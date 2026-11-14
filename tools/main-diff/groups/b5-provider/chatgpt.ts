@@ -1242,6 +1242,15 @@ const connectionCases: Case[] = [
     record: signedIn(),
     ops: [{ onChange: 'a' }, { dropSession: 1 }, { offChange: 'a' }, { offChange: 'a' }],
   }),
+  c(w([jsonRes({ error: 'invalid_request' }, 400), tokenOk({ id_token: undefined })]), {
+    now: NOW,
+    verdicts: [],
+    record: signedIn({ expiresAt: NOW - 1_000 }),
+    ops: [
+      { parallel: [{ accessToken: {} }, { accessToken: {} }, { accessToken: {} }] },
+      { state: 1 },
+    ],
+  }),
 ]
 
 const connectionGroup: Group = {
@@ -1849,6 +1858,12 @@ function streamCases(): Case[] {
       tools: [{ name: 'bad name!', description: 'x', inputSchema: {} }],
     }),
     streamCase(stream(turn('ok')), { maxTokens: 64, system: 'Custom system' }),
+    // Pin the connection clock so the expired fixture does not hide the stream error.
+    streamCase(
+      stream([delta('{"text":"cut at tools","toolCalls":[{"name":"read_doc","inputJson":"{')]),
+      {},
+      { record: fresh(), now: NOW },
+    ),
   ]
 }
 

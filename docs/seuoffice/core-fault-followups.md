@@ -35,3 +35,27 @@ MISSED extract a global pax header is a file  (80 checks, 80 equal, 0 difference
 - 해시는 위와 같이 `JSON.stringify`한 객체의 UTF-8 바이트에서 계산한다. 실제 변이의 위치·내용은 같고 선택 metadata만 다르다.
 
 고정 원본 제품과 실행의 catalog는 바꾸지 않는다. 원본 `channel-key`가 실제 `DIFF`로 잡혔는지는 해당 원본 산출물에서 별도로 감사한다. 새 검증 계획은 모든 selector가 정확 제품의 실제 함수 목록에 등록돼 있는지 검사하며 ghost selector를 예외로 허용하지 않는다.
+
+## 실패한 동시 ChatGPT refresh의 공유
+
+원본 제품 `375b08bd0e1f7e8432e6514468cc9d25be01b100`, 정의 `97ffeb5ec856c6a05399eae70525ede3568057ba`, 실행 `43604410368` attempt1의 job `132476063748`은 원본 `b5-provider-chatgpt.json#42`를 MISSED로 남겼다. 65개 비교는 모두 같았다. 원본 결과와 변이 본문을 바꾸지 않는다.
+
+- 원본 변이 객체 SHA256: `10a70b21f074fa7e861bd20ddd46ff4ace7c40e8115c108a68187f2903914b65`.
+- 대상은 `chatgpt_connection.rs`의 실행 중 refresh 재사용 guard다. 원본 위치·이름·file·find·replace·selector와 catalog 84개 항목을 유지한다.
+- 기존 유일한 병렬 case39는 성공한 refresh다. 공유를 제거해도 첫 실행이 새 토큰을 저장하면 뒤의 직렬 실행은 새 토큰을 재사용한다.
+
+변이가 전 입력에서 동등한 것은 아니다. 만료 토큰의 첫 refresh가 일시 실패하면 세션이 그대로 남는다. 공유가 없으면 다른 동시 호출이 다시 refresh하여 다른 결과를 받는다.
+
+후속 case65는 기존 65개 뒤에만 추가한다. 명시 clock `1700000000000`, 만료 세션, 세 동시 accessToken 호출에 첫 HTTP400 `invalid_request`와 다음 성공 응답을 둔다. 정상 TS 오라클은 요청 한 번과 같은 network 오류 세 개, 세션 불변을 관측했다. 같은 원본 Rust 변이의 추가 요청·서로 다른 호출 결과는 아직 hosted 검증 전이다.
+
+## 인증 뒤의 ChatGPT stream 조기 종료
+
+같은 원본 job은 `b5-provider-chatgpt.json#66`도 MISSED로 남겼다. 82개 비교는 모두 같았다.
+
+- 원본 변이 객체 SHA256: `0d488f4225f891d4f1fd09488a50d58ee626787e779dd58e6a6cd851f50f9b2a`.
+- 대상은 `chatgpt_responses.rs`의 조기 종료 오류에서 `the stream ended early`를 `the stream ended`로 바꾸는 원본 변이다.
+- 기존 cut-stream case46/47의 세션 만료 시각은 `1700003600000`인데, main-diff context clock은 `1794452400000`이다. 명시 connection clock이 없어 정상 TS도 Responses 호출 전에 OAuth token 요청과 network 오류로 끝났다. stream delta는 없었다.
+
+후속 case82는 기존 82개 뒤에만 추가한다. 명시 connection clock으로 기존 fresh 세션을 실제 유효하게 두고, 완료 event 없이 닫히는 tool-argument SSE를 소비한다. 정상 TS 오라클은 Responses 요청 한 번, delta `cut at tools`, 오류 `ChatGPT stopped while sending tool arguments: the stream ended early`를 관측했다.
+
+기존 147개 사례·공통 clock·TS/Rust 구현·원본 catalog·판정식은 그대로다. 두 새 사례의 TS 관측은 Rust 감도 증명이 아니다. 좁은 hosted 경로는 원본 양성 대조 0과 원본 target을 각각 `42/84`, `66/84`로 골라 정상 동등·실제 typed DIFF·복구·완전성을 검사한다. 그 성공도 원본 MISSED나 전체 batch의 성공으로 소급하지 않는다.
