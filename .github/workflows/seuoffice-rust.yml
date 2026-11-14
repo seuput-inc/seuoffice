@@ -69,7 +69,7 @@ jobs:
           dpkg -i "$RUNNER_TEMP/nss-inputs/libsigsegv.deb"
           dpkg -i "$RUNNER_TEMP/nss-inputs/gawk.deb" "$RUNNER_TEMP/nss-inputs/bison.deb"
           sha256sum "$(command -v bison)" "$(command -v gawk)" "$RUNNER_TEMP/nss-tools/usr/bin/patchelf" | tee "$RUNNER_TEMP/nss-results/additional-tools.sha256"
-          curl -fsSL 'https://dist.opendnssec.org/source/softhsm-2.6.1.tar.gz' -o "$RUNNER_TEMP/nss-inputs/softhsm-2.6.1.tar.gz"
+          curl -fsSL 'https://github.com/opendnssec/opendnssec/releases/download/2.1.14/softhsm-2.6.1.tar.gz' -o "$RUNNER_TEMP/nss-inputs/softhsm-2.6.1.tar.gz"
           echo '61249473054bcd1811519ef9a989a880a7bdcc36d317c9c25457fc614df475f2  '"$RUNNER_TEMP/nss-inputs/softhsm-2.6.1.tar.gz" | sha256sum -c -
           python3 - <<'PY'
           import json, os, pathlib, urllib.request
