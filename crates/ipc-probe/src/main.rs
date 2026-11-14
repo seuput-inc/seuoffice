@@ -413,6 +413,14 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
                             provided,
                             then,
                         ),
+                        Some("d2") => shell_ipc_d2::probe_trigger(
+                            &name,
+                            ViewId(view),
+                            &args,
+                            &services,
+                            provided,
+                            then,
+                        ),
                         _ => false,
                     }
                 })

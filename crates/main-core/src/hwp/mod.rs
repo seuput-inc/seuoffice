@@ -13,6 +13,7 @@ pub mod field_kinds;
 pub mod hwp5_file;
 pub mod ipc;
 pub mod print_document;
+pub mod recovery;
 pub mod save_as_formats;
 pub mod save_fixes;
 pub mod save_plan;

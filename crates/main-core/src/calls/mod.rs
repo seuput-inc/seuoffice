@@ -38,6 +38,7 @@ mod b6_apps;
 mod b6_shell;
 mod b6_tabs;
 mod b6_utils;
+mod d2_hwp_recovery;
 mod fakes;
 mod files;
 mod node_fs;
@@ -115,6 +116,7 @@ const GROUPS: &[Group] = &[
     b6_shell::call,
     b6_apps::call,
     b6_tabs::call,
+    d2_hwp_recovery::call,
     b2_cli::call,
     b4_fonts::call,
     b4_pdf_store::call,
