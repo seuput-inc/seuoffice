@@ -74,6 +74,35 @@ def build_nss(make, source, env, *arguments):
             except (OSError, subprocess.TimeoutExpired) as error:
                 record = {'directory': str(directory), 'diagnosticError': str(error)}
             print('NSS_OBJECT_QUERY ' + json.dumps(record), flush=True)
+        # Standalone get_objs lacks the failed recursive make's exported context.
+        # A failed-build-only replay records that expansion, then restores bytes.
+        rules = source / 'coreconf' / 'rules.mk'
+        original = rules.read_bytes()
+        anchor = b'$(SHARED_LIBRARY): $(OBJS) $(RES) $(MAPFILE) $(SUB_SHLOBJS) | $$(@D)/d'
+        expansion = source / 'nss-failed-rule-expansion.txt'
+        try:
+            if original.count(anchor) != 1:
+                raise ValueError('NSS shared-library diagnostic anchor changed')
+            variables = ('MAKELEVEL', 'MAKEFLAGS', 'SHARED_LIBRARY', 'OBJS', 'RES', 'MAPFILE', 'SUB_SHLOBJS')
+            diagnostic = ''.join(
+                '$(file ' + ('>' if index == 0 else '>>') + str(expansion)
+                + ',' + name + '=$(' + name + '))\n'
+                for index, name in enumerate(variables)
+            ).encode()
+            rules.write_bytes(original.replace(anchor, diagnostic + anchor))
+            replay = subprocess.run(
+                [make, 'nss_build_all', '-j2', *arguments], cwd=source,
+                env=env, text=True, capture_output=True, timeout=120,
+            )
+            print('NSS_FAILED_RULE_EXPANSION ' + json.dumps({
+                'status': replay.returncode,
+                'expansion': expansion.read_text() if expansion.exists() else None,
+                'stderr': replay.stderr,
+            }), flush=True)
+        except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+            print('NSS_FAILED_RULE_DIAGNOSTIC ' + str(error), flush=True)
+        finally:
+            rules.write_bytes(original)
         raise
 
 def unpack(archive, out):
