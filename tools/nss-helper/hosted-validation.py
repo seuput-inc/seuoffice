@@ -48,6 +48,14 @@ def main():
     p.add_argument('--image-digest', required=True)
     a = p.parse_args()
     inputs, results = a.inputs.resolve(strict=True), a.results.resolve(strict=True)
+    rust_identity = {}
+    for name, version_args in (('rustc', ['-vV']), ('cargo', ['-V'])):
+        actual = Path(subprocess.check_output(['rustup', 'which', name], text=True).strip()).resolve(strict=True)
+        version = subprocess.check_output([str(actual), *version_args], text=True)
+        if not version.startswith(name + ' 1.95.0 '):
+            raise RuntimeError(f'unexpected {name} version: {version.splitlines()[0]}')
+        rust_identity[name] = {'path': str(actual), 'sha256': digest(actual), 'version': version}
+    (results / 'rust-toolchain.json').write_text(json.dumps(rust_identity, indent=2) + '\n')
     pins = json.loads((HERE / 'contract.json').read_text())['sources']
     cc = executable('gcc')
     linker = subprocess.check_output([str(cc), '-print-prog-name=ld'], text=True).strip()
@@ -72,6 +80,18 @@ def main():
          '--sqlite', inputs / pins['sqlite']['filename'], '--glibc', inputs / pins['glibc']['filename'],
          '--toolchain', config, '--work', a.work, '--output', a.output,
          '--arch', 'x86_64', '--kernel-min', '3.2.0'])
+    callback_receipt_path = a.work / 'nss-helper-test-receipt.json'
+    callback_receipt = json.loads(callback_receipt_path.read_text())
+    if (callback_receipt.get('format') != 1 or callback_receipt.get('status') != 'passed'
+            or callback_receipt.get('exit_code') != 0 or callback_receipt.get('assertions_enabled') is not True
+            or callback_receipt.get('helper_sha256') != digest(SHELL / 'src/host/d2/pdf/crypto/nss_export_helper.c')
+            or callback_receipt.get('test_sha256') != digest(SHELL / 'src/host/d2/pdf/crypto/nss_export_helper_test.c')
+            or callback_receipt.get('producer_sha256') != digest(HERE / 'produce.py')
+            or callback_receipt.get('build_log_sha256') != digest(a.work / 'nss-helper-test-build.log')
+            or callback_receipt.get('assertions') != 'NDEBUG undefined before including test and assert.h'):
+        raise RuntimeError('actual helper callback test receipt is invalid')
+    shutil.copyfile(callback_receipt_path, results / callback_receipt_path.name)
+    shutil.copyfile(a.work / 'nss-helper-test-build.log', results / 'nss-helper-test-build.log')
     pristine_root = one((a.work / 'nss-pristine').iterdir(), 'pristine NSS source root')
     run(['python3', HERE / 'test_patch.py', '--source', pristine_root / 'nss',
          '--scratch', a.work.resolve().parent / 'nss-patch-regression'])
@@ -96,8 +116,10 @@ def main():
         shutil.copyfile(HERE / name, scratch / 'tools/nss-helper' / name)
     (crate / 'Cargo.toml').write_text('[package]\nname="nss-launcher-fixture"\nversion="0.1.0"\nedition="2024"\n[workspace]\n[dependencies]\nserde_json="=1.0.154"\nsha2="=0.10.9"\nlibc="=0.2.191"\nzeroize="=1.9.1"\n[build-dependencies]\nserde_json="=1.0.154"\nsha2="=0.10.9"\n')
     (crate / 'build.rs').write_text('mod nss_manifest;\nmod nss_build;\nfn main() { println!("cargo:rerun-if-env-changed=NSS_BUNDLE_DIR"); let dir = std::env::var_os("NSS_BUNDLE_DIR").unwrap(); nss_build::embed_nss(std::path::Path::new(&dir)).unwrap(); }\n')
-    env = dict(os.environ, NSS_BUNDLE_DIR=str(a.output.resolve(strict=True)), CARGO_TARGET_DIR=str(scratch / 'target'))
-    run(['cargo', 'test', '--manifest-path', crate / 'Cargo.toml'], env=env)
+    env = dict(os.environ, NSS_BUNDLE_DIR=str(a.output.resolve(strict=True)), CARGO_TARGET_DIR=str(scratch / 'target'),
+               RUSTC=rust_identity['rustc']['path'])
+    cargo = rust_identity['cargo']['path']
+    run([cargo, 'test', '--manifest-path', crate / 'Cargo.toml'], env=env)
     rejected = scratch / 'tampered-build-bundle'
     shutil.copytree(a.output, rejected)
     victim = rejected / 'libnssutil3.so'
@@ -106,12 +128,12 @@ def main():
         f.seek(0)
         f.write(bytes([first[0] ^ 1]))
     bad_env = dict(env, NSS_BUNDLE_DIR=str(rejected))
-    bad = subprocess.run(['cargo', 'build', '--manifest-path', str(crate / 'Cargo.toml')],
+    bad = subprocess.run([cargo, 'build', '--manifest-path', str(crate / 'Cargo.toml')],
                          env=bad_env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     (results / 'tampered-build-validation.log').write_text(bad.stdout)
     if bad.returncode == 0 or 'size or digest mismatch' not in bad.stdout:
         raise RuntimeError('product manifest validation did not reject the tampered artifact')
-    run(['cargo', 'build', '--manifest-path', crate / 'Cargo.toml'], env=env)
+    run([cargo, 'build', '--manifest-path', crate / 'Cargo.toml'], env=env)
     (results / 'harness-Cargo.lock').write_bytes((crate / 'Cargo.lock').read_bytes())
     softhsm_source = inputs / 'softhsm-2.6.1.tar.gz'
     softhsm_digest = '61249473054bcd1811519ef9a989a880a7bdcc36d317c9c25457fc614df475f2'

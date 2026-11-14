@@ -168,6 +168,40 @@ def main():
     glibclib = one(sysroot.glob('**/libc.so.6'), 'libc')
     loadername = 'ld-linux-x86-64.so.2' if a.arch == 'x86_64' else 'ld-linux-aarch64.so.1'
     loader = one(sysroot.glob('**/' + loadername), 'loader')
+    # Compile the actual helper implementation into a synthetic protocol test.
+    # Pristine NSS keeps this test independent of the inherited-FD launcher.
+    testdir = nss_a / 'cmd' / 'seu-nss-export-test'
+    testdir.mkdir()
+    test_source = HELPER.with_name('nss_export_helper_test.c')
+    shutil.copyfile(HELPER, testdir / HELPER.name)
+    shutil.copyfile(test_source, testdir / test_source.name)
+    wrapper = testdir / 'nss_export_helper_assert_test.c'
+    wrapper.write_text('#ifdef NDEBUG\n#undef NDEBUG\n#endif\n#include "nss_export_helper_test.c"\n')
+    (testdir / 'manifest.mn').write_text('CORE_DEPTH = ../..\nMODULE = nss\nCSRCS = nss_export_helper_assert_test.c\nREQUIRES = dbm seccmd\nPROGRAM = seu-nss-export-test\n')
+    shutil.copyfile(program / 'Makefile', testdir / 'Makefile')
+    test_build = run([make, '-j2', 'USE_STATIC_LIBS=1'], testdir, nenv, capture=True)
+    (work / 'nss-helper-test-build.log').write_text(test_build)
+    test_exe = one((pristine / 'dist').glob('*/bin/seu-nss-export-test'), 'helper test')
+    test_libdir = one((pristine / 'dist').glob('*/lib'), 'pristine test libdir')
+    test_paths = ':'.join(str(path) for path in (test_libdir, sqlite_prefix / 'lib', glibclib.parent))
+    test_env = {'HOME': str(work), 'PATH': env['PATH'], 'LC_ALL': 'C', 'TZ': 'UTC'}
+    test_result = subprocess.run(
+        [str(loader), '--inhibit-cache', '--library-path', test_paths, str(test_exe)],
+        env=test_env, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, timeout=60)
+    (work / 'nss-helper-test-receipt.json').write_text(json.dumps({
+        'format': 1, 'status': 'passed', 'exit_code': test_result.returncode,
+        'scope': 'synthetic protected callback protocol, not external-token or UI proof',
+        'helper_sha256': sha(HELPER), 'test_sha256': sha(test_source),
+        'wrapper_sha256': sha(wrapper), 'executable_sha256': sha(test_exe),
+        'producer_sha256': sha(Path(__file__)),
+        'nss_source_sha256': PINS['nss'][1], 'toolchain': tools,
+        'make_flags': ['-j2', 'USE_STATIC_LIBS=1'],
+        'build_log_sha256': sha(work / 'nss-helper-test-build.log'),
+        'assertions': 'NDEBUG undefined before including test and assert.h',
+        'assertions_enabled': True,
+        'cases': ['approval', 'denial', 'invalid-response', 'eof', 'retry-refusal'],
+    }, indent=2) + '\n')
     dep_fd = dict(FD)
     dep_fd[loadername] = ALL_FD['loader']
     candidates = {'libc.so.6': glibclib, 'libm.so.6': one(sysroot.glob('**/libm.so.6'), 'libm'),
