@@ -1,10 +1,10 @@
-name: seuoffice rust - ledger consumer suite
+name: seuoffice rust - retained producer proof
 
 on:
   workflow_dispatch:
     inputs:
       product_sha:
-        description: Exact followup product for the manifest's ledger consumer boundary
+        description: Exact product with opt-in per-mutation evidence producer
         required: true
         type: string
 
@@ -13,23 +13,22 @@ permissions:
   actions: read
 
 concurrency:
-  group: seuoffice-main-ledger-consumer-suite-${{ inputs.product_sha || github.ref }}
+  group: seuoffice-main-retained-producer-proof-${{ inputs.product_sha || github.ref }}
   cancel-in-progress: false
 
 env:
-  MODE: main-ledger-consumer-suite
+  MODE: main-retained-producer-proof
   PRODUCT_DIR: ${{ github.workspace }}/product
   DRIVER_DIR: ${{ github.workspace }}/driver
   PRODUCT_SHA: ${{ inputs.product_sha }}
   DEFINITION_SHA: ${{ github.sha }}
-  PLAN_PATH: ${{ github.workspace }}/missed-sensitivity-plan.json
+  PLAN_PATH: ${{ github.workspace }}/retained-sensitivity-plan.json
 
 jobs:
   prepare:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
       product_sha: ${{ steps.identity.outputs.product_sha }}
     steps:
       - uses: actions/checkout@v4
@@ -40,9 +39,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Validate exact followup input
+      - name: Validate exact producer product input
         id: identity
-        run: node driver/tools/main-diff/missed-sensitivity-driver.mjs validate
+        run: node driver/tools/main-diff/retained-sensitivity-driver.mjs validate
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.identity.outputs.product_sha }}
@@ -50,26 +49,20 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Bind product lineage and original mutation objects
-        id: plan
-        run: node driver/tools/main-diff/missed-sensitivity-driver.mjs prepare
+        run: node driver/tools/main-diff/retained-sensitivity-driver.mjs prepare
       - uses: actions/upload-artifact@v4
         with:
-          name: missed-sensitivity-plan
-          path: missed-sensitivity-plan.json
+          name: retained-sensitivity-plan
+          path: retained-sensitivity-plan.json
           if-no-files-found: error
 
   sensitivity:
     needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      max-parallel: 8
-      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     env:
-      TARGET_ID: ${{ matrix.targetId }}
       JOB_OUT: ${{ github.workspace }}/job-out
-      MAIN_DIFF_OUT: ${{ github.workspace }}/job-out/mutant
+      MAIN_DIFF_MUTATION_EVIDENCE_DIR: ${{ github.workspace }}/job-out/retained
       MAIN_DIFF_ADDON: ${{ github.workspace }}/job-out/main_node.node
       MAIN_DIFF_PROFILE: node-faults
       CARGO_INCREMENTAL: '1'
@@ -88,7 +81,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
-          name: missed-sensitivity-plan
+          name: retained-sensitivity-plan
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -115,20 +108,19 @@ jobs:
         working-directory: product
         run: npm run build:wasm
       - name: Normal selected consumer baseline
-        id: baseline
         env:
           CARGO_INCREMENTAL: '1'
-        run: node driver/tools/main-diff/missed-sensitivity-driver.mjs job-prepare
-      - name: Original positive control and exact target residue
+        run: node driver/tools/main-diff/retained-sensitivity-driver.mjs baseline
+      - name: Original residue with append-only producer evidence
         id: mutations
         working-directory: product
         env:
           CARGO_INCREMENTAL: '1'
-          FAULT_SHARD: ${{ steps.baseline.outputs.fault_shard }}
-          FAULT_CATALOG: ${{ steps.baseline.outputs.catalog }}
+          FAULT_SHARD: '41/56'
+          FAULT_CATALOG: tools/main-diff/faults/b5-agent-apps.json
         shell: bash
         run: node tools/main-diff/faults.mjs "$FAULT_CATALOG" 2>&1 | tee "$JOB_OUT/faults.txt"
-      - name: Preserve raw producer evidence
+      - name: Preserve original producer result
         if: always()
         shell: bash
         run: |
@@ -136,21 +128,19 @@ jobs:
           if [ -f product/tools/main-diff/out/faults.json ]; then
             cp product/tools/main-diff/out/faults.json "$JOB_OUT/faults.json"
           fi
-          if [ -f "$MAIN_DIFF_OUT/report.json" ]; then
-            cp "$MAIN_DIFF_OUT/report.json" "$JOB_OUT/terminal-report-raw.json"
-          fi
-      - name: Audit exact appended-case sensitivity and restoration
+      - name: Audit every retained original report and restoration
         if: ${{ success() }}
         env:
           CARGO_INCREMENTAL: '1'
           MUTATION_STATUS: ${{ steps.mutations.outcome }}
-        run: node driver/tools/main-diff/missed-sensitivity-driver.mjs audit-job
-      - name: Publish bounded target result or incomplete raw evidence
+        run: node driver/tools/main-diff/retained-sensitivity-driver.mjs audit
+      - name: Publish bounded proof or incomplete raw evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: missed-sensitivity-${{ matrix.targetId }}
+          name: retained-producer-proof
           path: |
             job-out
             !job-out/*.node
+            !job-out/retained/work
           if-no-files-found: error
