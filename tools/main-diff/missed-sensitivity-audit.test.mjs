@@ -144,6 +144,127 @@ function audit(f) {
 function refresh(f) {
   f.evidence.reportSha256 = reportHash(f.evidence.report)
 }
+function consumerUnit() {
+  const f = syntheticUnit()
+  const c = f.manifest.cases[0]
+  const ledger = {
+    id: 'fixed',
+    fn: 'target',
+    case: 0,
+    typescript: JSON.parse(wire('fixed-ts')),
+    rust: JSON.parse(wire('fixed-rust')),
+  }
+  const page = (totalChars) =>
+    JSON.stringify({
+      answer: JSON.stringify({
+        value: [{ ok: true, name: 'whole.txt', text: '가😀', offset: 0, totalChars }],
+        logs: [['read']],
+      }),
+      files: { 'whole.txt': '가😀' },
+    })
+  f.manifest.scope = 'ledger-consumer-followup-only-not-full-recovery'
+  c.ledgerRequirements = [ledger]
+  c.caseRequirement = {
+    fn: 'target',
+    index: 1,
+    note: 'new case',
+    typescript: page(3),
+    valueChange: { path: ['value', 0, 'totalChars'], before: 3, after: 7 },
+  }
+  f.plan = makePlan(f.manifest, 'b'.repeat(40))
+  f.target = f.plan.cases[0]
+  f.baseline.identity.manifestSha256 = f.plan.manifestSha256
+  f.baseline.identity.planSha256 = hash(f.plan)
+  f.baseline.ledger = structuredClone([ledger])
+  f.baseline.ledgerSha256 = hash(f.baseline.ledger)
+  f.baseline.reports.unit.report.target = { checks: 2, equal: 1, listed: 1, distinct: 2 }
+  f.baseline.commands[0].stdout = f.baseline.commands[0].stdout.replace(
+    'target: 2 checks, 0 differences, 0 listed, 2 distinct',
+    'target: 2 checks, 0 differences, 1 listed, 2 distinct',
+  )
+  f.evidence.report.report.target.equal = 0
+  f.evidence.report.differences = [
+    { fn: 'target', case: 0, typescript: JSON.stringify(ledger.typescript), rust: wire('changed') },
+    { fn: 'target', case: 1, note: 'new case', typescript: page(3), rust: page(7) },
+  ]
+  f.evidence.rows[1].detail =
+    'DIFF target case 0 | DIFF target case 1 | STALE ledger entry fixed: it no longer reproduces'
+  refresh(f)
+  return f
+}
+
+test('ledger consumer requires typed ledger and independent exact value change', () => {
+  assert.equal(audit(consumerUnit()).typedNewCaseDifference.case, 1)
+  for (const mutate of [
+    (f) => {
+      f.evidence.report.differences.shift()
+      f.evidence.report.report.target.equal++
+      f.evidence.rows[1].detail =
+        'DIFF target case 1 | STALE ledger entry fixed: it no longer reproduces'
+    },
+    (f) => {
+      f.evidence.report.differences.pop()
+      f.evidence.report.report.target.equal++
+      f.evidence.rows[1].detail =
+        'DIFF target case 0 | STALE ledger entry fixed: it no longer reproduces'
+    },
+    (f) => {
+      f.evidence.report.differences[0].typescript = wire('other')
+    },
+    (f) => {
+      f.evidence.report.differences[0].rust = JSON.stringify(f.target.ledgerRequirements[0].rust)
+    },
+    (f) => {
+      f.evidence.report.differences[1].typescript = wire('wrong')
+    },
+    (f) => {
+      const d = f.evidence.report.differences[1]
+      const w = JSON.parse(d.rust)
+      const a = JSON.parse(w.answer)
+      a.logs.push(['other'])
+      w.answer = JSON.stringify(a)
+      d.rust = JSON.stringify(w)
+    },
+    (f) => {
+      const d = f.evidence.report.differences[1]
+      const w = JSON.parse(d.rust)
+      w.files.extra = 'bad'
+      d.rust = JSON.stringify(w)
+    },
+    (f) => {
+      const d = f.evidence.report.differences[1]
+      const w = JSON.parse(d.rust)
+      const a = JSON.parse(w.answer)
+      a.error = 'bad'
+      w.answer = JSON.stringify(a)
+      d.rust = JSON.stringify(w)
+    },
+    (f) => {
+      f.evidence.rows[1].detail += ' | STALE ledger entry unknown: it no longer reproduces'
+    },
+    (f) => {
+      f.evidence.rows[1].detail += ' | STALE ledger entry fixed: it no longer reproduces'
+    },
+    (f) => {
+      f.evidence.rows[1].detail = 'STALE ledger entry fixed: it no longer reproduces'
+    },
+    (f) => {
+      f.baseline.commands[0].stdout += 'STALE ledger entry fixed: it no longer reproduces\n'
+    },
+    (f) => {
+      f.baseline.ledger[0].typescript = JSON.parse(wire('wrong'))
+      f.baseline.ledgerSha256 = hash(f.baseline.ledger)
+    },
+  ]) {
+    const f = consumerUnit()
+    mutate(f)
+    refresh(f)
+    assert.throws(() => audit(f))
+  }
+  const old = syntheticUnit()
+  old.evidence.rows[1].detail += ' | STALE ledger entry fixed: it no longer reproduces'
+  assert.throws(() => audit(old))
+})
 
 test('synthetic unit: bounded receipt requires control and appended typed case', () => {
   const f = syntheticUnit()

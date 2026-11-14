@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { resolve } from 'node:path'
 import {
+  assertSelectedLedger,
   bindCatalogCase,
   identity,
   terminalReportPath,
@@ -10,7 +11,11 @@ import {
 import { hash } from './recovery-plan.mjs'
 
 const sha = 'a'.repeat(40)
-const manifest = { productSha: sha, cases: [{ id: 'target' }] }
+const manifest = {
+  productSha: sha,
+  scope: 'five-miss-followup-only-not-full-recovery',
+  cases: [{ id: 'target' }],
+}
 const env = {
   MODE: 'main-missed-sensitivity',
   PRODUCT_SHA: sha,
@@ -37,6 +42,31 @@ test('identity binds exact product, definition, run and target', () => {
     { TARGET_ID: 'unknown' },
   ])
     assert.throws(() => identity({ ...env, ...change }, manifest, true))
+})
+
+test('identity binds each explicit mode to its manifest scope', () => {
+  const consumerManifest = {
+    ...manifest,
+    scope: 'ledger-consumer-followup-only-not-full-recovery',
+  }
+  const consumerEnv = { ...env, MODE: 'main-ledger-consumer-sensitivity' }
+  assert.deepEqual(identity(consumerEnv, consumerManifest, true), identity(env, manifest, true))
+  assert.throws(() => identity(env, consumerManifest, true))
+  assert.throws(() => identity(consumerEnv, manifest, true))
+  assert.throws(() => identity(env, { ...manifest, scope: 'unknown' }, true))
+})
+
+test('selected ledger binds full declared entries and defaults to empty', () => {
+  const entry = { id: 'boundary', fn: 'readAttachmentPage', ts: { value: 3 }, rust: { value: 4 } }
+  assertSelectedLedger([entry], { ledgerRequirements: [entry] })
+  assertSelectedLedger([], {})
+  assert.throws(() => assertSelectedLedger([entry], {}))
+  assert.throws(() => assertSelectedLedger([], { ledgerRequirements: [entry] }))
+  assert.throws(() =>
+    assertSelectedLedger([{ ...entry, rust: { value: 5 } }], {
+      ledgerRequirements: [entry],
+    }),
+  )
 })
 
 test('terminal report resolves against the product runner directory', () => {

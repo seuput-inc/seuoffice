@@ -7,6 +7,10 @@ const sha = (s) => typeof s === 'string' && /^[a-f0-9]{40}$/.test(s)
 const sha256 = (s) => typeof s === 'string' && /^[a-f0-9]{64}$/.test(s)
 const text = (s) => typeof s === 'string' && s.length > 0
 const positive = (n) => Number.isSafeInteger(n) && n > 0
+const oldScope = 'five-miss-followup-only-not-full-recovery'
+const ledgerScope = 'ledger-consumer-followup-only-not-full-recovery'
+const scopes = [oldScope, ledgerScope]
+const keyOf = (fn, index) => JSON.stringify([fn, index])
 const requireValue = (condition, message) => {
   if (!condition) throw new Error(message)
 }
@@ -61,7 +65,7 @@ export function validateManifest(manifest) {
         productSha: manifest.parentProductSha,
       }) &&
       manifest.mutatorSha256 === originalMutatorSha256 &&
-      manifest.scope === 'five-miss-followup-only-not-full-recovery',
+      scopes.includes(manifest.scope),
     'Invalid manifest identity',
   )
   requireValue(
@@ -155,6 +159,39 @@ export function validateManifest(manifest) {
         validWire(r.typescript),
       'Invalid case requirement',
     )
+    const ledger = c.ledgerRequirements ?? []
+    requireValue(
+      Array.isArray(ledger) &&
+        (manifest.scope === oldScope ? ledger.length === 0 : ledger.length > 0) &&
+        (manifest.scope !== ledgerScope || manifest.cases.length === 1) &&
+        ledger.every(
+          (entry) =>
+            text(entry?.id) &&
+            c.fault.fn.includes(entry.fn) &&
+            Number.isSafeInteger(entry.case) &&
+            entry.case >= 0 &&
+            validWire(JSON.stringify(entry.typescript)) &&
+            validWire(JSON.stringify(entry.rust)) &&
+            !same(entry.typescript, entry.rust) &&
+            !(entry.fn === r.fn && entry.case === r.index),
+        ) &&
+        new Set(ledger.map((entry) => entry.id)).size === ledger.length &&
+        new Set(ledger.map((entry) => keyOf(entry.fn, entry.case))).size === ledger.length,
+      'Invalid ledger requirements',
+    )
+    if (manifest.scope === ledgerScope) {
+      const change = r.valueChange
+      requireValue(
+        change &&
+          Array.isArray(change.path) &&
+          change.path.length > 0 &&
+          change.path.every((part) => text(part) || (Number.isSafeInteger(part) && part >= 0)) &&
+          Object.hasOwn(change, 'before') &&
+          Object.hasOwn(change, 'after') &&
+          !same(change.before, change.after),
+        'Invalid value change requirement',
+      )
+    } else requireValue(r.valueChange === undefined, 'Unexpected value change requirement')
     requireValue(
       Array.isArray(c.baselineExpected) && c.baselineExpected.length > 0,
       'Missing baseline inventory',
@@ -174,6 +211,9 @@ export function validateManifest(manifest) {
     requireValue(
       same([...names].sort(), [...new Set([...c.control.fn, ...c.fault.fn])].sort()) &&
         c.baselineExpected.find((f) => f.name === r.fn).checks > r.index &&
+        ledger.every(
+          (entry) => entry.case < c.baselineExpected.find((f) => f.name === entry.fn).checks,
+        ) &&
         new Set(c.baselineExpected.filter((f) => c.fault.fn.includes(f.name)).map((f) => f.group))
           .size === 1,
       'Case or selector inventory mismatch',
@@ -205,15 +245,15 @@ export function auditBaseline(expected, baseline) {
     expected &&
       same(expected.identity, baseline?.identity) &&
       same(expected.baselineExpected, baseline.functions) &&
-      Array.isArray(baseline.ledger) &&
-      baseline.ledger.length === 0 &&
+      Array.isArray(expected.ledgerRequirements ?? []) &&
+      same(baseline.ledger, expected.ledgerRequirements ?? []) &&
       baseline.sources?.mutatorSha256 === originalMutatorSha256,
     'Baseline identity or inventory mismatch',
   )
   return auditNormalBaseline(baseline)
 }
 
-function detailDiffs(detail, fns) {
+function detailDiffs(detail, fns, allowStale = false) {
   requireValue(text(detail), 'Missing comparison detail')
   const segments = []
   let start = 0,
@@ -232,13 +272,19 @@ function detailDiffs(detail, fns) {
   }
   segments.push(detail.slice(start))
   const found = []
+  const stale = []
   for (const segment of segments.flatMap((s) => s.split(/\r?\n/))) {
     requireValue(
-      !/^(?:STALE\b|no such group:|fatal(?::|\s+error\b)|(?:[A-Za-z_$][\w$]*Error|Error)(?:\s+\[[^\]]+\])?(?::|\s+))/i.test(
+      !/^(?:no such group:|fatal(?::|\s+error\b)|(?:[A-Za-z_$][\w$]*Error|Error)(?:\s+\[[^\]]+\])?(?::|\s+))/i.test(
         segment,
       ) && !/\bFLOOR: fewer than two distinct answers\b/.test(segment),
       'Fatal comparison diagnostic',
     )
+    if (/^STALE\b/.test(segment)) {
+      const match = /^STALE ledger entry ([^:\r\n]+): it no longer reproduces$/.exec(segment)
+      requireValue(allowStale && match && !stale.includes(match[1]), 'Invalid STALE diagnostic')
+      stale.push(match[1])
+    }
     const match = /^DIFF (\S+) case (\d+)(?:\s|$)/.exec(segment)
     requireValue(!/^DIFF\b/.test(segment) || match, 'Malformed DIFF')
     if (match) {
@@ -250,7 +296,7 @@ function detailDiffs(detail, fns) {
     found.length > 0 && new Set(found.map((pair) => JSON.stringify(pair))).size === found.length,
     'Missing or duplicate DIFF',
   )
-  return found
+  return { diffs: found, stale }
 }
 
 export function auditTarget({ plan, target, baseline, evidence }) {
@@ -260,7 +306,14 @@ export function auditTarget({ plan, target, baseline, evidence }) {
       sha(plan.productSha) &&
       sha256(plan.manifestSha256) &&
       plan.maxParallel === 8 &&
-      plan.scope === 'five-miss-followup-only-not-full-recovery' &&
+      scopes.includes(plan.scope) &&
+      (plan.scope === oldScope
+        ? (target.ledgerRequirements ?? []).length === 0 &&
+          target.caseRequirement?.valueChange === undefined
+        : Array.isArray(target.ledgerRequirements) &&
+          target.ledgerRequirements.length > 0 &&
+          plan.cases.length === 1 &&
+          target.caseRequirement?.valueChange) &&
       Array.isArray(plan.cases) &&
       plan.cases.filter((c) => same(c, target)).length === 1 &&
       target.modulus === 4 * Math.ceil(target.catalogLength / 4) &&
@@ -284,7 +337,14 @@ export function auditTarget({ plan, target, baseline, evidence }) {
       same(identity, evidence?.identity),
     'Wrong evidence identity',
   )
-  auditBaseline({ identity, baselineExpected: target.baselineExpected }, baseline)
+  auditBaseline(
+    {
+      identity,
+      baselineExpected: target.baselineExpected,
+      ledgerRequirements: target.ledgerRequirements,
+    },
+    baseline,
+  )
   requireValue(
     Array.isArray(evidence.rows) && evidence.rows.length === 2 && typeof evidence.text === 'string',
     'Missing result rows',
@@ -309,7 +369,7 @@ export function auditTarget({ plan, target, baseline, evidence }) {
         row.verdict === 'CAUGHT',
       'Invalid mutation row',
     )
-    return detailDiffs(row.detail, fault.fn)
+    return detailDiffs(row.detail, fault.fn, position === 1 && plan.scope === ledgerScope)
   })
   const paths = [...new Set([target.control, target.fault].map((f) => `crates/${f.file}`))].sort()
   requireValue(
@@ -371,7 +431,7 @@ export function auditTarget({ plan, target, baseline, evidence }) {
     seen.add(key)
   }
   requireValue(
-    details[1].every((pair) => seen.has(JSON.stringify(pair))),
+    details[1].diffs.every((pair) => seen.has(JSON.stringify(pair))),
     'Printed DIFF absent from report',
   )
   for (const name of target.fault.fn) {
@@ -391,6 +451,21 @@ export function auditTarget({ plan, target, baseline, evidence }) {
       'Invalid terminal report counts or FLOOR',
     )
   }
+  const ledger = target.ledgerRequirements ?? []
+  for (const entry of ledger) {
+    const diff = payload.differences.find((d) => d.fn === entry.fn && d.case === entry.case)
+    requireValue(
+      diff &&
+        diff.typescript === JSON.stringify(entry.typescript) &&
+        diff.rust !== JSON.stringify(entry.rust) &&
+        diff.rust !== diff.typescript,
+      'Missing or unchanged typed ledger tuple',
+    )
+  }
+  requireValue(
+    same([...details[1].stale].sort(), ledger.map((entry) => entry.id).sort()),
+    'STALE diagnostics do not match typed ledger requirements',
+  )
   const requirement = target.caseRequirement
   const actual = payload.differences.find(
     (d) => d.fn === requirement.fn && d.case === requirement.index,
@@ -399,6 +474,41 @@ export function auditTarget({ plan, target, baseline, evidence }) {
     actual && actual.note === requirement.note && actual.typescript === requirement.typescript,
     'Missing appended case typed difference or wrong TypeScript oracle',
   )
+  if (requirement.valueChange) {
+    requireValue(
+      !ledger.some((entry) => entry.fn === actual.fn && entry.case === actual.case),
+      'Appended case must be independent of ledger',
+    )
+    const ts = JSON.parse(actual.typescript)
+    const rust = JSON.parse(actual.rust)
+    const answer = JSON.parse(ts.answer)
+    const mutant = JSON.parse(rust.answer)
+    const { path, before, after } = requirement.valueChange
+    let parent = answer
+    for (const part of path.slice(0, -1)) {
+      requireValue(
+        parent !== null && typeof parent === 'object' && Object.hasOwn(parent, part),
+        'Missing value change path',
+      )
+      parent = parent[part]
+    }
+    const last = path.at(-1)
+    requireValue(
+      parent !== null &&
+        typeof parent === 'object' &&
+        Object.hasOwn(parent, last) &&
+        same(parent[last], before),
+      'Wrong original value',
+    )
+    parent[last] = after
+    requireValue(
+      same(answer, mutant) &&
+        same(ts.files, rust.files) &&
+        same(Object.keys(ts).sort(), Object.keys(rust).sort()) &&
+        Object.keys(ts).every((key) => key === 'answer' || same(ts[key], rust[key])),
+      'Wrong consumer value change',
+    )
+  }
   return {
     scope: 'missed-sensitivity-only',
     identity,

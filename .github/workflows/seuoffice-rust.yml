@@ -1,10 +1,10 @@
-name: seuoffice rust - missed sensitivity
+name: seuoffice rust - ledger consumer sensitivity
 
 on:
   workflow_dispatch:
     inputs:
       product_sha:
-        description: Exact followup product for the manifest's missed consumer boundaries
+        description: Exact followup product for the manifest's ledger consumer boundary
         required: true
         type: string
 
@@ -13,11 +13,11 @@ permissions:
   actions: read
 
 concurrency:
-  group: seuoffice-main-missed-sensitivity-${{ inputs.product_sha || github.ref }}
+  group: seuoffice-main-ledger-consumer-sensitivity-${{ inputs.product_sha || github.ref }}
   cancel-in-progress: false
 
 env:
-  MODE: main-missed-sensitivity
+  MODE: main-ledger-consumer-sensitivity
   PRODUCT_DIR: ${{ github.workspace }}/product
   DRIVER_DIR: ${{ github.workspace }}/driver
   PRODUCT_SHA: ${{ inputs.product_sha }}

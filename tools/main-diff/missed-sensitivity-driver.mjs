@@ -24,7 +24,12 @@ const emit = (env, key, value) => {
 }
 
 export function identity(env, manifest, requireTarget = false) {
-  assert.equal(env.MODE, 'main-missed-sensitivity')
+  const modes = {
+    'five-miss-followup-only-not-full-recovery': 'main-missed-sensitivity',
+    'ledger-consumer-followup-only-not-full-recovery': 'main-ledger-consumer-sensitivity',
+  }
+  assert.ok(Object.hasOwn(modes, manifest.scope), 'Unknown manifest scope')
+  assert.equal(env.MODE, modes[manifest.scope])
   for (const key of ['DEFINITION_SHA', 'PRODUCT_SHA'])
     assert.match(env[key] ?? '', /^[a-f0-9]{40}$/)
   assert.equal(env.PRODUCT_SHA, manifest.productSha)
@@ -215,6 +220,10 @@ async function inventoryGroup(product, groupName) {
   }))
 }
 
+export function assertSelectedLedger(ledger, target) {
+  assert.deepEqual(ledger, target.ledgerRequirements ?? [])
+}
+
 function collectBaseline(product, out, env, target, current, catalog) {
   for (const path of [
     'tools/main-diff/main.ts',
@@ -236,7 +245,7 @@ function collectBaseline(product, out, env, target, current, catalog) {
   const selected = new Set(Object.values(groups).flat())
   const ledgerPath = join(product, 'tools/main-diff/divergences.json')
   const ledger = json(ledgerPath).filter((entry) => selected.has(entry.fn))
-  assert.deepEqual(ledger, [])
+  assertSelectedLedger(ledger, target)
   const root = join(out, 'baseline')
   mkdirSync(root, { recursive: true })
   const functions = []
@@ -325,7 +334,14 @@ function collectBaseline(product, out, env, target, current, catalog) {
     },
     verdict: 'success',
   }
-  auditBaseline({ identity: current, baselineExpected: target.baselineExpected }, baseline)
+  auditBaseline(
+    {
+      identity: current,
+      baselineExpected: target.baselineExpected,
+      ledgerRequirements: target.ledgerRequirements,
+    },
+    baseline,
+  )
   save(join(out, 'normal-baseline.json'), baseline)
   return baseline
 }
@@ -411,7 +427,14 @@ async function main(command, env) {
     mutatorSha256: hashBytes(checkedFile(product, 'tools/main-diff/faults.mjs')),
     wasmSha256: hashBytes(readFileSync(env.SEUOFFICE_WASM)),
   })
-  auditBaseline({ identity: current, baselineExpected: target.baselineExpected }, baseline)
+  auditBaseline(
+    {
+      identity: current,
+      baselineExpected: target.baselineExpected,
+      ledgerRequirements: target.ledgerRequirements,
+    },
+    baseline,
+  )
   const rowsPath = join(product, 'tools/main-diff/out/faults.json')
   copyFileSync(rowsPath, join(out, 'faults.json'))
   const rawReport = readFileSync(terminalReportPath(product, env))
