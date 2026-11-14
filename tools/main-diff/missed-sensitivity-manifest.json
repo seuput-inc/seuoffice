@@ -1,0 +1,324 @@
+{
+  "contract": "main-missed-sensitivity-manifest/v1",
+  "productSha": "276b0d2a8ce8b04b266ecf42048b6ef10b06d4aa",
+  "parentProductSha": "375b08bd0e1f7e8432e6514468cc9d25be01b100",
+  "originalRun": {
+    "runId": "43604410368",
+    "attempt": 1,
+    "definitionSha": "97ffeb5ec856c6a05399eae70525ede3568057ba",
+    "productSha": "375b08bd0e1f7e8432e6514468cc9d25be01b100"
+  },
+  "mutatorSha256": "5ee0052330c9b76197beb4a4056a1bffdfc2c063f98440f608ebca94644adc5b",
+  "cases": [
+    {
+      "id": "b4-pdf-store-54",
+      "catalog": "tools/main-diff/faults/b4-pdf-store.json",
+      "catalogLength": 97,
+      "catalogSha256": "d6b323c77ecf93fda9c3bf4c5a16b879f9248c11429239493b4f7564eb59a8da",
+      "index": 54,
+      "originalMutationSha256": "60fce510433be3926ae6ce0c7c86f846431ae781178ed1f1750cd2db21ef51c3",
+      "mutationSha256": "60fce510433be3926ae6ce0c7c86f846431ae781178ed1f1750cd2db21ef51c3",
+      "fault": {
+        "name": "migration replaces an equal provider record",
+        "file": "main-core/src/packages/pdf_structure/store.rs",
+        "find": "if current.is_none_or(|c| c.saved_at < meta.saved_at) {",
+        "replace": "if current.is_none_or(|c| c.saved_at <= meta.saved_at) {",
+        "fn": ["pdf-structure/store.migrateDocument"]
+      },
+      "control": {
+        "name": "interrupted job names another error",
+        "file": "main-core/src/packages/pdf_structure/store.rs",
+        "find": "Some(\"interrupted\".to_owned())",
+        "replace": "Some(\"interrupted!\".to_owned())",
+        "fn": [
+          "pdf-structure/store.readJob",
+          "pdf-structure/store.listJobs",
+          "pdf-structure/store.unfinishedJobs"
+        ]
+      },
+      "controlSha256": "50f73647f7828a5327b60e19d6603444bfdeeee53d2c44e999fc308c2a9016f8",
+      "caseRequirement": {
+        "fn": "pdf-structure/store.migrateDocument",
+        "index": 19,
+        "note": "equal provider timestamps preserve destination metadata without moving blocks",
+        "typescript": "{\"answer\":\"{\\\"value\\\":{\\\"aiReadPages\\\":0,\\\"translationBlocks\\\":0,\\\"languages\\\":[]}}\",\"files\":{\"pdf-store\":\"dir 755\",\"pdf-store/docs\":\"dir 755\",\"pdf-store/docs/docNew\":\"dir 755\",\"pdf-store/docs/docNew/translations\":\"dir 755\",\"pdf-store/docs/docNew/translations/en\":\"dir 755\",\"pdf-store/docs/docNew/translations/en/translation.json\":\"file 644 \\\"{\\\\\\\"format\\\\\\\":1,\\\\\\\"lang\\\\\\\":\\\\\\\"en\\\\\\\",\\\\\\\"provider\\\\\\\":\\\\\\\"destination\\\\\\\",\\\\\\\"model\\\\\\\":\\\\\\\"destination-model\\\\\\\",\\\\\\\"savedAt\\\\\\\":5}\\\"\",\"pdf-store/docs/docOld\":\"dir 755\",\"pdf-store/docs/docOld/translations\":\"dir 755\",\"pdf-store/docs/docOld/translations/en\":\"dir 755\",\"pdf-store/docs/docOld/translations/en/translation.json\":\"file 644 \\\"{\\\\\\\"format\\\\\\\":1,\\\\\\\"lang\\\\\\\":\\\\\\\"en\\\\\\\",\\\\\\\"provider\\\\\\\":\\\\\\\"openai\\\\\\\",\\\\\\\"model\\\\\\\":\\\\\\\"m1\\\\\\\",\\\\\\\"savedAt\\\\\\\":5}\\\"\"}}"
+      },
+      "baselineExpected": [
+        {
+          "group": "b4-pdf-store",
+          "name": "pdf-structure/store.listJobs",
+          "checks": 3,
+          "single": false
+        },
+        {
+          "group": "b4-pdf-store",
+          "name": "pdf-structure/store.migrateDocument",
+          "checks": 20,
+          "single": false
+        },
+        {
+          "group": "b4-pdf-store",
+          "name": "pdf-structure/store.readJob",
+          "checks": 30,
+          "single": false
+        },
+        {
+          "group": "b4-pdf-store",
+          "name": "pdf-structure/store.unfinishedJobs",
+          "checks": 3,
+          "single": false
+        }
+      ]
+    },
+    {
+      "id": "b4-pdf-store-70",
+      "catalog": "tools/main-diff/faults/b4-pdf-store.json",
+      "catalogLength": 97,
+      "catalogSha256": "d6b323c77ecf93fda9c3bf4c5a16b879f9248c11429239493b4f7564eb59a8da",
+      "index": 70,
+      "originalMutationSha256": "c3807cdf896c5d5f1255b61078d0a76fa704ba9eb0d52ef09100e139b0d0dcf8",
+      "mutationSha256": "c3807cdf896c5d5f1255b61078d0a76fa704ba9eb0d52ef09100e139b0d0dcf8",
+      "fault": {
+        "name": "insights need no three summaries",
+        "file": "main-core/src/packages/pdf_structure/reading.rs",
+        "find": ".filter(|items| items.len() == 3)?",
+        "replace": ".filter(|items| items.len() >= 3)?",
+        "fn": ["pdf-structure/reading.asInsights"]
+      },
+      "control": {
+        "name": "interrupted job names another error",
+        "file": "main-core/src/packages/pdf_structure/store.rs",
+        "find": "Some(\"interrupted\".to_owned())",
+        "replace": "Some(\"interrupted!\".to_owned())",
+        "fn": [
+          "pdf-structure/store.readJob",
+          "pdf-structure/store.listJobs",
+          "pdf-structure/store.unfinishedJobs"
+        ]
+      },
+      "controlSha256": "50f73647f7828a5327b60e19d6603444bfdeeee53d2c44e999fc308c2a9016f8",
+      "caseRequirement": {
+        "fn": "pdf-structure/reading.asInsights",
+        "index": 14,
+        "note": "four string summaries are rejected rather than truncated",
+        "typescript": "{\"answer\":\"{\\\"value\\\":null}\",\"files\":{}}"
+      },
+      "baselineExpected": [
+        {
+          "group": "b4-pdf-store",
+          "name": "pdf-structure/reading.asInsights",
+          "checks": 15,
+          "single": false
+        },
+        {
+          "group": "b4-pdf-store",
+          "name": "pdf-structure/store.listJobs",
+          "checks": 3,
+          "single": false
+        },
+        {
+          "group": "b4-pdf-store",
+          "name": "pdf-structure/store.readJob",
+          "checks": 30,
+          "single": false
+        },
+        {
+          "group": "b4-pdf-store",
+          "name": "pdf-structure/store.unfinishedJobs",
+          "checks": 3,
+          "single": false
+        }
+      ]
+    },
+    {
+      "id": "b4-pdf-store-96",
+      "catalog": "tools/main-diff/faults/b4-pdf-store.json",
+      "catalogLength": 97,
+      "catalogSha256": "d6b323c77ecf93fda9c3bf4c5a16b879f9248c11429239493b4f7564eb59a8da",
+      "index": 96,
+      "originalMutationSha256": "ad3d872d9550266c29912ef86cb1cb02ed3af7bfce92bda456e39077736689e1",
+      "mutationSha256": "ad3d872d9550266c29912ef86cb1cb02ed3af7bfce92bda456e39077736689e1",
+      "fault": {
+        "name": "lock of a live process is stale",
+        "file": "main-core/src/packages/pdf_structure/files.rs",
+        "find": "Some(JsonValue::Number(pid)) => *pid != env.pid() && !env.process_alive(*pid),",
+        "replace": "Some(JsonValue::Number(pid)) => *pid != env.pid() && env.process_alive(*pid),",
+        "fn": ["pdf-structure/files.writeJsonAtomic"]
+      },
+      "control": {
+        "name": "interrupted job names another error",
+        "file": "main-core/src/packages/pdf_structure/store.rs",
+        "find": "Some(\"interrupted\".to_owned())",
+        "replace": "Some(\"interrupted!\".to_owned())",
+        "fn": [
+          "pdf-structure/store.readJob",
+          "pdf-structure/store.listJobs",
+          "pdf-structure/store.unfinishedJobs"
+        ]
+      },
+      "controlSha256": "50f73647f7828a5327b60e19d6603444bfdeeee53d2c44e999fc308c2a9016f8",
+      "caseRequirement": {
+        "fn": "pdf-structure/files.writeJsonAtomic",
+        "index": 9,
+        "note": "a dead pid with future lock mtime cannot age out during acquisition",
+        "typescript": "{\"answer\":\"{}\",\"files\":{\"entry.json\":\"file 644 \\\"{\\\\\\\"new\\\\\\\":true}\\\"\"}}"
+      },
+      "baselineExpected": [
+        {
+          "group": "b4-pdf-store",
+          "name": "pdf-structure/files.writeJsonAtomic",
+          "checks": 10,
+          "single": false
+        },
+        {
+          "group": "b4-pdf-store",
+          "name": "pdf-structure/store.listJobs",
+          "checks": 3,
+          "single": false
+        },
+        {
+          "group": "b4-pdf-store",
+          "name": "pdf-structure/store.readJob",
+          "checks": 30,
+          "single": false
+        },
+        {
+          "group": "b4-pdf-store",
+          "name": "pdf-structure/store.unfinishedJobs",
+          "checks": 3,
+          "single": false
+        }
+      ]
+    },
+    {
+      "id": "b5-mcp-613",
+      "catalog": "tools/main-diff/faults/b5-mcp.json",
+      "catalogLength": 810,
+      "catalogSha256": "06cc360f1ecb58a06c9a88ff7c18f4540ff4e3e0626ca8a28a89a906d19b2eef",
+      "index": 613,
+      "originalMutationSha256": "063d2fd41a158c31acd820778b11dfcae7a47c5eb6930eb915fd49802e4fb373",
+      "mutationSha256": "916bf663a9cc68d4842464682a3b8f5ae698c00810ee0588850545bc3e699c2a",
+      "fault": {
+        "name": "local stop finishes before the child is gone",
+        "file": "main-core/src/shell/mcp_client/local.rs",
+        "find": ".is_none_or(|s| s.io.gone);",
+        "replace": ".is_none_or(|s| !s.io.gone);",
+        "fn": ["local.scenario"]
+      },
+      "control": {
+        "name": "json schema writes a number for a string",
+        "file": "main-core/src/packages/zod.rs",
+        "find": "Kind::String => json.set(\"type\", text(\"string\")),",
+        "replace": "Kind::String => json.set(\"type\", text(\"number\")),",
+        "fn": ["zod.toJsonSchema"]
+      },
+      "controlSha256": "3a0c319569d7760285e69a1cc2793585dc62fc6d4592794d45324240b4729cf0",
+      "caseRequirement": {
+        "fn": "local.scenario",
+        "index": 62,
+        "note": "stop stays pending until the child closes or the exit wait expires",
+        "typescript": "{\"answer\":\"{\\\"value\\\":{\\\"results\\\":[null,null,null],\\\"outcomes\\\":{\\\"boot\\\":{\\\"ok\\\":true},\\\"s\\\":\\\"pending\\\"},\\\"status\\\":{\\\"state\\\":\\\"idle\\\"},\\\"tail\\\":[]},\\\"logs\\\":[[\\\"resolve\\\",\\\"/usr/bin/tool\\\",{\\\"offerDownload\\\":true}],[\\\"mkdir\\\",\\\"/w\\\"],[\\\"mkdtemp\\\",\\\"/w/ieum-mcp-\\\"],[\\\"spawn\\\",\\\"/usr/bin/tool\\\",[\\\"--x\\\"],{\\\"cwd\\\":\\\"/w/ieum-mcp-000001\\\",\\\"env\\\":{\\\"PATH\\\":\\\"/usr/bin:/bin\\\",\\\"HOME\\\":\\\"/h\\\",\\\"TOKEN\\\":\\\"t\\\"},\\\"stdio\\\":[\\\"pipe\\\",\\\"pipe\\\",\\\"pipe\\\"],\\\"shell\\\":false,\\\"windowsHide\\\":true,\\\"detached\\\":true}],[\\\"track\\\",4000,{\\\"provider\\\":\\\"user-mcp\\\",\\\"command\\\":\\\"/usr/bin/tool\\\"}],[\\\"setTimeout\\\",180000],[\\\"write\\\",0,\\\"{\\\\\\\"method\\\\\\\":\\\\\\\"initialize\\\\\\\",\\\\\\\"params\\\\\\\":{\\\\\\\"protocolVersion\\\\\\\":\\\\\\\"2025-11-25\\\\\\\",\\\\\\\"capabilities\\\\\\\":{},\\\\\\\"clientInfo\\\\\\\":{\\\\\\\"name\\\\\\\":\\\\\\\"seuoffice\\\\\\\",\\\\\\\"version\\\\\\\":\\\\\\\"1.2.3\\\\\\\"}},\\\\\\\"jsonrpc\\\\\\\":\\\\\\\"2.0\\\\\\\",\\\\\\\"id\\\\\\\":0}\\\\n\\\"],[\\\"clearTimeout\\\",1],[\\\"write\\\",0,\\\"{\\\\\\\"method\\\\\\\":\\\\\\\"notifications/initialized\\\\\\\",\\\\\\\"jsonrpc\\\\\\\":\\\\\\\"2.0\\\\\\\"}\\\\n\\\"],[\\\"setTimeout\\\",600000],[\\\"write\\\",0,\\\"{\\\\\\\"jsonrpc\\\\\\\":\\\\\\\"2.0\\\\\\\",\\\\\\\"method\\\\\\\":\\\\\\\"notifications/cancelled\\\\\\\",\\\\\\\"params\\\\\\\":{\\\\\\\"requestId\\\\\\\":0,\\\\\\\"reason\\\\\\\":\\\\\\\"AbortError: This operation was aborted\\\\\\\"}}\\\\n\\\"],[\\\"clearTimeout\\\",2],[\\\"kill\\\",-4000,\\\"SIGTERM\\\"],[\\\"setTimeout\\\",2000],[\\\"setTimeout\\\",5000]]}\",\"files\":{}}"
+      },
+      "baselineExpected": [
+        {
+          "group": "b5-mcp",
+          "name": "local.scenario",
+          "checks": 63,
+          "single": false
+        },
+        {
+          "group": "b5-mcp",
+          "name": "zod.toJsonSchema",
+          "checks": 118,
+          "single": false
+        }
+      ],
+      "mutationLineage": {
+        "originalFault": {
+          "name": "local a gone process is waited for",
+          "file": "main-core/src/shell/mcp_client/local.rs",
+          "find": ".is_none_or(|s| s.io.gone);",
+          "replace": ".is_some_and(|s| s.io.gone);",
+          "fn": ["local.scenario"]
+        },
+        "originalSha256": "063d2fd41a158c31acd820778b11dfcae7a47c5eb6930eb915fd49802e4fb373",
+        "followupSha256": "916bf663a9cc68d4842464682a3b8f5ae698c00810ee0588850545bc3e699c2a",
+        "reason": "equivalent under public non-reentrant host; replace with non-equivalent stop-before-gone"
+      }
+    },
+    {
+      "id": "b5-mcp-649",
+      "catalog": "tools/main-diff/faults/b5-mcp.json",
+      "catalogLength": 810,
+      "catalogSha256": "06cc360f1ecb58a06c9a88ff7c18f4540ff4e3e0626ca8a28a89a906d19b2eef",
+      "index": 649,
+      "originalMutationSha256": "ce11b8f2def8536c923f16d6784cebf1064c106b45a31b145c8252260d86c1f9",
+      "mutationSha256": "ce11b8f2def8536c923f16d6784cebf1064c106b45a31b145c8252260d86c1f9",
+      "fault": {
+        "name": "runtimes a path is searched like a name",
+        "file": "main-core/src/shell/mcp_client/runtimes.rs",
+        "find": "if host::is_absolute(trimmed)\n                && is_full_dir(&host::dirname(trimmed))\n                && is_file(trimmed)",
+        "replace": "if is_file(trimmed)",
+        "fn": ["runtimes.scenario"]
+      },
+      "control": {
+        "name": "json schema writes a number for a string",
+        "file": "main-core/src/packages/zod.rs",
+        "find": "Kind::String => json.set(\"type\", text(\"string\")),",
+        "replace": "Kind::String => json.set(\"type\", text(\"number\")),",
+        "fn": ["zod.toJsonSchema"]
+      },
+      "controlSha256": "3a0c319569d7760285e69a1cc2793585dc62fc6d4592794d45324240b4729cf0",
+      "caseRequirement": {
+        "fn": "runtimes.scenario",
+        "index": 44,
+        "note": "an existing file reached by a relative path is not a full program path",
+        "typescript": "{\"answer\":\"{\\\"value\\\":{\\\"results\\\":[{\\\"ok\\\":false,\\\"reason\\\":\\\"runtime-missing\\\",\\\"detail\\\":\\\"not-found\\\",\\\"runtime\\\":null,\\\"downloads\\\":[],\\\"message\\\":\\\"the program was not found\\\"}]}}\",\"files\":{\"abs\":\"dir 755\",\"abs/tool\":\"file 755 \\\"#!/bin/sh\\\\n\\\"\"}}"
+      },
+      "baselineExpected": [
+        {
+          "group": "b5-mcp",
+          "name": "runtimes.scenario",
+          "checks": 45,
+          "single": false
+        },
+        {
+          "group": "b5-mcp",
+          "name": "zod.toJsonSchema",
+          "checks": 118,
+          "single": false
+        }
+      ]
+    }
+  ],
+  "sourceLineage": {
+    "paths": [
+      {
+        "path": "tools/main-diff/faults/b5-mcp.json",
+        "parentSha256": "a45058cef79809d51c1eda0116ccb3086bd05df0838f4757e820db0c4fb8cc25",
+        "productSha256": "06cc360f1ecb58a06c9a88ff7c18f4540ff4e3e0626ca8a28a89a906d19b2eef"
+      },
+      {
+        "path": "tools/main-diff/five-miss-followup.md",
+        "parentSha256": null,
+        "productSha256": "9fa1a7ed21162405374931928424490febe4df04b8860dcabf69ff0ac76480fb"
+      },
+      {
+        "path": "tools/main-diff/groups/b4-pdf-store.ts",
+        "parentSha256": "6352e039b52ae9d9abe7f48d9e92bf588c7f73316c2da6c9097c670c85b5b458",
+        "productSha256": "7189c685ffa6abf75ca8af50254251014fec8a7909aea9ad522ed816c36a40fd"
+      },
+      {
+        "path": "tools/main-diff/groups/b5-mcp/client-proc.ts",
+        "parentSha256": "81e50545ae327f9db9ea919f238e7551ad60dfe8ddfc775c503ef301526c6820",
+        "productSha256": "cffddc2fb01df727741c98cda4b06280952f7c813149f44cac609771442181f1"
+      },
+      {
+        "path": "tools/main-diff/mutation-613-lineage.json",
+        "parentSha256": null,
+        "productSha256": "ca1fc0f3c077d8f7c94b93ab7a2657d7480fe94ad2888763af5ff0588ae62c4a"
+      }
+    ]
+  },
+  "scope": "five-miss-followup-only-not-full-recovery"
+}
