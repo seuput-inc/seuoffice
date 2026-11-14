@@ -28,7 +28,9 @@
 
 따라서 이 공개 호스트·이벤트 모델에서 await 진입 시 slot 존재 불변식이 유지되고 두 식은 같은 값을 낸다. 이는 고정 소스의 제어흐름 증명이며 TLC·Lean 또는 실제 변이 성공으로 표현하지 않는다. 불가능한 None 상태를 가짜 호스트에 주입해 소비자 사례를 만들지 않는다. 원본 `#613`의 MISSED는 그대로 보존하며, 같은 소비자 결정의 비동등 후속 변이를 쓰려면 원본 index·객체 해시와 새 해시의 명시 계보가 필요하다.
 
-후속 교체 후보는 `.is_none_or(|s| !s.io.gone)`다. 같은 index·개수·소비자 결정을 유지하며 실제 자식이 아직 살아 있을 때 stop이 너무 일찍 끝나는 결함을 만든다. 이 문서 시점의 catalog는 아직 원본 그대로다. 이를 위한 `local.scenario` case62는 정상 시작 뒤 close·타이머를 보내지 않고 stop의 pending 상태를 유한하게 관찰한다. 가짜 None 상태나 끝나지 않는 await를 만들지 않는다.
+별도 metadata 후속은 같은 원본 index613·catalog 개수810·file·selector·find를 유지하고 name을 `local stop finishes before the child is gone`, replace를 `.is_none_or(|s| !s.io.gone)`로 바꾼다. 같은 소비자 결정에서 실제 자식이 아직 살아 있을 때 stop이 너무 일찍 끝나는 비동등 결함이다. 원본 객체 해시 `063d2fd41a158c31acd820778b11dfcae7a47c5eb6930eb915fd49802e4fb373`에서 후속 `916bf663a9cc68d4842464682a3b8f5ae698c00810ee0588850545bc3e699c2a`로의 계보는 `mutation-613-lineage.json`에 원본·후속 객체 전체와 함께 남긴다.
+
+이를 위한 `local.scenario` case62는 정상 시작 뒤 close·타이머를 보내지 않고 stop의 pending 상태를 유한하게 관찰한다. 가짜 None 상태나 끝나지 않는 await를 만들지 않는다. 새 후속을 CAUGHT로 인수하려면 이 정상 TS pending과 실제 mutant 조기 완료의 차이를 정확 제품·정의의 hosted 표적 proof로 확인해야 한다. 원본 MISSED를 소급 성공으로 바꾸지 않는다.
 
 ## 관측한 TS oracle과 남은 검증
 

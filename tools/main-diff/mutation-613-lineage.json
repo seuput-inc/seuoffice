@@ -1,0 +1,42 @@
+{
+  "contract": "main-mutation-replacement-lineage/v1",
+  "catalog": "tools/main-diff/faults/b5-mcp.json",
+  "index": 613,
+  "catalogLength": 810,
+  "originalProductSha": "375b08bd0e1f7e8432e6514468cc9d25be01b100",
+  "originalMutationSha256": "063d2fd41a158c31acd820778b11dfcae7a47c5eb6930eb915fd49802e4fb373",
+  "followupMutationSha256": "916bf663a9cc68d4842464682a3b8f5ae698c00810ee0588850545bc3e699c2a",
+  "originalFault": {
+    "name": "local a gone process is waited for",
+    "file": "main-core/src/shell/mcp_client/local.rs",
+    "find": ".is_none_or(|s| s.io.gone);",
+    "replace": ".is_some_and(|s| s.io.gone);",
+    "fn": ["local.scenario"]
+  },
+  "followupFault": {
+    "name": "local stop finishes before the child is gone",
+    "file": "main-core/src/shell/mcp_client/local.rs",
+    "find": ".is_none_or(|s| s.io.gone);",
+    "replace": ".is_none_or(|s| !s.io.gone);",
+    "fn": ["local.scenario"]
+  },
+  "classification": "original equivalent only under the public non-reentrant host event model; followup non-equivalent stop-before-gone decision",
+  "originalVerdict": "MISSED",
+  "originalVerdictUnchanged": true,
+  "proofStatus": "source-control-flow and TS normal oracle only; Rust mutant not yet run",
+  "newConsumerCase": {
+    "fn": "local.scenario",
+    "index": 62,
+    "note": "stop stays pending until the child closes or the exit wait expires",
+    "typescriptStopOutcome": "pending"
+  },
+  "sourceEvidence": {
+    "path": "crates/main-core/src/shell/mcp_client/local.rs",
+    "productSha": "375b08bd0e1f7e8432e6514468cc9d25be01b100",
+    "sourceSha256": "46ade0846e8c80874de8250f3ea549bcc6baba66d69b0c992ca89b79fac320fc",
+    "awaitExitLines": [1830, 1841],
+    "callers": [1737, 1872],
+    "slotRemovalLines": [1076, 1079],
+    "eventSettlementLines": [1013, 1031]
+  }
+}

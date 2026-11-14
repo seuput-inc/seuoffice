@@ -4375,10 +4375,10 @@
     "fn": ["local.scenario"]
   },
   {
-    "name": "local a gone process is waited for",
+    "name": "local stop finishes before the child is gone",
     "file": "main-core/src/shell/mcp_client/local.rs",
     "find": ".is_none_or(|s| s.io.gone);",
-    "replace": ".is_some_and(|s| s.io.gone);",
+    "replace": ".is_none_or(|s| !s.io.gone);",
     "fn": ["local.scenario"]
   },
   {
