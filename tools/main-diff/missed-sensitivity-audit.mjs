@@ -10,7 +10,8 @@ const positive = (n) => Number.isSafeInteger(n) && n > 0
 const oldScope = 'five-miss-followup-only-not-full-recovery'
 const ledgerScope = 'ledger-consumer-followup-only-not-full-recovery'
 const suiteScope = 'ledger-consumer-suite-only-not-full-recovery'
-const scopes = [oldScope, ledgerScope, suiteScope]
+const chatgptScope = 'chatgpt-consumer-followup-only-not-full-recovery'
+const scopes = [oldScope, ledgerScope, suiteScope, chatgptScope]
 const keyOf = (fn, index) => JSON.stringify([fn, index])
 const requireValue = (condition, message) => {
   if (!condition) throw new Error(message)
@@ -158,14 +159,16 @@ export function validateManifest(manifest) {
         c.fault.fn.includes(r.fn) &&
         Number.isSafeInteger(r.index) &&
         r.index >= 0 &&
-        text(r.note) &&
+        (manifest.scope === chatgptScope ? r.note === undefined : text(r.note)) &&
         validWire(r.typescript),
       'Invalid case requirement',
     )
     const ledger = c.ledgerRequirements ?? []
     requireValue(
       Array.isArray(ledger) &&
-        (manifest.scope === oldScope ? ledger.length === 0 : ledger.length > 0) &&
+        (manifest.scope === oldScope || manifest.scope === chatgptScope
+          ? ledger.length === 0
+          : ledger.length > 0) &&
         (manifest.scope !== ledgerScope || manifest.cases.length === 1) &&
         ledger.every(
           (entry) =>
@@ -195,7 +198,7 @@ export function validateManifest(manifest) {
         'Invalid value change requirement',
       )
     } else requireValue(r.valueChange === undefined, 'Unexpected value change requirement')
-    if (manifest.scope === suiteScope) {
+    if (manifest.scope === suiteScope || manifest.scope === chatgptScope) {
       requireValue(
         validWire(r.expectedRust) && !same(JSON.parse(r.typescript), JSON.parse(r.expectedRust)),
         'Invalid expected consumer result',
@@ -316,10 +319,15 @@ export function auditTarget({ plan, target, baseline, evidence }) {
       sha256(plan.manifestSha256) &&
       plan.maxParallel === 8 &&
       scopes.includes(plan.scope) &&
-      (plan.scope === oldScope
+      (plan.scope === oldScope || plan.scope === chatgptScope
         ? (target.ledgerRequirements ?? []).length === 0 &&
+          (plan.scope !== chatgptScope || Array.isArray(target.ledgerRequirements ?? [])) &&
           target.caseRequirement?.valueChange === undefined &&
-          target.caseRequirement?.expectedRust === undefined
+          (plan.scope === oldScope
+            ? target.caseRequirement?.expectedRust === undefined
+            : validWire(target.caseRequirement?.expectedRust) &&
+              target.caseRequirement?.note === undefined &&
+              plan.cases.length <= 8)
         : Array.isArray(target.ledgerRequirements) &&
           target.ledgerRequirements.length > 0 &&
           (plan.scope === ledgerScope
@@ -497,9 +505,11 @@ export function auditTarget({ plan, target, baseline, evidence }) {
     !ledger.some((entry) => entry.fn === actual.fn && entry.case === actual.case),
     'Required consumer case must be independent of ledger',
   )
-  if (plan.scope === suiteScope) {
+  if (plan.scope === suiteScope || plan.scope === chatgptScope) {
     requireValue(
-      same(JSON.parse(actual.rust), JSON.parse(requirement.expectedRust)),
+      plan.scope === chatgptScope
+        ? actual.rust === requirement.expectedRust
+        : same(JSON.parse(actual.rust), JSON.parse(requirement.expectedRust)),
       'Wrong exact consumer result',
     )
   }
@@ -536,7 +546,11 @@ export function auditTarget({ plan, target, baseline, evidence }) {
   }
   return {
     scope:
-      plan.scope === suiteScope ? 'ledger-consumer-suite-target-only' : 'missed-sensitivity-only',
+      plan.scope === suiteScope
+        ? 'ledger-consumer-suite-target-only'
+        : plan.scope === chatgptScope
+          ? 'chatgpt-consumer-target-only'
+          : 'missed-sensitivity-only',
     identity,
     target,
     records: evidence.rows,

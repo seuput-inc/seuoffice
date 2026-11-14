@@ -28,6 +28,7 @@ export function identity(env, manifest, requireTarget = false) {
     'five-miss-followup-only-not-full-recovery': 'main-missed-sensitivity',
     'ledger-consumer-followup-only-not-full-recovery': 'main-ledger-consumer-sensitivity',
     'ledger-consumer-suite-only-not-full-recovery': 'main-ledger-consumer-suite',
+    'chatgpt-consumer-followup-only-not-full-recovery': 'main-chatgpt-consumer-sensitivity',
   }
   assert.ok(Object.hasOwn(modes, manifest.scope), 'Unknown manifest scope')
   assert.equal(env.MODE, modes[manifest.scope])

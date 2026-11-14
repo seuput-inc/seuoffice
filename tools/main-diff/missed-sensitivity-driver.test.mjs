@@ -49,6 +49,7 @@ test('identity binds each explicit mode to its manifest scope', () => {
     ['five-miss-followup-only-not-full-recovery', 'main-missed-sensitivity'],
     ['ledger-consumer-followup-only-not-full-recovery', 'main-ledger-consumer-sensitivity'],
     ['ledger-consumer-suite-only-not-full-recovery', 'main-ledger-consumer-suite'],
+    ['chatgpt-consumer-followup-only-not-full-recovery', 'main-chatgpt-consumer-sensitivity'],
   ]
   for (const [scope, mode] of modes) {
     const selectedManifest = { ...manifest, scope }

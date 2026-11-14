@@ -1,10 +1,10 @@
-name: seuoffice rust - ledger consumer suite
+name: seuoffice rust - ChatGPT consumer proof
 
 on:
   workflow_dispatch:
     inputs:
       product_sha:
-        description: Exact followup product for the manifest's ledger consumer boundary
+        description: Exact followup product for the manifest's ChatGPT consumer proof
         required: true
         type: string
 
@@ -13,11 +13,11 @@ permissions:
   actions: read
 
 concurrency:
-  group: seuoffice-main-ledger-consumer-suite-${{ inputs.product_sha || github.ref }}
+  group: seuoffice-main-chatgpt-consumer-sensitivity-${{ inputs.product_sha || github.ref }}
   cancel-in-progress: false
 
 env:
-  MODE: main-ledger-consumer-suite
+  MODE: main-chatgpt-consumer-sensitivity
   PRODUCT_DIR: ${{ github.workspace }}/product
   DRIVER_DIR: ${{ github.workspace }}/driver
   PRODUCT_SHA: ${{ inputs.product_sha }}

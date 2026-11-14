@@ -1,6 +1,6 @@
 {
   "contract": "main-missed-sensitivity-manifest/v1",
-  "productSha": "8cfb4bf91bcf958d12b8899f3e1b31c6ad9d6961",
+  "productSha": "5423afa6f9c59568665eb0eeedc3b514b8a843fa",
   "parentProductSha": "375b08bd0e1f7e8432e6514468cc9d25be01b100",
   "originalRun": {
     "runId": "43604410368",
@@ -11,1115 +11,135 @@
   "mutatorSha256": "5ee0052330c9b76197beb4a4056a1bffdfc2c063f98440f608ebca94644adc5b",
   "cases": [
     {
-      "id": "b5-agent-apps-360",
-      "catalog": "tools/main-diff/faults/b5-agent-apps.json",
-      "catalogLength": 615,
-      "catalogSha256": "6f46fc9a5deda734b7b65c61f97b63944d519d399e7f129aa08985161f9b1db3",
-      "index": 360,
-      "originalMutationSha256": "ddf191260a7af4ae0db1db686bc3ed593cd57936d2d28f0271376dd4624eb85b",
-      "mutationSha256": "ddf191260a7af4ae0db1db686bc3ed593cd57936d2d28f0271376dd4624eb85b",
+      "id": "b5-provider-chatgpt-42",
+      "catalog": "tools/main-diff/faults/b5-provider-chatgpt.json",
+      "catalogLength": 84,
+      "catalogSha256": "900b42bf864f49984d78760f62d054245a3ba634d3fc5505f906ba0c4d5413cd",
+      "index": 42,
+      "originalMutationSha256": "10a70b21f074fa7e861bd20ddd46ff4ace7c40e8115c108a68187f2903914b65",
+      "mutationSha256": "10a70b21f074fa7e861bd20ddd46ff4ace7c40e8115c108a68187f2903914b65",
       "fault": {
-        "name": "diagram attachments: a file with unsaved changes is read",
-        "file": "main-core/src/diagram/ai_attachments.rs",
-        "find": "        assert_file_saved(open_files, file_path).map_err(str::to_owned)?;\n",
-        "replace": "",
+        "name": "connection: a refresh in flight is not shared",
+        "file": "main-core/src/packages/ai_provider/chatgpt_connection.rs",
+        "find": "if let Some(running) = running {",
+        "replace": "if let Some(running) = running.filter(|_| false) {",
+        "fn": ["chatgpt/connection.createChatGptConnection"]
+      },
+      "control": {
+        "name": "redirect uri names localhost, not 127.0.0.1",
+        "file": "main-core/src/packages/ai_provider/chatgpt_oauth.rs",
+        "find": "http://127.0.0.1:{}{}",
+        "replace": "http://localhost:{}{}",
         "fn": [
-          "diagram/ai-attachments.readAttachmentPage",
-          "diagram/ai-attachments.registerDiagramAiIpc"
+          "chatgpt/oauth.chatGptRedirectUri",
+          "chatgpt/oauth.chatGptAuthorizeUrl",
+          "chatgpt/oauth.exchangeChatGptCode"
         ]
       },
-      "control": {
-        "name": "off-status: state is not off",
-        "file": "main-core/src/packages/ai_provider/subscription_contract.rs",
-        "find": "(\"state\", text(\"off\")),",
-        "replace": "(\"state\", text(\"ready\")),",
-        "fn": ["ai-provider/subscription/contract.offSubscriptionStatus"]
-      },
-      "controlSha256": "ddc6c2a87e0282b2bef4ea99478297cbfbcf223e4b62f139bd13ce103f3572ff",
+      "controlSha256": "45c0faa444533e9c9f12063842aeeb8403f98f40285408961e1e06a8163f2e60",
       "caseRequirement": {
-        "fn": "diagram/ai-attachments.readAttachmentPage",
-        "index": 6,
-        "note": "a file with unsaved changes is not read",
-        "typescript": "{\"answer\":\"{\\\"value\\\":[{\\\"ok\\\":false,\\\"error\\\":\\\"This file is open with unsaved changes. Save it, then try again.\\\"}],\\\"logs\\\":[[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"]]}\",\"files\":{\"a.txt\":\"file 644 \\\"hello world\\\"\",\"archive.zip\":\"file 644 \\\"zip\\\"\",\"book.epub\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"cached.txt\":\"file 644 \\\"cached\\\"\",\"chart.DRAWIO.PNG\":\"file 644 hex:89504e47\",\"doc.docx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"emoji.txt\":\"file 644 \\\"😀a😀b\\\"\",\"flow.drawio\":\"file 644 \\\"<mxfile/>\\\"\",\"folder.txt\":\"dir 755\",\"huge.bin.txt\":\"file 644 \\\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\\"\",\"huge.md\":\"file 644 \\\"yyyyyyyyyyyyyyyyyyyy\\\"\",\"long.txt\":\"file 644 \\\"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\\\"\",\"map.drawio.svg\":\"file 644 \\\"<svg/>\\\"\",\"noext\":\"file 644 \\\"no extension\\\"\",\"notes.MD\":\"file 644 \\\"# notes\\\"\",\"old.dio\":\"file 644 \\\"<mxfile/>\\\"\",\"outline.xmind\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"pic.JPG\":\"file 644 hex:ffd8ffe0\",\"pic.png\":\"file 644 hex:89504e470d0a1a0a\",\"pic.webp\":\"file 644 \\\"RIFF\\\"\",\"plain.drawio.png\":\"file 644 hex:89504e47\",\"script.ts\":\"file 644 \\\"export {}\\\"\",\"sheet.xlsx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"trailing.\":\"file 644 \\\"trailing dot\\\"\",\"weird.__proto__\":\"file 644 \\\"x\\\"\",\"weird.constructor\":\"file 644 \\\"x\\\"\"}}",
-        "expectedRust": "{\"answer\":\"{\\\"value\\\":[{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":0,\\\"text\\\":\\\"abcde\\\"}],\\\"logs\\\":[[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"parseFileToText\\\",\\\"$DIR/long.txt\\\"]]}\",\"files\":{\"a.txt\":\"file 644 \\\"hello world\\\"\",\"archive.zip\":\"file 644 \\\"zip\\\"\",\"book.epub\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"cached.txt\":\"file 644 \\\"cached\\\"\",\"chart.DRAWIO.PNG\":\"file 644 hex:89504e47\",\"doc.docx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"emoji.txt\":\"file 644 \\\"😀a😀b\\\"\",\"flow.drawio\":\"file 644 \\\"<mxfile/>\\\"\",\"folder.txt\":\"dir 755\",\"huge.bin.txt\":\"file 644 \\\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\\"\",\"huge.md\":\"file 644 \\\"yyyyyyyyyyyyyyyyyyyy\\\"\",\"long.txt\":\"file 644 \\\"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\\\"\",\"map.drawio.svg\":\"file 644 \\\"<svg/>\\\"\",\"noext\":\"file 644 \\\"no extension\\\"\",\"notes.MD\":\"file 644 \\\"# notes\\\"\",\"old.dio\":\"file 644 \\\"<mxfile/>\\\"\",\"outline.xmind\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"pic.JPG\":\"file 644 hex:ffd8ffe0\",\"pic.png\":\"file 644 hex:89504e470d0a1a0a\",\"pic.webp\":\"file 644 \\\"RIFF\\\"\",\"plain.drawio.png\":\"file 644 hex:89504e47\",\"script.ts\":\"file 644 \\\"export {}\\\"\",\"sheet.xlsx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"trailing.\":\"file 644 \\\"trailing dot\\\"\",\"weird.__proto__\":\"file 644 \\\"x\\\"\",\"weird.constructor\":\"file 644 \\\"x\\\"\"}}"
+        "fn": "chatgpt/connection.createChatGptConnection",
+        "index": 65,
+        "typescript": "{\"answer\":\"{\\\"value\\\":{\\\"results\\\":[{\\\"parallel\\\":[{\\\"threw\\\":{\\\"name\\\":\\\"Error\\\",\\\"message\\\":\\\"ChatGPT could not be reached to renew the sign-in (network)\\\"}},{\\\"threw\\\":{\\\"name\\\":\\\"Error\\\",\\\"message\\\":\\\"ChatGPT could not be reached to renew the sign-in (network)\\\"}},{\\\"threw\\\":{\\\"name\\\":\\\"Error\\\",\\\"message\\\":\\\"ChatGPT could not be reached to renew the sign-in (network)\\\"}}]},{\\\"state\\\":{\\\"signedIn\\\":true}}],\\\"record\\\":{\\\"hostId\\\":\\\"urn:uuid:11111111-2222-4333-8444-555555555555\\\",\\\"clientId\\\":\\\"cid\\\",\\\"callbackPath\\\":\\\"/auth/callback\\\",\\\"subject\\\":\\\"acct-1\\\",\\\"session\\\":{\\\"accessToken\\\":\\\"at-1\\\",\\\"refreshToken\\\":\\\"rt-1\\\",\\\"expiresAt\\\":1699999999000,\\\"scopes\\\":[\\\"chatgpt.tokens.use.direct\\\",\\\"openid\\\"]}}},\\\"logs\\\":[[\\\"timer\\\",1,20000],[\\\"fetch\\\",0,\\\"node\\\",\\\"https://auth.openai.com/api/accounts/oauth/token\\\",\\\"POST\\\",[[\\\"Content-Type\\\",\\\"application/x-www-form-urlencoded\\\"],[\\\"User-Agent\\\",\\\"SeuOffice\\\"]],\\\"grant_type=refresh_token&client_id=cid&refresh_token=rt-1&resource=https%3A%2F%2Fapi.openai.com%2Fv1\\\",\\\"manual\\\"]]}\",\"files\":{}}",
+        "expectedRust": "{\"answer\":\"{\\\"value\\\":{\\\"results\\\":[{\\\"parallel\\\":[{\\\"threw\\\":{\\\"name\\\":\\\"Error\\\",\\\"message\\\":\\\"ChatGPT could not be reached to renew the sign-in (network)\\\"}},{\\\"accessToken\\\":\\\"at-new\\\"},{\\\"accessToken\\\":\\\"at-new\\\"}]},{\\\"state\\\":{\\\"signedIn\\\":true}}],\\\"record\\\":{\\\"hostId\\\":\\\"urn:uuid:11111111-2222-4333-8444-555555555555\\\",\\\"clientId\\\":\\\"cid\\\",\\\"callbackPath\\\":\\\"/auth/callback\\\",\\\"subject\\\":\\\"acct-1\\\",\\\"session\\\":{\\\"accessToken\\\":\\\"at-new\\\",\\\"refreshToken\\\":\\\"rt-new\\\",\\\"expiresAt\\\":1700003600000,\\\"scopes\\\":[\\\"openid\\\",\\\"chatgpt.tokens.use.direct\\\"]}}},\\\"logs\\\":[[\\\"timer\\\",1,20000],[\\\"fetch\\\",0,\\\"node\\\",\\\"https://auth.openai.com/api/accounts/oauth/token\\\",\\\"POST\\\",[[\\\"Content-Type\\\",\\\"application/x-www-form-urlencoded\\\"],[\\\"User-Agent\\\",\\\"SeuOffice\\\"]],\\\"grant_type=refresh_token&client_id=cid&refresh_token=rt-1&resource=https%3A%2F%2Fapi.openai.com%2Fv1\\\",\\\"manual\\\"],[\\\"timer\\\",2,20000],[\\\"fetch\\\",1,\\\"node\\\",\\\"https://auth.openai.com/api/accounts/oauth/token\\\",\\\"POST\\\",[[\\\"Content-Type\\\",\\\"application/x-www-form-urlencoded\\\"],[\\\"User-Agent\\\",\\\"SeuOffice\\\"]],\\\"grant_type=refresh_token&client_id=cid&refresh_token=rt-1&resource=https%3A%2F%2Fapi.openai.com%2Fv1\\\",\\\"manual\\\"]]}\",\"files\":{}}"
       },
+      "ledgerRequirements": [],
       "baselineExpected": [
         {
-          "group": "b5-agent",
-          "name": "ai-provider/subscription/contract.offSubscriptionStatus",
-          "checks": 3,
-          "single": false
-        },
-        {
-          "group": "b5-agent",
-          "name": "diagram/ai-attachments.readAttachmentPage",
-          "checks": 22,
-          "single": false
-        },
-        {
-          "group": "b5-agent",
-          "name": "diagram/ai-attachments.registerDiagramAiIpc",
-          "checks": 8,
-          "single": false
-        }
-      ],
-      "ledgerRequirements": [
-        {
-          "id": "diagram-attachment-page-cuts-a-surrogate-pair-3",
-          "fn": "diagram/ai-attachments.readAttachmentPage",
-          "case": 3,
-          "typescript": {
-            "answer": "{\"value\":[{\"ok\":true,\"name\":\"emoji.txt\",\"totalChars\":6,\"offset\":1,\"text\":\"\\ude00a\\ud83d\"}],\"logs\":[[\"diagramPictureExtOf\",\"$DIR/emoji.txt\"],[\"assertFileSaved\",\"$DIR/emoji.txt\"],[\"parseFileToText\",\"$DIR/emoji.txt\"]]}",
-            "files": {
-              "a.txt": "file 644 \"hello world\"",
-              "archive.zip": "file 644 \"zip\"",
-              "book.epub": "file 644 \"PK\\u0003\\u0004\"",
-              "cached.txt": "file 644 \"cached\"",
-              "chart.DRAWIO.PNG": "file 644 hex:89504e47",
-              "doc.docx": "file 644 \"PK\\u0003\\u0004\"",
-              "emoji.txt": "file 644 \"😀a😀b\"",
-              "flow.drawio": "file 644 \"<mxfile/>\"",
-              "folder.txt": "dir 755",
-              "huge.bin.txt": "file 644 \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
-              "huge.md": "file 644 \"yyyyyyyyyyyyyyyyyyyy\"",
-              "long.txt": "file 644 \"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\"",
-              "map.drawio.svg": "file 644 \"<svg/>\"",
-              "noext": "file 644 \"no extension\"",
-              "notes.MD": "file 644 \"# notes\"",
-              "old.dio": "file 644 \"<mxfile/>\"",
-              "outline.xmind": "file 644 \"PK\\u0003\\u0004\"",
-              "pic.JPG": "file 644 hex:ffd8ffe0",
-              "pic.png": "file 644 hex:89504e470d0a1a0a",
-              "pic.webp": "file 644 \"RIFF\"",
-              "plain.drawio.png": "file 644 hex:89504e47",
-              "script.ts": "file 644 \"export {}\"",
-              "sheet.xlsx": "file 644 \"PK\\u0003\\u0004\"",
-              "trailing.": "file 644 \"trailing dot\"",
-              "weird.__proto__": "file 644 \"x\"",
-              "weird.constructor": "file 644 \"x\""
-            }
-          },
-          "rust": {
-            "answer": "{\"value\":[{\"ok\":true,\"name\":\"emoji.txt\",\"totalChars\":6,\"offset\":1,\"text\":\"�a�\"}],\"logs\":[[\"diagramPictureExtOf\",\"$DIR/emoji.txt\"],[\"assertFileSaved\",\"$DIR/emoji.txt\"],[\"parseFileToText\",\"$DIR/emoji.txt\"]]}",
-            "files": {
-              "a.txt": "file 644 \"hello world\"",
-              "archive.zip": "file 644 \"zip\"",
-              "book.epub": "file 644 \"PK\\u0003\\u0004\"",
-              "cached.txt": "file 644 \"cached\"",
-              "chart.DRAWIO.PNG": "file 644 hex:89504e47",
-              "doc.docx": "file 644 \"PK\\u0003\\u0004\"",
-              "emoji.txt": "file 644 \"😀a😀b\"",
-              "flow.drawio": "file 644 \"<mxfile/>\"",
-              "folder.txt": "dir 755",
-              "huge.bin.txt": "file 644 \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
-              "huge.md": "file 644 \"yyyyyyyyyyyyyyyyyyyy\"",
-              "long.txt": "file 644 \"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\"",
-              "map.drawio.svg": "file 644 \"<svg/>\"",
-              "noext": "file 644 \"no extension\"",
-              "notes.MD": "file 644 \"# notes\"",
-              "old.dio": "file 644 \"<mxfile/>\"",
-              "outline.xmind": "file 644 \"PK\\u0003\\u0004\"",
-              "pic.JPG": "file 644 hex:ffd8ffe0",
-              "pic.png": "file 644 hex:89504e470d0a1a0a",
-              "pic.webp": "file 644 \"RIFF\"",
-              "plain.drawio.png": "file 644 hex:89504e47",
-              "script.ts": "file 644 \"export {}\"",
-              "sheet.xlsx": "file 644 \"PK\\u0003\\u0004\"",
-              "trailing.": "file 644 \"trailing dot\"",
-              "weird.__proto__": "file 644 \"x\"",
-              "weird.constructor": "file 644 \"x\""
-            }
-          },
-          "reason": "readAttachmentPage cuts the parsed text with String.slice at UTF-16 offsets (offset 1, length 4 of an emoji, `a`, an emoji, `b`), so each cut that falls inside a surrogate pair leaves a lone surrogate. A Rust String cannot hold one; the Rust answer holds U+FFFD there, which is what the TypeScript string becomes once it is sent as UTF-8 (the answer goes to the model as JSON text). The input is valid Unicode; only the slice makes it lone. Final."
-        }
-      ]
-    },
-    {
-      "id": "b5-agent-apps-379",
-      "catalog": "tools/main-diff/faults/b5-agent-apps.json",
-      "catalogLength": 615,
-      "catalogSha256": "6f46fc9a5deda734b7b65c61f97b63944d519d399e7f129aa08985161f9b1db3",
-      "index": 379,
-      "originalMutationSha256": "6da5048ecd21d19845754b8815bcfe25d57614c6befec21b0347bb9e793c5b19",
-      "mutationSha256": "6da5048ecd21d19845754b8815bcfe25d57614c6befec21b0347bb9e793c5b19",
-      "fault": {
-        "name": "diagram attachments: the total counts bytes",
-        "file": "main-core/src/diagram/ai_attachments.rs",
-        "find": "number(length16(&page_text) as f64)",
-        "replace": "number(page_text.len() as f64)",
-        "fn": [
-          "diagram/ai-attachments.readAttachmentPage",
-          "diagram/ai-attachments.registerDiagramAiIpc"
-        ]
-      },
-      "control": {
-        "name": "off-status: state is not off",
-        "file": "main-core/src/packages/ai_provider/subscription_contract.rs",
-        "find": "(\"state\", text(\"off\")),",
-        "replace": "(\"state\", text(\"ready\")),",
-        "fn": ["ai-provider/subscription/contract.offSubscriptionStatus"]
-      },
-      "controlSha256": "ddc6c2a87e0282b2bef4ea99478297cbfbcf223e4b62f139bd13ce103f3572ff",
-      "caseRequirement": {
-        "fn": "diagram/ai-attachments.readAttachmentPage",
-        "index": 21,
-        "note": "a whole non-ASCII page counts UTF-16 units, not UTF-8 bytes",
-        "typescript": "{\"answer\":\"{\\\"value\\\":[{\\\"ok\\\":true,\\\"name\\\":\\\"whole.txt\\\",\\\"totalChars\\\":3,\\\"offset\\\":0,\\\"text\\\":\\\"가😀\\\"}],\\\"logs\\\":[[\\\"diagramPictureExtOf\\\",\\\"$DIR/whole.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/whole.txt\\\"],[\\\"parseFileToText\\\",\\\"$DIR/whole.txt\\\"]]}\",\"files\":{\"whole.txt\":\"file 644 \\\"가😀\\\"\"}}",
-        "expectedRust": "{\"answer\":\"{\\\"value\\\":[{\\\"ok\\\":true,\\\"name\\\":\\\"whole.txt\\\",\\\"totalChars\\\":7,\\\"offset\\\":0,\\\"text\\\":\\\"가😀\\\"}],\\\"logs\\\":[[\\\"diagramPictureExtOf\\\",\\\"$DIR/whole.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/whole.txt\\\"],[\\\"parseFileToText\\\",\\\"$DIR/whole.txt\\\"]]}\",\"files\":{\"whole.txt\":\"file 644 \\\"가😀\\\"\"}}"
-      },
-      "baselineExpected": [
-        {
-          "group": "b5-agent",
-          "name": "ai-provider/subscription/contract.offSubscriptionStatus",
-          "checks": 3,
-          "single": false
-        },
-        {
-          "group": "b5-agent",
-          "name": "diagram/ai-attachments.readAttachmentPage",
-          "checks": 22,
-          "single": false
-        },
-        {
-          "group": "b5-agent",
-          "name": "diagram/ai-attachments.registerDiagramAiIpc",
-          "checks": 8,
-          "single": false
-        }
-      ],
-      "ledgerRequirements": [
-        {
-          "id": "diagram-attachment-page-cuts-a-surrogate-pair-3",
-          "fn": "diagram/ai-attachments.readAttachmentPage",
-          "case": 3,
-          "typescript": {
-            "answer": "{\"value\":[{\"ok\":true,\"name\":\"emoji.txt\",\"totalChars\":6,\"offset\":1,\"text\":\"\\ude00a\\ud83d\"}],\"logs\":[[\"diagramPictureExtOf\",\"$DIR/emoji.txt\"],[\"assertFileSaved\",\"$DIR/emoji.txt\"],[\"parseFileToText\",\"$DIR/emoji.txt\"]]}",
-            "files": {
-              "a.txt": "file 644 \"hello world\"",
-              "archive.zip": "file 644 \"zip\"",
-              "book.epub": "file 644 \"PK\\u0003\\u0004\"",
-              "cached.txt": "file 644 \"cached\"",
-              "chart.DRAWIO.PNG": "file 644 hex:89504e47",
-              "doc.docx": "file 644 \"PK\\u0003\\u0004\"",
-              "emoji.txt": "file 644 \"😀a😀b\"",
-              "flow.drawio": "file 644 \"<mxfile/>\"",
-              "folder.txt": "dir 755",
-              "huge.bin.txt": "file 644 \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
-              "huge.md": "file 644 \"yyyyyyyyyyyyyyyyyyyy\"",
-              "long.txt": "file 644 \"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\"",
-              "map.drawio.svg": "file 644 \"<svg/>\"",
-              "noext": "file 644 \"no extension\"",
-              "notes.MD": "file 644 \"# notes\"",
-              "old.dio": "file 644 \"<mxfile/>\"",
-              "outline.xmind": "file 644 \"PK\\u0003\\u0004\"",
-              "pic.JPG": "file 644 hex:ffd8ffe0",
-              "pic.png": "file 644 hex:89504e470d0a1a0a",
-              "pic.webp": "file 644 \"RIFF\"",
-              "plain.drawio.png": "file 644 hex:89504e47",
-              "script.ts": "file 644 \"export {}\"",
-              "sheet.xlsx": "file 644 \"PK\\u0003\\u0004\"",
-              "trailing.": "file 644 \"trailing dot\"",
-              "weird.__proto__": "file 644 \"x\"",
-              "weird.constructor": "file 644 \"x\""
-            }
-          },
-          "rust": {
-            "answer": "{\"value\":[{\"ok\":true,\"name\":\"emoji.txt\",\"totalChars\":6,\"offset\":1,\"text\":\"�a�\"}],\"logs\":[[\"diagramPictureExtOf\",\"$DIR/emoji.txt\"],[\"assertFileSaved\",\"$DIR/emoji.txt\"],[\"parseFileToText\",\"$DIR/emoji.txt\"]]}",
-            "files": {
-              "a.txt": "file 644 \"hello world\"",
-              "archive.zip": "file 644 \"zip\"",
-              "book.epub": "file 644 \"PK\\u0003\\u0004\"",
-              "cached.txt": "file 644 \"cached\"",
-              "chart.DRAWIO.PNG": "file 644 hex:89504e47",
-              "doc.docx": "file 644 \"PK\\u0003\\u0004\"",
-              "emoji.txt": "file 644 \"😀a😀b\"",
-              "flow.drawio": "file 644 \"<mxfile/>\"",
-              "folder.txt": "dir 755",
-              "huge.bin.txt": "file 644 \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
-              "huge.md": "file 644 \"yyyyyyyyyyyyyyyyyyyy\"",
-              "long.txt": "file 644 \"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\"",
-              "map.drawio.svg": "file 644 \"<svg/>\"",
-              "noext": "file 644 \"no extension\"",
-              "notes.MD": "file 644 \"# notes\"",
-              "old.dio": "file 644 \"<mxfile/>\"",
-              "outline.xmind": "file 644 \"PK\\u0003\\u0004\"",
-              "pic.JPG": "file 644 hex:ffd8ffe0",
-              "pic.png": "file 644 hex:89504e470d0a1a0a",
-              "pic.webp": "file 644 \"RIFF\"",
-              "plain.drawio.png": "file 644 hex:89504e47",
-              "script.ts": "file 644 \"export {}\"",
-              "sheet.xlsx": "file 644 \"PK\\u0003\\u0004\"",
-              "trailing.": "file 644 \"trailing dot\"",
-              "weird.__proto__": "file 644 \"x\"",
-              "weird.constructor": "file 644 \"x\""
-            }
-          },
-          "reason": "readAttachmentPage cuts the parsed text with String.slice at UTF-16 offsets (offset 1, length 4 of an emoji, `a`, an emoji, `b`), so each cut that falls inside a surrogate pair leaves a lone surrogate. A Rust String cannot hold one; the Rust answer holds U+FFFD there, which is what the TypeScript string becomes once it is sent as UTF-8 (the answer goes to the model as JSON text). The input is valid Unicode; only the slice makes it lone. Final."
-        }
-      ]
-    },
-    {
-      "id": "b5-agent-apps-380",
-      "catalog": "tools/main-diff/faults/b5-agent-apps.json",
-      "catalogLength": 615,
-      "catalogSha256": "6f46fc9a5deda734b7b65c61f97b63944d519d399e7f129aa08985161f9b1db3",
-      "index": 380,
-      "originalMutationSha256": "17bbf167964c520fddd515667a9fcee077125ac03968163ba3e0936780d14d14",
-      "mutationSha256": "17bbf167964c520fddd515667a9fcee077125ac03968163ba3e0936780d14d14",
-      "fault": {
-        "name": "diagram attachments: the page offset is not reported",
-        "file": "main-core/src/diagram/ai_attachments.rs",
-        "find": "(\"offset\", number(start)),",
-        "replace": "(\"offset\", number(0.0)),",
-        "fn": [
-          "diagram/ai-attachments.readAttachmentPage",
-          "diagram/ai-attachments.registerDiagramAiIpc"
-        ]
-      },
-      "control": {
-        "name": "off-status: state is not off",
-        "file": "main-core/src/packages/ai_provider/subscription_contract.rs",
-        "find": "(\"state\", text(\"off\")),",
-        "replace": "(\"state\", text(\"ready\")),",
-        "fn": ["ai-provider/subscription/contract.offSubscriptionStatus"]
-      },
-      "controlSha256": "ddc6c2a87e0282b2bef4ea99478297cbfbcf223e4b62f139bd13ce103f3572ff",
-      "caseRequirement": {
-        "fn": "diagram/ai-attachments.readAttachmentPage",
-        "index": 0,
-        "note": "a page, the end, past the end",
-        "typescript": "{\"answer\":\"{\\\"value\\\":[{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":5,\\\"text\\\":\\\"fghijabcde\\\"},{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":95,\\\"text\\\":\\\"fghij\\\"},{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":500,\\\"text\\\":\\\"\\\"}],\\\"logs\\\":[[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"],[\\\"parseFileToText\\\",\\\"$DIR/long.txt\\\"],[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"],[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"]]}\",\"files\":{\"a.txt\":\"file 644 \\\"hello world\\\"\",\"archive.zip\":\"file 644 \\\"zip\\\"\",\"book.epub\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"cached.txt\":\"file 644 \\\"cached\\\"\",\"chart.DRAWIO.PNG\":\"file 644 hex:89504e47\",\"doc.docx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"emoji.txt\":\"file 644 \\\"😀a😀b\\\"\",\"flow.drawio\":\"file 644 \\\"<mxfile/>\\\"\",\"folder.txt\":\"dir 755\",\"huge.bin.txt\":\"file 644 \\\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\\"\",\"huge.md\":\"file 644 \\\"yyyyyyyyyyyyyyyyyyyy\\\"\",\"long.txt\":\"file 644 \\\"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\\\"\",\"map.drawio.svg\":\"file 644 \\\"<svg/>\\\"\",\"noext\":\"file 644 \\\"no extension\\\"\",\"notes.MD\":\"file 644 \\\"# notes\\\"\",\"old.dio\":\"file 644 \\\"<mxfile/>\\\"\",\"outline.xmind\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"pic.JPG\":\"file 644 hex:ffd8ffe0\",\"pic.png\":\"file 644 hex:89504e470d0a1a0a\",\"pic.webp\":\"file 644 \\\"RIFF\\\"\",\"plain.drawio.png\":\"file 644 hex:89504e47\",\"script.ts\":\"file 644 \\\"export {}\\\"\",\"sheet.xlsx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"trailing.\":\"file 644 \\\"trailing dot\\\"\",\"weird.__proto__\":\"file 644 \\\"x\\\"\",\"weird.constructor\":\"file 644 \\\"x\\\"\"}}",
-        "expectedRust": "{\"answer\":\"{\\\"value\\\":[{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":0,\\\"text\\\":\\\"fghijabcde\\\"},{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":0,\\\"text\\\":\\\"fghij\\\"},{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":0,\\\"text\\\":\\\"\\\"}],\\\"logs\\\":[[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"],[\\\"parseFileToText\\\",\\\"$DIR/long.txt\\\"],[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"],[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"]]}\",\"files\":{\"a.txt\":\"file 644 \\\"hello world\\\"\",\"archive.zip\":\"file 644 \\\"zip\\\"\",\"book.epub\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"cached.txt\":\"file 644 \\\"cached\\\"\",\"chart.DRAWIO.PNG\":\"file 644 hex:89504e47\",\"doc.docx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"emoji.txt\":\"file 644 \\\"😀a😀b\\\"\",\"flow.drawio\":\"file 644 \\\"<mxfile/>\\\"\",\"folder.txt\":\"dir 755\",\"huge.bin.txt\":\"file 644 \\\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\\"\",\"huge.md\":\"file 644 \\\"yyyyyyyyyyyyyyyyyyyy\\\"\",\"long.txt\":\"file 644 \\\"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\\\"\",\"map.drawio.svg\":\"file 644 \\\"<svg/>\\\"\",\"noext\":\"file 644 \\\"no extension\\\"\",\"notes.MD\":\"file 644 \\\"# notes\\\"\",\"old.dio\":\"file 644 \\\"<mxfile/>\\\"\",\"outline.xmind\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"pic.JPG\":\"file 644 hex:ffd8ffe0\",\"pic.png\":\"file 644 hex:89504e470d0a1a0a\",\"pic.webp\":\"file 644 \\\"RIFF\\\"\",\"plain.drawio.png\":\"file 644 hex:89504e47\",\"script.ts\":\"file 644 \\\"export {}\\\"\",\"sheet.xlsx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"trailing.\":\"file 644 \\\"trailing dot\\\"\",\"weird.__proto__\":\"file 644 \\\"x\\\"\",\"weird.constructor\":\"file 644 \\\"x\\\"\"}}"
-      },
-      "baselineExpected": [
-        {
-          "group": "b5-agent",
-          "name": "ai-provider/subscription/contract.offSubscriptionStatus",
-          "checks": 3,
-          "single": false
-        },
-        {
-          "group": "b5-agent",
-          "name": "diagram/ai-attachments.readAttachmentPage",
-          "checks": 22,
-          "single": false
-        },
-        {
-          "group": "b5-agent",
-          "name": "diagram/ai-attachments.registerDiagramAiIpc",
-          "checks": 8,
-          "single": false
-        }
-      ],
-      "ledgerRequirements": [
-        {
-          "id": "diagram-attachment-page-cuts-a-surrogate-pair-3",
-          "fn": "diagram/ai-attachments.readAttachmentPage",
-          "case": 3,
-          "typescript": {
-            "answer": "{\"value\":[{\"ok\":true,\"name\":\"emoji.txt\",\"totalChars\":6,\"offset\":1,\"text\":\"\\ude00a\\ud83d\"}],\"logs\":[[\"diagramPictureExtOf\",\"$DIR/emoji.txt\"],[\"assertFileSaved\",\"$DIR/emoji.txt\"],[\"parseFileToText\",\"$DIR/emoji.txt\"]]}",
-            "files": {
-              "a.txt": "file 644 \"hello world\"",
-              "archive.zip": "file 644 \"zip\"",
-              "book.epub": "file 644 \"PK\\u0003\\u0004\"",
-              "cached.txt": "file 644 \"cached\"",
-              "chart.DRAWIO.PNG": "file 644 hex:89504e47",
-              "doc.docx": "file 644 \"PK\\u0003\\u0004\"",
-              "emoji.txt": "file 644 \"😀a😀b\"",
-              "flow.drawio": "file 644 \"<mxfile/>\"",
-              "folder.txt": "dir 755",
-              "huge.bin.txt": "file 644 \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
-              "huge.md": "file 644 \"yyyyyyyyyyyyyyyyyyyy\"",
-              "long.txt": "file 644 \"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\"",
-              "map.drawio.svg": "file 644 \"<svg/>\"",
-              "noext": "file 644 \"no extension\"",
-              "notes.MD": "file 644 \"# notes\"",
-              "old.dio": "file 644 \"<mxfile/>\"",
-              "outline.xmind": "file 644 \"PK\\u0003\\u0004\"",
-              "pic.JPG": "file 644 hex:ffd8ffe0",
-              "pic.png": "file 644 hex:89504e470d0a1a0a",
-              "pic.webp": "file 644 \"RIFF\"",
-              "plain.drawio.png": "file 644 hex:89504e47",
-              "script.ts": "file 644 \"export {}\"",
-              "sheet.xlsx": "file 644 \"PK\\u0003\\u0004\"",
-              "trailing.": "file 644 \"trailing dot\"",
-              "weird.__proto__": "file 644 \"x\"",
-              "weird.constructor": "file 644 \"x\""
-            }
-          },
-          "rust": {
-            "answer": "{\"value\":[{\"ok\":true,\"name\":\"emoji.txt\",\"totalChars\":6,\"offset\":1,\"text\":\"�a�\"}],\"logs\":[[\"diagramPictureExtOf\",\"$DIR/emoji.txt\"],[\"assertFileSaved\",\"$DIR/emoji.txt\"],[\"parseFileToText\",\"$DIR/emoji.txt\"]]}",
-            "files": {
-              "a.txt": "file 644 \"hello world\"",
-              "archive.zip": "file 644 \"zip\"",
-              "book.epub": "file 644 \"PK\\u0003\\u0004\"",
-              "cached.txt": "file 644 \"cached\"",
-              "chart.DRAWIO.PNG": "file 644 hex:89504e47",
-              "doc.docx": "file 644 \"PK\\u0003\\u0004\"",
-              "emoji.txt": "file 644 \"😀a😀b\"",
-              "flow.drawio": "file 644 \"<mxfile/>\"",
-              "folder.txt": "dir 755",
-              "huge.bin.txt": "file 644 \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
-              "huge.md": "file 644 \"yyyyyyyyyyyyyyyyyyyy\"",
-              "long.txt": "file 644 \"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\"",
-              "map.drawio.svg": "file 644 \"<svg/>\"",
-              "noext": "file 644 \"no extension\"",
-              "notes.MD": "file 644 \"# notes\"",
-              "old.dio": "file 644 \"<mxfile/>\"",
-              "outline.xmind": "file 644 \"PK\\u0003\\u0004\"",
-              "pic.JPG": "file 644 hex:ffd8ffe0",
-              "pic.png": "file 644 hex:89504e470d0a1a0a",
-              "pic.webp": "file 644 \"RIFF\"",
-              "plain.drawio.png": "file 644 hex:89504e47",
-              "script.ts": "file 644 \"export {}\"",
-              "sheet.xlsx": "file 644 \"PK\\u0003\\u0004\"",
-              "trailing.": "file 644 \"trailing dot\"",
-              "weird.__proto__": "file 644 \"x\"",
-              "weird.constructor": "file 644 \"x\""
-            }
-          },
-          "reason": "readAttachmentPage cuts the parsed text with String.slice at UTF-16 offsets (offset 1, length 4 of an emoji, `a`, an emoji, `b`), so each cut that falls inside a surrogate pair leaves a lone surrogate. A Rust String cannot hold one; the Rust answer holds U+FFFD there, which is what the TypeScript string becomes once it is sent as UTF-8 (the answer goes to the model as JSON text). The input is valid Unicode; only the slice makes it lone. Final."
-        }
-      ]
-    },
-    {
-      "id": "b5-agent-apps-381",
-      "catalog": "tools/main-diff/faults/b5-agent-apps.json",
-      "catalogLength": 615,
-      "catalogSha256": "6f46fc9a5deda734b7b65c61f97b63944d519d399e7f129aa08985161f9b1db3",
-      "index": 381,
-      "originalMutationSha256": "450a1f823afd5c6652bdb117ed19707c84007a8fe48fa3cce44d92bc9b3ed6a6",
-      "mutationSha256": "450a1f823afd5c6652bdb117ed19707c84007a8fe48fa3cce44d92bc9b3ed6a6",
-      "fault": {
-        "name": "diagram attachments: the page text starts at zero",
-        "file": "main-core/src/diagram/ai_attachments.rs",
-        "find": "text(slice_utf16(&page_text, start, Some(start + size))),",
-        "replace": "text(slice_utf16(&page_text, 0.0, Some(start + size))),",
-        "fn": [
-          "diagram/ai-attachments.readAttachmentPage",
-          "diagram/ai-attachments.registerDiagramAiIpc"
-        ]
-      },
-      "control": {
-        "name": "off-status: state is not off",
-        "file": "main-core/src/packages/ai_provider/subscription_contract.rs",
-        "find": "(\"state\", text(\"off\")),",
-        "replace": "(\"state\", text(\"ready\")),",
-        "fn": ["ai-provider/subscription/contract.offSubscriptionStatus"]
-      },
-      "controlSha256": "ddc6c2a87e0282b2bef4ea99478297cbfbcf223e4b62f139bd13ce103f3572ff",
-      "caseRequirement": {
-        "fn": "diagram/ai-attachments.readAttachmentPage",
-        "index": 0,
-        "note": "a page, the end, past the end",
-        "typescript": "{\"answer\":\"{\\\"value\\\":[{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":5,\\\"text\\\":\\\"fghijabcde\\\"},{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":95,\\\"text\\\":\\\"fghij\\\"},{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":500,\\\"text\\\":\\\"\\\"}],\\\"logs\\\":[[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"],[\\\"parseFileToText\\\",\\\"$DIR/long.txt\\\"],[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"],[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"]]}\",\"files\":{\"a.txt\":\"file 644 \\\"hello world\\\"\",\"archive.zip\":\"file 644 \\\"zip\\\"\",\"book.epub\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"cached.txt\":\"file 644 \\\"cached\\\"\",\"chart.DRAWIO.PNG\":\"file 644 hex:89504e47\",\"doc.docx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"emoji.txt\":\"file 644 \\\"😀a😀b\\\"\",\"flow.drawio\":\"file 644 \\\"<mxfile/>\\\"\",\"folder.txt\":\"dir 755\",\"huge.bin.txt\":\"file 644 \\\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\\"\",\"huge.md\":\"file 644 \\\"yyyyyyyyyyyyyyyyyyyy\\\"\",\"long.txt\":\"file 644 \\\"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\\\"\",\"map.drawio.svg\":\"file 644 \\\"<svg/>\\\"\",\"noext\":\"file 644 \\\"no extension\\\"\",\"notes.MD\":\"file 644 \\\"# notes\\\"\",\"old.dio\":\"file 644 \\\"<mxfile/>\\\"\",\"outline.xmind\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"pic.JPG\":\"file 644 hex:ffd8ffe0\",\"pic.png\":\"file 644 hex:89504e470d0a1a0a\",\"pic.webp\":\"file 644 \\\"RIFF\\\"\",\"plain.drawio.png\":\"file 644 hex:89504e47\",\"script.ts\":\"file 644 \\\"export {}\\\"\",\"sheet.xlsx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"trailing.\":\"file 644 \\\"trailing dot\\\"\",\"weird.__proto__\":\"file 644 \\\"x\\\"\",\"weird.constructor\":\"file 644 \\\"x\\\"\"}}",
-        "expectedRust": "{\"answer\":\"{\\\"value\\\":[{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":5,\\\"text\\\":\\\"abcdefghijabcde\\\"},{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":95,\\\"text\\\":\\\"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\\\"},{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":500,\\\"text\\\":\\\"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\\\"}],\\\"logs\\\":[[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"],[\\\"parseFileToText\\\",\\\"$DIR/long.txt\\\"],[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"],[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"]]}\",\"files\":{\"a.txt\":\"file 644 \\\"hello world\\\"\",\"archive.zip\":\"file 644 \\\"zip\\\"\",\"book.epub\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"cached.txt\":\"file 644 \\\"cached\\\"\",\"chart.DRAWIO.PNG\":\"file 644 hex:89504e47\",\"doc.docx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"emoji.txt\":\"file 644 \\\"😀a😀b\\\"\",\"flow.drawio\":\"file 644 \\\"<mxfile/>\\\"\",\"folder.txt\":\"dir 755\",\"huge.bin.txt\":\"file 644 \\\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\\"\",\"huge.md\":\"file 644 \\\"yyyyyyyyyyyyyyyyyyyy\\\"\",\"long.txt\":\"file 644 \\\"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\\\"\",\"map.drawio.svg\":\"file 644 \\\"<svg/>\\\"\",\"noext\":\"file 644 \\\"no extension\\\"\",\"notes.MD\":\"file 644 \\\"# notes\\\"\",\"old.dio\":\"file 644 \\\"<mxfile/>\\\"\",\"outline.xmind\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"pic.JPG\":\"file 644 hex:ffd8ffe0\",\"pic.png\":\"file 644 hex:89504e470d0a1a0a\",\"pic.webp\":\"file 644 \\\"RIFF\\\"\",\"plain.drawio.png\":\"file 644 hex:89504e47\",\"script.ts\":\"file 644 \\\"export {}\\\"\",\"sheet.xlsx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"trailing.\":\"file 644 \\\"trailing dot\\\"\",\"weird.__proto__\":\"file 644 \\\"x\\\"\",\"weird.constructor\":\"file 644 \\\"x\\\"\"}}"
-      },
-      "baselineExpected": [
-        {
-          "group": "b5-agent",
-          "name": "ai-provider/subscription/contract.offSubscriptionStatus",
-          "checks": 3,
-          "single": false
-        },
-        {
-          "group": "b5-agent",
-          "name": "diagram/ai-attachments.readAttachmentPage",
-          "checks": 22,
-          "single": false
-        },
-        {
-          "group": "b5-agent",
-          "name": "diagram/ai-attachments.registerDiagramAiIpc",
-          "checks": 8,
-          "single": false
-        }
-      ],
-      "ledgerRequirements": [
-        {
-          "id": "diagram-attachment-page-cuts-a-surrogate-pair-3",
-          "fn": "diagram/ai-attachments.readAttachmentPage",
-          "case": 3,
-          "typescript": {
-            "answer": "{\"value\":[{\"ok\":true,\"name\":\"emoji.txt\",\"totalChars\":6,\"offset\":1,\"text\":\"\\ude00a\\ud83d\"}],\"logs\":[[\"diagramPictureExtOf\",\"$DIR/emoji.txt\"],[\"assertFileSaved\",\"$DIR/emoji.txt\"],[\"parseFileToText\",\"$DIR/emoji.txt\"]]}",
-            "files": {
-              "a.txt": "file 644 \"hello world\"",
-              "archive.zip": "file 644 \"zip\"",
-              "book.epub": "file 644 \"PK\\u0003\\u0004\"",
-              "cached.txt": "file 644 \"cached\"",
-              "chart.DRAWIO.PNG": "file 644 hex:89504e47",
-              "doc.docx": "file 644 \"PK\\u0003\\u0004\"",
-              "emoji.txt": "file 644 \"😀a😀b\"",
-              "flow.drawio": "file 644 \"<mxfile/>\"",
-              "folder.txt": "dir 755",
-              "huge.bin.txt": "file 644 \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
-              "huge.md": "file 644 \"yyyyyyyyyyyyyyyyyyyy\"",
-              "long.txt": "file 644 \"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\"",
-              "map.drawio.svg": "file 644 \"<svg/>\"",
-              "noext": "file 644 \"no extension\"",
-              "notes.MD": "file 644 \"# notes\"",
-              "old.dio": "file 644 \"<mxfile/>\"",
-              "outline.xmind": "file 644 \"PK\\u0003\\u0004\"",
-              "pic.JPG": "file 644 hex:ffd8ffe0",
-              "pic.png": "file 644 hex:89504e470d0a1a0a",
-              "pic.webp": "file 644 \"RIFF\"",
-              "plain.drawio.png": "file 644 hex:89504e47",
-              "script.ts": "file 644 \"export {}\"",
-              "sheet.xlsx": "file 644 \"PK\\u0003\\u0004\"",
-              "trailing.": "file 644 \"trailing dot\"",
-              "weird.__proto__": "file 644 \"x\"",
-              "weird.constructor": "file 644 \"x\""
-            }
-          },
-          "rust": {
-            "answer": "{\"value\":[{\"ok\":true,\"name\":\"emoji.txt\",\"totalChars\":6,\"offset\":1,\"text\":\"�a�\"}],\"logs\":[[\"diagramPictureExtOf\",\"$DIR/emoji.txt\"],[\"assertFileSaved\",\"$DIR/emoji.txt\"],[\"parseFileToText\",\"$DIR/emoji.txt\"]]}",
-            "files": {
-              "a.txt": "file 644 \"hello world\"",
-              "archive.zip": "file 644 \"zip\"",
-              "book.epub": "file 644 \"PK\\u0003\\u0004\"",
-              "cached.txt": "file 644 \"cached\"",
-              "chart.DRAWIO.PNG": "file 644 hex:89504e47",
-              "doc.docx": "file 644 \"PK\\u0003\\u0004\"",
-              "emoji.txt": "file 644 \"😀a😀b\"",
-              "flow.drawio": "file 644 \"<mxfile/>\"",
-              "folder.txt": "dir 755",
-              "huge.bin.txt": "file 644 \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
-              "huge.md": "file 644 \"yyyyyyyyyyyyyyyyyyyy\"",
-              "long.txt": "file 644 \"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\"",
-              "map.drawio.svg": "file 644 \"<svg/>\"",
-              "noext": "file 644 \"no extension\"",
-              "notes.MD": "file 644 \"# notes\"",
-              "old.dio": "file 644 \"<mxfile/>\"",
-              "outline.xmind": "file 644 \"PK\\u0003\\u0004\"",
-              "pic.JPG": "file 644 hex:ffd8ffe0",
-              "pic.png": "file 644 hex:89504e470d0a1a0a",
-              "pic.webp": "file 644 \"RIFF\"",
-              "plain.drawio.png": "file 644 hex:89504e47",
-              "script.ts": "file 644 \"export {}\"",
-              "sheet.xlsx": "file 644 \"PK\\u0003\\u0004\"",
-              "trailing.": "file 644 \"trailing dot\"",
-              "weird.__proto__": "file 644 \"x\"",
-              "weird.constructor": "file 644 \"x\""
-            }
-          },
-          "reason": "readAttachmentPage cuts the parsed text with String.slice at UTF-16 offsets (offset 1, length 4 of an emoji, `a`, an emoji, `b`), so each cut that falls inside a surrogate pair leaves a lone surrogate. A Rust String cannot hold one; the Rust answer holds U+FFFD there, which is what the TypeScript string becomes once it is sent as UTF-8 (the answer goes to the model as JSON text). The input is valid Unicode; only the slice makes it lone. Final."
-        }
-      ]
-    },
-    {
-      "id": "b5-agent-apps-467",
-      "catalog": "tools/main-diff/faults/b5-agent-apps.json",
-      "catalogLength": 615,
-      "catalogSha256": "6f46fc9a5deda734b7b65c61f97b63944d519d399e7f129aa08985161f9b1db3",
-      "index": 467,
-      "originalMutationSha256": "ca4d945405806b50c7b99837b2d1be9dc083cd9ba7348e2534c65f204a31d7f3",
-      "mutationSha256": "ca4d945405806b50c7b99837b2d1be9dc083cd9ba7348e2534c65f204a31d7f3",
-      "fault": {
-        "name": "epub attachments: the total counts bytes",
-        "file": "main-core/src/epub/ai_attachments.rs",
-        "find": "number(length16(&page_text) as f64)",
-        "replace": "number(page_text.len() as f64)",
-        "fn": ["epub/ai-attachments.readAttachmentPage", "epub/ai-attachments.registerEpubAiIpc"]
-      },
-      "control": {
-        "name": "off-status: state is not off",
-        "file": "main-core/src/packages/ai_provider/subscription_contract.rs",
-        "find": "(\"state\", text(\"off\")),",
-        "replace": "(\"state\", text(\"ready\")),",
-        "fn": ["ai-provider/subscription/contract.offSubscriptionStatus"]
-      },
-      "controlSha256": "ddc6c2a87e0282b2bef4ea99478297cbfbcf223e4b62f139bd13ce103f3572ff",
-      "caseRequirement": {
-        "fn": "epub/ai-attachments.readAttachmentPage",
-        "index": 21,
-        "note": "a whole non-ASCII page counts UTF-16 units, not UTF-8 bytes",
-        "typescript": "{\"answer\":\"{\\\"value\\\":[{\\\"ok\\\":true,\\\"name\\\":\\\"whole.txt\\\",\\\"totalChars\\\":3,\\\"offset\\\":0,\\\"text\\\":\\\"가😀\\\"}],\\\"logs\\\":[[\\\"diagramPictureExtOf\\\",\\\"$DIR/whole.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/whole.txt\\\"],[\\\"parseFileToText\\\",\\\"$DIR/whole.txt\\\"]]}\",\"files\":{\"whole.txt\":\"file 644 \\\"가😀\\\"\"}}",
-        "expectedRust": "{\"answer\":\"{\\\"value\\\":[{\\\"ok\\\":true,\\\"name\\\":\\\"whole.txt\\\",\\\"totalChars\\\":7,\\\"offset\\\":0,\\\"text\\\":\\\"가😀\\\"}],\\\"logs\\\":[[\\\"diagramPictureExtOf\\\",\\\"$DIR/whole.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/whole.txt\\\"],[\\\"parseFileToText\\\",\\\"$DIR/whole.txt\\\"]]}\",\"files\":{\"whole.txt\":\"file 644 \\\"가😀\\\"\"}}"
-      },
-      "baselineExpected": [
-        {
-          "group": "b5-agent",
-          "name": "ai-provider/subscription/contract.offSubscriptionStatus",
-          "checks": 3,
-          "single": false
-        },
-        {
-          "group": "b5-agent",
-          "name": "epub/ai-attachments.readAttachmentPage",
-          "checks": 22,
-          "single": false
-        },
-        {
-          "group": "b5-agent",
-          "name": "epub/ai-attachments.registerEpubAiIpc",
+          "group": "b5-provider",
+          "name": "chatgpt/oauth.chatGptRedirectUri",
           "checks": 6,
           "single": false
-        }
-      ],
-      "ledgerRequirements": [
+        },
         {
-          "id": "epub-attachment-page-cuts-a-surrogate-pair-3",
-          "fn": "epub/ai-attachments.readAttachmentPage",
-          "case": 3,
-          "typescript": {
-            "answer": "{\"value\":[{\"ok\":true,\"name\":\"emoji.txt\",\"totalChars\":6,\"offset\":1,\"text\":\"\\ude00a\\ud83d\"}],\"logs\":[[\"diagramPictureExtOf\",\"$DIR/emoji.txt\"],[\"assertFileSaved\",\"$DIR/emoji.txt\"],[\"parseFileToText\",\"$DIR/emoji.txt\"]]}",
-            "files": {
-              "a.txt": "file 644 \"hello world\"",
-              "archive.zip": "file 644 \"zip\"",
-              "book.epub": "file 644 \"PK\\u0003\\u0004\"",
-              "cached.txt": "file 644 \"cached\"",
-              "chart.DRAWIO.PNG": "file 644 hex:89504e47",
-              "doc.docx": "file 644 \"PK\\u0003\\u0004\"",
-              "emoji.txt": "file 644 \"😀a😀b\"",
-              "flow.drawio": "file 644 \"<mxfile/>\"",
-              "folder.txt": "dir 755",
-              "huge.bin.txt": "file 644 \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
-              "huge.md": "file 644 \"yyyyyyyyyyyyyyyyyyyy\"",
-              "long.txt": "file 644 \"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\"",
-              "map.drawio.svg": "file 644 \"<svg/>\"",
-              "noext": "file 644 \"no extension\"",
-              "notes.MD": "file 644 \"# notes\"",
-              "old.dio": "file 644 \"<mxfile/>\"",
-              "outline.xmind": "file 644 \"PK\\u0003\\u0004\"",
-              "pic.JPG": "file 644 hex:ffd8ffe0",
-              "pic.png": "file 644 hex:89504e470d0a1a0a",
-              "pic.webp": "file 644 \"RIFF\"",
-              "plain.drawio.png": "file 644 hex:89504e47",
-              "script.ts": "file 644 \"export {}\"",
-              "sheet.xlsx": "file 644 \"PK\\u0003\\u0004\"",
-              "trailing.": "file 644 \"trailing dot\"",
-              "weird.__proto__": "file 644 \"x\"",
-              "weird.constructor": "file 644 \"x\""
-            }
-          },
-          "rust": {
-            "answer": "{\"value\":[{\"ok\":true,\"name\":\"emoji.txt\",\"totalChars\":6,\"offset\":1,\"text\":\"�a�\"}],\"logs\":[[\"diagramPictureExtOf\",\"$DIR/emoji.txt\"],[\"assertFileSaved\",\"$DIR/emoji.txt\"],[\"parseFileToText\",\"$DIR/emoji.txt\"]]}",
-            "files": {
-              "a.txt": "file 644 \"hello world\"",
-              "archive.zip": "file 644 \"zip\"",
-              "book.epub": "file 644 \"PK\\u0003\\u0004\"",
-              "cached.txt": "file 644 \"cached\"",
-              "chart.DRAWIO.PNG": "file 644 hex:89504e47",
-              "doc.docx": "file 644 \"PK\\u0003\\u0004\"",
-              "emoji.txt": "file 644 \"😀a😀b\"",
-              "flow.drawio": "file 644 \"<mxfile/>\"",
-              "folder.txt": "dir 755",
-              "huge.bin.txt": "file 644 \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
-              "huge.md": "file 644 \"yyyyyyyyyyyyyyyyyyyy\"",
-              "long.txt": "file 644 \"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\"",
-              "map.drawio.svg": "file 644 \"<svg/>\"",
-              "noext": "file 644 \"no extension\"",
-              "notes.MD": "file 644 \"# notes\"",
-              "old.dio": "file 644 \"<mxfile/>\"",
-              "outline.xmind": "file 644 \"PK\\u0003\\u0004\"",
-              "pic.JPG": "file 644 hex:ffd8ffe0",
-              "pic.png": "file 644 hex:89504e470d0a1a0a",
-              "pic.webp": "file 644 \"RIFF\"",
-              "plain.drawio.png": "file 644 hex:89504e47",
-              "script.ts": "file 644 \"export {}\"",
-              "sheet.xlsx": "file 644 \"PK\\u0003\\u0004\"",
-              "trailing.": "file 644 \"trailing dot\"",
-              "weird.__proto__": "file 644 \"x\"",
-              "weird.constructor": "file 644 \"x\""
-            }
-          },
-          "reason": "readAttachmentPage cuts the parsed text with String.slice at UTF-16 offsets (offset 1, length 4 of an emoji, `a`, an emoji, `b`), so each cut that falls inside a surrogate pair leaves a lone surrogate. A Rust String cannot hold one; the Rust answer holds U+FFFD there, which is what the TypeScript string becomes once it is sent as UTF-8 (the answer goes to the model as JSON text). The input is valid Unicode; only the slice makes it lone. Final."
+          "group": "b5-provider",
+          "name": "chatgpt/oauth.chatGptAuthorizeUrl",
+          "checks": 4,
+          "single": false
+        },
+        {
+          "group": "b5-provider",
+          "name": "chatgpt/oauth.exchangeChatGptCode",
+          "checks": 30,
+          "single": false
+        },
+        {
+          "group": "b5-provider",
+          "name": "chatgpt/connection.createChatGptConnection",
+          "checks": 66,
+          "single": false
         }
       ]
     },
     {
-      "id": "b5-agent-apps-468",
-      "catalog": "tools/main-diff/faults/b5-agent-apps.json",
-      "catalogLength": 615,
-      "catalogSha256": "6f46fc9a5deda734b7b65c61f97b63944d519d399e7f129aa08985161f9b1db3",
-      "index": 468,
-      "originalMutationSha256": "fe2ad4730f77c4060dc0a2708b6ad24b1fa39beaa7d65a9f885bbd7e3b2db2f2",
-      "mutationSha256": "fe2ad4730f77c4060dc0a2708b6ad24b1fa39beaa7d65a9f885bbd7e3b2db2f2",
+      "id": "b5-provider-chatgpt-66",
+      "catalog": "tools/main-diff/faults/b5-provider-chatgpt.json",
+      "catalogLength": 84,
+      "catalogSha256": "900b42bf864f49984d78760f62d054245a3ba634d3fc5505f906ba0c4d5413cd",
+      "index": 66,
+      "originalMutationSha256": "0d488f4225f891d4f1fd09488a50d58ee626787e779dd58e6a6cd851f50f9b2a",
+      "mutationSha256": "0d488f4225f891d4f1fd09488a50d58ee626787e779dd58e6a6cd851f50f9b2a",
       "fault": {
-        "name": "epub attachments: the page offset is not reported",
-        "file": "main-core/src/epub/ai_attachments.rs",
-        "find": "(\"offset\", number(start)),",
-        "replace": "(\"offset\", number(0.0)),",
-        "fn": ["epub/ai-attachments.readAttachmentPage", "epub/ai-attachments.registerEpubAiIpc"]
+        "name": "responses: a stream cut in tool arguments words it otherwise",
+        "file": "main-core/src/packages/ai_provider/chatgpt_responses.rs",
+        "find": "the stream ended early",
+        "replace": "the stream ended",
+        "fn": ["chatgpt/responses.streamChatGpt"]
       },
       "control": {
-        "name": "off-status: state is not off",
-        "file": "main-core/src/packages/ai_provider/subscription_contract.rs",
-        "find": "(\"state\", text(\"off\")),",
-        "replace": "(\"state\", text(\"ready\")),",
-        "fn": ["ai-provider/subscription/contract.offSubscriptionStatus"]
-      },
-      "controlSha256": "ddc6c2a87e0282b2bef4ea99478297cbfbcf223e4b62f139bd13ce103f3572ff",
-      "caseRequirement": {
-        "fn": "epub/ai-attachments.readAttachmentPage",
-        "index": 0,
-        "note": "a page, the end, past the end",
-        "typescript": "{\"answer\":\"{\\\"value\\\":[{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":5,\\\"text\\\":\\\"fghijabcde\\\"},{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":95,\\\"text\\\":\\\"fghij\\\"},{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":500,\\\"text\\\":\\\"\\\"}],\\\"logs\\\":[[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"],[\\\"parseFileToText\\\",\\\"$DIR/long.txt\\\"],[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"],[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"]]}\",\"files\":{\"a.txt\":\"file 644 \\\"hello world\\\"\",\"archive.zip\":\"file 644 \\\"zip\\\"\",\"book.epub\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"cached.txt\":\"file 644 \\\"cached\\\"\",\"chart.DRAWIO.PNG\":\"file 644 hex:89504e47\",\"doc.docx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"emoji.txt\":\"file 644 \\\"😀a😀b\\\"\",\"flow.drawio\":\"file 644 \\\"<mxfile/>\\\"\",\"folder.txt\":\"dir 755\",\"huge.bin.txt\":\"file 644 \\\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\\"\",\"huge.md\":\"file 644 \\\"yyyyyyyyyyyyyyyyyyyy\\\"\",\"long.txt\":\"file 644 \\\"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\\\"\",\"map.drawio.svg\":\"file 644 \\\"<svg/>\\\"\",\"noext\":\"file 644 \\\"no extension\\\"\",\"notes.MD\":\"file 644 \\\"# notes\\\"\",\"old.dio\":\"file 644 \\\"<mxfile/>\\\"\",\"outline.xmind\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"pic.JPG\":\"file 644 hex:ffd8ffe0\",\"pic.png\":\"file 644 hex:89504e470d0a1a0a\",\"pic.webp\":\"file 644 \\\"RIFF\\\"\",\"plain.drawio.png\":\"file 644 hex:89504e47\",\"script.ts\":\"file 644 \\\"export {}\\\"\",\"sheet.xlsx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"trailing.\":\"file 644 \\\"trailing dot\\\"\",\"weird.__proto__\":\"file 644 \\\"x\\\"\",\"weird.constructor\":\"file 644 \\\"x\\\"\"}}",
-        "expectedRust": "{\"answer\":\"{\\\"value\\\":[{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":0,\\\"text\\\":\\\"fghijabcde\\\"},{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":0,\\\"text\\\":\\\"fghij\\\"},{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":0,\\\"text\\\":\\\"\\\"}],\\\"logs\\\":[[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"],[\\\"parseFileToText\\\",\\\"$DIR/long.txt\\\"],[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"],[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"]]}\",\"files\":{\"a.txt\":\"file 644 \\\"hello world\\\"\",\"archive.zip\":\"file 644 \\\"zip\\\"\",\"book.epub\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"cached.txt\":\"file 644 \\\"cached\\\"\",\"chart.DRAWIO.PNG\":\"file 644 hex:89504e47\",\"doc.docx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"emoji.txt\":\"file 644 \\\"😀a😀b\\\"\",\"flow.drawio\":\"file 644 \\\"<mxfile/>\\\"\",\"folder.txt\":\"dir 755\",\"huge.bin.txt\":\"file 644 \\\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\\"\",\"huge.md\":\"file 644 \\\"yyyyyyyyyyyyyyyyyyyy\\\"\",\"long.txt\":\"file 644 \\\"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\\\"\",\"map.drawio.svg\":\"file 644 \\\"<svg/>\\\"\",\"noext\":\"file 644 \\\"no extension\\\"\",\"notes.MD\":\"file 644 \\\"# notes\\\"\",\"old.dio\":\"file 644 \\\"<mxfile/>\\\"\",\"outline.xmind\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"pic.JPG\":\"file 644 hex:ffd8ffe0\",\"pic.png\":\"file 644 hex:89504e470d0a1a0a\",\"pic.webp\":\"file 644 \\\"RIFF\\\"\",\"plain.drawio.png\":\"file 644 hex:89504e47\",\"script.ts\":\"file 644 \\\"export {}\\\"\",\"sheet.xlsx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"trailing.\":\"file 644 \\\"trailing dot\\\"\",\"weird.__proto__\":\"file 644 \\\"x\\\"\",\"weird.constructor\":\"file 644 \\\"x\\\"\"}}"
-      },
-      "baselineExpected": [
-        {
-          "group": "b5-agent",
-          "name": "ai-provider/subscription/contract.offSubscriptionStatus",
-          "checks": 3,
-          "single": false
-        },
-        {
-          "group": "b5-agent",
-          "name": "epub/ai-attachments.readAttachmentPage",
-          "checks": 22,
-          "single": false
-        },
-        {
-          "group": "b5-agent",
-          "name": "epub/ai-attachments.registerEpubAiIpc",
-          "checks": 6,
-          "single": false
-        }
-      ],
-      "ledgerRequirements": [
-        {
-          "id": "epub-attachment-page-cuts-a-surrogate-pair-3",
-          "fn": "epub/ai-attachments.readAttachmentPage",
-          "case": 3,
-          "typescript": {
-            "answer": "{\"value\":[{\"ok\":true,\"name\":\"emoji.txt\",\"totalChars\":6,\"offset\":1,\"text\":\"\\ude00a\\ud83d\"}],\"logs\":[[\"diagramPictureExtOf\",\"$DIR/emoji.txt\"],[\"assertFileSaved\",\"$DIR/emoji.txt\"],[\"parseFileToText\",\"$DIR/emoji.txt\"]]}",
-            "files": {
-              "a.txt": "file 644 \"hello world\"",
-              "archive.zip": "file 644 \"zip\"",
-              "book.epub": "file 644 \"PK\\u0003\\u0004\"",
-              "cached.txt": "file 644 \"cached\"",
-              "chart.DRAWIO.PNG": "file 644 hex:89504e47",
-              "doc.docx": "file 644 \"PK\\u0003\\u0004\"",
-              "emoji.txt": "file 644 \"😀a😀b\"",
-              "flow.drawio": "file 644 \"<mxfile/>\"",
-              "folder.txt": "dir 755",
-              "huge.bin.txt": "file 644 \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
-              "huge.md": "file 644 \"yyyyyyyyyyyyyyyyyyyy\"",
-              "long.txt": "file 644 \"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\"",
-              "map.drawio.svg": "file 644 \"<svg/>\"",
-              "noext": "file 644 \"no extension\"",
-              "notes.MD": "file 644 \"# notes\"",
-              "old.dio": "file 644 \"<mxfile/>\"",
-              "outline.xmind": "file 644 \"PK\\u0003\\u0004\"",
-              "pic.JPG": "file 644 hex:ffd8ffe0",
-              "pic.png": "file 644 hex:89504e470d0a1a0a",
-              "pic.webp": "file 644 \"RIFF\"",
-              "plain.drawio.png": "file 644 hex:89504e47",
-              "script.ts": "file 644 \"export {}\"",
-              "sheet.xlsx": "file 644 \"PK\\u0003\\u0004\"",
-              "trailing.": "file 644 \"trailing dot\"",
-              "weird.__proto__": "file 644 \"x\"",
-              "weird.constructor": "file 644 \"x\""
-            }
-          },
-          "rust": {
-            "answer": "{\"value\":[{\"ok\":true,\"name\":\"emoji.txt\",\"totalChars\":6,\"offset\":1,\"text\":\"�a�\"}],\"logs\":[[\"diagramPictureExtOf\",\"$DIR/emoji.txt\"],[\"assertFileSaved\",\"$DIR/emoji.txt\"],[\"parseFileToText\",\"$DIR/emoji.txt\"]]}",
-            "files": {
-              "a.txt": "file 644 \"hello world\"",
-              "archive.zip": "file 644 \"zip\"",
-              "book.epub": "file 644 \"PK\\u0003\\u0004\"",
-              "cached.txt": "file 644 \"cached\"",
-              "chart.DRAWIO.PNG": "file 644 hex:89504e47",
-              "doc.docx": "file 644 \"PK\\u0003\\u0004\"",
-              "emoji.txt": "file 644 \"😀a😀b\"",
-              "flow.drawio": "file 644 \"<mxfile/>\"",
-              "folder.txt": "dir 755",
-              "huge.bin.txt": "file 644 \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
-              "huge.md": "file 644 \"yyyyyyyyyyyyyyyyyyyy\"",
-              "long.txt": "file 644 \"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\"",
-              "map.drawio.svg": "file 644 \"<svg/>\"",
-              "noext": "file 644 \"no extension\"",
-              "notes.MD": "file 644 \"# notes\"",
-              "old.dio": "file 644 \"<mxfile/>\"",
-              "outline.xmind": "file 644 \"PK\\u0003\\u0004\"",
-              "pic.JPG": "file 644 hex:ffd8ffe0",
-              "pic.png": "file 644 hex:89504e470d0a1a0a",
-              "pic.webp": "file 644 \"RIFF\"",
-              "plain.drawio.png": "file 644 hex:89504e47",
-              "script.ts": "file 644 \"export {}\"",
-              "sheet.xlsx": "file 644 \"PK\\u0003\\u0004\"",
-              "trailing.": "file 644 \"trailing dot\"",
-              "weird.__proto__": "file 644 \"x\"",
-              "weird.constructor": "file 644 \"x\""
-            }
-          },
-          "reason": "readAttachmentPage cuts the parsed text with String.slice at UTF-16 offsets (offset 1, length 4 of an emoji, `a`, an emoji, `b`), so each cut that falls inside a surrogate pair leaves a lone surrogate. A Rust String cannot hold one; the Rust answer holds U+FFFD there, which is what the TypeScript string becomes once it is sent as UTF-8 (the answer goes to the model as JSON text). The input is valid Unicode; only the slice makes it lone. Final."
-        }
-      ]
-    },
-    {
-      "id": "b5-agent-apps-469",
-      "catalog": "tools/main-diff/faults/b5-agent-apps.json",
-      "catalogLength": 615,
-      "catalogSha256": "6f46fc9a5deda734b7b65c61f97b63944d519d399e7f129aa08985161f9b1db3",
-      "index": 469,
-      "originalMutationSha256": "069e583570f37c66718cf3098fe99bee600a044ff07500e3d2ed0914e5d045d5",
-      "mutationSha256": "069e583570f37c66718cf3098fe99bee600a044ff07500e3d2ed0914e5d045d5",
-      "fault": {
-        "name": "epub attachments: the page text starts at zero",
-        "file": "main-core/src/epub/ai_attachments.rs",
-        "find": "text(slice_utf16(&page_text, start, Some(start + size))),",
-        "replace": "text(slice_utf16(&page_text, 0.0, Some(start + size))),",
-        "fn": ["epub/ai-attachments.readAttachmentPage", "epub/ai-attachments.registerEpubAiIpc"]
-      },
-      "control": {
-        "name": "off-status: state is not off",
-        "file": "main-core/src/packages/ai_provider/subscription_contract.rs",
-        "find": "(\"state\", text(\"off\")),",
-        "replace": "(\"state\", text(\"ready\")),",
-        "fn": ["ai-provider/subscription/contract.offSubscriptionStatus"]
-      },
-      "controlSha256": "ddc6c2a87e0282b2bef4ea99478297cbfbcf223e4b62f139bd13ce103f3572ff",
-      "caseRequirement": {
-        "fn": "epub/ai-attachments.readAttachmentPage",
-        "index": 0,
-        "note": "a page, the end, past the end",
-        "typescript": "{\"answer\":\"{\\\"value\\\":[{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":5,\\\"text\\\":\\\"fghijabcde\\\"},{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":95,\\\"text\\\":\\\"fghij\\\"},{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":500,\\\"text\\\":\\\"\\\"}],\\\"logs\\\":[[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"],[\\\"parseFileToText\\\",\\\"$DIR/long.txt\\\"],[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"],[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"]]}\",\"files\":{\"a.txt\":\"file 644 \\\"hello world\\\"\",\"archive.zip\":\"file 644 \\\"zip\\\"\",\"book.epub\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"cached.txt\":\"file 644 \\\"cached\\\"\",\"chart.DRAWIO.PNG\":\"file 644 hex:89504e47\",\"doc.docx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"emoji.txt\":\"file 644 \\\"😀a😀b\\\"\",\"flow.drawio\":\"file 644 \\\"<mxfile/>\\\"\",\"folder.txt\":\"dir 755\",\"huge.bin.txt\":\"file 644 \\\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\\"\",\"huge.md\":\"file 644 \\\"yyyyyyyyyyyyyyyyyyyy\\\"\",\"long.txt\":\"file 644 \\\"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\\\"\",\"map.drawio.svg\":\"file 644 \\\"<svg/>\\\"\",\"noext\":\"file 644 \\\"no extension\\\"\",\"notes.MD\":\"file 644 \\\"# notes\\\"\",\"old.dio\":\"file 644 \\\"<mxfile/>\\\"\",\"outline.xmind\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"pic.JPG\":\"file 644 hex:ffd8ffe0\",\"pic.png\":\"file 644 hex:89504e470d0a1a0a\",\"pic.webp\":\"file 644 \\\"RIFF\\\"\",\"plain.drawio.png\":\"file 644 hex:89504e47\",\"script.ts\":\"file 644 \\\"export {}\\\"\",\"sheet.xlsx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"trailing.\":\"file 644 \\\"trailing dot\\\"\",\"weird.__proto__\":\"file 644 \\\"x\\\"\",\"weird.constructor\":\"file 644 \\\"x\\\"\"}}",
-        "expectedRust": "{\"answer\":\"{\\\"value\\\":[{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":5,\\\"text\\\":\\\"abcdefghijabcde\\\"},{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":95,\\\"text\\\":\\\"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\\\"},{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":500,\\\"text\\\":\\\"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\\\"}],\\\"logs\\\":[[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"],[\\\"parseFileToText\\\",\\\"$DIR/long.txt\\\"],[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"],[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"]]}\",\"files\":{\"a.txt\":\"file 644 \\\"hello world\\\"\",\"archive.zip\":\"file 644 \\\"zip\\\"\",\"book.epub\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"cached.txt\":\"file 644 \\\"cached\\\"\",\"chart.DRAWIO.PNG\":\"file 644 hex:89504e47\",\"doc.docx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"emoji.txt\":\"file 644 \\\"😀a😀b\\\"\",\"flow.drawio\":\"file 644 \\\"<mxfile/>\\\"\",\"folder.txt\":\"dir 755\",\"huge.bin.txt\":\"file 644 \\\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\\"\",\"huge.md\":\"file 644 \\\"yyyyyyyyyyyyyyyyyyyy\\\"\",\"long.txt\":\"file 644 \\\"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\\\"\",\"map.drawio.svg\":\"file 644 \\\"<svg/>\\\"\",\"noext\":\"file 644 \\\"no extension\\\"\",\"notes.MD\":\"file 644 \\\"# notes\\\"\",\"old.dio\":\"file 644 \\\"<mxfile/>\\\"\",\"outline.xmind\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"pic.JPG\":\"file 644 hex:ffd8ffe0\",\"pic.png\":\"file 644 hex:89504e470d0a1a0a\",\"pic.webp\":\"file 644 \\\"RIFF\\\"\",\"plain.drawio.png\":\"file 644 hex:89504e47\",\"script.ts\":\"file 644 \\\"export {}\\\"\",\"sheet.xlsx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"trailing.\":\"file 644 \\\"trailing dot\\\"\",\"weird.__proto__\":\"file 644 \\\"x\\\"\",\"weird.constructor\":\"file 644 \\\"x\\\"\"}}"
-      },
-      "baselineExpected": [
-        {
-          "group": "b5-agent",
-          "name": "ai-provider/subscription/contract.offSubscriptionStatus",
-          "checks": 3,
-          "single": false
-        },
-        {
-          "group": "b5-agent",
-          "name": "epub/ai-attachments.readAttachmentPage",
-          "checks": 22,
-          "single": false
-        },
-        {
-          "group": "b5-agent",
-          "name": "epub/ai-attachments.registerEpubAiIpc",
-          "checks": 6,
-          "single": false
-        }
-      ],
-      "ledgerRequirements": [
-        {
-          "id": "epub-attachment-page-cuts-a-surrogate-pair-3",
-          "fn": "epub/ai-attachments.readAttachmentPage",
-          "case": 3,
-          "typescript": {
-            "answer": "{\"value\":[{\"ok\":true,\"name\":\"emoji.txt\",\"totalChars\":6,\"offset\":1,\"text\":\"\\ude00a\\ud83d\"}],\"logs\":[[\"diagramPictureExtOf\",\"$DIR/emoji.txt\"],[\"assertFileSaved\",\"$DIR/emoji.txt\"],[\"parseFileToText\",\"$DIR/emoji.txt\"]]}",
-            "files": {
-              "a.txt": "file 644 \"hello world\"",
-              "archive.zip": "file 644 \"zip\"",
-              "book.epub": "file 644 \"PK\\u0003\\u0004\"",
-              "cached.txt": "file 644 \"cached\"",
-              "chart.DRAWIO.PNG": "file 644 hex:89504e47",
-              "doc.docx": "file 644 \"PK\\u0003\\u0004\"",
-              "emoji.txt": "file 644 \"😀a😀b\"",
-              "flow.drawio": "file 644 \"<mxfile/>\"",
-              "folder.txt": "dir 755",
-              "huge.bin.txt": "file 644 \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
-              "huge.md": "file 644 \"yyyyyyyyyyyyyyyyyyyy\"",
-              "long.txt": "file 644 \"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\"",
-              "map.drawio.svg": "file 644 \"<svg/>\"",
-              "noext": "file 644 \"no extension\"",
-              "notes.MD": "file 644 \"# notes\"",
-              "old.dio": "file 644 \"<mxfile/>\"",
-              "outline.xmind": "file 644 \"PK\\u0003\\u0004\"",
-              "pic.JPG": "file 644 hex:ffd8ffe0",
-              "pic.png": "file 644 hex:89504e470d0a1a0a",
-              "pic.webp": "file 644 \"RIFF\"",
-              "plain.drawio.png": "file 644 hex:89504e47",
-              "script.ts": "file 644 \"export {}\"",
-              "sheet.xlsx": "file 644 \"PK\\u0003\\u0004\"",
-              "trailing.": "file 644 \"trailing dot\"",
-              "weird.__proto__": "file 644 \"x\"",
-              "weird.constructor": "file 644 \"x\""
-            }
-          },
-          "rust": {
-            "answer": "{\"value\":[{\"ok\":true,\"name\":\"emoji.txt\",\"totalChars\":6,\"offset\":1,\"text\":\"�a�\"}],\"logs\":[[\"diagramPictureExtOf\",\"$DIR/emoji.txt\"],[\"assertFileSaved\",\"$DIR/emoji.txt\"],[\"parseFileToText\",\"$DIR/emoji.txt\"]]}",
-            "files": {
-              "a.txt": "file 644 \"hello world\"",
-              "archive.zip": "file 644 \"zip\"",
-              "book.epub": "file 644 \"PK\\u0003\\u0004\"",
-              "cached.txt": "file 644 \"cached\"",
-              "chart.DRAWIO.PNG": "file 644 hex:89504e47",
-              "doc.docx": "file 644 \"PK\\u0003\\u0004\"",
-              "emoji.txt": "file 644 \"😀a😀b\"",
-              "flow.drawio": "file 644 \"<mxfile/>\"",
-              "folder.txt": "dir 755",
-              "huge.bin.txt": "file 644 \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
-              "huge.md": "file 644 \"yyyyyyyyyyyyyyyyyyyy\"",
-              "long.txt": "file 644 \"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\"",
-              "map.drawio.svg": "file 644 \"<svg/>\"",
-              "noext": "file 644 \"no extension\"",
-              "notes.MD": "file 644 \"# notes\"",
-              "old.dio": "file 644 \"<mxfile/>\"",
-              "outline.xmind": "file 644 \"PK\\u0003\\u0004\"",
-              "pic.JPG": "file 644 hex:ffd8ffe0",
-              "pic.png": "file 644 hex:89504e470d0a1a0a",
-              "pic.webp": "file 644 \"RIFF\"",
-              "plain.drawio.png": "file 644 hex:89504e47",
-              "script.ts": "file 644 \"export {}\"",
-              "sheet.xlsx": "file 644 \"PK\\u0003\\u0004\"",
-              "trailing.": "file 644 \"trailing dot\"",
-              "weird.__proto__": "file 644 \"x\"",
-              "weird.constructor": "file 644 \"x\""
-            }
-          },
-          "reason": "readAttachmentPage cuts the parsed text with String.slice at UTF-16 offsets (offset 1, length 4 of an emoji, `a`, an emoji, `b`), so each cut that falls inside a surrogate pair leaves a lone surrogate. A Rust String cannot hold one; the Rust answer holds U+FFFD there, which is what the TypeScript string becomes once it is sent as UTF-8 (the answer goes to the model as JSON text). The input is valid Unicode; only the slice makes it lone. Final."
-        }
-      ]
-    },
-    {
-      "id": "b5-agent-apps-547",
-      "catalog": "tools/main-diff/faults/b5-agent-apps.json",
-      "catalogLength": 615,
-      "catalogSha256": "6f46fc9a5deda734b7b65c61f97b63944d519d399e7f129aa08985161f9b1db3",
-      "index": 547,
-      "originalMutationSha256": "559a3c98f3cde2f235973d29010ddea4930b025e0ffb10707fb50d196d1f9038",
-      "mutationSha256": "559a3c98f3cde2f235973d29010ddea4930b025e0ffb10707fb50d196d1f9038",
-      "fault": {
-        "name": "mindmap attachments: the page text starts at zero",
-        "file": "main-core/src/mindmap/ai_attachments.rs",
-        "find": "text(slice_utf16(&page_text, start, Some(start + size))),",
-        "replace": "text(slice_utf16(&page_text, 0.0, Some(start + size))),",
+        "name": "redirect uri names localhost, not 127.0.0.1",
+        "file": "main-core/src/packages/ai_provider/chatgpt_oauth.rs",
+        "find": "http://127.0.0.1:{}{}",
+        "replace": "http://localhost:{}{}",
         "fn": [
-          "mindmap/ai-attachments.readAttachmentPage",
-          "mindmap/ai-attachments.registerMindmapAiIpc"
+          "chatgpt/oauth.chatGptRedirectUri",
+          "chatgpt/oauth.chatGptAuthorizeUrl",
+          "chatgpt/oauth.exchangeChatGptCode"
         ]
       },
-      "control": {
-        "name": "off-status: state is not off",
-        "file": "main-core/src/packages/ai_provider/subscription_contract.rs",
-        "find": "(\"state\", text(\"off\")),",
-        "replace": "(\"state\", text(\"ready\")),",
-        "fn": ["ai-provider/subscription/contract.offSubscriptionStatus"]
-      },
-      "controlSha256": "ddc6c2a87e0282b2bef4ea99478297cbfbcf223e4b62f139bd13ce103f3572ff",
+      "controlSha256": "45c0faa444533e9c9f12063842aeeb8403f98f40285408961e1e06a8163f2e60",
       "caseRequirement": {
-        "fn": "mindmap/ai-attachments.readAttachmentPage",
-        "index": 0,
-        "note": "a page, the end, past the end",
-        "typescript": "{\"answer\":\"{\\\"value\\\":[{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":5,\\\"text\\\":\\\"fghijabcde\\\"},{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":95,\\\"text\\\":\\\"fghij\\\"},{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":500,\\\"text\\\":\\\"\\\"}],\\\"logs\\\":[[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"],[\\\"parseFileToText\\\",\\\"$DIR/long.txt\\\"],[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"],[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"]]}\",\"files\":{\"a.txt\":\"file 644 \\\"hello world\\\"\",\"archive.zip\":\"file 644 \\\"zip\\\"\",\"book.epub\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"cached.txt\":\"file 644 \\\"cached\\\"\",\"chart.DRAWIO.PNG\":\"file 644 hex:89504e47\",\"doc.docx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"emoji.txt\":\"file 644 \\\"😀a😀b\\\"\",\"flow.drawio\":\"file 644 \\\"<mxfile/>\\\"\",\"folder.txt\":\"dir 755\",\"huge.bin.txt\":\"file 644 \\\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\\"\",\"huge.md\":\"file 644 \\\"yyyyyyyyyyyyyyyyyyyy\\\"\",\"long.txt\":\"file 644 \\\"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\\\"\",\"map.drawio.svg\":\"file 644 \\\"<svg/>\\\"\",\"noext\":\"file 644 \\\"no extension\\\"\",\"notes.MD\":\"file 644 \\\"# notes\\\"\",\"old.dio\":\"file 644 \\\"<mxfile/>\\\"\",\"outline.xmind\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"pic.JPG\":\"file 644 hex:ffd8ffe0\",\"pic.png\":\"file 644 hex:89504e470d0a1a0a\",\"pic.webp\":\"file 644 \\\"RIFF\\\"\",\"plain.drawio.png\":\"file 644 hex:89504e47\",\"script.ts\":\"file 644 \\\"export {}\\\"\",\"sheet.xlsx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"trailing.\":\"file 644 \\\"trailing dot\\\"\",\"weird.__proto__\":\"file 644 \\\"x\\\"\",\"weird.constructor\":\"file 644 \\\"x\\\"\"}}",
-        "expectedRust": "{\"answer\":\"{\\\"value\\\":[{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":5,\\\"text\\\":\\\"abcdefghijabcde\\\"},{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":95,\\\"text\\\":\\\"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\\\"},{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":500,\\\"text\\\":\\\"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\\\"}],\\\"logs\\\":[[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"],[\\\"parseFileToText\\\",\\\"$DIR/long.txt\\\"],[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"],[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"]]}\",\"files\":{\"a.txt\":\"file 644 \\\"hello world\\\"\",\"archive.zip\":\"file 644 \\\"zip\\\"\",\"book.epub\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"cached.txt\":\"file 644 \\\"cached\\\"\",\"chart.DRAWIO.PNG\":\"file 644 hex:89504e47\",\"doc.docx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"emoji.txt\":\"file 644 \\\"😀a😀b\\\"\",\"flow.drawio\":\"file 644 \\\"<mxfile/>\\\"\",\"folder.txt\":\"dir 755\",\"huge.bin.txt\":\"file 644 \\\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\\"\",\"huge.md\":\"file 644 \\\"yyyyyyyyyyyyyyyyyyyy\\\"\",\"long.txt\":\"file 644 \\\"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\\\"\",\"map.drawio.svg\":\"file 644 \\\"<svg/>\\\"\",\"noext\":\"file 644 \\\"no extension\\\"\",\"notes.MD\":\"file 644 \\\"# notes\\\"\",\"old.dio\":\"file 644 \\\"<mxfile/>\\\"\",\"outline.xmind\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"pic.JPG\":\"file 644 hex:ffd8ffe0\",\"pic.png\":\"file 644 hex:89504e470d0a1a0a\",\"pic.webp\":\"file 644 \\\"RIFF\\\"\",\"plain.drawio.png\":\"file 644 hex:89504e47\",\"script.ts\":\"file 644 \\\"export {}\\\"\",\"sheet.xlsx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"trailing.\":\"file 644 \\\"trailing dot\\\"\",\"weird.__proto__\":\"file 644 \\\"x\\\"\",\"weird.constructor\":\"file 644 \\\"x\\\"\"}}"
+        "fn": "chatgpt/responses.streamChatGpt",
+        "index": 82,
+        "typescript": "{\"answer\":\"{\\\"value\\\":{\\\"outcome\\\":{\\\"threw\\\":{\\\"name\\\":\\\"Error\\\",\\\"message\\\":\\\"ChatGPT stopped while sending tool arguments: the stream ended early\\\"}},\\\"record\\\":{\\\"hostId\\\":\\\"urn:uuid:11111111-2222-4333-8444-555555555555\\\",\\\"clientId\\\":\\\"cid\\\",\\\"callbackPath\\\":\\\"/auth/callback\\\",\\\"subject\\\":\\\"acct-1\\\",\\\"session\\\":{\\\"accessToken\\\":\\\"at-1\\\",\\\"refreshToken\\\":\\\"rt-1\\\",\\\"expiresAt\\\":1700003600000,\\\"scopes\\\":[\\\"chatgpt.tokens.use.direct\\\",\\\"openid\\\"]}}},\\\"logs\\\":[[\\\"timer\\\",1,60000],[\\\"fetch\\\",0,\\\"node\\\",\\\"https://api.openai.com/v1/responses\\\",\\\"POST\\\",[[\\\"Authorization\\\",\\\"Bearer at-1\\\"],[\\\"Content-Type\\\",\\\"application/json\\\"],[\\\"Accept\\\",\\\"text/event-stream\\\"],[\\\"User-Agent\\\",\\\"SeuOffice\\\"]],\\\"{\\\\\\\"model\\\\\\\":\\\\\\\"gpt-5\\\\\\\",\\\\\\\"input\\\\\\\":[{\\\\\\\"role\\\\\\\":\\\\\\\"user\\\\\\\",\\\\\\\"content\\\\\\\":[{\\\\\\\"type\\\\\\\":\\\\\\\"input_text\\\\\\\",\\\\\\\"text\\\\\\\":\\\\\\\"<instructions>\\\\\\\\nYou are helpful.\\\\\\\\n\\\\\\\\nYou are the language-model backend embedded in an office application. You cannot read or change files, run commands or browse the web yourself, and you must not try. The caller supplies the conversation so far and the list of application tools. Give your whole answer by calling StructuredOutput exactly once; write nothing outside that call. Write the \\\\\\\\\\\\\\\"text\\\\\\\\\\\\\\\" property first and put the user-visible prose there. Put the application tool calls you request in \\\\\\\\\\\\\\\"toolCalls\\\\\\\\\\\\\\\"; each \\\\\\\\\\\\\\\"inputJson\\\\\\\\\\\\\\\" must be a JSON-encoded object matching that tool's inputSchema; use only the listed tool names; return an empty \\\\\\\\\\\\\\\"toolCalls\\\\\\\\\\\\\\\" array when no tool is needed. Never write a tool call into \\\\\\\\\\\\\\\"text\\\\\\\\\\\\\\\": a call written as text is never run. The application tools are not tools of yours: do not call them directly, request them in \\\\\\\\\\\\\\\"toolCalls\\\\\\\\\\\\\\\" of the StructuredOutput call. The application runs the requested tools itself and reports their results in the next turn.\\\\\\\\n</instructions>\\\\\\\"},{\\\\\\\"type\\\\\\\":\\\\\\\"input_text\\\\\\\",\\\\\\\"text\\\\\\\":\\\\\\\"<app_tools>\\\\\\\\n[{\\\\\\\\\\\\\\\"name\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"read_doc\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"description\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"Read\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"inputSchema\\\\\\\\\\\\\\\":{\\\\\\\\\\\\\\\"type\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"object\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"properties\\\\\\\\\\\\\\\":{}}},{\\\\\\\\\\\\\\\"name\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"write_doc\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"description\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"Write\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"inputSchema\\\\\\\\\\\\\\\":{\\\\\\\\\\\\\\\"type\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"object\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"properties\\\\\\\\\\\\\\\":{}}}]\\\\\\\\n</app_tools>\\\\\\\\n<response_schema>\\\\\\\\n{\\\\\\\\\\\\\\\"type\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"object\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"properties\\\\\\\\\\\\\\\":{\\\\\\\\\\\\\\\"text\\\\\\\\\\\\\\\":{\\\\\\\\\\\\\\\"type\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"string\\\\\\\\\\\\\\\"},\\\\\\\\\\\\\\\"toolCalls\\\\\\\\\\\\\\\":{\\\\\\\\\\\\\\\"type\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"array\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"items\\\\\\\\\\\\\\\":{\\\\\\\\\\\\\\\"type\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"object\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"properties\\\\\\\\\\\\\\\":{\\\\\\\\\\\\\\\"name\\\\\\\\\\\\\\\":{\\\\\\\\\\\\\\\"type\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"string\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"enum\\\\\\\\\\\\\\\":[\\\\\\\\\\\\\\\"read_doc\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"write_doc\\\\\\\\\\\\\\\"]},\\\\\\\\\\\\\\\"inputJson\\\\\\\\\\\\\\\":{\\\\\\\\\\\\\\\"type\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"string\\\\\\\\\\\\\\\"}},\\\\\\\\\\\\\\\"required\\\\\\\\\\\\\\\":[\\\\\\\\\\\\\\\"name\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"inputJson\\\\\\\\\\\\\\\"],\\\\\\\\\\\\\\\"additionalProperties\\\\\\\\\\\\\\\":false}}},\\\\\\\\\\\\\\\"required\\\\\\\\\\\\\\\":[\\\\\\\\\\\\\\\"text\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"toolCalls\\\\\\\\\\\\\\\"],\\\\\\\\\\\\\\\"additionalProperties\\\\\\\\\\\\\\\":false}\\\\\\\\n</response_schema>\\\\\\\\nThe content blocks after this one are the conversation so far, in order: one JSON object per event, and the images attached to a user event right after it.\\\\\\\\nAnswer the conversation with one StructuredOutput call whose input matches response_schema, \\\\\\\\\\\\\\\"text\\\\\\\\\\\\\\\" first, and nothing outside it.\\\\\\\\nKeep this one-turn response within roughly 1000 output tokens.\\\\\\\"},{\\\\\\\"type\\\\\\\":\\\\\\\"input_text\\\\\\\",\\\\\\\"text\\\\\\\":\\\\\\\"{\\\\\\\\\\\\\\\"role\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"user\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"text\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"Hello\\\\\\\\\\\\\\\"}\\\\\\\"}]}],\\\\\\\"store\\\\\\\":false,\\\\\\\"stream\\\\\\\":true}\\\",\\\"manual\\\"],[\\\"clear\\\",1],[\\\"timer\\\",2,180000],[\\\"clear\\\",2],[\\\"timer\\\",3,180000],[\\\"delta\\\",\\\"cut at tools\\\"],[\\\"clear\\\",3]]}\",\"files\":{}}",
+        "expectedRust": "{\"answer\":\"{\\\"value\\\":{\\\"outcome\\\":{\\\"threw\\\":{\\\"name\\\":\\\"Error\\\",\\\"message\\\":\\\"ChatGPT stopped while sending tool arguments: the stream ended\\\"}},\\\"record\\\":{\\\"hostId\\\":\\\"urn:uuid:11111111-2222-4333-8444-555555555555\\\",\\\"clientId\\\":\\\"cid\\\",\\\"callbackPath\\\":\\\"/auth/callback\\\",\\\"subject\\\":\\\"acct-1\\\",\\\"session\\\":{\\\"accessToken\\\":\\\"at-1\\\",\\\"refreshToken\\\":\\\"rt-1\\\",\\\"expiresAt\\\":1700003600000,\\\"scopes\\\":[\\\"chatgpt.tokens.use.direct\\\",\\\"openid\\\"]}}},\\\"logs\\\":[[\\\"timer\\\",1,60000],[\\\"fetch\\\",0,\\\"node\\\",\\\"https://api.openai.com/v1/responses\\\",\\\"POST\\\",[[\\\"Authorization\\\",\\\"Bearer at-1\\\"],[\\\"Content-Type\\\",\\\"application/json\\\"],[\\\"Accept\\\",\\\"text/event-stream\\\"],[\\\"User-Agent\\\",\\\"SeuOffice\\\"]],\\\"{\\\\\\\"model\\\\\\\":\\\\\\\"gpt-5\\\\\\\",\\\\\\\"input\\\\\\\":[{\\\\\\\"role\\\\\\\":\\\\\\\"user\\\\\\\",\\\\\\\"content\\\\\\\":[{\\\\\\\"type\\\\\\\":\\\\\\\"input_text\\\\\\\",\\\\\\\"text\\\\\\\":\\\\\\\"<instructions>\\\\\\\\nYou are helpful.\\\\\\\\n\\\\\\\\nYou are the language-model backend embedded in an office application. You cannot read or change files, run commands or browse the web yourself, and you must not try. The caller supplies the conversation so far and the list of application tools. Give your whole answer by calling StructuredOutput exactly once; write nothing outside that call. Write the \\\\\\\\\\\\\\\"text\\\\\\\\\\\\\\\" property first and put the user-visible prose there. Put the application tool calls you request in \\\\\\\\\\\\\\\"toolCalls\\\\\\\\\\\\\\\"; each \\\\\\\\\\\\\\\"inputJson\\\\\\\\\\\\\\\" must be a JSON-encoded object matching that tool's inputSchema; use only the listed tool names; return an empty \\\\\\\\\\\\\\\"toolCalls\\\\\\\\\\\\\\\" array when no tool is needed. Never write a tool call into \\\\\\\\\\\\\\\"text\\\\\\\\\\\\\\\": a call written as text is never run. The application tools are not tools of yours: do not call them directly, request them in \\\\\\\\\\\\\\\"toolCalls\\\\\\\\\\\\\\\" of the StructuredOutput call. The application runs the requested tools itself and reports their results in the next turn.\\\\\\\\n</instructions>\\\\\\\"},{\\\\\\\"type\\\\\\\":\\\\\\\"input_text\\\\\\\",\\\\\\\"text\\\\\\\":\\\\\\\"<app_tools>\\\\\\\\n[{\\\\\\\\\\\\\\\"name\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"read_doc\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"description\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"Read\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"inputSchema\\\\\\\\\\\\\\\":{\\\\\\\\\\\\\\\"type\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"object\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"properties\\\\\\\\\\\\\\\":{}}},{\\\\\\\\\\\\\\\"name\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"write_doc\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"description\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"Write\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"inputSchema\\\\\\\\\\\\\\\":{\\\\\\\\\\\\\\\"type\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"object\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"properties\\\\\\\\\\\\\\\":{}}}]\\\\\\\\n</app_tools>\\\\\\\\n<response_schema>\\\\\\\\n{\\\\\\\\\\\\\\\"type\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"object\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"properties\\\\\\\\\\\\\\\":{\\\\\\\\\\\\\\\"text\\\\\\\\\\\\\\\":{\\\\\\\\\\\\\\\"type\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"string\\\\\\\\\\\\\\\"},\\\\\\\\\\\\\\\"toolCalls\\\\\\\\\\\\\\\":{\\\\\\\\\\\\\\\"type\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"array\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"items\\\\\\\\\\\\\\\":{\\\\\\\\\\\\\\\"type\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"object\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"properties\\\\\\\\\\\\\\\":{\\\\\\\\\\\\\\\"name\\\\\\\\\\\\\\\":{\\\\\\\\\\\\\\\"type\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"string\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"enum\\\\\\\\\\\\\\\":[\\\\\\\\\\\\\\\"read_doc\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"write_doc\\\\\\\\\\\\\\\"]},\\\\\\\\\\\\\\\"inputJson\\\\\\\\\\\\\\\":{\\\\\\\\\\\\\\\"type\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"string\\\\\\\\\\\\\\\"}},\\\\\\\\\\\\\\\"required\\\\\\\\\\\\\\\":[\\\\\\\\\\\\\\\"name\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"inputJson\\\\\\\\\\\\\\\"],\\\\\\\\\\\\\\\"additionalProperties\\\\\\\\\\\\\\\":false}}},\\\\\\\\\\\\\\\"required\\\\\\\\\\\\\\\":[\\\\\\\\\\\\\\\"text\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"toolCalls\\\\\\\\\\\\\\\"],\\\\\\\\\\\\\\\"additionalProperties\\\\\\\\\\\\\\\":false}\\\\\\\\n</response_schema>\\\\\\\\nThe content blocks after this one are the conversation so far, in order: one JSON object per event, and the images attached to a user event right after it.\\\\\\\\nAnswer the conversation with one StructuredOutput call whose input matches response_schema, \\\\\\\\\\\\\\\"text\\\\\\\\\\\\\\\" first, and nothing outside it.\\\\\\\\nKeep this one-turn response within roughly 1000 output tokens.\\\\\\\"},{\\\\\\\"type\\\\\\\":\\\\\\\"input_text\\\\\\\",\\\\\\\"text\\\\\\\":\\\\\\\"{\\\\\\\\\\\\\\\"role\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"user\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"text\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"Hello\\\\\\\\\\\\\\\"}\\\\\\\"}]}],\\\\\\\"store\\\\\\\":false,\\\\\\\"stream\\\\\\\":true}\\\",\\\"manual\\\"],[\\\"clear\\\",1],[\\\"timer\\\",2,180000],[\\\"clear\\\",2],[\\\"timer\\\",3,180000],[\\\"delta\\\",\\\"cut at tools\\\"],[\\\"clear\\\",3]]}\",\"files\":{}}"
       },
+      "ledgerRequirements": [],
       "baselineExpected": [
         {
-          "group": "b5-agent",
-          "name": "ai-provider/subscription/contract.offSubscriptionStatus",
-          "checks": 3,
+          "group": "b5-provider",
+          "name": "chatgpt/oauth.chatGptRedirectUri",
+          "checks": 6,
           "single": false
         },
         {
-          "group": "b5-agent",
-          "name": "mindmap/ai-attachments.readAttachmentPage",
-          "checks": 22,
+          "group": "b5-provider",
+          "name": "chatgpt/oauth.chatGptAuthorizeUrl",
+          "checks": 4,
           "single": false
         },
         {
-          "group": "b5-agent",
-          "name": "mindmap/ai-attachments.registerMindmapAiIpc",
-          "checks": 8,
-          "single": false
-        }
-      ],
-      "ledgerRequirements": [
-        {
-          "id": "mindmap-attachment-page-cuts-a-surrogate-pair-3",
-          "fn": "mindmap/ai-attachments.readAttachmentPage",
-          "case": 3,
-          "typescript": {
-            "answer": "{\"value\":[{\"ok\":true,\"name\":\"emoji.txt\",\"totalChars\":6,\"offset\":1,\"text\":\"\\ude00a\\ud83d\"}],\"logs\":[[\"diagramPictureExtOf\",\"$DIR/emoji.txt\"],[\"assertFileSaved\",\"$DIR/emoji.txt\"],[\"parseFileToText\",\"$DIR/emoji.txt\"]]}",
-            "files": {
-              "a.txt": "file 644 \"hello world\"",
-              "archive.zip": "file 644 \"zip\"",
-              "book.epub": "file 644 \"PK\\u0003\\u0004\"",
-              "cached.txt": "file 644 \"cached\"",
-              "chart.DRAWIO.PNG": "file 644 hex:89504e47",
-              "doc.docx": "file 644 \"PK\\u0003\\u0004\"",
-              "emoji.txt": "file 644 \"😀a😀b\"",
-              "flow.drawio": "file 644 \"<mxfile/>\"",
-              "folder.txt": "dir 755",
-              "huge.bin.txt": "file 644 \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
-              "huge.md": "file 644 \"yyyyyyyyyyyyyyyyyyyy\"",
-              "long.txt": "file 644 \"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\"",
-              "map.drawio.svg": "file 644 \"<svg/>\"",
-              "noext": "file 644 \"no extension\"",
-              "notes.MD": "file 644 \"# notes\"",
-              "old.dio": "file 644 \"<mxfile/>\"",
-              "outline.xmind": "file 644 \"PK\\u0003\\u0004\"",
-              "pic.JPG": "file 644 hex:ffd8ffe0",
-              "pic.png": "file 644 hex:89504e470d0a1a0a",
-              "pic.webp": "file 644 \"RIFF\"",
-              "plain.drawio.png": "file 644 hex:89504e47",
-              "script.ts": "file 644 \"export {}\"",
-              "sheet.xlsx": "file 644 \"PK\\u0003\\u0004\"",
-              "trailing.": "file 644 \"trailing dot\"",
-              "weird.__proto__": "file 644 \"x\"",
-              "weird.constructor": "file 644 \"x\""
-            }
-          },
-          "rust": {
-            "answer": "{\"value\":[{\"ok\":true,\"name\":\"emoji.txt\",\"totalChars\":6,\"offset\":1,\"text\":\"�a�\"}],\"logs\":[[\"diagramPictureExtOf\",\"$DIR/emoji.txt\"],[\"assertFileSaved\",\"$DIR/emoji.txt\"],[\"parseFileToText\",\"$DIR/emoji.txt\"]]}",
-            "files": {
-              "a.txt": "file 644 \"hello world\"",
-              "archive.zip": "file 644 \"zip\"",
-              "book.epub": "file 644 \"PK\\u0003\\u0004\"",
-              "cached.txt": "file 644 \"cached\"",
-              "chart.DRAWIO.PNG": "file 644 hex:89504e47",
-              "doc.docx": "file 644 \"PK\\u0003\\u0004\"",
-              "emoji.txt": "file 644 \"😀a😀b\"",
-              "flow.drawio": "file 644 \"<mxfile/>\"",
-              "folder.txt": "dir 755",
-              "huge.bin.txt": "file 644 \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
-              "huge.md": "file 644 \"yyyyyyyyyyyyyyyyyyyy\"",
-              "long.txt": "file 644 \"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\"",
-              "map.drawio.svg": "file 644 \"<svg/>\"",
-              "noext": "file 644 \"no extension\"",
-              "notes.MD": "file 644 \"# notes\"",
-              "old.dio": "file 644 \"<mxfile/>\"",
-              "outline.xmind": "file 644 \"PK\\u0003\\u0004\"",
-              "pic.JPG": "file 644 hex:ffd8ffe0",
-              "pic.png": "file 644 hex:89504e470d0a1a0a",
-              "pic.webp": "file 644 \"RIFF\"",
-              "plain.drawio.png": "file 644 hex:89504e47",
-              "script.ts": "file 644 \"export {}\"",
-              "sheet.xlsx": "file 644 \"PK\\u0003\\u0004\"",
-              "trailing.": "file 644 \"trailing dot\"",
-              "weird.__proto__": "file 644 \"x\"",
-              "weird.constructor": "file 644 \"x\""
-            }
-          },
-          "reason": "readAttachmentPage cuts the parsed text with String.slice at UTF-16 offsets (offset 1, length 4 of an emoji, `a`, an emoji, `b`), so each cut that falls inside a surrogate pair leaves a lone surrogate. A Rust String cannot hold one; the Rust answer holds U+FFFD there, which is what the TypeScript string becomes once it is sent as UTF-8 (the answer goes to the model as JSON text). The input is valid Unicode; only the slice makes it lone. Final."
-        }
-      ]
-    },
-    {
-      "id": "b5-agent-apps-548",
-      "catalog": "tools/main-diff/faults/b5-agent-apps.json",
-      "catalogLength": 615,
-      "catalogSha256": "6f46fc9a5deda734b7b65c61f97b63944d519d399e7f129aa08985161f9b1db3",
-      "index": 548,
-      "originalMutationSha256": "4eeef7af1c71719b432755d175370d539c5e435fb89d85567bd985a041284ffd",
-      "mutationSha256": "4eeef7af1c71719b432755d175370d539c5e435fb89d85567bd985a041284ffd",
-      "fault": {
-        "name": "mindmap attachments: the page text is cut at the size",
-        "file": "main-core/src/mindmap/ai_attachments.rs",
-        "find": "text(slice_utf16(&page_text, start, Some(start + size))),",
-        "replace": "text(slice_utf16(&page_text, start, None)),",
-        "fn": [
-          "mindmap/ai-attachments.readAttachmentPage",
-          "mindmap/ai-attachments.registerMindmapAiIpc"
-        ]
-      },
-      "control": {
-        "name": "off-status: state is not off",
-        "file": "main-core/src/packages/ai_provider/subscription_contract.rs",
-        "find": "(\"state\", text(\"off\")),",
-        "replace": "(\"state\", text(\"ready\")),",
-        "fn": ["ai-provider/subscription/contract.offSubscriptionStatus"]
-      },
-      "controlSha256": "ddc6c2a87e0282b2bef4ea99478297cbfbcf223e4b62f139bd13ce103f3572ff",
-      "caseRequirement": {
-        "fn": "mindmap/ai-attachments.readAttachmentPage",
-        "index": 0,
-        "note": "a page, the end, past the end",
-        "typescript": "{\"answer\":\"{\\\"value\\\":[{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":5,\\\"text\\\":\\\"fghijabcde\\\"},{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":95,\\\"text\\\":\\\"fghij\\\"},{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":500,\\\"text\\\":\\\"\\\"}],\\\"logs\\\":[[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"],[\\\"parseFileToText\\\",\\\"$DIR/long.txt\\\"],[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"],[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"]]}\",\"files\":{\"a.txt\":\"file 644 \\\"hello world\\\"\",\"archive.zip\":\"file 644 \\\"zip\\\"\",\"book.epub\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"cached.txt\":\"file 644 \\\"cached\\\"\",\"chart.DRAWIO.PNG\":\"file 644 hex:89504e47\",\"doc.docx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"emoji.txt\":\"file 644 \\\"😀a😀b\\\"\",\"flow.drawio\":\"file 644 \\\"<mxfile/>\\\"\",\"folder.txt\":\"dir 755\",\"huge.bin.txt\":\"file 644 \\\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\\"\",\"huge.md\":\"file 644 \\\"yyyyyyyyyyyyyyyyyyyy\\\"\",\"long.txt\":\"file 644 \\\"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\\\"\",\"map.drawio.svg\":\"file 644 \\\"<svg/>\\\"\",\"noext\":\"file 644 \\\"no extension\\\"\",\"notes.MD\":\"file 644 \\\"# notes\\\"\",\"old.dio\":\"file 644 \\\"<mxfile/>\\\"\",\"outline.xmind\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"pic.JPG\":\"file 644 hex:ffd8ffe0\",\"pic.png\":\"file 644 hex:89504e470d0a1a0a\",\"pic.webp\":\"file 644 \\\"RIFF\\\"\",\"plain.drawio.png\":\"file 644 hex:89504e47\",\"script.ts\":\"file 644 \\\"export {}\\\"\",\"sheet.xlsx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"trailing.\":\"file 644 \\\"trailing dot\\\"\",\"weird.__proto__\":\"file 644 \\\"x\\\"\",\"weird.constructor\":\"file 644 \\\"x\\\"\"}}",
-        "expectedRust": "{\"answer\":\"{\\\"value\\\":[{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":5,\\\"text\\\":\\\"fghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\\\"},{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":95,\\\"text\\\":\\\"fghij\\\"},{\\\"ok\\\":true,\\\"name\\\":\\\"long.txt\\\",\\\"totalChars\\\":100,\\\"offset\\\":500,\\\"text\\\":\\\"\\\"}],\\\"logs\\\":[[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"],[\\\"parseFileToText\\\",\\\"$DIR/long.txt\\\"],[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"],[\\\"diagramPictureExtOf\\\",\\\"$DIR/long.txt\\\"],[\\\"assertFileSaved\\\",\\\"$DIR/long.txt\\\"]]}\",\"files\":{\"a.txt\":\"file 644 \\\"hello world\\\"\",\"archive.zip\":\"file 644 \\\"zip\\\"\",\"book.epub\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"cached.txt\":\"file 644 \\\"cached\\\"\",\"chart.DRAWIO.PNG\":\"file 644 hex:89504e47\",\"doc.docx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"emoji.txt\":\"file 644 \\\"😀a😀b\\\"\",\"flow.drawio\":\"file 644 \\\"<mxfile/>\\\"\",\"folder.txt\":\"dir 755\",\"huge.bin.txt\":\"file 644 \\\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\\"\",\"huge.md\":\"file 644 \\\"yyyyyyyyyyyyyyyyyyyy\\\"\",\"long.txt\":\"file 644 \\\"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\\\"\",\"map.drawio.svg\":\"file 644 \\\"<svg/>\\\"\",\"noext\":\"file 644 \\\"no extension\\\"\",\"notes.MD\":\"file 644 \\\"# notes\\\"\",\"old.dio\":\"file 644 \\\"<mxfile/>\\\"\",\"outline.xmind\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"pic.JPG\":\"file 644 hex:ffd8ffe0\",\"pic.png\":\"file 644 hex:89504e470d0a1a0a\",\"pic.webp\":\"file 644 \\\"RIFF\\\"\",\"plain.drawio.png\":\"file 644 hex:89504e47\",\"script.ts\":\"file 644 \\\"export {}\\\"\",\"sheet.xlsx\":\"file 644 \\\"PK\\\\u0003\\\\u0004\\\"\",\"trailing.\":\"file 644 \\\"trailing dot\\\"\",\"weird.__proto__\":\"file 644 \\\"x\\\"\",\"weird.constructor\":\"file 644 \\\"x\\\"\"}}"
-      },
-      "baselineExpected": [
-        {
-          "group": "b5-agent",
-          "name": "ai-provider/subscription/contract.offSubscriptionStatus",
-          "checks": 3,
+          "group": "b5-provider",
+          "name": "chatgpt/oauth.exchangeChatGptCode",
+          "checks": 30,
           "single": false
         },
         {
-          "group": "b5-agent",
-          "name": "mindmap/ai-attachments.readAttachmentPage",
-          "checks": 22,
+          "group": "b5-provider",
+          "name": "chatgpt/responses.streamChatGpt",
+          "checks": 83,
           "single": false
-        },
-        {
-          "group": "b5-agent",
-          "name": "mindmap/ai-attachments.registerMindmapAiIpc",
-          "checks": 8,
-          "single": false
-        }
-      ],
-      "ledgerRequirements": [
-        {
-          "id": "mindmap-attachment-page-cuts-a-surrogate-pair-3",
-          "fn": "mindmap/ai-attachments.readAttachmentPage",
-          "case": 3,
-          "typescript": {
-            "answer": "{\"value\":[{\"ok\":true,\"name\":\"emoji.txt\",\"totalChars\":6,\"offset\":1,\"text\":\"\\ude00a\\ud83d\"}],\"logs\":[[\"diagramPictureExtOf\",\"$DIR/emoji.txt\"],[\"assertFileSaved\",\"$DIR/emoji.txt\"],[\"parseFileToText\",\"$DIR/emoji.txt\"]]}",
-            "files": {
-              "a.txt": "file 644 \"hello world\"",
-              "archive.zip": "file 644 \"zip\"",
-              "book.epub": "file 644 \"PK\\u0003\\u0004\"",
-              "cached.txt": "file 644 \"cached\"",
-              "chart.DRAWIO.PNG": "file 644 hex:89504e47",
-              "doc.docx": "file 644 \"PK\\u0003\\u0004\"",
-              "emoji.txt": "file 644 \"😀a😀b\"",
-              "flow.drawio": "file 644 \"<mxfile/>\"",
-              "folder.txt": "dir 755",
-              "huge.bin.txt": "file 644 \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
-              "huge.md": "file 644 \"yyyyyyyyyyyyyyyyyyyy\"",
-              "long.txt": "file 644 \"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\"",
-              "map.drawio.svg": "file 644 \"<svg/>\"",
-              "noext": "file 644 \"no extension\"",
-              "notes.MD": "file 644 \"# notes\"",
-              "old.dio": "file 644 \"<mxfile/>\"",
-              "outline.xmind": "file 644 \"PK\\u0003\\u0004\"",
-              "pic.JPG": "file 644 hex:ffd8ffe0",
-              "pic.png": "file 644 hex:89504e470d0a1a0a",
-              "pic.webp": "file 644 \"RIFF\"",
-              "plain.drawio.png": "file 644 hex:89504e47",
-              "script.ts": "file 644 \"export {}\"",
-              "sheet.xlsx": "file 644 \"PK\\u0003\\u0004\"",
-              "trailing.": "file 644 \"trailing dot\"",
-              "weird.__proto__": "file 644 \"x\"",
-              "weird.constructor": "file 644 \"x\""
-            }
-          },
-          "rust": {
-            "answer": "{\"value\":[{\"ok\":true,\"name\":\"emoji.txt\",\"totalChars\":6,\"offset\":1,\"text\":\"�a�\"}],\"logs\":[[\"diagramPictureExtOf\",\"$DIR/emoji.txt\"],[\"assertFileSaved\",\"$DIR/emoji.txt\"],[\"parseFileToText\",\"$DIR/emoji.txt\"]]}",
-            "files": {
-              "a.txt": "file 644 \"hello world\"",
-              "archive.zip": "file 644 \"zip\"",
-              "book.epub": "file 644 \"PK\\u0003\\u0004\"",
-              "cached.txt": "file 644 \"cached\"",
-              "chart.DRAWIO.PNG": "file 644 hex:89504e47",
-              "doc.docx": "file 644 \"PK\\u0003\\u0004\"",
-              "emoji.txt": "file 644 \"😀a😀b\"",
-              "flow.drawio": "file 644 \"<mxfile/>\"",
-              "folder.txt": "dir 755",
-              "huge.bin.txt": "file 644 \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
-              "huge.md": "file 644 \"yyyyyyyyyyyyyyyyyyyy\"",
-              "long.txt": "file 644 \"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\"",
-              "map.drawio.svg": "file 644 \"<svg/>\"",
-              "noext": "file 644 \"no extension\"",
-              "notes.MD": "file 644 \"# notes\"",
-              "old.dio": "file 644 \"<mxfile/>\"",
-              "outline.xmind": "file 644 \"PK\\u0003\\u0004\"",
-              "pic.JPG": "file 644 hex:ffd8ffe0",
-              "pic.png": "file 644 hex:89504e470d0a1a0a",
-              "pic.webp": "file 644 \"RIFF\"",
-              "plain.drawio.png": "file 644 hex:89504e47",
-              "script.ts": "file 644 \"export {}\"",
-              "sheet.xlsx": "file 644 \"PK\\u0003\\u0004\"",
-              "trailing.": "file 644 \"trailing dot\"",
-              "weird.__proto__": "file 644 \"x\"",
-              "weird.constructor": "file 644 \"x\""
-            }
-          },
-          "reason": "readAttachmentPage cuts the parsed text with String.slice at UTF-16 offsets (offset 1, length 4 of an emoji, `a`, an emoji, `b`), so each cut that falls inside a surrogate pair leaves a lone surrogate. A Rust String cannot hold one; the Rust answer holds U+FFFD there, which is what the TypeScript string becomes once it is sent as UTF-8 (the answer goes to the model as JSON text). The input is valid Unicode; only the slice makes it lone. Final."
         }
       ]
     }
   ],
   "sourceLineage": {
     "paths": [
+      {
+        "path": "docs/seuoffice/core-fault-followups.md",
+        "parentSha256": "121c3b74ad9935419a290da68e359edbe27bd3e2fff5baa52935fb5af3248eb7",
+        "productSha256": "0d538c92ed26a062ceb4215e7331126a5e59e42ed1f628b5a21dd8956239b6cc"
+      },
       {
         "path": "tools/main-diff/apps545-followup.md",
         "parentSha256": null,
@@ -1151,11 +171,16 @@
         "productSha256": "cffddc2fb01df727741c98cda4b06280952f7c813149f44cac609771442181f1"
       },
       {
+        "path": "tools/main-diff/groups/b5-provider/chatgpt.ts",
+        "parentSha256": "a02cc93a3c47124645099edeced8cb2efbffd82926eb5a5b782253d01c375ab6",
+        "productSha256": "8337aabeacaa41a8b1db4e973d30b6ebdfc64f935ca2a46373a8a4784ec02472"
+      },
+      {
         "path": "tools/main-diff/mutation-613-lineage.json",
         "parentSha256": null,
         "productSha256": "ca1fc0f3c077d8f7c94b93ab7a2657d7480fe94ad2888763af5ff0588ae62c4a"
       }
     ]
   },
-  "scope": "ledger-consumer-suite-only-not-full-recovery"
+  "scope": "chatgpt-consumer-followup-only-not-full-recovery"
 }

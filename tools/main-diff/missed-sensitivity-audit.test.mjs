@@ -353,6 +353,99 @@ test('suite preserves singleton rejection and proves complete independent consum
   }
 })
 
+function chatgptUnit() {
+  const f = syntheticUnit()
+  f.manifest.scope = 'chatgpt-consumer-followup-only-not-full-recovery'
+  const requirement = f.manifest.cases[0].caseRequirement
+  delete requirement.note
+  requirement.expectedRust = wire('mutant')
+  f.plan = makePlan(f.manifest, 'b'.repeat(40))
+  f.target = f.plan.cases[0]
+  Object.assign(f.baseline.identity, {
+    manifestSha256: f.plan.manifestSha256,
+    planSha256: hash(f.plan),
+  })
+  delete f.evidence.report.differences[0].note
+  refresh(f)
+  return f
+}
+
+test('ChatGPT consumer requires a complete independent typed difference without ledger or note', () => {
+  assert.equal(audit(chatgptUnit()).scope, 'chatgpt-consumer-target-only')
+  for (const mutate of [
+    (f) => {
+      delete f.manifest.cases[0].caseRequirement.expectedRust
+    },
+    (f) => {
+      f.manifest.cases[0].caseRequirement.expectedRust = 'invalid'
+    },
+    (f) => {
+      f.manifest.cases[0].caseRequirement.expectedRust = wire('expected')
+    },
+    (f) => {
+      f.manifest.cases[0].caseRequirement.note = 'unexpected'
+    },
+    (f) => {
+      f.manifest.cases[0].ledgerRequirements = [{}]
+    },
+  ]) {
+    const f = chatgptUnit()
+    mutate(f)
+    assert.throws(() => validateManifest(f.manifest))
+  }
+  for (const mutate of [
+    (f) => {
+      f.evidence.report.differences[0].rust = wire('wrong')
+    },
+    (f) => {
+      const w = JSON.parse(f.evidence.report.differences[0].rust)
+      w.files.extra = 'unexpected'
+      f.evidence.report.differences[0].rust = JSON.stringify(w)
+    },
+    (f) => {
+      f.evidence.report.differences[0].typescript = wire('wrong')
+    },
+    (f) => {
+      f.evidence.report.differences[0].note = 'unexpected'
+    },
+    (f) => {
+      f.evidence.rows[1].detail += ' | STALE ledger entry fixed: it no longer reproduces'
+    },
+    (f) => {
+      f.evidence.rows[1].detail += ' | DIFF other case 1'
+    },
+    (f) => {
+      f.evidence.report.differences = []
+      f.evidence.report.report.target.equal++
+    },
+    (f) => {
+      f.evidence.sourceAfter['crates/target.rs'] = h('0')
+    },
+    (f) => {
+      f.baseline.ledger = [{}]
+      f.baseline.ledgerSha256 = hash(f.baseline.ledger)
+    },
+  ]) {
+    const f = chatgptUnit()
+    mutate(f)
+    refresh(f)
+    assert.throws(() => audit(f))
+  }
+  for (const scope of [
+    'five-miss-followup-only-not-full-recovery',
+    'ledger-consumer-followup-only-not-full-recovery',
+    'ledger-consumer-suite-only-not-full-recovery',
+  ]) {
+    const f = scope.startsWith('five-')
+      ? syntheticUnit()
+      : scope.startsWith('ledger-consumer-suite')
+        ? suiteUnit()
+        : consumerUnit()
+    delete f.manifest.cases[0].caseRequirement.note
+    assert.throws(() => validateManifest(f.manifest))
+  }
+})
+
 test('synthetic unit: bounded receipt requires control and appended typed case', () => {
   const f = syntheticUnit()
   assert.equal(validateManifest(f.manifest), true)
