@@ -385,6 +385,21 @@ const oauthGroup: Group = {
         }),
         { state: 's23', clientId: 'mine' },
       ),
+      c(
+        w([], {
+          calls: [true],
+          requestBatches: [
+            {
+              afterCall: 0,
+              requests: [
+                { url: '/auth/callback?state=$state&code=first&client_id=cid' },
+                { url: '/auth/callback?state=$state&code=second&client_id=cid' },
+              ],
+            },
+          ],
+        }),
+        { state: 'same-turn' },
+      ),
     ],
   },
   'chatgpt/oauth.exchangeChatGptCode': {
@@ -480,6 +495,15 @@ const oauthGroup: Group = {
       c(w([{ reject: { message: 'offline' } }]), refreshOpts()),
       c(w([{ hang: true }]), refreshOpts()),
       c(w([textRes('busy', 503), tokenOk()]), refreshOpts()),
+      c(
+        w([
+          jsonRes({ error: 'invalid_grant' }, 429, [
+            ['content-type', 'application/json'],
+            ['retry-after', '21'],
+          ]),
+        ]),
+        refreshOpts(),
+      ),
     ],
   },
   'chatgpt/oauth.revokeChatGptSession': {
@@ -1864,6 +1888,42 @@ function streamCases(): Case[] {
       {},
       { record: fresh(), now: NOW },
     ),
+    streamCase(
+      stream([
+        ...turn('x').slice(0, -1),
+        {
+          type: 'response.incomplete',
+          response: { incomplete_details: { reason: 'max_output_tokens' } },
+        },
+      ]),
+      {},
+      { record: fresh(), now: NOW },
+    ),
+    streamCase(
+      stream([
+        {
+          type: 'response.failed',
+          response: { error: { code: 'subscription_sharing_usage_limit_exceeded' } },
+        },
+      ]),
+      {},
+      { record: fresh(), now: NOW },
+    ),
+    streamCase(
+      stream([{ type: 'response.failed', response: { error: { message: 'boom' } } }]),
+      {},
+      { record: fresh(), now: NOW },
+    ),
+    streamCase(
+      stream([delta('{"text":"a","toolCalls":5}'), completed()]),
+      {},
+      { record: fresh(), now: NOW },
+    ),
+    streamCase(
+      stream(turn('ok')),
+      { config: { apiKey: '', model: 'bad model!' } },
+      { record: fresh(), now: NOW },
+    ),
   ]
 }
 
@@ -1917,6 +1977,11 @@ function chatCases(): Case[] {
     streamCase(bridgeWorld([jsonRes({ error: 'invalid_grant' }, 400)]), q('x'), {
       record: signedIn({ expiresAt: STALE }),
     }),
+    streamCase(
+      plain([delta('The answer.'), completed()]),
+      { ...q('Question?'), system: 'Custom system' },
+      { record: fresh(), now: NOW },
+    ),
   ]
 }
 

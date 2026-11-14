@@ -832,6 +832,16 @@ const linkCases = (): Case[] => [
     { bin: { dir: true }, 'old/cli/seuoffice': '' },
     'a relative link to a foreign launcher is read against its own folder: occupied',
   ),
+  linkCase(
+    {
+      links: [
+        [`${BIN}/seuoffice`, '$DIR/old/cli/seuoffice'],
+        ['$DIR/old/cli/seuoffice.cjs', '$DIR/missing-bundle'],
+      ],
+    },
+    { bin: { dir: true }, 'old/cli/seuoffice': '' },
+    'a dangling bundle beside a foreign launcher does not make it ours',
+  ),
 ]
 
 const ourCases: Case[] = [

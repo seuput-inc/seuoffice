@@ -236,6 +236,7 @@ enum Later {
     Close(Id, Option<String>),
     /// a scripted loopback request (its spec, the `state` of the call it follows)
     Request(Value, String),
+    RequestBatch(Vec<Value>, String),
 }
 
 struct Body {
@@ -637,6 +638,16 @@ impl WorldRun {
                         }
                     }
                 }
+                if let Some(batches) = self.spec.get("requestBatches").and_then(Value::as_array) {
+                    for batch in batches {
+                        if batch.get("afterCall").and_then(Value::as_u64) == Some(k)
+                            && let Some(requests) = batch.get("requests").and_then(Value::as_array)
+                        {
+                            self.later
+                                .push_back(Later::RequestBatch(requests.clone(), state.clone()));
+                        }
+                    }
+                }
                 let event = match answer
                     .as_ref()
                     .and_then(|a| a.get("reject"))
@@ -771,45 +782,54 @@ impl WorldRun {
                 Some(c) => close(c, child, signal),
                 None => Vec::new(),
             },
-            Later::Request(spec, state) => {
-                let Some((server, _)) = self.servers.iter().rev().find(|s| s.1).copied() else {
-                    return Vec::new();
-                };
-                let n = self.requests;
-                self.requests += 1;
-                let headers = spec
-                    .get("headers")
-                    .and_then(Value::as_array)
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|p| {
-                                Some((
-                                    p.get(0)?.as_str()?.to_lowercase(),
-                                    p.get(1)?.as_str()?.to_owned(),
-                                ))
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                vec![Event::Request {
-                    server,
-                    request: HttpRequest {
-                        id: n,
-                        method: spec
-                            .get("method")
-                            .and_then(Value::as_str)
-                            .unwrap_or("GET")
-                            .to_owned(),
-                        url: spec
-                            .get("url")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .replace("$state", &state),
-                        headers,
-                    },
-                }]
+            Later::RequestBatch(requests, state) => {
+                let mut events = Vec::with_capacity(requests.len());
+                for request in &requests {
+                    if let Some(event) = self.request_event(request, &state) {
+                        events.push(event);
+                    }
+                }
+                events
             }
+            Later::Request(spec, state) => self.request_event(&spec, &state).into_iter().collect(),
         }
+    }
+
+    fn request_event(&mut self, spec: &Value, state: &str) -> Option<Event> {
+        let (server, _) = self.servers.iter().rev().find(|s| s.1).copied()?;
+        let n = self.requests;
+        self.requests += 1;
+        let headers = spec
+            .get("headers")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|p| {
+                        Some((
+                            p.get(0)?.as_str()?.to_lowercase(),
+                            p.get(1)?.as_str()?.to_owned(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Some(Event::Request {
+            server,
+            request: HttpRequest {
+                id: n,
+                method: spec
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or("GET")
+                    .to_owned(),
+                url: spec
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .replace("$state", state),
+                headers,
+            },
+        })
     }
 }
 

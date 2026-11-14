@@ -355,6 +355,21 @@ pub(super) fn call(name: &str, args: &[Value], cx: &mut Context) -> Option<Answe
         }
         "sources.isInsideCodexHome" => super::str_arg(args, 0).and_then(|path| {
             let home = super::str_arg(args, 1)?;
+            for pair in list_of(arg(args, 2).and_then(|fixture| fixture.get("$links"))) {
+                let pair = list_of(Some(pair));
+                let link = super::str_arg(pair, 0)?;
+                let target = super::str_arg(pair, 1)?;
+                if let Some(parent) = std::path::Path::new(link).parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|error| CallError::plain(error.to_string()))?;
+                }
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(target, link)
+                    .map_err(|error| CallError::plain(error.to_string()))?;
+                #[cfg(windows)]
+                std::os::windows::fs::symlink_dir(target, link)
+                    .map_err(|error| CallError::plain(error.to_string()))?;
+            }
             Ok(Some(Value::Bool(is_inside_codex_home(path, home))))
         }),
         // ---- states.ts, skill-editors.ts ----

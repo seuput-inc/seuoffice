@@ -414,6 +414,7 @@ group['user-skills-service.importPreviewOf'] = {
     [IMPORT({ origin: { kind: 'text' }, candidates: [] }), 't3'],
     [IMPORT({ origin: { kind: 'zip', file: '/a.zip' } }), 't4'],
     [IMPORT({ origin: { kind: 'skill-file', file: '/a/SKILL.md' } }), 't5'],
+    [IMPORT({ candidates: [CANDIDATE({ emptyBody: true })] }), 'tok'],
   ),
 }
 
@@ -1588,6 +1589,93 @@ group['user-skills-service.createUserSkillsService'] = {
         { m: 'list' },
       ],
       withLibrary(),
+    ),
+    scenario({}, [{ m: 'read', a: ['project:x'] }], {
+      [`${APP}/bad/SKILL.md`]: md('---', 'name: bad', 'description: "\\U00110000"', '---', 'b'),
+    }),
+    scenario(
+      {
+        lib: {
+          install: {
+            installed: [
+              {
+                key: 'mine',
+                name: 'mine-renamed',
+                dir: '$DIR/home/.seuoffice/skills/mine',
+                replaced: true,
+              },
+            ],
+            skipped: [],
+          },
+          write: [
+            {
+              path: '$DIR/home/.seuoffice/skills/mine/SKILL.md',
+              text: skillMd('mine-renamed'),
+            },
+          ],
+        },
+      },
+      [
+        { m: 'setState', a: ['app:mine', { invoke: 'manual' }] },
+        {
+          m: 'install',
+          a: [
+            IMPORT({ candidates: [CANDIDATE({ key: 'mine', name: 'mine' })] }),
+            { selected: ['mine'], onCollision: { mine: 'replace' } },
+          ],
+        },
+        { m: 'list' },
+      ],
+      withLibrary(),
+    ),
+    scenario(
+      {},
+      [
+        {
+          m: 'saveFromCard',
+          a: [
+            {
+              targetId: 'user:ext',
+              name: 'mine',
+              title: 'Copy',
+              description: 'D',
+              body: 'B',
+              invoke: 'auto',
+              overwrite: false,
+            },
+          ],
+        },
+      ],
+      withLibrary(),
+    ),
+    scenario(
+      { builtin: true },
+      [
+        {
+          m: 'saveFromCard',
+          a: [
+            {
+              targetId: 'user:ext',
+              name: 'clash',
+              title: 'Copy',
+              description: 'D',
+              body: 'B',
+              invoke: 'auto',
+            },
+          ],
+        },
+      ],
+      {
+        [`${HOME}/.claude/skills/ext/SKILL.md`]: skillMd('ext'),
+        ...Object.fromEntries(
+          Array.from({ length: 5_000 }, (_, index) => [
+            `${HOME}/.claude/skills/ext/z${String(index).padStart(4, '0')}.txt`,
+            '',
+          ]),
+        ),
+        [`${BUILTIN}/builtin-skills.json`]: JSON.stringify([{ name: 'clash', agentOnly: false }]),
+        [`${BUILTIN}/clash/SKILL.md`]: skillMd('clash'),
+      },
     ),
   ],
 }

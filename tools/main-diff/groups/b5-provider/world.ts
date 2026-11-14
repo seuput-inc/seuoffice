@@ -129,6 +129,7 @@ export interface World {
   /** the pids whose `process.kill` throws EPERM (a process of another user) */
   killDenied?: number[]
   requests?: RequestSpec[]
+  requestBatches?: { afterCall: number; requests: Omit<RequestSpec, 'afterCall'>[] }[]
   listenError?: { message: string; code?: string }
 }
 
@@ -379,6 +380,13 @@ export class WorldRun {
       const k = this.callCount++
       for (const spec of this.world.requests ?? [])
         if (spec.afterCall === k) this.emitLater(() => this.deliver(spec, args))
+      for (const batch of this.world.requestBatches ?? []) {
+        if (batch.afterCall === k) {
+          this.emitLater(() => {
+            for (const spec of batch.requests) this.deliver({ ...spec, afterCall: k }, args)
+          })
+        }
+      }
       // the script reaches Rust as JSON: an `undefined` entry is `null` there,
       // so it is `null` here too; `{ undefined: true }` (or no entry) is `undefined`
       const given = this.world.calls?.[k]

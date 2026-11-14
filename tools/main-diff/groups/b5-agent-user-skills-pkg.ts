@@ -5,13 +5,14 @@
  * `ai-provider/user-skills/<ts-file>.<export>`.
  *
  * - Folders are the case's `files`; every path in an answer has the case folder
- *   written `$DIR`. The platform has no symbolic links in a case (a spec file
- *   cannot make one), so the link rules of `listSkillFolderFiles` are not
- *   compared.
+ *   written `$DIR`. `isInsideCodexHome` can additionally create directory links
+ *   from the last argument's `$links`; folder-listing link rules are not compared.
  * - `suggestUserSkillName` gets its random part as the last argument.
  * - A skill is the JSON of `UserSkill`; `resolveUserSkillStates` reads the
  *   settings as the second argument.
  */
+import { mkdirSync, symlinkSync } from 'node:fs'
+import { dirname } from 'node:path'
 import { skillEditorScope } from '../../../packages/agent-core/src/skill-editors.ts'
 import {
   BUILTIN_SKILLS_MANIFEST,
@@ -218,6 +219,7 @@ add('frontmatter.parseSkillMd', {
     [md('---', 'name: meta', 'metadata: scalar', 'description: d', '---', 'b')],
     [md('---', 'name: __proto__', '__proto__: x', 'description: d', '---', 'b')],
     [md('---', 'name: empty-value', 'description:', 'metadata:', '---', 'b')],
+    [md('---', 'name: s', 'description: d', "allowed-tools: [can't]", '---', 'b')],
   ),
 })
 
@@ -288,6 +290,7 @@ add('frontmatter.renderSkillMd', {
       { name: 'a', description: 'd', body: 'x' },
       md('---', 'name: a', 'description: "\\U00110000"', '---', 'x'),
     ],
+    [{ name: 'a', description: 'padded ', body: 'x' }],
   ),
 })
 
@@ -507,6 +510,10 @@ add('folder.readUserSkillFolder', {
       args: ['$DIR/s', { source: 'app' }],
       files: { 's/SKILL.md': md('---', 'name: s', 'description: "\\U00110000"', '---', 'b') },
     },
+    {
+      args: ['$DIR/s', { source: 'app', agentOnly: ['s'] }],
+      files: { 's/SKILL.md': SKILL },
+    },
   ],
 })
 
@@ -575,13 +582,28 @@ add('sources.codexHomeDir', {
 })
 
 add('sources.isInsideCodexHome', {
-  ts: async (args) => isInsideCodexHome(args[0] as string, args[1] as string),
+  ts: async (args) => {
+    const fixture = args[2] as { $links: [string, string][] } | undefined
+    for (const [link, target] of fixture?.$links ?? []) {
+      mkdirSync(dirname(link), { recursive: true })
+      symlinkSync(target, link, 'dir')
+    }
+    return isInsideCodexHome(args[0] as string, args[1] as string)
+  },
   cases: [
     { args: ['$DIR/home/.codex/skills', '$DIR/home'], files: { 'home/.codex/auth.json': '{}' } },
     { args: ['$DIR/home/.codex', '$DIR/home'], files: { 'home/.codex/auth.json': '{}' } },
     { args: ['$DIR/home/.claude/skills', '$DIR/home'], files: { 'home/.claude/x': 'x' } },
     { args: ['$DIR/home/.codexx', '$DIR/home'], files: { 'home/.codexx/x': 'x' } },
     { args: ['$DIR/home/.agents/../.codex/s', '$DIR/home'] },
+    {
+      args: [
+        '$DIR/home/.codex/missing',
+        '$DIR/home',
+        { $links: [['$DIR/home/.codex', '$DIR/store']] },
+      ],
+      files: { 'store/auth.json': '{}' },
+    },
   ],
 })
 
@@ -702,6 +724,15 @@ add('states.pickEnabledUserSkills', {
       },
     ],
     [[]],
+    [
+      SKILLS,
+      {
+        states: {
+          'plugin:zz:beta': { enabled: true },
+          'plugin:aa:beta': { enabled: true },
+        },
+      },
+    ],
   ),
 })
 
