@@ -133,17 +133,19 @@ def main():
     glibc_env = dict(env, CFLAGS='-g -O2 -U_FORTIFY_SOURCE')
     run([glibc / 'configure', '--prefix=/usr', '--disable-werror', '--without-selinux', '--with-headers=' + str(include), '--enable-kernel=' + a.kernel_min], build, glibc_env)
     run([make, '-j2'], build, glibc_env); run([make, 'install', 'DESTDIR=' + str(sysroot)], build, glibc_env)
+    crt_dir = one(sysroot.glob('**/crt1.o'), 'built glibc startup directory').parent
+    compiler_root = ['--sysroot=' + str(sysroot), '-B' + str(crt_dir) + '/']
     for name in ('crt1.o', 'Scrt1.o', 'crti.o', 'crtn.o', 'crtbegin.o', 'crtend.o'):
-        crt = Path(run([cc, '--sysroot=' + str(sysroot), '-print-file-name=' + name], capture=True).strip()).resolve(strict=True)
+        crt = Path(run([cc, *compiler_root, '-print-file-name=' + name], capture=True).strip()).resolve(strict=True)
         if name in ('crt1.o', 'Scrt1.o', 'crti.o', 'crtn.o') and sysroot.resolve() not in crt.parents:
             raise ValueError(f'compiler did not resolve {name} from built sysroot')
         tools[name] = 'sha256:' + sha(crt)
-    libgcc = Path(run([cc, '--sysroot=' + str(sysroot), '-print-libgcc-file-name'], capture=True).strip()).resolve(strict=True)
+    libgcc = Path(run([cc, *compiler_root, '-print-libgcc-file-name'], capture=True).strip()).resolve(strict=True)
     tools['libgcc'] = libgcc.name + '|sha256:' + sha(libgcc)
     # The compiler executable and the just-built glibc sysroot are inputs to all
     # NSS/SQLite objects. Packaging verifies the resulting ELF closure below.
-    syscc = cc + ' --sysroot=' + str(sysroot)
-    buildenv = dict(env, CC=syscc, CXX=cxx + ' --sysroot=' + str(sysroot))
+    syscc = cc + ' ' + ' '.join(compiler_root)
+    buildenv = dict(env, CC=syscc, CXX=cxx + ' ' + ' '.join(compiler_root))
     sqlite = unpack(a.sqlite, work / 'sqlite-src'); sqlite_prefix = work / 'sqlite-prefix'
     run([sqlite / 'configure', '--prefix=' + str(sqlite_prefix), '--disable-static', '--enable-shared'], sqlite, buildenv)
     run([make, '-j2'], sqlite, buildenv); run([make, 'install'], sqlite, buildenv)
@@ -260,7 +262,7 @@ def main():
     source['contract_sha256'] = sha(HERE / 'contract.json')
     abi = {'target': a.arch + '-unknown-linux-gnu', 'kernel_min': a.kernel_min,
            'glibc': '2.39-5-ge0910f1d3278f05439fb434ee528fc9be1b6bd5e',
-           'flags': 'BUILD_OPT=1 USE_64=1 USE_STATIC_LIBS=1 GLIBC_CFLAGS=-g,-O2,-U_FORTIFY_SOURCE GLIBC_CONFIG=--without-selinux'}
+           'flags': 'BUILD_OPT=1 USE_64=1 USE_STATIC_LIBS=1 GLIBC_CFLAGS=-g,-O2,-U_FORTIFY_SOURCE GLIBC_CONFIG=--without-selinux SYSROOT_CRT_PREFIX=1'}
     (out / 'licenses').mkdir()
     notice_specs = [
         ('nss', nss_a / 'COPYING', 'nss.txt', PINS['nss'][2] + '#nss/COPYING'),
