@@ -1170,6 +1170,12 @@ const localCases: Case[] = [
     ],
     'each call settles as the method it began as: ensure, list, call, stop',
   ),
+  lc(
+    OK,
+    options(),
+    [step('ensure', { label: 'boot' }), init(), step('stop', { label: 's' })],
+    'stop stays pending until the child closes or the exit wait expires',
+  ),
 ]
 
 // ---------------------------------------------------------------------------
@@ -2106,6 +2112,12 @@ const kitCases: Case[] = [
       'pc/script.bat': PLAIN,
       'pc/prog.exe': PLAIN,
     },
+  ),
+  kc(
+    kitOptions(),
+    [rs(`${'../'.repeat(process.cwd().split('/').length)}$DIR/abs/tool`)],
+    'an existing file reached by a relative path is not a full program path',
+    { 'abs/tool': EXE },
   ),
 ]
 

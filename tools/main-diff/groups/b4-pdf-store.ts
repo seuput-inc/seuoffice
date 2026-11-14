@@ -1940,6 +1940,19 @@ export const group: Group = {
         merge(oldDocument(), { [`${docDir(D2)}/ai-read`]: 'a file where the new folder goes' }),
         'the new document cannot be written',
       ),
+      c(
+        [O, MIGRATE],
+        merge(metaFile(D1, 'en', 5), {
+          [`${trDir(D2, 'en')}/translation.json`]: j({
+            format: 1,
+            lang: 'en',
+            provider: 'destination',
+            model: 'destination-model',
+            savedAt: 5,
+          }),
+        }),
+        'equal provider timestamps preserve destination metadata without moving blocks',
+      ),
     ],
   },
   'pdf-structure/store.deleteDocument': {
@@ -2041,6 +2054,17 @@ export const group: Group = {
         ['$DIR/entry.json', { a: 1 }],
         { 'entry.json': { dir: true } },
         'a folder where the entry goes',
+      ),
+      c(
+        ['$DIR/entry.json', { new: true }],
+        {
+          'entry.json': '{"old":true}',
+          '.entry.json.lock': {
+            text: '{"pid":2147483648,"id":"x"}',
+            mtimeMs: 4_102_444_800_000,
+          },
+        },
+        'a dead pid with future lock mtime cannot age out during acquisition',
       ),
     ],
   },
@@ -2408,6 +2432,11 @@ export const group: Group = {
       c([insights('en', ['fpA'], { pageFingerprints: 'x' })], undefined, 'pageFingerprints'),
       c([insights('en', ['fpA'], { model: 3 })], undefined, 'model'),
       c([null], undefined, 'null'),
+      c(
+        [insights('en', ['fpA'], { summary3: ['a', 'b', 'c', 'd'] })],
+        undefined,
+        'four string summaries are rejected rather than truncated',
+      ),
     ],
   },
   'pdf-structure/note-links.asNoteLinks': {
