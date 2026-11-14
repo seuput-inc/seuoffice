@@ -381,6 +381,14 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
                     // one arm per batch crate that exports `probe_trigger`,
                     // matched on the name's prefix; the batch adds its own
                     match name.split_once('/').map(|(batch, _)| batch) {
+                        Some("d1") => shell_ipc_d1::probe_trigger(
+                            &name,
+                            ViewId(view),
+                            &args,
+                            &services,
+                            provided,
+                            then,
+                        ),
                         Some("a") => shell_ipc_a::probe_trigger(
                             &name,
                             ViewId(view),
