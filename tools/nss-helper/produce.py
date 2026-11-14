@@ -52,6 +52,30 @@ def run(args, cwd=None, env=None, capture=False):
     return subprocess.run([str(a) for a in args], cwd=cwd, env=env, check=True,
                           text=True, stdout=subprocess.PIPE if capture else None).stdout
 
+def build_nss(make, source, env, *arguments):
+    try:
+        run([make, 'nss_build_all', '-j2', *arguments], source, env)
+    except subprocess.CalledProcessError:
+        # rules.mk consumes nested get_objs stdout as make prerequisite syntax.
+        # Preserve that exact producer output without changing the failed build.
+        directories = {source / 'lib' / 'nss'}
+        for line in (source / 'lib' / 'nss' / 'config.mk').read_text().splitlines():
+            relative = line.strip().removesuffix('\\').strip()
+            if relative.startswith('../') and ' ' not in relative:
+                directories.add((source / 'lib' / 'nss' / relative).resolve())
+        for directory in sorted(directories):
+            try:
+                result = subprocess.run(
+                    [make, '--no-print-directory', '-C', str(directory), 'get_objs'],
+                    env=env, text=True, capture_output=True, timeout=30,
+                )
+                record = {'directory': str(directory), 'status': result.returncode,
+                          'stdout': result.stdout, 'stderr': result.stderr}
+            except (OSError, subprocess.TimeoutExpired) as error:
+                record = {'directory': str(directory), 'diagnosticError': str(error)}
+            print('NSS_OBJECT_QUERY ' + json.dumps(record), flush=True)
+        raise
+
 def unpack(archive, out):
     out.mkdir()
     with tarfile.open(archive, 'r:gz') as tf:
@@ -157,11 +181,11 @@ def main():
     nenv = dict(buildenv, SQLITE_INCLUDE_DIR=str(sqlite_prefix / 'include'),
                 SQLITE_LIB_DIR=str(sqlite_prefix / 'lib'), SQLITE_LIB_NAME='sqlite3',
                 LD_LIBRARY_PATH=str(sqlite_prefix / 'lib'))
-    run([make, 'nss_build_all', '-j2'], nss_a, nenv)
+    build_nss(make, nss_a, nenv)
     sign = one((pristine / 'dist').glob('*/bin/shlibsign'), 'pristine shlibsign')
     checktool = one((pristine / 'dist').glob('*/bin/chktest'), 'pristine chktest')
     run(['python3', HERE / 'patch_nss.py', nss_b], env=env)
-    run([make, 'nss_build_all', '-j2', 'SHLIBSIGN_SRCDIR='], nss_b, nenv)
+    build_nss(make, nss_b, nenv, 'SHLIBSIGN_SRCDIR=')
     program = nss_b / 'cmd' / 'seu-nss-export'; program.mkdir()
     shutil.copyfile(HELPER, program / 'nss_export_helper.c')
     (program / 'manifest.mn').write_text('CORE_DEPTH = ../..\nMODULE = nss\nCSRCS = nss_export_helper.c\nREQUIRES = dbm seccmd\nPROGRAM = seu-nss-export\n')
