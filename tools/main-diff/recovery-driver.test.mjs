@@ -1,8 +1,19 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { identity, validateLineage, verifyRun, auditBatch } from './recovery-driver.mjs'
+import {
+  identity,
+  validateLineage,
+  verifyRun,
+  auditBatch,
+  readTerminalReport,
+} from './recovery-driver.mjs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { auditJob } from './recovery-audit.mjs'
 import { hash } from './recovery-plan.mjs'
+import { spawnSync } from 'node:child_process'
+import yaml from 'js-yaml'
 
 const productSha = '375b08bd0e1f7e8432e6514468cc9d25be01b100'
 const env = {
@@ -13,6 +24,62 @@ const env = {
   GITHUB_RUN_ATTEMPT: '1',
   RECOVERY_BATCH: '0',
 }
+
+test('terminal reports use MAIN_DIFF_OUT and never fall back to a stale default file', (t) => {
+  const scratch = process.env.OMPDESK_SCRATCH_DIR ?? tmpdir()
+  const root = mkdtempSync(join(scratch, 'terminal-report-path-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const product = join(root, 'product')
+  const tool = join(product, 'tools/main-diff')
+  const custom = join(root, 'comparison')
+  mkdirSync(join(tool, 'out'), { recursive: true })
+  mkdirSync(custom)
+  writeFileSync(join(tool, 'out/report.json'), 'stale default report')
+  writeFileSync(join(custom, 'report.json'), 'actual terminal report')
+  assert.equal(
+    readTerminalReport(product, { MAIN_DIFF_OUT: custom }).toString(),
+    'actual terminal report',
+  )
+  rmSync(join(custom, 'report.json'))
+  assert.throws(() => readTerminalReport(product, { MAIN_DIFF_OUT: custom }), { code: 'ENOENT' })
+  mkdirSync(join(tool, 'relative'))
+  writeFileSync(join(tool, 'relative/report.json'), 'relative terminal report')
+  assert.equal(
+    readTerminalReport(product, { MAIN_DIFF_OUT: 'relative' }).toString(),
+    'relative terminal report',
+  )
+  assert.equal(readTerminalReport(product, {}).toString(), 'stale default report')
+})
+
+test('raw preservation copies the configured report while fault rows stay in their fixed directory', (t) => {
+  const root = mkdtempSync(join(process.env.OMPDESK_SCRATCH_DIR ?? tmpdir(), 'terminal raw paths-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const fixed = join(root, 'product/tools/main-diff/out')
+  const custom = join(root, 'chosen comparison')
+  const out = join(root, 'job out')
+  mkdirSync(fixed, { recursive: true })
+  mkdirSync(custom)
+  writeFileSync(join(fixed, 'faults.json'), 'fixed fault rows')
+  writeFileSync(join(fixed, 'report.json'), 'stale default report')
+  writeFileSync(join(custom, 'report.json'), 'actual terminal report')
+  const workflow = yaml.load(
+    readFileSync(new URL('../../.github/workflows/seuoffice-rust.yml', import.meta.url), 'utf8'),
+  )
+  const step = workflow.jobs['main-recovery-job'].steps.find(
+    (step) => step.name === 'Preserve raw fault rows even after a producer failure',
+  )
+  const run = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', step.run], {
+    cwd: root,
+    env: { ...process.env, JOB_OUT: out, MAIN_DIFF_OUT: custom },
+    encoding: 'utf8',
+  })
+  assert.equal(run.status, 0, run.stderr)
+  assert.equal(readFileSync(join(out, 'faults.json'), 'utf8'), 'fixed fault rows')
+  assert.equal(
+    readFileSync(join(out, 'terminal-report-raw.json'), 'utf8'),
+    'actual terminal report',
+  )
+})
 
 test('recovery rejects mixed modes, wrong products and an unaudited second batch', () => {
   assert.deepEqual(identity(env, { productSha }), {

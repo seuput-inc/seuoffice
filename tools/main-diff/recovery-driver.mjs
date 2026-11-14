@@ -28,6 +28,10 @@ const output = (env, key, value) => {
   if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, `${key}=${value}\n`)
 }
 
+export function readTerminalReport(product) {
+  return readFileSync(join(product, 'tools/main-diff/out/report.json'))
+}
+
 export function identity(env, manifest) {
   assert.equal(env.MODE, 'main-fault-recovery')
   assert.match(env.DEFINITION_SHA ?? '', /^[0-9a-f]{40}$/)
@@ -628,7 +632,7 @@ async function main(command, env) {
     const marker = job.typedEvidenceRequirements[0]
     const group = baseline.functions[0].group
     assert.ok(baseline.functions.every((entry) => entry.group === group))
-    const rawReport = readFileSync(join(product, 'tools/main-diff/out/report.json'))
+    const rawReport = readTerminalReport(product, env)
     writeFileSync(join(out, 'terminal-report.json'), rawReport, { flag: 'wx' })
     const derived = evidence.runnerModel.entries.find((entry) => entry.index === marker.index)
     evidence.baseline = baseline
