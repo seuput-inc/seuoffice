@@ -467,6 +467,14 @@ const pageCases = (): Case[] => {
       },
       note: 'the size cap applies to plain text, not to office files',
     },
+    {
+      args: [
+        [{ read: [`${D}whole.txt`, 0, 128] }],
+        { parse: parse('whole.txt', TEXT('\uAC00\u{1F600}')) },
+      ],
+      files: { 'whole.txt': '\uAC00\u{1F600}' },
+      note: 'a whole non-ASCII page counts UTF-16 units, not UTF-8 bytes',
+    },
   ]
 }
 
