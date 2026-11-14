@@ -28,8 +28,10 @@ const output = (env, key, value) => {
   if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, `${key}=${value}\n`)
 }
 
-export function readTerminalReport(product) {
-  return readFileSync(join(product, 'tools/main-diff/out/report.json'))
+export function readTerminalReport(product, env) {
+  return readFileSync(
+    resolve(product, 'tools/main-diff', env.MAIN_DIFF_OUT ?? 'out', 'report.json'),
+  )
 }
 
 export function identity(env, manifest) {

@@ -49,6 +49,8 @@ manifest의 `typedEvidenceRequirements`는 원본 index·변이 객체 해시·s
 
 원본 `faults.mjs`가 성공 종료한 뒤 남은 `report.json`을 마지막 index·변이 해시·단일 group·전체 선택 함수·기대 사례 수에 결속한다. 각 알려진 STALE ID는 장부 case3의 실제 typed DIFF를 가져야 한다. mutant TS는 고정 장부 TS와 같고 mutant Rust는 고정 장부 Rust와 다르며 실제 TS/Rust도 달라야 한다. 이와 별개로 모든 장부 사례 밖의 독립 unlisted DIFF가 최소 하나 있어야 한다. 다른 함수·범위 밖 사례·중복·누락·fatal·FLOOR·unknown STALE·onlySTALE는 거부한다.
 
+비교 report는 제품 `main.ts`가 `MAIN_DIFF_OUT` 아래에 쓴다. 이 정의에서는 `$JOB_OUT/comparison/report.json`을 소비하고 실패 raw 보존도 같은 경로를 쓴다. 이 환경 변수가 상대 경로면 원본 compare의 작업 폴더인 제품 `tools/main-diff`를 기준으로 읽는다. 지정한 폴더의 report가 없을 때 기본 폴더의 오래된 파일로 대체하지 않는다. 반면 `faults.json`은 원본 runner가 고정한 제품 `tools/main-diff/out`에서 계속 읽는다.
+
 `report.json`은 모든 사례의 양쪽 출력이 아니라 차이와 집계만 보존한다. 따라서 장부 case가 differences에 없으면 새 tuple이나 TS 동등을 추정하지 않고 추가 증거 부족으로 거부한다. typed 감사가 입증한 정확 ID의 해당 행만 STALE 진단을 소비할 수 있다. 장부 삭제·ID별 verdict 우회·포괄 STALE 허용은 없다.
 
 소스 적용 근거는 정확 원본 runner 바이트 해시, committed 소스 해시, find1회와 파생 replace 해시, 정상 producer 종료와 `finally` 복구 및 실제 복구 해시의 결속이다. 실제 build 직전 소스를 직접 관측했다고 주장하지 않는다. 전역 preload·child-process hook·폴링은 쓰지 않고 제품 runner·catalog·profile은 바꾸지 않는다.

@@ -20,3 +20,4 @@ ts	phase	decision	why	evidence	result
 2026-11-14T13:44:00Z	regression	typed계획의prefix-only인수회귀를 먼저실패시킨뒤 원본report필수로 고친다	CAUGHT접두사만으로 새로운typed증거를 대체할수없다	20261114-133245-5466; 20261114-134134-0c95	red후35개회귀통과, hosted감도결과로확대하지않음
 2026-11-14T13:54:00Z	throughput	미발사새recovery정의만동시합계8로높이고배치는순차로유지한다	사용자새상한을반영하되원본7594실행과품질계약은바꾸지않는다	recovery-new-definition-max8-and-cost-finish-plan; 20261114-134936-1add	단일mutationmatrix8/timeout120/341jobs=[256,85]/최대25/typed4불변
 2026-11-14T13:54:00Z	cost	실측과개수파도및과거중앙값대입을구분한다	실패job시간과미측정42catalog를새제품완료예측으로숨기지않는다	recovery8-cost-evidence.json; 12:37:43UTC고정snapshot	완료13job77758초중6취소1실패; 최장7225초취소; 8병렬32+11파도는시간보장아님
+2026-11-14T14:08:37Z	fix	terminal report는MAIN_DIFF_OUT에서읽고faults.json의고정폴더와구분한다	비기본출력경로에서오래된기본report를인수하는실제경로결함을고친다	20261114-140443-c037; 20261114-140613-ab84; 20261114-140746-d1b2	reader와실제workflow보존script각red후37회귀green, 원본runner불변
