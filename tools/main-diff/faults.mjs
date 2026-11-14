@@ -19,6 +19,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createMutationEvidence, runComparison } from './mutation-evidence.mjs'
 
 const tool = dirname(fileURLToPath(import.meta.url))
 const crates = resolve(tool, '../../crates')
@@ -29,6 +30,16 @@ const [shard, shards] = (process.env.FAULT_SHARD ?? '0/1').split('/').map(Number
 // each fault rebuilds the addon: unoptimized and incremental, unless asked otherwise
 process.env.MAIN_DIFF_PROFILE ??= 'node-faults'
 const results = []
+const evidence =
+  process.env.MAIN_DIFF_MUTATION_EVIDENCE_DIR === undefined
+    ? null
+    : createMutationEvidence({
+        directory: process.env.MAIN_DIFF_MUTATION_EVIDENCE_DIR,
+        root: resolve(tool, '../..'),
+        files,
+        shard,
+        shards,
+      })
 
 // the group of each function: a comparison runs only the groups a fault names
 const listed = spawnSync('npx', ['tsx', 'main.ts', '--list'], { cwd: tool, encoding: 'utf8' })
@@ -45,9 +56,10 @@ const groupOf = new Map(
     .map((line) => line.split('\t').reverse()),
 )
 
-function compare(fns) {
+function compare(fns, mutation) {
   let status = 0
   let out = ''
+  let position = 0
   for (const group of new Set(fns.map((f) => groupOf.get(f) ?? 'unknown'))) {
     const mine = fns.filter((f) => (groupOf.get(f) ?? 'unknown') === group)
     const args = [
@@ -59,41 +71,67 @@ function compare(fns) {
       '3',
       ...mine.flatMap((f) => ['--fn', f]),
     ]
-    const run = spawnSync('npx', args, { cwd: tool, encoding: 'utf8' })
+    const run = runComparison({
+      evidence,
+      mutation,
+      position,
+      group,
+      functions: mine,
+      command: 'npx',
+      args,
+      cwd: tool,
+    })
+    if (run === null) return null
+    position++
     status ||= run.status
     out += `${run.stdout}${run.stderr}`
   }
   return { status, out }
 }
 
-for (const file of files) {
-  const faults = JSON.parse(readFileSync(resolve(file), 'utf8'))
+catalogLoop: for (const [ordinal, file] of files.entries()) {
+  const catalogBytes = evidence ? readFileSync(resolve(file)) : null
+  const faults = JSON.parse(
+    catalogBytes ? catalogBytes.toString('utf8') : readFileSync(resolve(file), 'utf8'),
+  )
+  const catalog = evidence?.catalog(ordinal, file, catalogBytes, faults.length)
   console.log(`\n${file}`)
   for (const [i, fault] of faults.entries()) {
     if (i !== 0 && i % shards !== shard) continue
     const path = join(crates, fault.file)
     // a file that is gone (moved, merged) is a BAD entry, not the end of the shard
-    const original = existsSync(path) ? readFileSync(path, 'utf8') : ''
+    const exists = existsSync(path)
+    const original = exists ? readFileSync(path, 'utf8') : ''
     const count = original.split(fault.find).length - 1
+    const mutation = evidence?.begin(catalog, i, fault, path, original, exists, count)
     let verdict
     let detail
+    let captureFailed = false
     if (count !== 1) {
       verdict = 'BAD'
       detail = `find occurs ${count} times`
     } else {
       writeFileSync(path, original.replace(fault.find, fault.replace))
+      evidence?.applied(mutation)
       try {
         execFileSync('node', ['build.mjs'], { cwd: tool, stdio: 'pipe' })
-        const { status, out } = compare(fault.fn)
-        verdict = status === 0 ? 'MISSED' : /^DIFF /m.test(out) ? 'CAUGHT' : 'MISSED'
-        detail = out
-          .split('\n')
-          .filter(
-            (l) =>
-              l.startsWith('DIFF ') || / checks, \d+ equal/.test(l) || /FLOOR|STALE|Error/.test(l),
-          )
-          .slice(0, 4)
-          .join(' | ')
+        const comparison = compare(fault.fn, mutation)
+        if (comparison === null) {
+          captureFailed = true
+        } else {
+          const { status, out } = comparison
+          verdict = status === 0 ? 'MISSED' : /^DIFF /m.test(out) ? 'CAUGHT' : 'MISSED'
+          detail = out
+            .split('\n')
+            .filter(
+              (l) =>
+                l.startsWith('DIFF ') ||
+                / checks, \d+ equal/.test(l) ||
+                /FLOOR|STALE|Error/.test(l),
+            )
+            .slice(0, 4)
+            .join(' | ')
+        }
       } catch (err) {
         verdict = 'BUILD'
         detail = String(err.stderr ?? err)
@@ -105,6 +143,8 @@ for (const file of files) {
         writeFileSync(path, original)
       }
     }
+    if (captureFailed) break catalogLoop
+    evidence?.end(mutation, verdict, detail)
     results.push({
       faults: file,
       name: fault.name,
@@ -124,10 +164,12 @@ for (const file of files) {
 
 const out = join(tool, 'out')
 mkdirSync(out, { recursive: true })
-writeFileSync(join(out, 'faults.json'), `${JSON.stringify(results, null, 2)}\n`)
+const resultsBytes = `${JSON.stringify(results, null, 2)}\n`
+writeFileSync(join(out, 'faults.json'), resultsBytes)
 const count = (v) => results.filter((r) => r.verdict === v).length
 console.log(
   `\n${results.length} faults: ${count('CAUGHT')} caught, ${count('MISSED')} missed, ${count('BUILD')} not building, ${count('BAD')} bad`,
 )
 // rebuild the unfaulted addon, so a later step compares the code as it is
 execFileSync('node', ['build.mjs'], { cwd: tool, stdio: 'inherit' })
+if (evidence && !evidence.finish(resultsBytes)) process.exitCode = 1
