@@ -44,6 +44,7 @@ mod node_fs;
 mod node_path;
 mod settings;
 mod update;
+mod w_shell;
 
 use serde_json::{Map, Value};
 
@@ -121,6 +122,7 @@ const GROUPS: &[Group] = &[
     b3_projects::call,
     b5_mcp::call,
     b5_provider::call,
+    w_shell::call,
     b5_kb::call,
 ];
 

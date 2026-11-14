@@ -26,6 +26,7 @@ on:
         'tools/odt-diff/**',
         'tools/fileparse-diff/**',
         'tools/epub-diff/**',
+        'tools/ipc-diff/**',
         'packages/docx-engine/src/**',
         'packages/pptx-engine/src/**',
         'packages/odt-engine/src/**',
@@ -63,6 +64,10 @@ on:
         description: Run every engine's fault probes, as before a merge
         type: boolean
         default: false
+      ipc_faults:
+        description: A faults file for tools/ipc-diff/faults.mjs (the stage 3 IPC handlers), run beside the gates
+        required: false
+        default: ''
 
 concurrency:
   group: seuoffice-rust-${{ github.ref }}
@@ -277,6 +282,79 @@ jobs:
         with:
           name: main-diff-out
           path: tools/main-diff/out
+          if-no-files-found: ignore
+
+      # All six batches must cover their handlers and emitted events.
+      - name: IPC comparison
+        if: ${{ !cancelled() }}
+        timeout-minutes: 30
+        shell: bash
+        run: |
+          npm --prefix tools/ipc-diff run typecheck
+          npm --prefix tools/ipc-diff run test
+          mkdir -p tools/ipc-diff/out
+          npm --prefix tools/ipc-diff run gate -- --show 40 --require W --require U --require A --require M --require D1 --require D2 2>&1 | tee tools/ipc-diff/out/gate.txt
+
+      - name: Keep the IPC comparison
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipc-diff-out
+          path: tools/ipc-diff/out
+          if-no-files-found: ignore
+
+  # Fault injection for the stage 3 IPC handlers: each fault rebuilds
+  # ipc-probe and runs its groups, which must then differ.
+  ipc-faults:
+    needs: quick
+    if: ${{ inputs.ipc_faults }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        id: rhwp-source
+        with:
+          path: crates/.rhwp-source
+          key: rhwp-source-${{ hashFiles('vendor/rhwp-core/**', 'tools/build-rhwp-core.mjs') }}
+      - name: rhwp source
+        if: steps.rhwp-source.outputs.cache-hit != 'true'
+        run: node tools/build-rhwp-core.mjs --source-only
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Faults
+        shell: bash
+        env:
+          FAULTS: ${{ inputs.ipc_faults }}
+          FAULT_SHARD: ${{ matrix.shard }}/4
+        run: |
+          mkdir -p tools/ipc-diff/out
+          node tools/ipc-diff/faults.mjs "$FAULTS" 2>&1 | tee tools/ipc-diff/out/faults.txt
+          exit ${PIPESTATUS[0]}
+
+      - name: Keep the result
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipc-diff-faults-${{ matrix.shard }}
+          path: tools/ipc-diff/out
           if-no-files-found: ignore
 
   # Fault injection: each fault of the file through comparison (f), one at a

@@ -16,10 +16,17 @@ members = [
   "spike-one-run-save",
   "main-core",
   "main-node",
+  "shell-contract",
+  # one crate per stage 3 area batch: shell-ipc/u, a, m, w, d1, d2
+  "shell-ipc/*",
+  # the shell's IPC core without Tauri (wire form, channel table, dispatch)
+  # and the Rust side of tools/ipc-diff (stage 3, batch W)
+  "shell-core",
+  "ipc-probe",
 ]
 # vendor and .rhwp-source are third-party trees outside workspace checks;
-# spike-main-bridge is an experiment with its own lock.
-exclude = ["vendor", ".rhwp-source", "spike-main-bridge"]
+# spike-main-bridge and the CEF shell have their own workspaces and locks.
+exclude = ["vendor", ".rhwp-source", "spike-main-bridge", "shell"]
 resolver = "3"
 
 [workspace.package]
