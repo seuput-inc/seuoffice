@@ -49,6 +49,11 @@ on:
         required: false
         type: string
         default: ''
+      main_validation_product_sha:
+        description: Exact product for hosted prepush and the two complete core baseline lanes
+        required: false
+        type: string
+        default: ''
       faults:
         description: A faults file for tools/docx-diff/faults.py, run instead of the gate (on a rust-faults/* branch)
         required: false
@@ -72,8 +77,8 @@ on:
         default: false
 
 concurrency:
-  group: seuoffice-rust-${{ github.ref }}
-  cancel-in-progress: ${{ inputs.main_faults_product_sha == '' && inputs.main_faults_gate_run == '' && inputs.main_baseline_product_sha == '' }}
+  group: ${{ inputs.main_validation_product_sha && format('seuoffice-core-validation-{0}', inputs.main_validation_product_sha) || format('seuoffice-rust-{0}', github.ref) }}
+  cancel-in-progress: ${{ inputs.main_faults_product_sha == '' && inputs.main_faults_gate_run == '' && inputs.main_baseline_product_sha == '' && inputs.main_validation_product_sha == '' }}
 
 permissions:
   contents: read
@@ -81,7 +86,7 @@ permissions:
 
 jobs:
   quick:
-    if: ${{ !inputs.main_faults_product_sha && !inputs.main_faults_gate_run && !inputs.main_baseline_product_sha }}
+    if: ${{ !inputs.main_faults_product_sha && !inputs.main_faults_gate_run && !inputs.main_baseline_product_sha && !inputs.main_validation_product_sha }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     outputs:
@@ -663,7 +668,7 @@ jobs:
           if-no-files-found: ignore
 
   main-faults-only-prepare:
-    if: ${{ (inputs.main_faults_product_sha || inputs.main_faults_gate_run) && !inputs.main_baseline_product_sha }}
+    if: ${{ (inputs.main_faults_product_sha || inputs.main_faults_gate_run) && !inputs.main_baseline_product_sha && !inputs.main_validation_product_sha }}
     runs-on: ubuntu-latest
     outputs:
       catalogs: ${{ steps.plan.outputs.catalogs }}
@@ -785,7 +790,7 @@ jobs:
 
   # Explicit baseline evidence is not a green product-head gate for faults-only.
   main-baseline-only:
-    if: ${{ inputs.main_baseline_product_sha != '' }}
+    if: ${{ inputs.main_baseline_product_sha != '' || inputs.main_validation_product_sha != '' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     strategy:
@@ -801,7 +806,7 @@ jobs:
       PRODUCT_DIR: ${{ github.workspace }}/product
       DRIVER_DIR: ${{ github.workspace }}/driver
       PLAN_PATH: ${{ github.workspace }}/baseline-plan.json
-      PRODUCT_SHA: ${{ inputs.main_baseline_product_sha }}
+      PRODUCT_SHA: ${{ inputs.main_validation_product_sha || inputs.main_baseline_product_sha }}
       DEFINITION_SHA: ${{ github.sha }}
       PROFILE: ${{ matrix.profile }}
       DOCX_FAULTS: ${{ inputs.faults }}
@@ -811,19 +816,31 @@ jobs:
       GATE_RUN_ID: ${{ inputs.main_faults_gate_run }}
       ALL_FAULTS: ${{ inputs.all_faults }}
       FAULT_SHARDS: ${{ inputs.fault_shards }}
+      VALIDATION_PRODUCT_SHA: ${{ inputs.main_validation_product_sha }}
+      BASELINE_PRODUCT_SHA: ${{ inputs.main_baseline_product_sha }}
+      VALIDATION_PLAN_PATH: ${{ github.workspace }}/validation-plan.json
       SEUOFFICE_WASM: ${{ github.workspace }}/product/crates/target/wasm32-wasip1/release/office_wasm.wasm
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           path: driver
-          sparse-checkout: tools/main-diff/baseline-only.mjs
+          sparse-checkout: |
+            tools/main-diff/baseline-only.mjs
+            tools/main-diff/hosted-validation.mjs
+            tools/main-diff/hosted-validation-manifest.json
+            tools/main-diff/hosted-validation-reuse.json
+            tools/main-diff/hosted-validation-receipts.json
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      - name: Validate explicit hosted validation mode
+        if: ${{ inputs.main_validation_product_sha != '' }}
+        run: node driver/tools/main-diff/hosted-validation.mjs prepare
 
       - name: Validate explicit baseline mode
         id: plan
@@ -833,10 +850,15 @@ jobs:
         with:
           ref: ${{ steps.plan.outputs.product_sha }}
           path: product
+          fetch-depth: ${{ inputs.main_validation_product_sha && '0' || '1' }}
           persist-credentials: false
 
       - name: Verify both immutable checkouts
         run: node driver/tools/main-diff/baseline-only.mjs check
+
+      - name: Verify fixed validation source and proposal bindings
+        if: ${{ inputs.main_validation_product_sha != '' }}
+        run: node driver/tools/main-diff/hosted-validation.mjs check
 
       - name: Rust toolchain
         run: |
@@ -907,12 +929,109 @@ jobs:
       - name: Audit function and case completeness
         run: node driver/tools/main-diff/baseline-only.mjs audit
 
+      - name: Bind fixed inventory and source to the baseline result
+        if: ${{ inputs.main_validation_product_sha != '' }}
+        run: node driver/tools/main-diff/hosted-validation.mjs baseline
+
       - name: Keep baseline evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: main-baseline-only-${{ matrix.profile }}
+          name: ${{ inputs.main_validation_product_sha && format('main-validation-baseline-{0}', matrix.profile) || format('main-baseline-only-{0}', matrix.profile) }}
           path: |
             baseline-plan.json
+            validation-plan.json
             product/tools/main-diff/out
+          if-no-files-found: error
+
+  main-hosted-prepush:
+    if: ${{ inputs.main_validation_product_sha != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      SOURCE_DIR: ${{ github.workspace }}/source
+      DRIVER_DIR: ${{ github.workspace }}/driver
+      VALIDATION_PLAN_PATH: ${{ github.workspace }}/validation-plan.json
+      VALIDATION_OUT: ${{ github.workspace }}/hosted-prepush
+      VALIDATION_PRODUCT_SHA: ${{ inputs.main_validation_product_sha }}
+      BASELINE_PRODUCT_SHA: ${{ inputs.main_baseline_product_sha }}
+      DEFINITION_SHA: ${{ github.sha }}
+      PROFILE: hosted-prepush
+      DOCX_FAULTS: ${{ inputs.faults }}
+      ODT_FAULTS: ${{ inputs.odt_faults }}
+      MAIN_FAULTS: ${{ inputs.main_faults }}
+      FAULT_PRODUCT_SHA: ${{ inputs.main_faults_product_sha }}
+      GATE_RUN_ID: ${{ inputs.main_faults_gate_run }}
+      ALL_FAULTS: ${{ inputs.all_faults }}
+      FAULT_SHARDS: ${{ inputs.fault_shards }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: driver
+          sparse-checkout: |
+            tools/main-diff/baseline-only.mjs
+            tools/main-diff/hosted-validation.mjs
+            tools/main-diff/hosted-validation-manifest.json
+            tools/main-diff/hosted-validation-reuse.json
+            tools/main-diff/hosted-validation-receipts.json
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate explicit hosted validation mode
+        id: plan
+        run: node driver/tools/main-diff/hosted-validation.mjs prepare
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.plan.outputs.product_sha }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify fixed source and proposal bindings
+        run: node driver/tools/main-diff/hosted-validation.mjs check
+
+      - name: Rust toolchain for the unchanged source prepush
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy --component rust-src --target wasm32-wasip1
+          rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: source/crates
+          key: hosted-prepush-${{ inputs.main_validation_product_sha }}
+
+      - uses: actions/cache@v4
+        id: rhwp-source
+        with:
+          path: source/crates/.rhwp-source
+          key: rhwp-source-${{ hashFiles('source/vendor/rhwp-core/**', 'source/tools/build-rhwp-core.mjs') }}
+
+      - name: Product rhwp source
+        if: steps.rhwp-source.outputs.cache-hit != 'true'
+        working-directory: source
+        run: node tools/build-rhwp-core.mjs --source-only
+
+      - name: Install exact source dependencies
+        working-directory: source
+        run: npm ci
+
+      - name: Run the unchanged source prepush against the exact base
+        env:
+          CARGO_INCREMENTAL: '1'
+        run: node driver/tools/main-diff/hosted-validation.mjs prepush
+
+      - name: Keep hosted prepush evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: main-validation-hosted-prepush
+          path: |
+            validation-plan.json
+            hosted-prepush
           if-no-files-found: error
