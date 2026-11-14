@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""Run the real pinned producer and standalone production launcher on a hosted Linux runner."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tarfile
+import produce
+
+ROOT = Path(__file__).resolve().parents[2]
+SHELL = ROOT / 'crates/shell'
+HERE = Path(__file__).resolve().parent
+
+
+def run(args, *, cwd=None, env=None):
+    subprocess.run([str(arg) for arg in args], cwd=cwd, env=env, check=True)
+
+
+def digest(path):
+    h = hashlib.sha256()
+    with path.open('rb') as f:
+        for block in iter(lambda: f.read(1024 * 1024), b''):
+            h.update(block)
+    return h.hexdigest()
+
+
+def executable(name):
+    found = shutil.which(name)
+    if not found:
+        raise RuntimeError(f'required tool missing: {name}')
+    return Path(found).resolve(strict=True)
+
+
+def one(paths, label):
+    paths = list(paths)
+    if len(paths) != 1:
+        raise RuntimeError(f'expected exactly one {label}: {paths}')
+    return paths[0].resolve(strict=True)
+
+
+def main():
+    p = argparse.ArgumentParser()
+    for name in ('inputs', 'patchelf', 'work', 'output', 'results', 'fixture-setup'):
+        p.add_argument('--' + name, type=Path, required=True)
+    p.add_argument('--image-digest', required=True)
+    a = p.parse_args()
+    inputs, results = a.inputs.resolve(strict=True), a.results.resolve(strict=True)
+    pins = json.loads((HERE / 'contract.json').read_text())['sources']
+    cc = executable('gcc')
+    linker = subprocess.check_output([str(cc), '-print-prog-name=ld'], text=True).strip()
+    linker = Path(linker).resolve(strict=True) if '/' in linker else executable(linker)
+    if linker != executable('ld'):
+        raise RuntimeError('CC-selected linker does not match recorded linker')
+    tools = {'cc': cc, 'cxx': executable('g++'), 'ld': linker, 'make': executable('make'),
+             'patchelf': a.patchelf.resolve(strict=True), 'readelf': executable('readelf')}
+    cfg = {'image_digest': a.image_digest}
+    cfg.update({key: {'path': str(path), 'sha256': digest(path)} for key, path in tools.items()})
+    headers = a.work.resolve().parent / 'nss-kernel-headers'
+    if headers.exists():
+        raise RuntimeError('kernel header staging path already exists')
+    headers.mkdir()
+    for source, name in [('/usr/include/linux', 'linux'), ('/usr/include/asm-generic', 'asm-generic'),
+                         ('/usr/include/x86_64-linux-gnu/asm', 'asm')]:
+        shutil.copytree(source, headers / name)
+    cfg['kernel_headers'] = {'path': str(headers), 'sha256': produce.tree_sha(headers)}
+    config = results / 'toolchain.json'
+    config.write_text(json.dumps(cfg, indent=2) + '\n')
+    run(['python3', HERE / 'produce.py', '--nss', inputs / pins['nss']['filename'],
+         '--sqlite', inputs / pins['sqlite']['filename'], '--glibc', inputs / pins['glibc']['filename'],
+         '--toolchain', config, '--work', a.work, '--output', a.output,
+         '--arch', 'x86_64', '--kernel-min', '3.2.0'])
+    pristine_root = one((a.work / 'nss-pristine').iterdir(), 'pristine NSS source root')
+    run(['python3', HERE / 'test_patch.py', '--source', pristine_root / 'nss',
+         '--scratch', a.work.resolve().parent / 'nss-patch-regression'])
+
+    scratch = a.work.resolve().parent / 'nss-harness'
+    if scratch.exists():
+        raise RuntimeError('harness output already exists')
+    crate = scratch / 'crates/shell'
+    (crate / 'src').mkdir(parents=True)
+    (scratch / 'tools/nss-helper').mkdir(parents=True)
+    for name in ('nss_manifest.rs', 'nss_build.rs'):
+        shutil.copyfile(SHELL / name, crate / name)
+    worker = SHELL / 'src/host/d2/pdf/crypto/worker'
+    for name in ('nss_bundle.rs', 'nss_exchange.rs'):
+        shutil.copyfile(worker / name, crate / 'src' / name)
+    shutil.copyfile(SHELL / 'src/signer_child_guard.rs', crate / 'src/signer_child_guard.rs')
+    helper = crate / 'src/host/d2/pdf/crypto/nss_export_helper.c'
+    helper.parent.mkdir(parents=True)
+    shutil.copyfile(SHELL / 'src/host/d2/pdf/crypto/nss_export_helper.c', helper)
+    shutil.copyfile(HERE / 'launcher.rs', crate / 'src/main.rs')
+    for name in ('contract.json', 'patch_nss.py', 'produce.py'):
+        shutil.copyfile(HERE / name, scratch / 'tools/nss-helper' / name)
+    (crate / 'Cargo.toml').write_text('[package]\nname="nss-launcher-fixture"\nversion="0.1.0"\nedition="2024"\n[workspace]\n[dependencies]\nserde_json="=1.0.154"\nsha2="=0.10.9"\nlibc="=0.2.191"\nzeroize="=1.9.1"\n[build-dependencies]\nserde_json="=1.0.154"\nsha2="=0.10.9"\n')
+    (crate / 'build.rs').write_text('mod nss_manifest;\nmod nss_build;\nfn main() { println!("cargo:rerun-if-env-changed=NSS_BUNDLE_DIR"); let dir = std::env::var_os("NSS_BUNDLE_DIR").unwrap(); nss_build::embed_nss(std::path::Path::new(&dir)).unwrap(); }\n')
+    env = dict(os.environ, NSS_BUNDLE_DIR=str(a.output.resolve(strict=True)), CARGO_TARGET_DIR=str(scratch / 'target'))
+    run(['cargo', 'test', '--manifest-path', crate / 'Cargo.toml'], env=env)
+    rejected = scratch / 'tampered-build-bundle'
+    shutil.copytree(a.output, rejected)
+    victim = rejected / 'libnssutil3.so'
+    with victim.open('r+b') as f:
+        first = f.read(1)
+        f.seek(0)
+        f.write(bytes([first[0] ^ 1]))
+    bad_env = dict(env, NSS_BUNDLE_DIR=str(rejected))
+    bad = subprocess.run(['cargo', 'build', '--manifest-path', str(crate / 'Cargo.toml')],
+                         env=bad_env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    (results / 'tampered-build-validation.log').write_text(bad.stdout)
+    if bad.returncode == 0 or 'size or digest mismatch' not in bad.stdout:
+        raise RuntimeError('product manifest validation did not reject the tampered artifact')
+    run(['cargo', 'build', '--manifest-path', crate / 'Cargo.toml'], env=env)
+    (results / 'harness-Cargo.lock').write_bytes((crate / 'Cargo.lock').read_bytes())
+    softhsm_source = inputs / 'softhsm-2.6.1.tar.gz'
+    softhsm_digest = '61249473054bcd1811519ef9a989a880a7bdcc36d317c9c25457fc614df475f2'
+    if digest(softhsm_source) != softhsm_digest:
+        raise RuntimeError('SoftHSM fixture source digest mismatch')
+    softhsm_tree = scratch / 'softhsm-source'
+    softhsm_tree.mkdir()
+    with tarfile.open(softhsm_source, 'r:gz') as archive:
+        archive.extractall(softhsm_tree, filter='data')
+    softhsm_root = one(softhsm_tree.iterdir(), 'SoftHSM source root')
+    softhsm_prefix = scratch / 'softhsm'
+    run([softhsm_root / 'configure', '--prefix=' + str(softhsm_prefix),
+         '--disable-p11-kit', '--with-crypto-backend=openssl'], cwd=softhsm_root, env=env)
+    run(['make', '-j2'], cwd=softhsm_root, env=env)
+    run(['make', 'install'], cwd=softhsm_root, env=env)
+    module = one(softhsm_prefix.glob('lib/softhsm/libsofthsm2.so'), 'SoftHSM fixture module')
+    env.update(SOFTHSM_MODULE=str(module), SOFTHSM_MODULE_SHA256=digest(module),
+               SOFTHSM_SOURCE_SHA256=softhsm_digest, SOFTHSM_SOURCE_ARCHIVE=str(softhsm_source))
+    install = scratch / 'install/usr'
+    (install / 'bin').mkdir(parents=True)
+    (install / 'lib/SeuOffice').mkdir(parents=True)
+    shutil.copyfile(scratch / 'target/debug/nss-launcher-fixture', install / 'bin/nss-launcher')
+    (install / 'bin/nss-launcher').chmod(0o755)
+    shutil.copytree(a.output, install / 'lib/SeuOffice/nss')
+    for mode in ('--test-sigchld-ignore', '--test-sigchld-no-wait'):
+        run([install / 'bin/nss-launcher', mode], env=env)
+    pristine = pristine_root / 'dist'
+    certutil = one(pristine.glob('*/bin/certutil'), 'pristine certutil')
+    libdir = one(pristine.glob('*/lib'), 'pristine NSS library directory')
+    nspr_include = one(pristine.glob('*/include'), 'pristine NSPR include directory')
+    nss_include = (pristine / 'public/nss').resolve(strict=True)
+    env.update(NSS_CERTUTIL=str(certutil), NSS_TEST_LIBDIR=str(libdir),
+               NSS_SQLITE_LIBDIR=str((a.work / 'sqlite-prefix/lib').resolve(strict=True)),
+               NSS_CC=str(cc), NSS_TEST_INCLUDE_DIRS=f'{nss_include}:{nspr_include}')
+    tool_lib = scratch / 'fixture-libs'
+    shutil.copytree(libdir, tool_lib, symlinks=True)
+    sqlite = (a.work / 'sqlite-prefix/lib/libsqlite3.so.0').resolve(strict=True)
+    shutil.copyfile(sqlite, tool_lib / 'libsqlite3.so.0')
+    receipt = scratch / 'install/nss-proof-receipt.json'
+    run(['python3', HERE / 'hosted-proof.py', '--bundle', install / 'lib/SeuOffice/nss',
+         '--scratch', scratch / 'install', '--launcher', install / 'bin/nss-launcher',
+         '--certutil', certutil, '--openssl', executable('openssl'),
+         '--tool-lib-dir', tool_lib, '--fixture-setup', a.fixture_setup.resolve(strict=True),
+         '--receipt', receipt], env=env)
+    shutil.copyfile(receipt, results / 'nss-proof-receipt.json')
+    shutil.copyfile(a.output / 'manifest.json', results / 'manifest.json')
+
+
+if __name__ == '__main__':
+    main()
