@@ -1,10 +1,16 @@
-name: seuoffice rust - retained producer proof
+name: seuoffice rust - next core sensitivity
 
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: Explicit bounded original-21 and corrected-3 retained sensitivity mode
+        required: true
+        type: choice
+        options:
+          - next-core-retained-sensitivity
       product_sha:
-        description: Exact product with opt-in per-mutation evidence producer
+        description: Exact ed559 validation product, not a branch or a legacy gate
         required: true
         type: string
 
@@ -13,16 +19,17 @@ permissions:
   actions: read
 
 concurrency:
-  group: seuoffice-main-retained-producer-proof-${{ inputs.product_sha || github.ref }}
+  group: seuoffice-next-core-retained-sensitivity-${{ inputs.product_sha || github.ref }}
   cancel-in-progress: false
 
 env:
-  MODE: main-retained-producer-proof
+  MODE: ${{ inputs.mode }}
   PRODUCT_DIR: ${{ github.workspace }}/product
   DRIVER_DIR: ${{ github.workspace }}/driver
   PRODUCT_SHA: ${{ inputs.product_sha }}
   DEFINITION_SHA: ${{ github.sha }}
-  PLAN_PATH: ${{ github.workspace }}/retained-sensitivity-plan.json
+  PLAN_PATH: ${{ github.workspace }}/next-core-plan.json
+  PREREQUISITE_PATH: ${{ github.workspace }}/prerequisite.json
 
 jobs:
   prepare:
@@ -30,6 +37,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       product_sha: ${{ steps.identity.outputs.product_sha }}
+      matrix: ${{ steps.identity.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -39,33 +47,41 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Validate exact producer product input
+      - name: Validate the exact three-lane prerequisite and bounded request
         id: identity
-        run: node driver/tools/main-diff/retained-sensitivity-driver.mjs validate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node driver/tools/main-diff/next-core-sensitivity.mjs validate
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.identity.outputs.product_sha }}
           path: product
           fetch-depth: 0
           persist-credentials: false
-      - name: Bind product lineage and original mutation objects
-        run: node driver/tools/main-diff/retained-sensitivity-driver.mjs prepare
+      - name: Bind source lineage and original mutation objects
+        run: node driver/tools/main-diff/next-core-sensitivity.mjs prepare
       - uses: actions/upload-artifact@v4
         with:
-          name: retained-sensitivity-plan
-          path: retained-sensitivity-plan.json
+          name: next-core-plan
+          path: |
+            next-core-plan.json
+            prerequisite.json
           if-no-files-found: error
 
   sensitivity:
     needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     env:
-      JOB_OUT: ${{ github.workspace }}/job-out
-      MAIN_DIFF_MUTATION_EVIDENCE_DIR: ${{ github.workspace }}/job-out/retained
-      MAIN_DIFF_ADDON: ${{ github.workspace }}/job-out/main_node.node
+      JOB_KEY: ${{ matrix.key }}
+      JOB_OUT: ${{ github.workspace }}/job-out/${{ matrix.key }}
+      MAIN_DIFF_MUTATION_EVIDENCE_DIR: ${{ github.workspace }}/job-out/${{ matrix.key }}/retained
+      MAIN_DIFF_ADDON: ${{ github.workspace }}/job-out/${{ matrix.key }}/main_node.node
       MAIN_DIFF_PROFILE: node-faults
-      CARGO_INCREMENTAL: '1'
       SEUOFFICE_WASM: ${{ github.workspace }}/product/crates/target/wasm32-wasip1/release/office_wasm.wasm
     steps:
       - uses: actions/checkout@v4
@@ -81,10 +97,12 @@ jobs:
           fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
-          name: retained-sensitivity-plan
+          name: next-core-plan
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Verify the exact source and frozen job plan
+        run: node driver/tools/main-diff/next-core-sensitivity.mjs check
       - name: Rust toolchain
         run: |
           rustup toolchain install stable --profile minimal --target wasm32-wasip1
@@ -92,6 +110,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: product/crates
+          key: next-core-${{ inputs.product_sha }}
       - uses: actions/cache@v4
         id: rhwp-source
         with:
@@ -110,17 +129,17 @@ jobs:
       - name: Normal selected consumer baseline
         env:
           CARGO_INCREMENTAL: '1'
-        run: node driver/tools/main-diff/retained-sensitivity-driver.mjs baseline
-      - name: Original residue with append-only producer evidence
+        run: node driver/tools/main-diff/next-core-sensitivity.mjs baseline
+      - name: Original control and target with append-only evidence
         id: mutations
         working-directory: product
         env:
           CARGO_INCREMENTAL: '1'
-          FAULT_SHARD: '41/56'
-          FAULT_CATALOG: tools/main-diff/faults/b5-agent-apps.json
+          FAULT_SHARD: ${{ matrix.shard }}
+          FAULT_CATALOG: ${{ matrix.catalog }}
         shell: bash
         run: node tools/main-diff/faults.mjs "$FAULT_CATALOG" 2>&1 | tee "$JOB_OUT/faults.txt"
-      - name: Preserve original producer result
+      - name: Preserve the original producer result
         if: always()
         shell: bash
         run: |
@@ -128,19 +147,57 @@ jobs:
           if [ -f product/tools/main-diff/out/faults.json ]; then
             cp product/tools/main-diff/out/faults.json "$JOB_OUT/faults.json"
           fi
-      - name: Audit every retained original report and restoration
+      - name: Audit every retained record, typed witness and source restoration
         if: ${{ success() }}
         env:
           CARGO_INCREMENTAL: '1'
           MUTATION_STATUS: ${{ steps.mutations.outcome }}
-        run: node driver/tools/main-diff/retained-sensitivity-driver.mjs audit
-      - name: Publish bounded proof or incomplete raw evidence
+        run: node driver/tools/main-diff/next-core-sensitivity.mjs audit
+      - name: Publish complete proof or incomplete original evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: retained-producer-proof
+          name: next-core-records-${{ matrix.key }}
           path: |
-            job-out
-            !job-out/*.node
-            !job-out/retained/work
+            job-out/${{ matrix.key }}
+            !job-out/${{ matrix.key }}/*.node
+            !job-out/${{ matrix.key }}/retained/work
+          if-no-files-found: error
+
+  aggregate:
+    needs: [prepare, sensitivity]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      COMPLETIONS_DIR: ${{ github.workspace }}/completions
+      AGGREGATE_PATH: ${{ github.workspace }}/next-core-acceptance.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: driver
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.product_sha }}
+          path: product
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: next-core-plan
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: next-core-records-*
+          path: completions
+          merge-multiple: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Re-audit the exact complete 24-job evidence set
+        run: node driver/tools/main-diff/next-core-sensitivity.mjs aggregate
+      - uses: actions/upload-artifact@v4
+        with:
+          name: next-core-acceptance
+          path: next-core-acceptance.json
           if-no-files-found: error

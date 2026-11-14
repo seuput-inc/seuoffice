@@ -452,6 +452,8 @@ async function main(command, env) {
   })
 }
 
+export { baseline as runSelectedBaseline }
+
 if (process.argv[1] && resolve(process.argv[1]) === self)
   main(process.argv[2], process.env).catch((error) => {
     console.error(error)
