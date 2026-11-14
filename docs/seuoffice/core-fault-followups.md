@@ -89,3 +89,19 @@ Codex home의 `$links`는 해당 FnSpec의 마지막 인자로만 받는다. 양
 세 비교 group의 기존 1,205개 사례는 입력과 순서가 모두 같음을 검사했다. 제품 375 뒤에 추가된 22개 중 앞선 두 사례를 제외한 새 20개의 정상 TS 소비 결과를 별도로 확인했다. 이때 쓰인 기존 로컬 WASM의 SHA256은 `4759268735a30c7ae599f64be83c06c8d405f599bd66eb395c1d9c09834abe56`이며, 같은 엔진 소스를 가진 7363 후보에서 만든 기존 자료다. hosted 표준 WASM의 `3f4e957…2615`와 같은 바이트라고 주장하지 않는다.
 
 TS 오라클과 사례 계보는 새 Rust 감도 성공이 아니다. 새 정상 Rust 비교, 원본 비대조 21개와 별도 교정 변이의 실제 DIFF, 원자료·복구·완전성은 정확 후속 제품과 소비 정의를 고정한 뒤 hosted에서 검증해야 한다. 원본 MISSED, BUILD, STALE와 운영 실패의 판정은 소급하지 않는다.
+
+## 별도 교정 변이의 계보
+
+소비 사례 후속과 별도의 metadata 커밋은 다음 세 항목의 이름과 `replace`만 바꾼다. 각 목록 길이와 원본 index, `file`, `find`, selector는 그대로다. 원본 실행의 MISSED·BUILD를 교정 변이의 성공으로 바꾸지 않는다.
+
+- `b3b4-rest-index-core.json#0`: 원본은 빈 범위를 넣어 `find_text_ranges`의 `ends[e - 1]`에 도달하면 underflow를 일으킨다. 실제 8개 조각이 같은 양성 대조에서 실패해 뒤의 변이를 실행하지 않았다. 정상 구현은 빈 needle을 건너뛰고 찾은 needle의 양수 길이를 끝 위치에 더하므로 `e > s`이며, raw 범위를 받는 공개 입력도 없다. 정상 유효 입력의 빈 범위 결함으로 분류하지 않는다. 후속 `ranges.clear()`는 같은 소비 결함인 검색 결과 누락을 만들되 잘못된 내부 범위를 만들지 않는다.
+  - 원본 객체: `57d441bc379d00a5e4b59f23051d5a767970aa0cd1ab2c89c46d9eed1e8ca32e`.
+  - 후속 객체: `8fb61cbe606d9fbe876863891b2a276b108f3fb9c5bb5fbbe0a53e2391308297`.
+- `b5-provider-chatgpt.json#27`: 원본 `Some(_) if false`는 뒤에서 쓰는 `kid` binding을 지워 `Option<Option<&str>>`와의 타입 오류를 만든다. 후속 `Some(kid) if false`는 binding 타입을 보존하며 키 선택만 끈다.
+  - 원본 객체: `d21f5b83c5e569e488ed9c54aa8eae5115accb9c1d4ce828a16b0d4e121022b2`.
+  - 후속 객체: `150de84ebdc1d6f3e5114fd9ff8d18d45fe3dd94b9709ee1fdf0db5f8b1162e8`.
+- `b5-agent-user-skills.json#131`: 원본은 opener의 `Option<String>` 생산자를 무타입 `None`으로 바꿔 `str` 크기 추론 오류를 만든다. 후속 `None::<String>`은 saved path 제거라는 소비 결함을 같은 타입으로 표현한다.
+  - 원본 객체: `28bced8ff10bdf6c6cb822a81bd785a61458ff16c3223c297868b4bc7e84ce35`.
+  - 후속 객체: `571b3bbd325002c44e25df2ab99191347809e7fdb85af14506bb57dd348923f5`.
+
+세 후속 모두 새 정확 제품의 hosted 정상 비교와 실제 변이 검출이 아직 필요하다. panic이나 빌드 실패를 독립 소비자 DIFF로 받아들이는 예외는 추가하지 않는다.

@@ -193,10 +193,10 @@
     "fn": ["chatgpt/oauth.verifyChatGptIdToken", "chatgpt/connection.createChatGptConnection"]
   },
   {
-    "name": "id token: the kid does not select keys",
+    "name": "id token: a present kid does not select keys",
     "file": "main-core/src/packages/ai_provider/chatgpt_oauth.rs",
     "find": "Some(kid) if !kid.is_empty() => {",
-    "replace": "Some(_) if false => {",
+    "replace": "Some(kid) if false => {",
     "fn": ["chatgpt/oauth.verifyChatGptIdToken"]
   },
   {

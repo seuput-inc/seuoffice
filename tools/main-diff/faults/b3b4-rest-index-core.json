@@ -1,9 +1,9 @@
 [
   {
-    "name": "no hit is ever kept",
+    "name": "no hit is retained as a range",
     "file": "main-core/src/shell/text_marks.rs",
     "find": "ranges.push((pos, pos + needle.len()));",
-    "replace": "ranges.push((pos, pos));",
+    "replace": "ranges.clear();",
     "fn": [
       "text-marks.findRanges",
       "text-marks.findTextRanges",
