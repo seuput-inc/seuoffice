@@ -268,6 +268,37 @@ export function loadRetainedEvidence(directory, plan, baselineValue) {
     lstatSync(directory).isDirectory() && !lstatSync(directory).isSymbolicLink(),
     'Invalid evidence directory',
   )
+  const expectDirectory = (path, files, directories, optionalDirectories = []) => {
+    const at = join(directory, path)
+    const state = lstatSync(at)
+    assert.ok(!state.isSymbolicLink(), 'Symbolic evidence path')
+    assert.ok(state.isDirectory(), 'Invalid evidence entry')
+    const names = readdirSync(at).sort()
+    assert.deepEqual(
+      names,
+      [
+        ...files,
+        ...directories,
+        ...optionalDirectories.filter((name) => names.includes(name)),
+      ].sort(),
+      'Unexpected evidence inventory',
+    )
+    for (const name of names) {
+      const entry = lstatSync(join(at, name))
+      assert.ok(!entry.isSymbolicLink(), 'Symbolic evidence path')
+      assert.ok(
+        files.includes(name) ? entry.isFile() : entry.isDirectory(),
+        'Invalid evidence entry',
+      )
+    }
+  }
+  expectDirectory('', ['run.json', 'producer-finished.json'], ['catalogs', 'mutations'], ['work'])
+  expectDirectory('catalogs', ['0.json'], [])
+  expectDirectory(
+    'mutations',
+    [],
+    plan.indices.map((index) => `0-${index}`),
+  )
   const readRaw = (path) => {
     assert.ok(safe(path), 'Invalid evidence path')
     const parts = path.split('/')
@@ -290,6 +321,12 @@ export function loadRetainedEvidence(directory, plan, baselineValue) {
         }),
       ),
     ]
+    expectDirectory(base, ['start.json', 'applied.json', 'end.json'], ['groups'])
+    expectDirectory(
+      `${base}/groups`,
+      groups.flatMap((_, position) => [`${position}-command.json`, `${position}-report.raw.json`]),
+      [],
+    )
     return {
       catalogOrdinal: 0,
       index,

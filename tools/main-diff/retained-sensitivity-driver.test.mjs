@@ -155,3 +155,37 @@ test('rejects operational capture errors, symbolic files and symbolic directorie
     /Symbolic evidence path/,
   )
 })
+
+test('rejects an extra mutation directory outside the selected original indices', (t) => {
+  const f = evidenceFixture(t)
+  mkdirSync(join(f.directory, 'mutations/0-2'))
+  assert.throws(() => loadRetainedEvidence(f.directory, f.plan, f.baseline), /evidence inventory/)
+})
+
+test('rejects an extra catalog evidence file', (t) => {
+  const f = evidenceFixture(t)
+  writeFileSync(join(f.directory, 'catalogs/1.json'), '{"ordinal":1}')
+  assert.throws(() => loadRetainedEvidence(f.directory, f.plan, f.baseline), /evidence inventory/)
+})
+
+for (const name of ['1-command.json', '1-report.raw.json']) {
+  test(`rejects an extra group evidence file ${name}`, (t) => {
+    const f = evidenceFixture(t)
+    writeFileSync(join(f.directory, 'mutations/0-0/groups', name), '{"extra":true}')
+    assert.throws(() => loadRetainedEvidence(f.directory, f.plan, f.baseline), /evidence inventory/)
+  })
+}
+
+test('separates optional comparison work from evidence and rejects a symbolic work root', (t) => {
+  const f = evidenceFixture(t)
+  const work = join(f.directory, 'work')
+  mkdirSync(work)
+  writeFileSync(join(work, 'report.json'), '{"notEvidence":true}')
+  assert.equal(loadRetainedEvidence(f.directory, f.plan, f.baseline).records.length, 2)
+  rmSync(work, { recursive: true })
+  symlinkSync(f.root, work)
+  assert.throws(
+    () => loadRetainedEvidence(f.directory, f.plan, f.baseline),
+    /Symbolic evidence path/,
+  )
+})

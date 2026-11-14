@@ -22,7 +22,7 @@
 
 `files`는 문자열 값만 허용한다. 실제 JS 오류 진단, unknown selector, 다른 함수, 누락·중복 case, 부정확 집계, only-STALE, source 복구 실패, 증거 IO 오류는 거부한다. JSON 데이터 안의 오류 이름은 실행 진단으로 바꾸지 않는다.
 
-loader는 manifest가 정한 고정 경로만 읽고 심볼릭 링크와 `capture-errors.json`을 거부한다. 옛 기본 report나 마지막 report로 빠진 중간 자료를 대신하지 않는다.
+loader는 root·catalog·mutation·group의 실제 항목 집합과 파일 종류를 예상 목록에 정확히 대조한다. 추가 자료, 심볼릭 링크와 `capture-errors.json`을 거부한다. 선택적인 `work/`는 실제 폴더여야 하며 그 안의 비교 작업 파일은 증거 목록에 포함하거나 대신 읽지 않는다. 옛 기본 report나 마지막 report로 빠진 중간 자료를 대신하지 않는다.
 
 #545는 고정 장부 case3의 실제 반응과 별도 case21의 전체 페이지를 함께 검사한다. 독립 case21의 TS `totalChars=3`, Rust `totalChars=7` 외 파일·텍스트·offset·로그가 이미 관측한 singleton 자료와 정확히 같아야 한다.
 
