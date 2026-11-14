@@ -45,14 +45,21 @@ test('identity binds exact product, definition, run and target', () => {
 })
 
 test('identity binds each explicit mode to its manifest scope', () => {
-  const consumerManifest = {
-    ...manifest,
-    scope: 'ledger-consumer-followup-only-not-full-recovery',
+  const modes = [
+    ['five-miss-followup-only-not-full-recovery', 'main-missed-sensitivity'],
+    ['ledger-consumer-followup-only-not-full-recovery', 'main-ledger-consumer-sensitivity'],
+    ['ledger-consumer-suite-only-not-full-recovery', 'main-ledger-consumer-suite'],
+  ]
+  for (const [scope, mode] of modes) {
+    const selectedManifest = { ...manifest, scope }
+    assert.deepEqual(
+      identity({ ...env, MODE: mode }, selectedManifest, true),
+      identity(env, manifest, true),
+    )
+    for (const [, otherMode] of modes)
+      if (otherMode !== mode)
+        assert.throws(() => identity({ ...env, MODE: otherMode }, selectedManifest, true))
   }
-  const consumerEnv = { ...env, MODE: 'main-ledger-consumer-sensitivity' }
-  assert.deepEqual(identity(consumerEnv, consumerManifest, true), identity(env, manifest, true))
-  assert.throws(() => identity(env, consumerManifest, true))
-  assert.throws(() => identity(consumerEnv, manifest, true))
   assert.throws(() => identity(env, { ...manifest, scope: 'unknown' }, true))
 })
 

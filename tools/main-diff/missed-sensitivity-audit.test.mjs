@@ -266,6 +266,93 @@ test('ledger consumer requires typed ledger and independent exact value change',
   assert.throws(() => audit(old))
 })
 
+function suiteUnit() {
+  const f = consumerUnit()
+  const c = f.manifest.cases[0]
+  f.manifest.scope = 'ledger-consumer-suite-only-not-full-recovery'
+  delete c.caseRequirement.valueChange
+  c.caseRequirement.expectedRust = f.evidence.report.differences[1].rust
+  f.manifest.cases = Array.from({ length: 9 }, (_, i) => ({
+    ...structuredClone(c),
+    id: `unit-${i}`,
+    index: 4 + i,
+    catalogLength: 17,
+  }))
+  f.plan = makePlan(f.manifest, 'b'.repeat(40))
+  f.target = f.plan.cases[0]
+  Object.assign(f.baseline.identity, {
+    manifestSha256: f.plan.manifestSha256,
+    planSha256: hash(f.plan),
+    targetId: f.target.id,
+  })
+  f.evidence.identity = f.baseline.identity
+  return f
+}
+
+test('suite preserves singleton rejection and proves complete independent consumer output', () => {
+  const complete = suiteUnit()
+  assert.equal(complete.plan.cases.length, 9)
+  assert.equal(audit(complete).scope, 'ledger-consumer-suite-target-only')
+  for (const scope of [
+    'five-miss-followup-only-not-full-recovery',
+    'ledger-consumer-followup-only-not-full-recovery',
+  ]) {
+    const f = suiteUnit()
+    f.manifest.scope = scope
+    assert.throws(() => validateManifest(f.manifest))
+  }
+  for (const change of [
+    (w) => {
+      w.answer = JSON.stringify({ error: 'failed' })
+    },
+    (w) => {
+      w.files.extra = 'unexpected'
+    },
+    (w) => {
+      const a = JSON.parse(w.answer)
+      a.logs.push(['unexpected'])
+      w.answer = JSON.stringify(a)
+    },
+    (w) => {
+      const a = JSON.parse(w.answer)
+      a.value[0].totalChars = 8
+      w.answer = JSON.stringify(a)
+    },
+  ]) {
+    const f = suiteUnit()
+    const d = f.evidence.report.differences[1]
+    const changed = JSON.parse(d.rust)
+    change(changed)
+    d.rust = JSON.stringify(changed)
+    refresh(f)
+    assert.throws(() => audit(f))
+  }
+  const missing = suiteUnit()
+  missing.evidence.report.differences.shift()
+  missing.evidence.report.report.target.equal++
+  missing.evidence.rows[1].detail =
+    'DIFF target case 1 | STALE ledger entry fixed: it no longer reproduces'
+  refresh(missing)
+  assert.throws(() => audit(missing))
+  const onlyLedger = suiteUnit()
+  onlyLedger.evidence.report.differences.pop()
+  onlyLedger.evidence.report.report.target.equal++
+  onlyLedger.evidence.rows[1].detail =
+    'DIFF target case 0 | STALE ledger entry fixed: it no longer reproduces'
+  refresh(onlyLedger)
+  assert.throws(() => audit(onlyLedger))
+  for (const diagnostic of [
+    'STALE ledger entry unknown: it no longer reproduces',
+    'TypeError: failed',
+    'FLOOR: fewer than two distinct answers',
+    'DIFF other case 1',
+  ]) {
+    const f = suiteUnit()
+    f.evidence.rows[1].detail += ` | ${diagnostic}`
+    assert.throws(() => audit(f))
+  }
+})
+
 test('synthetic unit: bounded receipt requires control and appended typed case', () => {
   const f = syntheticUnit()
   assert.equal(validateManifest(f.manifest), true)

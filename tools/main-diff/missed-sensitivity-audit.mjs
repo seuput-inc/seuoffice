@@ -9,7 +9,8 @@ const text = (s) => typeof s === 'string' && s.length > 0
 const positive = (n) => Number.isSafeInteger(n) && n > 0
 const oldScope = 'five-miss-followup-only-not-full-recovery'
 const ledgerScope = 'ledger-consumer-followup-only-not-full-recovery'
-const scopes = [oldScope, ledgerScope]
+const suiteScope = 'ledger-consumer-suite-only-not-full-recovery'
+const scopes = [oldScope, ledgerScope, suiteScope]
 const keyOf = (fn, index) => JSON.stringify([fn, index])
 const requireValue = (condition, message) => {
   if (!condition) throw new Error(message)
@@ -85,7 +86,9 @@ export function validateManifest(manifest) {
     paths.add(item.path)
   }
   requireValue(
-    Array.isArray(manifest.cases) && manifest.cases.length > 0 && manifest.cases.length <= 8,
+    Array.isArray(manifest.cases) &&
+      manifest.cases.length > 0 &&
+      manifest.cases.length <= (manifest.scope === suiteScope ? 256 : 8),
     'Invalid manifest cases',
   )
   const ids = new Set(),
@@ -192,6 +195,12 @@ export function validateManifest(manifest) {
         'Invalid value change requirement',
       )
     } else requireValue(r.valueChange === undefined, 'Unexpected value change requirement')
+    if (manifest.scope === suiteScope) {
+      requireValue(
+        validWire(r.expectedRust) && !same(JSON.parse(r.typescript), JSON.parse(r.expectedRust)),
+        'Invalid expected consumer result',
+      )
+    } else requireValue(r.expectedRust === undefined, 'Unexpected expected consumer result')
     requireValue(
       Array.isArray(c.baselineExpected) && c.baselineExpected.length > 0,
       'Missing baseline inventory',
@@ -309,11 +318,17 @@ export function auditTarget({ plan, target, baseline, evidence }) {
       scopes.includes(plan.scope) &&
       (plan.scope === oldScope
         ? (target.ledgerRequirements ?? []).length === 0 &&
-          target.caseRequirement?.valueChange === undefined
+          target.caseRequirement?.valueChange === undefined &&
+          target.caseRequirement?.expectedRust === undefined
         : Array.isArray(target.ledgerRequirements) &&
           target.ledgerRequirements.length > 0 &&
-          plan.cases.length === 1 &&
-          target.caseRequirement?.valueChange) &&
+          (plan.scope === ledgerScope
+            ? plan.cases.length === 1 &&
+              target.caseRequirement?.valueChange &&
+              target.caseRequirement?.expectedRust === undefined
+            : plan.cases.length <= 256 &&
+              validWire(target.caseRequirement?.expectedRust) &&
+              target.caseRequirement?.valueChange === undefined)) &&
       Array.isArray(plan.cases) &&
       plan.cases.filter((c) => same(c, target)).length === 1 &&
       target.modulus === 4 * Math.ceil(target.catalogLength / 4) &&
@@ -369,7 +384,11 @@ export function auditTarget({ plan, target, baseline, evidence }) {
         row.verdict === 'CAUGHT',
       'Invalid mutation row',
     )
-    return detailDiffs(row.detail, fault.fn, position === 1 && plan.scope === ledgerScope)
+    return detailDiffs(
+      row.detail,
+      fault.fn,
+      position === 1 && (plan.scope === ledgerScope || plan.scope === suiteScope),
+    )
   })
   const paths = [...new Set([target.control, target.fault].map((f) => `crates/${f.file}`))].sort()
   requireValue(
@@ -474,11 +493,17 @@ export function auditTarget({ plan, target, baseline, evidence }) {
     actual && actual.note === requirement.note && actual.typescript === requirement.typescript,
     'Missing appended case typed difference or wrong TypeScript oracle',
   )
-  if (requirement.valueChange) {
+  requireValue(
+    !ledger.some((entry) => entry.fn === actual.fn && entry.case === actual.case),
+    'Required consumer case must be independent of ledger',
+  )
+  if (plan.scope === suiteScope) {
     requireValue(
-      !ledger.some((entry) => entry.fn === actual.fn && entry.case === actual.case),
-      'Appended case must be independent of ledger',
+      same(JSON.parse(actual.rust), JSON.parse(requirement.expectedRust)),
+      'Wrong exact consumer result',
     )
+  }
+  if (requirement.valueChange) {
     const ts = JSON.parse(actual.typescript)
     const rust = JSON.parse(actual.rust)
     const answer = JSON.parse(ts.answer)
@@ -510,7 +535,8 @@ export function auditTarget({ plan, target, baseline, evidence }) {
     )
   }
   return {
-    scope: 'missed-sensitivity-only',
+    scope:
+      plan.scope === suiteScope ? 'ledger-consumer-suite-target-only' : 'missed-sensitivity-only',
     identity,
     target,
     records: evidence.rows,

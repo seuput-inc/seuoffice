@@ -1,4 +1,4 @@
-name: seuoffice rust - ledger consumer sensitivity
+name: seuoffice rust - ledger consumer suite
 
 on:
   workflow_dispatch:
@@ -13,11 +13,11 @@ permissions:
   actions: read
 
 concurrency:
-  group: seuoffice-main-ledger-consumer-sensitivity-${{ inputs.product_sha || github.ref }}
+  group: seuoffice-main-ledger-consumer-suite-${{ inputs.product_sha || github.ref }}
   cancel-in-progress: false
 
 env:
-  MODE: main-ledger-consumer-sensitivity
+  MODE: main-ledger-consumer-suite
   PRODUCT_DIR: ${{ github.workspace }}/product
   DRIVER_DIR: ${{ github.workspace }}/driver
   PRODUCT_SHA: ${{ inputs.product_sha }}
