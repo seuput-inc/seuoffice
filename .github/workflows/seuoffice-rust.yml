@@ -66,7 +66,8 @@ jobs:
           curl -fsSL 'https://security.ubuntu.com/ubuntu/pool/main/g/gawk/gawk_5.2.1-2ubuntu0.1_amd64.deb' -o "$RUNNER_TEMP/nss-inputs/gawk.deb"
           curl -fsSL 'https://archive.ubuntu.com/ubuntu/pool/main/libs/libsigsegv/libsigsegv2_2.14-1ubuntu2_amd64.deb' -o "$RUNNER_TEMP/nss-inputs/libsigsegv.deb"
           printf '%s  %s\n' 9d75084d1293f68f3c1a2ee677dea5baa4e010bac2d4c455d8e23177e97aa353 "$RUNNER_TEMP/nss-inputs/bison.deb" baaf6853bea746485bff4ae0e506599b3c5093ebe6ec9b9584e4272f94f75b93 "$RUNNER_TEMP/nss-inputs/gawk.deb" 889f338bea4ebfd999939d946da4ac0a45668264a5aae78e023feeb0529505b8 "$RUNNER_TEMP/nss-inputs/libsigsegv.deb" | sha256sum -c -
-          dpkg -i "$RUNNER_TEMP/nss-inputs/libsigsegv.deb" "$RUNNER_TEMP/nss-inputs/gawk.deb" "$RUNNER_TEMP/nss-inputs/bison.deb"
+          dpkg -i "$RUNNER_TEMP/nss-inputs/libsigsegv.deb"
+          dpkg -i "$RUNNER_TEMP/nss-inputs/gawk.deb" "$RUNNER_TEMP/nss-inputs/bison.deb"
           sha256sum "$(command -v bison)" "$(command -v gawk)" "$RUNNER_TEMP/nss-tools/usr/bin/patchelf" | tee "$RUNNER_TEMP/nss-results/additional-tools.sha256"
           curl -fsSL 'https://dist.opendnssec.org/source/softhsm-2.6.1.tar.gz' -o "$RUNNER_TEMP/nss-inputs/softhsm-2.6.1.tar.gz"
           echo '61249473054bcd1811519ef9a989a880a7bdcc36d317c9c25457fc614df475f2  '"$RUNNER_TEMP/nss-inputs/softhsm-2.6.1.tar.gz" | sha256sum -c -
