@@ -131,7 +131,7 @@ def main():
     shutil.copytree(Path(cfg['kernel_headers']['path']).resolve(strict=True), include)
     # BZ 31928: the driver must see -U; -Wp,-U bypasses Ubuntu GCC's defaults.
     glibc_env = dict(env, CFLAGS='-g -O2 -U_FORTIFY_SOURCE')
-    run([glibc / 'configure', '--prefix=/usr', '--disable-werror', '--with-headers=' + str(include), '--enable-kernel=' + a.kernel_min], build, glibc_env)
+    run([glibc / 'configure', '--prefix=/usr', '--disable-werror', '--without-selinux', '--with-headers=' + str(include), '--enable-kernel=' + a.kernel_min], build, glibc_env)
     run([make, '-j2'], build, glibc_env); run([make, 'install', 'DESTDIR=' + str(sysroot)], build, glibc_env)
     for name in ('crt1.o', 'Scrt1.o', 'crti.o', 'crtn.o', 'crtbegin.o', 'crtend.o'):
         crt = Path(run([cc, '--sysroot=' + str(sysroot), '-print-file-name=' + name], capture=True).strip()).resolve(strict=True)
@@ -260,7 +260,7 @@ def main():
     source['contract_sha256'] = sha(HERE / 'contract.json')
     abi = {'target': a.arch + '-unknown-linux-gnu', 'kernel_min': a.kernel_min,
            'glibc': '2.39-5-ge0910f1d3278f05439fb434ee528fc9be1b6bd5e',
-           'flags': 'BUILD_OPT=1 USE_64=1 USE_STATIC_LIBS=1 GLIBC_CFLAGS=-g,-O2,-U_FORTIFY_SOURCE'}
+           'flags': 'BUILD_OPT=1 USE_64=1 USE_STATIC_LIBS=1 GLIBC_CFLAGS=-g,-O2,-U_FORTIFY_SOURCE GLIBC_CONFIG=--without-selinux'}
     (out / 'licenses').mkdir()
     notice_specs = [
         ('nss', nss_a / 'COPYING', 'nss.txt', PINS['nss'][2] + '#nss/COPYING'),
