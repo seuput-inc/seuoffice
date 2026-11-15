@@ -21,6 +21,7 @@
 
 - 실제 raw 산출물의 앞선 엄격 감사를 통과한 완결 native 사실만 선택기에 넣는다. 선택기는 raw 감사기를 대신하지 않는다.
 - 역사적 사실은 선택 함수 **전부**를 덮는 별도 소스 증명에 연결한다. 증명에는 구현 closure, 어댑터, 입력 생성, 정규화, 실행 문맥, 마지막 이름 우선 owner 매핑의 해시를 묶는다.
+- `bindSelectedInventory`는 선택 함수의 `group/name/checks/single`과 등록 순서를 결속한다. 같은 이름이 다른 group에 다시 등록되면 마지막 등록이 실제 owner가 되므로 이를 하나의 이름 dictionary로 뭉개지 않는다. 사례가 늘거나 줄거나 owner·single 판정이 바뀌면 거부한다. 이 결속은 입력 payload의 동일성을 증명하지 않으며 소스 증명과 함께 소비해야 한다.
 - ed559→5e215에서 선택된 24표적의 27개 함수는 기존 사례와 입력 생성이 같다. 추가 Claude·subscription 사례는 선택되지 않은 callback이고, 선택된 ChatGPT 경로는 변경된 subscription·KB 어댑터에 도달하지 않는다. 새로운 fonts·KB 함수와 이 범위 밖 변이는 이 증명으로 차감하지 않는다.
 - 이전 B4의 8개 owner 정적 runtime import 그래프 272파일과 변이 구현 119파일은 30f303→5e215에서 바이트가 같다. 이 그래프가 동적 로딩 전체를 증명하지는 않는다. 별도로 `b4-pdf.ts`가 복사·import하는 `ocr.ts`와 `ocr-vision.ts`도 같은 바이트이며, 기록된 Linux에서는 Windows OCR 생성자의 플랫폼 guard가 파일 검사·spawn 전에 null을 반환한다. 공통 bootstrap은 별도 참조 도달성·기존 native API 투영으로 다룬다. 실제 로더 파일 읽기와 WASI의 random/time/console import가 없다고 주장하지 않는다.
 - 시스템 글꼴 탐색을 선택한 B4 원본 index 103·106·339·341·342는 설치 글꼴·검색 순서 증거가 없으므로 차감하지 않는다. 이는 ID별 verdict 예외가 아니다. `font-locate.findSystemFont`, `font-locate.findFontCovering`, `font-similar.similarFontFor` 중 하나라도 선택한 객체는 소스 증명이 전체 selector를 덮지 못한다.
@@ -37,7 +38,7 @@
 
 613의 원본 동등성 분류에는 공개 host가 재진입하지 않는다는 전제를 명시한다. 정형 도구 성공이 아니다. 후속 객체가 CAUGHT여도 원본 객체 성공으로 세지 않는다. 각 원본·후속 객체 해시와 처분을 결과에 함께 남긴다.
 
-## 소스 증명을 결속한 차감안
+## 8190의 첫 차감안
 
 - 현제품 직접 증거: 고유 객체 14개.
 - 별도 소스 동등성 근거: 앞선 24표적의 27개와 이전 B4의 368개, 합계 395개. 두 경계의 독립 정적 검토에서 추가 제외 대상은 발견되지 않았다.

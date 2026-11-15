@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  bindSelectedInventory,
   indexMutationUniverses,
   mutationKey,
   mutationObjectHash,
@@ -192,4 +193,52 @@ test('a forged accepted/required partition cannot silently omit a mutation', () 
   selected.requiredCurrentEvidence.pop()
   selected.requiredCurrentEvidenceCount--
   assert.throws(() => planCurrentResidues(u, selected))
+})
+
+test('inventory binding rejects changed corpus size without claiming payload equality', () => {
+  const before = [{ group: 'api', name: 'api.read', checks: 2, single: false }]
+  const binding = bindSelectedInventory({
+    producerProductSha: old,
+    productSha: current,
+    selectors: ['api.read'],
+    before,
+    after: [...before, { group: 'other', name: 'other.write', checks: 3, single: false }],
+  })
+  assert.deepEqual(binding.rows, before)
+  assert.equal(binding.casePayloadEqualityProven, false)
+  assert.equal(binding.historicalRuntimeCorpusCaptured, false)
+  for (const patch of [{ checks: 3 }, { single: true }, { group: 'other-owner' }])
+    assert.throws(() =>
+      bindSelectedInventory({
+        producerProductSha: old,
+        productSha: current,
+        selectors: ['api.read'],
+        before,
+        after: [{ ...before[0], ...patch }],
+      }),
+    )
+})
+
+test('inventory binding preserves last-name-wins registration rather than collapsing duplicate names', () => {
+  const before = [
+    { group: 'first', name: 'api.read', checks: 2, single: false },
+    { group: 'last', name: 'api.read', checks: 4, single: false },
+  ]
+  const options = { producerProductSha: old, productSha: current, selectors: ['api.read'], before }
+  assert.throws(() => bindSelectedInventory({ ...options, after: before.toReversed() }))
+  assert.throws(() => bindSelectedInventory({ ...options, after: [before[1]] }))
+  assert.throws(() => bindSelectedInventory({ ...options, after: [...before, before[1]] }))
+})
+
+test('inventory binding cannot lose an additional selected consumer', () => {
+  const before = [{ group: 'api', name: 'api.read', checks: 2, single: false }]
+  assert.throws(() =>
+    bindSelectedInventory({
+      producerProductSha: old,
+      productSha: current,
+      selectors: ['api.read', 'api.write'],
+      before,
+      after: before,
+    }),
+  )
 })

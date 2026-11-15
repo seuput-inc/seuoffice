@@ -55,6 +55,58 @@ export function indexMutationUniverses(originalProductSha, productSha, catalogs)
   return { originalProductSha, productSha, entries }
 }
 
+/** Inventory equality binds coverage and owner order, never absent case payloads. */
+export function bindSelectedInventory({
+  producerProductSha,
+  productSha,
+  selectors,
+  before,
+  after,
+}) {
+  assert.ok(commit(producerProductSha) && commit(productSha))
+  assert.ok(Array.isArray(selectors) && selectors.length > 0)
+  assert.ok(selectors.every((name) => typeof name === 'string' && name.length > 0))
+  const wanted = new Set(selectors)
+  assert.equal(wanted.size, selectors.length)
+  const selected = (inventory) => {
+    assert.ok(Array.isArray(inventory))
+    const seen = new Set()
+    const rows = []
+    for (const row of inventory) {
+      if (!wanted.has(row.name)) continue
+      assert.ok(typeof row.group === 'string' && row.group.length > 0)
+      assert.ok(Number.isSafeInteger(row.checks) && row.checks > 0)
+      assert.equal(typeof row.single, 'boolean')
+      const key = JSON.stringify([row.group, row.name])
+      assert.ok(!seen.has(key), 'Duplicate function inventory entry')
+      seen.add(key)
+      rows.push({ group: row.group, name: row.name, checks: row.checks, single: row.single })
+    }
+    assert.deepEqual(
+      [...new Set(rows.map((row) => row.name))].sort(),
+      [...wanted].sort(),
+      'Selected function missing from inventory',
+    )
+    return rows
+  }
+  const producerRows = selected(before)
+  const currentRows = selected(after)
+  assert.deepEqual(
+    currentRows,
+    producerRows,
+    'Selected case count, single flag or name-owner registration order changed',
+  )
+  return {
+    contract: 'selected-function-inventory-binding/v1',
+    producerProductSha,
+    productSha,
+    rows: currentRows,
+    selectedInventorySha256: mutationObjectHash(currentRows),
+    casePayloadEqualityProven: false,
+    historicalRuntimeCorpusCaptured: false,
+  }
+}
+
 function receiptReference(reference) {
   assert.ok(reference && digest(reference.receiptSha256))
   assert.ok(commit(reference.definitionSha) && commit(reference.productSha))
