@@ -209,7 +209,10 @@ def main():
     # of .chk until every DT_NEEDED rewrite is complete.
     pristine = unpack(a.nss, work / 'nss-pristine'); modified = unpack(a.nss, work / 'nss-patched')
     nss_a, nss_b = pristine / 'nss', modified / 'nss'
-    nenv = dict(buildenv, SQLITE_INCLUDE_DIR=str(sqlite_prefix / 'include'),
+    # Recursive make's directory banners otherwise enter SUB_SHLOBJS as object
+    # names (including "make[4]:") before NSS parses its shared-library rule.
+    nenv = dict(buildenv, MAKEFLAGS='--no-print-directory',
+                SQLITE_INCLUDE_DIR=str(sqlite_prefix / 'include'),
                 SQLITE_LIB_DIR=str(sqlite_prefix / 'lib'), SQLITE_LIB_NAME='sqlite3',
                 LD_LIBRARY_PATH=str(sqlite_prefix / 'lib'))
     build_nss(make, nss_a, nenv)
