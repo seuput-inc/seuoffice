@@ -1,495 +1,94 @@
-name: seuoffice rust
-
-# The Rust document engines (crates/) and their parity gates against the
-# TypeScript engines (tools/docx-diff, tools/pptx-diff), on a GitHub runner.
-# Decision 0025.
-#
-# crates/ lives on a branch until its first unit is merged, so this file does
-# nothing on main yet: start it on that branch by hand,
-#   gh workflow run "seuoffice rust" --ref <branch>
-# It runs on its own for a push that touches the crates or the gate once they
-# are on main. The workstation that develops the port is shared and slow, which
-# is why the full gate runs here.
-
+name: seuoffice shell NSS validation
 on:
-  push:
-    branches: [main]
-    paths:
-      [
-        'crates/**',
-        'tools/docx-diff/**',
-        'tools/pptx-diff/**',
-        'packages/docx-engine/src/**',
-        'packages/pptx-engine/src/**',
-      ]
   workflow_dispatch:
     inputs:
-      faults:
-        description: A faults file for tools/docx-diff/faults.py, run instead of the gate (on a rust-faults/* branch)
-        required: false
-        default: ''
-      main_faults:
-        description: A faults file for tools/main-diff/faults.mjs (the central process), run beside the gates
-        required: false
-        default: ''
-      ipc_faults:
-        description: A faults file for tools/ipc-diff/faults.mjs (the stage 3 IPC handlers), run beside the gates
-        required: false
-        default: ''
-
-concurrency:
-  group: seuoffice-rust-${{ github.ref }}
-  cancel-in-progress: true
-
+      source_sha:
+        description: Exact reviewed source commit SHA
+        required: true
+        type: string
 permissions:
   contents: read
-
+concurrency:
+  group: nss-validation-${{ inputs.source_sha }}
+  cancel-in-progress: false
 jobs:
-  crates:
-    if: ${{ !inputs.faults }}
+  nss:
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 180
+    defaults:
+      run:
+        working-directory: source
+    container:
+      image: buildpack-deps@sha256:890e8b5c0040e1deff5cc7dc7b4414e67069f79e3301afc4ec5bd49d64ef13e5
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      IMAGE_DIGEST: sha256:890e8b5c0040e1deff5cc7dc7b4414e67069f79e3301afc4ec5bd49d64ef13e5
     steps:
-      - uses: actions/checkout@v4
+      - name: Validate immutable source input
+        shell: bash
+        working-directory: .
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          fetch-depth: 0
-
-      - name: Is the Rust engine in this tree
-        id: has
-        run: |
-          if [ -f crates/Cargo.toml ]; then echo "crates=true" >> "$GITHUB_OUTPUT"; else echo "crates=false" >> "$GITHUB_OUTPUT"; fi
-
-      - name: Rust toolchain with the WASI target
-        if: steps.has.outputs.crates == 'true'
-        run: |
-          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
-          rustup default stable
-          rustup target add wasm32-wasip1
-          rustc --version
-
-      - uses: actions/cache@v4
-        if: steps.has.outputs.crates == 'true'
+          ref: ${{ github.sha }}
+          path: definition
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            crates/target
-          key: seuoffice-rust-${{ runner.os }}-${{ hashFiles('crates/Cargo.lock') }}
-          restore-keys: seuoffice-rust-${{ runner.os }}-
-
-      - name: Format
-        if: steps.has.outputs.crates == 'true'
-        run: cargo fmt --manifest-path crates/Cargo.toml --all -- --check
-
-      # every check below runs whether or not an earlier one failed, so that one
-      # run says everything: the job is red when any of them is
-      - name: Clippy
-        if: ${{ !cancelled() && steps.has.outputs.crates == 'true' }}
-        run: cargo clippy --manifest-path crates/Cargo.toml --workspace --all-targets -- -D warnings
-
-      - name: Unit tests
-        if: ${{ !cancelled() && steps.has.outputs.crates == 'true' }}
-        run: cargo test --manifest-path crates/Cargo.toml --workspace
-
-      - name: Licences of the dependencies
-        if: ${{ !cancelled() && steps.has.outputs.crates == 'true' }}
-        run: |
-          cargo install cargo-deny --locked
-          cd crates && cargo deny check licenses
-
-      # the vendored regex engine carries patches of its own: its suite runs as published
-      - name: Vendored regress tests
-        if: ${{ !cancelled() && steps.has.outputs.crates == 'true' }}
-        run: cargo test --manifest-path crates/vendor/regress/Cargo.toml --features utf16
-
-      - uses: actions/setup-node@v4
-        if: ${{ !cancelled() && steps.has.outputs.crates == 'true' }}
+          ref: ${{ inputs.source_sha }}
+          path: source
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
-          node-version: 22
-          cache: npm
-
-      # a search past the backtrack bound refuses on wasm32 too, where an
-      # unbounded stack traps the module
-      - name: Regex bound on wasm32
-        if: ${{ !cancelled() && steps.has.outputs.crates == 'true' }}
-        run: |
-          cargo build --manifest-path crates/Cargo.toml -p jscompat --example limit_wasm --target wasm32-wasip1 --release
-          node --no-warnings crates/jscompat/examples/limit_wasm.mjs crates/target/wasm32-wasip1/release/examples/limit_wasm.wasm 25000000
-
-      - name: Install
-        if: ${{ !cancelled() && steps.has.outputs.crates == 'true' }}
-        run: npm ci
-
-      - name: Gate harness typecheck and tests
-        if: ${{ !cancelled() && steps.has.outputs.crates == 'true' }}
-        run: |
-          npm --prefix tools/docx-diff run typecheck
-          npm --prefix tools/docx-diff run test
-
-      # the whole output is kept as an artifact: the first comparison of a newly
-      # ported group is read from there, not from a run on somebody's machine
-      - name: Parity gate
-        if: ${{ !cancelled() && steps.has.outputs.crates == 'true' }}
+          toolchain: 1.95.0
+      - name: Record definition and source identity
         shell: bash
         run: |
-          mkdir -p tools/docx-diff/out
-          npm --prefix tools/docx-diff run gate -- --by-function --show 20 2>&1 | tee tools/docx-diff/out/gate.txt
-
-      - name: Keep the gate output
-        if: ${{ always() && steps.has.outputs.crates == 'true' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: docx-diff-out
-          path: tools/docx-diff/out
-          if-no-files-found: ignore
-
-      # the central process (decision 0030): crates/main-core through its
-      # Node-API addon against the TypeScript main process
-      - name: Central process comparison
-        if: ${{ !cancelled() && steps.has.outputs.crates == 'true' }}
-        # a full run takes minutes; a case that never returns fails the step
-        # (its log and trace are kept) instead of holding the job for hours
-        timeout-minutes: 30
-        shell: bash
-        env:
-          MAIN_DIFF_TRACE: ${{ github.workspace }}/tools/main-diff/out/trace.txt
-        run: |
-          npm --prefix tools/main-diff run typecheck
-          mkdir -p tools/main-diff/out
-          npm --prefix tools/main-diff run gate -- --show 40 2>&1 | tee tools/main-diff/out/gate.txt
-
-      - name: Keep the central process comparison
-        if: ${{ always() && steps.has.outputs.crates == 'true' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: main-diff-out
-          path: tools/main-diff/out
-          if-no-files-found: ignore
-
-      # stage 3: each IPC channel's Rust handler (crates/shell-ipc through
-      # crates/ipc-probe) against its TypeScript ipcMain handler. A batch that
-      # is done adds `--require <batch>` here (its coverage then fails the step).
-      - name: IPC comparison
-        if: ${{ !cancelled() && steps.has.outputs.crates == 'true' }}
-        timeout-minutes: 30
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE/definition" rev-parse HEAD)" = "$GITHUB_SHA"
+          mkdir -p "$RUNNER_TEMP/nss-results"
+          printf 'definition_sha=%s\nsource_sha=%s\nimage_digest=%s\n' "$GITHUB_SHA" "$SOURCE_SHA" "$IMAGE_DIGEST" | tee "$RUNNER_TEMP/nss-results/identity.txt"
+          sha256sum "$GITHUB_WORKSPACE/definition/.github/workflows/seuoffice-rust.yml" | tee "$RUNNER_TEMP/nss-results/definition.sha256"
+          sha256sum tools/nss-helper/{contract.json,produce.py,patch_nss.py,test_patch.py,launcher.rs,hosted-validation.py,hosted-proof.py,external-fixture.py,test_token_wrapper.c,test_softhsm_init.c} crates/shell/src/host/d2/pdf/crypto/{nss_export_helper.c,nss_export_helper_test.c,worker/nss_bundle.rs,worker/nss_exchange.rs,worker/nss_bridge.rs} crates/shell/src/{signer_child_guard.rs,index_worker_process.rs} crates/shell/{nss_manifest.rs,nss_build.rs,build.rs} | tee "$RUNNER_TEMP/nss-results/sources.sha256"
+      - name: Prepare pinned helper tools and source archives
         shell: bash
         run: |
-          npm --prefix tools/ipc-diff run typecheck
-          npm --prefix tools/ipc-diff run test
-          mkdir -p tools/ipc-diff/out
-          npm --prefix tools/ipc-diff run gate -- --show 40 --require D1 --require W 2>&1 | tee tools/ipc-diff/out/gate.txt
-
-      - name: Keep the IPC comparison
-        if: ${{ always() && steps.has.outputs.crates == 'true' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ipc-diff-out
-          path: tools/ipc-diff/out
-          if-no-files-found: ignore
-
-  # Fault injection for the stage 3 IPC handlers: each fault rebuilds
-  # ipc-probe and runs its groups, which must then differ.
-  ipc-faults:
-    if: ${{ inputs.ipc_faults }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install
-        run: npm ci
-
-      - name: Faults
-        shell: bash
-        env:
-          FAULTS: ${{ inputs.ipc_faults }}
-          FAULT_SHARD: ${{ matrix.shard }}/4
-        run: |
-          mkdir -p tools/ipc-diff/out
-          node tools/ipc-diff/faults.mjs "$FAULTS" 2>&1 | tee tools/ipc-diff/out/faults.txt
-          exit ${PIPESTATUS[0]}
-
-      - name: Keep the result
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ipc-diff-faults-${{ matrix.shard }}
-          path: tools/ipc-diff/out
-          if-no-files-found: ignore
-
-  # The central process on Windows (decision 0030): the functions whose Rust
-  # reads the platform (the file identity of fs.statSync, the file error
-  # table of node-fs) against the TypeScript on the same machine. The Linux job compares everything else.
-  main-windows:
-    if: ${{ !inputs.faults }}
-    runs-on: windows-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Is the central process in this tree
-        id: has
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/nss-home"
+          mkdir -p "$HOME" "$RUNNER_TEMP/nss-inputs" "$RUNNER_TEMP/nss-tools"
+          curl -fsSL https://archive.ubuntu.com/ubuntu/pool/universe/p/patchelf/patchelf_0.18.0-1.1build1_amd64.deb -o "$RUNNER_TEMP/nss-inputs/patchelf.deb"
+          echo '962a43e33cd56061522554898557a038ccbb8aa4e1e0f421b2d6f6adf1f80c60  '"$RUNNER_TEMP/nss-inputs/patchelf.deb" | sha256sum -c -
+          dpkg-deb -x "$RUNNER_TEMP/nss-inputs/patchelf.deb" "$RUNNER_TEMP/nss-tools"
+          curl -fsSL 'https://security.ubuntu.com/ubuntu/pool/main/b/bison/bison_3.8.2+dfsg-1ubuntu0.24.04.1_amd64.deb' -o "$RUNNER_TEMP/nss-inputs/bison.deb"
+          curl -fsSL 'https://security.ubuntu.com/ubuntu/pool/main/g/gawk/gawk_5.2.1-2ubuntu0.1_amd64.deb' -o "$RUNNER_TEMP/nss-inputs/gawk.deb"
+          curl -fsSL 'https://archive.ubuntu.com/ubuntu/pool/main/libs/libsigsegv/libsigsegv2_2.14-1ubuntu2_amd64.deb' -o "$RUNNER_TEMP/nss-inputs/libsigsegv.deb"
+          printf '%s  %s\n' 9d75084d1293f68f3c1a2ee677dea5baa4e010bac2d4c455d8e23177e97aa353 "$RUNNER_TEMP/nss-inputs/bison.deb" baaf6853bea746485bff4ae0e506599b3c5093ebe6ec9b9584e4272f94f75b93 "$RUNNER_TEMP/nss-inputs/gawk.deb" 889f338bea4ebfd999939d946da4ac0a45668264a5aae78e023feeb0529505b8 "$RUNNER_TEMP/nss-inputs/libsigsegv.deb" | sha256sum -c -
+          dpkg -i "$RUNNER_TEMP/nss-inputs/libsigsegv.deb"
+          dpkg -i "$RUNNER_TEMP/nss-inputs/gawk.deb" "$RUNNER_TEMP/nss-inputs/bison.deb"
+          sha256sum "$(command -v bison)" "$(command -v gawk)" "$RUNNER_TEMP/nss-tools/usr/bin/patchelf" | tee "$RUNNER_TEMP/nss-results/additional-tools.sha256"
+          curl -fsSL 'https://github.com/opendnssec/opendnssec/releases/download/2.1.14/softhsm-2.6.1.tar.gz' -o "$RUNNER_TEMP/nss-inputs/softhsm-2.6.1.tar.gz"
+          echo '61249473054bcd1811519ef9a989a880a7bdcc36d317c9c25457fc614df475f2  '"$RUNNER_TEMP/nss-inputs/softhsm-2.6.1.tar.gz" | sha256sum -c -
+          python3 - <<'PY'
+          import json, os, pathlib, urllib.request
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          pins = json.loads(pathlib.Path('tools/nss-helper/contract.json').read_text())['sources']
+          for name in ('nss', 'sqlite', 'glibc'):
+              pin = pins[name]
+              urllib.request.urlretrieve(pin['url'], root / 'nss-inputs' / pin['filename'])
+          PY
+      - name: Build and validate the NSS artifact set
         shell: bash
         run: |
-          if [ -f crates/main-core/Cargo.toml ]; then echo "main=true" >> "$GITHUB_OUTPUT"; else echo "main=false" >> "$GITHUB_OUTPUT"; fi
-
-      - name: Rust toolchain
-        if: steps.has.outputs.main == 'true'
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-
-      # node_fs's Windows error table against libuv's own switch, every case
-      - name: Error table against libuv
-        if: steps.has.outputs.main == 'true'
-        working-directory: crates
-        run: cargo test -p main-core --lib libuv_table
-
-      - uses: actions/setup-node@v4
-        if: steps.has.outputs.main == 'true'
+          set -euo pipefail
+          export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+          export HOME="$RUNNER_TEMP/nss-home"
+          python3 tools/nss-helper/hosted-validation.py --image-digest "$IMAGE_DIGEST" --inputs "$RUNNER_TEMP/nss-inputs" --patchelf "$RUNNER_TEMP/nss-tools/usr/bin/patchelf" --work "$RUNNER_TEMP/nss-work" --output "$RUNNER_TEMP/nss-output" --results "$RUNNER_TEMP/nss-results" --fixture-setup tools/nss-helper/external-fixture.py 2>&1 | tee "$RUNNER_TEMP/nss-results/validation.log"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
         with:
-          node-version: 22
-          cache: npm
-
-      - name: Install
-        if: steps.has.outputs.main == 'true'
-        run: npm ci
-
-      - name: Central process comparison on Windows
-        if: steps.has.outputs.main == 'true'
-        shell: bash
-        run: |
-          mkdir -p tools/main-diff/out
-          # two runs, each its own filter; the second must not hide the first's failure
-          set +e
-          status=0
-          npm --prefix tools/main-diff run gate -- --fn rename-validation.isSameFile --fn rename-validation.pdfSaveAsTarget --fn folder-files.plainFileIn.hardLinks --fn write-guard.appendData.hardLinks --show 40 2>&1 | tee tools/main-diff/out/gate.txt
-          [ "${PIPESTATUS[0]}" -eq 0 ] || status=1
-          npm --prefix tools/main-diff run gate -- --group node-fs --show 40 2>&1 | tee tools/main-diff/out/gate-node-fs.txt
-          [ "${PIPESTATUS[0]}" -eq 0 ] || status=1
-          exit $status
-
-      - name: Keep the Windows comparison
-        if: ${{ always() && steps.has.outputs.main == 'true' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: main-diff-windows-out
-          path: tools/main-diff/out
-          if-no-files-found: ignore
-
-  # Fault injection for the central process (decision 0030): each fault of
-  # the file rebuilds the Node-API addon and runs the comparison of its
-  # functions, which must then differ.
-  main-faults:
-    if: ${{ inputs.main_faults }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3, 4, 5]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install
-        run: npm ci
-
-      - name: Faults
-        shell: bash
-        env:
-          FAULTS: ${{ inputs.main_faults }}
-          FAULT_SHARD: ${{ matrix.shard }}/6
-        run: |
-          mkdir -p tools/main-diff/out
-          node tools/main-diff/faults.mjs "$FAULTS" 2>&1 | tee tools/main-diff/out/faults.txt
-
-      - name: Keep the result
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: main-diff-faults-${{ matrix.shard }}
-          path: tools/main-diff/out
-          if-no-files-found: ignore
-
-  # Fault injection: each fault of the file through comparison (f), one at a
-  # time. It rebuilds the wasm once per fault, which is why it runs here.
-  faults:
-    if: ${{ inputs.faults }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Rust toolchain with the WASI target
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustup target add wasm32-wasip1
-
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            crates/target
-          key: seuoffice-rust-faults-${{ runner.os }}-${{ hashFiles('crates/Cargo.lock') }}
-          restore-keys: seuoffice-rust-${{ runner.os }}-
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install
-        run: npm ci
-
-      - name: Faults
-        env:
-          FAULTS: ${{ inputs.faults }}
-        run: python3 tools/docx-diff/faults.py "$FAULTS"
-
-      - name: Keep the result
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: docx-diff-faults
-          path: tools/docx-diff/out
-          if-no-files-found: ignore
-
-  pptx:
-    if: ${{ !inputs.faults }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 75
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Is the slides gate in this tree
-        id: has
-        run: |
-          if [ -f tools/pptx-diff/package.json ]; then echo "pptx=true" >> "$GITHUB_OUTPUT"; else echo "pptx=false" >> "$GITHUB_OUTPUT"; fi
-
-      - name: Rust toolchain with the WASI target
-        if: steps.has.outputs.pptx == 'true'
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustup target add wasm32-wasip1
-
-      - uses: actions/cache@v4
-        if: steps.has.outputs.pptx == 'true'
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            crates/target
-          key: seuoffice-rust-pptx-${{ runner.os }}-${{ hashFiles('crates/Cargo.lock') }}
-          restore-keys: seuoffice-rust-${{ runner.os }}-
-
-      - uses: actions/setup-node@v4
-        if: steps.has.outputs.pptx == 'true'
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install
-        if: steps.has.outputs.pptx == 'true'
-        run: npm ci
-
-      - name: Slides gate typecheck
-        if: steps.has.outputs.pptx == 'true'
-        run: npm --prefix tools/pptx-diff run typecheck
-
-      - name: Slides parity gate
-        if: steps.has.outputs.pptx == 'true'
-        run: npm --prefix tools/pptx-diff run gate
-
-      - name: Slides fault anchors
-        if: steps.has.outputs.pptx == 'true'
-        run: npm --prefix tools/pptx-diff run faults -- --inventory
-
-      - name: Keep the slides gate output
-        if: always() && steps.has.outputs.pptx == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: pptx-diff-out
-          path: tools/pptx-diff/out
-          if-no-files-found: ignore
-
-  # One Rust fault at a time through the slides gate: each must be caught.
-  pptx-faults:
-    if: ${{ !inputs.faults }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Is the slides gate in this tree
-        id: has
-        run: |
-          if [ -f tools/pptx-diff/package.json ]; then echo "pptx=true" >> "$GITHUB_OUTPUT"; else echo "pptx=false" >> "$GITHUB_OUTPUT"; fi
-
-      - name: Rust toolchain with the WASI target
-        if: steps.has.outputs.pptx == 'true'
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustup target add wasm32-wasip1
-
-      - uses: actions/cache@v4
-        if: steps.has.outputs.pptx == 'true'
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: seuoffice-rust-pptx-faults-${{ runner.os }}-${{ hashFiles('crates/Cargo.lock') }}
-          restore-keys: seuoffice-rust-${{ runner.os }}-
-
-      - uses: actions/setup-node@v4
-        if: steps.has.outputs.pptx == 'true'
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install
-        if: steps.has.outputs.pptx == 'true'
-        run: npm ci
-
-      - name: Slides fault probes
-        if: steps.has.outputs.pptx == 'true'
-        run: npm --prefix tools/pptx-diff run faults -- --shard ${{ matrix.shard }}/4
-
-      - name: Keep the fault probe output
-        if: always() && steps.has.outputs.pptx == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: pptx-faults-out-${{ matrix.shard }}
-          path: tools/pptx-diff/out/faults
-          if-no-files-found: ignore
+          name: nss-validation-${{ github.run_id }}
+          path: ${{ runner.temp }}/nss-results
+          if-no-files-found: error
