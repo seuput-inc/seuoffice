@@ -79,15 +79,17 @@ def build_nss(make, source, env, *arguments):
         rules = source / 'coreconf' / 'rules.mk'
         original = rules.read_bytes()
         anchor = b'$(SHARED_LIBRARY): $(OBJS) $(RES) $(MAPFILE) $(SUB_SHLOBJS) | $$(@D)/d'
-        expansion = source / 'nss-failed-rule-expansion.txt'
+        expansion = source / 'nss-failed-rule-expansion'
+        expansion.mkdir(exist_ok=True)
         try:
             if original.count(anchor) != 1:
                 raise ValueError('NSS shared-library diagnostic anchor changed')
             variables = ('MAKELEVEL', 'MAKEFLAGS', 'SHARED_LIBRARY', 'OBJS', 'RES', 'MAPFILE', 'SUB_SHLOBJS')
             diagnostic = ''.join(
-                '$(file ' + ('>' if index == 0 else '>>') + str(expansion)
+                '$(file >' + str(expansion)
+                + '/$(MAKELEVEL)-$(subst /,_,$(CURDIR))-' + name + '.txt'
                 + ',' + name + '=$(' + name + '))\n'
-                for index, name in enumerate(variables)
+                for name in variables
             ).encode()
             rules.write_bytes(original.replace(anchor, diagnostic + anchor))
             replay = subprocess.run(
@@ -96,7 +98,7 @@ def build_nss(make, source, env, *arguments):
             )
             print('NSS_FAILED_RULE_EXPANSION ' + json.dumps({
                 'status': replay.returncode,
-                'expansion': expansion.read_text() if expansion.exists() else None,
+                'expansion': {path.name: path.read_text() for path in sorted(expansion.glob('*.txt'))},
                 'stderr': replay.stderr,
             }), flush=True)
         except (OSError, ValueError, subprocess.TimeoutExpired) as error:
