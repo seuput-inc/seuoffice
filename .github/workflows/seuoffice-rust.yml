@@ -24,7 +24,7 @@ jobs:
           printf 'PROOF_DIR=%s/pdf-codec-proof\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           python3 - <<'PY'
           import os
-          assert os.environ['SOURCE_SHA'] == '44c43b919728e1cc6d05914835865df90ee7499e'
+          assert os.environ['SOURCE_SHA'] == '3c9411d4d11cfbda8e810005b416847338bed17e'
           PY
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
