@@ -1,0 +1,66 @@
+{
+  "schema": "seuoffice-quit-completion-validation-input/v1",
+  "phase": "baseline-before-drop-guard",
+  "sourceKind": "exact Main candidate working-tree unit; not a compiled product commit",
+  "actualProductSourcePath": "crates/shell/src/host/quit/completion.rs",
+  "actualProductCallerPath": "crates/shell/src/host/quit.rs",
+  "originalCallerSource": "exact inherited source tar member; only this member read, no full1483audit",
+  "callerBeforeSha256": "110bd97890ad70fd6733060b6101312947775a966465bd654f00d6512faa8345",
+  "callerAfterSha256": "99afa0e3a6d3d79b47ba1d3540fa0ebe596da266f3e393c326218a811cbc60ae",
+  "callerPublicationBoundary": "only own behavior-preserving extraction hunk, never the full inherited caller WIP",
+  "corePostCorrespondence": {
+    "path": "crates/shell-core/src/core_thread.rs",
+    "fileSha256": "98d4c0a5a1da9b4efd5c6ead92968a6c1e662ab09e1471c0f7d8fcc5a17866a4",
+    "lineRange": "52-62",
+    "snippet": "core-thread-post-correspondence.txt",
+    "promise": "rejected job is dropped outside the core queue mutex"
+  },
+  "files": {
+    "quit-caller-post-migration.patch": {
+      "sha256": "7127669699eb590175299d910b67338c14d7ab36aca513b549272c8154820406",
+      "bytes": 1054
+    },
+    "completion.rs": {
+      "sha256": "8bf247896195f3637909c3f929bf6e1697a7458d1f446fd48fa4eb05cae31da9",
+      "bytes": 2649
+    },
+    "quit-completion-hosted-tests.rs": {
+      "sha256": "ad897c92d8aab9e7c105a947f4c0892e82aeefde3e08e9fe8d204f7c4423dda7",
+      "bytes": 83
+    },
+    "Properties.md": {
+      "sha256": "1c5fbc8d0d85d3c1e6d7f60e349320cf57d37ac5fdffefdb18170fc01d11a706",
+      "bytes": 4450
+    },
+    "core-thread-post-correspondence.txt": {
+      "sha256": "9cb2a4f9a34c1c0e3a7c7a7a5f455dccb95c1582c62ab1b0c67872caf1824ba6",
+      "bytes": 337
+    }
+  },
+  "directCompile": "rustc --edition=2024 --test quit-completion-hosted-tests.rs -o <runner-owned-output>",
+  "wrapperPlacement": "validation source root; #[path] resolves directly to actualProductSourcePath",
+  "baselineExpected": {
+    "compileExitCode": 0,
+    "testProcessExitCode": 101,
+    "runtimeAssertionFailures": [
+      "completion::tests::rejected_queue_reports_failure_instead_of_abandoning_waiter",
+      "completion::tests::accepted_job_with_discarded_completion_reports_failure"
+    ],
+    "positiveControls": [
+      "completion::tests::retained_completion_keeps_waiter_pending_until_the_original_result",
+      "completion::tests::original_failure_reaches_the_waiter_without_becoming_success"
+    ],
+    "runtimeFailureReason": "assertion failed: matches!(receive.try_recv(), Ok(Err(_)))"
+  },
+  "baselineRedObserved": false,
+  "behavioralDropGuardApplied": false,
+  "fixGate": "real hosted compile success and exactly these runtime failures before modifying guard",
+  "forbiddenClaims": [
+    "whole shell compilation",
+    "actual CEF quit",
+    "IPC403 opening",
+    "Windows lag resolution",
+    "unbounded proof"
+  ],
+  "rootAuthorization": "hub-office-existing-publisher-next-quit-unit-approved-20261115-1"
+}

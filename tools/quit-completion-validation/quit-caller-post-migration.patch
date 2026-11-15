@@ -1,0 +1,31 @@
+--- a/crates/shell/src/host/quit.rs
++++ b/crates/shell/src/host/quit.rs
+@@ -4,6 +4,8 @@
+ use shell_contract::runtime::Services;
+ use shell_ipc_w::projects::Projects;
+ use tauri::{AppHandle, RunEvent};
++
++mod completion;
+ 
+ #[derive(Clone, Copy, PartialEq, Eq)]
+ enum Startup { Pending, Ready, Failed }
+@@ -150,12 +152,14 @@
+         session_flushed(startup, Err("session services unavailable at quit".into()));
+         return;
+     };
+-    services.core.post(Box::new(move || {
+-        super::recovery_launch::finalize_session_lifecycle(
++    completion::post_with_completion(
++        |job| services.core.post(job),
++        |done| super::recovery_launch::finalize_session_lifecycle(
+             super::recovery_launch::SessionLifecycle::CleanExit,
+-            Box::new(move |result| session_flushed(startup, result)),
+-        );
+-    }));
++            Box::new(move |result| done.finish(result)),
++        ),
++        move |result| session_flushed(startup, result),
++    );
+ }
+ 
+ fn session_flushed(startup: Startup, result: Result<(), String>) {

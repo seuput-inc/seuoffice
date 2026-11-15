@@ -1,0 +1,11 @@
+impl Thread for CoreThread {
+    fn post(&self, job: Job) {
+        let rejected = {
+            let queue = self.queue.lock().unwrap();
+            match queue.as_ref() {
+                Some(queue) => queue.send(job).err().map(|error| error.0),
+                None => Some(job),
+            }
+        };
+        drop(rejected);
+    }
