@@ -31,7 +31,7 @@ def interrupt_on_signal(signum, frame):
 
 
 def run(args, env, data=None, *, pass_fds=(), timeout=300, mode='command',
-        forward_stderr=False):
+        forward_stderr=False, synthetic_diagnostics=False):
     name = Path(args[0]).name
     print(f'fixture: {name} [{mode}]', file=sys.stderr, flush=True)
     proc = subprocess.Popen([str(value) for value in args], env=env,
@@ -40,7 +40,7 @@ def run(args, env, data=None, *, pass_fds=(), timeout=300, mode='command',
                             stderr=None if forward_stderr else subprocess.PIPE,
                             pass_fds=pass_fds, start_new_session=True)
     try:
-        stdout, _ = proc.communicate(input=data, timeout=timeout)
+        stdout, stderr = proc.communicate(input=data, timeout=timeout)
     except subprocess.TimeoutExpired:
         try:
             _signal_group(proc, signal.SIGTERM)
@@ -59,5 +59,10 @@ def run(args, env, data=None, *, pass_fds=(), timeout=300, mode='command',
         proc.communicate()
         raise
     if proc.returncode:
+        if synthetic_diagnostics:
+            for label, output in (('stdout', stdout), ('stderr', stderr)):
+                if output:
+                    text = output[:16384].decode('utf-8', errors='replace')
+                    print(f'fixture synthetic {name} {label}:\n{text}', file=sys.stderr, flush=True)
         raise RuntimeError(f'{name} [{mode}] exited {proc.returncode}')
     return stdout

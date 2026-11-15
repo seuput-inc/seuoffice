@@ -1,3 +1,5 @@
+import contextlib
+import io
 import os
 from pathlib import Path
 import stat
@@ -36,6 +38,21 @@ class FixtureUtilsTest(unittest.TestCase):
     def test_timeout_reaps_child(self):
         with self.assertRaises(TimeoutError):
             run([sys.executable, '-c', 'import time; time.sleep(30)'], os.environ, timeout=0.2)
+
+    def test_synthetic_diagnostics_are_opt_in_and_bounded(self):
+        code = 'import sys; print("synthetic-out"); sys.stderr.write("synthetic-error"); sys.exit(22)'
+        for enabled in (False, True):
+            output = io.StringIO()
+            with contextlib.redirect_stderr(output), self.assertRaises(RuntimeError):
+                run([sys.executable, '-c', code], os.environ, synthetic_diagnostics=enabled)
+            self.assertEqual('synthetic-error' in output.getvalue(), enabled)
+            self.assertEqual('synthetic-out' in output.getvalue(), enabled)
+
+        output = io.StringIO()
+        code = 'import sys; sys.stderr.write("x" * 20000); sys.exit(1)'
+        with contextlib.redirect_stderr(output), self.assertRaises(RuntimeError):
+            run([sys.executable, '-c', code], os.environ, synthetic_diagnostics=True)
+        self.assertLess(len(output.getvalue()), 17000)
 
     def test_outer_timeout_reaps_nested_group(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -67,7 +67,7 @@ def main():
     env['SOFTHSM2_CONF'] = str(config)
     run([init, provider], env)
     run([modutil, '-force', '-dbdir', 'sql:' + str(main_db), '-add', 'SyntheticExternal',
-         '-libfile', wrapper], env)
+         '-libfile', wrapper], env, mode='add-synthetic-module', synthetic_diagnostics=True)
     nickname = 'SyntheticExternalKey'
     locked_nickname = 'SyntheticNonextractable'
     with noise_file(root) as noise:

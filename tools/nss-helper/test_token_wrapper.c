@@ -3,6 +3,7 @@
  * is synthetic test data; no real token or hardware PIN is consulted. */
 #define _POSIX_C_SOURCE 200809L
 #include <dlfcn.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <pkcs11.h>
@@ -47,9 +48,15 @@ CK_RV C_GetFunctionList(CK_FUNCTION_LIST_PTR_PTR output) {
     if (!output) return CKR_ARGUMENTS_BAD;
     if (setenv("SOFTHSM2_CONF", TEST_PROVIDER_CONFIG, 1) != 0) return CKR_GENERAL_ERROR;
     handle = dlopen(TEST_PROVIDER_PATH, RTLD_NOW | RTLD_LOCAL);
-    if (!handle) return CKR_GENERAL_ERROR;
+    if (!handle) {
+        fprintf(stderr, "synthetic provider dlopen: %s\n", dlerror());
+        return CKR_GENERAL_ERROR;
+    }
     *(void **)(&get_list) = dlsym(handle, "C_GetFunctionList");
-    if (!get_list) return CKR_GENERAL_ERROR;
+    if (!get_list) {
+        fprintf(stderr, "synthetic provider dlsym: %s\n", dlerror());
+        return CKR_GENERAL_ERROR;
+    }
     rv = get_list(&upstream);
     if (rv != CKR_OK || !upstream) return rv == CKR_OK ? CKR_GENERAL_ERROR : rv;
     wrapped = *upstream;
