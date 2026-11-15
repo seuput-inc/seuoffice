@@ -1,0 +1,109 @@
+{
+  "schema": "seuoffice-system-webview-diagnostic-v1",
+  "kind": "throwaway-current-renderer-native-engine-diagnostic",
+  "sourceSha": "7f7ba6a62dfc2cfa4f52cdaa6d39ee02bddedbd4",
+  "sourceActualParent": "3bde25bfd039509b7bc8ef594e5f1a37b57ec6d8",
+  "definitionParent": "7f7ba6a62dfc2cfa4f52cdaa6d39ee02bddedbd4",
+  "frozenPolicyBase": "1e9d0ec1ad96c7862dec0ee1b3ec7d47f3148483",
+  "sourceManifest": {
+    "path": "crates/shell/ci/system-webview-source-manifest.json",
+    "sha256": "e37abf24b42084508ecaca527e37fd9b23f9c2e4663e6eea053b59a4653e8244",
+    "entries": 1556
+  },
+  "inheritedCanonicalRhwp": {
+    "path": "tools/build-rhwp-core.mjs",
+    "sha256": "f3a8f06da1371947aaef149e73d0810dd69fca94b760d3d8cca33d711e5c46f1"
+  },
+  "frozenPrepush": {
+    "path": "tools/prepush.mjs",
+    "sha256": "64c82ffe03995e6a518998c90ae354920473d48e0f35caaa01afadd5b938c4d6",
+    "base": "1e9d0ec1ad96c7862dec0ee1b3ec7d47f3148483",
+    "sourceAndDefinitionIndependentRequired": true
+  },
+  "scripts": [
+    {
+      "path": "tools/system-webview-probe/frontend/contract.json",
+      "packetPath": "frontend/contract.json",
+      "bytes": 1286,
+      "sha256": "47b51fae1adc0b0c005081dcae826fd1477925b7de3b41642192f505ee7444d0",
+      "mode": "100644"
+    },
+    {
+      "path": "tools/system-webview-probe/frontend/make_fixture.py",
+      "packetPath": "frontend/make_fixture.py",
+      "bytes": 4206,
+      "sha256": "ef9f4017db9f51335fce1cd6a4ff37b735f9e3fdfbf8cf3a76f18d81fb707fee",
+      "mode": "100644"
+    },
+    {
+      "path": "tools/system-webview-probe/frontend/probe/index.html",
+      "packetPath": "frontend/probe/index.html",
+      "bytes": 571,
+      "sha256": "689310007d901e283056a9f324efc51967fa38fbad3927ac06e1996b2a1ef713",
+      "mode": "100644"
+    },
+    {
+      "path": "tools/system-webview-probe/frontend/probe/probe.js",
+      "packetPath": "frontend/probe/probe.js",
+      "bytes": 11481,
+      "sha256": "0df9a2e014c4ec0996d62d1776c25b8b12e780275f073f9a398ed469c99f5ac9",
+      "mode": "100644"
+    },
+    {
+      "path": "tools/system-webview-probe/native/electron.cjs",
+      "packetPath": "native/electron.cjs",
+      "bytes": 4049,
+      "sha256": "671e48c88c57963182aa97d1aaf05f6eecc86afc04537f2e69ed61742ae917c2",
+      "mode": "100644"
+    },
+    {
+      "path": "tools/system-webview-probe/native/wkwebview.py",
+      "packetPath": "native/wkwebview.py",
+      "bytes": 8939,
+      "sha256": "82b4b789046cbd620750081c0601fcd17de02d2e35b34dd10b9db9c64e0dbf6a",
+      "mode": "100644"
+    },
+    {
+      "path": "tools/system-webview-probe/requirements.txt",
+      "packetPath": "requirements.txt",
+      "bytes": 505,
+      "sha256": "432147e4047a213a9846367adce7b4ebee3b507d8ac7c0120aaabf37f58437d3",
+      "mode": "100644"
+    },
+    {
+      "path": "tools/system-webview-probe/run_probe.py",
+      "packetPath": "run_probe.py",
+      "bytes": 11149,
+      "sha256": "fce6145d9e779484c71223223e4a448e2bf9968d53d2ff34daa4df6073486741",
+      "mode": "100644"
+    }
+  ],
+  "scope": {
+    "hostedOnly": true,
+    "runner": "macos-latest",
+    "engines": [
+      "Electron 43.8.3",
+      "native macOS WKWebView"
+    ],
+    "invocationsPerEngine": 1,
+    "python": "3.12",
+    "pdfRaster": "same pinned PDFium 5.15.2 / 96dpi RGBA",
+    "fixture": "new deterministic synthetic mixed Korean/Latin DOCX",
+    "nativeProfiles": "nonpersistent WKWebsiteDataStore; ephemeral Electron userData under own output",
+    "print": "diagnostic-cloned-dom, not actual application PDF consumer"
+  },
+  "productGreen": false,
+  "wholeCrateChecked": false,
+  "candidateBuilt": false,
+  "nativeAuthorityVerified": false,
+  "releaseAcceptance": false,
+  "oldS5D5QandNssUnchanged": true,
+  "staticReviewFixes": [
+    "explicit NSWindow Python-owned lifetime",
+    "settle after explicit font loads",
+    "post-edit healthy pagination snapshot",
+    "ordered full paragraph text retention with exactly one expected edit",
+    "PDF consumer raster comparison, not PDF internal visitor commands"
+  ],
+  "executionState": "UNRUN_PENDING_STATIC_CHECK_AND_EXACT_DEFINITION"
+}
