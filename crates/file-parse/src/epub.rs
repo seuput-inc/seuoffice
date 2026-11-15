@@ -33,7 +33,10 @@ pub fn epub_to_text(bytes: &[u8]) -> Result<String, String> {
     epub_to_text_with_host(bytes, &seu_host::call)
 }
 
-pub fn epub_to_text_with_host(bytes: &[u8], host: &crate::parse::HostCall<'_>) -> Result<String, String> {
+pub fn epub_to_text_with_host(
+    bytes: &[u8],
+    host: &crate::parse::HostCall<'_>,
+) -> Result<String, String> {
     let book = match open_epub_with_host(bytes, &EPUB_ZIP_LIMITS, host) {
         EpubOpenResult::Opened(book) => book,
         EpubOpenResult::Refused { reason, detail } => {
@@ -56,7 +59,8 @@ pub fn epub_to_text_with_host(bytes: &[u8], host: &crate::parse::HostCall<'_>) -
             continue;
         }
         decoded += 1;
-        let text = extract_chapter_text_with_host(&source.text, host).map_err(|error| error.message)?;
+        let text =
+            extract_chapter_text_with_host(&source.text, host).map_err(|error| error.message)?;
         if !text.is_empty() {
             parts.push(text);
         }

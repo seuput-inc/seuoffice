@@ -125,7 +125,11 @@ impl KbServices for FakeKb {
     fn paths_indexed_as_on_disk(&self, paths: &[String]) -> Result<Vec<String>, Thrown> {
         self.log(json!(["fileIndexStore.pathsIndexedAsOnDisk", paths]));
         let stale = strings(&self.index()["stale"]);
-        Ok(paths.iter().filter(|path| !stale.contains(path)).cloned().collect())
+        Ok(paths
+            .iter()
+            .filter(|path| !stale.contains(path))
+            .cloned()
+            .collect())
     }
 
     fn index_search(

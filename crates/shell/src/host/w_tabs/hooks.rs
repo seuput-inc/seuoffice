@@ -243,9 +243,7 @@ pub(super) fn fail_prepared_view(
     let view = prepared.view;
     let created = prepared.generation.clone();
     drop(prepared);
-    let cleanup: shell_ipc_w::tabs::host::ViewCreationCleanup = std::sync::Arc::new(move |done| {
-        super::accepted::cleanup_proof(cx.clone(), view, created.clone(), proof.clone(), done);
-    });
+    let cleanup = super::accepted::cleanup_proof(cx, view, created, proof);
     let retry = cleanup.clone();
     cleanup(Box::new(move |result| core.post(Box::new(move || {
         let cleanup = match result {
@@ -375,6 +373,12 @@ impl Hooks {
             shell_contract::ipc::RecoveryOpenContext::NativeStartup(operation), None, None, Some(constraint),
             attempt.rollback_store(), before, Box::new(move |result| {
                 let Some(done) = completed.borrow_mut().take() else { return; };
+                let target = match &result { Ok(ready) => ready.target(), Err(error) => &error.target };
+                if let Err(error) = completed_attempt.bind_target(target) {
+                    completed_attempt.retain_unbound_cleanup(Box::new(move || drop(result)));
+                    reporter(error.clone());
+                    return done(Err(error));
+                }
                 match result {
                     Err(error) => {
                         let completion = Box::new(move |result: Result<(), String>| {
@@ -382,7 +386,10 @@ impl Hooks {
                         });
                         match error.cleanup {
                             shell_ipc_w::tabs::host::ViewCreationCleanupState::Complete => completed_attempt.fail_before_creation(error.message, completion),
-                            shell_ipc_w::tabs::host::ViewCreationCleanupState::Acknowledged(receipt) => completed_attempt.fail_after_cleanup(error.message, receipt, reporter.clone(), completion),
+                            shell_ipc_w::tabs::host::ViewCreationCleanupState::Acknowledged(retirement) => {
+                                let original = error.message.clone();
+                                completed_attempt.fail_after_retirement(error.message, retirement, reporter.clone(), Box::new(move || completion(Err(original))));
+                            }
                             shell_ipc_w::tabs::host::ViewCreationCleanupState::Pending(cleanup) => completed_attempt.fail(error.message, Some(cleanup), reporter.clone(), completion),
                         }
                     }
@@ -1554,6 +1561,12 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
             shell_contract::ipc::RecoveryOpenContext::NativeStartup(operation),Some(request),None,None,attempt.rollback_store(),before,
             Box::new(move |result| {
                 let Some(done)=completed.borrow_mut().take() else { return; };
+                let target=match &result { Ok(ready)=>ready.target(),Err(error)=>&error.target };
+                if let Err(error)=completed_attempt.bind_target(target) {
+                    completed_attempt.retain_unbound_cleanup(Box::new(move || drop(result)));
+                    reporter(error.clone());
+                    return done(Err(error));
+                }
                 match result {
                     Err(error)=>{
                         let completion=Box::new(move |result:Result<(),String>| {
@@ -1561,7 +1574,10 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
                         });
                         match error.cleanup {
                             shell_ipc_w::tabs::host::ViewCreationCleanupState::Complete => completed_attempt.fail_before_creation(error.message, completion),
-                            shell_ipc_w::tabs::host::ViewCreationCleanupState::Acknowledged(receipt) => completed_attempt.fail_after_cleanup(error.message, receipt, reporter.clone(), completion),
+                            shell_ipc_w::tabs::host::ViewCreationCleanupState::Acknowledged(retirement) => {
+                                let original = error.message.clone();
+                                completed_attempt.fail_after_retirement(error.message, retirement, reporter.clone(), Box::new(move || completion(Err(original))));
+                            }
                             shell_ipc_w::tabs::host::ViewCreationCleanupState::Pending(cleanup) => completed_attempt.fail(error.message, Some(cleanup), reporter.clone(), completion),
                         }
                     }
@@ -1638,6 +1654,12 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
             shell_contract::ipc::RecoveryOpenContext::NativeStartup(operation), None, Some(startup), None, attempt.rollback_store(), before,
             Box::new(move |result| {
                 let Some(done) = completed.borrow_mut().take() else { return; };
+                let target = match &result { Ok(ready) => ready.target(), Err(error) => &error.target };
+                if let Err(error) = completed_attempt.bind_target(target) {
+                    completed_attempt.retain_unbound_cleanup(Box::new(move || drop(result)));
+                    reporter(error.clone());
+                    return done(Err(error));
+                }
                 match result {
                     Err(error) => {
                         let completion = Box::new(move |result: Result<(), String>| {
@@ -1645,7 +1667,10 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
                         });
                         match error.cleanup {
                             shell_ipc_w::tabs::host::ViewCreationCleanupState::Complete => completed_attempt.fail_before_creation(error.message, completion),
-                            shell_ipc_w::tabs::host::ViewCreationCleanupState::Acknowledged(receipt) => completed_attempt.fail_after_cleanup(error.message, receipt, reporter.clone(), completion),
+                            shell_ipc_w::tabs::host::ViewCreationCleanupState::Acknowledged(retirement) => {
+                                let original = error.message.clone();
+                                completed_attempt.fail_after_retirement(error.message, retirement, reporter.clone(), Box::new(move || completion(Err(original))));
+                            }
                             shell_ipc_w::tabs::host::ViewCreationCleanupState::Pending(cleanup) => completed_attempt.fail(error.message, Some(cleanup), reporter.clone(), completion),
                         }
                     }

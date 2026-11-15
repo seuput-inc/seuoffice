@@ -65,11 +65,26 @@ impl Views for Live {
         Vec::new()
     }
     fn on_destroyed(&self, _: Box<dyn Fn(ViewId) + Send + Sync>) {}
-    fn renderer_generation(&self, view: ViewId) -> Option<shell_contract::runtime::RendererGeneration> {
-        if !self.0.lock().unwrap().contains(&view.0) { return None; }
-        Some(self.1.lock().unwrap().entry(view).or_insert_with(shell_contract::runtime::RendererGeneration::new).clone())
+    fn renderer_generation(
+        &self,
+        view: ViewId,
+    ) -> Option<shell_contract::runtime::RendererGeneration> {
+        if !self.0.lock().unwrap().contains(&view.0) {
+            return None;
+        }
+        Some(
+            self.1
+                .lock()
+                .unwrap()
+                .entry(view)
+                .or_insert_with(shell_contract::runtime::RendererGeneration::new)
+                .clone(),
+        )
     }
-    fn on_renderer_replaced(&self, listener: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>) {
+    fn on_renderer_replaced(
+        &self,
+        listener: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>,
+    ) {
         self.2.lock().unwrap().push(listener);
     }
 }
@@ -182,7 +197,11 @@ fn rig(
         jobs: tx,
         owner: thread::current().id(),
     });
-    let views = Arc::new(Live(Mutex::new(HashSet::from([VIEW])), Mutex::default(), Mutex::default()));
+    let views = Arc::new(Live(
+        Mutex::new(HashSet::from([VIEW])),
+        Mutex::default(),
+        Mutex::default(),
+    ));
     let host = Arc::new(FakeHost {
         statuses: statuses(codex_ready),
         route,
@@ -445,7 +464,9 @@ fn a_destroyed_window_starts_its_generation_aborted() {
         json!({}),
     );
     r.views.0.lock().unwrap().clear();
-    for (_, generation) in r.views.1.lock().unwrap().drain() { generation.revoke(); }
+    for (_, generation) in r.views.1.lock().unwrap().drain() {
+        generation.revoke();
+    }
     let answer = r.call("sheets", json!({ "prompt": "owl" }));
     assert_eq!(answer["error"], "This operation was aborted");
 }

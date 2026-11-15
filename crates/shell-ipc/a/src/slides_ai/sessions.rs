@@ -40,20 +40,35 @@ pub trait SlidesAiSessions: SlidesDocuments {
     /// `slides:ai-run-begin`, second half: `beginAiRun(session, sender.id)`
     /// once the wait ended (`run_begin_finish`); `false` for a view without a
     /// session
-    fn run_begin_finish(&self, view: ViewId, ticket: RunBeginTicket, wake: RunBeginWake) -> Result<bool, IpcError>;
+    fn run_begin_finish(
+        &self,
+        view: ViewId,
+        ticket: RunBeginTicket,
+        wake: RunBeginWake,
+    ) -> Result<bool, IpcError>;
     /// `slides:ai-run-hold`: `holdAiRun(session, sender.id)` and, when it held
     /// something, `buildAllRenderSlides(...)` as an array; `None` for `null`
-    fn run_hold(&self, owner: &shell_contract::ipc::NativeRequestOwner) -> Result<Option<IpcValue>, IpcError>;
+    fn run_hold(
+        &self,
+        owner: &shell_contract::ipc::NativeRequestOwner,
+    ) -> Result<Option<IpcValue>, IpcError>;
     /// `slides:ai-proposal-accept`: `acceptAiProposal(session)`: the render
     /// slides and the snapshot id; `None` for `null`
-    fn proposal_accept(&self, owner: &shell_contract::ipc::NativeRequestOwner) -> Result<Option<(IpcValue, u64)>, IpcError>;
+    fn proposal_accept(
+        &self,
+        owner: &shell_contract::ipc::NativeRequestOwner,
+    ) -> Result<Option<(IpcValue, u64)>, IpcError>;
     /// `slides:ai-proposal-reject`: `rejectAiProposal(session)`; `false` without a session
     fn proposal_reject(&self, view: ViewId) -> bool;
     /// `slides:ai-snapshot-restore`: nothing while the deck is in master view
     /// or inside a history batch, else `restoreAiSnapshot(session, id)` and
     /// `scheduleDeckBroadcast`, answering `buildAllRenderSlides(...)`; `None`
     /// for `null`. `id` is the renderer's argument (NaN for a non-number)
-    fn snapshot_restore(&self, owner: &shell_contract::ipc::NativeRequestOwner, id: f64) -> Result<Option<IpcValue>, IpcError>;
+    fn snapshot_restore(
+        &self,
+        owner: &shell_contract::ipc::NativeRequestOwner,
+        id: f64,
+    ) -> Result<Option<IpcValue>, IpcError>;
     /// `ai:insert-image-url` (`replace` false) or `ai:replace-picture-url`,
     /// up to the download (`insert_image_begin`, `replace_picture_begin`);
     /// `Ok(None)` answers `null` (no session included)

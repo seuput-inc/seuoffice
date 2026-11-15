@@ -175,16 +175,26 @@ mod tests {
     }
     impl Drop for ReenterOnDrop {
         fn drop(&mut self) {
-            let unlocked = self.core.upgrade().is_some_and(|core| core.queue.try_lock().is_ok());
+            let unlocked = self
+                .core
+                .upgrade()
+                .is_some_and(|core| core.queue.try_lock().is_ok());
             self.observed.send(unlocked).unwrap();
         }
     }
 
     fn assert_rejected_job_dropped_outside_queue_lock(core: &Arc<CoreThread>) {
         let (observed, received) = mpsc::channel();
-        let guard = ReenterOnDrop { core: Arc::downgrade(core), observed };
+        let guard = ReenterOnDrop {
+            core: Arc::downgrade(core),
+            observed,
+        };
         core.post(Box::new(move || drop(guard)));
-        assert!(received.recv_timeout(std::time::Duration::from_secs(5)).unwrap());
+        assert!(
+            received
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+        );
     }
 
     #[test]
@@ -199,7 +209,9 @@ mod tests {
         let (send, receive) = mpsc::channel::<Job>();
         drop(receive);
         let core = Arc::new(CoreThread {
-            queue: Mutex::new(Some(send)), id: thread::current().id(), join: Mutex::new(None),
+            queue: Mutex::new(Some(send)),
+            id: thread::current().id(),
+            join: Mutex::new(None),
         });
         assert_rejected_job_dropped_outside_queue_lock(&core);
     }
@@ -218,7 +230,10 @@ mod tests {
 
     #[test]
     fn rejected_job_drop_can_post_again_to_the_same_stopped_core() {
-        struct Repost { core: Arc<CoreThread>, done: mpsc::Sender<()> }
+        struct Repost {
+            core: Arc<CoreThread>,
+            done: mpsc::Sender<()>,
+        }
         impl Drop for Repost {
             fn drop(&mut self) {
                 self.core.post(Box::new(|| {}));
@@ -228,8 +243,13 @@ mod tests {
         let core = CoreThread::spawn("queue-reentrant-rejection");
         core.stop();
         let (send, receive) = mpsc::channel();
-        let guard = Repost { core: core.clone(), done: send };
+        let guard = Repost {
+            core: core.clone(),
+            done: send,
+        };
         thread::spawn(move || core.post(Box::new(move || drop(guard))));
-        receive.recv_timeout(std::time::Duration::from_secs(5)).expect("rejection held its queue lock");
+        receive
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("rejection held its queue lock");
     }
 }

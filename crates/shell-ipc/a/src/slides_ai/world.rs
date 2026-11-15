@@ -119,7 +119,11 @@ impl PictureDeck for FakeDeck {
         Ok(true)
     }
 
-    fn find_element_id(&self, _slide_index: f64, reference: &str) -> Result<Option<String>, CoreError> {
+    fn find_element_id(
+        &self,
+        _slide_index: f64,
+        reference: &str,
+    ) -> Result<Option<String>, CoreError> {
         Ok(reference.strip_prefix("d:").map(str::to_owned))
     }
 
@@ -201,7 +205,10 @@ impl World {
     /// An edit of the open run (or an ordinary one): one undo step, then the page changes
     pub fn edit(&self, view: ViewId, page: usize, suffix: &str) {
         if let Some(entry) = self.entries.borrow_mut().get_mut(&view.0) {
-            entry.session.push_history().unwrap_or_else(|never| match never {});
+            entry
+                .session
+                .push_history()
+                .unwrap_or_else(|never| match never {});
             entry.session.deck.slides[page].push_str(suffix);
             entry.session.op_seq = Some(entry.session.op_seq.unwrap_or(0) + 1);
         }
@@ -285,7 +292,12 @@ impl SlidesAiSessions for World {
         }
     }
 
-    fn run_begin_finish(&self, view: ViewId, ticket: RunBeginTicket, wake: RunBeginWake) -> Result<bool, shell_contract::IpcError> {
+    fn run_begin_finish(
+        &self,
+        view: ViewId,
+        ticket: RunBeginTicket,
+        wake: RunBeginWake,
+    ) -> Result<bool, shell_contract::IpcError> {
         let mut entries = self.entries.borrow_mut();
         let Some(entry) = entries.get_mut(&view.0) else {
             return Ok(false);
@@ -297,20 +309,38 @@ impl SlidesAiSessions for World {
             view.0 as f64,
             ticket,
             wake,
-        ).unwrap_or_else(|never| match never {}))
+        )
+        .unwrap_or_else(|never| match never {}))
     }
 
-    fn run_hold(&self, owner: &shell_contract::ipc::NativeRequestOwner) -> Result<Option<IpcValue>, shell_contract::IpcError> {
+    fn run_hold(
+        &self,
+        owner: &shell_contract::ipc::NativeRequestOwner,
+    ) -> Result<Option<IpcValue>, shell_contract::IpcError> {
         let mut entries = self.entries.borrow_mut();
-        let Some(entry) = entries.get_mut(&owner.view.0) else { return Ok(None) };
-        Ok(hold_ai_run(&mut entry.session, &mut entry.review, owner.view.0 as f64).unwrap_or_else(|never| match never {})
-            .then(|| Self::deck_of(entry)))
+        let Some(entry) = entries.get_mut(&owner.view.0) else {
+            return Ok(None);
+        };
+        Ok(
+            hold_ai_run(&mut entry.session, &mut entry.review, owner.view.0 as f64)
+                .unwrap_or_else(|never| match never {})
+                .then(|| Self::deck_of(entry)),
+        )
     }
 
-    fn proposal_accept(&self, owner: &shell_contract::ipc::NativeRequestOwner) -> Result<Option<(IpcValue, u64)>, shell_contract::IpcError> {
+    fn proposal_accept(
+        &self,
+        owner: &shell_contract::ipc::NativeRequestOwner,
+    ) -> Result<Option<(IpcValue, u64)>, shell_contract::IpcError> {
         let mut entries = self.entries.borrow_mut();
-        let Some(entry) = entries.get_mut(&owner.view.0) else { return Ok(None) };
-        let Some(id) = accept_ai_proposal(&mut entry.session, &mut entry.review, &mut entry.ids).unwrap_or_else(|never| match never {}) else { return Ok(None) };
+        let Some(entry) = entries.get_mut(&owner.view.0) else {
+            return Ok(None);
+        };
+        let Some(id) = accept_ai_proposal(&mut entry.session, &mut entry.review, &mut entry.ids)
+            .unwrap_or_else(|never| match never {})
+        else {
+            return Ok(None);
+        };
         Ok(Some((Self::deck_of(entry), id)))
     }
 
@@ -321,13 +351,23 @@ impl SlidesAiSessions for World {
             .is_some_and(|entry| reject_ai_proposal(&mut entry.review))
     }
 
-    fn snapshot_restore(&self, owner: &shell_contract::ipc::NativeRequestOwner, id: f64) -> Result<Option<IpcValue>, shell_contract::IpcError> {
+    fn snapshot_restore(
+        &self,
+        owner: &shell_contract::ipc::NativeRequestOwner,
+        id: f64,
+    ) -> Result<Option<IpcValue>, shell_contract::IpcError> {
         let mut entries = self.entries.borrow_mut();
-        let Some(entry) = entries.get_mut(&owner.view.0) else { return Ok(None) };
+        let Some(entry) = entries.get_mut(&owner.view.0) else {
+            return Ok(None);
+        };
         if entry.review.master_edit || entry.session.history_batch.is_some() {
             return Ok(None);
         }
-        if !entry.session.restore_ai_snapshot(id).unwrap_or_else(|never| match never {}) {
+        if !entry
+            .session
+            .restore_ai_snapshot(id)
+            .unwrap_or_else(|never| match never {})
+        {
             return Ok(None);
         }
         entry.session.schedule_deck_broadcast();
@@ -362,7 +402,9 @@ impl SlidesAiSessions for World {
         downloaded: Option<Vec<u8>>,
     ) -> Result<Option<JsonValue>, shell_contract::IpcError> {
         let mut entries = self.entries.borrow_mut();
-        let Some(entry) = entries.get_mut(&owner.view.0) else { return Ok(None) };
+        let Some(entry) = entries.get_mut(&owner.view.0) else {
+            return Ok(None);
+        };
         Ok(if replace {
             replace_picture_finish(
                 &mut entry.session,
@@ -381,6 +423,10 @@ impl SlidesAiSessions for World {
                 ticket,
                 downloaded,
             )
-        }.map_err(|error| shell_contract::IpcError { name: Some("Error".into()), message: error.message })?)
+        }
+        .map_err(|error| shell_contract::IpcError {
+            name: Some("Error".into()),
+            message: error.message,
+        })?)
     }
 }

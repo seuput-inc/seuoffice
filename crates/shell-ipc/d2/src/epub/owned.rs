@@ -330,8 +330,8 @@ impl Epub {
             epub.emit_owned(view, &id, mode);
         });
         match &scope.authority {
-            SaveAuthority::Renderer(origin) => self.dialogs.save_owned_many_extra(self.parent(view), options, origin.clone(), scope.participants(), scope.cancel.clone(), scope.pending.clone(), scope.additional.clone(), Box::new(move |result| deliver(result.map(|value| value.map(BookDestination::Renderer)))),
-            SaveAuthority::Native(binding) => self.dialogs.save_existing_document(self.parent(view), options, binding.clone(), scope.participants(), scope.cancel.clone(), scope.pending.clone(), scope.additional.clone(), Box::new(move |result| deliver(result.map(|value| value.map(BookDestination::Native)))),
+            SaveAuthority::Renderer(origin) => self.dialogs.save_owned_many_extra(self.parent(view), options, origin.clone(), scope.participants(), scope.cancel.clone(), scope.pending.clone(), scope.additional.clone(), Box::new(move |result| deliver(result.map(|value| value.map(BookDestination::Renderer))))),
+            SaveAuthority::Native(binding) => self.dialogs.save_existing_document(self.parent(view), options, binding.clone(), scope.participants(), scope.cancel.clone(), scope.pending.clone(), scope.additional.clone(), Box::new(move |result| deliver(result.map(|value| value.map(BookDestination::Native))))),
         }
     }
 

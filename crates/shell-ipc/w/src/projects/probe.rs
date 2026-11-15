@@ -114,14 +114,26 @@ impl ProjectsHost for FakeHost {
         cancel: &shell_contract::runtime::CancelToken,
         effect: &mut dyn FnMut() -> Result<(), shell_contract::IpcError>,
     ) -> Result<(), shell_contract::IpcError> {
-        let generation = owner.context.renderer().ok_or_else(|| shell_contract::IpcError {
-            name: Some("Error".into()), message: "Renderer document authentication is not ready.".into(),
-        })?;
-        generation.with_active(|| cancel.with_active(effect).ok_or_else(|| shell_contract::IpcError {
-            name: Some("Error".into()), message: "The project request was cancelled.".into(),
-        })?).ok_or_else(|| shell_contract::IpcError {
-            name: Some("Error".into()), message: "The renderer was replaced.".into(),
-        })?
+        let generation = owner
+            .context
+            .renderer()
+            .ok_or_else(|| shell_contract::IpcError {
+                name: Some("Error".into()),
+                message: "Renderer document authentication is not ready.".into(),
+            })?;
+        generation
+            .with_active(|| {
+                cancel
+                    .with_active(effect)
+                    .ok_or_else(|| shell_contract::IpcError {
+                        name: Some("Error".into()),
+                        message: "The project request was cancelled.".into(),
+                    })?
+            })
+            .ok_or_else(|| shell_contract::IpcError {
+                name: Some("Error".into()),
+                message: "The renderer was replaced.".into(),
+            })?
     }
     fn attach(&self, events: Arc<dyn PageEvents>) {
         self.state.lock().unwrap().events = Some(events);
@@ -291,7 +303,11 @@ impl ProjectFiles for FakeFiles {
             .flatten()
             .filter_map(Value::as_str)
             .collect();
-        Ok(paths.iter().filter(|path| indexed.contains(&path.as_str())).cloned().collect())
+        Ok(paths
+            .iter()
+            .filter(|path| indexed.contains(&path.as_str()))
+            .cloned()
+            .collect())
     }
 
     /// `readKnowledgeFilePage` for a text file: `parseFileToText` of one reads
@@ -317,7 +333,10 @@ impl ProjectFiles for FakeFiles {
         })
     }
 
-    fn open_files_async(&self, done: Box<dyn FnOnce(Result<Vec<OpenFileState>, OpenFilesSourceFailed>)>) {
+    fn open_files_async(
+        &self,
+        done: Box<dyn FnOnce(Result<Vec<OpenFileState>, OpenFilesSourceFailed>)>,
+    ) {
         let result = if self.config["openFilesFail"].as_bool() == Some(true) {
             Err(OpenFilesSourceFailed)
         } else {
@@ -463,7 +482,9 @@ pub fn probe_hosts(hosts: &mut Hosts, case: &Value) {
     // the same fake, for the triggers
     hosts.insert(host.clone());
     hosts.insert(host as ProjectsHostRef);
-    hosts.insert(super::ProjectCleanupShutdown(shell_contract::runtime::CancelToken::default()));
+    hosts.insert(super::ProjectCleanupShutdown(
+        shell_contract::runtime::CancelToken::default(),
+    ));
     hosts.insert(Arc::new(FakeFiles {
         log: log.clone(),
         config: config.clone(),

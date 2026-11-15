@@ -23,7 +23,6 @@ use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use shell_contract::ids::{ViewId, WindowId};
-use shell_contract::ipc::Sender;
 use shell_contract::provided::Provided;
 use shell_contract::runtime::Services;
 use shell_contract::runtime::Views;
@@ -181,12 +180,8 @@ impl Hooks {
         let network_session = if surface == Surface::Diagram {
             Some(super::d1::diagram_headless::network::session().map_err(TabError)?)
         } else { None };
-        let view = self.cx.views.new_view_id();
-        self.cx.views.add_view(Sender { view, window, surface }, format!("view-{}", view.0)).map_err(TabError)?;
-        let Some(created) = self.cx.views.renderer_generation(view) else {
-            self.cx.views.remove_view(view);
-            return Err(TabError("the reserved editor generation is unavailable".into()));
-        };
+        let registration = self.cx.views.allocate_view().map_err(TabError)?;
+        let (view, created) = self.cx.views.register_view(registration, window, surface).map_err(TabError)?;
         let submission = tauri_runtime_cef::NativeBrowserSubmissionGuard::new();
         let proof = super::window::NativeClosureProof::new(submission.receipt(), view, created.clone());
         if let Err(error) = self.cx.views.set_closure_proof(view, &created, proof.clone()) {
@@ -976,19 +971,20 @@ impl WindowsHost for NativeWindows {
         let Some(shell) = self.shell_window() else { return done(Err(ViewCreationFailure { error: TabError("no shell window for help view".into()), cleanup: ViewCreationCleanupState::Complete })); };
         let Some(window_lifecycle) = self.cx.views.window_lifecycle(shell.window) else { return done(Err(ViewCreationFailure { error: TabError("the shell window is unavailable".into()), cleanup: ViewCreationCleanupState::Complete })); };
         let Some(core) = self.core.get().cloned() else { return done(Err(ViewCreationFailure { error: TabError("the core thread is unavailable".into()), cleanup: ViewCreationCleanupState::Complete })); };
-        let view = self.cx.views.new_view_id();
-        if let Err(error) = self.cx.views.add_view(Sender { view, window: shell.window, surface: Surface::Shell }, format!("view-{}", view.0)) {
-            return done(Err(ViewCreationFailure { error: TabError(error), cleanup: ViewCreationCleanupState::Complete }));
-        }
-        let Some(generation) = self.cx.views.renderer_generation(view) else {
-            self.cx.views.remove_view(view);
-            return done(Err(ViewCreationFailure { error: TabError("the help view generation is unavailable".into()), cleanup: ViewCreationCleanupState::Complete }));
+        let registration = match self.cx.views.allocate_view() {
+            Ok(registration) => registration,
+            Err(error) => return done(Err(ViewCreationFailure { error: TabError(error), cleanup: ViewCreationCleanupState::Complete })),
         };
+        let (view, generation) = match self.cx.views.register_view(registration, shell.window, Surface::Shell) {
+            Ok(registered) => registered,
+            Err(error) => return done(Err(ViewCreationFailure { error: TabError(error), cleanup: ViewCreationCleanupState::Complete })),
+        };
+        let child_generation = generation.clone();
         let cx = self.cx.clone();
         let create_cx = cx.clone();
         accepted::schedule_child(cx, core, view, generation, None, Box::new(move || {
             create_cx.windows.add_reserved_view(
-                view, shell.window, &window_lifecycle,
+                view, &child_generation, shell.window, &window_lifecycle,
                 ViewSpec { url: "genoffice-app://help/index.html?mode=help".into(), bridge: Bridge::Surface(Surface::Shell) },
                 Bounds { x: 0.0, y: 0.0, width: 1.0, height: 1.0 }, WindowOptions::default(),
                 None, None,
@@ -1021,9 +1017,8 @@ impl WindowsHost for NativeWindows {
         let Some(core) = self.core.get().cloned() else { return done(Err(fail("the core thread is unavailable".into()))); };
         let Some(prepare) = crate::ipc::native_owner::with_native_command_preparation_effect(
             &operation, &command, &participants, &cancel, &pending, || || {
-                let view = self.cx.views.new_view_id();
-                self.cx.views.add_view(Sender { view, window: shell.window, surface: Surface::Shell }, format!("view-{}", view.0))?;
-                let created = self.cx.views.renderer_generation(view).ok_or_else(|| "the help view generation is unavailable".to_owned())?;
+                let registration = self.cx.views.allocate_view()?;
+                let (view, created) = self.cx.views.register_view(registration, shell.window, Surface::Shell)?;
                 Ok::<_, String>((view, created))
             },
         ) else { return done(Err(fail("The native help command expired before preparation".into()))); };
@@ -1035,12 +1030,13 @@ impl WindowsHost for NativeWindows {
                 return done(Err(fail(error)));
             }
         };
+        let child_generation = created.clone();
         let cx = self.cx.clone();
         let create_cx = cx.clone();
         native_command::start(cx, core, target, command, participants, cancel, pending,
             Box::new(move |frame| {
                 create_cx.windows.add_reserved_view(
-                    view, shell.window, &window_lifecycle,
+                    view, &child_generation, shell.window, &window_lifecycle,
                     ViewSpec { url, bridge: Bridge::Surface(Surface::Shell) },
                     Bounds { x: 0.0, y: 0.0, width: 1.0, height: 1.0 }, WindowOptions::default(),
                     None, None,

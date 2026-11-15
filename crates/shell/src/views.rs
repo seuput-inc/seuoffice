@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use shell_contract::Surface;
@@ -38,6 +38,7 @@ struct Record {
     native_browser: Option<(i32, FrameNavigationState)>,
     native_reload: Option<ReservedNativeReload>,
     closure_proof: Option<crate::host::window::NativeClosureProof>,
+    teardown: Arc<ViewRemovalDelivery>,
     browser_owner: Arc<Mutex<Option<shell_contract::ipc::NativeBrowserOwner>>>,
 }
 
@@ -666,10 +667,114 @@ fn wake_native_terminal_queue(state: Arc<Mutex<NativeTerminalState>>, core: Arc<
     }));
 }
 
+pub(crate) enum TerminalViewRemoval { Removed(Arc<ViewRemovalDelivery>), Absent, Replaced }
+
+type RemovalDone = Box<dyn FnOnce(Result<(), String>) + Send>;
+
+#[derive(Default)]
+struct ViewRemovalDeliveryState {
+    ready: bool,
+    listeners: Vec<Listener>,
+    running: bool,
+    complete: bool,
+    indeterminate: bool,
+    waiters: Vec<RemovalDone>,
+}
+
+pub(crate) struct ViewRemovalDelivery {
+    view: ViewId,
+    core: Arc<dyn Thread>,
+    state: Mutex<ViewRemovalDeliveryState>,
+}
+
+impl ViewRemovalDelivery {
+    pub(crate) fn start(self: &Arc<Self>, done: RemovalDone) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if state.complete { drop(state); done(Ok(())); return; }
+        if state.indeterminate {
+            drop(state);
+            done(Err("View destruction notification has an indeterminate outcome".into()));
+            return;
+        }
+        state.waiters.push(done);
+        if !state.ready { return; }
+        if state.running { return; }
+        state.running = true;
+        drop(state);
+        let mut guard = ViewRemovalWake { delivery: self.clone(), pending: true };
+        let delivery = self.clone();
+        self.core.post(Box::new(move || {
+            guard.pending = false;
+            if !delivery.core.is_current() {
+                delivery.finish(Err("View destruction notification requires the core thread".into()), false);
+                return;
+            }
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::ipc::view_destroyed(delivery.view);
+                crate::host::menu::document_view_destroyed(delivery.view);
+                let listeners = delivery.state.lock().unwrap_or_else(|error| error.into_inner()).listeners.clone();
+                for listener in &listeners { listener(delivery.view); }
+            }));
+            match result {
+                Ok(()) => delivery.finish(Ok(()), false),
+                Err(_) => delivery.finish(Err("View destruction notification panicked".into()), true),
+            }
+        }));
+    }
+
+    fn publish(self: &Arc<Self>, listeners: Vec<Listener>) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.listeners = listeners;
+        state.ready = true;
+        drop(state);
+        self.start(Box::new(|result| {
+            if let Err(error) = result { eprintln!("{error}"); }
+        }));
+    }
+
+    fn finish(&self, result: Result<(), String>, indeterminate: bool) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.running = false;
+        state.complete = result.is_ok();
+        state.indeterminate = indeterminate;
+        let waiters = std::mem::take(&mut state.waiters);
+        drop(state);
+        for done in waiters { done(result.clone()); }
+    }
+}
+
+struct ViewRemovalWake { delivery: Arc<ViewRemovalDelivery>, pending: bool }
+impl Drop for ViewRemovalWake {
+    fn drop(&mut self) {
+        if self.pending {
+            self.delivery.finish(Err("View destruction notification was discarded".into()), false);
+        }
+    }
+}
+
+static NEXT_VIEW_ID: AtomicU64 = AtomicU64::new(1);
+
+fn allocate_view_id(next: &AtomicU64) -> Result<ViewId, String> {
+    let id = next.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| {
+        if id <= u64::from(u32::MAX) { Some(id + 1) } else { None }
+    }).map_err(|_| "The native view IDs are exhausted".to_owned())?;
+    Ok(ViewId(id as u32))
+}
+
+pub(crate) struct ViewRegistration {
+    view: ViewId,
+    creation: RendererGeneration,
+    table: Arc<()>,
+}
+
+impl ViewRegistration {
+    pub(crate) fn view(&self) -> ViewId { self.view }
+}
+
 pub struct ViewTable {
     inner: Mutex<Inner>,
+    identity: Arc<()>,
     next_window: AtomicU32,
-    next_view: AtomicU32,
     listeners: Mutex<Vec<Listener>>,
     renderer_listeners: Mutex<Vec<RendererListener>>,
     native_terminals: Arc<Mutex<NativeTerminalState>>,
@@ -681,9 +786,9 @@ impl ViewTable {
     pub fn new(outlet: Arc<TauriOutlet>, core: Arc<dyn Thread>) -> Self {
         ViewTable {
             inner: Mutex::default(),
+            identity: Arc::new(()),
             // Electron's ids start at 1
             next_window: AtomicU32::new(1),
-            next_view: AtomicU32::new(1),
             listeners: Mutex::default(),
             renderer_listeners: Mutex::default(),
             native_terminals: Arc::default(),
@@ -696,8 +801,8 @@ impl ViewTable {
         WindowId(self.next_window.fetch_add(1, Ordering::Relaxed))
     }
 
-    pub fn new_view_id(&self) -> ViewId {
-        ViewId(self.next_view.fetch_add(1, Ordering::Relaxed))
+    pub(crate) fn allocate_view(&self) -> Result<ViewRegistration, String> {
+        Ok(ViewRegistration { view: allocate_view_id(&NEXT_VIEW_ID)?, creation: RendererGeneration::new(), table: self.identity.clone() })
     }
 
     pub(crate) fn set_closure_proof(&self, view: ViewId, created: &RendererGeneration, proof: crate::host::window::NativeClosureProof) -> Result<(), String> {
@@ -707,6 +812,7 @@ impl ViewTable {
             if !record.renderer.same_generation(created) || !proof.reservation().matches(view, created) || record.closure_proof.is_some() {
                 return Err("The view closure reservation does not match".into());
             }
+            proof.bind_teardown(record.teardown.clone())?;
             record.closure_proof = Some(proof.clone());
         }
         let terminals = self.native_terminals.clone();
@@ -745,74 +851,42 @@ impl ViewTable {
         self.inner.lock().ok()?.windows.get(&window).map(|record| record.lifecycle.clone())
     }
 
-    /// A view that carries a bridge: its messages are accepted from now on
-    pub fn add_view(&self, sender: Sender, label: String) -> Result<(), String> {
-        let expected = {
-            let inner = self.inner.lock().unwrap();
-            inner.views.get(&sender.view).map(|record| record.renderer.clone())
-        };
-        self.add_view_captured(sender, label, expected)
+    /// Consume the only registration right for this newly allocated physical webview.
+    pub(crate) fn register_view(&self, registration: ViewRegistration, window: WindowId, surface: Surface) -> Result<(ViewId, RendererGeneration), String> {
+        if !Arc::ptr_eq(&registration.table, &self.identity) {
+            return Err("The native view registration belongs to another table".into());
+        }
+        let ViewRegistration { view, creation, .. } = registration;
+        let label = format!("view-{}", view.0);
+        let mut inner = self.inner.lock().map_err(|_| "The view table is unavailable")?;
+        if inner.views.contains_key(&view) || inner.by_label.contains_key(&label) {
+            return Err("The native view registration was already consumed".into());
+        }
+        self.outlet.expect(view);
+        inner.by_label.insert(label.clone(), view);
+        inner.views.insert(view, Record {
+            sender: Sender { view, window, surface }, label,
+            reserved: NativeReservedViewState::new(),
+            docs_media: None, docs_browser: None, docs_asset: None,
+            slides_media: None, slides_browser: None, asset_view: None, asset_browser: None,
+            native_origin: None, renderer: creation.clone(), creation: creation.clone(),
+            native_generation_used: false, native_browser: None, native_reload: None,
+            closure_proof: None, browser_owner: Arc::new(Mutex::new(None)),
+            teardown: Arc::new(ViewRemovalDelivery { view, core: self.core.clone(), state: Mutex::default() }),
+        });
+        Ok((view, creation))
     }
 
-    fn add_view_captured(&self, sender: Sender, label: String, expected: Option<RendererGeneration>) -> Result<(), String> {
-        let (previous, renderer_loss) = {
-            let loss = expected.as_ref().map(RendererGeneration::revoke_deferred);
-            let mut inner = self.inner.lock().unwrap();
-            let matches = match (expected.as_ref(), inner.views.get(&sender.view)) {
-                (None, None) => true,
-                (Some(expected), Some(record)) => record.renderer.same_generation(expected),
-                _ => false,
-            };
-            if !matches {
-                drop(inner);
-                if let Some(loss) = loss { loss.cancel(); }
-                return Err("The original view was replaced during registration".into());
-            }
-            self.outlet.expect(sender.view);
-            let creation = RendererGeneration::new();
-            inner.by_label.insert(label.clone(), sender.view);
-            let previous = inner.views.insert(
-            sender.view,
-            Record {
-                sender,
-                label,
-                reserved: NativeReservedViewState::new(),
-                docs_media: None,
-                docs_browser: None,
-                docs_asset: None,
-                slides_media: None,
-                slides_browser: None,
-                asset_view: None,
-                asset_browser: None,
-                native_origin: None,
-                renderer: creation.clone(),
-                creation,
-                native_generation_used: false,
-                native_browser: None,
-                native_reload: None,
-                closure_proof: None,
-                browser_owner: Arc::new(Mutex::new(None)),
-            },
-            );
-            if let Some(previous) = &previous {
-                if inner.by_label.get(&previous.label) == Some(&sender.view)
-                    && inner.views.get(&sender.view).is_some_and(|record| record.label != previous.label) {
-                    inner.by_label.remove(&previous.label);
-                }
-            }
-            drop(inner);
-            (previous, loss)
-        };
-        if let Some(loss) = renderer_loss { loss.cancel(); }
-        if let Some(previous) = previous {
-            if let Some(lease) = previous.docs_media { lease.revoke(); }
-            if let Some(session) = previous.docs_asset { let _ = crate::host::document_assets::revoke_session(session); }
-            if let Some(lease) = previous.slides_media {
-                lease.revoke();
-                crate::host::d1::slides_media::revoke_view(sender.view, &lease);
-            }
-            if let Some(lease) = previous.asset_view { lease.revoke(); }
-            self.notify_renderer_replaced(sender.view, previous.renderer);
+    pub(crate) fn validate_reserved_view(
+        &self, view: ViewId, created: &RendererGeneration, window: WindowId, surface: Surface,
+        lifecycle: &Arc<NativeWindowLifecycle>,
+    ) -> Result<(), String> {
+        let inner = self.inner.lock().map_err(|_| "The view table is unavailable")?;
+        let record = inner.views.get(&view).ok_or("The captured native view is unavailable")?;
+        if !record.creation.same_generation(created) || !record.renderer.same_generation(created)
+            || !created.is_active() || record.sender.window != window || record.sender.surface != surface
+            || !inner.windows.get(&window).is_some_and(|current| Arc::ptr_eq(&current.lifecycle, lifecycle)) {
+            return Err("The captured native view or parent changed".into());
         }
         Ok(())
     }
@@ -1585,6 +1659,40 @@ impl ViewTable {
         self.remove_view_matching(view,Some(expected))
     }
 
+    pub(crate) fn remove_view_after_terminal(
+        &self, view: ViewId, reservation: &shell_contract::ipc::NativeClosureReservation,
+        owner: &shell_contract::ipc::NativeBrowserOwner, receipt: &shell_contract::ipc::NativeClosureReceipt,
+    ) -> Result<TerminalViewRemoval, String> {
+        if !receipt.matches(reservation, view, reservation.created()) {
+            return Err("The native terminal receipt does not match the captured view".into());
+        }
+        let (replaced, removed) = receipt.with_terminal_owner(owner, |transition| {
+            if !transition.matches(reservation, owner) {
+                return Err("The native terminal owner does not match the captured view".into());
+            }
+            let mut inner = self.inner.lock().map_err(|_| "The view table is unavailable")?;
+            let Some(record) = inner.views.get(&view) else { return Ok((false, None)); };
+            if !record.creation.same_generation(reservation.created())
+                || !record.closure_proof.as_ref().is_some_and(|proof|
+                    proof.reservation().same_reservation(reservation) && proof.owner().same_owner(owner))
+                || record.browser_owner.lock().map_err(|_| "The browser owner is unavailable")?
+                    .as_ref().is_some_and(|current| !current.same_owner(owner)) {
+                return Ok((true, None));
+            }
+            let removed = inner.views.remove(&view).ok_or("The captured native view disappeared")?;
+            if inner.by_label.get(&removed.label) == Some(&view) { inner.by_label.remove(&removed.label); }
+            if inner.main == Some(view) { inner.main = None; }
+            Ok((false, Some(removed)))
+        })?;
+        if let Some(removed) = removed {
+            removed.renderer.revoke_deferred().cancel();
+            let delivery = removed.teardown.clone();
+            self.finish_removed_view(view, removed);
+            return Ok(TerminalViewRemoval::Removed(delivery));
+        }
+        Ok(if replaced { TerminalViewRemoval::Replaced } else { TerminalViewRemoval::Absent })
+    }
+
     fn remove_view_matching(&self, view: ViewId, expected: Option<&RendererGeneration>) -> bool {
         let captured = {
             let inner = self.inner.lock().unwrap();
@@ -1613,6 +1721,11 @@ impl ViewTable {
         let Some(removed) = removed else {
             return false;
         };
+        self.finish_removed_view(view, removed);
+        true
+    }
+
+    fn finish_removed_view(&self, view: ViewId, removed: Record) {
         if let Some(lease) = &removed.docs_media { lease.revoke(); }
         if let Some(lease) = &removed.slides_media {
             lease.revoke();
@@ -1628,15 +1741,8 @@ impl ViewTable {
         crate::host::d2::hwp_host::keyboard::forget(&removed.label);
         crate::host::renderer_disposal::forget(view);
         self.outlet.forget(view);
-        let listeners: Vec<Listener> = self.listeners.lock().unwrap().clone();
-        self.core.post(Box::new(move || {
-            crate::ipc::view_destroyed(view);
-            crate::host::menu::document_view_destroyed(view);
-            for listener in &listeners {
-                listener(view);
-            }
-        }));
-        true
+        let listeners = self.listeners.lock().unwrap().clone();
+        removed.teardown.publish(listeners);
     }
 
     pub(crate) fn remove_window_captured(&self, window: WindowId, expected: &Arc<NativeWindowLifecycle>) -> Result<(), String> {
@@ -1774,6 +1880,103 @@ mod tests {
         }
     }
 
+    fn register(table: &ViewTable, window: WindowId) -> (ViewId, RendererGeneration) {
+        table.register_view(table.allocate_view().unwrap(), window, Surface::Docs).unwrap()
+    }
+
+    #[test]
+    fn view_id_allocation_exhausts_without_wrapping() {
+        let next = AtomicU64::new(u64::from(u32::MAX));
+        assert_eq!(allocate_view_id(&next).unwrap(), ViewId(u32::MAX));
+        assert!(allocate_view_id(&next).is_err());
+        assert!(allocate_view_id(&next).is_err());
+    }
+
+    #[test]
+    fn dropped_view_removal_wake_reports_failure_and_can_retry() {
+        struct Dropped;
+        impl Thread for Dropped {
+            fn post(&self, _: Box<dyn FnOnce() + Send>) {}
+            fn is_current(&self) -> bool { false }
+        }
+        let delivery = Arc::new(ViewRemovalDelivery {
+            view: ViewId(1), core: Arc::new(Dropped),
+            state: Mutex::new(ViewRemovalDeliveryState { ready: true, ..Default::default() }),
+        });
+        let errors = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        for _ in 0..2 {
+            let errors = errors.clone();
+            delivery.start(Box::new(move |result| {
+                if result.is_err() { errors.fetch_add(1, Ordering::Relaxed); }
+            }));
+        }
+        assert_eq!(errors.load(Ordering::Relaxed), 2);
+        assert!(!delivery.state.lock().unwrap().complete);
+    }
+
+    #[test]
+    fn legacy_detach_and_native_proof_join_the_same_teardown() {
+        let table = ViewTable::new(Arc::new(TauriOutlet::default()), Arc::new(Inline));
+        let (view, created) = register(&table, WindowId(1));
+        let proof = crate::host::window::NativeClosureProof::new(
+            tauri_runtime_cef::NativeBrowserClose::default(), view, created.clone(),
+        );
+        table.set_closure_proof(view, &created, proof.clone()).unwrap();
+        let notifications = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = notifications.clone();
+        table.on_destroyed(Box::new(move |_| { observed.fetch_add(1, Ordering::Relaxed); }));
+        let completions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let first = completions.clone();
+        let delivery = proof.teardown().unwrap();
+        delivery.start(Box::new(move |result| {
+            assert!(result.is_ok());
+            first.fetch_add(1, Ordering::Relaxed);
+        }));
+        assert_eq!(completions.load(Ordering::Relaxed), 0);
+        table.remove_view(view);
+        let second = completions.clone();
+        delivery.start(Box::new(move |result| {
+            assert!(result.is_ok());
+            second.fetch_add(1, Ordering::Relaxed);
+        }));
+        assert_eq!(completions.load(Ordering::Relaxed), 2);
+        assert_eq!(notifications.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn terminal_removal_distinguishes_replaced_and_missing_records() {
+        let table = ViewTable::new(Arc::new(TauriOutlet::default()), Arc::new(Inline));
+        let ticket = table.allocate_view().unwrap();
+        let view = ticket.view();
+        let window = WindowId(181);
+        table.add_window(window, "terminal-window".into());
+        let (_, created) = table.register_view(ticket, window, Surface::Docs).unwrap();
+        let actual = crate::host::window::NativeClosureProof::new(tauri_runtime_cef::NativeBrowserClose::default(), view, created.clone());
+        table.set_closure_proof(view, &created, actual).unwrap();
+        let (issuer, reservation, owner) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(view, created);
+        let receipt = issuer.closed();
+        assert!(matches!(table.remove_view_after_terminal(view, &reservation, &owner, &receipt).unwrap(), TerminalViewRemoval::Replaced));
+        assert!(table.sender_of(view).is_some());
+        let absent = table.allocate_view().unwrap().view();
+        let (issuer, reservation, owner) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(absent, RendererGeneration::new());
+        assert!(matches!(table.remove_view_after_terminal(absent, &reservation, &owner, &issuer.closed()).unwrap(), TerminalViewRemoval::Absent));
+    }
+
+    #[test]
+    fn successor_terminal_cannot_remove_the_original_owners_view() {
+        let table = ViewTable::new(Arc::new(TauriOutlet::default()), Arc::new(Inline));
+        let ticket = table.allocate_view().unwrap();
+        let view = ticket.view();
+        let window = WindowId(183);
+        table.add_window(window, "successor-window".into());
+        let (_, created) = table.register_view(ticket, window, Surface::Docs).unwrap();
+        let (issuer, reservation, owner) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(view, created);
+        reservation.with_initial_owner(&owner, |_| Ok(())).unwrap();
+        reservation.prepare_replacement(&owner).unwrap().commit(|_, _| Ok(())).unwrap();
+        assert!(table.remove_view_after_terminal(view, &reservation, &owner, &issuer.closed()).is_err());
+        assert!(table.sender_of(view).is_some());
+    }
+
     #[test]
     fn native_terminal_delivery_retains_event_after_dropped_wake() {
         struct Dropped;
@@ -1814,11 +2017,9 @@ mod tests {
         let table = ViewTable::new(Arc::new(TauriOutlet::default()), Arc::new(Inline));
         let old = WindowId(1);
         let new = WindowId(2);
-        let view = ViewId(1);
         let old_lifecycle = table.add_window(old, "old".into());
         let new_lifecycle = table.add_window(new, "new".into());
-        table.add_view(Sender { view, window: old, surface: Surface::Docs }, "view".into()).unwrap();
-        let generation = table.renderer_generation(view).unwrap();
+        let (view, generation) = register(&table, old);
         let submission = tauri_runtime_cef::NativeBrowserSubmissionGuard::new();
         let proof = crate::host::window::NativeClosureProof::new(submission.receipt(), view, generation.clone());
         table.set_closure_proof(view, &generation, proof.clone()).unwrap();
@@ -1833,11 +2034,9 @@ mod tests {
     #[test]
     fn browser_owner_is_published_only_after_exact_adoption() {
         let table = ViewTable::new(Arc::new(TauriOutlet::default()), Arc::new(Inline));
-        let view = ViewId(91);
         let window = WindowId(91);
         table.add_window(window, "owner-window".into());
-        table.add_view(Sender { view, window, surface: Surface::Docs }, "owner-view".into()).unwrap();
-        let created = table.renderer_generation(view).unwrap();
+        let (view, created) = register(&table, window);
         let submission = tauri_runtime_cef::NativeBrowserSubmissionGuard::new();
         let proof = crate::host::window::NativeClosureProof::new(submission.receipt(), view, created.clone());
         table.set_closure_proof(view, &created, proof.clone()).unwrap();
@@ -1875,7 +2074,7 @@ mod tests {
         assert!(table.prepare_browser_owner(view, &created, foreign.owner()).is_err());
         let stale_replacement = proof.reservation().prepare_replacement(&successor).unwrap();
         let stale_owner = table.prepare_browser_owner(view, &created, stale_replacement.successor()).unwrap();
-        table.add_view(Sender { view, window, surface: Surface::Docs }, "new-owner-view".into()).unwrap();
+        table.remove_view(view);
         assert!(created.with_active(|| stale_replacement.commit(|transition, _| {
             stale_owner.validate(transition)?.commit();
             Ok(())
@@ -1887,11 +2086,9 @@ mod tests {
         let table = ViewTable::new(Arc::new(TauriOutlet::default()), Arc::new(Inline));
         let source = WindowId(41);
         let target = WindowId(42);
-        let view = ViewId(41);
         let source_lifecycle = table.add_window(source, "source".into());
         let target_lifecycle = table.add_window(target, "target".into());
-        table.add_view(Sender { view, window: source, surface: Surface::Docs }, "view".into()).unwrap();
-        let creation = table.renderer_generation(view).unwrap();
+        let (view, creation) = register(&table, source);
         let submission = tauri_runtime_cef::NativeBrowserSubmissionGuard::new();
         let proof = crate::host::window::NativeClosureProof::new(submission.receipt(), view, creation.clone());
         table.set_closure_proof(view, &creation, proof.clone()).unwrap();
@@ -1919,11 +2116,9 @@ mod tests {
         let table = ViewTable::new(Arc::new(TauriOutlet::default()), Arc::new(Inline));
         let old_window = WindowId(1);
         let new_window = WindowId(2);
-        let view = ViewId(7);
         let old_lifecycle = table.add_window(old_window, "old".into());
         let new_lifecycle = table.add_window(new_window, "new".into());
-        table.add_view(Sender { view, window: old_window, surface: Surface::Docs }, "view".into()).unwrap();
-        let old = table.renderer_generation(view).unwrap();
+        let (view, old) = register(&table, old_window);
         let current = table.replace_renderer(view, &old).unwrap();
         let submission = tauri_runtime_cef::NativeBrowserSubmissionGuard::new();
         let proof = crate::host::window::NativeClosureProof::new(submission.receipt(), view, current.clone());
@@ -1941,11 +2136,9 @@ mod tests {
         let table = ViewTable::new(Arc::new(TauriOutlet::default()), Arc::new(Inline));
         let original = WindowId(1);
         let destination = WindowId(2);
-        let view = ViewId(8);
         let original_lifecycle = table.add_window(original, "old".into());
         let destination_lifecycle = table.add_window(destination, "new".into());
-        table.add_view(Sender { view, window: original, surface: Surface::Docs }, "view".into()).unwrap();
-        let generation = table.renderer_generation(view).unwrap();
+        let (view, generation) = register(&table, original);
         let submission = tauri_runtime_cef::NativeBrowserSubmissionGuard::new();
         let proof = crate::host::window::NativeClosureProof::new(submission.receipt(), view, generation.clone());
         table.set_closure_proof(view, &generation, proof.clone()).unwrap();
@@ -1963,8 +2156,7 @@ mod tests {
     #[test]
     fn renderer_replacement_is_fenced_and_keeps_the_view() {
         let table = ViewTable::new(Arc::new(TauriOutlet::default()), Arc::new(Inline));
-        let view = ViewId(9);
-        table.add_view(Sender { view, window: WindowId(1), surface: Surface::Docs }, "doc".into()).unwrap();
+        let (view, _) = register(&table, WindowId(1));
         let events = Arc::new(Mutex::new(Vec::new()));
         let captured = events.clone();
         table.on_renderer_replaced(Box::new(move |id, generation| captured.lock().unwrap().push((id, generation))));
@@ -1982,43 +2174,35 @@ mod tests {
     }
 
     #[test]
-    fn stale_captured_registration_never_retires_or_replaces_successor() {
+    fn registration_ticket_is_bound_to_its_table_and_never_reused() {
         let table = ViewTable::new(Arc::new(TauriOutlet::default()), Arc::new(Inline));
-        let view = ViewId(44);
-        let sender = Sender { view, window: WindowId(1), surface: Surface::Docs };
-        table.add_view(sender, "original".into()).unwrap();
-        let old = table.renderer_generation(view).unwrap();
-        table.add_view(sender, "successor".into()).unwrap();
-        let successor = table.renderer_generation(view).unwrap();
-        assert!(table.add_view_captured(sender, "stale".into(), Some(old)).is_err());
-        assert!(successor.is_active());
-        assert!(table.renderer_generation(view).unwrap().same_generation(&successor));
-        assert_eq!(table.sender_of_label("successor"), Some(sender));
-        assert!(table.sender_of_label("stale").is_none());
+        let other = ViewTable::new(Arc::new(TauriOutlet::default()), Arc::new(Inline));
+        let ticket = table.allocate_view().unwrap();
+        let abandoned = ticket.view();
+        assert!(other.register_view(ticket, WindowId(1), Surface::Docs).is_err());
+        assert!(table.sender_of(abandoned).is_none());
+        assert!(other.sender_of(abandoned).is_none());
+        let (view, _) = register(&table, WindowId(1));
+        assert_ne!(view, abandoned);
     }
 
     #[test]
-    fn stale_renderer_event_cannot_retire_reused_view() {
+    fn stale_child_cannot_resurrect_a_removed_view() {
         let table = ViewTable::new(Arc::new(TauriOutlet::default()), Arc::new(Inline));
-        let view = ViewId(10);
-        let sender = Sender { view, window: WindowId(1), surface: Surface::Docs };
-        table.add_view(sender, "old".into()).unwrap();
-        let old = table.renderer_generation(view).unwrap();
-        table.add_view(sender, "new".into()).unwrap();
-        let current = table.renderer_generation(view).unwrap();
-        assert!(!old.is_active());
-        assert!(table.replace_renderer(view, &old).is_none());
-        assert!(current.is_active());
-        assert!(table.renderer_generation(view).unwrap().same_generation(&current));
+        let window = WindowId(1);
+        let lifecycle = table.add_window(window, "window".into());
+        let (view, old) = register(&table, window);
+        table.remove_view(view);
+        let (next, current) = register(&table, window);
+        assert_ne!(view, next);
+        assert!(table.validate_reserved_view(view, &old, window, Surface::Docs, &lifecycle).is_err());
+        assert!(table.validate_reserved_view(next, &current, window, Surface::Docs, &lifecycle).is_ok());
     }
 
     #[test]
     fn captured_reserved_state_obeys_renderer_generation() {
         let table = ViewTable::new(Arc::new(TauriOutlet::default()), Arc::new(Inline));
-        let view = ViewId(12);
-        let sender = Sender { view, window: WindowId(1), surface: Surface::Docs };
-        table.add_view(sender, "doc".into()).unwrap();
-        let old = table.renderer_generation(view).unwrap();
+        let (view, old) = register(&table, WindowId(1));
         let reserved = table.inner.lock().unwrap().views.get(&view).unwrap().reserved.clone();
         assert!(old.with_active(|| reserved.set_zoom(1.5)).is_some());
         let next = table.replace_renderer(view, &old).unwrap();
@@ -2026,17 +2210,17 @@ mod tests {
         assert_eq!(reserved.zoom(), 1.5);
         assert!(next.with_active(|| reserved.set_zoom(2.0)).is_some());
         assert_eq!(table.zoom(view), 2.0);
-        table.add_view(sender, "replacement".into()).unwrap();
+        table.remove_view(view);
         assert!(next.with_active(|| reserved.set_zoom(4.0)).is_none());
-        assert_eq!(table.zoom(view), 1.0);
+        let (replacement, _) = register(&table, WindowId(1));
+        assert_eq!(table.zoom(replacement), 1.0);
     }
 
     #[test]
     fn delayed_replacement_notification_identifies_only_old_waiters() {
         let queue = Arc::new(Queued::default());
         let table = ViewTable::new(Arc::new(TauriOutlet::default()), queue.clone());
-        let view = ViewId(11);
-        table.add_view(Sender { view, window: WindowId(1), surface: Surface::Docs }, "doc".into()).unwrap();
+        let (view, _) = register(&table, WindowId(1));
         let waiters = Arc::new(Mutex::new(Vec::<RendererGeneration>::new()));
         let pending = waiters.clone();
         table.on_renderer_replaced(Box::new(move |_, old| {

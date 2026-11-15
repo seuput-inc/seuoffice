@@ -37,9 +37,7 @@ fn fail_prepared(prepared: PreparedEditorView, error: TabError, done: Done) {
     let view = prepared.view;
     let created = prepared.generation.clone();
     drop(prepared);
-    let cleanup: shell_ipc_w::tabs::host::ViewCreationCleanup = Arc::new(move |done| {
-        accepted::cleanup_proof(cx.clone(), view, created.clone(), proof.clone(), done);
-    });
+    let cleanup = accepted::cleanup_proof(cx, view, created, proof);
     let retry = cleanup.clone();
     cleanup(Box::new(move |result| core.post(Box::new(move || {
         let cleanup = match result {

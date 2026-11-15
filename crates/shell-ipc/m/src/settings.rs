@@ -18,8 +18,8 @@ use main_core::packages::electron_utils::template_fonts_dir::{
     TemplateFontsHost, template_fonts_dir,
 };
 use main_core::packages::i18n::{self, LANGS, Lang};
-use main_core::shell::app_settings::{read_app_settings, write_app_setting};
 use main_core::shell::app_settings::queue::Completion;
+use main_core::shell::app_settings::{read_app_settings, write_app_setting};
 use main_core::shell::atomic_write::atomic_write_file;
 use main_core::shell::csv_import_limit::csv_import_limit_mb;
 use shell_contract::channels::Surface;
@@ -71,26 +71,41 @@ thread_local! {
 
 fn settings_token() -> u64 {
     SETTINGS_NEXT.with(|next| {
-        let token = next.get().checked_add(1).expect("settings callback ID exhausted");
+        let token = next
+            .get()
+            .checked_add(1)
+            .expect("settings callback ID exhausted");
         next.set(token);
         token
     })
 }
 
-fn start_settings(cx: &Ctx, start: impl FnOnce(main_core::shell::app_settings::queue::Completion) + 'static) {
+fn start_settings(
+    cx: &Ctx,
+    start: impl FnOnce(main_core::shell::app_settings::queue::Completion) + 'static,
+) {
     let token = settings_token();
     SETTINGS_BEGIN.with(|pending| pending.borrow_mut().insert(token, Box::new(start)));
     let core = cx.services.core.clone();
-    main_core::shell::app_settings::queue::for_path(&cx.settings_path()).submit(move |completion| {
-        core.post(Box::new(move || {
-            if let Some(start) = SETTINGS_BEGIN.with(|pending| pending.borrow_mut().remove(&token)) {
-                start(completion);
-            }
-        }));
-    });
+    main_core::shell::app_settings::queue::for_path(&cx.settings_path()).submit(
+        move |completion| {
+            core.post(Box::new(move || {
+                if let Some(start) =
+                    SETTINGS_BEGIN.with(|pending| pending.borrow_mut().remove(&token))
+                {
+                    start(completion);
+                }
+            }));
+        },
+    );
 }
 
-fn queue_settings(cx: &Ctx, completion: main_core::shell::app_settings::queue::Completion, work: impl FnOnce(String) -> Reply + Send + 'static, done: impl FnOnce(Reply) + 'static) {
+fn queue_settings(
+    cx: &Ctx,
+    completion: main_core::shell::app_settings::queue::Completion,
+    work: impl FnOnce(String) -> Reply + Send + 'static,
+    done: impl FnOnce(Reply) + 'static,
+) {
     let token = settings_token();
     SETTINGS_DONE.with(|pending| pending.borrow_mut().insert(token, Box::new(done)));
     let path = cx.settings_path();
@@ -136,79 +151,144 @@ fn author_name_setting(cx: &Ctx) -> (String, String) {
 }
 
 fn set_language(cx: Rc<Ctx>, raw: &IpcValue, reply: Responder, completion: Completion) {
-    let Some(lang) = as_str(raw).filter(|s| i18n::is_lang(s))
-        .and_then(|s| LANGS.into_iter().find(|l| l.as_str() == s)) else {
+    let Some(lang) = as_str(raw)
+        .filter(|s| i18n::is_lang(s))
+        .and_then(|s| LANGS.into_iter().find(|l| l.as_str() == s))
+    else {
         return reply.reply(Ok(IpcValue::Undefined));
     };
-    if lang == lang_of(&cx) { return reply.reply(Ok(IpcValue::Undefined)); }
+    if lang == lang_of(&cx) {
+        return reply.reply(Ok(IpcValue::Undefined));
+    }
     let completed = cx.clone();
-    queue_settings(&cx, completion, move |path| {
-        write_app_setting(&path, "language", Some(JsonValue::String(lang.as_str().to_owned())))
-            .map_err(node_error).map(|()| IpcValue::Undefined)
-    }, move |result| reply.reply(result.map(|value| {
-        completed.state.set_language(lang);
-        completed.host.rebuild_menus_for_language();
-        notify_quick_look(&completed);
-        completed.emit(Target::All, "app:language-changed", vec![string(lang.as_str())]);
-        value
-    })));
+    queue_settings(
+        &cx,
+        completion,
+        move |path| {
+            write_app_setting(
+                &path,
+                "language",
+                Some(JsonValue::String(lang.as_str().to_owned())),
+            )
+            .map_err(node_error)
+            .map(|()| IpcValue::Undefined)
+        },
+        move |result| {
+            reply.reply(result.map(|value| {
+                completed.state.set_language(lang);
+                completed.host.rebuild_menus_for_language();
+                notify_quick_look(&completed);
+                completed.emit(
+                    Target::All,
+                    "app:language-changed",
+                    vec![string(lang.as_str())],
+                );
+                value
+            }))
+        },
+    );
 }
 
 fn set_theme(cx: Rc<Ctx>, raw: &IpcValue, reply: Responder, completion: Completion) {
-    let Some(theme) = as_str(raw).filter(|t| UI_THEMES.contains(t)).map(str::to_owned) else {
+    let Some(theme) = as_str(raw)
+        .filter(|t| UI_THEMES.contains(t))
+        .map(str::to_owned)
+    else {
         return reply.reply(Ok(IpcValue::Undefined));
     };
-    if theme == cx.state.theme(&cx.settings_path()) { return reply.reply(Ok(IpcValue::Undefined)); }
+    if theme == cx.state.theme(&cx.settings_path()) {
+        return reply.reply(Ok(IpcValue::Undefined));
+    }
     cx.state.set_theme(&theme);
     let written = theme.clone();
     let completed = cx.clone();
-    queue_settings(&cx, completion, move |path| {
-        write_app_setting(&path, "theme", Some(JsonValue::String(written)))
-            .map_err(node_error).map(|()| IpcValue::Undefined)
-    }, move |result| reply.reply(result.map(|value| {
-        completed.host.set_native_theme(&theme);
-        completed.host.refresh_title_bar_overlay();
-        notify_quick_look(&completed);
-        completed.emit(Target::All, "app:theme-changed", vec![string(theme)]);
-        value
-    })));
+    queue_settings(
+        &cx,
+        completion,
+        move |path| {
+            write_app_setting(&path, "theme", Some(JsonValue::String(written)))
+                .map_err(node_error)
+                .map(|()| IpcValue::Undefined)
+        },
+        move |result| {
+            reply.reply(result.map(|value| {
+                completed.host.set_native_theme(&theme);
+                completed.host.refresh_title_bar_overlay();
+                notify_quick_look(&completed);
+                completed.emit(Target::All, "app:theme-changed", vec![string(theme)]);
+                value
+            }))
+        },
+    );
 }
 
 fn set_document_theme(cx: Rc<Ctx>, raw: &IpcValue, reply: Responder, completion: Completion) {
-    let Some(theme) = as_str(raw).filter(|t| DOC_THEMES.contains(t)).map(str::to_owned) else {
+    let Some(theme) = as_str(raw)
+        .filter(|t| DOC_THEMES.contains(t))
+        .map(str::to_owned)
+    else {
         return reply.reply(Ok(IpcValue::Undefined));
     };
-    if theme == cx.state.doc_theme(&cx.settings_path()) { return reply.reply(Ok(IpcValue::Undefined)); }
+    if theme == cx.state.doc_theme(&cx.settings_path()) {
+        return reply.reply(Ok(IpcValue::Undefined));
+    }
     cx.state.set_doc_theme(&theme);
     let written = theme.clone();
     let completed = cx.clone();
-    queue_settings(&cx, completion, move |path| {
-        write_app_setting(&path, "documentTheme", Some(JsonValue::String(written)))
-            .map_err(node_error).map(|()| IpcValue::Undefined)
-    }, move |result| reply.reply(result.map(|value| {
-        completed.emit(Target::All, "app:document-theme-changed", vec![string(theme)]);
-        value
-    })));
+    queue_settings(
+        &cx,
+        completion,
+        move |path| {
+            write_app_setting(&path, "documentTheme", Some(JsonValue::String(written)))
+                .map_err(node_error)
+                .map(|()| IpcValue::Undefined)
+        },
+        move |result| {
+            reply.reply(result.map(|value| {
+                completed.emit(
+                    Target::All,
+                    "app:document-theme-changed",
+                    vec![string(theme)],
+                );
+                value
+            }))
+        },
+    );
 }
 
 fn set_author_name(cx: Rc<Ctx>, raw: &IpcValue, reply: Responder, completion: Completion) {
     let value = sanitize_author_name(to_json(raw).as_ref());
     let written = value.clone();
     let completed = cx.clone();
-    queue_settings(&cx, completion, move |path| {
-        let changed = written != read_author_name_setting(&path);
-        if changed {
-            write_app_setting(&path, AUTHOR_NAME_KEY, Some(JsonValue::String(written))).map_err(node_error)?;
-        }
-        Ok(IpcValue::Bool(changed))
-    }, move |result| reply.reply(result.map(|changed| {
-        let fallback = system_author_name(completed.host.username().as_deref());
-        if matches!(changed, IpcValue::Bool(true)) {
-            completed.emit(Target::All, "app:author-name-changed",
-                vec![string(if value.is_empty() { fallback.clone() } else { value.clone() })]);
-        }
-        object([("value", string(value)), ("fallback", string(fallback))])
-    })));
+    queue_settings(
+        &cx,
+        completion,
+        move |path| {
+            let changed = written != read_author_name_setting(&path);
+            if changed {
+                write_app_setting(&path, AUTHOR_NAME_KEY, Some(JsonValue::String(written)))
+                    .map_err(node_error)?;
+            }
+            Ok(IpcValue::Bool(changed))
+        },
+        move |result| {
+            reply.reply(result.map(|changed| {
+                let fallback = system_author_name(completed.host.username().as_deref());
+                if matches!(changed, IpcValue::Bool(true)) {
+                    completed.emit(
+                        Target::All,
+                        "app:author-name-changed",
+                        vec![string(if value.is_empty() {
+                            fallback.clone()
+                        } else {
+                            value.clone()
+                        })],
+                    );
+                }
+                object([("value", string(value)), ("fallback", string(fallback))])
+            }))
+        },
+    );
 }
 
 /// `normalizeMarkdownTheme(value)`: `String(value)` when it names a theme
@@ -288,7 +368,9 @@ pub(crate) fn register(registry: &mut dyn Registry, cx: &Rc<Ctx>) -> Result<(), 
     invoke_later(registry, "home:set-language", move |_, args, reply| {
         let raw = arg(&args, 0).clone();
         let owned = c.clone();
-        start_settings(&c, move |completion| set_language(owned, &raw, reply, completion));
+        start_settings(&c, move |completion| {
+            set_language(owned, &raw, reply, completion)
+        });
     })?;
 
     let theme = |cx: Rc<Ctx>| move |_: &_, _| Ok(string(cx.state.theme(&cx.settings_path())));
@@ -298,7 +380,9 @@ pub(crate) fn register(registry: &mut dyn Registry, cx: &Rc<Ctx>) -> Result<(), 
     invoke_later(registry, "home:set-theme", move |_, args, reply| {
         let raw = arg(&args, 0).clone();
         let owned = c.clone();
-        start_settings(&c, move |completion| set_theme(owned, &raw, reply, completion));
+        start_settings(&c, move |completion| {
+            set_theme(owned, &raw, reply, completion)
+        });
     })?;
 
     let doc_theme =
@@ -306,11 +390,17 @@ pub(crate) fn register(registry: &mut dyn Registry, cx: &Rc<Ctx>) -> Result<(), 
     invoke(registry, "app:get-document-theme", doc_theme(cx.clone()))?;
     invoke(registry, "home:get-document-theme", doc_theme(cx.clone()))?;
     let c = cx.clone();
-    invoke_later(registry, "home:set-document-theme", move |_, args, reply| {
-        let raw = arg(&args, 0).clone();
-        let owned = c.clone();
-        start_settings(&c, move |completion| set_document_theme(owned, &raw, reply, completion));
-    })?;
+    invoke_later(
+        registry,
+        "home:set-document-theme",
+        move |_, args, reply| {
+            let raw = arg(&args, 0).clone();
+            let owned = c.clone();
+            start_settings(&c, move |completion| {
+                set_document_theme(owned, &raw, reply, completion)
+            });
+        },
+    )?;
 
     let c = cx.clone();
     invoke(registry, "home:get-author-name", move |_, _| {
@@ -329,7 +419,9 @@ pub(crate) fn register(registry: &mut dyn Registry, cx: &Rc<Ctx>) -> Result<(), 
     invoke_later(registry, "home:set-author-name", move |_, args, reply| {
         let raw = arg(&args, 0).clone();
         let owned = c.clone();
-        start_settings(&c, move |completion| set_author_name(owned, &raw, reply, completion));
+        start_settings(&c, move |completion| {
+            set_author_name(owned, &raw, reply, completion)
+        });
     })?;
     let c = cx.clone();
     invoke(registry, "user:display-name", move |call, _| {
@@ -491,24 +583,34 @@ mod tests {
     #[test]
     fn rapid_language_reversals_follow_completed_core_state() {
         let p = probe(json!({ "appLocale": "en-US" }));
-        let replies = p.call_many(sender(1, Shell), "home:set-language", vec![
-            vec![string("ko")], vec![string("en")], vec![string("ko")],
-        ]);
+        let replies = p.call_many(
+            sender(1, Shell),
+            "home:set-language",
+            vec![vec![string("ko")], vec![string("en")], vec![string("ko")]],
+        );
         assert_eq!(replies, vec![Ok(IpcValue::Undefined); 3]);
         assert_eq!(settings(&p)["language"], "ko");
-        let languages = p.take_events().into_iter()
+        let languages = p
+            .take_events()
+            .into_iter()
             .filter(|(_, channel, _)| *channel == "app:language-changed")
-            .map(|(_, _, args)| args).collect::<Vec<_>>();
-        assert_eq!(languages, vec![vec![string("ko")], vec![string("en")], vec![string("ko")]]);
+            .map(|(_, _, args)| args)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            languages,
+            vec![vec![string("ko")], vec![string("en")], vec![string("ko")]]
+        );
     }
 
     #[test]
     fn failed_language_writes_do_not_change_the_next_decision() {
         let p = probe(json!({ "appLocale": "en-US" }));
         std::fs::create_dir_all(p.user_data().join("app-settings.json")).unwrap();
-        let replies = p.call_many(sender(1, Shell), "home:set-language", vec![
-            vec![string("ko")], vec![string("en")], vec![string("ko")],
-        ]);
+        let replies = p.call_many(
+            sender(1, Shell),
+            "home:set-language",
+            vec![vec![string("ko")], vec![string("en")], vec![string("ko")]],
+        );
         assert!(replies[0].is_err());
         assert_eq!(replies[1], Ok(IpcValue::Undefined));
         assert!(replies[2].is_err());

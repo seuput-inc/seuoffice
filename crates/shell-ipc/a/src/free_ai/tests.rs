@@ -53,8 +53,17 @@ impl Views for Inline {
         Vec::new()
     }
     fn on_destroyed(&self, _: Box<dyn Fn(ViewId) + Send + Sync>) {}
-    fn renderer_generation(&self, _: ViewId) -> Option<shell_contract::runtime::RendererGeneration> { None }
-    fn on_renderer_replaced(&self, _: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>) {}
+    fn renderer_generation(
+        &self,
+        _: ViewId,
+    ) -> Option<shell_contract::runtime::RendererGeneration> {
+        None
+    }
+    fn on_renderer_replaced(
+        &self,
+        _: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>,
+    ) {
+    }
 }
 
 struct NoPaths;
@@ -92,7 +101,11 @@ impl OsShell for FakeOs {
     fn trash_item(&self, _: &Path) -> Result<(), String> {
         Ok(())
     }
-    fn trash_item_authorized(&self, path: &std::path::Path, admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>) -> Result<(), String> {
+    fn trash_item_authorized(
+        &self,
+        path: &std::path::Path,
+        admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>,
+    ) -> Result<(), String> {
         admit(&mut || self.trash_item(path))
     }
 }

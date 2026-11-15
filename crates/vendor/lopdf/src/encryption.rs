@@ -243,12 +243,14 @@ impl TryFrom<EncryptionVersion<'_>> for EncryptionState {
                 let owner_password = algorithm.sanitize_password_r4(owner_password)?;
                 let user_password = algorithm.sanitize_password_r4(user_password)?;
 
-                algorithm.owner_value =
-                    algorithm.compute_hashed_owner_password_r4(Some(&owner_password), &user_password)?;
+                algorithm.owner_value = algorithm
+                    .compute_hashed_owner_password_r4(Some(&owner_password), &user_password)?;
 
-                algorithm.user_value = algorithm.compute_hashed_user_password_r2(document, &user_password)?;
+                algorithm.user_value =
+                    algorithm.compute_hashed_user_password_r2(document, &user_password)?;
 
-                let file_encryption_key = algorithm.compute_file_encryption_key_r4(document, &user_password)?;
+                let file_encryption_key =
+                    algorithm.compute_file_encryption_key_r4(document, &user_password)?;
 
                 Ok(Self {
                     version: algorithm.version,
@@ -283,12 +285,14 @@ impl TryFrom<EncryptionVersion<'_>> for EncryptionState {
                 let owner_password = algorithm.sanitize_password_r4(owner_password)?;
                 let user_password = algorithm.sanitize_password_r4(user_password)?;
 
-                algorithm.owner_value =
-                    algorithm.compute_hashed_owner_password_r4(Some(&owner_password), &user_password)?;
+                algorithm.owner_value = algorithm
+                    .compute_hashed_owner_password_r4(Some(&owner_password), &user_password)?;
 
-                algorithm.user_value = algorithm.compute_hashed_user_password_r3_r4(document, &user_password)?;
+                algorithm.user_value =
+                    algorithm.compute_hashed_user_password_r3_r4(document, &user_password)?;
 
-                let file_encryption_key = algorithm.compute_file_encryption_key_r4(document, &user_password)?;
+                let file_encryption_key =
+                    algorithm.compute_file_encryption_key_r4(document, &user_password)?;
 
                 Ok(Self {
                     version: algorithm.version,
@@ -326,12 +330,14 @@ impl TryFrom<EncryptionVersion<'_>> for EncryptionState {
                 let owner_password = algorithm.sanitize_password_r4(owner_password)?;
                 let user_password = algorithm.sanitize_password_r4(user_password)?;
 
-                algorithm.owner_value =
-                    algorithm.compute_hashed_owner_password_r4(Some(&owner_password), &user_password)?;
+                algorithm.owner_value = algorithm
+                    .compute_hashed_owner_password_r4(Some(&owner_password), &user_password)?;
 
-                algorithm.user_value = algorithm.compute_hashed_user_password_r3_r4(document, &user_password)?;
+                algorithm.user_value =
+                    algorithm.compute_hashed_user_password_r3_r4(document, &user_password)?;
 
-                let file_encryption_key = algorithm.compute_file_encryption_key_r4(document, &user_password)?;
+                let file_encryption_key =
+                    algorithm.compute_file_encryption_key_r4(document, &user_password)?;
 
                 Ok(Self {
                     version: algorithm.version,
@@ -376,19 +382,20 @@ impl TryFrom<EncryptionVersion<'_>> for EncryptionState {
                 let owner_password = algorithm.sanitize_password_r6(owner_password)?;
                 let user_password = algorithm.sanitize_password_r6(user_password)?;
 
-                let (user_value, user_encrypted) =
-                    algorithm.compute_hashed_user_password_r6(file_encryption_key, user_password)?;
+                let (user_value, user_encrypted) = algorithm
+                    .compute_hashed_user_password_r6(file_encryption_key, user_password)?;
 
                 algorithm.user_value = user_value;
                 algorithm.user_encrypted = user_encrypted;
 
-                let (owner_value, owner_encrypted) =
-                    algorithm.compute_hashed_owner_password_r6(file_encryption_key, owner_password)?;
+                let (owner_value, owner_encrypted) = algorithm
+                    .compute_hashed_owner_password_r6(file_encryption_key, owner_password)?;
 
                 algorithm.owner_value = owner_value;
                 algorithm.owner_encrypted = owner_encrypted;
 
-                algorithm.permission_encrypted = algorithm.compute_permissions(file_encryption_key)?;
+                algorithm.permission_encrypted =
+                    algorithm.compute_permissions(file_encryption_key)?;
 
                 Ok(Self {
                     version: algorithm.version,
@@ -434,19 +441,20 @@ impl TryFrom<EncryptionVersion<'_>> for EncryptionState {
                 let owner_password = algorithm.sanitize_password_r6(owner_password)?;
                 let user_password = algorithm.sanitize_password_r6(user_password)?;
 
-                let (user_value, user_encrypted) =
-                    algorithm.compute_hashed_user_password_r6(file_encryption_key, user_password)?;
+                let (user_value, user_encrypted) = algorithm
+                    .compute_hashed_user_password_r6(file_encryption_key, user_password)?;
 
                 algorithm.user_value = user_value;
                 algorithm.user_encrypted = user_encrypted;
 
-                let (owner_value, owner_encrypted) =
-                    algorithm.compute_hashed_owner_password_r6(file_encryption_key, owner_password)?;
+                let (owner_value, owner_encrypted) = algorithm
+                    .compute_hashed_owner_password_r6(file_encryption_key, owner_password)?;
 
                 algorithm.owner_value = owner_value;
                 algorithm.owner_encrypted = owner_encrypted;
 
-                algorithm.permission_encrypted = algorithm.compute_permissions(file_encryption_key)?;
+                algorithm.permission_encrypted =
+                    algorithm.compute_permissions(file_encryption_key)?;
 
                 Ok(Self {
                     version: algorithm.version,
@@ -473,34 +481,60 @@ impl EncryptionState {
     /// Build the PDF application's R6 AESV3 state from unsanitized UTF-8 bytes.
     /// Passwords end at the first NUL and are limited to 127 bytes.
     pub fn pdf_crypt_new_r6(
-        file_key: &[u8], user: &[u8], owner: &[u8], permissions: Permissions,
+        file_key: &[u8],
+        user: &[u8],
+        owner: &[u8],
+        permissions: Permissions,
     ) -> Result<Self, Error> {
-        if file_key.len() != 32 { return Err(DecryptionError::InvalidKeyLength.into()); }
+        if file_key.len() != 32 {
+            return Err(DecryptionError::InvalidKeyLength.into());
+        }
         fn password(bytes: &[u8]) -> &[u8] {
-            let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len()).min(127);
+            let end = bytes
+                .iter()
+                .position(|b| *b == 0)
+                .unwrap_or(bytes.len())
+                .min(127);
             &bytes[..end]
         }
         let user = password(user);
-        let owner = if owner.is_empty() { user } else { password(owner) };
-        let mut algorithm = PasswordAlgorithm {
-            encrypt_metadata: true, version: 5, revision: 6, length: Some(256),
-            permissions, ..Default::default()
+        let owner = if owner.is_empty() {
+            user
+        } else {
+            password(owner)
         };
-        let (user_value, user_encrypted) = algorithm.compute_hashed_user_password_r6(file_key, user)?;
+        let mut algorithm = PasswordAlgorithm {
+            encrypt_metadata: true,
+            version: 5,
+            revision: 6,
+            length: Some(256),
+            permissions,
+            ..Default::default()
+        };
+        let (user_value, user_encrypted) =
+            algorithm.compute_hashed_user_password_r6(file_key, user)?;
         algorithm.user_value = user_value;
         algorithm.user_encrypted = user_encrypted;
-        let (owner_value, owner_encrypted) = algorithm.compute_hashed_owner_password_r6(file_key, owner)?;
+        let (owner_value, owner_encrypted) =
+            algorithm.compute_hashed_owner_password_r6(file_key, owner)?;
         algorithm.owner_value = owner_value;
         algorithm.owner_encrypted = owner_encrypted;
         algorithm.permission_encrypted = algorithm.compute_permissions(file_key)?;
         let filter: Arc<dyn CryptFilter> = Arc::new(Aes256CryptFilter);
         Ok(Self {
-            version: 5, revision: 6, key_length: Some(256), encrypt_metadata: true,
+            version: 5,
+            revision: 6,
+            key_length: Some(256),
+            encrypt_metadata: true,
             crypt_filters: BTreeMap::from([(b"StdCF".to_vec(), filter)]),
-            file_encryption_key: file_key.to_vec(), stream_filter: b"StdCF".to_vec(),
-            string_filter: b"StdCF".to_vec(), owner_value: algorithm.owner_value,
-            owner_encrypted: algorithm.owner_encrypted, user_value: algorithm.user_value,
-            user_encrypted: algorithm.user_encrypted, permissions,
+            file_encryption_key: file_key.to_vec(),
+            stream_filter: b"StdCF".to_vec(),
+            string_filter: b"StdCF".to_vec(),
+            owner_value: algorithm.owner_value,
+            owner_encrypted: algorithm.owner_encrypted,
+            user_value: algorithm.user_value,
+            user_encrypted: algorithm.user_encrypted,
+            permissions,
             permission_encrypted: algorithm.permission_encrypted,
         })
     }
@@ -574,11 +608,20 @@ impl EncryptionState {
         Self::decode_with_owner(document, password, true, false)
     }
 
-    pub(crate) fn decode_pdf_crypt(document: &Document, password: &[u8], owner: bool) -> Result<Self, Error> {
+    pub(crate) fn decode_pdf_crypt(
+        document: &Document,
+        password: &[u8],
+        owner: bool,
+    ) -> Result<Self, Error> {
         Self::decode_with_owner(document, password, owner, true)
     }
 
-    fn decode_with_owner(document: &Document, password: &[u8], owner: bool, pdf_crypt: bool) -> Result<Self, Error> {
+    fn decode_with_owner(
+        document: &Document,
+        password: &[u8],
+        owner: bool,
+        pdf_crypt: bool,
+    ) -> Result<Self, Error> {
         if !document.is_encrypted() {
             return Err(Error::NotEncrypted);
         }
@@ -656,22 +699,32 @@ impl EncryptionState {
         }
 
         if pdf_crypt && algorithm.version >= 4 {
-            if state.stream_filter.is_empty() { state.stream_filter = b"StdCF".to_vec(); }
-            if state.string_filter.is_empty() { state.string_filter = b"StdCF".to_vec(); }
+            if state.stream_filter.is_empty() {
+                state.stream_filter = b"StdCF".to_vec();
+            }
+            if state.string_filter.is_empty() {
+                state.string_filter = b"StdCF".to_vec();
+            }
             let dictionary = document.get_encrypted()?;
             for name in [state.stream_filter.clone(), state.string_filter.clone()] {
-                let method = dictionary.get(b"CF").and_then(Object::as_dict)
-                    .and_then(|filters| filters.get(&name)).and_then(Object::as_dict)
-                    .and_then(|filter| filter.get(b"CFM")).and_then(Object::as_name).ok();
-                let selected: Arc<dyn CryptFilter> = if name == b"Identity" || method == Some(b"Identity") {
-                    Arc::new(IdentityCryptFilter)
-                } else if state.revision >= 5 {
-                    Arc::new(Aes256CryptFilter)
-                } else if method == Some(b"AESV2") {
-                    Arc::new(Aes128CryptFilter)
-                } else {
-                    Arc::new(Rc4CryptFilter)
-                };
+                let method = dictionary
+                    .get(b"CF")
+                    .and_then(Object::as_dict)
+                    .and_then(|filters| filters.get(&name))
+                    .and_then(Object::as_dict)
+                    .and_then(|filter| filter.get(b"CFM"))
+                    .and_then(Object::as_name)
+                    .ok();
+                let selected: Arc<dyn CryptFilter> =
+                    if name == b"Identity" || method == Some(b"Identity") {
+                        Arc::new(IdentityCryptFilter)
+                    } else if state.revision >= 5 {
+                        Arc::new(Aes256CryptFilter)
+                    } else if method == Some(b"AESV2") {
+                        Arc::new(Aes128CryptFilter)
+                    } else {
+                        Arc::new(Rc4CryptFilter)
+                    };
                 state.crypt_filters.insert(name, selected);
             }
         }
@@ -721,7 +774,10 @@ impl EncryptionState {
         if self.revision >= 5 {
             encrypted.set(b"OE", Object::string_literal(self.owner_encrypted.clone()));
             encrypted.set(b"UE", Object::string_literal(self.user_encrypted.clone()));
-            encrypted.set(b"Perms", Object::string_literal(self.permission_encrypted.clone()));
+            encrypted.set(
+                b"Perms",
+                Object::string_literal(self.permission_encrypted.clone()),
+            );
         }
 
         Ok(encrypted)
@@ -743,7 +799,11 @@ impl EncryptionState {
 }
 
 /// Encrypts `obj`.
-pub fn encrypt_object(state: &EncryptionState, obj_id: ObjectId, obj: &mut Object) -> Result<(), DecryptionError> {
+pub fn encrypt_object(
+    state: &EncryptionState,
+    obj_id: ObjectId,
+    obj: &mut Object,
+) -> Result<(), DecryptionError> {
     // The cross-reference stream shall not be encrypted and strings appearing in the
     // cross-reference stream dictionary shall not be encrypted.
     let is_xref_stream = obj
@@ -837,7 +897,11 @@ pub fn encrypt_object(state: &EncryptionState, obj_id: ObjectId, obj: &mut Objec
 }
 
 /// Decrypts `obj`.
-pub fn decrypt_object(state: &EncryptionState, obj_id: ObjectId, obj: &mut Object) -> Result<(), DecryptionError> {
+pub fn decrypt_object(
+    state: &EncryptionState,
+    obj_id: ObjectId,
+    obj: &mut Object,
+) -> Result<(), DecryptionError> {
     // The cross-reference stream shall not be encrypted and strings appearing in the
     // cross-reference stream dictionary shall not be encrypted.
     let is_xref_stream = obj
@@ -949,7 +1013,11 @@ mod tests {
                 String::from("Plaintext"),
                 String::from("BBF316E8D940AF0AD3"),
             ),
-            (String::from("Wiki"), String::from("pedia"), String::from("1021BF0420")),
+            (
+                String::from("Wiki"),
+                String::from("pedia"),
+                String::from("1021BF0420"),
+            ),
         ];
 
         for (key, plain, cipher) in cases {
@@ -957,7 +1025,8 @@ mod tests {
             let cipher = cipher.as_bytes();
             let mut cipher_bytes = Vec::with_capacity(cipher.len() / 2);
             for hex_pair in cipher.chunks_exact(2) {
-                cipher_bytes.push(u8::from_str_radix(std::str::from_utf8(hex_pair).unwrap(), 16).unwrap());
+                cipher_bytes
+                    .push(u8::from_str_radix(std::str::from_utf8(hex_pair).unwrap(), 16).unwrap());
             }
 
             let decryptor = Rc4::new(key);
@@ -986,14 +1055,20 @@ mod tests {
     #[test]
     fn raw_loader_preserves_empty_user_security_and_unlocks_legacy_owner() {
         let mut document = create_document();
-        let info = document.trailer.get(b"Info").unwrap().as_reference().unwrap();
+        let info = document
+            .trailer
+            .get(b"Info")
+            .unwrap()
+            .as_reference()
+            .unwrap();
         let state = EncryptionState::try_from(EncryptionVersion::V2 {
             document: &document,
             owner_password: "owner",
             user_password: "",
             key_length: 40,
             permissions: Permissions::all(),
-        }).unwrap();
+        })
+        .unwrap();
         document.encrypt(&state).unwrap();
         let mut bytes = Vec::new();
         document.save_to(&mut bytes).unwrap();
@@ -1006,8 +1081,15 @@ mod tests {
         assert!(raw.is_encrypted());
         raw.decrypt_raw_checked(b"owner", true).unwrap();
         assert!(!raw.is_encrypted());
-        assert_eq!(raw.get_dictionary(info).unwrap().get(b"Title").unwrap().as_str().unwrap(),
-            b"Create PDF document example");
+        assert_eq!(
+            raw.get_dictionary(info)
+                .unwrap()
+                .get(b"Title")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            b"Create PDF document example"
+        );
     }
 
     #[test]
@@ -1026,40 +1108,73 @@ mod tests {
             owner_password: "owner",
             user_password: "user",
             permissions: Permissions::all(),
-        }).unwrap();
+        })
+        .unwrap();
         document.encrypt_checked(&state).unwrap();
         let stream = document.get_object(id).unwrap().as_stream().unwrap();
         assert!(stream.content.is_empty());
-        assert_ne!(stream.dict.get(b"Label").unwrap().as_str().unwrap(), b"private");
+        assert_ne!(
+            stream.dict.get(b"Label").unwrap().as_str().unwrap(),
+            b"private"
+        );
         document.decrypt_raw_checked(b"user", false).unwrap();
         let stream = document.get_object(id).unwrap().as_stream().unwrap();
         assert!(stream.content.is_empty());
-        assert_eq!(stream.dict.get(b"Label").unwrap().as_str().unwrap(), b"private");
+        assert_eq!(
+            stream.dict.get(b"Label").unwrap().as_str().unwrap(),
+            b"private"
+        );
     }
 
     #[test]
     fn selected_security_uses_filter_default_and_first_sixteen_id_bytes() {
         let mut document = create_document();
         let file_id = b"0123456789abcdef";
-        document.trailer.set(b"ID", crate::Object::Array(vec![crate::Object::string_literal(file_id)]));
+        document.trailer.set(
+            b"ID",
+            crate::Object::Array(vec![crate::Object::string_literal(file_id)]),
+        );
         let filter: Arc<dyn CryptFilter> = Arc::new(Aes128CryptFilter);
         let state = EncryptionState::try_from(EncryptionVersion::V4 {
-            document: &document, encrypt_metadata: true,
+            document: &document,
+            encrypt_metadata: true,
             crypt_filters: BTreeMap::from([(b"StdCF".to_vec(), filter)]),
-            stream_filter: b"StdCF".to_vec(), string_filter: b"StdCF".to_vec(),
-            owner_password: "owner", user_password: "user", permissions: Permissions::all(),
-        }).unwrap();
+            stream_filter: b"StdCF".to_vec(),
+            string_filter: b"StdCF".to_vec(),
+            owner_password: "owner",
+            user_password: "user",
+            permissions: Permissions::all(),
+        })
+        .unwrap();
         document.encrypt_checked(&state).unwrap();
-        let enc_id = document.trailer.get(b"Encrypt").unwrap().as_reference().unwrap();
-        document.get_dictionary_mut(enc_id).unwrap().remove(b"Length");
+        let enc_id = document
+            .trailer
+            .get(b"Encrypt")
+            .unwrap()
+            .as_reference()
+            .unwrap();
+        document
+            .get_dictionary_mut(enc_id)
+            .unwrap()
+            .remove(b"Length");
         let dictionary = document.get_encrypted().unwrap().clone();
         let security = Document::pdf_crypt_security(&dictionary, b"0123456789abcdef-extra");
         security.authenticate_pdf_crypt_owner(b"owner").unwrap();
         security.authenticate_pdf_crypt_user(b"user").unwrap();
         let object_state = Document::pdf_crypt_state(&security, b"owner", true).unwrap();
         assert!(Document::pdf_crypt_state(&security, b"wrong", true).is_err());
-        let info = document.trailer.get(b"Info").unwrap().as_reference().unwrap();
-        let mut title = document.get_dictionary(info).unwrap().get(b"Title").unwrap().clone();
+        let info = document
+            .trailer
+            .get(b"Info")
+            .unwrap()
+            .as_reference()
+            .unwrap();
+        let mut title = document
+            .get_dictionary(info)
+            .unwrap()
+            .get(b"Title")
+            .unwrap()
+            .clone();
         super::decrypt_object(&object_state, info, &mut title).unwrap();
         assert_eq!(title.as_str().unwrap(), b"Create PDF document example");
         document.decrypt_raw_with_state(&object_state).unwrap();
@@ -1070,9 +1185,12 @@ mod tests {
     fn pdf_crypt_accepts_revision_two_short_user_prefix() {
         let mut document = create_document();
         let state = EncryptionState::try_from(EncryptionVersion::V1 {
-            document: &document, owner_password: "owner", user_password: "user",
+            document: &document,
+            owner_password: "owner",
+            user_password: "user",
             permissions: Permissions::all(),
-        }).unwrap();
+        })
+        .unwrap();
         document.encrypt_checked(&state).unwrap();
         let mut dictionary = document.get_encrypted().unwrap().clone();
         let prefix = dictionary.get(b"U").unwrap().as_str().unwrap()[..4].to_vec();
@@ -1086,11 +1204,20 @@ mod tests {
     fn checked_decryption_rejects_missing_required_object_stream_without_mutation() {
         let mut document = create_document();
         let state = EncryptionState::try_from(EncryptionVersion::V1 {
-            document: &document, owner_password: "owner", user_password: "user",
+            document: &document,
+            owner_password: "owner",
+            user_password: "user",
             permissions: Permissions::all(),
-        }).unwrap();
+        })
+        .unwrap();
         document.encrypt_checked(&state).unwrap();
-        document.reference_table.insert(999, crate::xref::XrefEntry::Compressed { container: 998, index: 0 });
+        document.reference_table.insert(
+            999,
+            crate::xref::XrefEntry::Compressed {
+                container: 998,
+                index: 0,
+            },
+        );
         assert!(document.decrypt_raw_checked(b"user", false).is_err());
         assert!(document.is_encrypted());
         assert!(!document.was_encrypted());
@@ -1175,11 +1302,20 @@ mod tests {
             encrypt_metadata: true,
             crypt_filters: BTreeMap::from([(b"StdCF".to_vec(), filter)]),
             file_encryption_key: &key,
-            stream_filter: b"StdCF".to_vec(), string_filter: b"StdCF".to_vec(),
-            owner_password: "owner", user_password: "user", permissions: Permissions::all(),
-        }).unwrap();
+            stream_filter: b"StdCF".to_vec(),
+            string_filter: b"StdCF".to_vec(),
+            owner_password: "owner",
+            user_password: "user",
+            permissions: Permissions::all(),
+        })
+        .unwrap();
         document.encrypt_checked(&state).unwrap();
-        let id = document.trailer.get(b"Encrypt").unwrap().as_reference().unwrap();
+        let id = document
+            .trailer
+            .get(b"Encrypt")
+            .unwrap()
+            .as_reference()
+            .unwrap();
         document.get_dictionary_mut(id).unwrap().remove(b"Perms");
         let security = Document::pdf_crypt_security(document.get_encrypted().unwrap(), b"ABC");
         let derived = Document::pdf_crypt_state(&security, b"user", false).unwrap();
@@ -1191,13 +1327,26 @@ mod tests {
     fn pdf_crypt_r6_builder_uses_raw_password_bytes() {
         let key = [42u8; 32];
         let permissions = Permissions::from_bits_retain((-4i64) as u64);
-        let state = EncryptionState::pdf_crypt_new_r6(&key, "a\u{ad}b".as_bytes(), b"owner\0ignored", permissions).unwrap();
+        let state = EncryptionState::pdf_crypt_new_r6(
+            &key,
+            "a\u{ad}b".as_bytes(),
+            b"owner\0ignored",
+            permissions,
+        )
+        .unwrap();
         let dictionary = state.encode().unwrap();
         let security = Document::pdf_crypt_security(&dictionary, b"");
-        security.authenticate_pdf_crypt_user("a\u{ad}b".as_bytes()).unwrap();
+        security
+            .authenticate_pdf_crypt_user("a\u{ad}b".as_bytes())
+            .unwrap();
         assert!(security.authenticate_pdf_crypt_user(b"ab").is_err());
         security.authenticate_pdf_crypt_owner(b"owner").unwrap();
-        assert_eq!(Document::pdf_crypt_state(&security, b"owner", true).unwrap().file_encryption_key(), &key);
+        assert_eq!(
+            Document::pdf_crypt_state(&security, b"owner", true)
+                .unwrap()
+                .file_encryption_key(),
+            &key
+        );
         assert_eq!(dictionary.get(b"P").unwrap().as_i64().unwrap(), -4);
     }
 

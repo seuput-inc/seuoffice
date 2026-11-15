@@ -12,7 +12,6 @@ use super::{canonical_path_key, is_valid_project_id, nfc};
 
 #[path = "chat_files.rs"]
 mod chat_files;
-#[path = "native_store/owned_rename.rs"]
 pub mod owned_rename;
 use owned_rename::RenameIo as _;
 

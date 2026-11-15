@@ -103,7 +103,6 @@ fn is_text_ext(ext: &str) -> bool {
     )
 }
 
-
 /// `ZIP_DOCUMENT_EXTS.has(ext)`
 fn is_zip_document_ext(ext: &str) -> bool {
     matches!(
@@ -379,8 +378,12 @@ fn read(
             )));
         };
         let text = match ext {
-            "md" | "markdown" | "txt" | "json" => crate::markdown::redact_markdown_source(&text).map_err(caught)?,
-            "html" | "htm" => crate::html::redact_html_source_with_host(&text, host).map_err(caught)?,
+            "md" | "markdown" | "txt" | "json" => {
+                crate::markdown::redact_markdown_source(&text).map_err(caught)?
+            }
+            "html" | "htm" => {
+                crate::html::redact_html_source_with_host(&text, host).map_err(caught)?
+            }
             _ => text,
         };
         return Ok(Some(read_ok(text)));
@@ -471,21 +474,46 @@ mod owned_host_tests {
                 "fileparse.diagramFormatOf" => Ok(Value::Null),
                 "fileparse.htmlSourceElements" => {
                     assert_eq!(input["source"], source);
-                    Ok(json!([{"tagName":"p","attrs":[{"name":"data-gx-redact","value":"name"}],"startTag":[0,25],"inner":[25,31]}]))
+                    Ok(
+                        json!([{"tagName":"p","attrs":[{"name":"data-gx-redact","value":"name"}],"startTag":[0,25],"inner":[25,31]}]),
+                    )
                 }
                 _ => panic!("unexpected dependency {name}"),
             }
         };
-        let result = parse_file_to_text_with_host("a.html", source.as_bytes(), ParseFileOptions::default(), None, &host);
+        let result = parse_file_to_text_with_host(
+            "a.html",
+            source.as_bytes(),
+            ParseFileOptions::default(),
+            None,
+            &host,
+        );
         assert_eq!(result["ok"], true);
         assert!(!result["text"].as_str().unwrap().contains("secret"));
-        assert_eq!(*calls.borrow(), ["fileparse.diagramFormatOf", "fileparse.htmlSourceElements"]);
+        assert_eq!(
+            *calls.borrow(),
+            ["fileparse.diagramFormatOf", "fileparse.htmlSourceElements"]
+        );
     }
 
     #[test]
     fn dependency_failure_keeps_original_parse_error_shape() {
-        let host = |_: &str, _: &Value| Err(seu_host::HostError { name:"AbortError".into(), message:"request ended".into() });
-        let result = parse_file_to_text_with_host("a.txt", b"text", ParseFileOptions::default(), None, &host);
-        assert_eq!(result, json!({"ok":false,"kind":"text","error":"request ended"}));
+        let host = |_: &str, _: &Value| {
+            Err(seu_host::HostError {
+                name: "AbortError".into(),
+                message: "request ended".into(),
+            })
+        };
+        let result = parse_file_to_text_with_host(
+            "a.txt",
+            b"text",
+            ParseFileOptions::default(),
+            None,
+            &host,
+        );
+        assert_eq!(
+            result,
+            json!({"ok":false,"kind":"text","error":"request ended"})
+        );
     }
 }

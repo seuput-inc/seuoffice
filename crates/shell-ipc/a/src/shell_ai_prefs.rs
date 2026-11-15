@@ -7,10 +7,10 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::{Rc, Weak};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::path::PathBuf;
+use std::rc::{Rc, Weak};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use jscompat::{JsObject, JsonValue};
 use main_core::packages::ui::normalize_slides_ai_fonts;
@@ -126,10 +126,15 @@ static NEXT_PREF_CACHE: AtomicU64 = AtomicU64::new(1);
 fn prefs_from_settings(saved: &main_core::shell::app_settings::Settings) -> AiPanelPrefs {
     let mut raw = JsObject::new();
     for (key, stored) in [
-        ("side", "aiPanelSide"), ("fontSize", "aiPanelFontSize"),
-        ("customFontSize", "aiPanelCustomFontSize"), ("spellcheck", "aiPanelSpellcheck"),
-        ("openInNewDocs", "aiPanelOpenInNewDocs"), ("showAiSidebar", "aiPanelShowSidebar"),
-    ] { field(&mut raw, key, saved.get(stored).cloned()); }
+        ("side", "aiPanelSide"),
+        ("fontSize", "aiPanelFontSize"),
+        ("customFontSize", "aiPanelCustomFontSize"),
+        ("spellcheck", "aiPanelSpellcheck"),
+        ("openInNewDocs", "aiPanelOpenInNewDocs"),
+        ("showAiSidebar", "aiPanelShowSidebar"),
+    ] {
+        field(&mut raw, key, saved.get(stored).cloned());
+    }
     normalize_ai_panel_prefs(&raw)
 }
 
@@ -156,7 +161,9 @@ impl ShellAiPrefsPort {
     ) -> Self {
         let cache = Rc::new(RefCell::new(None));
         let cache_id = NEXT_PREF_CACHE.fetch_add(1, Ordering::Relaxed);
-        PREF_CACHES.with(|caches| { caches.borrow_mut().insert(cache_id, Rc::downgrade(&cache)); });
+        PREF_CACHES.with(|caches| {
+            caches.borrow_mut().insert(cache_id, Rc::downgrade(&cache));
+        });
         ShellAiPrefsPort {
             paths,
             events,
@@ -177,7 +184,6 @@ impl ShellAiPrefsPort {
             .join("app-settings.json");
         path.to_string_lossy().into_owned()
     }
-
 
     /// `setAiPanelPrefs(patch)`: `patch` as the renderer sent it, since
     /// `'key' in raw` also sees a key whose value is `undefined`
@@ -223,12 +229,19 @@ impl ShellAiPrefsPort {
             let saved = read_app_settings(&path);
             core.post(Box::new(move || {
                 let _completion = completion;
-                let cache = PREF_CACHES.with(|caches| caches.borrow().get(&cache_id).and_then(Weak::upgrade));
+                let cache = PREF_CACHES
+                    .with(|caches| caches.borrow().get(&cache_id).and_then(Weak::upgrade));
                 let Some(cache) = cache else {
-                    reply.reply(Err(IpcError { name: Some("Error".into()), message: "AI preferences service is unavailable".into() }));
+                    reply.reply(Err(IpcError {
+                        name: Some("Error".into()),
+                        message: "AI preferences service is unavailable".into(),
+                    }));
                     return;
                 };
-                let prefs = cache.borrow().clone().unwrap_or_else(|| prefs_from_settings(&saved));
+                let prefs = cache
+                    .borrow()
+                    .clone()
+                    .unwrap_or_else(|| prefs_from_settings(&saved));
                 *cache.borrow_mut() = Some(prefs.clone());
                 reply.reply(Ok(from_json(&prefs.to_json())));
             }));
@@ -245,12 +258,19 @@ impl ShellAiPrefsPort {
             let saved = read_app_settings(&path);
             let post = core.clone();
             core.post(Box::new(move || {
-                let cache = PREF_CACHES.with(|caches| caches.borrow().get(&cache_id).and_then(Weak::upgrade));
+                let cache = PREF_CACHES
+                    .with(|caches| caches.borrow().get(&cache_id).and_then(Weak::upgrade));
                 let Some(cache) = cache else {
-                    reply.reply(Err(IpcError { name: Some("Error".into()), message: "AI preferences service is unavailable".into() }));
+                    reply.reply(Err(IpcError {
+                        name: Some("Error".into()),
+                        message: "AI preferences service is unavailable".into(),
+                    }));
                     return;
                 };
-                let previous = cache.borrow().clone().unwrap_or_else(|| prefs_from_settings(&saved));
+                let previous = cache
+                    .borrow()
+                    .clone()
+                    .unwrap_or_else(|| prefs_from_settings(&saved));
                 let (next, changed) = Self::merge(previous.clone(), args.first());
                 if !changed {
                     *cache.borrow_mut() = Some(previous);
@@ -259,19 +279,37 @@ impl ShellAiPrefsPort {
                     return;
                 }
                 workers.spawn(Box::new(move || {
-                    let result = write_app_settings(&path, &[
-                        ("aiPanelSide", Some(JsonValue::String(next.side.into()))),
-                        ("aiPanelFontSize", Some(JsonValue::String(next.font_size.into()))),
-                        ("aiPanelCustomFontSize", Some(JsonValue::Number(next.custom_font_size))),
-                        ("aiPanelSpellcheck", Some(JsonValue::Bool(next.spellcheck))),
-                        ("aiPanelOpenInNewDocs", Some(JsonValue::Bool(next.open_in_new_docs))),
-                        ("aiPanelShowSidebar", Some(JsonValue::Bool(next.show_ai_sidebar))),
-                    ]).map_err(node_error);
+                    let result = write_app_settings(
+                        &path,
+                        &[
+                            ("aiPanelSide", Some(JsonValue::String(next.side.into()))),
+                            (
+                                "aiPanelFontSize",
+                                Some(JsonValue::String(next.font_size.into())),
+                            ),
+                            (
+                                "aiPanelCustomFontSize",
+                                Some(JsonValue::Number(next.custom_font_size)),
+                            ),
+                            ("aiPanelSpellcheck", Some(JsonValue::Bool(next.spellcheck))),
+                            (
+                                "aiPanelOpenInNewDocs",
+                                Some(JsonValue::Bool(next.open_in_new_docs)),
+                            ),
+                            (
+                                "aiPanelShowSidebar",
+                                Some(JsonValue::Bool(next.show_ai_sidebar)),
+                            ),
+                        ],
+                    )
+                    .map_err(node_error);
                     post.post(Box::new(move || {
                         let _completion = completion;
                         reply.reply(result.map(|()| {
                             PREF_CACHES.with(|caches| {
-                                if let Some(cache) = caches.borrow().get(&cache_id).and_then(Weak::upgrade) {
+                                if let Some(cache) =
+                                    caches.borrow().get(&cache_id).and_then(Weak::upgrade)
+                                {
                                     *cache.borrow_mut() = Some(next.clone());
                                 }
                             });
@@ -288,7 +326,9 @@ impl ShellAiPrefsPort {
 
 impl Drop for ShellAiPrefsPort {
     fn drop(&mut self) {
-        PREF_CACHES.with(|caches| { caches.borrow_mut().remove(&self.cache_id); });
+        PREF_CACHES.with(|caches| {
+            caches.borrow_mut().remove(&self.cache_id);
+        });
     }
 }
 
@@ -336,7 +376,8 @@ impl ShellAiPrefs for ShellAiPrefsPort {
         let core = self.core.clone();
         main_core::shell::app_settings::queue::for_path(&path).submit(move |completion| {
             let settings = read_app_settings(&path);
-            let fonts = normalize_slides_ai_fonts(settings.get(SLIDES_AI_FONTS_KEY), &locale).to_json();
+            let fonts =
+                normalize_slides_ai_fonts(settings.get(SLIDES_AI_FONTS_KEY), &locale).to_json();
             core.post(Box::new(move || {
                 let _completion = completion;
                 reply.reply(Ok(from_json(&fonts)));
@@ -424,12 +465,18 @@ mod tests {
     thread_local! { static TEST_JOBS: RefCell<Option<std::sync::mpsc::Receiver<TestJob>>> = const { RefCell::new(None) }; }
     struct TestThread(std::sync::mpsc::Sender<TestJob>);
     impl Thread for TestThread {
-        fn post(&self, job: TestJob) { self.0.send(job).expect("test core alive"); }
-        fn is_current(&self) -> bool { false }
+        fn post(&self, job: TestJob) {
+            self.0.send(job).expect("test core alive");
+        }
+        fn is_current(&self) -> bool {
+            false
+        }
     }
     struct TestWorkers;
     impl Workers for TestWorkers {
-        fn spawn(&self, job: TestJob) { std::thread::spawn(job); }
+        fn spawn(&self, job: TestJob) {
+            std::thread::spawn(job);
+        }
     }
 
     struct Rig {
@@ -470,10 +517,23 @@ mod tests {
             native: None,
         };
         let (send, receive) = std::sync::mpsc::channel();
-        f(&cx, Responder::new(move |result| { let _ = send.send(result); }));
+        f(
+            &cx,
+            Responder::new(move |result| {
+                let _ = send.send(result);
+            }),
+        );
         loop {
-            if let Ok(result) = receive.try_recv() { return result; }
-            let job = TEST_JOBS.with(|slot| slot.borrow().as_ref().expect("test core").recv_timeout(std::time::Duration::from_secs(5)).expect("core job"));
+            if let Ok(result) = receive.try_recv() {
+                return result;
+            }
+            let job = TEST_JOBS.with(|slot| {
+                slot.borrow()
+                    .as_ref()
+                    .expect("test core")
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .expect("core job")
+            });
             job();
         }
     }
@@ -535,15 +595,31 @@ mod tests {
         let r = rig("ordered", None);
         let (second_send, second_receive) = std::sync::mpsc::channel();
         let first = call(|cx, reply| {
-            r.port.app_set_ai_panel_prefs(cx, vec![obj(&[("side", IpcValue::String("right".into()))])], reply);
-            r.port.home_set_ai_panel_prefs(cx, vec![obj(&[("spellcheck", IpcValue::Bool(false))])],
-                Responder::new(move |result| { let _ = second_send.send(result); }));
+            r.port.app_set_ai_panel_prefs(
+                cx,
+                vec![obj(&[("side", IpcValue::String("right".into()))])],
+                reply,
+            );
+            r.port.home_set_ai_panel_prefs(
+                cx,
+                vec![obj(&[("spellcheck", IpcValue::Bool(false))])],
+                Responder::new(move |result| {
+                    let _ = second_send.send(result);
+                }),
+            );
         });
         assert_eq!(first, Ok(prefs("right", "default", 14.0, true)));
         let second = loop {
-            if let Ok(value) = second_receive.try_recv() { break value; }
-            let job = TEST_JOBS.with(|slot| slot.borrow().as_ref().expect("test core")
-                .recv_timeout(std::time::Duration::from_secs(5)).expect("core job"));
+            if let Ok(value) = second_receive.try_recv() {
+                break value;
+            }
+            let job = TEST_JOBS.with(|slot| {
+                slot.borrow()
+                    .as_ref()
+                    .expect("test core")
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .expect("core job")
+            });
             job();
         };
         assert_eq!(second, Ok(prefs("right", "default", 14.0, false)));
@@ -552,18 +628,24 @@ mod tests {
         assert_eq!(file["aiPanelSpellcheck"], false);
     }
 
-
     #[test]
     fn failed_write_does_not_publish_or_advance_cache() {
         let r = rig("failed-write", None);
         std::fs::create_dir(r.dir.join("app-settings.json")).unwrap();
-        let result = call(|cx, reply| r.port.app_set_ai_panel_prefs(
-            cx, vec![obj(&[("side", IpcValue::String("right".into()))])], reply));
+        let result = call(|cx, reply| {
+            r.port.app_set_ai_panel_prefs(
+                cx,
+                vec![obj(&[("side", IpcValue::String("right".into()))])],
+                reply,
+            )
+        });
         assert!(result.is_err());
         assert!(r.log.0.lock().unwrap().is_empty());
         std::fs::remove_dir(r.dir.join("app-settings.json")).unwrap();
-        assert_eq!(call(|cx, reply| r.port.app_get_ai_panel_prefs(cx, vec![], reply)),
-            Ok(prefs("left", "default", 14.0, true)));
+        assert_eq!(
+            call(|cx, reply| r.port.app_get_ai_panel_prefs(cx, vec![], reply)),
+            Ok(prefs("left", "default", 14.0, true))
+        );
     }
     #[test]
     fn an_unchanged_patch_writes_and_sends_nothing() {

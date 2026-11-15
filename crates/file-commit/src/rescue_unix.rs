@@ -1,5 +1,5 @@
 //! Handle-relative rescue copy for an actual retained private stage.
-use std::{ffi::{CStr, CString}, fs::{File, Permissions}, io::{self, Seek, SeekFrom}, os::{fd::{AsRawFd, FromRawFd}, unix::fs::{MetadataExt, PermissionsExt}};
+use std::{ffi::{CStr, CString}, fs::{File, Permissions}, io::{self, Seek, SeekFrom}, os::{fd::{AsRawFd, FromRawFd}, unix::fs::{MetadataExt, PermissionsExt}}};
 use crate::{OwnedStage, PendingStage, PrivateDirectory};
 
 /// Capture the final entry itself, including a symlink, without requiring

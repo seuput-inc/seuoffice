@@ -1,0 +1,293 @@
+name: seuoffice rust bundle
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+      next_version:
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CEF_CRATE_VERSION: '154.5.0'
+  CEF_VERSION: '154.0.34'
+  ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+jobs:
+  bundle:
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win
+            node_platform: win32
+            arch: X64
+          - os: macos-latest
+            platform: mac
+            node_platform: darwin
+            arch: ARM64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Reject unsupported configured signing
+        env:
+          WIN_LINK: ${{ secrets.WIN_CSC_LINK != '' }}
+          WIN_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD != '' }}
+          MAC_LINK: ${{ secrets.CSC_LINK != '' }}
+          MAC_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD != '' }}
+          APPLE_ID_SET: ${{ secrets.APPLE_ID != '' }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD != '' }}
+          APPLE_TEAM: ${{ secrets.APPLE_TEAM_ID != '' }}
+        run: |
+          set -euo pipefail
+          if { [ '${{ matrix.platform }}' = win ] && { [ "$WIN_LINK" = true ] || [ "$WIN_PASSWORD" = true ]; }; } ||
+             { [ '${{ matrix.platform }}' = mac ] && { [ "$MAC_LINK" = true ] || [ "$MAC_PASSWORD" = true ] || [ "$APPLE_ID_SET" = true ] || [ "$APPLE_PASSWORD" = true ] || [ "$APPLE_TEAM" = true ]; }; }; then
+            echo '::error::SIGNING/INPUT/BLOCKED: configured signing is not supported by this Rust producer'
+            exit 1
+          fi
+          test "$RUNNER_ARCH" = '${{ matrix.arch }}'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source_sha }}
+      - name: Checkout workflow helpers
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          path: .bundle-definition
+      - name: Validate source and versions
+        env:
+          SOURCE: ${{ inputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+          NEXT_VERSION: ${{ inputs.next_version }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE" =~ ^[0-9a-f]{40}$ ]] && [ "$(git rev-parse HEAD)" = "$SOURCE" ]
+          node -e 'const parse=s=>{if(!/^\d+\.\d+\.\d+$/.test(s)) throw Error("invalid version");return s.split(".").map(BigInt)};const [v,n]=process.argv.slice(1),a=parse(v);if(n){const b=parse(n);if(!b.some((x,i)=>x>a[i]&&b.slice(0,i).every((y,j)=>y===a[j]))) throw Error("next_version must be greater")}' "$VERSION" "$NEXT_VERSION"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .nvmrc
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable branch, 2026-07
+        with:
+          targets: wasm32-wasip1
+      - name: Prepare pinned Tauri source
+        run: bash crates/shell/ci/prepare-tauri-source.sh
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          workspaces: |
+            crates/shell
+            apps/sheets/native/xlsx-engine
+          cache-on-failure: true
+      - name: CEF path
+        run: echo "CEF_PATH=$HOME/.cache/tauri-cef" >> "$GITHUB_ENV"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.cache/tauri-cef
+          key: shell-cef-${{ runner.os }}-${{ runner.arch }}-${{ env.CEF_CRATE_VERSION }}
+      - name: ninja (Windows)
+        if: matrix.platform == 'win'
+        run: ninja --version || choco install ninja -y
+      - name: Install dependencies
+        run: npm ci
+      - name: Prepare RHWP source
+        run: node tools/build-rhwp-core.mjs --source-only
+      - name: Build apps
+        env:
+          SEUOFFICE_GOOGLE_CLIENT_ID: ${{ secrets.SEUOFFICE_GOOGLE_CLIENT_ID || secrets.GENOFFICE_GOOGLE_CLIENT_ID }}
+          SEUOFFICE_GOOGLE_CLIENT_SECRET: ${{ secrets.SEUOFFICE_GOOGLE_CLIENT_SECRET || secrets.GENOFFICE_GOOGLE_CLIENT_SECRET }}
+        run: npm run build:all
+      - name: Place xlsx sidecar (Windows)
+        if: matrix.platform == 'win'
+        run: |
+          set -euo pipefail
+          engine=apps/sheets/native/xlsx-engine/target
+          mkdir -p "$engine/x86_64-pc-windows-gnu/release"
+          cp "$engine/release/xlsx-sidecar.exe" "$engine/x86_64-pc-windows-gnu/release/"
+      - name: Build preloads and engine host
+        run: |
+          node crates/shell/bridge/preloads.mjs
+          node crates/shell/engine-host/build.mjs
+      - name: OCR helper (macOS)
+        if: matrix.platform == 'mac'
+        run: swiftc -O packages/pdf2docx/ocr-helper/vision-ocr.swift -o packages/pdf2docx/ocr-helper/vision-ocr
+      - name: Native helpers (Windows)
+        if: matrix.platform == 'win'
+        run: |
+          node packages/pdf2docx/ocr-helper/build-win.mjs
+          node apps/shell/src/main/quick-look/build-win.mjs
+      - name: Node runtime and notices
+        run: |
+          node crates/shell/bundle/node-runtime.mjs
+          SEUOFFICE_SHELL_BUNDLE=1 npm run notices
+      - name: Tauri CLI
+        working-directory: crates/shell
+        run: npm install --no-audit --no-fund
+      - name: Package both channels
+        working-directory: crates/shell
+        env:
+          VERSION: ${{ inputs.version }}
+          NEXT_VERSION: ${{ inputs.next_version }}
+          APPLE_SIGNING_IDENTITY: '-'
+        run: |
+          set -euo pipefail
+          python3 ci/cef-index-mirror.py 8099 "$CEF_VERSION" > "$RUNNER_TEMP/cef-mirror.log" 2>&1 &
+          mirror=$!
+          trap 'kill "$mirror" 2>/dev/null || true' EXIT
+          ready=false
+          for _ in $(seq 1 90); do if curl -sf http://127.0.0.1:8099/index.json -o /dev/null; then ready=true; break; fi; sleep 1; done
+          [ "$ready" = true ]
+          export CEF_DOWNLOAD_URL=http://127.0.0.1:8099
+          preflight_first=true
+          profile_preflight() {
+            PREFLIGHT_FIRST="$preflight_first" PREFLIGHT_RECEIPT="$(cygpath -w "$RUNNER_TEMP/profile-preflight.json")" powershell -NoProfile -NonInteractive -Command '
+              $ErrorActionPreference = "Stop"
+              if (-not $env:RUNNER_TEMP -or $env:GITHUB_ACTIONS -ne "true" -or $env:RUNNER_ENVIRONMENT -ne "github-hosted") { throw "BLOCKED: GitHub-hosted runner required" }
+              $roaming = [Environment]::GetFolderPath("ApplicationData")
+              if (-not $roaming -or -not $env:APPDATA -or
+                  ([IO.Path]::GetFullPath($roaming).TrimEnd("\") -ine [IO.Path]::GetFullPath($env:APPDATA).TrimEnd("\"))) {
+                throw "BLOCKED: ambiguous default application data directory"
+              }
+              $parent = Get-Item -LiteralPath $roaming -Force -ErrorAction Stop
+              if (-not $parent.PSIsContainer) { throw "BLOCKED: default application data parent is not a directory" }
+              for ($dir = $parent; $dir; $dir = $dir.Parent) {
+                if ($dir.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "BLOCKED: ambiguous reparse point $($dir.FullName)" }
+              }
+              if (@(Get-ChildItem -LiteralPath $roaming -Force -ErrorAction Stop | Where-Object { $_.Name -ieq "seuoffice" }).Count -ne 0) {
+                throw "BLOCKED: default SeuOffice profile already exists"
+              }
+              $root = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall"
+              $old = @(Get-ChildItem -LiteralPath $root -ErrorAction Stop | Where-Object {
+                $_.PSChildName -ine "SeuOffice" -and (Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction Stop).DisplayName -like "SeuOffice*"
+              })
+              if ($old.Count -ne 0) { throw "BLOCKED: existing Electron installation may be taken over" }
+              if ($env:PREFLIGHT_FIRST -eq "true") {
+                $receipt = [ordered]@{ path = (Join-Path $roaming "seuoffice"); initiallyAbsent = $true; runner = "github-hosted"; runId = $env:GITHUB_RUN_ID; runAttempt = $env:GITHUB_RUN_ATTEMPT } | ConvertTo-Json
+                $stream = [IO.File]::Open($env:PREFLIGHT_RECEIPT, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+                try {
+                  $bytes = [Text.Encoding]::UTF8.GetBytes($receipt)
+                  $stream.Write($bytes, 0, $bytes.Length)
+                } finally { $stream.Dispose() }
+              } elseif (-not (Test-Path -LiteralPath $env:PREFLIGHT_RECEIPT -PathType Leaf)) {
+                throw "BLOCKED: initial profile preflight receipt missing"
+              }
+            '
+            preflight_first=false
+          }
+          for v in "$VERSION" ${NEXT_VERSION:+"$NEXT_VERSION"}; do
+            (cd ../.. && SEUOFFICE_APP_VERSION="$v" npm run build -w @seuoffice/cli)
+            out="$RUNNER_TEMP/release/$v"
+            mkdir -p "$out"
+            for channel in latest stable; do
+              export SEUOFFICE_UPDATE_CHANNEL="$channel"
+              node bundle/release-feed.mjs app-update
+              rm -rf target/release/bundle
+              suffix=''
+              [ "$channel" != stable ] || suffix='-stable'
+              if [ '${{ matrix.platform }}' = win ]; then
+                npx tauri build --config bundle/windows.conf.json --config "{\"version\":\"$v\"}" --bundles nsis --verbose
+                [ "$(find target/release/bundle/nsis -name '*.exe' -type f | wc -l | tr -d ' ')" = 1 ]
+                built_installer=$(find target/release/bundle/nsis -name '*.exe' -type f)
+                installer="$out/SeuOffice-Setup-$v$suffix.exe"
+                cp "$built_installer" "$installer"
+                install="$RUNNER_TEMP/seuoffice-install"
+                profile_preflight
+                INSTALLER="$(cygpath -w "$installer")" INSTALL_DIR="$(cygpath -w "$install")" powershell -NoProfile -Command '$p = Start-Process -FilePath $env:INSTALLER -ArgumentList @("/S", "/D=$env:INSTALL_DIR") -Wait -PassThru; if ($p.ExitCode -ne 0) { exit $p.ExitCode }'
+                resources="$install/resources"
+                grep -Fxq "channel: $channel" "$resources/app-update.yml"
+                grep -Fxq 'owner: seuput-inc' "$resources/app-update.yml"
+                grep -Fxq 'repo: seuoffice' "$resources/app-update.yml"
+                for file in "$installer" "$install/SeuOffice.exe" "$resources/native/xlsx-sidecar.exe"; do
+                  status=$(FILE_TO_VERIFY="$file" powershell -NoProfile -Command '(Get-AuthenticodeSignature -LiteralPath $env:FILE_TO_VERIFY).Status' | tr -d '\r')
+                  [ "$status" = NotSigned ] || { echo "::error::unexpected signature status $status"; exit 1; }
+                done
+                node ../../.bundle-definition/crates/shell/bundle/smoke-cli.mjs "$resources" "$RUNNER_TEMP/smoke-$v-$channel" "$v"
+                profile_preflight
+                node bundle/release-feed.mjs feed --version "$v" --platform win32 "$installer"
+              else
+                npx tauri build --config bundle/macos.conf.json --config "{\"version\":\"$v\"}" --bundles app,dmg --verbose
+                [ "$(find target/release/bundle/macos -maxdepth 1 -name '*.app' -type d | wc -l | tr -d ' ')" = 1 ]
+                [ "$(find target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -type f | wc -l | tr -d ' ')" = 1 ]
+                app=$(find target/release/bundle/macos -maxdepth 1 -name '*.app' -type d)
+                built_dmg=$(find target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -type f)
+                [ "$(lipo -archs "$app/Contents/MacOS/SeuOffice")" = arm64 ]
+                codesign --verify --deep --strict --verbose=2 "$app"
+                signature=$(codesign -dv --verbose=2 "$app" 2>&1)
+                grep -q 'Signature=adhoc' <<<"$signature"
+                grep -Fxq "channel: $channel" "$app/Contents/Resources/app-update.yml"
+                grep -Fxq 'owner: seuput-inc' "$app/Contents/Resources/app-update.yml"
+                grep -Fxq 'repo: seuoffice' "$app/Contents/Resources/app-update.yml"
+                test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = com.seuput.seuoffice
+                test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$v"
+                for host in docs sheets slides pdf markdown html mindmap hwp epub diagram shell; do
+                  test -f "$app/Contents/Resources/modules/$host/renderer/index.html"
+                done
+                zip="$out/SeuOffice-$v-arm64-mac$suffix.zip"
+                dmg="$out/SeuOffice-$v-arm64$suffix.dmg"
+                ditto -c -k --sequesterRsrc --keepParent "$app" "$zip"
+                cp "$built_dmg" "$dmg"
+                extracted="$RUNNER_TEMP/extracted-$v-$channel"
+                mkdir -p "$extracted"
+                ditto -x -k "$zip" "$extracted"
+                codesign --verify --deep --strict "$extracted/SeuOffice.app"
+                extracted_signature=$(codesign -dv --verbose=2 "$extracted/SeuOffice.app" 2>&1)
+                grep -q 'Signature=adhoc' <<<"$extracted_signature"
+                grep -Fxq "channel: $channel" "$extracted/SeuOffice.app/Contents/Resources/app-update.yml"
+                mount="$RUNNER_TEMP/mount-$v-$channel"
+                mkdir -p "$mount"
+                hdiutil attach -readonly -nobrowse -mountpoint "$mount" "$dmg"
+                dmg_signature=$(codesign -dv --verbose=2 "$mount/SeuOffice.app" 2>&1)
+                if ! codesign --verify --deep --strict "$mount/SeuOffice.app" || ! grep -q 'Signature=adhoc' <<<"$dmg_signature" || ! grep -Fxq "channel: $channel" "$mount/SeuOffice.app/Contents/Resources/app-update.yml"; then
+                  hdiutil detach "$mount"
+                  exit 1
+                fi
+                hdiutil detach "$mount"
+                node ../../.bundle-definition/crates/shell/bundle/smoke-cli.mjs "$extracted/SeuOffice.app/Contents/Resources" "$RUNNER_TEMP/smoke-$v-$channel" "$v"
+                node bundle/release-feed.mjs feed --version "$v" --platform darwin "$zip" "$dmg"
+                rm "$dmg.blockmap"
+              fi
+            done
+          done
+      - name: Validate and write manifest
+        env:
+          SOURCE: ${{ inputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+          NEXT_VERSION: ${{ inputs.next_version }}
+        run: |
+          set -euo pipefail
+          signing=unsigned
+          [ '${{ matrix.platform }}' != mac ] || signing=ad-hoc
+          node .bundle-definition/crates/shell/bundle/bundle-manifest.mjs --root "$RUNNER_TEMP/release" --platform '${{ matrix.node_platform }}' --versions "$VERSION $NEXT_VERSION" --source "$SOURCE" --definition "$GITHUB_SHA" --run "$GITHUB_RUN_ID" --signing "$signing"
+      - name: Attest the build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-path: |
+            ${{ runner.temp }}/release/*/*
+            ${{ runner.temp }}/release/rust-bundle-manifest.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rust-bundle-${{ matrix.platform }}
+          path: ${{ runner.temp }}/release
+          if-no-files-found: error
+      - name: Upload Windows profile preflight receipt
+        if: matrix.platform == 'win'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rust-bundle-win-profile-preflight
+          path: ${{ runner.temp }}/profile-preflight.json
+          if-no-files-found: error

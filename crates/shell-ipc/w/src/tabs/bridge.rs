@@ -307,8 +307,17 @@ impl TabHost<ViewId, super::host::RetainedSpareBinding> for Bridge {
 /// the readies of a page load are numbered above every opener's
 pub(super) const PAGE_READY_BASE: u64 = 1 << 32;
 
-impl DetachedHost<ViewId, super::window_snapshot::WindowReservation, super::host::RetainedSpareBinding> for Bridge {
-    fn create_window(&mut self, options: &WindowOptions) -> super::window_snapshot::WindowReservation {
+impl
+    DetachedHost<
+        ViewId,
+        super::window_snapshot::WindowReservation,
+        super::host::RetainedSpareBinding,
+    > for Bridge
+{
+    fn create_window(
+        &mut self,
+        options: &WindowOptions,
+    ) -> super::window_snapshot::WindowReservation {
         let window = self.windows.create_window(options);
         self.created = Some(window.window());
         window
@@ -349,13 +358,26 @@ impl DetachedHost<ViewId, super::window_snapshot::WindowReservation, super::host
     fn win_position(&mut self, win: &super::window_snapshot::WindowReservation) -> (f64, f64) {
         self.windows.window_state(win.window()).position
     }
-    fn win_set_position(&mut self, win: &super::window_snapshot::WindowReservation, x: f64, y: f64) {
+    fn win_set_position(
+        &mut self,
+        win: &super::window_snapshot::WindowReservation,
+        x: f64,
+        y: f64,
+    ) {
         self.windows.window_set_position(win.window(), x, y)
     }
-    fn content_add_child_view(&mut self, win: &super::window_snapshot::WindowReservation, view: &ViewId) {
+    fn content_add_child_view(
+        &mut self,
+        win: &super::window_snapshot::WindowReservation,
+        view: &ViewId,
+    ) {
         self.windows.add_child_view(win.window(), *view)
     }
-    fn content_remove_child_view(&mut self, win: &super::window_snapshot::WindowReservation, view: &ViewId) {
+    fn content_remove_child_view(
+        &mut self,
+        win: &super::window_snapshot::WindowReservation,
+        view: &ViewId,
+    ) {
         self.windows.remove_child_view(win.window(), *view)
     }
     fn display_work_area(&mut self, at: (f64, f64)) -> Rect {

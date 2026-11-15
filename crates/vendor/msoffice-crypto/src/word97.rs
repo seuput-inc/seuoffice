@@ -118,7 +118,6 @@ pub(crate) fn decrypt(container: &mut LegacyContainer, password: &str) -> Result
         None
     };
 
-
     container.overwrite(WORD_DOCUMENT, &word_plain)?;
     container.overwrite(table_name, &table_plain)?;
     if let Some(data) = data_plain {

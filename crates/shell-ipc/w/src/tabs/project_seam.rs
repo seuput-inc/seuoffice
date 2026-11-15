@@ -20,8 +20,15 @@ pub struct ViewDocument {
 impl TabsState {
     pub fn all_file_paths(&self) -> Vec<String> {
         let mut inner = self.inner.borrow_mut();
-        let Inner { manager, detached, bridge, .. } = &mut *inner;
-        let mut paths = manager.as_ref().map_or_else(Vec::new, |manager| manager.open_file_paths());
+        let Inner {
+            manager,
+            detached,
+            bridge,
+            ..
+        } = &mut *inner;
+        let mut paths = manager
+            .as_ref()
+            .map_or_else(Vec::new, |manager| manager.open_file_paths());
         paths.extend(detached.detached_file_paths(bridge));
         paths
     }
@@ -33,14 +40,23 @@ impl TabsState {
             return false;
         };
         let mut inner = self.inner.borrow_mut();
-        let Inner { manager, detached, bridge, .. } = &mut *inner;
+        let Inner {
+            manager,
+            detached,
+            bridge,
+            ..
+        } = &mut *inner;
         let mut copies = manager.as_ref().map_or(0, |manager| {
-            manager.open_file_paths().iter()
+            manager
+                .open_file_paths()
+                .iter()
                 .filter(|path| canonical_path(Some(path)).as_deref() == Some(wanted.as_str()))
                 .count()
         });
         if copies < 2 {
-            copies += detached.detached_file_paths(bridge).iter()
+            copies += detached
+                .detached_file_paths(bridge)
+                .iter()
                 .filter(|path| canonical_path(Some(path)).as_deref() == Some(wanted.as_str()))
                 .count();
         }
@@ -67,7 +83,9 @@ impl TabsState {
         let wc = i64::from(view.0);
         let mut inner = self.inner.borrow_mut();
         inner.manager_call(|manager, host| manager.set_tab_file_for(host, wc, path));
-        let Inner { detached, bridge, .. } = &mut *inner;
+        let Inner {
+            detached, bridge, ..
+        } = &mut *inner;
         detached.detached_set_file_for(bridge, wc, path);
         inner.drain();
     }
@@ -76,7 +94,9 @@ impl TabsState {
         let wc = i64::from(view.0);
         let mut inner = self.inner.borrow_mut();
         inner.manager_call(|manager, host| manager.set_tab_title_for(host, wc, title));
-        let Inner { detached, bridge, .. } = &mut *inner;
+        let Inner {
+            detached, bridge, ..
+        } = &mut *inner;
         detached.detached_set_title_for(bridge, wc, title);
         inner.drain();
     }
@@ -84,7 +104,9 @@ impl TabsState {
     pub fn doc_asker(&self, view: ViewId) -> main_core::shell::doc_picker::asker::DocAsker {
         let details = self.details_of(view);
         let tab_id = details.as_ref().and_then(|details| details.tab_id.clone());
-        let path = details.and_then(|details| details.file_path).filter(|path| !path.is_empty());
+        let path = details
+            .and_then(|details| details.file_path)
+            .filter(|path| !path.is_empty());
         let pane_tab_id = tab_id.as_ref().and_then(|id| {
             self.with_manager(|manager, _| manager.split_state())
                 .flatten()
@@ -118,10 +140,12 @@ impl TabsState {
             bridge,
             ..
         } = &mut *g;
-        if let Some((kind, _, file_path)) = manager
-            .as_ref()
-            .and_then(|m| m.describe_web_contents(&mut *bridge as &mut dyn TabHost<ViewId, super::host::RetainedSpareBinding>, wc))
-        {
+        if let Some((kind, _, file_path)) = manager.as_ref().and_then(|m| {
+            m.describe_web_contents(
+                &mut *bridge as &mut dyn TabHost<ViewId, super::host::RetainedSpareBinding>,
+                wc,
+            )
+        }) {
             return Some(ViewDocument { kind, file_path });
         }
         detached
@@ -138,8 +162,11 @@ impl TabsState {
     pub fn view_of_file(&self, path: &str) -> Option<ViewId> {
         let mut g = self.inner.borrow_mut();
         if let Some(found) = g.manager_call(|m, b| {
-            m.find_tab_by_path(b as &mut dyn TabHost<ViewId, super::host::RetainedSpareBinding>, Some(path))
-                .map(|tab| tab.view)
+            m.find_tab_by_path(
+                b as &mut dyn TabHost<ViewId, super::host::RetainedSpareBinding>,
+                Some(path),
+            )
+            .map(|tab| tab.view)
         }) && found.is_some()
         {
             return found;
@@ -223,10 +250,12 @@ impl TabsState {
             bridge,
             ..
         } = &mut *g;
-        if let Some((_, title, file_path)) = manager
-            .as_ref()
-            .and_then(|m| m.describe_web_contents(&mut *bridge as &mut dyn TabHost<ViewId, super::host::RetainedSpareBinding>, wc))
-        {
+        if let Some((_, title, file_path)) = manager.as_ref().and_then(|m| {
+            m.describe_web_contents(
+                &mut *bridge as &mut dyn TabHost<ViewId, super::host::RetainedSpareBinding>,
+                wc,
+            )
+        }) {
             return Some((title, file_path));
         }
         let focused = detached.focused_detached_tab(bridge)?;
@@ -267,7 +296,10 @@ impl TabsState {
             manager, bridge, ..
         } = &mut *g;
         manager.as_ref().and_then(|m| {
-            m.tab_id_for_web_contents(&mut *bridge as &mut dyn TabHost<ViewId, super::host::RetainedSpareBinding>, i64::from(view.0))
+            m.tab_id_for_web_contents(
+                &mut *bridge as &mut dyn TabHost<ViewId, super::host::RetainedSpareBinding>,
+                i64::from(view.0),
+            )
         })
     }
 

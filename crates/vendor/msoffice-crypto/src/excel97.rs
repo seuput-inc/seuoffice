@@ -231,7 +231,6 @@ pub(crate) fn decrypt(container: &mut LegacyContainer, password: &str) -> Result
     plain[fp.body.start - 4..fp.body.start - 2].fill(0);
     plain[fp.body.clone()].fill(0);
 
-
     if name == BOOK {
         container.replace(WORKBOOK, &plain)?;
         container.remove(BOOK)?;
@@ -260,22 +259,29 @@ mod tests {
     #[test]
     fn biff5_xor_filepass_without_type_decrypts() {
         let workbook = [
-            0x09, 0x08, 4, 0, 0, 5, 0, 0,
-            0x2f, 0, 4, 0, 0xce, 0xa6, 0x27, 0x97,
-            0x0a, 0, 0, 0,
+            0x09, 0x08, 4, 0, 0, 5, 0, 0, 0x2f, 0, 4, 0, 0xce, 0xa6, 0x27, 0x97, 0x0a, 0, 0, 0,
         ];
         let mut storage = Cursor::new(Vec::new());
         {
             let mut file = cfb::CompoundFile::create(&mut storage).unwrap();
-            file.create_stream("/Book").unwrap().write_all(&workbook).unwrap();
+            file.create_stream("/Book")
+                .unwrap()
+                .write_all(&workbook)
+                .unwrap();
             file.flush().unwrap();
         }
         let encrypted = storage.into_inner();
         let decrypted = crate::decrypt_binary_office(&encrypted, "testpass").unwrap();
         let mut cfb = cfb::CompoundFile::open(Cursor::new(decrypted)).unwrap();
         let mut result = Vec::new();
-        cfb.open_stream("/Workbook").unwrap().read_to_end(&mut result).unwrap();
+        cfb.open_stream("/Workbook")
+            .unwrap()
+            .read_to_end(&mut result)
+            .unwrap();
         assert_eq!(&result[8..16], &[0, 0, 4, 0, 0, 0, 0, 0]);
-        assert!(matches!(crate::decrypt_binary_office(&encrypted, "wrong"), Err(crate::Error::WrongPassword)));
+        assert!(matches!(
+            crate::decrypt_binary_office(&encrypted, "wrong"),
+            Err(crate::Error::WrongPassword)
+        ));
     }
 }

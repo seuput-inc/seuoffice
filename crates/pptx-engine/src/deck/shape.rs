@@ -1090,7 +1090,9 @@ pub fn set_element_fill(
     fill: &ElementFill,
     opts: &FillOpts,
 ) -> Result<bool, String> {
-    let Some((previous, current)) = set_element_fill_on_slide(slide_mut(opened, slide_index)?, element_id, fill, opts)? else {
+    let Some((previous, current)) =
+        set_element_fill_on_slide(slide_mut(opened, slide_index)?, element_id, fill, opts)?
+    else {
         return Ok(false);
     };
     cleanup_superseded_slide_resources(opened, slide_index, &previous, &current)?;
@@ -1108,11 +1110,21 @@ pub fn set_element_fill_on_slide(
     };
     let (model, fill_patch) = match fill {
         ElementFill::Color(color) => (
-            if color == "none" { Fill::None } else { Fill::Solid { color: color.clone() } },
+            if color == "none" {
+                Fill::None
+            } else {
+                Fill::Solid {
+                    color: color.clone(),
+                }
+            },
             FillPatch::Color(color.clone()),
         ),
         ElementFill::Gradient(g) => {
-            let path = g.path.or_else(|| g.radial.filter(|r| *r).map(|_| crate::types::GradientPath::Circle));
+            let path = g.path.or_else(|| {
+                g.radial
+                    .filter(|r| *r)
+                    .map(|_| crate::types::GradientPath::Circle)
+            });
             (
                 Fill::Gradient(GradientFill {
                     stops: g.stops.clone(),

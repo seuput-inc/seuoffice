@@ -26,11 +26,17 @@ pub struct TocSources<'a> {
 /// `parseLenient`: parses as XML; markup only an HTML parser accepts is read
 /// the way a browser would. `None` is what `readTree` makes of a throw.
 fn parse_lenient(text: &str, host: &HostCall<'_>) -> Option<XmlElement> {
-    parse_xml(text).or_else(|_| parse_html_with_host(text, host)).ok()
+    parse_xml(text)
+        .or_else(|_| parse_html_with_host(text, host))
+        .ok()
 }
 
 /// `readTree`
-fn read_tree(sources: &TocSources, path: Option<&str>, host: &HostCall<'_>) -> Result<Option<XmlElement>, String> {
+fn read_tree(
+    sources: &TocSources,
+    path: Option<&str>,
+    host: &HostCall<'_>,
+) -> Result<Option<XmlElement>, String> {
     let Some(name) = path.and_then(|path| (sources.find_entry)(path)) else {
         return Ok(None);
     };

@@ -41,9 +41,9 @@ use crate::error::Error;
 use crate::file_params::{
     algorithm_name, bad, wide, AllowedSet, Bound, FileField, FileProblem, Invariant,
 };
-use crate::hash::HashAlgorithm;
 #[cfg(test)]
 use crate::hash::fit_iv;
+use crate::hash::HashAlgorithm;
 use crate::integrity::{IntegrityCheck, IntegrityMaterial, IntegrityOutcome, IntegrityPolicy};
 use crate::limits;
 use crate::segments::{read_full, Segmenter, SEGMENT_LEN};
@@ -97,7 +97,6 @@ enum KeyEncryptorKind {
 const AES_KEY_LENS: [usize; 3] = [16, 24, 32];
 /// AES block / CBC IV length in bytes.
 const AES_BLOCK_LEN: usize = 16;
-
 
 pub(crate) struct AgileParams {
     /// `keyData/@saltValue` — the *package* salt. Seeds the per-segment content IVs and
@@ -461,13 +460,15 @@ pub(crate) fn verify_password(params: &AgileParams, h_final: &PasswordDigest) ->
     // digest, padded with zeroes, to the entire decrypted hash value.
     let matches = verifier_input.with_secret(|vi| {
         let computed = VerifierPlaintext::new(hash.digest(vi));
-        computed.with_secret(|c| verifier_hash.with_secret(|vh| {
-            if vh.len() < digest_len {
-                return false;
-            }
-            let padding = vh[digest_len..].iter().fold(0u8, |acc, byte| acc | byte);
-            c.as_slice().ct_eq(&vh[..digest_len]) & [padding].ct_eq(&[0])
-        }))
+        computed.with_secret(|c| {
+            verifier_hash.with_secret(|vh| {
+                if vh.len() < digest_len {
+                    return false;
+                }
+                let padding = vh[digest_len..].iter().fold(0u8, |acc, byte| acc | byte);
+                c.as_slice().ct_eq(&vh[..digest_len]) & [padding].ct_eq(&[0])
+            })
+        })
     });
     if !matches {
         return Err(Error::WrongPassword);
@@ -518,14 +519,15 @@ fn decrypt_package_to<S: Read + Seek, W: Write>(
         ));
     }
 
-    let declared_size = u64::from(u32::from_le_bytes([prefix[0], prefix[1], prefix[2], prefix[3]]));
+    let declared_size = u64::from(u32::from_le_bytes([
+        prefix[0], prefix[1], prefix[2], prefix[3],
+    ]));
     let data_len = stream_len - 8;
 
     // No payload ceiling here, deliberately, since the streaming API: this function
     // allocates one segment whatever the stream's length, so there is nothing for a
     // ceiling to protect. `limits::PAYLOAD_CEILING` bounds what the whole-buffer
     // wrappers allocate, and they check it where they allocate.
-
 
     let mut mac = check.map(IntegrityCheck::start);
     if let Some(mac) = &mut mac {
@@ -788,7 +790,6 @@ pub(crate) fn aes_cbc_decrypt_in_place(buf: &mut [u8], key: &[u8], iv: &[u8]) ->
     .map_err(|_| Error::CipherError)
 }
 
-
 /// [`aes_cbc_encrypt`] in place: the ciphertext overwrites the plaintext in `buf`, for
 /// [`aes_cbc_decrypt_in_place`]'s reason on the way in. `buf` must be a multiple of 16
 /// bytes.
@@ -842,7 +843,10 @@ pub(crate) fn parse_encryption_info(xml_data: &[u8]) -> Result<AgileParams, Erro
     parse_encryption_info_with_policy(xml_data, false)
 }
 
-fn parse_encryption_info_with_policy(xml_data: &[u8], skip_integrity: bool) -> Result<AgileParams, Error> {
+fn parse_encryption_info_with_policy(
+    xml_data: &[u8],
+    skip_integrity: bool,
+) -> Result<AgileParams, Error> {
     let mut reader = Reader::from_reader(xml_data);
     reader.config_mut().trim_text(true);
 
@@ -1134,12 +1138,12 @@ fn parse_encryption_info_with_policy(xml_data: &[u8], skip_integrity: bool) -> R
     )?;
     let inner_salt = inner_or_outer_salt(inner_salt, FileField::EncryptedKeySaltValue)?;
 
-
     // The application uses the entire unwrapped blob as the package key.
     let encrypted_key_value = encrypted_key_value
         .ok_or_else(|| bad(FileField::EncryptedKeyValue, FileProblem::Missing))?;
     let key_data_key_bits = u32::try_from(encrypted_key_value.len())
-        .ok().and_then(|len| len.checked_mul(8))
+        .ok()
+        .and_then(|len| len.checked_mul(8))
         .ok_or(Error::InvariantViolated(Invariant::Unrepresentable))?;
     check_key_bits(Some(key_data_key_bits), FileField::KeyDataKeyBits)?;
 
@@ -1261,7 +1265,6 @@ fn check_block_size(declared: Option<u32>, field: FileField) -> Result<u32, Erro
     Ok(declared)
 }
 
-
 /// A required `saltValue`. Named for the two fields it produces so neither call site
 /// reads as the other's.
 fn inner_or_outer_salt(declared: Option<Vec<u8>>, field: FileField) -> Result<Vec<u8>, Error> {
@@ -1368,7 +1371,6 @@ fn parse_u32_attr(attr: &quick_xml::events::attributes::Attribute) -> Result<u32
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     const ALL_HASHES: [HashAlgorithm; 4] = [
         HashAlgorithm::Sha1,
@@ -1553,8 +1555,12 @@ mod tests {
 
     #[test]
     fn skip_integrity_does_not_parse_broken_integrity_fields() {
-        let xml = String::from_utf8(minimal_xml(&good_key_data(), &good_enc_key())).unwrap()
-            .replace("<keyData", "<dataIntegrity encryptedHmacKey=\"!\"/><keyData");
+        let xml = String::from_utf8(minimal_xml(&good_key_data(), &good_enc_key()))
+            .unwrap()
+            .replace(
+                "<keyData",
+                "<dataIntegrity encryptedHmacKey=\"!\"/><keyData",
+            );
         assert!(parse_encryption_info_with_policy(xml.as_bytes(), true).is_ok());
         assert!(parse_encryption_info_with_policy(xml.as_bytes(), false).is_err());
     }

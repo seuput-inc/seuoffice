@@ -46,12 +46,15 @@ use serde_json::{Value, json};
 use shell_contract::{ViewId, WindowId};
 
 use super::{Log, push};
+use crate::generate::host::{
+    GenerateAuthority, GenerateCommittedOpen, GenerateCommittedTarget, GenerateOpenRequest,
+    GenerateOpenResult, GenerateShell, GenerateShellHost, GenerateWindowCleanup, TabContents,
+};
 use crate::generate::{BoundGenerateWindowEvents, GenerateWindowEvents};
-use crate::generate::host::{GenerateAuthority, GenerateShell, GenerateShellHost, TabContents, GenerateOpenRequest, GenerateOpenResult, GenerateCommittedOpen, GenerateCommittedTarget, GenerateWindowCleanup};
+use main_core::shell::generate::generate_api::GenerateWindowState;
 use shell_contract::hosts::{DialogsHost, FileDialog, OsShellHost};
 use shell_contract::ipc::{EventSink, NativeContext, Target};
 use shell_contract::runtime::CancelToken;
-use main_core::shell::generate::generate_api::GenerateWindowState;
 use std::path::PathBuf;
 
 /// Inserts this port's factory and the fake of its host, answering from the
@@ -103,12 +106,24 @@ struct State {
 struct ModeledCommittedTarget(shell_contract::runtime::RendererGeneration, CancelToken);
 
 impl GenerateCommittedTarget for ModeledCommittedTarget {
-    fn created(&self) -> &shell_contract::runtime::RendererGeneration { &self.0 }
-    fn validate_target(&self) -> Result<(), String> {
-        if self.0.is_active() && !self.1.is_cancelled() { Ok(()) } else { Err("modeled generated target was replaced".into()) }
+    fn created(&self) -> &shell_contract::runtime::RendererGeneration {
+        &self.0
     }
-    fn with_terminal_commit(&self, effect: &mut dyn FnMut() -> Result<(), String>) -> Result<(), String> {
-        self.0.with_active(|| self.1.with_active(effect)).flatten().ok_or("modeled generated target was replaced")?
+    fn validate_target(&self) -> Result<(), String> {
+        if self.0.is_active() && !self.1.is_cancelled() {
+            Ok(())
+        } else {
+            Err("modeled generated target was replaced".into())
+        }
+    }
+    fn with_terminal_commit(
+        &self,
+        effect: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.0
+            .with_active(|| self.1.with_active(effect))
+            .flatten()
+            .ok_or("modeled generated target was replaced")?
     }
 }
 
@@ -226,18 +241,39 @@ impl GenerateShell for FakeGenerateShell {
         // This is the non-native probe model, not production admission.
         authority.check_cancelled()
     }
-    fn show_open_dialog(&self, authority: &GenerateAuthority, dialogs: DialogsHost, parent: WindowId, options: &FileDialog) -> Result<Option<Vec<PathBuf>>, String> {
+    fn show_open_dialog(
+        &self,
+        authority: &GenerateAuthority,
+        dialogs: DialogsHost,
+        parent: WindowId,
+        options: &FileDialog,
+    ) -> Result<Option<Vec<PathBuf>>, String> {
         self.check_authority(authority)?;
         Ok(dialogs.open(Some(parent), options))
     }
-    fn open_external(&self, authority: &GenerateAuthority, os: OsShellHost, url: &str) -> Result<(), String> {
+    fn open_external(
+        &self,
+        authority: &GenerateAuthority,
+        os: OsShellHost,
+        url: &str,
+    ) -> Result<(), String> {
         self.check_authority(authority)?;
         os.open_external(url)
     }
-    fn send_state(&self, authority: &GenerateAuthority, events: Arc<dyn EventSink>, view: ViewId, state: &GenerateWindowState) -> Result<(), String> {
+    fn send_state(
+        &self,
+        authority: &GenerateAuthority,
+        events: Arc<dyn EventSink>,
+        view: ViewId,
+        state: &GenerateWindowState,
+    ) -> Result<(), String> {
         self.check_authority(authority)?;
         let value = serde_json::to_value(state).map_err(|error| error.to_string())?;
-        events.emit(Target::View(view), "generate:state", vec![crate::generate::ipc_of(&value)]);
+        events.emit(
+            Target::View(view),
+            "generate:state",
+            vec![crate::generate::ipc_of(&value)],
+        );
         Ok(())
     }
     fn create_window(
@@ -252,7 +288,11 @@ impl GenerateShell for FakeGenerateShell {
             .and_then(Value::as_u64)
             .map_or(50 + state.created as u32, |id| id as u32);
         state.created += 1;
-        let events = events.bind(WindowId(id), NativeContext::new(("probe-generate-window", id)), CancelToken::default())?;
+        let events = events.bind(
+            WindowId(id),
+            NativeContext::new(("probe-generate-window", id)),
+            CancelToken::default(),
+        )?;
         state.listeners.push((id, events));
         drop(state);
         let options = plain(serde_json::to_value(options).expect("options print"));
@@ -260,7 +300,11 @@ impl GenerateShell for FakeGenerateShell {
         Ok(WindowId(id))
     }
 
-    fn window_view(&self, _authority: &GenerateAuthority, window: WindowId) -> Result<Option<ViewId>, String> {
+    fn window_view(
+        &self,
+        _authority: &GenerateAuthority,
+        window: WindowId,
+    ) -> Result<Option<ViewId>, String> {
         let state = self.state.lock().expect("the fake's state");
         Ok(state
             .listeners
@@ -269,19 +313,32 @@ impl GenerateShell for FakeGenerateShell {
             .then_some(ViewId(window.0)))
     }
 
-    fn window_is_destroyed(&self, _authority: &GenerateAuthority, window: WindowId) -> Result<bool, String> {
-        Ok(self.state
+    fn window_is_destroyed(
+        &self,
+        _authority: &GenerateAuthority,
+        window: WindowId,
+    ) -> Result<bool, String> {
+        Ok(self
+            .state
             .lock()
             .expect("the fake's state")
             .destroyed
             .contains(&window.0))
     }
 
-    fn window_is_minimized(&self, _authority: &GenerateAuthority, window: WindowId) -> Result<bool, String> {
+    fn window_is_minimized(
+        &self,
+        _authority: &GenerateAuthority,
+        window: WindowId,
+    ) -> Result<bool, String> {
         Ok(self.listed("minimized", window.0))
     }
 
-    fn window_restore(&self, _authority: &GenerateAuthority, window: WindowId) -> Result<(), String> {
+    fn window_restore(
+        &self,
+        _authority: &GenerateAuthority,
+        window: WindowId,
+    ) -> Result<(), String> {
         self.win(window, "restore");
         Ok(())
     }
@@ -314,7 +371,11 @@ impl GenerateShell for FakeGenerateShell {
         Ok(())
     }
 
-    fn window_remove_menu(&self, _authority: &GenerateAuthority, window: WindowId) -> Result<(), String> {
+    fn window_remove_menu(
+        &self,
+        _authority: &GenerateAuthority,
+        window: WindowId,
+    ) -> Result<(), String> {
         self.win(window, "removeMenu");
         Ok(())
     }
@@ -339,7 +400,11 @@ impl GenerateShell for FakeGenerateShell {
         Ok(())
     }
 
-    fn unwatch_theme(&self, _authority: &GenerateAuthority, window: WindowId) -> Result<(), String> {
+    fn unwatch_theme(
+        &self,
+        _authority: &GenerateAuthority,
+        window: WindowId,
+    ) -> Result<(), String> {
         let slot = {
             let mut state = self.state.lock().expect("the fake's state");
             let at = state.watchers.iter().position(|w| *w == Some(window.0));
@@ -358,12 +423,21 @@ impl GenerateShell for FakeGenerateShell {
         self.spec["rendererUrl"].as_str().map(str::to_owned)
     }
 
-    fn window_load_url(&self, _authority: &GenerateAuthority, window: WindowId, url: &str) -> Result<(), String> {
+    fn window_load_url(
+        &self,
+        _authority: &GenerateAuthority,
+        window: WindowId,
+        url: &str,
+    ) -> Result<(), String> {
         self.line(json!(["win", window.0, "loadURL", url]));
         Ok(())
     }
 
-    fn window_load_generate_page(&self, _authority: &GenerateAuthority, window: WindowId) -> Result<(), String> {
+    fn window_load_generate_page(
+        &self,
+        _authority: &GenerateAuthority,
+        window: WindowId,
+    ) -> Result<(), String> {
         self.win(window, "loadFile");
         Ok(())
     }
@@ -419,25 +493,44 @@ impl GenerateShell for FakeGenerateShell {
         let mut shown = serde_json::to_value(handoff).expect("a hand-off prints");
         shown["id"] = json!("ID");
         shown["createdAt"] = json!(0);
-        self.line(json!(["openTargetTab", plain(shown), opener_json(opener.as_ref())]));
+        self.line(json!([
+            "openTargetTab",
+            plain(shown),
+            opener_json(opener.as_ref())
+        ]));
         if self.spec["openTarget"].as_str() == Some("throws") {
             return then(Err("no tab could open".to_owned()));
         }
         let state = self.state.clone();
         let log = self.log.clone();
         let window = request.window;
-        let cleanup = GenerateWindowCleanup::new(window, Box::new(move |done| {
-            push(&log, json!(["win", window.0, "close"]));
-            let events = {
-                let mut state = state.lock().expect("the fake's state");
-                state.destroyed.push(window.0);
-                state.listeners.iter().find(|(id, _)| *id == window.0).map(|(_, events)| events.clone())
-            };
-            if let Some(events) = events { events.closed(); }
-            done(Ok(()));
-        }));
-        then(GenerateCommittedOpen::new(request.token,
-            Box::new(ModeledCommittedTarget(shell_contract::runtime::RendererGeneration::new(), CancelToken::default())), cleanup))
+        let cleanup = GenerateWindowCleanup::new(
+            window,
+            Box::new(move |done| {
+                push(&log, json!(["win", window.0, "close"]));
+                let events = {
+                    let mut state = state.lock().expect("the fake's state");
+                    state.destroyed.push(window.0);
+                    state
+                        .listeners
+                        .iter()
+                        .find(|(id, _)| *id == window.0)
+                        .map(|(_, events)| events.clone())
+                };
+                if let Some(events) = events {
+                    events.closed();
+                }
+                done(Ok(()));
+            }),
+        );
+        then(GenerateCommittedOpen::new(
+            request.token,
+            Box::new(ModeledCommittedTarget(
+                shell_contract::runtime::RendererGeneration::new(),
+                CancelToken::default(),
+            )),
+            cleanup,
+        ))
     }
 
     fn can_open_converted(&self) -> bool {
@@ -455,22 +548,38 @@ impl GenerateShell for FakeGenerateShell {
         then(Err("conversions are not on offer".to_owned()))
     }
 
-    fn open_documents(&self, _authority: &GenerateAuthority, then: Box<dyn FnOnce(Result<Vec<OpenDocumentTab>, String>) + Send>) {
+    fn open_documents(
+        &self,
+        _authority: &GenerateAuthority,
+        then: Box<dyn FnOnce(Result<Vec<OpenDocumentTab>, String>) + Send>,
+    ) {
         let tabs = self.state.lock().expect("the fake's state").tabs.clone();
         then(Ok(tabs))
     }
 
-    fn tab_contents(&self, _authority: &GenerateAuthority, tab_id: &str) -> Result<Option<TabContents>, String> {
+    fn tab_contents(
+        &self,
+        _authority: &GenerateAuthority,
+        tab_id: &str,
+    ) -> Result<Option<TabContents>, String> {
         self.line(json!(["webContentsFor", tab_id]));
-        Ok(self.contents_spec(tab_id)
+        Ok(self
+            .contents_spec(tab_id)
             .map(|(id, destroyed)| TabContents {
                 view: ViewId(id),
                 destroyed,
             }))
     }
 
-    fn reveal_tab(&self, authority: &GenerateAuthority, tab_id: String, then: Box<dyn FnOnce(Result<(), String>) + Send>) {
-        let result = self.check_authority(authority).map(|()| self.line(json!(["reveal", tab_id])));
+    fn reveal_tab(
+        &self,
+        authority: &GenerateAuthority,
+        tab_id: String,
+        then: Box<dyn FnOnce(Result<(), String>) + Send>,
+    ) {
+        let result = self
+            .check_authority(authority)
+            .map(|()| self.line(json!(["reveal", tab_id])));
         then(result);
     }
 
@@ -480,7 +589,12 @@ impl GenerateShell for FakeGenerateShell {
             .is_some_and(|kinds| kinds.iter().any(|k| k.as_str() == Some(kind.as_str())))
     }
 
-    fn save(&self, _authority: &GenerateAuthority, need: SaveNeed, then: Box<dyn FnOnce(SaveAnswer) + Send>) {
+    fn save(
+        &self,
+        _authority: &GenerateAuthority,
+        need: SaveNeed,
+        then: Box<dyn FnOnce(SaveAnswer) + Send>,
+    ) {
         let answer = match need {
             SaveNeed::ToPath {
                 kind,
@@ -526,7 +640,11 @@ impl GenerateShell for FakeGenerateShell {
         0.0
     }
 
-    fn parse_file_to_text(&self, _authority: &GenerateAuthority, path: &str) -> Result<ParsedFile, String> {
+    fn parse_file_to_text(
+        &self,
+        _authority: &GenerateAuthority,
+        path: &str,
+    ) -> Result<ParsedFile, String> {
         self.read_line(path);
         let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
         match self.spec["parse"].get(name) {
@@ -553,11 +671,21 @@ impl GenerateShell for FakeGenerateShell {
         ["(boundary)".to_owned(), "(relationship)".to_owned()]
     }
 
-    fn first_sheet_root(&self, _authority: &GenerateAuthority, _: &str, _: &str) -> Result<XmindTopic, String> {
+    fn first_sheet_root(
+        &self,
+        _authority: &GenerateAuthority,
+        _: &str,
+        _: &str,
+    ) -> Result<XmindTopic, String> {
         Err("conversions are not on offer".to_owned())
     }
 
-    fn create_xmind_document_from_outline(&self, _authority: &GenerateAuthority, _: &str, _: &str) -> Result<(), String> {
+    fn create_xmind_document_from_outline(
+        &self,
+        _authority: &GenerateAuthority,
+        _: &str,
+        _: &str,
+    ) -> Result<(), String> {
         Err("conversions are not on offer".to_owned())
     }
 
@@ -565,7 +693,12 @@ impl GenerateShell for FakeGenerateShell {
         Err("conversions are not on offer".to_owned())
     }
 
-    fn apply_deck_op(&self, _authority: &GenerateAuthority, _: u64, _: &JsonValue) -> Result<OpOutcome, String> {
+    fn apply_deck_op(
+        &self,
+        _authority: &GenerateAuthority,
+        _: u64,
+        _: &JsonValue,
+    ) -> Result<OpOutcome, String> {
         Err("conversions are not on offer".to_owned())
     }
 
@@ -573,6 +706,9 @@ impl GenerateShell for FakeGenerateShell {
         Err("conversions are not on offer".to_owned())
     }
     fn release_conversion_resources(&self, _: &GenerateAuthority) {
-        self.state.lock().expect("the probe's state").released_conversions += 1;
+        self.state
+            .lock()
+            .expect("the probe's state")
+            .released_conversions += 1;
     }
 }

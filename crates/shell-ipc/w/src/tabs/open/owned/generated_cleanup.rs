@@ -341,6 +341,31 @@ enum RemovalPhase {
     Settled(Result<(), String>),
 }
 
+enum HydratedSurvivor {
+    Unstarted,
+    Opening,
+    Ready {
+        id: String,
+        owner: shell_contract::ipc::NativeRequestOwner,
+        generation: shell_contract::runtime::RendererGeneration,
+    },
+    Pending(super::AdoptedSurvivorPending),
+    Failed(String),
+}
+
+impl HydratedSurvivor {
+    fn ready_owner(&self) -> Result<Option<(&str, &shell_contract::ipc::NativeRequestOwner)>, String> {
+        match self {
+            Self::Unstarted => Ok(None),
+            Self::Ready { id, owner, generation } if generation.is_active() => Ok(Some((id, owner))),
+            Self::Ready { .. } => Err("The hydrated survivor renderer is no longer active".into()),
+            Self::Opening => Err("The captured survivor is still opening".into()),
+            Self::Pending(pending) => Err(pending.error.clone()),
+            Self::Failed(error) => Err(error.clone()),
+        }
+    }
+}
+
 pub(super) struct GeneratedCleanupCoordinator {
     state: std::rc::Rc<TabsState>,
     authority: std::cell::RefCell<Option<GeneratedCleanupAuthority>>,
@@ -352,7 +377,7 @@ pub(super) struct GeneratedCleanupCoordinator {
     tab_id: std::rc::Rc<std::cell::RefCell<Option<String>>>,
     spare: bool,
     close: Arc<BrowserClose>,
-    hydrated: std::cell::RefCell<Option<(String, shell_contract::ipc::NativeRequestOwner)>>,
+    hydrated: std::cell::RefCell<HydratedSurvivor>,
     prepared: std::cell::RefCell<Option<PreparedRemoval>>,
     claim: std::cell::RefCell<Option<NativeBrowserCloseClaim<()>>>,
     claimed: std::cell::Cell<bool>,
@@ -374,7 +399,7 @@ impl GeneratedCleanupCoordinator {
         let (close, cleanup) = browser_cleanup(binding.clone());
         let coordinator = std::rc::Rc::new(Self {
             state: state.clone(), authority: std::cell::RefCell::new(Some(authority)), request_participants, operation, view,
-            binding, actor, tab_id, spare, close, hydrated: std::cell::RefCell::new(None),
+            binding, actor, tab_id, spare, close, hydrated: std::cell::RefCell::new(HydratedSurvivor::Unstarted),
             prepared: std::cell::RefCell::new(None), claim: std::cell::RefCell::new(None),
             claimed: std::cell::Cell::new(false), registration: std::cell::RefCell::new(None),
             retry: std::cell::RefCell::new(None), rollback_done: std::cell::Cell::new(false),
@@ -657,7 +682,41 @@ impl GeneratedCleanupCoordinator {
             Err(error) => return done(Err(error)),
         };
         if let Some((opener, context)) = hydration {
-            let needs_hydration = self.hydrated.borrow().is_none();
+            let pending = {
+                let mut hydrated = self.hydrated.borrow_mut();
+                match &*hydrated {
+                    HydratedSurvivor::Pending(_) =>
+                        Ok(Some(std::mem::replace(&mut *hydrated, HydratedSurvivor::Opening))),
+                    HydratedSurvivor::Opening => Err("The captured survivor is still opening".to_owned()),
+                    HydratedSurvivor::Failed(error) => Err(error.clone()),
+                    _ => Ok(None),
+                }
+            };
+            let pending = match pending {
+                Ok(pending) => pending,
+                Err(error) => return done(Err(error)),
+            };
+            if let Some(HydratedSurvivor::Pending(mut pending)) = pending {
+                let resumed = pending.retry().and_then(|()| {
+                    if !pending.generation.is_active() {
+                        return Err("The hydrated survivor renderer is no longer active".into());
+                    }
+                    pending.closure.reservation.with_owner(&pending.closure.owner, |_| Ok(()))
+                });
+                if let Err(error) = resumed {
+                    pending.error = error.clone();
+                    *self.hydrated.borrow_mut() = HydratedSurvivor::Pending(pending);
+                    return done(Err(error));
+                }
+                let id = pending.id.clone();
+                let owner = pending.owner.clone();
+                let generation = pending.generation.clone();
+                let retained = self.authority.borrow_mut().as_mut()
+                    .map(|authority| authority.participants.push(owner.clone())).is_some();
+                *self.hydrated.borrow_mut() = HydratedSurvivor::Ready { id, owner, generation };
+                if !retained { return done(Err("The generated cleanup authority is unavailable".into())); }
+            }
+            let needs_hydration = matches!(*self.hydrated.borrow(), HydratedSurvivor::Unstarted);
             if needs_hydration {
                 let captured = {
                     let authority = self.authority.borrow();
@@ -667,20 +726,27 @@ impl GeneratedCleanupCoordinator {
                 let Some((source, shell, cancel, pending)) = captured else {
                     return done(Err("The generated cleanup authority is unavailable".into()));
                 };
+                *self.hydrated.borrow_mut() = HydratedSurvivor::Opening;
                 let coordinator = self.clone();
                 let generated_id = id.clone();
                 return self.state.hydrate_generated_survivor(opener, context, source, shell, cancel, pending,
                     Box::new(move |result| match result {
-                        Ok((id, owner, _)) => {
-                            let retained = {
-                                let mut authority = coordinator.authority.borrow_mut();
-                                authority.as_mut().map(|authority| authority.participants.push(owner.clone())).is_some()
-                            };
+                        Ok(super::SurvivorHydration::Ready { id, owner, generation }) => {
+                            let retained = coordinator.authority.borrow_mut().as_mut()
+                                .map(|authority| authority.participants.push(owner.clone())).is_some();
+                            *coordinator.hydrated.borrow_mut() = HydratedSurvivor::Ready { id, owner, generation };
                             if !retained { return done(Err("The generated cleanup authority is unavailable".into())); }
-                            *coordinator.hydrated.borrow_mut() = Some((id.clone(), owner));
                             done(coordinator.prepare_and_claim(&generated_id));
                         }
-                        Err(error) => done(Err(error)),
+                        Ok(super::SurvivorHydration::AdoptedPending(pending)) => {
+                            let error = pending.error.clone();
+                            *coordinator.hydrated.borrow_mut() = HydratedSurvivor::Pending(pending);
+                            done(Err(error));
+                        }
+                        Err(error) => {
+                            *coordinator.hydrated.borrow_mut() = HydratedSurvivor::Failed(error.clone());
+                            done(Err(error));
+                        }
                     }));
             }
         }
@@ -697,7 +763,7 @@ impl GeneratedCleanupCoordinator {
             let authority = self.authority.borrow();
             let authority = authority.as_ref().ok_or("The generated cleanup authority is unavailable")?;
             let hydrated = self.hydrated.borrow();
-            validate_survivors(authority, &preview, hydrated.as_ref().map(|(id, owner)| (id.as_str(), owner)))?;
+            validate_survivors(authority, &preview, hydrated.ready_owner()?)?;
             prepare_removal(&self.state, authority, &preview)?
         };
         *self.prepared.borrow_mut() = Some(prepared);
@@ -717,7 +783,7 @@ impl GeneratedCleanupCoordinator {
             let manager = inner.manager.as_ref().ok_or("The shell window is unavailable")?;
             let preview = manager.preview_closed_generated_owned(&id, &self.view)?;
             let hydrated = self.hydrated.borrow();
-            validate_survivors(authority, &preview, hydrated.as_ref().map(|(id, owner)| (id.as_str(), owner)))?;
+            validate_survivors(authority, &preview, hydrated.ready_owner()?)?;
             let prepared = self.prepared.borrow();
             let prepared = prepared.as_ref().ok_or("The prepared generated removal is unavailable")?;
             if preview.removal() != &prepared.removal { return Err("The generated removal state changed".into()); }

@@ -39,8 +39,8 @@ use main_core::packages::electron_utils::unsaved_files::{
 };
 use main_core::shell::document_links_shell::GenerateWindowRequest;
 use main_core::shell::generate::generate_window::{
-    GenerateWindow as WindowModule, WindowId as ModuleWindow, WindowStep, WindowNeed, WindowRun,
-    WindowOutcome, WindowOpen,
+    GenerateWindow as WindowModule, WindowId as ModuleWindow, WindowNeed, WindowOpen,
+    WindowOutcome, WindowRun, WindowStep,
 };
 use main_core::shell::generate::open_materials::{OpenDocumentTab, OpenSnapshot};
 use main_core::shell::generate::session::SessionAnswer;
@@ -91,11 +91,19 @@ pub struct BoundGenerateWindowEvents {
 
 impl GenerateWindowEvents {
     pub(crate) fn new(inner: Arc<Inner>) -> Self {
-        Self { inner, binding: Arc::new(Mutex::new(EventBinding::Unbound)) }
+        Self {
+            inner,
+            binding: Arc::new(Mutex::new(EventBinding::Unbound)),
+        }
     }
 
     /// Called once by the exact first registered document, never by a view lookup.
-    pub fn bind(&self, window: WindowId, identity: NativeContext, cancel: CancelToken) -> Result<BoundGenerateWindowEvents, String> {
+    pub fn bind(
+        &self,
+        window: WindowId,
+        identity: NativeContext,
+        cancel: CancelToken,
+    ) -> Result<BoundGenerateWindowEvents, String> {
         let previous = {
             let mut binding = self.binding.lock().unwrap_or_else(PoisonError::into_inner);
             match &*binding {
@@ -105,13 +113,22 @@ impl GenerateWindowEvents {
                         return Err("The generate window was already closed.".into());
                     }
                     *binding = EventBinding::Bound(cancel.clone());
-                    return Ok(BoundGenerateWindowEvents { inner: self.inner.clone(), window, identity, cancel, binding: self.binding.clone() });
+                    return Ok(BoundGenerateWindowEvents {
+                        inner: self.inner.clone(),
+                        window,
+                        identity,
+                        cancel,
+                        binding: self.binding.clone(),
+                    });
                 }
                 EventBinding::Bound(previous) => Some(previous.clone()),
                 EventBinding::Revoked => None,
-            }.inspect(|_| *binding = EventBinding::Revoked)
+            }
+            .inspect(|_| *binding = EventBinding::Revoked)
         };
-        if let Some(previous) = previous { previous.cancel(); }
+        if let Some(previous) = previous {
+            previous.cancel();
+        }
         Err("The generate window document was already bound or closed.".into())
     }
 
@@ -119,20 +136,40 @@ impl GenerateWindowEvents {
     pub fn closed(&self, window: WindowId, identity: NativeContext) {
         let previous = {
             let mut binding = self.binding.lock().unwrap_or_else(PoisonError::into_inner);
-            let previous = match &*binding { EventBinding::Bound(cancel) => Some(cancel.clone()), _ => None };
+            let previous = match &*binding {
+                EventBinding::Bound(cancel) => Some(cancel.clone()),
+                _ => None,
+            };
             *binding = EventBinding::Revoked;
             previous
         };
-        if let Some(previous) = previous { previous.cancel(); }
-        BoundGenerateWindowEvents { inner: self.inner.clone(), window, identity, cancel: CancelToken::default(), binding: self.binding.clone() }.closed();
+        if let Some(previous) = previous {
+            previous.cancel();
+        }
+        BoundGenerateWindowEvents {
+            inner: self.inner.clone(),
+            window,
+            identity,
+            cancel: CancelToken::default(),
+            binding: self.binding.clone(),
+        }
+        .closed();
     }
 }
 
 impl BoundGenerateWindowEvents {
-    fn on_core(&self, event: GenerateWindowEvent, job: impl FnOnce(&Arc<Inner>, &GenerateAuthority, WindowId) + Send + 'static) {
+    fn on_core(
+        &self,
+        event: GenerateWindowEvent,
+        job: impl FnOnce(&Arc<Inner>, &GenerateAuthority, WindowId) + Send + 'static,
+    ) {
         let inner = self.inner.clone();
         let authority = GenerateAuthority {
-            origin: GenerateOrigin::WindowEvent { window: self.window, identity: self.identity.clone(), event },
+            origin: GenerateOrigin::WindowEvent {
+                window: self.window,
+                identity: self.identity.clone(),
+                event,
+            },
             cancel: self.cancel.clone(),
         };
         let window = self.window;
@@ -146,20 +183,34 @@ impl BoundGenerateWindowEvents {
     }
 
     pub fn ready_to_show(&self, origin: NativeContext) {
-        self.on_core(GenerateWindowEvent::Ready { origin }, |inner, authority, window| {
-            Inner::finish_step(None, inner.run(authority, |w, b| w.on_ready_to_show(b, module_window(window))).map(|()| WindowOutcome::Unit));
-        });
+        self.on_core(
+            GenerateWindowEvent::Ready { origin },
+            |inner, authority, window| {
+                Inner::finish_step(
+                    None,
+                    inner
+                        .run(authority, |w, b| {
+                            w.on_ready_to_show(b, module_window(window))
+                        })
+                        .map(|()| WindowOutcome::Unit),
+                );
+            },
+        );
     }
 
     pub fn focus(&self) {
         self.on_core(GenerateWindowEvent::Focus, |inner, authority, window| {
-            inner.snapshot(authority.clone(), move |inner, authority, snap| match snap {
-                Ok(snap) => {
-                    let step = inner.run(authority, |w, b| w.on_focus(b, snap, module_window(window)));
-                    inner.carry_step(authority.clone(), step, None);
-                }
-                Err(error) => eprintln!("[generate] cannot refresh open documents: {error}"),
-            });
+            inner.snapshot(
+                authority.clone(),
+                move |inner, authority, snap| match snap {
+                    Ok(snap) => {
+                        let step =
+                            inner.run(authority, |w, b| w.on_focus(b, snap, module_window(window)));
+                        inner.carry_step(authority.clone(), step, None);
+                    }
+                    Err(error) => eprintln!("[generate] cannot refresh open documents: {error}"),
+                },
+            );
         });
     }
 
@@ -167,20 +218,40 @@ impl BoundGenerateWindowEvents {
         *self.binding.lock().unwrap_or_else(PoisonError::into_inner) = EventBinding::Revoked;
         self.cancel.cancel();
         self.on_core(GenerateWindowEvent::Closed, |inner, authority, window| {
-            Inner::finish_step(None, inner.run(authority, |w, b| w.on_closed(b, module_window(window))).map(|()| WindowOutcome::Unit));
+            Inner::finish_step(
+                None,
+                inner
+                    .run(authority, |w, b| w.on_closed(b, module_window(window)))
+                    .map(|()| WindowOutcome::Unit),
+            );
         });
     }
 
     pub fn theme_updated(&self) {
         self.on_core(GenerateWindowEvent::Theme, |inner, authority, window| {
-            Inner::finish_step(None, inner.run(authority, |w, b| w.on_theme_updated(b, module_window(window))).map(|()| WindowOutcome::Unit));
+            Inner::finish_step(
+                None,
+                inner
+                    .run(authority, |w, b| {
+                        w.on_theme_updated(b, module_window(window))
+                    })
+                    .map(|()| WindowOutcome::Unit),
+            );
         });
     }
 
     pub fn open_link(&self, origin: NativeContext, url: String) {
-        self.on_core(GenerateWindowEvent::OpenLink { origin }, move |inner, authority, _| {
-            Inner::finish_step(None, inner.run(authority, |w, b| w.window_open(b, &url)).map(|()| WindowOutcome::Unit));
-        });
+        self.on_core(
+            GenerateWindowEvent::OpenLink { origin },
+            move |inner, authority, _| {
+                Inner::finish_step(
+                    None,
+                    inner
+                        .run(authority, |w, b| w.window_open(b, &url))
+                        .map(|()| WindowOutcome::Unit),
+                );
+            },
+        );
     }
 }
 
@@ -199,7 +270,11 @@ impl Inner {
     }
 
     /// Runs `f` on the module state with the host of a call
-    fn run<R>(self: &Arc<Self>, authority: &GenerateAuthority, f: impl FnOnce(&mut WindowModule, &mut Bridge<'_>) -> R) -> R {
+    fn run<R>(
+        self: &Arc<Self>,
+        authority: &GenerateAuthority,
+        f: impl FnOnce(&mut WindowModule, &mut Bridge<'_>) -> R,
+    ) -> R {
         let mut bridge = Bridge::new(self, authority);
         let mut window = self.window();
         f(&mut window, &mut bridge)
@@ -210,7 +285,9 @@ impl Inner {
     fn snapshot(
         self: &Arc<Self>,
         authority: GenerateAuthority,
-        then: impl FnOnce(&Arc<Inner>, &GenerateAuthority, Result<&OpenSnapshot<'_>, String>) + Send + 'static,
+        then: impl FnOnce(&Arc<Inner>, &GenerateAuthority, Result<&OpenSnapshot<'_>, String>)
+        + Send
+        + 'static,
     ) {
         if let Err(error) = self.check_authority(&authority) {
             then(self, &authority, Err(error));
@@ -218,34 +295,49 @@ impl Inner {
         }
         let inner = self.clone();
         let request_authority = authority.clone();
-        self.shell.open_documents(&request_authority, Box::new(move |tabs| {
-            let core = inner.services.core.clone();
-            let job = move || {
-                if let Err(error) = inner.check_authority(&authority) {
-                    then(&inner, &authority, Err(error));
-                    return;
-                }
-                match tabs {
-                    Ok(tabs) => {
-                        let holder = open_files_of(&tabs);
-                        then(&inner, &authority, Ok(&OpenSnapshot { files: &holder, tabs: &tabs }));
+        self.shell.open_documents(
+            &request_authority,
+            Box::new(move |tabs| {
+                let core = inner.services.core.clone();
+                let job = move || {
+                    if let Err(error) = inner.check_authority(&authority) {
+                        then(&inner, &authority, Err(error));
+                        return;
                     }
-                    Err(error) => then(&inner, &authority, Err(error)),
+                    match tabs {
+                        Ok(tabs) => {
+                            let holder = open_files_of(&tabs);
+                            then(
+                                &inner,
+                                &authority,
+                                Ok(&OpenSnapshot {
+                                    files: &holder,
+                                    tabs: &tabs,
+                                }),
+                            );
+                        }
+                        Err(error) => then(&inner, &authority, Err(error)),
+                    }
+                };
+                if core.is_current() {
+                    job()
+                } else {
+                    core.post(Box::new(job))
                 }
-            };
-            if core.is_current() {
-                job()
-            } else {
-                core.post(Box::new(job))
-            }
-        }));
+            }),
+        );
     }
 
     fn finish_step(reply: Option<Responder>, result: Result<WindowOutcome, Failure>) {
-        let result = result.map(|outcome| match outcome {
-            WindowOutcome::Unit => IpcValue::Undefined,
-            WindowOutcome::Made(made) => IpcValue::Bool(made),
-        }).map_err(|Failure(message)| IpcError { name: Some("Error".into()), message });
+        let result = result
+            .map(|outcome| match outcome {
+                WindowOutcome::Unit => IpcValue::Undefined,
+                WindowOutcome::Made(made) => IpcValue::Bool(made),
+            })
+            .map_err(|Failure(message)| IpcError {
+                name: Some("Error".into()),
+                message,
+            });
         if let Some(reply) = reply {
             reply.reply(result);
         } else if let Err(error) = result {
@@ -253,7 +345,13 @@ impl Inner {
         }
     }
 
-    fn resume_step(self: &Arc<Self>, authority: GenerateAuthority, run: WindowRun, answer: SessionAnswer, reply: Option<Responder>) {
+    fn resume_step(
+        self: &Arc<Self>,
+        authority: GenerateAuthority,
+        run: WindowRun,
+        answer: SessionAnswer,
+        reply: Option<Responder>,
+    ) {
         let inner = self.clone();
         self.services.core.post(Box::new(move || {
             inner.snapshot(authority, move |inner, authority, snap| match snap {
@@ -269,48 +367,91 @@ impl Inner {
         }));
     }
 
-    fn complete_open(self: &Arc<Self>, authority: GenerateAuthority, run: WindowRun, result: host::GenerateOpenResult, reply: Option<Responder>) {
+    fn complete_open(
+        self: &Arc<Self>,
+        authority: GenerateAuthority,
+        run: WindowRun,
+        result: host::GenerateOpenResult,
+        reply: Option<Responder>,
+    ) {
         let inner = self.clone();
         self.services.core.post(Box::new(move || {
             let committed = match result {
-                Err(error) => return inner.resume_step(authority, run, SessionAnswer::OpenFailed(Failure(error)), reply),
+                Err(error) => {
+                    return inner.resume_step(
+                        authority,
+                        run,
+                        SessionAnswer::OpenFailed(Failure(error)),
+                        reply,
+                    );
+                }
                 Ok(committed) => committed,
             };
-            let host::GenerateCommittedOpen { receipt, target, cleanup } = committed;
+            let host::GenerateCommittedOpen {
+                receipt,
+                target,
+                cleanup,
+            } = committed;
             let mut pending_run = Some(run);
             let mut pending_receipt = Some(receipt);
             let mut completed = None;
             let admitted = target.with_terminal_commit(&mut || {
-                let run = pending_run.take().ok_or("The generated operation was already consumed.")?;
-                let receipt = pending_receipt.take().ok_or("The generated receipt was already consumed.")?;
-                let result = inner.window().complete_committed_open(run, receipt).map_err(|error| error.0)?;
+                let run = pending_run
+                    .take()
+                    .ok_or("The generated operation was already consumed.")?;
+                let receipt = pending_receipt
+                    .take()
+                    .ok_or("The generated receipt was already consumed.")?;
+                let result = inner
+                    .window()
+                    .complete_committed_open(run, receipt)
+                    .map_err(|error| error.0)?;
                 completed = Some(result);
                 Ok(())
             });
             if let Err(error) = admitted {
-                if let Some(run) = pending_run { inner.window().discard_run(run); }
+                if let Some(run) = pending_run {
+                    inner.window().discard_run(run);
+                }
                 return Self::finish_step(reply, Err(Failure(error)));
             }
             let completed = match completed {
                 Some(committed) => Ok(committed),
                 None => {
-                    if let Some(run) = pending_run { inner.window().discard_run(run); }
-                    Err(Failure("The target admission did not commit the generated operation.".into()))
+                    if let Some(run) = pending_run {
+                        inner.window().discard_run(run);
+                    }
+                    Err(Failure(
+                        "The target admission did not commit the generated operation.".into(),
+                    ))
                 }
             };
             match completed {
                 Ok(committed) if committed.cleanup_window == module_window(cleanup.window) => {
                     cleanup.complete(Box::new(move |result| {
-                        Self::finish_step(reply, result.map(|()| committed.outcome).map_err(Failure));
+                        Self::finish_step(
+                            reply,
+                            result.map(|()| committed.outcome).map_err(Failure),
+                        );
                     }));
                 }
-                Ok(_) => Self::finish_step(reply, Err(Failure("The committed operation does not own this cleanup window.".into()))),
+                Ok(_) => Self::finish_step(
+                    reply,
+                    Err(Failure(
+                        "The committed operation does not own this cleanup window.".into(),
+                    )),
+                ),
                 Err(error) => Self::finish_step(reply, Err(error)),
             }
         }));
     }
 
-    fn carry_step(self: &Arc<Self>, authority: GenerateAuthority, step: WindowStep, reply: Option<Responder>) {
+    fn carry_step(
+        self: &Arc<Self>,
+        authority: GenerateAuthority,
+        step: WindowStep,
+        reply: Option<Responder>,
+    ) {
         match step {
             WindowStep::Done(result) => Self::finish_step(reply, result),
             WindowStep::Need(need, run) => {
@@ -319,43 +460,103 @@ impl Inner {
                     return Self::finish_step(reply, Err(Failure(error)));
                 }
                 match need {
-                    WindowNeed::OpenTarget { handoff, opener, token, window } => {
+                    WindowNeed::OpenTarget {
+                        handoff,
+                        opener,
+                        token,
+                        window,
+                    } => {
                         let inner = self.clone();
                         let resumed = authority.clone();
-                        self.shell.open_target_tab(&authority, handoff, opener,
-                            host::GenerateOpenRequest { token, window: WindowId(window as u32) },
-                            Box::new(move |result| inner.complete_open(resumed, run, result, reply)));
+                        self.shell.open_target_tab(
+                            &authority,
+                            handoff,
+                            opener,
+                            host::GenerateOpenRequest {
+                                token,
+                                window: WindowId(window as u32),
+                            },
+                            Box::new(move |result| {
+                                inner.complete_open(resumed, run, result, reply)
+                            }),
+                        );
                     }
-                    WindowNeed::OpenConverted { document, opener, token, window } => {
+                    WindowNeed::OpenConverted {
+                        document,
+                        opener,
+                        token,
+                        window,
+                    } => {
                         let inner = self.clone();
                         let resumed = authority.clone();
-                        self.shell.open_converted_tab(&authority, document, opener,
-                            host::GenerateOpenRequest { token, window: WindowId(window as u32) },
-                            Box::new(move |result| inner.complete_open(resumed, run, result, reply)));
+                        self.shell.open_converted_tab(
+                            &authority,
+                            document,
+                            opener,
+                            host::GenerateOpenRequest {
+                                token,
+                                window: WindowId(window as u32),
+                            },
+                            Box::new(move |result| {
+                                inner.complete_open(resumed, run, result, reply)
+                            }),
+                        );
                     }
                     need => {
                         let inner = self.clone();
                         let resume_authority = authority.clone();
-                        let resume = move |answer| inner.resume_step(resume_authority, run, answer, reply);
+                        let resume =
+                            move |answer| inner.resume_step(resume_authority, run, answer, reply);
                         match need {
-                            WindowNeed::Save(need) => self.shell.save(&authority, need,
-                                Box::new(move |answer| resume(SessionAnswer::Save(answer)))),
-                            WindowNeed::Sleep(ms) => self.shell.set_timeout(&authority, ms,
-                                Box::new(move || resume(SessionAnswer::Slept))),
-                            WindowNeed::Reveal(tab_id) => self.shell.reveal_tab(&authority, tab_id,
-                                Box::new(move |result| resume(SessionAnswer::Revealed(result.map_err(Failure))))),
-                            need @ (WindowNeed::Inspect(_) | WindowNeed::Notice(_) | WindowNeed::Convert(_) | WindowNeed::OpenDialog { .. }) => {
+                            WindowNeed::Save(need) => self.shell.save(
+                                &authority,
+                                need,
+                                Box::new(move |answer| resume(SessionAnswer::Save(answer))),
+                            ),
+                            WindowNeed::Sleep(ms) => self.shell.set_timeout(
+                                &authority,
+                                ms,
+                                Box::new(move || resume(SessionAnswer::Slept)),
+                            ),
+                            WindowNeed::Reveal(tab_id) => self.shell.reveal_tab(
+                                &authority,
+                                tab_id,
+                                Box::new(move |result| {
+                                    resume(SessionAnswer::Revealed(result.map_err(Failure)))
+                                }),
+                            ),
+                            need @ (WindowNeed::Inspect(_)
+                            | WindowNeed::Notice(_)
+                            | WindowNeed::Convert(_)
+                            | WindowNeed::OpenDialog { .. }) => {
                                 let inner = self.clone();
                                 self.services.workers.spawn(Box::new(move || {
                                     let answer = match need {
-                                        WindowNeed::Inspect(job) => SessionAnswer::Inspected(bridge::inspect_job(&inner, &authority, job)),
-                                        WindowNeed::Notice(job) => SessionAnswer::Noticed(bridge::notice_job(&inner, &authority, job)),
-                                        WindowNeed::Convert(job) => SessionAnswer::Converted(bridge::convert_job(&inner, &authority, job)),
+                                        WindowNeed::Inspect(job) => SessionAnswer::Inspected(
+                                            bridge::inspect_job(&inner, &authority, job),
+                                        ),
+                                        WindowNeed::Notice(job) => SessionAnswer::Noticed(
+                                            bridge::notice_job(&inner, &authority, job),
+                                        ),
+                                        WindowNeed::Convert(job) => SessionAnswer::Converted(
+                                            bridge::convert_job(&inner, &authority, job),
+                                        ),
                                         WindowNeed::OpenDialog { window, options } => {
-                                            let result = inner.check_authority(&authority).map_err(Failure).and_then(|()| {
-                                                inner.shell.show_open_dialog(&authority, inner.dialogs.clone(), WindowId(window as u32), &file_dialog(&options))
-                                                    .map(dialog_result).map_err(Failure)
-                                            });
+                                            let result = inner
+                                                .check_authority(&authority)
+                                                .map_err(Failure)
+                                                .and_then(|()| {
+                                                    inner
+                                                        .shell
+                                                        .show_open_dialog(
+                                                            &authority,
+                                                            inner.dialogs.clone(),
+                                                            WindowId(window as u32),
+                                                            &file_dialog(&options),
+                                                        )
+                                                        .map(dialog_result)
+                                                        .map_err(Failure)
+                                                });
                                             SessionAnswer::Dialog(result)
                                         }
                                         _ => unreachable!("non-worker generate need"),
@@ -363,7 +564,9 @@ impl Inner {
                                     resume(answer);
                                 }));
                             }
-                            WindowNeed::OpenTarget { .. } | WindowNeed::OpenConverted { .. } => unreachable!("terminal generate need"),
+                            WindowNeed::OpenTarget { .. } | WindowNeed::OpenConverted { .. } => {
+                                unreachable!("terminal generate need")
+                            }
                         }
                     }
                 }
@@ -372,7 +575,11 @@ impl Inner {
     }
 
     /// `openGenerateWindowForDocument(request)`
-    fn open_for_document(self: &Arc<Self>, request: GenerateWindowRequest<WindowId>, authority: GenerateAuthority) {
+    fn open_for_document(
+        self: &Arc<Self>,
+        request: GenerateWindowRequest<WindowId>,
+        authority: GenerateAuthority,
+    ) {
         self.snapshot(authority, move |inner, authority, snap| {
             let snap = match snap {
                 Ok(snap) => snap,
@@ -518,14 +725,21 @@ impl GenerateWindowPort {
     /// ("make another document from this one"). The window opens once the
     /// open tabs are known, so a caller must not hold a borrow of the store
     /// across it.
-    pub fn make_window_opener(&self) -> Box<dyn Fn(GenerateWindowRequest<WindowId>, GenerateAuthority)> {
+    pub fn make_window_opener(
+        &self,
+    ) -> Box<dyn Fn(GenerateWindowRequest<WindowId>, GenerateAuthority)> {
         let inner = self.inner.clone();
         Box::new(move |request, authority| inner.open_for_document(request, authority))
     }
 
     fn authority(&self, cx: &CallContext) -> Result<GenerateAuthority, IpcError> {
         let authority = GenerateAuthority::renderer(cx);
-        self.inner.check_authority(&authority).map_err(|message| IpcError { name: Some("Error".into()), message })?;
+        self.inner
+            .check_authority(&authority)
+            .map_err(|message| IpcError {
+                name: Some("Error".into()),
+                message,
+            })?;
         Ok(authority)
     }
 
@@ -535,12 +749,7 @@ impl GenerateWindowPort {
         &self,
         cx: &CallContext,
         reply: Responder,
-        open: impl FnOnce(
-            &mut WindowModule,
-            &mut Bridge<'_>,
-            &OpenSnapshot<'_>,
-            f64,
-        ) -> WindowOpen
+        open: impl FnOnce(&mut WindowModule, &mut Bridge<'_>, &OpenSnapshot<'_>, f64) -> WindowOpen
         + Send
         + 'static,
     ) {
@@ -549,67 +758,109 @@ impl GenerateWindowPort {
             Err(error) => return reply.reply(Err(error)),
         };
         let sender = sender_of(cx);
-        self.inner.snapshot(authority, move |inner, authority, snap| {
-            let snap = match snap {
-                Ok(snap) => snap,
-                Err(error) => return reply.reply(unit(Err(Failure(error)))),
-            };
-            let result = inner.run(authority, |w, b| open(w, b, snap, sender));
-            reply.reply(unit(result.result));
-            inner.carry_step(authority.clone(), result.background, None);
-        });
+        self.inner
+            .snapshot(authority, move |inner, authority, snap| {
+                let snap = match snap {
+                    Ok(snap) => snap,
+                    Err(error) => return reply.reply(unit(Err(Failure(error)))),
+                };
+                let result = inner.run(authority, |w, b| open(w, b, snap, sender));
+                reply.reply(unit(result.result));
+                inner.carry_step(authority.clone(), result.background, None);
+            });
     }
 }
 
 impl GenerateWindowChannels for GenerateWindowPort {
     fn generate_add_materials(&self, cx: &CallContext, _args: Vec<IpcValue>, reply: Responder) {
-        let authority = match self.authority(cx) { Ok(authority) => authority, Err(error) => return reply.reply(Err(error)) };
+        let authority = match self.authority(cx) {
+            Ok(authority) => authority,
+            Err(error) => return reply.reply(Err(error)),
+        };
         let sender = sender_of(cx);
-        self.inner.snapshot(authority, move |inner, authority, snap| match snap {
-            Ok(snap) => {
-                let step = inner.run(authority, |w, b| w.handle_add_materials(b, snap, sender));
-                inner.carry_step(authority.clone(), step, Some(reply));
-            }
-            Err(error) => reply.reply(unit(Err(Failure(error)))),
-        });
+        self.inner
+            .snapshot(authority, move |inner, authority, snap| match snap {
+                Ok(snap) => {
+                    let step = inner.run(authority, |w, b| w.handle_add_materials(b, snap, sender));
+                    inner.carry_step(authority.clone(), step, Some(reply));
+                }
+                Err(error) => reply.reply(unit(Err(Failure(error)))),
+            });
     }
 
     fn generate_cancel(&self, cx: &CallContext, _args: Vec<IpcValue>, reply: Responder) {
-        let authority = match self.authority(cx) { Ok(authority) => authority, Err(error) => return reply.reply(Err(error)) };
+        let authority = match self.authority(cx) {
+            Ok(authority) => authority,
+            Err(error) => return reply.reply(Err(error)),
+        };
         let sender = sender_of(cx);
-        let result = self.inner.run(&authority, |w, b| w.handle_cancel(b, sender));
+        let result = self
+            .inner
+            .run(&authority, |w, b| w.handle_cancel(b, sender));
         reply.reply(unit(result))
     }
 
     fn generate_get_state(&self, cx: &CallContext, _args: Vec<IpcValue>, reply: Responder) {
-        let authority = match self.authority(cx) { Ok(authority) => authority, Err(error) => return reply.reply(Err(error)) };
+        let authority = match self.authority(cx) {
+            Ok(authority) => authority,
+            Err(error) => return reply.reply(Err(error)),
+        };
         let sender = sender_of(cx);
-        let state = self.inner.run(&authority, |w, b| w.handle_get_state(b, sender));
-        reply.reply(state.map(|state| match state {
-            Some(state) => serde_json::to_value(&state).map_or(IpcValue::Null, |v| ipc_of(&v)),
-            None => IpcValue::Null,
-        }).map_err(|Failure(message)| IpcError { name: Some("Error".into()), message }))
+        let state = self
+            .inner
+            .run(&authority, |w, b| w.handle_get_state(b, sender));
+        reply.reply(
+            state
+                .map(|state| match state {
+                    Some(state) => {
+                        serde_json::to_value(&state).map_or(IpcValue::Null, |v| ipc_of(&v))
+                    }
+                    None => IpcValue::Null,
+                })
+                .map_err(|Failure(message)| IpcError {
+                    name: Some("Error".into()),
+                    message,
+                }),
+        )
     }
 
     fn generate_get_theme(&self, cx: &CallContext, _args: Vec<IpcValue>, reply: Responder) {
-        let authority = match self.authority(cx) { Ok(authority) => authority, Err(error) => return reply.reply(Err(error)) };
+        let authority = match self.authority(cx) {
+            Ok(authority) => authority,
+            Err(error) => return reply.reply(Err(error)),
+        };
         let sender = sender_of(cx);
-        let theme = self.inner.run(&authority, |w, b| w.handle_get_theme(&*b, sender));
-        reply.reply(theme.map(IpcValue::String).map_err(|Failure(message)| IpcError { name: Some("Error".into()), message }))
+        let theme = self
+            .inner
+            .run(&authority, |w, b| w.handle_get_theme(&*b, sender));
+        reply.reply(
+            theme
+                .map(IpcValue::String)
+                .map_err(|Failure(message)| IpcError {
+                    name: Some("Error".into()),
+                    message,
+                }),
+        )
     }
 
     fn generate_make(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
-        let authority = match self.authority(cx) { Ok(authority) => authority, Err(error) => return reply.reply(Err(error)) };
+        let authority = match self.authority(cx) {
+            Ok(authority) => authority,
+            Err(error) => return reply.reply(Err(error)),
+        };
         let sender = sender_of(cx);
         let text = jarg(&args, 0);
-        self.inner.snapshot(authority, move |inner, authority, snap| {
-            let snap = match snap {
-                Ok(snap) => snap,
-                Err(error) => return reply.reply(unit(Err(Failure(error)))),
-            };
-            let step = inner.run(authority, |w, b| w.handle_make(b, snap, sender, text.as_ref()));
-            inner.carry_step(authority.clone(), step, Some(reply));
-        });
+        self.inner
+            .snapshot(authority, move |inner, authority, snap| {
+                let snap = match snap {
+                    Ok(snap) => snap,
+                    Err(error) => return reply.reply(unit(Err(Failure(error)))),
+                };
+                let step = inner.run(authority, |w, b| {
+                    w.handle_make(b, snap, sender, text.as_ref())
+                });
+                inner.carry_step(authority.clone(), step, Some(reply));
+            });
     }
 
     fn generate_open_with_group(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
@@ -627,56 +878,78 @@ impl GenerateWindowChannels for GenerateWindowPort {
     }
 
     fn generate_refresh(&self, cx: &CallContext, _args: Vec<IpcValue>, reply: Responder) {
-        let authority = match self.authority(cx) { Ok(authority) => authority, Err(error) => return reply.reply(Err(error)) };
+        let authority = match self.authority(cx) {
+            Ok(authority) => authority,
+            Err(error) => return reply.reply(Err(error)),
+        };
         let sender = sender_of(cx);
-        self.inner.snapshot(authority, move |inner, authority, snap| {
-            let snap = match snap {
-                Ok(snap) => snap,
-                Err(error) => return reply.reply(unit(Err(Failure(error)))),
-            };
-            let step = inner.run(authority, |w, b| w.handle_refresh(b, snap, sender));
-            inner.carry_step(authority.clone(), step, Some(reply));
-        });
+        self.inner
+            .snapshot(authority, move |inner, authority, snap| {
+                let snap = match snap {
+                    Ok(snap) => snap,
+                    Err(error) => return reply.reply(unit(Err(Failure(error)))),
+                };
+                let step = inner.run(authority, |w, b| w.handle_refresh(b, snap, sender));
+                inner.carry_step(authority.clone(), step, Some(reply));
+            });
     }
 
     fn generate_remove_material(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
-        let authority = match self.authority(cx) { Ok(authority) => authority, Err(error) => return reply.reply(Err(error)) };
+        let authority = match self.authority(cx) {
+            Ok(authority) => authority,
+            Err(error) => return reply.reply(Err(error)),
+        };
         let sender = sender_of(cx);
         let key = jarg(&args, 0);
-        let result = self.inner
-            .run(&authority, |w, b| w.handle_remove_material(b, sender, key.as_ref()));
+        let result = self.inner.run(&authority, |w, b| {
+            w.handle_remove_material(b, sender, key.as_ref())
+        });
         reply.reply(unit(result))
     }
 
     fn generate_save_material(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
-        let authority = match self.authority(cx) { Ok(authority) => authority, Err(error) => return reply.reply(Err(error)) };
+        let authority = match self.authority(cx) {
+            Ok(authority) => authority,
+            Err(error) => return reply.reply(Err(error)),
+        };
         let sender = sender_of(cx);
         let key = jarg(&args, 0);
-        self.inner.snapshot(authority, move |inner, authority, snap| {
-            let snap = match snap {
-                Ok(snap) => snap,
-                Err(error) => return reply.reply(unit(Err(Failure(error)))),
-            };
-            let step = inner.run(authority, |w, b| w.handle_save_material(b, snap, sender, key.as_ref()));
-            inner.carry_step(authority.clone(), step, Some(reply));
-        });
+        self.inner
+            .snapshot(authority, move |inner, authority, snap| {
+                let snap = match snap {
+                    Ok(snap) => snap,
+                    Err(error) => return reply.reply(unit(Err(Failure(error)))),
+                };
+                let step = inner.run(authority, |w, b| {
+                    w.handle_save_material(b, snap, sender, key.as_ref())
+                });
+                inner.carry_step(authority.clone(), step, Some(reply));
+            });
     }
 
     fn generate_set_convert(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
-        let authority = match self.authority(cx) { Ok(authority) => authority, Err(error) => return reply.reply(Err(error)) };
+        let authority = match self.authority(cx) {
+            Ok(authority) => authority,
+            Err(error) => return reply.reply(Err(error)),
+        };
         let sender = sender_of(cx);
         let kind = jarg(&args, 0);
-        let result = self.inner
-            .run(&authority, |w, b| w.handle_set_convert(b, sender, kind.as_ref()));
+        let result = self.inner.run(&authority, |w, b| {
+            w.handle_set_convert(b, sender, kind.as_ref())
+        });
         reply.reply(unit(result))
     }
 
     fn generate_set_kind(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
-        let authority = match self.authority(cx) { Ok(authority) => authority, Err(error) => return reply.reply(Err(error)) };
+        let authority = match self.authority(cx) {
+            Ok(authority) => authority,
+            Err(error) => return reply.reply(Err(error)),
+        };
         let sender = sender_of(cx);
         let kind = jarg(&args, 0);
-        let result = self.inner
-            .run(&authority, |w, b| w.handle_set_kind(b, sender, kind.as_ref()));
+        let result = self.inner.run(&authority, |w, b| {
+            w.handle_set_kind(b, sender, kind.as_ref())
+        });
         reply.reply(unit(result))
     }
 }

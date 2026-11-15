@@ -22,6 +22,7 @@
       "../../apps/pdf/node_modules/harfbuzzjs/hb-subset.wasm": "resources/wasm/hb-subset.wasm",
       "../../node_modules/@neslinesli93/qpdf-wasm/dist/qpdf.wasm": "resources/wasm/qpdf.wasm",
       "../../node_modules/@rhwp/core/rhwp_bg.wasm": "resources/wasm/rhwp_bg.wasm",
+      "../target/wasm32-wasip1/release/office_wasm.wasm": "resources/wasm/office_wasm.wasm",
       "../../packages/cli/dist/seuoffice.cjs": "resources/cli/seuoffice.cjs",
       "../../packages/cli/bin/seuoffice": "resources/cli/seuoffice",
       "../../packages/cli/bin/seuoffice.cmd": "resources/cli/seuoffice.cmd",

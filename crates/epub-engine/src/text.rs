@@ -271,12 +271,16 @@ pub fn extract_chapter_text_with_host(source: &str, host: &HostCall<'_>) -> Resu
     chapter_text_from_parse(source, parse_xml_with_host(&units(source), host), host)
 }
 
-fn chapter_text_from_parse(source: &str, parsed: XmlParseResult, host: &HostCall<'_>) -> Result<String, Thrown> {
+fn chapter_text_from_parse(
+    source: &str,
+    parsed: XmlParseResult,
+    host: &HostCall<'_>,
+) -> Result<String, Thrown> {
     let roots = match parsed {
         XmlParseResult::Ok(doc) => vec![from_xml(&doc, doc.root, 0)?],
         XmlParseResult::Err { .. } => {
-            let answer = host("epub.chapterTextRoots", &json!({ "text": source }))
-                .map_err(host_thrown)?;
+            let answer =
+                host("epub.chapterTextRoots", &json!({ "text": source })).map_err(host_thrown)?;
             roots_from_flat(&answer).map_err(|message| {
                 if message.starts_with("the roots are nested") {
                     Thrown::stack_overflow()

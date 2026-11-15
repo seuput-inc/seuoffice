@@ -10,10 +10,10 @@ afterEach(() => { vi.unstubAllGlobals(); vi.resetModules() })
 
 describe('HarfBuzz font subset worker', () => {
   it('matches the original subsetter for a real font and preserves requested glyphs', async () => {
-    let answer: ((value: unknown) => void) | undefined
+    const { promise, resolve } = Promise.withResolvers<unknown>()
     const worker: { location: { href: string }; onmessage?: (event: { data: unknown }) => void; postMessage: (value: unknown) => void } = {
       location: { href: 'https://engine-host/pdf/font-subset-worker.js' },
-      postMessage: value => answer?.(value),
+      postMessage: value => resolve(value),
     }
     vi.stubGlobal('self', worker)
     vi.stubGlobal('fetch', async (url: URL) => {
@@ -22,8 +22,6 @@ describe('HarfBuzz font subset worker', () => {
     })
     // The worker installs its handler against self when its module loads.
     await import('./font-subset-worker')
-    const { promise, resolve } = Promise.withResolvers<unknown>()
-    answer = resolve
     worker.onmessage!({ data: { fontBase64: font.toString('base64'), text: 'Hello 세계 \u{1F600} ' } })
     const reply = await promise as { ok?: string; error?: { message: string } }
     expect(reply.error).toBeUndefined()
@@ -36,16 +34,14 @@ describe('HarfBuzz font subset worker', () => {
   })
 
   it('reports malformed base64 rather than returning an empty font', async () => {
-    let answer: ((value: unknown) => void) | undefined
+    const { promise, resolve } = Promise.withResolvers<unknown>()
     const worker: { location: { href: string }; onmessage?: (event: { data: unknown }) => void; postMessage: (value: unknown) => void } = {
       location: { href: 'https://engine-host/pdf/font-subset-worker.js' },
-      postMessage: value => answer?.(value),
+      postMessage: value => resolve(value),
     }
     vi.stubGlobal('self', worker)
     // The worker installs its handler against self when its module loads.
     await import('./font-subset-worker')
-    const { promise, resolve } = Promise.withResolvers<unknown>()
-    answer = resolve
     worker.onmessage!({ data: { fontBase64: '!!', text: 'A' } })
     expect(await promise).toMatchObject({ error: { name: 'InvalidCharacterError' } })
   })

@@ -123,13 +123,19 @@ impl Docs {
     }
 
     pub fn take_owned_pdf_grant(
-        &self, view: ViewId, token: &str, generation: &shell_contract::runtime::RendererGeneration,
+        &self,
+        view: ViewId,
+        token: &str,
+        generation: &shell_contract::runtime::RendererGeneration,
     ) -> Option<shell_contract::editors::OwnedPdfGrant> {
-        self.editor(view)?.take_owned_pdf_grant(view, token, generation)
+        self.editor(view)?
+            .take_owned_pdf_grant(view, token, generation)
     }
 
     pub fn take_native_headless_pdf_grant(
-        &self, view: ViewId, native: Option<&shell_contract::ipc::NativeContext>,
+        &self,
+        view: ViewId,
+        native: Option<&shell_contract::ipc::NativeContext>,
     ) -> Result<Option<shell_contract::editors::NativeHeadlessPdfGrant>, String> {
         match self.editor(view) {
             Some(editor) => editor.take_native_headless_pdf_grant(view, native),

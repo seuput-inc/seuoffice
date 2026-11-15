@@ -17,9 +17,9 @@
 //! same things this one does, `fExternal` included, which neither can serve.
 
 use crate::error::Error;
-use crate::file_params::{bad, wide, Bound, FileField, FileProblem, Invariant};
 #[cfg(test)]
 use crate::file_params::AlgorithmName;
+use crate::file_params::{bad, wide, Bound, FileField, FileProblem, Invariant};
 use crate::limits::{RC4_ENCRYPTION_HEADER_SIZE_MAX, RC4_KEY_BITS_DEFAULT};
 use crate::rc4::{self, BlockKeySchedule};
 use crate::sensitive::{utf16le_password, DerivedKey, PasswordDigest};
@@ -114,7 +114,11 @@ fn parse_inner(structure: &[u8], powerpoint: bool) -> Result<CryptoApiHeader, Er
     // §2.3.5.1: vMajor 2, 3 or 4 with vMinor 2. Version 1.1 is the MD5 family,
     // `rc4_office97`; a caller dispatches on the pair before arriving here, so a
     // mismatch is the same fact the version variant already names.
-    if if powerpoint { !matches!(major, 2..=4) && minor != 2 } else { !matches!(major, 2..=4) || minor != 2 } {
+    if if powerpoint {
+        !matches!(major, 2..=4) && minor != 2
+    } else {
+        !matches!(major, 2..=4) || minor != 2
+    } {
         return Err(Error::UnsupportedEncryptionVersion(major, minor));
     }
 
@@ -136,7 +140,8 @@ fn parse_inner(structure: &[u8], powerpoint: bool) -> Result<CryptoApiHeader, Er
     if header_size < HEADER_FIXED_LEN {
         return Err(header_range(Bound::Spec));
     }
-    let header_end = PREFIX_LEN.checked_add(header_size)
+    let header_end = PREFIX_LEN
+        .checked_add(header_size)
         .ok_or(Error::InvariantViolated(Invariant::Unrepresentable))?;
     let Some(header) = structure.get(PREFIX_LEN..header_end) else {
         return Err(bad(
@@ -160,24 +165,30 @@ fn parse_inner(structure: &[u8], powerpoint: bool) -> Result<CryptoApiHeader, Er
 
     let key_bits = key_size;
 
-    let hash_length_at = header_end.checked_add(36)
+    let hash_length_at = header_end
+        .checked_add(36)
         .ok_or(Error::InvariantViolated(Invariant::Unrepresentable))?;
-    let verifier_hash_size = le32(hash_length_at).ok_or_else(|| bad(
-        FileField::EncryptionVerifier,
-        FileProblem::Truncated {
-            have: wide(structure.len().saturating_sub(header_end)),
-            need: 40,
-        },
-    ))?;
-    let hash_start = header_end.checked_add(40)
+    let verifier_hash_size = le32(hash_length_at).ok_or_else(|| {
+        bad(
+            FileField::EncryptionVerifier,
+            FileProblem::Truncated {
+                have: wide(structure.len().saturating_sub(header_end)),
+                need: 40,
+            },
+        )
+    })?;
+    let hash_start = header_end
+        .checked_add(40)
         .ok_or(Error::InvariantViolated(Invariant::Unrepresentable))?;
     let available = structure.len().saturating_sub(hash_start);
     if available.min(verifier_hash_size as usize) != VERIFIER_HASH_LEN {
         return Err(Error::WrongPassword);
     }
-    let verifier_end = header_end.checked_add(VERIFIER_LEN)
+    let verifier_end = header_end
+        .checked_add(VERIFIER_LEN)
         .ok_or(Error::InvariantViolated(Invariant::Unrepresentable))?;
-    let verifier = structure.get(header_end..verifier_end)
+    let verifier = structure
+        .get(header_end..verifier_end)
         .ok_or(Error::InvariantViolated(Invariant::InternalSlice))?;
 
     let mut salt = [0u8; SALT_LEN];
@@ -298,10 +309,13 @@ mod tests {
         let zero = CryptoApiKeySchedule::new("password", &salt, 0).unwrap();
         let mut stream = [0u8; 16];
         rc4::decrypt_with_block(&zero, &mut stream, 0).unwrap();
-        assert_eq!(stream, [
-            0xde, 0x18, 0x89, 0x41, 0xa3, 0x37, 0x5d, 0x3a,
-            0x8a, 0x06, 0x1e, 0x67, 0x57, 0x6e, 0x92, 0x6d,
-        ]);
+        assert_eq!(
+            stream,
+            [
+                0xde, 0x18, 0x89, 0x41, 0xa3, 0x37, 0x5d, 0x3a, 0x8a, 0x06, 0x1e, 0x67, 0x57, 0x6e,
+                0x92, 0x6d,
+            ]
+        );
         for bits in [8, 39, 40, 159, 160, 256] {
             let schedule = CryptoApiKeySchedule::new("password", &salt, bits).unwrap();
             let mut message = *b"synthetic RC4";

@@ -5,7 +5,7 @@ use std::rc::Rc;
 use main_core::packages::electron_utils::recovery_contract::RecoveryOpenDone;
 use main_core::shell::tab_manager::TabKind;
 use shell_contract::{Provided, ViewId, ipc::{RecoveryOpenContext, RecoveryOpenTarget, RecoveryRequestConstraint}, runtime::{CancelSubscription, Services, Views}};
-use tauri_runtime_cef::{FrameEventKind, NativeBrowserClose, NativeBrowserCloseSubscription, NativeContextToken};
+use tauri_runtime_cef::{FrameEventKind, NativeBrowserCloseSubscription, NativeContextToken};
 
 use crate::host::HostContext;
 use crate::ipc::native_owner::{self, NativeOwnerAuthority};
@@ -29,6 +29,7 @@ pub(crate) type RecoveryCleanup = shell_ipc_w::tabs::host::ViewCreationCleanup;
 pub(crate) struct RecoveryFailure {
     pub message: String,
     pub cleanup: shell_ipc_w::tabs::host::ViewCreationCleanupState,
+    pub target: RecoveryOpenTarget,
 }
 type Done = Box<dyn FnOnce(Result<RecoveryReady, RecoveryFailure>)>;
 type SendDone = Box<dyn FnOnce(Result<RecoveryReady, RecoveryFailure>) + Send>;
@@ -37,11 +38,12 @@ pub(crate) struct RecoveryReady {
     owner: shell_contract::ipc::NativeRequestOwner,
     _target: RecoveryOpenTarget,
     browser: Browser,
-    cx: HostContext,
+    close: Arc<NativeClose>,
     core: Arc<dyn shell_contract::runtime::Thread>,
 }
 impl RecoveryReady {
     pub(crate) fn view(&self) -> ViewId { self.owner.view }
+    pub(crate) fn target(&self) -> &RecoveryOpenTarget { &self._target }
     pub(crate) fn invocation_document(&self) -> Result<shell_contract::ipc::NativeInvocationDocument, String> {
         self._target.invocation_target().ok_or_else(|| "The recovery target is not a native invocation".to_owned())?.registered_document()
     }
@@ -52,9 +54,6 @@ impl RecoveryReady {
         shell_ipc_w::tabs::host::ViewClosureBinding,
     ) {
         let owner = self.owner.clone();
-        let cx = self.cx;
-        let core = self.core;
-        let view = self.owner.view;
         let target = self._target;
         let browser = self.browser;
         let reservation = browser.proof.reservation().clone();
@@ -63,106 +62,337 @@ impl RecoveryReady {
         let registration = shell_ipc_w::tabs::host::NativeBrowserRegistration::Registered(owner.clone());
         let proof = browser.proof.clone();
         let watch_target = target.clone();
-        let watch_core = core.clone();
+        let watch_core = self.core;
         let closure = Arc::new(move |done| {
             let target = watch_target.clone();
             let core = watch_core.clone();
             proof.watch(Box::new(move |receipt| {
+                if receipt.outcome() != shell_contract::ipc::NativeClosureOutcome::Closed
+                    || !receipt.matches(target.closure_reservation(), target.view(), target.created())
+                    || !receipt.terminal_owner().is_some_and(|owner| owner.same_owner(target.browser_owner())) {
+                    eprintln!("[recovery] terminal receipt does not match the adopted browser");
+                    return;
+                }
                 if let Err(error) = target.drain_work(core, Box::new(move || done(shell_contract::ipc::NativeBrowserRetirement::Closed(receipt)))) {
                     eprintln!("[recovery] closure work drain failed: {error}");
                 }
             }))
         });
-        (owner, Arc::new(move |done| discard_captured(cx.clone(), core.clone(), view, target.clone(), browser.clone(), false,
-            Box::new(move |result| done(result.map(shell_contract::ipc::NativeBrowserRetirement::Closed))))),
-            shell_ipc_w::tabs::host::ViewClosureBinding { reservation, owner: browser_owner, producer, closure, registration })
-    }
-    pub(crate) fn discard(self, done: Box<dyn FnOnce(Result<shell_contract::ipc::NativeClosureReceipt, String>) + Send>) {
-        discard_captured(self.cx, self.core, self.owner.view, self._target, self.browser, false, done);
+        let close = self.close;
+        let cleanup: RecoveryCleanup = Arc::new(move |done| {
+            close.start(Box::new(move |result| {
+                match result {
+                    Ok(shell_contract::ipc::NativeBrowserRetirement::Closed(receipt))
+                        if receipt.outcome() == shell_contract::ipc::NativeClosureOutcome::NotCreated =>
+                            done(Err("The ready recovery browser was reported as never created".into())),
+                    result => done(result),
+                }
+            }));
+        });
+        (owner, cleanup, shell_ipc_w::tabs::host::ViewClosureBinding { reservation, owner: browser_owner, producer, closure, registration })
     }
 }
 
-fn discard_captured(
-    cx: HostContext, core: Arc<dyn shell_contract::runtime::Thread>, view: ViewId,
-    target: RecoveryOpenTarget, browser: Browser, allow_not_created: bool,
-    done: Box<dyn FnOnce(Result<shell_contract::ipc::NativeClosureReceipt, String>) + Send>,
-) {
-    let created = target.created().clone();
-    let completion = Arc::new(Mutex::new(Some(done)));
-    let completed = completion.clone();
-    let drain_core = core.clone();
-    let done = shell_ipc_w::home_files::back_to_core(core, move |result| {
-        let receipt = match result {
-            Ok(receipt) => receipt,
-            Err(error) => {
-                if let Some(done) = completed.lock().unwrap_or_else(|error| error.into_inner()).take() { done(Err(error)); }
-                return;
-            }
-        };
-        let drained = completed.clone();
-        if let Err(error) = target.drain_work(drain_core, Box::new(move || {
-            if let Some(done) = drained.lock().unwrap_or_else(|error| error.into_inner()).take() { done(Ok(receipt)); }
-        })) {
-            if let Some(done) = completed.lock().unwrap_or_else(|error| error.into_inner()).take() { done(Err(error)); }
-        }
-    });
-    let state = Arc::new(Discard {
-        done: Mutex::new(Some(Box::new(done))), subscription: Mutex::new(None),
-        cx, view, created,
-    });
-    let closed = state.clone();
-    let subscription = browser.proof.when_closed(move |receipt| {
-        if receipt.outcome() == shell_contract::ipc::NativeClosureOutcome::NotCreated && !allow_not_created {
-            return closed.finish(Err("The ready recovery browser was reported as never created".into()));
-        }
-        closed.cx.views.remove_view_if_generation(closed.view, &closed.created);
-        closed.finish(Ok(receipt));
-    });
-    match subscription {
-        Ok(subscription) => *state.subscription.lock().unwrap_or_else(|error| error.into_inner()) = Some(subscription),
-        Err(error) => return state.finish(Err(error)),
-    }
-    let close = browser.closed;
-    let webview = browser.webview;
-    let ui = state.cx.ui.clone();
-    let posted = DiscardPost(Some(state.clone()));
-    ui.post(Box::new(move || {
-        let mut posted = posted;
-        crate::host::contents::forget_webview(webview.label());
-        if let Err(error) = close.request_close() { state.finish(Err(error)); }
-        drop(posted.0.take());
-    }));
+pub(super) type CloseDone = Box<dyn FnOnce(Result<shell_contract::ipc::NativeBrowserRetirement, String>) + Send>;
+
+#[derive(Default)]
+struct NativeCloseState {
+    permit: Option<shell_contract::ipc::NativeBrowserClosePermit>,
+    retirement: Option<shell_contract::ipc::NativeBrowserRetirement>,
+    webview: Option<tauri::Webview>,
+    watching: bool,
+    claiming: bool,
+    claimed: bool,
+    claim_error: Option<String>,
+    dispatching: bool,
+    dispatched: bool,
+    detaching: bool,
+    detached: bool,
+    delivery: Option<Arc<crate::views::ViewRemovalDelivery>>,
+    notifying: bool,
+    draining: bool,
+    drained: bool,
+    running: bool,
+    waiters: Vec<CloseDone>,
 }
 
-struct Discard {
-    done: Mutex<Option<Box<dyn FnOnce(Result<shell_contract::ipc::NativeClosureReceipt, String>) + Send>>>,
-    subscription: Mutex<Option<NativeBrowserCloseSubscription>>,
+pub(super) struct NativeClose {
     cx: HostContext,
-    view: ViewId,
-    created: shell_contract::runtime::RendererGeneration,
+    drain: Option<(RecoveryOpenTarget, Arc<dyn shell_contract::runtime::Thread>)>,
+    proof: crate::host::window::NativeClosureProof,
+    state: Mutex<NativeCloseState>,
 }
-impl Discard {
-    fn finish(&self, result: Result<shell_contract::ipc::NativeClosureReceipt, String>) {
-        let subscription = self.subscription.lock().unwrap_or_else(|error| error.into_inner()).take();
-        drop(subscription);
-        let done = self.done.lock().unwrap_or_else(|error| error.into_inner()).take();
-        if let Some(done) = done { done(result); }
+
+enum CloseWork {
+    Watch,
+    Claim,
+    Dispatch,
+    Detach(shell_contract::ipc::NativeClosureReceipt),
+    Notify(Arc<crate::views::ViewRemovalDelivery>),
+    Drain,
+    Error(String),
+    Complete(shell_contract::ipc::NativeBrowserRetirement, Vec<CloseDone>),
+    Wait,
+}
+
+impl NativeClose {
+    pub(super) fn new(
+        cx: HostContext, proof: crate::host::window::NativeClosureProof,
+        drain: Option<(RecoveryOpenTarget, Arc<dyn shell_contract::runtime::Thread>)>,
+    ) -> Arc<Self> {
+        let mut state = NativeCloseState::default();
+        state.drained = drain.is_none();
+        Arc::new(Self { cx, drain, proof, state: Mutex::new(state) })
+    }
+    fn fail(&self, error: String) {
+        let waiters = {
+            let mut state = self.state.lock().unwrap_or_else(|poison| poison.into_inner());
+            state.running = false;
+            std::mem::take(&mut state.waiters)
+        };
+        for done in waiters { done(Err(error.clone())); }
+    }
+
+    fn record(self: &Arc<Self>, receipt: shell_contract::ipc::NativeClosureReceipt) -> bool {
+        if !receipt.matches(self.proof.reservation(), self.proof.reservation().view(), self.proof.reservation().created())
+            || !receipt.terminal_owner().is_some_and(|owner| owner.same_owner(self.proof.owner())) {
+            return false;
+        }
+        {
+            let mut state = self.state.lock().unwrap_or_else(|poison| poison.into_inner());
+            if state.retirement.is_none() {
+                state.retirement = Some(shell_contract::ipc::NativeBrowserRetirement::Closed(receipt));
+            }
+        }
+        self.drive();
+        true
+    }
+
+    pub(super) fn start(self: &Arc<Self>, done: CloseDone) {
+        {
+            let mut state = self.state.lock().unwrap_or_else(|poison| poison.into_inner());
+            state.waiters.push(done);
+            if state.running { return; }
+            state.running = true;
+        }
+        self.drive();
+    }
+
+    fn completed(&self) -> Option<shell_contract::ipc::NativeBrowserRetirement> {
+        let state = self.state.lock().unwrap_or_else(|poison| poison.into_inner());
+        if state.drained && (state.detached || matches!(state.retirement.as_ref(), Some(shell_contract::ipc::NativeBrowserRetirement::Superseded(_)))) {
+            state.retirement.clone()
+        } else { None }
+    }
+
+    fn drive(self: &Arc<Self>) {
+        let work = {
+            let mut state = self.state.lock().unwrap_or_else(|poison| poison.into_inner());
+            if !state.running { return; }
+            if let Some(retirement) = state.retirement.clone() {
+                match &retirement {
+                    shell_contract::ipc::NativeBrowserRetirement::Closed(receipt) if !state.detached => {
+                        if let Some(delivery) = state.delivery.clone() {
+                            if state.notifying { CloseWork::Wait }
+                            else { state.notifying = true; CloseWork::Notify(delivery) }
+                        } else if state.detaching { CloseWork::Wait }
+                        else { state.detaching = true; CloseWork::Detach(receipt.clone()) }
+                    }
+                    _ if !state.drained => {
+                        if state.draining { CloseWork::Wait }
+                        else { state.draining = true; CloseWork::Drain }
+                    }
+                    _ => {
+                        state.running = false;
+                        CloseWork::Complete(retirement, std::mem::take(&mut state.waiters))
+                    }
+                }
+            } else if state.claim_error.is_some() && !state.watching {
+                state.watching = true;
+                CloseWork::Watch
+            } else if let Some(error) = state.claim_error.take() {
+                CloseWork::Error(error)
+            } else if !state.claimed {
+                if state.claiming { CloseWork::Wait }
+                else { state.claiming = true; CloseWork::Claim }
+            } else if !state.watching {
+                state.watching = true;
+                CloseWork::Watch
+            } else if !state.dispatched && !state.dispatching && state.permit.is_some() {
+                state.dispatching = true;
+                CloseWork::Dispatch
+            } else { CloseWork::Wait }
+        };
+        match work {
+            CloseWork::Watch => {
+                let mut guard = RecoveryWatchGuard { close: self.clone(), pending: true };
+                let close = self.clone();
+                if self.proof.watch(Box::new(move |receipt| {
+                    guard.pending = false;
+                    if !close.record(receipt) { close.drive(); }
+                })).is_ok() { self.drive(); }
+            }
+            CloseWork::Claim => {
+                let claim = self.proof.reservation().claim_close(self.proof.owner(), |_| Ok(()));
+                let mut state = self.state.lock().unwrap_or_else(|poison| poison.into_inner());
+                state.claiming = false;
+                match claim {
+                    Ok(shell_contract::ipc::NativeBrowserCloseClaim::Won { permit, .. }) => {
+                        state.claimed = true;
+                        state.permit = Some(permit);
+                    }
+                    Ok(shell_contract::ipc::NativeBrowserCloseClaim::Superseded(proof)) => {
+                        state.claimed = true;
+                        state.retirement = Some(shell_contract::ipc::NativeBrowserRetirement::Superseded(proof));
+                    }
+                    Err(error) => {
+                        if state.retirement.is_none() { state.claim_error = Some(error); }
+                    }
+                }
+                drop(state);
+                self.drive();
+            }
+            CloseWork::Dispatch => {
+                let guard = RecoveryDispatchGuard { close: self.clone(), pending: true };
+                let close = self.clone();
+                self.cx.ui.post(Box::new(move || {
+                    let mut guard = guard;
+                    let (permit, webview) = {
+                        let mut state = close.state.lock().unwrap_or_else(|poison| poison.into_inner());
+                        if state.retirement.is_some() {
+                            state.dispatching = false;
+                            guard.pending = false;
+                            drop(state);
+                            close.drive();
+                            return;
+                        }
+                        (state.permit.take(), state.webview.clone())
+                    };
+                    let Some(permit) = permit else {
+                        guard.pending = false;
+                        close.state.lock().unwrap_or_else(|poison| poison.into_inner()).dispatching = false;
+                        return close.fail("The recovery close permit is unavailable".into());
+                    };
+                    if let Some(webview) = webview { crate::host::contents::forget_webview(webview.label()); }
+                    let result = close.proof.dispatch_close(permit);
+                    let mut state = close.state.lock().unwrap_or_else(|poison| poison.into_inner());
+                    state.dispatching = false;
+                    let error = match result {
+                        Ok(permit) => { state.permit = Some(permit); state.dispatched = true; None }
+                        Err((error, permit)) => { state.permit = Some(permit); Some(error) }
+                    };
+                    let terminal = state.retirement.is_some();
+                    guard.pending = false;
+                    drop(state);
+                    if let Some(error) = error {
+                        if terminal { close.drive(); } else { close.fail(error); }
+                    } else { close.drive(); }
+                }));
+            }
+            CloseWork::Detach(receipt) => {
+                let result = self.cx.views.remove_view_after_terminal(self.proof.reservation().view(),
+                    self.proof.reservation(), self.proof.owner(), &receipt);
+                let mut state = self.state.lock().unwrap_or_else(|poison| poison.into_inner());
+                state.detaching = false;
+                match result {
+                    Ok(crate::views::TerminalViewRemoval::Removed(delivery)) => {
+                        if !self.proof.teardown().is_some_and(|bound| Arc::ptr_eq(&bound, &delivery)) {
+                            drop(state);
+                            return self.fail("The terminal view teardown belongs to another registration".into());
+                        }
+                        state.delivery = Some(delivery);
+                        drop(state);
+                        self.drive();
+                    }
+                    Ok(crate::views::TerminalViewRemoval::Absent) => {
+                        let Some(delivery) = self.proof.teardown() else {
+                            drop(state);
+                            return self.fail("The native view has no captured teardown".into());
+                        };
+                        state.delivery = Some(delivery);
+                        drop(state);
+                        self.drive();
+                    }
+                    Ok(crate::views::TerminalViewRemoval::Replaced) => {
+                        drop(state);
+                        self.fail("The terminal view belongs to another browser owner".into());
+                    }
+                    Err(error) => { drop(state); self.fail(error); }
+                }
+            }
+            CloseWork::Notify(delivery) => {
+                let close = self.clone();
+                delivery.start(Box::new(move |result| {
+                    let mut state = close.state.lock().unwrap_or_else(|poison| poison.into_inner());
+                    state.notifying = false;
+                    if result.is_ok() { state.detached = true; }
+                    drop(state);
+                    match result {
+                        Ok(()) => close.drive(),
+                        Err(error) => close.fail(error),
+                    }
+                }));
+            }
+            CloseWork::Drain => {
+                let mut guard = RecoveryDrainGuard { close: self.clone(), pending: true };
+                let close = self.clone();
+                let Some((target, core)) = &self.drain else {
+                    guard.pending = false;
+                    self.state.lock().unwrap_or_else(|poison| poison.into_inner()).draining = false;
+                    return self.fail("The recovery work drain is unavailable".into());
+                };
+                let _ = target.drain_work(core.clone(), Box::new(move || {
+                    guard.pending = false;
+                    let mut state = close.state.lock().unwrap_or_else(|poison| poison.into_inner());
+                    state.draining = false;
+                    state.drained = true;
+                    drop(state);
+                    close.drive();
+                }));
+            }
+            CloseWork::Complete(retirement, waiters) => {
+                for done in waiters { done(Ok(retirement.clone())); }
+            }
+            CloseWork::Error(error) => self.fail(error),
+            CloseWork::Wait => {}
+        }
     }
 }
 
-struct DiscardPost(Option<Arc<Discard>>);
-impl Drop for DiscardPost {
+struct RecoveryWatchGuard { close: Arc<NativeClose>, pending: bool }
+impl Drop for RecoveryWatchGuard {
     fn drop(&mut self) {
-        if let Some(state) = self.0.take() {
-            state.finish(Err("The captured recovery cleanup task was discarded".into()));
+        if self.pending {
+            let terminal = {
+                let mut state = self.close.state.lock().unwrap_or_else(|poison| poison.into_inner());
+                state.watching = false;
+                state.retirement.is_some()
+            };
+            if !terminal { self.close.fail("The recovery close watcher discarded its completion".into()); }
+        }
+    }
+}
+struct RecoveryDispatchGuard { close: Arc<NativeClose>, pending: bool }
+impl Drop for RecoveryDispatchGuard {
+    fn drop(&mut self) {
+        if self.pending {
+            self.close.state.lock().unwrap_or_else(|poison| poison.into_inner()).dispatching = false;
+            self.close.fail("The recovery close task was discarded".into());
+        }
+    }
+}
+struct RecoveryDrainGuard { close: Arc<NativeClose>, pending: bool }
+impl Drop for RecoveryDrainGuard {
+    fn drop(&mut self) {
+        if self.pending {
+            self.close.state.lock().unwrap_or_else(|poison| poison.into_inner()).draining = false;
+            self.close.fail("The recovery work drain was discarded".into());
         }
     }
 }
 
 #[derive(Clone)]
 struct Browser {
-    webview: tauri::Webview,
-    closed: NativeBrowserClose,
     proof: crate::host::window::NativeClosureProof,
 }
 
@@ -171,12 +401,10 @@ struct Opening {
     core: Arc<dyn shell_contract::runtime::Thread>,
     target: RecoveryOpenTarget,
     proof: crate::host::window::NativeClosureProof,
-    closed_receipt: Mutex<Option<shell_contract::ipc::NativeClosureReceipt>>,
+    close: Arc<NativeClose>,
     browser: OnceLock<Browser>,
-    failure_close: OnceLock<NativeBrowserClose>,
     origin: OnceLock<NativeContextToken>,
     constructed: AtomicBool,
-    construction_admitted: AtomicBool,
     settled: AtomicBool,
     document_ready: AtomicBool,
     initialized: AtomicBool,
@@ -255,42 +483,19 @@ impl Opening {
         if let Some(receipt) = self.target.committed_seed() {
             if let Ok(notification) = receipt.fail_after_loss(error.clone()) { notification.notify(); }
         }
-        *self.result.lock().unwrap_or_else(|error| error.into_inner()) = Some(Err(RecoveryFailure { message: error, cleanup: shell_ipc_w::tabs::host::ViewCreationCleanupState::Complete }));
-        self.target.created().revoke();
+        *self.result.lock().unwrap_or_else(|error| error.into_inner()) = Some(Err(RecoveryFailure { message: error, cleanup: shell_ipc_w::tabs::host::ViewCreationCleanupState::Complete, target: self.target.clone() }));
         self.close_created();
     }
 
     fn close_created(self: &Arc<Self>) {
-        let Some(browser) = self.browser.get() else {
-            if self.constructed.load(Ordering::Acquire) {
-                if !self.construction_admitted.load(Ordering::Acquire) {
-                    self.cx.views.remove_view_if_generation(self.target.view(), self.target.created());
-                }
-                self.complete();
-            }
-            return;
-        };
-        if self.closed.load(Ordering::Acquire) { self.complete(); return; }
-        if self.closing.swap(true, Ordering::AcqRel) { return; }
-        let original = browser.webview.clone();
-        let close = browser.closed.clone();
+        if !self.constructed.load(Ordering::Acquire) || self.closing.swap(true, Ordering::AcqRel) { return; }
         let opening = self.clone();
-        let ui = self.cx.ui.clone();
-        let posted = ClosePost(Some(opening.clone()));
-        ui.post(Box::new(move || {
-            let mut posted = posted;
-            if opening.closed.load(Ordering::Acquire) {
-                drop(posted.0.take());
-                opening.complete(); return;
+        self.close.start(Box::new(move |result| {
+            if let Err(error) = result {
+                let mut current = opening.result.lock().unwrap_or_else(|poison| poison.into_inner());
+                if let Some(Err(first)) = current.as_mut() { first.message.push_str(&format!("; recovery browser cleanup failed: {error}")); }
             }
-            crate::host::contents::forget_webview(original.label());
-            if let Err(error) = close.request_close() {
-                let mut result = opening.result.lock().unwrap_or_else(|error| error.into_inner());
-                if let Some(Err(first)) = result.as_mut() { first.message.push_str(&format!("; recovery browser cleanup failed: {error}")); }
-                drop(result);
-                opening.complete();
-            }
-            drop(posted.0.take());
+            opening.complete();
         }));
     }
 
@@ -312,7 +517,7 @@ impl Opening {
         let Some(browser) = self.browser.get().cloned() else { return self.fail("The original recovery browser is unavailable".into()); };
         let Some(receipt) = self.target.committed_seed() else { return self.fail("The recovery seed was not committed".into()); };
         let cancel = self.target.created().loss_token();
-        let ready = RecoveryReady { owner: owner.clone(), _target: self.target.clone(), browser, cx: self.cx.clone(), core: self.core.clone() };
+        let ready = RecoveryReady { owner: owner.clone(), _target: self.target.clone(), browser, close: self.close.clone(), core: self.core.clone() };
         let admitted = native_owner::with_recovery_open_service_snapshot(&receipt, &snapshot, &owner, &[], None, None, &cancel, None, &[], || {
             if self.closed.load(Ordering::Acquire) || self.settled.swap(true, Ordering::AcqRel) { return false; }
             *self.result.lock().unwrap_or_else(|error| error.into_inner()) = Some(Ok(ready));
@@ -367,20 +572,11 @@ impl Opening {
         }
         let mut result = self.result.lock().unwrap_or_else(|error| error.into_inner()).take();
         if let Some(Err(error)) = result.as_mut() {
-            error.cleanup = if let Some(receipt) = self.closed_receipt.lock().unwrap_or_else(|poison| poison.into_inner()).clone() {
-                shell_ipc_w::tabs::host::ViewCreationCleanupState::Acknowledged(
-                    shell_contract::ipc::NativeBrowserRetirement::Closed(receipt))
+            error.cleanup = if let Some(retirement) = self.close.completed() {
+                shell_ipc_w::tabs::host::ViewCreationCleanupState::Acknowledged(retirement)
             } else {
-                let cx = self.cx.clone();
-                let core = self.core.clone();
-                let view = self.target.view();
-                let created = self.target.created().clone();
-                let proof = self.proof.clone();
-                shell_ipc_w::tabs::host::ViewCreationCleanupState::Pending(Arc::new(move |done| {
-                    let done = shell_ipc_w::home_files::back_to_core(core.clone(), done);
-                    super::accepted::cleanup_proof(cx.clone(), view, created.clone(), proof.clone(),
-                        Box::new(move |result| done(result.map(shell_contract::ipc::NativeBrowserRetirement::Closed))));
-                }))
+                let close = self.close.clone();
+                shell_ipc_w::tabs::host::ViewCreationCleanupState::Pending(Arc::new(move |done| close.start(done)))
             };
         }
         let subscription = self.subscription.lock().unwrap_or_else(|error| error.into_inner()).take();
@@ -423,17 +619,6 @@ impl Opening {
     }
 }
 
-struct ClosePost(Option<Arc<Opening>>);
-impl Drop for ClosePost {
-    fn drop(&mut self) {
-        if let Some(opening) = self.0.take() {
-            let mut result = opening.result.lock().unwrap_or_else(|error| error.into_inner());
-            if let Some(Err(error)) = result.as_mut() { error.message.push_str("; recovery cleanup task was discarded"); }
-            drop(result);
-            opening.complete();
-        }
-    }
-}
 
 struct Preparation(Option<Arc<Opening>>);
 impl Drop for Preparation {
@@ -514,23 +699,23 @@ pub(crate) fn create_recovery_view_owned(
         Ok(target) => target,
         Err(error) => { prepared.cx.views.remove_view_if_generation(view, &created); return Err(error); }
     };
+    let close = NativeClose::new(prepared.cx.clone(), prepared.proof.clone(), Some((target.clone(), services.core.clone())));
     let done = shell_ipc_w::home_files::back_to_core(services.core.clone(), done);
     let opening = Arc::new(Opening {
-        cx: prepared.cx.clone(), target, proof: prepared.proof.clone(), closed_receipt: Mutex::new(None), browser: OnceLock::new(), failure_close: OnceLock::new(), origin: OnceLock::new(),
+        cx: prepared.cx.clone(), target, proof: prepared.proof.clone(), close, browser: OnceLock::new(), origin: OnceLock::new(),
         document_ready: AtomicBool::new(false), initialized: AtomicBool::new(false),
         core: services.core.clone(),
-        construction_admitted: AtomicBool::new(false),
         constructed: AtomicBool::new(false), settled: AtomicBool::new(false), closing: AtomicBool::new(false), closed: AtomicBool::new(false),
         draining: AtomicBool::new(false), drained: AtomicBool::new(false),
         subscription: Mutex::new(None), losses: Mutex::new(Vec::new()), result: Mutex::new(None), done: Mutex::new(Some(Box::new(done))),
     });
     let observe_close = opening.clone();
     match opening.proof.when_closed(move |receipt| {
-        *observe_close.closed_receipt.lock().unwrap_or_else(|error| error.into_inner()) = Some(receipt);
-        observe_close.closed.store(true, Ordering::Release);
-        observe_close.cx.views.remove_view_if_generation(observe_close.target.view(), observe_close.target.created());
-        if observe_close.settled.load(Ordering::Acquire) { observe_close.complete(); }
-        else { observe_close.fail("The recovery browser closed before its document became ready".into()); }
+        let original = observe_close.close.record(receipt);
+        if original { observe_close.closed.store(true, Ordering::Release); }
+        if observe_close.settled.load(Ordering::Acquire) { observe_close.close_created(); }
+        else if original { observe_close.fail("The recovery browser closed before its document became ready".into()); }
+        else { observe_close.fail("The native terminal belongs to another browser owner".into()); }
     }) {
         Ok(subscription) => *opening.subscription.lock().unwrap_or_else(|error| error.into_inner()) = Some(subscription),
         Err(error) => {
@@ -647,25 +832,20 @@ pub(crate) fn create_recovery_view_owned(
         let construction = Construction(Some(prepared_opening.clone()));
         ui.post(Box::new(move || {
             let result = native_owner::run_recovery_seeded_ui(prepared_opening.cx.ui.as_ref(), &receipt, || {
-                prepared_opening.construction_admitted.store(true, Ordering::Release);
                 move || prepared.install()
             }).map(|action| action()).map_err(|error| super::accepted::InstallError {
                 error: main_core::shell::tab_manager::TabError(error), close: None, proof: None,
             }).and_then(|result| result);
             match result {
                 Err(error) => {
-                    if let Some(close) = error.close {
-                        let _ = prepared_opening.failure_close.set(close);
-                    } else {
-                        prepared_opening.construction_admitted.store(false, Ordering::Release);
-                    }
+                    drop(error.close);
                     prepared_opening.constructed.store(true, Ordering::Release);
                     prepared_opening.fail(error.error.0);
                     drop(construction);
                 }
                 Ok(child) => {
-                    let closed = child.close.clone();
-                    let _ = prepared_opening.browser.set(Browser { webview: child.webview.clone(), closed, proof: prepared_opening.proof.clone() });
+                    prepared_opening.close.state.lock().unwrap_or_else(|poison| poison.into_inner()).webview = Some(child.webview.clone());
+                    let _ = prepared_opening.browser.set(Browser { proof: prepared_opening.proof.clone() });
                     let opening = prepared_opening.clone();
                     super::accepted::await_creation(child, Box::new(move |result| {
                         let mut construction = construction;

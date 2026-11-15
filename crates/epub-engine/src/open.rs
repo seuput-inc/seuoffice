@@ -204,7 +204,11 @@ pub fn open_epub(input: &[u8], limits: &ZipLimits) -> EpubOpenResult {
 }
 
 /// Opens with an explicit parser callback for navigation and chapter-title fallbacks.
-pub fn open_epub_with_host(input: &[u8], limits: &ZipLimits, host: &HostCall<'_>) -> EpubOpenResult {
+pub fn open_epub_with_host(
+    input: &[u8],
+    limits: &ZipLimits,
+    host: &HostCall<'_>,
+) -> EpubOpenResult {
     match open_or_refuse(input, limits, host) {
         Ok(book) => EpubOpenResult::Opened(Box::new(book)),
         Err(Failure::Refusal(reason, detail)) => EpubOpenResult::Refused { reason, detail },
@@ -253,7 +257,11 @@ fn metadata_of(parsed: &ParsedPackage<'_>) -> EpubMetadata {
     }
 }
 
-fn open_or_refuse(bytes: &[u8], limits: &ZipLimits, host: &HostCall<'_>) -> Result<EpubBook, Failure> {
+fn open_or_refuse(
+    bytes: &[u8],
+    limits: &ZipLimits,
+    host: &HostCall<'_>,
+) -> Result<EpubBook, Failure> {
     // 1. zip gate
     let package =
         load_zip_package_staged(bytes, limits, true).map_err(|failure| match failure {
@@ -384,12 +392,15 @@ fn open_or_refuse(bytes: &[u8], limits: &ZipLimits, host: &HostCall<'_>) -> Resu
         }
     }
 
-    let toc = build_toc_with_host(&TocSources {
-        manifest: &manifest,
-        spine: &spine,
-        find_entry: &|path| archive.find(path),
-        read_text: &|path| archive.read_text(path),
-    }, host)?;
+    let toc = build_toc_with_host(
+        &TocSources {
+            manifest: &manifest,
+            spine: &spine,
+            find_entry: &|path| archive.find(path),
+            read_text: &|path| archive.read_text(path),
+        },
+        host,
+    )?;
 
     let vertical_writing = detect_vertical_writing(&archive, &metadata, &manifest)?;
     let info = EpubBookInfo {

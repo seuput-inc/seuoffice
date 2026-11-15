@@ -60,7 +60,8 @@ impl ObjectStream {
             .get(..first_offset)
             .ok_or(Error::InvalidOffset(first_offset))?;
 
-        let numbers_str = std::str::from_utf8(index_block).map_err(|e| Error::InvalidObjectStream(e.to_string()))?;
+        let numbers_str = std::str::from_utf8(index_block)
+            .map_err(|e| Error::InvalidObjectStream(e.to_string()))?;
         let numbers: Vec<_> = numbers_str
             .split_whitespace()
             .map(|number| u32::from_str(number).ok())
@@ -94,9 +95,15 @@ impl ObjectStream {
             Some(((id, 0), object))
         };
         #[cfg(feature = "rayon")]
-        let objects = numbers[..len].par_chunks(2).filter_map(chunks_filter_map).collect();
+        let objects = numbers[..len]
+            .par_chunks(2)
+            .filter_map(chunks_filter_map)
+            .collect();
         #[cfg(not(feature = "rayon"))]
-        let objects = numbers[..len].chunks(2).filter_map(chunks_filter_map).collect();
+        let objects = numbers[..len]
+            .chunks(2)
+            .filter_map(chunks_filter_map)
+            .collect();
 
         Ok(ObjectStream {
             objects,
@@ -105,43 +112,61 @@ impl ObjectStream {
         })
     }
 
-/// Decode every declared object, failing rather than silently dropping entries.
-pub(crate) fn parse_strict(stream: &mut Stream) -> Result<Vec<(ObjectId, Object)>> {
-    if stream.is_compressed() {
-        stream.decompress()?;
-    }
-    let first = usize::try_from(stream.dict.get(b"First")?.as_i64()?)
-        .map_err(|error| Error::NumericCast(error.to_string()))?;
-    let count = usize::try_from(stream.dict.get(b"N")?.as_i64()?)
-        .map_err(|error| Error::NumericCast(error.to_string()))?;
-    let header = stream.content.get(..first).ok_or(Error::InvalidOffset(first))?;
-    let header = std::str::from_utf8(header).map_err(|error| Error::InvalidObjectStream(error.to_string()))?;
-    let numbers: Vec<usize> = header.split_whitespace().map(str::parse)
-        .collect::<std::result::Result<_, _>>()
-        .map_err(|_| Error::InvalidObjectStream("invalid object stream index".into()))?;
-    if count.checked_mul(2) != Some(numbers.len()) {
-        return Err(Error::InvalidObjectStream("object stream count mismatch".into()));
-    }
-    let mut seen = std::collections::HashSet::new();
-    let mut result = Vec::with_capacity(count);
-    for index in 0..count {
-        let id = u32::try_from(numbers[index * 2]).map_err(|error| Error::NumericCast(error.to_string()))?;
-        if !seen.insert(id) {
-            return Err(Error::InvalidObjectStream("duplicate object stream entry".into()));
+    /// Decode every declared object, failing rather than silently dropping entries.
+    pub(crate) fn parse_strict(stream: &mut Stream) -> Result<Vec<(ObjectId, Object)>> {
+        if stream.is_compressed() {
+            stream.decompress()?;
         }
-        let start = first.checked_add(numbers[index * 2 + 1]).ok_or(Error::InvalidOffset(first))?;
-        let end = if index + 1 == count {
-            stream.content.len()
-        } else {
-            first.checked_add(numbers[(index + 1) * 2 + 1]).ok_or(Error::InvalidOffset(first))?
-        };
-        let bytes = stream.content.get(start..end).ok_or(Error::InvalidOffset(start))?;
-        let object = parser::direct_object_strict(bytes)
-            .ok_or_else(|| Error::InvalidObjectStream("invalid compressed object".into()))?;
-        result.push(((id, 0), object));
+        let first = usize::try_from(stream.dict.get(b"First")?.as_i64()?)
+            .map_err(|error| Error::NumericCast(error.to_string()))?;
+        let count = usize::try_from(stream.dict.get(b"N")?.as_i64()?)
+            .map_err(|error| Error::NumericCast(error.to_string()))?;
+        let header = stream
+            .content
+            .get(..first)
+            .ok_or(Error::InvalidOffset(first))?;
+        let header = std::str::from_utf8(header)
+            .map_err(|error| Error::InvalidObjectStream(error.to_string()))?;
+        let numbers: Vec<usize> = header
+            .split_whitespace()
+            .map(str::parse)
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|_| Error::InvalidObjectStream("invalid object stream index".into()))?;
+        if count.checked_mul(2) != Some(numbers.len()) {
+            return Err(Error::InvalidObjectStream(
+                "object stream count mismatch".into(),
+            ));
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut result = Vec::with_capacity(count);
+        for index in 0..count {
+            let id = u32::try_from(numbers[index * 2])
+                .map_err(|error| Error::NumericCast(error.to_string()))?;
+            if !seen.insert(id) {
+                return Err(Error::InvalidObjectStream(
+                    "duplicate object stream entry".into(),
+                ));
+            }
+            let start = first
+                .checked_add(numbers[index * 2 + 1])
+                .ok_or(Error::InvalidOffset(first))?;
+            let end = if index + 1 == count {
+                stream.content.len()
+            } else {
+                first
+                    .checked_add(numbers[(index + 1) * 2 + 1])
+                    .ok_or(Error::InvalidOffset(first))?
+            };
+            let bytes = stream
+                .content
+                .get(start..end)
+                .ok_or(Error::InvalidOffset(start))?;
+            let object = parser::direct_object_strict(bytes)
+                .ok_or_else(|| Error::InvalidObjectStream("invalid compressed object".into()))?;
+            result.push(((id, 0), object));
+        }
+        Ok(result)
     }
-    Ok(result)
-}
 
     /// Create a builder for constructing new object streams
     pub fn builder() -> ObjectStreamBuilder {

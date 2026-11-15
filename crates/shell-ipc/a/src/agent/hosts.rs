@@ -149,7 +149,10 @@ pub trait AgentServices: Send + Sync {
     /// lists them (`id`, `name`, `title`, `description`, `dir`, `source`, ...)
     fn enabled_for_agent(&self, folder: &str) -> Result<Vec<JsonValue>, String>;
     /// Capture on core; execute the returned settings-reading task on a worker.
-    fn enabled_for_agent_task(&self, folder: &str) -> Result<Box<dyn FnOnce() -> Result<Vec<JsonValue>, String> + Send>, String>;
+    fn enabled_for_agent_task(
+        &self,
+        folder: &str,
+    ) -> Result<Box<dyn FnOnce() -> Result<Vec<JsonValue>, String> + Send>, String>;
     /// worker: `buildAgentSkillBundle(skills, dir)` of `packages/ai-provider/src/agent-session/skills.ts`
     fn build_skill_bundle(
         &self,

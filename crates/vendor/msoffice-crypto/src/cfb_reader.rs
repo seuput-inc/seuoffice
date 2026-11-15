@@ -102,7 +102,8 @@ impl<R: Read + Seek> Seek for SeekBufReader<R> {
 pub(crate) fn read_encryption_info_in<F: Read + Seek>(
     cfb: &mut cfb::CompoundFile<F>,
 ) -> Result<Vec<u8>, Error> {
-    let stream = cfb.open_stream("/EncryptionInfo")
+    let stream = cfb
+        .open_stream("/EncryptionInfo")
         .map_err(|_| Error::MissingStream("EncryptionInfo"))?;
     read_stream(stream)
 }
@@ -118,7 +119,8 @@ pub(crate) fn read_stream(mut stream: impl Read) -> Result<Vec<u8>, Error> {
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error) => return Err(error.into()),
         };
-        bytes.try_reserve(count)
+        bytes
+            .try_reserve(count)
             .map_err(|_| io::Error::new(io::ErrorKind::OutOfMemory, "stream allocation failed"))?;
         bytes.extend_from_slice(&chunk[..count]);
     }
@@ -202,7 +204,12 @@ mod tests {
     #[test]
     fn encryption_info_is_not_limited_to_the_upstream_margin() {
         let len = ENCRYPTION_INFO_READ_CAP + 1;
-        assert_eq!(read_encryption_info(&cfb_with_encryption_info(len)).unwrap().len(), len);
+        assert_eq!(
+            read_encryption_info(&cfb_with_encryption_info(len))
+                .unwrap()
+                .len(),
+            len
+        );
     }
 
     /// A stream nowhere near the cap — the size every real file has; the agile fixture

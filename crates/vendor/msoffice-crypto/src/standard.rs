@@ -237,8 +237,11 @@ pub(crate) fn parse_encryption_info(info: &[u8]) -> Result<StandardParams<'_>, E
 
     // The header itself. `info[0..4]` is the size field, so the header runs from 4 and
     // the verifier from `4 + header_size`.
-    let end = 4usize.checked_add(header_size)
-        .ok_or(Error::InvariantViolated(crate::file_params::Invariant::Unrepresentable))?;
+    let end = 4usize
+        .checked_add(header_size)
+        .ok_or(Error::InvariantViolated(
+            crate::file_params::Invariant::Unrepresentable,
+        ))?;
     let Some(h) = info.get(4..end) else {
         return Err(bad(
             FileField::EncryptionHeaderSize,
@@ -614,9 +617,10 @@ fn decrypt_package_to<S: Read + Seek, W: Write>(
     if stream_len < 8 || read_full(encrypted_package, &mut prefix)? < 8 {
         return Err(Error::MissingStream("EncryptedPackage too short"));
     }
-    let declared_size = u64::from(u32::from_le_bytes([prefix[0], prefix[1], prefix[2], prefix[3]]));
+    let declared_size = u64::from(u32::from_le_bytes([
+        prefix[0], prefix[1], prefix[2], prefix[3],
+    ]));
     let data_len = stream_len - 8;
-
 
     let mut body = encrypted_package.by_ref().take(data_len);
     let mut remaining = declared_size;

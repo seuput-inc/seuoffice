@@ -122,7 +122,8 @@ struct TestViews {
     cancels: Mutex<HashMap<u32, CancelToken>>,
     listeners: Mutex<Vec<ViewListener>>,
     generations: Mutex<HashMap<ViewId, shell_contract::runtime::RendererGeneration>>,
-    replacements: Mutex<Vec<Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>>>,
+    replacements:
+        Mutex<Vec<Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>>>,
 }
 
 impl TestViews {
@@ -137,7 +138,9 @@ impl TestViews {
 
     fn destroy(&self, view: u32) {
         self.gone.lock().unwrap().push(ViewId(view));
-        if let Some(generation) = self.generations.lock().unwrap().remove(&ViewId(view)) { generation.revoke(); }
+        if let Some(generation) = self.generations.lock().unwrap().remove(&ViewId(view)) {
+            generation.revoke();
+        }
         self.cancel_of(view).cancel();
         for listener in self.listeners.lock().unwrap().iter() {
             listener(ViewId(view));
@@ -159,11 +162,26 @@ impl Views for TestViews {
     fn on_destroyed(&self, listener: Box<dyn Fn(ViewId) + Send + Sync>) {
         self.listeners.lock().unwrap().push(listener);
     }
-    fn renderer_generation(&self, view: ViewId) -> Option<shell_contract::runtime::RendererGeneration> {
-        if self.gone.lock().unwrap().contains(&view) { return None; }
-        Some(self.generations.lock().unwrap().entry(view).or_insert_with(shell_contract::runtime::RendererGeneration::new).clone())
+    fn renderer_generation(
+        &self,
+        view: ViewId,
+    ) -> Option<shell_contract::runtime::RendererGeneration> {
+        if self.gone.lock().unwrap().contains(&view) {
+            return None;
+        }
+        Some(
+            self.generations
+                .lock()
+                .unwrap()
+                .entry(view)
+                .or_insert_with(shell_contract::runtime::RendererGeneration::new)
+                .clone(),
+        )
     }
-    fn on_renderer_replaced(&self, listener: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>) {
+    fn on_renderer_replaced(
+        &self,
+        listener: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>,
+    ) {
         self.replacements.lock().unwrap().push(listener);
     }
 }

@@ -277,7 +277,10 @@ impl DocPickerControl {
             return reply.reply(Ok(failed("busy")));
         }
         let lang = inner.window.lang();
-        state.generation = state.generation.checked_add(1).expect("picker generation exhausted");
+        state.generation = state
+            .generation
+            .checked_add(1)
+            .expect("picker generation exhausted");
         let view = inner.window.create(&DocPickerWindowOptions {
             width: 720,
             height: 640,
@@ -335,17 +338,35 @@ impl Handler for ListDocuments {
             let result = if mentions {
                 let mut asker = control.asker_of(view);
                 asker.web_contents_id = Some(view.0);
-                match doc_list(control.0.sources.as_ref(), &asker, DocListOptions { project_files: true }) {
+                match doc_list(
+                    control.0.sources.as_ref(),
+                    &asker,
+                    DocListOptions {
+                        project_files: true,
+                    },
+                ) {
                     Ok(items) => {
-                        let items = to_mention_items(&items).into_iter().map(|item| {
-                            IpcValue::Object(vec![
-                                ("path".into(), item.path.map_or(IpcValue::Null, IpcValue::String)),
-                                ("name".into(), IpcValue::String(item.name)),
-                                ("dir".into(), IpcValue::String(item.dir)),
-                                ("group".into(), IpcValue::String(item.group.as_str().to_owned())),
-                                ("state".into(), IpcValue::String(item.state.as_str().to_owned())),
-                            ])
-                        }).collect();
+                        let items = to_mention_items(&items)
+                            .into_iter()
+                            .map(|item| {
+                                IpcValue::Object(vec![
+                                    (
+                                        "path".into(),
+                                        item.path.map_or(IpcValue::Null, IpcValue::String),
+                                    ),
+                                    ("name".into(), IpcValue::String(item.name)),
+                                    ("dir".into(), IpcValue::String(item.dir)),
+                                    (
+                                        "group".into(),
+                                        IpcValue::String(item.group.as_str().to_owned()),
+                                    ),
+                                    (
+                                        "state".into(),
+                                        IpcValue::String(item.state.as_str().to_owned()),
+                                    ),
+                                ])
+                            })
+                            .collect();
                         Ok(IpcValue::Object(vec![
                             ("ok".into(), IpcValue::Bool(true)),
                             ("items".into(), IpcValue::Array(items)),
@@ -357,11 +378,18 @@ impl Handler for ListDocuments {
                 Ok(unavailable())
             } else {
                 let asker = control.0.lock().asker.clone();
-                match doc_list(control.0.sources.as_ref(), &asker, DocListOptions::default()) {
+                match doc_list(
+                    control.0.sources.as_ref(),
+                    &asker,
+                    DocListOptions::default(),
+                ) {
                     Ok(items) => {
                         let value = IpcValue::Object(vec![
                             ("ok".into(), IpcValue::Bool(true)),
-                            ("items".into(), IpcValue::Array(items.iter().map(item_ipc).collect())),
+                            (
+                                "items".into(),
+                                IpcValue::Array(items.iter().map(item_ipc).collect()),
+                            ),
                         ]);
                         let mut state = control.0.lock();
                         if state.view == Some(view) {
@@ -369,7 +397,10 @@ impl Handler for ListDocuments {
                         }
                         Ok(value)
                     }
-                    Err(message) => Err(IpcError { name: Some("Error".into()), message }),
+                    Err(message) => Err(IpcError {
+                        name: Some("Error".into()),
+                        message,
+                    }),
                 }
             };
             reply.reply(result);
@@ -406,25 +437,38 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
                     IpcValue::String(c.0.window.lang().as_str().to_owned()),
                 ),
                 ("theme".into(), IpcValue::String(c.0.window.theme())),
-                ("readyToken".into(), IpcValue::String(c.0.lock().generation.to_string())),
+                (
+                    "readyToken".into(),
+                    IpcValue::String(c.0.lock().generation.to_string()),
+                ),
             ]))
         },
     )?;
 
     let c = control.clone();
-    handle(registry, "doc-picker:ready", ChannelKind::Invoke, move |cx, args| {
-        let state = c.0.lock();
-        if state.view == Some(cx.sender.view)
-            && matches!(args.first(), Some(IpcValue::String(token)) if token == &state.generation.to_string())
-        {
-            c.0.window.renderer_ready(cx.sender.view);
-        }
-        Ok(IpcValue::Undefined)
-    })?;
+    handle(
+        registry,
+        "doc-picker:ready",
+        ChannelKind::Invoke,
+        move |cx, args| {
+            let state = c.0.lock();
+            if state.view == Some(cx.sender.view)
+                && matches!(args.first(), Some(IpcValue::String(token)) if token == &state.generation.to_string())
+            {
+                c.0.window.renderer_ready(cx.sender.view);
+            }
+            Ok(IpcValue::Undefined)
+        },
+    )?;
 
     registry.register(
-        Batch::W, "doc-picker:list", ChannelKind::Invoke,
-        Rc::new(ListDocuments { control: control.clone(), mentions: false }),
+        Batch::W,
+        "doc-picker:list",
+        ChannelKind::Invoke,
+        Rc::new(ListDocuments {
+            control: control.clone(),
+            mentions: false,
+        }),
     )?;
 
     let c = control.clone();
@@ -489,8 +533,13 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
     )?;
 
     registry.register(
-        Batch::W, "doc:attach-list", ChannelKind::Invoke,
-        Rc::new(ListDocuments { control, mentions: true }),
+        Batch::W,
+        "doc:attach-list",
+        ChannelKind::Invoke,
+        Rc::new(ListDocuments {
+            control,
+            mentions: true,
+        }),
     )
 }
 

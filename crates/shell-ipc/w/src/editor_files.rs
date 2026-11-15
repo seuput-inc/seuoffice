@@ -49,8 +49,12 @@ pub struct DocsTab {
 pub trait DocsTabs: Send + Sync {
     /// `openTab(path, options)`: `new_blank` is `{ newBlank: true }`
     fn open_tab_owned(
-        &self, path: Option<String>, new_blank: bool, origin: shell_contract::ipc::NativeRequestOwner,
-        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        &self,
+        path: Option<String>,
+        new_blank: bool,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
         done: Box<dyn FnOnce(Result<(), String>) + Send>,
     );
     /// the tabs that show a docs document, in tab order
@@ -913,16 +917,29 @@ struct OpenDocsTab(DocsTabsHost);
 impl Handler for OpenDocsTab {
     fn call(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
         let Some(context) = cx.native.clone() else {
-            return reply.reply(Err(error("Authenticated document request owner is unavailable.")));
+            return reply.reply(Err(error(
+                "Authenticated document request owner is unavailable.",
+            )));
         };
         let path = match args.first() {
             Some(IpcValue::String(path)) => Some(path.clone()),
             _ => None,
         };
         let blank = path.as_deref().is_none_or(str::is_empty);
-        let origin = shell_contract::ipc::NativeRequestOwner { view: cx.sender.view, context };
-        self.0.open_tab_owned(path, blank, origin, cx.cancel.clone(), shell_contract::runtime::CancelToken::new(),
-            Box::new(move |result| reply.reply(result.map(|()| IpcValue::Undefined).map_err(error))));
+        let origin = shell_contract::ipc::NativeRequestOwner {
+            view: cx.sender.view,
+            context,
+        };
+        self.0.open_tab_owned(
+            path,
+            blank,
+            origin,
+            cx.cancel.clone(),
+            shell_contract::runtime::CancelToken::new(),
+            Box::new(move |result| {
+                reply.reply(result.map(|()| IpcValue::Undefined).map_err(error))
+            }),
+        );
     }
 }
 
@@ -1082,7 +1099,12 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
 
     // ---- docs: windows ----
 
-    registry.register(Batch::W, "win:new", ChannelKind::Invoke, Rc::new(OpenDocsTab(tabs.clone())))?;
+    registry.register(
+        Batch::W,
+        "win:new",
+        ChannelKind::Invoke,
+        Rc::new(OpenDocsTab(tabs.clone())),
+    )?;
 
     let t = tabs.clone();
     handle(registry, "win:list", ChannelKind::Invoke, move |_, _| {
@@ -1237,12 +1259,23 @@ mod fakes {
 
     impl DocsTabs for FakeTabs {
         fn open_tab_owned(
-            &self, path: Option<String>, new_blank: bool, _: shell_contract::ipc::NativeRequestOwner,
-            _: shell_contract::runtime::CancelToken, _: shell_contract::runtime::CancelToken,
+            &self,
+            path: Option<String>,
+            new_blank: bool,
+            _: shell_contract::ipc::NativeRequestOwner,
+            _: shell_contract::runtime::CancelToken,
+            _: shell_contract::runtime::CancelToken,
             done: Box<dyn FnOnce(Result<(), String>) + Send>,
         ) {
-            let options = if new_blank { json!({ "newBlank": true }) } else { Value::Null };
-            self.log.lock().unwrap().push(json!(["docs.openTab", path, options]));
+            let options = if new_blank {
+                json!({ "newBlank": true })
+            } else {
+                Value::Null
+            };
+            self.log
+                .lock()
+                .unwrap()
+                .push(json!(["docs.openTab", path, options]));
             done(Ok(()));
         }
 
@@ -1382,22 +1415,42 @@ pub fn probe_hosts(hosts: &mut shell_contract::Hosts, case: &serde_json::Value) 
 #[cfg(test)]
 mod owned_docs_tests {
     use super::*;
+    use shell_contract::{
+        Surface, ViewId, WindowId,
+        ipc::{NativeContext, Sender},
+        runtime::{CancelToken, RendererGeneration},
+    };
     use std::sync::{Mutex, mpsc};
-    use shell_contract::{Surface, ViewId, WindowId, ipc::{NativeContext, Sender}, runtime::{CancelToken, RendererGeneration}};
 
     type Completion = Box<dyn FnOnce(Result<(), String>) + Send>;
     #[derive(Default)]
     struct DeferredTabs {
         completion: Mutex<Option<Completion>>,
-        seen: Mutex<Option<(Option<String>, bool, shell_contract::ipc::NativeRequestOwner, CancelToken)>>,
+        seen: Mutex<
+            Option<(
+                Option<String>,
+                bool,
+                shell_contract::ipc::NativeRequestOwner,
+                CancelToken,
+            )>,
+        >,
     }
     impl DocsTabs for DeferredTabs {
-        fn open_tab_owned(&self, path: Option<String>, blank: bool, origin: shell_contract::ipc::NativeRequestOwner,
-            cancel: CancelToken, _: CancelToken, done: Completion) {
+        fn open_tab_owned(
+            &self,
+            path: Option<String>,
+            blank: bool,
+            origin: shell_contract::ipc::NativeRequestOwner,
+            cancel: CancelToken,
+            _: CancelToken,
+            done: Completion,
+        ) {
             *self.seen.lock().unwrap() = Some((path, blank, origin, cancel));
             *self.completion.lock().unwrap() = Some(done);
         }
-        fn list_tabs(&self) -> Vec<DocsTab> { Vec::new() }
+        fn list_tabs(&self) -> Vec<DocsTab> {
+            Vec::new()
+        }
         fn focus_tab(&self, _: &str) {}
     }
 
@@ -1407,26 +1460,56 @@ mod owned_docs_tests {
         let handler = OpenDocsTab(tabs.clone());
         let generation = RendererGeneration::new();
         let context = CallContext {
-            sender: Sender { view: ViewId(1), window: WindowId(2), surface: Surface::Docs },
-            request: None, cancel: CancelToken::new(),
-            native: Some(NativeContext::with_owner_loss((), generation.clone(), generation.loss_token())),
+            sender: Sender {
+                view: ViewId(1),
+                window: WindowId(2),
+                surface: Surface::Docs,
+            },
+            request: None,
+            cancel: CancelToken::new(),
+            native: Some(NativeContext::with_owner_loss(
+                (),
+                generation.clone(),
+                generation.loss_token(),
+            )),
         };
         let (send, receive) = mpsc::channel();
-        handler.call(&context, vec![IpcValue::String("original.docx".into())], Responder::new(move |reply| { send.send(reply).unwrap(); }));
+        handler.call(
+            &context,
+            vec![IpcValue::String("original.docx".into())],
+            Responder::new(move |reply| {
+                send.send(reply).unwrap();
+            }),
+        );
         let seen = tabs.seen.lock().unwrap();
         let (path, blank, origin, cancel) = seen.as_ref().unwrap();
         assert_eq!(path.as_deref(), Some("original.docx"));
         assert!(!blank);
         assert_eq!(origin.view, context.sender.view);
-        assert!(origin.context.renderer().unwrap().same_generation(&generation));
+        assert!(
+            origin
+                .context
+                .renderer()
+                .unwrap()
+                .same_generation(&generation)
+        );
         assert!(cancel.same_token(&context.cancel));
         drop(seen);
         assert!(receive.try_recv().is_err());
         let done = tabs.completion.lock().unwrap().take().unwrap();
         done(Err("creation failed".into()));
-        assert_eq!(receive.recv().unwrap().unwrap_err().message, "creation failed");
+        assert_eq!(
+            receive.recv().unwrap().unwrap_err().message,
+            "creation failed"
+        );
         let (send, receive) = mpsc::channel();
-        handler.call(&context, vec![], Responder::new(move |reply| { send.send(reply).unwrap(); }));
+        handler.call(
+            &context,
+            vec![],
+            Responder::new(move |reply| {
+                send.send(reply).unwrap();
+            }),
+        );
         let seen = tabs.seen.lock().unwrap();
         assert!(seen.as_ref().unwrap().1);
         drop(seen);
@@ -1441,11 +1524,23 @@ mod owned_docs_tests {
         let tabs = Arc::new(DeferredTabs::default());
         let handler = OpenDocsTab(tabs.clone());
         let context = CallContext {
-            sender: Sender { view: ViewId(1), window: WindowId(2), surface: Surface::Docs },
-            request: None, cancel: CancelToken::new(), native: None,
+            sender: Sender {
+                view: ViewId(1),
+                window: WindowId(2),
+                surface: Surface::Docs,
+            },
+            request: None,
+            cancel: CancelToken::new(),
+            native: None,
         };
         let (send, receive) = mpsc::channel();
-        handler.call(&context, vec![], Responder::new(move |reply| { send.send(reply).unwrap(); }));
+        handler.call(
+            &context,
+            vec![],
+            Responder::new(move |reply| {
+                send.send(reply).unwrap();
+            }),
+        );
         assert!(receive.recv().unwrap().is_err());
         assert!(tabs.completion.lock().unwrap().is_none());
     }

@@ -63,7 +63,10 @@ fn byte_of_unit(source: &str) -> Vec<usize> {
 }
 
 /// `sourceElements(source)`, through the host.
-fn source_elements(source: &str, host: &crate::parse::HostCall<'_>) -> Result<Vec<SourceElement>, String> {
+fn source_elements(
+    source: &str,
+    host: &crate::parse::HostCall<'_>,
+) -> Result<Vec<SourceElement>, String> {
     let answer = host("fileparse.htmlSourceElements", &json!({ "source": source }))
         .map_err(|error| error.message)?;
     let elements: Vec<HostElement> = serde_json::from_value(answer)
@@ -293,7 +296,10 @@ pub fn redact_html_source(source: &str) -> Result<String, String> {
     redact_html_source_with_host(source, &seu_host::call)
 }
 
-pub fn redact_html_source_with_host(source: &str, host: &crate::parse::HostCall<'_>) -> Result<String, String> {
+pub fn redact_html_source_with_host(
+    source: &str,
+    host: &crate::parse::HostCall<'_>,
+) -> Result<String, String> {
     if !js_regex!(r"data-gx-redact|gx:redact:", "i").test(source) {
         return Ok(source.to_owned());
     }

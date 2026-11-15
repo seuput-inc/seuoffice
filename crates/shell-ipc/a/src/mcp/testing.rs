@@ -99,8 +99,10 @@ type Listener = Box<dyn Fn(ViewId) + Send + Sync>;
 struct TestViews {
     alive: Mutex<Vec<u32>>,
     listeners: Mutex<Vec<Listener>>,
-    generations: Mutex<std::collections::HashMap<ViewId, shell_contract::runtime::RendererGeneration>>,
-    replacements: Mutex<Vec<Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>>>,
+    generations:
+        Mutex<std::collections::HashMap<ViewId, shell_contract::runtime::RendererGeneration>>,
+    replacements:
+        Mutex<Vec<Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>>>,
 }
 
 impl Views for TestViews {
@@ -133,12 +135,27 @@ impl Views for TestViews {
         self.listeners.lock().unwrap().push(listener);
     }
 
-    fn renderer_generation(&self, view: ViewId) -> Option<shell_contract::runtime::RendererGeneration> {
-        if !self.alive.lock().unwrap().contains(&view.0) { return None; }
-        Some(self.generations.lock().unwrap().entry(view).or_insert_with(shell_contract::runtime::RendererGeneration::new).clone())
+    fn renderer_generation(
+        &self,
+        view: ViewId,
+    ) -> Option<shell_contract::runtime::RendererGeneration> {
+        if !self.alive.lock().unwrap().contains(&view.0) {
+            return None;
+        }
+        Some(
+            self.generations
+                .lock()
+                .unwrap()
+                .entry(view)
+                .or_insert_with(shell_contract::runtime::RendererGeneration::new)
+                .clone(),
+        )
     }
 
-    fn on_renderer_replaced(&self, listener: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>) {
+    fn on_renderer_replaced(
+        &self,
+        listener: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>,
+    ) {
         self.replacements.lock().unwrap().push(listener);
     }
 }
@@ -220,7 +237,9 @@ impl Rig {
     /// A view goes away: the listeners the ports gave `Views::on_destroyed` run
     pub fn destroy_view(&self, view: u32) {
         self.views.alive.lock().unwrap().retain(|v| *v != view);
-        if let Some(generation) = self.views.generations.lock().unwrap().remove(&ViewId(view)) { generation.revoke(); }
+        if let Some(generation) = self.views.generations.lock().unwrap().remove(&ViewId(view)) {
+            generation.revoke();
+        }
         let listeners = self.views.listeners.lock().unwrap();
         for listener in listeners.iter() {
             listener(ViewId(view));
@@ -295,7 +314,11 @@ impl OsShell for Os {
     fn trash_item(&self, _: &std::path::Path) -> Result<(), String> {
         Ok(())
     }
-    fn trash_item_authorized(&self, path: &std::path::Path, admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>) -> Result<(), String> {
+    fn trash_item_authorized(
+        &self,
+        path: &std::path::Path,
+        admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>,
+    ) -> Result<(), String> {
         admit(&mut || self.trash_item(path))
     }
 }

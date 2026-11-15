@@ -52,8 +52,17 @@ impl Views for Inline {
         Vec::new()
     }
     fn on_destroyed(&self, _: Box<dyn Fn(ViewId) + Send + Sync>) {}
-    fn renderer_generation(&self, _: ViewId) -> Option<shell_contract::runtime::RendererGeneration> { None }
-    fn on_renderer_replaced(&self, _: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>) {}
+    fn renderer_generation(
+        &self,
+        _: ViewId,
+    ) -> Option<shell_contract::runtime::RendererGeneration> {
+        None
+    }
+    fn on_renderer_replaced(
+        &self,
+        _: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>,
+    ) {
+    }
 }
 
 pub struct Dir(pub PathBuf);
@@ -494,7 +503,11 @@ impl shell_contract::hosts::OsShell for FakeOs {
     fn trash_item(&self, _path: &Path) -> Result<(), String> {
         Ok(())
     }
-    fn trash_item_authorized(&self, path: &std::path::Path, admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>) -> Result<(), String> {
+    fn trash_item_authorized(
+        &self,
+        path: &std::path::Path,
+        admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>,
+    ) -> Result<(), String> {
         admit(&mut || self.trash_item(path))
     }
 }
@@ -572,8 +585,15 @@ pub fn context() -> CallContext {
 /// Calls a handler and waits for its answer, including queued settings writes.
 pub fn call(f: impl FnOnce(&CallContext, Responder)) -> Result<IpcValue, IpcError> {
     let (send, receive) = std::sync::mpsc::channel();
-    f(&context(), Responder::new(move |result| { let _ = send.send(result); }));
-    receive.recv_timeout(std::time::Duration::from_secs(5)).expect("answered")
+    f(
+        &context(),
+        Responder::new(move |result| {
+            let _ = send.send(result);
+        }),
+    );
+    receive
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("answered")
 }
 
 pub fn obj(entries: &[(&str, IpcValue)]) -> IpcValue {

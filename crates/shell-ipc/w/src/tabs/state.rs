@@ -72,7 +72,11 @@ pub(super) enum McpBlank {
 
 pub(super) struct Inner {
     pub manager: Option<TabManager<ViewId, super::host::RetainedSpareBinding>>,
-    pub detached: DetachedWindows<ViewId, super::window_snapshot::WindowReservation, super::host::RetainedSpareBinding>,
+    pub detached: DetachedWindows<
+        ViewId,
+        super::window_snapshot::WindowReservation,
+        super::host::RetainedSpareBinding,
+    >,
     pub bridge: Bridge,
     /// the record of each detached window
     pub recs: HashMap<WindowId, RecId>,
@@ -86,7 +90,8 @@ pub(super) struct Inner {
     pub last_split_state: Option<SplitViewState>,
     pub split_timer: bool,
     pub(super) split_memory_clock: super::activation::SplitMemoryClock,
-    pub(super) pending_owned_split_memory: Option<Box<dyn FnOnce(super::activation::TabUiStepDone)>>,
+    pub(super) pending_owned_split_memory:
+        Option<Box<dyn FnOnce(super::activation::TabUiStepDone)>>,
     /// `pendingNewFileDir` and `pendingDirByWc` with their `setAt`
     pub pending_new_dir: HashMap<String, (String, f64)>,
     pub pending_dir_by_wc: HashMap<i64, (String, f64)>,
@@ -103,12 +108,21 @@ pub struct TabsState {
     pub(super) services: Services,
     pub(super) menus: RefCell<HashMap<u64, PendingMenu>>,
     pub(super) next_menu: Cell<u64>,
-    ensure_waits: RefCell<HashMap<u64, Vec<(EnsureAfterReady<ViewId>, Box<dyn FnOnce(Result<TabLoadResult<ViewId>, String>)>)>>>,
+    ensure_waits: RefCell<
+        HashMap<
+            u64,
+            Vec<(
+                EnsureAfterReady<ViewId>,
+                Box<dyn FnOnce(Result<TabLoadResult<ViewId>, String>)>,
+            )>,
+        >,
+    >,
     pub(super) pending_owned: RefCell<HashMap<u64, super::open::PendingOwnedOpen>>,
     pub(super) owned_creation_cleanup: RefCell<HashMap<usize, super::open::OwnedCreationCleanup>>,
     pub(super) adopted_editors: RefCell<HashMap<u64, super::open::AdoptedEditorLifetime>>,
     pub(super) retained_recovery_cleanups: RefCell<Vec<Rc<dyn super::activation::RecoveryAttempt>>>,
-    pub(super) spare_creator_authority: RefCell<Option<shell_contract::ipc::NativeInvocationOperation>>,
+    pub(super) spare_creator_authority:
+        RefCell<Option<shell_contract::ipc::NativeInvocationOperation>>,
     pub(super) creation_cleanup_waiters: RefCell<Vec<Box<dyn FnOnce(Result<(), String>)>>>,
     pub(super) creation_shutdown: Cell<bool>,
     pub(super) creations_inflight: RefCell<std::collections::HashSet<u64>>,
@@ -639,7 +653,9 @@ impl TabsState {
             CURRENT.with(|current| {
                 if let Some(state) = current.borrow().as_ref() {
                     state.inner.borrow_mut().mcp_blank.remove(&view);
-                    if let Some(projects) = state.provided.all::<crate::projects::Projects>().first() {
+                    if let Some(projects) =
+                        state.provided.all::<crate::projects::Projects>().first()
+                    {
                         projects.new_documents().borrow_mut().forget(view.0 as i64);
                     }
                 }
@@ -659,7 +675,8 @@ impl TabsState {
 
     /// The shell window closed (macOS keeps running): the manager goes with it
     pub fn shell_window_closed(&self) {
-        self.manager_epoch.set(self.manager_epoch.get().wrapping_add(1));
+        self.manager_epoch
+            .set(self.manager_epoch.get().wrapping_add(1));
         self.abort_owned_opens("shell window closed");
         self.drain_creation_cleanups();
         let mut g = self.inner.borrow_mut();
@@ -684,25 +701,36 @@ impl TabsState {
 
     /// Initialize only the first shell. The caller must hold the startup
     /// operation's admission; this function performs no callbacks or UI work.
-    pub fn initialize_first_shell_window(&self, shell: super::host::ShellWindow) -> Result<(), String> {
-        if self.manager_epoch.get() != 1 || !self.pending_owned.borrow().is_empty()
-            || !self.ensure_waits.borrow().is_empty() || self.activation_running.get()
-            || !self.activation_queue.borrow().is_empty() {
+    pub fn initialize_first_shell_window(
+        &self,
+        shell: super::host::ShellWindow,
+    ) -> Result<(), String> {
+        if self.manager_epoch.get() != 1
+            || !self.pending_owned.borrow().is_empty()
+            || !self.ensure_waits.borrow().is_empty()
+            || self.activation_running.get()
+            || !self.activation_queue.borrow().is_empty()
+        {
             return Err("The initial shell state is no longer empty".into());
         }
         let mut state = self.inner.borrow_mut();
-        if state.manager.is_some() || state.bridge.shell.is_some() || state.pending_owned_split_memory.is_some() {
+        if state.manager.is_some()
+            || state.bridge.shell.is_some()
+            || state.pending_owned_split_memory.is_some()
+        {
             return Err("The initial shell is already installed".into());
         }
         state.bridge.shell = Some(shell);
         state.manager = Some(TabManager::new());
         state.detached.set_dock_host(true);
-        self.manager_epoch.set(self.manager_epoch.get().wrapping_add(1));
+        self.manager_epoch
+            .set(self.manager_epoch.get().wrapping_add(1));
         Ok(())
     }
 
     pub fn install_spare_creator_authority(
-        &self, startup: shell_contract::ipc::NativeInvocationOperation,
+        &self,
+        startup: shell_contract::ipc::NativeInvocationOperation,
     ) -> Result<(), String> {
         if startup.purpose() != shell_contract::ipc::NativeInvocationPurpose::StartupLaunch
             || startup.startup_owner().is_none()
@@ -711,7 +739,9 @@ impl TabsState {
             return Err("The spare creator requires the captured active startup authority".into());
         }
         let mut retained = self.spare_creator_authority.borrow_mut();
-        if retained.is_some() { return Err("The spare creator authority is already installed".into()); }
+        if retained.is_some() {
+            return Err("The spare creator authority is already installed".into());
+        }
         *retained = Some(startup);
         Ok(())
     }
@@ -719,7 +749,8 @@ impl TabsState {
     /// The shell window was made (at launch, or again after it closed on
     /// macOS): its tab manager starts with the Home tab only
     pub fn shell_window_opened(&self, shell: super::host::ShellWindow) {
-        self.manager_epoch.set(self.manager_epoch.get().wrapping_add(1));
+        self.manager_epoch
+            .set(self.manager_epoch.get().wrapping_add(1));
         self.abort_owned_opens("shell window replaced");
         let mut g = self.inner.borrow_mut();
         g.bridge.shell = Some(shell);
@@ -732,11 +763,17 @@ impl TabsState {
     /// title). `None` while there is no shell window.
     pub fn with_manager<R>(
         &self,
-        f: impl FnOnce(&mut TabManager<ViewId, super::host::RetainedSpareBinding>, &mut dyn TabHost<ViewId, super::host::RetainedSpareBinding>) -> R,
+        f: impl FnOnce(
+            &mut TabManager<ViewId, super::host::RetainedSpareBinding>,
+            &mut dyn TabHost<ViewId, super::host::RetainedSpareBinding>,
+        ) -> R,
     ) -> Option<R> {
-        self.inner
-            .borrow_mut()
-            .manager_call(|m, b| f(m, b as &mut dyn TabHost<ViewId, super::host::RetainedSpareBinding>))
+        self.inner.borrow_mut().manager_call(|m, b| {
+            f(
+                m,
+                b as &mut dyn TabHost<ViewId, super::host::RetainedSpareBinding>,
+            )
+        })
     }
     pub fn ensure_tab_loaded(
         &self,
@@ -758,7 +795,11 @@ impl TabsState {
             match step {
                 EnsureStep::Done(result) => return done(Ok(result)),
                 EnsureStep::Rejected(error) => return done(Err(error)),
-                EnsureStep::NeedsUser { opener, context, next } => {
+                EnsureStep::NeedsUser {
+                    opener,
+                    context,
+                    next,
+                } => {
                     let answer = self.hooks.opener_needs_user(&opener, &context);
                     match self.with_manager(|manager, host| {
                         manager.resume_ensure_needs_user(host, next, answer)
@@ -768,7 +809,11 @@ impl TabsState {
                     }
                 }
                 EnsureStep::AwaitReady { ready, next } => {
-                    self.ensure_waits.borrow_mut().entry(ready.0).or_default().push((next, done));
+                    self.ensure_waits
+                        .borrow_mut()
+                        .entry(ready.0)
+                        .or_default()
+                        .push((next, done));
                     return;
                 }
             }
@@ -777,7 +822,11 @@ impl TabsState {
 
     pub fn settle_ready(&self, ready: Ready, answer: Result<(), String>) {
         self.with_manager(|manager, _| manager.ready_settled(ready));
-        let waits = self.ensure_waits.borrow_mut().remove(&ready.0).unwrap_or_default();
+        let waits = self
+            .ensure_waits
+            .borrow_mut()
+            .remove(&ready.0)
+            .unwrap_or_default();
         for (next, done) in waits {
             match self.with_manager(|manager, host| {
                 manager.resume_ensure_ready(host, next, answer.clone())
@@ -787,7 +836,6 @@ impl TabsState {
             }
         }
     }
-
 
     /// The shell window's id and its own view
     pub fn shell_window(&self) -> Option<super::host::ShellWindow> {
@@ -808,7 +856,11 @@ impl TabsState {
             HostEvent::PageLoad { token, loaded } => {
                 self.settle_ready(
                     Ready(super::bridge::PAGE_READY_BASE + token),
-                    if loaded { Ok(()) } else { Err("page failed to load".to_owned()) },
+                    if loaded {
+                        Ok(())
+                    } else {
+                        Err("page failed to load".to_owned())
+                    },
                 );
             }
             HostEvent::Window(window, what) => self.window_event(window, what),
@@ -822,7 +874,10 @@ impl TabsState {
         if what == WindowEvent::Resize {
             let state = self.windows.window_state(window);
             if !state.destroyed {
-                let previous = g.minimized_windows.insert(window, state.minimized).unwrap_or(false);
+                let previous = g
+                    .minimized_windows
+                    .insert(window, state.minimized)
+                    .unwrap_or(false);
                 if previous && !state.minimized {
                     drop(g);
                     self.window_event(window, WindowEvent::Restore);
@@ -923,19 +978,39 @@ impl TabsState {
     }
 
     fn start_spare_sheets(&self) {
-        let prepare = self.inner.borrow_mut().manager_call(|manager, host| manager.prepare_spare_sheets_view(host));
-        if prepare != Some(true) { return; }
+        let prepare = self
+            .inner
+            .borrow_mut()
+            .manager_call(|manager, host| manager.prepare_spare_sheets_view(host));
+        if prepare != Some(true) {
+            return;
+        }
         let startup = match self.spare_creator_authority.borrow().clone() {
             Some(startup) => startup,
-            None => { self.hooks.warn("[shell] spare creation failed:", "The original startup authority is unavailable"); return; }
+            None => {
+                self.hooks.warn(
+                    "[shell] spare creation failed:",
+                    "The original startup authority is unavailable",
+                );
+                return;
+            }
         };
         let Some(shell) = startup.startup_owner().cloned() else {
-            self.hooks.warn("[shell] spare creation failed:", "The original shell owner is unavailable");
+            self.hooks.warn(
+                "[shell] spare creation failed:",
+                "The original shell owner is unavailable",
+            );
             return;
         };
-        let id = match self.owned_id().and_then(|id| { self.begin_creation(id)?; Ok(id) }) {
+        let id = match self.owned_id().and_then(|id| {
+            self.begin_creation(id)?;
+            Ok(id)
+        }) {
             Ok(id) => id,
-            Err(error) => { self.hooks.warn("[shell] spare creation failed:", &error); return; }
+            Err(error) => {
+                self.hooks.warn("[shell] spare creation failed:", &error);
+                return;
+            }
         };
         let cleanup = self.hooks.cleanup_lifetime();
         let rollback: super::host::EditorSeedRollbackStore = Rc::default();

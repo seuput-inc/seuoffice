@@ -106,7 +106,6 @@ pub(crate) fn decrypt(container: &mut LegacyContainer, password: &str) -> Result
     let schedule = CryptoApiKeySchedule::new(password, &header.salt, header.key_bits)?;
     schedule.verify(&header)?;
 
-
     // Persist objects may also follow the directory. Stop at the next object,
     // metadata, or end of stream rather than assuming the directory is last.
     let mut objects: Vec<(u32, usize)> = Vec::with_capacity(directory.len());
@@ -117,7 +116,11 @@ pub(crate) fn decrypt(container: &mut LegacyContainer, password: &str) -> Result
 
     let mut plain = doc.clone();
     decrypt_objects(
-        &schedule, &mut plain, &objects, directory_offset, edit_offset,
+        &schedule,
+        &mut plain,
+        &objects,
+        directory_offset,
+        edit_offset,
         usize::try_from(session_offset).map_err(unrepresentable)?,
         usize::try_from(session_len).map_err(unrepresentable)?,
     )?;
@@ -158,7 +161,12 @@ fn decrypt_objects(
 ) -> Result<(), Error> {
     for (i, &(id, offset)) in objects.iter().enumerate() {
         if offset > plain.len() {
-            return Err(bad(FileField::PersistObject, FileProblem::Unreadable { offset: wide(offset) }));
+            return Err(bad(
+                FileField::PersistObject,
+                FileProblem::Unreadable {
+                    offset: wide(offset),
+                },
+            ));
         }
         if offset == directory_offset || offset == edit_offset {
             continue;
@@ -166,7 +174,10 @@ fn decrypt_objects(
         let next = objects.get(i + 1).map(|&(_, next)| next);
         let end = object_end(offset, next, plain.len(), directory_offset, edit_offset);
         if offset == session_offset {
-            let zero_end = offset.saturating_add(8).saturating_add(session_len).min(plain.len());
+            let zero_end = offset
+                .saturating_add(8)
+                .saturating_add(session_len)
+                .min(plain.len());
             plain[offset..zero_end].fill(0);
         } else if end > offset {
             rc4::decrypt_with_block(schedule, &mut plain[offset..end], id)?;
@@ -191,7 +202,13 @@ mod object_tests {
     }
 }
 
-fn object_end(offset: usize, next: Option<usize>, len: usize, directory: usize, edit: usize) -> usize {
+fn object_end(
+    offset: usize,
+    next: Option<usize>,
+    len: usize,
+    directory: usize,
+    edit: usize,
+) -> usize {
     let mut end = next.unwrap_or(len).min(len);
     for boundary in [directory, edit] {
         if boundary > offset {

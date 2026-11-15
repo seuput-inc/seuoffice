@@ -146,18 +146,25 @@ impl Dispatcher {
             return;
         };
         let generation = native.as_ref().and_then(NativeContext::renderer).cloned();
-        if generation.as_ref().is_some_and(|generation| !generation.is_active()) {
+        if generation
+            .as_ref()
+            .is_some_and(|generation| !generation.is_active())
+        {
             once.answer(Err(error("the sender's renderer was replaced".into())));
             return;
         }
         let (cancel, view_loss) = {
             let mut cancels = self.cancels.borrow_mut();
             let entry = cancels.entry(sender.view).or_default();
-            let cancel = if let Some((_, token)) = entry.renderers.iter().find(|(old, _)| match (old, &generation) {
-                (Some(a), Some(b)) => a.same_generation(b),
-                (None, None) => true,
-                _ => false,
-            }) {
+            let cancel = if let Some((_, token)) =
+                entry
+                    .renderers
+                    .iter()
+                    .find(|(old, _)| match (old, &generation) {
+                        (Some(a), Some(b)) => a.same_generation(b),
+                        (None, None) => true,
+                        _ => false,
+                    }) {
                 token.clone()
             } else {
                 let token = CancelToken::default();
@@ -166,7 +173,9 @@ impl Dispatcher {
             };
             (cancel, entry.destroyed.clone())
         };
-        let native = native.map(|context| context.bind_dispatcher_cancellation(sender.view, cancel.clone(), view_loss));
+        let native = native.map(|context| {
+            context.bind_dispatcher_cancellation(sender.view, cancel.clone(), view_loss)
+        });
         let cx = CallContext {
             sender,
             request,
@@ -183,7 +192,9 @@ impl Dispatcher {
         let tokens = self.cancels.borrow_mut().remove(&view);
         if let Some(entry) = tokens {
             entry.destroyed.cancel();
-            for (_, token) in entry.renderers { token.cancel(); }
+            for (_, token) in entry.renderers {
+                token.cancel();
+            }
         }
     }
 
@@ -195,7 +206,11 @@ impl Dispatcher {
             if let Some(entries) = cancels.get_mut(&view) {
                 let mut index = 0;
                 while index < entries.renderers.len() {
-                    if entries.renderers[index].0.as_ref().is_some_and(|generation| generation.same_generation(old)) {
+                    if entries.renderers[index]
+                        .0
+                        .as_ref()
+                        .is_some_and(|generation| generation.same_generation(old))
+                    {
                         tokens.push(entries.renderers.remove(index).1);
                     } else {
                         index += 1;
@@ -206,7 +221,9 @@ impl Dispatcher {
             }
             tokens
         };
-        for token in tokens { token.cancel_renderer_retired(); }
+        for token in tokens {
+            token.cancel_renderer_retired();
+        }
     }
 }
 
@@ -376,7 +393,9 @@ mod tests {
         struct Check(Arc<std::sync::atomic::AtomicUsize>);
         impl Handler for Check {
             fn call(&self, cx: &CallContext, _: Vec<IpcValue>, reply: Responder) {
-                let same = cx.native.as_ref()
+                let same = cx
+                    .native
+                    .as_ref()
                     .and_then(|native| native.downcast_ref::<Arc<std::sync::atomic::AtomicUsize>>())
                     .is_some_and(|captured| Arc::ptr_eq(captured, &self.0));
                 reply.reply(Ok(IpcValue::Bool(same)));
@@ -385,11 +404,22 @@ mod tests {
         let (channel, surface) = w_invoke();
         let captured = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut table = Table::default();
-        table.register(Batch::W, channel, ChannelKind::Invoke, Rc::new(Check(captured.clone()))).unwrap();
+        table
+            .register(
+                Batch::W,
+                channel,
+                ChannelKind::Invoke,
+                Rc::new(Check(captured.clone())),
+            )
+            .unwrap();
         let dispatcher = Dispatcher::new(table);
         let (tx, rx) = mpsc::channel();
         dispatcher.dispatch(
-            Sender { view: ViewId(1), window: WindowId(1), surface },
+            Sender {
+                view: ViewId(1),
+                window: WindowId(1),
+                surface,
+            },
             ChannelKind::Invoke,
             None,
             Some(NativeContext::new(captured)),
@@ -412,14 +442,32 @@ mod tests {
         let (channel, surface) = w_invoke();
         let captured = Rc::new(RefCell::new(Vec::new()));
         let mut table = Table::default();
-        table.register(Batch::W, channel, ChannelKind::Invoke, Rc::new(Capture(captured.clone()))).unwrap();
+        table
+            .register(
+                Batch::W,
+                channel,
+                ChannelKind::Invoke,
+                Rc::new(Capture(captured.clone())),
+            )
+            .unwrap();
         let dispatcher = Dispatcher::new(table);
-        let sender = Sender { view: ViewId(1), window: WindowId(1), surface };
+        let sender = Sender {
+            view: ViewId(1),
+            window: WindowId(1),
+            surface,
+        };
         let old = RendererGeneration::new();
         let new = RendererGeneration::new();
         for generation in [&old, &new] {
-            dispatcher.dispatch(sender, ChannelKind::Invoke, None,
-                Some(NativeContext::with_renderer((), generation.clone())), channel, vec![], Box::new(|_| {}));
+            dispatcher.dispatch(
+                sender,
+                ChannelKind::Invoke,
+                None,
+                Some(NativeContext::with_renderer((), generation.clone())),
+                channel,
+                vec![],
+                Box::new(|_| {}),
+            );
         }
         old.revoke();
         dispatcher.renderer_replaced(sender.view, &old);
@@ -432,15 +480,30 @@ mod tests {
     fn revoked_renderer_cannot_dispatch_queued_request() {
         let (channel, surface) = w_invoke();
         let mut table = Table::default();
-        table.register(Batch::W, channel, ChannelKind::Invoke, Rc::new(Does::Answer)).unwrap();
+        table
+            .register(
+                Batch::W,
+                channel,
+                ChannelKind::Invoke,
+                Rc::new(Does::Answer),
+            )
+            .unwrap();
         let dispatcher = Dispatcher::new(table);
         let generation = RendererGeneration::new();
         let native = NativeContext::with_renderer((), generation.clone());
         generation.revoke();
         let (tx, rx) = mpsc::channel();
         dispatcher.dispatch(
-            Sender { view: ViewId(1), window: WindowId(1), surface },
-            ChannelKind::Invoke, None, Some(native), channel, vec![],
+            Sender {
+                view: ViewId(1),
+                window: WindowId(1),
+                surface,
+            },
+            ChannelKind::Invoke,
+            None,
+            Some(native),
+            channel,
+            vec![],
             Box::new(move |reply| tx.send(reply).unwrap()),
         );
         assert!(rx.recv().unwrap().is_err());
@@ -458,34 +521,85 @@ mod tests {
         let (channel, surface) = w_invoke();
         let captured = Rc::new(RefCell::new(Vec::new()));
         let mut table = Table::default();
-        table.register(Batch::W, channel, ChannelKind::Invoke, Rc::new(Capture(captured.clone()))).unwrap();
+        table
+            .register(
+                Batch::W,
+                channel,
+                ChannelKind::Invoke,
+                Rc::new(Capture(captured.clone())),
+            )
+            .unwrap();
         let dispatcher = Dispatcher::new(table);
-        let sender = Sender { view: ViewId(1), window: WindowId(1), surface };
+        let sender = Sender {
+            view: ViewId(1),
+            window: WindowId(1),
+            surface,
+        };
         let old = RendererGeneration::new();
         for _ in 0..2 {
-            dispatcher.dispatch(sender, ChannelKind::Invoke, None,
-                Some(NativeContext::with_renderer((), old.clone())), channel, vec![], Box::new(|_| {}));
+            dispatcher.dispatch(
+                sender,
+                ChannelKind::Invoke,
+                None,
+                Some(NativeContext::with_renderer((), old.clone())),
+                channel,
+                vec![],
+                Box::new(|_| {}),
+            );
         }
         let contexts = captured.borrow().clone();
         assert!(contexts[0].cancel.same_token(&contexts[1].cancel));
-        let first = shell_contract::ipc::NativeRequestOwner { view: sender.view, context: contexts[0].native.clone().unwrap() };
-        let provenance = first.dispatcher_cancellation_for(&contexts[0].cancel).unwrap();
+        let first = shell_contract::ipc::NativeRequestOwner {
+            view: sender.view,
+            context: contexts[0].native.clone().unwrap(),
+        };
+        let provenance = first
+            .dispatcher_cancellation_for(&contexts[0].cancel)
+            .unwrap();
         let view_loss = provenance.view_loss();
         let external = provenance.external_loss();
-        assert!(first.dispatcher_cancellation_for(&CancelToken::default()).is_none());
+        assert!(
+            first
+                .dispatcher_cancellation_for(&CancelToken::default())
+                .is_none()
+        );
         old.revoke();
         dispatcher.renderer_replaced(sender.view, &old);
         assert!(contexts[0].cancel.is_cancelled());
         assert!(!external.is_cancelled());
         assert!(!view_loss.is_cancelled());
-        assert!(dispatcher.cancels.borrow().get(&sender.view).unwrap().renderers.is_empty());
+        assert!(
+            dispatcher
+                .cancels
+                .borrow()
+                .get(&sender.view)
+                .unwrap()
+                .renderers
+                .is_empty()
+        );
         let successor = RendererGeneration::new();
-        dispatcher.dispatch(sender, ChannelKind::Invoke, None,
-            Some(NativeContext::with_renderer((), successor)), channel, vec![], Box::new(|_| {}));
+        dispatcher.dispatch(
+            sender,
+            ChannelKind::Invoke,
+            None,
+            Some(NativeContext::with_renderer((), successor)),
+            channel,
+            vec![],
+            Box::new(|_| {}),
+        );
         let next = captured.borrow()[2].clone();
         assert!(!next.cancel.same_token(&contexts[0].cancel));
-        let next_owner = shell_contract::ipc::NativeRequestOwner { view: sender.view, context: next.native.unwrap() };
-        assert!(next_owner.dispatcher_cancellation_for(&next.cancel).unwrap().view_loss().same_token(&view_loss));
+        let next_owner = shell_contract::ipc::NativeRequestOwner {
+            view: sender.view,
+            context: next.native.unwrap(),
+        };
+        assert!(
+            next_owner
+                .dispatcher_cancellation_for(&next.cancel)
+                .unwrap()
+                .view_loss()
+                .same_token(&view_loss)
+        );
         dispatcher.view_destroyed(sender.view);
         assert!(view_loss.is_cancelled());
         assert!(next.cancel.is_cancelled());

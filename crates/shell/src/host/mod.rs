@@ -31,6 +31,7 @@ pub(crate) mod committed_writer;
 pub(crate) mod drawio_assets;
 pub mod message_box;
 pub mod os_shell;
+pub(crate) mod prepared_trash;
 pub(crate) mod pdf;
 pub(crate) mod shell_tabs;
 pub(crate) mod recovery_openers;

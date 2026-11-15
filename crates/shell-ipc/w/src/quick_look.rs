@@ -353,8 +353,10 @@ impl QuickLookControl {
         let payload = self.0.extract(&resolved);
         let inner = &self.0;
         let mut state = inner.lock();
-        if !state.explorer_enabled || state.explorer_generation != generation
-            || state.current_path.as_deref() != Some(resolved.as_str()) {
+        if !state.explorer_enabled
+            || state.explorer_generation != generation
+            || state.current_path.as_deref() != Some(resolved.as_str())
+        {
             return;
         }
         state.current_payload = Some(payload.clone());
@@ -381,7 +383,9 @@ impl QuickLookControl {
     pub fn explorer_space(&self, raw_path: &str) {
         let generation = {
             let state = self.0.lock();
-            if !state.explorer_enabled { return; }
+            if !state.explorer_enabled {
+                return;
+            }
             state.explorer_generation
         };
         let raw_path = raw_path.to_owned();
@@ -394,7 +398,9 @@ impl QuickLookControl {
                 }
                 {
                     let state = inner.lock();
-                    if !state.explorer_enabled || state.explorer_generation != generation { return; }
+                    if !state.explorer_enabled || state.explorer_generation != generation {
+                        return;
+                    }
                     if state.view.is_some()
                         && inner.window.is_visible()
                         && !state.hide_pending
@@ -415,7 +421,9 @@ impl QuickLookControl {
     pub fn explorer_navigate(&self, raw_path: &str) {
         let generation = {
             let state = self.0.lock();
-            if !state.explorer_enabled { return; }
+            if !state.explorer_enabled {
+                return;
+            }
             state.explorer_generation
         };
         let raw_path = raw_path.to_owned();
@@ -423,7 +431,9 @@ impl QuickLookControl {
             let resolved = resolve(&[&raw_path]);
             {
                 let mut state = inner.lock();
-                if !state.explorer_enabled || state.explorer_generation != generation { return; }
+                if !state.explorer_enabled || state.explorer_generation != generation {
+                    return;
+                }
                 if state.view.is_none() || !inner.window.is_visible() || state.hide_pending {
                     return;
                 }
@@ -436,8 +446,10 @@ impl QuickLookControl {
             }
             let payload = inner.extract(&resolved);
             let mut state = inner.lock();
-            if !state.explorer_enabled || state.explorer_generation != generation
-                || state.current_path.as_deref() != Some(resolved.as_str()) {
+            if !state.explorer_enabled
+                || state.explorer_generation != generation
+                || state.current_path.as_deref() != Some(resolved.as_str())
+            {
                 return;
             }
             state.current_payload = Some(payload.clone());
@@ -452,7 +464,9 @@ impl QuickLookControl {
     pub fn explorer_escape(&self) {
         let generation = {
             let state = self.0.lock();
-            if !state.explorer_enabled { return; }
+            if !state.explorer_enabled {
+                return;
+            }
             state.explorer_generation
         };
         self.spawn({
@@ -488,7 +502,10 @@ impl QuickLookControl {
         if explorer {
             let mut state = self.0.lock();
             if state.explorer_enabled != settings.explorer_space_preview {
-                state.explorer_generation = state.explorer_generation.checked_add(1).expect("explorer generation exhausted");
+                state.explorer_generation = state
+                    .explorer_generation
+                    .checked_add(1)
+                    .expect("explorer generation exhausted");
                 state.explorer_enabled = settings.explorer_space_preview;
             }
         }
@@ -505,7 +522,10 @@ impl QuickLookControl {
     pub fn stop(&self) {
         {
             let mut state = self.0.lock();
-            state.explorer_generation = state.explorer_generation.checked_add(1).expect("explorer generation exhausted");
+            state.explorer_generation = state
+                .explorer_generation
+                .checked_add(1)
+                .expect("explorer generation exhausted");
             state.explorer_enabled = false;
         }
         self.0.runtime.stop();
@@ -705,16 +725,28 @@ impl Handler for SetSettings {
         let core = self.core.clone();
         main_core::shell::app_settings::queue::for_path(&path).submit(move |completion| {
             let current = normalize(read_app_settings(&path).get("quickLook"));
-            let partial = args.first().filter(|p| matches!(p, IpcValue::Object(_) | IpcValue::Array(_) | IpcValue::Bytes(..) | IpcValue::Date(_)));
+            let partial = args.first().filter(|p| {
+                matches!(
+                    p,
+                    IpcValue::Object(_)
+                        | IpcValue::Array(_)
+                        | IpcValue::Bytes(..)
+                        | IpcValue::Date(_)
+                )
+            });
             let flag = |key: &str, current: bool| match partial.and_then(|p| field(p, key)) {
                 Some(IpcValue::Bool(b)) => *b,
                 _ => current,
             };
             let next = QuickLookSettings {
-                explorer_space_preview: flag("explorerSpacePreview", current.explorer_space_preview),
+                explorer_space_preview: flag(
+                    "explorerSpacePreview",
+                    current.explorer_space_preview,
+                ),
                 keep_in_tray: flag("keepInTray", current.keep_in_tray),
             };
-            let result = write_app_setting(&path, "quickLook", Some(next.to_json())).map_err(node_error);
+            let result =
+                write_app_setting(&path, "quickLook", Some(next.to_json())).map_err(node_error);
             core.post(Box::new(move || {
                 let _completion = completion;
                 reply.reply(result.map(|()| {
@@ -788,7 +820,11 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
         Batch::W,
         "quick-look:set-settings",
         ChannelKind::Invoke,
-        Rc::new(SetSettings { path: settings_path.clone(), control: control.clone(), core: services.core.clone() }),
+        Rc::new(SetSettings {
+            path: settings_path.clone(),
+            control: control.clone(),
+            core: services.core.clone(),
+        }),
     )?;
 
     let c = control.clone();

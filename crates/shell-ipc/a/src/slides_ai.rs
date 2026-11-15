@@ -60,11 +60,23 @@ pub use sessions::{MediaCallAbort, Overrides, SessionsBuilder, SlidesAiSessions}
 const SETTLE_POLL_MS: u64 = 20;
 
 fn native_owner(cx: &CallContext) -> Result<shell_contract::ipc::NativeRequestOwner, IpcError> {
-    let context = cx.native.as_ref().ok_or_else(|| IpcError { name: Some("Error".into()), message: "missing authenticated render capability".into() })?;
-    if !context.renderer().is_some_and(|generation| generation.is_active()) {
-        return Err(IpcError { name: Some("Error".into()), message: "renderer capability is missing or revoked".into() });
+    let context = cx.native.as_ref().ok_or_else(|| IpcError {
+        name: Some("Error".into()),
+        message: "missing authenticated render capability".into(),
+    })?;
+    if !context
+        .renderer()
+        .is_some_and(|generation| generation.is_active())
+    {
+        return Err(IpcError {
+            name: Some("Error".into()),
+            message: "renderer capability is missing or revoked".into(),
+        });
     }
-    Ok(shell_contract::ipc::NativeRequestOwner { view: cx.sender.view, context: context.clone() })
+    Ok(shell_contract::ipc::NativeRequestOwner {
+        view: cx.sender.view,
+        context: context.clone(),
+    })
 }
 
 /// `Date.now()`
@@ -654,12 +666,17 @@ impl SlidesAi for SlidesAiPort {
     }
 
     fn slides_ai_snapshot_restore(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
-        let owner = match native_owner(cx) { Ok(owner) => owner, Err(error) => return reply.reply(Err(error)) };
+        let owner = match native_owner(cx) {
+            Ok(owner) => owner,
+            Err(error) => return reply.reply(Err(error)),
+        };
         let id = match args.first() {
             Some(IpcValue::Number(id)) => *id,
             _ => f64::NAN,
         };
-        let restored = self.core.sessions()
+        let restored = self
+            .core
+            .sessions()
             .map(|sessions| sessions.snapshot_restore(&owner, id))
             .transpose()
             .map(|value| value.flatten().unwrap_or(IpcValue::Null));
@@ -709,8 +726,13 @@ pub struct SlidesAiProposalPort {
 
 impl SlidesAiProposal for SlidesAiProposalPort {
     fn slides_ai_proposal_accept(&self, cx: &CallContext, _args: Vec<IpcValue>, reply: Responder) {
-        let owner = match native_owner(cx) { Ok(owner) => owner, Err(error) => return reply.reply(Err(error)) };
-        let accepted = self.core.sessions()
+        let owner = match native_owner(cx) {
+            Ok(owner) => owner,
+            Err(error) => return reply.reply(Err(error)),
+        };
+        let accepted = self
+            .core
+            .sessions()
             .map(|sessions| sessions.proposal_accept(&owner))
             .transpose()
             .map(|value| value.flatten());
@@ -757,8 +779,13 @@ impl SlidesAiProposal for SlidesAiProposalPort {
     }
 
     fn slides_ai_run_hold(&self, cx: &CallContext, _args: Vec<IpcValue>, reply: Responder) {
-        let owner = match native_owner(cx) { Ok(owner) => owner, Err(error) => return reply.reply(Err(error)) };
-        let held = self.core.sessions()
+        let owner = match native_owner(cx) {
+            Ok(owner) => owner,
+            Err(error) => return reply.reply(Err(error)),
+        };
+        let held = self
+            .core
+            .sessions()
             .map(|sessions| sessions.run_hold(&owner))
             .transpose()
             .map(|value| value.flatten().unwrap_or(IpcValue::Null));

@@ -187,7 +187,6 @@ impl DocsBridgeHost for FamilyHost {
         std::path::Path::new(path).exists()
     }
 
-
     fn authorize_save(&mut self, wc_id: i64, file_path: &str) {
         if let Some(view) = view_of(wc_id) {
             self.common.tabs.authorize_docs_save(view, file_path);
@@ -236,7 +235,6 @@ impl SheetsBridgeHost for FamilyHost {
     fn exists_sync(&mut self, path: &str) -> bool {
         std::path::Path::new(path).exists()
     }
-
 
     fn authorize_save(&mut self, wc_id: i64, file_path: &str) {
         if let Some(view) = view_of(wc_id) {
@@ -425,10 +423,16 @@ impl McpDocumentBridges for BridgesPort {
 impl McpBridgeControl for BridgesPort {
     fn docs_open_blank_tab(&self, then: Then<Option<JsonValue>>) {
         let bridges = self.bridges.clone();
-        self.bridges.common.tabs.open_blank_docs_tab(Box::new(move |opened| {
-            let submitted = bridges.docs.borrow_mut().open_attached_tab(opened.map(|view| i64::from(view.0)));
-            bridges.submit(Kind::Docs, submitted, then);
-        }));
+        self.bridges
+            .common
+            .tabs
+            .open_blank_docs_tab(Box::new(move |opened| {
+                let submitted = bridges
+                    .docs
+                    .borrow_mut()
+                    .open_attached_tab(opened.map(|view| i64::from(view.0)));
+                bridges.submit(Kind::Docs, submitted, then);
+            }));
     }
 
     fn docs_run_command(
@@ -448,10 +452,16 @@ impl McpBridgeControl for BridgesPort {
 
     fn sheets_open_blank_tab(&self, then: Then<Option<JsonValue>>) {
         let bridges = self.bridges.clone();
-        self.bridges.common.tabs.open_blank_sheets_tab(Box::new(move |opened| {
-            let submitted = bridges.sheets.borrow_mut().open_attached_tab(opened.map(|view| i64::from(view.0)));
-            bridges.submit(Kind::Sheets, submitted, then);
-        }));
+        self.bridges
+            .common
+            .tabs
+            .open_blank_sheets_tab(Box::new(move |opened| {
+                let submitted = bridges
+                    .sheets
+                    .borrow_mut()
+                    .open_attached_tab(opened.map(|view| i64::from(view.0)));
+                bridges.submit(Kind::Sheets, submitted, then);
+            }));
     }
 
     fn sheets_run_command(
@@ -504,7 +514,11 @@ mod tests {
         fn open_blank_docs_tab(&self, done: Box<dyn FnOnce(Result<ViewId, String>)>) {
             self.log.lock().unwrap().push("open docs".into());
             let mut open = self.open.lock().unwrap();
-            let result = if open.is_empty() { Err("no more tabs".to_owned()) } else { Ok(open.remove(0)) };
+            let result = if open.is_empty() {
+                Err("no more tabs".to_owned())
+            } else {
+                Ok(open.remove(0))
+            };
             drop(open);
             done(result);
         }
@@ -522,7 +536,12 @@ mod tests {
         }
         fn open_blank_sheets_tab(&self, done: Box<dyn FnOnce(Result<ViewId, String>)>) {
             self.log.lock().unwrap().push("open sheets".into());
-            let result = self.open.lock().unwrap().pop().ok_or_else(|| "no more tabs".to_owned());
+            let result = self
+                .open
+                .lock()
+                .unwrap()
+                .pop()
+                .ok_or_else(|| "no more tabs".to_owned());
             done(result);
         }
         fn authorize_sheets_save(&self, view: ViewId, path: &str) {
@@ -570,16 +589,27 @@ mod tests {
         fn open_blank_sheets_tab(&self, done: Box<dyn FnOnce(Result<ViewId, String>)>) {
             self.0.open_blank_sheets_tab(done);
         }
-        fn authorize_docs_save(&self, view: ViewId, path: &str) { self.0.authorize_docs_save(view, path); }
-        fn abandon_blank_docs_tab(&self, view: ViewId) { self.0.abandon_blank_docs_tab(view); }
-        fn authorize_sheets_save(&self, view: ViewId, path: &str) { self.0.authorize_sheets_save(view, path); }
-        fn abandon_blank_sheets_tab(&self, view: ViewId) { self.0.abandon_blank_sheets_tab(view); }
+        fn authorize_docs_save(&self, view: ViewId, path: &str) {
+            self.0.authorize_docs_save(view, path);
+        }
+        fn abandon_blank_docs_tab(&self, view: ViewId) {
+            self.0.abandon_blank_docs_tab(view);
+        }
+        fn authorize_sheets_save(&self, view: ViewId, path: &str) {
+            self.0.authorize_sheets_save(view, path);
+        }
+        fn abandon_blank_sheets_tab(&self, view: ViewId) {
+            self.0.abandon_blank_sheets_tab(view);
+        }
     }
 
     #[test]
     fn blank_open_waits_for_attached_and_renderer_ready() {
         let rig = Rig::new(&[7]);
-        let tabs = Arc::new(DeferredTabs(Tabs { log: Mutex::default(), open: Mutex::default() }));
+        let tabs = Arc::new(DeferredTabs(Tabs {
+            log: Mutex::default(),
+            open: Mutex::default(),
+        }));
         let port = BridgesPort::new(&rig.services, tabs);
         let (results, then) = collect();
         port.docs_open_blank_tab(then());
@@ -594,13 +624,19 @@ mod tests {
     #[test]
     fn blank_open_propagates_creation_failure() {
         let rig = Rig::new(&[7]);
-        let tabs = Arc::new(DeferredTabs(Tabs { log: Mutex::default(), open: Mutex::default() }));
+        let tabs = Arc::new(DeferredTabs(Tabs {
+            log: Mutex::default(),
+            open: Mutex::default(),
+        }));
         let port = BridgesPort::new(&rig.services, tabs);
         let (results, then) = collect();
         port.docs_open_blank_tab(then());
         PENDING_OPEN.with(|slot| slot.borrow_mut().take().unwrap()(Err("creation failed".into())));
         assert_eq!(results.borrow().len(), 1);
-        assert_eq!(results.borrow()[0].as_ref().unwrap_err().message, "creation failed");
+        assert_eq!(
+            results.borrow()[0].as_ref().unwrap_err().message,
+            "creation failed"
+        );
     }
 
     #[test]
@@ -764,7 +800,10 @@ mod tests {
         let (results, then) = collect();
         port.docs_open_blank_tab(then());
         assert_eq!(results.borrow().len(), 1);
-        assert_eq!(results.borrow()[0].as_ref().unwrap_err().message, "no more tabs");
+        assert_eq!(
+            results.borrow()[0].as_ref().unwrap_err().message,
+            "no more tabs"
+        );
     }
 
     #[test]

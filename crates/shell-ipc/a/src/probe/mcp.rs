@@ -215,7 +215,9 @@ struct ProbeTabs {
 impl McpTabs for ProbeTabs {
     fn open_blank_docs_tab(&self, done: Box<dyn FnOnce(Result<ViewId, String>)>) {
         push(&self.log, json!(["openBlankDocsTabForMcp"]));
-        let result = Ok(ViewId(self.docs.lock().expect("tabs").pop_front().unwrap_or(0)));
+        let result = Ok(ViewId(
+            self.docs.lock().expect("tabs").pop_front().unwrap_or(0),
+        ));
         done(result);
     }
 
@@ -231,7 +233,9 @@ impl McpTabs for ProbeTabs {
         push(&self.log, json!(["openBlankSheetsTabForMcp"]));
         let result = match &self.sheets_error {
             Some(message) => Err(message.clone()),
-            None => Ok(ViewId(self.sheets.lock().expect("tabs").pop_front().unwrap_or(0))),
+            None => Ok(ViewId(
+                self.sheets.lock().expect("tabs").pop_front().unwrap_or(0),
+            )),
         };
         done(result);
     }

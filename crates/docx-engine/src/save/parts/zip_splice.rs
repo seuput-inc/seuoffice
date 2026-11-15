@@ -52,7 +52,9 @@ pub struct ZipEntry {
 pub trait ByteSource {
     fn size(&self) -> u64;
     fn read(&self, offset: u64, length: u64) -> Result<Vec<u8>, String>;
-    fn check_cancelled(&self) -> Result<(), String> { Ok(()) }
+    fn check_cancelled(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// `bufferSource`
@@ -74,14 +76,26 @@ impl ByteSource for BufferSource<'_> {
     }
 }
 
-struct CheckedBuffer<'a> { bytes: &'a [u8], check: &'a dyn Fn() -> Result<(), String> }
+struct CheckedBuffer<'a> {
+    bytes: &'a [u8],
+    check: &'a dyn Fn() -> Result<(), String>,
+}
 impl ByteSource for CheckedBuffer<'_> {
-    fn size(&self) -> u64 { self.bytes.len() as u64 }
-    fn check_cancelled(&self) -> Result<(), String> { (self.check)() }
+    fn size(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+    fn check_cancelled(&self) -> Result<(), String> {
+        (self.check)()
+    }
     fn read(&self, offset: u64, length: u64) -> Result<Vec<u8>, String> {
         self.check_cancelled()?;
-        let start = usize::try_from(offset).unwrap_or(usize::MAX).min(self.bytes.len());
-        let end = usize::try_from(offset.saturating_add(length)).unwrap_or(usize::MAX).min(self.bytes.len()).max(start);
+        let start = usize::try_from(offset)
+            .unwrap_or(usize::MAX)
+            .min(self.bytes.len());
+        let end = usize::try_from(offset.saturating_add(length))
+            .unwrap_or(usize::MAX)
+            .min(self.bytes.len())
+            .max(start);
         let mut out = Vec::with_capacity(end - start);
         for chunk in self.bytes[start..end].chunks(64 * 1024) {
             self.check_cancelled()?;
@@ -92,7 +106,11 @@ impl ByteSource for CheckedBuffer<'_> {
     }
 }
 
-pub fn read_zip_entries_checked(bytes: &[u8], limits: &ZipLimits, check: &dyn Fn() -> Result<(), String>) -> Result<Vec<ZipEntry>, String> {
+pub fn read_zip_entries_checked(
+    bytes: &[u8],
+    limits: &ZipLimits,
+    check: &dyn Fn() -> Result<(), String>,
+) -> Result<Vec<ZipEntry>, String> {
     read_zip_entries(&CheckedBuffer { bytes, check }, limits)
 }
 
@@ -147,7 +165,9 @@ pub fn read_zip_entries(src: &dyn ByteSource, limits: &ZipLimits) -> Result<Vec<
     let mut eocd: Option<usize> = None;
     if tail.len() >= 22 {
         for i in (0..=tail.len() - 22).rev() {
-            if i % 4096 == 0 { src.check_cancelled()?; }
+            if i % 4096 == 0 {
+                src.check_cancelled()?;
+            }
             if u32_at(&tail, i) == SIG_EOCD {
                 eocd = Some(i);
                 break;
@@ -224,7 +244,10 @@ pub fn read_zip_entries(src: &dyn ByteSource, limits: &ZipLimits) -> Result<Vec<
     for entry in &entries {
         src.check_cancelled()?;
         if !entry.name.ends_with('/') {
-            declared.push(DeclaredPart { name: &entry.name, usize: f64::from(entry.usize) });
+            declared.push(DeclaredPart {
+                name: &entry.name,
+                usize: f64::from(entry.usize),
+            });
         }
     }
     assert_declared_sizes_within_limits(&declared, limits)?;
@@ -266,7 +289,10 @@ pub fn write_zip(entries: &[OutEntry]) -> Result<Vec<u8>, String> {
     write_zip_checked(entries, &|| Ok(()))
 }
 
-fn write_zip_checked(entries: &[OutEntry], check: &dyn Fn() -> Result<(), String>) -> Result<Vec<u8>, String> {
+fn write_zip_checked(
+    entries: &[OutEntry],
+    check: &dyn Fn() -> Result<(), String>,
+) -> Result<Vec<u8>, String> {
     if entries.len() >= 0xffff {
         return Err("zip: too many entries for a plain archive".to_owned());
     }
@@ -391,7 +417,11 @@ pub fn slim_docx<S: ByteSource>(
 }
 
 /// `inflated`
-fn inflated(entry: &ZipEntry, raw: &[u8], check: &dyn Fn() -> Result<(), String>) -> Result<Vec<u8>, String> {
+fn inflated(
+    entry: &ZipEntry,
+    raw: &[u8],
+    check: &dyn Fn() -> Result<(), String>,
+) -> Result<Vec<u8>, String> {
     check()?;
     match entry.method {
         0 => CheckedBuffer { bytes: raw, check }.read(0, raw.len() as u64),
@@ -401,9 +431,13 @@ fn inflated(entry: &ZipEntry, raw: &[u8], check: &dyn Fn() -> Result<(), String>
             let mut buffer = [0u8; 64 * 1024];
             loop {
                 check()?;
-                let count = decoder.read(&mut buffer).map_err(|error| error.to_string())?;
+                let count = decoder
+                    .read(&mut buffer)
+                    .map_err(|error| error.to_string())?;
                 check()?;
-                if count == 0 { break; }
+                if count == 0 {
+                    break;
+                }
                 out.extend_from_slice(&buffer[..count]);
             }
             Ok(out)
@@ -416,7 +450,11 @@ fn inflated(entry: &ZipEntry, raw: &[u8], check: &dyn Fn() -> Result<(), String>
 }
 
 /// `placeholderHash`: the placeholder hash when the entry is one, else None.
-fn placeholder_hash(entry: &ZipEntry, raw: &[u8], check: &dyn Fn() -> Result<(), String>) -> Result<Option<String>, String> {
+fn placeholder_hash(
+    entry: &ZipEntry,
+    raw: &[u8],
+    check: &dyn Fn() -> Result<(), String>,
+) -> Result<Option<String>, String> {
     if entry.usize as usize != LAZY_MEDIA_PLACEHOLDER_BYTES {
         return Ok(None);
     }
@@ -430,7 +468,10 @@ pub fn lazy_media_hashes_in(bytes: &[u8]) -> Result<Vec<String>, String> {
     lazy_media_hashes_in_checked(bytes, &|| Ok(()))
 }
 
-pub fn lazy_media_hashes_in_checked(bytes: &[u8], check: &dyn Fn() -> Result<(), String>) -> Result<Vec<String>, String> {
+pub fn lazy_media_hashes_in_checked(
+    bytes: &[u8],
+    check: &dyn Fn() -> Result<(), String>,
+) -> Result<Vec<String>, String> {
     let src = CheckedBuffer { bytes, check };
     let mut hashes: Vec<String> = Vec::new();
     for entry in read_zip_entries(&src, &DEFAULT_ZIP_LIMITS)? {
@@ -460,7 +501,8 @@ pub fn materialize_docx(
 }
 
 pub fn materialize_docx_checked(
-    bytes: &[u8], source_for: &mut dyn FnMut(&str) -> SourceOpen,
+    bytes: &[u8],
+    source_for: &mut dyn FnMut(&str) -> SourceOpen,
     check: &dyn Fn() -> Result<(), String>,
 ) -> Result<Vec<u8>, String> {
     let src = CheckedBuffer { bytes, check };
@@ -518,9 +560,15 @@ mod cancellation_tests {
         let check = || {
             let next = checks.get() + 1;
             checks.set(next);
-            if next >= 3 { Err("cancelled".to_owned()) } else { Ok(()) }
+            if next >= 3 {
+                Err("cancelled".to_owned())
+            } else {
+                Ok(())
+            }
         };
-        assert!(matches!(read_zip_entries_checked(&archive, &DEFAULT_ZIP_LIMITS, &check), Err(error) if error == "cancelled"));
+        assert!(
+            matches!(read_zip_entries_checked(&archive, &DEFAULT_ZIP_LIMITS, &check), Err(error) if error == "cancelled")
+        );
         assert_eq!(checks.get(), 3);
     }
 
@@ -531,9 +579,16 @@ mod cancellation_tests {
         let check = || {
             let next = checks.get() + 1;
             checks.set(next);
-            if next == 4 { Err("cancelled".to_owned()) } else { Ok(()) }
+            if next == 4 {
+                Err("cancelled".to_owned())
+            } else {
+                Ok(())
+            }
         };
-        let source = CheckedBuffer { bytes: &bytes, check: &check };
+        let source = CheckedBuffer {
+            bytes: &bytes,
+            check: &check,
+        };
         assert!(matches!(source.read(0, bytes.len() as u64), Err(error) if error == "cancelled"));
         assert_eq!(checks.get(), 4);
     }

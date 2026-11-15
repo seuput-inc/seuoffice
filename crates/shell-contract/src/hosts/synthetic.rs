@@ -1994,7 +1994,7 @@ impl OwnedEffects for SyntheticOwnedEffects {
         let mut enter = || {
             generations.with_active(|| pdf.with_live(|| controls.with_active(|| {
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(||
-                    handoff.with_completed_owner(&registered, &mut || effect(handoff.input()))) {
+                    handoff.with_completed_owner(&registered, &mut || effect(handoff.input())))) {
                     Ok(result) => result,
                     Err(payload) => { panic_payload = Some(payload); Err("Synthetic reload parser effect panicked".into()) }
                 }

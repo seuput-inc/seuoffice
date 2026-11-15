@@ -64,8 +64,8 @@ fn resolve_html_entity_using(name: &[u16], host: &HostCall<'_>) -> Result<Option
     if is_entity_name(name) {
         let name_text = lossy(name);
         let reference = format!("&{name_text};");
-        let decoded = host("epub.parseFragmentText", &json!({ "html": reference }))
-            .map_err(host_thrown)?;
+        let decoded =
+            host("epub.parseFragmentText", &json!({ "html": reference })).map_err(host_thrown)?;
         // a legacy prefix match (`&notin` read as `&not` + `in;`) leaves the `;` behind
         if let Some(decoded) = decoded.as_str()
             && decoded != reference
@@ -102,9 +102,13 @@ impl XmlHost for RequestPositionsHost<'_> {
     }
 
     fn resolve_html_entity(&self, name: &str) -> Result<Option<String>, Thrown> {
-        if let Some(value) = self.entities.borrow().get(name).cloned() { return Ok(value); }
+        if let Some(value) = self.entities.borrow().get(name).cloned() {
+            return Ok(value);
+        }
         let value = resolve_html_entity_using(&units(name), self.call)?;
-        self.entities.borrow_mut().insert(name.to_owned(), value.clone());
+        self.entities
+            .borrow_mut()
+            .insert(name.to_owned(), value.clone());
         Ok(value)
     }
 }
@@ -138,7 +142,11 @@ pub fn decode_character_data(raw: &[u16], with_html: bool) -> Result<Vec<u16>, T
     decode_character_data_using(raw, with_html, &PositionsHost)
 }
 
-fn decode_character_data_using(raw: &[u16], with_html: bool, host: &dyn XmlHost) -> Result<Vec<u16>, Thrown> {
+fn decode_character_data_using(
+    raw: &[u16],
+    with_html: bool,
+    host: &dyn XmlHost,
+) -> Result<Vec<u16>, Thrown> {
     let text = normalize_newlines(raw);
     let mut out = Vec::with_capacity(text.len());
     let mut i = 0;
@@ -149,11 +157,7 @@ fn decode_character_data_using(raw: &[u16], with_html: bool, host: &dyn XmlHost)
                 end += 1;
             }
             if end > i + 1 && text.get(end) == Some(&0x3B) {
-                out.extend(resolve_reference(
-                    host,
-                    &text[i + 1..end],
-                    with_html,
-                )?);
+                out.extend(resolve_reference(host, &text[i + 1..end], with_html)?);
                 i = end + 1;
                 continue;
             }
@@ -216,7 +220,8 @@ impl Reader<'_> {
         }
         let length = self.source.len();
         let raw = &self.source[start.min(length)..end.min(length)];
-        let value = decode_character_data_using(raw, self.has_doctype, self.host).map_err(sax_error)?;
+        let value =
+            decode_character_data_using(raw, self.has_doctype, self.host).map_err(sax_error)?;
         self.elements[parent].children.push(XmlNode::Text(XmlText {
             start,
             end,
@@ -257,7 +262,9 @@ impl Handler for Reader<'_> {
         if !self.has_doctype {
             return Ok(None);
         }
-        Ok(self.host.resolve_html_entity(&lossy(name))
+        Ok(self
+            .host
+            .resolve_html_entity(&lossy(name))
             .map_err(sax_error)?
             .map(|value| units(&value)))
     }
@@ -374,7 +381,10 @@ pub fn parse_xml(source: &[u16]) -> XmlParseResult {
 
 /// Position-preserving XML parsing with only this request's entity resolver.
 pub fn parse_xml_with_host(source: &[u16], host: &HostCall<'_>) -> XmlParseResult {
-    let request = RequestPositionsHost { call: host, entities: RefCell::new(HashMap::new()) };
+    let request = RequestPositionsHost {
+        call: host,
+        entities: RefCell::new(HashMap::new()),
+    };
     parse_xml_using(source, &request)
 }
 

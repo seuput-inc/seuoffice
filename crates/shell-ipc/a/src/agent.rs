@@ -50,7 +50,8 @@ impl AgentWindowPort {
     }
 
     fn call(&self, op: Op, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
-        self.inner.invoke(op, cx.sender.view, cx.cancel.clone(), &args, reply);
+        self.inner
+            .invoke(op, cx.sender.view, cx.cancel.clone(), &args, reply);
     }
 }
 

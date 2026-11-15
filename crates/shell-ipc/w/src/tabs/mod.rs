@@ -16,20 +16,20 @@
 mod activation;
 mod bridge;
 mod detached_snapshot;
+mod documents;
 pub mod host;
 mod menus;
-mod documents;
 pub use documents::DocsExportCloseOutcome;
 mod open;
-pub(crate) mod owned_saved;
 mod ops;
+pub(crate) mod owned_saved;
 #[cfg(feature = "probe")]
 mod probe;
 mod project_seam;
-mod state;
 mod startup;
-mod wire;
+mod state;
 pub mod window_snapshot;
+mod wire;
 
 use std::rc::Rc;
 
@@ -40,22 +40,34 @@ use shell_contract::ipc::{
 use shell_contract::runtime::Services;
 use shell_contract::{Batch, IpcValue};
 
+pub use activation::TabActivationAuthority;
+pub use activation::{
+    DocsDisposal, DocsDisposalOperation, OwnedLoadedTabView, PreparedTabActivationPublication,
+    PreparedTabUiBatch, PreparedTabUiStep, SplitMemoryRevision, TabActivationPublicationSnapshot,
+    TabUiDone, TabUiRun,
+};
+pub use activation::{RecoveryAttempt, RecoveryCleanup, StartupRecoveryConstraint};
+pub use activation::{TabUiStepDone, TabUiStepOutcome, TabUiStepRetry};
 pub use host::{
     DocAction, HostEvent, HostEvents, MenuEntry, MenuEntryKind, ShellWindow, TabHooks, TabsChanged,
     TimerKey, ViewHappened, ViewListen, WindowEvent, WindowState, WindowsHost, WindowsHostRef,
 };
+pub use open::{
+    AdoptedLifetimeFailure, AdoptedLifetimeHandle, CallerOwnedAdoptedLifetime,
+    RetainedAdoptedLifetime,
+};
+pub use open::{
+    CommittedGeneratedTab, GeneratedEditorOpen, PreparedGeneratedOperation, native_open_surface,
+    retire_adopted_editor_receipts, rollback_editor_receipts,
+};
+pub use owned_saved::{
+    MovedTabs, PendingDirSave, SavedContinuation, SavedPublication, SavedSessionUpdate, SavedTabAck,
+};
 #[cfg(feature = "probe")]
-pub use probe::{probe_hosts, probe_state, ProbeShellRegistration, ProbeViewRegistrar};
+pub use probe::{ProbeShellRegistration, ProbeViewRegistrar, probe_hosts, probe_state};
 pub use project_seam::ViewDocument;
-pub use state::TabsState;
-pub use open::{CommittedGeneratedTab, GeneratedEditorOpen, PreparedGeneratedOperation, native_open_surface, rollback_editor_receipts, retire_adopted_editor_receipts};
-pub use open::{AdoptedLifetimeFailure, AdoptedLifetimeHandle, CallerOwnedAdoptedLifetime, RetainedAdoptedLifetime};
-pub use owned_saved::{SavedTabAck,SavedSessionUpdate,SavedPublication,SavedContinuation,PendingDirSave,MovedTabs};
-pub use activation::{DocsDisposal, DocsDisposalOperation, PreparedTabUiBatch, PreparedTabUiStep, TabUiDone, TabUiRun, TabActivationPublicationSnapshot, PreparedTabActivationPublication, SplitMemoryRevision, OwnedLoadedTabView};
-pub use activation::TabActivationAuthority;
-pub use activation::{RecoveryAttempt, RecoveryCleanup, StartupRecoveryConstraint};
-pub use activation::{TabUiStepDone, TabUiStepOutcome, TabUiStepRetry};
 pub use startup::{StartupBind, StartupHydrationBind, StartupMutationDone};
+pub use state::TabsState;
 
 use self::menus::popup_at;
 use self::open::NewKind;
@@ -103,10 +115,12 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
     let state = TabsState::new(services, windows, hooks, provided.clone());
     provided.add::<TabsState>(state.clone());
     #[cfg(feature = "probe")]
-    probe::install_first_shell(&state, services).map_err(|message| RegisterError::Initialization {
-        batch: Batch::W,
-        host: "shell_ipc_w::tabs::probe::first_shell",
-        message,
+    probe::install_first_shell(&state, services).map_err(|message| {
+        RegisterError::Initialization {
+            batch: Batch::W,
+            host: "shell_ipc_w::tabs::probe::first_shell",
+            message,
+        }
     })?;
     let main = services
         .hosts

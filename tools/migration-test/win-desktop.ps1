@@ -29,6 +29,8 @@ param(
   [Parameter(Mandatory)] [string]$ToVersion,
   [string]$Next,
   [string]$NextVersion,
+  [string]$ToReceipt,
+  [string]$NextReceipt,
   [ValidateSet('none', 'kill-installer', 'block-start', 'lock-file')] [string]$Fault = 'none',
   [Parameter(Mandatory)] [string]$Out,
   [int]$Port = 9229,
@@ -38,8 +40,17 @@ param(
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
-$ud = Join-Path $env:APPDATA 'seuoffice'
+if (-not $env:RUNNER_TEMP -or $env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Migration requires a GitHub-hosted runner and RUNNER_TEMP' }
+$roaming = [Environment]::GetFolderPath('ApplicationData')
+if (-not $roaming -or -not $env:APPDATA -or
+    ([IO.Path]::GetFullPath($roaming).TrimEnd('\') -ine [IO.Path]::GetFullPath($env:APPDATA).TrimEnd('\'))) {
+  throw 'BLOCKED: ambiguous default application data directory'
+}
+$ud = Join-Path $roaming 'seuoffice'
+$env:SEUOFFICE_USER_DATA = $ud
 $result = [ordered]@{ from = $From; to = $ToVersion; next = $NextVersion; fault = $Fault; steps = @() }
+if ($ToReceipt) { $result.toReceipt = Get-Content -Raw $ToReceipt | ConvertFrom-Json }
+if ($NextReceipt) { $result.nextReceipt = Get-Content -Raw $NextReceipt | ConvertFrom-Json }
 
 function Step($name, $data) {
   $script:result.steps += [ordered]@{ step = $name; at = (Get-Date).ToString('o'); data = $data }
@@ -53,9 +64,19 @@ function Fail($message) {
   Save
   throw $message
 }
+function ProbeFailure($message, $candidate) {
+  if ($candidate -and (AppProcesses)) {
+    try { $null = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/json/list" -TimeoutSec 5 }
+    catch {
+      $script:result.blocked = 'Candidate CDP endpoint unavailable; a test-only isolated real-page control seam is required for these exact candidate bytes'
+      Fail "$message. $($script:result.blocked)"
+    }
+  }
+  Fail $message
+}
 function Probe([string[]]$arguments) {
   & node (Join-Path $here 'probe.mjs') @arguments --port $Port
-  if ($LASTEXITCODE -ne 0) { Fail "probe $($arguments[0]) failed" }
+  if ($LASTEXITCODE -ne 0) { ProbeFailure "probe $($arguments[0]) failed" ($arguments[0] -eq 'check' -and $Fault -eq 'none' -and [bool]$ToReceipt) }
 }
 function InstallDir {
   # the key does not exist on a machine that never installed an app per user
@@ -162,6 +183,20 @@ public static class MigrationDialogs {
 $ifeo = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\SeuOffice.exe'
 
 try {
+  $parent = Get-Item -LiteralPath $roaming -Force -ErrorAction Stop
+  if (-not $parent.PSIsContainer) { throw 'default application data parent is not a directory' }
+  for ($dir = $parent; $dir; $dir = $dir.Parent) {
+    if ($dir.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "ambiguous reparse point $($dir.FullName)" }
+  }
+  if (@(Get-ChildItem -LiteralPath $roaming -Force -ErrorAction Stop | Where-Object { $_.Name -ieq 'seuoffice' }).Count -ne 0) {
+    throw 'default SeuOffice profile already exists'
+  }
+} catch {
+  $result.blocked = "Cannot prove the default profile absent: $($_.Exception.Message)"
+  Fail $result.blocked
+}
+Step 'profile' @{ location = 'ephemeral runner default profile'; path = $ud; initiallyAbsent = $true }
+try {
   if ((Test-Path (Exe)) -and -not $Force) {
     Fail "SeuOffice is installed at $(InstallDir); rerun with -Force to use and change its data"
   }
@@ -222,6 +257,7 @@ try {
     } | Select-Object -First 1
     if (-not $installer) { Start-Sleep -Milliseconds 500 }
   }
+  if (-not $installer) { Fail 'the update did not start an installer' }
   Step 'installer-started' @{ path = $installer.Path; seconds = $t.Elapsed.TotalSeconds }
   # read the exit code later: the handle must be taken while the process runs
   if ($installer) { $null = $installer.Handle }
@@ -299,7 +335,7 @@ try {
     StartApp @()
     $t = [Diagnostics.Stopwatch]::StartNew()
     & node (Join-Path $here 'probe.mjs') update --port $Port --version $NextVersion
-    if ($LASTEXITCODE -ne 0) { Fail 'the second update did not reach "downloaded"' }
+    if ($LASTEXITCODE -ne 0) { ProbeFailure 'the second update did not reach "downloaded"' ([bool]$ToReceipt) }
     $downloadSeconds = $t.Elapsed.TotalSeconds
     # what the updater took from the feed: block-map ranges, or the whole file
     $name = Split-Path -Leaf $Next
@@ -317,6 +353,7 @@ try {
     # the installer starts the new app (--force-run): stop that one, not an earlier one
     for ($i = 0; $i -lt 90 -and -not (AppProcesses); $i++) { Start-Sleep 1 }
     Start-Sleep 10
+    if ((ExeVersion) -ne $NextVersion) { Fail "second update installed $(ExeVersion), expected $NextVersion" }
     StopApp
     StartApp @()
     Start-Sleep 10

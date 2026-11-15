@@ -22,15 +22,21 @@ use main_core::shell::title_bar_overlay::TitleBarOverlay;
 use shell_contract::hosts::{
     Dialogs, FileDialog, Hosts, MainWindow, MessageBox, MessageBoxAnswer, OsShell,
 };
-use shell_contract::ipc::{CallContext, EventSink, NativeContext, Reply, Responder, Sender, Target};
+use shell_contract::ipc::{
+    CallContext, EventSink, NativeContext, Reply, Responder, Sender, Target,
+};
 use shell_contract::runtime::{AppPaths, CancelToken, PathName, Services, Thread, Views, Workers};
 use shell_contract::{IpcValue, Surface, ViewId, WindowId};
 
+use super::host::{
+    GenerateAuthority, GenerateCommittedOpen, GenerateCommittedTarget, GenerateOpenRequest,
+    GenerateOpenResult, GenerateOrigin, GenerateShell, GenerateWindowCleanup, GenerateWindowEvent,
+    TabContents,
+};
 use super::{BoundGenerateWindowEvents, GenerateWindowPort};
-use super::host::{GenerateAuthority, GenerateOrigin, GenerateShell, GenerateWindowEvent, TabContents, GenerateOpenRequest, GenerateOpenResult, GenerateCommittedOpen, GenerateCommittedTarget, GenerateWindowCleanup};
+use crate::ports::GenerateWindow as Channels;
 use main_core::shell::generate::generate_api::GenerateWindowState;
 use shell_contract::hosts::{DialogsHost, OsShellHost};
-use crate::ports::GenerateWindow as Channels;
 
 type Job = Box<dyn FnOnce() + Send>;
 
@@ -91,8 +97,17 @@ impl Views for Inline {
         Vec::new()
     }
     fn on_destroyed(&self, _: Box<dyn Fn(ViewId) + Send + Sync>) {}
-    fn renderer_generation(&self, _: ViewId) -> Option<shell_contract::runtime::RendererGeneration> { None }
-    fn on_renderer_replaced(&self, _: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>) {}
+    fn renderer_generation(
+        &self,
+        _: ViewId,
+    ) -> Option<shell_contract::runtime::RendererGeneration> {
+        None
+    }
+    fn on_renderer_replaced(
+        &self,
+        _: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>,
+    ) {
+    }
 }
 
 struct Dir(PathBuf);
@@ -132,33 +147,151 @@ struct FakeDialogs {
     asked: Mutex<Vec<(Option<WindowId>, FileDialog)>>,
 }
 
-fn synthetic_owned_dialog_admit(origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken) -> Result<(), String> {
-    let source = origin.context.renderer().ok_or("synthetic dialog source is unbound")?;
-    let target = destination.context.renderer().ok_or("synthetic dialog destination is unbound")?;
+fn synthetic_owned_dialog_admit(
+    origin: &shell_contract::ipc::NativeRequestOwner,
+    destination: &shell_contract::ipc::NativeRequestOwner,
+    cancel: &shell_contract::runtime::CancelToken,
+    pending: &shell_contract::runtime::CancelToken,
+) -> Result<(), String> {
+    let source = origin
+        .context
+        .renderer()
+        .ok_or("synthetic dialog source is unbound")?;
+    let target = destination
+        .context
+        .renderer()
+        .ok_or("synthetic dialog destination is unbound")?;
     let source_loss = origin.loss_token();
     let target_loss = destination.loss_token();
-    source.with_active_pair(target, || shell_contract::runtime::CancelToken::with_active_all([Some(cancel), Some(pending), source_loss.as_ref(), target_loss.as_ref()], || ()))
-        .flatten().ok_or_else(|| "Renderer document is no longer available.".into())
+    source
+        .with_active_pair(target, || {
+            shell_contract::runtime::CancelToken::with_active_all(
+                [
+                    Some(cancel),
+                    Some(pending),
+                    source_loss.as_ref(),
+                    target_loss.as_ref(),
+                ],
+                || (),
+            )
+        })
+        .flatten()
+        .ok_or_else(|| "Renderer document is no longer available.".into())
 }
 
 impl Dialogs for FakeDialogs {
     shell_contract::synthetic_recovery_dialog_methods!();
-    fn message_prepared(&self, parent: Option<shell_contract::WindowId>, options: shell_contract::hosts::MessageBox, target: shell_contract::ipc::RecoveryOpenTarget, snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot, done: Box<dyn FnOnce(Result<shell_contract::hosts::MessageBoxAnswer, String>) + Send>) { done(shell_contract::hosts::synthetic::recovery_dialog(&target, &snapshot, || self.message(parent, &options))); }
-    fn save_prepared(&self, parent: Option<shell_contract::WindowId>, options: shell_contract::hosts::FileDialog, target: shell_contract::ipc::RecoveryOpenTarget, snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot, done: Box<dyn FnOnce(Result<Option<shell_contract::ipc::RecoveryPreparedDestination>, String>) + Send>) { done(shell_contract::hosts::synthetic::recovery_save(&target, &snapshot, || self.save(parent, &options))); }
-    fn open_owned(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<Vec<std::path::PathBuf>>, String>) + Send>) {
-        done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.open(parent, &options)));
+    fn message_prepared(
+        &self,
+        parent: Option<shell_contract::WindowId>,
+        options: shell_contract::hosts::MessageBox,
+        target: shell_contract::ipc::RecoveryOpenTarget,
+        snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
+        done: Box<dyn FnOnce(Result<shell_contract::hosts::MessageBoxAnswer, String>) + Send>,
+    ) {
+        done(shell_contract::hosts::synthetic::recovery_dialog(
+            &target,
+            &snapshot,
+            || self.message(parent, &options),
+        ));
     }
-    fn save_owned(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>) {
-        done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.save(parent, &options)));
+    fn save_prepared(
+        &self,
+        parent: Option<shell_contract::WindowId>,
+        options: shell_contract::hosts::FileDialog,
+        target: shell_contract::ipc::RecoveryOpenTarget,
+        snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
+        done: Box<
+            dyn FnOnce(Result<Option<shell_contract::ipc::RecoveryPreparedDestination>, String>)
+                + Send,
+        >,
+    ) {
+        done(shell_contract::hosts::synthetic::recovery_save(
+            &target,
+            &snapshot,
+            || self.save(parent, &options),
+        ));
     }
-    fn message_owned(&self, parent: Option<WindowId>, options: MessageBox, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>) {
-        done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.message(parent, &options)));
+    fn open_owned(
+        &self,
+        parent: Option<WindowId>,
+        options: FileDialog,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        destination: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<Option<Vec<std::path::PathBuf>>, String>) + Send>,
+    ) {
+        done(
+            synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending)
+                .map(|()| self.open(parent, &options)),
+        );
     }
-    fn save_owned_many(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>) {
-        done(shell_contract::hosts::synthetic::admit_many(&origin, &participants, &cancel, &pending, || self.save(parent, &options)));
+    fn save_owned(
+        &self,
+        parent: Option<WindowId>,
+        options: FileDialog,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        destination: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>,
+    ) {
+        done(
+            synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending)
+                .map(|()| self.save(parent, &options)),
+        );
     }
-    fn message_owned_many(&self, parent: Option<WindowId>, options: MessageBox, origin: shell_contract::ipc::NativeRequestOwner, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>) {
-        done(shell_contract::hosts::synthetic::admit_many(&origin, &participants, &cancel, &pending, || self.message(parent, &options)));
+    fn message_owned(
+        &self,
+        parent: Option<WindowId>,
+        options: MessageBox,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        destination: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>,
+    ) {
+        done(
+            synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending)
+                .map(|()| self.message(parent, &options)),
+        );
+    }
+    fn save_owned_many(
+        &self,
+        parent: Option<WindowId>,
+        options: FileDialog,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>,
+    ) {
+        done(shell_contract::hosts::synthetic::admit_many(
+            &origin,
+            &participants,
+            &cancel,
+            &pending,
+            || self.save(parent, &options),
+        ));
+    }
+    fn message_owned_many(
+        &self,
+        parent: Option<WindowId>,
+        options: MessageBox,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>,
+    ) {
+        done(shell_contract::hosts::synthetic::admit_many(
+            &origin,
+            &participants,
+            &cancel,
+            &pending,
+            || self.message(parent, &options),
+        ));
     }
     fn open(&self, parent: Option<WindowId>, options: &FileDialog) -> Option<Vec<PathBuf>> {
         self.asked.lock().unwrap().push((parent, options.clone()));
@@ -191,7 +324,11 @@ impl OsShell for FakeOs {
     fn trash_item(&self, _: &std::path::Path) -> Result<(), String> {
         Ok(())
     }
-    fn trash_item_authorized(&self, path: &std::path::Path, admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>) -> Result<(), String> {
+    fn trash_item_authorized(
+        &self,
+        path: &std::path::Path,
+        admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>,
+    ) -> Result<(), String> {
         admit(&mut || self.trash_item(path))
     }
 }
@@ -244,12 +381,24 @@ struct FakeShell(Arc<Mutex<World>>);
 struct ModeledCommittedTarget(shell_contract::runtime::RendererGeneration, CancelToken);
 
 impl GenerateCommittedTarget for ModeledCommittedTarget {
-    fn created(&self) -> &shell_contract::runtime::RendererGeneration { &self.0 }
-    fn validate_target(&self) -> Result<(), String> {
-        if self.0.is_active() && !self.1.is_cancelled() { Ok(()) } else { Err("modeled generated target was replaced".into()) }
+    fn created(&self) -> &shell_contract::runtime::RendererGeneration {
+        &self.0
     }
-    fn with_terminal_commit(&self, effect: &mut dyn FnMut() -> Result<(), String>) -> Result<(), String> {
-        self.0.with_active(|| self.1.with_active(effect)).flatten().ok_or("modeled generated target was replaced")?
+    fn validate_target(&self) -> Result<(), String> {
+        if self.0.is_active() && !self.1.is_cancelled() {
+            Ok(())
+        } else {
+            Err("modeled generated target was replaced".into())
+        }
+    }
+    fn with_terminal_commit(
+        &self,
+        effect: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.0
+            .with_active(|| self.1.with_active(effect))
+            .flatten()
+            .ok_or("modeled generated target was replaced")?
     }
 }
 
@@ -267,28 +416,56 @@ impl GenerateShell for FakeShell {
     fn check_authority(&self, authority: &GenerateAuthority) -> Result<(), String> {
         // The fake models cancellation explicitly; it does not grant native access.
         authority.check_cancelled()?;
-        if let GenerateOrigin::WindowEvent { identity, event, .. } = &authority.origin {
-            if let GenerateWindowEvent::Ready { origin } | GenerateWindowEvent::OpenLink { origin } = event {
+        if let GenerateOrigin::WindowEvent {
+            identity, event, ..
+        } = &authority.origin
+        {
+            if let GenerateWindowEvent::Ready { origin }
+            | GenerateWindowEvent::OpenLink { origin } = event
+            {
                 if !Arc::ptr_eq(&identity.as_arc(), &origin.as_arc()) {
-                    return Err("model native event origin does not match its bound document".into());
+                    return Err(
+                        "model native event origin does not match its bound document".into(),
+                    );
                 }
             }
         }
         self.0.lock().unwrap().authorities.push(authority.clone());
         Ok(())
     }
-    fn show_open_dialog(&self, authority: &GenerateAuthority, dialogs: DialogsHost, parent: WindowId, options: &FileDialog) -> Result<Option<Vec<PathBuf>>, String> {
+    fn show_open_dialog(
+        &self,
+        authority: &GenerateAuthority,
+        dialogs: DialogsHost,
+        parent: WindowId,
+        options: &FileDialog,
+    ) -> Result<Option<Vec<PathBuf>>, String> {
         self.check_authority(authority)?;
         Ok(dialogs.open(Some(parent), options))
     }
-    fn open_external(&self, authority: &GenerateAuthority, os: OsShellHost, url: &str) -> Result<(), String> {
+    fn open_external(
+        &self,
+        authority: &GenerateAuthority,
+        os: OsShellHost,
+        url: &str,
+    ) -> Result<(), String> {
         self.check_authority(authority)?;
         os.open_external(url)
     }
-    fn send_state(&self, authority: &GenerateAuthority, events: Arc<dyn EventSink>, view: ViewId, state: &GenerateWindowState) -> Result<(), String> {
+    fn send_state(
+        &self,
+        authority: &GenerateAuthority,
+        events: Arc<dyn EventSink>,
+        view: ViewId,
+        state: &GenerateWindowState,
+    ) -> Result<(), String> {
         self.check_authority(authority)?;
         let value = serde_json::to_value(state).map_err(|error| error.to_string())?;
-        events.emit(Target::View(view), "generate:state", vec![super::ipc_of(&value)]);
+        events.emit(
+            Target::View(view),
+            "generate:state",
+            vec![super::ipc_of(&value)],
+        );
         Ok(())
     }
     fn create_window(
@@ -297,7 +474,11 @@ impl GenerateShell for FakeShell {
         options: &GenerateWindowOptions,
         events: super::GenerateWindowEvents,
     ) -> Result<WindowId, String> {
-        let events = events.bind(GEN_WINDOW, NativeContext::new(("model-generate-window", GEN_VIEW)), CancelToken::default())?;
+        let events = events.bind(
+            GEN_WINDOW,
+            NativeContext::new(("model-generate-window", GEN_VIEW)),
+            CancelToken::default(),
+        )?;
         let mut w = self.0.lock().unwrap();
         w.window_open = true;
         w.events = Some(events);
@@ -307,13 +488,25 @@ impl GenerateShell for FakeShell {
         ));
         Ok(GEN_WINDOW)
     }
-    fn window_view(&self, _authority: &GenerateAuthority, window: WindowId) -> Result<Option<ViewId>, String> {
+    fn window_view(
+        &self,
+        _authority: &GenerateAuthority,
+        window: WindowId,
+    ) -> Result<Option<ViewId>, String> {
         Ok((window == GEN_WINDOW).then_some(ViewId(GEN_VIEW)))
     }
-    fn window_is_destroyed(&self, _authority: &GenerateAuthority, window: WindowId) -> Result<bool, String> {
+    fn window_is_destroyed(
+        &self,
+        _authority: &GenerateAuthority,
+        window: WindowId,
+    ) -> Result<bool, String> {
         Ok(window == GEN_WINDOW && !self.0.lock().unwrap().window_open)
     }
-    fn window_is_minimized(&self, _authority: &GenerateAuthority, _: WindowId) -> Result<bool, String> {
+    fn window_is_minimized(
+        &self,
+        _authority: &GenerateAuthority,
+        _: WindowId,
+    ) -> Result<bool, String> {
         Ok(false)
     }
     fn window_restore(&self, _authority: &GenerateAuthority, _: WindowId) -> Result<(), String> {
@@ -328,7 +521,11 @@ impl GenerateShell for FakeShell {
         self.note("focus");
         Ok(())
     }
-    fn window_close(&self, _authority: &GenerateAuthority, _window: WindowId) -> Result<(), String> {
+    fn window_close(
+        &self,
+        _authority: &GenerateAuthority,
+        _window: WindowId,
+    ) -> Result<(), String> {
         let events = {
             let mut w = self.0.lock().unwrap();
             w.window_open = false;
@@ -340,8 +537,19 @@ impl GenerateShell for FakeShell {
         }
         Ok(())
     }
-    fn window_remove_menu(&self, _authority: &GenerateAuthority, _: WindowId) -> Result<(), String> { Ok(()) }
-    fn window_set_title_bar_overlay(&self, _authority: &GenerateAuthority, _: WindowId, o: &TitleBarOverlay) -> Result<(), String> {
+    fn window_remove_menu(
+        &self,
+        _authority: &GenerateAuthority,
+        _: WindowId,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+    fn window_set_title_bar_overlay(
+        &self,
+        _authority: &GenerateAuthority,
+        _: WindowId,
+        o: &TitleBarOverlay,
+    ) -> Result<(), String> {
         self.note(format!("overlay {}", o.color));
         Ok(())
     }
@@ -356,11 +564,20 @@ impl GenerateShell for FakeShell {
     fn renderer_url(&self) -> Option<String> {
         None
     }
-    fn window_load_url(&self, _authority: &GenerateAuthority, _: WindowId, url: &str) -> Result<(), String> {
+    fn window_load_url(
+        &self,
+        _authority: &GenerateAuthority,
+        _: WindowId,
+        url: &str,
+    ) -> Result<(), String> {
         self.note(format!("loadURL {url}"));
         Ok(())
     }
-    fn window_load_generate_page(&self, _authority: &GenerateAuthority, _: WindowId) -> Result<(), String> {
+    fn window_load_generate_page(
+        &self,
+        _authority: &GenerateAuthority,
+        _: WindowId,
+    ) -> Result<(), String> {
         self.note("loadFile");
         Ok(())
     }
@@ -395,23 +612,35 @@ impl GenerateShell for FakeShell {
         request: GenerateOpenRequest,
         then: Box<dyn FnOnce(GenerateOpenResult) + Send>,
     ) {
-        if let Err(error) = self.check_authority(authority) { return then(Err(error)); }
+        if let Err(error) = self.check_authority(authority) {
+            return then(Err(error));
+        }
         let world = self.0.clone();
-        let cleanup = GenerateWindowCleanup::new(request.window, Box::new(move |done| {
-            let events = {
-                let mut world = world.lock().unwrap();
-                world.window_open = false;
-                world.log.push("close".into());
-                world.events.clone()
-            };
-            if let Some(events) = events { events.closed(); }
-            done(Ok(()));
-        }));
-        let target = ModeledCommittedTarget(shell_contract::runtime::RendererGeneration::new(), CancelToken::default());
+        let cleanup = GenerateWindowCleanup::new(
+            request.window,
+            Box::new(move |done| {
+                let events = {
+                    let mut world = world.lock().unwrap();
+                    world.window_open = false;
+                    world.log.push("close".into());
+                    world.events.clone()
+                };
+                if let Some(events) = events {
+                    events.closed();
+                }
+                done(Ok(()));
+            }),
+        );
+        let target = ModeledCommittedTarget(
+            shell_contract::runtime::RendererGeneration::new(),
+            CancelToken::default(),
+        );
         let target_epoch = target.0.clone();
         let target_loss = target.1.clone();
         let finish = Box::new(move |loaded: Result<(), String>| {
-            then(loaded.and_then(|()| GenerateCommittedOpen::new(request.token, Box::new(target), cleanup)));
+            then(loaded.and_then(|()| {
+                GenerateCommittedOpen::new(request.token, Box::new(target), cleanup)
+            }));
         });
         let result = {
             let mut w = self.0.lock().unwrap();
@@ -423,7 +652,10 @@ impl GenerateShell for FakeShell {
                 w.target_replies.push(finish);
                 return;
             }
-            match &w.open_target { Some(error) => Err(error.clone()), None => Ok(()) }
+            match &w.open_target {
+                Some(error) => Err(error.clone()),
+                None => Ok(()),
+            }
         };
         finish(result)
     }
@@ -440,24 +672,41 @@ impl GenerateShell for FakeShell {
     ) {
         then(Err("no conversions here".to_owned()))
     }
-    fn open_documents(&self, _authority: &GenerateAuthority, then: Box<dyn FnOnce(Result<Vec<OpenDocumentTab>, String>) + Send>) {
+    fn open_documents(
+        &self,
+        _authority: &GenerateAuthority,
+        then: Box<dyn FnOnce(Result<Vec<OpenDocumentTab>, String>) + Send>,
+    ) {
         let world = self.0.lock().unwrap();
         then(match &world.list_error {
             Some(error) => Err(error.clone()),
             None => Ok(world.tabs.clone()),
         })
     }
-    fn tab_contents(&self, _authority: &GenerateAuthority, tab_id: &str) -> Result<Option<TabContents>, String> {
+    fn tab_contents(
+        &self,
+        _authority: &GenerateAuthority,
+        tab_id: &str,
+    ) -> Result<Option<TabContents>, String> {
         let w = self.0.lock().unwrap();
         Ok(w.contents.iter().find(|(id, _)| id == tab_id).map(|c| c.1))
     }
-    fn reveal_tab(&self, authority: &GenerateAuthority, tab_id: String, then: Box<dyn FnOnce(Result<(), String>) + Send>) {
-        if let Err(error) = self.check_authority(authority) { return then(Err(error)); }
+    fn reveal_tab(
+        &self,
+        authority: &GenerateAuthority,
+        tab_id: String,
+        then: Box<dyn FnOnce(Result<(), String>) + Send>,
+    ) {
+        if let Err(error) = self.check_authority(authority) {
+            return then(Err(error));
+        }
         let authority = authority.clone();
         let world = self.0.clone();
         let finish = Box::new(move |result: Result<(), String>| {
             let result = result.and_then(|()| authority.check_cancelled());
-            if result.is_ok() { world.lock().unwrap().log.push(format!("reveal {tab_id}")); }
+            if result.is_ok() {
+                world.lock().unwrap().log.push(format!("reveal {tab_id}"));
+            }
             then(result);
         });
         let mut world = self.0.lock().unwrap();
@@ -471,7 +720,12 @@ impl GenerateShell for FakeShell {
     fn has_save(&self, kind: DocumentTabKind) -> bool {
         self.0.lock().unwrap().saves_for.contains(&kind)
     }
-    fn save(&self, _authority: &GenerateAuthority, need: SaveNeed, then: Box<dyn FnOnce(SaveAnswer) + Send>) {
+    fn save(
+        &self,
+        _authority: &GenerateAuthority,
+        need: SaveNeed,
+        then: Box<dyn FnOnce(SaveAnswer) + Send>,
+    ) {
         self.0.lock().unwrap().saves.push((need, then));
     }
     fn set_timeout(&self, _authority: &GenerateAuthority, ms: f64, then: Job) {
@@ -483,7 +737,11 @@ impl GenerateShell for FakeShell {
     fn now_ms(&self) -> f64 {
         1000.0
     }
-    fn parse_file_to_text(&self, _authority: &GenerateAuthority, path: &str) -> Result<ParsedFile, String> {
+    fn parse_file_to_text(
+        &self,
+        _authority: &GenerateAuthority,
+        path: &str,
+    ) -> Result<ParsedFile, String> {
         let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
         Ok(ParsedFile {
             ok: true,
@@ -495,16 +753,31 @@ impl GenerateShell for FakeShell {
     fn not_topic_marks(&self) -> [String; 2] {
         ["(boundary)".to_owned(), "(relationship)".to_owned()]
     }
-    fn first_sheet_root(&self, _authority: &GenerateAuthority, _: &str, _: &str) -> Result<XmindTopic, String> {
+    fn first_sheet_root(
+        &self,
+        _authority: &GenerateAuthority,
+        _: &str,
+        _: &str,
+    ) -> Result<XmindTopic, String> {
         Err("no engine".to_owned())
     }
-    fn create_xmind_document_from_outline(&self, _authority: &GenerateAuthority, _: &str, _: &str) -> Result<(), String> {
+    fn create_xmind_document_from_outline(
+        &self,
+        _authority: &GenerateAuthority,
+        _: &str,
+        _: &str,
+    ) -> Result<(), String> {
         Err("no engine".to_owned())
     }
     fn open_blank_deck(&self, _authority: &GenerateAuthority) -> Result<u64, String> {
         Err("no engine".to_owned())
     }
-    fn apply_deck_op(&self, _authority: &GenerateAuthority, _: u64, _: &JsonValue) -> Result<OpOutcome, String> {
+    fn apply_deck_op(
+        &self,
+        _authority: &GenerateAuthority,
+        _: u64,
+        _: &JsonValue,
+    ) -> Result<OpOutcome, String> {
         Err("no engine".to_owned())
     }
     fn save_deck(&self, _authority: &GenerateAuthority, _: u64) -> Result<Vec<u8>, String> {
@@ -765,7 +1038,6 @@ fn open_documents_failure_rejects_the_request() {
     let error = answer(&slot).unwrap_err();
     assert_eq!(error.message, "document listing failed");
 }
-
 
 #[test]
 fn kind_and_removal_change_the_state_and_push_it() {
@@ -1097,12 +1369,18 @@ fn focus_rereads_and_closed_unwatches_through_the_listeners() {
 fn an_editors_menu_opens_the_window_with_its_document_and_the_new_tab_follows_it() {
     let r = rig("document");
     let open = r.port.make_window_opener();
-    open(GenerateWindowRequest {
-        web_contents_id: 40.0,
-        file_path: None,
-        title: "Draft".to_owned(),
-        parent: Some(WindowId(3)),
-    }, GenerateAuthority::native_menu(NativeContext::new("model-native-menu"), CancelToken::default()));
+    open(
+        GenerateWindowRequest {
+            web_contents_id: 40.0,
+            file_path: None,
+            title: "Draft".to_owned(),
+            parent: Some(WindowId(3)),
+        },
+        GenerateAuthority::native_menu(
+            NativeContext::new("model-native-menu"),
+            CancelToken::default(),
+        ),
+    );
     r.core.run();
     let log = r.shell.log();
     assert!(log[0].ends_with("parent=Some(3)"), "{log:?}");
@@ -1193,15 +1471,17 @@ fn the_factory_needs_its_hosts_and_provides_the_one_store() {
 
     use super::host::GenerateShellHost;
 
-    let make = |hosts: Hosts| shell_contract::hosts::synthetic::SyntheticOwnedEffects::install(Services {
-        ui: Arc::new(Inline),
-        core: Arc::new(Core::default()),
-        workers: Arc::new(Inline),
-        events: Arc::new(Events::default()),
-        views: Arc::new(Inline),
-        paths: Arc::new(Dir(std::env::temp_dir())),
-        hosts: Arc::new(hosts),
-    });
+    let make = |hosts: Hosts| {
+        shell_contract::hosts::synthetic::SyntheticOwnedEffects::install(Services {
+            ui: Arc::new(Inline),
+            core: Arc::new(Core::default()),
+            workers: Arc::new(Inline),
+            events: Arc::new(Events::default()),
+            views: Arc::new(Inline),
+            paths: Arc::new(Dir(std::env::temp_dir())),
+            hosts: Arc::new(hosts),
+        })
+    };
     let provided = Rc::new(Provided::default());
     let factory = super::factory();
     // a shell built without the make window's host refuses to start
@@ -1234,13 +1514,22 @@ fn captured_home_authority_survives_listing_and_cancellation_stops_creation() {
     let generation = shell_contract::runtime::RendererGeneration::new();
     let native = NativeContext::with_renderer("original-ingress", generation);
     let cx = CallContext {
-        sender: Sender { view: ViewId(1), window: WindowId(1), surface: Surface::Shell },
-        request: None, cancel: cancel.clone(), native: Some(native.clone()),
+        sender: Sender {
+            view: ViewId(1),
+            window: WindowId(1),
+            surface: Surface::Shell,
+        },
+        request: None,
+        cancel: cancel.clone(),
+        native: Some(native.clone()),
     };
     let slot: Slot = Arc::default();
     let result = slot.clone();
-    r.port.generate_open_with_paths(&cx, vec![IpcValue::Array(vec![s(&path)])],
-        Responder::new(move |reply| *result.lock().unwrap() = Some(reply)));
+    r.port.generate_open_with_paths(
+        &cx,
+        vec![IpcValue::Array(vec![s(&path)])],
+        Responder::new(move |reply| *result.lock().unwrap() = Some(reply)),
+    );
     cancel.cancel();
     r.core.run();
     assert!(answer(&slot).is_err());
@@ -1258,15 +1547,28 @@ fn owner_loss_without_request_cancel_stops_an_async_continuation() {
     let r = rig("origin-loss");
     let path = r.file("material.txt", "hello");
     let loss = CancelToken::default();
-    let native = NativeContext::with_owner_loss("original", shell_contract::runtime::RendererGeneration::new(), loss.clone());
+    let native = NativeContext::with_owner_loss(
+        "original",
+        shell_contract::runtime::RendererGeneration::new(),
+        loss.clone(),
+    );
     let cx = CallContext {
-        sender: Sender { view: ViewId(1), window: WindowId(1), surface: Surface::Shell },
-        request: None, cancel: CancelToken::default(), native: Some(native),
+        sender: Sender {
+            view: ViewId(1),
+            window: WindowId(1),
+            surface: Surface::Shell,
+        },
+        request: None,
+        cancel: CancelToken::default(),
+        native: Some(native),
     };
     let slot: Slot = Arc::default();
     let result = slot.clone();
-    r.port.generate_open_with_paths(&cx, vec![IpcValue::Array(vec![s(&path)])],
-        Responder::new(move |reply| *result.lock().unwrap() = Some(reply)));
+    r.port.generate_open_with_paths(
+        &cx,
+        vec![IpcValue::Array(vec![s(&path)])],
+        Responder::new(move |reply| *result.lock().unwrap() = Some(reply)),
+    );
     loss.cancel();
     r.core.run();
     assert!(answer(&slot).is_err());
@@ -1278,15 +1580,42 @@ fn event_binding_cannot_rebind_or_revive_after_closed() {
     let r = rig("event-binding");
     let factory = super::GenerateWindowEvents::new(r.port.inner.clone());
     let first_cancel = CancelToken::default();
-    let first = factory.bind(GEN_WINDOW, NativeContext::new("first-document"), first_cancel.clone()).unwrap();
-    assert!(factory.bind(GEN_WINDOW, NativeContext::new("replacement-document"), CancelToken::default()).is_err());
+    let first = factory
+        .bind(
+            GEN_WINDOW,
+            NativeContext::new("first-document"),
+            first_cancel.clone(),
+        )
+        .unwrap();
+    assert!(
+        factory
+            .bind(
+                GEN_WINDOW,
+                NativeContext::new("replacement-document"),
+                CancelToken::default()
+            )
+            .is_err()
+    );
     assert!(first_cancel.is_cancelled());
     first.focus();
     first.ready_to_show(first.identity.clone());
     first.closed();
-    assert!(factory.bind(GEN_WINDOW, NativeContext::new("late-document"), CancelToken::default()).is_err());
+    assert!(
+        factory
+            .bind(
+                GEN_WINDOW,
+                NativeContext::new("late-document"),
+                CancelToken::default()
+            )
+            .is_err()
+    );
     r.core.run();
-    assert!(!r.shell.log().iter().any(|line| line == "show" || line == "focus"));
+    assert!(
+        !r.shell
+            .log()
+            .iter()
+            .any(|line| line == "show" || line == "focus")
+    );
 }
 
 #[test]
@@ -1311,14 +1640,26 @@ fn a_floating_inspection_never_runs_after_its_original_owner_is_lost() {
     let path = r.file("material.txt", "hello");
     let loss = CancelToken::default();
     let cx = CallContext {
-        sender: Sender { view: ViewId(1), window: WindowId(1), surface: Surface::Shell },
-        request: None, cancel: CancelToken::default(),
-        native: Some(NativeContext::with_owner_loss("source", shell_contract::runtime::RendererGeneration::new(), loss.clone())),
+        sender: Sender {
+            view: ViewId(1),
+            window: WindowId(1),
+            surface: Surface::Shell,
+        },
+        request: None,
+        cancel: CancelToken::default(),
+        native: Some(NativeContext::with_owner_loss(
+            "source",
+            shell_contract::runtime::RendererGeneration::new(),
+            loss.clone(),
+        )),
     };
     let slot: Slot = Arc::default();
     let result = slot.clone();
-    r.port.generate_open_with_paths(&cx, vec![IpcValue::Array(vec![s(&path)])],
-        Responder::new(move |reply| *result.lock().unwrap() = Some(reply)));
+    r.port.generate_open_with_paths(
+        &cx,
+        vec![IpcValue::Array(vec![s(&path)])],
+        Responder::new(move |reply| *result.lock().unwrap() = Some(reply)),
+    );
     r.core.run();
     assert_eq!(answer(&slot), Ok(IpcValue::Undefined));
     assert!(!workers.0.lock().unwrap().is_empty());
@@ -1327,7 +1668,12 @@ fn a_floating_inspection_never_runs_after_its_original_owner_is_lost() {
     workers.run();
     r.core.run();
     assert_eq!(r.events.states(GEN_VIEW), before);
-    assert!(!r.shell.log().iter().any(|line| line.starts_with("openTargetTab")));
+    assert!(
+        !r.shell
+            .log()
+            .iter()
+            .any(|line| line.starts_with("openTargetTab"))
+    );
 }
 
 #[test]
@@ -1338,16 +1684,32 @@ fn committed_target_completion_survives_later_source_cancellation() {
     r.shell.0.lock().unwrap().defer_target = true;
     let cancel = CancelToken::default();
     let cx = CallContext {
-        sender: Sender { view: ViewId(GEN_VIEW), window: GEN_WINDOW, surface: Surface::Shell },
-        request: None, cancel: cancel.clone(), native: None,
+        sender: Sender {
+            view: ViewId(GEN_VIEW),
+            window: GEN_WINDOW,
+            surface: Surface::Shell,
+        },
+        request: None,
+        cancel: cancel.clone(),
+        native: None,
     };
     let slot: Slot = Arc::default();
     let result = slot.clone();
-    r.port.generate_make(&cx, vec![s("make a deck")],
-        Responder::new(move |reply| *result.lock().unwrap() = Some(reply)));
+    r.port.generate_make(
+        &cx,
+        vec![s("make a deck")],
+        Responder::new(move |reply| *result.lock().unwrap() = Some(reply)),
+    );
     r.core.run();
     assert!(slot.lock().unwrap().is_none());
-    let then = r.shell.0.lock().unwrap().target_replies.pop().expect("actual tab completion pending");
+    let then = r
+        .shell
+        .0
+        .lock()
+        .unwrap()
+        .target_replies
+        .pop()
+        .expect("actual tab completion pending");
     cancel.cancel();
     let before = r.events.states(GEN_VIEW);
     then(Ok(()));
@@ -1363,10 +1725,19 @@ fn make_closes_only_after_the_target_tab_reports_success() {
     let path = r.file("material.txt", "hello");
     r.open(&[&path]);
     r.shell.0.lock().unwrap().defer_target = true;
-    let slot = r.call(GEN_VIEW, |port, cx, reply| port.generate_make(cx, vec![s("make a deck")], reply));
+    let slot = r.call(GEN_VIEW, |port, cx, reply| {
+        port.generate_make(cx, vec![s("make a deck")], reply)
+    });
     assert!(slot.lock().unwrap().is_none());
     assert!(r.shell.0.lock().unwrap().window_open);
-    let then = r.shell.0.lock().unwrap().target_replies.pop().expect("actual tab completion pending");
+    let then = r
+        .shell
+        .0
+        .lock()
+        .unwrap()
+        .target_replies
+        .pop()
+        .expect("actual tab completion pending");
     then(Ok(()));
     assert!(slot.lock().unwrap().is_none());
     r.core.run();
@@ -1379,16 +1750,37 @@ fn a_successful_target_transfer_is_not_undone_by_normal_generate_close() {
     let r = rig("normal-close-after-transfer");
     let path = r.file("material.txt", "hello");
     r.open(&[&path]);
-    let loss = r.shell.0.lock().unwrap().events.as_ref().unwrap().cancel.clone();
+    let loss = r
+        .shell
+        .0
+        .lock()
+        .unwrap()
+        .events
+        .as_ref()
+        .unwrap()
+        .cancel
+        .clone();
     let cx = CallContext {
-        sender: Sender { view: ViewId(GEN_VIEW), window: GEN_WINDOW, surface: Surface::Shell },
-        request: None, cancel: CancelToken::default(),
-        native: Some(NativeContext::with_owner_loss("generate-source", shell_contract::runtime::RendererGeneration::new(), loss.clone())),
+        sender: Sender {
+            view: ViewId(GEN_VIEW),
+            window: GEN_WINDOW,
+            surface: Surface::Shell,
+        },
+        request: None,
+        cancel: CancelToken::default(),
+        native: Some(NativeContext::with_owner_loss(
+            "generate-source",
+            shell_contract::runtime::RendererGeneration::new(),
+            loss.clone(),
+        )),
     };
     let slot: Slot = Arc::default();
     let result = slot.clone();
-    r.port.generate_make(&cx, vec![s("make a deck")],
-        Responder::new(move |reply| *result.lock().unwrap() = Some(reply)));
+    r.port.generate_make(
+        &cx,
+        vec![s("make a deck")],
+        Responder::new(move |reply| *result.lock().unwrap() = Some(reply)),
+    );
     r.core.run();
     assert!(loss.is_cancelled());
     assert_eq!(answer(&slot), Ok(IpcValue::Bool(true)));
@@ -1402,10 +1794,15 @@ fn a_committed_target_replaced_before_terminal_apply_cannot_close_the_generate_w
     let path = r.file("material.txt", "hello");
     r.open(&[&path]);
     r.shell.0.lock().unwrap().defer_target = true;
-    let slot = r.call(GEN_VIEW, |port, cx, reply| port.generate_make(cx, vec![s("make a deck")], reply));
+    let slot = r.call(GEN_VIEW, |port, cx, reply| {
+        port.generate_make(cx, vec![s("make a deck")], reply)
+    });
     let (then, target) = {
         let mut world = r.shell.0.lock().unwrap();
-        (world.target_replies.pop().unwrap(), world.target_epochs.last().unwrap().clone())
+        (
+            world.target_replies.pop().unwrap(),
+            world.target_epochs.last().unwrap().clone(),
+        )
     };
     then(Ok(()));
     target.revoke();
@@ -1417,21 +1814,44 @@ fn a_committed_target_replaced_before_terminal_apply_cannot_close_the_generate_w
 #[test]
 fn material_reveal_waits_for_actual_focus_outcome() {
     for failed in [false, true] {
-        let r = rig(if failed { "reveal-error-ack" } else { "reveal-success-ack" });
+        let r = rig(if failed {
+            "reveal-error-ack"
+        } else {
+            "reveal-success-ack"
+        });
         let path = r.file("notes.md", "# notes");
         {
             let mut world = r.shell.0.lock().unwrap();
             world.tabs = vec![tab("md", DocumentTabKind::Markdown, Some(&path), true)];
-            world.contents = vec![("md".into(), TabContents { view: ViewId(41), destroyed: false })];
+            world.contents = vec![(
+                "md".into(),
+                TabContents {
+                    view: ViewId(41),
+                    destroyed: false,
+                },
+            )];
             world.defer_reveal = true;
         }
         r.open(&[&path]);
         let key = field(&items(field(&r.state(), "materials"))[0], "key");
-        let slot = r.call(GEN_VIEW, |port, cx, reply| port.generate_save_material(cx, vec![key], reply));
+        let slot = r.call(GEN_VIEW, |port, cx, reply| {
+            port.generate_save_material(cx, vec![key], reply)
+        });
         assert!(slot.lock().unwrap().is_none());
         assert!(!r.shell.log().iter().any(|line| line == "reveal md"));
-        let then = r.shell.0.lock().unwrap().reveal_replies.pop().expect("actual focus completion pending");
-        then(if failed { Err("actual focus failed".into()) } else { Ok(()) });
+        let then = r
+            .shell
+            .0
+            .lock()
+            .unwrap()
+            .reveal_replies
+            .pop()
+            .expect("actual focus completion pending");
+        then(if failed {
+            Err("actual focus failed".into())
+        } else {
+            Ok(())
+        });
         r.core.run();
         if failed {
             assert!(answer(&slot).is_err());
@@ -1449,10 +1869,16 @@ fn native_target_loss_without_renderer_replacement_rejects_terminal_commit() {
     let path = r.file("material.txt", "hello");
     r.open(&[&path]);
     r.shell.0.lock().unwrap().defer_target = true;
-    let slot = r.call(GEN_VIEW, |port, cx, reply| port.generate_make(cx, vec![s("make a deck")], reply));
+    let slot = r.call(GEN_VIEW, |port, cx, reply| {
+        port.generate_make(cx, vec![s("make a deck")], reply)
+    });
     let (then, generation, native_loss) = {
         let mut world = r.shell.0.lock().unwrap();
-        (world.target_replies.pop().unwrap(), world.target_epochs.last().unwrap().clone(), world.target_losses.last().unwrap().clone())
+        (
+            world.target_replies.pop().unwrap(),
+            world.target_epochs.last().unwrap().clone(),
+            world.target_losses.last().unwrap().clone(),
+        )
     };
     then(Ok(()));
     native_loss.cancel();

@@ -16,7 +16,6 @@ use std::sync::{Arc, OnceLock};
 
 use shell_contract::hosts::MainWindow;
 use shell_contract::ids::{ViewId, WindowId};
-use shell_contract::ipc::Sender;
 use shell_contract::runtime::{RendererGeneration, Views};
 use shell_contract::{Hosts, MainWindowHost, Surface};
 use tauri::webview::{NewWindowResponse, WebviewBuilder};
@@ -40,6 +39,7 @@ pub(crate) struct NativeClosureProof {
     reservation: shell_contract::ipc::NativeClosureReservation,
     owner: shell_contract::ipc::NativeBrowserOwner,
     state: Arc<std::sync::Mutex<NativeClosureProofState>>,
+    teardown: Arc<OnceLock<Arc<crate::views::ViewRemovalDelivery>>>,
 }
 
 struct NativeClosureProofState {
@@ -50,7 +50,7 @@ struct NativeClosureProofState {
 impl NativeClosureProof {
     pub(crate) fn new(close: tauri_runtime_cef::NativeBrowserClose, view: ViewId, created: shell_contract::runtime::RendererGeneration) -> Self {
         let (issuer, reservation, owner) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(view, created);
-        Self { close, reservation, owner, state: Arc::new(std::sync::Mutex::new(NativeClosureProofState {
+        Self { close, reservation, owner, teardown: Arc::new(OnceLock::new()), state: Arc::new(std::sync::Mutex::new(NativeClosureProofState {
             issuer: Some(issuer), receipt: None,
         })) }
     }
@@ -58,6 +58,14 @@ impl NativeClosureProof {
     pub(crate) fn reservation(&self) -> &shell_contract::ipc::NativeClosureReservation { &self.reservation }
     pub(crate) fn owner(&self) -> &shell_contract::ipc::NativeBrowserOwner { &self.owner }
     pub(crate) fn close(&self) -> tauri_runtime_cef::NativeBrowserClose { self.close.clone() }
+
+    pub(crate) fn bind_teardown(&self, teardown: Arc<crate::views::ViewRemovalDelivery>) -> Result<(), String> {
+        self.teardown.set(teardown).map_err(|_| "The native view teardown is already bound".into())
+    }
+
+    pub(crate) fn teardown(&self) -> Option<Arc<crate::views::ViewRemovalDelivery>> {
+        self.teardown.get().cloned()
+    }
 
     pub(crate) fn dispatch_close(
         &self, mut permit: shell_contract::ipc::NativeBrowserClosePermit,
@@ -506,8 +514,13 @@ impl Windows {
     fn open_window_native(&self, spec: WindowSpec, options: WindowOptions, explicit_navigation: bool, reserved: Option<PreparedDeferredWindow>) -> Result<(WindowId, ViewId), String> {
         let url = Self::url_of(&spec.view.url)?;
         let reserved_identity = reserved.as_ref().map(|entry| (entry.window, entry.view, entry.created.clone(), entry.surface, entry.window_lifecycle.clone()));
-        let (window, view) = reserved_identity.as_ref().map(|(window, view, _, _, _)| (*window, *view))
-            .unwrap_or_else(|| (self.views.new_window_id(), self.views.new_view_id()));
+        let (window, view, mut registration) = match &reserved_identity {
+            Some((window, view, _, _, _)) => (*window, *view, None),
+            None => {
+                let registration = self.views.allocate_view()?;
+                (self.views.new_window_id(), registration.view(), Some(registration))
+            }
+        };
         if let Some((_, _, created, surface, lifecycle)) = &reserved_identity {
             let bound = self.views.view_window_captured(view, created).ok();
             if spec.view.bridge.surface() != Some(*surface)
@@ -636,17 +649,19 @@ impl Windows {
             builder = builder.native_window_submission(submission);
         }
         if let Some(surface) = spec.view.bridge.surface() {
-            if reserved_identity.is_none() {
-                if let Err(error) = self.views.add_view(Sender { view, window, surface }, label.clone()) {
-                    CLOSED_CALLBACKS.lock().unwrap().remove(&window);
-                    self.views.remove_window(window);
-                    return Err(error);
+            let captured = if let Some(registration) = registration.take() {
+                match self.views.register_view(registration, window, surface) {
+                    Ok((_, created)) => created,
+                    Err(error) => {
+                        CLOSED_CALLBACKS.lock().unwrap().remove(&window);
+                        self.views.remove_window(window);
+                        return Err(error);
+                    }
                 }
-            }
-            let Some(captured) = self.views.renderer_generation(view) else {
-                CLOSED_CALLBACKS.lock().unwrap().remove(&window);
-                if reserved_identity.is_none() { self.views.remove_window(window); }
-                return Err("The view renderer generation is unavailable.".to_owned());
+            } else if let Some((_, _, created, _, _)) = &reserved_identity {
+                created.clone()
+            } else {
+                return Err("The native view registration is unavailable".into());
             };
             if reserved_identity.is_none() {
                 let submission = tauri_runtime_cef::NativeBrowserSubmissionGuard::new();
@@ -710,6 +725,7 @@ impl Windows {
     pub(crate) fn add_reserved_view(
         &self,
         view: ViewId,
+        created: &RendererGeneration,
         window: WindowId,
         window_lifecycle: &Arc<crate::views::NativeWindowLifecycle>,
         spec: ViewSpec,
@@ -724,6 +740,8 @@ impl Windows {
         if !window_lifecycle.belongs_to(window) {
             return Err("The captured parent window does not match".to_owned().into());
         }
+        let surface = spec.bridge.surface().ok_or_else(|| "A reserved child must have a bridge".to_owned())?;
+        self.views.validate_reserved_view(view, created, window, surface, window_lifecycle)?;
         let parent = window_lifecycle.window_handle()?;
         let view_label = format!("view-{}", view.0);
         let frames = view_label.clone();
@@ -778,25 +796,21 @@ impl Windows {
             }
             NewWindowResponse::Deny
         });
-        if let Some(surface) = spec.bridge.surface() {
-            match self.views.sender_of(view) {
-                Some(sender) if sender.window == window && sender.surface == surface => {}
-                Some(_) => return Err(format!("view {} has a different owner", view.0).into()),
-                None => self.views.add_view(Sender { view, window, surface }, view_label).map_err(ChildCreationError::from)?,
-            }
-            let Some(captured) = self.views.renderer_generation(view) else {
-                self.views.remove_view(view);
-                return Err("The view renderer generation is unavailable.".to_owned().into());
-            };
-            let _ = generation.set(captured);
-        }
+        let _ = generation.set(created.clone());
         if let Some(proof) = &prepared_proof {
             if !generation.get().is_some_and(|created| proof.reservation().matches(view, created)) {
                 return Err("The native closure reservation does not match the view".to_owned().into());
             }
         }
         let close = prepared_proof.as_ref().map(NativeClosureProof::close).unwrap_or_default();
-        let proof = prepared_proof.or_else(|| generation.get().map(|created| NativeClosureProof::new(close.clone(), view, created.clone())));
+        let proof = match prepared_proof {
+            Some(proof) => Some(proof),
+            None => {
+                let proof = NativeClosureProof::new(close.clone(), view, created.clone());
+                self.views.set_closure_proof(view, created, proof.clone()).map_err(ChildCreationError::from)?;
+                Some(proof)
+            }
+        };
         builder = match submission {
             Some(submission) => builder.native_browser_submission(submission),
             None => builder.native_browser_close_reservation(close.clone()),
@@ -818,7 +832,8 @@ impl Windows {
 
     pub(crate) fn reserve_deferred_window(&self, surface: Surface) -> Result<PreparedDeferredWindow, String> {
         let window = self.views.new_window_id();
-        let view = self.views.new_view_id();
+        let registration = self.views.allocate_view()?;
+        let view = registration.view();
         let label = format!("view-{}", view.0);
         let window_lifecycle = self.views.add_window(window, label.clone());
         let window_submission = tauri_runtime_cef::NativeWindowSubmissionGuard::new();
@@ -826,13 +841,12 @@ impl Windows {
             self.views.remove_window(window);
             return Err(error);
         }
-        if let Err(error) = self.views.add_view(Sender { view, window, surface }, label) {
-            self.views.remove_window(window);
-            return Err(error);
-        }
-        let Some(created) = self.views.renderer_generation(view) else {
-            self.views.remove_window(window);
-            return Err("The reserved renderer generation is unavailable".into());
+        let (_, created) = match self.views.register_view(registration, window, surface) {
+            Ok(registered) => registered,
+            Err(error) => {
+                self.views.remove_window(window);
+                return Err(error);
+            }
         };
         let submission = tauri_runtime_cef::NativeBrowserSubmissionGuard::new();
         let proof = NativeClosureProof::new(submission.receipt(), view, created.clone());

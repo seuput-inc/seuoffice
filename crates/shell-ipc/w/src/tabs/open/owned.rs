@@ -235,31 +235,22 @@ fn retain_lifetime_failure(
         let waiting = waiter.clone();
         let terminal = settled.clone();
         handle.observe_terminal(Box::new(move |proof| {
-            match (recovery, proof) {
-                (Some((attempt, _)), shell_contract::ipc::NativeBrowserRetirement::Closed(receipt)) => {
+            match recovery {
+                Some((attempt, _)) => {
                     started.set(true);
                     *waiting.borrow_mut() = Some(done);
                     let failed = waiting.clone();
                     let completed = waiting.clone();
-                    let original = "The adopted editor retired before recovery completed".to_owned();
-                    let expected = original.clone();
-                    attempt.fail_after_cleanup(original, receipt,
+                    attempt.fail_after_retirement("The adopted editor retired before recovery completed".into(), proof,
                         std::rc::Rc::new(move |error| {
                             if let Some(done) = failed.borrow_mut().take() { done(Err(error)); }
                         }),
-                        Box::new(move |result| {
-                            let result = match result {
-                                Err(error) if error == expected => Ok(()),
-                                Err(error) => Err(error),
-                                Ok(()) => Err("The recovery failure completed without an error".into()),
-                            };
-                            *terminal.borrow_mut() = Some(result.clone());
-                            if let Some(done) = completed.borrow_mut().take() { done(result); }
+                        Box::new(move || {
+                            *terminal.borrow_mut() = Some(Ok(()));
+                            if let Some(done) = completed.borrow_mut().take() { done(Ok(())); }
                         }));
                 }
-                (Some(_), shell_contract::ipc::NativeBrowserRetirement::Superseded(_)) =>
-                    done(Err("The adopted recovery editor was superseded".into())),
-                (None, _) => done(Ok(())),
+                None => done(Ok(())),
             }
         }));
     });

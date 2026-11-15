@@ -23,17 +23,17 @@ use main_core::packages::electron_utils::generate_handoff::GenerateHandoff;
 use main_core::packages::i18n::Lang;
 use main_core::shell::app_routing::DocumentTabKind;
 use main_core::shell::generate::convert::{ConvertedDocument, OpOutcome, XmindTopic};
+use main_core::shell::generate::generate_api::GenerateWindowState;
 use main_core::shell::generate::generate_window::{
     GenerateText, GenerateWindowOptions, NewDocumentOpener,
 };
 use main_core::shell::generate::materials::ParsedFile;
 use main_core::shell::generate::open_materials::{OpenDocumentTab, SaveAnswer, SaveNeed};
 use main_core::shell::title_bar_overlay::TitleBarOverlay;
-use shell_contract::{ViewId, WindowId};
 use shell_contract::hosts::{DialogsHost, FileDialog, OsShellHost};
 use shell_contract::ipc::{CallContext, EventSink, NativeContext, Sender};
 use shell_contract::runtime::{CancelToken, RendererGeneration};
-use main_core::shell::generate::generate_api::GenerateWindowState;
+use shell_contract::{ViewId, WindowId};
 use std::path::PathBuf;
 
 #[derive(Clone, Debug)]
@@ -47,9 +47,18 @@ pub enum GenerateWindowEvent {
 
 #[derive(Clone, Debug)]
 pub enum GenerateOrigin {
-    Renderer { sender: Sender, native: Option<NativeContext> },
-    NativeMenu { native: NativeContext },
-    WindowEvent { window: WindowId, identity: NativeContext, event: GenerateWindowEvent },
+    Renderer {
+        sender: Sender,
+        native: Option<NativeContext>,
+    },
+    NativeMenu {
+        native: NativeContext,
+    },
+    WindowEvent {
+        window: WindowId,
+        identity: NativeContext,
+        event: GenerateWindowEvent,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -60,11 +69,20 @@ pub struct GenerateAuthority {
 
 impl GenerateAuthority {
     pub fn renderer(cx: &CallContext) -> Self {
-        Self { origin: GenerateOrigin::Renderer { sender: cx.sender, native: cx.native.clone() }, cancel: cx.cancel.clone() }
+        Self {
+            origin: GenerateOrigin::Renderer {
+                sender: cx.sender,
+                native: cx.native.clone(),
+            },
+            cancel: cx.cancel.clone(),
+        }
     }
 
     pub fn native_menu(native: NativeContext, cancel: CancelToken) -> Self {
-        Self { origin: GenerateOrigin::NativeMenu { native }, cancel }
+        Self {
+            origin: GenerateOrigin::NativeMenu { native },
+            cancel,
+        }
     }
 
     pub fn native_context(&self) -> Option<&NativeContext> {
@@ -76,15 +94,25 @@ impl GenerateAuthority {
     }
 
     pub fn is_closed_event(&self) -> bool {
-        matches!(&self.origin, GenerateOrigin::WindowEvent { event: GenerateWindowEvent::Closed, .. })
+        matches!(
+            &self.origin,
+            GenerateOrigin::WindowEvent {
+                event: GenerateWindowEvent::Closed,
+                ..
+            }
+        )
     }
 
     /// The production host separately validates the opaque native proof.
     pub fn check_cancelled(&self) -> Result<(), String> {
-        if self.is_closed_event() { return Ok(()); }
+        if self.is_closed_event() {
+            return Ok(());
+        }
         let lost = self.native_context().is_some_and(|native| {
             native.owner_loss().is_some_and(|loss| loss.is_cancelled())
-                || native.renderer().is_some_and(|renderer| !renderer.is_active())
+                || native
+                    .renderer()
+                    .is_some_and(|renderer| !renderer.is_active())
         });
         if self.cancel.is_cancelled() || lost {
             Err("The generating document is no longer available.".into())
@@ -104,7 +132,10 @@ pub struct GenerateOpenRequest {
 pub trait GenerateCommittedTarget: Send {
     fn created(&self) -> &RendererGeneration;
     fn validate_target(&self) -> Result<(), String>;
-    fn with_terminal_commit(&self, effect: &mut dyn FnMut() -> Result<(), String>) -> Result<(), String>;
+    fn with_terminal_commit(
+        &self,
+        effect: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<(), String>;
 }
 
 pub type GenerateCleanupDone = Box<dyn FnOnce(Result<(), String>) + Send>;
@@ -119,7 +150,9 @@ impl GenerateWindowCleanup {
         Self { window, close }
     }
 
-    pub(super) fn complete(self, done: GenerateCleanupDone) { (self.close)(done); }
+    pub(super) fn complete(self, done: GenerateCleanupDone) {
+        (self.close)(done);
+    }
 }
 
 pub struct GenerateCommittedOpen {
@@ -131,11 +164,18 @@ pub struct GenerateCommittedOpen {
 impl GenerateCommittedOpen {
     pub fn new(
         token: main_core::shell::generate::session::OpenCommitToken,
-        target: Box<dyn GenerateCommittedTarget>, cleanup: GenerateWindowCleanup,
+        target: Box<dyn GenerateCommittedTarget>,
+        cleanup: GenerateWindowCleanup,
     ) -> Result<Self, String> {
         target.validate_target()?;
-        if !target.created().is_active() { return Err("The generated target was replaced.".into()); }
-        Ok(Self { receipt: token.commit(), target, cleanup })
+        if !target.created().is_active() {
+            return Err("The generated target was replaced.".into());
+        }
+        Ok(Self {
+            receipt: token.commit(),
+            target,
+            cleanup,
+        })
     }
 }
 
@@ -155,9 +195,26 @@ pub struct TabContents {
 /// module, and the engines named in the module doc
 pub trait GenerateShell: Send + Sync {
     fn check_authority(&self, authority: &GenerateAuthority) -> Result<(), String>;
-    fn show_open_dialog(&self, authority: &GenerateAuthority, dialogs: DialogsHost, parent: WindowId, options: &FileDialog) -> Result<Option<Vec<PathBuf>>, String>;
-    fn open_external(&self, authority: &GenerateAuthority, os_shell: OsShellHost, url: &str) -> Result<(), String>;
-    fn send_state(&self, authority: &GenerateAuthority, events: Arc<dyn EventSink>, view: ViewId, state: &GenerateWindowState) -> Result<(), String>;
+    fn show_open_dialog(
+        &self,
+        authority: &GenerateAuthority,
+        dialogs: DialogsHost,
+        parent: WindowId,
+        options: &FileDialog,
+    ) -> Result<Option<Vec<PathBuf>>, String>;
+    fn open_external(
+        &self,
+        authority: &GenerateAuthority,
+        os_shell: OsShellHost,
+        url: &str,
+    ) -> Result<(), String>;
+    fn send_state(
+        &self,
+        authority: &GenerateAuthority,
+        events: Arc<dyn EventSink>,
+        view: ViewId,
+        state: &GenerateWindowState,
+    ) -> Result<(), String>;
     // ---- the window: `new BrowserWindow` and what the module calls on it ----
 
     /// `new BrowserWindow(options)` with the preload of
@@ -174,13 +231,26 @@ pub trait GenerateShell: Send + Sync {
     ) -> Result<WindowId, String>;
     /// `win.webContents.id` of a window this host made (`create_window`); the
     /// shell window's page is the main window host's, asked there. `None` once it is gone
-    fn window_view(&self, authority: &GenerateAuthority, window: WindowId) -> Result<Option<ViewId>, String>;
+    fn window_view(
+        &self,
+        authority: &GenerateAuthority,
+        window: WindowId,
+    ) -> Result<Option<ViewId>, String>;
     /// `win.isDestroyed()`
-    fn window_is_destroyed(&self, authority: &GenerateAuthority, window: WindowId) -> Result<bool, String>;
+    fn window_is_destroyed(
+        &self,
+        authority: &GenerateAuthority,
+        window: WindowId,
+    ) -> Result<bool, String>;
     /// `win.isMinimized()`
-    fn window_is_minimized(&self, authority: &GenerateAuthority, window: WindowId) -> Result<bool, String>;
+    fn window_is_minimized(
+        &self,
+        authority: &GenerateAuthority,
+        window: WindowId,
+    ) -> Result<bool, String>;
     /// `win.restore()`
-    fn window_restore(&self, authority: &GenerateAuthority, window: WindowId) -> Result<(), String>;
+    fn window_restore(&self, authority: &GenerateAuthority, window: WindowId)
+    -> Result<(), String>;
     /// `win.show()`
     fn window_show(&self, authority: &GenerateAuthority, window: WindowId) -> Result<(), String>;
     /// `win.focus()`
@@ -188,7 +258,11 @@ pub trait GenerateShell: Send + Sync {
     /// `win.close()`: the window's `closed` follows
     fn window_close(&self, authority: &GenerateAuthority, window: WindowId) -> Result<(), String>;
     /// `win.removeMenu()`
-    fn window_remove_menu(&self, authority: &GenerateAuthority, window: WindowId) -> Result<(), String>;
+    fn window_remove_menu(
+        &self,
+        authority: &GenerateAuthority,
+        window: WindowId,
+    ) -> Result<(), String>;
     /// `win.setTitleBarOverlay(overlay)`: `Err` when the window was torn down
     fn window_set_title_bar_overlay(
         &self,
@@ -203,9 +277,18 @@ pub trait GenerateShell: Send + Sync {
     /// `process.env.ELECTRON_RENDERER_URL`
     fn renderer_url(&self) -> Option<String>;
     /// `win.loadURL(url)`
-    fn window_load_url(&self, authority: &GenerateAuthority, window: WindowId, url: &str) -> Result<(), String>;
+    fn window_load_url(
+        &self,
+        authority: &GenerateAuthority,
+        window: WindowId,
+        url: &str,
+    ) -> Result<(), String>;
     /// `win.loadFile(join(__dirname, '../renderer/generate.html'))`
-    fn window_load_generate_page(&self, authority: &GenerateAuthority, window: WindowId) -> Result<(), String>;
+    fn window_load_generate_page(
+        &self,
+        authority: &GenerateAuthority,
+        window: WindowId,
+    ) -> Result<(), String>;
     /// `nativeTheme.shouldUseDarkColors`
     fn should_use_dark_colors(&self, authority: &GenerateAuthority) -> Result<bool, String>;
 
@@ -250,17 +333,35 @@ pub trait GenerateShell: Send + Sync {
     /// `deps.list()`: the open tabs (`tabManager.openDocuments()` and the
     /// detached windows' documents). `then` runs once the list is known; the
     /// open files of the TypeScript's `OpenFilesSource` are the same list.
-    fn open_documents(&self, authority: &GenerateAuthority, then: Box<dyn FnOnce(Result<Vec<OpenDocumentTab>, String>) + Send>);
+    fn open_documents(
+        &self,
+        authority: &GenerateAuthority,
+        then: Box<dyn FnOnce(Result<Vec<OpenDocumentTab>, String>) + Send>,
+    );
     /// `deps.webContentsFor(tabId)`
-    fn tab_contents(&self, authority: &GenerateAuthority, tab_id: &str) -> Result<Option<TabContents>, String>;
+    fn tab_contents(
+        &self,
+        authority: &GenerateAuthority,
+        tab_id: &str,
+    ) -> Result<Option<TabContents>, String>;
     /// `deps.reveal(tabId)`: bring the tab (and its window) forward
-    fn reveal_tab(&self, authority: &GenerateAuthority, tab_id: String, then: Box<dyn FnOnce(Result<(), String>) + Send>);
+    fn reveal_tab(
+        &self,
+        authority: &GenerateAuthority,
+        tab_id: String,
+        then: Box<dyn FnOnce(Result<(), String>) + Send>,
+    );
     /// `!!deps.save[kind]`
     fn has_save(&self, kind: DocumentTabKind) -> bool;
     /// `deps.save[kind](...)`: the editor's save command (`mcpDocsControl.runCommand(wcId,
     /// 'save_document', { path, overwrite: true })`, `requestMarkdownSave(wc, 'save')`, ...).
     /// `then` is told when the editor answered; a rejection is `Err`.
-    fn save(&self, authority: &GenerateAuthority, need: SaveNeed, then: Box<dyn FnOnce(SaveAnswer) + Send>);
+    fn save(
+        &self,
+        authority: &GenerateAuthority,
+        need: SaveNeed,
+        then: Box<dyn FnOnce(SaveAnswer) + Send>,
+    );
     /// `setTimeout(then, ms)`: the recheck of "save" waits on it
     fn set_timeout(&self, authority: &GenerateAuthority, ms: f64, then: Box<dyn FnOnce() + Send>);
 
@@ -272,17 +373,36 @@ pub trait GenerateShell: Send + Sync {
     // ---- engines not in `main-core` ----
 
     /// `parseFileToText(path)` of `@seuoffice/file-parse`; `Err` is a throw
-    fn parse_file_to_text(&self, authority: &GenerateAuthority, path: &str) -> Result<ParsedFile, String>;
+    fn parse_file_to_text(
+        &self,
+        authority: &GenerateAuthority,
+        path: &str,
+    ) -> Result<ParsedFile, String>;
     /// `OUTLINE_KIND_MARKS.boundary` and `OUTLINE_KIND_MARKS.relationship` of the map editor
     fn not_topic_marks(&self) -> [String; 2];
     /// `outlineToSheets(outline, { untitled })[0].rootTopic`
-    fn first_sheet_root(&self, authority: &GenerateAuthority, outline: &str, untitled: &str) -> Result<XmindTopic, String>;
+    fn first_sheet_root(
+        &self,
+        authority: &GenerateAuthority,
+        outline: &str,
+        untitled: &str,
+    ) -> Result<XmindTopic, String>;
     /// `createXmindDocumentFromOutline(text, { untitled })`
-    fn create_xmind_document_from_outline(&self, authority: &GenerateAuthority, text: &str, untitled: &str) -> Result<(), String>;
+    fn create_xmind_document_from_outline(
+        &self,
+        authority: &GenerateAuthority,
+        text: &str,
+        untitled: &str,
+    ) -> Result<(), String>;
     /// `openPptx(await createBlankPptx())`: the host keeps the deck and names it
     fn open_blank_deck(&self, authority: &GenerateAuthority) -> Result<u64, String>;
     /// `runTxn(opened, { ops: [op], isolation: 'atomic' })`
-    fn apply_deck_op(&self, authority: &GenerateAuthority, deck: u64, op: &JsonValue) -> Result<OpOutcome, String>;
+    fn apply_deck_op(
+        &self,
+        authority: &GenerateAuthority,
+        deck: u64,
+        op: &JsonValue,
+    ) -> Result<OpOutcome, String>;
     /// `savePptx(opened)`: the deck is gone after it
     fn save_deck(&self, authority: &GenerateAuthority, deck: u64) -> Result<Vec<u8>, String>;
     /// Discard only this request's private conversion handles on the worker.

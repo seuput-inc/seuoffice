@@ -20,10 +20,10 @@
 //! `project:*` is the per-document chat of the app-data project store, in
 //! [`legacy`]. What the shell must provide is in [`host`].
 
+mod chat_io;
 pub mod host;
 mod legacy;
 mod mutations;
-mod chat_io;
 mod new_document_cleanup;
 #[cfg(feature = "probe")]
 mod probe;
@@ -42,15 +42,23 @@ use main_core::packages::project_store::{
 };
 use main_core::shell::projects::chat_store::OutsideChatAssociation;
 use main_core::shell::projects::new_documents::NewDocumentPlacer;
-use main_core::shell::projects::project_guide::{AdoptPlan, AdoptPreparation, AdoptScan, AdoptStart, ContextPreparation, CreateNew, CreatePreparation, InstallIdPreparation, NewProjectRequest, ProjectGuide, ProjectSettingsWrite, TrustPreparation, TrustUsePreparation, TrustWrite};
+use main_core::shell::projects::project_guide::{
+    AdoptPlan, AdoptPreparation, AdoptScan, AdoptStart, ContextPreparation, CreateNew,
+    CreatePreparation, InstallIdPreparation, NewProjectRequest, ProjectGuide, ProjectSettingsWrite,
+    TrustPreparation, TrustUsePreparation, TrustWrite,
+};
 use main_core::shell::projects::project_ipc::{
-    ChatAppendRequest, IpcStep, PageReturnWatch, ProjectIpc, ProjectIpcDeps, SelectionRequest, TRUST_RETURN_ARM_MS,
+    ChatAppendRequest, IpcStep, PageReturnWatch, ProjectIpc, ProjectIpcDeps, SelectionRequest,
+    TRUST_RETURN_ARM_MS,
 };
 use main_core::shell::projects::project_tools::{ProjectReadStep, finish_project_read};
 use serde_json::Value;
 use shell_contract::error::IpcError;
 use shell_contract::ids::ViewId;
-use shell_contract::ipc::{CallContext, ChannelKind, Handler, NativeRequestOwner, RegisterError, Registry, Responder as RawResponder};
+use shell_contract::ipc::{
+    CallContext, ChannelKind, Handler, NativeRequestOwner, RegisterError, Registry,
+    Responder as RawResponder,
+};
 use shell_contract::runtime::{Services as ShellServices, Thread};
 use shell_contract::value::IpcValue;
 use shell_contract::{Batch, DialogsHost, OsShellHost};
@@ -67,57 +75,113 @@ use self::services::{GuidePending, Services, Shell};
 
 enum AdoptWork {
     Plan(AdoptPlan),
-    Answer(main_core::shell::projects::project_guide::PendingAdopt, ProjectTrustAnswer),
+    Answer(
+        main_core::shell::projects::project_guide::PendingAdopt,
+        ProjectTrustAnswer,
+    ),
 }
 
 enum AdoptDestination {
     Plain,
     Create(NewProjectRequest, bool),
-    Hint(main_core::shell::projects::project_ipc::ProjectWindow, String),
+    Hint(
+        main_core::shell::projects::project_ipc::ProjectWindow,
+        String,
+    ),
 }
 
 fn guarded_settings_commit(
-    host: &ProjectsHostRef, owner: &Option<RequestOwner>, from: &str, to: &str,
+    host: &ProjectsHostRef,
+    owner: &Option<RequestOwner>,
+    from: &str,
+    to: &str,
 ) -> Result<(), main_core::node_fs::NodeError> {
-    let denied = |message: String| main_core::node_fs::NodeError { code: None, message };
-    let owner = owner.as_ref().ok_or_else(|| denied("authenticated project owner is unavailable".into()))?;
+    let denied = |message: String| main_core::node_fs::NodeError {
+        code: None,
+        message,
+    };
+    let owner = owner
+        .as_ref()
+        .ok_or_else(|| denied("authenticated project owner is unavailable".into()))?;
     let mut outcome = None;
     host.with_request_owner(&owner.native, &owner.cancel, &mut || {
-        outcome = Some(std::fs::rename(from, to).map_err(|error| main_core::node_fs::node_error2(&error, "rename", from, to)));
+        outcome = Some(
+            std::fs::rename(from, to)
+                .map_err(|error| main_core::node_fs::node_error2(&error, "rename", from, to)),
+        );
         Ok(())
-    }).map_err(|error| denied(error.message))?;
+    })
+    .map_err(|error| denied(error.message))?;
     outcome.unwrap_or_else(|| Err(denied("project owner guard did not run".into())))
 }
 
 fn guarded_project_publish(
-    host: &ProjectsHostRef, owner: &Option<RequestOwner>,
+    host: &ProjectsHostRef,
+    owner: &Option<RequestOwner>,
     effect: &mut dyn FnMut() -> Result<(), main_core::node_fs::NodeError>,
 ) -> Result<(), main_core::node_fs::NodeError> {
-    let denied = |message: String| main_core::node_fs::NodeError { code: None, message };
-    let owner = owner.as_ref().ok_or_else(|| denied("authenticated project owner is unavailable".into()))?;
+    let denied = |message: String| main_core::node_fs::NodeError {
+        code: None,
+        message,
+    };
+    let owner = owner
+        .as_ref()
+        .ok_or_else(|| denied("authenticated project owner is unavailable".into()))?;
     let mut outcome = None;
     let guarded = host.with_request_owner(&owner.native, &owner.cancel, &mut || {
         let result = effect();
-        let answer = result.as_ref().map(|_| ()).map_err(|error| error_of(Thrown(error.message.clone())));
+        let answer = result
+            .as_ref()
+            .map(|_| ())
+            .map_err(|error| error_of(Thrown(error.message.clone())));
         outcome = Some(result);
         answer
     });
     match outcome {
         Some(Err(error)) => Err(error),
         Some(Ok(())) => guarded.map_err(|error| denied(error.message)),
-        None => Err(denied(guarded.err().map(|error| error.message).unwrap_or_else(|| "project owner guard did not run".into()))),
+        None => Err(denied(
+            guarded
+                .err()
+                .map(|error| error.message)
+                .unwrap_or_else(|| "project owner guard did not run".into()),
+        )),
     }
 }
 
 enum ChatContinuation {
-    Initial { window: main_core::shell::projects::project_ipc::ProjectWindow, selection: main_core::packages::project_store::ProjectSelection },
-    List { window: main_core::shell::projects::project_ipc::ProjectWindow, project_id: ProjectId },
-    Open { sender: i64, chat_ref: main_core::packages::project_store::ProjectChatRef, args: JsonValue },
-    Rename { chat_ref: main_core::packages::project_store::ProjectChatRef, args: JsonValue },
-    Attach { chat_ref: main_core::packages::project_store::ProjectChatRef, doc_path: String },
-    OpenDocument { chat_ref: main_core::packages::project_store::ProjectChatRef },
-    New { sender: i64, project_id: ProjectId },
-    Delete { sender: i64, chat_ref: main_core::packages::project_store::ProjectChatRef },
+    Initial {
+        window: main_core::shell::projects::project_ipc::ProjectWindow,
+        selection: main_core::packages::project_store::ProjectSelection,
+    },
+    List {
+        window: main_core::shell::projects::project_ipc::ProjectWindow,
+        project_id: ProjectId,
+    },
+    Open {
+        sender: i64,
+        chat_ref: main_core::packages::project_store::ProjectChatRef,
+        args: JsonValue,
+    },
+    Rename {
+        chat_ref: main_core::packages::project_store::ProjectChatRef,
+        args: JsonValue,
+    },
+    Attach {
+        chat_ref: main_core::packages::project_store::ProjectChatRef,
+        doc_path: String,
+    },
+    OpenDocument {
+        chat_ref: main_core::packages::project_store::ProjectChatRef,
+    },
+    New {
+        sender: i64,
+        project_id: ProjectId,
+    },
+    Delete {
+        sender: i64,
+        chat_ref: main_core::packages::project_store::ProjectChatRef,
+    },
     Append(ChatAppendRequest),
 }
 
@@ -256,7 +320,11 @@ impl PageEvents for Reporter {
 }
 
 impl Projects {
-    fn new(shell: Shell, core: Arc<dyn Thread>, cleanup_shutdown: ProjectCleanupShutdown) -> Rc<Projects> {
+    fn new(
+        shell: Shell,
+        core: Arc<dyn Thread>,
+        cleanup_shutdown: ProjectCleanupShutdown,
+    ) -> Rc<Projects> {
         let cleanup = ProjectCleanupSink::new(cleanup_shutdown.0, core.clone());
         Rc::new_cyclic(|this| Projects {
             shell,
@@ -274,78 +342,164 @@ impl Projects {
         })
     }
 
-    fn guarded_core<T>(&self, reply: &Responder, work: impl FnOnce() -> Result<T, Thrown>) -> Result<T, Thrown> {
-        let owner = reply.owner.as_ref().ok_or_else(|| Thrown("authenticated project owner is unavailable".into()))?;
+    fn guarded_core<T>(
+        &self,
+        reply: &Responder,
+        work: impl FnOnce() -> Result<T, Thrown>,
+    ) -> Result<T, Thrown> {
+        let owner = reply
+            .owner
+            .as_ref()
+            .ok_or_else(|| Thrown("authenticated project owner is unavailable".into()))?;
         let mut work = Some(work);
         let mut result = None;
-        self.shell.host.with_request_owner(&owner.native, &owner.cancel, &mut || {
-            let work = work.take().ok_or_else(|| error_of(Thrown("project continuation repeated".into())))?;
-            result = Some(work());
-            Ok(())
-        }).map_err(|error| Thrown(error.message))?;
+        self.shell
+            .host
+            .with_request_owner(&owner.native, &owner.cancel, &mut || {
+                let work = work
+                    .take()
+                    .ok_or_else(|| error_of(Thrown("project continuation repeated".into())))?;
+                result = Some(work());
+                Ok(())
+            })
+            .map_err(|error| Thrown(error.message))?;
         result.unwrap_or_else(|| Err(Thrown("project continuation did not run".into())))
     }
     fn open_trust_files(
-        &self,mut paths:std::vec::IntoIter<String>,chats:Option<String>,opened:bool,
-        pending:main_core::shell::projects::project_ipc::AwaitingTrust<GuidePending>,reply:Responder,
+        &self,
+        mut paths: std::vec::IntoIter<String>,
+        chats: Option<String>,
+        opened: bool,
+        pending: main_core::shell::projects::project_ipc::AwaitingTrust<GuidePending>,
+        reply: Responder,
     ) {
-        if let Err(error)=self.guarded_core(&reply,||Ok(())) {
-            return self.respond_guarded(reply,Err(error_of(error)));
+        if let Err(error) = self.guarded_core(&reply, || Ok(())) {
+            return self.respond_guarded(reply, Err(error_of(error)));
         }
-        if let Some(path)=paths.next() {
-            let Some(owner)=reply.owner.clone() else { return self.respond_guarded(reply,Err(error_of(Thrown("authenticated project request owner is unavailable".into())))); };
-            let Some(tabs)=self.shell.tabs() else { return self.respond_guarded(reply,Err(error_of(Thrown("tab services are unavailable".into())))); };
-            let weak=self.this.clone();
-            tabs.route_document_path_owned(path,owner.native,owner.cancel,Box::new(move |result| {
-                let Some(projects)=weak.upgrade() else { return reply.reply(Err(error_of(Thrown("project services are unavailable".into())))); };
-                match result {
-                    Err(error)=>projects.respond_guarded(reply,Err(error_of(Thrown(error)))),
-                    Ok(view)=>{
-                        if let Some(view)=view { projects.track(view); }
-                        projects.open_trust_files(paths,chats,opened || view.is_some(),pending,reply);
+        if let Some(path) = paths.next() {
+            let Some(owner) = reply.owner.clone() else {
+                return self.respond_guarded(
+                    reply,
+                    Err(error_of(Thrown(
+                        "authenticated project request owner is unavailable".into(),
+                    ))),
+                );
+            };
+            let Some(tabs) = self.shell.tabs() else {
+                return self.respond_guarded(
+                    reply,
+                    Err(error_of(Thrown("tab services are unavailable".into()))),
+                );
+            };
+            let weak = self.this.clone();
+            tabs.route_document_path_owned(
+                path,
+                owner.native,
+                owner.cancel,
+                Box::new(move |result| {
+                    let Some(projects) = weak.upgrade() else {
+                        return reply.reply(Err(error_of(Thrown(
+                            "project services are unavailable".into(),
+                        ))));
+                    };
+                    match result {
+                        Err(error) => projects.respond_guarded(reply, Err(error_of(Thrown(error)))),
+                        Ok(view) => {
+                            if let Some(view) = view {
+                                projects.track(view);
+                            }
+                            projects.open_trust_files(
+                                paths,
+                                chats,
+                                opened || view.is_some(),
+                                pending,
+                                reply,
+                            );
+                        }
                     }
-                }
-            }));
+                }),
+            );
             return;
         }
-        if let Some(path)=chats {
-            let mut accepted=None;
-            let result=self.guarded_core(&reply,|| { accepted=Some(path); Ok(()) });
-            if let Err(error)=result { return self.respond_guarded(reply,Err(error_of(error))); }
-            if let Some(path)=accepted { let _=self.shell.os.open_path(std::path::Path::new(&path)); }
+        if let Some(path) = chats {
+            let mut accepted = None;
+            let result = self.guarded_core(&reply, || {
+                accepted = Some(path);
+                Ok(())
+            });
+            if let Err(error) = result {
+                return self.respond_guarded(reply, Err(error_of(error)));
+            }
+            if let Some(path) = accepted {
+                let _ = self.shell.os.open_path(std::path::Path::new(&path));
+            }
         }
-        self.advance(Ok(pending.finish_view(opened)),reply);
+        self.advance(Ok(pending.finish_view(opened)), reply);
     }
     fn open_chat_target(
-        &self,path:Option<String>,chat_ref:main_core::packages::project_store::ProjectChatRef,reply:Responder,
+        &self,
+        path: Option<String>,
+        chat_ref: main_core::packages::project_store::ProjectChatRef,
+        reply: Responder,
     ) {
-        if let Err(error)=self.guarded_core(&reply,||Ok(())) { return self.respond_guarded(reply,Err(error_of(error))); }
-        let Some(owner)=reply.owner.clone() else { return self.respond_guarded(reply,Err(error_of(Thrown("authenticated project request owner is unavailable".into())))); };
-        let Some(tabs)=self.shell.tabs() else { return self.respond_guarded(reply,Err(error_of(Thrown("tab services are unavailable".into())))); };
-        let weak=self.this.clone();
-        let done=crate::home_files::back_to_core(self.core.clone(),move |result:Result<Option<ViewId>,String>| {
-            let Some(projects)=weak.upgrade() else { return reply.reply(Err(error_of(Thrown("project services are unavailable".into())))); };
-            let step=projects.guarded_core(&reply,|| {
-                let target=result.map_err(Thrown)?.map(|view|i64::from(view.0));
-                projects.serve(|ipc,deps|ipc.finish_open_document_chat_target(deps,&chat_ref,target))
-            });
-            projects.advance(step,reply);
-        });
-        tabs.open_document_chat_owned(owner.native,owner.cancel,path,done);
+        if let Err(error) = self.guarded_core(&reply, || Ok(())) {
+            return self.respond_guarded(reply, Err(error_of(error)));
+        }
+        let Some(owner) = reply.owner.clone() else {
+            return self.respond_guarded(
+                reply,
+                Err(error_of(Thrown(
+                    "authenticated project request owner is unavailable".into(),
+                ))),
+            );
+        };
+        let Some(tabs) = self.shell.tabs() else {
+            return self.respond_guarded(
+                reply,
+                Err(error_of(Thrown("tab services are unavailable".into()))),
+            );
+        };
+        let weak = self.this.clone();
+        let done = crate::home_files::back_to_core(
+            self.core.clone(),
+            move |result: Result<Option<ViewId>, String>| {
+                let Some(projects) = weak.upgrade() else {
+                    return reply.reply(Err(error_of(Thrown(
+                        "project services are unavailable".into(),
+                    ))));
+                };
+                let step = projects.guarded_core(&reply, || {
+                    let target = result.map_err(Thrown)?.map(|view| i64::from(view.0));
+                    projects.serve(|ipc, deps| {
+                        ipc.finish_open_document_chat_target(deps, &chat_ref, target)
+                    })
+                });
+                projects.advance(step, reply);
+            },
+        );
+        tabs.open_document_chat_owned(owner.native, owner.cancel, path, done);
     }
 
-
-
-    fn finish_guarded_install(&self, reply: &Responder, result: Result<String, String>) -> Result<String, String> {
+    fn finish_guarded_install(
+        &self,
+        reply: &Responder,
+        result: Result<String, String>,
+    ) -> Result<String, String> {
         let mut id = Some(result?);
         let mut finished = None;
-        let owner = reply.owner.as_ref().ok_or_else(|| "authenticated project owner is unavailable".to_owned())?;
-        self.shell.host.with_request_owner(&owner.native, &owner.cancel, &mut || {
-            if let Some(id) = id.take() {
-                finished = Some(self.guide().finish_install_id(id));
-            }
-            Ok(())
-        }).map_err(|error| error.message)?;
+        let owner = reply
+            .owner
+            .as_ref()
+            .ok_or_else(|| "authenticated project owner is unavailable".to_owned())?;
+        self.shell
+            .host
+            .with_request_owner(&owner.native, &owner.cancel, &mut || {
+                if let Some(id) = id.take() {
+                    finished = Some(self.guide().finish_install_id(id));
+                }
+                Ok(())
+            })
+            .map_err(|error| error.message)?;
         finished.ok_or_else(|| "project owner guard did not run".to_owned())
     }
 
@@ -358,32 +512,54 @@ impl Projects {
         let commit_owner = reply.owner.clone();
         let commit_host = self.shell.host.clone();
         let guide = self.guide();
-        let writes: Vec<_> = items.iter().map(|item| {
-            guide.prepare_outside_chat(&item.doc_path, &item.project_id, &item.chat_id)
-                .map_err(|error| error.message())
-        }).collect();
+        let writes: Vec<_> = items
+            .iter()
+            .map(|item| {
+                guide
+                    .prepare_outside_chat(&item.doc_path, &item.project_id, &item.chat_id)
+                    .map_err(|error| error.message())
+            })
+            .collect();
         let token = NEXT_SETTINGS.with(|next| {
             let token = next.get();
-            next.set(token.checked_add(1).expect("project settings token exhausted"));
+            next.set(
+                token
+                    .checked_add(1)
+                    .expect("project settings token exhausted"),
+            );
             token
         });
         PENDING_OUTSIDE.with(|pending| {
-            pending.borrow_mut().insert(token, (self.this.clone(), reply, step, items));
+            pending
+                .borrow_mut()
+                .insert(token, (self.this.clone(), reply, step, items));
         });
         let path = self.shell.settings_path();
         let queue = main_core::shell::app_settings::queue::for_path(&path);
         let core = self.core.clone();
         queue.submit(move |completion| {
-            let results: Vec<_> = writes.into_iter().map(|write| match write {
-                Ok(write) => write.execute_guarded(&path, |from, to| guarded_settings_commit(&commit_host, &commit_owner, from, to)).map_err(|error| error.message()),
-                Err(error) => Err(error),
-            }).collect();
+            let results: Vec<_> = writes
+                .into_iter()
+                .map(|write| match write {
+                    Ok(write) => write
+                        .execute_guarded(&path, |from, to| {
+                            guarded_settings_commit(&commit_host, &commit_owner, from, to)
+                        })
+                        .map_err(|error| error.message()),
+                    Err(error) => Err(error),
+                })
+                .collect();
             core.post(Box::new(move || {
                 let pending = PENDING_OUTSIDE.with(|pending| pending.borrow_mut().remove(&token));
-                let Some((projects, reply, step, items)) = pending else { drop(completion); return };
+                let Some((projects, reply, step, items)) = pending else {
+                    drop(completion);
+                    return;
+                };
                 let Some(projects) = projects.upgrade() else {
                     drop(completion);
-                    return reply.reply(Err(error_of(Thrown("project services are unavailable".into()))));
+                    return reply.reply(Err(error_of(Thrown(
+                        "project services are unavailable".into(),
+                    ))));
                 };
                 {
                     let mut inner = projects.inner.borrow_mut();
@@ -400,17 +576,22 @@ impl Projects {
         });
     }
 
-
     fn write_settings(&self, write: ProjectSettingsWrite, reply: Responder) {
         let commit_owner = reply.owner.clone();
         let commit_host = self.shell.host.clone();
         let token = NEXT_SETTINGS.with(|next| {
             let token = next.get();
-            next.set(token.checked_add(1).expect("project settings token exhausted"));
+            next.set(
+                token
+                    .checked_add(1)
+                    .expect("project settings token exhausted"),
+            );
             token
         });
         PENDING_SETTINGS.with(|pending| {
-            pending.borrow_mut().insert(token, (self.this.clone(), reply));
+            pending
+                .borrow_mut()
+                .insert(token, (self.this.clone(), reply));
         });
         let path = self.shell.settings_path();
         let queue = main_core::shell::app_settings::queue::for_path(&path);
@@ -445,29 +626,40 @@ impl Projects {
         let commit_host = self.shell.host.clone();
         let token = NEXT_SETTINGS.with(|next| {
             let token = next.get();
-            next.set(token.checked_add(1).expect("project settings token exhausted"));
+            next.set(
+                token
+                    .checked_add(1)
+                    .expect("project settings token exhausted"),
+            );
             token
         });
         PENDING_SETTINGS.with(|pending| {
-            pending.borrow_mut().insert(token, (self.this.clone(), reply));
+            pending
+                .borrow_mut()
+                .insert(token, (self.this.clone(), reply));
         });
         let path = self.shell.settings_path();
         let queue = main_core::shell::app_settings::queue::for_path(&path);
         let core = self.core.clone();
         queue.submit(move |completion| {
             core.post(Box::new(move || {
-                let owner = PENDING_SETTINGS.with(|pending| pending.borrow().get(&token).map(|entry| entry.0.clone()));
+                let owner = PENDING_SETTINGS
+                    .with(|pending| pending.borrow().get(&token).map(|entry| entry.0.clone()));
                 let Some(projects) = owner.and_then(|owner| owner.upgrade()) else {
-                    let pending = PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
+                    let pending =
+                        PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
                     drop(completion);
                     if let Some((_, reply)) = pending {
-                        reply.reply(Err(error_of(Thrown("project services are unavailable".into()))));
+                        reply.reply(Err(error_of(Thrown(
+                            "project services are unavailable".into(),
+                        ))));
                     }
                     return;
                 };
                 let owner = projects.serve(|ipc, deps| ipc.selection_owner_current(deps, &request));
                 if !matches!(owner, Ok(true)) {
-                    let pending = PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
+                    let pending =
+                        PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
                     projects.guide().restore_touch_timer();
                     drop(completion);
                     projects.sync_touch_timer();
@@ -480,10 +672,14 @@ impl Projects {
                     }
                     return;
                 }
-                let write = match projects.guide().prepare_selection(&request.target, request.project_id.as_deref()) {
+                let write = match projects
+                    .guide()
+                    .prepare_selection(&request.target, request.project_id.as_deref())
+                {
                     Ok(write) => write,
                     Err(error) => {
-                        let pending = PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
+                        let pending =
+                            PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
                         drop(completion);
                         if let Some((_, reply)) = pending {
                             reply.reply(Err(error_of(Thrown(error.message()))));
@@ -494,23 +690,39 @@ impl Projects {
                 let workers = projects.shell.workers.clone();
                 let core = projects.core.clone();
                 workers.spawn(Box::new(move || {
-                    let result = write.execute_guarded(&path, |from, to| guarded_settings_commit(&commit_host, &commit_owner, from, to)).map_err(|error| error.message());
+                    let result = write
+                        .execute_guarded(&path, |from, to| {
+                            guarded_settings_commit(&commit_host, &commit_owner, from, to)
+                        })
+                        .map_err(|error| error.message());
                     core.post(Box::new(move || {
-                        let pending = PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
-                        let Some((projects, reply)) = pending else { drop(completion); return };
+                        let pending =
+                            PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
+                        let Some((projects, reply)) = pending else {
+                            drop(completion);
+                            return;
+                        };
                         let Some(projects) = projects.upgrade() else {
                             drop(completion);
-                            return reply.reply(Err(error_of(Thrown("project services are unavailable".into()))));
+                            return reply.reply(Err(error_of(Thrown(
+                                "project services are unavailable".into(),
+                            ))));
                         };
                         let guide = projects.guide();
                         let step = projects.guarded_core(&reply, || {
-                            if !projects.serve(|ipc, deps| ipc.selection_owner_current(deps, &request))? {
+                            if !projects
+                                .serve(|ipc, deps| ipc.selection_owner_current(deps, &request))?
+                            {
                                 return Err(Thrown("selection owner changed".into()));
                             }
-                            let result = result.map(|ack| guide.finish_selection(ack)).map_err(Thrown);
+                            let result = result
+                                .map(|ack| guide.finish_selection(ack))
+                                .map_err(Thrown);
                             projects.serve(|ipc, deps| ipc.finish_selection(deps, request, result))
                         });
-                        if step.is_err() { guide.restore_touch_timer(); }
+                        if step.is_err() {
+                            guide.restore_touch_timer();
+                        }
                         drop(completion);
                         projects.advance(step, reply);
                         projects.sync_touch_timer();
@@ -521,13 +733,21 @@ impl Projects {
     }
 
     fn write_hint_selection(
-        &self, owner: i64, window: main_core::shell::projects::project_ipc::ProjectWindow,
-        doc_path: String, result: main_core::packages::project_store::AddFolderResult, reply: Responder,
+        &self,
+        owner: i64,
+        window: main_core::shell::projects::project_ipc::ProjectWindow,
+        doc_path: String,
+        result: main_core::packages::project_store::AddFolderResult,
+        reply: Responder,
     ) {
         let project_id = match &result {
-            main_core::packages::project_store::AddFolderResult::Added { project, .. } => project.id.clone(),
+            main_core::packages::project_store::AddFolderResult::Added { project, .. } => {
+                project.id.clone()
+            }
             _ => {
-                let step = self.guarded_core(&reply, || self.serve(|ipc, deps| ipc.finish_hint_selection(deps, result)));
+                let step = self.guarded_core(&reply, || {
+                    self.serve(|ipc, deps| ipc.finish_hint_selection(deps, result))
+                });
                 return self.advance(step, reply);
             }
         };
@@ -535,65 +755,106 @@ impl Projects {
         let commit_host = self.shell.host.clone();
         let token = NEXT_SETTINGS.with(|next| {
             let token = next.get();
-            next.set(token.checked_add(1).expect("project settings token exhausted"));
+            next.set(
+                token
+                    .checked_add(1)
+                    .expect("project settings token exhausted"),
+            );
             token
         });
-        PENDING_SETTINGS.with(|pending| { pending.borrow_mut().insert(token, (self.this.clone(), reply)); });
+        PENDING_SETTINGS.with(|pending| {
+            pending
+                .borrow_mut()
+                .insert(token, (self.this.clone(), reply));
+        });
         let path = self.shell.settings_path();
         let queue = main_core::shell::app_settings::queue::for_path(&path);
         let core = self.core.clone();
         queue.submit(move |completion| {
             core.post(Box::new(move || {
-                let projects = PENDING_SETTINGS.with(|pending| pending.borrow().get(&token).map(|entry| entry.0.clone()));
+                let projects = PENDING_SETTINGS
+                    .with(|pending| pending.borrow().get(&token).map(|entry| entry.0.clone()));
                 let Some(projects) = projects.and_then(|projects| projects.upgrade()) else {
-                    let pending = PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
+                    let pending =
+                        PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
                     drop(completion);
-                    if let Some((_, reply)) = pending { reply.reply(Err(error_of(Thrown("project services are unavailable".into())))); }
+                    if let Some((_, reply)) = pending {
+                        reply.reply(Err(error_of(Thrown(
+                            "project services are unavailable".into(),
+                        ))));
+                    }
                     return;
                 };
-                let native = commit_owner.as_ref().is_some_and(|owner| commit_host.with_request_owner(&owner.native, &owner.cancel, &mut || Ok(())).is_ok());
-                let current = projects.serve(|ipc, deps| ipc.hint_owner_current(deps, owner, &window));
+                let native = commit_owner.as_ref().is_some_and(|owner| {
+                    commit_host
+                        .with_request_owner(&owner.native, &owner.cancel, &mut || Ok(()))
+                        .is_ok()
+                });
+                let current =
+                    projects.serve(|ipc, deps| ipc.hint_owner_current(deps, owner, &window));
                 if !native || !current {
-                    let pending = PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
+                    let pending =
+                        PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
                     drop(completion);
-                    if let Some((_, reply)) = pending { reply.reply(Err(error_of(Thrown("hint owner changed".into())))); }
+                    if let Some((_, reply)) = pending {
+                        reply.reply(Err(error_of(Thrown("hint owner changed".into()))));
+                    }
                     return;
                 }
-                let target = main_core::shell::projects::project_guide::SelectionTarget::Document { path: doc_path };
-                let write = match projects.guide().prepare_selection(&target, Some(&project_id)) {
+                let target = main_core::shell::projects::project_guide::SelectionTarget::Document {
+                    path: doc_path,
+                };
+                let write = match projects
+                    .guide()
+                    .prepare_selection(&target, Some(&project_id))
+                {
                     Ok(write) => write,
                     Err(error) => {
-                        let pending = PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
+                        let pending =
+                            PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
                         drop(completion);
-                        if let Some((_, reply)) = pending { reply.reply(Err(error_of(Thrown(error.message())))); }
+                        if let Some((_, reply)) = pending {
+                            reply.reply(Err(error_of(Thrown(error.message()))));
+                        }
                         return;
                     }
                 };
                 let workers = projects.shell.workers.clone();
                 let core = projects.core.clone();
                 workers.spawn(Box::new(move || {
-                    let outcome = write.execute_guarded(&path, |from, to| guarded_settings_commit(&commit_host, &commit_owner, from, to))
+                    let outcome = write
+                        .execute_guarded(&path, |from, to| {
+                            guarded_settings_commit(&commit_host, &commit_owner, from, to)
+                        })
                         .map_err(|error| error.message());
                     core.post(Box::new(move || {
-                        let pending = PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
-                        let Some((projects, reply)) = pending else { drop(completion); return };
+                        let pending =
+                            PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
+                        let Some((projects, reply)) = pending else {
+                            drop(completion);
+                            return;
+                        };
                         let Some(projects) = projects.upgrade() else {
                             drop(completion);
-                            return reply.reply(Err(error_of(Thrown("project services are unavailable".into()))));
+                            return reply.reply(Err(error_of(Thrown(
+                                "project services are unavailable".into(),
+                            ))));
                         };
                         let step = match outcome {
                             Ok(ack) => projects.guarded_core(&reply, || {
-                                if !projects.serve(|ipc, deps| ipc.hint_owner_current(deps, owner, &window)) {
+                                if !projects
+                                    .serve(|ipc, deps| ipc.hint_owner_current(deps, owner, &window))
+                                {
                                     return Err(Thrown("hint owner changed".into()));
                                 }
                                 projects.guide().finish_selection(ack);
                                 projects.serve(|ipc, deps| ipc.finish_hint_selection(deps, result))
                             }),
-                            Err(error) => {
-                                Err(Thrown(error))
-                            }
+                            Err(error) => Err(Thrown(error)),
                         };
-                        if step.is_err() { projects.guide().restore_touch_timer(); }
+                        if step.is_err() {
+                            projects.guide().restore_touch_timer();
+                        }
                         drop(completion);
                         projects.advance(step, reply);
                         projects.sync_touch_timer();
@@ -616,30 +877,51 @@ impl Projects {
         };
         let token = NEXT_SETTINGS.with(|next| {
             let token = next.get();
-            next.set(token.checked_add(1).expect("project settings token exhausted"));
+            next.set(
+                token
+                    .checked_add(1)
+                    .expect("project settings token exhausted"),
+            );
             token
         });
         PENDING_SETTINGS.with(|pending| {
-            pending.borrow_mut().insert(token, (self.this.clone(), reply));
+            pending
+                .borrow_mut()
+                .insert(token, (self.this.clone(), reply));
         });
         let path = self.shell.settings_path();
         let queue = main_core::shell::app_settings::queue::for_path(&path);
         let core = self.core.clone();
         queue.submit(move |completion| {
-            let result = write.execute_guarded(&path, |from, to| guarded_settings_commit(&commit_host, &commit_owner, from, to)).map_err(|error| error.message());
+            let result = write
+                .execute_guarded(&path, |from, to| {
+                    guarded_settings_commit(&commit_host, &commit_owner, from, to)
+                })
+                .map_err(|error| error.message());
             core.post(Box::new(move || {
                 let pending = PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
-                let Some((projects, reply)) = pending else { drop(completion); return };
+                let Some((projects, reply)) = pending else {
+                    drop(completion);
+                    return;
+                };
                 let Some(projects) = projects.upgrade() else {
                     drop(completion);
-                    return reply.reply(Err(error_of(Thrown("project services are unavailable".into()))));
+                    return reply.reply(Err(error_of(Thrown(
+                        "project services are unavailable".into(),
+                    ))));
                 };
                 let guide = projects.guide();
                 let step = projects.guarded_core(&reply, || {
-                    let result = result.map_err(Thrown).and_then(|ack| guide.finish_context(ack).map_err(|error| Thrown(error.message())));
+                    let result = result.map_err(Thrown).and_then(|ack| {
+                        guide
+                            .finish_context(ack)
+                            .map_err(|error| Thrown(error.message()))
+                    });
                     ProjectIpc::finish_context_read(result)
                 });
-                if step.is_err() { guide.restore_touch_timer(); }
+                if step.is_err() {
+                    guide.restore_touch_timer();
+                }
                 drop(completion);
                 projects.advance(step, reply);
                 projects.sync_touch_timer();
@@ -647,13 +929,23 @@ impl Projects {
         });
     }
 
-    fn trust_answer(&self, project_id: String, pending: GuidePending, answer: ProjectTrustAnswer, reply: Responder) {
+    fn trust_answer(
+        &self,
+        project_id: String,
+        pending: GuidePending,
+        answer: ProjectTrustAnswer,
+        reply: Responder,
+    ) {
         let GuidePending::DecideTrust(pending) = pending else {
-            return reply.reply(Err(error_of(Thrown("the trust answer belongs to another request".into()))));
+            return reply.reply(Err(error_of(Thrown(
+                "the trust answer belongs to another request".into(),
+            ))));
         };
         let write = match self.guide().prepare_trust_answer(pending, answer) {
             TrustPreparation::Done(result) => {
-                let step = self.guarded_core(&reply, || self.serve(|ipc, deps| ipc.finish_trust_answer(deps, &project_id, Ok(result))));
+                let step = self.guarded_core(&reply, || {
+                    self.serve(|ipc, deps| ipc.finish_trust_answer(deps, &project_id, Ok(result)))
+                });
                 return self.advance(step, reply);
             }
             TrustPreparation::Write(write) => write,
@@ -668,55 +960,89 @@ impl Projects {
         }
     }
 
-    fn trust_use(&self, project_id: String, sender: i64, install_id: Option<String>, reply: Responder) {
-        match self.guide().prepare_decide_trust_use(&project_id, install_id.as_deref()) {
+    fn trust_use(
+        &self,
+        project_id: String,
+        sender: i64,
+        install_id: Option<String>,
+        reply: Responder,
+    ) {
+        match self
+            .guide()
+            .prepare_decide_trust_use(&project_id, install_id.as_deref())
+        {
             Err(error) => reply.reply(Err(error_of(Thrown(error.message())))),
             Ok(TrustUsePreparation::Done(result)) => {
-                let step = self.guarded_core(&reply, || self.serve(|ipc, deps| ipc.finish_trust_answer(deps, &project_id, Ok(result))));
+                let step = self.guarded_core(&reply, || {
+                    self.serve(|ipc, deps| ipc.finish_trust_answer(deps, &project_id, Ok(result)))
+                });
                 self.advance(step, reply);
             }
             Ok(TrustUsePreparation::Ask { prompt, pending }) => {
-                let step = ProjectIpc::prompt_decide_trust(sender, project_id, prompt, GuidePending::DecideTrust(pending));
+                let step = ProjectIpc::prompt_decide_trust(
+                    sender,
+                    project_id,
+                    prompt,
+                    GuidePending::DecideTrust(pending),
+                );
                 self.advance(Ok(step), reply);
             }
-            Ok(TrustUsePreparation::Write(write)) => self.queue_trust_write(project_id, write, reply),
-            Ok(TrustUsePreparation::NeedInstallId) => {
-                match self.guide().prepare_install_id() {
-                    InstallIdPreparation::Ready(id) => self.trust_use(project_id, sender, Some(id), reply),
-                    InstallIdPreparation::Write(write) => {
-                        let commit_owner = reply.owner.clone();
-                        let commit_host = self.shell.host.clone();
-                        let token = NEXT_SETTINGS.with(|next| {
-                            let token = next.get();
-                            next.set(token.checked_add(1).expect("project settings token exhausted"));
-                            token
-                        });
-                        PENDING_SETTINGS.with(|pending| {
-                            pending.borrow_mut().insert(token, (self.this.clone(), reply));
-                        });
-                        let path = self.shell.settings_path();
-                        let queue = main_core::shell::app_settings::queue::for_path(&path);
-                        let core = self.core.clone();
-                        queue.submit(move |completion| {
-                            let result = write.execute_guarded(&path, |from, to| guarded_settings_commit(&commit_host, &commit_owner, from, to)).map_err(|error| error.message());
-                            core.post(Box::new(move || {
-                                let pending = PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
-                                let Some((projects, reply)) = pending else { drop(completion); return };
-                                let Some(projects) = projects.upgrade() else {
-                                    drop(completion);
-                                    return reply.reply(Err(error_of(Thrown("project services are unavailable".into()))));
-                                };
-                                let result = projects.finish_guarded_install(&reply, result);
-                                drop(completion);
-                                match result {
-                                    Ok(id) => projects.trust_use(project_id, sender, Some(id), reply),
-                                    Err(error) => reply.reply(Err(error_of(Thrown(error)))),
-                                }
-                            }));
-                        });
-                    }
-                }
+            Ok(TrustUsePreparation::Write(write)) => {
+                self.queue_trust_write(project_id, write, reply)
             }
+            Ok(TrustUsePreparation::NeedInstallId) => match self.guide().prepare_install_id() {
+                InstallIdPreparation::Ready(id) => {
+                    self.trust_use(project_id, sender, Some(id), reply)
+                }
+                InstallIdPreparation::Write(write) => {
+                    let commit_owner = reply.owner.clone();
+                    let commit_host = self.shell.host.clone();
+                    let token = NEXT_SETTINGS.with(|next| {
+                        let token = next.get();
+                        next.set(
+                            token
+                                .checked_add(1)
+                                .expect("project settings token exhausted"),
+                        );
+                        token
+                    });
+                    PENDING_SETTINGS.with(|pending| {
+                        pending
+                            .borrow_mut()
+                            .insert(token, (self.this.clone(), reply));
+                    });
+                    let path = self.shell.settings_path();
+                    let queue = main_core::shell::app_settings::queue::for_path(&path);
+                    let core = self.core.clone();
+                    queue.submit(move |completion| {
+                        let result = write
+                            .execute_guarded(&path, |from, to| {
+                                guarded_settings_commit(&commit_host, &commit_owner, from, to)
+                            })
+                            .map_err(|error| error.message());
+                        core.post(Box::new(move || {
+                            let pending = PENDING_SETTINGS
+                                .with(|pending| pending.borrow_mut().remove(&token));
+                            let Some((projects, reply)) = pending else {
+                                drop(completion);
+                                return;
+                            };
+                            let Some(projects) = projects.upgrade() else {
+                                drop(completion);
+                                return reply.reply(Err(error_of(Thrown(
+                                    "project services are unavailable".into(),
+                                ))));
+                            };
+                            let result = projects.finish_guarded_install(&reply, result);
+                            drop(completion);
+                            match result {
+                                Ok(id) => projects.trust_use(project_id, sender, Some(id), reply),
+                                Err(error) => reply.reply(Err(error_of(Thrown(error)))),
+                            }
+                        }));
+                    });
+                }
+            },
         }
     }
 
@@ -725,26 +1051,46 @@ impl Projects {
         let commit_host = self.shell.host.clone();
         let token = NEXT_SETTINGS.with(|next| {
             let token = next.get();
-            next.set(token.checked_add(1).expect("project settings token exhausted"));
+            next.set(
+                token
+                    .checked_add(1)
+                    .expect("project settings token exhausted"),
+            );
             token
         });
         PENDING_SETTINGS.with(|pending| {
-            pending.borrow_mut().insert(token, (self.this.clone(), reply));
+            pending
+                .borrow_mut()
+                .insert(token, (self.this.clone(), reply));
         });
         let path = self.shell.settings_path();
         let queue = main_core::shell::app_settings::queue::for_path(&path);
         let core = self.core.clone();
         queue.submit(move |completion| {
-            let result = write.execute_guarded(&path, |from, to| guarded_settings_commit(&commit_host, &commit_owner, from, to)).map_err(|error| error.message());
+            let result = write
+                .execute_guarded(&path, |from, to| {
+                    guarded_settings_commit(&commit_host, &commit_owner, from, to)
+                })
+                .map_err(|error| error.message());
             core.post(Box::new(move || {
                 let pending = PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
-                let Some((projects, reply)) = pending else { drop(completion); return };
+                let Some((projects, reply)) = pending else {
+                    drop(completion);
+                    return;
+                };
                 let Some(projects) = projects.upgrade() else {
                     drop(completion);
-                    return reply.reply(Err(error_of(Thrown("project services are unavailable".into()))));
+                    return reply.reply(Err(error_of(Thrown(
+                        "project services are unavailable".into(),
+                    ))));
                 };
                 let step = projects.guarded_core(&reply, || {
-                    let result = result.map_err(Thrown).and_then(|ack| projects.guide().finish_trust_answer(ack).map_err(|error| Thrown(error.message())));
+                    let result = result.map_err(Thrown).and_then(|ack| {
+                        projects
+                            .guide()
+                            .finish_trust_answer(ack)
+                            .map_err(|error| Thrown(error.message()))
+                    });
                     projects.serve(|ipc, deps| ipc.finish_trust_answer(deps, &project_id, result))
                 });
                 drop(completion);
@@ -754,61 +1100,109 @@ impl Projects {
         });
     }
 
-    fn start_creation(&self, owner: i64, request: NewProjectRequest, second: bool, reply: Responder) {
+    fn start_creation(
+        &self,
+        owner: i64,
+        request: NewProjectRequest,
+        second: bool,
+        reply: Responder,
+    ) {
         match self.guide().prepare_create(&request) {
             Err(error) => reply.reply(Err(error_of(Thrown(error.message())))),
             Ok(CreatePreparation::Done(result)) => {
-                let step = self.guarded_core(&reply, || self.serve(|ipc, deps| ipc.finish_create_answer(deps, owner, request, second, Ok(result))));
+                let step = self.guarded_core(&reply, || {
+                    self.serve(|ipc, deps| {
+                        ipc.finish_create_answer(deps, owner, request, second, Ok(result))
+                    })
+                });
                 self.advance(step, reply);
             }
-            Ok(CreatePreparation::Adopt(start)) =>
-                self.start_adoption(owner, AdoptDestination::Create(request, second), Ok(start), reply),
-            Ok(CreatePreparation::New { parent, name, target }) =>
-                self.queue_creation(owner, request, second, parent, name, target, reply),
+            Ok(CreatePreparation::Adopt(start)) => self.start_adoption(
+                owner,
+                AdoptDestination::Create(request, second),
+                Ok(start),
+                reply,
+            ),
+            Ok(CreatePreparation::New {
+                parent,
+                name,
+                target,
+            }) => self.queue_creation(owner, request, second, parent, name, target, reply),
         }
     }
 
     fn queue_creation(
-        &self, owner: i64, request: NewProjectRequest, second: bool,
-        parent: String, name: String, target: String, reply: Responder,
+        &self,
+        owner: i64,
+        request: NewProjectRequest,
+        second: bool,
+        parent: String,
+        name: String,
+        target: String,
+        reply: Responder,
     ) {
         let commit_owner = reply.owner.clone();
         let commit_host = self.shell.host.clone();
         let token = NEXT_SETTINGS.with(|next| {
             let token = next.get();
-            next.set(token.checked_add(1).expect("project settings token exhausted"));
+            next.set(
+                token
+                    .checked_add(1)
+                    .expect("project settings token exhausted"),
+            );
             token
         });
         PENDING_SETTINGS.with(|pending| {
-            pending.borrow_mut().insert(token, (self.this.clone(), reply));
+            pending
+                .borrow_mut()
+                .insert(token, (self.this.clone(), reply));
         });
         let path = self.shell.settings_path();
         let queue = main_core::shell::app_settings::queue::for_path(&path);
         let core = self.core.clone();
         queue.submit(move |completion| {
             core.post(Box::new(move || {
-                let projects = PENDING_SETTINGS.with(|pending| pending.borrow().get(&token).map(|entry| entry.0.clone()));
+                let projects = PENDING_SETTINGS
+                    .with(|pending| pending.borrow().get(&token).map(|entry| entry.0.clone()));
                 let Some(projects) = projects.and_then(|projects| projects.upgrade()) else {
-                    let pending = PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
+                    let pending =
+                        PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
                     drop(completion);
                     if let Some((_, reply)) = pending {
-                        reply.reply(Err(error_of(Thrown("project services are unavailable".into()))));
+                        reply.reply(Err(error_of(Thrown(
+                            "project services are unavailable".into(),
+                        ))));
                     }
                     return;
                 };
-                let write = match projects.guide().prepare_new_project(&parent, &name, &target) {
+                let write = match projects
+                    .guide()
+                    .prepare_new_project(&parent, &name, &target)
+                {
                     Ok(CreateNew::Write(write)) => write,
                     Ok(CreateNew::Done(result)) => {
-                        let pending = PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
+                        let pending =
+                            PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
                         drop(completion);
                         if let Some((_, reply)) = pending {
-                            let step = projects.guarded_core(&reply, || projects.serve(|ipc, deps| ipc.finish_create_answer(deps, owner, request, second, Ok(result))));
+                            let step = projects.guarded_core(&reply, || {
+                                projects.serve(|ipc, deps| {
+                                    ipc.finish_create_answer(
+                                        deps,
+                                        owner,
+                                        request,
+                                        second,
+                                        Ok(result),
+                                    )
+                                })
+                            });
                             projects.advance(step, reply);
                         }
                         return;
                     }
                     Err(error) => {
-                        let pending = PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
+                        let pending =
+                            PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
                         drop(completion);
                         if let Some((_, reply)) = pending {
                             reply.reply(Err(error_of(Thrown(error.message()))));
@@ -819,22 +1213,37 @@ impl Projects {
                 let workers = projects.shell.workers.clone();
                 let core = projects.core.clone();
                 workers.spawn(Box::new(move || {
-                    let result = write.execute_authorized(
-                        &path,
-                        |effect| guarded_project_publish(&commit_host, &commit_owner, effect),
-                        |from, to| guarded_settings_commit(&commit_host, &commit_owner, from, to),
-                    ).map_err(|error| error.message());
+                    let result = write
+                        .execute_authorized(
+                            &path,
+                            |effect| guarded_project_publish(&commit_host, &commit_owner, effect),
+                            |from, to| {
+                                guarded_settings_commit(&commit_host, &commit_owner, from, to)
+                            },
+                        )
+                        .map_err(|error| error.message());
                     core.post(Box::new(move || {
-                        let pending = PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
-                        let Some((projects, reply)) = pending else { drop(completion); return };
+                        let pending =
+                            PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
+                        let Some((projects, reply)) = pending else {
+                            drop(completion);
+                            return;
+                        };
                         let Some(projects) = projects.upgrade() else {
                             drop(completion);
-                            return reply.reply(Err(error_of(Thrown("project services are unavailable".into()))));
+                            return reply.reply(Err(error_of(Thrown(
+                                "project services are unavailable".into(),
+                            ))));
                         };
-                        let result = result.map(|execution| projects.guide().finish_create(execution))
+                        let result = result
+                            .map(|execution| projects.guide().finish_create(execution))
                             .map_err(Thrown);
                         drop(completion);
-                        let step = projects.guarded_core(&reply, || projects.serve(|ipc, deps| ipc.finish_create_answer(deps, owner, request, second, result)));
+                        let step = projects.guarded_core(&reply, || {
+                            projects.serve(|ipc, deps| {
+                                ipc.finish_create_answer(deps, owner, request, second, result)
+                            })
+                        });
                         projects.advance(step, reply);
                     }));
                 }));
@@ -843,19 +1252,41 @@ impl Projects {
     }
 
     fn finish_adopt_step(
-        &self, owner: i64, destination: AdoptDestination,
-        result: Result<main_core::packages::project_store::AddFolderResult, Thrown>, reply: &Responder,
+        &self,
+        owner: i64,
+        destination: AdoptDestination,
+        result: Result<main_core::packages::project_store::AddFolderResult, Thrown>,
+        reply: &Responder,
     ) -> Result<IpcStep<GuidePending>, Thrown> {
-        self.guarded_core(reply, || self.serve(|ipc, deps| match destination {
-            AdoptDestination::Plain => ipc.finish_adopt_answer(deps, owner, None, result),
-            AdoptDestination::Create(request, second) => ipc.finish_adopt_answer(deps, owner, Some((request, second)), result),
-            AdoptDestination::Hint(window, doc_path) => ipc.finish_hint_adoption(deps, owner, window, doc_path, result),
-        }))
+        self.guarded_core(reply, || {
+            self.serve(|ipc, deps| match destination {
+                AdoptDestination::Plain => ipc.finish_adopt_answer(deps, owner, None, result),
+                AdoptDestination::Create(request, second) => {
+                    ipc.finish_adopt_answer(deps, owner, Some((request, second)), result)
+                }
+                AdoptDestination::Hint(window, doc_path) => {
+                    ipc.finish_hint_adoption(deps, owner, window, doc_path, result)
+                }
+            })
+        })
     }
 
-    fn start_adoption(&self, owner: i64, destination: AdoptDestination, start: Result<AdoptStart, main_core::shell::projects::project_guide::GuideError>, reply: Responder) {
-        if !reply.owner.as_ref().is_some_and(|owner| self.shell.host.with_request_owner(&owner.native, &owner.cancel, &mut || Ok(())).is_ok()) {
-            return reply.reply(Err(error_of(Thrown("adoption owner is no longer available".into()))));
+    fn start_adoption(
+        &self,
+        owner: i64,
+        destination: AdoptDestination,
+        start: Result<AdoptStart, main_core::shell::projects::project_guide::GuideError>,
+        reply: Responder,
+    ) {
+        if !reply.owner.as_ref().is_some_and(|owner| {
+            self.shell
+                .host
+                .with_request_owner(&owner.native, &owner.cancel, &mut || Ok(()))
+                .is_ok()
+        }) {
+            return reply.reply(Err(error_of(Thrown(
+                "adoption owner is no longer available".into(),
+            ))));
         }
         if let AdoptDestination::Hint(window, _) = &destination
             && !self.serve(|ipc, deps| ipc.hint_owner_current(deps, owner, window))
@@ -871,18 +1302,32 @@ impl Projects {
             Ok(AdoptStart::Ask { prompt, pending }) => {
                 let pending = GuidePending::Adopt(pending);
                 let step = match destination {
-                    AdoptDestination::Create(request, second) => ProjectIpc::prompt_create(owner, request, second, prompt, pending),
+                    AdoptDestination::Create(request, second) => {
+                        ProjectIpc::prompt_create(owner, request, second, prompt, pending)
+                    }
                     AdoptDestination::Plain => ProjectIpc::prompt_adopt(owner, prompt, pending),
-                    AdoptDestination::Hint(window, doc_path) => ProjectIpc::prompt_hint(owner, window, doc_path, prompt, pending),
+                    AdoptDestination::Hint(window, doc_path) => {
+                        ProjectIpc::prompt_hint(owner, window, doc_path, prompt, pending)
+                    }
                 };
                 self.advance(Ok(step), reply);
             }
-            Ok(AdoptStart::Ready(plan)) => self.queue_adoption(owner, AdoptWork::Plan(plan), destination, reply),
-            Ok(AdoptStart::NeedInstallId(scan)) => self.adoption_install_id(owner, destination, scan, reply),
+            Ok(AdoptStart::Ready(plan)) => {
+                self.queue_adoption(owner, AdoptWork::Plan(plan), destination, reply)
+            }
+            Ok(AdoptStart::NeedInstallId(scan)) => {
+                self.adoption_install_id(owner, destination, scan, reply)
+            }
         }
     }
 
-    fn adoption_install_id(&self, owner: i64, destination: AdoptDestination, scan: AdoptScan, reply: Responder) {
+    fn adoption_install_id(
+        &self,
+        owner: i64,
+        destination: AdoptDestination,
+        scan: AdoptScan,
+        reply: Responder,
+    ) {
         match self.guide().prepare_install_id() {
             InstallIdPreparation::Ready(id) => {
                 let start = self.guide().scan_adoption(scan, &id);
@@ -893,30 +1338,58 @@ impl Projects {
                 let commit_host = self.shell.host.clone();
                 let token = NEXT_SETTINGS.with(|next| {
                     let token = next.get();
-                    next.set(token.checked_add(1).expect("project settings token exhausted"));
+                    next.set(
+                        token
+                            .checked_add(1)
+                            .expect("project settings token exhausted"),
+                    );
                     token
                 });
                 PENDING_SETTINGS.with(|pending| {
-                    pending.borrow_mut().insert(token, (self.this.clone(), reply));
+                    pending
+                        .borrow_mut()
+                        .insert(token, (self.this.clone(), reply));
                 });
                 let path = self.shell.settings_path();
                 let queue = main_core::shell::app_settings::queue::for_path(&path);
                 let core = self.core.clone();
                 queue.submit(move |completion| {
-                    let result = write.execute_guarded(&path, |from, to| guarded_settings_commit(&commit_host, &commit_owner, from, to)).map_err(|error| error.message());
+                    let result = write
+                        .execute_guarded(&path, |from, to| {
+                            guarded_settings_commit(&commit_host, &commit_owner, from, to)
+                        })
+                        .map_err(|error| error.message());
                     core.post(Box::new(move || {
-                        let pending = PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
-                        let Some((projects, reply)) = pending else { drop(completion); return };
+                        let pending =
+                            PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
+                        let Some((projects, reply)) = pending else {
+                            drop(completion);
+                            return;
+                        };
                         let Some(projects) = projects.upgrade() else {
                             drop(completion);
-                            return reply.reply(Err(error_of(Thrown("project services are unavailable".into()))));
+                            return reply.reply(Err(error_of(Thrown(
+                                "project services are unavailable".into(),
+                            ))));
                         };
                         let result = projects.finish_guarded_install(&reply, result);
                         drop(completion);
                         match result {
                             Ok(id) => {
-                                if !reply.owner.as_ref().is_some_and(|owner| projects.shell.host.with_request_owner(&owner.native, &owner.cancel, &mut || Ok(())).is_ok()) {
-                                    return reply.reply(Err(error_of(Thrown("adoption owner is no longer available".into()))));
+                                if !reply.owner.as_ref().is_some_and(|owner| {
+                                    projects
+                                        .shell
+                                        .host
+                                        .with_request_owner(
+                                            &owner.native,
+                                            &owner.cancel,
+                                            &mut || Ok(()),
+                                        )
+                                        .is_ok()
+                                }) {
+                                    return reply.reply(Err(error_of(Thrown(
+                                        "adoption owner is no longer available".into(),
+                                    ))));
                                 }
                                 let start = projects.guide().scan_adoption(scan, &id);
                                 projects.start_adoption(owner, destination, start, reply);
@@ -938,77 +1411,120 @@ impl Projects {
         reply: Responder,
     ) {
         let GuidePending::Adopt(pending) = pending else {
-            return reply.reply(Err(error_of(Thrown("the trust answer belongs to another request".into()))));
+            return reply.reply(Err(error_of(Thrown(
+                "the trust answer belongs to another request".into(),
+            ))));
         };
         if answer.is_none() {
-            let result = self.guide().prepare_adopt_answer(pending, answer)
+            let result = self
+                .guide()
+                .prepare_adopt_answer(pending, answer)
                 .map_err(|error| Thrown(error.message()));
             let result = match result {
                 Ok(AdoptPreparation::Done(result)) => Ok(result),
-                Ok(AdoptPreparation::Write(_)) => Err(Thrown("cancelled adoption unexpectedly requested a write".into())),
+                Ok(AdoptPreparation::Write(_)) => Err(Thrown(
+                    "cancelled adoption unexpectedly requested a write".into(),
+                )),
                 Err(error) => Err(error),
             };
             let step = self.finish_adopt_step(owner, destination, result, &reply);
             return self.advance(step, reply);
         }
-        self.queue_adoption(owner, AdoptWork::Answer(pending, answer), destination, reply);
+        self.queue_adoption(
+            owner,
+            AdoptWork::Answer(pending, answer),
+            destination,
+            reply,
+        );
     }
 
-    fn queue_adoption(&self, owner: i64, work: AdoptWork, destination: AdoptDestination, reply: Responder) {
+    fn queue_adoption(
+        &self,
+        owner: i64,
+        work: AdoptWork,
+        destination: AdoptDestination,
+        reply: Responder,
+    ) {
         let commit_owner = reply.owner.clone();
         let commit_host = self.shell.host.clone();
         let token = NEXT_SETTINGS.with(|next| {
             let token = next.get();
-            next.set(token.checked_add(1).expect("project settings token exhausted"));
+            next.set(
+                token
+                    .checked_add(1)
+                    .expect("project settings token exhausted"),
+            );
             token
         });
         PENDING_SETTINGS.with(|pending| {
-            pending.borrow_mut().insert(token, (self.this.clone(), reply));
+            pending
+                .borrow_mut()
+                .insert(token, (self.this.clone(), reply));
         });
         let path = self.shell.settings_path();
         let queue = main_core::shell::app_settings::queue::for_path(&path);
         let core = self.core.clone();
         queue.submit(move |completion| {
             core.post(Box::new(move || {
-                let projects = PENDING_SETTINGS.with(|pending| pending.borrow().get(&token).map(|entry| entry.0.clone()));
+                let projects = PENDING_SETTINGS
+                    .with(|pending| pending.borrow().get(&token).map(|entry| entry.0.clone()));
                 let Some(projects) = projects.and_then(|projects| projects.upgrade()) else {
-                    let pending = PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
+                    let pending =
+                        PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
                     drop(completion);
                     if let Some((_, reply)) = pending {
-                        reply.reply(Err(error_of(Thrown("project services are unavailable".into()))));
+                        reply.reply(Err(error_of(Thrown(
+                            "project services are unavailable".into(),
+                        ))));
                     }
                     return;
                 };
-                let live = commit_owner.as_ref().is_some_and(|owner| commit_host.with_request_owner(&owner.native, &owner.cancel, &mut || Ok(())).is_ok())
-                    && match &destination {
-                        AdoptDestination::Hint(window, _) => projects.serve(|ipc, deps| ipc.hint_owner_current(deps, owner, window)),
-                        _ => true,
-                    };
+                let live = commit_owner.as_ref().is_some_and(|owner| {
+                    commit_host
+                        .with_request_owner(&owner.native, &owner.cancel, &mut || Ok(()))
+                        .is_ok()
+                }) && match &destination {
+                    AdoptDestination::Hint(window, _) => {
+                        projects.serve(|ipc, deps| ipc.hint_owner_current(deps, owner, window))
+                    }
+                    _ => true,
+                };
                 if !live {
-                    let pending = PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
+                    let pending =
+                        PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
                     drop(completion);
                     if let Some((_, reply)) = pending {
-                        reply.reply(Err(error_of(Thrown("adoption owner is no longer available".into()))));
+                        reply.reply(Err(error_of(Thrown(
+                            "adoption owner is no longer available".into(),
+                        ))));
                     }
                     return;
                 }
                 let preparation = match work {
-                    AdoptWork::Plan(plan) => projects.guide().prepare_adopt_write(plan).map(AdoptPreparation::Write),
-                    AdoptWork::Answer(pending, answer) => projects.guide().prepare_adopt_answer(pending, answer),
+                    AdoptWork::Plan(plan) => projects
+                        .guide()
+                        .prepare_adopt_write(plan)
+                        .map(AdoptPreparation::Write),
+                    AdoptWork::Answer(pending, answer) => {
+                        projects.guide().prepare_adopt_answer(pending, answer)
+                    }
                 };
                 let write = match preparation {
                     Ok(AdoptPreparation::Write(write)) => write,
                     Ok(AdoptPreparation::Done(result)) => {
-                        let pending = PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
+                        let pending =
+                            PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
                         drop(completion);
                         if let Some((_, reply)) = pending {
-                            let step = projects.finish_adopt_step(owner, destination, Ok(result), &reply);
+                            let step =
+                                projects.finish_adopt_step(owner, destination, Ok(result), &reply);
                             projects.advance(step, reply);
                         }
                         return;
                     }
                     Err(error) => {
-                        let pending = PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
+                        let pending =
+                            PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
                         drop(completion);
                         if let Some((_, reply)) = pending {
                             reply.reply(Err(error_of(Thrown(error.message()))));
@@ -1019,33 +1535,54 @@ impl Projects {
                 let workers = projects.shell.workers.clone();
                 let core = projects.core.clone();
                 workers.spawn(Box::new(move || {
-                    let result = write.execute_authorized(
-                        &path,
-                        |effect| guarded_project_publish(&commit_host, &commit_owner, effect),
-                        |from, to| guarded_settings_commit(&commit_host, &commit_owner, from, to),
-                    ).map_err(|error| error.message());
+                    let result = write
+                        .execute_authorized(
+                            &path,
+                            |effect| guarded_project_publish(&commit_host, &commit_owner, effect),
+                            |from, to| {
+                                guarded_settings_commit(&commit_host, &commit_owner, from, to)
+                            },
+                        )
+                        .map_err(|error| error.message());
                     core.post(Box::new(move || {
-                        let pending = PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
-                        let Some((projects, reply)) = pending else { drop(completion); return };
+                        let pending =
+                            PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));
+                        let Some((projects, reply)) = pending else {
+                            drop(completion);
+                            return;
+                        };
                         let Some(projects) = projects.upgrade() else {
                             drop(completion);
-                            return reply.reply(Err(error_of(Thrown("project services are unavailable".into()))));
+                            return reply.reply(Err(error_of(Thrown(
+                                "project services are unavailable".into(),
+                            ))));
                         };
-                        let mut result = Some(result.map(|ack| projects.guide().prepare_adoption_ack(ack)));
+                        let mut result =
+                            Some(result.map(|ack| projects.guide().prepare_adoption_ack(ack)));
                         let mut completed = None;
                         let guarded = match reply.owner.as_ref() {
-                            Some(owner) => projects.shell.host.with_request_owner(&owner.native, &owner.cancel, &mut || {
-                                let Some(result) = result.take() else { return Ok(()) };
-                                completed = Some(match result {
-                                    Ok(ack) => Ok(projects.guide().finish_adoption_ack(ack)),
-                                    Err(error) => Err(Thrown(error)),
-                                });
-                                Ok(())
-                            }),
-                            None => Err(error_of(Thrown("authenticated project request owner is unavailable".into()))),
+                            Some(owner) => projects.shell.host.with_request_owner(
+                                &owner.native,
+                                &owner.cancel,
+                                &mut || {
+                                    let Some(result) = result.take() else {
+                                        return Ok(());
+                                    };
+                                    completed = Some(match result {
+                                        Ok(ack) => Ok(projects.guide().finish_adoption_ack(ack)),
+                                        Err(error) => Err(Thrown(error)),
+                                    });
+                                    Ok(())
+                                },
+                            ),
+                            None => Err(error_of(Thrown(
+                                "authenticated project request owner is unavailable".into(),
+                            ))),
                         };
                         let result = match guarded {
-                            Ok(()) => completed.unwrap_or_else(|| Err(Thrown("adoption acknowledgement did not run".into()))),
+                            Ok(()) => completed.unwrap_or_else(|| {
+                                Err(Thrown("adoption acknowledgement did not run".into()))
+                            }),
                             Err(error) => Err(Thrown(error.message)),
                         };
                         let (result, warnings) = match result {
@@ -1062,7 +1599,6 @@ impl Projects {
             }));
         });
     }
-
 
     /// Calls `f` with the request layer and the services it is served with
     fn serve<R>(
@@ -1116,13 +1652,17 @@ impl Projects {
         self.track(sender);
         if matches!(name, "search" | "read") {
             let projects = self.this.clone();
-            self.shell.files.open_files_async(Box::new(move |open_files| {
-                if let Some(projects) = projects.upgrade() {
-                    projects.request_ready(name, sender, raw, reply, Some(open_files));
-                } else {
-                    reply.reply(Err(error_of(Thrown("project services are unavailable".into()))));
-                }
-            }));
+            self.shell
+                .files
+                .open_files_async(Box::new(move |open_files| {
+                    if let Some(projects) = projects.upgrade() {
+                        projects.request_ready(name, sender, raw, reply, Some(open_files));
+                    } else {
+                        reply.reply(Err(error_of(Thrown(
+                            "project services are unavailable".into(),
+                        ))));
+                    }
+                }));
         } else {
             self.request_ready(name, sender, raw, reply, None);
         }
@@ -1138,16 +1678,24 @@ impl Projects {
     ) {
         if name == "read" {
             let guarded = self.with_tools(|tools| {
-                tools.prepare_read(sender, raw.as_ref().unwrap_or(&JsonValue::Null), open_files.unwrap_or(Err(OpenFilesSourceFailed)))
+                tools.prepare_read(
+                    sender,
+                    raw.as_ref().unwrap_or(&JsonValue::Null),
+                    open_files.unwrap_or(Err(OpenFilesSourceFailed)),
+                )
             });
             match guarded {
                 Err(error) => reply.reply(Err(error_of(error))),
-                Ok(ProjectReadStep::Done(result)) => reply.reply(Ok(to_ipc(&serde_json::to_value(result).expect("project read serializes")))),
+                Ok(ProjectReadStep::Done(result)) => reply.reply(Ok(to_ipc(
+                    &serde_json::to_value(result).expect("project read serializes"),
+                ))),
                 Ok(ProjectReadStep::Read { path, offset }) => {
                     let files = self.shell.files.clone();
                     self.shell.workers.spawn(Box::new(move || {
                         let result = finish_project_read(files.read_page(&path, offset));
-                        reply.reply(Ok(to_ipc(&serde_json::to_value(result).expect("project read serializes"))));
+                        reply.reply(Ok(to_ipc(
+                            &serde_json::to_value(result).expect("project read serializes"),
+                        )));
                     }));
                 }
             }
@@ -1173,75 +1721,185 @@ impl Projects {
 
     fn respond_guarded(&self, reply: Responder, value: shell_contract::ipc::Reply) {
         let Some(owner) = reply.owner.clone() else {
-            return reply.reply(Err(error_of(Thrown("authenticated project request owner is unavailable".into()))));
+            return reply.reply(Err(error_of(Thrown(
+                "authenticated project request owner is unavailable".into(),
+            ))));
         };
         let mut reply = Some(reply);
         let mut value = Some(value);
-        let result = self.shell.host.with_request_owner(&owner.native, &owner.cancel, &mut || {
-            if let (Some(reply), Some(value)) = (reply.take(), value.take()) {
-                reply.reply(value);
-            }
-            Ok(())
-        });
+        let result = self
+            .shell
+            .host
+            .with_request_owner(&owner.native, &owner.cancel, &mut || {
+                if let (Some(reply), Some(value)) = (reply.take(), value.take()) {
+                    reply.reply(value);
+                }
+                Ok(())
+            });
         if let Some(reply) = reply.take() {
-            let error = result.err().unwrap_or_else(|| error_of(Thrown("project owner guard did not run".into())));
+            let error = result
+                .err()
+                .unwrap_or_else(|| error_of(Thrown("project owner guard did not run".into())));
             reply.reply(Err(error));
         }
     }
 
     fn advance(&self, mut step: Result<IpcStep<GuidePending>, Thrown>, reply: Responder) {
         loop {
-            let outside = self.inner.borrow_mut().services.as_mut()
-                .map(|services| services.chats.take_outside_writes()).unwrap_or_default();
+            let outside = self
+                .inner
+                .borrow_mut()
+                .services
+                .as_mut()
+                .map(|services| services.chats.take_outside_writes())
+                .unwrap_or_default();
             if !outside.is_empty() {
                 return self.queue_outside_writes(outside, step, reply);
             }
             match step {
                 Err(thrown) => return self.respond_guarded(reply, Err(error_of(thrown))),
                 Ok(IpcStep::Done(value)) => {
-                    return self.respond_guarded(reply, Ok(value.as_ref().map_or(IpcValue::Undefined, to_ipc)));
+                    return self.respond_guarded(
+                        reply,
+                        Ok(value.as_ref().map_or(IpcValue::Undefined, to_ipc)),
+                    );
                 }
                 Ok(IpcStep::SettingsWrite(write)) => return self.write_settings(write, reply),
                 Ok(IpcStep::Mutation(request)) => return self.mutation(request, reply),
-                Ok(IpcStep::ContextRead { project_id }) => return self.read_context(project_id, reply),
-                Ok(IpcStep::SelectionWrite(request)) => return self.write_selection(request, reply),
-                Ok(IpcStep::InitialChat { window, selection }) => return self.queue_chat_io(ChatContinuation::Initial { window, selection }, reply),
-                Ok(IpcStep::ListChats { window, project_id }) => return self.queue_chat_io(ChatContinuation::List { window, project_id }, reply),
-                Ok(IpcStep::OpenChat { sender, chat_ref, args }) => return self.queue_chat_io(ChatContinuation::Open { sender, chat_ref, args }, reply),
-                Ok(IpcStep::RenameChat { chat_ref, args }) => return self.queue_chat_io(ChatContinuation::Rename { chat_ref, args }, reply),
-                Ok(IpcStep::AttachChat { chat_ref, doc_path }) => return self.queue_chat_io(ChatContinuation::Attach { chat_ref, doc_path }, reply),
-                Ok(IpcStep::OpenDocumentChat { chat_ref }) => return self.queue_chat_io(ChatContinuation::OpenDocument { chat_ref }, reply),
-                Ok(IpcStep::NewChat { sender, project_id }) => return self.queue_chat_io(ChatContinuation::New { sender, project_id }, reply),
-                Ok(IpcStep::DeleteChat { sender, chat_ref }) => return self.queue_chat_io(ChatContinuation::Delete { sender, chat_ref }, reply),
-                Ok(IpcStep::ChatAppend(request)) => return self.queue_chat_io(ChatContinuation::Append(request), reply),
-                Ok(IpcStep::TrustAnswer { project_id, pending, answer }) =>
-                    return self.trust_answer(project_id, pending, answer, reply),
-                Ok(IpcStep::TrustWithout { project_id, sender: _ }) =>
-                    return self.trust_without(project_id, reply),
-                Ok(IpcStep::TrustUse { project_id, sender }) =>
-                    return self.trust_use(project_id, sender, None, reply),
-                Ok(IpcStep::AdoptStart { owner, folder, relocate_id }) => {
+                Ok(IpcStep::ContextRead { project_id }) => {
+                    return self.read_context(project_id, reply);
+                }
+                Ok(IpcStep::SelectionWrite(request)) => {
+                    return self.write_selection(request, reply);
+                }
+                Ok(IpcStep::InitialChat { window, selection }) => {
+                    return self
+                        .queue_chat_io(ChatContinuation::Initial { window, selection }, reply);
+                }
+                Ok(IpcStep::ListChats { window, project_id }) => {
+                    return self.queue_chat_io(ChatContinuation::List { window, project_id }, reply);
+                }
+                Ok(IpcStep::OpenChat {
+                    sender,
+                    chat_ref,
+                    args,
+                }) => {
+                    return self.queue_chat_io(
+                        ChatContinuation::Open {
+                            sender,
+                            chat_ref,
+                            args,
+                        },
+                        reply,
+                    );
+                }
+                Ok(IpcStep::RenameChat { chat_ref, args }) => {
+                    return self.queue_chat_io(ChatContinuation::Rename { chat_ref, args }, reply);
+                }
+                Ok(IpcStep::AttachChat { chat_ref, doc_path }) => {
+                    return self
+                        .queue_chat_io(ChatContinuation::Attach { chat_ref, doc_path }, reply);
+                }
+                Ok(IpcStep::OpenDocumentChat { chat_ref }) => {
+                    return self.queue_chat_io(ChatContinuation::OpenDocument { chat_ref }, reply);
+                }
+                Ok(IpcStep::NewChat { sender, project_id }) => {
+                    return self.queue_chat_io(ChatContinuation::New { sender, project_id }, reply);
+                }
+                Ok(IpcStep::DeleteChat { sender, chat_ref }) => {
+                    return self.queue_chat_io(ChatContinuation::Delete { sender, chat_ref }, reply);
+                }
+                Ok(IpcStep::ChatAppend(request)) => {
+                    return self.queue_chat_io(ChatContinuation::Append(request), reply);
+                }
+                Ok(IpcStep::TrustAnswer {
+                    project_id,
+                    pending,
+                    answer,
+                }) => return self.trust_answer(project_id, pending, answer, reply),
+                Ok(IpcStep::TrustWithout {
+                    project_id,
+                    sender: _,
+                }) => return self.trust_without(project_id, reply),
+                Ok(IpcStep::TrustUse { project_id, sender }) => {
+                    return self.trust_use(project_id, sender, None, reply);
+                }
+                Ok(IpcStep::AdoptStart {
+                    owner,
+                    folder,
+                    relocate_id,
+                }) => {
                     let start = self.guide().prepare_adopt(&folder, relocate_id.as_deref());
                     return self.start_adoption(owner, AdoptDestination::Plain, start, reply);
                 }
-                Ok(IpcStep::CreateStart { owner, request, second }) =>
-                    return self.start_creation(owner, request, second, reply),
-                Ok(IpcStep::ConfirmExisting { owner, request, folder_path }) => {
+                Ok(IpcStep::CreateStart {
+                    owner,
+                    request,
+                    second,
+                }) => return self.start_creation(owner, request, second, reply),
+                Ok(IpcStep::ConfirmExisting {
+                    owner,
+                    request,
+                    folder_path,
+                }) => {
                     if let Err(error) = self.guarded_core(&reply, || Ok(())) {
                         return self.respond_guarded(reply, Err(error_of(error)));
                     }
-                    step = self.serve(|_, deps| ProjectIpc::continue_confirm_existing(deps, owner, request, &folder_path));
+                    step = self.serve(|_, deps| {
+                        ProjectIpc::continue_confirm_existing(deps, owner, request, &folder_path)
+                    });
                 }
-                Ok(IpcStep::HintStart { owner, window, doc_path }) => {
+                Ok(IpcStep::HintStart {
+                    owner,
+                    window,
+                    doc_path,
+                }) => {
                     let start = self.guide().prepare_adopt_hint(&doc_path);
-                    return self.start_adoption(owner, AdoptDestination::Hint(window, doc_path), start, reply);
+                    return self.start_adoption(
+                        owner,
+                        AdoptDestination::Hint(window, doc_path),
+                        start,
+                        reply,
+                    );
                 }
-                Ok(IpcStep::HintAnswer { owner, window, doc_path, pending, answer }) =>
-                    return self.adopt_answer(owner, pending, answer, AdoptDestination::Hint(window, doc_path), reply),
-                Ok(IpcStep::HintSelection { owner, window, doc_path, result }) =>
-                    return self.write_hint_selection(owner, window, doc_path, result, reply),
-                Ok(IpcStep::AdoptAnswer { owner, pending, answer, create }) =>
-                    return self.adopt_answer(owner, pending, answer, match create { Some((request, second)) => AdoptDestination::Create(request, second), None => AdoptDestination::Plain }, reply),
+                Ok(IpcStep::HintAnswer {
+                    owner,
+                    window,
+                    doc_path,
+                    pending,
+                    answer,
+                }) => {
+                    return self.adopt_answer(
+                        owner,
+                        pending,
+                        answer,
+                        AdoptDestination::Hint(window, doc_path),
+                        reply,
+                    );
+                }
+                Ok(IpcStep::HintSelection {
+                    owner,
+                    window,
+                    doc_path,
+                    result,
+                }) => return self.write_hint_selection(owner, window, doc_path, result, reply),
+                Ok(IpcStep::AdoptAnswer {
+                    owner,
+                    pending,
+                    answer,
+                    create,
+                }) => {
+                    return self.adopt_answer(
+                        owner,
+                        pending,
+                        answer,
+                        match create {
+                            Some((request, second)) => AdoptDestination::Create(request, second),
+                            None => AdoptDestination::Plain,
+                        },
+                        reply,
+                    );
+                }
                 Ok(IpcStep::AskTrust {
                     owner,
                     prompt,
@@ -1251,10 +1909,16 @@ impl Projects {
                     let choice = self.shell.ask_trust(owner, &prompt);
                     step = self.serve(|ipc, deps| ipc.resume_trust(deps, pending, choice));
                 }
-                Ok(IpcStep::ViewTrustFiles { paths,chats,pending }) =>
-                    return self.open_trust_files(paths.into_iter(),chats,false,pending,reply),
-                Ok(IpcStep::OpenDocumentChatTarget { path,chat_ref }) =>
-                    return self.open_chat_target(path,chat_ref,reply),
+                Ok(IpcStep::ViewTrustFiles {
+                    paths,
+                    chats,
+                    pending,
+                }) => {
+                    return self.open_trust_files(paths.into_iter(), chats, false, pending, reply);
+                }
+                Ok(IpcStep::OpenDocumentChatTarget { path, chat_ref }) => {
+                    return self.open_chat_target(path, chat_ref, reply);
+                }
                 Ok(IpcStep::WaitForReturn { owner, pending }) => {
                     let page = u32::try_from(owner)
                         .ok()
@@ -1418,7 +2082,9 @@ impl Projects {
         offset: f64,
         open_files: Result<Vec<OpenFileState>, OpenFilesSourceFailed>,
     ) -> Result<ProjectReadStep, Thrown> {
-        self.with_tools(|tools| tools.prepare_project_read_with_open_files(owner, project_id, path, offset, open_files))
+        self.with_tools(|tools| {
+            tools.prepare_project_read_with_open_files(owner, project_id, path, offset, open_files)
+        })
     }
 
     fn with_tools<R>(&self, f: impl FnOnce(&mut services::ToolsOfShell) -> R) -> R {
@@ -1428,7 +2094,6 @@ impl Projects {
         });
         f(&mut services.tools)
     }
-
 
     /// `projectFolderIpc.windowProject(id)`: the project this window's AI
     /// panel has chosen now (the panel's last answer, else the starting
@@ -1488,23 +2153,39 @@ impl Projects {
         (seed, lookup, self.guide().new_document_io())
     }
 
-    pub fn new_document_cleanup(&self) -> ProjectCleanupSink { self.cleanup.clone() }
+    pub fn new_document_cleanup(&self) -> ProjectCleanupSink {
+        self.cleanup.clone()
+    }
 
     /// Flush before shutdown; the callback runs on core after the write.
     pub fn flush_touches(&self, done: Box<dyn FnOnce(Result<(), String>)>) {
         let token = NEXT_SETTINGS.with(|next| {
             let token = next.get();
-            next.set(token.checked_add(1).expect("project settings token exhausted"));
+            next.set(
+                token
+                    .checked_add(1)
+                    .expect("project settings token exhausted"),
+            );
             token
         });
-        PENDING_TOUCHES.with(|pending| { pending.borrow_mut().insert(token, (self.this.clone(), Some(done))); });
+        PENDING_TOUCHES.with(|pending| {
+            pending
+                .borrow_mut()
+                .insert(token, (self.this.clone(), Some(done)));
+        });
         let cleanup = self.cleanup.clone();
         let core = self.core.clone();
         self.shell.workers.spawn(Box::new(move || {
             let result = cleanup.quiesce_and_drain();
             core.post(Box::new(move || {
-                let Some((projects, done)) = PENDING_TOUCHES.with(|pending| pending.borrow_mut().remove(&token)) else { return; };
-                let Some(done) = done else { return; };
+                let Some((projects, done)) =
+                    PENDING_TOUCHES.with(|pending| pending.borrow_mut().remove(&token))
+                else {
+                    return;
+                };
+                let Some(done) = done else {
+                    return;
+                };
                 match (projects.upgrade(), result) {
                     (Some(projects), Ok(())) => projects.queue_touch_flush(Some(done)),
                     (_, Err(error)) => done(Err(error)),
@@ -1515,18 +2196,31 @@ impl Projects {
     }
 
     fn queue_touch_flush(&self, done: Option<Box<dyn FnOnce(Result<(), String>)>>) {
-        let guide = self.inner.borrow().services.as_ref().map(|services| services.guide.0.clone());
+        let guide = self
+            .inner
+            .borrow()
+            .services
+            .as_ref()
+            .map(|services| services.guide.0.clone());
         let Some(flush) = guide.and_then(|guide| guide.prepare_touch_flush()) else {
-            if let Some(done) = done { done(Ok(())); }
+            if let Some(done) = done {
+                done(Ok(()));
+            }
             return;
         };
         let token = NEXT_SETTINGS.with(|next| {
             let token = next.get();
-            next.set(token.checked_add(1).expect("project settings token exhausted"));
+            next.set(
+                token
+                    .checked_add(1)
+                    .expect("project settings token exhausted"),
+            );
             token
         });
         PENDING_TOUCHES.with(|pending| {
-            pending.borrow_mut().insert(token, (self.this.clone(), done));
+            pending
+                .borrow_mut()
+                .insert(token, (self.this.clone(), done));
         });
         let path = self.shell.settings_path();
         let queue = main_core::shell::app_settings::queue::for_path(&path);
@@ -1535,7 +2229,10 @@ impl Projects {
             let result = flush.execute(&path).map_err(|error| error.message());
             core.post(Box::new(move || {
                 let pending = PENDING_TOUCHES.with(|pending| pending.borrow_mut().remove(&token));
-                let Some((projects, done)) = pending else { drop(completion); return };
+                let Some((projects, done)) = pending else {
+                    drop(completion);
+                    return;
+                };
                 if let Some(projects) = projects.upgrade() {
                     if result.is_ok() {
                         projects.guide().finish_touch_flush(&flush);
@@ -1544,11 +2241,17 @@ impl Projects {
                     }
                     drop(completion);
                     projects.sync_touch_timer();
-                    if let Err(error) = result { eprintln!("shell: flushing project touches: {error}"); }
-                    if let Some(done) = done { done(Ok(())); }
+                    if let Err(error) = result {
+                        eprintln!("shell: flushing project touches: {error}");
+                    }
+                    if let Some(done) = done {
+                        done(Ok(()));
+                    }
                 } else {
                     drop(completion);
-                    if let Some(done) = done { done(Err("project services are unavailable".into())); }
+                    if let Some(done) = done {
+                        done(Err("project services are unavailable".into()));
+                    }
                 }
             }));
         });
@@ -1565,13 +2268,34 @@ impl Handler for Request {
     fn call(&self, cx: &CallContext, args: Vec<IpcValue>, reply: RawResponder) {
         let raw = args.first().and_then(json_of);
         let Some(context) = cx.native.clone() else {
-            return reply.reply(Err(error_of(Thrown("authenticated project request owner is unavailable".into()))));
+            return reply.reply(Err(error_of(Thrown(
+                "authenticated project request owner is unavailable".into(),
+            ))));
         };
-        let owner = NativeRequestOwner { view: cx.sender.view, context };
-        if let Err(error) = self.projects.shell.host.with_request_owner(&owner, &cx.cancel, &mut || Ok(())) {
+        let owner = NativeRequestOwner {
+            view: cx.sender.view,
+            context,
+        };
+        if let Err(error) =
+            self.projects
+                .shell
+                .host
+                .with_request_owner(&owner, &cx.cancel, &mut || Ok(()))
+        {
             return reply.reply(Err(error));
         }
-        self.projects.request(self.name, cx.sender.view, raw, Responder { raw: reply, owner: Some(RequestOwner { native: owner, cancel: cx.cancel.clone() }) });
+        self.projects.request(
+            self.name,
+            cx.sender.view,
+            raw,
+            Responder {
+                raw: reply,
+                owner: Some(RequestOwner {
+                    native: owner,
+                    cancel: cx.cancel.clone(),
+                }),
+            },
+        );
     }
 }
 

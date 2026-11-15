@@ -35,30 +35,81 @@ pub(crate) type NeedsWork = Box<dyn FnOnce() -> Result<bool,String> + Send>;
 pub(crate) type NeedsUser = dyn Fn(&RestoredTabOpener, &UnloadedTabOpenContext) -> Result<NeedsWork, String>;
 pub(crate) type FailedAttemptDone=Box<dyn FnOnce(Result<shell_ipc_w::tabs::OwnedLoadedTabView,String>)>;
 pub(crate) type RecoveryCleanup=shell_ipc_w::tabs::RecoveryCleanup;
-struct HeldFailure { error:String,done:FailedAttemptDone,cleanup:Option<RecoveryCleanup>,closure:Option<shell_contract::ipc::NativeClosureReceipt>,core:Option<std::sync::Arc<dyn shell_contract::runtime::Thread>>,in_flight:bool,on_cleanup_error:Option<Rc<dyn Fn(String)>> }
+enum RollbackProgress {
+    Retired(Rc<dyn shell_ipc_w::tabs::host::EditorSeedRollback>),
+    Finished(Rc<dyn shell_ipc_w::tabs::host::EditorSeedRollback>),
+}
+struct HeldFailure {
+    error:String,done:FailedAttemptDone,cleanup:Option<RecoveryCleanup>,
+    retirement:Option<shell_contract::ipc::NativeBrowserRetirement>,
+    delivery:Option<std::sync::Arc<std::sync::Mutex<Option<Result<shell_contract::ipc::NativeBrowserRetirement,String>>>>>,
+    rollback_progress:Option<RollbackProgress>,
+    indeterminate:Option<&'static str>,
+    core:Option<std::sync::Arc<dyn shell_contract::runtime::Thread>>,
+    in_flight:bool,on_cleanup_error:Option<Rc<dyn Fn(String)>>,
+}
 
 fn rollback_receipts(
-    store:shell_ipc_w::tabs::host::EditorSeedRollbackStore,
-    proof:shell_contract::ipc::NativeClosureReceipt,
+    attempt:NativeAttempt,
+    proof:shell_contract::ipc::NativeBrowserRetirement,
     done:Box<dyn FnOnce(Result<(),String>)>,
 ) {
-    let receipt=store.borrow().last().cloned();
-    let Some(receipt)=receipt else { return done(Ok(())); };
+    let next={
+        let entry=attempt.entry.borrow();
+        match entry.held_failure.as_ref() {
+            None=>Err("The recovery failure is not retained".to_owned()),
+            Some(held)=>{
+                let receipt=entry.rollback.borrow().last().cloned();
+                match (receipt,held.rollback_progress.as_ref()) {
+                    (None,None)=>Ok(None),
+                    (Some(receipt),None)=>Ok(Some((receipt,0))),
+                    (Some(receipt),Some(RollbackProgress::Retired(previous))) if Rc::ptr_eq(&receipt,previous)=>Ok(Some((receipt,1))),
+                    (Some(receipt),Some(RollbackProgress::Finished(previous))) if Rc::ptr_eq(&receipt,previous)=>Ok(Some((receipt,2))),
+                    _=>Err("The recovery rollback sequence changed".to_owned()),
+                }
+            }
+        }
+    };
+    let (receipt,stage)=match next { Ok(Some(next))=>next,Ok(None)=>return done(Ok(())),Err(error)=>return done(Err(error)) };
+    if stage==2 {
+        let matched={
+            let mut entry=attempt.entry.borrow_mut();
+            let matched=entry.rollback.borrow().last().is_some_and(|last|Rc::ptr_eq(last,&receipt));
+            if matched {
+                entry.rollback.borrow_mut().pop();
+                if let Some(held)=entry.held_failure.as_mut() { held.rollback_progress=None; }
+            }
+            matched
+        };
+        if !matched { return done(Err("The recovery rollback sequence changed".into())); }
+        return rollback_receipts(attempt,proof,done);
+    }
+    let next_attempt=attempt.clone();
     let next_receipt=receipt.clone();
-    let next_store=store.clone();
-    receipt.retire_closed(proof.clone(),Box::new(move |result| {
+    let superseded=matches!(&proof,shell_contract::ipc::NativeBrowserRetirement::Superseded(_));
+    let next_proof=proof.clone();
+    let completed=Box::new(move |result:Result<(),String>| {
         if let Err(error)=result { return done(Err(error)); }
-        let after=next_receipt.clone();
-        next_receipt.rollback(Box::new(move |result| {
-            if let Err(error)=result { return done(Err(error)); }
-            let matched={
-                let mut pending=next_store.borrow_mut();
-                if pending.last().is_some_and(|last|Rc::ptr_eq(last,&after)) { pending.pop();true } else { false }
-            };
-            if !matched { return done(Err("The recovery rollback sequence changed".into())); }
-            rollback_receipts(next_store,proof,done);
-        }));
-    }));
+        let retained={
+            let mut entry=next_attempt.entry.borrow_mut();
+            if !next_attempt.matches_entry(&entry) { false }
+            else if let Some(held)=entry.held_failure.as_mut() {
+                held.rollback_progress=Some(if stage==1 || superseded {
+                    RollbackProgress::Finished(next_receipt)
+                } else { RollbackProgress::Retired(next_receipt) });
+                true
+            } else { false }
+        };
+        if !retained { return done(Err("The exact recovery attempt is unavailable".into())); }
+        rollback_receipts(next_attempt,next_proof,done);
+    });
+    if stage==1 { receipt.rollback(completed); }
+    else {
+        match proof {
+            shell_contract::ipc::NativeBrowserRetirement::Closed(proof)=>receipt.retire_closed(proof,completed),
+            shell_contract::ipc::NativeBrowserRetirement::Superseded(proof)=>receipt.retire_superseded(proof,completed),
+        }
+    }
 }
 
 enum Attempt {
@@ -75,6 +126,7 @@ struct Entry {
     selected: UnloadedTabSpec,
     plan: Rc<super::recovery_launch::issuer::RecoveryPlan>,
     attempt: Attempt,
+    target:Option<shell_contract::ipc::RecoveryOpenTarget>,
     held_failure:Option<HeldFailure>,
     rollback: shell_ipc_w::tabs::host::EditorSeedRollbackStore,
     retired: bool,
@@ -104,24 +156,114 @@ struct NativeAttemptBridge {
     core:std::sync::Arc<dyn shell_contract::runtime::Thread>,
 }
 
+fn matches_retirement(target:&shell_contract::ipc::RecoveryOpenTarget,proof:&shell_contract::ipc::NativeBrowserRetirement)->bool {
+    match proof {
+        shell_contract::ipc::NativeBrowserRetirement::Closed(receipt)=>
+            receipt.matches(target.closure_reservation(),target.view(),target.created())
+                && receipt.terminal_owner().is_some_and(|owner|owner.same_owner(target.browser_owner())),
+        shell_contract::ipc::NativeBrowserRetirement::Superseded(proof)=>
+            proof.matches(target.closure_reservation(),target.browser_owner()),
+    }
+}
+
+fn retained_attempt(opener:Opener,generation:&shell_contract::runtime::RendererGeneration)->Option<NativeAttempt> {
+    REGISTRY.with(|registry| {
+        let entry=registry.borrow().entries.get(&opener.id).cloned()?;
+        let operation={
+            let current=entry.borrow();
+            let Attempt::Active(operation)=&current.attempt else{return None};
+            if !operation.authority_generation().same_generation(generation) { return None; }
+            operation.clone()
+        };
+        Some(NativeAttempt {entry,opener,operation})
+    })
+}
+
+fn recovery_attempt_abandoned(opener:Opener,generation:&shell_contract::runtime::RendererGeneration) {
+    let Some(attempt)=retained_attempt(opener,generation) else{return};
+    let abandoned={
+        let mut entry=attempt.entry.borrow_mut();
+        if let Some(held)=entry.held_failure.as_mut() {
+            if held.in_flight {
+                held.in_flight=false;
+                let delivered=held.delivery.as_ref().is_some_and(|slot|
+                    slot.lock().unwrap_or_else(|error|error.into_inner()).is_some());
+                if !delivered { held.indeterminate=Some("The recovery cleanup completion was discarded"); }
+                true
+            } else { false }
+        } else { false }
+    };
+    if abandoned { attempt.cleanup_failed("The recovery cleanup discarded its completion".into()); }
+}
+
+struct RecoveryCleanupGuard {
+    opener:Opener,generation:shell_contract::runtime::RendererGeneration,
+    core:std::sync::Arc<dyn shell_contract::runtime::Thread>,pending:bool,
+}
+impl Drop for RecoveryCleanupGuard {
+    fn drop(&mut self) {
+        if self.pending {
+            let opener=self.opener;
+            let generation=self.generation.clone();
+            self.core.post(Box::new(move ||recovery_attempt_abandoned(opener,&generation)));
+        }
+    }
+}
+struct RecoveryRollbackGuard { attempt:NativeAttempt,pending:bool }
+impl Drop for RecoveryRollbackGuard {
+    fn drop(&mut self) {
+        if self.pending {
+            let abandoned={
+                let mut entry=self.attempt.entry.borrow_mut();
+                if let Some(held)=entry.held_failure.as_mut() {
+                    if held.in_flight {
+                        held.in_flight=false;
+                        held.indeterminate=Some("The recovery rollback completion was discarded");
+                        true
+                    } else { false }
+                } else { false }
+            };
+            if abandoned { self.attempt.cleanup_failed("The recovery rollback discarded its completion".into()); }
+        }
+    }
+}
+
 impl NativeAttempt {
+    fn matches_entry(&self,entry:&Entry)->bool {
+        matches!(&entry.attempt,Attempt::Active(operation)
+            if operation.authority_generation().same_generation(self.operation.authority_generation()))
+    }
+    fn registered(&self)->bool {
+        REGISTRY.with(|registry|registry.borrow().entries.get(&self.opener.id)
+            .is_some_and(|entry|Rc::ptr_eq(entry,&self.entry)))
+    }
+    fn retain_unbound(&self,cleanup:Box<dyn FnOnce()>) {
+        let owner=self.entry.borrow().owner;
+        REGISTRY.with(|registry|registry.borrow_mut().quarantined.push((owner,self.clone(),cleanup)));
+        fail_drains(owner,"The recovery cleanup has no matching target".into());
+    }
+    fn quarantined(&self)->bool {
+        REGISTRY.with(|registry|registry.borrow().quarantined.iter().any(|(_,attempt,_)|
+            Rc::ptr_eq(&attempt.entry,&self.entry)
+                && attempt.operation.authority_generation().same_generation(self.operation.authority_generation())))
+    }
     fn cleanup_failed(&self,error:String) {
         let (owner,observer)={ let entry=self.entry.borrow();(entry.owner,entry.held_failure.as_ref().and_then(|held|held.on_cleanup_error.clone())) };
         fail_drains(owner,error.clone());
         if let Some(observer)=observer { observer(error); }
     }
     fn finish(&self,success:bool)->Result<WindowId,String> {
+        if !self.registered() || self.quarantined() { return Err("The exact recovery attempt is unavailable".into()); }
         let owner={
             let mut entry=self.entry.borrow_mut();
-            let matches=matches!(&entry.attempt,Attempt::Active(operation)
-                if operation.authority_generation().same_generation(self.operation.authority_generation()));
-            if !matches || entry.held_failure.is_some() { return Err("The exact recovery attempt is unavailable".into()); }
+            if !self.matches_entry(&entry) || entry.held_failure.is_some() { return Err("The exact recovery attempt is unavailable".into()); }
             entry.attempt=Attempt::Finishing;
             entry.owner
         };
         self.operation.finish();
         let remove={
             let mut entry=self.entry.borrow_mut();
+            entry.target=None;
             if success || entry.retired { entry.retired=true; true }
             else { entry.attempt=Attempt::Idle; false }
         };
@@ -138,19 +280,23 @@ impl NativeAttempt {
     }
 
     fn closed(&self)->Result<(),String> {
-        let (proof,store)={
+        if !self.registered() { return Err("The exact recovery attempt is unavailable".into()); }
+        let proof={
             let mut entry=self.entry.borrow_mut();
-            let matches=matches!(&entry.attempt,Attempt::Active(operation)
-                if operation.authority_generation().same_generation(self.operation.authority_generation()));
-            if !matches { return Err("The exact recovery attempt is unavailable".into()); }
-            let held=entry.held_failure.as_mut().ok_or("The recovery failure is not retained")?;
+            if !self.matches_entry(&entry) { return Err("The exact recovery attempt is unavailable".into()); }
+            let held=entry.held_failure.as_ref().ok_or("The recovery failure is not retained")?;
             if held.in_flight { return Ok(()); }
-            let proof=held.closure.clone().ok_or("The recovery close proof is unavailable")?;
-            held.in_flight=true;
-            (proof,entry.rollback.clone())
+            let proof=held.retirement.clone().ok_or("The recovery retirement is unavailable")?;
+            if !entry.target.as_ref().is_some_and(|target|matches_retirement(target,&proof)) {
+                return Err("The retirement does not match the original recovery target".into());
+            }
+            entry.held_failure.as_mut().ok_or("The recovery failure is not retained")?.in_flight=true;
+            proof
         };
         let attempt=self.clone();
-        rollback_receipts(store,proof,Box::new(move |result| {
+        let mut guard=RecoveryRollbackGuard {attempt:self.clone(),pending:true};
+        rollback_receipts(self.clone(),proof,Box::new(move |result| {
+            guard.pending=false;
             let owner=attempt.entry.borrow().owner;
             if let Some(held)=attempt.entry.borrow_mut().held_failure.as_mut() { held.in_flight=false; }
             if let Err(error)=result { attempt.cleanup_failed(error); return; }
@@ -164,40 +310,80 @@ impl NativeAttempt {
         Ok(())
     }
     fn retry_failure(&self) {
+        enum Work {
+            Retire,
+            Indeterminate(&'static str),
+            Delivered(Result<shell_contract::ipc::NativeBrowserRetirement,String>),
+            Cleanup(RecoveryCleanup,std::sync::Arc<dyn shell_contract::runtime::Thread>,
+                std::sync::Arc<std::sync::Mutex<Option<Result<shell_contract::ipc::NativeBrowserRetirement,String>>>>,
+                shell_contract::ipc::RecoveryOpenTarget),
+            Unavailable,
+        }
+        if !self.registered() { return; }
         let state={
             let mut entry=self.entry.borrow_mut();
-            let Some(held)=entry.held_failure.as_mut() else{return};
+            if !self.matches_entry(&entry) { return; }
+            let Entry {target,held_failure,..}=&mut *entry;
+            let Some(held)=held_failure.as_mut() else{return};
             if held.in_flight { None }
-            else if held.closure.is_some() { Some(Ok(())) }
-            else if let (Some(cleanup),Some(core))=(held.cleanup.clone(),held.core.clone()) {
-                held.in_flight=true; Some(Err((cleanup,core)))
-            } else { None }
+            else if let Some(error)=held.indeterminate { Some(Work::Indeterminate(error)) }
+            else if held.retirement.is_some() { Some(Work::Retire) }
+            else {
+                let delivered=held.delivery.as_ref().and_then(|slot|slot.lock().unwrap_or_else(|error|error.into_inner()).take());
+                if let Some(result)=delivered {
+                    held.delivery=None;
+                    Some(Work::Delivered(result))
+                } else if let (Some(cleanup),Some(core),Some(target))=(held.cleanup.clone(),held.core.clone(),target.as_ref()) {
+                    let delivery=std::sync::Arc::new(std::sync::Mutex::new(None));
+                    held.delivery=Some(delivery.clone());
+                    held.in_flight=true;
+                    Some(Work::Cleanup(cleanup,core,delivery,target.clone()))
+                } else { Some(Work::Unavailable) }
+            }
         };
         match state {
-            Some(Ok(()))=>if let Err(error)=self.closed(){self.cleanup_failed(error);},
-            Some(Err((cleanup,core)))=>{
-                let attempt=self.clone();
-                let done=shell_ipc_w::home_files::back_to_core(core,move |result:Result<shell_contract::ipc::NativeClosureReceipt,String>| {
-                    let owner=attempt.entry.borrow().owner;
-                    let failed={
-                        let mut entry=attempt.entry.borrow_mut();
-                        if let Some(held)=entry.held_failure.as_mut() {
-                            held.in_flight=false;
-                            match result { Ok(proof)=>{held.closure=Some(proof);None}, Err(error)=>Some(error) }
-                        } else { None }
+            Some(Work::Indeterminate(error))=>self.cleanup_failed(error.into()),
+            Some(Work::Retire)=>if let Err(error)=self.closed(){self.cleanup_failed(error);},
+            Some(Work::Delivered(result))=>{
+                let failed={
+                    let mut entry=self.entry.borrow_mut();
+                    let valid=match &result {
+                        Ok(proof)=>entry.target.as_ref().is_some_and(|target|matches_retirement(target,proof)),
+                        Err(_)=>true,
                     };
-                    if let Some(error)=failed { attempt.cleanup_failed(error);return; }
-                    let ready=attempt.entry.borrow().held_failure.as_ref().is_some_and(|held|held.closure.is_some());
-                    if ready { attempt.retry_failure(); }
-                });
-                cleanup(done);
+                    if let Some(held)=entry.held_failure.as_mut() {
+                        match result {
+                            Ok(proof) if valid=>{held.retirement=Some(proof);held.cleanup=None;None},
+                            Ok(_)=>Some("The retirement does not match the original recovery target".into()),
+                            Err(error)=>Some(error),
+                        }
+                    } else { None }
+                };
+                if let Some(error)=failed { self.cleanup_failed(error); }
+                else { self.retry_failure(); }
             }
-            None=>{
-                let entry=self.entry.borrow();
-                if entry.held_failure.as_ref().is_some_and(|held|!held.in_flight && held.closure.is_none() && held.cleanup.is_none()) {
-                    drop(entry);self.cleanup_failed("The recovery cleanup is unavailable".into());
-                }
+            Some(Work::Cleanup(cleanup,core,delivery,target))=>{
+                let opener=self.opener;
+                let generation=self.operation.authority_generation().clone();
+                let guard=RecoveryCleanupGuard {opener,generation:generation.clone(),core:core.clone(),pending:true};
+                cleanup(Box::new(move |result| {
+                    let result=match result {
+                        Ok(proof) if !matches_retirement(&target,&proof)=>
+                            Err("The retirement does not match the original recovery target".into()),
+                        result=>result,
+                    };
+                    *delivery.lock().unwrap_or_else(|error|error.into_inner())=Some(result);
+                    core.post(Box::new(move || {
+                        let mut guard=guard;
+                        guard.pending=false;
+                        let Some(attempt)=retained_attempt(opener,&generation) else{return};
+                        if let Some(held)=attempt.entry.borrow_mut().held_failure.as_mut() { held.in_flight=false; }
+                        attempt.retry_failure();
+                    }));
+                }));
             }
+            Some(Work::Unavailable)=>self.cleanup_failed("The recovery cleanup is unavailable".into()),
+            None=>{}
         }
     }
 }
@@ -206,16 +392,38 @@ impl shell_ipc_w::tabs::RecoveryAttempt for NativeAttemptBridge {
     fn rollback_store(&self)->shell_ipc_w::tabs::host::EditorSeedRollbackStore {
         self.attempt.entry.borrow().rollback.clone()
     }
+    fn bind_target(&self,target:&shell_contract::ipc::RecoveryOpenTarget)->Result<(),String> {
+        if !self.attempt.registered() { return Err("The exact recovery attempt is unavailable".into()); }
+        let invocation=target.invocation_target().ok_or("The recovery target has no native invocation")?;
+        if !invocation.operation().authority_generation().same_generation(self.attempt.operation.authority_generation())
+            || invocation.view()!=target.view() || !invocation.created().same_generation(target.created())
+            || !target.closure_reservation().matches(target.view(),target.created())
+            || !target.browser_owner().reservation().same_reservation(target.closure_reservation()) {
+            return Err("The recovery target does not belong to the original attempt".into());
+        }
+        let mut entry=self.attempt.entry.borrow_mut();
+        if !self.attempt.matches_entry(&entry) { return Err("The exact recovery attempt is unavailable".into()); }
+        if let Some(current)=entry.target.as_ref() {
+            if !current.same_binding(target) { return Err("The recovery attempt already captured another target".into()); }
+        } else { entry.target=Some(target.clone()); }
+        Ok(())
+    }
+    fn retain_unbound_cleanup(&self,cleanup:Box<dyn FnOnce()>) {
+        self.attempt.retain_unbound(cleanup);
+    }
     fn fail(&self,error:String,cleanup:Option<shell_ipc_w::tabs::RecoveryCleanup>,on_cleanup_error:Rc<dyn Fn(String)>,done:Box<dyn FnOnce(Result<(),String>)>) {
+        let valid=self.attempt.registered() && {
+            let entry=self.attempt.entry.borrow();
+            self.attempt.matches_entry(&entry) && entry.target.is_some() && entry.held_failure.is_none()
+        };
+        if !valid {
+            self.attempt.retain_unbound(Box::new(move ||drop((error,cleanup,done))));
+            on_cleanup_error("The exact recovery attempt cannot retain this failure".into());
+            return;
+        }
         {
             let mut entry=self.attempt.entry.borrow_mut();
-            let matches=matches!(&entry.attempt,Attempt::Active(operation)
-                if operation.authority_generation().same_generation(self.attempt.operation.authority_generation()));
-            if !matches || entry.held_failure.is_some() {
-                eprintln!("[recovery] exact attempt cannot retain another failure");
-                return;
-            }
-            entry.held_failure=Some(HeldFailure { error,cleanup,closure:None,core:Some(self.core.clone()),in_flight:false,on_cleanup_error:Some(on_cleanup_error),done:Box::new(move |result| {
+            entry.held_failure=Some(HeldFailure { error,cleanup,retirement:None,delivery:None,rollback_progress:None,indeterminate:None,core:Some(self.core.clone()),in_flight:false,on_cleanup_error:Some(on_cleanup_error),done:Box::new(move |result| {
                 match result { Err(error)=>done(Err(error)),Ok(_)=>done(Err("unexpected recovery cleanup result".into())) }
             }) });
         }
@@ -229,13 +437,20 @@ impl shell_ipc_w::tabs::RecoveryAttempt for NativeAttemptBridge {
         }
     }
 
-    fn fail_after_cleanup(&self,error:String,proof:shell_contract::ipc::NativeClosureReceipt,on_cleanup_error:Rc<dyn Fn(String)>,done:Box<dyn FnOnce(Result<(),String>)>) {
+    fn fail_after_retirement(&self,error:String,proof:shell_contract::ipc::NativeBrowserRetirement,on_cleanup_error:Rc<dyn Fn(String)>,done:Box<dyn FnOnce()>) {
+        let valid=self.attempt.registered() && {
+            let entry=self.attempt.entry.borrow();
+            self.attempt.matches_entry(&entry) && entry.held_failure.is_none()
+                && entry.target.as_ref().is_some_and(|target|matches_retirement(target,&proof))
+        };
+        if !valid {
+            self.attempt.retain_unbound(Box::new(move ||drop((error,proof,done))));
+            on_cleanup_error("The retirement does not match the original recovery attempt".into());
+            return;
+        }
         {
             let mut entry=self.attempt.entry.borrow_mut();
-            if entry.held_failure.is_some() { return; }
-            entry.held_failure=Some(HeldFailure { error,cleanup:None,closure:Some(proof),core:Some(self.core.clone()),in_flight:false,on_cleanup_error:Some(on_cleanup_error),done:Box::new(move |result| {
-                match result { Err(error)=>done(Err(error)),Ok(_)=>done(Err("unexpected recovery cleanup result".into())) }
-            }) });
+            entry.held_failure=Some(HeldFailure { error,cleanup:None,retirement:Some(proof),delivery:None,rollback_progress:None,indeterminate:None,core:Some(self.core.clone()),in_flight:false,on_cleanup_error:Some(on_cleanup_error),done:Box::new(move |_|done()) });
         }
         self.attempt.retry_failure();
     }
@@ -318,6 +533,7 @@ struct Registry {
     next: u64,
     entries: HashMap<u64, Rc<RefCell<Entry>>>,
     direct: HashMap<u64,DirectEntry>,
+    quarantined:Vec<(WindowId,NativeAttempt,Box<dyn FnOnce()>)>,
     closing: std::collections::HashSet<WindowId>,
     shutting_down: bool,
     queries:HashMap<u64,RecoveryQuery>,
@@ -345,7 +561,7 @@ pub(crate) fn register(
     });
     let id=id?;
     REGISTRY.with(|registry| {
-        registry.borrow_mut().entries.insert(id,Rc::new(RefCell::new(Entry { owner,kind,tab_id:None,selected,plan:Rc::new(plan),attempt:Attempt::Idle,held_failure:None,rollback:Rc::default(),retired:false,open,needs_user })));
+        registry.borrow_mut().entries.insert(id,Rc::new(RefCell::new(Entry { owner,kind,tab_id:None,selected,plan:Rc::new(plan),attempt:Attempt::Idle,target:None,held_failure:None,rollback:Rc::default(),retired:false,open,needs_user })));
     });
     Ok(Opener { id,has_needs_user:true })
 }
@@ -560,7 +776,8 @@ fn finish_drains(owner:WindowId) {
         let mut registry=registry.borrow_mut();
         if registry.entries.values().any(|entry|{ let entry=entry.borrow(); entry.owner==owner && entry.opening() })
             || registry.direct.values().any(|entry|entry.owner==owner)
-            || registry.queries.values().any(|query|query.owner==owner) { return Vec::new(); }
+            || registry.queries.values().any(|query|query.owner==owner)
+            || registry.quarantined.iter().any(|(current,_,_)|*current==owner) { return Vec::new(); }
         let mut ready=Vec::new();
         let mut waiting=Vec::new();
         for (current,done) in registry.drains.drain(..) {
@@ -617,7 +834,9 @@ pub(crate) fn cancel_and_drain(owner:WindowId,done:Box<dyn FnOnce(Result<(),Stri
     });
     for id in direct { retry_direct(id); }
     for attempt in attempts { attempt.retry_failure(); }
-    finish_drains(owner);
+    if REGISTRY.with(|registry|registry.borrow().quarantined.iter().any(|(current,_,_)|*current==owner)) {
+        fail_drains(owner,"The recovery cleanup has no matching target".into());
+    } else { finish_drains(owner); }
 }
 
 pub(crate) fn register_direct(owner:WindowId,operation:shell_contract::ipc::NativeInvocationOperation,rollback:shell_ipc_w::tabs::host::EditorSeedRollbackStore)->Result<u64,String> {
@@ -854,6 +1073,7 @@ fn cancel_registered_and_drain(done:Box<dyn FnOnce(Result<(),String>)>) {
         registry.entries.values().map(|entry|entry.borrow().owner)
             .chain(registry.direct.values().map(|entry|entry.owner))
             .chain(registry.queries.values().map(|query|query.owner))
+            .chain(registry.quarantined.iter().map(|(owner,_,_)|*owner))
             .collect::<std::collections::HashSet<_>>()
     });
     if owners.is_empty() { return done(Ok(())); }
@@ -986,6 +1206,69 @@ mod tests {
     use std::cell::Cell;
     use shell_contract::ipc::{NativeInvocationIssuer,NativeInvocationSelection};
     use shell_contract::runtime::CancelToken;
+    use shell_ipc_w::tabs::RecoveryAttempt;
+
+    struct Core;
+    impl shell_contract::runtime::Thread for Core {
+        fn post(&self,job:Box<dyn FnOnce()+Send>){job()}
+        fn is_current(&self)->bool {true}
+    }
+
+    struct DropFirstPost(std::sync::atomic::AtomicBool);
+    impl shell_contract::runtime::Thread for DropFirstPost {
+        fn post(&self,job:Box<dyn FnOnce()+Send>) {
+            if self.0.swap(false,std::sync::atomic::Ordering::SeqCst) { drop(job); }
+            else { job(); }
+        }
+        fn is_current(&self)->bool {true}
+    }
+
+    fn bind_attempt(attempt:&NativeAttempt,view:ViewId)->(NativeAttemptBridge,shell_contract::ipc::NativeClosureIssuer,shell_contract::ipc::RecoveryOpenTarget) {
+        let created=shell_contract::runtime::RendererGeneration::new();
+        let (issuer,reservation,owner)=shell_contract::ipc::NativeClosureIssuer::new_with_owner(view,created.clone());
+        let source=shell_contract::ipc::NativeRequestOwner {
+            view:ViewId(900),
+            context:shell_contract::ipc::NativeContext::with_owner_loss((),shell_contract::runtime::RendererGeneration::new(),CancelToken::new()),
+        };
+        let request=shell_contract::ipc::RecoveryRequestConstraint {
+            source,participants:Vec::new(),cancel:CancelToken::new(),pending:CancelToken::new(),
+        };
+        let target=shell_contract::ipc::RecoveryOpenTarget::bind_request(
+            shell_contract::ipc::RecoveryOpenContext::NativeStartup(attempt.operation.clone()),
+            view,created,reservation,owner,request,
+        ).unwrap();
+        let bridge=NativeAttemptBridge {attempt:attempt.clone(),core:std::sync::Arc::new(Core)};
+        bridge.bind_target(&target).unwrap();
+        (bridge,issuer,target)
+    }
+
+    struct TrackedReceipt {
+        target:shell_contract::ipc::RecoveryOpenTarget,
+        closed:Cell<u32>,
+        superseded:Cell<u32>,
+        rollback:Cell<u32>,
+        fail_first:bool,
+    }
+    impl shell_ipc_w::tabs::host::EditorSeedRollback for TrackedReceipt {
+        fn retire_closed(&self,proof:shell_contract::ipc::NativeClosureReceipt,done:Box<dyn FnOnce(Result<(),String>)>) {
+            assert!(matches_retirement(&self.target,&shell_contract::ipc::NativeBrowserRetirement::Closed(proof)));
+            self.closed.set(self.closed.get()+1);
+            done(Ok(()));
+        }
+        fn retire_adopted(&self,_:shell_contract::ipc::NativeClosureReceipt,done:Box<dyn FnOnce(Result<(),String>)>) {
+            done(Err("unexpected adoption".into()));
+        }
+        fn retire_superseded(&self,proof:shell_contract::ipc::NativeBrowserSuperseded,done:Box<dyn FnOnce(Result<(),String>)>) {
+            assert!(proof.matches(self.target.closure_reservation(),self.target.browser_owner()));
+            self.superseded.set(self.superseded.get()+1);
+            done(Ok(()));
+        }
+        fn rollback(&self,done:Box<dyn FnOnce(Result<(),String>)>) {
+            self.rollback.set(self.rollback.get()+1);
+            if self.fail_first && self.rollback.get()==1 { done(Err("rollback failed".into())); }
+            else { done(Ok(())); }
+        }
+    }
 
     fn context(id:&str)->UnloadedTabOpenContext {
         UnloadedTabOpenContext { tab_id:id.into(),kind:TabKind::Docs,title:"later title".into(),file_path:None }
@@ -1073,10 +1356,11 @@ mod tests {
         let tab=context("tab");
         let mut prepared=prepare_open(&opener,&tab).unwrap();
         let attempt=prepared.attempt.take().unwrap();
+        let (_bridge,issuer,_target)=bind_attempt(&attempt,ViewId(12));
         let answered=Rc::new(Cell::new(false));
         let answer=answered.clone();
         let observed=Rc::new(Cell::new(0));let notifications=observed.clone();
-        attempt.entry.borrow_mut().held_failure=Some(HeldFailure { error:"close failed".into(),cleanup:None,closure:None,core:None,in_flight:false,on_cleanup_error:Some(Rc::new(move |_|notifications.set(notifications.get()+1))),done:Box::new(move |result| {
+        attempt.entry.borrow_mut().held_failure=Some(HeldFailure { error:"close failed".into(),cleanup:None,retirement:None,delivery:None,rollback_progress:None,indeterminate:None,core:None,in_flight:false,on_cleanup_error:Some(Rc::new(move |_|notifications.set(notifications.get()+1))),done:Box::new(move |result| {
             assert!(matches!(result,Err(error) if error=="close failed"));
             answer.set(true);
         }) });
@@ -1087,14 +1371,144 @@ mod tests {
         assert_eq!(observed.get(),1);
         assert!(!answered.get());assert!(failed.get());
         let drained=Rc::new(Cell::new(false));
-        let proof=shell_contract::ipc::NativeClosureIssuer::new(ViewId(12),shell_contract::runtime::RendererGeneration::new()).0.closed();
-        attempt.entry.borrow_mut().held_failure.as_mut().unwrap().closure=Some(proof);
+        let proof=shell_contract::ipc::NativeBrowserRetirement::Closed(issuer.closed());
+        attempt.entry.borrow_mut().held_failure.as_mut().unwrap().retirement=Some(proof);
         attempt.closed().unwrap();
         let flag=drained.clone();
         cancel_and_drain(WindowId(12),Box::new(move |result|{result.unwrap();flag.set(true)}));
         assert!(answered.get());
         assert!(drained.get());
         assert!(prepare_open(&opener,&tab).is_err());
+    }
+    #[test]
+    fn foreign_retirement_does_not_finish_the_original_attempt() {
+        let (opener,_,_)=make(WindowId(81),false);
+        let attempt=prepare_open(&opener,&context("foreign")).unwrap().attempt.take().unwrap();
+        let (bridge,_issuer,target)=bind_attempt(&attempt,ViewId(81));
+        let foreign=shell_contract::ipc::NativeClosureIssuer::new(ViewId(81),target.created().clone()).0.closed();
+        let reported=Rc::new(Cell::new(false));let report=reported.clone();
+        let finished=Rc::new(Cell::new(false));let done=finished.clone();
+        bridge.fail_after_retirement("original".into(),shell_contract::ipc::NativeBrowserRetirement::Closed(foreign),
+            Rc::new(move |_|report.set(true)),Box::new(move ||done.set(true)));
+        assert!(reported.get());
+        assert!(!finished.get());
+        assert!(attempt.entry.borrow().held_failure.is_none());
+        assert!(attempt.finish(false).is_err());
+    }
+
+    #[test]
+    fn successor_closure_cannot_finish_the_original_attempt() {
+        let (opener,_,_)=make(WindowId(85),false);
+        let attempt=prepare_open(&opener,&context("next-owner")).unwrap().attempt.take().unwrap();
+        let (bridge,issuer,target)=bind_attempt(&attempt,ViewId(85));
+        let reservation=target.closure_reservation().clone();
+        let owner=target.browser_owner().clone();
+        reservation.with_initial_owner(&owner,|_|Ok(())).unwrap();
+        let replacement=reservation.prepare_replacement(&owner).unwrap();
+        let (_successor,_,())=replacement.commit(|_,_|Ok(())).unwrap();
+        let proof=shell_contract::ipc::NativeBrowserRetirement::Closed(issuer.closed());
+        let reported=Rc::new(Cell::new(false));let report=reported.clone();
+        let finished=Rc::new(Cell::new(false));let done=finished.clone();
+        bridge.fail_after_retirement("original".into(),proof,Rc::new(move |_|report.set(true)),Box::new(move ||done.set(true)));
+        assert!(reported.get());
+        assert!(!finished.get());
+        assert!(attempt.entry.borrow().held_failure.is_none());
+        assert!(attempt.finish(false).is_err());
+    }
+
+    #[test]
+    fn superseded_retirement_keeps_the_successor_and_does_not_roll_it_back() {
+        let (opener,_,_)=make(WindowId(82),false);
+        let attempt=prepare_open(&opener,&context("successor")).unwrap().attempt.take().unwrap();
+        let (bridge,_issuer,target)=bind_attempt(&attempt,ViewId(82));
+        let reservation=target.closure_reservation().clone();
+        let owner=target.browser_owner().clone();
+        reservation.with_initial_owner(&owner,|_|Ok(())).unwrap();
+        let replacement=reservation.prepare_replacement(&owner).unwrap();
+        let (successor,proof,())=replacement.commit(|_,_|Ok(())).unwrap();
+        let receipt=Rc::new(TrackedReceipt {target,closed:Cell::new(0),superseded:Cell::new(0),rollback:Cell::new(0),fail_first:false});
+        attempt.entry.borrow().rollback.borrow_mut().push(receipt.clone());
+        let finished=Rc::new(Cell::new(false));let done=finished.clone();
+        bridge.fail_after_retirement("original".into(),shell_contract::ipc::NativeBrowserRetirement::Superseded(proof),
+            Rc::new(|error|panic!("{error}")),Box::new(move ||done.set(true)));
+        assert!(finished.get());
+        assert_eq!(receipt.superseded.get(),1);
+        assert_eq!(receipt.rollback.get(),0);
+        assert!(reservation.with_owner(&successor,|_|Ok(())).is_ok());
+    }
+
+    #[test]
+    fn rollback_retry_does_not_repeat_the_acknowledged_actor_retirement() {
+        let (opener,_,_)=make(WindowId(83),false);
+        let attempt=prepare_open(&opener,&context("retry")).unwrap().attempt.take().unwrap();
+        let (bridge,issuer,target)=bind_attempt(&attempt,ViewId(83));
+        let receipt=Rc::new(TrackedReceipt {target,closed:Cell::new(0),superseded:Cell::new(0),rollback:Cell::new(0),fail_first:true});
+        attempt.entry.borrow().rollback.borrow_mut().push(receipt.clone());
+        let reported=Rc::new(Cell::new(false));let report=reported.clone();
+        let finished=Rc::new(Cell::new(false));let done=finished.clone();
+        bridge.fail_after_retirement("original".into(),shell_contract::ipc::NativeBrowserRetirement::Closed(issuer.closed()),
+            Rc::new(move |_|report.set(true)),Box::new(move ||done.set(true)));
+        assert!(reported.get());
+        assert!(!finished.get());
+        bridge.retry_cleanup();
+        assert!(finished.get());
+        assert_eq!(receipt.closed.get(),1);
+        assert_eq!(receipt.rollback.get(),2);
+    }
+    #[test]
+    fn discarded_actor_completion_is_not_replayed() {
+        struct Dropping(Cell<u32>);
+        impl shell_ipc_w::tabs::host::EditorSeedRollback for Dropping {
+            fn retire_closed(&self,_:shell_contract::ipc::NativeClosureReceipt,done:Box<dyn FnOnce(Result<(),String>)>) {
+                self.0.set(self.0.get()+1);
+                drop(done);
+            }
+            fn retire_adopted(&self,_:shell_contract::ipc::NativeClosureReceipt,done:Box<dyn FnOnce(Result<(),String>)>) {
+                done(Err("unexpected adoption".into()));
+            }
+            fn retire_superseded(&self,_:shell_contract::ipc::NativeBrowserSuperseded,done:Box<dyn FnOnce(Result<(),String>)>) {
+                done(Err("unexpected supersession".into()));
+            }
+            fn rollback(&self,done:Box<dyn FnOnce(Result<(),String>)>) { done(Err("unexpected rollback".into())); }
+        }
+        let (opener,_,_)=make(WindowId(86),false);
+        let attempt=prepare_open(&opener,&context("discarded")).unwrap().attempt.take().unwrap();
+        let (bridge,issuer,_target)=bind_attempt(&attempt,ViewId(86));
+        let receipt=Rc::new(Dropping(Cell::new(0)));
+        attempt.entry.borrow().rollback.borrow_mut().push(receipt.clone());
+        let errors=Rc::new(Cell::new(0));let reported=errors.clone();
+        let finished=Rc::new(Cell::new(false));let done=finished.clone();
+        bridge.fail_after_retirement("original".into(),shell_contract::ipc::NativeBrowserRetirement::Closed(issuer.closed()),
+            Rc::new(move |_|reported.set(reported.get()+1)),Box::new(move ||done.set(true)));
+        assert_eq!(errors.get(),1);
+        bridge.retry_cleanup();
+        assert_eq!(errors.get(),2);
+        assert_eq!(receipt.0.get(),1);
+        assert!(!finished.get());
+    }
+    #[test]
+    fn dropped_core_delivery_keeps_the_real_retirement_without_reclosing() {
+        use std::sync::{Arc,Mutex,atomic::{AtomicBool,AtomicUsize,Ordering}};
+        let (opener,_,_)=make(WindowId(84),false);
+        let attempt=prepare_open(&opener,&context("delivery")).unwrap().attempt.take().unwrap();
+        let (mut bridge,issuer,_target)=bind_attempt(&attempt,ViewId(84));
+        bridge.core=Arc::new(DropFirstPost(AtomicBool::new(true)));
+        let calls=Arc::new(AtomicUsize::new(0));let invoked=calls.clone();
+        let issuer=Mutex::new(Some(issuer));
+        let cleanup:RecoveryCleanup=Arc::new(move |done| {
+            invoked.fetch_add(1,Ordering::SeqCst);
+            let issuer=issuer.lock().unwrap().take().unwrap();
+            done(Ok(shell_contract::ipc::NativeBrowserRetirement::Closed(issuer.closed())));
+        });
+        let reported=Rc::new(Cell::new(false));let report=reported.clone();
+        let finished=Rc::new(Cell::new(false));let done=finished.clone();
+        bridge.fail("original".into(),Some(cleanup),Rc::new(move |_|report.set(true)),
+            Box::new(move |result| {assert!(result.is_err());done.set(true)}));
+        assert!(reported.get());
+        assert!(!finished.get());
+        bridge.retry_cleanup();
+        assert!(finished.get());
+        assert_eq!(calls.load(Ordering::SeqCst),1);
     }
     #[test]
     fn closing_owner_revokes_only_its_selected_operation() {

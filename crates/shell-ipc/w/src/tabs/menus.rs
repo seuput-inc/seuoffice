@@ -164,7 +164,11 @@ impl TabsState {
             return reply.reply(Ok(IpcValue::Undefined));
         };
         let mut actions = HashMap::new();
-        fn collect(entries: &[MenuEntry], actions: &mut HashMap<u32, MenuAction>, cx: &CallContext) {
+        fn collect(
+            entries: &[MenuEntry],
+            actions: &mut HashMap<u32, MenuAction>,
+            cx: &CallContext,
+        ) {
             for entry in entries {
                 if entry.kind != MenuEntryKind::Separator {
                     actions.insert(entry.id, MenuAction::AppMenu(entry.id, cx.clone()));

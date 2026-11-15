@@ -218,13 +218,21 @@ impl IntegrationsPort {
 
     fn snapshot(&self) -> Self {
         Self {
-            paths: self.paths.clone(), dialogs: self.dialogs.clone(), clipboard: self.clipboard.clone(),
-            main_window: self.main_window.clone(), skills: self.skills.clone(), core: self.core.clone(),
+            paths: self.paths.clone(),
+            dialogs: self.dialogs.clone(),
+            clipboard: self.clipboard.clone(),
+            main_window: self.main_window.clone(),
+            skills: self.skills.clone(),
+            core: self.core.clone(),
             picked: RefCell::new(self.picked.borrow().clone()),
         }
     }
 
-    fn queued(&self, reply: Responder, work: impl FnOnce(Self) -> Result<IpcValue, IpcError> + Send + 'static) {
+    fn queued(
+        &self,
+        reply: Responder,
+        work: impl FnOnce(Self) -> Result<IpcValue, IpcError> + Send + 'static,
+    ) {
         let snapshot = self.snapshot();
         let path = snapshot.settings_path();
         let core = self.core.clone();
@@ -486,7 +494,10 @@ impl Integrations for IntegrationsPort {
 
     fn integrations_install_skill(&self, _cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
         let target = arg(&args, 0);
-        self.queued(reply, move |port| port.install(target.as_ref()).map(|state| from_json(&state.to_json())));
+        self.queued(reply, move |port| {
+            port.install(target.as_ref())
+                .map(|state| from_json(&state.to_json()))
+        });
     }
 
     fn integrations_pick_skill_dir(
@@ -518,7 +529,10 @@ impl Integrations for IntegrationsPort {
         reply: Responder,
     ) {
         let agent_id = arg(&args, 0);
-        self.queued(reply, move |port| port.uninstall(agent_id.as_ref()).map(|state| from_json(&state.to_json())));
+        self.queued(reply, move |port| {
+            port.uninstall(agent_id.as_ref())
+                .map(|state| from_json(&state.to_json()))
+        });
     }
 }
 
@@ -556,14 +570,22 @@ mod tests {
 
     struct TestCore;
     impl Thread for TestCore {
-        fn post(&self, job: Box<dyn FnOnce() + Send>) { job(); }
-        fn is_current(&self) -> bool { true }
+        fn post(&self, job: Box<dyn FnOnce() + Send>) {
+            job();
+        }
+        fn is_current(&self) -> bool {
+            true
+        }
     }
 
     struct ManualCore(std::sync::mpsc::Sender<Box<dyn FnOnce() + Send>>);
     impl Thread for ManualCore {
-        fn post(&self, job: Box<dyn FnOnce() + Send>) { self.0.send(job).unwrap(); }
-        fn is_current(&self) -> bool { true }
+        fn post(&self, job: Box<dyn FnOnce() + Send>) {
+            self.0.send(job).unwrap();
+        }
+        fn is_current(&self) -> bool {
+            true
+        }
     }
 
     struct Dir {
@@ -587,33 +609,151 @@ mod tests {
         seen_save: Mutex<Vec<FileDialog>>,
         clip: Mutex<Vec<String>>,
     }
-    fn synthetic_owned_dialog_admit(origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken) -> Result<(), String> {
-        let source = origin.context.renderer().ok_or("synthetic dialog source is unbound")?;
-        let target = destination.context.renderer().ok_or("synthetic dialog destination is unbound")?;
+    fn synthetic_owned_dialog_admit(
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+    ) -> Result<(), String> {
+        let source = origin
+            .context
+            .renderer()
+            .ok_or("synthetic dialog source is unbound")?;
+        let target = destination
+            .context
+            .renderer()
+            .ok_or("synthetic dialog destination is unbound")?;
         let source_loss = origin.loss_token();
         let target_loss = destination.loss_token();
-        source.with_active_pair(target, || shell_contract::runtime::CancelToken::with_active_all([Some(cancel), Some(pending), source_loss.as_ref(), target_loss.as_ref()], || ()))
-            .flatten().ok_or_else(|| "Renderer document is no longer available.".into())
+        source
+            .with_active_pair(target, || {
+                shell_contract::runtime::CancelToken::with_active_all(
+                    [
+                        Some(cancel),
+                        Some(pending),
+                        source_loss.as_ref(),
+                        target_loss.as_ref(),
+                    ],
+                    || (),
+                )
+            })
+            .flatten()
+            .ok_or_else(|| "Renderer document is no longer available.".into())
     }
 
     impl Dialogs for Pc {
         shell_contract::synthetic_recovery_dialog_methods!();
-        fn message_prepared(&self, parent: Option<shell_contract::WindowId>, options: shell_contract::hosts::MessageBox, target: shell_contract::ipc::RecoveryOpenTarget, snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot, done: Box<dyn FnOnce(Result<shell_contract::hosts::MessageBoxAnswer, String>) + Send>) { done(shell_contract::hosts::synthetic::recovery_dialog(&target, &snapshot, || self.message(parent, &options))); }
-        fn save_prepared(&self, parent: Option<shell_contract::WindowId>, options: shell_contract::hosts::FileDialog, target: shell_contract::ipc::RecoveryOpenTarget, snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot, done: Box<dyn FnOnce(Result<Option<shell_contract::ipc::RecoveryPreparedDestination>, String>) + Send>) { done(shell_contract::hosts::synthetic::recovery_save(&target, &snapshot, || self.save(parent, &options))); }
-        fn open_owned(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<Vec<std::path::PathBuf>>, String>) + Send>) {
-            done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.open(parent, &options)));
+        fn message_prepared(
+            &self,
+            parent: Option<shell_contract::WindowId>,
+            options: shell_contract::hosts::MessageBox,
+            target: shell_contract::ipc::RecoveryOpenTarget,
+            snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
+            done: Box<dyn FnOnce(Result<shell_contract::hosts::MessageBoxAnswer, String>) + Send>,
+        ) {
+            done(shell_contract::hosts::synthetic::recovery_dialog(
+                &target,
+                &snapshot,
+                || self.message(parent, &options),
+            ));
         }
-        fn save_owned(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>) {
-            done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.save(parent, &options)));
+        fn save_prepared(
+            &self,
+            parent: Option<shell_contract::WindowId>,
+            options: shell_contract::hosts::FileDialog,
+            target: shell_contract::ipc::RecoveryOpenTarget,
+            snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
+            done: Box<
+                dyn FnOnce(Result<Option<shell_contract::ipc::RecoveryPreparedDestination>, String>)
+                    + Send,
+            >,
+        ) {
+            done(shell_contract::hosts::synthetic::recovery_save(
+                &target,
+                &snapshot,
+                || self.save(parent, &options),
+            ));
         }
-        fn message_owned(&self, parent: Option<WindowId>, options: MessageBox, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>) {
-            done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.message(parent, &options)));
+        fn open_owned(
+            &self,
+            parent: Option<WindowId>,
+            options: FileDialog,
+            origin: shell_contract::ipc::NativeRequestOwner,
+            destination: shell_contract::ipc::NativeRequestOwner,
+            cancel: shell_contract::runtime::CancelToken,
+            pending: shell_contract::runtime::CancelToken,
+            done: Box<dyn FnOnce(Result<Option<Vec<std::path::PathBuf>>, String>) + Send>,
+        ) {
+            done(
+                synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending)
+                    .map(|()| self.open(parent, &options)),
+            );
         }
-        fn save_owned_many(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>) {
-            done(shell_contract::hosts::synthetic::admit_many(&origin, &participants, &cancel, &pending, || self.save(parent, &options)));
+        fn save_owned(
+            &self,
+            parent: Option<WindowId>,
+            options: FileDialog,
+            origin: shell_contract::ipc::NativeRequestOwner,
+            destination: shell_contract::ipc::NativeRequestOwner,
+            cancel: shell_contract::runtime::CancelToken,
+            pending: shell_contract::runtime::CancelToken,
+            done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>,
+        ) {
+            done(
+                synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending)
+                    .map(|()| self.save(parent, &options)),
+            );
         }
-        fn message_owned_many(&self, parent: Option<WindowId>, options: MessageBox, origin: shell_contract::ipc::NativeRequestOwner, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>) {
-            done(shell_contract::hosts::synthetic::admit_many(&origin, &participants, &cancel, &pending, || self.message(parent, &options)));
+        fn message_owned(
+            &self,
+            parent: Option<WindowId>,
+            options: MessageBox,
+            origin: shell_contract::ipc::NativeRequestOwner,
+            destination: shell_contract::ipc::NativeRequestOwner,
+            cancel: shell_contract::runtime::CancelToken,
+            pending: shell_contract::runtime::CancelToken,
+            done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>,
+        ) {
+            done(
+                synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending)
+                    .map(|()| self.message(parent, &options)),
+            );
+        }
+        fn save_owned_many(
+            &self,
+            parent: Option<WindowId>,
+            options: FileDialog,
+            origin: shell_contract::ipc::NativeRequestOwner,
+            participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+            cancel: shell_contract::runtime::CancelToken,
+            pending: shell_contract::runtime::CancelToken,
+            done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>,
+        ) {
+            done(shell_contract::hosts::synthetic::admit_many(
+                &origin,
+                &participants,
+                &cancel,
+                &pending,
+                || self.save(parent, &options),
+            ));
+        }
+        fn message_owned_many(
+            &self,
+            parent: Option<WindowId>,
+            options: MessageBox,
+            origin: shell_contract::ipc::NativeRequestOwner,
+            participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+            cancel: shell_contract::runtime::CancelToken,
+            pending: shell_contract::runtime::CancelToken,
+            done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>,
+        ) {
+            done(shell_contract::hosts::synthetic::admit_many(
+                &origin,
+                &participants,
+                &cancel,
+                &pending,
+                || self.message(parent, &options),
+            ));
         }
         fn open(&self, parent: Option<WindowId>, options: &FileDialog) -> Option<Vec<PathBuf>> {
             self.seen_open
@@ -882,8 +1022,15 @@ mod tests {
             native: None,
         };
         let (send, receive) = std::sync::mpsc::channel();
-        f(&cx, Responder::new(move |result| { let _ = send.send(result); }));
-        receive.recv_timeout(std::time::Duration::from_secs(5)).expect("answered")
+        f(
+            &cx,
+            Responder::new(move |result| {
+                let _ = send.send(result);
+            }),
+        );
+        receive
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("answered")
     }
 
     fn obj(entries: &[(&str, IpcValue)]) -> IpcValue {
@@ -947,26 +1094,54 @@ mod tests {
         let settings_path = r.port.settings_path();
         let queue = main_core::shell::app_settings::queue::for_path(&settings_path);
         let cx = CallContext {
-            sender: Sender { view: ViewId(5), window: WindowId(2), surface: Surface::Docs },
-            request: None, cancel: CancelToken::default(), native: None,
+            sender: Sender {
+                view: ViewId(5),
+                window: WindowId(2),
+                surface: Surface::Docs,
+            },
+            request: None,
+            cancel: CancelToken::default(),
+            native: None,
         };
         let (answered, answer) = std::sync::mpsc::channel();
-        r.port.integrations_install_skill(&cx, vec![obj(&[("agentId", s("claude-code"))])],
-            Responder::new(move |result| { answered.send(result).unwrap(); }));
-        let install_completion = core_jobs.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        r.port.integrations_install_skill(
+            &cx,
+            vec![obj(&[("agentId", s("claude-code"))])],
+            Responder::new(move |result| {
+                answered.send(result).unwrap();
+            }),
+        );
+        let install_completion = core_jobs
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
         let (written, written_rx) = std::sync::mpsc::channel();
         queue.submit(move |completion| {
-            write_app_setting(&settings_path, "theme", Some(JsonValue::String("dark".into()))).unwrap();
+            write_app_setting(
+                &settings_path,
+                "theme",
+                Some(JsonValue::String("dark".into())),
+            )
+            .unwrap();
             written.send(()).unwrap();
             drop(completion);
         });
         assert!(written_rx.try_recv().is_err());
         assert!(answer.try_recv().is_err());
         install_completion();
-        assert!(answer.recv_timeout(std::time::Duration::from_secs(5)).unwrap().is_ok());
-        written_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert!(
+            answer
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .is_ok()
+        );
+        written_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
         let settings = read_app_settings(&r.port.settings_path());
-        assert_eq!(settings.get("theme"), Some(&JsonValue::String("dark".into())));
+        assert_eq!(
+            settings.get("theme"),
+            Some(&JsonValue::String("dark".into()))
+        );
         assert!(!r.port.ledger().entries().is_empty());
     }
 

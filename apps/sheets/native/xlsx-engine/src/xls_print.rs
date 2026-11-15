@@ -143,7 +143,9 @@ impl XlsPageSetup {
 
         if self.setup.is_some() || self.margins.iter().any(Option::is_some) {
             let margin = |value: Option<f64>, default: f64| {
-                value.filter(|v| v.is_finite() && (0.0..=49.0).contains(v)).unwrap_or(default)
+                value
+                    .filter(|v| v.is_finite() && (0.0..=49.0).contains(v))
+                    .unwrap_or(default)
             };
             let [left, right, top, bottom] =
                 [0, 1, 2, 3].map(|i| margin(self.margins[i], DEFAULT_MARGINS[i]));
@@ -340,9 +342,17 @@ pub(crate) fn print_name_formula(sheet_name: &str, areas: &[PrintRange]) -> Stri
             let whole_rows = area.first_col == 0 && area.last_col >= 0xFF;
             let whole_cols = area.first_row == 0 && area.last_row == 0xFFFF;
             let reference = if whole_rows && !whole_cols {
-                format!("${}:${}", u32::from(area.first_row) + 1, u32::from(area.last_row) + 1)
+                format!(
+                    "${}:${}",
+                    u32::from(area.first_row) + 1,
+                    u32::from(area.last_row) + 1
+                )
             } else if whole_cols && !whole_rows {
-                format!("${}:${}", column_letters(area.first_col), column_letters(area.last_col))
+                format!(
+                    "${}:${}",
+                    column_letters(area.first_col),
+                    column_letters(area.last_col)
+                )
             } else {
                 format!(
                     "${}${}:${}${}",
@@ -430,9 +440,15 @@ mod tests {
         assert!(page.take_record(0x0083, &1u16.to_le_bytes()));
         assert!(!page.take_record(0x0208, &[0; 16]));
 
-        assert_eq!(page.sheet_pr_xml(), r#"<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>"#);
+        assert_eq!(
+            page.sheet_pr_xml(),
+            r#"<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>"#
+        );
         let tail = page.tail_xml();
-        assert!(tail.starts_with(r#"<printOptions horizontalCentered="1"/>"#), "{tail}");
+        assert!(
+            tail.starts_with(r#"<printOptions horizontalCentered="1"/>"#),
+            "{tail}"
+        );
         assert!(tail.contains(
             r#"<pageMargins left="0.25" right="0.75" top="1" bottom="0.5" header="0.3" footer="0.2"/>"#
         ));
@@ -443,7 +459,10 @@ mod tests {
     fn undefined_printer_fields_are_left_out() {
         let mut page = XlsPageSetup::default();
         // fNoPls: paper, scale and orientation are not meaningful
-        page.take_record(0x00A1, &setup_record(0, 0, (1, 0), Setup::NO_PLS | Setup::PORTRAIT));
+        page.take_record(
+            0x00A1,
+            &setup_record(0, 0, (1, 0), Setup::NO_PLS | Setup::PORTRAIT),
+        );
         let tail = page.tail_xml();
         assert!(tail.contains(r#"<pageSetup fitToHeight="0"/>"#), "{tail}");
         assert!(page.sheet_pr_xml().is_empty());
@@ -500,7 +519,10 @@ mod tests {
         let area = print_name(&name_record(0x06, 2, &area3d((0, 29), (0, 7)))).unwrap();
         assert_eq!(area.sheet, 1);
         assert!(!area.titles);
-        assert_eq!(print_name_formula("시간'표", &area.areas), "'시간''표'!$A$1:$H$30");
+        assert_eq!(
+            print_name_formula("시간'표", &area.areas),
+            "'시간''표'!$A$1:$H$30"
+        );
 
         // titles: rows 1–3 and columns A–B, as a PtgMemFunc union
         let mut formula = vec![0x29, 23, 0];
@@ -509,10 +531,19 @@ mod tests {
         formula.push(0x10);
         let titles = print_name(&name_record(0x07, 1, &formula)).unwrap();
         assert!(titles.titles);
-        assert_eq!(print_name_formula("S", &titles.areas), "'S'!$A:$B,'S'!$1:$3");
+        assert_eq!(
+            print_name_formula("S", &titles.areas),
+            "'S'!$A:$B,'S'!$1:$3"
+        );
 
         // a workbook-scoped or user-defined name is not a print name
-        assert_eq!(print_name(&name_record(0x06, 0, &area3d((0, 1), (0, 1)))), None);
-        assert_eq!(print_name(&name_record(0x0D, 1, &area3d((0, 1), (0, 1)))), None);
+        assert_eq!(
+            print_name(&name_record(0x06, 0, &area3d((0, 1), (0, 1)))),
+            None
+        );
+        assert_eq!(
+            print_name(&name_record(0x0D, 1, &area3d((0, 1), (0, 1)))),
+            None
+        );
     }
 }

@@ -9,10 +9,7 @@ use std::sync::Arc;
 use shell_contract::hosts::OsShell;
 use shell_contract::{Hosts, OsShellHost};
 
-use super::HostContext;
-
-#[path = "prepared_trash.rs"]
-pub(crate) mod prepared_trash;
+use super::{prepared_trash, HostContext};
 
 struct ShellOs;
 

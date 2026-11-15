@@ -10,15 +10,15 @@
 //! of the tree's roots).
 
 mod saved_metadata;
-pub use saved_metadata::{PreparedRecent,PreparedMovedMetadata,Failure as SavedMetadataFailure};
+pub use saved_metadata::{Failure as SavedMetadataFailure, PreparedMovedMetadata, PreparedRecent};
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use jscompat::node_path::host::{basename, dirname, join, resolve};
 use jscompat::{JsObject, JsTypeError, JsonValue, json_parse, number_to_string, slice_utf16, trim};
@@ -69,7 +69,7 @@ use crate::shared_dialog::with_shared_memory;
 
 // ---- hosts -----------------------------------------------------------------
 
-pub type OwnedHomeRefresh = Box<dyn FnOnce(Box<dyn FnOnce(Result<(),String>)>) + Send>;
+pub type OwnedHomeRefresh = Box<dyn FnOnce(Box<dyn FnOnce(Result<(), String>)>) + Send>;
 
 /// What the other areas hold or do about a file path
 pub trait HomeFiles: Send + Sync {
@@ -79,8 +79,11 @@ pub trait HomeFiles: Send + Sync {
     fn system_locale(&self) -> String;
     /// Opens only under the captured renderer request and reports actual completion.
     fn open_document_path_owned(
-        &self,path:String,origin:shell_contract::ipc::NativeRequestOwner,cancel:shell_contract::runtime::CancelToken,
-        done:Box<dyn FnOnce(Result<Option<shell_contract::ViewId>,String>)+Send>,
+        &self,
+        path: String,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<Option<shell_contract::ViewId>, String>) + Send>,
     );
     /// `handleDroppedFiles(paths, droppedFilesDeps())`
     fn open_dropped_files(&self, paths: Vec<String>);
@@ -101,42 +104,63 @@ pub trait HomeFiles: Send + Sync {
     /// `buildDocsMenu()`: File > Open Recent follows recent.json
     fn recents_changed(&self);
     fn prepare_recents_changed_owned(
-        &self, origin:&shell_contract::ipc::NativeRequestOwner, destination:&shell_contract::ipc::NativeRequestOwner,
-        cancel:&shell_contract::runtime::CancelToken, pending:&shell_contract::runtime::CancelToken,
-        effects:&shell_contract::hosts::OwnedEffectsHost,
-    ) -> Result<Option<OwnedHomeRefresh>,String>;
+        &self,
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+    ) -> Result<Option<OwnedHomeRefresh>, String>;
     fn prepare_recents_changed_many_owned(
-        &self,origin:&shell_contract::ipc::NativeRequestOwner,destination:&shell_contract::ipc::NativeRequestOwner,
-        participants:&[shell_contract::ipc::NativeRequestOwner],
-        cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,
-        effects:&shell_contract::hosts::OwnedEffectsHost,
-    )->Result<Option<OwnedHomeRefresh>,String>;
+        &self,
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+    ) -> Result<Option<OwnedHomeRefresh>, String>;
     fn prepare_recents_changed_many_owned_extra(
-        &self,origin:&shell_contract::ipc::NativeRequestOwner,destination:&shell_contract::ipc::NativeRequestOwner,
-        participants:&[shell_contract::ipc::NativeRequestOwner],cancel:&shell_contract::runtime::CancelToken,
-        pending:&shell_contract::runtime::CancelToken,additional:&[shell_contract::runtime::CancelToken],
-        effects:&shell_contract::hosts::OwnedEffectsHost,
-    )->Result<Option<OwnedHomeRefresh>,String>;
+        &self,
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+    ) -> Result<Option<OwnedHomeRefresh>, String>;
     fn prepare_recents_changed_recovery(
-        &self,receipt:&shell_contract::ipc::RecoverySeedReceipt,receiver:&shell_contract::ipc::NativeRequestOwner,
-        cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,
-        effects:&shell_contract::hosts::OwnedEffectsHost,
-    )->Result<Option<OwnedHomeRefresh>,String>;
+        &self,
+        receipt: &shell_contract::ipc::RecoverySeedReceipt,
+        receiver: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+    ) -> Result<Option<OwnedHomeRefresh>, String>;
     fn prepare_recents_changed_native(
-        &self, operation: &shell_contract::ipc::NativeInvocationOperation,
+        &self,
+        operation: &shell_contract::ipc::NativeInvocationOperation,
         expected: &shell_contract::ipc::NativeEditorCommand,
         effects: &shell_contract::hosts::OwnedEffectsHost,
     ) -> Result<Option<OwnedHomeRefresh>, String>;
     fn prepare_recents_changed_existing_document(
-        &self,binding:&shell_contract::ipc::NativeExistingDocumentBinding,participants:&[shell_contract::ipc::NativeRequestOwner],
-        cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,additional:&[shell_contract::runtime::CancelToken],
-        effects:&shell_contract::hosts::OwnedEffectsHost,
-    )->Result<Option<OwnedHomeRefresh>,String>;
-    fn prepare_recents_changed_saved_document(
-        &self, document: &shell_contract::ipc::NativeSavedDocument,
+        &self,
+        binding: &shell_contract::ipc::NativeExistingDocumentBinding,
         participants: &[shell_contract::ipc::NativeRequestOwner],
-        cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
-        additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+    ) -> Result<Option<OwnedHomeRefresh>, String>;
+    fn prepare_recents_changed_saved_document(
+        &self,
+        document: &shell_contract::ipc::NativeSavedDocument,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+        effects: &shell_contract::hosts::OwnedEffectsHost,
     ) -> Result<Option<OwnedHomeRefresh>, String>;
     /// `spawn('explorer.exe', ['shell:RecycleBin'])`, Windows only
     fn open_recycle_bin(&self);
@@ -174,7 +198,13 @@ pub trait FileSearch: Send + Sync {
     /// `fileIndexer?.refresh()`: nothing when the indexer was never created
     fn refresh(&self);
     /// `fileIndexStore.search(q, { exts, offset, limit })`
-    fn search(&self, q: &str, exts: Option<&[String]>, offset: f64, limit: f64) -> Result<SearchResult, String>;
+    fn search(
+        &self,
+        q: &str,
+        exts: Option<&[String]>,
+        offset: f64,
+        limit: f64,
+    ) -> Result<SearchResult, String>;
     /// `fileIndexer.progress()`
     fn progress(&self) -> Result<IndexProgress, String>;
     /// `searchReranker.rerank(q, fileIndexStore.pathsIndexedAsOnDisk(paths), settings)`
@@ -600,7 +630,6 @@ fn read_recent(path: &str) -> Vec<String> {
     }
 }
 
-
 // ---- the module's state -----------------------------------------------------
 
 /// What every handler of this module shares; lives on the core thread
@@ -638,14 +667,23 @@ pub fn back_to_core<T: Send + 'static>(
 ) -> Box<dyn FnOnce(T) + Send> {
     let id = NEXT_HOME_CONTINUATION.fetch_add(1, Ordering::Relaxed);
     HOME_CONTINUATIONS.with(|pending| {
-        pending.borrow_mut().insert(id, Box::new(move |value| {
-            if let Ok(value) = value.downcast::<T>() { callback(*value); }
-        }));
+        pending.borrow_mut().insert(
+            id,
+            Box::new(move |value| {
+                if let Ok(value) = value.downcast::<T>() {
+                    callback(*value);
+                }
+            }),
+        );
     });
-    Box::new(move |value| core.post(Box::new(move || {
-        let callback = HOME_CONTINUATIONS.with(|pending| pending.borrow_mut().remove(&id));
-        if let Some(callback) = callback { callback(Box::new(value)); }
-    })))
+    Box::new(move |value| {
+        core.post(Box::new(move || {
+            let callback = HOME_CONTINUATIONS.with(|pending| pending.borrow_mut().remove(&id));
+            if let Some(callback) = callback {
+                callback(Box::new(value));
+            }
+        }))
+    })
 }
 
 fn submit_folder_work<T: Send + 'static>(
@@ -693,17 +731,26 @@ struct FolderWork {
 
 impl FolderWork {
     fn lang(&self) -> Lang {
-        if let Ok(env) = std::env::var("SEUOFFICE_LANG") { return normalize_lang(Some(&env)); }
+        if let Ok(env) = std::env::var("SEUOFFICE_LANG") {
+            return normalize_lang(Some(&env));
+        }
         let settings = read_app_settings(&self.settings_path);
         install_lang(settings.get("language"), Some(&self.host.system_locale()))
     }
     fn default_dir(&self) -> Result<String, IpcError> {
-        configured_default_save_dir(&Paths(self.paths.as_ref()), &mut self.save_dir.lock().unwrap(), self.host.now_ms())
-            .map_err(|e| error(e.0))
+        configured_default_save_dir(
+            &Paths(self.paths.as_ref()),
+            &mut self.save_dir.lock().unwrap(),
+            self.host.now_ms(),
+        )
+        .map_err(|e| error(e.0))
     }
     fn extras(&self) -> Result<Vec<String>, IpcError> {
         let default = self.default_dir()?;
-        Ok(read_extra_roots(&read_app_settings(&self.settings_path), &default))
+        Ok(read_extra_roots(
+            &read_app_settings(&self.settings_path),
+            &default,
+        ))
     }
     fn watch(&self) -> Result<(), IpcError> {
         let mut roots = vec![self.default_dir()?];
@@ -711,24 +758,43 @@ impl FolderWork {
         roots.retain(|root| exists_sync(root));
         let events = self.events.clone();
         let search = self.search.clone();
-        self.watch.watch(&roots, Arc::new(move |dirs| {
-            search.refresh();
-            events.emit(Target::All, "home:folder-changed", vec![strings(&dirs)]);
-        }));
+        self.watch.watch(
+            &roots,
+            Arc::new(move |dirs| {
+                search.refresh();
+                events.emit(Target::All, "home:folder-changed", vec![strings(&dirs)]);
+            }),
+        );
         Ok(())
     }
     fn add(&self, path: &str) -> Result<Option<FolderRoot>, IpcError> {
         let extras = self.extras()?;
         let default = self.default_dir()?;
-        let Some(extras) = with_extra_root(&extras, &default, path) else { return Ok(None) };
-        write_app_setting(&self.settings_path, FOLDER_ROOTS_KEY, Some(JsonValue::Array(extras.into_iter().map(JsonValue::String).collect()))).map_err(node_error)?;
+        let Some(extras) = with_extra_root(&extras, &default, path) else {
+            return Ok(None);
+        };
+        write_app_setting(
+            &self.settings_path,
+            FOLDER_ROOTS_KEY,
+            Some(JsonValue::Array(
+                extras.into_iter().map(JsonValue::String).collect(),
+            )),
+        )
+        .map_err(node_error)?;
         self.watch()?;
         self.search.refresh();
         Ok(Some(describe_extra_root(path)))
     }
     fn remove(&self, path: &str) -> Result<(), IpcError> {
         let extras = without_extra_root(&self.extras()?, path);
-        write_app_setting(&self.settings_path, FOLDER_ROOTS_KEY, Some(JsonValue::Array(extras.into_iter().map(JsonValue::String).collect()))).map_err(node_error)?;
+        write_app_setting(
+            &self.settings_path,
+            FOLDER_ROOTS_KEY,
+            Some(JsonValue::Array(
+                extras.into_iter().map(JsonValue::String).collect(),
+            )),
+        )
+        .map_err(node_error)?;
         self.watch()?;
         self.search.refresh();
         Ok(())
@@ -941,30 +1007,49 @@ impl Home {
             .collect()
     }
 
-
     /// `removeRecentFiles(paths)`
     fn remove_recent_files(&self, paths: &[String]) -> Result<(), IpcError> {
-        saved_metadata::recent_sync(&self.recent_path, saved_metadata::RecentEdit::Remove(paths.to_vec())).map_err(node_error)?;
+        saved_metadata::recent_sync(
+            &self.recent_path,
+            saved_metadata::RecentEdit::Remove(paths.to_vec()),
+        )
+        .map_err(node_error)?;
         self.host.recents_changed();
         Ok(())
     }
 
     /// `removeStarredFiles(paths)`
     fn remove_starred_files(&self, paths: &[String]) -> Result<(), IpcError> {
-        saved_metadata::starred_sync(&self.starred_path, saved_metadata::StarredEdit::Remove(paths.to_vec())).map_err(node_error).map(|_| ())
+        saved_metadata::starred_sync(
+            &self.starred_path,
+            saved_metadata::StarredEdit::Remove(paths.to_vec()),
+        )
+        .map_err(node_error)
+        .map(|_| ())
     }
 
     /// `replaceRecentFile(old, new)`
     fn replace_recent_file(&self, old_path: &str, new_path: &str) -> Result<(), IpcError> {
-        saved_metadata::recent_sync(&self.recent_path, saved_metadata::RecentEdit::Replace(old_path.to_owned(),new_path.to_owned())).map_err(node_error)?;
-        saved_metadata::starred_sync(&self.starred_path, saved_metadata::StarredEdit::Rename(old_path.to_owned(),new_path.to_owned())).map_err(node_error)?;
+        saved_metadata::recent_sync(
+            &self.recent_path,
+            saved_metadata::RecentEdit::Replace(old_path.to_owned(), new_path.to_owned()),
+        )
+        .map_err(node_error)?;
+        saved_metadata::starred_sync(
+            &self.starred_path,
+            saved_metadata::StarredEdit::Rename(old_path.to_owned(), new_path.to_owned()),
+        )
+        .map_err(node_error)?;
         self.host.recents_changed();
         Ok(())
     }
 
     /// `pushRecent(path)` of docs-main: the head of the recent list
     pub fn record_recent_file(&self, path: &str) {
-        match saved_metadata::recent_sync(&self.recent_path, saved_metadata::RecentEdit::Record(path.to_owned())) {
+        match saved_metadata::recent_sync(
+            &self.recent_path,
+            saved_metadata::RecentEdit::Record(path.to_owned()),
+        ) {
             Ok(false) => {}
             // The saved document survives a metadata write failure, as before.
             Ok(true) | Err(_) => self.host.recents_changed(),
@@ -1001,7 +1086,12 @@ impl Home {
         self.host.project_file_renamed(old_path, new_path);
         self.host.file_moved_before_template(old_path, new_path);
         if new_path.to_ascii_lowercase().ends_with(".pptx") {
-            for hooks in self.provided.upgrade().expect("home services are unavailable").all::<dyn SlidesTemplateSelectionHooks>() {
+            for hooks in self
+                .provided
+                .upgrade()
+                .expect("home services are unavailable")
+                .all::<dyn SlidesTemplateSelectionHooks>()
+            {
                 hooks.moved(old_path, new_path);
             }
         }
@@ -1024,9 +1114,13 @@ impl Home {
 
     fn folder_work(&self) -> FolderWork {
         FolderWork {
-            settings_path: self.settings_path.clone(), paths: self.paths.clone(),
-            save_dir: self.save_dir.clone(), host: self.host.clone(), watch: self.watch.clone(),
-            events: self.events.clone(), search: self.search.clone(),
+            settings_path: self.settings_path.clone(),
+            paths: self.paths.clone(),
+            save_dir: self.save_dir.clone(),
+            host: self.host.clone(),
+            watch: self.watch.clone(),
+            events: self.events.clone(),
+            search: self.search.clone(),
         }
     }
 
@@ -1036,16 +1130,28 @@ impl Home {
         done: impl FnOnce(Result<T, IpcError>) + 'static,
     ) {
         let folder = self.folder_work();
-        submit_folder_work(&self.settings_path, self.core.clone(), false, move || work(folder), done);
+        submit_folder_work(
+            &self.settings_path,
+            self.core.clone(),
+            false,
+            move || work(folder),
+            done,
+        );
     }
 
     fn run_folder_work_guarded<T: Send + 'static>(
         &self,
         work: impl FnOnce(FolderWork) -> Result<T, IpcError> + Send + 'static,
-        done: impl FnOnce(Result<T, IpcError>, main_core::shell::app_settings::queue::Completion) + 'static,
+        done: impl FnOnce(Result<T, IpcError>, main_core::shell::app_settings::queue::Completion)
+        + 'static,
     ) {
         let folder = self.folder_work();
-        submit_folder_work_guarded(&self.settings_path, self.core.clone(), move || work(folder), done);
+        submit_folder_work_guarded(
+            &self.settings_path,
+            self.core.clone(),
+            move || work(folder),
+            done,
+        );
     }
 
     /// Refresh watchers in settings order; completion runs on the core thread
@@ -1055,7 +1161,11 @@ impl Home {
     }
 
     /// `noticeSaveDirFallback()`: once per run
-    fn notice_save_dir_fallback(&self, lang: Lang, completion: &mut Option<main_core::shell::app_settings::queue::Completion>) {
+    fn notice_save_dir_fallback(
+        &self,
+        lang: Lang,
+        completion: &mut Option<main_core::shell::app_settings::queue::Completion>,
+    ) {
         let Some(fallback) = default_save_dir_fallback(&self.save_dir.lock().unwrap()) else {
             return;
         };
@@ -1134,7 +1244,6 @@ impl Home {
         };
         (canceled, files)
     }
-
 }
 
 // ---- search ----------------------------------------------------------------
@@ -1191,7 +1300,9 @@ fn search_files(home: &Home, raw: Option<&IpcValue>) -> Result<IpcValue, IpcErro
             total: 0.0,
         }
     } else {
-        home.search.search(&q, exts.as_deref(), offset, limit).map_err(error)?
+        home.search
+            .search(&q, exts.as_deref(), offset, limit)
+            .map_err(error)?
     };
     let hits = result
         .hits
@@ -1246,17 +1357,28 @@ fn handle_on_worker(
     registry.register(Batch::W, channel, ChannelKind::Invoke, Rc::new(OnWorker(f)))
 }
 fn open_selected_paths(
-    host:HomeFilesHost,mut paths:std::vec::IntoIter<String>,origin:shell_contract::ipc::NativeRequestOwner,
-    cancel:shell_contract::runtime::CancelToken,reply:Responder,
+    host: HomeFilesHost,
+    mut paths: std::vec::IntoIter<String>,
+    origin: shell_contract::ipc::NativeRequestOwner,
+    cancel: shell_contract::runtime::CancelToken,
+    reply: Responder,
 ) {
-    let Some(path)=paths.next() else { return reply.reply(Ok(IpcValue::Undefined)); };
-    let next=host.clone(); let next_origin=origin.clone(); let next_cancel=cancel.clone();
-    host.open_document_path_owned(path,origin,cancel,Box::new(move |result| match result {
-        Ok(_)=>open_selected_paths(next,paths,next_origin,next_cancel,reply),
-        Err(message)=>reply.reply(Err(error(message))),
-    }));
+    let Some(path) = paths.next() else {
+        return reply.reply(Ok(IpcValue::Undefined));
+    };
+    let next = host.clone();
+    let next_origin = origin.clone();
+    let next_cancel = cancel.clone();
+    host.open_document_path_owned(
+        path,
+        origin,
+        cancel,
+        Box::new(move |result| match result {
+            Ok(_) => open_selected_paths(next, paths, next_origin, next_cancel, reply),
+            Err(message) => reply.reply(Err(error(message))),
+        }),
+    );
 }
-
 
 pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), RegisterError> {
     let user_data = services.paths.path(PathName::UserData);
@@ -1383,7 +1505,11 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
         move |_, args| {
             let paths = string_paths(args.first());
             let group = as_str(args.get(1)).filter(|g| !g.is_empty());
-            saved_metadata::starred_sync(&h.starred_path, saved_metadata::StarredEdit::Assign(paths,group.map(str::to_owned))).map_err(node_error)?;
+            saved_metadata::starred_sync(
+                &h.starred_path,
+                saved_metadata::StarredEdit::Assign(paths, group.map(str::to_owned)),
+            )
+            .map_err(node_error)?;
             Ok(IpcValue::Undefined)
         },
     )?;
@@ -1403,7 +1529,11 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
     let h = home.clone();
     handle(registry, "home:toggle-star", invoke, move |_, args| {
         if let Some(path) = as_str(args.first()) {
-            saved_metadata::starred_sync(&h.starred_path, saved_metadata::StarredEdit::Toggle(path.to_owned())).map_err(node_error)?;
+            saved_metadata::starred_sync(
+                &h.starred_path,
+                saved_metadata::StarredEdit::Toggle(path.to_owned()),
+            )
+            .map_err(node_error)?;
         }
         Ok(IpcValue::Undefined)
     })?;
@@ -1457,7 +1587,9 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
                 .collect(),
             _ => Vec::new(),
         };
-        if q.is_empty() || paths.len() < 2 { return reply.reply(Ok(IpcValue::Null)); }
+        if q.is_empty() || paths.len() < 2 {
+            return reply.reply(Ok(IpcValue::Null));
+        }
         match h.search.available() {
             Ok(true) => {}
             Ok(false) => return reply.reply(Ok(IpcValue::Null)),
@@ -1466,7 +1598,12 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
         let search = h.search.clone();
         // the excerpts go to a decision model: the network, off the core thread
         h.workers.spawn(Box::new(move || {
-            reply.reply(search.rerank(&q, &paths).map(|value| value.unwrap_or(IpcValue::Null)).map_err(error))
+            reply.reply(
+                search
+                    .rerank(&q, &paths)
+                    .map(|value| value.unwrap_or(IpcValue::Null))
+                    .map_err(error),
+            )
         }));
     })?;
 
@@ -1474,15 +1611,33 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
 
     let h = home.clone();
     handle_on_worker(registry, "home:open-path", move |cx, args, reply| {
-        let Some(path)=as_str(args.first()).filter(|p| !p.is_empty() && p.encode_utf16().count()<=4096) else {
+        let Some(path) =
+            as_str(args.first()).filter(|p| !p.is_empty() && p.encode_utf16().count() <= 4096)
+        else {
             return reply.reply(Ok(IpcValue::Undefined));
         };
-        let Some(context)=cx.native.clone() else { return reply.reply(Err(error("Authenticated home request owner is unavailable"))); };
-        let origin=shell_contract::ipc::NativeRequestOwner { view:cx.sender.view,context };
-        let search=h.search.clone();
-        h.host.open_document_path_owned(path.to_owned(),origin,cx.cancel.clone(),Box::new(move |result| {
-            match result { Ok(_)=>{ search.refresh(); reply.reply(Ok(IpcValue::Undefined)); },Err(message)=>reply.reply(Err(error(message))) }
-        }));
+        let Some(context) = cx.native.clone() else {
+            return reply.reply(Err(error(
+                "Authenticated home request owner is unavailable",
+            )));
+        };
+        let origin = shell_contract::ipc::NativeRequestOwner {
+            view: cx.sender.view,
+            context,
+        };
+        let search = h.search.clone();
+        h.host.open_document_path_owned(
+            path.to_owned(),
+            origin,
+            cx.cancel.clone(),
+            Box::new(move |result| match result {
+                Ok(_) => {
+                    search.refresh();
+                    reply.reply(Ok(IpcValue::Undefined));
+                }
+                Err(message) => reply.reply(Err(error(message))),
+            }),
+        );
     })?;
 
     let h = home.clone();
@@ -1538,10 +1693,25 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
             ]),
         );
         let (canceled, files) = h.open_dialog(Some(cx.sender.window), &options);
-        if canceled { return reply.reply(Ok(IpcValue::Undefined)); }
-        let Some(context)=cx.native.clone() else { return reply.reply(Err(error("Authenticated home request owner is unavailable"))); };
-        let origin=shell_contract::ipc::NativeRequestOwner { view:cx.sender.view,context };
-        open_selected_paths(h.host.clone(),files.into_iter(),origin,cx.cancel.clone(),reply);
+        if canceled {
+            return reply.reply(Ok(IpcValue::Undefined));
+        }
+        let Some(context) = cx.native.clone() else {
+            return reply.reply(Err(error(
+                "Authenticated home request owner is unavailable",
+            )));
+        };
+        let origin = shell_contract::ipc::NativeRequestOwner {
+            view: cx.sender.view,
+            context,
+        };
+        open_selected_paths(
+            h.host.clone(),
+            files.into_iter(),
+            origin,
+            cx.cancel.clone(),
+            reply,
+        );
     })?;
 
     let h = home.clone();
@@ -1675,7 +1845,10 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
                     home.notice_save_dir_fallback(lang, &mut completion);
                     reply.reply(Ok(IpcValue::Array(roots.iter().map(root_to_ipc).collect())));
                 }
-                Err(error) => { let _completion = completion; reply.reply(Err(error)); }
+                Err(error) => {
+                    let _completion = completion;
+                    reply.reply(Err(error));
+                }
             },
         );
     })?;
@@ -1684,33 +1857,61 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
     handle_on_worker(registry, "home:folder-root-add", move |_, _, reply| {
         let home = h.clone();
         let folder = h.folder_work();
-        submit_folder_work(&h.settings_path, h.core.clone(), true, move || Ok(folder.lang()), move |result| {
-            let lang = match result { Ok(lang) => lang, Err(error) => return reply.reply(Err(error)) };
-            let mut options = JsObject::new();
-            options.set("title", JsonValue::String(tm(lang, Msg::DlgAddFolderRoot).into()));
-            options.set("properties", JsonValue::Array(vec![JsonValue::String("openDirectory".into())]));
-            let (canceled, files) = home.open_dialog(home.parent_of_main(), &options);
-            let Some(picked) = files.into_iter().next().filter(|p| !p.is_empty() && !canceled) else {
-                return reply.reply(Ok(IpcValue::Null));
-            };
-            let displayed = picked.clone();
-            let next_home = home.clone();
-            home.run_folder_work_guarded(
-                move |work| -> Result<Option<Option<FolderRoot>>, IpcError> {
-                    if !describe_extra_root(&picked).readable { return Ok(None); }
-                    work.add(&picked).map(Some)
-                },
-                move |result, completion| match result {
-                    Ok(None) => {
-                        drop(completion);
-                        next_home.show_error_dialog(tm(lang, Msg::FolderRootUnusable), &displayed);
-                        reply.reply(Ok(IpcValue::Null));
-                    }
-                    Ok(Some(root)) => { let _completion = completion; reply.reply(Ok(root.map_or(IpcValue::Null, |r| root_to_ipc(&r)))); }
-                    Err(error) => { let _completion = completion; reply.reply(Err(error)); }
-                },
-            );
-        });
+        submit_folder_work(
+            &h.settings_path,
+            h.core.clone(),
+            true,
+            move || Ok(folder.lang()),
+            move |result| {
+                let lang = match result {
+                    Ok(lang) => lang,
+                    Err(error) => return reply.reply(Err(error)),
+                };
+                let mut options = JsObject::new();
+                options.set(
+                    "title",
+                    JsonValue::String(tm(lang, Msg::DlgAddFolderRoot).into()),
+                );
+                options.set(
+                    "properties",
+                    JsonValue::Array(vec![JsonValue::String("openDirectory".into())]),
+                );
+                let (canceled, files) = home.open_dialog(home.parent_of_main(), &options);
+                let Some(picked) = files
+                    .into_iter()
+                    .next()
+                    .filter(|p| !p.is_empty() && !canceled)
+                else {
+                    return reply.reply(Ok(IpcValue::Null));
+                };
+                let displayed = picked.clone();
+                let next_home = home.clone();
+                home.run_folder_work_guarded(
+                    move |work| -> Result<Option<Option<FolderRoot>>, IpcError> {
+                        if !describe_extra_root(&picked).readable {
+                            return Ok(None);
+                        }
+                        work.add(&picked).map(Some)
+                    },
+                    move |result, completion| match result {
+                        Ok(None) => {
+                            drop(completion);
+                            next_home
+                                .show_error_dialog(tm(lang, Msg::FolderRootUnusable), &displayed);
+                            reply.reply(Ok(IpcValue::Null));
+                        }
+                        Ok(Some(root)) => {
+                            let _completion = completion;
+                            reply.reply(Ok(root.map_or(IpcValue::Null, |r| root_to_ipc(&r))));
+                        }
+                        Err(error) => {
+                            let _completion = completion;
+                            reply.reply(Err(error));
+                        }
+                    },
+                );
+            },
+        );
     })?;
 
     let h = home.clone();
@@ -1722,14 +1923,21 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
                 let mut added = Vec::new();
                 let mut files = Vec::new();
                 for path in paths {
-                    if !describe_extra_root(&path).readable { files.push(path); continue; }
-                    if let Some(root) = work.add(&path)? { added.push(root); }
+                    if !describe_extra_root(&path).readable {
+                        files.push(path);
+                        continue;
+                    }
+                    if let Some(root) = work.add(&path)? {
+                        added.push(root);
+                    }
                 }
                 Ok((added, files))
             },
             move |result| match result {
                 Ok((added, files)) => {
-                    if !files.is_empty() { host.open_dropped_files(files); }
+                    if !files.is_empty() {
+                        host.open_dropped_files(files);
+                    }
                     reply.reply(Ok(IpcValue::Array(added.iter().map(root_to_ipc).collect())));
                 }
                 Err(error) => reply.reply(Err(error)),
@@ -1738,15 +1946,19 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
     })?;
 
     let h = home.clone();
-    handle_on_worker(registry, "home:folder-root-remove", move |_, args, reply| {
-        let Some(path) = as_str(args.first()).map(str::to_owned) else {
-            return reply.reply(Ok(IpcValue::Undefined));
-        };
-        h.run_folder_work(
-            move |work| work.remove(&path),
-            move |result| reply.reply(result.map(|()| IpcValue::Undefined)),
-        );
-    })?;
+    handle_on_worker(
+        registry,
+        "home:folder-root-remove",
+        move |_, args, reply| {
+            let Some(path) = as_str(args.first()).map(str::to_owned) else {
+                return reply.reply(Ok(IpcValue::Undefined));
+            };
+            h.run_folder_work(
+                move |work| work.remove(&path),
+                move |result| reply.reply(result.map(|()| IpcValue::Undefined)),
+            );
+        },
+    )?;
 
     // ---- the tree ----
 
@@ -1998,9 +2210,14 @@ mod fakes {
             self.case["locale"].as_str().unwrap_or("ko").to_owned()
         }
         fn open_document_path_owned(
-            &self,_:String,_:shell_contract::ipc::NativeRequestOwner,_:shell_contract::runtime::CancelToken,
-            done:Box<dyn FnOnce(Result<Option<shell_contract::ViewId>,String>)+Send>,
-        ) { done(Ok(None)); }
+            &self,
+            _: String,
+            _: shell_contract::ipc::NativeRequestOwner,
+            _: shell_contract::runtime::CancelToken,
+            done: Box<dyn FnOnce(Result<Option<shell_contract::ViewId>, String>) + Send>,
+        ) {
+            done(Ok(None));
+        }
         fn open_dropped_files(&self, _: Vec<String>) {}
         fn open_file_paths(&self) -> Vec<String> {
             Vec::new()
@@ -2031,69 +2248,127 @@ mod fakes {
         fn file_moved(&self, _: &str, _: &str) {}
         fn recents_changed(&self) {}
         fn prepare_recents_changed_owned(
-            &self, origin:&shell_contract::ipc::NativeRequestOwner, destination:&shell_contract::ipc::NativeRequestOwner,
-            cancel:&shell_contract::runtime::CancelToken, pending:&shell_contract::runtime::CancelToken,
-            effects:&shell_contract::hosts::OwnedEffectsHost,
-        )->Result<Option<OwnedHomeRefresh>,String> {
-            effects.with_owned_effect(origin,destination,cancel,pending,&mut || Ok(()))?;
+            &self,
+            origin: &shell_contract::ipc::NativeRequestOwner,
+            destination: &shell_contract::ipc::NativeRequestOwner,
+            cancel: &shell_contract::runtime::CancelToken,
+            pending: &shell_contract::runtime::CancelToken,
+            effects: &shell_contract::hosts::OwnedEffectsHost,
+        ) -> Result<Option<OwnedHomeRefresh>, String> {
+            effects.with_owned_effect(origin, destination, cancel, pending, &mut || Ok(()))?;
             // This source probe has no installed shell/Docs menu.
             Ok(None)
         }
         fn prepare_recents_changed_many_owned(
-            &self,origin:&shell_contract::ipc::NativeRequestOwner,destination:&shell_contract::ipc::NativeRequestOwner,
-            participants:&[shell_contract::ipc::NativeRequestOwner],
-            cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,
-            effects:&shell_contract::hosts::OwnedEffectsHost,
-        )->Result<Option<OwnedHomeRefresh>,String> {
+            &self,
+            origin: &shell_contract::ipc::NativeRequestOwner,
+            destination: &shell_contract::ipc::NativeRequestOwner,
+            participants: &[shell_contract::ipc::NativeRequestOwner],
+            cancel: &shell_contract::runtime::CancelToken,
+            pending: &shell_contract::runtime::CancelToken,
+            effects: &shell_contract::hosts::OwnedEffectsHost,
+        ) -> Result<Option<OwnedHomeRefresh>, String> {
             let mut targets = participants.to_vec();
             targets.push(destination.clone());
-            effects.with_owned_transition_many(origin,&targets,cancel,pending,&mut |_| Ok(()))?;
+            effects
+                .with_owned_transition_many(origin, &targets, cancel, pending, &mut |_| Ok(()))?;
             Ok(None)
         }
         fn prepare_recents_changed_many_owned_extra(
-            &self,origin:&shell_contract::ipc::NativeRequestOwner,destination:&shell_contract::ipc::NativeRequestOwner,
-            participants:&[shell_contract::ipc::NativeRequestOwner],cancel:&shell_contract::runtime::CancelToken,
-            pending:&shell_contract::runtime::CancelToken,additional:&[shell_contract::runtime::CancelToken],
-            effects:&shell_contract::hosts::OwnedEffectsHost,
-        )->Result<Option<OwnedHomeRefresh>,String> {
-            let mut targets=participants.to_vec(); targets.push(destination.clone());
-            let extra:Vec<_>=additional.iter().collect();
-            effects.with_owned_effect_many_extra(origin,&targets,cancel,pending,&extra,&mut ||Ok(()))?;
+            &self,
+            origin: &shell_contract::ipc::NativeRequestOwner,
+            destination: &shell_contract::ipc::NativeRequestOwner,
+            participants: &[shell_contract::ipc::NativeRequestOwner],
+            cancel: &shell_contract::runtime::CancelToken,
+            pending: &shell_contract::runtime::CancelToken,
+            additional: &[shell_contract::runtime::CancelToken],
+            effects: &shell_contract::hosts::OwnedEffectsHost,
+        ) -> Result<Option<OwnedHomeRefresh>, String> {
+            let mut targets = participants.to_vec();
+            targets.push(destination.clone());
+            let extra: Vec<_> = additional.iter().collect();
+            effects.with_owned_effect_many_extra(
+                origin,
+                &targets,
+                cancel,
+                pending,
+                &extra,
+                &mut || Ok(()),
+            )?;
             Ok(None)
         }
         fn prepare_recents_changed_recovery(
-            &self,receipt:&shell_contract::ipc::RecoverySeedReceipt,receiver:&shell_contract::ipc::NativeRequestOwner,
-            cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,
-            effects:&shell_contract::hosts::OwnedEffectsHost,
-        )->Result<Option<OwnedHomeRefresh>,String> {
-            effects.with_recovery_open_effect_many(receipt,receiver,&[],cancel,pending,&mut ||Ok(()))?;
+            &self,
+            receipt: &shell_contract::ipc::RecoverySeedReceipt,
+            receiver: &shell_contract::ipc::NativeRequestOwner,
+            cancel: &shell_contract::runtime::CancelToken,
+            pending: &shell_contract::runtime::CancelToken,
+            effects: &shell_contract::hosts::OwnedEffectsHost,
+        ) -> Result<Option<OwnedHomeRefresh>, String> {
+            effects.with_recovery_open_effect_many(
+                receipt,
+                receiver,
+                &[],
+                cancel,
+                pending,
+                &mut || Ok(()),
+            )?;
             Ok(None)
         }
         fn prepare_recents_changed_native(
-            &self, operation: &shell_contract::ipc::NativeInvocationOperation,
+            &self,
+            operation: &shell_contract::ipc::NativeInvocationOperation,
             expected: &shell_contract::ipc::NativeEditorCommand,
             effects: &shell_contract::hosts::OwnedEffectsHost,
         ) -> Result<Option<OwnedHomeRefresh>, String> {
-            effects.with_native_command_preparation_effect(operation, expected, &[], operation.cancel(), operation.shutdown(), &mut || Ok(()))?;
+            effects.with_native_command_preparation_effect(
+                operation,
+                expected,
+                &[],
+                operation.cancel(),
+                operation.shutdown(),
+                &mut || Ok(()),
+            )?;
             Ok(None)
         }
         fn prepare_recents_changed_existing_document(
-            &self,binding:&shell_contract::ipc::NativeExistingDocumentBinding,participants:&[shell_contract::ipc::NativeRequestOwner],
-            cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,additional:&[shell_contract::runtime::CancelToken],
-            effects:&shell_contract::hosts::OwnedEffectsHost,
-        )->Result<Option<OwnedHomeRefresh>,String> {
-            let additional:Vec<_>=additional.iter().collect();
-            effects.with_existing_document_save_effect_extra(binding,participants,cancel,pending,&additional,&mut || Ok(()))?;
+            &self,
+            binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+            participants: &[shell_contract::ipc::NativeRequestOwner],
+            cancel: &shell_contract::runtime::CancelToken,
+            pending: &shell_contract::runtime::CancelToken,
+            additional: &[shell_contract::runtime::CancelToken],
+            effects: &shell_contract::hosts::OwnedEffectsHost,
+        ) -> Result<Option<OwnedHomeRefresh>, String> {
+            let additional: Vec<_> = additional.iter().collect();
+            effects.with_existing_document_save_effect_extra(
+                binding,
+                participants,
+                cancel,
+                pending,
+                &additional,
+                &mut || Ok(()),
+            )?;
             Ok(None)
         }
         fn prepare_recents_changed_saved_document(
-            &self, document: &shell_contract::ipc::NativeSavedDocument,
+            &self,
+            document: &shell_contract::ipc::NativeSavedDocument,
             participants: &[shell_contract::ipc::NativeRequestOwner],
-            cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
-            additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost,
+            cancel: &shell_contract::runtime::CancelToken,
+            pending: &shell_contract::runtime::CancelToken,
+            additional: &[shell_contract::runtime::CancelToken],
+            effects: &shell_contract::hosts::OwnedEffectsHost,
         ) -> Result<Option<OwnedHomeRefresh>, String> {
             let additional: Vec<_> = additional.iter().collect();
-            effects.with_native_saved_document_input(document, participants, cancel, pending, &additional, &mut |_| Ok(()))?;
+            effects.with_native_saved_document_input(
+                document,
+                participants,
+                cancel,
+                pending,
+                &additional,
+                &mut |_| Ok(()),
+            )?;
             Ok(None)
         }
         fn open_recycle_bin(&self) {}
@@ -2274,8 +2549,12 @@ mod watcher_order_tests {
 
     struct Core(mpsc::Sender<Box<dyn FnOnce() + Send>>);
     impl shell_contract::runtime::Thread for Core {
-        fn post(&self, job: Box<dyn FnOnce() + Send>) { self.0.send(job).unwrap(); }
-        fn is_current(&self) -> bool { true }
+        fn post(&self, job: Box<dyn FnOnce() + Send>) {
+            self.0.send(job).unwrap();
+        }
+        fn is_current(&self) -> bool {
+            true
+        }
     }
 
     #[test]
@@ -2288,18 +2567,36 @@ mod watcher_order_tests {
         let answers = Rc::new(RefCell::new(Vec::new()));
         let out = answers.clone();
         let core_id = std::thread::current().id();
-        let path = format!("/synthetic/watch-test-{}", NEXT_HOME_CONTINUATION.fetch_add(1, Ordering::Relaxed));
-        submit_folder_work(&path, core.clone(), false, move || {
-            entered.send(std::thread::current().id()).unwrap();
-            release_rx.recv().unwrap();
-            Ok(1)
-        }, move |result| out.borrow_mut().push(result.unwrap()));
-        assert_ne!(entered_rx.recv_timeout(Duration::from_secs(2)).unwrap(), core_id);
+        let path = format!(
+            "/synthetic/watch-test-{}",
+            NEXT_HOME_CONTINUATION.fetch_add(1, Ordering::Relaxed)
+        );
+        submit_folder_work(
+            &path,
+            core.clone(),
+            false,
+            move || {
+                entered.send(std::thread::current().id()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(1)
+            },
+            move |result| out.borrow_mut().push(result.unwrap()),
+        );
+        assert_ne!(
+            entered_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            core_id
+        );
         let out = answers.clone();
-        submit_folder_work(&path, core, false, move || {
-            second.send(()).unwrap();
-            Ok(2)
-        }, move |result| out.borrow_mut().push(result.unwrap()));
+        submit_folder_work(
+            &path,
+            core,
+            false,
+            move || {
+                second.send(()).unwrap();
+                Ok(2)
+            },
+            move |result| out.borrow_mut().push(result.unwrap()),
+        );
         assert!(second_rx.try_recv().is_err());
         assert!(answers.borrow().is_empty());
         release.send(()).unwrap();
@@ -2313,16 +2610,24 @@ mod watcher_order_tests {
     fn modal_path_releases_queue_before_waiting_for_user() {
         let (post, run) = mpsc::channel::<Box<dyn FnOnce() + Send>>();
         let core: Arc<dyn shell_contract::runtime::Thread> = Arc::new(Core(post));
-        let path = format!("/syntynthetic/watch-modal-{}", NEXT_HOME_CONTINUATION.fetch_add(1, Ordering::Relaxed));
+        let path = format!(
+            "/syntynthetic/watch-modal-{}",
+            NEXT_HOME_CONTINUATION.fetch_add(1, Ordering::Relaxed)
+        );
         let (entered, entered_rx) = mpsc::channel();
         let finished = Rc::new(Cell::new(false));
         let result = finished.clone();
-        submit_folder_work_guarded(&path, core, || Ok(()), move |outcome, completion| {
-            outcome.unwrap();
-            drop(completion);
-            entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-            result.set(true);
-        });
+        submit_folder_work_guarded(
+            &path,
+            core,
+            || Ok(()),
+            move |outcome, completion| {
+                outcome.unwrap();
+                drop(completion);
+                entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                result.set(true);
+            },
+        );
         main_core::shell::app_settings::queue::for_path(&path).submit(move |completion| {
             entered.send(()).unwrap();
             drop(completion);
@@ -2337,9 +2642,13 @@ mod watcher_order_tests {
         let core: Arc<dyn shell_contract::runtime::Thread> = Arc::new(Core(post));
         let answer = Rc::new(RefCell::new(None));
         let out = answer.clone();
-        submit_folder_work("/synthetic/watch-panic", core, false, || -> Result<(), IpcError> {
-            panic!("synthetic worker failure")
-        }, move |result| *out.borrow_mut() = Some(result));
+        submit_folder_work(
+            "/synthetic/watch-panic",
+            core,
+            false,
+            || -> Result<(), IpcError> { panic!("synthetic worker failure") },
+            move |result| *out.borrow_mut() = Some(result),
+        );
         run.recv_timeout(Duration::from_secs(2)).unwrap()();
         assert!(answer.borrow().as_ref().unwrap().is_err());
     }

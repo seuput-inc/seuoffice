@@ -243,7 +243,7 @@ impl OwnedSave {
         options: shell_contract::hosts::FileDialog, done: Box<dyn FnOnce(Result<Option<SaveDestination>, String>) + Send>) {
         match &self.authority {
             SaveAuthority::Renderer(origin) => dialogs.save_owned_many_extra(parent, options, origin.clone(), self.participants(&[]), self.cancel.clone(), self.pending.clone(), self.additional.clone(),
-                Box::new(move |result| done(result.map(|path| path.map(SaveDestination::Renderer)))),
+                Box::new(move |result| done(result.map(|path| path.map(SaveDestination::Renderer))))),
             SaveAuthority::Native(binding) => {
                 let done = Box::new(move |result: Result<Option<shell_contract::ipc::NativeSaveDestination>, String>| done(result.map(|path| path.map(SaveDestination::Native))));
                 match &self.revision_snapshot {

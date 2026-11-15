@@ -61,8 +61,17 @@ impl Views for NoViews {
         Vec::new()
     }
     fn on_destroyed(&self, _: Box<dyn Fn(ViewId) + Send + Sync>) {}
-    fn renderer_generation(&self, _: ViewId) -> Option<shell_contract::runtime::RendererGeneration> { None }
-    fn on_renderer_replaced(&self, _: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>) {}
+    fn renderer_generation(
+        &self,
+        _: ViewId,
+    ) -> Option<shell_contract::runtime::RendererGeneration> {
+        None
+    }
+    fn on_renderer_replaced(
+        &self,
+        _: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>,
+    ) {
+    }
 }
 
 struct Dir(PathBuf);
@@ -114,7 +123,11 @@ impl OsShell for FakeOs {
     fn trash_item(&self, _: &std::path::Path) -> Result<(), String> {
         Ok(())
     }
-    fn trash_item_authorized(&self, path: &std::path::Path, admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>) -> Result<(), String> {
+    fn trash_item_authorized(
+        &self,
+        path: &std::path::Path,
+        admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>,
+    ) -> Result<(), String> {
         admit(&mut || self.trash_item(path))
     }
 }
@@ -631,13 +644,26 @@ fn shared_connection_observes_login_and_logout_on_the_shared_driver() {
     let out = seen.clone();
     let first = connection.clone();
     let first_rt = rt.clone();
-    driver.run(async move { first.state(&first_rt).await }, move |result| *out.borrow_mut() = Some(result.unwrap().signed_in));
+    driver.run(async move { first.state(&first_rt).await }, move |result| {
+        *out.borrow_mut() = Some(result.unwrap().signed_in)
+    });
     w.pump_until(|| seen.borrow().is_some());
     assert_eq!(*seen.borrow(), Some(true));
-    assert_eq!(field(&w.ok(SubscriptionPort::ai_subscription_logout, provider("chatgpt")), "ok"), Some(&IpcValue::Bool(true)));
+    assert_eq!(
+        field(
+            &w.ok(
+                SubscriptionPort::ai_subscription_logout,
+                provider("chatgpt")
+            ),
+            "ok"
+        ),
+        Some(&IpcValue::Bool(true))
+    );
     *seen.borrow_mut() = None;
     let out = seen.clone();
-    driver.run(async move { connection.state(&rt).await }, move |result| *out.borrow_mut() = Some(result.unwrap().signed_in));
+    driver.run(async move { connection.state(&rt).await }, move |result| {
+        *out.borrow_mut() = Some(result.unwrap().signed_in)
+    });
     w.pump_until(|| seen.borrow().is_some());
     assert_eq!(*seen.borrow(), Some(false));
 }

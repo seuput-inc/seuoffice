@@ -86,14 +86,18 @@ pub enum IndexReadError {
 }
 
 impl From<String> for IndexReadError {
-    fn from(message: String) -> Self { Self::Read(message) }
+    fn from(message: String) -> Self {
+        Self::Read(message)
+    }
 }
 
 /// `CFB.read(bytes)`: every entry of `FileIndex`, in directory order.
 pub fn read_index(bytes: &[u8]) -> Result<Vec<IndexEntry>, String> {
     read_index_with_stream_limit(bytes, usize::MAX).map_err(|error| match error {
         IndexReadError::Read(message) => message,
-        IndexReadError::StreamLimit { .. } => "compound: a stream does not fit in memory".to_owned(),
+        IndexReadError::StreamLimit { .. } => {
+            "compound: a stream does not fit in memory".to_owned()
+        }
     })
 }
 
@@ -101,7 +105,8 @@ pub fn read_index(bytes: &[u8]) -> Result<Vec<IndexEntry>, String> {
 /// allocation. Other entries retain metadata but no content. `usize::MAX`
 /// selects the original, complete index, including its original read failures.
 pub fn read_index_with_stream_limit(
-    bytes: &[u8], max_stream_bytes: usize,
+    bytes: &[u8],
+    max_stream_bytes: usize,
 ) -> Result<Vec<IndexEntry>, IndexReadError> {
     let (mut reader, header) = open(bytes)?;
     let (links, _, mut contents) = reader.read_directory(&header)?;
@@ -109,10 +114,18 @@ pub fn read_index_with_stream_limit(
     if max_stream_bytes != usize::MAX {
         let mut seen = HashSet::new();
         for ((link, path), content) in links.iter().zip(&paths).zip(&mut contents) {
-            if link.kind != Some(2) { *content = Content::Missing; continue; }
-            let relative = path.strip_prefix("Root Entry/")
+            if link.kind != Some(2) {
+                *content = Content::Missing;
+                continue;
+            }
+            let relative = path
+                .strip_prefix("Root Entry/")
                 .unwrap_or_else(|| path.trim_start_matches('/'));
-            let name = if relative.is_empty() { link.name.as_str() } else { relative };
+            let name = if relative.is_empty() {
+                link.name.as_str()
+            } else {
+                relative
+            };
             if name.is_empty() || name.starts_with('\u{1}') || !seen.insert(name) {
                 *content = Content::Missing;
                 continue;
@@ -120,14 +133,25 @@ pub fn read_index_with_stream_limit(
             let size = match *content {
                 Content::Missing => 0,
                 Content::Fat { key, size } => size.min(reader.chain(key)?.len),
-                Content::Mini { store, table, start, size } => {
-                    if max_stream_bytes >= 4096 { continue; }
+                Content::Mini {
+                    store,
+                    table,
+                    start,
+                    size,
+                } => {
+                    if max_stream_bytes >= 4096 {
+                        continue;
+                    }
                     reader.mini_len(store, table, start, size)?
                 }
             };
             if size > max_stream_bytes as u64 {
                 return Err(IndexReadError::StreamLimit {
-                    full_path: if relative.is_empty() { name.to_owned() } else { path.clone() },
+                    full_path: if relative.is_empty() {
+                        name.to_owned()
+                    } else {
+                        path.clone()
+                    },
                     size: usize::try_from(size)
                         .map_err(|_| "compound: a stream does not fit in memory".to_owned())?,
                 });
@@ -762,19 +786,25 @@ impl<'a> Reader<'a> {
     }
 
     fn mini_len(
-        &mut self, store: Key, table: Option<Key>, start: Int, size: Int,
+        &mut self,
+        store: Key,
+        table: Option<Key>,
+        start: Int,
+        size: Int,
     ) -> Result<u64, String> {
         let (Some(table), Some(size), Some(first)) = (table, size, start) else {
             return Ok(0);
         };
-        if size <= 0 || first < 0 { return Ok(0); }
+        if size <= 0 || first < 0 {
+            return Ok(0);
+        }
         self.chain(store)?;
         self.chain(table)?;
-        let (Some(payload), Some(table)) = (self.chains.get(&store), self.chains.get(&table)) else {
+        let (Some(payload), Some(table)) = (self.chains.get(&store), self.chains.get(&table))
+        else {
             return Ok(0);
         };
-        let (mut total, mut visited, mut left, mut at) =
-            (0u64, Vec::new(), i64::from(size), first);
+        let (mut total, mut visited, mut left, mut at) = (0u64, Vec::new(), i64::from(size), first);
         while left > 0 && at >= 0 {
             if visited.contains(&at) {
                 return Err(format!(
@@ -1230,19 +1260,52 @@ mod tests {
         first.right = 2;
         let mut duplicate = entry("Same", 2, 3, 4096);
         duplicate.right = 3;
-        let file = compound(1, NONE, NONE, &[0], &[
-            int32s(&[FATSECT, ENDOFCHAIN, ENDOFCHAIN, 4, ENDOFCHAIN, 6, ENDOFCHAIN], 512),
-            directory(&[root(1, ENDOFCHAIN, 0), first, duplicate, entry("\u{1}Producer", 2, 5, 4096)]),
-            fill(512, 2), fill(512, 3), fill(512, 4), fill(512, 5), fill(512, 6),
-        ]);
+        let file = compound(
+            1,
+            NONE,
+            NONE,
+            &[0],
+            &[
+                int32s(
+                    &[
+                        FATSECT, ENDOFCHAIN, ENDOFCHAIN, 4, ENDOFCHAIN, 6, ENDOFCHAIN,
+                    ],
+                    512,
+                ),
+                directory(&[
+                    root(1, ENDOFCHAIN, 0),
+                    first,
+                    duplicate,
+                    entry("\u{1}Producer", 2, 5, 4096),
+                ]),
+                fill(512, 2),
+                fill(512, 3),
+                fill(512, 4),
+                fill(512, 5),
+                fill(512, 6),
+            ],
+        );
         let bounded = read_index_with_stream_limit(&file, 512).unwrap();
-        let streams: Vec<_> = bounded.iter().filter(|entry| entry.kind == Some(2)).collect();
+        let streams: Vec<_> = bounded
+            .iter()
+            .filter(|entry| entry.kind == Some(2))
+            .collect();
         assert_eq!(streams.len(), 3);
         assert_eq!(streams[0].content.as_deref(), Some(fill(512, 2).as_slice()));
         assert!(streams[1].content.is_none());
         assert!(streams[2].content.is_none());
         let original = read_index(&file).unwrap();
-        assert_eq!(original.iter().find(|entry| entry.name == "\u{1}Producer").unwrap().content.as_ref().unwrap().len(), 1024);
+        assert_eq!(
+            original
+                .iter()
+                .find(|entry| entry.name == "\u{1}Producer")
+                .unwrap()
+                .content
+                .as_ref()
+                .unwrap()
+                .len(),
+            1024
+        );
     }
 
     #[test]
@@ -1250,7 +1313,16 @@ mod tests {
         let file = two_sector_chain(ENDOFCHAIN, 2);
         let bounded = read_index_with_stream_limit(&file, 1024).unwrap();
         let original = read_index(&file).unwrap();
-        assert_eq!(bounded.iter().filter(|entry| entry.kind == Some(2)).collect::<Vec<_>>(), original.iter().filter(|entry| entry.kind == Some(2)).collect::<Vec<_>>());
+        assert_eq!(
+            bounded
+                .iter()
+                .filter(|entry| entry.kind == Some(2))
+                .collect::<Vec<_>>(),
+            original
+                .iter()
+                .filter(|entry| entry.kind == Some(2))
+                .collect::<Vec<_>>()
+        );
         assert!(matches!(
             read_index_with_stream_limit(&file, 1023),
             Err(IndexReadError::StreamLimit { size: 1024, .. })
@@ -1262,7 +1334,16 @@ mod tests {
         let file = mini_chain(&[1, 2, 3, ENDOFCHAIN]);
         let bounded = read_index_with_stream_limit(&file, 200).unwrap();
         let original = read_index(&file).unwrap();
-        assert_eq!(bounded.iter().filter(|entry| entry.kind == Some(2)).collect::<Vec<_>>(), original.iter().filter(|entry| entry.kind == Some(2)).collect::<Vec<_>>());
+        assert_eq!(
+            bounded
+                .iter()
+                .filter(|entry| entry.kind == Some(2))
+                .collect::<Vec<_>>(),
+            original
+                .iter()
+                .filter(|entry| entry.kind == Some(2))
+                .collect::<Vec<_>>()
+        );
         assert!(matches!(
             read_index_with_stream_limit(&file, 199),
             Err(IndexReadError::StreamLimit { size: 200, .. })

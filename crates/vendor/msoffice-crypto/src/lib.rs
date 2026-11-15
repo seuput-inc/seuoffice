@@ -1188,7 +1188,6 @@ fn decrypt_ooxml_core<R: Read + Seek, W: Write>(
     let reader = cfb_reader::SeekBufReader::new(reader)?;
     let mut cfb = cfb::CompoundFile::open(reader).map_err(container_error)?;
 
-
     let encryption_info = cfb_reader::read_encryption_info_in(&mut cfb)?;
     let mut package = cfb.open_stream("/EncryptedPackage").map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {

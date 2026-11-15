@@ -118,10 +118,10 @@ impl PreparedEditorView {
     }
 
     fn install_mode(self, generated: Option<u64>) -> Result<crate::host::window::CreatedChild, InstallError> {
-        let Self { cx, core, view, generation: _, proof, submission, window, window_lifecycle, surface, url, deferred, docs_lease, slides_lease, asset_lease, network_session, invocation_on_frame, invocation_navigate } = self;
+        let Self { cx, core, view, generation, proof, submission, window, window_lifecycle, surface, url, deferred, docs_lease, slides_lease, asset_lease, network_session, invocation_on_frame, invocation_navigate } = self;
         let initial_url = if deferred { "about:blank".to_owned() } else { url.clone() };
         let child = cx.windows.add_reserved_view(
-            view, window, &window_lifecycle, ViewSpec { url: initial_url, bridge: Bridge::Surface(surface) },
+            view, &generation, window, &window_lifecycle, ViewSpec { url: initial_url, bridge: Bridge::Surface(surface) },
             Bounds { x: 0.0, y: 0.0, width: 1.0, height: 1.0 },
             WindowOptions { network_session, ..Default::default() },
             Some(proof),
@@ -220,22 +220,14 @@ static NEXT: AtomicU64 = AtomicU64::new(1);
 pub(super) fn cleanup_proof(
     cx: HostContext, view: ViewId, generation: shell_contract::runtime::RendererGeneration,
     proof: crate::host::window::NativeClosureProof,
-    done: Box<dyn FnOnce(Result<shell_contract::ipc::NativeBrowserRetirement, String>) + Send>,
-) {
-    let done = Arc::new(std::sync::Mutex::new(Some(done)));
-    let callback_done = done.clone();
-    if let Err(error) = proof.watch(Box::new(move |receipt| {
-        cx.views.remove_view_if_generation(view, &generation);
-        if let Some(done) = callback_done.lock().unwrap_or_else(|error| error.into_inner()).take() {
-            done(Ok(shell_contract::ipc::NativeBrowserRetirement::Closed(receipt)));
-        }
-    })) {
-        if let Some(done) = done.lock().unwrap_or_else(|error| error.into_inner()).take() { done(Err(error)); }
-        return;
-    }
-    if let Err(error) = proof.close().request_close() {
-        if let Some(done) = done.lock().unwrap_or_else(|error| error.into_inner()).take() { done(Err(error)); }
-    }
+) -> shell_ipc_w::tabs::host::ViewCreationCleanup {
+    let matches = proof.reservation().matches(view, &generation)
+        && proof.owner().reservation().same_reservation(proof.reservation());
+    let close = super::recovery::NativeClose::new(cx, proof, None);
+    Arc::new(move |done| {
+        if !matches { return done(Err("The native cleanup does not match its original reservation".into())); }
+        close.start(done);
+    })
 }
 
 fn finish_install(
@@ -268,9 +260,7 @@ fn finish_install(
                     producer: Arc::new(proof.clone()), closure: closure.clone(),
                     registration: shell_ipc_w::tabs::host::NativeBrowserRegistration::Unregistered,
                 };
-                let cleanup: ViewCreationCleanup = Arc::new(move |done| {
-                    cleanup_proof(cx.clone(), view, generation.clone(), proof.clone(), done);
-                });
+                let cleanup: ViewCreationCleanup = cleanup_proof(cx.clone(), view, generation.clone(), proof.clone());
                 core.post(Box::new(move || {
                     let callback = COMPLETIONS.with(|pending| pending.borrow_mut().remove(&id));
                     if let Some(callback) = callback { callback(Ok(ViewCreationReady { view: child.view, cleanup, closure, reservation })); }
@@ -285,9 +275,7 @@ fn finish_install(
                         }
                     }));
                 };
-                let cleanup: ViewCreationCleanup = Arc::new(move |done| {
-                    cleanup_proof(cx.clone(), view, generation.clone(), proof.clone(), done);
-                });
+                let cleanup: ViewCreationCleanup = cleanup_proof(cx.clone(), view, generation.clone(), proof.clone());
                 let retry = cleanup.clone();
                 cleanup(Box::new(move |result| {
                     let (error, cleanup) = match result {

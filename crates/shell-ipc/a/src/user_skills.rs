@@ -36,8 +36,9 @@
 
 mod owned_handoff;
 pub use owned_handoff::{
-    ConvertedRollback, GenerateRollback, PreparedConverted, PreparedGenerateHandoff, drop_generate_handoff_owned,
-    handoff_consumer, prepare_generate_converted, prepare_generate_handoff, report_generate_run_started_owned, take_generate_handoff_owned,
+    ConvertedRollback, GenerateRollback, PreparedConverted, PreparedGenerateHandoff,
+    drop_generate_handoff_owned, handoff_consumer, prepare_generate_converted,
+    prepare_generate_handoff, report_generate_run_started_owned, take_generate_handoff_owned,
 };
 #[cfg(test)]
 pub use owned_handoff::{queue_generate_handoff_owned, record_generate_converted_fenced};
@@ -56,10 +57,10 @@ use main_core::packages::electron_utils::generate_handoff::{
     HandoffSkillChip, HandoffStore, HandoffWebContents, handoff_editor_for_file,
     handoff_editor_takes_attachments,
 };
-use main_core::packages::electron_utils::user_skills_channels::template_open_input_of;
 use main_core::packages::electron_utils::unsaved_files::{
     OpenFileState, OpenFilesHolder, OpenFilesSourceFailed,
 };
+use main_core::packages::electron_utils::user_skills_channels::template_open_input_of;
 use main_core::shell::agent::agent_skills::{ManageWindows, user_skills_manage_gate};
 use main_core::shell::app_settings::{agent_skill_notice_due, mark_agent_skill_notice_seen};
 use main_core::shell::atomic_write::atomic_write_file;
@@ -795,14 +796,21 @@ impl SkillsCore {
             deferred: None,
         };
         let ipc = Arc::new(Mutex::new(UserSkillsIpc::new(UserSkillsService::new(
-            host.clone(), library, None,
+            host.clone(),
+            library,
+            None,
         ))));
         // `sender.once('destroyed')` of every window that left something waiting
         let listener = ipc.clone();
         env.services.views.on_destroyed(Box::new(move |view| {
             lock(&listener).sender_destroyed(id_of(view));
         }));
-        SkillsCore { ipc, importer, env, skill_host: host }
+        SkillsCore {
+            ipc,
+            importer,
+            env,
+            skill_host: host,
+        }
     }
 
     fn ipc(&self) -> MutexGuard<'_, SkillsIpc> {
@@ -827,11 +835,18 @@ impl SkillsCore {
     pub fn enabled_for_agent_task(
         &self,
         project_root: Option<String>,
-    ) -> Box<dyn FnOnce() -> Svc<Vec<main_core::shell::user_skills::user_skills_service::AgentEnabledSkill>> + Send> {
+    ) -> Box<
+        dyn FnOnce() -> Svc<
+                Vec<main_core::shell::user_skills::user_skills_service::AgentEnabledSkill>,
+            > + Send,
+    > {
         let host = self.skill_host.clone();
         let importer = self.importer.clone();
         Box::new(move || {
-            let library = Library { importer, deferred: None };
+            let library = Library {
+                importer,
+                deferred: None,
+            };
             UserSkillsService::new(host, library, None).enabled_for_agent(project_root.as_deref())
         })
     }
@@ -965,7 +980,10 @@ impl UserSkillsPort {
         let importer = self.core.importer.clone();
         let core = self.core.env.services.core.clone();
         main_core::shell::app_settings::queue::for_path(&path).submit(move |completion| {
-            let library = Library { importer, deferred: None };
+            let library = Library {
+                importer,
+                deferred: None,
+            };
             let mut ipc = UserSkillsIpc::new(UserSkillsService::new(skill_host, library, None));
             let result = body(&mut ipc, &mut host, sender_id);
             let changed = host.changed;
@@ -1088,9 +1106,14 @@ impl crate::ports::UserSkills for UserSkillsPort {
 
     fn skills_copy_to_mine(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
         let (id, overwrite) = (arg(&args, 0), arg(&args, 1));
-        self.run_queued(cx, Some("skills:copy-to-mine"), reply, move |ipc, host, sender| {
-            ipc.copy_to_mine(host, sender, id.as_ref(), overwrite.as_ref())
-        });
+        self.run_queued(
+            cx,
+            Some("skills:copy-to-mine"),
+            reply,
+            move |ipc, host, sender| {
+                ipc.copy_to_mine(host, sender, id.as_ref(), overwrite.as_ref())
+            },
+        );
     }
 
     fn skills_export_bundle(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
@@ -1119,9 +1142,12 @@ impl crate::ports::UserSkills for UserSkillsPort {
 
     fn skills_hide_builtin(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
         let id = arg(&args, 0);
-        self.run_queued(cx, Some("skills:hide-builtin"), reply, move |ipc, host, sender| {
-            ipc.hide_builtin(host, sender, id.as_ref())
-        });
+        self.run_queued(
+            cx,
+            Some("skills:hide-builtin"),
+            reply,
+            move |ipc, host, sender| ipc.hide_builtin(host, sender, id.as_ref()),
+        );
     }
 
     fn skills_import_folder(&self, cx: &CallContext, _args: Vec<IpcValue>, reply: Responder) {
@@ -1171,7 +1197,9 @@ impl crate::ports::UserSkills for UserSkillsPort {
 
     fn skills_install(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
         let raw = arg(&args, 0);
-        let work = match self.run(cx, |ipc, host, sender| ipc.install_begin(host, sender, raw.as_ref())) {
+        let work = match self.run(cx, |ipc, host, sender| {
+            ipc.install_begin(host, sender, raw.as_ref())
+        }) {
             Ok(work) => work,
             Err(refused) => return answer(reply, refused),
         };
@@ -1182,7 +1210,10 @@ impl crate::ports::UserSkills for UserSkillsPort {
         let env = self.core.env.clone();
         let core = env.services.core.clone();
         main_core::shell::app_settings::queue::for_path(&path).submit(move |completion| {
-            let library = Library { importer, deferred: None };
+            let library = Library {
+                importer,
+                deferred: None,
+            };
             let mut service = UserSkillsService::new(skill_host, library, None);
             let done = service.install(&work.imported, &work.selected, &work.on_collision);
             let core_again = core.clone();
@@ -1248,9 +1279,12 @@ impl crate::ports::UserSkills for UserSkillsPort {
 
     fn skills_remove(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
         let id = arg(&args, 0);
-        self.run_queued(cx, Some("skills:remove"), reply, move |ipc, host, sender| {
-            ipc.remove(host, sender, id.as_ref())
-        });
+        self.run_queued(
+            cx,
+            Some("skills:remove"),
+            reply,
+            move |ipc, host, sender| ipc.remove(host, sender, id.as_ref()),
+        );
     }
 
     fn skills_save(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
@@ -1269,9 +1303,12 @@ impl crate::ports::UserSkills for UserSkillsPort {
 
     fn skills_set_state(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
         let (id, patch) = (arg(&args, 0), arg(&args, 1));
-        self.run_queued(cx, Some("skills:set-state"), reply, move |ipc, host, sender| {
-            ipc.set_state(host, sender, id.as_ref(), patch.as_ref())
-        });
+        self.run_queued(
+            cx,
+            Some("skills:set-state"),
+            reply,
+            move |ipc, host, sender| ipc.set_state(host, sender, id.as_ref(), patch.as_ref()),
+        );
     }
 
     fn skills_suggest_name(&self, _cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
@@ -1286,9 +1323,12 @@ impl crate::ports::UserSkills for UserSkillsPort {
 
     fn skills_unhide_builtins(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
         let names = arg(&args, 0);
-        self.run_queued(cx, Some("skills:unhide-builtins"), reply, move |ipc, host, sender| {
-            ipc.unhide_builtins(host, sender, names.as_ref())
-        });
+        self.run_queued(
+            cx,
+            Some("skills:unhide-builtins"),
+            reply,
+            move |ipc, host, sender| ipc.unhide_builtins(host, sender, names.as_ref()),
+        );
     }
 }
 
@@ -1385,7 +1425,9 @@ impl TemplateTabsHost for TabsHost {
 
     /// `userSkills.templateFile(id)`
     fn template_file_of(&mut self, skill_id: &str) -> Svc<TemplateFile> {
-        self.template.take().unwrap_or_else(|| lock(&self.skills).service.template_file(skill_id))
+        self.template
+            .take()
+            .unwrap_or_else(|| lock(&self.skills).service.template_file(skill_id))
     }
 
     fn open_copy(&mut self, copy: &TemplateCopy) -> Result<Option<OpenedCopyTab>, String> {
@@ -1403,7 +1445,9 @@ impl TemplateTabsHost for TabsHost {
     }
 
     fn opener_file_path(&mut self, opener_id: f64) -> Option<String> {
-        self.opener.take().unwrap_or_else(|| self.tabs.opener_file_path(view_of(opener_id)))
+        self.opener
+            .take()
+            .unwrap_or_else(|| self.tabs.opener_file_path(view_of(opener_id)))
     }
 
     fn focus_tab(&mut self, tab_id: &str) -> bool {
@@ -1505,7 +1549,6 @@ impl TemplateTabsCore {
         }
     }
 
-
     /// `templateTabs.openPreview(owner, input)`: spec 5.6 "make a blank
     /// template". Returns `(tabId, previewId)`.
     pub fn open_preview(&self, owner: ViewId, input: &PreviewInput) -> Svc<(String, String)> {
@@ -1602,9 +1645,17 @@ impl crate::ports::TemplateTabs for TemplateTabsPort {
         let raw = arg(&args, 0);
         let input = template_open_input_of(raw.as_ref())
             .and_then(|input| TemplateOpenInput::from_json(&input));
-        let template = input.as_ref().filter(|input| input.with_current)
-            .map(|input| lock(&self.core.skills).service.template_file(&input.skill_id));
-        let attachable = template.as_ref().and_then(|result| result.as_ref().ok())
+        let template = input
+            .as_ref()
+            .filter(|input| input.with_current)
+            .map(|input| {
+                lock(&self.core.skills)
+                    .service
+                    .template_file(&input.skill_id)
+            });
+        let attachable = template
+            .as_ref()
+            .and_then(|result| result.as_ref().ok())
             .and_then(|template| handoff_editor_for_file(&template.file_name))
             .is_some_and(handoff_editor_takes_attachments);
         let opener = attachable.then(|| self.core.copies.opener_file_path(cx.sender.view));
@@ -1814,13 +1865,18 @@ mod tests {
     struct ViewTable {
         live: Mutex<Vec<Sender>>,
         listeners: Mutex<Vec<Listener>>,
-        generations: Mutex<std::collections::HashMap<ViewId, shell_contract::runtime::RendererGeneration>>,
-        replacements: Mutex<Vec<Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>>>,
+        generations:
+            Mutex<std::collections::HashMap<ViewId, shell_contract::runtime::RendererGeneration>>,
+        replacements: Mutex<
+            Vec<Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>>,
+        >,
     }
     impl ViewTable {
         fn destroy(&self, view: u32) {
             lock(&self.live).retain(|sender| sender.view != ViewId(view));
-            if let Some(generation) = lock(&self.generations).remove(&ViewId(view)) { generation.revoke(); }
+            if let Some(generation) = lock(&self.generations).remove(&ViewId(view)) {
+                generation.revoke();
+            }
             for listener in lock(&self.listeners).iter() {
                 listener(ViewId(view));
             }
@@ -1836,11 +1892,26 @@ mod tests {
         fn on_destroyed(&self, listener: Listener) {
             lock(&self.listeners).push(listener);
         }
-        fn renderer_generation(&self, view: ViewId) -> Option<shell_contract::runtime::RendererGeneration> {
-            if !lock(&self.live).iter().any(|sender| sender.view == view) { return None; }
-            Some(lock(&self.generations).entry(view).or_insert_with(shell_contract::runtime::RendererGeneration::new).clone())
+        fn renderer_generation(
+            &self,
+            view: ViewId,
+        ) -> Option<shell_contract::runtime::RendererGeneration> {
+            if !lock(&self.live).iter().any(|sender| sender.view == view) {
+                return None;
+            }
+            Some(
+                lock(&self.generations)
+                    .entry(view)
+                    .or_insert_with(shell_contract::runtime::RendererGeneration::new)
+                    .clone(),
+            )
         }
-        fn on_renderer_replaced(&self, listener: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>) {
+        fn on_renderer_replaced(
+            &self,
+            listener: Box<
+                dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync,
+            >,
+        ) {
             lock(&self.replacements).push(listener);
         }
     }
@@ -1868,33 +1939,151 @@ mod tests {
         open_error: Mutex<String>,
         trash_fails: Mutex<bool>,
     }
-    fn synthetic_owned_dialog_admit(origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken) -> Result<(), String> {
-        let source = origin.context.renderer().ok_or("synthetic dialog source is unbound")?;
-        let target = destination.context.renderer().ok_or("synthetic dialog destination is unbound")?;
+    fn synthetic_owned_dialog_admit(
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+    ) -> Result<(), String> {
+        let source = origin
+            .context
+            .renderer()
+            .ok_or("synthetic dialog source is unbound")?;
+        let target = destination
+            .context
+            .renderer()
+            .ok_or("synthetic dialog destination is unbound")?;
         let source_loss = origin.loss_token();
         let target_loss = destination.loss_token();
-        source.with_active_pair(target, || shell_contract::runtime::CancelToken::with_active_all([Some(cancel), Some(pending), source_loss.as_ref(), target_loss.as_ref()], || ()))
-            .flatten().ok_or_else(|| "Renderer document is no longer available.".into())
+        source
+            .with_active_pair(target, || {
+                shell_contract::runtime::CancelToken::with_active_all(
+                    [
+                        Some(cancel),
+                        Some(pending),
+                        source_loss.as_ref(),
+                        target_loss.as_ref(),
+                    ],
+                    || (),
+                )
+            })
+            .flatten()
+            .ok_or_else(|| "Renderer document is no longer available.".into())
     }
 
     impl Dialogs for Pc {
         shell_contract::synthetic_recovery_dialog_methods!();
-        fn message_prepared(&self, parent: Option<shell_contract::WindowId>, options: shell_contract::hosts::MessageBox, target: shell_contract::ipc::RecoveryOpenTarget, snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot, done: Box<dyn FnOnce(Result<shell_contract::hosts::MessageBoxAnswer, String>) + Send>) { done(shell_contract::hosts::synthetic::recovery_dialog(&target, &snapshot, || self.message(parent, &options))); }
-        fn save_prepared(&self, parent: Option<shell_contract::WindowId>, options: shell_contract::hosts::FileDialog, target: shell_contract::ipc::RecoveryOpenTarget, snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot, done: Box<dyn FnOnce(Result<Option<shell_contract::ipc::RecoveryPreparedDestination>, String>) + Send>) { done(shell_contract::hosts::synthetic::recovery_save(&target, &snapshot, || self.save(parent, &options))); }
-        fn open_owned(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<Vec<std::path::PathBuf>>, String>) + Send>) {
-            done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.open(parent, &options)));
+        fn message_prepared(
+            &self,
+            parent: Option<shell_contract::WindowId>,
+            options: shell_contract::hosts::MessageBox,
+            target: shell_contract::ipc::RecoveryOpenTarget,
+            snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
+            done: Box<dyn FnOnce(Result<shell_contract::hosts::MessageBoxAnswer, String>) + Send>,
+        ) {
+            done(shell_contract::hosts::synthetic::recovery_dialog(
+                &target,
+                &snapshot,
+                || self.message(parent, &options),
+            ));
         }
-        fn save_owned(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>) {
-            done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.save(parent, &options)));
+        fn save_prepared(
+            &self,
+            parent: Option<shell_contract::WindowId>,
+            options: shell_contract::hosts::FileDialog,
+            target: shell_contract::ipc::RecoveryOpenTarget,
+            snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
+            done: Box<
+                dyn FnOnce(Result<Option<shell_contract::ipc::RecoveryPreparedDestination>, String>)
+                    + Send,
+            >,
+        ) {
+            done(shell_contract::hosts::synthetic::recovery_save(
+                &target,
+                &snapshot,
+                || self.save(parent, &options),
+            ));
         }
-        fn message_owned(&self, parent: Option<WindowId>, options: MessageBox, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>) {
-            done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.message(parent, &options)));
+        fn open_owned(
+            &self,
+            parent: Option<WindowId>,
+            options: FileDialog,
+            origin: shell_contract::ipc::NativeRequestOwner,
+            destination: shell_contract::ipc::NativeRequestOwner,
+            cancel: shell_contract::runtime::CancelToken,
+            pending: shell_contract::runtime::CancelToken,
+            done: Box<dyn FnOnce(Result<Option<Vec<std::path::PathBuf>>, String>) + Send>,
+        ) {
+            done(
+                synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending)
+                    .map(|()| self.open(parent, &options)),
+            );
         }
-        fn save_owned_many(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>) {
-            done(shell_contract::hosts::synthetic::admit_many(&origin, &participants, &cancel, &pending, || self.save(parent, &options)));
+        fn save_owned(
+            &self,
+            parent: Option<WindowId>,
+            options: FileDialog,
+            origin: shell_contract::ipc::NativeRequestOwner,
+            destination: shell_contract::ipc::NativeRequestOwner,
+            cancel: shell_contract::runtime::CancelToken,
+            pending: shell_contract::runtime::CancelToken,
+            done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>,
+        ) {
+            done(
+                synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending)
+                    .map(|()| self.save(parent, &options)),
+            );
         }
-        fn message_owned_many(&self, parent: Option<WindowId>, options: MessageBox, origin: shell_contract::ipc::NativeRequestOwner, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>) {
-            done(shell_contract::hosts::synthetic::admit_many(&origin, &participants, &cancel, &pending, || self.message(parent, &options)));
+        fn message_owned(
+            &self,
+            parent: Option<WindowId>,
+            options: MessageBox,
+            origin: shell_contract::ipc::NativeRequestOwner,
+            destination: shell_contract::ipc::NativeRequestOwner,
+            cancel: shell_contract::runtime::CancelToken,
+            pending: shell_contract::runtime::CancelToken,
+            done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>,
+        ) {
+            done(
+                synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending)
+                    .map(|()| self.message(parent, &options)),
+            );
+        }
+        fn save_owned_many(
+            &self,
+            parent: Option<WindowId>,
+            options: FileDialog,
+            origin: shell_contract::ipc::NativeRequestOwner,
+            participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+            cancel: shell_contract::runtime::CancelToken,
+            pending: shell_contract::runtime::CancelToken,
+            done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>,
+        ) {
+            done(shell_contract::hosts::synthetic::admit_many(
+                &origin,
+                &participants,
+                &cancel,
+                &pending,
+                || self.save(parent, &options),
+            ));
+        }
+        fn message_owned_many(
+            &self,
+            parent: Option<WindowId>,
+            options: MessageBox,
+            origin: shell_contract::ipc::NativeRequestOwner,
+            participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+            cancel: shell_contract::runtime::CancelToken,
+            pending: shell_contract::runtime::CancelToken,
+            done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>,
+        ) {
+            done(shell_contract::hosts::synthetic::admit_many(
+                &origin,
+                &participants,
+                &cancel,
+                &pending,
+                || self.message(parent, &options),
+            ));
         }
         fn open(&self, parent: Option<WindowId>, options: &FileDialog) -> Option<Vec<PathBuf>> {
             lock(&self.asked).push(format!(
@@ -1941,7 +2130,11 @@ mod tests {
             lock(&self.trashed).push(path.to_string_lossy().into_owned());
             Ok(())
         }
-        fn trash_item_authorized(&self, path: &std::path::Path, admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>) -> Result<(), String> {
+        fn trash_item_authorized(
+            &self,
+            path: &std::path::Path,
+            admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>,
+        ) -> Result<(), String> {
             admit(&mut || self.trash_item(path))
         }
     }
@@ -1952,27 +2145,91 @@ mod tests {
         fn capture_png(&self, _: ViewId) -> Result<Vec<u8>, String> {
             unreachable!()
         }
-        fn print_to_pdf_owned(&self, _: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, options: IpcValue) -> Result<Vec<u8>, String> {
-            if cancel.is_cancelled() || pending.is_cancelled() { return Err("Print request expired.".into()); }
+        fn print_to_pdf_owned(
+            &self,
+            _: &shell_contract::ipc::NativeRequestOwner,
+            destination: &shell_contract::ipc::NativeRequestOwner,
+            cancel: &shell_contract::runtime::CancelToken,
+            pending: &shell_contract::runtime::CancelToken,
+            options: IpcValue,
+        ) -> Result<Vec<u8>, String> {
+            if cancel.is_cancelled() || pending.is_cancelled() {
+                return Err("Print request expired.".into());
+            }
             self.print_to_pdf(destination.view, options)
         }
-        fn print_to_pdf_existing_document(&self, binding: &shell_contract::ipc::NativeExistingDocumentBinding, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], options: IpcValue) -> Result<Vec<u8>, String> {
+        fn print_to_pdf_existing_document(
+            &self,
+            binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+            participants: &[shell_contract::ipc::NativeRequestOwner],
+            cancel: &shell_contract::runtime::CancelToken,
+            pending: &shell_contract::runtime::CancelToken,
+            additional: &[shell_contract::runtime::CancelToken],
+            options: IpcValue,
+        ) -> Result<Vec<u8>, String> {
             let extra = additional.iter().collect::<Vec<_>>();
             let mut admitted = false;
-            shell_contract::hosts::synthetic::with_existing_document_save_extra(binding, participants, cancel, pending, &extra, &mut || { admitted = true; Ok(()) })?;
-            if !admitted { return Err("Print request expired.".into()); }
+            shell_contract::hosts::synthetic::with_existing_document_save_extra(
+                binding,
+                participants,
+                cancel,
+                pending,
+                &extra,
+                &mut || {
+                    admitted = true;
+                    Ok(())
+                },
+            )?;
+            if !admitted {
+                return Err("Print request expired.".into());
+            }
             self.print_to_pdf(binding.owner().view, options)
         }
-        fn print_to_pdf_owned_many_extra(&self, origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], options: IpcValue) -> Result<Vec<u8>, String> {
-            let mut owners = participants.to_vec(); owners.push(destination.clone());
+        fn print_to_pdf_owned_many_extra(
+            &self,
+            origin: &shell_contract::ipc::NativeRequestOwner,
+            destination: &shell_contract::ipc::NativeRequestOwner,
+            participants: &[shell_contract::ipc::NativeRequestOwner],
+            cancel: &shell_contract::runtime::CancelToken,
+            pending: &shell_contract::runtime::CancelToken,
+            additional: &[shell_contract::runtime::CancelToken],
+            options: IpcValue,
+        ) -> Result<Vec<u8>, String> {
+            let mut owners = participants.to_vec();
+            owners.push(destination.clone());
             let extra = additional.iter().collect::<Vec<_>>();
-            shell_contract::hosts::synthetic::with_owned_effect_many_extra(origin, &owners, cancel, pending, &extra, &mut || Ok(()))?;
+            shell_contract::hosts::synthetic::with_owned_effect_many_extra(
+                origin,
+                &owners,
+                cancel,
+                pending,
+                &extra,
+                &mut || Ok(()),
+            )?;
             self.print_to_pdf(destination.view, options)
         }
-        fn print_to_pdf_native_invocation(&self, document: &shell_contract::ipc::NativeInvocationDocument, owner: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, options: IpcValue) -> Result<Vec<u8>, String> {
+        fn print_to_pdf_native_invocation(
+            &self,
+            document: &shell_contract::ipc::NativeInvocationDocument,
+            owner: &shell_contract::ipc::NativeRequestOwner,
+            participants: &[shell_contract::ipc::NativeRequestOwner],
+            cancel: &shell_contract::runtime::CancelToken,
+            pending: &shell_contract::runtime::CancelToken,
+            options: IpcValue,
+        ) -> Result<Vec<u8>, String> {
             let mut options = Some(options);
             let mut admitted = None;
-            shell_contract::hosts::synthetic::with_native_invocation(document, owner, participants, cancel, pending, &mut || { admitted = options.take(); Ok(()) })?;
+            shell_contract::hosts::synthetic::with_native_invocation(
+                document,
+                owner,
+                participants,
+                cancel,
+                pending,
+                &mut || {
+                    admitted = options.take();
+                    Ok(())
+                },
+            )?;
             self.print_to_pdf(owner.view, admitted.ok_or("Print request expired.")?)
         }
         fn print_to_pdf(&self, _: ViewId, _: IpcValue) -> Result<Vec<u8>, String> {
@@ -2174,7 +2431,10 @@ mod tests {
         fn opener_file_path(&self, opener: ViewId) -> Option<String> {
             lock(&self.files).get(&opener.0).cloned()
         }
-        fn open_files(&self, done: Box<dyn FnOnce(Result<Vec<OpenFileState>, OpenFilesSourceFailed>)>) {
+        fn open_files(
+            &self,
+            done: Box<dyn FnOnce(Result<Vec<OpenFileState>, OpenFilesSourceFailed>)>,
+        ) {
             done(lock(&self.open_files).clone())
         }
         fn focus_tab(&self, tab_id: &str) -> bool {
@@ -2264,15 +2524,16 @@ mod tests {
                 dir.join("builtin").to_string_lossy().into_owned(),
             )));
             hosts.insert::<TemplateCopyTabsHost>(copies.clone());
-            let services = shell_contract::hosts::synthetic::SyntheticOwnedEffects::install(Services {
-                ui: queue.clone(),
-                core: queue.clone(),
-                workers: pool.clone(),
-                events: events.clone(),
-                views: views.clone(),
-                paths: Arc::new(Paths(dir.clone())),
-                hosts: Arc::new(hosts),
-            });
+            let services =
+                shell_contract::hosts::synthetic::SyntheticOwnedEffects::install(Services {
+                    ui: queue.clone(),
+                    core: queue.clone(),
+                    workers: pool.clone(),
+                    events: events.clone(),
+                    views: views.clone(),
+                    paths: Arc::new(Paths(dir.clone())),
+                    hosts: Arc::new(hosts),
+                });
             let provided = Rc::new(Provided::default());
             let skills = (factory().0)(&services, &provided).unwrap();
             let tabs = (template_tabs_factory().0)(&services, &provided).unwrap();
@@ -2338,10 +2599,17 @@ mod tests {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             while lock(slot).is_none() {
                 self.settle();
-                if lock(slot).is_some() { break; }
-                if !lock(&self.pool.0).is_empty() { continue; }
+                if lock(slot).is_some() {
+                    break;
+                }
+                if !lock(&self.pool.0).is_empty() {
+                    continue;
+                }
                 let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-                assert!(!remaining.is_zero(), "timed out waiting for skills response");
+                assert!(
+                    !remaining.is_zero(),
+                    "timed out waiting for skills response"
+                );
                 let guard = lock(&self.queue.0);
                 if guard.is_empty() {
                     drop(self.queue.1.wait_timeout(guard, remaining).unwrap());
@@ -2586,7 +2854,11 @@ mod tests {
 
         let w = World::new("settings-fifo");
         let id = w.save_skill("queued");
-        let path = w.dir.join("data/app-settings.json").to_string_lossy().into_owned();
+        let path = w
+            .dir
+            .join("data/app-settings.json")
+            .to_string_lossy()
+            .into_owned();
         let queue = main_core::shell::app_settings::queue::for_path(&path);
         let (entered_tx, entered_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
@@ -2595,28 +2867,46 @@ mod tests {
             release_rx.recv().unwrap();
         });
         entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        let slot = w.start(MAIN, "skills:set-state", vec![s(&id), iv(json!({"enabled": false}))]);
+        let slot = w.start(
+            MAIN,
+            "skills:set-state",
+            vec![s(&id), iv(json!({"enabled": false}))],
+        );
         let (next_tx, next_rx) = mpsc::channel();
         let next_path = path.clone();
         queue.submit(move |_completion| {
             main_core::shell::app_settings::write_app_setting(
-                &next_path, "theme", Some(JsonValue::String("dark".into())),
-            ).unwrap();
+                &next_path,
+                "theme",
+                Some(JsonValue::String("dark".into())),
+            )
+            .unwrap();
             next_tx.send(()).unwrap();
         });
         release_tx.send(()).unwrap();
         let guard = lock(&w.queue.0);
-        let (guard, timeout) = w.queue.1.wait_timeout_while(
-            guard, Duration::from_secs(5), |jobs| jobs.is_empty(),
-        ).unwrap();
+        let (guard, timeout) = w
+            .queue
+            .1
+            .wait_timeout_while(guard, Duration::from_secs(5), |jobs| jobs.is_empty())
+            .unwrap();
         assert!(!timeout.timed_out() && !guard.is_empty());
         drop(guard);
-        assert!(next_rx.try_recv().is_err(), "next writer ran before core completion");
+        assert!(
+            next_rx.try_recv().is_err(),
+            "next writer ran before core completion"
+        );
         w.settle_until(&slot);
-        assert_eq!(json_of(&lock(&slot).take().unwrap().unwrap()), json!({"ok": true}));
+        assert_eq!(
+            json_of(&lock(&slot).take().unwrap().unwrap()),
+            json!({"ok": true})
+        );
         next_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         let settings = main_core::shell::app_settings::read_app_settings(&path);
-        assert_eq!(settings.get("theme"), Some(&JsonValue::String("dark".into())));
+        assert_eq!(
+            settings.get("theme"),
+            Some(&JsonValue::String("dark".into()))
+        );
         assert!(settings.get("skills").is_some());
     }
 

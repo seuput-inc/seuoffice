@@ -299,8 +299,7 @@ fn search_saved(
     within: Option<VisibleTest>,
 ) -> Result<Vec<KbSearchHit>, Thrown> {
     let open_files = open_files_holder(host);
-    let mut visible =
-        within.map(|test| move |path: &str| -> Result<bool, Thrown> { test(path) });
+    let mut visible = within.map(|test| move |path: &str| -> Result<bool, Thrown> { test(path) });
     search_saved_knowledge_with_project(
         &open_files,
         &mut |q, pool, within| host.index_search(q, pool, within),
@@ -553,7 +552,9 @@ impl KnowledgeBase for KnowledgeBasePort {
         } else {
             KB_SEARCH_LIMIT_DEFAULT
         };
-        if trim(&q).is_empty() { return reply.reply(Ok(IpcValue::Array(Vec::new()))); }
+        if trim(&q).is_empty() {
+            return reply.reply(Ok(IpcValue::Array(Vec::new())));
+        }
         match self.host.has_file_index() {
             Ok(true) => {}
             Ok(false) => return reply.reply(Ok(IpcValue::Array(Vec::new()))),
@@ -580,7 +581,10 @@ impl KnowledgeBase for KnowledgeBasePort {
         };
         let host = self.host.clone();
         self.answer_from_worker(reply, move || {
-            let within = match project_id { Some(id) => host.project_visible_test(&id)?, None => None };
+            let within = match project_id {
+                Some(id) => host.project_visible_test(&id)?,
+                None => None,
+            };
             let hits = search_saved(&host, &q, &in_scope, limit.min(KB_SEARCH_LIMIT_MAX), within)?;
             Ok(IpcValue::Array(hits.iter().map(hit_ipc).collect()))
         });
@@ -867,7 +871,9 @@ mod tests {
     impl KbServices for Fake {
         fn has_file_index(&self) -> Result<bool, Thrown> {
             let state = self.state();
-            if let Some(error) = &state.index_error { return Err(Thrown(error.clone())); }
+            if let Some(error) = &state.index_error {
+                return Err(Thrown(error.clone()));
+            }
             Ok(!state.no_index)
         }
         fn refresh_file_index_if_stale(&self, max_age_ms: u64) {
@@ -876,8 +882,14 @@ mod tests {
         }
         fn paths_indexed_as_on_disk(&self, paths: &[String]) -> Result<Vec<String>, Thrown> {
             let state = self.state();
-            if let Some(error) = &state.indexed_error { return Err(Thrown(error.clone())); }
-            Ok(paths.iter().filter(|p| state.on_disk.contains(*p)).cloned().collect())
+            if let Some(error) = &state.indexed_error {
+                return Err(Thrown(error.clone()));
+            }
+            Ok(paths
+                .iter()
+                .filter(|p| state.on_disk.contains(*p))
+                .cloned()
+                .collect())
         }
         fn index_search(
             &self,
@@ -1299,10 +1311,16 @@ mod tests {
     fn search_propagates_index_failures_instead_of_returning_no_hits() {
         let r = rig("search-index-error");
         r.host.state().index_error = Some("index initialization failed".into());
-        assert_eq!(search(&r, query("a")).unwrap_err().message, "index initialization failed");
+        assert_eq!(
+            search(&r, query("a")).unwrap_err().message,
+            "index initialization failed"
+        );
         r.host.state().index_error = None;
         r.host.state().indexed_error = Some("index lookup failed".into());
-        assert_eq!(search(&r, query("a")).unwrap_err().message, "index lookup failed");
+        assert_eq!(
+            search(&r, query("a")).unwrap_err().message,
+            "index lookup failed"
+        );
     }
 
     #[test]

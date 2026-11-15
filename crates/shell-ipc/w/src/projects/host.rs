@@ -142,7 +142,10 @@ pub trait ProjectFiles: Send + Sync {
     fn read_page(&self, file_path: &str, offset: f64) -> Result<KbReadPage, Thrown>;
     /// Query current open documents and dirty state. The callback runs on the
     /// core thread after any renderer dirty checks have completed.
-    fn open_files_async(&self, done: Box<dyn FnOnce(Result<Vec<OpenFileState>, OpenFilesSourceFailed>)>);
+    fn open_files_async(
+        &self,
+        done: Box<dyn FnOnce(Result<Vec<OpenFileState>, OpenFilesSourceFailed>)>,
+    );
 }
 
 pub type ProjectFilesHost = Arc<dyn ProjectFiles>;

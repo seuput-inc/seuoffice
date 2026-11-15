@@ -32,12 +32,12 @@ use main_core::shell::atomic_write::atomic_write_file_authorized;
 use shell_contract::ipc::NativeRequestOwner;
 use shell_contract::runtime::{CancelToken, Thread, Workers};
 
+use super::ReopenAdmission;
 use super::client::{
     DriveClientHost, DriveError, DriveFile, MAX_OPEN_BYTES, OpenPlan, UploadTarget,
 };
 use super::host::{DriveShellHost, StopWatch};
 use super::util::{Clock, is_inside, on_core, same_path, system_clock};
-use super::ReopenAdmission;
 
 const INDEX_FILE: &str = "index.json";
 const PRUNE_AFTER_MS: u64 = 30 * 24 * 60 * 60 * 1000;
@@ -279,9 +279,15 @@ impl Drop for Timers {
     }
 }
 
-pub(super) struct CacheGeneration { pub loss: CancelToken }
+pub(super) struct CacheGeneration {
+    pub loss: CancelToken,
+}
 impl CacheGeneration {
-    fn new() -> Arc<Self> { Arc::new(Self { loss: CancelToken::default() }) }
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            loss: CancelToken::default(),
+        })
+    }
 }
 
 /// `DriveFiles`
@@ -350,14 +356,33 @@ pub(super) enum OpenScope {
 }
 pub(super) enum NativeRefresh {
     Unchanged,
-    Committed { path: PathBuf, entry: CacheEntry, generation: Arc<CacheGeneration>, transaction: native_reopen::Transaction, moved_commit: file_commit::FileCommitReceipt, fallback: Option<std::fs::File>, warning: Option<String> },
-    CleanupPending { transaction: native_reopen::Transaction, error: String, rollback_error: String },
+    Committed {
+        path: PathBuf,
+        entry: CacheEntry,
+        generation: Arc<CacheGeneration>,
+        transaction: native_reopen::Transaction,
+        moved_commit: file_commit::FileCommitReceipt,
+        fallback: Option<std::fs::File>,
+        warning: Option<String>,
+    },
+    CleanupPending {
+        transaction: native_reopen::Transaction,
+        error: String,
+        rollback_error: String,
+    },
 }
 
-
 impl OpenScope {
-    pub(super) fn request(owner: NativeRequestOwner, cancel: CancelToken, admission: ReopenAdmission) -> Self {
-        Self::Request { owner, cancel, admission }
+    pub(super) fn request(
+        owner: NativeRequestOwner,
+        cancel: CancelToken,
+        admission: ReopenAdmission,
+    ) -> Self {
+        Self::Request {
+            owner,
+            cancel,
+            admission,
+        }
     }
 
     pub(super) fn check(&self) -> Result<(), String> {
@@ -367,11 +392,17 @@ impl OpenScope {
     fn admit<T>(&self, effect: impl FnOnce() -> T) -> Result<T, String> {
         match self {
             Self::Service => Ok(effect()),
-            Self::Request { owner, cancel, admission } => {
+            Self::Request {
+                owner,
+                cancel,
+                admission,
+            } => {
                 let mut effect = Some(effect);
                 let mut result = None;
                 admission(owner, cancel, &mut || {
-                    let effect = effect.take().ok_or("Drive effect admission was invoked more than once")?;
+                    let effect = effect
+                        .take()
+                        .ok_or("Drive effect admission was invoked more than once")?;
                     result = Some(effect());
                     Ok(())
                 })?;
@@ -383,20 +414,39 @@ impl OpenScope {
     fn admit_recorded<T>(&self, effect: impl FnOnce() -> T) -> Result<T, String> {
         match self {
             Self::Service => Ok(effect()),
-            Self::Request { owner, cancel, admission } => {
-                let mut effect=Some(effect);let mut outcome=None;
-                let admitted=admission(owner,cancel,&mut || {
-                    let work=effect.take().ok_or("Drive effect admission was invoked more than once")?;
-                    outcome=Some(work());Ok(())
+            Self::Request {
+                owner,
+                cancel,
+                admission,
+            } => {
+                let mut effect = Some(effect);
+                let mut outcome = None;
+                let admitted = admission(owner, cancel, &mut || {
+                    let work = effect
+                        .take()
+                        .ok_or("Drive effect admission was invoked more than once")?;
+                    outcome = Some(work());
+                    Ok(())
                 });
-                match outcome { Some(value)=>Ok(value), None=>Err(admitted.err().unwrap_or_else(||"Drive effect was not admitted".into())) }
+                match outcome {
+                    Some(value) => Ok(value),
+                    None => Err(admitted
+                        .err()
+                        .unwrap_or_else(|| "Drive effect was not admitted".into())),
+                }
             }
         }
     }
 
-
-    fn rename(&self, rename: &mut dyn FnMut() -> std::io::Result<()>) -> Result<std::io::Result<()>, main_core::node_fs::NodeError> {
-        self.admit(rename).map_err(|message| main_core::node_fs::NodeError { code: None, message })
+    fn rename(
+        &self,
+        rename: &mut dyn FnMut() -> std::io::Result<()>,
+    ) -> Result<std::io::Result<()>, main_core::node_fs::NodeError> {
+        self.admit(rename)
+            .map_err(|message| main_core::node_fs::NodeError {
+                code: None,
+                message,
+            })
     }
 }
 
@@ -467,15 +517,22 @@ impl DriveFiles {
     fn put_scoped(&self, entry: CacheEntry, scope: &OpenScope) -> Result<(), OpenFailure> {
         let mut entries = self.entries.lock().unwrap();
         let mut old = None;
-        let result = scope.admit_recorded(|| {
-            match entries.iter_mut().find(|e| e.source_id == entry.source_id) {
-                Some(slot) => *slot = entry,
-                None => entries.push(entry),
-            }
-            old = Some(std::mem::replace(&mut *self.generation.lock().unwrap(), CacheGeneration::new()));
-        }).map_err(|_| OpenFailure::Disk);
+        let result = scope
+            .admit_recorded(|| {
+                match entries.iter_mut().find(|e| e.source_id == entry.source_id) {
+                    Some(slot) => *slot = entry,
+                    None => entries.push(entry),
+                }
+                old = Some(std::mem::replace(
+                    &mut *self.generation.lock().unwrap(),
+                    CacheGeneration::new(),
+                ));
+            })
+            .map_err(|_| OpenFailure::Disk);
         drop(entries);
-        if let Some(old) = old { old.loss.cancel(); }
+        if let Some(old) = old {
+            old.loss.cancel();
+        }
         result
     }
 
@@ -483,17 +540,29 @@ impl DriveFiles {
         let _ = self.update_scoped(source_id, change, &OpenScope::Service);
     }
 
-    fn update_scoped(&self, source_id: &str, change: impl FnOnce(&mut CacheEntry), scope: &OpenScope) -> Result<(), OpenFailure> {
+    fn update_scoped(
+        &self,
+        source_id: &str,
+        change: impl FnOnce(&mut CacheEntry),
+        scope: &OpenScope,
+    ) -> Result<(), OpenFailure> {
         let mut entries = self.entries.lock().unwrap();
         let mut old = None;
-        let result = scope.admit_recorded(|| {
-            if let Some(entry) = entries.iter_mut().find(|e| e.source_id == source_id) {
-                change(entry);
-                old = Some(std::mem::replace(&mut *self.generation.lock().unwrap(), CacheGeneration::new()));
-            }
-        }).map_err(|_| OpenFailure::Disk);
+        let result = scope
+            .admit_recorded(|| {
+                if let Some(entry) = entries.iter_mut().find(|e| e.source_id == source_id) {
+                    change(entry);
+                    old = Some(std::mem::replace(
+                        &mut *self.generation.lock().unwrap(),
+                        CacheGeneration::new(),
+                    ));
+                }
+            })
+            .map_err(|_| OpenFailure::Disk);
         drop(entries);
-        if let Some(old) = old { old.loss.cancel(); }
+        if let Some(old) = old {
+            old.loss.cancel();
+        }
         result
     }
 
@@ -510,23 +579,42 @@ impl DriveFiles {
             .cloned()
     }
 
-    pub(super) fn capture_native_entry(&self, path: &str) -> Result<Option<(CacheEntry, Arc<CacheGeneration>)>, String> {
-        let entries = self.entries.lock().map_err(|_| "The Drive cache is poisoned")?;
-        let generation = self.generation.lock().map_err(|_| "The Drive generation is poisoned")?;
-        Ok(entries.iter()
+    pub(super) fn capture_native_entry(
+        &self,
+        path: &str,
+    ) -> Result<Option<(CacheEntry, Arc<CacheGeneration>)>, String> {
+        let entries = self
+            .entries
+            .lock()
+            .map_err(|_| "The Drive cache is poisoned")?;
+        let generation = self
+            .generation
+            .lock()
+            .map_err(|_| "The Drive generation is poisoned")?;
+        Ok(entries
+            .iter()
             .find(|entry| same_path(Path::new(&entry.local_path), Path::new(path)))
             .cloned()
             .map(|entry| (entry, generation.clone())))
     }
 
     pub(super) fn with_native_generation<T>(
-        &self, expected_entry: &CacheEntry, expected_generation: &Arc<CacheGeneration>,
+        &self,
+        expected_entry: &CacheEntry,
+        expected_generation: &Arc<CacheGeneration>,
         effect: impl FnOnce() -> Result<T, String>,
     ) -> Result<T, String> {
-        let entries = self.entries.lock().map_err(|_| "The Drive cache is poisoned")?;
-        let generation = self.generation.lock().map_err(|_| "The Drive generation is poisoned")?;
+        let entries = self
+            .entries
+            .lock()
+            .map_err(|_| "The Drive cache is poisoned")?;
+        let generation = self
+            .generation
+            .lock()
+            .map_err(|_| "The Drive generation is poisoned")?;
         if !Arc::ptr_eq(&generation, expected_generation)
-            || !entries.iter().any(|entry| entry == expected_entry) {
+            || !entries.iter().any(|entry| entry == expected_entry)
+        {
             return Err("The committed Drive cache entry changed".into());
         }
         effect()
@@ -551,7 +639,10 @@ impl DriveFiles {
         );
         let body = json_stringify_pretty(&JsonValue::Object(index), 2);
         let path = self.cache_dir.join(INDEX_FILE);
-        let _ = atomic_write_file_authorized(&path.to_string_lossy(), body.as_bytes(), &mut |rename| scope.rename(rename));
+        let _ =
+            atomic_write_file_authorized(&path.to_string_lossy(), body.as_bytes(), &mut |rename| {
+                scope.rename(rename)
+            });
     }
 
     fn local_sha(entry: &CacheEntry) -> Option<String> {
@@ -602,10 +693,17 @@ impl DriveFiles {
                 let before = entries.len();
                 entries.retain(|e| e.source_id != entry.source_id);
                 if entries.len() != before {
-                    Some(std::mem::replace(&mut *self.generation.lock().unwrap(), CacheGeneration::new()))
-                } else { None }
+                    Some(std::mem::replace(
+                        &mut *self.generation.lock().unwrap(),
+                        CacheGeneration::new(),
+                    ))
+                } else {
+                    None
+                }
             };
-            if let Some(old) = old { old.loss.cancel(); }
+            if let Some(old) = old {
+                old.loss.cancel();
+            }
             if let Some(folder) = Path::new(&entry.local_path).parent() {
                 let _ = fs::remove_dir_all(folder);
             }
@@ -676,128 +774,265 @@ impl DriveFiles {
     }
     /// Refresh one exact native-selected Drive entry; only the rename/index
     /// commit runs under the selected document's admission.
-    pub(super) fn prepare_native_local_path(&self, selected:&CacheEntry, selected_generation:&Arc<CacheGeneration>, source_commit:&file_commit::FileCommitReceipt, scope:&OpenScope, authority:&super::native_reopen::Authority)->Result<NativeRefresh,String> {
+    pub(super) fn prepare_native_local_path(
+        &self,
+        selected: &CacheEntry,
+        selected_generation: &Arc<CacheGeneration>,
+        source_commit: &file_commit::FileCommitReceipt,
+        scope: &OpenScope,
+        authority: &super::native_reopen::Authority,
+    ) -> Result<NativeRefresh, String> {
         scope.check()?;
-        self.start().map_err(|error|error.to_string())?;
-        let (selected_fingerprint,fallback)=native_reopen::capture_selected(Path::new(&selected.local_path))?;
-        let fallback_file=fallback.as_ref().ok_or("The selected Drive cache object no longer exists")?;
-        if !source_commit.same_object(fallback_file).map_err(|error|error.to_string())? {
-            return Err("The selected Drive cache object does not match the committed output".into());
+        self.start().map_err(|error| error.to_string())?;
+        let (selected_fingerprint, fallback) =
+            native_reopen::capture_selected(Path::new(&selected.local_path))?;
+        let fallback_file = fallback
+            .as_ref()
+            .ok_or("The selected Drive cache object no longer exists")?;
+        if !source_commit
+            .same_object(fallback_file)
+            .map_err(|error| error.to_string())?
+        {
+            return Err(
+                "The selected Drive cache object does not match the committed output".into(),
+            );
         }
-        let file=self.file_behind_shortcut(&selected.source_id).map_err(|error|format!("{error:?}"))?;
+        let file = self
+            .file_behind_shortcut(&selected.source_id)
+            .map_err(|error| format!("{error:?}"))?;
         scope.check()?;
-        let plan=self.client.open_plan(&file.name,&file.mime_type);
-        if plan==OpenPlan::None { return Err("The Drive file type is not supported".into()); }
-        let original=self.entry(&file.id).ok_or("The selected Drive cache entry no longer exists")?;
-        if original!=*selected { return Err("The selected Drive cache entry changed".into()); }
-        let old_path=PathBuf::from(&original.local_path);
-        let old_digest=selected_fingerprint;
+        let plan = self.client.open_plan(&file.name, &file.mime_type);
+        if plan == OpenPlan::None {
+            return Err("The Drive file type is not supported".into());
+        }
+        let original = self
+            .entry(&file.id)
+            .ok_or("The selected Drive cache entry no longer exists")?;
+        if original != *selected {
+            return Err("The selected Drive cache entry changed".into());
+        }
+        let old_path = PathBuf::from(&original.local_path);
+        let old_digest = selected_fingerprint;
         if old_digest.is_some() {
-            let dirty=old_digest.as_ref().map(|value|value.hash.as_str())!=Some(original.synced_sha.as_str());
-            let current=file.modified_time==original.source_modified;
-            if self.is_open(&original.local_path)||dirty||current {
-                let mut old=None;
-                let result=authority.with_prepared(&[],&[],&mut |admit| {
-                    let mut entries=self.entries.lock().map_err(|_|"The Drive cache is poisoned")?;
-                    let mut generation=self.generation.lock().map_err(|_|"The Drive generation is poisoned")?;
+            let dirty = old_digest.as_ref().map(|value| value.hash.as_str())
+                != Some(original.synced_sha.as_str());
+            let current = file.modified_time == original.source_modified;
+            if self.is_open(&original.local_path) || dirty || current {
+                let mut old = None;
+                let result = authority.with_prepared(&[], &[], &mut |admit| {
+                    let mut entries = self
+                        .entries
+                        .lock()
+                        .map_err(|_| "The Drive cache is poisoned")?;
+                    let mut generation = self
+                        .generation
+                        .lock()
+                        .map_err(|_| "The Drive generation is poisoned")?;
                     admit(&mut || {
-                        if !Arc::ptr_eq(&generation,selected_generation) { return Err("The selected Drive cache entry changed".into()); }
-                        let entry=entries.iter_mut().find(|entry|entry.source_id==file.id && **entry==original)
+                        if !Arc::ptr_eq(&generation, selected_generation) {
+                            return Err("The selected Drive cache entry changed".into());
+                        }
+                        let entry = entries
+                            .iter_mut()
+                            .find(|entry| entry.source_id == file.id && **entry == original)
                             .ok_or("The selected Drive cache entry changed")?;
-                        entry.opened_at=self.now();
-                        old=Some(std::mem::replace(&mut *generation,CacheGeneration::new()));
+                        entry.opened_at = self.now();
+                        old = Some(std::mem::replace(&mut *generation, CacheGeneration::new()));
                         Ok(())
                     })
                 });
-                let changed=old.is_some();
-                if let Some(old)=old { old.loss.cancel(); }
-                if !changed { result?; return Err("The Drive cache update was not admitted".into()); }
+                let changed = old.is_some();
+                if let Some(old) = old {
+                    old.loss.cancel();
+                }
+                if !changed {
+                    result?;
+                    return Err("The Drive cache update was not admitted".into());
+                }
                 self.save_index_scoped(scope);
-                if dirty&&!original.detached { self.sync_if_changed(&original.source_id); }
+                if dirty && !original.detached {
+                    self.sync_if_changed(&original.source_id);
+                }
                 return Ok(NativeRefresh::Unchanged);
             }
         }
-        let (google,extension,bytes)=match &plan {
-            OpenPlan::Export { mime,extension }=>(true,extension,self.client.export(&file.id,mime,MAX_OPEN_BYTES)),
-            OpenPlan::Download { extension }=>(false,extension,self.client.download(&file.id,MAX_OPEN_BYTES)),
-            OpenPlan::None=>return Err("The Drive file type is not supported".into()),
+        let (google, extension, bytes) = match &plan {
+            OpenPlan::Export { mime, extension } => (
+                true,
+                extension,
+                self.client.export(&file.id, mime, MAX_OPEN_BYTES),
+            ),
+            OpenPlan::Download { extension } => (
+                false,
+                extension,
+                self.client.download(&file.id, MAX_OPEN_BYTES),
+            ),
+            OpenPlan::None => return Err("The Drive file type is not supported".into()),
         };
-        let bytes=bytes.map_err(|error|format!("{error:?}"))?;
+        let bytes = bytes.map_err(|error| format!("{error:?}"))?;
         scope.check()?;
-        let folder_name:String=file.id.chars().map(|c|if c.is_ascii_alphanumeric()||c=='_'||c=='-' {c}else{'_'}).collect();
-        let folder=self.cache_dir.join(folder_name);
-        match scope.admit(||fs::create_dir(&folder))? {
-            Ok(())=>{},
-            Err(error) if error.kind()==std::io::ErrorKind::AlreadyExists && folder.is_dir()=>{},
-            Err(error)=>return Err(error.to_string()),
+        let folder_name: String = file
+            .id
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let folder = self.cache_dir.join(folder_name);
+        match scope.admit(|| fs::create_dir(&folder))? {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && folder.is_dir() => {}
+            Err(error) => return Err(error.to_string()),
         }
-        let destination=folder.join(self.client.local_file_name(&file.name,extension));
-        let local=destination.to_str().ok_or("The Drive cache path is not valid Unicode")?.to_owned();
-        let updated=CacheEntry {
-            source_id:file.id.clone(),google,name:file.name.clone(),parent_id:file.parents.first().cloned(),
-            local_path:local,synced_sha:sha256_hex(&bytes),target_id:(!google).then(||file.id.clone()),
-            target_md5:if google {None}else{file.md5_checksum.clone()},
-            target_modified:if google {None}else{Some(file.modified_time.clone())},
-            source_modified:file.modified_time.clone(),detached:false,opened_at:self.now(),
+        let destination = folder.join(self.client.local_file_name(&file.name, extension));
+        let local = destination
+            .to_str()
+            .ok_or("The Drive cache path is not valid Unicode")?
+            .to_owned();
+        let updated = CacheEntry {
+            source_id: file.id.clone(),
+            google,
+            name: file.name.clone(),
+            parent_id: file.parents.first().cloned(),
+            local_path: local,
+            synced_sha: sha256_hex(&bytes),
+            target_id: (!google).then(|| file.id.clone()),
+            target_md5: if google {
+                None
+            } else {
+                file.md5_checksum.clone()
+            },
+            target_modified: if google {
+                None
+            } else {
+                Some(file.modified_time.clone())
+            },
+            source_modified: file.modified_time.clone(),
+            detached: false,
+            opened_at: self.now(),
         };
-        let _writing=self.index_lock.lock().map_err(|_|"The Drive index lock is poisoned")?;
-        let entries=self.entries.lock().map_err(|_|"The Drive cache is poisoned")?;
-        let generation=self.generation.lock().map_err(|_|"The Drive generation is poisoned")?;
-        if !Arc::ptr_eq(&generation,selected_generation) || entries.iter().find(|entry|entry.source_id==file.id)!=Some(&original) { return Err("The selected Drive cache entry changed".into()); }
-        let snapshot=entries.clone();
+        let _writing = self
+            .index_lock
+            .lock()
+            .map_err(|_| "The Drive index lock is poisoned")?;
+        let entries = self
+            .entries
+            .lock()
+            .map_err(|_| "The Drive cache is poisoned")?;
+        let generation = self
+            .generation
+            .lock()
+            .map_err(|_| "The Drive generation is poisoned")?;
+        if !Arc::ptr_eq(&generation, selected_generation)
+            || entries.iter().find(|entry| entry.source_id == file.id) != Some(&original)
+        {
+            return Err("The selected Drive cache entry changed".into());
+        }
+        let snapshot = entries.clone();
         drop(generation);
         drop(entries);
-        let mut next=snapshot.clone();
-        let slot=next.iter_mut().find(|entry|entry.source_id==file.id).ok_or("The selected Drive cache entry disappeared")?;
-        *slot=updated.clone();
-        let mut index=JsObject::new();
-        index.set("entries",JsonValue::Array(next.iter().map(CacheEntry::to_json).collect()));
-        let index_bytes=json_stringify_pretty(&JsonValue::Object(index),2);
-        let mut transaction=native_reopen::Transaction::prepare(old_path,old_digest,destination.clone(),self.cache_dir.join(INDEX_FILE),&bytes,index_bytes.as_bytes())?;
-        let mut writing=Some(_writing);
-        let committed_generation=CacheGeneration::new();
-        let mut old_generation=None;
-        let mut moved_commit=None;
-        let mut next=Some(next);
-        let mut rollback=None;
-        let admitted=authority.with_prepared(&[],&[],&mut |admit| {
-            let result=(|| {
-                let mut entries=self.entries.lock().map_err(|_|"The Drive cache is poisoned")?;
-                let mut generation=self.generation.lock().map_err(|_|"The Drive generation is poisoned")?;
+        let mut next = snapshot.clone();
+        let slot = next
+            .iter_mut()
+            .find(|entry| entry.source_id == file.id)
+            .ok_or("The selected Drive cache entry disappeared")?;
+        *slot = updated.clone();
+        let mut index = JsObject::new();
+        index.set(
+            "entries",
+            JsonValue::Array(next.iter().map(CacheEntry::to_json).collect()),
+        );
+        let index_bytes = json_stringify_pretty(&JsonValue::Object(index), 2);
+        let mut transaction = native_reopen::Transaction::prepare(
+            old_path,
+            old_digest,
+            destination.clone(),
+            self.cache_dir.join(INDEX_FILE),
+            &bytes,
+            index_bytes.as_bytes(),
+        )?;
+        let mut writing = Some(_writing);
+        let committed_generation = CacheGeneration::new();
+        let mut old_generation = None;
+        let mut moved_commit = None;
+        let mut next = Some(next);
+        let mut rollback = None;
+        let admitted = authority.with_prepared(&[], &[], &mut |admit| {
+            let result = (|| {
+                let mut entries = self
+                    .entries
+                    .lock()
+                    .map_err(|_| "The Drive cache is poisoned")?;
+                let mut generation = self
+                    .generation
+                    .lock()
+                    .map_err(|_| "The Drive generation is poisoned")?;
                 admit(&mut || {
-                    if !Arc::ptr_eq(&generation,selected_generation) || *entries!=snapshot { return Err("The selected Drive cache entry changed".into()); }
-                    let next=next.take().ok_or("The Drive cache commit was already attempted")?;
-                    let commit=transaction.commit()?;
-                    *entries=next;
-                    old_generation=Some(std::mem::replace(&mut *generation,committed_generation.clone()));
-                    moved_commit=Some(commit);
+                    if !Arc::ptr_eq(&generation, selected_generation) || *entries != snapshot {
+                        return Err("The selected Drive cache entry changed".into());
+                    }
+                    let next = next
+                        .take()
+                        .ok_or("The Drive cache commit was already attempted")?;
+                    let commit = transaction.commit()?;
+                    *entries = next;
+                    old_generation = Some(std::mem::replace(
+                        &mut *generation,
+                        committed_generation.clone(),
+                    ));
+                    moved_commit = Some(commit);
                     Ok(())
                 })
             })();
-            if moved_commit.is_none() { rollback=Some(transaction.rollback()); }
+            if moved_commit.is_none() {
+                rollback = Some(transaction.rollback());
+            }
             drop(writing.take());
             result
         });
-        let moved_commit=match moved_commit {
-            Some(commit)=>commit,
-            None=>{
-                let error=admitted.err().unwrap_or_else(||"The Drive cache commit was not admitted".into());
-                let rollback=rollback.unwrap_or_else(||transaction.rollback());
+        let moved_commit = match moved_commit {
+            Some(commit) => commit,
+            None => {
+                let error = admitted
+                    .err()
+                    .unwrap_or_else(|| "The Drive cache commit was not admitted".into());
+                let rollback = rollback.unwrap_or_else(|| transaction.rollback());
                 drop(writing.take());
                 return match rollback {
-                    Ok(())=>Err(error),
-                    Err(rollback)=>Ok(NativeRefresh::CleanupPending { transaction,error,rollback_error:rollback }),
+                    Ok(()) => Err(error),
+                    Err(rollback) => Ok(NativeRefresh::CleanupPending {
+                        transaction,
+                        error,
+                        rollback_error: rollback,
+                    }),
                 };
             }
         };
-        let warning=transaction.cleanup().err();
+        let warning = transaction.cleanup().err();
         drop(writing.take());
-        if let Some(old)=old_generation { old.loss.cancel(); }
-        Ok(NativeRefresh::Committed { path:destination,entry:updated,generation:committed_generation,transaction,moved_commit,fallback,warning })
+        if let Some(old) = old_generation {
+            old.loss.cancel();
+        }
+        Ok(NativeRefresh::Committed {
+            path: destination,
+            entry: updated,
+            generation: committed_generation,
+            transaction,
+            moved_commit,
+            fallback,
+            warning,
+        })
     }
 
-
-    pub(super) fn prepare_local_path(&self, file_id: &str, scope: &OpenScope) -> Result<String, OpenFailure> {
+    pub(super) fn prepare_local_path(
+        &self,
+        file_id: &str,
+        scope: &OpenScope,
+    ) -> Result<String, OpenFailure> {
         scope.check().map_err(|_| OpenFailure::Disk)?;
         self.start().map_err(|_| OpenFailure::Disk)?;
         let file = self
@@ -863,7 +1098,9 @@ impl DriveFiles {
                 OpenScope::Request { .. } => {
                     match scope.admit(|| fs::create_dir(&folder)).map_err(|_| ())? {
                         Ok(()) => {}
-                        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && folder.is_dir() => {}
+                        Err(error)
+                            if error.kind() == std::io::ErrorKind::AlreadyExists
+                                && folder.is_dir() => {}
                         Err(_) => return Err(()),
                     }
                 }
@@ -871,34 +1108,40 @@ impl DriveFiles {
             if let Some(existing) = &existing
                 && !same_path(Path::new(&existing.local_path), &local_path)
             {
-                let _ = scope.admit(|| fs::remove_file(&existing.local_path)).map_err(|_| ())?;
+                let _ = scope
+                    .admit(|| fs::remove_file(&existing.local_path))
+                    .map_err(|_| ())?;
             }
-            atomic_write_file_authorized(&local, &bytes, &mut |rename| scope.rename(rename)).map_err(|_| ())
+            atomic_write_file_authorized(&local, &bytes, &mut |rename| scope.rename(rename))
+                .map_err(|_| ())
         })();
         stored.map_err(|()| OpenFailure::Disk)?;
-        self.put_scoped(CacheEntry {
-            source_id: file.id.clone(),
-            google,
-            name: file.name.clone(),
-            parent_id: file.parents.first().cloned(),
-            local_path: local.clone(),
-            synced_sha: sha256_hex(&bytes),
-            // every open of a Google document starts over: its first save makes a new Office file
-            target_id: (!google).then(|| file.id.clone()),
-            target_md5: if google {
-                None
-            } else {
-                file.md5_checksum.clone()
+        self.put_scoped(
+            CacheEntry {
+                source_id: file.id.clone(),
+                google,
+                name: file.name.clone(),
+                parent_id: file.parents.first().cloned(),
+                local_path: local.clone(),
+                synced_sha: sha256_hex(&bytes),
+                // every open of a Google document starts over: its first save makes a new Office file
+                target_id: (!google).then(|| file.id.clone()),
+                target_md5: if google {
+                    None
+                } else {
+                    file.md5_checksum.clone()
+                },
+                target_modified: if google {
+                    None
+                } else {
+                    Some(file.modified_time.clone())
+                },
+                source_modified: file.modified_time.clone(),
+                detached: false,
+                opened_at: self.now(),
             },
-            target_modified: if google {
-                None
-            } else {
-                Some(file.modified_time.clone())
-            },
-            source_modified: file.modified_time.clone(),
-            detached: false,
-            opened_at: self.now(),
-        }, scope)?;
+            scope,
+        )?;
         self.save_index_scoped(scope);
         scope.check().map_err(|_| OpenFailure::Disk)?;
         Ok(local)
@@ -1166,10 +1409,16 @@ mod tests {
         let owner = NativeRequestOwner {
             view: shell_contract::ViewId(7),
             context: shell_contract::ipc::NativeContext::with_owner_loss(
-                (), shell_contract::runtime::RendererGeneration::new(), cancel.clone(),
+                (),
+                shell_contract::runtime::RendererGeneration::new(),
+                cancel.clone(),
             ),
         };
-        let scope = OpenScope::request(owner, cancel.clone(), super::super::tests::synthetic_reopen_admission());
+        let scope = OpenScope::request(
+            owner,
+            cancel.clone(),
+            super::super::tests::synthetic_reopen_admission(),
+        );
         assert_eq!(scope.admit(|| 7).unwrap(), 7);
         cancel.cancel();
         let mut effects = 0;
@@ -1181,21 +1430,30 @@ mod tests {
     fn revocation_waits_for_only_the_admitted_effect_and_refuses_the_next() {
         let cancel = CancelToken::default();
         let (revoking, revocation) = std::sync::mpsc::channel();
-        let _observer = cancel.on_cancel(move || { revoking.send(()).unwrap(); });
+        let _observer = cancel.on_cancel(move || {
+            revoking.send(()).unwrap();
+        });
         let owner = NativeRequestOwner {
             view: shell_contract::ViewId(7),
             context: shell_contract::ipc::NativeContext::with_renderer(
-                (), shell_contract::runtime::RendererGeneration::new(),
+                (),
+                shell_contract::runtime::RendererGeneration::new(),
             ),
         };
-        let scope = OpenScope::request(owner, cancel.clone(), super::super::tests::synthetic_reopen_admission());
+        let scope = OpenScope::request(
+            owner,
+            cancel.clone(),
+            super::super::tests::synthetic_reopen_admission(),
+        );
         let (entered, entering) = std::sync::mpsc::channel();
         let (release, released) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
-            scope.admit(|| {
-                entered.send(()).unwrap();
-                released.recv().unwrap();
-            }).unwrap();
+            scope
+                .admit(|| {
+                    entered.send(()).unwrap();
+                    released.recv().unwrap();
+                })
+                .unwrap();
             scope
         });
         entering.recv_timeout(Duration::from_secs(1)).unwrap();

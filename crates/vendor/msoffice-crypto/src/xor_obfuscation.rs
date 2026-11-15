@@ -164,8 +164,12 @@ impl XorObfuscator {
         let reversed = password.chars().rev().flat_map(|ch| {
             let mut units = [0u16; 2];
             let count = ch.encode_utf16(&mut units).len();
-            [if count == 2 { Some(units[1]) } else { None }, Some(units[0])]
-                .into_iter().flatten()
+            [
+                if count == 2 { Some(units[1]) } else { None },
+                Some(units[0]),
+            ]
+            .into_iter()
+            .flatten()
         });
         for mut unit in reversed {
             for _ in 0..7 {

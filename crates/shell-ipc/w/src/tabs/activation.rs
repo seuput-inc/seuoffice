@@ -86,18 +86,21 @@ pub struct PreparedTabUiBatch {
     pub steps: Vec<Option<PreparedTabUiStep>>,
 }
 
-pub type RecoveryCleanup = Arc<dyn Fn(Box<dyn FnOnce(Result<shell_contract::ipc::NativeClosureReceipt, String>) + Send>) + Send + Sync>;
+pub type RecoveryCleanup = Arc<dyn Fn(Box<dyn FnOnce(Result<shell_contract::ipc::NativeBrowserRetirement, String>) + Send>) + Send + Sync>;
 
 /// The exact in-flight recovery attempt, retained from the sealed opener entry.
 pub trait RecoveryAttempt {
     fn rollback_store(&self) -> super::host::EditorSeedRollbackStore;
-    /// Retain the original failure and cleanup until the captured native close
-    /// has actually acknowledged. Invoke completion before releasing the drain.
+    fn bind_target(&self, target: &shell_contract::ipc::RecoveryOpenTarget) -> Result<(), String>;
+    /// Keep an unbound producer result without running its cleanup.
+    fn retain_unbound_cleanup(&self, cleanup: Box<dyn FnOnce()>);
+    /// Retain the original failure until native retirement is acknowledged.
+    /// Invoke completion before releasing the drain.
     fn fail(&self, error: String, cleanup: Option<RecoveryCleanup>, on_cleanup_error: std::rc::Rc<dyn Fn(String)>, done: TabUiDone);
     /// Only before the native constructor or actor preparation was admitted.
     fn fail_before_creation(&self, error: String, done: TabUiDone);
-    /// Only after the native producer has already observed the real close ACK.
-    fn fail_after_cleanup(&self, error: String, receipt: shell_contract::ipc::NativeClosureReceipt, on_cleanup_error: std::rc::Rc<dyn Fn(String)>, done: TabUiDone);
+    /// Complete only after the original retirement and its receipt rollback settle.
+    fn fail_after_retirement(&self, error: String, retirement: shell_contract::ipc::NativeBrowserRetirement, on_cleanup_error: std::rc::Rc<dyn Fn(String)>, done: Box<dyn FnOnce()>);
     fn retry_cleanup(&self);
     /// Transfer the already adopted document, not an activation-success claim.
     fn adopted(&self) -> Result<(), String>;

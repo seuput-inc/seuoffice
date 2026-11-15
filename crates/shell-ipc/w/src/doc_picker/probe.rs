@@ -135,7 +135,6 @@ impl DocPickerWindow for Window {
         }
     }
 
-
     fn show(&self) {
         push(&self.log, json!(["BrowserWindow.show"]));
     }

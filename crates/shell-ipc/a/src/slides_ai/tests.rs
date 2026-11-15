@@ -79,7 +79,8 @@ struct TestViews {
     gone: Mutex<HashSet<u32>>,
     listeners: Mutex<Vec<ViewListener>>,
     generations: Mutex<HashMap<ViewId, shell_contract::runtime::RendererGeneration>>,
-    replacements: Mutex<Vec<Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>>>,
+    replacements:
+        Mutex<Vec<Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>>>,
 }
 
 impl TestViews {
@@ -108,11 +109,26 @@ impl Views for TestViews {
     fn on_destroyed(&self, listener: Box<dyn Fn(ViewId) + Send + Sync>) {
         self.listeners.lock().unwrap().push(listener);
     }
-    fn renderer_generation(&self, view: ViewId) -> Option<shell_contract::runtime::RendererGeneration> {
-        if self.gone.lock().unwrap().contains(&view.0) { return None; }
-        Some(self.generations.lock().unwrap().entry(view).or_insert_with(shell_contract::runtime::RendererGeneration::new).clone())
+    fn renderer_generation(
+        &self,
+        view: ViewId,
+    ) -> Option<shell_contract::runtime::RendererGeneration> {
+        if self.gone.lock().unwrap().contains(&view.0) {
+            return None;
+        }
+        Some(
+            self.generations
+                .lock()
+                .unwrap()
+                .entry(view)
+                .or_insert_with(shell_contract::runtime::RendererGeneration::new)
+                .clone(),
+        )
     }
-    fn on_renderer_replaced(&self, listener: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>) {
+    fn on_renderer_replaced(
+        &self,
+        listener: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>,
+    ) {
         self.replacements.lock().unwrap().push(listener);
     }
 }
@@ -157,7 +173,11 @@ impl OsShell for NoOs {
     fn trash_item(&self, _path: &Path) -> Result<(), String> {
         Ok(())
     }
-    fn trash_item_authorized(&self, path: &std::path::Path, admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>) -> Result<(), String> {
+    fn trash_item_authorized(
+        &self,
+        path: &std::path::Path,
+        admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>,
+    ) -> Result<(), String> {
         admit(&mut || self.trash_item(path))
     }
 }
@@ -379,9 +399,15 @@ fn context() -> CallContext {
         },
         request: None,
         cancel: CancelToken::default(),
-        native: ACTIVE_VIEWS.with(|active| active.borrow().as_ref()
-            .and_then(|views| views.renderer_generation(VIEW))
-            .map(|generation| shell_contract::ipc::NativeContext::with_renderer(VIEW, generation))),
+        native: ACTIVE_VIEWS.with(|active| {
+            active
+                .borrow()
+                .as_ref()
+                .and_then(|views| views.renderer_generation(VIEW))
+                .map(|generation| {
+                    shell_contract::ipc::NativeContext::with_renderer(VIEW, generation)
+                })
+        }),
     }
 }
 
@@ -1245,22 +1271,40 @@ impl SlidesAiSessions for Scripted {
             .pop_front()
             .unwrap_or(SettleStep::Quiet)
     }
-    fn run_begin_finish(&self, view: ViewId, ticket: RunBeginTicket, wake: RunBeginWake) -> Result<bool, shell_contract::IpcError> {
+    fn run_begin_finish(
+        &self,
+        view: ViewId,
+        ticket: RunBeginTicket,
+        wake: RunBeginWake,
+    ) -> Result<bool, shell_contract::IpcError> {
         self.inner.run_begin_finish(view, ticket, wake)
     }
-    fn run_hold(&self, owner: &shell_contract::ipc::NativeRequestOwner) -> Result<Option<IpcValue>, shell_contract::IpcError> {
+    fn run_hold(
+        &self,
+        owner: &shell_contract::ipc::NativeRequestOwner,
+    ) -> Result<Option<IpcValue>, shell_contract::IpcError> {
         if self.fail_hold.get() {
-            return Err(shell_contract::IpcError { name: Some("Error".into()), message: "snapshot failed".into() });
+            return Err(shell_contract::IpcError {
+                name: Some("Error".into()),
+                message: "snapshot failed".into(),
+            });
         }
         self.inner.run_hold(owner)
     }
-    fn proposal_accept(&self, owner: &shell_contract::ipc::NativeRequestOwner) -> Result<Option<(IpcValue, u64)>, shell_contract::IpcError> {
+    fn proposal_accept(
+        &self,
+        owner: &shell_contract::ipc::NativeRequestOwner,
+    ) -> Result<Option<(IpcValue, u64)>, shell_contract::IpcError> {
         self.inner.proposal_accept(owner)
     }
     fn proposal_reject(&self, view: ViewId) -> bool {
         self.inner.proposal_reject(view)
     }
-    fn snapshot_restore(&self, owner: &shell_contract::ipc::NativeRequestOwner, id: f64) -> Result<Option<IpcValue>, shell_contract::IpcError> {
+    fn snapshot_restore(
+        &self,
+        owner: &shell_contract::ipc::NativeRequestOwner,
+        id: f64,
+    ) -> Result<Option<IpcValue>, shell_contract::IpcError> {
         self.inner.snapshot_restore(owner, id)
     }
     fn picture_begin(

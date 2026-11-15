@@ -563,16 +563,26 @@ pub fn open_owned(data: Vec<u8>) -> Result<Archive, String> {
 impl Archive {
     /// Finds the exact file first, then the first case-insensitive file.
     pub fn entry(&self, name: &str) -> Result<Option<Vec<u8>>, String> {
-        let exact = self.entries.iter().find(|entry| !entry.is_dir && entry.name == name);
+        let exact = self
+            .entries
+            .iter()
+            .find(|entry| !entry.is_dir && entry.name == name);
         let found = exact.or_else(|| {
             let lower = name.to_lowercase();
-            self.entries.iter().find(|entry| !entry.is_dir && entry.name.to_lowercase() == lower)
+            self.entries
+                .iter()
+                .find(|entry| !entry.is_dir && entry.name.to_lowercase() == lower)
         });
         let Some(entry) = found else { return Ok(None) };
         if entry.uncompressed_size == 0 {
             return Ok(Some(Vec::new()));
         }
-        content_of(entry.compression, &self.data[entry.content.clone()], entry.uncompressed_size).map(Some)
+        content_of(
+            entry.compression,
+            &self.data[entry.content.clone()],
+            entry.uncompressed_size,
+        )
+        .map(Some)
     }
 }
 
@@ -610,27 +620,46 @@ pub fn open_selective(data: &[u8]) -> Result<SelectiveArchive<'_>, String> {
             return Err(UNIX_DIR_WITHOUT_SLASH.to_owned());
         }
         let mut name = resolve(&original);
-        if is_dir && !name.ends_with('/') { name.push('/'); }
+        if is_dir && !name.ends_with('/') {
+            name.push('/');
+        }
         let stored_empty = is_dir || file.uncompressed_size == 0;
         let entry = SelectiveEntry {
-            name: name.clone(), unsafe_original_name: original, is_dir,
+            name: name.clone(),
+            unsafe_original_name: original,
+            is_dir,
             uncompressed_size: (!stored_empty).then_some(file.uncompressed_size as f64),
             date: file.date(),
             unix_permissions: (file.version_made_by >> 8 == MADE_BY_UNIX)
                 .then_some(((file.external_file_attributes >> 16) & 0xffff) as u32),
             compression,
-            compressed: if stored_empty { &[] } else { file.compressed_content },
-            size: if stored_empty { 0 } else { file.uncompressed_size },
+            compressed: if stored_empty {
+                &[]
+            } else {
+                file.compressed_content
+            },
+            size: if stored_empty {
+                0
+            } else {
+                file.uncompressed_size
+            },
         };
-        if let Some(&index) = indices.get(&name) { entries[index] = entry; }
-        else { indices.insert(name, entries.len()); entries.push(entry); }
+        if let Some(&index) = indices.get(&name) {
+            entries[index] = entry;
+        } else {
+            indices.insert(name, entries.len());
+            entries.push(entry);
+        }
     }
     Ok(SelectiveArchive { entries, indices })
 }
 
 impl<'a> SelectiveArchive<'a> {
     pub fn file(&self, name: &str) -> Option<&SelectiveEntry<'a>> {
-        self.indices.get(name).map(|index| &self.entries[*index]).filter(|entry| !entry.is_dir)
+        self.indices
+            .get(name)
+            .map(|index| &self.entries[*index])
+            .filter(|entry| !entry.is_dir)
     }
 }
 
@@ -646,13 +675,20 @@ impl SelectiveEntry<'_> {
     /// before copying that chunk into the result. Damaged partial chunks retain
     /// pako's existing discard semantics, not an eager inflater's error policy.
     pub fn read_capped(&self, limit: usize) -> Result<Vec<u8>, CappedReadError> {
-        if self.uncompressed_size.is_some_and(|size| size > limit as f64) {
+        if self
+            .uncompressed_size
+            .is_some_and(|size| size > limit as f64)
+        {
             return Err(CappedReadError::Limit);
         }
-        if self.size == 0 { return Ok(Vec::new()); }
+        if self.size == 0 {
+            return Ok(Vec::new());
+        }
         let result = match self.compression {
             Compression::Store => {
-                if self.compressed.len() > limit { return Err(CappedReadError::Limit); }
+                if self.compressed.len() > limit {
+                    return Err(CappedReadError::Limit);
+                }
                 self.compressed.to_vec()
             }
             Compression::Deflate => {
@@ -664,7 +700,8 @@ impl SelectiveEntry<'_> {
                 let mut result = Vec::new();
                 loop {
                     let (before_in, before_out) = (inflater.total_in(), inflater.total_out());
-                    let status = inflater.decompress(input, &mut buffer[filled..], FlushDecompress::None);
+                    let status =
+                        inflater.decompress(input, &mut buffer[filled..], FlushDecompress::None);
                     let consumed = (inflater.total_in() - before_in) as usize;
                     let produced = (inflater.total_out() - before_out) as usize;
                     input = &input[consumed..];
@@ -680,7 +717,12 @@ impl SelectiveEntry<'_> {
                     }
                     match status {
                         Ok(Status::StreamEnd) => break,
-                        Ok(_) if consumed + produced > 0 && result.len() <= usize::try_from(self.size).unwrap_or(0).saturating_add(CHUNK) => {},
+                        Ok(_)
+                            if consumed + produced > 0
+                                && result.len()
+                                    <= usize::try_from(self.size)
+                                        .unwrap_or(0)
+                                        .saturating_add(CHUNK) => {}
                         _ => break,
                     }
                 }
@@ -688,8 +730,12 @@ impl SelectiveEntry<'_> {
             }
         };
         if result.len() as i64 != self.size {
-            Err(CappedReadError::Read("Bug : uncompressed data size mismatch".to_owned()))
-        } else { Ok(result) }
+            Err(CappedReadError::Read(
+                "Bug : uncompressed data size mismatch".to_owned(),
+            ))
+        } else {
+            Ok(result)
+        }
     }
 }
 
@@ -1001,17 +1047,32 @@ mod tests {
         ]);
         let eager = load(&data, false).unwrap();
         let archive = open_owned(data).unwrap();
-        assert_eq!(archive.entry("preview/COVER.png").unwrap(), Some(b"image".to_vec()));
-        assert_eq!(archive.entry("large.bin").unwrap_err(), "Bug : uncompressed data size mismatch");
-        assert_eq!(eager[0].content.as_ref().unwrap_err(), "Bug : uncompressed data size mismatch");
+        assert_eq!(
+            archive.entry("preview/COVER.png").unwrap(),
+            Some(b"image".to_vec())
+        );
+        assert_eq!(
+            archive.entry("large.bin").unwrap_err(),
+            "Bug : uncompressed data size mismatch"
+        );
+        assert_eq!(
+            eager[0].content.as_ref().unwrap_err(),
+            "Bug : uncompressed data size mismatch"
+        );
     }
 
     #[test]
     fn deferred_archive_rejects_the_same_malformed_header() {
         let mut data = test_archive(&[("name", b"x", 0, 1)]);
         data[0] = 0;
-        let eager = match load(&data, false) { Err(error) => error, Ok(_) => panic!("expected error") };
-        let deferred = match open_owned(data) { Err(error) => error, Ok(_) => panic!("expected error") };
+        let eager = match load(&data, false) {
+            Err(error) => error,
+            Ok(_) => panic!("expected error"),
+        };
+        let deferred = match open_owned(data) {
+            Err(error) => error,
+            Ok(_) => panic!("expected error"),
+        };
         assert_eq!(deferred, eager);
     }
 
@@ -1030,7 +1091,10 @@ mod tests {
         assert_eq!(selected.date, eager[2].date);
         assert_eq!(selected.unix_permissions, eager[2].unix_permissions);
         assert_eq!(selected.unsafe_original_name, eager[2].unsafe_original_name);
-        assert_eq!(selective.file("CONTENT.XML").unwrap().read_capped(5), Ok(b"upper".to_vec()));
+        assert_eq!(
+            selective.file("CONTENT.XML").unwrap().read_capped(5),
+            Ok(b"upper".to_vec())
+        );
         assert!(selective.file("Content.xml").is_none());
         assert!(selective.file("folder/").is_none());
     }
@@ -1042,18 +1106,45 @@ mod tests {
             ("content.xml", b"<a/>", 0, 4),
         ]);
         let archive = open_selective(&data).unwrap();
-        assert_eq!(archive.file("content.xml").unwrap().read_capped(4), Ok(b"<a/>".to_vec()));
-        assert_eq!(archive.file("unused").unwrap().read_capped(64 * 1024 * 1024), Err(CappedReadError::Limit));
+        assert_eq!(
+            archive.file("content.xml").unwrap().read_capped(4),
+            Ok(b"<a/>".to_vec())
+        );
+        assert_eq!(
+            archive
+                .file("unused")
+                .unwrap()
+                .read_capped(64 * 1024 * 1024),
+            Err(CappedReadError::Limit)
+        );
     }
 
     #[test]
     fn selective_cap_checks_declared_and_actual_stored_bytes_before_copy() {
-        let data = test_archive(&[("declared", b"short", 0, 100), ("actual", b"longer", 0, 2), ("empty", b"ignored", 0, 0)]);
+        let data = test_archive(&[
+            ("declared", b"short", 0, 100),
+            ("actual", b"longer", 0, 2),
+            ("empty", b"ignored", 0, 0),
+        ]);
         let archive = open_selective(&data).unwrap();
-        assert_eq!(archive.file("declared").unwrap().read_capped(99), Err(CappedReadError::Limit));
-        assert_eq!(archive.file("actual").unwrap().read_capped(5), Err(CappedReadError::Limit));
-        assert_eq!(archive.file("actual").unwrap().read_capped(6), Err(CappedReadError::Read("Bug : uncompressed data size mismatch".to_owned())));
-        assert_eq!(archive.file("empty").unwrap().read_capped(0), Ok(Vec::new()));
+        assert_eq!(
+            archive.file("declared").unwrap().read_capped(99),
+            Err(CappedReadError::Limit)
+        );
+        assert_eq!(
+            archive.file("actual").unwrap().read_capped(5),
+            Err(CappedReadError::Limit)
+        );
+        assert_eq!(
+            archive.file("actual").unwrap().read_capped(6),
+            Err(CappedReadError::Read(
+                "Bug : uncompressed data size mismatch".to_owned()
+            ))
+        );
+        assert_eq!(
+            archive.file("empty").unwrap().read_capped(0),
+            Ok(Vec::new())
+        );
     }
 
     #[test]
@@ -1061,31 +1152,62 @@ mod tests {
         use std::io::Write;
         for size in [65_535usize, 65_536, 65_537, 131_073] {
             let expected = vec![b'x'; size];
-            let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
+            let mut encoder =
+                flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
             encoder.write_all(&expected).unwrap();
             let compressed = encoder.finish().unwrap();
             let data = test_archive(&[("body", &compressed, 8, size as u32)]);
             let archive = open_selective(&data).unwrap();
-            assert_eq!(archive.file("body").unwrap().read_capped(size), Ok(expected));
-            assert_eq!(archive.file("body").unwrap().read_capped(size - 1), Err(CappedReadError::Limit));
+            assert_eq!(
+                archive.file("body").unwrap().read_capped(size),
+                Ok(expected)
+            );
+            assert_eq!(
+                archive.file("body").unwrap().read_capped(size - 1),
+                Err(CappedReadError::Limit)
+            );
         }
-        let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
+        let mut encoder =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
         encoder.write_all(&vec![b'x'; 65_537]).unwrap();
         let compressed = encoder.finish().unwrap();
         let understated = test_archive(&[("body", &compressed, 8, 1)]);
         let archive = open_selective(&understated).unwrap();
-        assert_eq!(archive.file("body").unwrap().read_capped(65_536), Err(CappedReadError::Limit));
-        assert_eq!(archive.file("body").unwrap().read_capped(65_537), Err(CappedReadError::Read("Bug : uncompressed data size mismatch".to_owned())));
+        assert_eq!(
+            archive.file("body").unwrap().read_capped(65_536),
+            Err(CappedReadError::Limit)
+        );
+        assert_eq!(
+            archive.file("body").unwrap().read_capped(65_537),
+            Err(CappedReadError::Read(
+                "Bug : uncompressed data size mismatch".to_owned()
+            ))
+        );
         let corrupt = test_archive(&[("body", b"bad", 8, 1)]);
-        assert_eq!(open_selective(&corrupt).unwrap().file("body").unwrap().read_capped(1), Err(CappedReadError::Read("Bug : uncompressed data size mismatch".to_owned())));
+        assert_eq!(
+            open_selective(&corrupt)
+                .unwrap()
+                .file("body")
+                .unwrap()
+                .read_capped(1),
+            Err(CappedReadError::Read(
+                "Bug : uncompressed data size mismatch".to_owned()
+            ))
+        );
     }
 
     #[test]
     fn selective_metadata_refusals_match_the_unchanged_eager_reader() {
         let mut data = test_archive(&[("name", b"x", 0, 1)]);
         data[0] = 0;
-        let eager = match load(&data, false) { Err(error) => error, Ok(_) => panic!("expected refusal") };
-        let selective = match open_selective(&data) { Err(error) => error, Ok(_) => panic!("expected refusal") };
+        let eager = match load(&data, false) {
+            Err(error) => error,
+            Ok(_) => panic!("expected refusal"),
+        };
+        let selective = match open_selective(&data) {
+            Err(error) => error,
+            Ok(_) => panic!("expected refusal"),
+        };
         assert_eq!(selective, eager);
     }
 }
