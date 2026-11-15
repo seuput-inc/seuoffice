@@ -1,6 +1,6 @@
 # Hosted source prepush and core baseline
 
-This explicit mode validates product `3e5a4b02fd395c09a63bf64791b9d33e67570b26` against base `375b08bd0e1f7e8432e6514468cc9d25be01b100`. The product is published only under `backup/validation/stage2-final-core-3e5a4b02`; publication is an input handoff, not a local prepush PASS or permission to ship. Earlier ed559 receipts remain evidence for ed559 only.
+This explicit mode validates product `5e215c4910887ed4b65c241b10d64c1f978a63e3` against base `375b08bd0e1f7e8432e6514468cc9d25be01b100`. The product is published only under `backup/validation/stage2-core-format-5e215c49`; publication is an input handoff, not a local prepush PASS or permission to ship. Earlier ed559 and 3e5 receipts remain evidence for their original products only. Run43661410435 failed source formatting; its two successful baseline lanes do not satisfy the new product prerequisite. This follow-up applies only its exact hosted formatter diff.
 
 Dispatch the definition branch with only `main_validation_product_sha=<exact product>`, `fault_shards=1`, `all_faults=false`, and every other selector empty. Mixed legacy-baseline or fault inputs fail before product checkout. The old baseline mode remains separate.
 

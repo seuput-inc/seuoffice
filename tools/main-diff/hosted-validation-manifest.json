@@ -1,14 +1,14 @@
 {
   "contract": "main-hosted-prepush-baseline/v1",
   "scope": "source-prepush-and-complete-core-baseline-only-not-fault-or-reuse-acceptance",
-  "productSha": "3e5a4b02fd395c09a63bf64791b9d33e67570b26",
+  "productSha": "5e215c4910887ed4b65c241b10d64c1f978a63e3",
   "baseSha": "375b08bd0e1f7e8432e6514468cc9d25be01b100",
   "prepushScriptSha256": "64c82ffe03995e6a518998c90ae354920473d48e0f35caaa01afadd5b938c4d6",
   "registrySha256": "00be7494a08534991a60b4e1cc3cd94eaa826a8f6808b7943d7963f87c6b46ac",
   "baselineModuleSha256": "ad2ef44314d8aca2637648f19148d3b68f9c5d5b8cc2bab9728908d6ea1c33fc",
   "canonicalObjectHashContract": "sha256-json-stringify-utf8/v1",
   "producerCanonicalObjectHash": {
-    "productSha": "3e5a4b02fd395c09a63bf64791b9d33e67570b26",
+    "productSha": "5e215c4910887ed4b65c241b10d64c1f978a63e3",
     "path": "tools/main-diff/mutation-evidence.mjs",
     "method": "createMutationEvidence(...).begin",
     "expression": "hash(JSON.stringify(fault))",
@@ -14132,7 +14132,7 @@
     {
       "path": "crates/main-core/src/calls/b5_provider/subscription.rs",
       "beforeSha256": "eb62ea2fe8ee11819986e85281e3c5809c9b86df88a7b864be2e27e98b875503",
-      "afterSha256": "fcddcc4d5491fd12374109f18eec0805b672f0fafd20afe5fa9382d50462bc9b"
+      "afterSha256": "09129f24af8bdc1b867ae2f3951e354ce270982a7d7bbc5c8f2c363bd7338b6f"
     },
     {
       "path": "crates/main-core/src/calls/b5_provider/world.rs",
@@ -14260,7 +14260,7 @@
       "afterSha256": "1fa042d016888f2ddb3623b2ffc210c89b6690e938a81056b0533a601267ac49"
     }
   ],
-  "reuseProposalSha256": "461870cf00331bd5e276f7d8077cbe9d88417881fc7d6cc4cf0f949813c4f633",
+  "reuseProposalSha256": "2aca72f7592ae9623fb2246f860c72e4b8ff514231c7308aba414d90e02c5408",
   "reuseManifest": "hosted-validation-reuse.json",
   "nativeBaselinePassed": false,
   "reuseAccepted": false,
