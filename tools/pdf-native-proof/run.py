@@ -125,6 +125,9 @@ def main():
     flate_version = locked_version(production_packages, 'flate2')
     json_version = locked_version(production_packages, 'serde_json')
     chrono_version = locked_version(production_packages, 'chrono')
+    openssl_version = locked_version(production_packages, 'openssl')
+    openssl_sys_version = locked_version(production_packages, 'openssl-sys')
+    openssl_src_version = locked_version(production_packages, 'openssl-src')
     module_root = scratch / 'modules'
     evidence['module_sources'] = materialize_modules(module_root)
     def js_inventory():
@@ -158,6 +161,9 @@ jscompat = {{ path = {toml_path(ROOT / 'crates/jscompat')} }}
 flate2 = {{ version = "={flate_version}", features = ["zlib-rs"] }}
 serde_json = {{ version = "={json_version}", features = ["preserve_order", "float_roundtrip"] }}
 chrono = {{ version = "={chrono_version}", features = ["clock"] }}
+openssl = {{ version = "={openssl_version}", features = ["vendored"] }}
+openssl-sys = "={openssl_sys_version}"
+openssl-src = "={openssl_src_version}"
 [patch.crates-io]
 regress = {{ path = {toml_path(ROOT / 'crates/vendor/regress')} }}
 [workspace]

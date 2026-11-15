@@ -97,7 +97,7 @@
     "tools/pdf-native-proof/compare.ts": "4ba2b9fd37b16942fc961fdf5b32343d54c769d7f23ea847698e93590a0ba4e2",
     "tools/pdf-native-proof/dependencies.cjs": "1460b99a9acd25fc887f395b0d12ed1edcb43c7ee20e08a03042622b6f20bfb9",
     "tools/pdf-native-proof/main.rs": "a05d03699674599cf2596e602b7813fc5e31a9a1f6e31f30a6585c16abbe7961",
-    "tools/pdf-native-proof/run.py": "7520e76d4c5b50fc4782f029d33d3df01a49e299c1ec5d808e2b260e63f8de4c",
+    "tools/pdf-native-proof/run.py": "8492e1f078518e2be0e6e8e66cefc07675f370cbdc36b52ec612e49e93773ae7",
     "tools/pdf-native-proof/test-static.mjs": "1ad92257beb988ecabcc09d2eadbb3fad21636c3f197e57e43b3dcde28e39719",
     "tools/pdf-native-proof/test_static.py": "338aa714e29173eef5e1c9141647365fdc024ab0cab787f01e8fae512ad374cb"
   },
