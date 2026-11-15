@@ -20,6 +20,8 @@ import struct
 import subprocess
 import time
 
+from fixture_utils import noise_file, run
+
 TIMEOUT = 60
 MAX_FRAME = 32 * 1024 * 1024
 
@@ -47,12 +49,6 @@ def header_digests(directories):
     return results
 
 
-def run(args, *, env, data=None):
-    result = subprocess.run([str(v) for v in args], input=data, env=env,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if result.returncode:
-        raise RuntimeError(f'{args[0]} exited {result.returncode}: {result.stderr.decode("utf-8", errors="replace")}')
-    return result.stdout
 
 def read_exact(pipe, count, proc):
     if count > MAX_FRAME: raise RuntimeError('oversized helper frame')
@@ -162,9 +158,9 @@ def assert_identity(openssl, p12, password, expected, env):
     r, w = os.pipe()
     try:
         os.write(w, password + b'\n'); os.close(w); w = -1
-        process = subprocess.run([str(openssl), 'pkcs12', '-clcerts', '-nokeys', '-passin', f'fd:{r}'],
-            input=p12, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, pass_fds=(r,), check=True)
-        der = run([openssl, 'x509', '-outform', 'DER'], env=env, data=process.stdout)
+        pem = run([openssl, 'pkcs12', '-clcerts', '-nokeys', '-passin', f'fd:{r}'],
+                  env=env, data=p12, pass_fds=(r,), mode='verify-identity')
+        der = run([openssl, 'x509', '-outform', 'DER'], env=env, data=pem)
         if hashlib.sha256(der).hexdigest() != expected: raise AssertionError('export selected wrong identity')
     finally:
         os.close(r)
@@ -174,9 +170,10 @@ def sql_fixture(certutil, openssl, scratch, label, env):
     db = scratch / label; db.mkdir()
     run([certutil, '-N', '-d', 'sql:' + str(db), '--empty-password'], env=env)
     nickname = 'Synthetic ' + label
-    run([certutil, '-S', '-d', 'sql:' + str(db), '-n', nickname, '-s', 'CN=' + label,
-         '-x', '-t', 'u,u,u', '-m', '17', '-v', '12', '-k', 'rsa', '-g', '2048',
-         '-Z', 'SHA256', '-z', '/dev/urandom'], env=env)
+    with noise_file(scratch) as noise:
+        run([certutil, '-S', '-d', 'sql:' + str(db), '-n', nickname, '-s', 'CN=' + label,
+             '-x', '-t', 'u,u,u', '-m', '17', '-v', '12', '-k', 'rsa', '-g', '2048',
+             '-Z', 'SHA256', '-z', noise], env=env, mode='generate-certificate')
     return db, nickname, expected_cert(certutil, openssl, db, nickname, env)
 
 def main():
@@ -244,7 +241,8 @@ def main():
     # Fixture builder creates its own synthetic module and DB in scratch; it
     # must register the real module with NSS and identify its generated cert.
     external_dir = scratch / 'external'; external_dir.mkdir()
-    fixture = json.loads(run([a.fixture_setup, '--scratch', external_dir], env=env))
+    fixture = json.loads(run([a.fixture_setup, '--scratch', external_dir], env=env,
+                             timeout=900, mode='external-fixture', forward_stderr=True))
     if set(fixture) != {'dir', 'nickname', 'password', 'nonextractable', 'marker', 'cert_sha256', 'protected'}:
         raise ValueError('invalid external fixture contract')
     ext_db = Path(fixture['dir']).resolve(strict=True)

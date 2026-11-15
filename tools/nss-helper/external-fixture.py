@@ -12,25 +12,25 @@ import os
 from pathlib import Path
 import re
 import shutil
-import subprocess
+import signal
+from fixture_utils import interrupt_on_signal, noise_file, run
 
 HERE = Path(__file__).resolve().parent
 
-def run(args, env, data=None):
-    return subprocess.run([str(x) for x in args], input=data, env=env,
-                          check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
 
 def run_with_pin(args, env):
     r, w = os.pipe()
     try:
         os.write(w, b'1234\n'); os.close(w); w = -1
-        return subprocess.run([str(x) for x in args] + ['-f', f'/proc/self/fd/{r}'],
-            env=env, pass_fds=(r,), check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
+        return run(args + ['-f', f'/proc/self/fd/{r}'], env,
+                   pass_fds=(r,), mode='token-certificate')
     finally:
         os.close(r)
         if w >= 0: os.close(w)
 
 def main():
+    signal.signal(signal.SIGTERM, interrupt_on_signal)
+    signal.signal(signal.SIGINT, interrupt_on_signal)
     p = argparse.ArgumentParser(); p.add_argument('--scratch', required=True, type=Path); a = p.parse_args()
     root = a.scratch.resolve(strict=True)
     if any(root.iterdir()): raise ValueError('external fixture scratch must be empty')
@@ -70,11 +70,12 @@ def main():
          '-libfile', wrapper], env)
     nickname = 'SyntheticExternalKey'
     locked_nickname = 'SyntheticNonextractable'
-    for name, flags, serial in ((nickname, 'token,private,sensitive,extractable', '19'),
-                                (locked_nickname, 'token,private,sensitive,unextractable', '20')):
-        run_with_pin([certutil, '-S', '-d', 'sql:' + str(main_db), '-h', 'SyntheticExternal',
-             '-n', name, '-s', 'CN=' + name, '-x', '-t', 'u,u,u', '-m', serial, '-v', '12',
-             '-k', 'rsa', '-g', '2048', '-Z', 'SHA256', '-z', '/dev/urandom', '--keyAttrFlags', flags], env)
+    with noise_file(root) as noise:
+        for name, flags, serial in ((nickname, 'token,private,sensitive,extractable', '19'),
+                                    (locked_nickname, 'token,private,sensitive,unextractable', '20')):
+            run_with_pin([certutil, '-S', '-d', 'sql:' + str(main_db), '-h', 'SyntheticExternal',
+                 '-n', name, '-s', 'CN=' + name, '-x', '-t', 'u,u,u', '-m', serial, '-v', '12',
+                 '-k', 'rsa', '-g', '2048', '-Z', 'SHA256', '-z', noise, '--keyAttrFlags', flags], env)
     listing = run_with_pin([certutil, '-K', '-d', 'sql:' + str(main_db), '-h', 'SyntheticExternal'], env).decode()
     matches = [m.group(2).strip() for line in listing.splitlines()
                if (m := re.match(r'^<\s*\d+>\s+(\S+)\s+[0-9a-fA-F]{8,}\s+(.+?)\s*$', line))
