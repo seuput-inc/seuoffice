@@ -1,0 +1,72 @@
+{
+  "schema": "seuoffice-nss-wrap-observation-input/v1",
+  "sourceParent": "fff703ca06b625ab0e94c1c67bc0673cc0f7e760",
+  "definitionParent": "119ff25cf3789225037f03427e45d839c59672c5",
+  "frozenPolicySourceBase": "54d63f2eb1d9b09c64e8afe70a324cad21863101",
+  "frozenPolicyDefinitionBase": "0c4de3f8d29b273a50663b772ed97f2a1867812f",
+  "files": [
+    {
+      "path": "tools/nss-helper/test_token_wrapper.c",
+      "baseObservedSha256": "45cd47f5dc8c34ffb54e5879d4eca640ac3cb9932dfc759b706d98369f070043",
+      "sha256": "0ff4cf5b00858c158e02a061e2fdf1138443e64ef4e6a4da608ea6b1a2c84512",
+      "size": 3813,
+      "packet": "test_token_wrapper.c"
+    }
+  ],
+  "originalFailureRun": 43718485435,
+  "originalFailure": {
+    "protectedReturncode": 1,
+    "status": 2,
+    "prompts": 1,
+    "loginCkRv": 0,
+    "addCertKeyNssError": -8096,
+    "underlyingCause": "UNKNOWN"
+  },
+  "staticEvidence": {
+    "nssPin": "NSS_3_108_RTM",
+    "softHsmPin": "2.6.1",
+    "softHsmArchiveSha256": "61249473054bcd1811519ef9a989a880a7bdcc36d317c9c25457fc614df475f2",
+    "facts": [
+      "NSS encrypted privatekey AES-CBC export selects CKM_AES_CBC_PAD; two synchronous wrapquery/output callsites.",
+      "SoftHSM2.6.1 doesnotadvertise WRAP forAES_CBC_PAD anddefaultwrapdispatch returns CKR_MECHANISM_INVALID ifthisoperationreached.",
+      "NSS p12e overwrites exporterfailure with-8096; pk11akey wrapfailuredoesnotmap actualCK_RV."
+    ],
+    "actualWrapReached": "UNKNOWN",
+    "actualProviderCkRv": "UNKNOWN",
+    "actualCauseConfirmed": false
+  },
+  "observation": {
+    "scope": "existing controlled hosted synthetic PKCS11 provider wrapper only; no product launcher or realtoken change",
+    "operation": "C_WrapKey",
+    "forwarding": "exactlyone unchangedupstream call perinvocation, returnCK_RV unchanged",
+    "output": [
+      "fixed synthetic-wrap literal",
+      "query/output classification",
+      "public mechanism integer",
+      "actual CK_RV integer"
+    ],
+    "forbiddenOutput": [
+      "session/object handles",
+      "PIN/password",
+      "key/wrapped bytes",
+      "parameters/templates",
+      "protocol stdout"
+    ],
+    "errorState": "saveupstream errno beforeprotected-markercheck/logging andrestore before return",
+    "storage": "existing concurrentdrain/bounded16KiB/original-byteunionredaction unchanged",
+    "invocationBound": "NOT_ASSERTED: the two direct private-key wrap callsites do not bound other provider wrapping calls during key/slot movement; use the existing bounded stderr collector, not an event-count claim.",
+    "limits": "If no synthetic-wrap event, failure remains beforewrap orotherslot path; do not claim mechanismfailurefromstaticreview"
+  },
+  "unchanged": [
+    "provider pins/crypto/mechanismlist/PINsource",
+    "helperexportalgorithm",
+    "protocol/status/assertions/timeouts",
+    "alltenfixturetests",
+    "independentREQUIREDnative/policyjobs",
+    "IPC403closed"
+  ],
+  "localChecks": "NOT_RUN",
+  "runtime": "NOT_RUN",
+  "productGreen": false,
+  "state": "DRAFT_REVIEW_ONLY_NOT_PUBLISHED_OR_DISPATCHED"
+}
