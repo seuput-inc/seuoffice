@@ -249,7 +249,15 @@ impl VerifiedNssBundle {
     pub(super) fn spawn_helper(&self) -> Result<NssChild, String> {
         let (child_in, parent_in) = pipe()?;
         let (parent_out, child_out) = pipe()?;
-        let null = OpenOptions::new().write(true).open("/dev/null").map_err(|e| format!("NSS stderr: {e}"))?;
+        #[cfg(not(test))]
+        let stderr_path = "/dev/null";
+        #[cfg(test)]
+        let stderr_path = if env!("CARGO_PKG_NAME") == "nss-launcher-fixture" {
+            "/proc/self/fd/2"
+        } else {
+            "/dev/null"
+        };
+        let null = OpenOptions::new().write(true).open(stderr_path).map_err(|e| format!("NSS stderr: {e}"))?;
         let child_in = high_duplicate(&child_in)?;
         let child_out = high_duplicate(&child_out)?;
         let null = high_duplicate(&null)?;
