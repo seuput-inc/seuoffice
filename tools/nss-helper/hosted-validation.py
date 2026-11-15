@@ -134,7 +134,8 @@ def main():
     (results / 'tampered-build-validation.log').write_text(bad.stdout)
     if bad.returncode == 0 or 'size or digest mismatch' not in bad.stdout:
         raise RuntimeError('product manifest validation did not reject the tampered artifact')
-    run([cargo, 'build', '--manifest-path', crate / 'Cargo.toml'], env=env)
+    run([cargo, 'rustc', '--manifest-path', crate / 'Cargo.toml',
+         '--bin', 'nss-launcher-fixture', '--', '--cfg', 'test'], env=env)
     (results / 'harness-Cargo.lock').write_bytes((crate / 'Cargo.lock').read_bytes())
     softhsm_source = inputs / 'softhsm-2.6.1.tar.gz'
     softhsm_digest = '61249473054bcd1811519ef9a989a880a7bdcc36d317c9c25457fc614df475f2'

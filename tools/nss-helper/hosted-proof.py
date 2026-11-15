@@ -18,6 +18,7 @@ import shutil
 import signal
 import struct
 import subprocess
+import sys
 import time
 
 from fixture_utils import noise_file, run
@@ -68,13 +69,34 @@ def occupy_descriptors():
     for fd in range(200, 217): os.dup2(source, fd, inheritable=True)
     if source not in range(200, 217): os.close(source)
 
-def invoke(launcher, directory, nickname, password, *, env, approve=True, occupied=False):
+def drain_helper_stderr(pipe):
+    captured = bytearray()
+    while chunk := pipe.read(4096):
+        captured.extend(chunk[:max(0, 16384 - len(captured))])
+    return bytes(captured)
+
+
+def report_helper_diagnostics(phase, returncode, status, prompts, stderr, secrets=()):
+    print(f'fixture synthetic nss-launcher [{phase}] returncode={returncode} status={status} prompts={prompts}',
+          file=sys.stderr, flush=True)
+    for secret in (b'1234', *secrets):
+        if secret:
+            stderr = stderr.replace(secret, b'<synthetic-credential>')
+    text = stderr.decode('utf-8', errors='replace').encode('utf-8')[:16384].decode('utf-8', errors='ignore')
+    if text:
+        print(f'fixture synthetic helper stderr [{phase}]:\n{text}', file=sys.stderr, flush=True)
+
+def invoke(launcher, directory, nickname, password, *, env, phase, approve=True, occupied=False):
     fields = [str(directory).encode(), nickname.encode(), password.encode()]
     wire = b'\x02\x01' + b''.join(struct.pack('>Q', len(x)) for x in fields) + b''.join(fields)
     proc = subprocess.Popen([str(launcher)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL, env=env, start_new_session=True,
+        stderr=subprocess.PIPE, env=env, start_new_session=True,
         close_fds=not occupied, preexec_fn=occupy_descriptors if occupied else None)
     prompts = 0
+    terminal_status = None
+    exported_password = b''
+    stderr_pool = ThreadPoolExecutor(max_workers=1)
+    stderr_result = stderr_pool.submit(drain_helper_stderr, proc.stderr)
     try:
         proc.stdin.write(wire); proc.stdin.flush()
         while True:
@@ -87,6 +109,8 @@ def invoke(launcher, directory, nickname, password, *, env, approve=True, occupi
                 prompts += 1; proc.stdin.write(bytes([2, 1 if approve else 0])); proc.stdin.flush()
                 continue
             if status not in range(5) or (status and (n1 or n2)): raise RuntimeError('invalid terminal response')
+            terminal_status = status
+            if status == 0: exported_password = second
             proc.stdin.close(); rc = proc.wait(timeout=TIMEOUT)
             if (status == 0) != (rc == 0): raise RuntimeError('launcher status mismatch')
             return status, first, second, prompts
@@ -94,12 +118,22 @@ def invoke(launcher, directory, nickname, password, *, env, approve=True, occupi
         if proc.poll() is None:
             os.killpg(proc.pid, signal.SIGKILL); proc.wait()
         proc.stdout.close()
+        try:
+            stderr = stderr_result.result()
+        finally:
+            stderr_pool.shutdown()
+            proc.stderr.close()
+        report_helper_diagnostics(phase, proc.returncode, terminal_status, prompts, stderr,
+                                  (password.encode(), exported_password))
 
 def cancel_at_prompt(launcher, directory, nickname, env):
     fields = [str(directory).encode(), nickname.encode(), b'']
     wire = b'\x02\x01' + b''.join(struct.pack('>Q', len(x)) for x in fields) + b''.join(fields)
     proc = subprocess.Popen([str(launcher)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL, env=env, start_new_session=True)
+        stderr=subprocess.PIPE, env=env, start_new_session=True)
+    status = None
+    stderr_pool = ThreadPoolExecutor(max_workers=1)
+    stderr_result = stderr_pool.submit(drain_helper_stderr, proc.stderr)
     try:
         proc.stdin.write(wire); proc.stdin.flush()
         status, length, second = struct.unpack('>BQQ', read_exact(proc.stdout, 17, proc))
@@ -125,6 +159,13 @@ def cancel_at_prompt(launcher, directory, nickname, env):
     finally:
         if proc.poll() is None: os.killpg(proc.pid, signal.SIGKILL); proc.wait()
         proc.stdout.close(); proc.stdin.close()
+        try:
+            stderr = stderr_result.result()
+        finally:
+            stderr_pool.shutdown()
+            proc.stderr.close()
+        report_helper_diagnostics('protected-external-cancellation', proc.returncode, status,
+                                  int(status == 5), stderr)
 
 def original_nonextractable(pk12util, db, nickname, marker, env):
     # Output and both synthetic passwords use inherited anonymous FDs only.
@@ -138,6 +179,8 @@ def original_nonextractable(pk12util, db, nickname, marker, env):
             '-d', 'sql:' + str(db), '-n', nickname, '-w', f'/proc/self/fd/{export_r}',
             '-k', f'/proc/self/fd/{pin_r}'], env=env, pass_fds=(output, export_r, pin_r),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=TIMEOUT)
+        print(f'fixture synthetic pk12util [original-nonextractable] returncode={result.returncode}',
+              file=sys.stderr, flush=True)
         if result.returncode == 0 or os.fstat(output).st_size != 0:
             raise AssertionError('original unexpectedly exported unextractable key')
         error = result.stderr.decode(errors='replace')
@@ -218,15 +261,16 @@ def main():
     manifest_path = bundle / 'manifest.json'
     manifest = json.loads(manifest_path.read_text())
     db, nick, cert = sql_fixture(a.certutil, a.openssl, scratch, 'sql-a', env)
-    status, p12, pw, prompts = invoke(launcher, db, nick, '', env=env)
+    status, p12, pw, prompts = invoke(launcher, db, nick, '', env=env, phase='sql-export')
     if status or not p12 or not pw or prompts: raise AssertionError('SQL export failed')
     assert_identity(a.openssl, p12, pw, cert, env)
-    status, p12, pw, _ = invoke(launcher, db, nick, '', env=env, occupied=True)
+    status, p12, pw, _ = invoke(launcher, db, nick, '', env=env, phase='occupied-descriptors', occupied=True)
     if status: raise AssertionError('occupied descriptor collision')
     assert_identity(a.openssl, p12, pw, cert, env)
     db2, nick2, cert2 = sql_fixture(a.certutil, a.openssl, scratch, 'sql-b', env)
     with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [pool.submit(invoke, launcher, d, n, '', env=env) for d, n in ((db, nick), (db2, nick2))]
+        futures = [pool.submit(invoke, launcher, d, n, '', env=env, phase=f'concurrent-export-{index}')
+                   for index, (d, n) in enumerate(((db, nick), (db2, nick2)))]
         results = [f.result() for f in futures]
     for result, expected in zip(results, (cert, cert2)):
         status, p12, pw, _ = result
@@ -236,7 +280,7 @@ def main():
     # must not be silently reinterpreted as dbm:<dir>.
     legacy = scratch / 'legacy-only'; legacy.mkdir()
     run([a.certutil, '-N', '-d', 'dbm:' + str(legacy), '--empty-password'], env=env)
-    status, _, _, _ = invoke(launcher, legacy, nick, '', env=env)
+    status, _, _, _ = invoke(launcher, legacy, nick, '', env=env, phase='legacy-only-rejection')
     if status == 0: raise AssertionError('legacy directory incorrectly exported')
     # Fixture builder creates its own synthetic module and DB in scratch; it
     # must register the real module with NSS and identify its generated cert.
@@ -247,17 +291,22 @@ def main():
         raise ValueError('invalid external fixture contract')
     ext_db = Path(fixture['dir']).resolve(strict=True)
     if external_dir not in ext_db.parents or fixture['protected'] is not True: raise ValueError('fixture not isolated/protected')
-    status, p12, pw, prompts = invoke(launcher, ext_db, fixture['nickname'], fixture['password'], env=env)
-    if status or prompts == 0: raise AssertionError('protected external token not exercised')
+    status, p12, pw, prompts = invoke(launcher, ext_db, fixture['nickname'], fixture['password'], env=env,
+                                    phase='protected-external-approval')
+    if status or prompts == 0:
+        raise AssertionError(f'protected external token not exercised (status={status}, prompts={prompts})')
     assert_identity(a.openssl, p12, pw, fixture['cert_sha256'], env)
-    status, _, _, prompts = invoke(launcher, ext_db, fixture['nickname'], fixture['password'], env=env, approve=False)
-    if status == 0 or prompts == 0: raise AssertionError('protected-token denial succeeded')
+    status, _, _, prompts = invoke(launcher, ext_db, fixture['nickname'], fixture['password'], env=env,
+                                   phase='protected-external-denial', approve=False)
+    if status == 0 or prompts == 0:
+        raise AssertionError(f'protected-token denial succeeded (status={status}, prompts={prompts})')
     marker = Path(fixture['marker']).resolve(strict=True)
     if external_dir not in marker.parents: raise ValueError('fixture marker not isolated')
     cancel_at_prompt(launcher, ext_db, fixture['nickname'], env)
     pk12util = (a.certutil.resolve(strict=True).parent / 'pk12util').resolve(strict=True)
     original_status = original_nonextractable(pk12util, ext_db, fixture['nonextractable'], marker, env)
-    status, _, _, _ = invoke(launcher, ext_db, fixture['nonextractable'], fixture['password'], env=env)
+    status, _, _, _ = invoke(launcher, ext_db, fixture['nonextractable'], fixture['password'], env=env,
+                             phase='nonextractable-error-parity')
     if status != original_status: raise AssertionError('nonextractable error differs from original pk12util')
     # Copy the synthetic fixture installation to each isolated negative case;
     # the launcher retains its original embedded manifest trust anchor.
@@ -272,6 +321,8 @@ def main():
                 byte = f.read(1); f.seek(0); f.write(bytes([byte[0] ^ 1]))
         result = subprocess.run([str(copied_launcher)], input=b'', stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL, env=env, timeout=TIMEOUT)
+        print(f'fixture synthetic nss-launcher [negative-bundle-{mode}] returncode={result.returncode}',
+              file=sys.stderr, flush=True)
         if result.returncode != 2 or result.stdout:
             raise AssertionError('resolver did not reject missing/tampered bundle')
     proof = {

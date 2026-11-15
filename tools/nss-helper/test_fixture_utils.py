@@ -1,13 +1,20 @@
 import contextlib
 import io
+import importlib.util
+from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
 
 from fixture_utils import noise_file, run
+
+proof_spec = importlib.util.spec_from_file_location('nss_hosted_proof', Path(__file__).with_name('hosted-proof.py'))
+proof = importlib.util.module_from_spec(proof_spec)
+proof_spec.loader.exec_module(proof)
 
 
 class FixtureUtilsTest(unittest.TestCase):
@@ -65,6 +72,35 @@ class FixtureUtilsTest(unittest.TestCase):
         self.assertIn('[fixture-phase] returncode=0', output.getvalue())
         self.assertIn('synthetic-warning', output.getvalue())
         self.assertNotIn('synthetic-payload', output.getvalue())
+
+    def test_helper_stderr_drains_past_the_storage_limit(self):
+        code = 'import sys; sys.stderr.buffer.write(b"x" * 200000); sys.stderr.flush(); print("drained")'
+        proc = subprocess.Popen([sys.executable, '-c', code], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
+            captured = pool.submit(proof.drain_helper_stderr, proc.stderr)
+            self.assertEqual(proc.wait(timeout=5), 0)
+            self.assertEqual(proc.stdout.read(), b'drained\n')
+            self.assertEqual(captured.result(timeout=5), b'x' * 16384)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            proc.stdout.close()
+            proc.stderr.close()
+            pool.shutdown()
+
+    def test_helper_diagnostics_remove_credentials_before_output(self):
+        output = io.StringIO()
+        raw = b'1234 store-secret export-secret ' + b'x' * 20000
+        with contextlib.redirect_stderr(output):
+            proof.report_helper_diagnostics('synthetic-phase', 1, 2, 0, raw,
+                                            (b'store-secret', b'export-secret'))
+        text = output.getvalue()
+        for secret in ('1234', 'store-secret', 'export-secret'):
+            self.assertNotIn(secret, text)
+        self.assertIn('returncode=1 status=2 prompts=0', text)
+        self.assertLess(len(text.encode()), 17000)
 
     def test_outer_timeout_reaps_nested_group(self):
         with tempfile.TemporaryDirectory() as directory:
