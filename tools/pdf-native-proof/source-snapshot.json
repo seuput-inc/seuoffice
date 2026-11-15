@@ -40,7 +40,7 @@
     "crates/jscompat/tests/limit.rs": "c378e3879037dce5500ef5c38a771a642ebd32a339252d4f105c91d9c79a87f4",
     "crates/jscompat/tests/sites.rs": "15b88de231838b5148ed6cb1909144c68b9c5561c03797b8267dbba7081510c9",
     "crates/shell-contract/src/pdf_sign_options.rs": "086f15fef3446cd4fd4a371aa938f5fb7884fc0674c4ab04663cb3f903a36e7b",
-    "crates/shell/Cargo.lock": "79da25f4111b17d60065eff3d3a7ef16da5c786a9d7ecb7b3ef7b63b789d6e4f",
+    "crates/shell/Cargo.lock": "c5b861d827dcce3ea359a24c4fa8f10ec92d8dbab5db07e19bc5b4b2bc3b6b9b",
     "crates/shell/Cargo.toml": "7f2741848a68256e00544d4ca9bcbc1db1da2b29b7371bb0afa13d15d2f4657e",
     "crates/shell/src/host/d2/pdf/crypto/pdf_lib.rs": "16b1222e6e38c90208299588720ae4a304a8eebc21b54ed6c611a3d05d7e5d82",
     "crates/shell/src/host/d2/pdf/crypto/pdf_lib/assembly.rs": "9c5d79461e9cda37163db5411718656b7e84fc48cde78e3f83c11188f1d970ef",
