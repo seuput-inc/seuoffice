@@ -29,20 +29,25 @@ jobs:
         working-directory: .
         run: |
           set -euo pipefail
-          test "$SOURCE_SHA" = 58c2e103b307481d16de808ead697db1b03d9de9
+          test "$SOURCE_SHA" = cf98d4c9c64722d43f1876835de86d73ded7cf87
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
           path: definition
           persist-credentials: false
+          fetch-depth: 2
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ inputs.source_sha }}
           path: source
           persist-credentials: false
+          fetch-depth: 2
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: 1.95.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: source/.nvmrc
       - name: Record definition and source identity
         shell: bash
         run: |
@@ -53,6 +58,27 @@ jobs:
           printf 'definition_sha=%s\nsource_sha=%s\nimage_digest=%s\n' "$GITHUB_SHA" "$SOURCE_SHA" "$IMAGE_DIGEST" | tee "$RUNNER_TEMP/nss-results/identity.txt"
           sha256sum "$GITHUB_WORKSPACE/definition/.github/workflows/seuoffice-rust.yml" | tee "$RUNNER_TEMP/nss-results/definition.sha256"
           sha256sum tools/nss-helper/{contract.json,produce.py,patch_nss.py,test_patch.py,launcher.rs,hosted-validation.py,hosted-proof.py,external-fixture.py,fixture_utils.py,test_fixture_utils.py,test_token_wrapper.c,test_softhsm_init.c} crates/shell/src/host/d2/pdf/crypto/{nss_export_helper.c,nss_export_helper_test.c,worker/nss_bundle.rs,worker/nss_exchange.rs,worker/nss_bridge.rs} crates/shell/src/{signer_child_guard.rs,index_worker_process.rs} crates/shell/{nss_manifest.rs,nss_build.rs,build.rs} | tee "$RUNNER_TEMP/nss-results/sources.sha256"
+          printf '%s  %s\n' dea540c84dd6753db67bc42da5bc5a2847d078c5f854136157dd4b562ae81d44 tools/nss-helper/hosted-validation.py 64c82ffe03995e6a518998c90ae354920473d48e0f35caaa01afadd5b938c4d6 tools/prepush.mjs | sha256sum -c -
+          test "$(git merge-base HEAD 58c2e103b307481d16de808ead697db1b03d9de9)" = 58c2e103b307481d16de808ead697db1b03d9de9
+          test "$(git -C "$GITHUB_WORKSPACE/definition" merge-base HEAD c572e34152811bf96657419d36cb7e919eb25695)" = c572e34152811bf96657419d36cb7e919eb25695
+      - name: Run genuine frozen prepush for both reviewed trees
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_status=0
+          (
+            npm ci --ignore-scripts &&
+            node tools/prepush.mjs --base 58c2e103b307481d16de808ead697db1b03d9de9
+          ) 2>&1 | tee "$RUNNER_TEMP/nss-results/prepush-source.log" || source_status=$?
+          definition_status=0
+          (
+            cd "$GITHUB_WORKSPACE/definition" &&
+            npm ci --ignore-scripts &&
+            node "$GITHUB_WORKSPACE/source/tools/prepush.mjs" --base c572e34152811bf96657419d36cb7e919eb25695
+          ) 2>&1 | tee "$RUNNER_TEMP/nss-results/prepush-definition.log" || definition_status=$?
+          printf 'source_status=%s\ndefinition_status=%s\n' "$source_status" "$definition_status" | tee "$RUNNER_TEMP/nss-results/prepush-status.txt"
+          test "$source_status" -eq 0
+          test "$definition_status" -eq 0
       - name: Verify finite fixture input and owned child cleanup
         shell: bash
         run: |
