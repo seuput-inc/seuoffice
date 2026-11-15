@@ -53,6 +53,9 @@ def run(args, cwd=None, env=None, capture=False):
                           text=True, stdout=subprocess.PIPE if capture else None).stdout
 
 def build_nss(make, source, env, *arguments):
+    # Linux.mk selects ambient -lz by default. Build the pinned NSS archive's
+    # own static zlib instead; no headers or libraries may escape the sysroot.
+    arguments = ('USE_SYSTEM_ZLIB=', *arguments)
     try:
         run([make, 'nss_build_all', '-j2', *arguments], source, env)
     except subprocess.CalledProcessError:
@@ -66,7 +69,7 @@ def build_nss(make, source, env, *arguments):
         for directory in sorted(directories):
             try:
                 result = subprocess.run(
-                    [make, '--no-print-directory', '-C', str(directory), 'get_objs'],
+                    [make, '--no-print-directory', '-C', str(directory), 'get_objs', 'USE_SYSTEM_ZLIB='],
                     env=env, text=True, capture_output=True, timeout=30,
                 )
                 record = {'directory': str(directory), 'status': result.returncode,
@@ -224,7 +227,7 @@ def main():
     shutil.copyfile(HELPER, program / 'nss_export_helper.c')
     (program / 'manifest.mn').write_text('CORE_DEPTH = ../..\nMODULE = nss\nCSRCS = nss_export_helper.c\nREQUIRES = dbm seccmd\nPROGRAM = seu-nss-export\n')
     (program / 'Makefile').write_text('include manifest.mn\ninclude $(CORE_DEPTH)/coreconf/config.mk\ninclude ../platlibs.mk\ninclude $(CORE_DEPTH)/coreconf/rules.mk\ninclude ../platrules.mk\n')
-    run([make, '-j2', 'USE_STATIC_LIBS=1'], program, nenv)
+    run([make, '-j2', 'USE_SYSTEM_ZLIB=', 'USE_STATIC_LIBS=1'], program, nenv)
     helper = one((modified / 'dist').glob('*/bin/seu-nss-export'), 'helper')
     libdir = one((modified / 'dist').glob('*/lib'), 'NSS libdir')
     glibclib = one(sysroot.glob('**/libc.so.6'), 'libc')
@@ -241,7 +244,7 @@ def main():
     wrapper.write_text('#ifdef NDEBUG\n#undef NDEBUG\n#endif\n#include "nss_export_helper_test.c"\n')
     (testdir / 'manifest.mn').write_text('CORE_DEPTH = ../..\nMODULE = nss\nCSRCS = nss_export_helper_assert_test.c\nREQUIRES = dbm seccmd\nPROGRAM = seu-nss-export-test\n')
     shutil.copyfile(program / 'Makefile', testdir / 'Makefile')
-    test_build = run([make, '-j2', 'USE_STATIC_LIBS=1'], testdir, nenv, capture=True)
+    test_build = run([make, '-j2', 'USE_SYSTEM_ZLIB=', 'USE_STATIC_LIBS=1'], testdir, nenv, capture=True)
     (work / 'nss-helper-test-build.log').write_text(test_build)
     test_exe = one((pristine / 'dist').glob('*/bin/seu-nss-export-test'), 'helper test')
     test_libdir = one((pristine / 'dist').glob('*/lib'), 'pristine test libdir')
