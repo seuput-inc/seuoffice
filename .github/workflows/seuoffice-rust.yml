@@ -1,4 +1,4 @@
-name: seuoffice shell NSS validation
+name: seuoffice NSS real-helper stderr observation
 on:
   workflow_dispatch:
     inputs:
@@ -9,10 +9,16 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: nss-validation-${{ inputs.source_sha }}
+  group: nss-child-stderr-${{ inputs.source_sha }}
   cancel-in-progress: false
+env:
+  SOURCE_SHA: ${{ inputs.source_sha }}
+  SOURCE_BASE: 54d63f2eb1d9b09c64e8afe70a324cad21863101
+  DEFINITION_BASE: 0c4de3f8d29b273a50663b772ed97f2a1867812f
+  IMAGE_DIGEST: sha256:890e8b5c0040e1deff5cc7dc7b4414e67069f79e3301afc4ec5bd49d64ef13e5
 jobs:
-  nss:
+  native-observation:
+    name: Real NSS native observation, independently required
     runs-on: ubuntu-latest
     timeout-minutes: 180
     defaults:
@@ -20,16 +26,13 @@ jobs:
         working-directory: source
     container:
       image: buildpack-deps@sha256:890e8b5c0040e1deff5cc7dc7b4414e67069f79e3301afc4ec5bd49d64ef13e5
-    env:
-      SOURCE_SHA: ${{ inputs.source_sha }}
-      IMAGE_DIGEST: sha256:890e8b5c0040e1deff5cc7dc7b4414e67069f79e3301afc4ec5bd49d64ef13e5
     steps:
       - name: Validate immutable source input
         shell: bash
         working-directory: .
         run: |
           set -euo pipefail
-          test "$SOURCE_SHA" = 54d63f2eb1d9b09c64e8afe70a324cad21863101
+          test "$SOURCE_SHA" = 4e30e7d08f223d2e4cc307599c66ba4d16758f9a
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
@@ -45,9 +48,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: 1.95.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          node-version-file: source/.nvmrc
       - name: Record definition and source identity
         shell: bash
         run: |
@@ -58,73 +58,57 @@ jobs:
           printf 'definition_sha=%s\nsource_sha=%s\nimage_digest=%s\n' "$GITHUB_SHA" "$SOURCE_SHA" "$IMAGE_DIGEST" | tee "$RUNNER_TEMP/nss-results/identity.txt"
           sha256sum "$GITHUB_WORKSPACE/definition/.github/workflows/seuoffice-rust.yml" | tee "$RUNNER_TEMP/nss-results/definition.sha256"
           sha256sum tools/nss-helper/{contract.json,produce.py,patch_nss.py,test_patch.py,launcher.rs,hosted-validation.py,hosted-proof.py,external-fixture.py,fixture_utils.py,test_fixture_utils.py,test_token_wrapper.c,test_softhsm_init.c} crates/shell/src/host/d2/pdf/crypto/{nss_export_helper.c,nss_export_helper_test.c,worker/nss_bundle.rs,worker/nss_exchange.rs,worker/nss_bridge.rs} crates/shell/src/{signer_child_guard.rs,index_worker_process.rs} crates/shell/{nss_manifest.rs,nss_build.rs,build.rs} | tee "$RUNNER_TEMP/nss-results/sources.sha256"
-          printf '%s  %s\n' dea540c84dd6753db67bc42da5bc5a2847d078c5f854136157dd4b562ae81d44 tools/nss-helper/hosted-validation.py 64c82ffe03995e6a518998c90ae354920473d48e0f35caaa01afadd5b938c4d6 tools/prepush.mjs | sha256sum -c -
-          test "$(git rev-parse HEAD^)" = cf98d4c9c64722d43f1876835de86d73ded7cf87
-          test "$(git -C "$GITHUB_WORKSPACE/definition" rev-parse HEAD^)" = 6c8f74e24c474898f5ff599a19f4579bb0b3ec13
+          printf '%s  %s\n' 64c82ffe03995e6a518998c90ae354920473d48e0f35caaa01afadd5b938c4d6 tools/prepush.mjs | sha256sum -c -
+          test "$(git rev-parse HEAD^)" = "$SOURCE_BASE"
+          test "$(git -C "$GITHUB_WORKSPACE/definition" rev-parse HEAD^)" = "$DEFINITION_BASE"
           python3 - <<'PY'
           import hashlib, json, os, pathlib, subprocess
           definition = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'definition'
           results = pathlib.Path(os.environ['RUNNER_TEMP']) / 'nss-results'
-          metadata = definition / '.github/validation'
-          expected_metadata = {
-              'nss-export-diagnostics-manifest.json': '2507fd288d805937d7c7135f2f6aff616cea04441d5b763ed7be0b6ea7bbcae4',
-              'nss-export-diagnosis.json': 'd1df24fc3a3307604e7c29e90c42736fa78176d9472106e5e23960125c510719'
-          }
-          for name, expected in expected_metadata.items():
-              data = (metadata / name).read_bytes()
-              if hashlib.sha256(data).hexdigest() != expected:
-                  raise RuntimeError('reviewed input metadata changed: ' + name)
-              (results / name).write_bytes(data)
-          manifest = json.loads((metadata / 'nss-export-diagnostics-manifest.json').read_text())
-          if (manifest['sourceParent'] != 'cf98d4c9c64722d43f1876835de86d73ded7cf87'
-                  or manifest['definitionParent'] != '6c8f74e24c474898f5ff599a19f4579bb0b3ec13'):
-              raise RuntimeError('input manifest parent mismatch')
+          manifest_path = definition / '.github/validation/nss-child-stderr-manifest.json'
+          manifest_bytes = manifest_path.read_bytes()
+          manifest_sha = hashlib.sha256(manifest_bytes).hexdigest()
+          if manifest_sha != 'd05d267ce29b232e075009a7c5a9a5666ce1a28aa8bdcc918a1c734eedb62f8c':
+              raise RuntimeError('final real-spawn input manifest changed')
+          (results / manifest_path.name).write_bytes(manifest_bytes)
+          manifest = json.loads(manifest_bytes)
+          if (manifest['sourceParent'] != os.environ['SOURCE_BASE']
+                  or manifest['definitionParent'] != os.environ['DEFINITION_BASE']):
+              raise RuntimeError('real-spawn input parent mismatch')
           observed = {}
           for entry in manifest['files']:
+              base = subprocess.check_output(['git', 'show', manifest['sourceParent'] + ':' + entry['path']])
+              if hashlib.sha256(base).hexdigest() != entry['baseObservedSha256']:
+                  raise RuntimeError('observed-run base bytes differ: ' + entry['path'])
               data = pathlib.Path(entry['path']).read_bytes()
               digest = hashlib.sha256(data).hexdigest()
               if len(data) != entry['size'] or digest != entry['sha256']:
-                  raise RuntimeError('reviewed source bytes changed: ' + entry['path'])
+                  raise RuntimeError('final packet bytes differ: ' + entry['path'])
               observed[entry['path']] = digest
           changed = subprocess.check_output(['git', 'diff', '--name-only', manifest['sourceParent'], 'HEAD'], text=True).splitlines()
-          if len(changed) != 3 or set(changed) != set(observed):
-              raise RuntimeError('source contains changes outside the three reviewed files')
+          if len(changed) != 4 or set(changed) != set(observed):
+              raise RuntimeError('source contains changes outside the four reviewed files')
           changed_definition = subprocess.check_output(['git', '-C', str(definition), 'diff', '--name-only', manifest['definitionParent'], 'HEAD'], text=True).splitlines()
-          expected_definition = {'.github/workflows/seuoffice-rust.yml'} | {'.github/validation/' + name for name in expected_metadata}
-          if set(changed_definition) != expected_definition or len(changed_definition) != 3:
+          if set(changed_definition) != {'.github/workflows/seuoffice-rust.yml', '.github/validation/nss-child-stderr-manifest.json'} or len(changed_definition) != 2:
               raise RuntimeError('definition contains unrelated changes')
           binding = {'sourceSha': os.environ['SOURCE_SHA'], 'definitionSha': os.environ['GITHUB_SHA'],
                      'sourceParent': manifest['sourceParent'], 'definitionParent': manifest['definitionParent'],
-                     'sourceFiles': observed, 'metadataSha256': expected_metadata,
-                     'oldRun': manifest['oldRun'], 'oldFailureExactCause': manifest['oldFailureExactCause'],
-                     'newRuntimeVerified': False}
+                     'sourceFiles': observed, 'manifestSha256': manifest_sha,
+                     'observedFailure': manifest['observedFailure'], 'testBuild': manifest['testBuild'],
+                     'redactionReview': manifest['redactionReview'],
+                     'observationOnly': True, 'policyOrProductGreen': False, 'newRuntimeObserved': False}
           (results / 'input-binding.json').write_text(json.dumps(binding, indent=2) + '\n')
           print(json.dumps(binding, indent=2))
           PY
-      - name: Run genuine frozen prepush for both reviewed trees
-        shell: bash
-        run: |
-          set -euo pipefail
-          source_status=0
-          (
-            npm ci --ignore-scripts &&
-            node tools/prepush.mjs --base cf98d4c9c64722d43f1876835de86d73ded7cf87
-          ) 2>&1 | tee "$RUNNER_TEMP/nss-results/prepush-source.log" || source_status=$?
-          definition_status=0
-          (
-            cd "$GITHUB_WORKSPACE/definition" &&
-            npm ci --ignore-scripts &&
-            node "$GITHUB_WORKSPACE/source/tools/prepush.mjs" --base 6c8f74e24c474898f5ff599a19f4579bb0b3ec13
-          ) 2>&1 | tee "$RUNNER_TEMP/nss-results/prepush-definition.log" || definition_status=$?
-          printf 'source_status=%s\ndefinition_status=%s\n' "$source_status" "$definition_status" | tee "$RUNNER_TEMP/nss-results/prepush-status.txt"
-          test "$source_status" -eq 0
-          test "$definition_status" -eq 0
-      - name: Verify finite fixture input and owned child cleanup
+      - name: Run all ten fixture, real-child, boundary and overlap tests
         shell: bash
         run: |
           set -euo pipefail
           export TMPDIR="$RUNNER_TEMP"
-          python3 -B tools/nss-helper/test_fixture_utils.py 2>&1 | tee "$RUNNER_TEMP/nss-results/fixture-tests.log"
+          fixture_status=0
+          python3 -B tools/nss-helper/test_fixture_utils.py 2>&1 | tee "$RUNNER_TEMP/nss-results/fixture-tests.log" || fixture_status=$?
+          printf '%s\n' "$fixture_status" > "$RUNNER_TEMP/nss-results/fixture-tests-status.txt"
+          exit "$fixture_status"
       - name: Prepare pinned helper tools and source archives
         shell: bash
         run: |
@@ -157,10 +141,115 @@ jobs:
           set -euo pipefail
           export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
           export HOME="$RUNNER_TEMP/nss-home"
-          python3 tools/nss-helper/hosted-validation.py --image-digest "$IMAGE_DIGEST" --inputs "$RUNNER_TEMP/nss-inputs" --patchelf "$RUNNER_TEMP/nss-tools/usr/bin/patchelf" --work "$RUNNER_TEMP/nss-work" --output "$RUNNER_TEMP/nss-output" --results "$RUNNER_TEMP/nss-results" --fixture-setup tools/nss-helper/external-fixture.py 2>&1 | tee "$RUNNER_TEMP/nss-results/validation.log"
+          native_status=0
+          python3 tools/nss-helper/hosted-validation.py --image-digest "$IMAGE_DIGEST" --inputs "$RUNNER_TEMP/nss-inputs" --patchelf "$RUNNER_TEMP/nss-tools/usr/bin/patchelf" --work "$RUNNER_TEMP/nss-work" --output "$RUNNER_TEMP/nss-output" --results "$RUNNER_TEMP/nss-results" --fixture-setup tools/nss-helper/external-fixture.py 2>&1 | tee "$RUNNER_TEMP/nss-results/validation.log" || native_status=$?
+          printf '%s\n' "$native_status" > "$RUNNER_TEMP/nss-results/native-status.txt"
+          exit "$native_status"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: nss-validation-${{ github.run_id }}
           path: ${{ runner.temp }}/nss-results
+          if-no-files-found: error
+  frozen-prepush:
+    name: Unchanged genuine prepush, independently required
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    container:
+      image: buildpack-deps@sha256:890e8b5c0040e1deff5cc7dc7b4414e67069f79e3301afc4ec5bd49d64ef13e5
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+    steps:
+      - name: Validate immutable source input
+        working-directory: .
+        run: test "$SOURCE_SHA" = 4e30e7d08f223d2e4cc307599c66ba4d16758f9a
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          path: definition
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: source
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: source/.nvmrc
+      - name: Bind exact inputs and unchanged canonical rhwp prerequisite
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/nss-prepush"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse HEAD^)" = "$SOURCE_BASE"
+          test "$(git -C "$GITHUB_WORKSPACE/definition" rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE/definition" rev-parse HEAD^)" = "$DEFINITION_BASE"
+          printf '%s  %s\n' 64c82ffe03995e6a518998c90ae354920473d48e0f35caaa01afadd5b938c4d6 tools/prepush.mjs | sha256sum -c -
+          sha256sum "$GITHUB_WORKSPACE/definition/.github/workflows/seuoffice-rust.yml" > "$RUNNER_TEMP/nss-prepush/definition.sha256"
+          printf 'source_sha=%s\nsource_base=%s\ndefinition_sha=%s\ndefinition_base=%s\n' "$SOURCE_SHA" "$SOURCE_BASE" "$GITHUB_SHA" "$DEFINITION_BASE" > "$RUNNER_TEMP/nss-prepush/identity.txt"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
+          results = pathlib.Path(os.environ['RUNNER_TEMP']) / 'nss-prepush'
+          definition = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'definition'
+          manifest_path = definition / '.github/validation/nss-child-stderr-manifest.json'
+          manifest_bytes = manifest_path.read_bytes()
+          if hashlib.sha256(manifest_bytes).hexdigest() != 'd05d267ce29b232e075009a7c5a9a5666ce1a28aa8bdcc918a1c734eedb62f8c':
+              raise RuntimeError('final policy input manifest changed')
+          (results / manifest_path.name).write_bytes(manifest_bytes)
+          tool_sha = hashlib.sha256(pathlib.Path('tools/build-rhwp-core.mjs').read_bytes()).hexdigest()
+          vendor = pathlib.Path('vendor/rhwp-core/package.json')
+          vendor_sha = hashlib.sha256(vendor.read_bytes()).hexdigest()
+          if (tool_sha != '8ee967e10d3f848a3d68d1a22a5bef5220c1a2de02bac20fa5813f8b075aa2ee'
+                  or vendor_sha != 'fab293a2e4695f82110444fbd15874ffad0180fdf81b998b670833f6a21e5bd6'):
+              raise RuntimeError('canonical rhwp preparation tool or manifest changed')
+          pins = json.loads(vendor.read_text())['rhwp']
+          if pins['tag'] != 'v0.9.0' or pins['commit'] != 'c9095c5f67632e6721e800ccc7fb43ea49d26682':
+              raise RuntimeError('canonical rhwp source pin changed')
+          patches = [{'path': 'vendor/rhwp-core/patches/' + name,
+                      'sha256': hashlib.sha256((pathlib.Path('vendor/rhwp-core/patches') / name).read_bytes()).hexdigest()}
+                     for name in pins['patches']]
+          patch_set_sha = hashlib.sha256(json.dumps(patches, separators=(',', ':')).encode()).hexdigest()
+          if patch_set_sha != '633b31a0011d9bb7773de9e257df389ea0ab5dc5ba8c66afc1097d3d03763691':
+              raise RuntimeError('canonical rhwp ordered patch set changed')
+          receipt = {'sourceSha': os.environ['SOURCE_SHA'], 'definitionSha': os.environ['GITHUB_SHA'],
+                     'toolSha256': tool_sha, 'manifestSha256': vendor_sha, 'pins': pins,
+                     'patches': patches, 'orderedPatchSetSha256': patch_set_sha,
+                     'command': 'node tools/build-rhwp-core.mjs --source-only',
+                     'toolOrPinOrPolicyChanged': False, 'nativeObservationIsPolicyGreen': False}
+          (results / 'rhwp-preparation-inputs.json').write_text(json.dumps(receipt, indent=2) + '\n')
+          print(json.dumps(receipt, indent=2))
+          PY
+      - name: Run the full unchanged policy on both actual base scopes
+        run: |
+          set -euo pipefail
+          source_status=0
+          (
+            npm ci --ignore-scripts &&
+            node tools/build-rhwp-core.mjs --source-only &&
+            test -f crates/.rhwp-source/v0.9.0/Cargo.toml &&
+            test "$(git -C crates/.rhwp-source/v0.9.0 rev-parse HEAD)" = c9095c5f67632e6721e800ccc7fb43ea49d26682 &&
+            node tools/prepush.mjs --base "$SOURCE_BASE"
+          ) 2>&1 | tee "$RUNNER_TEMP/nss-prepush/prepush-source.log" || source_status=$?
+          definition_status=0
+          (
+            cd "$GITHUB_WORKSPACE/definition" &&
+            npm ci --ignore-scripts &&
+            node "$GITHUB_WORKSPACE/source/tools/prepush.mjs" --base "$DEFINITION_BASE"
+          ) 2>&1 | tee "$RUNNER_TEMP/nss-prepush/prepush-definition.log" || definition_status=$?
+          printf 'source_status=%s\ndefinition_status=%s\n' "$source_status" "$definition_status" | tee "$RUNNER_TEMP/nss-prepush/status.txt"
+          test "$source_status" -eq 0
+          test "$definition_status" -eq 0
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: nss-frozen-prepush-${{ github.run_id }}
+          path: ${{ runner.temp }}/nss-prepush
           if-no-files-found: error
