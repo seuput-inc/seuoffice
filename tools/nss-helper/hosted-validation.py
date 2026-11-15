@@ -146,10 +146,17 @@ def main():
         archive.extractall(softhsm_tree, filter='data')
     softhsm_root = one(softhsm_tree.iterdir(), 'SoftHSM source root')
     softhsm_prefix = scratch / 'softhsm'
+    crypto = Path(subprocess.check_output(
+        [str(cc), '-print-file-name=libcrypto.so.3'], text=True).strip()).resolve(strict=True)
+    # The isolated fixture and product loaders inhibit ld.so.cache. Give the
+    # synthetic provider a transitive search path for its host OpenSSL runtime.
+    softhsm_env = dict(env, LDFLAGS=shlex.join([
+        '-Wl,--disable-new-dtags,-rpath,' + str(crypto.parent),
+    ]))
     run([softhsm_root / 'configure', '--prefix=' + str(softhsm_prefix),
-         '--disable-p11-kit', '--with-crypto-backend=openssl'], cwd=softhsm_root, env=env)
-    run(['make', '-j2'], cwd=softhsm_root, env=env)
-    run(['make', 'install'], cwd=softhsm_root, env=env)
+         '--disable-p11-kit', '--with-crypto-backend=openssl'], cwd=softhsm_root, env=softhsm_env)
+    run(['make', '-j2'], cwd=softhsm_root, env=softhsm_env)
+    run(['make', 'install'], cwd=softhsm_root, env=softhsm_env)
     module = one(softhsm_prefix.glob('lib/softhsm/libsofthsm2.so'), 'SoftHSM fixture module')
     env.update(SOFTHSM_MODULE=str(module), SOFTHSM_MODULE_SHA256=digest(module),
                SOFTHSM_SOURCE_SHA256=softhsm_digest, SOFTHSM_SOURCE_ARCHIVE=str(softhsm_source))
