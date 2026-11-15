@@ -9,6 +9,8 @@
 //! and holder in locals of the call, as the TypeScript loads a fresh copy of
 //! the module for each case. A `null` where a number is read is `NaN` (the
 //! TypeScript's `NaN` is `null` in JSON).
+//! Page offsets can also use the string tags `NaN`, `Infinity`, `-Infinity`
+//! so the public reader receives the same non-finite number on both sides.
 
 use std::cell::RefCell;
 use std::fs;
@@ -270,6 +272,11 @@ fn reads_call(kind: Read, args: &[Value], cx: &mut Context) -> Answer {
             let path = text(op, "read").ok_or_else(|| bad("a read"))?;
             let offset = match op.get("offset") {
                 None => 0.0,
+                Some(Value::String(tag)) => match tag.as_str() {
+                    "Infinity" => f64::INFINITY,
+                    "-Infinity" => f64::NEG_INFINITY,
+                    _ => f64::NAN,
+                },
                 Some(value) => number(Some(value)),
             };
             let result = match kind {

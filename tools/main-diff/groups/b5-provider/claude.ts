@@ -762,6 +762,14 @@ const lineReader: Group = {
         args: [wc({ stdout: [big(4 * 1024 * 1024 + 1), 'ignored\n'] })],
         note: 'after the overflow',
       },
+      {
+        args: [
+          wc({
+            stdout: [`${' '.repeat(2_097_152)}\n`, `${' '.repeat(2_097_152)}\n`, 'ok\n'],
+          }),
+        ],
+        note: 'complete lines do not accumulate toward the unfinished-line byte cap',
+      },
     ],
   },
 }

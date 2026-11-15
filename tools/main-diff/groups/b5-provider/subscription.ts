@@ -793,6 +793,7 @@ interface TempOpts {
   dir?: string
   alive?: number[]
   system?: boolean
+  seedRecord?: { version: number; path: string; ownerPid: number; ownerStartedAt: number }
 }
 
 const CLAUDE_PREFIX = 'seuoffice-claude-code-'
@@ -940,6 +941,12 @@ const tempFns: Group = {
     ts: ([world, o], cx) =>
       tempCall(world, o as TempOpts, cx, async () => {
         const opts = o as TempOpts
+        if (opts.seedRecord !== undefined) {
+          writeFileSync(
+            join(opts.dir as string, 'ai-temp-dir-probe.json'),
+            JSON.stringify(opts.seedRecord),
+          )
+        }
         const calls: number[] = []
         // `system`: the module's own processAlive, through the world's process.kill
         const removed = await temp.cleanupTrackedTempDirs(opts.dir as string, {
@@ -1110,6 +1117,24 @@ const tempFns: Group = {
           [`tmp/${CLAUDE_PREFIX}aaa/file.txt`]: 'x',
         },
         'the system temporary directory is the default root',
+      ),
+      cf(
+        [
+          w({ killDenied: [77] } as Any),
+          {
+            dir: `${DIR}/rec`,
+            tempRoot: `${DIR}/tmp`,
+            system: true,
+            seedRecord: {
+              version: 1,
+              path: `${DIR}/tmp/${CLAUDE_PREFIX}eperm`,
+              ownerPid: 77,
+              ownerStartedAt: 1,
+            },
+          },
+        ],
+        { rec: { dir: true }, [`tmp/${CLAUDE_PREFIX}eperm/file.txt`]: 'x' },
+        'a materialized record reaches the system EPERM probe and stays alive',
       ),
     ],
   },
@@ -1871,6 +1896,14 @@ const locateCases: Case[] = [
     [w(), WIN_CODEX({ env: winEnv(''), arch: 'riscv64' })],
     { 'local/Microsoft/WinGet/Packages/OpenAI.Codex_aaa/codex-x86_64-pc-windows-msvc.exe': 'MZ' },
     'Windows: no known CPU name',
+  ),
+  cf(
+    [w(), CODEX({ managed: `${DIR}/managed`, env: posixEnv(''), platform: 'linux' })],
+    {
+      'managed/aaa/codex': exe(1_700_000_100_000),
+      'managed/bbb/codex': exe(1_700_000_000_000),
+    },
+    'the newer managed release sorts before the older path',
   ),
 ]
 

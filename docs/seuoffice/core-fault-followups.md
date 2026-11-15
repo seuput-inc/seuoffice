@@ -105,3 +105,34 @@ TS 오라클과 사례 계보는 새 Rust 감도 성공이 아니다. 새 정상
   - 후속 객체: `571b3bbd325002c44e25df2ab99191347809e7fdb85af14506bb57dd348923f5`.
 
 세 후속 모두 새 정확 제품의 hosted 정상 비교와 실제 변이 검출이 아직 필요하다. panic이나 빌드 실패를 독립 소비자 DIFF로 받아들이는 예외는 추가하지 않는다.
+
+## ed559 정상 관문과 24개 표적의 완료 범위
+
+제품 `ed559ed6a54c8b4c5ef0afecfe6f980d4d2b85a1`의 CI `43642800806`은 성공했다. 별도 정의 `8f9fd953223c552fbef04bee7b38bf78d72f282a`의 실행 `43648349140` attempt1은 같은 제품의 원래 `tools/prepush.mjs --base 375b08bd0e1f7e8432e6514468cc9d25be01b100`, Linux 전체 중심 비교와 기존 Windows 범위를 각각 실제 실행해 성공했다. Linux는 함수 2,327개·사례 52,720개·등록 차이 13개이며 미등록 차이와 FLOOR는 없었다.
+
+정의 `9a663372df3c7fe0358a6407c43437acb06b22ad`의 실행 `43652914727` attempt1은 같은 제품의 별도 24개 표적에 한정된다. 정상 비교 2,129개와 원본 47개 record, 실제 typed 소비자 차이, 원자료 보존과 source 복구를 전체 산출물로 감사했다. 이 결과는 원본 실패나 전체 복구의 성공이 아니며 batch1을 해제하지 않는다.
+
+## 마지막 완료 산출물의 추가 MISSED 10개
+
+원본 제품 `375b08bd0e1f7e8432e6514468cc9d25be01b100`, 정의 `97ffeb5ec856c6a05399eae70525ede3568057ba`, 실행 `43604410368` attempt1은 최종 실패했다. 완료 산출물 256개를 감사한 부분 인수는 완결 job 219개·고유 원본 ID 4,206개뿐이다. 산출물 거부 36개와 실패 producer의 산출물 부재 1개는 따로 남긴다. CAUGHT 일부를 조각 완결로 바꾸지 않는다.
+
+마지막 여섯 실패 산출물에서 다음 10개의 실제 MISSED를 추가 분류했다. 모두 고정 소스에서 비동등 경로가 있으므로 변이 교체가 아니라 소비 사례를 추가한다. 원본 변이 객체·목록 순서·개수·기존 사례는 바꾸지 않는다.
+
+| 목록                       | 원본 위치 | 놓친 경계                                                       | 추가 사례                                                |
+| -------------------------- | --------- | --------------------------------------------------------------- | -------------------------------------------------------- |
+| `b4-fonts`                 | 3         | 지원하지 않는 플랫폼의 이름 레코드가 기존 Windows 이름과 충돌함 | familyInfoFor 21: 같은 이름을 가리키는 두 face           |
+| 같은 목록                  | 17        | 뒤 face의 false가 앞 face의 Hangul 정보를 덮음                  | familyInfoFor 22: 같은 가족의 두 face                    |
+| 같은 목록                  | 34        | UTF-16 길이와 UTF-8 바이트 길이가 다름                          | familyInfoFor 23: 86단위·258바이트 이름                  |
+| 같은 목록                  | 59        | 음수 hhea line gap을 unsigned로 읽음                            | familyVerticalMetrics 29: line gap -1                    |
+| 같은 목록                  | 67        | 이미 찾지 못한 가족을 다시 조회하며 캐시 파일을 재생성함        | familyVerticalMetrics 30: 삭제 뒤 실제 파일 부재         |
+| `b5-provider-claude`       | 45        | 완성된 여러 줄의 바이트 수가 잘못 누적됨                        | readLines 17: 각 2MiB 공백 두 줄 뒤 `ok`                 |
+| `b5-provider-subscription` | 97        | 경로 순서와 수정 시각 순서가 같아 정렬 결함이 가려짐            | locateSubscriptionProgram 69: 새 aaa와 오래된 bbb        |
+| 같은 목록                  | 113       | 유효 record와 EPERM probe의 조합에 미도달                       | cleanupTrackedTempDirs 15: 살아 있는 타 소유자 폴더 보존 |
+| `b5-kb`                    | 43        | JSON 숫자 운송이 Infinity를 null로 바꿈                         | readKnowledgeFilePage 11: 명시 비유한 숫자 태그          |
+| 같은 목록                  | 91        | 대문자 DOCX를 실제 공개 요청에서 거부하는 경계가 없음           | parseKbCreateRequest 26: `DOCX`                          |
+
+113번의 새 `seedRecord`는 인자의 `$DIR` 치환 뒤 양쪽 adapter가 기록한다. `system` 경로는 기본 always-alive callback 대신 world의 `process.kill(pid, 0)` 모의 경계를 사용한다. `killDenied`가 EPERM을 던지므로 실제 다른 프로세스에 신호를 보내지 않는다. 기존 FileSpec 내용이나 다른 사례의 record를 일괄 치환하지 않는다.
+
+43번은 `NaN`, `Infinity`, `-Infinity` 문자열 태그를 해당 페이지 adapter에서만 숫자로 되돌린다. 기존 유한 숫자·null·누락 입력의 처리는 유지한다. 정상 제품 함수나 전역 JSON 인코더를 바꾸지 않는다.
+
+이 후속의 TS 소비 결과·기존 입력 계보와 실제 Rust 정상·변이 감도는 별개의 근거다. 로컬 Rust 명령은 실행하지 않는다. 새 정확 제품의 hosted prepush·정상 비교·원본 대조와 표적의 typed DIFF 및 복구를 확인하기 전에는 추가 10개 감도 성공이나 재사용 인수로 올리지 않는다.

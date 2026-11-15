@@ -723,6 +723,37 @@ const infoCases: Case[] = [
     'a Korean name asked for as such is not a family of the files',
     files(fx('ko.ttf', KO)),
   ),
+  scenario(
+    [info('\u4142')],
+    'a Macintosh record cannot attach Hangul coverage to a Windows family',
+    files(
+      fx(
+        'platform.ttc',
+        ttc([
+          { names: [W(1, '\u4142')], os2: { cpr: 0 } },
+          { names: [[1, 0, 0, 1, 'AB']], os2: { cpr: 1 << 19 } },
+        ]),
+      ),
+    ),
+  ),
+  scenario(
+    [info('Mixed Coverage')],
+    'an earlier face keeps its Hangul coverage when the last face has none',
+    files(
+      fx(
+        'mixed.ttc',
+        ttc([
+          { names: [W(1, 'Mixed Coverage')], os2: { cpr: 1 << 19 } },
+          { names: [W(1, 'Mixed Coverage')], os2: { cpr: 0 } },
+        ]),
+      ),
+    ),
+  ),
+  scenario(
+    [info('\ud55c'.repeat(86))],
+    '86 UTF-16 units fit even when their UTF-8 bytes exceed 256',
+    files(fx('long.ttf', font({ names: [W(1, '\ud55c'.repeat(86))], os2: { cpr: 1 << 19 } }))),
+  ),
 ]
 
 const FONT_PATH = `${HOME}/AppData/Local/Microsoft/Windows/Fonts`
@@ -1022,6 +1053,18 @@ const metricsCases: Case[] = [
     ],
     'Unicode-platform names',
     files(fx('uni.otf', UNI)),
+  ),
+  scenario(
+    [metricsOf('Negative Gap')],
+    'the signed hhea line gap may be negative',
+    files(
+      fx('negative.ttf', font({ names: [W(1, 'Negative Gap')], hhea: [900, -200, -1], os2: null })),
+    ),
+  ),
+  scenario(
+    [cache(), metricsOf('constructor'), { rm: CACHE }, metricsOf('constructor'), read()],
+    'a remembered miss does not recreate a deleted persisted cache',
+    files(fx('unrelated.ttf', font({ names: [W(1, 'Other')] }))),
   ),
 ]
 

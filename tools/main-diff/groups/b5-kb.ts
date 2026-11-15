@@ -350,7 +350,7 @@ const projectCases: unknown[][] = [
 
 interface ReadOp {
   read?: string
-  offset?: number
+  offset?: number | 'NaN' | 'Infinity' | '-Infinity'
   starred?: boolean
   project?: { result?: unknown; throws?: string } | null
   write?: string
@@ -389,7 +389,14 @@ function readSpec(kind: ReadKind, cases: Case[]): FnSpec {
             out.push(null)
           } else {
             const path = op.read as string
-            const offset = op.offset ?? 0
+            const offset =
+              op.offset === 'NaN'
+                ? NaN
+                : op.offset === 'Infinity'
+                  ? Infinity
+                  : op.offset === '-Infinity'
+                    ? -Infinity
+                    : (op.offset ?? 0)
             out.push(
               await settle(() => {
                 if (kind === 'text') return kb.readKnowledgeFileText(path)
@@ -574,6 +581,17 @@ const pageCases: Case[] = [
   },
   { args: [[read(D + 'none.txt', 0)]], note: 'no such file' },
   { args: [[read(D + 'x.bad', 0)]], files: { 'x.bad': 'b' }, note: 'the parser refused' },
+  {
+    args: [
+      [
+        { read: A, offset: 'Infinity' },
+        { read: A, offset: '-Infinity' },
+        { read: A, offset: 'NaN' },
+      ],
+    ],
+    files: { 'a.txt': 'alpha' },
+    note: 'tagged non-finite offsets reach both public readers as actual numbers',
+  },
 ]
 
 const OK_PAGE = { status: 'ok', text: 'project text', totalChars: 12, offset: 3 }
@@ -971,6 +989,7 @@ const createRequestCases: Case[] = [
   [{ format: 'md', content: '\u{1F600}'.repeat(1_000_000) }],
   [{ format: 'txt', content: ' ' }],
   [{ content: ' ' }],
+  [{ format: 'DOCX', content: 'hello', title: 'Upper' }],
 ].map((args): Case => ({ args }))
 
 // ---------------------------------------------------------------------------

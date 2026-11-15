@@ -712,6 +712,17 @@ pub(super) fn call(name: &str, args: &[Value], cx: &mut Context) -> Option<Answe
         "subscription/temp-dirs.cleanupTrackedTempDirs" => {
             in_world(args, cx, |rt, _, sink, o| async move {
                 let state = temp_state(key_str(Some(&o), "moduleDir"), &sink);
+                let dir = key_str(Some(&o), "dir").unwrap_or_default();
+                if let Some(record) = o.get("seedRecord") {
+                    let bytes = serde_json::to_vec(record)
+                        .map_err(|error| JsError::error(error.to_string()))?;
+                    fs::write(std::path::Path::new(&dir).join("ai-temp-dir-probe.json"), bytes)
+                        .map_err(|error| JsError::error(error.to_string()))?;
+                }
+                let system = o.get("system").and_then(Value::as_bool) == Some(true);
+                if system {
+                    state.borrow_mut().alive = None;
+                }
                 let alive_pids: Vec<f64> = o
                     .get("alive")
                     .and_then(Value::as_array)
@@ -726,7 +737,7 @@ pub(super) fn call(name: &str, args: &[Value], cx: &mut Context) -> Option<Answe
                         owner_pid: None,
                     },
                     // `system`: the module's own processAlive, through the world's process.kill
-                    alive: if o.get("system").and_then(Value::as_bool) == Some(true) {
+                    alive: if system {
                         None
                     } else {
                         Some(Rc::new(move |pid| {
@@ -735,13 +746,7 @@ pub(super) fn call(name: &str, args: &[Value], cx: &mut Context) -> Option<Answe
                         }))
                     },
                 };
-                let removed = cleanup_tracked_temp_dirs(
-                    &rt,
-                    &state,
-                    &key_str(Some(&o), "dir").unwrap_or_default(),
-                    &options,
-                )
-                .await;
+                let removed = cleanup_tracked_temp_dirs(&rt, &state, &dir, &options).await;
                 let mut asked = calls.borrow().clone();
                 asked.sort_by(f64::total_cmp);
                 Ok(Some(json!({
