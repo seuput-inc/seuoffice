@@ -58,11 +58,11 @@ def run(args, env, data=None, *, pass_fds=(), timeout=300, mode='command',
         _signal_group(proc, signal.SIGKILL)
         proc.communicate()
         raise
+    if synthetic_diagnostics:
+        print(f'fixture synthetic {name} [{mode}] returncode={proc.returncode}', file=sys.stderr, flush=True)
+        if stderr:
+            text = stderr[:16384].decode('utf-8', errors='replace')
+            print(f'fixture synthetic {name} stderr:\n{text}', file=sys.stderr, flush=True)
     if proc.returncode:
-        if synthetic_diagnostics:
-            for label, output in (('stdout', stdout), ('stderr', stderr)):
-                if output:
-                    text = output[:16384].decode('utf-8', errors='replace')
-                    print(f'fixture synthetic {name} {label}:\n{text}', file=sys.stderr, flush=True)
         raise RuntimeError(f'{name} [{mode}] exited {proc.returncode}')
     return stdout

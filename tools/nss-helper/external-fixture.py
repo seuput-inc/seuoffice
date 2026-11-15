@@ -6,6 +6,7 @@ SoftHSM2 performs certificate/key/crypto operations; only the post-setup
 protected-path signal is synthetic. No real user store or token is consulted.
 """
 import argparse
+from functools import partial
 import hashlib
 import json
 import os
@@ -16,14 +17,15 @@ import signal
 from fixture_utils import interrupt_on_signal, noise_file, run
 
 HERE = Path(__file__).resolve().parent
+run_synthetic = partial(run, synthetic_diagnostics=True)
 
 
-def run_with_pin(args, env):
+def run_with_pin(args, env, *, mode):
     r, w = os.pipe()
     try:
         os.write(w, b'1234\n'); os.close(w); w = -1
-        return run(args + ['-f', f'/proc/self/fd/{r}'], env,
-                   pass_fds=(r,), mode='token-certificate')
+        return run_synthetic(args + ['-f', f'/proc/self/fd/{r}'], env,
+                             pass_fds=(r,), mode=mode)
     finally:
         os.close(r)
         if w >= 0: os.close(w)
@@ -52,7 +54,8 @@ def main():
         raise ValueError('synthetic provider source pin mismatch')
     main_db = root / 'main'; tokens = root / 'tokens'; module_dir = root / 'module'
     for path in (main_db, tokens, module_dir): path.mkdir()
-    run([certutil, '-N', '-d', 'sql:' + str(main_db), '--empty-password'], env)
+    run_synthetic([certutil, '-N', '-d', 'sql:' + str(main_db), '--empty-password'],
+                  env, mode='initialize-synthetic-db')
     config = root / 'softhsm2.conf'
     config.write_text('directories.tokendir = ' + str(tokens) + '\nobjectstore.backend = file\nlog.level = ERROR\n')
     marker = root / 'protected-marker'; wrapper = module_dir / 'libtest-token.so'
@@ -61,13 +64,15 @@ def main():
                '-DTEST_PROTECTED_MARKER=' + json.dumps(str(marker))]
     inc = [part for path in includes for part in ('-I', str(path))]
     init = module_dir / 'init-token'
-    run([compiler, '-O2', *inc, HERE / 'test_softhsm_init.c', '-o', init, '-ldl'], env)
-    run([compiler, '-shared', '-fPIC', '-O2', *defines, *inc,
-         HERE / 'test_token_wrapper.c', '-o', wrapper, '-ldl'], env)
+    run_synthetic([compiler, '-O2', *inc, HERE / 'test_softhsm_init.c', '-o', init, '-ldl'],
+                  env, mode='build-synthetic-token-init')
+    run_synthetic([compiler, '-shared', '-fPIC', '-O2', *defines, *inc,
+                   HERE / 'test_token_wrapper.c', '-o', wrapper, '-ldl'],
+                  env, mode='build-synthetic-token-wrapper')
     env['SOFTHSM2_CONF'] = str(config)
-    run([init, provider], env)
-    run([modutil, '-force', '-dbdir', 'sql:' + str(main_db), '-add', 'SyntheticExternal',
-         '-libfile', wrapper], env, mode='add-synthetic-module', synthetic_diagnostics=True)
+    run_synthetic([init, provider], env, mode='initialize-synthetic-token')
+    run_synthetic([modutil, '-force', '-dbdir', 'sql:' + str(main_db), '-add', 'SyntheticExternal',
+                   '-libfile', wrapper], env, mode='add-synthetic-module')
     nickname = 'SyntheticExternalKey'
     locked_nickname = 'SyntheticNonextractable'
     with noise_file(root) as noise:
@@ -75,16 +80,20 @@ def main():
                                     (locked_nickname, 'token,private,sensitive,unextractable', '20')):
             run_with_pin([certutil, '-S', '-d', 'sql:' + str(main_db), '-h', 'SyntheticExternal',
                  '-n', name, '-s', 'CN=' + name, '-x', '-t', 'u,u,u', '-m', serial, '-v', '12',
-                 '-k', 'rsa', '-g', '2048', '-Z', 'SHA256', '-z', noise, '--keyAttrFlags', flags], env)
-    listing = run_with_pin([certutil, '-K', '-d', 'sql:' + str(main_db), '-h', 'SyntheticExternal'], env).decode()
+                 '-k', 'rsa', '-g', '2048', '-Z', 'SHA256', '-z', noise, '--keyAttrFlags', flags],
+                 env, mode='create-synthetic-token-certificate')
+    listing = run_with_pin([certutil, '-K', '-d', 'sql:' + str(main_db), '-h', 'SyntheticExternal'],
+                           env, mode='list-synthetic-token-keys').decode()
     matches = [m.group(2).strip() for line in listing.splitlines()
                if (m := re.match(r'^<\s*\d+>\s+(\S+)\s+[0-9a-fA-F]{8,}\s+(.+?)\s*$', line))
                and m.group(1) == 'rsa']
     selected = [value for value in matches if nickname in value]
     denied = [value for value in matches if locked_nickname in value]
     if len(selected) != 1 or len(denied) != 1: raise RuntimeError('synthetic RSA keys not uniquely listed')
-    pem = run([certutil, '-L', '-d', 'sql:' + str(main_db), '-n', selected[0], '-a'], env)
-    der = run([openssl, 'x509', '-outform', 'DER'], env, pem)
+    pem = run_with_pin([certutil, '-L', '-d', 'sql:' + str(main_db), '-h', 'SyntheticExternal',
+                        '-n', selected[0], '-a'], env, mode='export-synthetic-token-certificate')
+    der = run_synthetic([openssl, 'x509', '-outform', 'DER'], env, pem,
+                        mode='encode-synthetic-certificate-der')
     marker.touch(mode=0o600)
     print(json.dumps({'dir': str(main_db), 'nickname': selected[0], 'password': '',
                       'nonextractable': denied[0], 'marker': str(marker),

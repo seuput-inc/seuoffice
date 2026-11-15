@@ -44,15 +44,27 @@ class FixtureUtilsTest(unittest.TestCase):
         for enabled in (False, True):
             output = io.StringIO()
             with contextlib.redirect_stderr(output), self.assertRaises(RuntimeError):
-                run([sys.executable, '-c', code], os.environ, synthetic_diagnostics=enabled)
+                run([sys.executable, '-c', code], os.environ, mode='fixture-phase', synthetic_diagnostics=enabled)
             self.assertEqual('synthetic-error' in output.getvalue(), enabled)
-            self.assertEqual('synthetic-out' in output.getvalue(), enabled)
+            self.assertEqual('[fixture-phase] returncode=22' in output.getvalue(), enabled)
+            self.assertNotIn('synthetic-out', output.getvalue())
 
         output = io.StringIO()
         code = 'import sys; sys.stderr.write("x" * 20000); sys.exit(1)'
         with contextlib.redirect_stderr(output), self.assertRaises(RuntimeError):
             run([sys.executable, '-c', code], os.environ, synthetic_diagnostics=True)
         self.assertLess(len(output.getvalue()), 17000)
+
+    def test_synthetic_success_reports_phase_and_stderr_without_exposing_stdout(self):
+        output = io.StringIO()
+        code = 'import sys; print("synthetic-payload"); sys.stderr.write("synthetic-warning")'
+        with contextlib.redirect_stderr(output):
+            result = run([sys.executable, '-c', code], os.environ,
+                         mode='fixture-phase', synthetic_diagnostics=True)
+        self.assertEqual(result, b'synthetic-payload\n')
+        self.assertIn('[fixture-phase] returncode=0', output.getvalue())
+        self.assertIn('synthetic-warning', output.getvalue())
+        self.assertNotIn('synthetic-payload', output.getvalue())
 
     def test_outer_timeout_reaps_nested_group(self):
         with tempfile.TemporaryDirectory() as directory:
