@@ -104,15 +104,36 @@ loader_LoadLibrary(const char* nameToLoad)
 }
 ''')
 
+# freebl's no-dependency build stubs PORT_Alloc/Free, but not PORT_Strdup.
+# Keep allocation paired with its existing PORT_Free without adding nssutil.
+replace('lib/freebl/shvfy.c',
+'''static char *
+mkCheckFileName(const char *libName)''',
+'''static char *
+seu_DuplicateDescriptorPath(const char *path)
+{
+    size_t length = PORT_Strlen(path) + 1;
+    char *copy = PORT_Alloc(length);
+    if (!copy) {
+        PORT_SetError(SEC_ERROR_NO_MEMORY);
+        return NULL;
+    }
+    PORT_Memcpy(copy, path, length);
+    return copy;
+}
+
+static char *
+mkCheckFileName(const char *libName)''')
+
 replace('lib/freebl/shvfy.c',
 '''    int ln_len = PORT_Strlen(libName);
     int index = ln_len + 1 - sizeof("." SHLIB_SUFFIX);''',
 '''    /* The verified private libraries and their final .chk files are sealed
      * separately. Never derive an adjacent pathname from an fd symlink. */
-    if (PORT_Strcmp(libName, "/proc/self/fd/@FD:libsoftokn3.so@") == 0) return PORT_Strdup("/proc/self/fd/@FD:libsoftokn3.chk@");
-    if (PORT_Strcmp(libName, "/proc/self/fd/@FD:libfreebl3.so@") == 0) return PORT_Strdup("/proc/self/fd/@FD:libfreebl3.chk@");
-    if (PORT_Strcmp(libName, "/proc/self/fd/@FD:libfreeblpriv3.so@") == 0) return PORT_Strdup("/proc/self/fd/@FD:libfreeblpriv3.chk@");
-    if (PORT_Strcmp(libName, "/proc/self/fd/@FD:libnssdbm3.so@") == 0) return PORT_Strdup("/proc/self/fd/@FD:libnssdbm3.chk@");
+    if (PORT_Strcmp(libName, "/proc/self/fd/@FD:libsoftokn3.so@") == 0) return seu_DuplicateDescriptorPath("/proc/self/fd/@FD:libsoftokn3.chk@");
+    if (PORT_Strcmp(libName, "/proc/self/fd/@FD:libfreebl3.so@") == 0) return seu_DuplicateDescriptorPath("/proc/self/fd/@FD:libfreebl3.chk@");
+    if (PORT_Strcmp(libName, "/proc/self/fd/@FD:libfreeblpriv3.so@") == 0) return seu_DuplicateDescriptorPath("/proc/self/fd/@FD:libfreeblpriv3.chk@");
+    if (PORT_Strcmp(libName, "/proc/self/fd/@FD:libnssdbm3.so@") == 0) return seu_DuplicateDescriptorPath("/proc/self/fd/@FD:libnssdbm3.chk@");
     int ln_len = PORT_Strlen(libName);
     int index = ln_len + 1 - sizeof("." SHLIB_SUFFIX);''')
 replace('lib/freebl/shvfy.c',
@@ -120,16 +141,29 @@ replace('lib/freebl/shvfy.c',
     char *shName = PR_GetLibraryFilePathname(name, addr);''',
 '''    /* Address-based resolution of a memfd is not a stable pathname. */
     char *shName;
+    PRBool privateName = PR_TRUE;
     if (name && PORT_Strstr(name, "softokn3")) {
-        shName = PORT_Strdup("/proc/self/fd/@FD:libsoftokn3.so@");
+        shName = seu_DuplicateDescriptorPath("/proc/self/fd/@FD:libsoftokn3.so@");
     } else if (name && PORT_Strstr(name, "freeblpriv3")) {
-        shName = PORT_Strdup("/proc/self/fd/@FD:libfreeblpriv3.so@");
+        shName = seu_DuplicateDescriptorPath("/proc/self/fd/@FD:libfreeblpriv3.so@");
     } else if (name && PORT_Strstr(name, "freebl3")) {
-        shName = PORT_Strdup("/proc/self/fd/@FD:libfreebl3.so@");
+        shName = seu_DuplicateDescriptorPath("/proc/self/fd/@FD:libfreebl3.so@");
     } else if (name && PORT_Strstr(name, "nssdbm3")) {
-        shName = PORT_Strdup("/proc/self/fd/@FD:libnssdbm3.so@");
+        shName = seu_DuplicateDescriptorPath("/proc/self/fd/@FD:libnssdbm3.so@");
     } else {
+        privateName = PR_FALSE;
         shName = PR_GetLibraryFilePathname(name, addr);
+    }''')
+replace('lib/freebl/shvfy.c',
+'''    if (shName != NULL) {
+        PR_Free(shName);
+    }''',
+'''    if (shName != NULL) {
+        if (privateName) {
+            PORT_Free(shName);
+        } else {
+            PR_Free(shName);
+        }
     }''')
 
 replace_region('lib/softoken/lgglue.c',
