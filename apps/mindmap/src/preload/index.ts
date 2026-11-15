@@ -57,12 +57,14 @@ function listen<Args extends unknown[]>(
 const core: MindmapCoreApi = {
   consumePending: () => ipcRenderer.invoke(MINDMAP_CHANNELS.consumePending),
   openFile: (path) => ipcRenderer.invoke(MINDMAP_CHANNELS.openFile, path),
-  recoveryInitialized: (token, ok, error) => ipcRenderer.invoke(MINDMAP_CHANNELS.recoveryInitialized, token, ok, error),
+  recoveryInitialized: (token, ok, error) =>
+    ipcRenderer.invoke(MINDMAP_CHANNELS.recoveryInitialized, token, ok, error),
   save: (request) => ipcRenderer.invoke(MINDMAP_CHANNELS.save, request),
   saveIntoProject: (request) => ipcRenderer.invoke(MINDMAP_CHANNELS.saveIntoProject, request),
   setDirty: (dirty) => ipcRenderer.send(MINDMAP_CHANNELS.dirtyChanged, dirty),
   onSaveRequest: (handler) => listen<[SaveMode, string?]>(MINDMAP_CHANNELS.saveRequest, handler),
-  sendSaveRequestAck: (ok, requestId, error) => ipcRenderer.send(MINDMAP_CHANNELS.saveRequestAck, ok, requestId, error),
+  sendSaveRequestAck: (ok, requestId, error) =>
+    ipcRenderer.send(MINDMAP_CHANNELS.saveRequestAck, ok, requestId, error),
   onCloseSaveRequest: (handler) => listen<[]>(MINDMAP_CHANNELS.closeSaveRequest, handler),
   sendCloseSaveResult: (ok) => ipcRenderer.send(MINDMAP_CHANNELS.closeSaveResult, ok),
   onFileRenamed: (handler) => listen<[string]>(MINDMAP_CHANNELS.fileRenamed, handler),
@@ -203,7 +205,8 @@ const makeFrom: MindmapMakeFromApi = {
 const recovery: MindmapRecoveryApi = {
   writeRecoveryCopy: (request) => ipcRenderer.invoke(MINDMAP_CHANNELS.recoveryCopy, request),
   onRecoveryCopyNow: (handler) => listen<[number]>(MINDMAP_CHANNELS.recoveryCopyNow, handler),
-  sendRecoveryCopyNowDone: (generation, error) => ipcRenderer.send(MINDMAP_CHANNELS.recoveryCopyNowDone, generation, error),
+  sendRecoveryCopyNowDone: (generation, error) =>
+    ipcRenderer.send(MINDMAP_CHANNELS.recoveryCopyNowDone, generation, error),
   onRecoveryReset: (handler) => listen<[]>(MINDMAP_CHANNELS.recoveryReset, handler),
 }
 

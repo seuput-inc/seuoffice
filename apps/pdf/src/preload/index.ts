@@ -152,8 +152,11 @@ const store: PdfStoreApi = {
 const api: PdfApi = {
   consumePending: () => ipcRenderer.invoke(PDF_CHANNELS.consumePending),
   consumeRecoveryPending: () =>
-    process.versions.electron ? Promise.resolve(null) : ipcRenderer.invoke(PDF_CHANNELS.consumeRecoveryPending),
-  recoveryInitialized: (token, ok, error) => ipcRenderer.invoke(PDF_CHANNELS.recoveryInitialized, token, ok, error),
+    process.versions.electron
+      ? Promise.resolve(null)
+      : ipcRenderer.invoke(PDF_CHANNELS.consumeRecoveryPending),
+  recoveryInitialized: (token, ok, error) =>
+    ipcRenderer.invoke(PDF_CHANNELS.recoveryInitialized, token, ok, error),
   openSourcePath: (path: string) => ipcRenderer.invoke('home:open-path', path),
   readFile: (path) => ipcRenderer.invoke(PDF_CHANNELS.readFile, path),
   readFileChunk: (path: string, start: number, end: number) =>
@@ -169,8 +172,13 @@ const api: PdfApi = {
   isUntitledCopy: (path) => ipcRenderer.invoke(PDF_CHANNELS.isUntitledCopy, path),
   templateBytes: (request) => ipcRenderer.invoke(PDF_CHANNELS.templateBytes, request),
   pickUntitledCopyTarget: (path, defaultName, id) =>
-    id === undefined ? ipcRenderer.invoke(PDF_CHANNELS.pickUntitledCopyTarget, path, defaultName) : ipcRenderer.invoke(PDF_CHANNELS.pickUntitledCopyTarget, path, defaultName, id),
-  adoptUntitledCopy: (path, id) => id === undefined ? ipcRenderer.invoke(PDF_CHANNELS.adoptUntitledCopy, path) : ipcRenderer.invoke(PDF_CHANNELS.adoptUntitledCopy, path, id),
+    id === undefined
+      ? ipcRenderer.invoke(PDF_CHANNELS.pickUntitledCopyTarget, path, defaultName)
+      : ipcRenderer.invoke(PDF_CHANNELS.pickUntitledCopyTarget, path, defaultName, id),
+  adoptUntitledCopy: (path, id) =>
+    id === undefined
+      ? ipcRenderer.invoke(PDF_CHANNELS.adoptUntitledCopy, path)
+      : ipcRenderer.invoke(PDF_CHANNELS.adoptUntitledCopy, path, id),
   validateTextEdits: (request) => ipcRenderer.invoke(PDF_CHANNELS.validateTextEdits, request),
   listEditFonts: () => ipcRenderer.invoke(PDF_CHANNELS.listEditFonts),
   canDrawText: (text, font, bold, italic) =>
@@ -280,19 +288,30 @@ const api: PdfApi = {
   setDirty: (dirty) => ipcRenderer.send(PDF_CHANNELS.dirtyChanged, dirty),
   onCloseSaveRequest: (handler) => {
     const listener = (_e: unknown, opts?: { flushAll?: boolean; ownedSaveId?: string }) =>
-      handler({ flushAll: opts?.flushAll === true, ...(typeof opts?.ownedSaveId === 'string' ? { ownedSaveId: opts.ownedSaveId } : {}) })
+      handler({
+        flushAll: opts?.flushAll === true,
+        ...(typeof opts?.ownedSaveId === 'string' ? { ownedSaveId: opts.ownedSaveId } : {}),
+      })
     ipcRenderer.on(PDF_CHANNELS.closeSaveRequest, listener)
     return () => ipcRenderer.removeListener(PDF_CHANNELS.closeSaveRequest, listener)
   },
-  sendCloseSaveResult: (ok, id) => id === undefined ? ipcRenderer.send(PDF_CHANNELS.closeSaveResult, ok) : ipcRenderer.send(PDF_CHANNELS.closeSaveResult, ok, id),
+  sendCloseSaveResult: (ok, id) =>
+    id === undefined
+      ? ipcRenderer.send(PDF_CHANNELS.closeSaveResult, ok)
+      : ipcRenderer.send(PDF_CHANNELS.closeSaveResult, ok, id),
   onSaveAsRequest: (handler) => {
-    const listener = (_e: Electron.IpcRendererEvent, targetPath: string, id?: string) => handler(targetPath, typeof id === 'string' ? id : undefined)
+    const listener = (_e: Electron.IpcRendererEvent, targetPath: string, id?: string) =>
+      handler(targetPath, typeof id === 'string' ? id : undefined)
     ipcRenderer.on(PDF_CHANNELS.saveAsRequest, listener)
     return () => ipcRenderer.removeListener(PDF_CHANNELS.saveAsRequest, listener)
   },
-  sendSaveAsResult: (ok, id) => id === undefined ? ipcRenderer.send(PDF_CHANNELS.saveAsResult, ok) : ipcRenderer.send(PDF_CHANNELS.saveAsResult, ok, id),
+  sendSaveAsResult: (ok, id) =>
+    id === undefined
+      ? ipcRenderer.send(PDF_CHANNELS.saveAsResult, ok)
+      : ipcRenderer.send(PDF_CHANNELS.saveAsResult, ok, id),
   onSaveAsFlow: (handler) => {
-    const listener = (_e: Electron.IpcRendererEvent, inFlight: boolean, id?: string) => handler(inFlight, typeof id === 'string' ? id : undefined)
+    const listener = (_e: Electron.IpcRendererEvent, inFlight: boolean, id?: string) =>
+      handler(inFlight, typeof id === 'string' ? id : undefined)
     ipcRenderer.on(PDF_CHANNELS.saveAsFlow, listener)
     return () => ipcRenderer.removeListener(PDF_CHANNELS.saveAsFlow, listener)
   },
@@ -343,7 +362,8 @@ const api: PdfApi = {
     ipcRenderer.on(PDF_CHANNELS.recoveryFlushRequest, listener)
     return () => ipcRenderer.removeListener(PDF_CHANNELS.recoveryFlushRequest, listener)
   },
-  sendRecoveryFlushDone: (token, error) => ipcRenderer.send(PDF_CHANNELS.recoveryFlushDone, token, error),
+  sendRecoveryFlushDone: (token, error) =>
+    ipcRenderer.send(PDF_CHANNELS.recoveryFlushDone, token, error),
   onRecoveryDropped: (handler) => {
     const listener = (_e: Electron.IpcRendererEvent, dropped: boolean) => handler(dropped === true)
     ipcRenderer.on(PDF_CHANNELS.recoveryDropped, listener)

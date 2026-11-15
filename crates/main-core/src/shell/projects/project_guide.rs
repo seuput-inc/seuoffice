@@ -42,7 +42,9 @@
 //! is `ProjectGuideDeps::warn` (absent: nothing is printed).
 
 mod mutations;
-pub use mutations::{MutationAcknowledgement, MutationPreparation, MutationRequest, MutationResult, MutationWrite};
+pub use mutations::{
+    MutationAcknowledgement, MutationPreparation, MutationRequest, MutationResult, MutationWrite,
+};
 mod chat_io;
 pub use chat_io::{ChatGuideAuthority, ChatGuideSeed, OwnedChatGuide};
 mod new_document;
@@ -118,9 +120,9 @@ use crate::shell::rename_validation::is_valid_rename_name;
 pub use super::context::INSTRUCTIONS_LIMIT_CHARS;
 pub use super::memory::MEMORY_SOFT_LIMIT_CHARS;
 
-
 fn unguarded_settings_commit(from: &str, to: &str) -> Result<(), NodeError> {
-    std::fs::rename(from, to).map_err(|error| crate::node_fs::node_error2(&error, "rename", from, to))
+    std::fs::rename(from, to)
+        .map_err(|error| crate::node_fs::node_error2(&error, "rename", from, to))
 }
 /// What a guide method that may show the first-time trust prompt (spec 5.10)
 /// answers: the result, or the prompt to show and the state to resume with
@@ -150,39 +152,56 @@ struct Adoption {
     expected_trust: Option<StoredTrustRecord>,
 }
 impl Adoption {
-    fn validate(&self, settings: &StoredProjectsSettings, platform: &str) -> Result<(), GuideError> {
+    fn validate(
+        &self,
+        settings: &StoredProjectsSettings,
+        platform: &str,
+    ) -> Result<(), GuideError> {
         if let Some(stale) = &self.stale_at_path
             && let Some(entry) = settings.list.iter().find(|entry| &entry.id == stale)
             && !same_path(&entry.path, &self.root, platform)
         {
             return Err(GuideError::plain("project changed while awaiting adoption"));
         }
-        let taken = settings.list.iter().any(|item| item.id != self.id
-            && self.stale_at_path.as_ref() != Some(&item.id)
-            && same_path(&item.path, &self.root, platform));
+        let taken = settings.list.iter().any(|item| {
+            item.id != self.id
+                && self.stale_at_path.as_ref() != Some(&item.id)
+                && same_path(&item.path, &self.root, platform)
+        });
         if taken {
             return Ok(());
         }
         if settings.trust.get(&self.id) != self.expected_trust.as_ref() {
-            return Err(GuideError::plain("project trust changed while awaiting adoption"));
+            return Err(GuideError::plain(
+                "project trust changed while awaiting adoption",
+            ));
         }
         if let Some(previous) = &self.previous {
             let current = settings.list.iter().find(|item| item.id == self.id);
-            if !current.is_some_and(|item| same_path(&item.path, &previous.path, platform) || same_path(&item.path, &self.root, platform)) {
+            if !current.is_some_and(|item| {
+                same_path(&item.path, &previous.path, platform)
+                    || same_path(&item.path, &self.root, platform)
+            }) {
                 return Err(GuideError::plain("project changed while awaiting adoption"));
             }
-        } else if settings.list.iter().any(|item| item.id == self.id && !same_path(&item.path, &self.root, platform)) {
+        } else if settings
+            .list
+            .iter()
+            .any(|item| item.id == self.id && !same_path(&item.path, &self.root, platform))
+        {
             return Err(GuideError::plain("project changed while awaiting adoption"));
         }
         Ok(())
     }
 }
 
-
 pub enum AdoptStart {
     Done(AddFolderResult),
     NeedInstallId(AdoptScan),
-    Ask { prompt: Box<ProjectTrustPrompt>, pending: PendingAdopt },
+    Ask {
+        prompt: Box<ProjectTrustPrompt>,
+        pending: PendingAdopt,
+    },
     Ready(AdoptPlan),
 }
 
@@ -234,22 +253,28 @@ impl AdoptWrite {
     }
 
     pub fn execute_authorized(
-        mut self, path: &str,
+        mut self,
+        path: &str,
         mut authorize: impl FnMut(&mut dyn FnMut() -> Result<(), NodeError>) -> Result<(), NodeError>,
         commit: impl FnOnce(&str, &str) -> Result<(), NodeError>,
     ) -> Result<AdoptAcknowledgement, GuideError> {
         let mut next = read_projects_settings(path);
         self.adoption.validate(&next, &self.platform)?;
-        let occupied = next.list.iter().any(|item| item.id != self.adoption.id
-            && self.adoption.stale_at_path.as_ref() != Some(&item.id)
-            && same_path(&item.path, &self.adoption.root, &self.platform));
+        let occupied = next.list.iter().any(|item| {
+            item.id != self.adoption.id
+                && self.adoption.stale_at_path.as_ref() != Some(&item.id)
+                && same_path(&item.path, &self.adoption.root, &self.platform)
+        });
         let mut copy_failure = None;
         let mut retained_private_dir = None;
         if !occupied {
             if let Some(file) = &self.copy_file {
                 let mut denied = None;
                 let result = ProjectWriteGuard::new(&self.platform).write_data_authorized(
-                    &self.adoption.root, project_folder_name("projectFile"), file.as_bytes(), None,
+                    &self.adoption.root,
+                    project_folder_name("projectFile"),
+                    file.as_bytes(),
+                    None,
                     &mut |effect| {
                         let mut effect_failed = false;
                         let mut called = false;
@@ -259,11 +284,15 @@ impl AdoptWrite {
                             effect_failed = result.is_err();
                             result
                         });
-                        if !called || !effect_failed { denied = result.as_ref().err().cloned(); }
+                        if !called || !effect_failed {
+                            denied = result.as_ref().err().cloned();
+                        }
                         result
                     },
                 );
-                if let Some(error) = denied { return Err(error.into()); }
+                if let Some(error) = denied {
+                    return Err(error.into());
+                }
                 match result {
                     Ok(path) if !path.is_empty() => retained_private_dir = Some(path),
                     Ok(_) => {}
@@ -271,7 +300,15 @@ impl AdoptWrite {
                 }
             }
         }
-        let Adoption { root, id, identity, previous, copied_from, stale_at_path, .. } = self.adoption;
+        let Adoption {
+            root,
+            id,
+            identity,
+            previous,
+            copied_from,
+            stale_at_path,
+            ..
+        } = self.adoption;
         let mut final_id = id.clone();
         let mut final_identity = identity;
         let mut show_notice = false;
@@ -279,12 +316,18 @@ impl AdoptWrite {
             if let Some(stale) = &stale_at_path {
                 next.list.retain(|item| item.id != *stale);
             }
-            if let Some(taken) = next.list.iter().find(|item| item.id != id && same_path(&item.path, &root, &self.platform)) {
+            if let Some(taken) = next
+                .list
+                .iter()
+                .find(|item| item.id != id && same_path(&item.path, &root, &self.platform))
+            {
                 final_id = taken.id.clone();
                 final_identity = FolderIdentity::Existing;
             } else {
                 if next.list.iter().any(|item| item.id == id) {
-                    if let Some(previous) = &previous && !same_path(&previous.path, &root, &self.platform) {
+                    if let Some(previous) = &previous
+                        && !same_path(&previous.path, &root, &self.platform)
+                    {
                         rebase_opt_outs(&mut next, &id, &previous.path, &root, &self.platform);
                     }
                     if let Some(listed) = next.list.iter_mut().find(|item| item.id == id) {
@@ -292,32 +335,55 @@ impl AdoptWrite {
                         listed.last_used_at = self.at.clone();
                     }
                 } else {
-                    next.list.push(ListEntry { id: id.clone(), path: root.clone(), pinned: false, last_used_at: self.at.clone() });
+                    next.list.push(ListEntry {
+                        id: id.clone(),
+                        path: root.clone(),
+                        pinned: false,
+                        last_used_at: self.at.clone(),
+                    });
                 }
                 if let Some(record) = self.trust.take() {
                     next.trust.set(id.as_str(), record);
                 }
                 if let Some(source_id) = &copied_from {
-                    if let Some(source) = next.trust.get(source_id).map(clone_trust) && next.trust.get(&id).is_none() {
+                    if let Some(source) = next.trust.get(source_id).map(clone_trust)
+                        && next.trust.get(&id).is_none()
+                    {
                         next.trust.set(id.as_str(), source);
                     }
-                    if let Some(switches) = next.settings.get(source_id).cloned() && next.settings.get(&id).is_none() {
+                    if let Some(switches) = next.settings.get(source_id).cloned()
+                        && next.settings.get(&id).is_none()
+                    {
                         next.settings.set(id.as_str(), switches);
                     }
                 }
             }
-            if self.notice.is_some() && !next.sync_notice_shown.iter().any(|shown| shown == &final_id) {
+            if self.notice.is_some()
+                && !next
+                    .sync_notice_shown
+                    .iter()
+                    .any(|shown| shown == &final_id)
+            {
                 next.sync_notice_shown.push(final_id.clone());
                 show_notice = true;
             }
         }
-        crate::shell::app_settings::write_projects_settings_guarded(path, Some(&next.to_json()), commit)?;
+        crate::shell::app_settings::write_projects_settings_guarded(
+            path,
+            Some(&next.to_json()),
+            commit,
+        )?;
         let next = read_projects_settings(path);
         let entry = entry_in(&next, &final_id)
             .ok_or_else(|| GuideError::plain(format!("project {final_id} was not listed")))?;
         Ok(AdoptAcknowledgement {
-            original_id: id, final_id, identity: final_identity, entry,
-            notice: if show_notice { self.notice } else { None }, copy_failure, retained_private_dir,
+            original_id: id,
+            final_id,
+            identity: final_identity,
+            entry,
+            notice: if show_notice { self.notice } else { None },
+            copy_failure,
+            retained_private_dir,
         })
     }
 }
@@ -368,7 +434,11 @@ pub struct NewProjectRequest {
 pub enum CreatePreparation {
     Done(CreateProjectResult),
     Adopt(AdoptStart),
-    New { parent: String, name: String, target: String },
+    New {
+        parent: String,
+        name: String,
+        target: String,
+    },
 }
 
 pub enum CreateNew {
@@ -387,50 +457,102 @@ pub struct CreateWrite {
 }
 
 pub enum CreateExecution {
-    Created { entry: ListEntry, retained_private_dir: Option<String> },
-    Exists { folder_path: String, detail: String },
-    Unwritable { detail: String },
+    Created {
+        entry: ListEntry,
+        retained_private_dir: Option<String>,
+    },
+    Exists {
+        folder_path: String,
+        detail: String,
+    },
+    Unwritable {
+        detail: String,
+    },
 }
 
 impl CreateWrite {
     pub fn execute_authorized(
-        mut self, path: &str,
+        mut self,
+        path: &str,
         mut authorize: impl FnMut(&mut dyn FnMut() -> Result<(), NodeError>) -> Result<(), NodeError>,
         commit: impl FnOnce(&str, &str) -> Result<(), NodeError>,
     ) -> Result<CreateExecution, GuideError> {
         let guard = ProjectWriteGuard::new(&self.platform);
-        let published = match guard.create_project_authorized(&self.parent, &self.name, self.project_file.as_bytes(), &mut authorize) {
+        let published = match guard.create_project_authorized(
+            &self.parent,
+            &self.name,
+            self.project_file.as_bytes(),
+            &mut authorize,
+        ) {
             Ok(published) => published,
-            Err(WriteGuardError::Refused(refused)) if refused.reason == ProjectWriteRefusal::Exists =>
-                return Ok(CreateExecution::Exists { folder_path: self.root, detail: refused.message() }),
-            Err(WriteGuardError::Fs(error)) if error.code.is_some() =>
-                return Ok(CreateExecution::Unwritable { detail: error.message }),
+            Err(WriteGuardError::Refused(refused))
+                if refused.reason == ProjectWriteRefusal::Exists =>
+            {
+                return Ok(CreateExecution::Exists {
+                    folder_path: self.root,
+                    detail: refused.message(),
+                });
+            }
+            Err(WriteGuardError::Fs(error)) if error.code.is_some() => {
+                return Ok(CreateExecution::Unwritable {
+                    detail: error.message,
+                });
+            }
             Err(error) => return Err(error.into()),
         };
         self.root = published.path.clone();
         let mut settings = read_projects_settings(path);
-        let entry = self.apply(&mut settings).map_err(|error| GuideError::plain(format!(
-            "{}; project already published at {}; private staging retained: {:?}",
-            error.message(), published.path, published.retained_private_dir,
-        )))?;
-        crate::shell::app_settings::write_projects_settings_guarded(path, Some(&settings.to_json()), commit)
-            .map_err(|error| GuideError::Node(NodeError {
+        let entry = self.apply(&mut settings).map_err(|error| {
+            GuideError::plain(format!(
+                "{}; project already published at {}; private staging retained: {:?}",
+                error.message(),
+                published.path,
+                published.retained_private_dir,
+            ))
+        })?;
+        crate::shell::app_settings::write_projects_settings_guarded(
+            path,
+            Some(&settings.to_json()),
+            commit,
+        )
+        .map_err(|error| {
+            GuideError::Node(NodeError {
                 code: error.code,
-                message: format!("{}; project already published at {}; private staging retained: {:?}",
-                    error.message, published.path, published.retained_private_dir),
-            }))?;
-        Ok(CreateExecution::Created { entry, retained_private_dir: published.retained_private_dir })
+                message: format!(
+                    "{}; project already published at {}; private staging retained: {:?}",
+                    error.message, published.path, published.retained_private_dir
+                ),
+            })
+        })?;
+        Ok(CreateExecution::Created {
+            entry,
+            retained_private_dir: published.retained_private_dir,
+        })
     }
 
     fn apply(self, settings: &mut StoredProjectsSettings) -> Result<ListEntry, GuideError> {
-        if settings.list.iter().any(|entry| entry.id == self.id || same_path(&entry.path, &self.root, &self.platform))
+        if settings
+            .list
+            .iter()
+            .any(|entry| entry.id == self.id || same_path(&entry.path, &self.root, &self.platform))
             || settings.trust.get(&self.id).is_some()
         {
             return Err(GuideError::plain("project changed while awaiting creation"));
         }
-        let entry = ListEntry { id: self.id.clone(), path: self.root, pinned: false, last_used_at: self.at };
+        let entry = ListEntry {
+            id: self.id.clone(),
+            path: self.root,
+            pinned: false,
+            last_used_at: self.at,
+        };
         settings.list.push(entry.clone());
-        settings.trust.set(&self.id, StoredTrustRecord { decision: "use".into(), hashes: JsObject::new() });
+        settings.trust.set(
+            &self.id,
+            StoredTrustRecord {
+                decision: "use".into(),
+                hashes: JsObject::new(),
+            },
+        );
         Ok(entry)
     }
 }
@@ -566,9 +688,17 @@ pub struct ProjectSettingsPatch {
 /// queue admits the worker; it reads and updates the latest disk state.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProjectSettingsWrite {
-    Pin { project_id: String, pinned: bool },
-    Remove { project_id: String },
-    Switches { project_id: String, patch: ProjectSettingsPatch },
+    Pin {
+        project_id: String,
+        pinned: bool,
+    },
+    Remove {
+        project_id: String,
+    },
+    Switches {
+        project_id: String,
+        patch: ProjectSettingsPatch,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -581,7 +711,9 @@ pub enum ProjectSettingsWriteResult {
 impl ProjectSettingsWrite {
     pub fn project_id(&self) -> &str {
         match self {
-            Self::Pin { project_id, .. } | Self::Switches { project_id, .. } | Self::Remove { project_id } => project_id,
+            Self::Pin { project_id, .. }
+            | Self::Switches { project_id, .. }
+            | Self::Remove { project_id } => project_id,
         }
     }
 
@@ -589,31 +721,53 @@ impl ProjectSettingsWrite {
         self.execute_guarded(path, unguarded_settings_commit)
     }
 
-    pub fn execute_guarded(&self, path: &str, commit: impl FnOnce(&str, &str) -> Result<(), NodeError>) -> Result<ProjectSettingsWriteResult, GuideError> {
-        let next = crate::shell::app_settings::update_projects_settings_guarded(path, |settings| self.apply(settings), commit)?;
+    pub fn execute_guarded(
+        &self,
+        path: &str,
+        commit: impl FnOnce(&str, &str) -> Result<(), NodeError>,
+    ) -> Result<ProjectSettingsWriteResult, GuideError> {
+        let next = crate::shell::app_settings::update_projects_settings_guarded(
+            path,
+            |settings| self.apply(settings),
+            commit,
+        )?;
         Ok(match self {
             Self::Pin { .. } => ProjectSettingsWriteResult::Pinned,
             Self::Remove { .. } => ProjectSettingsWriteResult::Removed,
-            Self::Switches { project_id, .. } =>
-                ProjectSettingsWriteResult::Switches(settings_of(project_id, &next)),
+            Self::Switches { project_id, .. } => {
+                ProjectSettingsWriteResult::Switches(settings_of(project_id, &next))
+            }
         })
     }
 
     fn apply(&self, settings: &mut StoredProjectsSettings) {
         match self {
             Self::Pin { project_id, pinned } => {
-                if let Some(entry) = settings.list.iter_mut().find(|entry| entry.id == *project_id) {
+                if let Some(entry) = settings
+                    .list
+                    .iter_mut()
+                    .find(|entry| entry.id == *project_id)
+                {
                     entry.pinned = *pinned;
                 }
             }
             Self::Remove { project_id } => drop_from_list(settings, project_id),
             Self::Switches { project_id, patch } => {
-                let mut current = settings.settings.get(project_id).cloned().unwrap_or(ProjectSwitches {
-                    memory_enabled: DEFAULT_SETTINGS.memory_enabled,
-                    read_agents_files: DEFAULT_SETTINGS.read_agents_files,
-                });
-                if let Some(value) = patch.memory_enabled { current.memory_enabled = value; }
-                if let Some(value) = patch.read_agents_files { current.read_agents_files = value; }
+                let mut current =
+                    settings
+                        .settings
+                        .get(project_id)
+                        .cloned()
+                        .unwrap_or(ProjectSwitches {
+                            memory_enabled: DEFAULT_SETTINGS.memory_enabled,
+                            read_agents_files: DEFAULT_SETTINGS.read_agents_files,
+                        });
+                if let Some(value) = patch.memory_enabled {
+                    current.memory_enabled = value;
+                }
+                if let Some(value) = patch.read_agents_files {
+                    current.read_agents_files = value;
+                }
                 settings.settings.set(project_id, current);
             }
         }
@@ -635,8 +789,16 @@ impl InstallIdWrite {
         self.execute_guarded(path, unguarded_settings_commit)
     }
 
-    pub fn execute_guarded(self, path: &str, commit: impl FnOnce(&str, &str) -> Result<(), NodeError>) -> Result<String, GuideError> {
-        let settings = crate::shell::app_settings::update_projects_settings_guarded(path, |settings| self.apply(settings), commit)?;
+    pub fn execute_guarded(
+        self,
+        path: &str,
+        commit: impl FnOnce(&str, &str) -> Result<(), NodeError>,
+    ) -> Result<String, GuideError> {
+        let settings = crate::shell::app_settings::update_projects_settings_guarded(
+            path,
+            |settings| self.apply(settings),
+            commit,
+        )?;
         Ok(settings.install_id)
     }
 
@@ -670,7 +832,6 @@ impl TouchFlush {
         }
     }
 }
-
 
 /// The `by` of `editMemory`: `ai` is the `project_remember` tool, `person` a
 /// "[remove]" on a memory line or the screen's per-entry delete
@@ -947,7 +1108,9 @@ impl ContextAuthority {
             for (file, hash) in updates {
                 match hash {
                     Some(hash) => record.hashes.set(file.as_str(), hash.clone()),
-                    None => { delete_key(&mut record.hashes, file.as_str()); }
+                    None => {
+                        delete_key(&mut record.hashes, file.as_str());
+                    }
                 }
             }
         }
@@ -989,24 +1152,45 @@ impl SelectionWrite {
         self.execute_guarded(path, unguarded_settings_commit)
     }
 
-    pub fn execute_guarded(self, path: &str, commit: impl FnOnce(&str, &str) -> Result<(), NodeError>) -> Result<SelectionAcknowledgement, GuideError> {
+    pub fn execute_guarded(
+        self,
+        path: &str,
+        commit: impl FnOnce(&str, &str) -> Result<(), NodeError>,
+    ) -> Result<SelectionAcknowledgement, GuideError> {
         let mut settings = read_projects_settings(path);
-        if let Some(id) = &self.project_id && entry_in(&settings, id).is_none() {
+        if let Some(id) = &self.project_id
+            && entry_in(&settings, id).is_none()
+        {
             return Err(unknown_project(id));
         }
-        record_selection(&mut settings, &self.target, self.project_id.as_deref(), &self.platform);
-        if let Some(touches) = &self.touches { touches.apply(&mut settings); }
-        crate::shell::app_settings::write_projects_settings_guarded(path, Some(&settings.to_json()), commit)?;
+        record_selection(
+            &mut settings,
+            &self.target,
+            self.project_id.as_deref(),
+            &self.platform,
+        );
+        if let Some(touches) = &self.touches {
+            touches.apply(&mut settings);
+        }
+        crate::shell::app_settings::write_projects_settings_guarded(
+            path,
+            Some(&settings.to_json()),
+            commit,
+        )?;
         let settings = read_projects_settings(path);
         let mut selection = selection_for(&settings, &self.target, &self.platform);
         if let ResolvedSelectionTarget::Document { doc_key } = &self.target {
-            selection.unregistered_project_hint = find_unregistered_project(doc_key, &settings, &self.refusal);
+            selection.unregistered_project_hint =
+                find_unregistered_project(doc_key, &settings, &self.refusal);
         }
         if selection.project_id != self.project_id {
             selection.project_id = self.project_id;
             selection.initial_chat_id = None;
         }
-        Ok(SelectionAcknowledgement { selection, touches: self.touches })
+        Ok(SelectionAcknowledgement {
+            selection,
+            touches: self.touches,
+        })
     }
 }
 
@@ -1023,10 +1207,24 @@ impl OutsideChatWrite {
         self.execute_guarded(path, unguarded_settings_commit)
     }
 
-    pub fn execute_guarded(self, path: &str, commit: impl FnOnce(&str, &str) -> Result<(), NodeError>) -> Result<(), GuideError> {
-        crate::shell::app_settings::update_projects_settings_guarded(path, |settings| {
-            record_outside_chat(settings, &self.doc_key, &self.project_id, &self.chat_id, &self.platform);
-        }, commit)?;
+    pub fn execute_guarded(
+        self,
+        path: &str,
+        commit: impl FnOnce(&str, &str) -> Result<(), NodeError>,
+    ) -> Result<(), GuideError> {
+        crate::shell::app_settings::update_projects_settings_guarded(
+            path,
+            |settings| {
+                record_outside_chat(
+                    settings,
+                    &self.doc_key,
+                    &self.project_id,
+                    &self.chat_id,
+                    &self.platform,
+                );
+            },
+            commit,
+        )?;
         Ok(())
     }
 }
@@ -1057,21 +1255,39 @@ impl ContextWrite {
         self.execute_guarded(path, unguarded_settings_commit)
     }
 
-    pub fn execute_guarded(mut self, path: &str, commit: impl FnOnce(&str, &str) -> Result<(), NodeError>) -> Result<ContextAcknowledgement, GuideError> {
+    pub fn execute_guarded(
+        mut self,
+        path: &str,
+        commit: impl FnOnce(&str, &str) -> Result<(), NodeError>,
+    ) -> Result<ContextAcknowledgement, GuideError> {
         let mut settings = read_projects_settings(path);
-        if !self.authority.apply_if_current(&mut settings, &self.hash_updates) {
-            return Err(GuideError::plain("project authority changed while reading context"));
+        if !self
+            .authority
+            .apply_if_current(&mut settings, &self.hash_updates)
+        {
+            return Err(GuideError::plain(
+                "project authority changed while reading context",
+            ));
         }
         let show_notice = self.sync_notice.is_some()
-            && !settings.sync_notice_shown.iter().any(|id| id == &self.authority.project_id);
+            && !settings
+                .sync_notice_shown
+                .iter()
+                .any(|id| id == &self.authority.project_id);
         if show_notice {
-            settings.sync_notice_shown.push(self.authority.project_id.clone());
+            settings
+                .sync_notice_shown
+                .push(self.authority.project_id.clone());
         }
         if let Some(touches) = &self.touches {
             touches.apply(&mut settings);
         }
         if !self.hash_updates.is_empty() || show_notice || self.touches.is_some() {
-            crate::shell::app_settings::write_projects_settings_guarded(path, Some(&settings.to_json()), commit)?;
+            crate::shell::app_settings::write_projects_settings_guarded(
+                path,
+                Some(&settings.to_json()),
+                commit,
+            )?;
             settings = read_projects_settings(path);
         }
         if show_notice && let Some(notice) = self.sync_notice {
@@ -1094,7 +1310,10 @@ pub enum TrustPreparation {
 pub enum TrustUsePreparation {
     NeedInstallId,
     Done(DecideTrustResult),
-    Ask { prompt: Box<ProjectTrustPrompt>, pending: PendingDecideTrust },
+    Ask {
+        prompt: Box<ProjectTrustPrompt>,
+        pending: PendingDecideTrust,
+    },
     Write(TrustWrite),
 }
 
@@ -1121,38 +1340,72 @@ impl TrustWrite {
         self.execute_guarded(path, unguarded_settings_commit)
     }
 
-    pub fn execute_guarded(self, path: &str, commit: impl FnOnce(&str, &str) -> Result<(), NodeError>) -> Result<TrustAcknowledgement, GuideError> {
+    pub fn execute_guarded(
+        self,
+        path: &str,
+        commit: impl FnOnce(&str, &str) -> Result<(), NodeError>,
+    ) -> Result<TrustAcknowledgement, GuideError> {
         let mut settings = read_projects_settings(path);
         let (authority, decision) = self.apply(&mut settings)?;
-        crate::shell::app_settings::write_projects_settings_guarded(path, Some(&settings.to_json()), commit)?;
-        Ok(TrustAcknowledgement { authority, decision, settings: read_projects_settings(path) })
+        crate::shell::app_settings::write_projects_settings_guarded(
+            path,
+            Some(&settings.to_json()),
+            commit,
+        )?;
+        Ok(TrustAcknowledgement {
+            authority,
+            decision,
+            settings: read_projects_settings(path),
+        })
     }
 
-    fn apply(mut self, settings: &mut StoredProjectsSettings) -> Result<(ContextAuthority, ProjectTrustDecision), GuideError> {
+    fn apply(
+        mut self,
+        settings: &mut StoredProjectsSettings,
+    ) -> Result<(ContextAuthority, ProjectTrustDecision), GuideError> {
         let (record, decision) = match self.change {
             TrustChange::Approve(hashes) => {
                 if !self.authority.is_current(settings) {
-                    return Err(GuideError::plain("project authority changed while awaiting trust"));
+                    return Err(GuideError::plain(
+                        "project authority changed while awaiting trust",
+                    ));
                 }
-                (StoredTrustRecord { decision: "use".into(), hashes }, ProjectTrustDecision::Use)
+                (
+                    StoredTrustRecord {
+                        decision: "use".into(),
+                        hashes,
+                    },
+                    ProjectTrustDecision::Use,
+                )
             }
             TrustChange::Without => {
-                if !entry_in(settings, &self.authority.project_id).is_some_and(|entry| entry.path == self.authority.path) {
+                if !entry_in(settings, &self.authority.project_id)
+                    .is_some_and(|entry| entry.path == self.authority.path)
+                {
                     return Err(GuideError::plain("project changed while awaiting trust"));
                 }
-                let hashes = settings.trust.get(&self.authority.project_id)
-                    .map(|record| record.hashes.clone()).unwrap_or_default();
+                let hashes = settings
+                    .trust
+                    .get(&self.authority.project_id)
+                    .map(|record| record.hashes.clone())
+                    .unwrap_or_default();
                 self.authority.switches = settings_of(&self.authority.project_id, settings);
-                (StoredTrustRecord { decision: "without".into(), hashes }, ProjectTrustDecision::Without)
+                (
+                    StoredTrustRecord {
+                        decision: "without".into(),
+                        hashes,
+                    },
+                    ProjectTrustDecision::Without,
+                )
             }
         };
-        settings.trust.set(&self.authority.project_id, record.clone());
+        settings
+            .trust
+            .set(&self.authority.project_id, record.clone());
         self.authority.trust = Some(record);
         Ok((self.authority, decision))
     }
 }
-
-
 
 /// `parseCreatedAt(text)`
 fn parse_created_at(text: &str) -> Option<String> {
@@ -1425,7 +1678,9 @@ impl ProjectGuide {
         if !id.is_empty() {
             return InstallIdPreparation::Ready(self.finish_install_id(id));
         }
-        InstallIdPreparation::Write(InstallIdWrite { candidate: self.new_id() })
+        InstallIdPreparation::Write(InstallIdWrite {
+            candidate: self.new_id(),
+        })
     }
 
     pub fn finish_install_id(&self, id: String) -> String {
@@ -1496,7 +1751,6 @@ impl ProjectGuide {
         }
     }
 
-
     fn to_item(&self, entry: &ListEntry) -> ProjectListItem {
         let missing = !is_folder(&entry.path);
         let file = if missing {
@@ -1559,7 +1813,9 @@ impl ProjectGuide {
     /// Writes the use times still held in memory (call at app quit, and when
     /// the timer of `touch_timer` is due)
     pub fn flush_touches(&self) -> Result<(), GuideError> {
-        let Some(flush) = self.prepare_touch_flush() else { return Ok(()) };
+        let Some(flush) = self.prepare_touch_flush() else {
+            return Ok(());
+        };
         if let Err(error) = flush.execute(&self.settings_path) {
             self.restore_touch_timer();
             return Err(error);
@@ -1571,10 +1827,19 @@ impl ProjectGuide {
     /// Captures work without removing touches that may change while it runs.
     pub fn prepare_touch_flush(&self) -> Option<TouchFlush> {
         self.touch_timer.set(None);
-        let pending: Vec<_> = self.pending_touches.borrow().iter()
-            .map(|(id, at)| (id.to_owned(), at.clone())).collect();
-        if pending.is_empty() { return None; }
-        Some(TouchFlush { pending, at_ms: self.clock() })
+        let pending: Vec<_> = self
+            .pending_touches
+            .borrow()
+            .iter()
+            .map(|(id, at)| (id.to_owned(), at.clone()))
+            .collect();
+        if pending.is_empty() {
+            return None;
+        }
+        Some(TouchFlush {
+            pending,
+            at_ms: self.clock(),
+        })
     }
 
     /// Acknowledge only timestamps included in a successful worker write.
@@ -1594,11 +1859,20 @@ impl ProjectGuide {
         if !self.pending_touches.borrow().is_empty() && self.touch_timer.get().is_none() {
             let now = self.clock();
             let written = self.touch_written_at.borrow();
-            let delay = self.pending_touches.borrow().iter().fold(self.touch_write_ms, |delay, (id, _)| {
-                let due = written.get(id).map_or(0.0, |last| math_max(0.0, *last + self.touch_write_ms - now));
-                delay.min(due)
-            });
-            self.touch_timer.set(Some(TouchTimer { armed_at: now, delay }));
+            let delay =
+                self.pending_touches
+                    .borrow()
+                    .iter()
+                    .fold(self.touch_write_ms, |delay, (id, _)| {
+                        let due = written
+                            .get(id)
+                            .map_or(0.0, |last| math_max(0.0, *last + self.touch_write_ms - now));
+                        delay.min(due)
+                    });
+            self.touch_timer.set(Some(TouchTimer {
+                armed_at: now,
+                delay,
+            }));
         }
     }
 
@@ -1653,8 +1927,11 @@ impl ProjectGuide {
     }
 
     pub fn set_pinned(&self, id: &str, pinned: bool) -> Result<(), GuideError> {
-        ProjectSettingsWrite::Pin { project_id: id.to_owned(), pinned }
-            .execute(&self.settings_path)?;
+        ProjectSettingsWrite::Pin {
+            project_id: id.to_owned(),
+            pinned,
+        }
+        .execute(&self.settings_path)?;
         Ok(())
     }
 
@@ -1662,7 +1939,10 @@ impl ProjectGuide {
     /// per-document records. The folder, the trust record and its hashes stay, so
     /// adding the folder again does not ask again.
     pub fn remove_from_list(&self, id: &str) -> Result<(), GuideError> {
-        ProjectSettingsWrite::Remove { project_id: id.to_owned() }.execute(&self.settings_path)?;
+        ProjectSettingsWrite::Remove {
+            project_id: id.to_owned(),
+        }
+        .execute(&self.settings_path)?;
         self.finish_remove_from_list(id);
         Ok(())
     }
@@ -1704,7 +1984,9 @@ impl ProjectGuide {
     ) -> Result<AddFolderResult, GuideError> {
         match self.prepare_adopt_answer(pending, answer)? {
             AdoptPreparation::Done(result) => Ok(result),
-            AdoptPreparation::Write(write) => self.finish_adoption(write.execute(&self.settings_path)?),
+            AdoptPreparation::Write(write) => {
+                self.finish_adoption(write.execute(&self.settings_path)?)
+            }
         }
     }
 
@@ -1722,14 +2004,24 @@ impl ProjectGuide {
             AdoptStart::Ask { prompt, pending } => Ok(GuideStep::AskTrust { prompt, pending }),
             AdoptStart::Ready(plan) => {
                 let write = self.prepare_adopt_write(plan)?;
-                Ok(GuideStep::Done(self.finish_adoption(write.execute(&self.settings_path)?)?))
+                Ok(GuideStep::Done(
+                    self.finish_adoption(write.execute(&self.settings_path)?)?,
+                ))
             }
-            AdoptStart::NeedInstallId(_) => Err(GuideError::plain("install identity is unavailable")),
+            AdoptStart::NeedInstallId(_) => {
+                Err(GuideError::plain("install identity is unavailable"))
+            }
         }
     }
 
-    pub fn prepare_adopt(&self, folder_path: &str, relocate_id: Option<&str>) -> Result<AdoptStart, GuideError> {
-        if let Some(id) = relocate_id && self.entry(id).is_none() {
+    pub fn prepare_adopt(
+        &self,
+        folder_path: &str,
+        relocate_id: Option<&str>,
+    ) -> Result<AdoptStart, GuideError> {
+        if let Some(id) = relocate_id
+            && self.entry(id).is_none()
+        {
             return Err(unknown_project(id));
         }
         let platform = self.platform.as_str();
@@ -1780,16 +2072,30 @@ impl ProjectGuide {
             .and_then(|source| settings.trust.get(source))
             .is_some();
         let adoption = Adoption {
-            root, id, name, identity, previous, copied_from, stale_at_path, expected_trust,
+            root,
+            id,
+            name,
+            identity,
+            previous,
+            copied_from,
+            stale_at_path,
+            expected_trust,
         };
         if needs_scan && !inherited {
             Ok(AdoptStart::NeedInstallId(AdoptScan { adoption }))
         } else {
-            Ok(AdoptStart::Ready(AdoptPlan { adoption, trust: None }))
+            Ok(AdoptStart::Ready(AdoptPlan {
+                adoption,
+                trust: None,
+            }))
         }
     }
 
-    pub fn scan_adoption(&self, scan: AdoptScan, install_id: &str) -> Result<AdoptStart, GuideError> {
+    pub fn scan_adoption(
+        &self,
+        scan: AdoptScan,
+        install_id: &str,
+    ) -> Result<AdoptStart, GuideError> {
         let adoption = scan.adoption;
         let scanned = scan_for_trust(&TrustScanInput {
             root: adoption.root.clone(),
@@ -1800,7 +2106,10 @@ impl ProjectGuide {
         if scanned.foreign {
             Ok(AdoptStart::Ask {
                 prompt: Box::new(scanned.prompt),
-                pending: PendingAdopt { adoption: Box::new(adoption), hashes: scanned.hashes },
+                pending: PendingAdopt {
+                    adoption: Box::new(adoption),
+                    hashes: scanned.hashes,
+                },
             })
         } else {
             Ok(AdoptStart::Ready(AdoptPlan {
@@ -1811,7 +2120,6 @@ impl ProjectGuide {
                 }),
             }))
         }
-
     }
 
     pub fn prepare_adopt_write(&self, plan: AdoptPlan) -> Result<AdoptWrite, GuideError> {
@@ -1836,11 +2144,20 @@ impl ProjectGuide {
         } else {
             None
         };
-        let notice = self.is_sync_folder(&adoption.root)
-            .then(|| ProjectNotice::SyncFolder { service: self.sync_service(&adoption.root) });
-        Ok(AdoptWrite { adoption, trust, at: self.now_iso()?, platform: self.platform.clone(), notice, copy_file })
+        let notice = self
+            .is_sync_folder(&adoption.root)
+            .then(|| ProjectNotice::SyncFolder {
+                service: self.sync_service(&adoption.root),
+            });
+        Ok(AdoptWrite {
+            adoption,
+            trust,
+            at: self.now_iso()?,
+            platform: self.platform.clone(),
+            notice,
+            copy_file,
+        })
     }
-
 
     pub fn prepare_adopt_answer(
         &self,
@@ -1849,15 +2166,23 @@ impl ProjectGuide {
     ) -> Result<AdoptPreparation, GuideError> {
         let PendingAdopt { adoption, hashes } = pending;
         let Some(decision) = answer else {
-            return Ok(AdoptPreparation::Done(AddFolderResult::Cancelled { stage: AddFolderStage::Trust }));
+            return Ok(AdoptPreparation::Done(AddFolderResult::Cancelled {
+                stage: AddFolderStage::Trust,
+            }));
         };
         Ok(AdoptPreparation::Write(self.prepare_finish_adopt(
             *adoption,
-            Some(StoredTrustRecord { decision: decision.as_str().to_owned(), hashes }),
+            Some(StoredTrustRecord {
+                decision: decision.as_str().to_owned(),
+                hashes,
+            }),
         )?))
     }
 
-    pub fn finish_adoption(&self, ack: AdoptAcknowledgement) -> Result<AddFolderResult, GuideError> {
+    pub fn finish_adoption(
+        &self,
+        ack: AdoptAcknowledgement,
+    ) -> Result<AddFolderResult, GuideError> {
         let completion = self.prepare_adoption_ack(ack);
         let (result, warnings) = self.finish_adoption_ack(completion);
         self.report_write_warnings(&warnings);
@@ -1867,28 +2192,50 @@ impl ProjectGuide {
     pub fn prepare_adoption_ack(&self, ack: AdoptAcknowledgement) -> AdoptionCompletion {
         let mut warnings = Vec::new();
         if let Some(path) = ack.retained_private_dir {
-            warnings.push(("[projects] private staging directory retained:".into(), path));
+            warnings.push((
+                "[projects] private staging directory retained:".into(),
+                path,
+            ));
         }
         let copy_failed = ack.copy_failure.is_some();
         if let Some(error) = ack.copy_failure {
-            warnings.push((format!("[projects] cannot write into project {}:", ack.original_id), error));
+            warnings.push((
+                format!("[projects] cannot write into project {}:", ack.original_id),
+                error,
+            ));
         }
         let mut project = self.to_item(&ack.entry);
-        if copy_failed && ack.final_id == ack.original_id { project.unwritable = true; }
+        if copy_failed && ack.final_id == ack.original_id {
+            project.unwritable = true;
+        }
         AdoptionCompletion {
-            original_id: ack.original_id, final_id: ack.final_id, copy_failed, warnings,
-            result: AddFolderResult::Added { project, identity: ack.identity, notices: ack.notice.into_iter().collect() },
+            original_id: ack.original_id,
+            final_id: ack.final_id,
+            copy_failed,
+            warnings,
+            result: AddFolderResult::Added {
+                project,
+                identity: ack.identity,
+                notices: ack.notice.into_iter().collect(),
+            },
         }
     }
 
-    pub fn finish_adoption_ack(&self, completion: AdoptionCompletion) -> (AddFolderResult, Vec<(String, String)>) {
+    pub fn finish_adoption_ack(
+        &self,
+        completion: AdoptionCompletion,
+    ) -> (AddFolderResult, Vec<(String, String)>) {
         if completion.copy_failed {
             self.mark_unwritable(&completion.original_id);
             let mut pending = self.pending_id_fix.borrow_mut();
-            if !pending.contains(&completion.original_id) { pending.push(completion.original_id.clone()); }
+            if !pending.contains(&completion.original_id) {
+                pending.push(completion.original_id.clone());
+            }
         }
         if completion.final_id != completion.original_id {
-            self.pending_id_fix.borrow_mut().retain(|item| *item != completion.original_id);
+            self.pending_id_fix
+                .borrow_mut()
+                .retain(|item| *item != completion.original_id);
         }
         (completion.result, completion.warnings)
     }
@@ -1911,60 +2258,103 @@ impl ProjectGuide {
     /// An existing folder of that name is never written to unless `useExisting` asks
     /// to add it as a project (identity and trust as for "add folder"; that path can
     /// ask, and resumes with [`ProjectGuide::resume_create_project`]).
-    pub fn create_project(&self, args: &NewProjectRequest) -> Result<GuideStep<CreateProjectResult, PendingAdopt>, GuideError> {
+    pub fn create_project(
+        &self,
+        args: &NewProjectRequest,
+    ) -> Result<GuideStep<CreateProjectResult, PendingAdopt>, GuideError> {
         match self.prepare_create(args)? {
             CreatePreparation::Done(result) => Ok(GuideStep::Done(result)),
             CreatePreparation::Adopt(start) => {
                 let start = match start {
-                    AdoptStart::NeedInstallId(scan) => self.scan_adoption(scan, &self.install_id()?)?,
+                    AdoptStart::NeedInstallId(scan) => {
+                        self.scan_adoption(scan, &self.install_id()?)?
+                    }
                     other => other,
                 };
                 match start {
                     AdoptStart::Done(result) => Ok(GuideStep::Done(result.into())),
-                    AdoptStart::Ask { prompt, pending } => Ok(GuideStep::AskTrust { prompt, pending }),
+                    AdoptStart::Ask { prompt, pending } => {
+                        Ok(GuideStep::AskTrust { prompt, pending })
+                    }
                     AdoptStart::Ready(plan) => {
                         let write = self.prepare_adopt_write(plan)?;
-                        Ok(GuideStep::Done(self.finish_adoption(write.execute(&self.settings_path)?)?.into()))
+                        Ok(GuideStep::Done(
+                            self.finish_adoption(write.execute(&self.settings_path)?)?
+                                .into(),
+                        ))
                     }
-                    AdoptStart::NeedInstallId(_) => Err(GuideError::plain("install identity is unavailable")),
+                    AdoptStart::NeedInstallId(_) => {
+                        Err(GuideError::plain("install identity is unavailable"))
+                    }
                 }
             }
-            CreatePreparation::New { parent, name, target } => match self.prepare_new_project(&parent, &name, &target)? {
+            CreatePreparation::New {
+                parent,
+                name,
+                target,
+            } => match self.prepare_new_project(&parent, &name, &target)? {
                 CreateNew::Done(result) => Ok(GuideStep::Done(result)),
                 CreateNew::Write(write) => {
-                    let result = write.execute_authorized(&self.settings_path, |effect| effect(), unguarded_settings_commit)?;
+                    let result = write.execute_authorized(
+                        &self.settings_path,
+                        |effect| effect(),
+                        unguarded_settings_commit,
+                    )?;
                     Ok(GuideStep::Done(self.finish_create(result)))
                 }
             },
         }
     }
 
-    pub fn prepare_create(&self, args: &NewProjectRequest) -> Result<CreatePreparation, GuideError> {
+    pub fn prepare_create(
+        &self,
+        args: &NewProjectRequest,
+    ) -> Result<CreatePreparation, GuideError> {
         let name = trim(&args.name);
         if !is_valid_rename_name(name) || name.chars().count() > PROJECT_NAME_MAX_CHARS {
             return Ok(CreatePreparation::Done(CreateProjectResult::InvalidName));
         }
-        let chosen = args.parent_dir.clone().unwrap_or_else(|| self.get_default_parent_folder());
+        let chosen = args
+            .parent_dir
+            .clone()
+            .unwrap_or_else(|| self.get_default_parent_folder());
         if !is_absolute(&chosen) {
             return Ok(CreatePreparation::Done(CreateProjectResult::Unwritable));
         }
         let parent = canonical_path(&chosen);
         let target = join(&[&parent, name]);
         if let Some(reason) = location_refusal(&target, &self.refusal_context()) {
-            return Ok(CreatePreparation::Done(CreateProjectResult::Refused { reason }));
+            return Ok(CreatePreparation::Done(CreateProjectResult::Refused {
+                reason,
+            }));
         }
         if exists(&target) {
-            let listed = self.read().list.iter().any(|item| same_path(&item.path, &target, &self.platform));
+            let listed = self
+                .read()
+                .list
+                .iter()
+                .any(|item| same_path(&item.path, &target, &self.platform));
             return if args.use_existing == Some(true) || listed {
                 Ok(CreatePreparation::Adopt(self.prepare_adopt(&target, None)?))
             } else {
-                Ok(CreatePreparation::Done(CreateProjectResult::Exists { folder_path: target }))
+                Ok(CreatePreparation::Done(CreateProjectResult::Exists {
+                    folder_path: target,
+                }))
             };
         }
-        Ok(CreatePreparation::New { parent, name: name.to_owned(), target })
+        Ok(CreatePreparation::New {
+            parent,
+            name: name.to_owned(),
+            target,
+        })
     }
 
-    pub fn prepare_new_project(&self, parent: &str, name: &str, _target: &str) -> Result<CreateNew, GuideError> {
+    pub fn prepare_new_project(
+        &self,
+        parent: &str,
+        name: &str,
+        _target: &str,
+    ) -> Result<CreateNew, GuideError> {
         let parent = match self.guard.resolve_create_parent(parent) {
             Ok(parent) => parent,
             Err(_) => return Ok(CreateNew::Done(CreateProjectResult::Unwritable)),
@@ -1981,20 +2371,36 @@ impl ProjectGuide {
             created_at: self.now_iso()?,
         };
         Ok(CreateNew::Write(CreateWrite {
-            id, root, parent, name: name.to_owned(), project_file: project_file_text(&file),
-            at: self.now_iso()?, platform: self.platform.clone(),
+            id,
+            root,
+            parent,
+            name: name.to_owned(),
+            project_file: project_file_text(&file),
+            at: self.now_iso()?,
+            platform: self.platform.clone(),
         }))
     }
 
     pub fn finish_create(&self, execution: CreateExecution) -> CreateProjectResult {
         match execution {
-            CreateExecution::Created { entry, retained_private_dir } => {
+            CreateExecution::Created {
+                entry,
+                retained_private_dir,
+            } => {
                 if let Some(retained_private_dir) = retained_private_dir {
-                    self.warn("[projects] private staging directory retained:", &retained_private_dir);
+                    self.warn(
+                        "[projects] private staging directory retained:",
+                        &retained_private_dir,
+                    );
                 }
-                CreateProjectResult::Created { project: self.to_item(&entry) }
+                CreateProjectResult::Created {
+                    project: self.to_item(&entry),
+                }
             }
-            CreateExecution::Exists { folder_path, detail } => {
+            CreateExecution::Exists {
+                folder_path,
+                detail,
+            } => {
                 self.warn("[projects] cannot publish project folder:", &detail);
                 CreateProjectResult::Exists { folder_path }
             }
@@ -2013,7 +2419,6 @@ impl ProjectGuide {
     ) -> Result<CreateProjectResult, GuideError> {
         Ok(self.resume_add_folder(pending, answer)?.into())
     }
-
 
     /// Renames in `project.json` only; the folder keeps its name
     pub fn rename_project(&self, id: &str, name: &str) -> Result<ProjectWriteResult, GuideError> {
@@ -2186,7 +2591,10 @@ impl ProjectGuide {
             Err(GuideError::NeedInstallId) => Err(GuideError::NeedInstallId),
             Err(error) => {
                 self.mark_unwritable(id);
-                self.warn(&format!("[projects] cannot write into project {id}:"), &error.message());
+                self.warn(
+                    &format!("[projects] cannot write into project {id}:"),
+                    &error.message(),
+                );
                 Ok(ProjectWriteResult::Unwritable)
             }
         }
@@ -2358,7 +2766,10 @@ impl ProjectGuide {
             ContextPreparation::Done(result) => Ok(result),
             ContextPreparation::Write(write) => match write.execute(&self.settings_path) {
                 Ok(ack) => self.finish_context(ack),
-                Err(error) => { self.restore_touch_timer(); Err(error) }
+                Err(error) => {
+                    self.restore_touch_timer();
+                    Err(error)
+                }
             },
         }
     }
@@ -2369,8 +2780,8 @@ impl ProjectGuide {
         let Some(entry) = entry_in(&settings, id) else {
             return Ok(ContextPreparation::Done(ProjectContextResult::Unknown));
         };
-        let authority = ContextAuthority::capture(&settings, id)
-            .expect("the project entry was just found");
+        let authority =
+            ContextAuthority::capture(&settings, id).expect("the project entry was just found");
         let root = entry.path;
         if !is_folder(&root) {
             return Ok(ContextPreparation::Done(ProjectContextResult::Missing));
@@ -2418,8 +2829,11 @@ impl ProjectGuide {
         if unwritable {
             notices.push(ProjectNotice::Unwritable);
         }
-        let sync_notice = self.is_sync_folder(&root)
-            .then(|| ProjectNotice::SyncFolder { service: self.sync_service(&root) });
+        let sync_notice = self
+            .is_sync_folder(&root)
+            .then(|| ProjectNotice::SyncFolder {
+                service: self.sync_service(&root),
+            });
 
         let mut files = ContextFiles {
             files: Vec::new(),
@@ -2435,7 +2849,11 @@ impl ProjectGuide {
                 visibility,
             });
         }
-        let touches = if self.stage_touch(id)? { self.prepare_touch_flush() } else { None };
+        let touches = if self.stage_touch(id)? {
+            self.prepare_touch_flush()
+        } else {
+            None
+        };
         let file = read_project_file(&root, None);
         Ok(ContextPreparation::Write(ContextWrite {
             authority,
@@ -2462,15 +2880,22 @@ impl ProjectGuide {
     }
 
     /// Revalidate while the shared queue completion is still held on core.
-    pub fn finish_context(&self, ack: ContextAcknowledgement) -> Result<ProjectContextResult, GuideError> {
+    pub fn finish_context(
+        &self,
+        ack: ContextAcknowledgement,
+    ) -> Result<ProjectContextResult, GuideError> {
         if !ack.authority.is_current(&ack.settings) {
             self.restore_touch_timer();
-            return Err(GuideError::plain("project authority changed while reading context"));
+            return Err(GuideError::plain(
+                "project authority changed while reading context",
+            ));
         }
         if let Some(touches) = &ack.touches {
             self.finish_touch_flush(touches);
         }
-        Ok(ProjectContextResult::Ok { context: Box::new(ack.context) })
+        Ok(ProjectContextResult::Ok {
+            context: Box::new(ack.context),
+        })
     }
 
     // ────────────────────────── project screen ──────────────────────────
@@ -2519,7 +2944,9 @@ impl ProjectGuide {
         match (ProjectSettingsWrite::Switches {
             project_id: id.to_owned(),
             patch: patch.clone(),
-        }).execute(&self.settings_path)? {
+        })
+        .execute(&self.settings_path)?
+        {
             ProjectSettingsWriteResult::Switches(settings) => Ok(settings),
             _ => unreachable!("switches write returned a different result"),
         }
@@ -2528,8 +2955,12 @@ impl ProjectGuide {
     /// Capture the project identity before queueing a trust revocation.
     pub fn prepare_trust_without(&self, id: &str) -> Result<TrustWrite, GuideError> {
         let settings = self.read();
-        let authority = ContextAuthority::capture(&settings, id).ok_or_else(|| unknown_project(id))?;
-        Ok(TrustWrite { authority, change: TrustChange::Without })
+        let authority =
+            ContextAuthority::capture(&settings, id).ok_or_else(|| unknown_project(id))?;
+        Ok(TrustWrite {
+            authority,
+            change: TrustChange::Without,
+        })
     }
 
     /// Change trust from the project screen. `without` applies at once; `use` shows the
@@ -2543,7 +2974,9 @@ impl ProjectGuide {
     ) -> Result<GuideStep<DecideTrustResult, PendingDecideTrust>, GuideError> {
         if decision == ProjectTrustDecision::Without {
             let write = self.prepare_trust_without(id)?;
-            return Ok(GuideStep::Done(self.finish_trust_answer(write.execute(&self.settings_path)?)?));
+            return Ok(GuideStep::Done(
+                self.finish_trust_answer(write.execute(&self.settings_path)?)?,
+            ));
         }
         let mut preview = self.prepare_decide_trust_use(id, None)?;
         if matches!(preview, TrustUsePreparation::NeedInstallId) {
@@ -2552,10 +2985,15 @@ impl ProjectGuide {
         }
         match preview {
             TrustUsePreparation::Done(result) => Ok(GuideStep::Done(result)),
-            TrustUsePreparation::Write(write) =>
-                Ok(GuideStep::Done(self.finish_trust_answer(write.execute(&self.settings_path)?)?)),
-            TrustUsePreparation::Ask { prompt, pending } => Ok(GuideStep::AskTrust { prompt, pending }),
-            TrustUsePreparation::NeedInstallId => Err(GuideError::plain("install identity is unavailable")),
+            TrustUsePreparation::Write(write) => Ok(GuideStep::Done(
+                self.finish_trust_answer(write.execute(&self.settings_path)?)?,
+            )),
+            TrustUsePreparation::Ask { prompt, pending } => {
+                Ok(GuideStep::AskTrust { prompt, pending })
+            }
+            TrustUsePreparation::NeedInstallId => {
+                Err(GuideError::plain("install identity is unavailable"))
+            }
         }
     }
 
@@ -2569,12 +3007,18 @@ impl ProjectGuide {
         let Some(entry) = entry_in(&initial, id) else {
             return Err(unknown_project(id));
         };
-        if initial.trust.get(id).is_some_and(|record| decision_of(&record.decision) == ProjectTrustDecision::Use) {
+        if initial
+            .trust
+            .get(id)
+            .is_some_and(|record| decision_of(&record.decision) == ProjectTrustDecision::Use)
+        {
             return Ok(TrustUsePreparation::Done(DecideTrustResult::Ok {
                 trust: ProjectTrustDecision::Use,
             }));
         }
-        let Some(install_id) = install_id else { return Ok(TrustUsePreparation::NeedInstallId) };
+        let Some(install_id) = install_id else {
+            return Ok(TrustUsePreparation::NeedInstallId);
+        };
         let file = read_project_file(&entry.path, None);
         let scan = scan_for_trust(&TrustScanInput {
             root: entry.path.clone(),
@@ -2592,11 +3036,13 @@ impl ProjectGuide {
                 pending: PendingDecideTrust {
                     id: id.to_owned(),
                     hashes: scan.hashes,
-                    authority: ContextAuthority::capture(&initial, id).expect("the project entry was just found"),
+                    authority: ContextAuthority::capture(&initial, id)
+                        .expect("the project entry was just found"),
                 },
             });
         }
-        let authority = ContextAuthority::capture(&initial, id).expect("the project entry was just found");
+        let authority =
+            ContextAuthority::capture(&initial, id).expect("the project entry was just found");
         Ok(TrustUsePreparation::Write(TrustWrite {
             authority,
             change: TrustChange::Approve(scan.hashes),
@@ -2611,31 +3057,50 @@ impl ProjectGuide {
     ) -> Result<DecideTrustResult, GuideError> {
         match self.prepare_trust_answer(pending, answer) {
             TrustPreparation::Done(result) => Ok(result),
-            TrustPreparation::Write(write) => self.finish_trust_answer(write.execute(&self.settings_path)?),
+            TrustPreparation::Write(write) => {
+                self.finish_trust_answer(write.execute(&self.settings_path)?)
+            }
         }
     }
 
     /// Prepare a trust answer without retaining the settings queue over a modal.
-    pub fn prepare_trust_answer(&self, pending: PendingDecideTrust, answer: ProjectTrustAnswer) -> TrustPreparation {
-        let PendingDecideTrust { id, hashes, authority } = pending;
+    pub fn prepare_trust_answer(
+        &self,
+        pending: PendingDecideTrust,
+        answer: ProjectTrustAnswer,
+    ) -> TrustPreparation {
+        let PendingDecideTrust {
+            id,
+            hashes,
+            authority,
+        } = pending;
         debug_assert_eq!(id, authority.project_id);
         match answer {
             None => TrustPreparation::Done(DecideTrustResult::Cancelled),
             Some(ProjectTrustDecision::Without) => TrustPreparation::Done(DecideTrustResult::Ok {
                 trust: ProjectTrustDecision::Without,
             }),
-            Some(ProjectTrustDecision::Use) => TrustPreparation::Write(TrustWrite { authority, change: TrustChange::Approve(hashes) }),
+            Some(ProjectTrustDecision::Use) => TrustPreparation::Write(TrustWrite {
+                authority,
+                change: TrustChange::Approve(hashes),
+            }),
         }
     }
 
     /// Complete a trust approval while its settings queue completion is held.
-    pub fn finish_trust_answer(&self, ack: TrustAcknowledgement) -> Result<DecideTrustResult, GuideError> {
+    pub fn finish_trust_answer(
+        &self,
+        ack: TrustAcknowledgement,
+    ) -> Result<DecideTrustResult, GuideError> {
         if !ack.authority.is_current(&ack.settings) {
-            return Err(GuideError::plain("project authority changed while awaiting trust"));
+            return Err(GuideError::plain(
+                "project authority changed while awaiting trust",
+            ));
         }
-        Ok(DecideTrustResult::Ok { trust: ack.decision })
+        Ok(DecideTrustResult::Ok {
+            trust: ack.decision,
+        })
     }
-
 
     pub fn save_instructions(
         &self,
@@ -2978,7 +3443,10 @@ impl ProjectGuide {
         let write = self.prepare_selection(target, project_id)?;
         match write.execute(&self.settings_path) {
             Ok(ack) => Ok(self.finish_selection(ack)),
-            Err(error) => { self.restore_touch_timer(); Err(error) }
+            Err(error) => {
+                self.restore_touch_timer();
+                Err(error)
+            }
         }
     }
 
@@ -2987,7 +3455,9 @@ impl ProjectGuide {
         target: &SelectionTarget,
         project_id: Option<&str>,
     ) -> Result<SelectionWrite, GuideError> {
-        if let Some(id) = project_id && self.entry(id).is_none() {
+        if let Some(id) = project_id
+            && self.entry(id).is_none()
+        {
             return Err(unknown_project(id));
         }
         let target = self.resolve_target(target)?;
@@ -3018,7 +3488,8 @@ impl ProjectGuide {
         project_id: &str,
         chat_id: &str,
     ) -> Result<(), GuideError> {
-        self.prepare_outside_chat(doc_path, project_id, chat_id)?.execute(&self.settings_path)
+        self.prepare_outside_chat(doc_path, project_id, chat_id)?
+            .execute(&self.settings_path)
     }
 
     pub fn prepare_outside_chat(
@@ -3042,11 +3513,15 @@ impl ProjectGuide {
     }
 
     pub fn prepare_adopt_hint(&self, doc_path: &str) -> Result<AdoptStart, GuideError> {
-        let target = SelectionTarget::Document { path: doc_path.to_owned() };
+        let target = SelectionTarget::Document {
+            path: doc_path.to_owned(),
+        };
         let selection = self.get_selection(&target)?;
         match selection.unregistered_project_hint {
             Some(hint) => self.prepare_adopt(&hint.folder_path, None),
-            None => Ok(AdoptStart::Done(AddFolderResult::Refused { reason: FolderRefusalReason::NotAFolder })),
+            None => Ok(AdoptStart::Done(AddFolderResult::Refused {
+                reason: FolderRefusalReason::NotAFolder,
+            })),
         }
     }
 
@@ -3189,16 +3664,17 @@ macro_rules! guide_traits {
                     id,
                     rel_path,
                     &mut |current: Option<&str>| -> Result<Option<String>, GuideError> {
-                        change(current, &mut || {
-                            match guide.prepare_install_id() {
-                                InstallIdPreparation::Ready(id) => Ok(id),
-                                InstallIdPreparation::Write(_) => Err(ChatStoreError::need_install_id()),
+                        change(current, &mut || match guide.prepare_install_id() {
+                            InstallIdPreparation::Ready(id) => Ok(id),
+                            InstallIdPreparation::Write(_) => {
+                                Err(ChatStoreError::need_install_id())
                             }
                         })
                         .map_err(guide_error)
                     },
                     data_dir,
-                ).map_err(chat_error)
+                )
+                .map_err(chat_error)
             }
 
             fn data_path(
@@ -3276,10 +3752,13 @@ mod context_authority_tests {
             pinned: false,
             last_used_at: String::new(),
         });
-        settings.trust.set("project", StoredTrustRecord {
-            decision: "use".into(),
-            hashes: JsObject::new(),
-        });
+        settings.trust.set(
+            "project",
+            StoredTrustRecord {
+                decision: "use".into(),
+                hashes: JsObject::new(),
+            },
+        );
         settings
     }
 
@@ -3288,13 +3767,18 @@ mod context_authority_tests {
         let settings = trusted();
         let entry = &settings.list[0];
         let adoption = Adoption {
-            root: "/new-root".into(), id: "project".into(), name: "project".into(),
+            root: "/new-root".into(),
+            id: "project".into(),
+            name: "project".into(),
             identity: FolderIdentity::Moved,
             previous: Some(crate::packages::project_store::ProjectListEntry {
-                id: entry.id.clone(), path: entry.path.clone(), pinned: entry.pinned,
+                id: entry.id.clone(),
+                path: entry.path.clone(),
+                pinned: entry.pinned,
                 last_used_at: entry.last_used_at.clone(),
             }),
-            copied_from: None, stale_at_path: None,
+            copied_from: None,
+            stale_at_path: None,
             expected_trust: settings.trust.get("project").cloned(),
         };
         assert!(adoption.validate(&settings, "linux").is_ok());
@@ -3313,11 +3797,20 @@ mod context_authority_tests {
     fn adoption_reports_settings_write_failure() {
         let write = AdoptWrite {
             adoption: Adoption {
-                root: "/new-root".into(), id: "new".into(), name: "new".into(),
-                identity: FolderIdentity::New, previous: None, copied_from: None,
-                stale_at_path: None, expected_trust: None,
+                root: "/new-root".into(),
+                id: "new".into(),
+                name: "new".into(),
+                identity: FolderIdentity::New,
+                previous: None,
+                copied_from: None,
+                stale_at_path: None,
+                expected_trust: None,
             },
-            trust: None, at: String::new(), platform: "linux".into(), notice: None, copy_file: None,
+            trust: None,
+            at: String::new(),
+            platform: "linux".into(),
+            notice: None,
+            copy_file: None,
         };
         assert!(write.execute("\0").is_err());
     }
@@ -3327,14 +3820,24 @@ mod context_authority_tests {
         let mut settings = trusted();
         let before = settings.clone();
         let write = CreateWrite {
-            id: "project".into(), root: "/new-root".into(), parent: "/".into(), name: "new-root".into(),
-            project_file: String::new(), at: String::new(), platform: "linux".into(),
+            id: "project".into(),
+            root: "/new-root".into(),
+            parent: "/".into(),
+            name: "new-root".into(),
+            project_file: String::new(),
+            at: String::new(),
+            platform: "linux".into(),
         };
         assert!(write.apply(&mut settings).is_err());
         assert_eq!(settings, before);
         let write = CreateWrite {
-            id: "other".into(), root: "/project".into(), parent: "/".into(), name: "project".into(),
-            project_file: String::new(), at: String::new(), platform: "linux".into(),
+            id: "other".into(),
+            root: "/project".into(),
+            parent: "/".into(),
+            name: "project".into(),
+            project_file: String::new(),
+            at: String::new(),
+            platform: "linux".into(),
         };
         assert!(write.apply(&mut settings).is_err());
         assert_eq!(settings, before);
@@ -3343,29 +3846,49 @@ mod context_authority_tests {
     #[cfg(unix)]
     #[test]
     fn settings_failure_keeps_the_published_project() {
-        let parent = std::env::temp_dir().join(format!("project-create-settings-{}", std::process::id()));
+        let parent =
+            std::env::temp_dir().join(format!("project-create-settings-{}", std::process::id()));
         std::fs::create_dir_all(&parent).unwrap();
         let parent = parent.canonicalize().unwrap();
         let root = parent.join("created");
         let path = parent.join("settings.json");
         std::fs::write(&path, "{}").unwrap();
         let write = CreateWrite {
-            id: "project".into(), root: root.to_string_lossy().into_owned(),
-            parent: parent.to_string_lossy().into_owned(), name: "created".into(),
-            project_file: "project metadata".into(), at: String::new(), platform: "linux".into(),
+            id: "project".into(),
+            root: root.to_string_lossy().into_owned(),
+            parent: parent.to_string_lossy().into_owned(),
+            name: "created".into(),
+            project_file: "project metadata".into(),
+            at: String::new(),
+            platform: "linux".into(),
         };
-        let result = write.execute_authorized(path.to_str().unwrap(), |effect| effect(), |_, _| {
-            Err(NodeError { code: None, message: "settings denied".into() })
-        });
+        let result = write.execute_authorized(
+            path.to_str().unwrap(),
+            |effect| effect(),
+            |_, _| {
+                Err(NodeError {
+                    code: None,
+                    message: "settings denied".into(),
+                })
+            },
+        );
         assert!(result.is_err());
-        assert_eq!(std::fs::read(root.join(".seuoffice/project.json")).unwrap(), b"project metadata");
+        assert_eq!(
+            std::fs::read(root.join(".seuoffice/project.json")).unwrap(),
+            b"project metadata"
+        );
         std::fs::remove_file(root.join(".seuoffice/project.json")).unwrap();
         std::fs::remove_dir(root.join(".seuoffice")).unwrap();
         std::fs::remove_dir(&root).unwrap();
         std::fs::remove_file(&path).unwrap();
         for entry in std::fs::read_dir(&parent).unwrap() {
             let entry = entry.unwrap();
-            assert!(entry.file_name().to_string_lossy().starts_with(".seuoffice-stage-"));
+            assert!(
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".seuoffice-stage-")
+            );
             std::fs::remove_dir(entry.path()).unwrap();
         }
         std::fs::remove_dir(parent).unwrap();
@@ -3381,14 +3904,20 @@ mod context_authority_tests {
         revoked.trust.get_mut("project").unwrap().decision = "without".into();
         assert!(!authority.is_current(&revoked));
         let before = revoked.clone();
-        assert!(!authority.apply_if_current(&mut revoked, &[(ProjectHashedFile::Instructions, Some("stale".into()))]));
+        assert!(!authority.apply_if_current(
+            &mut revoked,
+            &[(ProjectHashedFile::Instructions, Some("stale".into()))]
+        ));
         assert_eq!(revoked, before);
 
         let mut relocated = settings.clone();
         relocated.list[0].path = "/other".into();
         assert!(!authority.is_current(&relocated));
         let before = relocated.clone();
-        assert!(!authority.apply_if_current(&mut relocated, &[(ProjectHashedFile::Instructions, Some("stale".into()))]));
+        assert!(!authority.apply_if_current(
+            &mut relocated,
+            &[(ProjectHashedFile::Instructions, Some("stale".into()))]
+        ));
         assert_eq!(relocated, before);
     }
 
@@ -3399,7 +3928,12 @@ mod context_authority_tests {
         let updates = [(ProjectHashedFile::Instructions, Some("one".to_owned()))];
         assert!(authority.apply_if_current(&mut settings, &updates));
         assert!(authority.is_current(&settings));
-        settings.trust.get_mut("project").unwrap().hashes.set("instructions", "two".into());
+        settings
+            .trust
+            .get_mut("project")
+            .unwrap()
+            .hashes
+            .set("instructions", "two".into());
         assert!(!authority.is_current(&settings));
     }
 
@@ -3408,18 +3942,33 @@ mod context_authority_tests {
         let mut settings = trusted();
         ProjectSettingsWrite::Switches {
             project_id: "project".into(),
-            patch: ProjectSettingsPatch { memory_enabled: Some(false), read_agents_files: None },
-        }.apply(&mut settings);
+            patch: ProjectSettingsPatch {
+                memory_enabled: Some(false),
+                read_agents_files: None,
+            },
+        }
+        .apply(&mut settings);
         ProjectSettingsWrite::Switches {
             project_id: "project".into(),
-            patch: ProjectSettingsPatch { memory_enabled: None, read_agents_files: Some(true) },
-        }.apply(&mut settings);
-        ProjectSettingsWrite::Pin { project_id: "project".into(), pinned: true }.apply(&mut settings);
+            patch: ProjectSettingsPatch {
+                memory_enabled: None,
+                read_agents_files: Some(true),
+            },
+        }
+        .apply(&mut settings);
+        ProjectSettingsWrite::Pin {
+            project_id: "project".into(),
+            pinned: true,
+        }
+        .apply(&mut settings);
         let switches = settings_of("project", &settings);
         assert!(!switches.memory_enabled);
         assert!(switches.read_agents_files);
         assert!(settings.list[0].pinned);
-        ProjectSettingsWrite::Remove { project_id: "project".into() }.apply(&mut settings);
+        ProjectSettingsWrite::Remove {
+            project_id: "project".into(),
+        }
+        .apply(&mut settings);
         assert!(settings.list.is_empty());
         assert!(settings.trust.get("project").is_some());
     }
@@ -3427,18 +3976,45 @@ mod context_authority_tests {
     #[test]
     fn completed_touch_flush_does_not_discard_a_newer_touch() {
         let guide = ProjectGuide::new(ProjectGuideDeps {
-            settings_path: String::new(), home_dir: String::new(), user_data: String::new(),
-            default_parent_dir: Box::new(String::new), platform: None, env: None,
-            now: Some(Box::new(|| 10.0)), new_id: None, language: None, context_files: None,
+            settings_path: String::new(),
+            home_dir: String::new(),
+            user_data: String::new(),
+            default_parent_dir: Box::new(String::new),
+            platform: None,
+            env: None,
+            now: Some(Box::new(|| 10.0)),
+            new_id: None,
+            language: None,
+            context_files: None,
             touch_write_ms: Some(100.0),
-            local_date: Box::new(|_| LocalDateParts { full_year: 2025, month: 0, date: 1, hours: 0, minutes: 0, seconds: 0 }),
+            local_date: Box::new(|_| LocalDateParts {
+                full_year: 2025,
+                month: 0,
+                date: 1,
+                hours: 0,
+                minutes: 0,
+                seconds: 0,
+            }),
             warn: None,
         });
-        guide.pending_touches.borrow_mut().set("project", "first".into());
+        guide
+            .pending_touches
+            .borrow_mut()
+            .set("project", "first".into());
         let flush = guide.prepare_touch_flush().unwrap();
-        guide.pending_touches.borrow_mut().set("project", "newer".into());
+        guide
+            .pending_touches
+            .borrow_mut()
+            .set("project", "newer".into());
         guide.finish_touch_flush(&flush);
-        assert_eq!(guide.pending_touches.borrow().get("project").map(String::as_str), Some("newer"));
+        assert_eq!(
+            guide
+                .pending_touches
+                .borrow()
+                .get("project")
+                .map(String::as_str),
+            Some("newer")
+        );
         assert!(guide.touch_timer().is_some());
     }
 
@@ -3447,7 +4023,10 @@ mod context_authority_tests {
         let mut settings = trusted();
         settings.trust.get_mut("project").unwrap().decision = "without".into();
         let authority = ContextAuthority::capture(&settings, "project").unwrap();
-        let write = TrustWrite { authority, change: TrustChange::Approve(JsObject::new()) };
+        let write = TrustWrite {
+            authority,
+            change: TrustChange::Approve(JsObject::new()),
+        };
         settings.list[0].path = "/relocated".into();
         let before = settings.clone();
         assert!(write.apply(&mut settings).is_err());
@@ -3458,40 +4037,65 @@ mod context_authority_tests {
     fn queued_revocation_keeps_the_latest_hashes() {
         let mut settings = trusted();
         let authority = ContextAuthority::capture(&settings, "project").unwrap();
-        settings.trust.get_mut("project").unwrap().hashes.set("instructions", "latest".into());
-        let write = TrustWrite { authority, change: TrustChange::Without };
+        settings
+            .trust
+            .get_mut("project")
+            .unwrap()
+            .hashes
+            .set("instructions", "latest".into());
+        let write = TrustWrite {
+            authority,
+            change: TrustChange::Without,
+        };
         let (authority, decision) = write.apply(&mut settings).unwrap();
         assert_eq!(decision, ProjectTrustDecision::Without);
         assert!(authority.is_current(&settings));
         let trust = settings.trust.get("project").unwrap();
         assert_eq!(trust.decision, "without");
-        assert_eq!(trust.hashes.get("instructions").map(String::as_str), Some("latest"));
+        assert_eq!(
+            trust.hashes.get("instructions").map(String::as_str),
+            Some("latest")
+        );
     }
 
     #[test]
     fn queued_install_candidates_keep_the_first_committed_identity() {
         let mut settings = trusted();
-        InstallIdWrite { candidate: "first".into() }.apply(&mut settings);
-        InstallIdWrite { candidate: "second".into() }.apply(&mut settings);
+        InstallIdWrite {
+            candidate: "first".into(),
+        }
+        .apply(&mut settings);
+        InstallIdWrite {
+            candidate: "second".into(),
+        }
+        .apply(&mut settings);
         assert_eq!(settings.install_id, "first");
     }
 
     #[test]
     fn install_identity_reports_settings_write_failure() {
-        let write = InstallIdWrite { candidate: "candidate".into() };
+        let write = InstallIdWrite {
+            candidate: "candidate".into(),
+        };
         assert!(write.execute("\0").is_err());
     }
 
     #[test]
     fn revoked_owner_cannot_commit_install_identity() {
-        let dir = std::env::temp_dir().join(format!("project-install-guard-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("project-install-guard-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
         let original = "{\"other\":\"preserved\"}";
         std::fs::write(&path, original).unwrap();
-        let write = InstallIdWrite { candidate: "candidate".into() };
+        let write = InstallIdWrite {
+            candidate: "candidate".into(),
+        };
         let result = write.execute_guarded(path.to_str().unwrap(), |_, _| {
-            Err(NodeError { code: None, message: "owner revoked".into() })
+            Err(NodeError {
+                code: None,
+                message: "owner revoked".into(),
+            })
         });
         assert!(result.is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);

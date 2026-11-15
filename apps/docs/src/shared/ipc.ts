@@ -590,7 +590,10 @@ export interface DesktopApi {
    *  to save as Word instead, or to write the file without the marks ('clear';
    *  for an ODT the marks are cleared in the written copy). The document keeps
    *  its marks either way. Closing the box is 'cancel'. */
-  confirmMarkedExport(format: MarkedExportFormat, ownedSaveRequestId?: string): Promise<'docx' | 'clear' | 'cancel'>
+  confirmMarkedExport(
+    format: MarkedExportFormat,
+    ownedSaveRequestId?: string,
+  ): Promise<'docx' | 'clear' | 'cancel'>
   /** Save As, step two: write to the path step one returned (nothing else is
    *  accepted), docx or ODT bytes as its extension says. sourcePath: the
    *  document's current path — a docx write uses its desired next-save password
@@ -641,7 +644,12 @@ export interface DesktopApi {
   }>
   /** MCP-driven output: write the current document to an explicit absolute path
    *  with no dialog; refuses to replace an existing file unless overwrite is true */
-  saveDocxTo(path: string, data: ArrayBuffer, overwrite: boolean, ownedSaveRequestId?: string): Promise<McpSaveResult>
+  saveDocxTo(
+    path: string,
+    data: ArrayBuffer,
+    overwrite: boolean,
+    ownedSaveRequestId?: string,
+  ): Promise<McpSaveResult>
   /** a docx with lazily served pictures, whole again (one-shot URL); null on failure */
   materializeDocx(data: ArrayBuffer): Promise<{ dataUrl: string } | null>
   /** PNG of a viewport rectangle (CSS px of this page) as it is on screen; null on failure */
@@ -742,9 +750,14 @@ export interface DesktopApi {
   ): Promise<{ ok: boolean; path?: string; error?: string }>
   /** Export as images: the folder picker plus a pre-authorized temp PDF path the
    *  regular PDF export writes to silently (no reveal, no open) */
-  pickExportImagesTarget(ownedSaveRequestId?: string): Promise<{ dir: string; pdfPath: string } | null>
+  pickExportImagesTarget(
+    ownedSaveRequestId?: string,
+  ): Promise<{ dir: string; pdfPath: string } | null>
   /** Read back and delete the temp PDF written for an image export */
-  takeExportPdf(pdfPath: string, ownedSaveRequestId?: string): Promise<{ ok: boolean; base64?: string; error?: string }>
+  takeExportPdf(
+    pdfPath: string,
+    ownedSaveRequestId?: string,
+  ): Promise<{ ok: boolean; base64?: string; error?: string }>
   /** Write one page PNG into the folder chosen by pickExportImagesTarget */
   writeExportImage(
     dir: string,
@@ -854,7 +867,10 @@ export interface DesktopApi {
   onMenuCommand(handler: (command: MenuCommand, payload?: string) => void): () => void
   /** Close guard: main process queries pre-close state (dirty flag + autosave switch; if autosave is on, save silently without a dialog) */
   onCloseCheck(handler: (token?: string) => void): () => void
-  reportCloseCheck(state: { dirty: boolean; autoSave: boolean; filePath?: string | null }, token?: string): void
+  reportCloseCheck(
+    state: { dirty: boolean; autoSave: boolean; filePath?: string | null },
+    token?: string,
+  ): void
   /** Close guard chose "Save": main process asks the renderer to run the full save flow */
   onCloseSaveRequest(handler: (request?: OwnedSaveRequest) => void): () => void
   reportCloseSaveResult(ok: boolean, requestId?: string, error?: string): void

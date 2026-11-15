@@ -17,15 +17,25 @@ const pdfRequire = createRequire(resolve(root, 'apps/pdf/package.json'))
 const browserPdf = {
   name: 'browser-pdf-font-path',
   setup(builder) {
-    builder.onLoad({ filter: /[/\\]packages[/\\]file-parse[/\\]src[/\\]pdf\.ts$/ }, async ({ path }) => {
-      if (path !== pdfSource) throw new Error(`Unexpected PDF source: ${path}`)
-      let source = await readFile(path, 'utf8')
-      const imports = "import { createRequire } from 'node:module'\nimport { dirname, join } from 'node:path'\n"
-      const fontFunction = /function standardFontDataUrl\(\): string \| undefined \{[\s\S]*?\n\}/
-      if (!source.includes(imports) || !fontFunction.test(source)) throw new Error('PDF font resolver changed')
-      source = source.replace(imports, '').replace(fontFunction, "function standardFontDataUrl(): string { return new URL('./standard_fonts/', document.baseURI).href }")
-      return { contents: source, loader: 'ts', resolveDir: dirname(path) }
-    })
+    builder.onLoad(
+      { filter: /[/\\]packages[/\\]file-parse[/\\]src[/\\]pdf\.ts$/ },
+      async ({ path }) => {
+        if (path !== pdfSource) throw new Error(`Unexpected PDF source: ${path}`)
+        let source = await readFile(path, 'utf8')
+        const imports =
+          "import { createRequire } from 'node:module'\nimport { dirname, join } from 'node:path'\n"
+        const fontFunction = /function standardFontDataUrl\(\): string \| undefined \{[\s\S]*?\n\}/
+        if (!source.includes(imports) || !fontFunction.test(source))
+          throw new Error('PDF font resolver changed')
+        source = source
+          .replace(imports, '')
+          .replace(
+            fontFunction,
+            "function standardFontDataUrl(): string { return new URL('./standard_fonts/', document.baseURI).href }",
+          )
+        return { contents: source, loader: 'ts', resolveDir: dirname(path) }
+      },
+    )
   },
 }
 const browserMarkup = {
@@ -34,11 +44,18 @@ const browserMarkup = {
     builder.onResolve({ filter: /^\.\/diagram$/ }, ({ importer }) =>
       importer === hostSteps ? { path: markup } : undefined,
     )
-    builder.onLoad({ filter: /[/\\]packages[/\\]file-parse[/\\]src[/\\]host-steps\.ts$/ }, async ({ path }) => {
-      if (path !== hostSteps) throw new Error(`Unexpected host steps source: ${path}`)
-      const source = await readFile(path, 'utf8')
-      return { contents: `import { Buffer } from 'buffer'\n${source}`, loader: 'ts', resolveDir: dirname(path) }
-    })
+    builder.onLoad(
+      { filter: /[/\\]packages[/\\]file-parse[/\\]src[/\\]host-steps\.ts$/ },
+      async ({ path }) => {
+        if (path !== hostSteps) throw new Error(`Unexpected host steps source: ${path}`)
+        const source = await readFile(path, 'utf8')
+        return {
+          contents: `import { Buffer } from 'buffer'\n${source}`,
+          loader: 'ts',
+          resolveDir: dirname(path),
+        }
+      },
+    )
   },
 }
 const rawScripts = {
@@ -76,7 +93,11 @@ const browserQpdf = {
       const source = await readFile(path, 'utf8')
       const nodeBranch = /if\(fa\)\{var fs=require\("fs"\);[\s\S]*?\}else if\(da\|\|ea\)/
       if (!nodeBranch.test(source)) throw new Error('qpdf environment selection changed')
-      return { contents: source.replace(nodeBranch, 'if(da||ea)'), loader: 'js', resolveDir: dirname(path) }
+      return {
+        contents: source.replace(nodeBranch, 'if(da||ea)'),
+        loader: 'js',
+        resolveDir: dirname(path),
+      }
     })
   },
 }
@@ -106,7 +127,9 @@ await build({
   inject: [resolve(here, 'buffer-globals.ts')],
 })
 await cp(resolve(here, 'index.html'), resolve(outdir, 'index.html'))
-await cp(resolve(dirname(pdfPath), '../../standard_fonts'), resolve(outdir, 'standard_fonts'), { recursive: true })
+await cp(resolve(dirname(pdfPath), '../../standard_fonts'), resolve(outdir, 'standard_fonts'), {
+  recursive: true,
+})
 await mkdir(resolve(outdir, 'docs-vendor'), { recursive: true })
 await cp(require.resolve('@rhwp/core/rhwp_bg.wasm'), resolve(outdir, 'docs-vendor/rhwp.wasm'))
 const officeWasm = process.env.SEUOFFICE_WASM
@@ -116,5 +139,8 @@ await cp(officeWasm, resolve(outdir, 'docs-vendor/office.wasm'))
 await mkdir(resolve(outdir, 'pdf'), { recursive: true })
 const pdfiumWasm = require.resolve('@embedpdf/pdfium/pdfium.wasm')
 await cp(pdfiumWasm, resolve(outdir, 'pdf/pdfium.wasm'))
-await cp(require.resolve('@neslinesli93/qpdf-wasm/dist/qpdf.wasm'), resolve(outdir, 'pdf/qpdf.wasm'))
+await cp(
+  require.resolve('@neslinesli93/qpdf-wasm/dist/qpdf.wasm'),
+  resolve(outdir, 'pdf/qpdf.wasm'),
+)
 await cp(pdfRequire.resolve('harfbuzzjs/hb-subset.wasm'), resolve(outdir, 'pdf/hb-subset.wasm'))

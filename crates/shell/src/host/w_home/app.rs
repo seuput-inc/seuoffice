@@ -115,7 +115,7 @@ impl HomeApp for App {
 
 pub(crate) fn open_help_from_menu(topic:Option<String>) {
     use shell_contract::ipc::NativeEditorCommand;
-    let cancel=shell_contract::runtime::CancelToken::new();
+    let cancel=shell_contract::runtime::CancelToken::default();
     let operation=match super::super::native_commands::issue(NativeEditorCommand::OpenHelp { topic:topic.clone() },cancel) {
         Ok(operation)=>operation,
         Err(error)=>{ eprintln!("Could not open help: {error}"); return; }

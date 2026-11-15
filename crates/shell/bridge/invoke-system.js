@@ -41,10 +41,13 @@
       apply(random, crypto, [word])
       id = word[0]
     } while (apply(mapHas, callbacks, [id]))
-    apply(mapSet, callbacks, [id, (value) => {
-      if (once) unregister(id)
-      return callback(value)
-    }])
+    apply(mapSet, callbacks, [
+      id,
+      (value) => {
+        if (once) unregister(id)
+        return callback(value)
+      },
+    ])
     return id
   }
   const bootstrap = window.__seuofficeNativeBridgeBootstrap
@@ -52,54 +55,73 @@
   if (typeof bootstrap === 'function') {
     delete window.__seuofficeNativeBridgeBootstrap
     const bridge = bootstrap()
-    if (!bridge || (bridge.mode !== 'invoke' && bridge.mode !== 'preload') ||
-        typeof bridge.invokeTauri !== 'function' || typeof bridge.listenTauri !== 'function' ||
-        (bridge.mode === 'preload' && typeof bridge.sendSync !== 'function')) {
+    if (
+      !bridge ||
+      (bridge.mode !== 'invoke' && bridge.mode !== 'preload') ||
+      typeof bridge.invokeTauri !== 'function' ||
+      typeof bridge.listenTauri !== 'function' ||
+      (bridge.mode === 'preload' && typeof bridge.sendSync !== 'function')
+    ) {
       throw new NativeError('native document context was not initialized')
     }
     nativeInvoke = bridge.invokeTauri
-    bridge.listenTauri((callback, raw, body, index, end) => {
-      const data = end ? undefined : raw ? body : parse(apply(decodeText, textDecoder, [body]))
-      if (index === undefined) {
-        runCallback(callback, data)
-        return
-      }
-      if (typeof index !== 'bigint' || index < 0n || index > 9007199254740991n) {
-        throw new NativeError('native channel index is not a safe integer')
-      }
-      runCallback(callback, end ? { end: true, index: number(index) } : { message: data, index: number(index) })
-    }, () => {
-      if (!listenRegistration) {
-        if (bridge.mode === 'invoke') return true
-        throw new NativeError('the native output stream was never initialized')
-      }
-      if (!resetChannel || !callbacks) throw new NativeError('the native output stream cannot resume')
-      const channel = resetChannel(register, unregister)
-      if (typeof channel !== 'string') throw new NativeError('native Channel reset failed')
-      let success
-      let failure
-      success = register(() => unregister(failure), true)
-      failure = register((reason) => {
-        unregister(success)
-        throw new NativeError(`native output stream restore failed: ${reason}`)
-      }, true)
-      try {
-        nativeInvoke('ipc_listen', success, failure, 'application/json', invokeKey,
-          apply(encodeText, textEncoder, [`{"onFrame":${stringify(channel)}}`]), listenRegistration)
-      } catch (error) {
-        unregister(success)
-        unregister(failure)
-        throw error
-      }
-      return true
-    })
+    bridge.listenTauri(
+      (callback, raw, body, index, end) => {
+        const data = end ? undefined : raw ? body : parse(apply(decodeText, textDecoder, [body]))
+        if (index === undefined) {
+          runCallback(callback, data)
+          return
+        }
+        if (typeof index !== 'bigint' || index < 0n || index > 9007199254740991n) {
+          throw new NativeError('native channel index is not a safe integer')
+        }
+        runCallback(
+          callback,
+          end ? { end: true, index: number(index) } : { message: data, index: number(index) },
+        )
+      },
+      () => {
+        if (!listenRegistration) {
+          if (bridge.mode === 'invoke') return true
+          throw new NativeError('the native output stream was never initialized')
+        }
+        if (!resetChannel || !callbacks)
+          throw new NativeError('the native output stream cannot resume')
+        const channel = resetChannel(register, unregister)
+        if (typeof channel !== 'string') throw new NativeError('native Channel reset failed')
+        let success
+        let failure
+        success = register(() => unregister(failure), true)
+        failure = register((reason) => {
+          unregister(success)
+          throw new NativeError(`native output stream restore failed: ${reason}`)
+        }, true)
+        try {
+          nativeInvoke(
+            'ipc_listen',
+            success,
+            failure,
+            'application/json',
+            invokeKey,
+            apply(encodeText, textEncoder, [`{"onFrame":${stringify(channel)}}`]),
+            listenRegistration,
+          )
+        } catch (error) {
+          unregister(success)
+          unregister(failure)
+          throw error
+        }
+        return true
+      },
+    )
     if (bridge.mode === 'preload') {
       const sendSync = bridge.sendSync
       const send = (channel, frame) => new Bytes(sendSync(channel, frame))
       Object.defineProperty(send, '__seuofficeResumeChannel', {
         configurable: true,
         value(reset) {
-          if (resetChannel || typeof reset !== 'function') throw new NativeError('native Channel resume was already bound')
+          if (resetChannel || typeof reset !== 'function')
+            throw new NativeError('native Channel resume was already bound')
           resetChannel = reset
         },
       })
@@ -114,15 +136,18 @@
     if (payload instanceof ArrayBuffer || ArrayBuffer.isView(payload) || Array.isArray(payload)) {
       return ['application/octet-stream', payload]
     }
-    return ['application/json', stringify(payload, (_key, value) => {
-      if (value instanceof Map) return Object.fromEntries(value.entries())
-      if (value instanceof Uint8Array) return Array.from(value)
-      if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value))
-      if (typeof value === 'object' && value !== null && '__TAURI_TO_IPC_KEY__' in value) {
-        return value.__TAURI_TO_IPC_KEY__()
-      }
-      return value
-    })]
+    return [
+      'application/json',
+      stringify(payload, (_key, value) => {
+        if (value instanceof Map) return Object.fromEntries(value.entries())
+        if (value instanceof Uint8Array) return Array.from(value)
+        if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value))
+        if (typeof value === 'object' && value !== null && '__TAURI_TO_IPC_KEY__' in value) {
+          return value.__TAURI_TO_IPC_KEY__()
+        }
+        return value
+      }),
+    ]
   }
 
   Object.defineProperty(internals, 'postMessage', {
@@ -130,15 +155,19 @@
       const { cmd, callback, error, payload, options } = message
       const [contentType, body] = encode(payload)
       if (nativeInvoke) {
-        const bytes = contentType === 'application/json'
-          ? apply(encodeText, textEncoder, [body])
-          : body instanceof ArrayBuffer ? body
-          : ArrayBuffer.isView(body) ? new Uint8Array(body.buffer, body.byteOffset, body.byteLength)
-          : new Uint8Array(body)
+        const bytes =
+          contentType === 'application/json'
+            ? apply(encodeText, textEncoder, [body])
+            : body instanceof ArrayBuffer
+              ? body
+              : ArrayBuffer.isView(body)
+                ? new Uint8Array(body.buffer, body.byteOffset, body.byteLength)
+                : new Uint8Array(body)
         const headers = new HeadersNative(options && options.headers)
         const headersJson = stringify(Array.from(headers))
         if (cmd === 'ipc_listen' && listenRegistration === undefined) {
-          if (!(internals.callbacks instanceof Callbacks)) throw new NativeError('the Tauri callback map is unavailable')
+          if (!(internals.callbacks instanceof Callbacks))
+            throw new NativeError('the Tauri callback map is unavailable')
           callbacks = internals.callbacks
           listenRegistration = headersJson
         }
@@ -157,9 +186,17 @@
       const request = fetchNative(convertFileSrc(cmd, 'ipc'), { method: 'POST', body, headers })
       apply(promiseThen, request, [
         (response) => {
-          const callbackId = apply(headersGet, response.headers, ['Tauri-Response']) === 'ok' ? callback : error
-          const content = (apply(headersGet, response.headers, ['content-type']) || '').split(',')[0]
-          const read = content === 'application/json' ? responseJson : content === 'text/plain' ? responseText : responseBuffer
+          const callbackId =
+            apply(headersGet, response.headers, ['Tauri-Response']) === 'ok' ? callback : error
+          const content = (apply(headersGet, response.headers, ['content-type']) || '').split(
+            ',',
+          )[0]
+          const read =
+            content === 'application/json'
+              ? responseJson
+              : content === 'text/plain'
+                ? responseText
+                : responseBuffer
           apply(promiseThen, apply(read, response, []), [
             (data) => runCallback(callbackId, data),
             (reason) => runCallback(error, String(reason)),

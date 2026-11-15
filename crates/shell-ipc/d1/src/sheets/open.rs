@@ -70,7 +70,6 @@ struct SavedOpen {
     load_id: String,
 }
 
-
 /// `path.slice(path.lastIndexOf('.') + 1).toLowerCase()`
 pub fn extension_of(path: &str) -> String {
     match path.rfind('.') {
@@ -230,14 +229,20 @@ pub fn open_workbook_session(
 }
 
 pub fn open_workbook_session_with_owner(
-    env: &Env, view: ViewId, path: &str, options: OpenOptions,
+    env: &Env,
+    view: ViewId,
+    path: &str,
+    options: OpenOptions,
     owned: Option<(crate::owned_save::OwnedSave, String)>,
 ) -> Result<OpenedSession, IpcError> {
     open_workbook_session_captured(env, view, path, options, owned, None, None)
 }
 
 fn open_workbook_session_captured(
-    env: &Env, view: ViewId, path: &str, options: OpenOptions,
+    env: &Env,
+    view: ViewId,
+    path: &str,
+    options: OpenOptions,
     owned: Option<(crate::owned_save::OwnedSave, String)>,
     headless: Option<(shell_contract::ipc::NativeInvocationTarget, NativeOpen)>,
     saved: Option<SavedOpen>,
@@ -259,39 +264,64 @@ fn open_workbook_session_captured(
     let attempt = (|| -> Result<(OpenedSession, f64), IpcError> {
         let opened = match (&saved, &headless, &options.staged) {
             (Some(saved), None, None) => env.engine.open_saved_document(
-                &saved.snapshot, &document_locale(env), &env.shell.short_date_pattern().map_err(thrown)?, None,
-                &saved.document, &saved.actual, &saved.actual_cancel,
+                &saved.snapshot,
+                &document_locale(env),
+                &env.shell.short_date_pattern().map_err(thrown)?,
+                None,
+                &saved.document,
+                &saved.actual,
+                &saved.actual_cancel,
             )?,
             (None, Some((_, native)), None) => env.engine.open_native_invocation(
-                &native.snapshot, &document_locale(env), &env.shell.short_date_pattern().map_err(thrown)?,
-                None, &native.document, &native.cancel, &native.pending,
+                &native.snapshot,
+                &document_locale(env),
+                &env.shell.short_date_pattern().map_err(thrown)?,
+                None,
+                &native.document,
+                &native.cancel,
+                &native.pending,
             )?,
             (None, None, Some(staged)) => staged.opened.clone(),
             (None, None, None) => env.engine.open(
-                &snapshot_path, &document_locale(env), &env.shell.short_date_pattern().map_err(thrown)?, None,
+                &snapshot_path,
+                &document_locale(env),
+                &env.shell.short_date_pattern().map_err(thrown)?,
+                None,
             )?,
             _ => return Err(thrown("Conflicting workbook opening authorities")),
         };
         opened_id = Some(opened.session_id.clone());
         let digest = sha256_file(&snapshot_path).map_err(super::recovery::node_err)?;
         let snapshot_size = file_size(&snapshot_path)?;
-        let restore_target_sha = options.restore_target.as_deref().and_then(|p| {
-            match (&saved, &headless) {
-                (Some(saved), _) if p == saved.logical_path => Some(saved.original_sha.clone()),
-                (_, Some((_, native))) if p == native.logical_path => Some(native.original_sha.clone()),
-                (Some(_), _) => None,
-                _ => sha256_file(p).ok(),
-            }
-        });
-        let csv_source_sha = options.csv_source_path.as_deref().and_then(|p| {
-            match (&saved, &headless) {
-                (Some(saved), _) if p == saved.logical_path => Some(saved.original_sha.clone()),
-                (_, Some((_, native))) if p == native.logical_path => Some(native.original_sha.clone()),
-                (Some(_), _) => None,
-                _ => sha256_file(p).ok(),
-            }
-        });
-        let disk_state = if saved.is_some() { None } else { record_disk_state(&disk_state_path) };
+        let restore_target_sha =
+            options
+                .restore_target
+                .as_deref()
+                .and_then(|p| match (&saved, &headless) {
+                    (Some(saved), _) if p == saved.logical_path => Some(saved.original_sha.clone()),
+                    (_, Some((_, native))) if p == native.logical_path => {
+                        Some(native.original_sha.clone())
+                    }
+                    (Some(_), _) => None,
+                    _ => sha256_file(p).ok(),
+                });
+        let csv_source_sha =
+            options
+                .csv_source_path
+                .as_deref()
+                .and_then(|p| match (&saved, &headless) {
+                    (Some(saved), _) if p == saved.logical_path => Some(saved.original_sha.clone()),
+                    (_, Some((_, native))) if p == native.logical_path => {
+                        Some(native.original_sha.clone())
+                    }
+                    (Some(_), _) => None,
+                    _ => sha256_file(p).ok(),
+                });
+        let disk_state = if saved.is_some() {
+            None
+        } else {
+            record_disk_state(&disk_state_path)
+        };
         // an encrypted workbook writes no recovery copy: it would be plaintext
         let automatic_recovery_disabled =
             options.password.is_some() || !allows_automatic_workbook_recovery(&opened.sheets);
@@ -394,18 +424,30 @@ fn open_workbook_session_captured(
                 path.to_owned(),
             );
             let saved_session_id = id.clone();
-            let current = options.csv_source_path.clone().or_else(|| options.restore_target.clone())
+            let current = options
+                .csv_source_path
+                .clone()
+                .or_else(|| options.restore_target.clone())
                 .unwrap_or_else(|| path.clone());
             let registration = env.core(move |core| {
                 let register = || {
                     let mut state = core.state.borrow_mut();
-                    let tab = state.tab_mut(view)
+                    let tab = state
+                        .tab_mut(view)
                         .ok_or_else(|| thrown("The workbook tab was closed while saving"))?;
                     if let Some(saved) = &saved {
-                        if tab.browser_closing || !tab.browser_owner.as_ref().is_some_and(|owner| owner.same_owner(saved.document.target().browser()))
-                            || !tab.saved_load.borrow().as_ref().is_some_and(|load| load.id == saved.load_id
-                                && load.started && load.failure.is_none() && load.session_id.is_none()
-                                && load.target.same_target(saved.document.target())) {
+                        if tab.browser_closing
+                            || !tab.browser_owner.as_ref().is_some_and(|owner| {
+                                owner.same_owner(saved.document.target().browser())
+                            })
+                            || !tab.saved_load.borrow().as_ref().is_some_and(|load| {
+                                load.id == saved.load_id
+                                    && load.started
+                                    && load.failure.is_none()
+                                    && load.session_id.is_none()
+                                    && load.target.same_target(saved.document.target())
+                            })
+                        {
                             return Err(thrown("The saved workbook registration was replaced"));
                         }
                         saved.snapshot.retain_for_session()?;
@@ -413,9 +455,16 @@ fn open_workbook_session_captured(
                     if let Some((expected, native)) = &headless {
                         let current = core.env.services.views.renderer_generation(view);
                         if !expected.created().is_active()
-                            || !tab.headless_target.as_ref().is_some_and(|actual| actual.created().same_generation(expected.created())
-                                && actual.operation().authority_generation().same_generation(expected.operation().authority_generation()))
-                            || !current.as_ref().is_some_and(|actual| actual.same_generation(expected.created())) {
+                            || !tab.headless_target.as_ref().is_some_and(|actual| {
+                                actual.created().same_generation(expected.created())
+                                    && actual.operation().authority_generation().same_generation(
+                                        expected.operation().authority_generation(),
+                                    )
+                            })
+                            || !current
+                                .as_ref()
+                                .is_some_and(|actual| actual.same_generation(expected.created()))
+                        {
                             return Err(thrown("The headless workbook renderer was replaced"));
                         }
                         native.snapshot.retain_for_session()?;
@@ -439,36 +488,69 @@ fn open_workbook_session_captured(
                     } else if owned.is_some() {
                         tab.set_current_path(Some(current));
                     }
-                    if saved.is_none() { state.unsaved_new_workbooks.remove(&path); }
+                    if saved.is_none() {
+                        state.unsaved_new_workbooks.remove(&path);
+                    }
                     Ok(())
                 };
                 match (owned.as_ref(), headless.as_ref(), saved.as_ref()) {
                     (Some((scope, _)), None, None) => scope.effect(register),
                     (None, Some((_, native)), None) => {
-                        let effects = core.env.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>()
+                        let effects = core
+                            .env
+                            .services
+                            .hosts
+                            .get::<shell_contract::hosts::OwnedEffectsHost>()
                             .ok_or_else(|| thrown("Native invocation effects are unavailable"))?;
                         let mut register = Some(register);
                         let mut result = None;
-                        effects.with_native_invocation_effect(
-                            &native.document, &native.sender, &[], &native.cancel, &native.pending,
-                            &mut || {
-                                result = Some(register.take().ok_or("Workbook registration already admitted")?());
-                                Ok(())
-                            },
-                        ).map_err(thrown)?;
+                        effects
+                            .with_native_invocation_effect(
+                                &native.document,
+                                &native.sender,
+                                &[],
+                                &native.cancel,
+                                &native.pending,
+                                &mut || {
+                                    result = Some(register
+                                        .take()
+                                        .ok_or("Workbook registration already admitted")?(
+                                    ));
+                                    Ok(())
+                                },
+                            )
+                            .map_err(thrown)?;
                         result.ok_or_else(|| thrown("Workbook registration was not admitted"))?
                     }
                     (None, None, Some(saved)) => {
-                        let effects = core.env.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>()
+                        let effects = core
+                            .env
+                            .services
+                            .hosts
+                            .get::<shell_contract::hosts::OwnedEffectsHost>()
                             .ok_or_else(|| thrown("Saved workbook effects are unavailable"))?;
                         let target = saved.document.target();
                         let additional: Vec<_> = target.additional().iter().collect();
                         let mut register = Some(register);
                         let mut result = None;
-                        effects.with_native_saved_document_same_origin(&saved.document, &saved.actual, &saved.actual_cancel, target.participants(), target.cancel(), target.pending(), &additional, &mut |_| {
-                            result = Some(register.take().ok_or("Workbook registration already admitted")?());
-                            Ok(())
-                        }).map_err(thrown)?;
+                        effects
+                            .with_native_saved_document_same_origin(
+                                &saved.document,
+                                &saved.actual,
+                                &saved.actual_cancel,
+                                target.participants(),
+                                target.cancel(),
+                                target.pending(),
+                                &additional,
+                                &mut |_| {
+                                    result = Some(register
+                                        .take()
+                                        .ok_or("Workbook registration already admitted")?(
+                                    ));
+                                    Ok(())
+                                },
+                            )
+                            .map_err(thrown)?;
                         result.ok_or_else(|| thrown("Workbook registration was not admitted"))?
                     }
                     (None, None, None) => register(),
@@ -483,7 +565,9 @@ fn open_workbook_session_captured(
                 }
                 if !is_saved {
                     let key = path.to_owned();
-                    env.core(move |core| { core.state.borrow_mut().unsaved_new_workbooks.remove(&key); });
+                    env.core(move |core| {
+                        core.state.borrow_mut().unsaved_new_workbooks.remove(&key);
+                    });
                 }
                 return Err(error);
             }
@@ -498,7 +582,9 @@ fn open_workbook_session_captured(
             let _ = fs::remove_file(&snapshot_path);
             if !is_saved {
                 let key = path.to_owned();
-                env.core(move |core| { core.state.borrow_mut().unsaved_new_workbooks.remove(&key); });
+                env.core(move |core| {
+                    core.state.borrow_mut().unsaved_new_workbooks.remove(&key);
+                });
             }
             if let Some(dir) = &options.import_temp_dir {
                 cleanup_import_temp_directory(&env.temp_dir(), dir);
@@ -600,7 +686,9 @@ fn has_cfb_header(env: &Env, path: &str) -> Result<bool, IpcError> {
 }
 
 fn show_encrypted_open_failure(
-    env: &Env, parent: Option<WindowId>, authority: &OpenAuthority,
+    env: &Env,
+    parent: Option<WindowId>,
+    authority: &OpenAuthority,
 ) -> Result<(), IpcError> {
     let options = shell_contract::hosts::MessageBox {
         kind: Some("warning".into()),
@@ -612,15 +700,24 @@ fn show_encrypted_open_failure(
         cancel_id: None,
         checkbox_label: None,
     };
-    let owner = authority.owner.as_ref()
+    let owner = authority
+        .owner
+        .as_ref()
         .ok_or_else(|| thrown("Encrypted workbook prompt requires native request authority"))?;
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     env.dialogs.message_owned(
-        parent, options, owner.clone(), owner.clone(),
-        authority.cancel.clone(), authority.pending.clone(),
-        Box::new(move |result| { let _ = tx.send(result); }),
+        parent,
+        options,
+        owner.clone(),
+        owner.clone(),
+        authority.cancel.clone(),
+        authority.pending.clone(),
+        Box::new(move |result| {
+            let _ = tx.send(result);
+        }),
     );
-    rx.recv().map_err(|_| thrown("The encrypted workbook warning did not complete"))?
+    rx.recv()
+        .map_err(|_| thrown("The encrypted workbook warning did not complete"))?
         .map_err(thrown)?;
     Ok(())
 }
@@ -664,11 +761,20 @@ fn prepare_encrypted(
     let prompt = if headless {
         None
     } else {
-        let owner = authority.owner.as_ref()
+        let owner = authority
+            .owner
+            .as_ref()
             .ok_or_else(|| thrown("Encrypted workbook prompt requires native request authority"))?;
-        env.shell.password_prompt_owned(
-            parent, &basename(path, None), owner, owner, &authority.cancel, &authority.pending,
-        ).map_err(thrown)?
+        env.shell
+            .password_prompt_owned(
+                parent,
+                &basename(path, None),
+                owner,
+                owner,
+                &authority.cancel,
+                &authority.pending,
+            )
+            .map_err(thrown)?
     };
     let unlocked = env
         .engine
@@ -931,8 +1037,12 @@ fn prepare_workbook_for_open(
             if copy_extension == "xls" {
                 convert_legacy_import(env, input.physical, &open_path)?;
             } else {
-                let converted =
-                    convert_delimited(env, input.physical, (copy_extension == "tsv").then_some('\t'), None)?;
+                let converted = convert_delimited(
+                    env,
+                    input.physical,
+                    (copy_extension == "tsv").then_some('\t'),
+                    None,
+                )?;
                 write_file(&open_path, &converted.buffer)?;
             }
             // the mark follows the file the session edits
@@ -970,7 +1080,8 @@ fn prepare_workbook_for_open(
     }
     if !matches!(extension.as_str(), "csv" | "tsv" | "xls" | "ods") {
         // Unsaved work from a lost session is settled before the file's content loads
-        if authority.headless.is_none() && !options.skip_recovery_prompt
+        if authority.headless.is_none()
+            && !options.skip_recovery_prompt
             && let Some(recovered) = recovered_open_for(env, path, view, parent)
         {
             return Ok(Some(recovered));
@@ -1089,12 +1200,18 @@ pub(super) fn open_selected_workbook(
 ) -> Result<IpcValue, IpcError> {
     let queued = env.core(move |core| {
         core.require_tab(view)?;
-        Ok(core.state.borrow_mut().remove_queued_workbook(view).map(super::core::QueuedWorkbook::consume))
+        Ok(core
+            .state
+            .borrow_mut()
+            .remove_queued_workbook(view)
+            .map(super::core::QueuedWorkbook::consume))
     })?;
     let path = match explicit.or(queued) {
         Some(path) => path,
         None => {
-            if authority.headless.is_some() { return Err(thrown("The headless workbook input is no longer queued")); }
+            if authority.headless.is_some() {
+                return Err(thrown("The headless workbook input is no longer queued"));
+            }
             let parent = dialog_parent(env, view);
             let picked = open_dialog(
                 env,
@@ -1120,19 +1237,51 @@ pub(super) fn open_selected_workbook(
         let matches = matches!(target.operation().selection(),
             shell_contract::ipc::NativeInvocationSelection::HeadlessExport { input, .. }
                 if input == std::path::Path::new(&path));
-        if !matches { return Err(thrown("The workbook path does not match the headless invocation")); }
+        if !matches {
+            return Err(thrown(
+                "The workbook path does not match the headless invocation",
+            ));
+        }
     }
     let native = if let Some(target) = &authority.headless {
         let document = target.registered_document().map_err(thrown)?;
-        let sender = authority.owner.clone().ok_or_else(|| thrown("The headless sender has no native authority"))?;
-        let effects = env.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>()
+        let sender = authority
+            .owner
+            .clone()
+            .ok_or_else(|| thrown("The headless sender has no native authority"))?;
+        let effects = env
+            .services
+            .hosts
+            .get::<shell_contract::hosts::OwnedEffectsHost>()
             .ok_or_else(|| thrown("Native invocation effects are unavailable"))?;
-        effects.with_native_invocation_effect(&document, &sender, &[], &authority.cancel, &authority.pending, &mut || Ok(()))
+        effects
+            .with_native_invocation_effect(
+                &document,
+                &sender,
+                &[],
+                &authority.cancel,
+                &authority.pending,
+                &mut || Ok(()),
+            )
             .map_err(thrown)?;
-        let snapshot = env.engine.snapshot_native_invocation(&document, &authority.cancel, &authority.pending)?;
+        let snapshot = env.engine.snapshot_native_invocation(
+            &document,
+            &authority.cancel,
+            &authority.pending,
+        )?;
         let original_sha = sha256_file(snapshot.path()).map_err(super::recovery::node_err)?;
-        Some(NativeOpen { document, sender, snapshot, cancel: authority.cancel.clone(), pending: authority.pending.clone(), logical_path: path.clone(), original_sha })
-    } else { None };
+        Some(NativeOpen {
+            document,
+            sender,
+            snapshot,
+            cancel: authority.cancel.clone(),
+            pending: authority.pending.clone(),
+            logical_path: path.clone(),
+            original_sha,
+        })
+    } else {
+        None
+    };
     // a delimited import can take a while, so the renderer watches its progress and can cancel it
     let token = env.core(move |core| {
         let owner = f64::from(view.0);
@@ -1175,7 +1324,12 @@ pub(super) fn open_selected_workbook(
     let parent = dialog_parent(env, view);
     let prepared = prepare_workbook_for_open(
         env,
-        &WorkbookInput { logical: &path, physical: native.as_ref().map_or(path.as_str(), |native| native.snapshot.path()) },
+        &WorkbookInput {
+            logical: &path,
+            physical: native
+                .as_ref()
+                .map_or(path.as_str(), |native| native.snapshot.path()),
+        },
         Some(view),
         parent,
         &PrepareOptions {
@@ -1220,7 +1374,10 @@ pub(super) fn open_selected_workbook(
     }
     let headless = authority.headless.clone();
     if let Some(expected) = &headless {
-        let actual = authority.owner.as_ref().and_then(|owner| owner.context.renderer());
+        let actual = authority
+            .owner
+            .as_ref()
+            .and_then(|owner| owner.context.renderer());
         if !actual.is_some_and(|actual| actual.same_generation(expected.created())) {
             discard_prepared_open(env, &prepared);
             return Err(thrown("The headless workbook renderer was replaced"));
@@ -1229,8 +1386,14 @@ pub(super) fn open_selected_workbook(
     let native_session = match (headless.clone(), native) {
         (Some(target), Some(mut native)) => {
             if prepared.open_path != path {
-                let snapshot = read_file(&prepared.open_path).and_then(|bytes|
-                    env.engine.snapshot_native_bytes(&bytes, &native.document, &native.cancel, &native.pending));
+                let snapshot = read_file(&prepared.open_path).and_then(|bytes| {
+                    env.engine.snapshot_native_bytes(
+                        &bytes,
+                        &native.document,
+                        &native.cancel,
+                        &native.pending,
+                    )
+                });
                 native.snapshot = match snapshot {
                     Ok(snapshot) => snapshot,
                     Err(error) => {
@@ -1244,34 +1407,63 @@ pub(super) fn open_selected_workbook(
         (None, None) => None,
         _ => return Err(thrown("The native workbook authority is incomplete")),
     };
-    let opened = open_workbook_session_captured(env, view, &prepared.open_path, options, None, native_session, None)?;
+    let opened = open_workbook_session_captured(
+        env,
+        view,
+        &prepared.open_path,
+        options,
+        None,
+        native_session,
+        None,
+    )?;
     let current = path.clone();
     let repoint_headless = headless.clone();
-    let repointed = if repoint_headless.is_some() { Ok(()) } else { env.core(move |core| {
-        let mut state = core.state.borrow_mut();
-        let tab = state.tab_mut(view).ok_or_else(|| thrown("The workbook tab was closed"))?;
-        if let Some(expected) = &repoint_headless {
-            let current = core.env.services.views.renderer_generation(view);
-            if !expected.created().is_active() || !tab.headless_target.as_ref().is_some_and(|actual| actual.created().same_generation(expected.created()))
-                || !current.as_ref().is_some_and(|actual| actual.same_generation(expected.created())) {
-                return Err(thrown("The headless workbook renderer was replaced"));
-            }
-        }
-        tab.set_current_path(Some(current));
+    let repointed = if repoint_headless.is_some() {
         Ok(())
-    }) };
+    } else {
+        env.core(move |core| {
+            let mut state = core.state.borrow_mut();
+            let tab = state
+                .tab_mut(view)
+                .ok_or_else(|| thrown("The workbook tab was closed"))?;
+            if let Some(expected) = &repoint_headless {
+                let current = core.env.services.views.renderer_generation(view);
+                if !expected.created().is_active()
+                    || !tab
+                        .headless_target
+                        .as_ref()
+                        .is_some_and(|actual| actual.created().same_generation(expected.created()))
+                    || !current
+                        .as_ref()
+                        .is_some_and(|actual| actual.same_generation(expected.created()))
+                {
+                    return Err(thrown("The headless workbook renderer was replaced"));
+                }
+            }
+            tab.set_current_path(Some(current));
+            Ok(())
+        })
+    };
     if let Err(error) = repointed {
         let id = opened.session_id.clone();
         env.core(move |core| {
             let mut state = core.state.borrow_mut();
             if let Some(tab) = state.tab_mut(view) {
-                if headless.as_ref().is_none_or(|expected| tab.headless_target.as_ref()
-                    .is_some_and(|actual| actual.created().same_generation(expected.created()))) {
+                if headless.as_ref().is_none_or(|expected| {
+                    tab.headless_target
+                        .as_ref()
+                        .is_some_and(|actual| actual.created().same_generation(expected.created()))
+                }) {
                     tab.remove_session(&id);
                 }
             }
         });
-        cleanup_session(env, &opened.session_id, &opened.session, opened.session.import_temp_dir.as_deref());
+        cleanup_session(
+            env,
+            &opened.session_id,
+            &opened.session,
+            opened.session.import_temp_dir.as_deref(),
+        );
         return Err(error);
     }
     // The sidecar open itself can also outlive the tab
@@ -1303,7 +1495,10 @@ pub(super) fn open_selected_workbook(
 
 /// `openMergeSources`
 pub(super) fn open_merge_sources(
-    env: &Env, view: ViewId, paths: &[String], authority: &OpenAuthority,
+    env: &Env,
+    view: ViewId,
+    paths: &[String],
+    authority: &OpenAuthority,
 ) -> Result<IpcValue, IpcError> {
     env.core(move |core| core.require_tab(view))?;
     let mut opened: Vec<(String, SessionInfo)> = Vec::new();
@@ -1324,7 +1519,10 @@ pub(super) fn open_merge_sources(
         for path in paths {
             let prepared = prepare_workbook_for_open(
                 env,
-                &WorkbookInput { logical: path, physical: path },
+                &WorkbookInput {
+                    logical: path,
+                    physical: path,
+                },
                 Some(view),
                 parent,
                 &PrepareOptions {

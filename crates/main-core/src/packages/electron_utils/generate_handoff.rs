@@ -269,8 +269,16 @@ pub struct QueuedGenerateHandoff {
     pub id: String,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum QueueStatus { Queued, Consumed, RolledBack, RetiredConsumed }
-struct QueueIdentity { status: Cell<QueueStatus>, owned: bool }
+enum QueueStatus {
+    Queued,
+    Consumed,
+    RolledBack,
+    RetiredConsumed,
+}
+struct QueueIdentity {
+    status: Cell<QueueStatus>,
+    owned: bool,
+}
 
 /// Identity and displaced state for a single admitted handoff insertion.
 pub struct GenerateQueueReceipt {
@@ -281,7 +289,12 @@ pub struct GenerateQueueReceipt {
     previous_taken: Option<(usize, GenerateHandoff)>,
 }
 impl GenerateQueueReceipt {
-    pub fn was_consumed(&self) -> bool { matches!(self.token.status.get(),QueueStatus::Consumed|QueueStatus::RetiredConsumed) }
+    pub fn was_consumed(&self) -> bool {
+        matches!(
+            self.token.status.get(),
+            QueueStatus::Consumed | QueueStatus::RetiredConsumed
+        )
+    }
 }
 
 /// Identity for a single conversion event, including events it displaced.
@@ -305,11 +318,8 @@ pub struct PreparedGenerateQueue {
 pub struct PreparedGenerateRun {
     id: f64,
     token: Rc<QueueIdentity>,
-    result: Result<(GenerateRunStarted,GenerateRunStarted),String>,
+    result: Result<(GenerateRunStarted, GenerateRunStarted), String>,
 }
-
-
-
 
 /// `HandoffStore`
 pub struct HandoffStore {
@@ -352,79 +362,187 @@ impl HandoffStore {
     pub fn queue_generate_handoff(&mut self, web_contents_id: f64, handoff: GenerateHandoff) {
         self.taken.delete(web_contents_id);
         self.queued.set(web_contents_id, handoff);
-        self.queue_tokens.set(web_contents_id, Rc::new(QueueIdentity { status: Cell::new(QueueStatus::Queued), owned: false }));
+        self.queue_tokens.set(
+            web_contents_id,
+            Rc::new(QueueIdentity {
+                status: Cell::new(QueueStatus::Queued),
+                owned: false,
+            }),
+        );
     }
 
-    pub fn queue_generate_handoff_reversible(&mut self, id: f64, handoff: GenerateHandoff) -> GenerateQueueReceipt {
-        let token = Rc::new(QueueIdentity { status: Cell::new(QueueStatus::Queued), owned: true });
+    pub fn queue_generate_handoff_reversible(
+        &mut self,
+        id: f64,
+        handoff: GenerateHandoff,
+    ) -> GenerateQueueReceipt {
+        let token = Rc::new(QueueIdentity {
+            status: Cell::new(QueueStatus::Queued),
+            owned: true,
+        });
         self.commit_generate_queue(PreparedGenerateQueue { id, handoff, token })
     }
 
-    pub fn prepare_generate_queue(&mut self,id:f64,handoff:GenerateHandoff) -> Result<PreparedGenerateQueue,String> {
-        self.queued.0.try_reserve(1).map_err(|error|error.to_string())?;
-        self.queue_tokens.0.try_reserve(1).map_err(|error|error.to_string())?;
-        Ok(PreparedGenerateQueue { id,handoff,token:Rc::new(QueueIdentity { status:Cell::new(QueueStatus::Queued),owned:true }) })
+    pub fn prepare_generate_queue(
+        &mut self,
+        id: f64,
+        handoff: GenerateHandoff,
+    ) -> Result<PreparedGenerateQueue, String> {
+        self.queued
+            .0
+            .try_reserve(1)
+            .map_err(|error| error.to_string())?;
+        self.queue_tokens
+            .0
+            .try_reserve(1)
+            .map_err(|error| error.to_string())?;
+        Ok(PreparedGenerateQueue {
+            id,
+            handoff,
+            token: Rc::new(QueueIdentity {
+                status: Cell::new(QueueStatus::Queued),
+                owned: true,
+            }),
+        })
     }
 
-    pub fn can_commit_generate_queue(&self,plan:&PreparedGenerateQueue) -> bool {
-        (self.queued.at(plan.id).is_some() || self.queued.0.len()<self.queued.0.capacity())
-            && (self.queue_tokens.at(plan.id).is_some() || self.queue_tokens.0.len()<self.queue_tokens.0.capacity())
+    pub fn can_commit_generate_queue(&self, plan: &PreparedGenerateQueue) -> bool {
+        (self.queued.at(plan.id).is_some() || self.queued.0.len() < self.queued.0.capacity())
+            && (self.queue_tokens.at(plan.id).is_some()
+                || self.queue_tokens.0.len() < self.queue_tokens.0.capacity())
     }
 
-    pub fn commit_generate_queue(&mut self,plan:PreparedGenerateQueue) -> GenerateQueueReceipt {
-        let PreparedGenerateQueue { id,handoff,token }=plan;
-        let previous_queued = self.queued.at(id).map(|index| (index, self.queued.0.remove(index).1));
-        let previous_taken = self.taken.at(id).map(|index| (index, self.taken.0.remove(index).1));
+    pub fn commit_generate_queue(&mut self, plan: PreparedGenerateQueue) -> GenerateQueueReceipt {
+        let PreparedGenerateQueue { id, handoff, token } = plan;
+        let previous_queued = self
+            .queued
+            .at(id)
+            .map(|index| (index, self.queued.0.remove(index).1));
+        let previous_taken = self
+            .taken
+            .at(id)
+            .map(|index| (index, self.taken.0.remove(index).1));
         let previous_token = self.queue_tokens.delete(id);
         if let Some((index, _)) = &previous_queued {
-            self.queued.0.insert((*index).min(self.queued.0.len()), (id, handoff));
-        } else { self.queued.set(id, handoff); }
+            self.queued
+                .0
+                .insert((*index).min(self.queued.0.len()), (id, handoff));
+        } else {
+            self.queued.set(id, handoff);
+        }
         self.queue_tokens.set(id, token.clone());
-        GenerateQueueReceipt { id, token, previous_token, previous_queued, previous_taken }
+        GenerateQueueReceipt {
+            id,
+            token,
+            previous_token,
+            previous_queued,
+            previous_taken,
+        }
     }
 
-    pub fn rollback_generate_handoff(&mut self, receipt: &mut GenerateQueueReceipt) -> Result<(), String> {
+    pub fn rollback_generate_handoff(
+        &mut self,
+        receipt: &mut GenerateQueueReceipt,
+    ) -> Result<(), String> {
         match receipt.token.status.get() {
-            QueueStatus::Consumed | QueueStatus::RolledBack | QueueStatus::RetiredConsumed => return Ok(()),
+            QueueStatus::Consumed | QueueStatus::RolledBack | QueueStatus::RetiredConsumed => {
+                return Ok(());
+            }
             QueueStatus::Queued => {}
         }
-        if !self.queue_tokens.get(receipt.id).is_some_and(|token| Rc::ptr_eq(token, &receipt.token)) {
+        if !self
+            .queue_tokens
+            .get(receipt.id)
+            .is_some_and(|token| Rc::ptr_eq(token, &receipt.token))
+        {
             return Err("The generate handoff was replaced before rollback".into());
         }
         self.queued.delete(receipt.id);
         self.taken.delete(receipt.id);
         self.queue_tokens.delete(receipt.id);
-        let restore=receipt.previous_token.as_ref().is_none_or(|token|!matches!(token.status.get(),QueueStatus::RolledBack|QueueStatus::RetiredConsumed));
+        let restore = receipt.previous_token.as_ref().is_none_or(|token| {
+            !matches!(
+                token.status.get(),
+                QueueStatus::RolledBack | QueueStatus::RetiredConsumed
+            )
+        });
         if restore {
-            if let Some((index, handoff)) = receipt.previous_queued.take() { self.queued.0.insert(index.min(self.queued.0.len()), (receipt.id, handoff)); }
-            if let Some((index, handoff)) = receipt.previous_taken.take() { self.taken.0.insert(index.min(self.taken.0.len()), (receipt.id, handoff)); }
-            if let Some(token) = receipt.previous_token.take() { self.queue_tokens.set(receipt.id, token); }
+            if let Some((index, handoff)) = receipt.previous_queued.take() {
+                self.queued
+                    .0
+                    .insert(index.min(self.queued.0.len()), (receipt.id, handoff));
+            }
+            if let Some((index, handoff)) = receipt.previous_taken.take() {
+                self.taken
+                    .0
+                    .insert(index.min(self.taken.0.len()), (receipt.id, handoff));
+            }
+            if let Some(token) = receipt.previous_token.take() {
+                self.queue_tokens.set(receipt.id, token);
+            }
         } else {
-            receipt.previous_queued.take(); receipt.previous_taken.take(); receipt.previous_token.take();
+            receipt.previous_queued.take();
+            receipt.previous_taken.take();
+            receipt.previous_token.take();
         }
         receipt.token.status.set(QueueStatus::RolledBack);
         Ok(())
     }
-    pub fn retire_superseded_handoff(&mut self, receipt:&mut GenerateQueueReceipt) {
-        if self.queue_tokens.get(receipt.id).is_some_and(|token|Rc::ptr_eq(token,&receipt.token)) {
-            self.queued.delete(receipt.id); self.taken.delete(receipt.id); self.queue_tokens.delete(receipt.id);
+    pub fn retire_superseded_handoff(&mut self, receipt: &mut GenerateQueueReceipt) {
+        if self
+            .queue_tokens
+            .get(receipt.id)
+            .is_some_and(|token| Rc::ptr_eq(token, &receipt.token))
+        {
+            self.queued.delete(receipt.id);
+            self.taken.delete(receipt.id);
+            self.queue_tokens.delete(receipt.id);
         }
-        receipt.token.status.set(if receipt.was_consumed() { QueueStatus::RetiredConsumed } else { QueueStatus::RolledBack });
-        receipt.previous_queued.take(); receipt.previous_taken.take(); receipt.previous_token.take();
+        receipt.token.status.set(if receipt.was_consumed() {
+            QueueStatus::RetiredConsumed
+        } else {
+            QueueStatus::RolledBack
+        });
+        receipt.previous_queued.take();
+        receipt.previous_taken.take();
+        receipt.previous_token.take();
     }
 
     /// Discard only this adopted insertion, without restoring displaced state.
-    pub fn retire_adopted_handoff(&mut self, receipt:&mut GenerateQueueReceipt)->Result<(),String> {
-        let status=receipt.token.status.get();
-        if matches!(status,QueueStatus::RolledBack|QueueStatus::RetiredConsumed) { return Ok(()); }
-        if !self.queue_tokens.get(receipt.id).is_some_and(|token|Rc::ptr_eq(token,&receipt.token)) {
-            if status==QueueStatus::Consumed { return Ok(()); }
+    pub fn retire_adopted_handoff(
+        &mut self,
+        receipt: &mut GenerateQueueReceipt,
+    ) -> Result<(), String> {
+        let status = receipt.token.status.get();
+        if matches!(
+            status,
+            QueueStatus::RolledBack | QueueStatus::RetiredConsumed
+        ) {
+            return Ok(());
+        }
+        if !self
+            .queue_tokens
+            .get(receipt.id)
+            .is_some_and(|token| Rc::ptr_eq(token, &receipt.token))
+        {
+            if status == QueueStatus::Consumed {
+                return Ok(());
+            }
             return Err("The adopted generate handoff was replaced before close".into());
         }
-        self.queued.delete(receipt.id);self.taken.delete(receipt.id);self.queue_tokens.delete(receipt.id);
-        receipt.token.status.set(if status==QueueStatus::Consumed { QueueStatus::RetiredConsumed } else { QueueStatus::RolledBack });Ok(())
+        self.queued.delete(receipt.id);
+        self.taken.delete(receipt.id);
+        self.queue_tokens.delete(receipt.id);
+        receipt
+            .token
+            .status
+            .set(if status == QueueStatus::Consumed {
+                QueueStatus::RetiredConsumed
+            } else {
+                QueueStatus::RolledBack
+            });
+        Ok(())
     }
-
 
     /// queue for a live webContents, and drop the request when it goes away first
     pub fn queue_generate_handoff_for(
@@ -453,7 +571,9 @@ impl HandoffStore {
             return None;
         }
         let handoff = self.queued.delete(web_contents_id)?;
-        if let Some(token) = self.queue_tokens.get(web_contents_id) { token.status.set(QueueStatus::Consumed); }
+        if let Some(token) = self.queue_tokens.get(web_contents_id) {
+            token.status.set(QueueStatus::Consumed);
+        }
         self.taken.set(web_contents_id, handoff.clone());
         Some(handoff)
     }
@@ -605,36 +725,83 @@ impl HandoffStore {
 
     /// Stage the immutable run record before entering the native owner gate.
     pub fn prepare_generate_run_started(
-        &mut self,target:GenerateHandoffTarget,id:f64,attached_paths:&[String],now_ms:f64,
-        tab_id:Result<Option<String>,String>,
-    ) -> Result<Option<PreparedGenerateRun>,String> {
-        let Some(handoff)=self.taken.get(id) else { return Ok(None); };
-        if handoff.target!=target { return Ok(None); }
-        let attached:Vec<String>=attached_paths.iter().map(|path|self.path_key(path)).collect();
-        let sources:Vec<String>=handoff.materials.iter().map(|material|material.path.clone())
-            .filter(|path|attached.contains(&self.path_key(path))).collect();
-        if sources.is_empty() { return Ok(None); }
-        let token=self.queue_tokens.get(id).cloned().ok_or("The taken handoff identity is unavailable")?;
-        let result=tab_id.map(|tab_id| {
-            let event=GenerateRunStarted { tab_id:tab_id.filter(|value|!value.is_empty()),web_contents_id:id,target,
-                mode:handoff.mode.clone(),sources,handed_over:handoff.materials.iter().map(|material|material.path.clone()).collect(),
-                handoff_id:handoff.id.clone(),at:now_ms };
-            (event.clone(),event)
+        &mut self,
+        target: GenerateHandoffTarget,
+        id: f64,
+        attached_paths: &[String],
+        now_ms: f64,
+        tab_id: Result<Option<String>, String>,
+    ) -> Result<Option<PreparedGenerateRun>, String> {
+        let Some(handoff) = self.taken.get(id) else {
+            return Ok(None);
+        };
+        if handoff.target != target {
+            return Ok(None);
+        }
+        let attached: Vec<String> = attached_paths
+            .iter()
+            .map(|path| self.path_key(path))
+            .collect();
+        let sources: Vec<String> = handoff
+            .materials
+            .iter()
+            .map(|material| material.path.clone())
+            .filter(|path| attached.contains(&self.path_key(path)))
+            .collect();
+        if sources.is_empty() {
+            return Ok(None);
+        }
+        let token = self
+            .queue_tokens
+            .get(id)
+            .cloned()
+            .ok_or("The taken handoff identity is unavailable")?;
+        let result = tab_id.map(|tab_id| {
+            let event = GenerateRunStarted {
+                tab_id: tab_id.filter(|value| !value.is_empty()),
+                web_contents_id: id,
+                target,
+                mode: handoff.mode.clone(),
+                sources,
+                handed_over: handoff
+                    .materials
+                    .iter()
+                    .map(|material| material.path.clone())
+                    .collect(),
+                handoff_id: handoff.id.clone(),
+                at: now_ms,
+            };
+            (event.clone(), event)
         });
-        if result.is_ok() { self.runs.try_reserve(1).map_err(|error|error.to_string())?; }
-        Ok(Some(PreparedGenerateRun { id,token,result }))
+        if result.is_ok() {
+            self.runs
+                .try_reserve(1)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(Some(PreparedGenerateRun { id, token, result }))
     }
 
-    pub fn commit_generate_run_started(&mut self,plan:PreparedGenerateRun) -> Result<Option<GenerateRunStarted>,String> {
-        if !self.queue_tokens.get(plan.id).is_some_and(|token|Rc::ptr_eq(token,&plan.token))
-            || self.taken.get(plan.id).is_none() { return Err("The taken handoff changed before its run was recorded".into()); }
-        if plan.result.is_ok() && self.runs.len()==self.runs.capacity() { return Err("The run event capacity was consumed".into()); }
+    pub fn commit_generate_run_started(
+        &mut self,
+        plan: PreparedGenerateRun,
+    ) -> Result<Option<GenerateRunStarted>, String> {
+        if !self
+            .queue_tokens
+            .get(plan.id)
+            .is_some_and(|token| Rc::ptr_eq(token, &plan.token))
+            || self.taken.get(plan.id).is_none()
+        {
+            return Err("The taken handoff changed before its run was recorded".into());
+        }
+        if plan.result.is_ok() && self.runs.len() == self.runs.capacity() {
+            return Err("The run event capacity was consumed".into());
+        }
         self.taken.delete(plan.id);
         self.queue_tokens.delete(plan.id);
-        let (event,returned)=plan.result?;
+        let (event, returned) = plan.result?;
         self.runs.push(event);
-        if self.runs.len()>MAX_RUN_EVENTS {
-            let excess=self.runs.len()-MAX_RUN_EVENTS;
+        if self.runs.len() > MAX_RUN_EVENTS {
+            let excess = self.runs.len() - MAX_RUN_EVENTS;
             self.runs.drain(..excess);
         }
         Ok(Some(returned))
@@ -657,23 +824,48 @@ impl HandoffStore {
         conversion_id: &str,
         now_ms: f64,
     ) -> Result<GenerateConverted, String> {
-        self.record_generate_converted_reversible(web_contents_id, target, kind, sources, conversion_id, now_ms).map(|(event, _)| event)
+        self.record_generate_converted_reversible(
+            web_contents_id,
+            target,
+            kind,
+            sources,
+            conversion_id,
+            now_ms,
+        )
+        .map(|(event, _)| event)
     }
 
     pub fn record_generate_converted_reversible(
-        &mut self, web_contents_id: f64, target: GenerateConvertTarget, kind: GenerateConvertKind,
-        sources: &[String], conversion_id: &str, now_ms: f64,
+        &mut self,
+        web_contents_id: f64,
+        target: GenerateConvertTarget,
+        kind: GenerateConvertKind,
+        sources: &[String],
+        conversion_id: &str,
+        now_ms: f64,
     ) -> Result<(GenerateConverted, ConvertedEventReceipt), String> {
-        let event = self.prepare_generate_converted(web_contents_id, target, kind, sources, conversion_id, now_ms)?;
+        let event = self.prepare_generate_converted(
+            web_contents_id,
+            target,
+            kind,
+            sources,
+            conversion_id,
+            now_ms,
+        )?;
         Ok(self.commit_generate_converted(event))
     }
 
     pub fn prepare_generate_converted(
-        &mut self, web_contents_id: f64, target: GenerateConvertTarget, kind: GenerateConvertKind,
-        sources: &[String], conversion_id: &str, now_ms: f64,
+        &mut self,
+        web_contents_id: f64,
+        target: GenerateConvertTarget,
+        kind: GenerateConvertKind,
+        sources: &[String],
+        conversion_id: &str,
+        now_ms: f64,
     ) -> Result<PreparedConvertedEvent, String> {
         let tab_id = self.tab_id(web_contents_id)?.filter(|id| !id.is_empty());
-        let event=GenerateConverted {
+        let event = GenerateConverted {
             tab_id,
             web_contents_id,
             target,
@@ -683,27 +875,57 @@ impl HandoffStore {
             conversion_id: conversion_id.to_owned(),
             at: now_ms,
         };
-        self.converted.try_reserve(1).map_err(|error|error.to_string())?;
-        let mut evicted=Vec::new();
-        evicted.try_reserve(1).map_err(|error|error.to_string())?;
-        Ok(PreparedConvertedEvent { returned:event.clone(),event,token:Rc::new(()),evicted })
+        self.converted
+            .try_reserve(1)
+            .map_err(|error| error.to_string())?;
+        let mut evicted = Vec::new();
+        evicted.try_reserve(1).map_err(|error| error.to_string())?;
+        Ok(PreparedConvertedEvent {
+            returned: event.clone(),
+            event,
+            token: Rc::new(()),
+            evicted,
+        })
     }
 
     pub fn can_commit_generate_converted(&self) -> bool {
         self.converted.len() < self.converted.capacity() && self.converted.len() <= MAX_RUN_EVENTS
     }
 
-    pub fn commit_generate_converted(&mut self, plan: PreparedConvertedEvent) -> (GenerateConverted, ConvertedEventReceipt) {
-        let PreparedConvertedEvent { event,returned,token,mut evicted }=plan;
-        self.converted.push((token.clone(),event));
-        let excess=self.converted.len().saturating_sub(MAX_RUN_EVENTS);
+    pub fn commit_generate_converted(
+        &mut self,
+        plan: PreparedConvertedEvent,
+    ) -> (GenerateConverted, ConvertedEventReceipt) {
+        let PreparedConvertedEvent {
+            event,
+            returned,
+            token,
+            mut evicted,
+        } = plan;
+        self.converted.push((token.clone(), event));
+        let excess = self.converted.len().saturating_sub(MAX_RUN_EVENTS);
         evicted.extend(self.converted.drain(..excess));
-        (returned, ConvertedEventReceipt { token, evicted, done: false })
+        (
+            returned,
+            ConvertedEventReceipt {
+                token,
+                evicted,
+                done: false,
+            },
+        )
     }
 
-    pub fn rollback_generate_converted(&mut self, receipt: &mut ConvertedEventReceipt) -> Result<(), String> {
-        if receipt.done { return Ok(()); }
-        let index = self.converted.iter().position(|(token, _)| Rc::ptr_eq(token, &receipt.token))
+    pub fn rollback_generate_converted(
+        &mut self,
+        receipt: &mut ConvertedEventReceipt,
+    ) -> Result<(), String> {
+        if receipt.done {
+            return Ok(());
+        }
+        let index = self
+            .converted
+            .iter()
+            .position(|(token, _)| Rc::ptr_eq(token, &receipt.token))
             .ok_or("The converted event was replaced or evicted before rollback")?;
         if self.converted.len() - 1 + receipt.evicted.len() > MAX_RUN_EVENTS {
             return Err("The converted event cannot restore its displaced history".into());
@@ -716,7 +938,10 @@ impl HandoffStore {
 
     /// the recorded conversions, oldest first (a copy)
     pub fn generate_converted_events(&self) -> Vec<GenerateConverted> {
-        self.converted.iter().map(|(_, event)| event.clone()).collect()
+        self.converted
+            .iter()
+            .map(|(_, event)| event.clone())
+            .collect()
     }
 
     /// tests only: forget everything
@@ -734,72 +959,138 @@ impl HandoffStore {
 #[cfg(test)]
 mod rollback_tests {
     use super::*;
-    fn handoff(id:&str)->GenerateHandoff {
-        GenerateHandoff{id:id.into(),mode:"make".into(),target:GenerateHandoffTarget::Mindmap,materials:Vec::new(),text:String::new(),default_text:false,created_at:0.0}
+    fn handoff(id: &str) -> GenerateHandoff {
+        GenerateHandoff {
+            id: id.into(),
+            mode: "make".into(),
+            target: GenerateHandoffTarget::Mindmap,
+            materials: Vec::new(),
+            text: String::new(),
+            default_text: false,
+            created_at: 0.0,
+        }
     }
     #[test]
     fn staged_run_rejects_replacement_and_preserves_resolver_error_semantics() {
-        let mut store=HandoffStore::new(false);
-        let mut first=handoff("first");
-        first.materials.push(Material { path:"/source.md".into(),name:"source.md".into() });
-        store.queue_generate_handoff(2.0,first.clone());
-        store.take_generate_handoff(GenerateHandoffTarget::Mindmap,2.0).unwrap();
-        let plan=store.prepare_generate_run_started(GenerateHandoffTarget::Mindmap,2.0,&["/source.md".into()],0.0,Ok(Some("tab".into()))).unwrap().unwrap();
-        store.queue_generate_handoff(2.0,first.clone());
-        store.take_generate_handoff(GenerateHandoffTarget::Mindmap,2.0).unwrap();
+        let mut store = HandoffStore::new(false);
+        let mut first = handoff("first");
+        first.materials.push(Material {
+            path: "/source.md".into(),
+            name: "source.md".into(),
+        });
+        store.queue_generate_handoff(2.0, first.clone());
+        store
+            .take_generate_handoff(GenerateHandoffTarget::Mindmap, 2.0)
+            .unwrap();
+        let plan = store
+            .prepare_generate_run_started(
+                GenerateHandoffTarget::Mindmap,
+                2.0,
+                &["/source.md".into()],
+                0.0,
+                Ok(Some("tab".into())),
+            )
+            .unwrap()
+            .unwrap();
+        store.queue_generate_handoff(2.0, first.clone());
+        store
+            .take_generate_handoff(GenerateHandoffTarget::Mindmap, 2.0)
+            .unwrap();
         assert!(store.commit_generate_run_started(plan).is_err());
         assert!(store.generate_run_started_events().is_empty());
-        let failed=store.prepare_generate_run_started(GenerateHandoffTarget::Mindmap,2.0,&["/source.md".into()],0.0,Err("resolver failed".into())).unwrap().unwrap();
-        assert_eq!(store.commit_generate_run_started(failed).unwrap_err(),"resolver failed");
+        let failed = store
+            .prepare_generate_run_started(
+                GenerateHandoffTarget::Mindmap,
+                2.0,
+                &["/source.md".into()],
+                0.0,
+                Err("resolver failed".into()),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            store.commit_generate_run_started(failed).unwrap_err(),
+            "resolver failed"
+        );
         assert!(store.taken.get(2.0).is_none());
-        store.queue_generate_handoff(2.0,first);
-        store.take_generate_handoff(GenerateHandoffTarget::Mindmap,2.0).unwrap();
-        let plan=store.prepare_generate_run_started(GenerateHandoffTarget::Mindmap,2.0,&["/source.md".into()],1.0,Ok(Some("tab".into()))).unwrap().unwrap();
-        let event=store.commit_generate_run_started(plan).unwrap().unwrap();
-        assert_eq!(event.tab_id.as_deref(),Some("tab"));
-        assert_eq!(event.sources,vec!["/source.md"]);
-        assert!(store.prepare_generate_run_started(GenerateHandoffTarget::Mindmap,2.0,&["/source.md".into()],2.0,Ok(None)).unwrap().is_none());
+        store.queue_generate_handoff(2.0, first);
+        store
+            .take_generate_handoff(GenerateHandoffTarget::Mindmap, 2.0)
+            .unwrap();
+        let plan = store
+            .prepare_generate_run_started(
+                GenerateHandoffTarget::Mindmap,
+                2.0,
+                &["/source.md".into()],
+                1.0,
+                Ok(Some("tab".into())),
+            )
+            .unwrap()
+            .unwrap();
+        let event = store.commit_generate_run_started(plan).unwrap().unwrap();
+        assert_eq!(event.tab_id.as_deref(), Some("tab"));
+        assert_eq!(event.sources, vec!["/source.md"]);
+        assert!(
+            store
+                .prepare_generate_run_started(
+                    GenerateHandoffTarget::Mindmap,
+                    2.0,
+                    &["/source.md".into()],
+                    2.0,
+                    Ok(None)
+                )
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
     fn restores_taken_entry_and_refuses_equal_replacement() {
-        let mut store=HandoffStore::new(false);
-        store.queue_generate_handoff(2.0,handoff("old"));
-        store.take_generate_handoff(GenerateHandoffTarget::Mindmap,2.0).unwrap();
-        let mut receipt=store.queue_generate_handoff_reversible(2.0,handoff("same"));
-        store.queue_generate_handoff(2.0,handoff("same"));
+        let mut store = HandoffStore::new(false);
+        store.queue_generate_handoff(2.0, handoff("old"));
+        store
+            .take_generate_handoff(GenerateHandoffTarget::Mindmap, 2.0)
+            .unwrap();
+        let mut receipt = store.queue_generate_handoff_reversible(2.0, handoff("same"));
+        store.queue_generate_handoff(2.0, handoff("same"));
         assert!(store.rollback_generate_handoff(&mut receipt).is_err());
-        assert_eq!(store.queued.get(2.0).unwrap().id,"same");
-        let mut replacement=store.queue_generate_handoff_reversible(2.0,handoff("new"));
+        assert_eq!(store.queued.get(2.0).unwrap().id, "same");
+        let mut replacement = store.queue_generate_handoff_reversible(2.0, handoff("new"));
         store.rollback_generate_handoff(&mut replacement).unwrap();
-        assert_eq!(store.queued.get(2.0).unwrap().id,"same");
+        assert_eq!(store.queued.get(2.0).unwrap().id, "same");
     }
     #[test]
     fn restores_taken_history_and_preserves_consumed_transfer() {
-        let mut store=HandoffStore::new(false);
-        store.queue_generate_handoff(2.0,handoff("old"));
-        store.take_generate_handoff(GenerateHandoffTarget::Mindmap,2.0).unwrap();
-        let mut receipt=store.queue_generate_handoff_reversible(2.0,handoff("new"));
+        let mut store = HandoffStore::new(false);
+        store.queue_generate_handoff(2.0, handoff("old"));
+        store
+            .take_generate_handoff(GenerateHandoffTarget::Mindmap, 2.0)
+            .unwrap();
+        let mut receipt = store.queue_generate_handoff_reversible(2.0, handoff("new"));
         store.rollback_generate_handoff(&mut receipt).unwrap();
-        assert_eq!(store.taken.get(2.0).unwrap().id,"old");
-        let mut consumed=store.queue_generate_handoff_reversible(2.0,handoff("accepted"));
-        store.take_generate_handoff(GenerateHandoffTarget::Mindmap,2.0).unwrap();
+        assert_eq!(store.taken.get(2.0).unwrap().id, "old");
+        let mut consumed = store.queue_generate_handoff_reversible(2.0, handoff("accepted"));
+        store
+            .take_generate_handoff(GenerateHandoffTarget::Mindmap, 2.0)
+            .unwrap();
         store.rollback_generate_handoff(&mut consumed).unwrap();
-        assert_eq!(store.taken.get(2.0).unwrap().id,"accepted");
+        assert_eq!(store.taken.get(2.0).unwrap().id, "accepted");
     }
     #[test]
     fn superseded_displaced_queue_is_not_restored_by_successor_rollback() {
-        let mut store=HandoffStore::new(false);
-        let mut old=store.queue_generate_handoff_reversible(2.0,handoff("old"));
-        let mut next=store.queue_generate_handoff_reversible(2.0,handoff("next"));
+        let mut store = HandoffStore::new(false);
+        let mut old = store.queue_generate_handoff_reversible(2.0, handoff("old"));
+        let mut next = store.queue_generate_handoff_reversible(2.0, handoff("next"));
         store.retire_superseded_handoff(&mut old);
-        assert_eq!(store.queued.get(2.0).unwrap().id,"next");
+        assert_eq!(store.queued.get(2.0).unwrap().id, "next");
         store.rollback_generate_handoff(&mut next).unwrap();
         assert!(store.queued.get(2.0).is_none());
         assert!(store.taken.get(2.0).is_none());
-        let mut consumed=store.queue_generate_handoff_reversible(2.0,handoff("consumed"));
-        store.take_generate_handoff(GenerateHandoffTarget::Mindmap,2.0).unwrap();
-        let mut later=store.queue_generate_handoff_reversible(2.0,handoff("later"));
+        let mut consumed = store.queue_generate_handoff_reversible(2.0, handoff("consumed"));
+        store
+            .take_generate_handoff(GenerateHandoffTarget::Mindmap, 2.0)
+            .unwrap();
+        let mut later = store.queue_generate_handoff_reversible(2.0, handoff("later"));
         store.retire_superseded_handoff(&mut consumed);
         assert!(consumed.was_consumed());
         store.rollback_generate_handoff(&mut later).unwrap();
@@ -808,26 +1099,45 @@ mod rollback_tests {
 
     #[test]
     fn conversion_receipt_removes_only_its_exact_event_and_restores_evicted() {
-        let mut store=HandoffStore::new(false);
+        let mut store = HandoffStore::new(false);
         for i in 0..MAX_RUN_EVENTS {
-            store.record_generate_converted(1.0,GenerateConvertTarget::Markdown,GenerateConvertKind::MindmapToMarkdown,&[],&i.to_string(),0.0).unwrap();
+            store
+                .record_generate_converted(
+                    1.0,
+                    GenerateConvertTarget::Markdown,
+                    GenerateConvertKind::MindmapToMarkdown,
+                    &[],
+                    &i.to_string(),
+                    0.0,
+                )
+                .unwrap();
         }
-        let (_,mut receipt)=store.record_generate_converted_reversible(1.0,GenerateConvertTarget::Markdown,GenerateConvertKind::MindmapToMarkdown,&[],"same",0.0).unwrap();
+        let (_, mut receipt) = store
+            .record_generate_converted_reversible(
+                1.0,
+                GenerateConvertTarget::Markdown,
+                GenerateConvertKind::MindmapToMarkdown,
+                &[],
+                "same",
+                0.0,
+            )
+            .unwrap();
         store.rollback_generate_converted(&mut receipt).unwrap();
         store.rollback_generate_converted(&mut receipt).unwrap();
-        let events=store.generate_converted_events();
-        assert_eq!(events.len(),MAX_RUN_EVENTS);assert_eq!(events[0].conversion_id,"0");
-        assert!(events.iter().all(|event|event.conversion_id!="same"));
+        let events = store.generate_converted_events();
+        assert_eq!(events.len(), MAX_RUN_EVENTS);
+        assert_eq!(events[0].conversion_id, "0");
+        assert!(events.iter().all(|event| event.conversion_id != "same"));
     }
     #[test]
     fn numeric_teardown_removes_legacy_but_preserves_owned_receipt() {
-        let mut store=HandoffStore::new(false);
-        store.queue_generate_handoff(1.0,handoff("legacy"));
-        let mut owned=store.queue_generate_handoff_reversible(2.0,handoff("owned"));
+        let mut store = HandoffStore::new(false);
+        store.queue_generate_handoff(1.0, handoff("legacy"));
+        let mut owned = store.queue_generate_handoff_reversible(2.0, handoff("owned"));
         store.drop_legacy_handoff(1.0);
         store.drop_legacy_handoff(2.0);
         assert!(store.queued.get(1.0).is_none());
-        assert_eq!(store.queued.get(2.0).unwrap().id,"owned");
+        assert_eq!(store.queued.get(2.0).unwrap().id, "owned");
         store.rollback_generate_handoff(&mut owned).unwrap();
         assert!(store.queued.get(2.0).is_none());
     }

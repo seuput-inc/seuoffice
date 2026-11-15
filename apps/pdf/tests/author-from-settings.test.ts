@@ -107,7 +107,10 @@ describe('ordinary Electron PDF opening', () => {
   it('skips the native recovery route and preserves the pending path', async () => {
     const path = await openWithSettings()
     const original = Object.getOwnPropertyDescriptor(process.versions, 'electron')
-    Object.defineProperty(process.versions, 'electron', { configurable: true, value: 'test-electron' })
+    Object.defineProperty(process.versions, 'electron', {
+      configurable: true,
+      value: 'test-electron',
+    })
     try {
       expect(await api().consumeRecoveryPending()).toBeNull()
       expect(await api().consumePending()).toBe(path)

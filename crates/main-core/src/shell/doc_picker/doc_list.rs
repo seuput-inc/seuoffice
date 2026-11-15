@@ -253,15 +253,27 @@ mod tests {
             Err("dirty query failed".into())
         }
         fn recent(&self) -> Vec<RecentDocumentEntry> {
-            vec![RecentDocumentEntry { path: "/tmp/document.docx".into(), title: "document.docx".into(), missing: false }]
+            vec![RecentDocumentEntry {
+                path: "/tmp/document.docx".into(),
+                title: "document.docx".into(),
+                missing: false,
+            }]
         }
-        fn project_files(&self, _: &DocAsker) -> Vec<ProjectFile> { Vec::new() }
-        fn stat(&self, _: &str) -> Option<f64> { Some(1.0) }
+        fn project_files(&self, _: &DocAsker) -> Vec<ProjectFile> {
+            Vec::new()
+        }
+        fn stat(&self, _: &str) -> Option<f64> {
+            Some(1.0)
+        }
     }
 
     #[test]
     fn a_failed_dirty_query_never_presents_recent_files_as_safe() {
-        let result = doc_list(&FailedDocuments, &DocAsker::default(), DocListOptions::default());
+        let result = doc_list(
+            &FailedDocuments,
+            &DocAsker::default(),
+            DocListOptions::default(),
+        );
         assert_eq!(result.unwrap_err(), "dirty query failed");
     }
 }

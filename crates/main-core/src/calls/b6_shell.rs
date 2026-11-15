@@ -42,19 +42,18 @@ use crate::shell::crash_watch::{
     should_prompt_for_gone_renderer,
 };
 use crate::shell::error_dialog::{ErrorDialog, ErrorValue};
-use crate::shell::launch_recovery::{
-    PlannedOpen, PlannedTab, RecoveryChoice, RecoveryListResult,
-};
+use crate::shell::launch_recovery::{PlannedOpen, PlannedTab, RecoveryChoice, RecoveryListResult};
 use crate::shell::mac_update::{SpawnOptions, SwapChild};
 use crate::shell::permission_guard::{ShellPermissionGuardOptions, install_shell_permission_guard};
 use crate::shell::pointer_size::{
     POINTER_SIZE_VAR, PointerSize, apply_pointer_size_to, parse_cursor_base_size, read_pointer_size,
 };
 use crate::shell::recovery_shell::{
-    LaunchDeps, LaunchManager, LaunchMachine, LaunchNeed, LaunchReply, LaunchStep, LaunchRecoveryStore,
-    ListedTab, OpenContext, RecoveryContents, RecoveryEditors, RecoveryShell, RestoredTabOpener,
-    RestoredTabOpenerDeps, UnloadedTabSpec, discard_editor_recovery, editor_recovery_identity,
-    install_recovery_title_sources, prepare_launch, push_hwp_recovery_titles, restored_tab_opener,
+    LaunchDeps, LaunchMachine, LaunchManager, LaunchNeed, LaunchRecoveryStore, LaunchReply,
+    LaunchStep, ListedTab, OpenContext, RecoveryContents, RecoveryEditors, RecoveryShell,
+    RestoredTabOpener, RestoredTabOpenerDeps, UnloadedTabSpec, discard_editor_recovery,
+    editor_recovery_identity, install_recovery_title_sources, prepare_launch,
+    push_hwp_recovery_titles, restored_tab_opener,
 };
 use crate::shell::renderer_disposal::{
     Failure, ReleasableContents, RendererDisposal, destroy_closed_view,
@@ -1861,30 +1860,59 @@ impl RecoveryEditors for RecEditors {
         self.discard("discardDiagramRecovery", contents);
     }
 
-    fn open_recovered_view(&self,kind:&str,_title:&str,file_path:Option<&str>,copy:Option<&RecoveryOpenUntitledRequest>,done:Box<dyn FnOnce(Result<i64,Failure>)>) {
-        if copy.is_some() && kind=="pdf" {
-            log_line(&self.log,vec![text("createPdfView")]);
-        } else if copy.is_some() && kind=="sheets" {
-            let mut options=Map::new();
-            options.insert("includeAiHandlers".into(),Value::Bool(false));
-            options.insert("openingWorkbook".into(),Value::Bool(true));
-            log_line(&self.log,vec![text("createSheetsView"),Value::Object(options)]);
+    fn open_recovered_view(
+        &self,
+        kind: &str,
+        _title: &str,
+        file_path: Option<&str>,
+        copy: Option<&RecoveryOpenUntitledRequest>,
+        done: Box<dyn FnOnce(Result<i64, Failure>)>,
+    ) {
+        if copy.is_some() && kind == "pdf" {
+            log_line(&self.log, vec![text("createPdfView")]);
+        } else if copy.is_some() && kind == "sheets" {
+            let mut options = Map::new();
+            options.insert("includeAiHandlers".into(), Value::Bool(false));
+            options.insert("openingWorkbook".into(), Value::Bool(true));
+            log_line(
+                &self.log,
+                vec![text("createSheetsView"), Value::Object(options)],
+            );
         } else {
-            log_line(&self.log,vec![text("createPlainEditorView"),text(kind),file_path.map_or(Value::Null,text)]);
+            log_line(
+                &self.log,
+                vec![
+                    text("createPlainEditorView"),
+                    text(kind),
+                    file_path.map_or(Value::Null, text),
+                ],
+            );
         }
-        let view=self.view();
-        if let Some(request)=copy {
-            let mut shown=Map::new();
-            shown.insert("copy".into(),identity_json(&request.copy));
-            shown.insert("title".into(),text(&request.title));
-            if let Some(path)=&request.save_as_default_path { shown.insert("saveAsDefaultPath".into(),text(path)); }
-            log_line(&self.log,vec![text("openUntitledCopy"),text(kind),Value::from(view),Value::Object(shown)]);
-            match field_str(&self.spec,"contractOpens") {
-                Some("throws")=>return done(Err(Failure("open threw".into()))),
-                Some("rejects")=>return done(Err(Failure("open rejected".into()))),
-                _=>{}
+        let view = self.view();
+        if let Some(request) = copy {
+            let mut shown = Map::new();
+            shown.insert("copy".into(), identity_json(&request.copy));
+            shown.insert("title".into(), text(&request.title));
+            if let Some(path) = &request.save_as_default_path {
+                shown.insert("saveAsDefaultPath".into(), text(path));
             }
-        } else if kind=="sheets" { self.after_sheets_open_soon(); }
+            log_line(
+                &self.log,
+                vec![
+                    text("openUntitledCopy"),
+                    text(kind),
+                    Value::from(view),
+                    Value::Object(shown),
+                ],
+            );
+            match field_str(&self.spec, "contractOpens") {
+                Some("throws") => return done(Err(Failure("open threw".into()))),
+                Some("rejects") => return done(Err(Failure("open rejected".into()))),
+                _ => {}
+            }
+        } else if kind == "sheets" {
+            self.after_sheets_open_soon();
+        }
         done(Ok(view));
     }
 
@@ -1974,7 +2002,6 @@ impl RecManager {
 }
 
 impl RecManager {
-
     fn add_unloaded_tab(&mut self, spec: UnloadedTabSpec) -> Result<String, Failure> {
         self.throw_if("addUnloadedTab")?;
         log_line(&self.log, vec![text("addUnloadedTab"), tab_summary(&spec)]);
@@ -1988,7 +2015,9 @@ impl RecManager {
     fn hydrate_session(&mut self, tabs: Vec<UnloadedTabSpec>) -> Result<Vec<String>, Failure> {
         self.throw_if("hydrateSession")?;
         #[cfg(test)]
-        if let Some(callback) = &self.on_hydrate { callback(); }
+        if let Some(callback) = &self.on_hydrate {
+            callback();
+        }
         log_line(
             &self.log,
             vec![
@@ -2050,10 +2079,17 @@ impl RecManager {
 
 impl LaunchManager for RecManager {
     type Contents = RecWc;
-    fn list(&self) -> Result<Vec<ListedTab>, Failure> { Ok(self.strip.clone()) }
-    fn split_state(&self) -> Result<bool, Failure> { Ok(self.split) }
+    fn list(&self) -> Result<Vec<ListedTab>, Failure> {
+        Ok(self.strip.clone())
+    }
+    fn split_state(&self) -> Result<bool, Failure> {
+        Ok(self.split)
+    }
     fn web_contents_for_tab(&self, id: &str) -> Option<RecWc> {
-        self.contents.iter().find(|(tab, _)| tab == id).map(|(_, wc)| wc.clone())
+        self.contents
+            .iter()
+            .find(|(tab, _)| tab == id)
+            .map(|(_, wc)| wc.clone())
     }
 }
 
@@ -2135,36 +2171,87 @@ impl RecDeps {
 }
 
 fn drive_recovery_probe(
-    mut step: LaunchStep, shell: &mut RecoveryShell, editors: &RecEditors,
-    store: &dyn LaunchRecoveryStore, session: &mut SessionRecordProcess,
-    env: &mut dyn SessionRecorderEnv, deps: &mut RecDeps,
+    mut step: LaunchStep,
+    shell: &mut RecoveryShell,
+    editors: &RecEditors,
+    store: &dyn LaunchRecoveryStore,
+    session: &mut SessionRecordProcess,
+    env: &mut dyn SessionRecorderEnv,
+    deps: &mut RecDeps,
 ) -> Result<Option<LaunchMachine>, Failure> {
     loop {
         match step {
             LaunchStep::Done(result) => return result.map(|()| None),
             LaunchStep::AwaitList(items, machine) => {
-                log_line(&deps.log, vec![text("gate.publish"),
-                    Value::Array(items.iter().map(super::b3_shell::list_item_value).collect())]);
+                log_line(
+                    &deps.log,
+                    vec![
+                        text("gate.publish"),
+                        Value::Array(items.iter().map(super::b3_shell::list_item_value).collect()),
+                    ],
+                );
                 return Ok(Some(machine));
             }
             LaunchStep::Need(need, machine) => {
                 let reply = match need {
-                    LaunchNeed::Prepare { user_data, paths, reopened_by_installer } =>
-                        LaunchReply::Prepared(prepare_launch(store, session, env, user_data, &paths, reopened_by_installer,
-                            || editors.migrate_sheets_legacy_recovery(), || Ok(()))),
-                    LaunchNeed::RecordDecisions(decisions) => LaunchReply::Decisions(decisions.into_iter()
-                        .filter_map(|(identity, decision)| store.apply_decision(&identity, decision).err()).collect()),
-                    LaunchNeed::Hydrate(tabs) => LaunchReply::Hydrated(deps.manager().hydrate_session(tabs)),
+                    LaunchNeed::Prepare {
+                        user_data,
+                        paths,
+                        reopened_by_installer,
+                    } => LaunchReply::Prepared(prepare_launch(
+                        store,
+                        session,
+                        env,
+                        user_data,
+                        &paths,
+                        reopened_by_installer,
+                        || editors.migrate_sheets_legacy_recovery(),
+                        || Ok(()),
+                    )),
+                    LaunchNeed::RecordDecisions(decisions) => LaunchReply::Decisions(
+                        decisions
+                            .into_iter()
+                            .filter_map(|(identity, decision)| {
+                                store.apply_decision(&identity, decision).err()
+                            })
+                            .collect(),
+                    ),
+                    LaunchNeed::Hydrate(tabs) => {
+                        LaunchReply::Hydrated(deps.manager().hydrate_session(tabs))
+                    }
                     LaunchNeed::SessionChanged => LaunchReply::Completed(deps.session_changed()),
-                    LaunchNeed::CloseTab(id) => LaunchReply::Completed(deps.manager().close_tab_without_prompt(&id)),
-                    LaunchNeed::AddUnloaded(spec) => LaunchReply::Added(deps.manager().add_unloaded_tab(spec)),
-                    LaunchNeed::Reorder { id, slot } => LaunchReply::Completed(deps.manager().reorder_tab(&id, slot)),
+                    LaunchNeed::CloseTab(id) => {
+                        LaunchReply::Completed(deps.manager().close_tab_without_prompt(&id))
+                    }
+                    LaunchNeed::AddUnloaded(spec) => {
+                        LaunchReply::Added(deps.manager().add_unloaded_tab(spec))
+                    }
+                    LaunchNeed::Reorder { id, slot } => {
+                        LaunchReply::Completed(deps.manager().reorder_tab(&id, slot))
+                    }
                     LaunchNeed::OpenHome => LaunchReply::Completed(deps.manager().open_home_tab()),
-                    LaunchNeed::BeginSplit { a, b, orientation, ratio, focus } =>
-                        LaunchReply::Completed(deps.manager().begin_split(&a, &b, &orientation, ratio, &focus)),
-                    LaunchNeed::Activate(id) => LaunchReply::Completed(deps.manager().activate_tab(&id)),
-                    LaunchNeed::OpenPaths(paths) => LaunchReply::Completed(deps.open_launch_paths(&paths)),
-                    LaunchNeed::RestoreSplitOrHome => LaunchReply::Completed(deps.restore_split_memory_or_home()),
+                    LaunchNeed::BeginSplit {
+                        a,
+                        b,
+                        orientation,
+                        ratio,
+                        focus,
+                    } => LaunchReply::Completed(deps.manager().begin_split(
+                        &a,
+                        &b,
+                        &orientation,
+                        ratio,
+                        &focus,
+                    )),
+                    LaunchNeed::Activate(id) => {
+                        LaunchReply::Completed(deps.manager().activate_tab(&id))
+                    }
+                    LaunchNeed::OpenPaths(paths) => {
+                        LaunchReply::Completed(deps.open_launch_paths(&paths))
+                    }
+                    LaunchNeed::RestoreSplitOrHome => {
+                        LaunchReply::Completed(deps.restore_split_memory_or_home())
+                    }
                     LaunchNeed::Settled => LaunchReply::Completed(deps.settled()),
                 };
                 step = machine.resume(reply, shell, editors, deps);
@@ -2361,10 +2448,18 @@ fn recovery_call(args: &[Value], cx: &mut Context) -> Answer {
                     .map(str::to_owned),
             };
             results.push(if field_str(s, "call") == Some("open") {
-                let result=std::rc::Rc::new(RefCell::new(None));
-                let completed=result.clone();
-                opener.open(&editors,&deps,&context,Box::new(move |value| *completed.borrow_mut()=Some(value)));
-                let value=result.borrow_mut().take().expect("synthetic recovery editor completes inline");
+                let result = std::rc::Rc::new(RefCell::new(None));
+                let completed = result.clone();
+                opener.open(
+                    &editors,
+                    &deps,
+                    &context,
+                    Box::new(move |value| *completed.borrow_mut() = Some(value)),
+                );
+                let value = result
+                    .borrow_mut()
+                    .take()
+                    .expect("synthetic recovery editor completes inline");
                 opened(value)
             } else {
                 needs_user(opener.needs_user(&store, &deps, &context))
@@ -2372,11 +2467,21 @@ fn recovery_call(args: &[Value], cx: &mut Context) -> Answer {
         } else if let Some(s) = step.get("reopen") {
             let copy = untitled_of(s.get("copy").unwrap_or(&Value::Null));
             let planned = RecoveryShell::reopen_untitled_copy_plan(
-                field_str(s, "kind").unwrap_or_default(), field_str(s, "title").unwrap_or_default(), &copy,
+                field_str(s, "kind").unwrap_or_default(),
+                field_str(s, "title").unwrap_or_default(),
+                &copy,
             );
-            let result = deps.manager.add_unloaded_tab(crate::shell::recovery_shell::tab_spec(&planned))
-                .and_then(|id| { shell.note_planned(&id, &planned); deps.manager.activate_tab(&id) });
-            results.push(match result { Ok(()) => Value::Null, Err(Failure(message)) => error_entry(message) });
+            let result = deps
+                .manager
+                .add_unloaded_tab(crate::shell::recovery_shell::tab_spec(&planned))
+                .and_then(|id| {
+                    shell.note_planned(&id, &planned);
+                    deps.manager.activate_tab(&id)
+                });
+            results.push(match result {
+                Ok(()) => Value::Null,
+                Err(Failure(message)) => error_entry(message),
+            });
         } else if let Some(s) = step.get("discard") {
             if let Some(contents) = contents_of(field_str(s, "contents")) {
                 discard_editor_recovery(
@@ -2395,8 +2500,20 @@ fn recovery_call(args: &[Value], cx: &mut Context) -> Answer {
                 Err(Failure(message)) => results.push(error_entry(message)),
             }
         } else if step.get("launch").is_some() {
-            let step = LaunchMachine::start(deps.user_data_dir(), deps.launch_paths(), deps.reopened_by_installer());
-            match drive_recovery_probe(step, &mut shell, &editors, &store, &mut session, &mut session_env, &mut deps) {
+            let step = LaunchMachine::start(
+                deps.user_data_dir(),
+                deps.launch_paths(),
+                deps.reopened_by_installer(),
+            );
+            match drive_recovery_probe(
+                step,
+                &mut shell,
+                &editors,
+                &store,
+                &mut session,
+                &mut session_env,
+                &mut deps,
+            ) {
                 Ok(waiting) => {
                     pending = waiting;
                     results.push(Value::Null);
@@ -2406,7 +2523,15 @@ fn recovery_call(args: &[Value], cx: &mut Context) -> Answer {
         } else if let Some(answer) = step.get("answer") {
             if let Some(waiting) = pending.take() {
                 let step = waiting.answer(list_result_of(answer), &mut shell, &editors, &mut deps);
-                let _ = drive_recovery_probe(step, &mut shell, &editors, &store, &mut session, &mut session_env, &mut deps);
+                let _ = drive_recovery_probe(
+                    step,
+                    &mut shell,
+                    &editors,
+                    &store,
+                    &mut session,
+                    &mut session_env,
+                    &mut deps,
+                );
             }
             results.push(Value::Null);
         } else if let Some(id) = field_str(step, "openTab") {
@@ -2416,10 +2541,20 @@ fn recovery_call(args: &[Value], cx: &mut Context) -> Answer {
                     title: tab.title.clone(),
                     file_path: tab.file_path.clone(),
                 };
-                let result=std::rc::Rc::new(RefCell::new(None));
-                let completed=result.clone();
-                tab.opener.open(&editors,&deps,&context,Box::new(move |value| *completed.borrow_mut()=Some(value)));
-                results.push(opened(result.borrow_mut().take().expect("synthetic recovery editor completes inline")));
+                let result = std::rc::Rc::new(RefCell::new(None));
+                let completed = result.clone();
+                tab.opener.open(
+                    &editors,
+                    &deps,
+                    &context,
+                    Box::new(move |value| *completed.borrow_mut() = Some(value)),
+                );
+                results.push(opened(
+                    result
+                        .borrow_mut()
+                        .take()
+                        .expect("synthetic recovery editor completes inline"),
+                ));
             }
         } else if let Some(id) = field_str(step, "needsUserTab")
             && let Some(tab) = deps.manager.specs.get(id).cloned()
@@ -2918,28 +3053,45 @@ fn updater_call(args: &[Value], cx: &mut Context) -> Answer {
 #[cfg(test)]
 mod recovery_reentrancy_tests {
     use super::*;
-    use crate::shell::recovery_shell::LaunchRecoveryStore;
     use crate::shell::launch_recovery::{LaunchJudgment, LaunchPlan};
+    use crate::shell::recovery_shell::LaunchRecoveryStore;
     use std::sync::Mutex;
 
-    struct Store { lock: Mutex<()> }
+    struct Store {
+        lock: Mutex<()>,
+    }
     impl LaunchRecoveryStore for Store {
-        fn prune_stale_copies(&self) { drop(self.lock.lock().unwrap()); }
+        fn prune_stale_copies(&self) {
+            drop(self.lock.lock().unwrap());
+        }
         fn has_unresolved_copies(&self) -> Result<bool, Failure> {
             let _guard = self.lock.lock().unwrap();
             Ok(false)
         }
-        fn plan(&self, _: &LaunchJudgment, _: &crate::shell::session_record::SessionRecordReadResult,
-            _: &[String]) -> Result<LaunchPlan, Failure> {
+        fn plan(
+            &self,
+            _: &LaunchJudgment,
+            _: &crate::shell::session_record::SessionRecordReadResult,
+            _: &[String],
+        ) -> Result<LaunchPlan, Failure> {
             let _guard = self.lock.lock().unwrap();
             Ok(LaunchPlan {
-                restore_run: true, crash_loop: false, plain_launch: false,
-                tabs: Vec::new(), front: None, split: None, items: Vec::new(),
-                copies: Vec::new(), launch_paths: Vec::new(),
+                restore_run: true,
+                crash_loop: false,
+                plain_launch: false,
+                tabs: Vec::new(),
+                front: None,
+                split: None,
+                items: Vec::new(),
+                copies: Vec::new(),
+                launch_paths: Vec::new(),
             })
         }
-        fn apply_decision(&self, _: &RecoveryIdentity,
-            _: crate::packages::electron_utils::recovery_store::RecoveryLaunchDecision) -> Result<(), Failure> {
+        fn apply_decision(
+            &self,
+            _: &RecoveryIdentity,
+            _: crate::packages::electron_utils::recovery_store::RecoveryLaunchDecision,
+        ) -> Result<(), Failure> {
             let _guard = self.lock.lock().unwrap();
             Ok(())
         }
@@ -2947,21 +3099,32 @@ mod recovery_reentrancy_tests {
 
     struct Env;
     impl SessionRecorderEnv for Env {
-        fn now(&mut self) -> f64 { 1.0 }
-        fn write_json(&mut self, _: &str, _: &SessionRecord) -> Result<(), String> { Ok(()) }
+        fn now(&mut self) -> f64 {
+            1.0
+        }
+        fn write_json(&mut self, _: &str, _: &SessionRecord) -> Result<(), String> {
+            Ok(())
+        }
         fn warn(&mut self, _: &str, _: &str) {}
     }
 
     #[test]
     fn launch_hydration_can_reenter_the_recovery_store() {
         let log = Rc::new(RefCell::new(Vec::new()));
-        let store = Rc::new(Store { lock: Mutex::new(()) });
+        let store = Rc::new(Store {
+            lock: Mutex::new(()),
+        });
         let invoked = Rc::new(Cell::new(false));
         let seen = invoked.clone();
         let during_hydrate = store.clone();
         let manager = RecManager {
-            log: log.clone(), throws: Vec::new(), strip: Vec::new(), specs: HashMap::new(),
-            next_tab: 0, split: false, contents: Vec::new(),
+            log: log.clone(),
+            throws: Vec::new(),
+            strip: Vec::new(),
+            specs: HashMap::new(),
+            next_tab: 0,
+            split: false,
+            contents: Vec::new(),
             on_hydrate: Some(Rc::new(move || {
                 assert!(during_hydrate.lock.try_lock().is_ok());
                 assert!(!during_hydrate.has_unresolved_copies().unwrap());
@@ -2969,17 +3132,37 @@ mod recovery_reentrancy_tests {
             })),
         };
         let editors = RecEditors {
-            spec: Value::Null, log: log.clone(), wcs: Vec::new(), views: Cell::new(0),
+            spec: Value::Null,
+            log: log.clone(),
+            wcs: Vec::new(),
+            views: Cell::new(0),
             deferred: RefCell::new(Vec::new()),
         };
         let mut deps = RecDeps {
             spec: serde_json::json!({"userData": "/nonexistent-seuoffice-recovery-test"}),
-            log, manager, throws: Vec::new(),
+            log,
+            manager,
+            throws: Vec::new(),
         };
         let mut shell = RecoveryShell::new();
         let mut session = SessionRecordProcess::new();
-        let step = LaunchMachine::start(deps.user_data_dir(), deps.launch_paths(), deps.reopened_by_installer());
-        assert!(drive_recovery_probe(step, &mut shell, &editors, store.as_ref(), &mut session, &mut Env, &mut deps).is_ok());
+        let step = LaunchMachine::start(
+            deps.user_data_dir(),
+            deps.launch_paths(),
+            deps.reopened_by_installer(),
+        );
+        assert!(
+            drive_recovery_probe(
+                step,
+                &mut shell,
+                &editors,
+                store.as_ref(),
+                &mut session,
+                &mut Env,
+                &mut deps
+            )
+            .is_ok()
+        );
         assert!(invoked.get());
     }
 
@@ -2987,109 +3170,267 @@ mod recovery_reentrancy_tests {
     fn plain_launch_waits_for_real_open_result_before_settling() {
         let log = Rc::new(RefCell::new(Vec::new()));
         let manager = RecManager {
-            log: log.clone(), throws: Vec::new(), strip: Vec::new(), specs: HashMap::new(),
-            next_tab: 0, split: false, contents: Vec::new(), on_hydrate: None,
+            log: log.clone(),
+            throws: Vec::new(),
+            strip: Vec::new(),
+            specs: HashMap::new(),
+            next_tab: 0,
+            split: false,
+            contents: Vec::new(),
+            on_hydrate: None,
         };
         let editors = RecEditors {
-            spec: Value::Null, log: log.clone(), wcs: Vec::new(), views: Cell::new(0),
+            spec: Value::Null,
+            log: log.clone(),
+            wcs: Vec::new(),
+            views: Cell::new(0),
             deferred: RefCell::new(Vec::new()),
         };
-        let mut deps = RecDeps { spec: Value::Null, log: log.clone(), manager, throws: Vec::new() };
+        let mut deps = RecDeps {
+            spec: Value::Null,
+            log: log.clone(),
+            manager,
+            throws: Vec::new(),
+        };
         let mut shell = RecoveryShell::new();
         let LaunchStep::Need(LaunchNeed::Prepare { .. }, machine) =
-            LaunchMachine::start("data".into(), vec!["file".into()], false) else { panic!("expected worker preparation") };
-        let plan = LaunchPlan {
-            restore_run: false, crash_loop: false, plain_launch: true, tabs: vec![], front: None,
-            split: None, items: vec![], copies: vec![], launch_paths: vec!["file".into()],
+            LaunchMachine::start("data".into(), vec!["file".into()], false)
+        else {
+            panic!("expected worker preparation")
         };
-        let LaunchStep::Need(LaunchNeed::OpenPaths(paths), machine) =
-            machine.resume(LaunchReply::Prepared(Ok(plan)), &mut shell, &editors, &mut deps)
-            else { panic!("expected open request") };
+        let plan = LaunchPlan {
+            restore_run: false,
+            crash_loop: false,
+            plain_launch: true,
+            tabs: vec![],
+            front: None,
+            split: None,
+            items: vec![],
+            copies: vec![],
+            launch_paths: vec!["file".into()],
+        };
+        let LaunchStep::Need(LaunchNeed::OpenPaths(paths), machine) = machine.resume(
+            LaunchReply::Prepared(Ok(plan)),
+            &mut shell,
+            &editors,
+            &mut deps,
+        ) else {
+            panic!("expected open request")
+        };
         assert_eq!(paths, vec!["file"]);
-        let done = machine.resume(LaunchReply::Completed(Err(Failure("open failed".into()))),
-            &mut shell, &editors, &mut deps);
-        assert!(matches!(done, LaunchStep::Done(Err(Failure(message))) if message == "open failed"));
-        assert!(!log.borrow().iter().any(|line| line.to_string().contains("settled")));
+        let done = machine.resume(
+            LaunchReply::Completed(Err(Failure("open failed".into()))),
+            &mut shell,
+            &editors,
+            &mut deps,
+        );
+        assert!(
+            matches!(done, LaunchStep::Done(Err(Failure(message))) if message == "open failed")
+        );
+        assert!(
+            !log.borrow()
+                .iter()
+                .any(|line| line.to_string().contains("settled"))
+        );
     }
 
     #[test]
     fn restored_launch_waits_for_hydration_and_session_publication() {
         let log = Rc::new(RefCell::new(Vec::new()));
         let manager = RecManager {
-            log: log.clone(), throws: Vec::new(), strip: Vec::new(), specs: HashMap::new(),
-            next_tab: 0, split: false, contents: Vec::new(), on_hydrate: None,
+            log: log.clone(),
+            throws: Vec::new(),
+            strip: Vec::new(),
+            specs: HashMap::new(),
+            next_tab: 0,
+            split: false,
+            contents: Vec::new(),
+            on_hydrate: None,
         };
         let editors = RecEditors {
-            spec: Value::Null, log: log.clone(), wcs: Vec::new(), views: Cell::new(0),
+            spec: Value::Null,
+            log: log.clone(),
+            wcs: Vec::new(),
+            views: Cell::new(0),
             deferred: RefCell::new(Vec::new()),
         };
-        let mut deps = RecDeps { spec: Value::Null, log: log.clone(), manager, throws: Vec::new() };
+        let mut deps = RecDeps {
+            spec: Value::Null,
+            log: log.clone(),
+            manager,
+            throws: Vec::new(),
+        };
         let mut shell = RecoveryShell::new();
         let LaunchStep::Need(LaunchNeed::Prepare { .. }, machine) =
-            LaunchMachine::start("data".into(), vec![], false) else { panic!("expected worker preparation") };
-        let plan = LaunchPlan {
-            restore_run: true, crash_loop: false, plain_launch: false, tabs: vec![], front: None,
-            split: None, items: vec![], copies: vec![], launch_paths: vec![],
+            LaunchMachine::start("data".into(), vec![], false)
+        else {
+            panic!("expected worker preparation")
         };
-        let LaunchStep::Need(LaunchNeed::Hydrate(_), machine) =
-            machine.resume(LaunchReply::Prepared(Ok(plan)), &mut shell, &editors, &mut deps)
-            else { panic!("expected hydration request") };
+        let plan = LaunchPlan {
+            restore_run: true,
+            crash_loop: false,
+            plain_launch: false,
+            tabs: vec![],
+            front: None,
+            split: None,
+            items: vec![],
+            copies: vec![],
+            launch_paths: vec![],
+        };
+        let LaunchStep::Need(LaunchNeed::Hydrate(_), machine) = machine.resume(
+            LaunchReply::Prepared(Ok(plan)),
+            &mut shell,
+            &editors,
+            &mut deps,
+        ) else {
+            panic!("expected hydration request")
+        };
         assert!(log.borrow().is_empty());
-        let LaunchStep::Need(LaunchNeed::SessionChanged, machine) =
-            machine.resume(LaunchReply::Hydrated(Ok(vec![])), &mut shell, &editors, &mut deps)
-            else { panic!("expected session publication") };
-        let LaunchStep::Need(LaunchNeed::OpenHome, _) =
-            machine.resume(LaunchReply::Completed(Ok(())), &mut shell, &editors, &mut deps)
-            else { panic!("expected Home request") };
-        assert!(!log.borrow().iter().any(|line| line.to_string().contains("openHomeTab")));
+        let LaunchStep::Need(LaunchNeed::SessionChanged, machine) = machine.resume(
+            LaunchReply::Hydrated(Ok(vec![])),
+            &mut shell,
+            &editors,
+            &mut deps,
+        ) else {
+            panic!("expected session publication")
+        };
+        let LaunchStep::Need(LaunchNeed::OpenHome, _) = machine.resume(
+            LaunchReply::Completed(Ok(())),
+            &mut shell,
+            &editors,
+            &mut deps,
+        ) else {
+            panic!("expected Home request")
+        };
+        assert!(
+            !log.borrow()
+                .iter()
+                .any(|line| line.to_string().contains("openHomeTab"))
+        );
     }
 
     #[test]
     fn failed_async_activation_waits_for_home_before_settlement() {
         let log = Rc::new(RefCell::new(Vec::new()));
         let manager = RecManager {
-            log: log.clone(), throws: Vec::new(), strip: Vec::new(), specs: HashMap::new(),
-            next_tab: 0, split: false, contents: Vec::new(), on_hydrate: None,
+            log: log.clone(),
+            throws: Vec::new(),
+            strip: Vec::new(),
+            specs: HashMap::new(),
+            next_tab: 0,
+            split: false,
+            contents: Vec::new(),
+            on_hydrate: None,
         };
         let editors = RecEditors {
-            spec: Value::Null, log: log.clone(), wcs: Vec::new(), views: Cell::new(0),
+            spec: Value::Null,
+            log: log.clone(),
+            wcs: Vec::new(),
+            views: Cell::new(0),
             deferred: RefCell::new(Vec::new()),
         };
-        let mut deps = RecDeps { spec: Value::Null, log: log.clone(), manager, throws: Vec::new() };
+        let mut deps = RecDeps {
+            spec: Value::Null,
+            log: log.clone(),
+            manager,
+            throws: Vec::new(),
+        };
         let mut shell = RecoveryShell::new();
         let LaunchStep::Need(LaunchNeed::Prepare { .. }, machine) =
-            LaunchMachine::start("data".into(), vec![], false) else { panic!("expected preparation") };
-        let plan = LaunchPlan {
-            restore_run: true, crash_loop: false, plain_launch: false,
-            tabs: vec![PlannedTab { key: "original".into(), kind: "docs".into(), title: "title".into(), file_path: None, open: PlannedOpen::File }],
-            front: Some("original".into()), split: None, items: vec![], copies: vec![], launch_paths: vec![],
+            LaunchMachine::start("data".into(), vec![], false)
+        else {
+            panic!("expected preparation")
         };
-        let LaunchStep::Need(LaunchNeed::Hydrate(_), machine) =
-            machine.resume(LaunchReply::Prepared(Ok(plan)), &mut shell, &editors, &mut deps) else { panic!("expected hydration") };
-        let LaunchStep::Need(LaunchNeed::SessionChanged, machine) =
-            machine.resume(LaunchReply::Hydrated(Ok(vec!["tab".into()])), &mut shell, &editors, &mut deps) else { panic!("expected session") };
-        let LaunchStep::Need(LaunchNeed::Activate(id), machine) =
-            machine.resume(LaunchReply::Completed(Ok(())), &mut shell, &editors, &mut deps) else { panic!("expected activation") };
+        let plan = LaunchPlan {
+            restore_run: true,
+            crash_loop: false,
+            plain_launch: false,
+            tabs: vec![PlannedTab {
+                key: "original".into(),
+                kind: "docs".into(),
+                title: "title".into(),
+                file_path: None,
+                open: PlannedOpen::File,
+            }],
+            front: Some("original".into()),
+            split: None,
+            items: vec![],
+            copies: vec![],
+            launch_paths: vec![],
+        };
+        let LaunchStep::Need(LaunchNeed::Hydrate(_), machine) = machine.resume(
+            LaunchReply::Prepared(Ok(plan)),
+            &mut shell,
+            &editors,
+            &mut deps,
+        ) else {
+            panic!("expected hydration")
+        };
+        let LaunchStep::Need(LaunchNeed::SessionChanged, machine) = machine.resume(
+            LaunchReply::Hydrated(Ok(vec!["tab".into()])),
+            &mut shell,
+            &editors,
+            &mut deps,
+        ) else {
+            panic!("expected session")
+        };
+        let LaunchStep::Need(LaunchNeed::Activate(id), machine) = machine.resume(
+            LaunchReply::Completed(Ok(())),
+            &mut shell,
+            &editors,
+            &mut deps,
+        ) else {
+            panic!("expected activation")
+        };
         assert_eq!(id, "tab");
-        let LaunchStep::Need(LaunchNeed::OpenHome, machine) =
-            machine.resume(LaunchReply::Completed(Err(Failure("activation failed".into()))), &mut shell, &editors, &mut deps)
-            else { panic!("expected Home fallback") };
-        assert!(!log.borrow().iter().any(|line| line.to_string().contains("settled")));
-        let LaunchStep::Need(LaunchNeed::Settled, _) =
-            machine.resume(LaunchReply::Completed(Ok(())), &mut shell, &editors, &mut deps) else { panic!("expected settlement") };
+        let LaunchStep::Need(LaunchNeed::OpenHome, machine) = machine.resume(
+            LaunchReply::Completed(Err(Failure("activation failed".into()))),
+            &mut shell,
+            &editors,
+            &mut deps,
+        ) else {
+            panic!("expected Home fallback")
+        };
+        assert!(
+            !log.borrow()
+                .iter()
+                .any(|line| line.to_string().contains("settled"))
+        );
+        let LaunchStep::Need(LaunchNeed::Settled, _) = machine.resume(
+            LaunchReply::Completed(Ok(())),
+            &mut shell,
+            &editors,
+            &mut deps,
+        ) else {
+            panic!("expected settlement")
+        };
     }
 
     #[test]
     fn launch_preparation_stops_before_next_io_when_cancelled() {
-        let store = Store { lock: Mutex::new(()) };
+        let store = Store {
+            lock: Mutex::new(()),
+        };
         let mut session = SessionRecordProcess::new();
         let migrated = Cell::new(false);
         let checks = Cell::new(0);
-        let result = prepare_launch(&store, &mut session, &mut Env, "unused".into(), &[], false,
-            || migrated.set(true), || {
+        let result = prepare_launch(
+            &store,
+            &mut session,
+            &mut Env,
+            "unused".into(),
+            &[],
+            false,
+            || migrated.set(true),
+            || {
                 checks.set(checks.get() + 1);
-                if checks.get() == 3 { Err(Failure("cancelled".into())) } else { Ok(()) }
-            });
+                if checks.get() == 3 {
+                    Err(Failure("cancelled".into()))
+                } else {
+                    Ok(())
+                }
+            },
+        );
         assert!(matches!(result, Err(Failure(message)) if message == "cancelled"));
         assert!(migrated.get());
         assert!(session.session_recorder().is_none());

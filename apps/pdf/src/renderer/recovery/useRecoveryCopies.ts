@@ -91,7 +91,11 @@ export function useRecoveryCopies(
     window.addEventListener('pointermove', move, true)
     const off = apiRef.current?.onRecoveryFlushRequest?.((token) => {
       void scheduler.flushNow().then(
-        (result) => apiRef.current?.sendRecoveryFlushDone?.(token, result === 'written' || result === 'unchanged' ? undefined : `PDF recovery ${result}`),
+        (result) =>
+          apiRef.current?.sendRecoveryFlushDone?.(
+            token,
+            result === 'written' || result === 'unchanged' ? undefined : `PDF recovery ${result}`,
+          ),
         (error) => apiRef.current?.sendRecoveryFlushDone?.(token, String(error)),
       )
     })

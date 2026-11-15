@@ -82,7 +82,11 @@ pub type ZipSourceOf<'a> =
 pub trait ZipLibrary {
     fn check_cancelled(&self) -> Result<(), JsError>;
     /// `openZipFile(path)`
-    fn open_zip_file(&mut self, path: &str, file: Option<Arc<fs::File>>) -> Result<ZipFile, JsError>;
+    fn open_zip_file(
+        &mut self,
+        path: &str,
+        file: Option<Arc<fs::File>>,
+    ) -> Result<ZipFile, JsError>;
     fn open_zip_retained(&mut self, source: Arc<dyn RetainedZipBytes>) -> Result<ZipFile, JsError>;
     /// `zip.close()`
     fn close_zip_file(&mut self, zip: ZipFile);
@@ -211,13 +215,19 @@ pub fn read_file_at(file: &fs::File, offset: u64, buffer: &mut [u8]) -> std::io:
 
 impl ZipRead for FileReader {
     fn read(&mut self, offset: u64, length: u64) -> Result<Vec<u8>, JsError> {
-        let size = usize::try_from(length).map_err(|_| JsError::plain("lazy media: source range is too large"))?;
+        let size = usize::try_from(length)
+            .map_err(|_| JsError::plain("lazy media: source range is too large"))?;
         let mut buf = vec![0u8; size];
         let mut done = 0usize;
         while done < size {
-            let position = offset.checked_add(done as u64).ok_or_else(|| JsError::plain("lazy media: source offset overflow"))?;
-            let read = read_file_at(&self.file, position, &mut buf[done..]).map_err(|e| node_error_fd(&e, "read"))?;
-            if read == 0 { return Err(JsError::plain("lazy media: source file truncated")); }
+            let position = offset
+                .checked_add(done as u64)
+                .ok_or_else(|| JsError::plain("lazy media: source offset overflow"))?;
+            let read = read_file_at(&self.file, position, &mut buf[done..])
+                .map_err(|e| node_error_fd(&e, "read"))?;
+            if read == 0 {
+                return Err(JsError::plain("lazy media: source file truncated"));
+            }
             done += read;
         }
         Ok(buf)
@@ -233,9 +243,13 @@ fn sha256_file(file: &fs::File, lib: &dyn ZipLibrary) -> Result<String, JsError>
         lib.check_cancelled()?;
         let read = read_file_at(file, offset, &mut chunk).map_err(|e| node_error_fd(&e, "read"))?;
         lib.check_cancelled()?;
-        if read == 0 { break; }
+        if read == 0 {
+            break;
+        }
         hash.update(&chunk[..read]);
-        offset = offset.checked_add(read as u64).ok_or_else(|| JsError::plain("lazy media: source offset overflow"))?;
+        offset = offset
+            .checked_add(read as u64)
+            .ok_or_else(|| JsError::plain("lazy media: source offset overflow"))?;
     }
     Ok(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
@@ -338,28 +352,44 @@ impl LazyMedia {
             Some(file) => file,
             None => match fs::File::open(file_path) {
                 Ok(file) => Arc::new(file),
-                Err(_) => { lib.check_cancelled()?; return Ok(None); }
+                Err(_) => {
+                    lib.check_cancelled()?;
+                    return Ok(None);
+                }
             },
         };
         let zip = match lib.open_zip_file(file_path, Some(file.clone())) {
             Ok(zip) => zip,
-            Err(_) => { lib.check_cancelled()?; return Ok(None); }
+            Err(_) => {
+                lib.check_cancelled()?;
+                return Ok(None);
+            }
         };
         let opened = (|| -> Result<Option<OpenedLazyDocx>, JsError> {
             let mut media = 0u64;
             for entry in zip.entries.values() {
                 lib.check_cancelled()?;
-                if is_lazy_media_part(&entry.name) { media += entry.uncompressed_size; }
+                if is_lazy_media_part(&entry.name) {
+                    media += entry.uncompressed_size;
+                }
             }
-            if media < LAZY_MEDIA_MIN_BYTES { return Ok(None); }
+            if media < LAZY_MEDIA_MIN_BYTES {
+                return Ok(None);
+            }
             let hash = match sha256_file(&file, lib) {
                 Ok(hash) => hash,
-                Err(_) => { lib.check_cancelled()?; return Ok(None); }
+                Err(_) => {
+                    lib.check_cancelled()?;
+                    return Ok(None);
+                }
             };
             let slim = match lib.slim_docx(&zip, &hash, LAZY_MEDIA_MIN_BYTES) {
                 Ok(Some(slim)) => slim,
                 Ok(None) => return Ok(None),
-                Err(_) => { lib.check_cancelled()?; return Ok(None); }
+                Err(_) => {
+                    lib.check_cancelled()?;
+                    return Ok(None);
+                }
             };
             lib.check_cancelled()?;
             self.register_source(&hash, file_path, wc_id, Some(file.clone()));
@@ -376,31 +406,48 @@ impl LazyMedia {
     }
 
     pub fn open_lazy_retained(
-        &mut self, lib: &mut dyn ZipLibrary, file_path: &str,
-        source: Arc<dyn RetainedZipBytes>, wc_id: f64,
+        &mut self,
+        lib: &mut dyn ZipLibrary,
+        file_path: &str,
+        source: Arc<dyn RetainedZipBytes>,
+        wc_id: f64,
     ) -> Result<Option<OpenedLazyDocx>, JsError> {
         lib.check_cancelled()?;
         let zip = match lib.open_zip_retained(source.clone()) {
             Ok(zip) => zip,
-            Err(_) => { lib.check_cancelled()?; return Ok(None); }
+            Err(_) => {
+                lib.check_cancelled()?;
+                return Ok(None);
+            }
         };
         let opened = (|| -> Result<Option<OpenedLazyDocx>, JsError> {
             let mut media = 0u64;
             for entry in zip.entries.values() {
                 lib.check_cancelled()?;
-                if is_lazy_media_part(&entry.name) { media += entry.uncompressed_size; }
+                if is_lazy_media_part(&entry.name) {
+                    media += entry.uncompressed_size;
+                }
             }
-            if media < LAZY_MEDIA_MIN_BYTES { return Ok(None); }
+            if media < LAZY_MEDIA_MIN_BYTES {
+                return Ok(None);
+            }
             let mut digest = Sha256::new();
             for chunk in source.bytes().chunks(64 * 1024) {
                 lib.check_cancelled()?;
                 digest.update(chunk);
             }
-            let hash: String = digest.finalize().iter().map(|byte| format!("{byte:02x}")).collect();
+            let hash: String = digest
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
             let slim = match lib.slim_docx(&zip, &hash, LAZY_MEDIA_MIN_BYTES) {
                 Ok(Some(slim)) => slim,
                 Ok(None) => return Ok(None),
-                Err(_) => { lib.check_cancelled()?; return Ok(None); }
+                Err(_) => {
+                    lib.check_cancelled()?;
+                    return Ok(None);
+                }
             };
             lib.check_cancelled()?;
             self.register_source(&hash, file_path, wc_id, None);
@@ -429,7 +476,10 @@ impl LazyMedia {
         lib.check_cancelled()?;
         let hashes = match lib.lazy_media_hashes_in(bytes) {
             Ok(hashes) => hashes,
-            Err(_) => { lib.check_cancelled()?; return Ok(()); }
+            Err(_) => {
+                lib.check_cancelled()?;
+                return Ok(());
+            }
         };
         let file = source_file.or_else(|| fs::File::open(file_path).ok().map(Arc::new));
         lib.check_cancelled()?;
@@ -442,13 +492,20 @@ impl LazyMedia {
 
     /// Bind recovered placeholders to the original retained document archive.
     pub fn adopt_lazy_retained(
-        &mut self, lib: &mut dyn ZipLibrary, bytes: &[u8], file_path: &str,
-        source: Arc<dyn RetainedZipBytes>, wc_id: f64,
+        &mut self,
+        lib: &mut dyn ZipLibrary,
+        bytes: &[u8],
+        file_path: &str,
+        source: Arc<dyn RetainedZipBytes>,
+        wc_id: f64,
     ) -> Result<(), JsError> {
         lib.check_cancelled()?;
         let hashes = match lib.lazy_media_hashes_in(bytes) {
             Ok(hashes) => hashes,
-            Err(_) => { lib.check_cancelled()?; return Ok(()); }
+            Err(_) => {
+                lib.check_cancelled()?;
+                return Ok(());
+            }
         };
         for hash in hashes {
             lib.check_cancelled()?;
@@ -501,8 +558,12 @@ impl LazyMedia {
             return Ok(None);
         };
         let path = source.path.clone();
-        let Some(file) = source.file.clone() else { return Ok(None); };
-        let Ok(meta) = file.metadata() else { return Ok(None); };
+        let Some(file) = source.file.clone() else {
+            return Ok(None);
+        };
+        let Ok(meta) = file.metadata() else {
+            return Ok(None);
+        };
         let info = StatInfo::of(&meta);
         if let Some(table) = &source.table
             && table.size == info.size
@@ -564,9 +625,16 @@ impl LazyMedia {
         let (true, Some(entries)) = (has_source, entries) else {
             return Ok(None);
         };
-        let Some(source) = self.sources.get(hash) else { return Ok(None); };
-        let Some(file) = source.file.clone() else { return Ok(None); };
-        let size = file.metadata().map_err(|e| node_error(&e, "stat", &source.path))?.len();
+        let Some(source) = self.sources.get(hash) else {
+            return Ok(None);
+        };
+        let Some(file) = source.file.clone() else {
+            return Ok(None);
+        };
+        let size = file
+            .metadata()
+            .map_err(|e| node_error(&e, "stat", &source.path))?
+            .len();
         Ok(Some(Rc::new(RefCell::new(ZipFile {
             size,
             entries,
@@ -586,7 +654,10 @@ impl LazyMedia {
         lib.check_cancelled()?;
         let found = match lib.lazy_media_hashes_in(bytes) {
             Ok(found) => found,
-            Err(_) => { lib.check_cancelled()?; Vec::new() }
+            Err(_) => {
+                lib.check_cancelled()?;
+                Vec::new()
+            }
         };
         for hash in found {
             lib.check_cancelled()?;
@@ -600,7 +671,10 @@ impl LazyMedia {
                 lib.check_cancelled()?;
                 copy.extend_from_slice(chunk);
             }
-            return Ok(MaterializedDocx { bytes: copy, hashes });
+            return Ok(MaterializedDocx {
+                bytes: copy,
+                hashes,
+            });
         }
         let mut opened: JsMap<Result<Option<SharedZip>, JsError>> = JsMap::new();
         let full = lib.materialize_docx(bytes, &mut |lib, hash| {
@@ -630,7 +704,11 @@ impl LazyMedia {
         wc_id: f64,
         plain: Option<&[u8]>,
     ) {
-        let file = if plain.is_none() { fs::File::open(file_path).ok().map(Arc::new) } else { None };
+        let file = if plain.is_none() {
+            fs::File::open(file_path).ok().map(Arc::new)
+        } else {
+            None
+        };
         for hash in hashes {
             self.register_source(hash, file_path, wc_id, file.clone());
             if let Some(source) = self.sources.get_mut(hash) {
@@ -671,12 +749,17 @@ impl LazyMedia {
         while done < entry.csize {
             lib.check_cancelled()?;
             let count = (entry.csize - done).min(64 * 1024);
-            let offset = entry.data_offset.checked_add(done).ok_or_else(|| JsError::plain("lazy media: source offset overflow"))?;
+            let offset = entry
+                .data_offset
+                .checked_add(done)
+                .ok_or_else(|| JsError::plain("lazy media: source offset overflow"))?;
             let part = zip.borrow_mut().reader.read(offset, count)?;
             lib.check_cancelled()?;
             done += part.len() as u64;
             raw.extend_from_slice(&part);
-            if part.len() != count as usize { return Err(JsError::plain("lazy media: source file truncated")); }
+            if part.len() != count as usize {
+                return Err(JsError::plain("lazy media: source file truncated"));
+            }
         }
         let ext = part_path.rsplit('.').next().unwrap_or("").to_lowercase();
         let body = if entry.method == 0 {
@@ -687,9 +770,13 @@ impl LazyMedia {
             let mut buffer = [0u8; 64 * 1024];
             loop {
                 lib.check_cancelled()?;
-                let count = decoder.read(&mut buffer).map_err(|e| JsError::plain(e.to_string()))?;
+                let count = decoder
+                    .read(&mut buffer)
+                    .map_err(|e| JsError::plain(e.to_string()))?;
                 lib.check_cancelled()?;
-                if count == 0 { break; }
+                if count == 0 {
+                    break;
+                }
                 out.extend_from_slice(&buffer[..count]);
             }
             out
@@ -703,36 +790,73 @@ impl LazyMedia {
     }
 
     pub fn read_lazy_media_for(
-        &mut self, lib: &mut dyn ZipLibrary, url: &str, owner: MediaOwner,
+        &mut self,
+        lib: &mut dyn ZipLibrary,
+        url: &str,
+        owner: MediaOwner,
     ) -> Result<Option<LazyMediaBody>, JsError> {
-        let Some((hash, _)) = parse_lazy_media_url(url) else { return Ok(None) };
-        if !self.sources.get(&hash).is_some_and(|source| source.owners.contains(&f64::from(owner.view))) {
+        let Some((hash, _)) = parse_lazy_media_url(url) else {
+            return Ok(None);
+        };
+        if !self
+            .sources
+            .get(&hash)
+            .is_some_and(|source| source.owners.contains(&f64::from(owner.view)))
+        {
             return Ok(None);
         }
         self.read_lazy_media(lib, url)
     }
 
     pub fn answer_for(
-        &mut self, lib: &mut dyn ZipLibrary, handoffs: &mut ByteHandoffs<Vec<u8>>,
-        url: &str, fonts_dir: &str, permit: &MediaPermit,
+        &mut self,
+        lib: &mut dyn ZipLibrary,
+        handoffs: &mut ByteHandoffs<Vec<u8>>,
+        url: &str,
+        fonts_dir: &str,
+        permit: &MediaPermit,
     ) -> Result<MediaAnswer, JsError> {
-        let not_found = || MediaAnswer { status: 404, headers: Vec::new(), body: Vec::new() };
-        if !permit.is_active() { return Ok(not_found()); }
+        let not_found = || MediaAnswer {
+            status: 404,
+            headers: Vec::new(),
+            body: Vec::new(),
+        };
+        if !permit.is_active() {
+            return Ok(not_found());
+        }
         let answer = if let Some(bytes) = handoffs.take_handoff_for(url, permit.owner()) {
-            MediaAnswer { status: 200, headers: vec![
-                ("Content-Type".into(), "application/octet-stream".into()),
-                ("Content-Length".into(), bytes.len().to_string()),
-                ("Access-Control-Allow-Origin".into(), "*".into()),
-            ], body: bytes }
-        } else if let Some(font) = template_font_response(url, fonts_dir, &mut |path| fs::read(path).map_err(|_| ())) {
-            MediaAnswer { status: font.status, headers: font.headers, body: font.body }
+            MediaAnswer {
+                status: 200,
+                headers: vec![
+                    ("Content-Type".into(), "application/octet-stream".into()),
+                    ("Content-Length".into(), bytes.len().to_string()),
+                    ("Access-Control-Allow-Origin".into(), "*".into()),
+                ],
+                body: bytes,
+            }
+        } else if let Some(font) =
+            template_font_response(url, fonts_dir, &mut |path| fs::read(path).map_err(|_| ()))
+        {
+            MediaAnswer {
+                status: font.status,
+                headers: font.headers,
+                body: font.body,
+            }
         } else {
             match self.read_lazy_media_for(lib, url, permit.owner())? {
-                Some(media) => MediaAnswer { status: 200, headers: vec![("Content-Type".into(), media.mime)], body: media.body },
+                Some(media) => MediaAnswer {
+                    status: 200,
+                    headers: vec![("Content-Type".into(), media.mime)],
+                    body: media.body,
+                },
                 None => not_found(),
             }
         };
-        if permit.is_active() { Ok(answer) } else { Ok(not_found()) }
+        if permit.is_active() {
+            Ok(answer)
+        } else {
+            Ok(not_found())
+        }
     }
 
     /// The handler `registerLazyMediaProtocol` installs, for one request URL:

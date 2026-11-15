@@ -701,7 +701,11 @@ export class EpubEditController {
       return true
     }
     const result = await this.host.api
-      .applyEdits({ spineIndex: batch.spineIndex, edits: batch.edits, ...(requestId ? { requestId } : {}) })
+      .applyEdits({
+        spineIndex: batch.spineIndex,
+        edits: batch.edits,
+        ...(requestId ? { requestId } : {}),
+      })
       .catch((err): EpubEditResult => ({ ok: false, error: 'failed', message: String(err) }))
     if (result.ok) {
       this.note(result)

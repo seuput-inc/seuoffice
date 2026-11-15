@@ -82,7 +82,7 @@ impl Prepared {
                 Ok(())=>self.move_pending(path,dir,stage,done),
             },
         })));
-        workers.spawn(Box::new(move || complete.finish(resolve_default_root(&authority).map(|root|PendingDirSave::eligible_source(&input,&root,set_at))));
+        workers.spawn(Box::new(move || complete.finish(resolve_default_root(&authority).map(|root|PendingDirSave::eligible_source(&input,&root,set_at)))));
     }
 
     fn move_pending(self,path:String,dir:String,stage:SavedContinuation,done:Done) {

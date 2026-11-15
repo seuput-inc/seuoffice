@@ -123,7 +123,7 @@ fn run_call(context: Rc<Context>, call: HostCall, done: Box<dyn FnOnce(Settled)>
                 Some(DocumentTabKind::Diagram) => Surface::Diagram,
                 None => Surface::Shell,
             };
-            let cancel = CancelToken::new();
+            let cancel = CancelToken::default();
             let operation = match super::native_commands::issue(
                 NativeEditorCommand::OpenFile { surface, path: std::path::PathBuf::from(&path) },
                 cancel.clone(),

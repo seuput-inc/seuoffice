@@ -297,8 +297,8 @@ fn native_pdf_grant_keeps_callback_cancellation_and_document_lease() {
         let mut owner = effects.capture_owner(ViewId(1), &renderer).unwrap();
         let document = shell_contract::runtime::RendererGeneration::new();
         owner.context = owner.context.with_document_lease(document.clone());
-        let operation_cancel = CancelToken::new();
-        let binding = shell_contract::ipc::NativeInvocationIssuer::new(CancelToken::new())
+        let operation_cancel = CancelToken::default();
+        let binding = shell_contract::ipc::NativeInvocationIssuer::new(CancelToken::default())
             .issue_existing_document_save(
                 Surface::Hwp,
                 ViewId(1),
@@ -313,9 +313,9 @@ fn native_pdf_grant_keeps_callback_cancellation_and_document_lease() {
             selection,
             participants: Vec::new(),
         };
-        let cancel = CancelToken::new();
-        let pending = CancelToken::new();
-        let callback = CancelToken::new();
+        let cancel = CancelToken::default();
+        let pending = CancelToken::default();
+        let callback = CancelToken::default();
         let mut calls = 0;
         pdf_grant_effect(
             &authority,
@@ -366,9 +366,9 @@ fn renderer_pdf_grant_rejects_a_cancelled_callback_owner() {
     let renderer = probe.services.views.renderer_generation(ViewId(1)).unwrap();
     let owner = effects.capture_owner(ViewId(1), &renderer).unwrap();
     let authority = shell_contract::editors::OwnedPdfGrantAuthority::Renderer(owner.clone());
-    let cancel = CancelToken::new();
-    let pending = CancelToken::new();
-    let callback = CancelToken::new();
+    let cancel = CancelToken::default();
+    let pending = CancelToken::default();
+    let callback = CancelToken::default();
     let mut calls = 0;
     pdf_grant_effect(
         &authority,
@@ -597,8 +597,8 @@ fn cleanup_pending_retains_completion_until_actual_terminal_callback() {
     let grant = OwnedHwpCompletion {
         authority: shell_contract::editors::OwnedPdfGrantAuthority::Renderer(owner.clone()),
         destination: owner,
-        cancel: CancelToken::new(),
-        pending: CancelToken::new(),
+        cancel: CancelToken::default(),
+        pending: CancelToken::default(),
         additional: Vec::new(),
         effects,
         accepted_losses: Arc::default(),
@@ -669,8 +669,8 @@ fn failed_observer_registration_keeps_receipt_and_original_completion() {
     let grant = OwnedHwpCompletion {
         authority: shell_contract::editors::OwnedPdfGrantAuthority::Renderer(owner.clone()),
         destination: owner,
-        cancel: CancelToken::new(),
-        pending: CancelToken::new(),
+        cancel: CancelToken::default(),
+        pending: CancelToken::default(),
         additional: Vec::new(),
         effects,
         accepted_losses: Arc::default(),
@@ -733,8 +733,8 @@ fn immediate_terminal_delivery_survives_a_dropped_core_wake_and_ack_retry() {
     let grant = OwnedHwpCompletion {
         authority: shell_contract::editors::OwnedPdfGrantAuthority::Renderer(owner.clone()),
         destination: owner,
-        cancel: CancelToken::new(),
-        pending: CancelToken::new(),
+        cancel: CancelToken::default(),
+        pending: CancelToken::default(),
         additional: Vec::new(),
         effects,
         accepted_losses: Arc::default(),
@@ -791,8 +791,8 @@ fn early_supervisor_wake_keeps_the_original_responder_until_dispatch_completes()
     let grant = OwnedHwpCompletion {
         authority: shell_contract::editors::OwnedPdfGrantAuthority::Renderer(owner.clone()),
         destination: owner,
-        cancel: CancelToken::new(),
-        pending: CancelToken::new(),
+        cancel: CancelToken::default(),
+        pending: CancelToken::default(),
         additional: Vec::new(),
         effects,
         accepted_losses: Arc::default(),
@@ -854,8 +854,8 @@ fn restored_terminal_lease_is_recovered_from_the_original_pending_task() {
     let grant = OwnedHwpCompletion {
         authority: shell_contract::editors::OwnedPdfGrantAuthority::Renderer(owner.clone()),
         destination: owner,
-        cancel: CancelToken::new(),
-        pending: CancelToken::new(),
+        cancel: CancelToken::default(),
+        pending: CancelToken::default(),
         additional: Vec::new(),
         effects,
         accepted_losses: Arc::default(),
@@ -914,8 +914,8 @@ fn failed_prepared_start_retains_same_task_until_wake_retries_it() {
     let grant = OwnedHwpCompletion {
         authority: shell_contract::editors::OwnedPdfGrantAuthority::Renderer(owner.clone()),
         destination: owner,
-        cancel: CancelToken::new(),
-        pending: CancelToken::new(),
+        cancel: CancelToken::default(),
+        pending: CancelToken::default(),
         additional: Vec::new(),
         effects,
         accepted_losses: Arc::default(),

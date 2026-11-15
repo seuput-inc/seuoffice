@@ -18,41 +18,62 @@ pub trait SlidesDocuments {
     fn document(&self, view: ViewId) -> Option<SlidesDocument>;
 }
 
-pub type OwnedRecentMove = Box<dyn FnOnce(String, String, Box<dyn FnOnce(Result<(), String>) + Send>)>;
+pub type OwnedRecentMove =
+    Box<dyn FnOnce(String, String, Box<dyn FnOnce(Result<(), String>) + Send>)>;
 
 pub trait SlidesRecentFiles {
     fn prepare_moved_owned(
-        &self, origin: &crate::ipc::NativeRequestOwner, destination: &crate::ipc::NativeRequestOwner,
-        cancel: &crate::runtime::CancelToken, pending: &crate::runtime::CancelToken,
+        &self,
+        origin: &crate::ipc::NativeRequestOwner,
+        destination: &crate::ipc::NativeRequestOwner,
+        cancel: &crate::runtime::CancelToken,
+        pending: &crate::runtime::CancelToken,
         effects: &crate::hosts::OwnedEffectsHost,
     ) -> Result<OwnedRecentMove, String>;
     fn prepare_moved_many_owned(
-        &self, origin: &crate::ipc::NativeRequestOwner, destination: &crate::ipc::NativeRequestOwner,
+        &self,
+        origin: &crate::ipc::NativeRequestOwner,
+        destination: &crate::ipc::NativeRequestOwner,
         participants: &[crate::ipc::NativeRequestOwner],
-        cancel: &crate::runtime::CancelToken, pending: &crate::runtime::CancelToken,
+        cancel: &crate::runtime::CancelToken,
+        pending: &crate::runtime::CancelToken,
         effects: &crate::hosts::OwnedEffectsHost,
     ) -> Result<OwnedRecentMove, String>;
     fn prepare_moved_many_owned_extra(
-        &self, origin: &crate::ipc::NativeRequestOwner, destination: &crate::ipc::NativeRequestOwner,
-        participants: &[crate::ipc::NativeRequestOwner], cancel: &crate::runtime::CancelToken,
-        pending: &crate::runtime::CancelToken, additional: &[crate::runtime::CancelToken],
+        &self,
+        origin: &crate::ipc::NativeRequestOwner,
+        destination: &crate::ipc::NativeRequestOwner,
+        participants: &[crate::ipc::NativeRequestOwner],
+        cancel: &crate::runtime::CancelToken,
+        pending: &crate::runtime::CancelToken,
+        additional: &[crate::runtime::CancelToken],
         effects: &crate::hosts::OwnedEffectsHost,
     ) -> Result<OwnedRecentMove, String>;
     fn prepare_moved_recovery(
-        &self, receipt: &crate::ipc::RecoverySeedReceipt, snapshot: &crate::ipc::RecoveryAuthoritySnapshot, receiver: &crate::ipc::NativeRequestOwner,
-        destination: &crate::ipc::NativeRequestOwner, participants: &[crate::ipc::NativeRequestOwner],
-        cancel: &crate::runtime::CancelToken, pending: &crate::runtime::CancelToken,
+        &self,
+        receipt: &crate::ipc::RecoverySeedReceipt,
+        snapshot: &crate::ipc::RecoveryAuthoritySnapshot,
+        receiver: &crate::ipc::NativeRequestOwner,
+        destination: &crate::ipc::NativeRequestOwner,
+        participants: &[crate::ipc::NativeRequestOwner],
+        cancel: &crate::runtime::CancelToken,
+        pending: &crate::runtime::CancelToken,
         effects: &crate::hosts::OwnedEffectsHost,
     ) -> Result<OwnedRecentMove, String>;
     fn prepare_moved_existing_document(
-        &self, binding: &crate::ipc::NativeExistingDocumentBinding, participants: &[crate::ipc::NativeRequestOwner],
-        cancel: &crate::runtime::CancelToken, pending: &crate::runtime::CancelToken, additional: &[crate::runtime::CancelToken], effects: &crate::hosts::OwnedEffectsHost,
+        &self,
+        binding: &crate::ipc::NativeExistingDocumentBinding,
+        participants: &[crate::ipc::NativeRequestOwner],
+        cancel: &crate::runtime::CancelToken,
+        pending: &crate::runtime::CancelToken,
+        additional: &[crate::runtime::CancelToken],
+        effects: &crate::hosts::OwnedEffectsHost,
     ) -> Result<OwnedRecentMove, String>;
 }
 
-
 /// Captured on core, invoked with immutable paths; completion runs on the IO worker.
-pub type OwnedTemplateMove = Box<dyn FnOnce(String,String,Box<dyn FnOnce(Result<(),String>) + Send>)>;
+pub type OwnedTemplateMove =
+    Box<dyn FnOnce(String, String, Box<dyn FnOnce(Result<(), String>) + Send>)>;
 /// A: the hooks the slides save and rename paths call (template-selection-ipc);
 /// when none is provided, the callers do nothing
 pub trait SlidesTemplateSelectionHooks {
@@ -64,30 +85,50 @@ pub trait SlidesTemplateSelectionHooks {
     /// after-file-moved step for a .pptx (W's rename path)
     fn moved(&self, old_path: &str, new_path: &str);
     fn prepare_moved_owned(
-        &self,origin:&crate::ipc::NativeRequestOwner,destination:&crate::ipc::NativeRequestOwner,
-        cancel:&crate::runtime::CancelToken,pending:&crate::runtime::CancelToken,
-        effects:&crate::hosts::OwnedEffectsHost,
-    )->Result<OwnedTemplateMove,String>;
+        &self,
+        origin: &crate::ipc::NativeRequestOwner,
+        destination: &crate::ipc::NativeRequestOwner,
+        cancel: &crate::runtime::CancelToken,
+        pending: &crate::runtime::CancelToken,
+        effects: &crate::hosts::OwnedEffectsHost,
+    ) -> Result<OwnedTemplateMove, String>;
     fn prepare_moved_many_owned(
-        &self,origin:&crate::ipc::NativeRequestOwner,destination:&crate::ipc::NativeRequestOwner,
-        participants:&[crate::ipc::NativeRequestOwner],
-        cancel:&crate::runtime::CancelToken,pending:&crate::runtime::CancelToken,
-        effects:&crate::hosts::OwnedEffectsHost,
-    )->Result<OwnedTemplateMove,String>;
+        &self,
+        origin: &crate::ipc::NativeRequestOwner,
+        destination: &crate::ipc::NativeRequestOwner,
+        participants: &[crate::ipc::NativeRequestOwner],
+        cancel: &crate::runtime::CancelToken,
+        pending: &crate::runtime::CancelToken,
+        effects: &crate::hosts::OwnedEffectsHost,
+    ) -> Result<OwnedTemplateMove, String>;
     fn prepare_moved_many_owned_extra(
-        &self, origin: &crate::ipc::NativeRequestOwner, destination: &crate::ipc::NativeRequestOwner,
-        participants: &[crate::ipc::NativeRequestOwner], cancel: &crate::runtime::CancelToken,
-        pending: &crate::runtime::CancelToken, additional: &[crate::runtime::CancelToken],
+        &self,
+        origin: &crate::ipc::NativeRequestOwner,
+        destination: &crate::ipc::NativeRequestOwner,
+        participants: &[crate::ipc::NativeRequestOwner],
+        cancel: &crate::runtime::CancelToken,
+        pending: &crate::runtime::CancelToken,
+        additional: &[crate::runtime::CancelToken],
         effects: &crate::hosts::OwnedEffectsHost,
     ) -> Result<OwnedTemplateMove, String>;
     fn prepare_moved_recovery(
-        &self, receipt: &crate::ipc::RecoverySeedReceipt, snapshot: &crate::ipc::RecoveryAuthoritySnapshot, receiver: &crate::ipc::NativeRequestOwner,
-        destination: &crate::ipc::NativeRequestOwner, participants: &[crate::ipc::NativeRequestOwner],
-        cancel: &crate::runtime::CancelToken, pending: &crate::runtime::CancelToken,
+        &self,
+        receipt: &crate::ipc::RecoverySeedReceipt,
+        snapshot: &crate::ipc::RecoveryAuthoritySnapshot,
+        receiver: &crate::ipc::NativeRequestOwner,
+        destination: &crate::ipc::NativeRequestOwner,
+        participants: &[crate::ipc::NativeRequestOwner],
+        cancel: &crate::runtime::CancelToken,
+        pending: &crate::runtime::CancelToken,
         effects: &crate::hosts::OwnedEffectsHost,
     ) -> Result<OwnedTemplateMove, String>;
     fn prepare_moved_existing_document(
-        &self, binding: &crate::ipc::NativeExistingDocumentBinding, participants: &[crate::ipc::NativeRequestOwner],
-        cancel: &crate::runtime::CancelToken, pending: &crate::runtime::CancelToken, additional: &[crate::runtime::CancelToken], effects: &crate::hosts::OwnedEffectsHost,
+        &self,
+        binding: &crate::ipc::NativeExistingDocumentBinding,
+        participants: &[crate::ipc::NativeRequestOwner],
+        cancel: &crate::runtime::CancelToken,
+        pending: &crate::runtime::CancelToken,
+        additional: &[crate::runtime::CancelToken],
+        effects: &crate::hosts::OwnedEffectsHost,
     ) -> Result<OwnedTemplateMove, String>;
 }

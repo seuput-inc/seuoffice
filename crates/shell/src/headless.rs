@@ -129,7 +129,7 @@ pub(crate) fn start(cx: HostContext, services: Services, output: Output, shutdow
         let operation = issuer.issue(shell_contract::ipc::NativeInvocationSelection::HeadlessExport {
             surface,input:input.clone().into(),output:out_path.clone().into(),format:format.into(),
             page:request.page,ops:request.ops.clone(),batch:request.batch.map(str::to_owned),
-        },shell_contract::runtime::CancelToken::new());
+        },shell_contract::runtime::CancelToken::default());
         let unavailable = completion.clone();
         let unavailable_operation = operation.clone();
         crate::host::w::post_core_checked(move |_, _| {

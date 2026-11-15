@@ -13,7 +13,7 @@ fn operation(cancel: CancelToken, shutdown: CancelToken) -> NativeInvocationOper
 fn synthetic_owner(view: ViewId, created: &RendererGeneration) -> NativeRequestOwner {
     NativeRequestOwner {
         view,
-        context: NativeContext::with_owner_loss((), created.clone(), CancelToken::new()),
+        context: NativeContext::with_owner_loss((), created.clone(), CancelToken::default()),
     }
 }
 
@@ -23,9 +23,9 @@ fn register_synthetic_state(target: &NativeInvocationTarget, owner: NativeReques
 }
 #[test]
 fn headless_cleanup_retains_only_the_original_reservation_after_cancellation() {
-    let cancel = CancelToken::new();
-    let cleanup_shutdown = CancelToken::new();
-    let operation = operation(cancel.clone(), CancelToken::new());
+    let cancel = CancelToken::default();
+    let cleanup_shutdown = CancelToken::default();
+    let operation = operation(cancel.clone(), CancelToken::default());
     let created = RendererGeneration::new();
     let target = operation.reserve_target(ViewId(99), created.clone()).unwrap();
     let (_issuer, reservation, owner) = crate::ipc::NativeClosureIssuer::new_with_owner(target.view(), created);
@@ -34,7 +34,7 @@ fn headless_cleanup_retains_only_the_original_reservation_after_cancellation() {
     assert!(NativeHeadlessCleanup::capture(&target, &other, &other_owner, cleanup_shutdown).is_err());
     cancel.cancel();
     operation.finish();
-    assert!(NativeHeadlessCleanup::capture(&target, &reservation, &owner, CancelToken::new()).is_err());
+    assert!(NativeHeadlessCleanup::capture(&target, &reservation, &owner, CancelToken::default()).is_err());
     let claim = cleanup.claim_close(|transition| {
         assert!(transition.matches_owner(&owner));
         Ok(())
@@ -44,10 +44,10 @@ fn headless_cleanup_retains_only_the_original_reservation_after_cancellation() {
 }
 #[test]
 fn headless_cleanup_stops_at_process_cleanup_shutdown() {
-    let operation = operation(CancelToken::new(), CancelToken::new());
+    let operation = operation(CancelToken::default(), CancelToken::default());
     let target = operation.reserve_target(ViewId(101), RendererGeneration::new()).unwrap();
     let (_issuer, reservation, owner) = crate::ipc::NativeClosureIssuer::new_with_owner(target.view(), target.created().clone());
-    let shutdown = CancelToken::new();
+    let shutdown = CancelToken::default();
     let cleanup = NativeHeadlessCleanup::capture(&target, &reservation, &owner, shutdown.clone()).unwrap();
     shutdown.cancel();
     let mut called = false;
@@ -56,10 +56,10 @@ fn headless_cleanup_stops_at_process_cleanup_shutdown() {
 }
 #[test]
 fn headless_cleanup_reports_only_the_actual_successor() {
-    let operation = operation(CancelToken::new(), CancelToken::new());
+    let operation = operation(CancelToken::default(), CancelToken::default());
     let target = operation.reserve_target(ViewId(102), RendererGeneration::new()).unwrap();
     let (_issuer, reservation, owner) = crate::ipc::NativeClosureIssuer::new_with_owner(target.view(), target.created().clone());
-    let cleanup = NativeHeadlessCleanup::capture(&target, &reservation, &owner, CancelToken::new()).unwrap();
+    let cleanup = NativeHeadlessCleanup::capture(&target, &reservation, &owner, CancelToken::default()).unwrap();
     reservation.with_initial_owner(&owner, |_| Ok(())).unwrap();
     let replacement = reservation.prepare_replacement(&owner).unwrap();
     let (successor, _, ()) = replacement.commit(|_, _| Ok(())).unwrap();
@@ -80,20 +80,20 @@ fn headless_cleanup_reports_only_the_actual_successor() {
 
 #[test]
 fn existing_save_binds_exact_document_without_a_constructor() {
-    let issuer = NativeInvocationIssuer::new(CancelToken::new());
+    let issuer = NativeInvocationIssuer::new(CancelToken::default());
     let renderer = RendererGeneration::new();
     let document = RendererGeneration::new();
     let owner = NativeRequestOwner {
         view: ViewId(31),
-        context: NativeContext::with_owner_loss((), renderer.clone(), CancelToken::new())
+        context: NativeContext::with_owner_loss((), renderer.clone(), CancelToken::default())
             .with_document_lease(document.clone()),
     };
     assert!(issuer.issue_existing_document_save(Surface::Docs, ViewId(32), NativeSaveSelection::ExactPath("a.docx".into()),
-        owner.clone(), CancelToken::new()).is_err());
+        owner.clone(), CancelToken::default()).is_err());
     assert!(issuer.issue_existing_document_save(Surface::Docs, ViewId(31), NativeSaveSelection::ExactPath("a.docx".into()),
-        synthetic_owner(ViewId(31), &renderer), CancelToken::new()).is_err());
+        synthetic_owner(ViewId(31), &renderer), CancelToken::default()).is_err());
     let binding = issuer.issue_existing_document_save(Surface::Docs, ViewId(31), NativeSaveSelection::ExactPath("a.docx".into()),
-        owner, CancelToken::new()).unwrap();
+        owner, CancelToken::default()).unwrap();
     assert_eq!(binding.operation().selection(), &NativeInvocationSelection::NativeCommand(
         NativeEditorCommand::SaveDocument { surface: Surface::Docs, view: ViewId(31), selection: NativeSaveSelection::ExactPath("a.docx".into()) }));
     assert!(binding.owner().context.renderer().unwrap().same_generation(&renderer));
@@ -107,7 +107,7 @@ fn existing_save_binds_exact_document_without_a_constructor() {
 
 #[test]
 fn native_save_revision_successor_retires_every_view_and_preserves_selection() {
-    let issuer = NativeInvocationIssuer::new(CancelToken::new());
+    let issuer = NativeInvocationIssuer::new(CancelToken::default());
     let old = PdfDocumentLease::new();
     let next = PdfDocumentLease::new();
     let other_old = PdfDocumentLease::new();
@@ -117,7 +117,7 @@ fn native_save_revision_successor_retires_every_view_and_preserves_selection() {
     owner.context = owner.context.with_document_lease(RendererGeneration::new())
         .with_pdf_document(PdfDocumentLease::new()).with_pdf_revision(old.clone());
     let binding = issuer.issue_existing_document_save(Surface::Pdf, owner.view,
-        NativeSaveSelection::ExactPath("saved.pdf".into()), owner.clone(), CancelToken::new()).unwrap();
+        NativeSaveSelection::ExactPath("saved.pdf".into()), owner.clone(), CancelToken::default()).unwrap();
     let selection = NativeSaveDestination::from_exact_selection(binding).unwrap();
     let callback = owner.clone();
     let authority = NativeSaveRevisionAuthority::new(selection, vec![]);
@@ -164,17 +164,17 @@ fn native_reload_receipt_requires_the_exact_accepted_lineage() {
     let mut predecessor = synthetic_owner(view, &predecessor_generation);
     predecessor.context = predecessor.context.with_document_lease(RendererGeneration::new())
         .with_pdf_document(PdfDocumentLease::new()).with_pdf_revision(PdfDocumentLease::new());
-    let issuer = NativeInvocationIssuer::new(CancelToken::new());
+    let issuer = NativeInvocationIssuer::new(CancelToken::default());
     let binding = issuer.issue_existing_document_save(Surface::Pdf, view,
-        NativeSaveSelection::ExactPath("out.pdf".into()), predecessor.clone(), CancelToken::new()).unwrap();
+        NativeSaveSelection::ExactPath("out.pdf".into()), predecessor.clone(), CancelToken::default()).unwrap();
     let selected = NativeSaveDestination::from_exact_selection(binding).unwrap();
     let reserved = RendererGeneration::new();
     let marker = AcceptedPdfReload::from_native_admission(predecessor.clone(), reserved.clone(),
-        CancelToken::new(), CancelToken::new(), Arc::new(|_| true));
+        CancelToken::default(), CancelToken::default(), Arc::new(|_| true));
     let foreign = AcceptedPdfReload::from_native_admission(predecessor.clone(), reserved.clone(),
-        CancelToken::new(), CancelToken::new(), Arc::new(|_| true));
+        CancelToken::default(), CancelToken::default(), Arc::new(|_| true));
     let handoff = || NativeSaveReloadHandoff::from_native_admission(selected.clone(), marker.clone(),
-        vec![predecessor.clone()], CancelToken::new(), CancelToken::new(), vec![]).unwrap();
+        vec![predecessor.clone()], CancelToken::default(), CancelToken::default(), vec![]).unwrap();
     let mut successor = synthetic_owner(view, &reserved);
     successor.context = successor.context.with_pdf_document(PdfDocumentLease::new()).with_pdf_revision(PdfDocumentLease::new());
     let wrong = CommittedPdfReload::from_completed_native_load(successor.clone(), foreign).unwrap();
@@ -203,13 +203,13 @@ fn native_reload_receipt_requires_the_exact_accepted_lineage() {
 
 #[test]
 fn selected_save_normalization_is_one_hop_and_surface_bound() {
-    let issuer = NativeInvocationIssuer::new(CancelToken::new());
+    let issuer = NativeInvocationIssuer::new(CancelToken::default());
     let make = |surface, name: &str| {
         let generation = RendererGeneration::new();
         let mut owner = synthetic_owner(ViewId(31), &generation);
         owner.context = owner.context.with_document_lease(RendererGeneration::new());
         let binding = issuer.issue_existing_document_save(surface, ViewId(31),
-            NativeSaveSelection::Mode(crate::editors::SaveMode::SaveAs), owner, CancelToken::new()).unwrap();
+            NativeSaveSelection::Mode(crate::editors::SaveMode::SaveAs), owner, CancelToken::default()).unwrap();
         NativeSaveDestination::from_native_save_dialog(binding, name.into()).unwrap()
     };
     let html = make(Surface::Html, "folder/page").normalize_dialog_format(NativeSaveFormat::Html).unwrap();
@@ -238,28 +238,28 @@ fn selected_save_normalization_is_one_hop_and_surface_bound() {
 
 #[test]
 fn startup_command_recovery_issuer_seals_all_three_selections() {
-    let shutdown = CancelToken::new();
+    let shutdown = CancelToken::default();
     let issuer = NativeInvocationIssuer::new(shutdown);
     let owner = synthetic_owner(ViewId(1), &RendererGeneration::new());
-    let startup = issuer.issue_startup(vec![], false, owner.clone(), CancelToken::new());
-    let other = issuer.issue_startup(vec![], false, owner, CancelToken::new());
+    let startup = issuer.issue_startup(vec![], false, owner.clone(), CancelToken::default());
+    let other = issuer.issue_startup(vec![], false, owner, CancelToken::default());
     let command = issuer.issue_command_child(&startup, NativeEditorCommand::OpenFile {
         surface: Surface::Docs, path: "selected.docx".into(),
-    }, CancelToken::new()).unwrap();
+    }, CancelToken::default()).unwrap();
     let selection = NativeInvocationSelection::RecoveryBlank { surface: Surface::Docs, title: "Recovery".into() };
-    let child = issuer.issue_startup_command_recovery_child(&startup, &command, selection.clone(), CancelToken::new()).unwrap();
+    let child = issuer.issue_startup_command_recovery_child(&startup, &command, selection.clone(), CancelToken::default()).unwrap();
     assert!(command.is_child_of(&startup));
     assert!(child.is_child_of(&command));
     assert_eq!(child.selection(), &selection);
-    assert!(issuer.issue_command_recovery_child(&command, selection.clone(), CancelToken::new()).is_err());
-    assert!(issuer.issue_startup_command_recovery_child(&other, &command, selection, CancelToken::new()).is_err());
+    assert!(issuer.issue_command_recovery_child(&command, selection.clone(), CancelToken::default()).is_err());
+    assert!(issuer.issue_startup_command_recovery_child(&other, &command, selection, CancelToken::default()).is_err());
     let wrong_surface = NativeInvocationSelection::RecoveryBlank { surface: Surface::Sheets, title: "Recovery".into() };
-    assert!(issuer.issue_startup_command_recovery_child(&startup, &command, wrong_surface, CancelToken::new()).is_err());
+    assert!(issuer.issue_startup_command_recovery_child(&startup, &command, wrong_surface, CancelToken::default()).is_err());
 }
 
 #[test]
 fn one_operation_cannot_reserve_a_second_constructor() {
-    let operation = operation(CancelToken::new(), CancelToken::new());
+    let operation = operation(CancelToken::default(), CancelToken::default());
     let first = RendererGeneration::new();
     operation.reserve_target(ViewId(1), first.clone()).unwrap();
     assert!(operation.reserve_target(ViewId(2), RendererGeneration::new()).is_err());
@@ -269,7 +269,7 @@ fn one_operation_cannot_reserve_a_second_constructor() {
 
 #[test]
 fn recycled_view_id_cannot_replace_the_reserved_generation() {
-    let operation = operation(CancelToken::new(), CancelToken::new());
+    let operation = operation(CancelToken::default(), CancelToken::default());
     let first = RendererGeneration::new();
     let target = operation.reserve_target(ViewId(7), first.clone()).unwrap();
     assert!(register_synthetic_state(&target, synthetic_owner(ViewId(7), &RendererGeneration::new())).is_err());
@@ -280,7 +280,7 @@ fn recycled_view_id_cannot_replace_the_reserved_generation() {
 
 #[test]
 fn reading_the_registered_document_does_not_consume_its_lifetime() {
-    let operation = operation(CancelToken::new(), CancelToken::new());
+    let operation = operation(CancelToken::default(), CancelToken::default());
     let created = RendererGeneration::new();
     let target = operation.reserve_target(ViewId(8), created.clone()).unwrap();
     let owner = synthetic_owner(ViewId(8), &created);
@@ -299,8 +299,8 @@ fn reading_the_registered_document_does_not_consume_its_lifetime() {
 #[test]
 fn cancelling_either_native_input_or_shutdown_refuses_new_work() {
     for cancel_input in [true, false] {
-        let cancel = CancelToken::new();
-        let shutdown = CancelToken::new();
+        let cancel = CancelToken::default();
+        let shutdown = CancelToken::default();
         let operation = operation(cancel.clone(), shutdown.clone());
         let target = operation.reserve_target(ViewId(9), RendererGeneration::new()).unwrap();
         if cancel_input { cancel.cancel(); } else { shutdown.cancel(); }
@@ -312,8 +312,8 @@ fn cancelling_either_native_input_or_shutdown_refuses_new_work() {
 
 #[test]
 fn finish_revokes_only_its_invocation_not_shared_input_tokens() {
-    let cancel = CancelToken::new();
-    let shutdown = CancelToken::new();
+    let cancel = CancelToken::default();
+    let shutdown = CancelToken::default();
     let first = operation(cancel.clone(), shutdown.clone());
     let second = operation(cancel.clone(), shutdown.clone());
     first.finish();
@@ -325,7 +325,7 @@ fn finish_revokes_only_its_invocation_not_shared_input_tokens() {
 
 #[test]
 fn accepted_constructor_work_runs_after_its_admission_has_ended() {
-    let operation = operation(CancelToken::new(), CancelToken::new());
+    let operation = operation(CancelToken::default(), CancelToken::default());
     let selected = operation.with_active(|| || 42).unwrap();
     operation.finish();
     assert_eq!(selected(), 42);
@@ -333,10 +333,10 @@ fn accepted_constructor_work_runs_after_its_admission_has_ended() {
 }
 
 fn recovery_target(view: u32) -> RecoveryOpenTarget {
-    let issuer = NativeInvocationIssuer::new(CancelToken::new());
+    let issuer = NativeInvocationIssuer::new(CancelToken::default());
     let operation = issuer.issue(NativeInvocationSelection::RecoveryBlank {
         surface: Surface::Docs, title: "Recovered".into(),
-    }, CancelToken::new());
+    }, CancelToken::default());
     let created = RendererGeneration::new();
     let (_, closure, owner) = super::super::NativeClosureIssuer::new_with_owner(ViewId(view), created.clone());
     RecoveryOpenTarget::bind(RecoveryOpenContext::NativeStartup(operation),
@@ -441,17 +441,17 @@ fn recovery_drain_waits_for_worker_and_core_continuation_without_inline_callback
 
 #[test]
 fn recovery_child_lineage_cannot_be_substituted_by_an_identically_selected_startup() {
-    let shutdown = CancelToken::new();
+    let shutdown = CancelToken::default();
     let issuer = NativeInvocationIssuer::new(shutdown.clone());
     let owner = synthetic_owner(ViewId(19), &RendererGeneration::new());
-    let root = issuer.issue_startup(Vec::new(), false, owner.clone(), CancelToken::new());
-    let other = issuer.issue_startup(Vec::new(), false, owner, CancelToken::new());
+    let root = issuer.issue_startup(Vec::new(), false, owner.clone(), CancelToken::default());
+    let other = issuer.issue_startup(Vec::new(), false, owner, CancelToken::default());
     let selection = NativeInvocationSelection::RecoveryBlank { surface: Surface::Docs, title: "Draft".into() };
-    let child = issuer.issue_recovery_child(&root, selection.clone(), CancelToken::new()).unwrap();
+    let child = issuer.issue_recovery_child(&root, selection.clone(), CancelToken::default()).unwrap();
     assert!(child.is_child_of(&root.clone()));
     assert!(!child.is_child_of(&other));
-    assert!(NativeInvocationIssuer::new(CancelToken::new())
-        .issue_recovery_child(&root, selection, CancelToken::new()).is_err());
+    assert!(NativeInvocationIssuer::new(CancelToken::default())
+        .issue_recovery_child(&root, selection, CancelToken::default()).is_err());
     root.finish();
     assert!(child.with_active(|| ()).is_some());
     shutdown.cancel();
@@ -460,69 +460,69 @@ fn recovery_child_lineage_cannot_be_substituted_by_an_identically_selected_start
 
 #[test]
 fn remembered_command_requires_the_exact_startup_and_issuer() {
-    let issuer = NativeInvocationIssuer::new(CancelToken::new());
+    let issuer = NativeInvocationIssuer::new(CancelToken::default());
     let owner = synthetic_owner(ViewId(20), &RendererGeneration::new());
-    let root = issuer.issue_startup(Vec::new(), false, owner.clone(), CancelToken::new());
-    let other = issuer.issue_startup(Vec::new(), false, owner, CancelToken::new());
+    let root = issuer.issue_startup(Vec::new(), false, owner.clone(), CancelToken::default());
+    let other = issuer.issue_startup(Vec::new(), false, owner, CancelToken::default());
     let command = NativeEditorCommand::OpenFile { surface: Surface::Docs, path: "remembered.docx".into() };
-    let child = issuer.issue_command_child(&root, command.clone(), CancelToken::new()).unwrap();
+    let child = issuer.issue_command_child(&root, command.clone(), CancelToken::default()).unwrap();
     assert!(child.is_native_command());
     assert!(!child.is_root_native_command());
-    assert!(issuer.issue_command(NativeEditorCommand::OpenHome, CancelToken::new()).is_root_native_command());
+    assert!(issuer.issue_command(NativeEditorCommand::OpenHome, CancelToken::default()).is_root_native_command());
     assert_eq!(child.selection(), &NativeInvocationSelection::NativeCommand(command.clone()));
     assert!(child.is_child_of(&root));
     assert!(!child.is_child_of(&other));
-    assert!(NativeInvocationIssuer::new(CancelToken::new())
-        .issue_command_child(&root, command.clone(), CancelToken::new()).is_err());
+    assert!(NativeInvocationIssuer::new(CancelToken::default())
+        .issue_command_child(&root, command.clone(), CancelToken::default()).is_err());
     let unowned = issuer.issue(
         NativeInvocationSelection::StartupLaunch { paths: Vec::new(), reopened_by_installer: false },
-        CancelToken::new(),
+        CancelToken::default(),
     );
-    assert!(issuer.issue_command_child(&unowned, command.clone(), CancelToken::new()).is_err());
-    assert!(issuer.issue_command_child(&child, command, CancelToken::new()).is_err());
+    assert!(issuer.issue_command_child(&unowned, command.clone(), CancelToken::default()).is_err());
+    assert!(issuer.issue_command_child(&child, command, CancelToken::default()).is_err());
 }
 
 #[test]
 fn native_recovery_activation_retains_its_exact_command_root() {
-    let issuer = NativeInvocationIssuer::new(CancelToken::new());
+    let issuer = NativeInvocationIssuer::new(CancelToken::default());
     let root = issuer.issue_command(NativeEditorCommand::OpenFile {
         surface: Surface::Docs, path: "cached.docx".into(),
-    }, CancelToken::new());
+    }, CancelToken::default());
     let selection = NativeInvocationSelection::RecoveryBlank { surface: Surface::Docs, title: "Cached".into() };
-    let child = issuer.issue_command_recovery_child(&root, selection.clone(), CancelToken::new()).unwrap();
+    let child = issuer.issue_command_recovery_child(&root, selection.clone(), CancelToken::default()).unwrap();
     let context = RecoveryOpenContext::NativeStartup(child.clone());
     let created = RendererGeneration::new();
     let (_, closure, owner) = super::super::NativeClosureIssuer::new_with_owner(ViewId(21), created.clone());
     assert!(RecoveryOpenTarget::bind(context.clone(), ViewId(21), created.clone(), closure.clone(), owner.clone()).is_err());
-    let other = issuer.issue_command(NativeEditorCommand::OpenHome, CancelToken::new());
+    let other = issuer.issue_command(NativeEditorCommand::OpenHome, CancelToken::default());
     let constraint = |command| CommandRecoveryConstraint {
-        command, participants: Vec::new(), cancel: CancelToken::new(), pending: CancelToken::new(),
+        command, participants: Vec::new(), cancel: CancelToken::default(), pending: CancelToken::default(),
     };
     assert!(RecoveryOpenTarget::bind_command(context.clone(), ViewId(21), created.clone(),
         closure.clone(), owner.clone(), constraint(other)).is_err());
     let target = RecoveryOpenTarget::bind_command(context, ViewId(21), created,
         closure, owner, constraint(root.clone())).unwrap();
     assert!(child.is_child_of(&target.command_constraint().unwrap().command));
-    assert!(NativeInvocationIssuer::new(CancelToken::new())
-        .issue_command_recovery_child(&root, selection, CancelToken::new()).is_err());
+    assert!(NativeInvocationIssuer::new(CancelToken::default())
+        .issue_command_recovery_child(&root, selection, CancelToken::default()).is_err());
 }
 
 #[test]
 fn triple_recovery_binding_keeps_exact_lineage_and_browser_owner() {
-    let issuer = NativeInvocationIssuer::new(CancelToken::new());
+    let issuer = NativeInvocationIssuer::new(CancelToken::default());
     let shell = synthetic_owner(ViewId(80), &RendererGeneration::new());
-    let root = issuer.issue_startup(vec![], false, shell.clone(), CancelToken::new());
-    let other_root = issuer.issue_startup(vec![], false, shell.clone(), CancelToken::new());
+    let root = issuer.issue_startup(vec![], false, shell.clone(), CancelToken::default());
+    let other_root = issuer.issue_startup(vec![], false, shell.clone(), CancelToken::default());
     let command = issuer.issue_command_child(&root, NativeEditorCommand::OpenFile {
         surface: Surface::Docs, path: "cached.docx".into(),
-    }, CancelToken::new()).unwrap();
+    }, CancelToken::default()).unwrap();
     let child = issuer.issue_startup_command_recovery_child(&root, &command,
         NativeInvocationSelection::RecoveryBlank { surface: Surface::Docs, title: "Cached".into() },
-        CancelToken::new()).unwrap();
+        CancelToken::default()).unwrap();
     let startup = |operation| StartupRecoveryConstraint { startup: operation, shell: shell.clone(), participants: vec![],
-        cancel: CancelToken::new(), pending: CancelToken::new() };
+        cancel: CancelToken::default(), pending: CancelToken::default() };
     let command_constraint = CommandRecoveryConstraint { command: command.clone(), participants: vec![],
-        cancel: CancelToken::new(), pending: CancelToken::new() };
+        cancel: CancelToken::default(), pending: CancelToken::default() };
     let created = RendererGeneration::new();
     let (_, closure, browser_owner) = super::super::NativeClosureIssuer::new_with_owner(ViewId(81), created.clone());
     let (_, _, foreign) = super::super::NativeClosureIssuer::new_with_owner(ViewId(81), created.clone());

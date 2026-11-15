@@ -1094,7 +1094,10 @@ impl ZipRead for ScenarioRetainedReader {
     fn read(&mut self, offset: u64, length: u64) -> Result<Vec<u8>, JsError> {
         let bytes = self.0.bytes();
         let start = offset.min(bytes.len() as u64) as usize;
-        let end = offset.saturating_add(length).min(bytes.len() as u64).max(start as u64) as usize;
+        let end = offset
+            .saturating_add(length)
+            .min(bytes.len() as u64)
+            .max(start as u64) as usize;
         Ok(bytes[start..end].to_vec())
     }
 }
@@ -1109,8 +1112,14 @@ struct ScenarioLib<'a> {
 }
 
 impl ZipLibrary for ScenarioLib<'_> {
-    fn check_cancelled(&self) -> Result<(), JsError> { Ok(()) }
-    fn open_zip_file(&mut self, path: &str, _file: Option<std::sync::Arc<std::fs::File>>) -> Result<ZipFile, JsError> {
+    fn check_cancelled(&self) -> Result<(), JsError> {
+        Ok(())
+    }
+    fn open_zip_file(
+        &mut self,
+        path: &str,
+        _file: Option<std::sync::Arc<std::fs::File>>,
+    ) -> Result<ZipFile, JsError> {
         logl!(self.log; "openZipFile", path);
         let zip = self
             .lib
@@ -1137,11 +1146,20 @@ impl ZipLibrary for ScenarioLib<'_> {
         })
     }
 
-    fn open_zip_retained(&mut self, source: std::sync::Arc<dyn crate::docs::lazy_media::RetainedZipBytes>) -> Result<ZipFile, JsError> {
+    fn open_zip_retained(
+        &mut self,
+        source: std::sync::Arc<dyn crate::docs::lazy_media::RetainedZipBytes>,
+    ) -> Result<ZipFile, JsError> {
         let entries = self.read_zip_entries(source.bytes())?;
         let mut table = JsMap::new();
-        for entry in entries { table.set(entry.name.clone(), entry); }
-        Ok(ZipFile { size: source.bytes().len() as u64, entries: Rc::new(table), reader: Box::new(ScenarioRetainedReader(source)) })
+        for entry in entries {
+            table.set(entry.name.clone(), entry);
+        }
+        Ok(ZipFile {
+            size: source.bytes().len() as u64,
+            entries: Rc::new(table),
+            reader: Box::new(ScenarioRetainedReader(source)),
+        })
     }
 
     fn close_zip_file(&mut self, _zip: ZipFile) {
@@ -2032,16 +2050,22 @@ fn session_state_call(args: &[Value], cx: &mut Context) -> Answer {
         let op = text(step, "op");
         let result: Value = match op {
             "push" => {
-                session.push_history().unwrap_or_else(|never| match never {});
+                session
+                    .push_history()
+                    .unwrap_or_else(|never| match never {});
                 Value::Null
             }
             "pushRedo" => {
-                let snapshot = session.take_snapshot().unwrap_or_else(|never| match never {});
+                let snapshot = session
+                    .take_snapshot()
+                    .unwrap_or_else(|never| match never {});
                 session.redo_stack.push(snapshot);
                 Value::Null
             }
             "begin" => {
-                session.begin_history_batch().unwrap_or_else(|never| match never {});
+                session
+                    .begin_history_batch()
+                    .unwrap_or_else(|never| match never {});
                 Value::Null
             }
             "end" => session
@@ -2076,23 +2100,29 @@ fn session_state_call(args: &[Value], cx: &mut Context) -> Answer {
                 };
                 match popped {
                     Some(snap) => {
-                        session.restore_snapshot(&snap).unwrap_or_else(|never| match never {});
+                        session
+                            .restore_snapshot(&snap)
+                            .unwrap_or_else(|never| match never {});
                         Value::Bool(true)
                     }
                     None => Value::Bool(false),
                 }
             }
             "registerAi" => {
-                let snap = session.take_snapshot().unwrap_or_else(|never| match never {});
+                let snap = session
+                    .take_snapshot()
+                    .unwrap_or_else(|never| match never {});
                 Value::from(session.register_ai_snapshot(&mut ids, &snap))
             }
             "registerBefore" => match session.history_batch.as_ref().map(|b| b.before.clone()) {
                 Some(snap) => Value::from(session.register_ai_snapshot(&mut ids, &snap)),
                 None => Value::Null,
             },
-            "restoreAi" => {
-                Value::Bool(session.restore_ai_snapshot(num(step, "id").unwrap_or(f64::NAN)).unwrap_or_else(|never| match never {}))
-            }
+            "restoreAi" => Value::Bool(
+                session
+                    .restore_ai_snapshot(num(step, "id").unwrap_or(f64::NAN))
+                    .unwrap_or_else(|never| match never {}),
+            ),
             "settle" => {
                 session.settle_stale_history_batch(&mut ids);
                 Value::Null
@@ -2123,10 +2153,7 @@ fn session_state_call(args: &[Value], cx: &mut Context) -> Answer {
                             .get("slideId")
                             .and_then(Value::as_str)
                             .map(str::to_owned),
-                        created: record
-                            .get("created")
-                            .and_then(Value::as_array)
-                            .cloned(),
+                        created: record.get("created").and_then(Value::as_array).cloned(),
                     })
                     .collect();
                 session.journal_ops(source, records);
@@ -2138,7 +2165,8 @@ fn session_state_call(args: &[Value], cx: &mut Context) -> Answer {
                     &json!({ "slides": session.deck.slides.clone(), "size": session.deck.size.clone() }),
                 );
                 let mut replacement: Sess = Session::new(text(step, "path"), deck);
-                Sess::carry_history_for_replacement(Some(&mut session), &mut replacement).unwrap_or_else(|never| match never {});
+                Sess::carry_history_for_replacement(Some(&mut session), &mut replacement)
+                    .unwrap_or_else(|never| match never {});
                 session = replacement;
                 Value::Null
             }

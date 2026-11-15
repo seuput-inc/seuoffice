@@ -46,14 +46,22 @@ use super::schema;
 use super::session::{OpenOptions, SessionInfo, Staged, file_identity};
 use crate::value::{as_str, field, obj, string, thrown};
 
-
-type GeneratedCompletion = Box<dyn FnOnce(&Result<shell_contract::hosts::GeneratedPathOutcome, String>, Box<dyn FnOnce() + Send>)>;
+type GeneratedCompletion = Box<
+    dyn FnOnce(
+        &Result<shell_contract::hosts::GeneratedPathOutcome, String>,
+        Box<dyn FnOnce() + Send>,
+    ),
+>;
 
 pub(super) struct PendingGeneratedPublication {
     task: Option<std::sync::Arc<dyn shell_contract::hosts::GeneratedPathPending>>,
     prepared: Option<Box<dyn shell_contract::hosts::PreparedGeneratedPath>>,
-    observer: Option<(shell_contract::hosts::GeneratedPathObserver, shell_contract::hosts::GeneratedPathWake)>,
-    mailbox: std::sync::Arc<std::sync::Mutex<Option<shell_contract::hosts::GeneratedTerminalDelivery>>>,
+    observer: Option<(
+        shell_contract::hosts::GeneratedPathObserver,
+        shell_contract::hosts::GeneratedPathWake,
+    )>,
+    mailbox:
+        std::sync::Arc<std::sync::Mutex<Option<shell_contract::hosts::GeneratedTerminalDelivery>>>,
     delivery: Option<shell_contract::hosts::GeneratedTerminalDelivery>,
     complete: Option<GeneratedCompletion>,
     settled: bool,
@@ -61,13 +69,26 @@ pub(super) struct PendingGeneratedPublication {
     settling: bool,
 }
 
-pub(super) fn reserve_generated_publication(core: &Core, complete: GeneratedCompletion) -> (String, shell_contract::hosts::GeneratedPathWake) {
+pub(super) fn reserve_generated_publication(
+    core: &Core,
+    complete: GeneratedCompletion,
+) -> (String, shell_contract::hosts::GeneratedPathWake) {
     let id = core.env.uuid();
     let mailbox = std::sync::Arc::new(std::sync::Mutex::new(None));
-    core.state.borrow_mut().generated_publications.insert(id.clone(), PendingGeneratedPublication {
-        task: None, prepared: None, observer: None, mailbox, delivery: None,
-        complete: Some(complete), settled: false, settling: false, last_error: None,
-    });
+    core.state.borrow_mut().generated_publications.insert(
+        id.clone(),
+        PendingGeneratedPublication {
+            task: None,
+            prepared: None,
+            observer: None,
+            mailbox,
+            delivery: None,
+            complete: Some(complete),
+            settled: false,
+            settling: false,
+            last_error: None,
+        },
+    );
     let env = core.env.clone();
     let wake_id = id.clone();
     let wake: shell_contract::hosts::GeneratedPathWake = std::sync::Arc::new(move || {
@@ -78,14 +99,21 @@ pub(super) fn reserve_generated_publication(core: &Core, complete: GeneratedComp
 }
 
 pub(super) fn install_generated_publication(
-    core: &Core, id: &str, prepared: Box<dyn shell_contract::hosts::PreparedGeneratedPath>,
+    core: &Core,
+    id: &str,
+    prepared: Box<dyn shell_contract::hosts::PreparedGeneratedPath>,
     wake: shell_contract::hosts::GeneratedPathWake,
 ) -> Result<(), String> {
     let task = prepared.task();
     let mailbox = {
         let mut state = core.state.borrow_mut();
-        let pending = state.generated_publications.get_mut(id).ok_or("The generated publication reservation is unavailable")?;
-        if pending.task.is_some() { return Err("The generated publication was already installed".into()); }
+        let pending = state
+            .generated_publications
+            .get_mut(id)
+            .ok_or("The generated publication reservation is unavailable")?;
+        if pending.task.is_some() {
+            return Err("The generated publication was already installed".into());
+        }
         pending.task = Some(task.clone());
         pending.prepared = Some(prepared);
         pending.mailbox.clone()
@@ -106,8 +134,13 @@ pub(super) fn install_generated_publication(
 }
 
 fn start_generated_publication(core: &Core, id: &str) -> Result<(), String> {
-    let prepared = core.state.borrow_mut().generated_publications.get_mut(id)
-        .and_then(|pending| pending.prepared.take()).ok_or("The generated operation is unavailable")?;
+    let prepared = core
+        .state
+        .borrow_mut()
+        .generated_publications
+        .get_mut(id)
+        .and_then(|pending| pending.prepared.take())
+        .ok_or("The generated operation is unavailable")?;
     match prepared.start() {
         Ok(()) => Ok(()),
         Err(failure) => {
@@ -122,19 +155,35 @@ fn start_generated_publication(core: &Core, id: &str) -> Result<(), String> {
 pub(super) fn wake_generated_publication(core: &Core, id: &str) {
     let (mut delivery, complete, settled, task) = {
         let mut state = core.state.borrow_mut();
-        let Some(pending) = state.generated_publications.get_mut(id) else { return };
-        if pending.settling { return; }
-        let delivery = pending.delivery.take().or_else(||
-            pending.mailbox.lock().unwrap_or_else(|error| error.into_inner()).take());
+        let Some(pending) = state.generated_publications.get_mut(id) else {
+            return;
+        };
+        if pending.settling {
+            return;
+        }
+        let delivery = pending.delivery.take().or_else(|| {
+            pending
+                .mailbox
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take()
+        });
         pending.settling = true;
-        (delivery, pending.complete.take(), pending.settled, pending.task.clone())
+        (
+            delivery,
+            pending.complete.take(),
+            pending.settled,
+            pending.task.clone(),
+        )
     };
     if delivery.is_none() {
         if let Some(task) = &task {
             match task.take_redelivery() {
                 Ok(restored) => delivery = restored,
                 Err(error) => {
-                    if let Some(pending) = core.state.borrow_mut().generated_publications.get_mut(id) {
+                    if let Some(pending) =
+                        core.state.borrow_mut().generated_publications.get_mut(id)
+                    {
                         pending.last_error = Some(error);
                     }
                 }
@@ -142,7 +191,12 @@ pub(super) fn wake_generated_publication(core: &Core, id: &str) {
         }
     }
     if let Some(mut delivery) = delivery {
-        if matches!(delivery.result(), Ok(shell_contract::hosts::GeneratedPathOutcome::CleanupPending(_))) {
+        if matches!(
+            delivery.result(),
+            Ok(shell_contract::hosts::GeneratedPathOutcome::CleanupPending(
+                _
+            ))
+        ) {
             if let Some(pending) = core.state.borrow_mut().generated_publications.get_mut(id) {
                 pending.last_error = Some("A generated terminal delivery cannot be pending".into());
                 pending.delivery = Some(delivery);
@@ -155,26 +209,41 @@ pub(super) fn wake_generated_publication(core: &Core, id: &str) {
             let acknowledged = delivery.acknowledge();
             let mut state = core.state.borrow_mut();
             match acknowledged {
-                Ok(()) => { state.generated_publications.remove(id); }
-                Err(error) => if let Some(pending) = state.generated_publications.get_mut(id) {
-                    pending.last_error = Some(error); pending.delivery = Some(delivery); pending.settling = false;
-                },
+                Ok(()) => {
+                    state.generated_publications.remove(id);
+                }
+                Err(error) => {
+                    if let Some(pending) = state.generated_publications.get_mut(id) {
+                        pending.last_error = Some(error);
+                        pending.delivery = Some(delivery);
+                        pending.settling = false;
+                    }
+                }
             }
             return;
         }
         if let Some(complete) = complete {
             let env = core.env.clone();
             let callback_id = id.to_owned();
-            complete(delivery.result(), Box::new(move || env.post(move |core| finish_generated_publication(core, &callback_id))));
+            complete(
+                delivery.result(),
+                Box::new(move || {
+                    env.post(move |core| finish_generated_publication(core, &callback_id))
+                }),
+            );
         }
         let repeat = {
             let mut state = core.state.borrow_mut();
-            let Some(pending) = state.generated_publications.get_mut(id) else { return };
+            let Some(pending) = state.generated_publications.get_mut(id) else {
+                return;
+            };
             pending.delivery = Some(delivery);
             pending.settling = false;
             pending.settled
         };
-        if repeat { wake_generated_publication(core, id); }
+        if repeat {
+            wake_generated_publication(core, id);
+        }
     } else if let Some(pending) = core.state.borrow_mut().generated_publications.get_mut(id) {
         pending.complete = complete;
         pending.settling = false;
@@ -184,21 +253,34 @@ pub(super) fn wake_generated_publication(core: &Core, id: &str) {
 fn finish_generated_publication(core: &Core, id: &str) {
     let wake = {
         let mut state = core.state.borrow_mut();
-        let Some(pending) = state.generated_publications.get_mut(id) else { return };
+        let Some(pending) = state.generated_publications.get_mut(id) else {
+            return;
+        };
         pending.settled = true;
         !pending.settling
     };
-    if wake { wake_generated_publication(core, id); }
+    if wake {
+        wake_generated_publication(core, id);
+    }
 }
 
 pub(super) fn retry_generated_publication(core: &Core, id: &str) -> Result<(), String> {
     let (task, observer, start) = {
         let mut state = core.state.borrow_mut();
-        let pending = state.generated_publications.get_mut(id).ok_or("The generated publication is no longer pending")?;
-        (pending.task.clone(), pending.observer.take(), pending.prepared.is_some())
+        let pending = state
+            .generated_publications
+            .get_mut(id)
+            .ok_or("The generated publication is no longer pending")?;
+        (
+            pending.task.clone(),
+            pending.observer.take(),
+            pending.prepared.is_some(),
+        )
     };
     if let Some((observer, wake)) = observer {
-        let task = task.as_ref().ok_or("The generated cleanup task is unavailable")?;
+        let task = task
+            .as_ref()
+            .ok_or("The generated cleanup task is unavailable")?;
         if let Err(failure) = task.observe(observer, wake) {
             let error = failure.error;
             if let Some(pending) = core.state.borrow_mut().generated_publications.get_mut(id) {
@@ -207,9 +289,13 @@ pub(super) fn retry_generated_publication(core: &Core, id: &str) -> Result<(), S
             return Err(error);
         }
     }
-    if start { start_generated_publication(core, id)?; }
+    if start {
+        start_generated_publication(core, id)?;
+    }
     wake_generated_publication(core, id);
-    if let Some(task) = task { task.wake_observer()?; }
+    if let Some(task) = task {
+        task.wake_observer()?;
+    }
     Ok(())
 }
 
@@ -217,17 +303,36 @@ fn save_effect<T>(
     owned: Option<&crate::owned_save::OwnedSave>,
     effect: impl FnOnce() -> Result<T, IpcError>,
 ) -> Result<T, IpcError> {
-    match owned { Some(owned) => owned.effect(effect), None => effect() }
+    match owned {
+        Some(owned) => owned.effect(effect),
+        None => effect(),
+    }
 }
 
 fn write_bytes(
-    path: &str, bytes: &[u8], owned: Option<&crate::owned_save::OwnedSave>,
+    path: &str,
+    bytes: &[u8],
+    owned: Option<&crate::owned_save::OwnedSave>,
 ) -> Result<(), IpcError> {
-    let Some(owned) = owned else { return atomic_write_file(path, bytes).map_err(node_err) };
+    let Some(owned) = owned else {
+        return atomic_write_file(path, bytes).map_err(node_err);
+    };
     main_core::packages::electron_utils::atomic_write::atomic_write_file_authorized(
-        path, bytes, &mut |effect| owned.effect(|| { effect(); Ok(()) })
-            .map_err(|error| main_core::node_fs::NodeError { code: None, message: error.message }),
-    ).map_err(node_err)
+        path,
+        bytes,
+        &mut |effect| {
+            owned
+                .effect(|| {
+                    effect();
+                    Ok(())
+                })
+                .map_err(|error| main_core::node_fs::NodeError {
+                    code: None,
+                    message: error.message,
+                })
+        },
+    )
+    .map_err(node_err)
 }
 
 struct PrivateSaveDirectory<'a> {
@@ -237,7 +342,9 @@ struct PrivateSaveDirectory<'a> {
 
 impl Drop for PrivateSaveDirectory<'_> {
     fn drop(&mut self) {
-        if !self.transferred && let Some(path) = self.path {
+        if !self.transferred
+            && let Some(path) = self.path
+        {
             let _ = fs::remove_dir_all(path);
         }
     }
@@ -368,11 +475,16 @@ fn open_generated_file(env: &Env, path: &str) {
 }
 
 fn open_generated_file_owned(
-    env: &Env, path: &str, scope: &crate::owned_save::OwnedSave,
-    transition: Option<super::core::GeneratedTransition>, pdf: bool,
+    env: &Env,
+    path: &str,
+    scope: &crate::owned_save::OwnedSave,
+    transition: Option<super::core::GeneratedTransition>,
+    pdf: bool,
 ) -> Result<(), IpcError> {
     scope.check()?;
-    if env.shell.is_headless() { return Ok(()) }
+    if env.shell.is_headless() {
+        return Ok(());
+    }
     let transition = transition.unwrap_or_else(|| {
         let pending = scope.pending.clone();
         super::core::GeneratedTransition::new(move || pending.cancel())
@@ -380,37 +492,68 @@ fn open_generated_file_owned(
     let accepted = transition.clone();
     let origin = scope.origin.clone();
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
-    let done = Box::new(move |result| { let _ = tx.send(result); });
+    let done = Box::new(move |result| {
+        let _ = tx.send(result);
+    });
     let cancel = scope.cancel.clone();
     let pending = scope.pending.clone();
     let accepted = Box::new(move |marker| accepted.accept(marker, &origin, &cancel, &pending));
     if pdf {
         env.shell.export_pdf_written_owned(
-            path.to_owned(), scope.origin.clone(), scope.destination.clone(),
-            scope.cancel.clone(), scope.pending.clone(), scope.effects.clone(), accepted, done,
+            path.to_owned(),
+            scope.origin.clone(),
+            scope.destination.clone(),
+            scope.cancel.clone(),
+            scope.pending.clone(),
+            scope.effects.clone(),
+            accepted,
+            done,
         );
     } else {
         env.shell.open_generated_path_owned(
-            path.to_owned(), scope.origin.clone(), scope.destination.clone(),
-            scope.cancel.clone(), scope.pending.clone(), accepted, done,
+            path.to_owned(),
+            scope.origin.clone(),
+            scope.destination.clone(),
+            scope.cancel.clone(),
+            scope.pending.clone(),
+            accepted,
+            done,
         );
     }
-    let outcome = rx.recv().map_err(|_| thrown("The generated document did not finish opening"))?
+    let outcome = rx
+        .recv()
+        .map_err(|_| thrown("The generated document did not finish opening"))?
         .map_err(thrown)?;
     match outcome {
         shell_contract::hosts::GeneratedPathOutcome::NotOpened => {
-            if pdf { return Err(thrown("The generated PDF was not opened or revealed")); }
-            if transition.retired_origin() { return Err(thrown("The generated document did not finish reloading")); }
+            if pdf {
+                return Err(thrown("The generated PDF was not opened or revealed"));
+            }
+            if transition.retired_origin() {
+                return Err(thrown("The generated document did not finish reloading"));
+            }
             let os_shell = env.os_shell.clone();
             let path = std::path::PathBuf::from(path);
-            scope.ui_effect(Box::new(move || { os_shell.show_item_in_folder(&path); Ok(()) }))?;
+            scope.ui_effect(Box::new(move || {
+                os_shell.show_item_in_folder(&path);
+                Ok(())
+            }))?;
             scope.check()
         }
         shell_contract::hosts::GeneratedPathOutcome::Opened(receipt) => {
             transition.store(receipt);
             let mut completed = false;
-            transition.terminal(&mut || { completed = true; Ok(()) }).map_err(thrown)?;
-            if completed { Ok(()) } else { Err(thrown("The generated document completion was not admitted")) }
+            transition
+                .terminal(&mut || {
+                    completed = true;
+                    Ok(())
+                })
+                .map_err(thrown)?;
+            if completed {
+                Ok(())
+            } else {
+                Err(thrown("The generated document completion was not admitted"))
+            }
         }
     }
 }
@@ -507,20 +650,28 @@ fn guard_split_save(
     }
     let dialog = HostMessages(&*env.dialogs);
     let owned_dialog = owned.map(|scope| super::dialogs::OwnedMessages {
-        env, scope, error: std::cell::RefCell::new(None),
+        env,
+        scope,
+        error: std::cell::RefCell::new(None),
     });
     let parent = dialog_parent(env, view).map(Win);
     let lang = env.tm.lang();
     let verdict = confirm_overwrite_if_conflicted(&SaveConflictOptions {
         probe: Some(&probe),
-        dialog: owned_dialog.as_ref().map(|dialog| dialog as &dyn main_core::packages::electron_utils::message_box::MessageBox<Win>)
+        dialog: owned_dialog
+            .as_ref()
+            .map(|dialog| {
+                dialog as &dyn main_core::packages::electron_utils::message_box::MessageBox<Win>
+            })
             .unwrap_or(&dialog),
         parent: parent.as_ref(),
         path,
         recorded,
         lang: lang.as_str(),
     });
-    if let Some(error) = owned_dialog.and_then(|dialog| dialog.error.into_inner()) { return Err(error); }
+    if let Some(error) = owned_dialog.and_then(|dialog| dialog.error.into_inner()) {
+        return Err(error);
+    }
     Ok(if verdict == SaveConflictAnswer::Proceed {
         SplitVerdict::Overwrite
     } else {
@@ -541,9 +692,14 @@ fn place_staged_save(env: &Env, staged: &str, target: &str) -> Result<(), IpcErr
 }
 
 fn place_staged_save_owned(
-    env: &Env, staged: &str, target: &str, owned: Option<&crate::owned_save::OwnedSave>,
+    env: &Env,
+    staged: &str,
+    target: &str,
+    owned: Option<&crate::owned_save::OwnedSave>,
 ) -> Result<(), IpcError> {
-    let Some(owned) = owned else { return place_staged_save(env, staged, target) };
+    let Some(owned) = owned else {
+        return place_staged_save(env, staged, target);
+    };
     owned.check()?;
     let beside = main_core::packages::electron_utils::atomic_write::temp_path_beside(target);
     if let Err(error) = fs::copy(staged, &beside) {
@@ -551,10 +707,24 @@ fn place_staged_save_owned(
         return Err(io_err(error, "copyfile", staged));
     }
     let result = main_core::packages::electron_utils::atomic_write::atomic_move_file_authorized(
-        &beside, target, &mut |effect| owned.effect(|| { effect(); Ok(()) })
-            .map_err(|error| main_core::node_fs::NodeError { code: None, message: error.message }),
-    ).map_err(node_err);
-    if result.is_err() { let _ = fs::remove_file(&beside); }
+        &beside,
+        target,
+        &mut |effect| {
+            owned
+                .effect(|| {
+                    effect();
+                    Ok(())
+                })
+                .map_err(|error| main_core::node_fs::NodeError {
+                    code: None,
+                    message: error.message,
+                })
+        },
+    )
+    .map_err(node_err);
+    if result.is_err() {
+        let _ = fs::remove_file(&beside);
+    }
     result
 }
 
@@ -580,14 +750,20 @@ fn show_save_unreadable_dialog(
         Some(scope) => super::dialogs::ask_owned(env, parent, &options, scope)?,
         None => ask(env, parent, &options),
     };
-    if response != 0 { return Ok(()) }
+    if response != 0 {
+        return Ok(());
+    }
     let text = format!(
         "{} {reason} ({source_format}, {})",
-        env.tm.t("errSaveUnreadable"), env.shell.app_version(),
+        env.tm.t("errSaveUnreadable"),
+        env.shell.app_version(),
     );
     if let Some(scope) = owned {
         let clipboard = env.clipboard.clone();
-        scope.ui_effect(Box::new(move || { clipboard.write_text(&text); Ok(()) }))?;
+        scope.ui_effect(Box::new(move || {
+            clipboard.write_text(&text);
+            Ok(())
+        }))?;
     } else {
         env.clipboard.write_text(&text);
     }
@@ -634,10 +810,14 @@ pub fn save_workbook(env: &Env, view: ViewId, input: IpcValue) -> Result<IpcValu
 }
 
 pub fn save_workbook_with_owner(
-    env: &Env, view: ViewId, input: IpcValue,
+    env: &Env,
+    view: ViewId,
+    input: IpcValue,
     owned: Option<crate::owned_save::OwnedSave>,
 ) -> Result<IpcValue, IpcError> {
-    if let Some(owned) = &owned { owned.check()?; }
+    if let Some(owned) = &owned {
+        owned.check()?;
+    }
     env.core(move |core| core.require_tab(view))?;
     let request = parse_save_request(env, &input)?;
     let request = resolve_transferred(env, view, request)?;
@@ -758,7 +938,9 @@ pub fn save_workbook_with_owner(
             entries.push(("message", JsonValue::String(env.tm.t("csvSaveAsNotice"))));
         }
         let selection = match &owned {
-            Some(scope) => super::dialogs::save_dialog_owned(env, parent, &dialog_options(&entries), scope)?,
+            Some(scope) => {
+                super::dialogs::save_dialog_owned(env, parent, &dialog_options(&entries), scope)?
+            }
             None => save_dialog(env, parent, &dialog_options(&entries)),
         };
         let Some(file_path) = selection
@@ -795,10 +977,15 @@ pub fn save_workbook_with_owner(
             SaveAsKind::Ods | SaveAsKind::Pdf => {
                 let key = pick.path.clone();
                 let scope = owned.clone();
-                env.core(move |core| save_effect(scope.as_ref(), || {
-                    core.state.borrow_mut().save_as_export_targets.authorize(f64::from(view.0), &key);
-                    Ok(())
-                }))?;
+                env.core(move |core| {
+                    save_effect(scope.as_ref(), || {
+                        core.state
+                            .borrow_mut()
+                            .save_as_export_targets
+                            .authorize(f64::from(view.0), &key);
+                        Ok(())
+                    })
+                })?;
                 let name = if pick.kind == SaveAsKind::Ods {
                     "odsSaveAsPath"
                 } else {
@@ -818,7 +1005,8 @@ pub fn save_workbook_with_owner(
             view,
             &restore,
             recorded_state_for(&session, &restore).as_ref(),
-            quiet, owned.as_ref(),
+            quiet,
+            owned.as_ref(),
         )?;
         if verdict == SplitVerdict::Cancel {
             return Ok(obj([("canceled", IpcValue::Bool(true))]));
@@ -837,7 +1025,8 @@ pub fn save_workbook_with_owner(
             view,
             &session.path,
             recorded_state_for(&session, &session.path).as_ref(),
-            quiet, owned.as_ref(),
+            quiet,
+            owned.as_ref(),
         )?;
         if verdict == SplitVerdict::Cancel {
             return Ok(obj([("canceled", IpcValue::Bool(true))]));
@@ -856,7 +1045,8 @@ pub fn save_workbook_with_owner(
             view,
             &csv_source,
             recorded_state_for(&session, &csv_source).as_ref(),
-            quiet, owned.as_ref(),
+            quiet,
+            owned.as_ref(),
         )?;
         if verdict == SplitVerdict::Cancel {
             return Ok(obj([("canceled", IpcValue::Bool(true))]));
@@ -875,7 +1065,8 @@ pub fn save_workbook_with_owner(
         _ => None,
     };
     let mut private_directory = PrivateSaveDirectory {
-        path: plain_save_dir.as_deref(), transferred: false,
+        path: plain_save_dir.as_deref(),
+        transferred: false,
     };
     let plain_save_path = plain_save_dir
         .as_ref()
@@ -921,7 +1112,8 @@ pub fn save_workbook_with_owner(
                     env,
                     dialog_parent(env, view),
                     &reopen_failure_note(&failure),
-                    &source_format, owned.as_ref(),
+                    &source_format,
+                    owned.as_ref(),
                 )?;
             }
             return Err(thrown(format!(
@@ -951,14 +1143,16 @@ pub fn save_workbook_with_owner(
                 let (id, mut next) = (session_id.clone(), session.clone());
                 next.sha256 = saved_sha;
                 let scope = owned.clone();
-                env.core(move |core| save_effect(scope.as_ref(), || {
-                    if let Some(tab) = core.state.borrow_mut().tab_mut(view)
-                        && tab.session(&id).is_some()
-                    {
-                        tab.set_session(&id, next);
-                    }
-                    Ok(())
-                }))?;
+                env.core(move |core| {
+                    save_effect(scope.as_ref(), || {
+                        if let Some(tab) = core.state.borrow_mut().tab_mut(view)
+                            && tab.session(&id).is_some()
+                        {
+                            tab.set_session(&id, next);
+                        }
+                        Ok(())
+                    })
+                })?;
             }
             write_bytes(csv_source, &csv_bytes(content), owned.as_ref())?;
         }
@@ -979,12 +1173,18 @@ pub fn save_workbook_with_owner(
             }
         });
         cleanup_session(
-            env, &session_id, &session,
+            env,
+            &session_id,
+            &session,
             if csv_in_place || quiet_unsaved_new || plain_save_path.is_some() {
                 None
-            } else { session.import_temp_dir.as_deref() },
+            } else {
+                session.import_temp_dir.as_deref()
+            },
         );
-        if plain_save_path.is_some() { let _ = fs::remove_file(&session.path); }
+        if plain_save_path.is_some() {
+            let _ = fs::remove_file(&session.path);
+        }
     }
     let staged = Staged {
         snapshot_path: staged_path,
@@ -1035,25 +1235,40 @@ pub fn save_workbook_with_owner(
         .clone()
         .unwrap_or_else(|| target_path.clone());
     let opened = super::open::open_workbook_session_with_owner(
-        env, view, &open_path, options, owned.clone().map(|scope| (scope, session_id.clone())),
+        env,
+        view,
+        &open_path,
+        options,
+        owned.clone().map(|scope| (scope, session_id.clone())),
     )?;
     let opened_id = opened.session_id;
     let mut file = opened.value;
     private_directory.transferred = true;
     if owned.is_some() {
         cleanup_session(
-            env, &session_id, &session,
+            env,
+            &session_id,
+            &session,
             if csv_in_place || quiet_unsaved_new || plain_save_path.is_some() {
                 None
-            } else { session.import_temp_dir.as_deref() },
+            } else {
+                session.import_temp_dir.as_deref()
+            },
         );
-        if plain_save_path.is_some() { let _ = fs::remove_file(&session.path); }
+        if plain_save_path.is_some() {
+            let _ = fs::remove_file(&session.path);
+        }
     }
     // the swap retargets the tab: a Save As renames the file the picker matches links against
     if owned.is_none() {
         let current = if csv_in_place {
-            session.csv_source_path.clone().unwrap_or_else(|| target_path.clone())
-        } else { target_path.clone() };
+            session
+                .csv_source_path
+                .clone()
+                .unwrap_or_else(|| target_path.clone())
+        } else {
+            target_path.clone()
+        };
         env.core(move |core| {
             if let Some(tab) = core.state.borrow_mut().tab_mut(view) {
                 tab.set_current_path(Some(current));
@@ -1086,8 +1301,13 @@ pub fn save_workbook_with_owner(
     }
     // Notify the shell so it can update the tab title and record the saved path
     let published_path = if csv_in_place {
-        session.csv_source_path.clone().unwrap_or_else(|| target_path.clone())
-    } else { target_path.clone() };
+        session
+            .csv_source_path
+            .clone()
+            .unwrap_or_else(|| target_path.clone())
+    } else {
+        target_path.clone()
+    };
     let expected_path = published_path.clone();
     let published_path = if let Some(scope) = &owned {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
@@ -1098,21 +1318,32 @@ pub fn save_workbook_with_owner(
             let shell = core.env.shell.clone();
             let core = core.clone();
             shell.workbook_opened_owned(
-                view, requested.clone(), scope.origin.clone(), scope.destination.clone(),
-                scope.cancel.clone(), scope.pending.clone(),
+                view,
+                requested.clone(),
+                scope.origin.clone(),
+                scope.destination.clone(),
+                scope.cancel.clone(),
+                scope.pending.clone(),
                 Box::new(move |result| {
                     let saved = match result {
                         Ok(saved) => saved,
-                        Err(error) => { let _ = tx.send(Err(error)); return; }
+                        Err(error) => {
+                            let _ = tx.send(Err(error));
+                            return;
+                        }
                     };
                     let actual = saved.path;
                     let acknowledged = scope.effect(|| {
                         let mut state = core.state.borrow_mut();
-                        let tab = state.tab_mut(view)
+                        let tab = state
+                            .tab_mut(view)
                             .ok_or_else(|| thrown("The workbook tab was closed while saving"))?;
-                        let mut current = tab.session(&id).cloned()
-                            .ok_or_else(|| thrown("The workbook session was replaced while saving"))?;
-                        if current.path == requested { current.path = actual.clone(); }
+                        let mut current = tab.session(&id).cloned().ok_or_else(|| {
+                            thrown("The workbook session was replaced while saving")
+                        })?;
+                        if current.path == requested {
+                            current.path = actual.clone();
+                        }
                         if current.restore_target.as_deref() == Some(requested.as_str()) {
                             current.restore_target = Some(actual.clone());
                         }
@@ -1120,7 +1351,9 @@ pub fn save_workbook_with_owner(
                             current.csv_source_path = Some(actual.clone());
                         }
                         if let Some((path, _)) = current.disk_state.as_mut() {
-                            if *path == requested { *path = actual.clone(); }
+                            if *path == requested {
+                                *path = actual.clone();
+                            }
                         }
                         if current.recovery_identity.as_ref() == Some(&file_identity(&requested)) {
                             current.recovery_identity = Some(file_identity(&actual));
@@ -1139,15 +1372,20 @@ pub fn save_workbook_with_owner(
                 }),
             );
         });
-        rx.recv().map_err(|_| thrown("The saved workbook publication did not complete"))?
+        rx.recv()
+            .map_err(|_| thrown("The saved workbook publication did not complete"))?
             .map_err(thrown)?
     } else {
         env.shell.workbook_opened(view, &published_path);
         published_path
     };
-    if published_path != expected_path && let IpcValue::Object(fields) = &mut file {
+    if published_path != expected_path
+        && let IpcValue::Object(fields) = &mut file
+    {
         for (key, value) in fields {
-            if (key == "path" || key == "csvPath") && matches!(&*value, IpcValue::String(path) if path == &expected_path) {
+            if (key == "path" || key == "csvPath")
+                && matches!(&*value, IpcValue::String(path) if path == &expected_path)
+            {
                 *value = string(published_path.clone());
             } else if key == "name" {
                 *value = string(basename(&published_path, None));
@@ -1199,7 +1437,9 @@ fn ods_losses(result: &OdsConversion) -> Vec<(&'static str, f64)> {
 
 /// `confirmOdsLoss`
 fn confirm_ods_loss(
-    env: &Env, parent: Option<WindowId>, losses: &[(&'static str, f64)],
+    env: &Env,
+    parent: Option<WindowId>,
+    losses: &[(&'static str, f64)],
     owned: Option<&crate::owned_save::OwnedSave>,
 ) -> Result<bool, IpcError> {
     let mut lines = vec![env.tm.t("odsLossDetail"), String::new()];
@@ -1236,7 +1476,9 @@ enum Withheld {
 
 /// `askWithheldExport`
 fn ask_withheld_export(
-    env: &Env, parent: Option<WindowId>, format: &str,
+    env: &Env,
+    parent: Option<WindowId>,
+    format: &str,
     owned: Option<&crate::owned_save::OwnedSave>,
 ) -> Result<Withheld, IpcError> {
     let params = [("format", JsonValue::String(format.to_owned()))];
@@ -1252,18 +1494,23 @@ fn ask_withheld_export(
         0,
         Some(2),
     );
-    Ok(match match owned {
-        Some(scope) => super::dialogs::ask_owned(env, parent, &options, scope)?,
-        None => ask(env, parent, &options),
-    } {
-        0 => Withheld::Xlsx,
-        1 => Withheld::Export,
-        _ => Withheld::Cancel,
-    })
+    Ok(
+        match match owned {
+            Some(scope) => super::dialogs::ask_owned(env, parent, &options, scope)?,
+            None => ask(env, parent, &options),
+        } {
+            0 => Withheld::Xlsx,
+            1 => Withheld::Export,
+            _ => Withheld::Cancel,
+        },
+    )
 }
 
 fn show_ods_message(
-    env: &Env, parent: Option<WindowId>, kind: &str, message: String,
+    env: &Env,
+    parent: Option<WindowId>,
+    kind: &str,
+    message: String,
     owned: Option<&crate::owned_save::OwnedSave>,
 ) -> Result<(), IpcError> {
     let options = message_box(
@@ -1275,8 +1522,12 @@ fn show_ods_message(
         None,
     );
     match owned {
-        Some(scope) => { super::dialogs::ask_owned(env, parent, &options, scope)?; }
-        None => { ask(env, parent, &options); }
+        Some(scope) => {
+            super::dialogs::ask_owned(env, parent, &options, scope)?;
+        }
+        None => {
+            ask(env, parent, &options);
+        }
     }
     Ok(())
 }
@@ -1431,9 +1682,14 @@ fn export_workbook_as_ods(
 
 /// `exportOds`
 pub fn export_ods(
-    env: &Env, view: ViewId, input: IpcValue, owned: Option<crate::owned_save::OwnedSave>,
+    env: &Env,
+    view: ViewId,
+    input: IpcValue,
+    owned: Option<crate::owned_save::OwnedSave>,
 ) -> Result<IpcValue, IpcError> {
-    if let Some(scope) = &owned { scope.check()?; }
+    if let Some(scope) = &owned {
+        scope.check()?;
+    }
     env.core(move |core| core.require_tab(view))?;
     schema::parse(
         &schema::strict(vec![
@@ -1462,7 +1718,13 @@ pub fn export_ods(
     let parent = dialog_parent(env, view);
     // A password workbook runs on a plaintext temp copy
     if session.password.is_some() {
-        show_ods_message(env, parent, "error", env.tm.t("errOdsEncrypted"), owned.as_ref())?;
+        show_ods_message(
+            env,
+            parent,
+            "error",
+            env.tm.t("errOdsEncrypted"),
+            owned.as_ref(),
+        )?;
         return Ok(obj([
             ("canceled", IpcValue::Bool(true)),
             ("reason", string("encrypted")),
@@ -1473,9 +1735,15 @@ pub fn export_ods(
     if let IpcValue::String(requested) = field(&input, "targetPath") {
         let (key, requested) = (requested.clone(), requested.clone());
         let scope = owned.clone();
-        let taken = env.core(move |core| save_effect(scope.as_ref(), || {
-            Ok(core.state.borrow_mut().save_as_export_targets.take(f64::from(view.0), &key))
-        }))?;
+        let taken = env.core(move |core| {
+            save_effect(scope.as_ref(), || {
+                Ok(core
+                    .state
+                    .borrow_mut()
+                    .save_as_export_targets
+                    .take(f64::from(view.0), &key))
+            })
+        })?;
         if !taken {
             return Err(thrown("export target was not authorized"));
         }
@@ -1496,7 +1764,9 @@ pub fn export_ods(
                         "filters",
                         JsonValue::Array(vec![json_filter(&env.tm.t("filterOds"), &["ods"])]),
                     ),
-                ]), owned.as_ref(), true,
+                ]),
+                owned.as_ref(),
+                true,
             )?;
             match selection
                 .path
@@ -1514,7 +1784,13 @@ pub fn export_ods(
         let candidate = target_path.clone().unwrap_or_default();
         match &session.ods_source_path {
             Some(original) if same_file_path(&candidate, original) => {
-                show_ods_message(env, parent, "error", env.tm.t("errOdsOriginalTarget"), owned.as_ref())?;
+                show_ods_message(
+                    env,
+                    parent,
+                    "error",
+                    env.tm.t("errOdsOriginalTarget"),
+                    owned.as_ref(),
+                )?;
                 target_path = None;
             }
             _ => break candidate,
@@ -1561,7 +1837,13 @@ pub fn export_ods(
             IpcValue::Object(entries)
         }
         OdsOutcome::Unreadable => {
-            show_ods_message(env, parent, "error", env.tm.t("errOdsReopenFailed"), owned.as_ref())?;
+            show_ods_message(
+                env,
+                parent,
+                "error",
+                env.tm.t("errOdsReopenFailed"),
+                owned.as_ref(),
+            )?;
             obj([
                 ("canceled", IpcValue::Bool(true)),
                 ("reason", string("unreadable")),
@@ -1575,7 +1857,8 @@ pub fn export_ods(
                 env.tm.with(
                     "errOdsExportFailed",
                     &[("message", JsonValue::String(message))],
-                ), owned.as_ref(),
+                ),
+                owned.as_ref(),
             )?;
             obj([
                 ("canceled", IpcValue::Bool(true)),
@@ -1603,9 +1886,14 @@ fn without(value: &IpcValue, key: &str) -> IpcValue {
 
 /// `exportCsv`
 pub fn export_csv(
-    env: &Env, view: ViewId, input: IpcValue, owned: Option<crate::owned_save::OwnedSave>,
+    env: &Env,
+    view: ViewId,
+    input: IpcValue,
+    owned: Option<crate::owned_save::OwnedSave>,
 ) -> Result<IpcValue, IpcError> {
-    if let Some(scope) = &owned { scope.check()?; }
+    if let Some(scope) = &owned {
+        scope.check()?;
+    }
     env.core(move |core| core.require_tab(view))?;
     schema::parse(
         &schema::strict(vec![
@@ -1673,7 +1961,12 @@ pub fn export_csv(
                 entries.push(("message", JsonValue::String(notice)));
             }
             let selection = match &owned {
-                Some(scope) => super::dialogs::save_dialog_owned(env, parent, &dialog_options(&entries), scope)?,
+                Some(scope) => super::dialogs::save_dialog_owned(
+                    env,
+                    parent,
+                    &dialog_options(&entries),
+                    scope,
+                )?,
                 None => save_dialog(env, parent, &dialog_options(&entries)),
             };
             match selection
@@ -1691,32 +1984,38 @@ pub fn export_csv(
         format!("{picked}.csv")
     };
     // UTF-8 BOM so Excel decodes the reopened file correctly
-    write_bytes(&target, &csv_bytes(&get("content").unwrap_or_default()), owned.as_ref())?;
+    write_bytes(
+        &target,
+        &csv_bytes(&get("content").unwrap_or_default()),
+        owned.as_ref(),
+    )?;
     // An export can land on a CSV session's own source file: refresh the digest
     if let Some(written) = sha_of(&target) {
         let target = target.clone();
         let scope = owned.clone();
-        env.core(move |core| save_effect(scope.as_ref(), || {
-            let mut state = core.state.borrow_mut();
-            let Some(tab) = state.tab_mut(view) else {
-                return Err(thrown("The workbook tab was closed"));
-            };
-            let mut sessions: JsMap<serde_json::Map<String, Value>> = JsMap::new();
-            for (id, session) in &tab.sessions {
-                sessions.set(id.clone(), session.to_map());
-            }
-            refresh_csv_digest(&mut sessions, &target, &written);
-            for (id, map) in sessions.iter() {
-                if let Some(sha) = map.get("csvSourceSha").and_then(Value::as_str)
-                    && let Some(mut session) = tab.session(id).cloned()
-                    && session.csv_source_sha.as_deref() != Some(sha)
-                {
-                    session.csv_source_sha = Some(sha.to_owned());
-                    tab.set_session(id, session);
+        env.core(move |core| {
+            save_effect(scope.as_ref(), || {
+                let mut state = core.state.borrow_mut();
+                let Some(tab) = state.tab_mut(view) else {
+                    return Err(thrown("The workbook tab was closed"));
+                };
+                let mut sessions: JsMap<serde_json::Map<String, Value>> = JsMap::new();
+                for (id, session) in &tab.sessions {
+                    sessions.set(id.clone(), session.to_map());
                 }
-            }
-            Ok(())
-        }))?;
+                refresh_csv_digest(&mut sessions, &target, &written);
+                for (id, map) in sessions.iter() {
+                    if let Some(sha) = map.get("csvSourceSha").and_then(Value::as_str)
+                        && let Some(mut session) = tab.session(id).cloned()
+                        && session.csv_source_sha.as_deref() != Some(sha)
+                    {
+                        session.csv_source_sha = Some(sha.to_owned());
+                        tab.set_session(id, session);
+                    }
+                }
+                Ok(())
+            })
+        })?;
     }
     Ok(obj([
         ("canceled", IpcValue::Bool(false)),
@@ -1726,7 +2025,9 @@ pub fn export_csv(
 
 /// `csvSaveConfirm`
 pub fn csv_save_confirm(
-    env: &Env, view: ViewId, owned: Option<crate::owned_save::OwnedSave>,
+    env: &Env,
+    view: ViewId,
+    owned: Option<crate::owned_save::OwnedSave>,
 ) -> Result<IpcValue, IpcError> {
     env.core(move |core| core.require_tab(view))?;
     let options = message_box(
@@ -1778,11 +2079,16 @@ pub fn withheld_export_choice(
 
 /// `exportPdf` of the handler and pdf-export.ts
 pub(super) fn export_pdf(
-    env: &Env, view: ViewId, input: IpcValue, owned: Option<crate::owned_save::OwnedSave>,
+    env: &Env,
+    view: ViewId,
+    input: IpcValue,
+    owned: Option<crate::owned_save::OwnedSave>,
     transition: Option<super::core::GeneratedTransition>,
     headless: Option<super::core::HeadlessPrint>,
 ) -> Result<IpcValue, IpcError> {
-    if let Some(scope) = &owned { scope.check()?; }
+    if let Some(scope) = &owned {
+        scope.check()?;
+    }
     env.core(move |core| core.require_tab(view))?;
     let request = env.engine.parse_export_pdf_request(&input)?;
     let save_as = match field(&request, "saveAsPath") {
@@ -1790,15 +2096,23 @@ pub(super) fn export_pdf(
         _ => None,
     };
     if headless.is_some() && save_as.is_some() {
-        return Err(thrown("A headless export cannot use an interactive Save As target"));
+        return Err(thrown(
+            "A headless export cannot use an interactive Save As target",
+        ));
     }
     // Save As > PDF: only the path this tab's Save As dialog just returned skips the export's own dialog
     if let Some(path) = &save_as {
         let key = path.clone();
         let scope = owned.clone();
-        let taken = env.core(move |core| save_effect(scope.as_ref(), || {
-            Ok(core.state.borrow_mut().save_as_export_targets.take(f64::from(view.0), &key))
-        }))?;
+        let taken = env.core(move |core| {
+            save_effect(scope.as_ref(), || {
+                Ok(core
+                    .state
+                    .borrow_mut()
+                    .save_as_export_targets
+                    .take(f64::from(view.0), &key))
+            })
+        })?;
         if !taken {
             return Err(thrown("export target was not authorized"));
         }
@@ -1827,7 +2141,9 @@ pub(super) fn export_pdf(
                     "filters",
                     JsonValue::Array(vec![json_filter("PDF", &["pdf"])]),
                 ),
-            ]), owned.as_ref(), false,
+            ]),
+            owned.as_ref(),
+            false,
         )?;
         selection
             .path
@@ -1840,7 +2156,11 @@ pub(super) fn export_pdf(
         let valid = matches!(headless.document.operation().selection(),
             shell_contract::ipc::NativeInvocationSelection::HeadlessExport { output, .. }
                 if output == Path::new(&path));
-        if !valid { return Err(thrown("The PDF path does not match the headless invocation")); }
+        if !valid {
+            return Err(thrown(
+                "The PDF path does not match the headless invocation",
+            ));
+        }
     }
     let html = match field(&request, "html") {
         IpcValue::String(html) => html.clone(),
@@ -1849,46 +2169,83 @@ pub(super) fn export_pdf(
     let html = with_template_font_faces(&html, &env.shell.template_fonts_dir());
     let pdf = match (&owned, &headless) {
         (_, Some(headless)) => env.engine.render_pdf_owned(
-            &html, &request, super::engine::WorkbookPrintAuthority::NativeInvocation {
-                target: headless.document.target(), owner: headless.document.owner(),
-                cancel: &headless.cancel, pending: &headless.pending,
+            &html,
+            &request,
+            super::engine::WorkbookPrintAuthority::NativeInvocation {
+                target: headless.document.target(),
+                owner: headless.document.owner(),
+                cancel: &headless.cancel,
+                pending: &headless.pending,
             },
         )?,
         (Some(scope), None) => {
             let participants = scope.participants(&[]);
             match &scope.authority {
                 crate::owned_save::SaveAuthority::Renderer(origin) => env.engine.render_pdf_owned(
-                    &html, &request, super::engine::WorkbookPrintAuthority::Interactive {
-                        origin, destination: &scope.destination, cancel: &scope.cancel, pending: &scope.pending,
+                    &html,
+                    &request,
+                    super::engine::WorkbookPrintAuthority::Interactive {
+                        origin,
+                        destination: &scope.destination,
+                        cancel: &scope.cancel,
+                        pending: &scope.pending,
                     },
                 )?,
                 crate::owned_save::SaveAuthority::Native(binding) => env.engine.render_pdf_owned(
-                    &html, &request, super::engine::WorkbookPrintAuthority::ExistingDocument {
-                        binding, participants: &participants, cancel: &scope.cancel, pending: &scope.pending,
+                    &html,
+                    &request,
+                    super::engine::WorkbookPrintAuthority::ExistingDocument {
+                        binding,
+                        participants: &participants,
+                        cancel: &scope.cancel,
+                        pending: &scope.pending,
                         additional: &scope.additional,
                     },
                 )?,
             }
-        },
+        }
         (None, None) => env.engine.render_pdf(&html, &request)?,
     };
     if let Some(headless) = &headless {
-        let effects = env.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().cloned()
+        let effects = env
+            .services
+            .hosts
+            .get::<shell_contract::hosts::OwnedEffectsHost>()
+            .cloned()
             .ok_or_else(|| thrown("Native invocation effects are unavailable"))?;
         let headless = headless.clone();
-        let admission: main_core::packages::electron_utils::atomic_write::owned::Admission = std::sync::Arc::new(move |effect| {
-            let mut effect = Some(effect);
-            let mut output = None;
-            effects.with_native_invocation_effect(
-                &headless.document, headless.document.owner(), &[], &headless.cancel, &headless.pending,
-                &mut || {
-                    output = Some(effect.take().ok_or("The PDF publication was already admitted")?());
-                    Ok(())
-                },
-            ).map_err(|message| main_core::node_fs::NodeError { code: None, message })?;
-            output.ok_or_else(|| main_core::node_fs::NodeError { code: None, message: "The PDF publication was not admitted".into() })
-        });
-        main_core::packages::electron_utils::atomic_write::owned::write_file(&path, &pdf, admission).map_err(node_err)?;
+        let admission: main_core::packages::electron_utils::atomic_write::owned::Admission =
+            std::sync::Arc::new(move |effect| {
+                let mut effect = Some(effect);
+                let mut output = None;
+                effects
+                    .with_native_invocation_effect(
+                        &headless.document,
+                        headless.document.owner(),
+                        &[],
+                        &headless.cancel,
+                        &headless.pending,
+                        &mut || {
+                            output = Some(effect
+                                .take()
+                                .ok_or("The PDF publication was already admitted")?(
+                            ));
+                            Ok(())
+                        },
+                    )
+                    .map_err(|message| main_core::node_fs::NodeError {
+                        code: None,
+                        message,
+                    })?;
+                output.ok_or_else(|| main_core::node_fs::NodeError {
+                    code: None,
+                    message: "The PDF publication was not admitted".into(),
+                })
+            });
+        main_core::packages::electron_utils::atomic_write::owned::write_file(
+            &path, &pdf, admission,
+        )
+        .map_err(node_err)?;
     } else {
         write_bytes(&path, &pdf, owned.as_ref())?;
     }
@@ -1906,7 +2263,11 @@ pub(super) fn export_pdf(
 
 /// `createDocument`: never throws, answers `{ ok: false, error }`
 pub fn create_document(
-    env: &Env, view: ViewId, input: IpcValue, scope: crate::owned_save::OwnedSave, revision: u64,
+    env: &Env,
+    view: ViewId,
+    input: IpcValue,
+    scope: crate::owned_save::OwnedSave,
+    revision: u64,
 ) -> Result<IpcValue, IpcError> {
     scope.check()?;
     env.core(move |core| core.require_tab(view))?;
@@ -1916,13 +2277,23 @@ pub fn create_document(
         std::sync::Arc::new(move |effect| {
             let scope = scope.clone();
             env.core(move |core| {
-                scope.effect(|| {
-                    let current = core.state.borrow().tab(view)
-                        .is_some_and(|tab| tab.document.same_generation(&scope.document)
-                            && tab.metadata_revision == Some(revision));
-                    if !current { return Err(thrown("The workbook metadata changed during document creation")); }
-                    Ok(effect())
-                }).map_err(|error| main_core::node_fs::NodeError { code: None, message: error.message })
+                scope
+                    .effect(|| {
+                        let current = core.state.borrow().tab(view).is_some_and(|tab| {
+                            tab.document.same_generation(&scope.document)
+                                && tab.metadata_revision == Some(revision)
+                        });
+                        if !current {
+                            return Err(thrown(
+                                "The workbook metadata changed during document creation",
+                            ));
+                        }
+                        Ok(effect())
+                    })
+                    .map_err(|error| main_core::node_fs::NodeError {
+                        code: None,
+                        message: error.message,
+                    })
             })
         })
     };
@@ -1968,14 +2339,29 @@ pub fn create_document(
                 env.engine.sheet_csv_to_xlsx(&content, &sheet)?
             };
             // with a project chosen in this view's panel, into that folder
-            let placed = env.shell.write_new_document_owned(
-                &scope.origin, &scope.destination, &scope.cancel, &scope.pending, &scope.effects, admission.clone(), &file_name, &bytes,
-            ).map_err(thrown)?;
+            let placed = env
+                .shell
+                .write_new_document_owned(
+                    &scope.origin,
+                    &scope.destination,
+                    &scope.cancel,
+                    &scope.pending,
+                    &scope.effects,
+                    admission.clone(),
+                    &file_name,
+                    &bytes,
+                )
+                .map_err(thrown)?;
             let path = match placed {
                 Some(path) if !path.is_empty() => path,
                 _ => {
                     let path = unique_path_in(&default_save_dir(env)?, &file_name);
-                    main_core::packages::electron_utils::atomic_write::owned::write_file(&path, &bytes, admission.clone()).map_err(node_err)?;
+                    main_core::packages::electron_utils::atomic_write::owned::write_file(
+                        &path,
+                        &bytes,
+                        admission.clone(),
+                    )
+                    .map_err(node_err)?;
                     path
                 }
             };
@@ -1989,11 +2375,20 @@ pub fn create_document(
         ]);
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         env.shell.create_document_owned(
-            request, view, scope.origin.clone(), scope.destination.clone(),
-            scope.cancel.clone(), scope.pending.clone(), scope.effects.clone(), admission.clone(),
-            Box::new(move |result| { let _ = tx.send(result); }),
+            request,
+            view,
+            scope.origin.clone(),
+            scope.destination.clone(),
+            scope.cancel.clone(),
+            scope.pending.clone(),
+            scope.effects.clone(),
+            admission.clone(),
+            Box::new(move |result| {
+                let _ = tx.send(result);
+            }),
         );
-        rx.recv().map_err(|_| thrown("Document creation did not complete"))?
+        rx.recv()
+            .map_err(|_| thrown("Document creation did not complete"))?
             .map_err(thrown)
     })();
     Ok(attempt.unwrap_or_else(|error| failure(error.message)))

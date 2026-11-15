@@ -156,7 +156,10 @@ export function useMapExport(host: MapExportHost): MapExport {
       const session = current.session
       if (!session) return
       const api = window.mindmapApi
-      const to = { ...(path === undefined ? {} : { path }), ...(ownedSaveRequestId === undefined ? {} : { ownedSaveRequestId }) }
+      const to = {
+        ...(path === undefined ? {} : { path }),
+        ...(ownedSaveRequestId === undefined ? {} : { ownedSaveRequestId }),
+      }
       try {
         if (format === 'markdown') {
           current.flushAll()
@@ -223,7 +226,8 @@ export function useMapExport(host: MapExportHost): MapExport {
   // stable across renders: a save hands its Save As export pick to `exportAs`
   return useMemo(
     () => ({
-      exportAs: (format, path, ownedSaveRequestId) => inTurn(() => exportAs(format, path, ownedSaveRequestId)),
+      exportAs: (format, path, ownedSaveRequestId) =>
+        inTurn(() => exportAs(format, path, ownedSaveRequestId)),
       print: () => inTurn(print),
     }),
     [exportAs, print, inTurn],

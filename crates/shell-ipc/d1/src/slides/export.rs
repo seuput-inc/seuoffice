@@ -112,11 +112,24 @@ pub fn save_picture(app: &App, _cx: &CallContext, args: Args) -> Reply {
 pub fn export_images(app: &App, cx: &CallContext, args: Args, responder: Responder) {
     let op = args.get(0);
     let failed = |error: String| obj([("ok", IpcValue::Bool(false)), ("error", string(error))]);
-    let kind = if as_str(field(op, "format")) == Some("jpg") { "jpg" } else { "png" };
-    let scope = match app.export_scope(cx, as_str(field(op, "saveRequestId")), kind, as_str(field(op, "saveAsTarget")).unwrap_or("")) {
-        Ok(scope) => scope, Err(error) => return responder.reply(Ok(failed(error.message))),
+    let kind = if as_str(field(op, "format")) == Some("jpg") {
+        "jpg"
+    } else {
+        "png"
     };
-    let revision = match scope.revision(app) { Ok(revision) => revision, Err(error) => return responder.reply(Err(error)) };
+    let scope = match app.export_scope(
+        cx,
+        as_str(field(op, "saveRequestId")),
+        kind,
+        as_str(field(op, "saveAsTarget")).unwrap_or(""),
+    ) {
+        Ok(scope) => scope,
+        Err(error) => return responder.reply(Ok(failed(error.message))),
+    };
+    let revision = match scope.revision(app) {
+        Ok(revision) => revision,
+        Err(error) => return responder.reply(Err(error)),
+    };
     let outcome: Result<(Vec<String>, Vec<Vec<u8>>), String> = (|| {
         let format = prop(op, "format").map_err(|e| e.to_string())?;
         let ext = if as_str(format) == Some("jpg") {
@@ -143,8 +156,15 @@ pub fn export_images(app: &App, cx: &CallContext, args: Args, responder: Respond
         let count = pngs.len() as f64;
         let paths = if has_target {
             let wanted = as_str(target).unwrap_or("").to_owned();
-            if as_str(field(op, "saveRequestId")).is_none() { return Err("The Save As copy request identifier is required".into()); }
-            Some(main_core::packages::electron_utils::numbered_export_paths::numbered_export_paths(&wanted, count).map_err(|error| format!("RangeError: {}", error.0))?)
+            if as_str(field(op, "saveRequestId")).is_none() {
+                return Err("The Save As copy request identifier is required".into());
+            }
+            Some(
+                main_core::packages::electron_utils::numbered_export_paths::numbered_export_paths(
+                    &wanted, count,
+                )
+                .map_err(|error| format!("RangeError: {}", error.0))?,
+            )
         } else {
             Some(build_export_image_paths(
                 as_str(field(op, "dir")).unwrap_or(""),
@@ -162,29 +182,81 @@ pub fn export_images(app: &App, cx: &CallContext, args: Args, responder: Respond
         Ok(ok) => ok,
         Err(error) => return responder.reply(Ok(failed(error))),
     };
-    let admissions = paths.iter().enumerate().map(|(index, path)|
-        scope.revision_numbered_admission(app, revision.clone(), path.clone(), pngs.len(), index)
-    ).collect::<Vec<_>>();
-    let services = app.services.clone(); let index = app.registry_index;
+    let admissions = paths
+        .iter()
+        .enumerate()
+        .map(|(index, path)| {
+            scope.revision_numbered_admission(
+                app,
+                revision.clone(),
+                path.clone(),
+                pngs.len(),
+                index,
+            )
+        })
+        .collect::<Vec<_>>();
+    let services = app.services.clone();
+    let index = app.registry_index;
     app.services.workers.spawn(Box::new(move || {
-        let outcome = paths.iter().zip(&pngs).zip(admissions).try_for_each(|((path, bytes), admission)| main_core::packages::electron_utils::atomic_write::owned::write_file(path, bytes, admission));
+        let outcome =
+            paths
+                .iter()
+                .zip(&pngs)
+                .zip(admissions)
+                .try_for_each(|((path, bytes), admission)| {
+                    main_core::packages::electron_utils::atomic_write::owned::write_file(
+                        path, bytes, admission,
+                    )
+                });
         super::post_to(&services, index, move |app| {
-            let result = outcome.map_err(|error| thrown(error.message)).and_then(|()| scope.effect_at_revision(app, &revision, || obj([
-                ("ok", IpcValue::Bool(true)), ("paths", IpcValue::Array(paths.into_iter().map(string).collect())),
-            ])));
+            let result = outcome
+                .map_err(|error| thrown(error.message))
+                .and_then(|()| {
+                    scope.effect_at_revision(app, &revision, || {
+                        obj([
+                            ("ok", IpcValue::Bool(true)),
+                            (
+                                "paths",
+                                IpcValue::Array(paths.into_iter().map(string).collect()),
+                            ),
+                        ])
+                    })
+                });
             responder.reply(result);
         });
     }));
 }
 
-
 pub fn consume_headless_export(app: &App, cx: &CallContext, _args: Args) -> Reply {
     let owner = super::session::render_owner(cx)?;
-    let Some(target) = app.shell.take_headless_target_owned(&owner, &cx.cancel).map_err(thrown)? else { return Ok(IpcValue::Null); };
-    let effects = app.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().ok_or_else(|| thrown("The native export effect host is unavailable"))?;
-    effects.with_native_invocation_effect(&target.invocation, &owner, std::slice::from_ref(&owner), &cx.cancel, &cx.cancel, &mut || {
-        app.state.borrow_mut().headless_targets.insert(owner.view, target.invocation.clone()); Ok(())
-    }).map_err(thrown)?;
+    let Some(target) = app
+        .shell
+        .take_headless_target_owned(&owner, &cx.cancel)
+        .map_err(thrown)?
+    else {
+        return Ok(IpcValue::Null);
+    };
+    let effects = app
+        .services
+        .hosts
+        .get::<shell_contract::hosts::OwnedEffectsHost>()
+        .ok_or_else(|| thrown("The native export effect host is unavailable"))?;
+    effects
+        .with_native_invocation_effect(
+            &target.invocation,
+            &owner,
+            std::slice::from_ref(&owner),
+            &cx.cancel,
+            &cx.cancel,
+            &mut || {
+                app.state
+                    .borrow_mut()
+                    .headless_targets
+                    .insert(owner.view, target.invocation.clone());
+                Ok(())
+            },
+        )
+        .map_err(thrown)?;
     Ok(string(target.path))
 }
 
@@ -193,11 +265,20 @@ pub fn headless_export_done(app: &App, cx: &CallContext, args: Args) -> Result<(
     let ok = matches!(field(result, "ok"), IpcValue::Bool(true));
     let error = as_str(field(result, "error")).map(str::to_owned);
     let owner = super::session::render_owner(cx)?;
-    app.shell.headless_export_done_owned(&owner, &cx.cancel, ok, error).map_err(thrown)?;
+    app.shell
+        .headless_export_done_owned(&owner, &cx.cancel, ok, error)
+        .map_err(thrown)?;
     let mut state = app.state.borrow_mut();
-    if state.headless_targets.get(&owner.view).is_some_and(|document| {
-        owner.context.renderer().is_some_and(|renderer| document.created().same_generation(renderer))
-    }) {
+    if state
+        .headless_targets
+        .get(&owner.view)
+        .is_some_and(|document| {
+            owner
+                .context
+                .renderer()
+                .is_some_and(|renderer| document.created().same_generation(renderer))
+        })
+    {
         state.headless_targets.remove(&owner.view);
     }
     Ok(())
@@ -222,7 +303,14 @@ pub fn font_install_local(app: &App, _cx: &CallContext, _args: Args) -> Reply {
     let engine = app.engine.clone();
     let families = main_core::slides::font_store::install_local_font_files(
         &mut || user_data.clone(),
-        &|path| engine.font_file_families(path).map_err(|error| main_core::node_fs::NodeError { code: None, message: error.0 }),
+        &|path| {
+            engine
+                .font_file_families(path)
+                .map_err(|error| main_core::node_fs::NodeError {
+                    code: None,
+                    message: error.0,
+                })
+        },
         &paths,
     )
     .map_err(|e| thrown(e.message))?;
@@ -239,7 +327,9 @@ impl App {
     /// `afterFontsChanged()`: rebuild every open session with a fresh
     /// registry and push the relaid-out slides to all attached windows
     fn after_fonts_changed(&self) -> Result<(), IpcError> {
-        self.engine.reset_font_metrics().map_err(|error| thrown(error.0))?;
+        self.engine
+            .reset_font_metrics()
+            .map_err(|error| thrown(error.0))?;
         let sends: Vec<(super::engine::RenderOwner, IpcValue)> = {
             let state = self.state.borrow();
             let mut sends = Vec::new();
@@ -250,7 +340,12 @@ impl App {
                 for owner in state.attached_owners(slot) {
                     let payload = obj([
                         ("slides", self.render_all(session, &owner)?),
-                        ("size", self.size_value(self.engine.size(session.deck()).map_err(|e| thrown(e.0))?)),
+                        (
+                            "size",
+                            self.size_value(
+                                self.engine.size(session.deck()).map_err(|e| thrown(e.0))?,
+                            ),
+                        ),
                     ]);
                     sends.push((owner, payload));
                 }
@@ -258,7 +353,10 @@ impl App {
             sends
         };
         for (owner, payload) in sends {
-            self.services.events.emit_to_owner_checked(&owner, "slides:deck-changed", vec![payload]).map_err(thrown)?;
+            self.services
+                .events
+                .emit_to_owner_checked(&owner, "slides:deck-changed", vec![payload])
+                .map_err(thrown)?;
         }
         self.services
             .events
@@ -269,12 +367,16 @@ impl App {
 
 pub fn private_font_faces(app: &App, cx: &CallContext, _args: Args) -> Reply {
     let owner = super::session::render_owner(cx)?;
-    app.engine.private_font_faces(&owner).map_err(|error| thrown(error.0))
+    app.engine
+        .private_font_faces(&owner)
+        .map_err(|error| thrown(error.0))
 }
 
 pub fn private_font_data(app: &App, cx: &CallContext, args: Args) -> Reply {
     let owner = super::session::render_owner(cx)?;
-    app.engine.private_font_data(&owner, args.get(0)).map_err(|error| thrown(error.0))
+    app.engine
+        .private_font_data(&owner, args.get(0))
+        .map_err(|error| thrown(error.0))
 }
 
 // ---- template bytes and cover ----
@@ -289,15 +391,19 @@ pub fn template_bytes(app: &App, cx: &CallContext, _args: Args) -> Reply {
     if s.core.ai_run {
         return null();
     }
-    Ok(match app.engine.save_bytes(s.deck()).and_then(|bytes| {
-        app.engine.has_redaction(s.deck()).map(|redacted| (bytes, redacted))
-    }) {
-        Ok((bytes, redacted)) => obj([
-            ("bytes", buffer(bytes)),
-            ("redacted", IpcValue::Bool(redacted)),
-        ]),
-        Err(_) => IpcValue::Null,
-    })
+    Ok(
+        match app.engine.save_bytes(s.deck()).and_then(|bytes| {
+            app.engine
+                .has_redaction(s.deck())
+                .map(|redacted| (bytes, redacted))
+        }) {
+            Ok((bytes, redacted)) => obj([
+                ("bytes", buffer(bytes)),
+                ("redacted", IpcValue::Bool(redacted)),
+            ]),
+            Err(_) => IpcValue::Null,
+        },
+    )
 }
 
 pub fn template_cover_render(app: &App, cx: &CallContext, args: Args, responder: Responder) {
@@ -314,10 +420,15 @@ pub fn template_cover_render(app: &App, cx: &CallContext, args: Args, responder:
     let (id, lang) = (id.to_owned(), lang.to_owned());
     let engine = app.engine.clone();
     app.services.workers.spawn(Box::new(move || {
-        let result = engine.template_cover(&owner, &id, &lang, 1280.0)
+        let result = engine
+            .template_cover(&owner, &id, &lang, 1280.0)
             .map(|cover| cover.unwrap_or(IpcValue::Null))
             .map_err(|error| thrown(error.0));
-        if !owner.context.renderer().is_some_and(|generation| generation.is_active()) {
+        if !owner
+            .context
+            .renderer()
+            .is_some_and(|generation| generation.is_active())
+        {
             return responder.reply(Err(thrown("renderer capability is missing or revoked")));
         }
         responder.reply(result);
@@ -371,7 +482,13 @@ pub fn microphone_access(app: &App, cx: &CallContext, _args: Args, responder: Re
                 Ok(granted) => granted,
                 Err(error) => {
                     let mut state = app.state.borrow_mut();
-                    if state.narration.get(&view).is_some_and(|recording| recording.ticket == ticket) { state.narration.remove(&view); }
+                    if state
+                        .narration
+                        .get(&view)
+                        .is_some_and(|recording| recording.ticket == ticket)
+                    {
+                        state.narration.remove(&view);
+                    }
                     return responder.reply(Err(thrown(error)));
                 }
             };
@@ -404,23 +521,31 @@ pub fn microphone_release(app: &App, cx: &CallContext, _args: Args) -> Result<()
 
 pub fn handoff_take(app: &App, cx: &CallContext, _args: Args) -> Reply {
     let owner = super::session::render_owner(cx)?;
-    Ok(match app.shell.take_generate_handoff_owned(&owner, &cx.cancel).map_err(thrown)? {
-        None => IpcValue::Null,
-        Some(handoff) => obj([
-            ("id", string(handoff.id)),
-            ("text", string(handoff.text)),
-            (
-                "materials",
-                IpcValue::Array(
-                    handoff
-                        .materials
-                        .into_iter()
-                        .map(|(path, name)| obj([("path", string(path)), ("name", string(name))]))
-                        .collect(),
+    Ok(
+        match app
+            .shell
+            .take_generate_handoff_owned(&owner, &cx.cancel)
+            .map_err(thrown)?
+        {
+            None => IpcValue::Null,
+            Some(handoff) => obj([
+                ("id", string(handoff.id)),
+                ("text", string(handoff.text)),
+                (
+                    "materials",
+                    IpcValue::Array(
+                        handoff
+                            .materials
+                            .into_iter()
+                            .map(|(path, name)| {
+                                obj([("path", string(path)), ("name", string(name))])
+                            })
+                            .collect(),
+                    ),
                 ),
-            ),
-        ]),
-    })
+            ]),
+        },
+    )
 }
 
 /// a run carries at most this many attachment paths in one report
@@ -440,7 +565,12 @@ pub fn handoff_run_started(app: &App, cx: &CallContext, args: Args) -> Reply {
     }
     Ok(IpcValue::Bool(
         app.shell
-            .report_generate_run_started_owned(&super::session::render_owner(cx)?, &cx.cancel, &paths).map_err(thrown)?,
+            .report_generate_run_started_owned(
+                &super::session::render_owner(cx)?,
+                &cx.cancel,
+                &paths,
+            )
+            .map_err(thrown)?,
     ))
 }
 

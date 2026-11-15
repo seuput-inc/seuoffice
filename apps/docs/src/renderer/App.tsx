@@ -823,7 +823,12 @@ export function App() {
   const [docLoading, setDocLoading] = useState(false)
   /** true until the pending-open / new-blank boot checks settle; the start screen stays hidden meanwhile */
   const bootPendingRef = useRef<Promise<
-    [OpenDocxResult, boolean | { blank: true; recoveryReceipt: string }, AiDocContent | null, OpenFileResult | null]
+    [
+      OpenDocxResult,
+      boolean | { blank: true; recoveryReceipt: string },
+      AiDocContent | null,
+      OpenFileResult | null,
+    ]
   > | null>(null)
   const bootHandledRef = useRef(false)
   const recoveryPasswordReceiptRef = useRef<string | null>(null)
@@ -2245,14 +2250,18 @@ export function App() {
       })
     }, 30_000)
     const offNow = window.desktop.onWriteRecoveryNow?.((done) => {
-      const current = (running ?? Promise.resolve()).then(() => writeRecoveryCopyImpl(fileCtxRef.current, { force: true }))
+      const current = (running ?? Promise.resolve()).then(() =>
+        writeRecoveryCopyImpl(fileCtxRef.current, { force: true }),
+      )
       running = current
-      void current.then(
-        (outcome) => done(outcome === 'failed' ? 'Docs recovery copy failed' : undefined),
-        (error) => done(String(error)),
-      ).finally(() => {
-        if (running === current) running = null
-      })
+      void current
+        .then(
+          (outcome) => done(outcome === 'failed' ? 'Docs recovery copy failed' : undefined),
+          (error) => done(String(error)),
+        )
+        .finally(() => {
+          if (running === current) running = null
+        })
     })
     // a dropped copy whose close did not go through: the next tick copies again
     const offDropped = window.desktop.onRecoveryCopyDropped?.(forgetRecoveryCopy)
@@ -2577,7 +2586,11 @@ export function App() {
         }
         if (receipt && outcome !== 'password') {
           recoveryPasswordReceiptRef.current = null
-          await window.desktop.recoveryInitialized?.(receipt, outcome === 'ok', outcome === 'ok' ? undefined : outcome)
+          await window.desktop.recoveryInitialized?.(
+            receipt,
+            outcome === 'ok',
+            outcome === 'ok' ? undefined : outcome,
+          )
         }
         if (outcome === 'canceled') await resetFile()
         if (aiContent && !pending) {
@@ -2650,7 +2663,11 @@ export function App() {
       }
       if (receipt) {
         recoveryPasswordReceiptRef.current = null
-        await window.desktop.recoveryInitialized?.(receipt, outcome === 'ok', outcome === 'ok' ? undefined : outcome)
+        await window.desktop.recoveryInitialized?.(
+          receipt,
+          outcome === 'ok',
+          outcome === 'ok' ? undefined : outcome,
+        )
       }
       return
     }
@@ -6349,11 +6366,14 @@ export function App() {
   // close guard: the main process queries dirty state before closing a tab/window; choosing "Save" runs a full save and reports back
   useEffect(() => {
     const offCheck = window.desktop.onCloseCheck?.((token) => {
-      window.desktop.reportCloseCheck({
-        dirty: !!doc && (anyDirtyRef.current || dirtyRef.current),
-        autoSave: autoSave && !!doc?.filePath,
-        filePath: doc?.filePath ?? null,
-      }, token)
+      window.desktop.reportCloseCheck(
+        {
+          dirty: !!doc && (anyDirtyRef.current || dirtyRef.current),
+          autoSave: autoSave && !!doc?.filePath,
+          filePath: doc?.filePath ?? null,
+        },
+        token,
+      )
     })
     const offSave = window.desktop.onCloseSaveRequest?.((request) => {
       let first = true
@@ -6371,19 +6391,35 @@ export function App() {
           first = false
           return saveImpl(
             { ...fileCtxRef.current, ownedSaveRequestId: request.requestId },
-            saveAs, false, undefined,
-            request.targetPath ? {
-              path: request.targetPath,
-              overwrite: request.overwrite === true,
-              onError: (message) => { reason = message },
-            } : undefined,
+            saveAs,
+            false,
+            undefined,
+            request.targetPath
+              ? {
+                  path: request.targetPath,
+                  overwrite: request.overwrite === true,
+                  onError: (message) => {
+                    reason = message
+                  },
+                }
+              : undefined,
           )
         },
         wasIncomplete: () => saveIncompleteRef.current,
         hasPath: () => true,
       }).then(
-        (ok) => window.desktop.reportCloseSaveResult(ok === true, request?.requestId, reason || undefined),
-        (error) => window.desktop.reportCloseSaveResult(false, request?.requestId, error instanceof Error ? error.message : String(error)),
+        (ok) =>
+          window.desktop.reportCloseSaveResult(
+            ok === true,
+            request?.requestId,
+            reason || undefined,
+          ),
+        (error) =>
+          window.desktop.reportCloseSaveResult(
+            false,
+            request?.requestId,
+            error instanceof Error ? error.message : String(error),
+          ),
       )
     })
     return () => {

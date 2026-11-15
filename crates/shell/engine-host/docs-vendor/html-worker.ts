@@ -7,7 +7,7 @@ const worker = self as unknown as {
 }
 const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>()
 let next = 0
-worker.onmessage = async event => {
+worker.onmessage = async (event) => {
   const message = event.data
   if (message.type === 'callbackResult') {
     const waiter = pending.get(message.id)
@@ -26,9 +26,17 @@ worker.onmessage = async event => {
       worker.postMessage({ type: 'callback', id, operation, input })
       return promise
     })
-    const result = await convertHtml(message.url, driver, new AbortController().signal, message.naturalTableWidth)
+    const result = await convertHtml(
+      message.url,
+      driver,
+      new AbortController().signal,
+      message.naturalTableWidth,
+    )
     worker.postMessage({ type: 'result', result })
   } catch (error) {
-    worker.postMessage({ type: 'error', error: error instanceof Error ? error.message : String(error) })
+    worker.postMessage({
+      type: 'error',
+      error: error instanceof Error ? error.message : String(error),
+    })
   }
 }

@@ -170,7 +170,7 @@ describe('channels', () => {
     expect(new Set(names).size).toBe(names.length)
   })
 
-  it('registers every request channel and none of the shared AI channels', async () => {
+  it('registers Electron request channels and none of the shared AI channels', async () => {
     await openBook()
     for (const channel of handlers.keys()) {
       expect(Object.values(AI_CHANNELS)).not.toContain(channel)
@@ -184,8 +184,12 @@ describe('channels', () => {
       EPUB_CHANNELS.menuCommand,
       EPUB_CHANNELS.viewPrefsChanged,
     ])
+    // Recovery initialization is handled by the native shell, not Electron.
+    const nativeOnly = new Set<string>([EPUB_CHANNELS.recoveryInitialized])
     for (const channel of Object.values(EPUB_CHANNELS)) {
-      expect(handlers.has(channel), channel).toBe(!mainToRenderer.has(channel))
+      if (!nativeOnly.has(channel)) {
+        expect(handlers.has(channel), channel).toBe(!mainToRenderer.has(channel))
+      }
     }
   })
 })

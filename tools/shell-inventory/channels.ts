@@ -441,12 +441,24 @@ const nativeNames = new Set(NATIVE_CHANNEL_CONTRACTS.map((contract) => contract.
 const nativeChannels = NATIVE_CHANNEL_CONTRACTS.map((contract) => {
   const observed = channels.get(contract.name)
   if (!observed) throw new Error(`${contract.name}: native contract has no renderer call site`)
-  if (observed.handlers.length > 0) throw new Error(`${contract.name}: an Electron handler cannot be reclassified as native-only`)
-  if (observed.kinds.length !== contract.kinds.length || observed.kinds.some((kind) => !contract.kinds.includes(kind))
-    || observed.surfaces.length !== contract.surfaces.length || observed.surfaces.some((surface) => !contract.surfaces.includes(surface))) {
-    throw new Error(`${contract.name}: native overlay kinds or surfaces differ from its actual renderer calls`)
+  if (observed.handlers.length > 0)
+    throw new Error(`${contract.name}: an Electron handler cannot be reclassified as native-only`)
+  if (
+    observed.kinds.length !== contract.kinds.length ||
+    observed.kinds.some((kind) => !contract.kinds.includes(kind)) ||
+    observed.surfaces.length !== contract.surfaces.length ||
+    observed.surfaces.some((surface) => !contract.surfaces.includes(surface))
+  ) {
+    throw new Error(
+      `${contract.name}: native overlay kinds or surfaces differ from its actual renderer calls`,
+    )
   }
-  return { ...observed, batch: contract.batch, owner: contract.handler, namespace: 'native' as const }
+  return {
+    ...observed,
+    batch: contract.batch,
+    owner: contract.handler,
+    namespace: 'native' as const,
+  }
 })
 
 /**
@@ -478,7 +490,9 @@ for (const [m, counts] of moduleChannels) {
 }
 sharedModules.sort()
 
-const list = [...channels.values()].filter((channel) => !nativeNames.has(channel.name)).sort((a, b) => a.name.localeCompare(b.name))
+const list = [...channels.values()]
+  .filter((channel) => !nativeNames.has(channel.name))
+  .sort((a, b) => a.name.localeCompare(b.name))
 const summary = {
   rendererFiles: rendererFiles.length,
   rendererSites: list.reduce((n, c) => n + c.renderer.length, 0),
@@ -512,8 +526,14 @@ const summary = {
 const nativeContracts = nativeChannels.map((channel) => ({
   channel,
   contract: NATIVE_CHANNEL_CONTRACTS.find((contract) => contract.name === channel.name)!,
-  synthetic: { status: 'pending', reason: 'Inventory does not execute actual-handler regressions.' },
-  nativeHost: { status: 'pending', reason: 'Synthetic and Electron comparisons do not prove native authority.' },
+  synthetic: {
+    status: 'pending',
+    reason: 'Inventory does not execute actual-handler regressions.',
+  },
+  nativeHost: {
+    status: 'pending',
+    reason: 'Synthetic and Electron comparisons do not prove native authority.',
+  },
 }))
 
 const out = join(tool, 'out')
@@ -535,7 +555,9 @@ for (const b of batches) {
   console.log(`${b.id}: ${b.channels} channels, ${b.modules.length} modules`)
 }
 for (const contract of nativeContracts) {
-  console.log(`NATIVE ${contract.channel.batch} ${contract.channel.name}: synthetic pending; native-host pending`)
+  console.log(
+    `NATIVE ${contract.channel.batch} ${contract.channel.name}: synthetic pending; native-host pending`,
+  )
 }
 
 if (process.argv.includes('--markdown')) {
@@ -636,8 +658,9 @@ if (process.argv.includes('--rust')) {
           `    spec(${JSON.stringify(c.name)}, &[${c.kinds.map((k) => KIND[k]).join(', ')}], ${c.batch}, &[${[...c.surfaces].sort().map(pascal).join(', ')}]),`,
       ),
     '    // Native-only contracts have no Electron oracle, but remain required at runtime.',
-    ...nativeChannels.map((channel) =>
-      `    native_spec(${JSON.stringify(channel.name)}, &[${channel.kinds.map((kind) => KIND[kind]).join(', ')}], ${channel.batch}, &[${[...channel.surfaces].sort().map(pascal).join(', ')}]),`,
+    ...nativeChannels.map(
+      (channel) =>
+        `    native_spec(${JSON.stringify(channel.name)}, &[${channel.kinds.map((kind) => KIND[kind]).join(', ')}], ${channel.batch}, &[${[...channel.surfaces].sort().map(pascal).join(', ')}]),`,
     ),
     '];',
     '',

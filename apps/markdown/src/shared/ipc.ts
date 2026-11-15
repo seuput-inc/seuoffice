@@ -463,7 +463,9 @@ import type { MarkdownTheme } from './markdown-theme'
 import type { MarkdownPageRange, MarkdownPrintOptions } from './print-options'
 export interface MarkdownApi {
   /** Take the md path pending for this view (queued at tab creation); null = new untitled document */
-  consumePending(): Promise<string | { path: string; text: string; savedInputToken: string; recovered: boolean } | null>
+  consumePending(): Promise<
+    string | { path: string; text: string; savedInputToken: string; recovered: boolean } | null
+  >
   /** A new untitled tab's starting text (a conversion's result), taken once; null otherwise */
   takeSeed?(): Promise<string | null>
   /** Texts the PDF editor's "Add to note" queued for this note tab, taken once; [] otherwise */
@@ -528,9 +530,17 @@ export interface MarkdownApi {
    * `originalPath`: the file an untitled restored copy was of (its original is
    * missing); it gives the document's format, never its save target.
    */
-  recoveryOpen?(): Promise<{ text: string; originalPath?: string; recoveryToken?: string } | { recoveryToken: string; text?: never } | null>
+  recoveryOpen?(): Promise<
+    | { text: string; originalPath?: string; recoveryToken?: string }
+    | { recoveryToken: string; text?: never }
+    | null
+  >
   recoveryApplied?(result: { token: string; ok: boolean; error?: string }): Promise<void>
-  savedInputApplied(result: { token: string; outcome: 'applied' | 'recovered' | 'failed'; error?: string }): Promise<void>
+  savedInputApplied(result: {
+    token: string
+    outcome: 'applied' | 'recovered' | 'failed'
+    error?: string
+  }): Promise<void>
   /**
    * Keep `text` (exactly what a save would write now) as this document's
    * crash-recovery copy; null only answers a flush request. Rejects on a disk

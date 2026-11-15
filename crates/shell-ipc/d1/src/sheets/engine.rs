@@ -175,7 +175,6 @@ pub trait NativeWorkbookSnapshot: Send + Sync {
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
-
 pub trait WorkbookEngine: Send + Sync {
     // ---- sessions ----
 
@@ -212,17 +211,27 @@ pub trait WorkbookEngine: Send + Sync {
         pending: &shell_contract::runtime::CancelToken,
     ) -> EngineResult<OpenedWorkbook>;
     fn snapshot_saved_document(
-        &self, document: &shell_contract::ipc::NativeSavedDocument,
-        actual: &shell_contract::ipc::NativeRequestOwner, actual_cancel: &shell_contract::runtime::CancelToken,
+        &self,
+        document: &shell_contract::ipc::NativeSavedDocument,
+        actual: &shell_contract::ipc::NativeRequestOwner,
+        actual_cancel: &shell_contract::runtime::CancelToken,
     ) -> EngineResult<Arc<dyn NativeWorkbookSnapshot>>;
     fn snapshot_saved_bytes(
-        &self, bytes: &[u8], document: &shell_contract::ipc::NativeSavedDocument,
-        actual: &shell_contract::ipc::NativeRequestOwner, actual_cancel: &shell_contract::runtime::CancelToken,
+        &self,
+        bytes: &[u8],
+        document: &shell_contract::ipc::NativeSavedDocument,
+        actual: &shell_contract::ipc::NativeRequestOwner,
+        actual_cancel: &shell_contract::runtime::CancelToken,
     ) -> EngineResult<Arc<dyn NativeWorkbookSnapshot>>;
     fn open_saved_document(
-        &self, snapshot: &Arc<dyn NativeWorkbookSnapshot>, locale: &str, short_date: &str,
-        timeout_ms: Option<f64>, document: &shell_contract::ipc::NativeSavedDocument,
-        actual: &shell_contract::ipc::NativeRequestOwner, actual_cancel: &shell_contract::runtime::CancelToken,
+        &self,
+        snapshot: &Arc<dyn NativeWorkbookSnapshot>,
+        locale: &str,
+        short_date: &str,
+        timeout_ms: Option<f64>,
+        document: &shell_contract::ipc::NativeSavedDocument,
+        actual: &shell_contract::ipc::NativeRequestOwner,
+        actual_cancel: &shell_contract::runtime::CancelToken,
     ) -> EngineResult<OpenedWorkbook>;
     /// `client.close(sessionId)`
     fn close(&self, session_id: &str) -> EngineResult<()>;
@@ -324,7 +333,9 @@ pub trait WorkbookEngine: Send + Sync {
     /// first/even header variants stitched
     fn render_pdf(&self, html: &str, request: &IpcValue) -> EngineResult<Vec<u8>>;
     fn render_pdf_owned(
-        &self, html: &str, request: &IpcValue,
+        &self,
+        html: &str,
+        request: &IpcValue,
         authority: WorkbookPrintAuthority<'_>,
     ) -> EngineResult<Vec<u8>>;
 
@@ -363,7 +374,9 @@ pub trait SheetsShell: Send + Sync {
     /// `workbookOpenedHook(wc, path)`: the tab title and recent files
     fn workbook_opened(&self, view: ViewId, path: &str);
     fn workbook_opened_owned(
-        &self, view: ViewId, path: String,
+        &self,
+        view: ViewId,
+        path: String,
         origin: shell_contract::ipc::NativeRequestOwner,
         destination: shell_contract::ipc::NativeRequestOwner,
         cancel: shell_contract::runtime::CancelToken,
@@ -371,11 +384,17 @@ pub trait SheetsShell: Send + Sync {
         then: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>,
     );
     fn workbook_opened_existing_document(
-        &self, revision: shell_contract::ipc::NativeSaveRevisionAuthority, expected_path: std::path::PathBuf,
+        &self,
+        revision: shell_contract::ipc::NativeSaveRevisionAuthority,
+        expected_path: std::path::PathBuf,
         participants: Vec<shell_contract::ipc::NativeRequestOwner>,
-        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
-        additional: Vec<shell_contract::runtime::CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost,
-        on_revision: std::rc::Rc<dyn Fn(&shell_contract::ipc::NativeSaveRevisionReceipt) -> Result<(), String>>,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        on_revision: std::rc::Rc<
+            dyn Fn(&shell_contract::ipc::NativeSaveRevisionReceipt) -> Result<(), String>,
+        >,
         done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>,
     );
     /// `activateTabHook(wcId)`
@@ -401,7 +420,8 @@ pub trait SheetsShell: Send + Sync {
     /// `runtime.writeNewDocument(wcId, fileName, bytes)`: the path written, or
     /// `None` when the panel has no project
     fn write_new_document_owned(
-        &self, origin: &shell_contract::ipc::NativeRequestOwner,
+        &self,
+        origin: &shell_contract::ipc::NativeRequestOwner,
         destination: &shell_contract::ipc::NativeRequestOwner,
         participants: &[shell_contract::ipc::NativeRequestOwner],
         cancel: &shell_contract::runtime::CancelToken,
@@ -409,10 +429,19 @@ pub trait SheetsShell: Send + Sync {
         additional: &[shell_contract::runtime::CancelToken],
         effects: &shell_contract::hosts::OwnedEffectsHost,
         admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
-        file_name: &str, bytes: &[u8],
-    ) -> Result<Option<(shell_contract::ipc::SavedPublication, shell_contract::ipc::NativeSavedInput)>, String>;
+        file_name: &str,
+        bytes: &[u8],
+    ) -> Result<
+        Option<(
+            shell_contract::ipc::SavedPublication,
+            shell_contract::ipc::NativeSavedInput,
+        )>,
+        String,
+    >;
     fn create_document_owned(
-        &self, request: IpcValue, view: ViewId,
+        &self,
+        request: IpcValue,
+        view: ViewId,
         origin: shell_contract::ipc::NativeRequestOwner,
         destination: shell_contract::ipc::NativeRequestOwner,
         cancel: shell_contract::runtime::CancelToken,
@@ -424,17 +453,27 @@ pub trait SheetsShell: Send + Sync {
     /// `runtime.openGeneratedPath(path)`: opened in a tab (true) or not
     fn open_generated_path(&self, path: &str) -> bool;
     fn open_generated_path_owned(
-        &self, output: shell_contract::ipc::SavedPublication, written: Option<shell_contract::ipc::NativeSavedInput>,
-        participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken,
-        pending: shell_contract::runtime::CancelToken, additional: Vec<shell_contract::runtime::CancelToken>,
-        effects: shell_contract::hosts::OwnedEffectsHost, accepted: shell_contract::hosts::PdfReloadAccepted,
+        &self,
+        output: shell_contract::ipc::SavedPublication,
+        written: Option<shell_contract::ipc::NativeSavedInput>,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        accepted: shell_contract::hosts::PdfReloadAccepted,
         wake: shell_contract::hosts::GeneratedPathWake,
     ) -> Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String>;
     fn export_pdf_written_owned(
-        &self, output: shell_contract::ipc::SavedPublication, written: Option<shell_contract::ipc::NativeSavedInput>,
-        participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken,
-        pending: shell_contract::runtime::CancelToken, additional: Vec<shell_contract::runtime::CancelToken>,
-        effects: shell_contract::hosts::OwnedEffectsHost, accepted: shell_contract::hosts::PdfReloadAccepted,
+        &self,
+        output: shell_contract::ipc::SavedPublication,
+        written: Option<shell_contract::ipc::NativeSavedInput>,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        accepted: shell_contract::hosts::PdfReloadAccepted,
         wake: shell_contract::hosts::GeneratedPathWake,
     ) -> Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String>;
     /// `assertFileSaved(path)`: an error message when the file is open with unsaved changes
@@ -505,19 +544,25 @@ pub struct ScreenImage {
 pub trait ScreenCapture: Send + Sync {
     /// macOS only: `systemPreferences.getMediaAccessStatus('screen')`; every other platform answers `granted`
     fn media_access_status(
-        &self, origin: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken,
+        &self,
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
     ) -> Result<String, String>;
     /// `getSources({ types: ['screen', 'window'], thumbnailSize: 320x200 })`
     /// without the window of `exclude` (the asking view's own window)
     fn list_sources(
-        &self, origin: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken,
+        &self,
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
         exclude: Option<WindowId>,
     ) -> Result<Vec<ScreenSource>, String>;
     /// the source `id` at the largest display's physical size (at most
     /// 4096 per side), `None` when it is gone or its thumbnail is empty. A PNG
     /// over 20 MiB comes back halved in width.
     fn capture(
-        &self, origin: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken,
+        &self,
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
         id: &str,
     ) -> Result<Option<ScreenImage>, String>;
 }

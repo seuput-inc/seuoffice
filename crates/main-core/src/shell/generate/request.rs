@@ -281,9 +281,17 @@ pub enum PrepareStep {
 
 pub fn prepare_generate_request_begin(raw: &Value) -> PrepareStep {
     match validate_generate_request(raw) {
-        Ok(request) => PrepareRun { request, next: 0, statuses: Vec::new(), failure: None }.advance(),
+        Ok(request) => PrepareRun {
+            request,
+            next: 0,
+            statuses: Vec::new(),
+            failure: None,
+        }
+        .advance(),
         Err(error) => PrepareStep::Done(Ok(Prepared::Refused {
-            error: PrepareError::Shape(error), unsaved: None, excluded: None,
+            error: PrepareError::Shape(error),
+            unsaved: None,
+            excluded: None,
         })),
     }
 }
@@ -354,17 +362,31 @@ mod continuation_tests {
     #[test]
     fn preparation_visits_every_unique_path_once_and_returns_first_ordered_failure() {
         let raw = json!({ "mode": "ai", "kind": "markdown", "materials": ["/a.md", "/a.md", "/b.md"], "text": "" });
-        let PrepareStep::Inspect { path, run } = prepare_generate_request_begin(&raw) else { panic!("expected first inspection") };
+        let PrepareStep::Inspect { path, run } = prepare_generate_request_begin(&raw) else {
+            panic!("expected first inspection")
+        };
         assert_eq!(path, "/a.md");
-        let PrepareStep::Inspect { path, run } = run.resume(Err(Failure("first".into()))) else { panic!("second inspection must still run") };
+        let PrepareStep::Inspect { path, run } = run.resume(Err(Failure("first".into()))) else {
+            panic!("second inspection must still run")
+        };
         assert_eq!(path, "/b.md");
-        let PrepareStep::Done(Err(Failure(error))) = run.resume(Err(Failure("second".into()))) else { panic!("expected ordered failure") };
+        let PrepareStep::Done(Err(Failure(error))) = run.resume(Err(Failure("second".into())))
+        else {
+            panic!("expected ordered failure")
+        };
         assert_eq!(error, "first");
     }
 
     #[test]
     fn invalid_shape_never_requests_an_inspection() {
-        assert!(matches!(prepare_generate_request_begin(&json!({ "mode": "ai", "kind": "markdown", "materials": [] })),
-            PrepareStep::Done(Ok(Prepared::Refused { error: PrepareError::Shape(RequestShapeError::NoMaterial), .. }))));
+        assert!(matches!(
+            prepare_generate_request_begin(
+                &json!({ "mode": "ai", "kind": "markdown", "materials": [] })
+            ),
+            PrepareStep::Done(Ok(Prepared::Refused {
+                error: PrepareError::Shape(RequestShapeError::NoMaterial),
+                ..
+            }))
+        ));
     }
 }

@@ -47,12 +47,16 @@ pub fn atomic_write_file_authorized(
     data: &[u8],
     admit: &mut dyn FnMut(&mut dyn FnMut() -> io::Result<()>) -> Result<io::Result<()>, NodeError>,
 ) -> Result<(), NodeError> {
-    via_temp(file_path, &mut |tmp| {
-        // writeFile(tmp, data)
-        let mut file = fs::File::create(tmp).map_err(|e| node_error(&e, "open", tmp))?;
-        file.write_all(data)
-            .map_err(|e| node_error(&e, "write", tmp))
-    }, admit)
+    via_temp(
+        file_path,
+        &mut |tmp| {
+            // writeFile(tmp, data)
+            let mut file = fs::File::create(tmp).map_err(|e| node_error(&e, "open", tmp))?;
+            file.write_all(data)
+                .map_err(|e| node_error(&e, "write", tmp))
+        },
+        admit,
+    )
 }
 
 /// `viaTemp(filePath, fill)`
@@ -120,14 +124,19 @@ mod admission_tests {
     struct Fixture(std::path::PathBuf);
     impl Fixture {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!("atomic-admission-{}", jscompat::random_uuid()));
+            let path =
+                std::env::temp_dir().join(format!("atomic-admission-{}", jscompat::random_uuid()));
             fs::create_dir(&path).unwrap();
             Self(path)
         }
-        fn target(&self) -> String { self.0.join("document.txt").to_string_lossy().into_owned() }
+        fn target(&self) -> String {
+            self.0.join("document.txt").to_string_lossy().into_owned()
+        }
     }
     impl Drop for Fixture {
-        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
     }
 
     #[test]
@@ -138,8 +147,12 @@ mod admission_tests {
         let error = atomic_write_file_authorized(&target, b"after", &mut |_| {
             assert_eq!(fs::read(&target).unwrap(), b"before");
             assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 2);
-            Err(NodeError { code: None, message: "owner was revoked".into() })
-        }).unwrap_err();
+            Err(NodeError {
+                code: None,
+                message: "owner was revoked".into(),
+            })
+        })
+        .unwrap_err();
         assert!(error.message.contains("owner was revoked"));
         assert_eq!(fs::read(&target).unwrap(), b"before");
         assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 1);
@@ -155,7 +168,8 @@ mod admission_tests {
             commits += 1;
             assert_eq!(fs::read(&target).unwrap(), b"before");
             Ok(rename())
-        }).unwrap();
+        })
+        .unwrap();
         assert_eq!(commits, 1);
         assert_eq!(fs::read(&target).unwrap(), b"after");
         assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 1);
@@ -173,9 +187,13 @@ mod admission_tests {
             if attempts == 1 {
                 Ok(Err(io::Error::from_raw_os_error(libc::EACCES)))
             } else {
-                Err(NodeError { code: None, message: "owner was revoked before retry".into() })
+                Err(NodeError {
+                    code: None,
+                    message: "owner was revoked before retry".into(),
+                })
             }
-        }).unwrap_err();
+        })
+        .unwrap_err();
         assert_eq!(attempts, 2);
         assert_eq!(error.message, "owner was revoked before retry");
         assert_eq!(fs::read(&target).unwrap(), b"before");

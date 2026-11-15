@@ -369,7 +369,9 @@ pub struct MarkdownNoticeJob {
 }
 
 impl MarkdownNoticeJob {
-    pub fn new(path: String, cache: NoticeCache) -> Self { Self { path, cache } }
+    pub fn new(path: String, cache: NoticeCache) -> Self {
+        Self { path, cache }
+    }
 
     pub fn execute<H: NoticeHost>(mut self, host: &mut H) -> bool {
         markdown_redaction_notice(host, &mut self.cache, &self.path)
@@ -399,9 +401,16 @@ pub fn markdown_redaction_notice<H: NoticeHost>(
             }
             Err(_) => return false,
         }
-        let cached = cache.entries.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-            .iter().find(|(k, _)| Some(k) == key.as_ref()).map(|(_, value)| *value);
-        if let Some(cached) = cached { return cached; }
+        let cached = cache
+            .entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .find(|(k, _)| Some(k) == key.as_ref())
+            .map(|(_, value)| *value);
+        if let Some(cached) = cached {
+            return cached;
+        }
     }
     let parsed = match host.parse_file_to_text(path) {
         Ok(parsed) => parsed,
@@ -416,7 +425,10 @@ pub fn markdown_redaction_notice<H: NoticeHost>(
     };
     let notice = text != own;
     if let Some(key) = key {
-        let mut entries = cache.entries.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut entries = cache
+            .entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         entries.push((key, notice));
         if entries.len() > NOTICE_CACHE_MAX {
             entries.remove(0);

@@ -42,28 +42,54 @@ pub fn move_file_into(source: &str, target: &str) -> Result<(), NodeError> {
 
 impl Env {
     pub fn delete_saved_copies_owned(
-        &self, view: ViewId, identities: Vec<Option<RecoveryIdentity>>,
+        &self,
+        view: ViewId,
+        identities: Vec<Option<RecoveryIdentity>>,
         scope: &crate::owned_save::OwnedSave,
     ) -> Result<(), IpcError> {
         for identity in identities.into_iter().flatten() {
-            let Some(key) = self.copy_key(&identity) else { continue };
+            let Some(key) = self.copy_key(&identity) else {
+                continue;
+            };
             let held_key = key.clone();
-            let held = self.core(move |core| core.state.borrow().tab_recovery.get(&view)
-                .is_some_and(|state| state.held.contains(&held_key)));
-            if held { continue; }
-            self.with_store(|store| store.delete_copy_authorized(
-                &identity, RecoveryDeleteReason::Saved,
-                &mut |effect| scope.effect(|| { effect(); Ok(()) })
-                    .map_err(|error| NodeError { code: None, message: error.message }),
-            )).map_err(node_err)?;
+            let held = self.core(move |core| {
+                core.state
+                    .borrow()
+                    .tab_recovery
+                    .get(&view)
+                    .is_some_and(|state| state.held.contains(&held_key))
+            });
+            if held {
+                continue;
+            }
+            self.with_store(|store| {
+                store.delete_copy_authorized(
+                    &identity,
+                    RecoveryDeleteReason::Saved,
+                    &mut |effect| {
+                        scope
+                            .effect(|| {
+                                effect();
+                                Ok(())
+                            })
+                            .map_err(|error| NodeError {
+                                code: None,
+                                message: error.message,
+                            })
+                    },
+                )
+            })
+            .map_err(node_err)?;
             let scope = scope.clone();
-            self.core(move |core| scope.effect(|| {
-                if let Some(state) = core.state.borrow_mut().tab_recovery.get_mut(&view) {
-                    state.written.retain(|(written, _)| *written != key);
-                    state.keep.remove(&key);
-                }
-                Ok(())
-            }))?;
+            self.core(move |core| {
+                scope.effect(|| {
+                    if let Some(state) = core.state.borrow_mut().tab_recovery.get_mut(&view) {
+                        state.written.retain(|(written, _)| *written != key);
+                        state.keep.remove(&key);
+                    }
+                    Ok(())
+                })
+            })?;
         }
         Ok(())
     }

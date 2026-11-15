@@ -452,7 +452,7 @@ pub fn style_score(face: &FaceRef, want: &[String]) -> i64 {
     );
     let extras = have
         .iter()
-        .filter(|t| !wanted.contains(t) && !(near_weight != 0 && boldish(t.as_str())))
+        .filter(|t| !(wanted.contains(t) || near_weight != 0 && boldish(t.as_str())))
         .count() as i64;
     let regular_bonus =
         i64::from(want.is_empty() && have.iter().any(|t| REGULARISH.contains(&t.as_str())));

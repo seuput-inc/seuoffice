@@ -39,13 +39,25 @@ fn part_target(part: &str, el: Option<&IpcValue>) -> IpcValue {
 }
 
 /// `buildMasterRenderSlide(session)`
-fn master_render(app: &App, s: &SlideSession, view: &super::engine::RenderOwner) -> Result<Option<IpcValue>, IpcError> {
-    let Some(me) = s.master_edit.as_ref() else { return Ok(None) };
-    app.engine.master_render(s.deck(), view, &me.part_path, s.fit_width_px).map_err(|error| thrown(error.0))
+fn master_render(
+    app: &App,
+    s: &SlideSession,
+    view: &super::engine::RenderOwner,
+) -> Result<Option<IpcValue>, IpcError> {
+    let Some(me) = s.master_edit.as_ref() else {
+        return Ok(None);
+    };
+    app.engine
+        .master_render(s.deck(), view, &me.part_path, s.fit_width_px)
+        .map_err(|error| thrown(error.0))
 }
 
 /// `masterEditDone(session)`
-fn master_edit_done(app: &App, s: &mut SlideSession, view: &super::engine::RenderOwner) -> Result<IpcValue, IpcError> {
+fn master_edit_done(
+    app: &App,
+    s: &mut SlideSession,
+    view: &super::engine::RenderOwner,
+) -> Result<IpcValue, IpcError> {
     s.core.mark_meta_dirty();
     Ok(or_null(master_render(app, s, view)?))
 }
@@ -84,10 +96,15 @@ pub fn master_enter(app: &App, cx: &CallContext, args: Args) -> Reply {
     app.with_session(cx.sender.view, |app, s| {
         s.fit_width_px = number(args.get(0));
         let mut items = Vec::new();
-        for part in app.engine.master_parts(s.deck()).map_err(|error| thrown(error.0))? {
+        for part in app
+            .engine
+            .master_parts(s.deck())
+            .map_err(|error| thrown(error.0))?
+        {
             let Some(slide) = app
                 .engine
-                .master_parse(s.deck(), &owner, &part.part_path, s.fit_width_px).map_err(|error| thrown(error.0))?
+                .master_parse(s.deck(), &owner, &part.part_path, s.fit_width_px)
+                .map_err(|error| thrown(error.0))?
             else {
                 continue;
             };
@@ -116,7 +133,8 @@ pub fn master_open(app: &App, cx: &CallContext, args: Args) -> Reply {
         let part = as_str(args.get(0)).unwrap_or("");
         if app
             .engine
-            .master_parse(s.deck(), &owner, part, s.fit_width_px).map_err(|error| thrown(error.0))?
+            .master_parse(s.deck(), &owner, part, s.fit_width_px)
+            .map_err(|error| thrown(error.0))?
             .is_none()
         {
             return null();
@@ -159,11 +177,15 @@ pub fn master_edit_transform(app: &App, cx: &CallContext, args: Args) -> Reply {
     with_master(app, cx, |app, s, part| {
         let source_id = prop(op_value, "sourceId")?;
         let id = as_str(source_id).unwrap_or("");
-        if !app.engine.master_has_element(s.deck(), &part, id).map_err(|error| thrown(error.0))? {
+        if !app
+            .engine
+            .master_has_element(s.deck(), &part, id)
+            .map_err(|error| thrown(error.0))?
+        {
             return null();
         }
-        let scale =
-            number(field(op_value, "fitWidthPx")) / (app.engine.size(s.deck()).map_err(|e| thrown(e.0))?.cx / EMU_PER_PX_96);
+        let scale = number(field(op_value, "fitWidthPx"))
+            / (app.engine.size(s.deck()).map_err(|e| thrown(e.0))?.cx / EMU_PER_PX_96);
         let to_emu = |px: &IpcValue| js_round((number(px) / scale) * EMU_PER_PX_96);
         let offset = [
             to_emu(field(op_value, "xPx")),
@@ -173,17 +195,24 @@ pub fn master_edit_transform(app: &App, cx: &CallContext, args: Args) -> Reply {
         ];
         if truthy(field(op_value, "preview")) {
             // previews are not persisted: mutate the live master slide only
-            let snapshot = if s.transform_preview { None } else {
+            let snapshot = if s.transform_preview {
+                None
+            } else {
                 Some(s.core.take_snapshot().map_err(|error| thrown(error.0))?)
             };
             let rot = js_round(number(field(op_value, "rotationDeg")) * 60000.0);
-            app.engine.master_preview_transform(s.deck(), &part, id, offset, rot)
+            app.engine
+                .master_preview_transform(s.deck(), &part, id, offset, rot)
                 .map_err(|error| thrown(error.0))?;
             if let Some(snapshot) = snapshot {
                 s.core.push_history_snapshot(snapshot);
                 s.transform_preview = true;
             }
-            return Ok(or_null(master_render(app, s, &super::session::render_owner(cx)?)?));
+            return Ok(or_null(master_render(
+                app,
+                s,
+                &super::session::render_owner(cx)?,
+            )?));
         }
         let payload = op("setTransform")
             .set("target", part_target(&part, Some(source_id)))
@@ -202,7 +231,13 @@ pub fn master_edit_transform(app: &App, cx: &CallContext, args: Args) -> Reply {
             // the gesture's first preview frame already pushed the undo step
             s.transform_preview = false;
             let request = TxnRequest::atomic(vec![payload]).with_parts(vec![part.clone()]);
-            app.journaled_txn(s, &super::session::render_owner(cx)?, OpSource::Edit, &request)?.applied
+            app.journaled_txn(
+                s,
+                &super::session::render_owner(cx)?,
+                OpSource::Edit,
+                &request,
+            )?
+            .applied
         } else {
             master_txn(app, s, &super::session::render_owner(cx)?, &part, payload)?.is_some()
         };
@@ -279,8 +314,8 @@ pub fn master_delete_element(app: &App, cx: &CallContext, args: Args) -> Reply {
 pub fn master_add_element(app: &App, cx: &CallContext, args: Args) -> Reply {
     let op_value = args.get(0);
     with_master(app, cx, |app, s, part| {
-        let scale =
-            number(prop(op_value, "fitWidthPx")?) / (app.engine.size(s.deck()).map_err(|e| thrown(e.0))?.cx / EMU_PER_PX_96);
+        let scale = number(prop(op_value, "fitWidthPx")?)
+            / (app.engine.size(s.deck()).map_err(|e| thrown(e.0))?.cx / EMU_PER_PX_96);
         let to_emu = |px: &IpcValue| num(js_round((number(px) / scale) * EMU_PER_PX_96));
         let paragraphs = match field(op_value, "paragraphs") {
             IpcValue::Array(items) if !items.is_empty() => Some(IpcValue::Array(items.clone())),
@@ -331,7 +366,10 @@ pub fn master_add_element(app: &App, cx: &CallContext, args: Args) -> Reply {
             return null();
         }
         Ok(obj([
-            ("slide", master_edit_done(app, s, &super::session::render_owner(cx)?)?),
+            (
+                "slide",
+                master_edit_done(app, s, &super::session::render_owner(cx)?)?,
+            ),
             ("sourceId", source_id),
         ]))
     })

@@ -62,19 +62,33 @@ pub(super) struct HeadlessWorkGuard(Arc<HeadlessWork>);
 impl HeadlessWork {
     pub fn begin(self: &Arc<Self>) -> Result<HeadlessWorkGuard, IpcError> {
         let mut state = self.state.lock().unwrap();
-        if state.closing { return Err(thrown("The headless workbook is closing")); }
-        state.count = state.count.checked_add(1).ok_or_else(|| thrown("Too many headless workbook operations"))?;
+        if state.closing {
+            return Err(thrown("The headless workbook is closing"));
+        }
+        state.count = state
+            .count
+            .checked_add(1)
+            .ok_or_else(|| thrown("Too many headless workbook operations"))?;
         Ok(HeadlessWorkGuard(self.clone()))
     }
 
     pub fn drain(&self, done: Box<dyn FnOnce() + Send>) -> Result<(), String> {
         let done = {
             let mut state = self.state.lock().unwrap();
-            if state.drained.is_some() { return Err("The headless workbook is already closing".into()); }
+            if state.drained.is_some() {
+                return Err("The headless workbook is already closing".into());
+            }
             state.closing = true;
-            if state.count == 0 { Some(done) } else { state.drained = Some(done); None }
+            if state.count == 0 {
+                Some(done)
+            } else {
+                state.drained = Some(done);
+                None
+            }
         };
-        if let Some(done) = done { done(); }
+        if let Some(done) = done {
+            done();
+        }
         Ok(())
     }
 }
@@ -84,9 +98,15 @@ impl Drop for HeadlessWorkGuard {
         let done = {
             let mut state = self.0.state.lock().unwrap();
             state.count -= 1;
-            if state.count == 0 { state.drained.take() } else { None }
+            if state.count == 0 {
+                state.drained.take()
+            } else {
+                None
+            }
         };
-        if let Some(done) = done { done(); }
+        if let Some(done) = done {
+            done();
+        }
     }
 }
 
@@ -160,14 +180,17 @@ impl TabState {
     }
 
     fn bump_metadata_revision(&mut self) {
-        self.metadata_revision = self.metadata_revision.and_then(|revision| revision.checked_add(1));
+        self.metadata_revision = self
+            .metadata_revision
+            .and_then(|revision| revision.checked_add(1));
     }
 }
 
 pub(super) struct SavedLoad {
     pub target: shell_contract::ipc::NativeSavedTarget,
     pub document: Option<shell_contract::ipc::NativeSavedDocument>,
-    pub completion: Option<shell_contract::editors::Then<shell_contract::editors::SavedDocumentLoadOutcome>>,
+    pub completion:
+        Option<shell_contract::editors::Then<shell_contract::editors::SavedDocumentLoadOutcome>>,
     pub id: String,
     pub selection: Option<SavedSelection>,
     pub started: bool,
@@ -179,8 +202,18 @@ pub(super) struct SavedLoad {
 
 impl SavedLoad {
     pub fn new(target: shell_contract::ipc::NativeSavedTarget, id: String) -> Self {
-        Self { target, document: None, completion: None, id, selection: None,
-            started: false, subscriptions: Vec::new(), session_id: None, recovery_applied: false, failure: None }
+        Self {
+            target,
+            document: None,
+            completion: None,
+            id,
+            selection: None,
+            started: false,
+            subscriptions: Vec::new(),
+            session_id: None,
+            recovery_applied: false,
+            failure: None,
+        }
     }
 }
 
@@ -260,49 +293,96 @@ struct GeneratedTransitionInner {
 
 impl GeneratedTransition {
     pub fn new(loss: impl Fn() + Send + Sync + 'static) -> Self {
-        Self { inner: Arc::new(GeneratedTransitionInner {
-            retired_origin: std::sync::atomic::AtomicBool::new(false),
-            receipt: Mutex::new(None), cancellation: Mutex::new(None), subscriptions: Mutex::new(Vec::new()),
-            loss: Arc::new(loss),
-        }) }
+        Self {
+            inner: Arc::new(GeneratedTransitionInner {
+                retired_origin: std::sync::atomic::AtomicBool::new(false),
+                receipt: Mutex::new(None),
+                cancellation: Mutex::new(None),
+                subscriptions: Mutex::new(Vec::new()),
+                loss: Arc::new(loss),
+            }),
+        }
     }
 
-    pub fn accept(&self, marker: shell_contract::hosts::AcceptedPdfReload, origin: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken) {
-        if !marker.retires(origin) { return; }
+    pub fn accept(
+        &self,
+        marker: shell_contract::hosts::AcceptedPdfReload,
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+    ) {
+        if !marker.retires(origin) {
+            return;
+        }
         let losses = match origin.accepted_reload_losses(&marker, cancel, pending) {
             Ok(losses) => losses,
-            Err(_) => { (self.inner.loss)(); return; }
+            Err(_) => {
+                (self.inner.loss)();
+                return;
+            }
         };
-        let mut subscriptions = self.inner.subscriptions.lock().unwrap_or_else(|error| error.into_inner());
+        let mut subscriptions = self
+            .inner
+            .subscriptions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         for token in losses.tokens() {
             let loss = self.inner.loss.clone();
             subscriptions.push(token.on_cancel(move || loss()));
         }
-        *self.inner.cancellation.lock().unwrap_or_else(|error| error.into_inner()) = Some(losses);
-        self.inner.retired_origin.store(true, std::sync::atomic::Ordering::Release);
+        *self
+            .inner
+            .cancellation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(losses);
+        self.inner
+            .retired_origin
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 
     pub fn retired_origin(&self) -> bool {
-        self.inner.retired_origin.load(std::sync::atomic::Ordering::Acquire)
+        self.inner
+            .retired_origin
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
-    pub fn expected_dispatcher_cancel(&self, original: &shell_contract::runtime::CancelToken) -> bool {
-        self.inner.cancellation.lock().unwrap_or_else(|error| error.into_inner())
-            .as_ref().is_some_and(|losses|
-                !losses.cancel().same_token(original) && !losses.cancel().is_cancelled())
+    pub fn expected_dispatcher_cancel(
+        &self,
+        original: &shell_contract::runtime::CancelToken,
+    ) -> bool {
+        self.inner
+            .cancellation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .is_some_and(|losses| {
+                !losses.cancel().same_token(original) && !losses.cancel().is_cancelled()
+            })
     }
 
     pub fn store(&self, receipt: shell_contract::hosts::CommittedGeneratedPath) {
-        *self.inner.receipt.lock().unwrap_or_else(|error| error.into_inner()) = Some(receipt);
+        *self
+            .inner
+            .receipt
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(receipt);
     }
 
     pub fn has_receipt(&self) -> bool {
-        self.inner.receipt.lock().unwrap_or_else(|error| error.into_inner()).is_some()
+        self.inner
+            .receipt
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_some()
     }
 
     pub fn terminal(&self, effect: &mut dyn FnMut() -> Result<(), String>) -> Result<(), String> {
-        self.inner.receipt.lock().unwrap_or_else(|error| error.into_inner())
-            .as_ref().ok_or_else(|| "The generated document did not finish opening".to_owned())?
+        self.inner
+            .receipt
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .ok_or_else(|| "The generated document did not finish opening".to_owned())?
             .with_terminal_commit(effect)
     }
 }
@@ -334,7 +414,11 @@ pub(super) struct RecoveryOpenWaiter {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum QueueOutcome { Pending, Consumed, Retired }
+pub(super) enum QueueOutcome {
+    Pending,
+    Consumed,
+    Retired,
+}
 
 pub struct QueuedWorkbook {
     pub(super) path: String,
@@ -343,7 +427,10 @@ pub struct QueuedWorkbook {
 
 impl QueuedWorkbook {
     pub(super) fn new(path: String) -> Self {
-        Self { path, identity: Rc::new(std::cell::Cell::new(QueueOutcome::Pending)) }
+        Self {
+            path,
+            identity: Rc::new(std::cell::Cell::new(QueueOutcome::Pending)),
+        }
     }
 
     pub(super) fn consume(self) -> String {
@@ -359,7 +446,10 @@ pub(super) struct PendingBlank {
 
 impl PendingBlank {
     pub fn new(target: Option<(ViewId, shell_contract::runtime::RendererGeneration)>) -> Self {
-        Self { identity: Rc::new(std::cell::Cell::new(QueueOutcome::Pending)), target }
+        Self {
+            identity: Rc::new(std::cell::Cell::new(QueueOutcome::Pending)),
+            target,
+        }
     }
 }
 
@@ -396,7 +486,13 @@ pub struct AppState {
     pub shutdown: ShutdownLatch,
     pub tab_recovery: HashMap<ViewId, TabRecovery>,
     pub decided_opens: HashMap<ViewId, (String, RecoveryOpenDecision)>,
-    pub write_now_waiters: HashMap<String, (ViewId, Box<dyn FnOnce(Result<(), main_core::shell::renderer_disposal::Failure>)>)>,
+    pub write_now_waiters: HashMap<
+        String,
+        (
+            ViewId,
+            Box<dyn FnOnce(Result<(), main_core::shell::renderer_disposal::Failure>)>,
+        ),
+    >,
     pub attachment_text_cache: Vec<(String, (String, String))>,
     pub pasted_image_seq: u64,
     pub pasted_cleanup_started: bool,
@@ -454,23 +550,37 @@ impl AppState {
             .map(|(_, tab)| tab)
     }
 
-    pub(super) fn replace_queued_workbook(&mut self, view: ViewId, entry: QueuedWorkbook) -> Option<QueuedWorkbook> {
-        if let Some(tab) = self.tab_mut(view) { tab.queue_revision = Rc::new(()); }
+    pub(super) fn replace_queued_workbook(
+        &mut self,
+        view: ViewId,
+        entry: QueuedWorkbook,
+    ) -> Option<QueuedWorkbook> {
+        if let Some(tab) = self.tab_mut(view) {
+            tab.queue_revision = Rc::new(());
+        }
         self.queued_workbooks.insert(view, entry)
     }
-    pub(super) fn set_queued_workbook_prepared(&mut self, view: ViewId, entry: Option<QueuedWorkbook>, revision: Rc<()>) -> Option<QueuedWorkbook> {
-        if let Some(tab) = self.tab_mut(view) { tab.queue_revision = revision; }
+    pub(super) fn set_queued_workbook_prepared(
+        &mut self,
+        view: ViewId,
+        entry: Option<QueuedWorkbook>,
+        revision: Rc<()>,
+    ) -> Option<QueuedWorkbook> {
+        if let Some(tab) = self.tab_mut(view) {
+            tab.queue_revision = revision;
+        }
         match entry {
             Some(entry) => self.queued_workbooks.insert(view, entry),
             None => self.queued_workbooks.remove(&view),
         }
     }
 
-
     pub(super) fn remove_queued_workbook(&mut self, view: ViewId) -> Option<QueuedWorkbook> {
         let removed = self.queued_workbooks.remove(&view);
         if removed.is_some() {
-            if let Some(tab) = self.tab_mut(view) { tab.queue_revision = Rc::new(()); }
+            if let Some(tab) = self.tab_mut(view) {
+                tab.queue_revision = Rc::new(());
+            }
         }
         removed
     }
@@ -558,10 +668,14 @@ impl Env {
     /// Waits for the asynchronous cross-editor guard. Worker threads only.
     pub fn assert_file_saved(&self, path: &str) -> Result<(), String> {
         let (tx, rx) = mpsc::sync_channel(1);
-        self.shell.assert_file_saved(path.to_owned(), Box::new(move |result| {
-            let _ = tx.send(result);
-        }));
-        rx.recv().unwrap_or_else(|_| Err("The file save check did not complete.".into()))
+        self.shell.assert_file_saved(
+            path.to_owned(),
+            Box::new(move |result| {
+                let _ = tx.send(result);
+            }),
+        );
+        rx.recv()
+            .unwrap_or_else(|_| Err("The file save check did not complete.".into()))
     }
 
     pub fn window_of(&self, view: ViewId) -> Option<WindowId> {
@@ -623,48 +737,93 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl Core {
-    pub(super) fn validate_headless_sender(&self, cx: &shell_contract::ipc::CallContext) -> Result<(), IpcError> {
+    pub(super) fn validate_headless_sender(
+        &self,
+        cx: &shell_contract::ipc::CallContext,
+    ) -> Result<(), IpcError> {
         let state = self.state.borrow();
-        let Some(target) = state.tab(cx.sender.view).and_then(|tab| tab.headless_target.as_ref()) else {
+        let Some(target) = state
+            .tab(cx.sender.view)
+            .and_then(|tab| tab.headless_target.as_ref())
+        else {
             return Ok(());
         };
         let expected = target.created();
         let actual = cx.native.as_ref().and_then(|context| context.renderer());
-        if !expected.is_active() || target.operation().shutdown().is_cancelled()
+        if !expected.is_active()
+            || target.operation().shutdown().is_cancelled()
             || target.operation().cancel().is_cancelled()
-            || !actual.is_some_and(|actual| actual.same_generation(expected)) {
+            || !actual.is_some_and(|actual| actual.same_generation(expected))
+        {
             return Err(thrown("The headless workbook renderer was replaced"));
         }
         Ok(())
     }
 
-    pub(super) fn begin_headless_work(&self, cx: &shell_contract::ipc::CallContext) -> Result<Option<HeadlessWorkGuard>, IpcError> {
+    pub(super) fn begin_headless_work(
+        &self,
+        cx: &shell_contract::ipc::CallContext,
+    ) -> Result<Option<HeadlessWorkGuard>, IpcError> {
         self.validate_headless_sender(cx)?;
         let state = self.state.borrow();
         match state.tab(cx.sender.view) {
-            Some(tab) if tab.headless_target.is_some() => tab.headless_work.as_ref()
-                .ok_or_else(|| thrown("The headless workbook work tracker is unavailable"))?.begin().map(Some),
+            Some(tab) if tab.headless_target.is_some() => tab
+                .headless_work
+                .as_ref()
+                .ok_or_else(|| thrown("The headless workbook work tracker is unavailable"))?
+                .begin()
+                .map(Some),
             _ => Ok(None),
         }
     }
 
     pub(super) fn headless_effect<T>(
-        &self, cx: &shell_contract::ipc::CallContext, effect: impl FnOnce() -> T,
+        &self,
+        cx: &shell_contract::ipc::CallContext,
+        effect: impl FnOnce() -> T,
     ) -> Result<T, IpcError> {
-        let target = self.state.borrow().tab(cx.sender.view).and_then(|tab| tab.headless_target.clone());
-        let Some(target) = target else { return Ok(effect()); };
+        let target = self
+            .state
+            .borrow()
+            .tab(cx.sender.view)
+            .and_then(|tab| tab.headless_target.clone());
+        let Some(target) = target else {
+            return Ok(effect());
+        };
         let document = target.registered_document().map_err(thrown)?;
-        let context = cx.native.clone().ok_or_else(|| thrown("The headless sender has no native authority"))?;
-        let sender = shell_contract::ipc::NativeRequestOwner { view: cx.sender.view, context };
-        let effects = self.env.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>()
+        let context = cx
+            .native
+            .clone()
+            .ok_or_else(|| thrown("The headless sender has no native authority"))?;
+        let sender = shell_contract::ipc::NativeRequestOwner {
+            view: cx.sender.view,
+            context,
+        };
+        let effects = self
+            .env
+            .services
+            .hosts
+            .get::<shell_contract::hosts::OwnedEffectsHost>()
             .ok_or_else(|| thrown("Native invocation effects are unavailable"))?;
         let pending = shell_contract::runtime::CancelToken::default();
         let mut effect = Some(effect);
         let mut output = None;
-        effects.with_native_invocation_effect(&document, &sender, &[], &cx.cancel, &pending, &mut || {
-            output = Some(effect.take().ok_or("The headless effect was already admitted")?());
-            Ok(())
-        }).map_err(thrown)?;
+        effects
+            .with_native_invocation_effect(
+                &document,
+                &sender,
+                &[],
+                &cx.cancel,
+                &pending,
+                &mut || {
+                    output = Some(effect
+                        .take()
+                        .ok_or("The headless effect was already admitted")?(
+                    ));
+                    Ok(())
+                },
+            )
+            .map_err(thrown)?;
         output.ok_or_else(|| thrown("The headless effect was not admitted"))
     }
 
@@ -717,10 +876,18 @@ mod generated_transition_tests {
         };
         let unrelated = GeneratedTransition::new(|| {});
         let other_marker = shell_contract::hosts::AcceptedPdfReload::from_native_admission(
-            other, RendererGeneration::new(), CancelToken::default(), CancelToken::default(),
+            other,
+            RendererGeneration::new(),
+            CancelToken::default(),
+            CancelToken::default(),
             Arc::new(|_| true),
         );
-        unrelated.accept(other_marker, &origin, &CancelToken::default(), &CancelToken::default());
+        unrelated.accept(
+            other_marker,
+            &origin,
+            &CancelToken::default(),
+            &CancelToken::default(),
+        );
         assert!(!unrelated.retired_origin());
         let browser_loss = CancelToken::default();
         let reservation_loss = CancelToken::default();
@@ -728,10 +895,18 @@ mod generated_transition_tests {
         let notify = cancelled.clone();
         let transition = GeneratedTransition::new(move || notify.cancel());
         let marker = shell_contract::hosts::AcceptedPdfReload::from_native_admission(
-            origin.clone(), RendererGeneration::new(), browser_loss.clone(), reservation_loss,
+            origin.clone(),
+            RendererGeneration::new(),
+            browser_loss.clone(),
+            reservation_loss,
             Arc::new(|_| true),
         );
-        transition.accept(marker, &origin, &CancelToken::default(), &CancelToken::default());
+        transition.accept(
+            marker,
+            &origin,
+            &CancelToken::default(),
+            &CancelToken::default(),
+        );
         assert!(!transition.retired_origin());
         assert!(cancelled.is_cancelled());
     }

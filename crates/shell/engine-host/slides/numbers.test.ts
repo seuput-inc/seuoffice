@@ -4,8 +4,16 @@ import { encodeSlideNumbers, reviveSlideNumbers } from '../slides'
 describe('slide native numeric wire', () => {
   it('revives nested non-finite jscompat markers without changing ordinary objects or bytes', () => {
     const bytes = new Uint8Array([1, 2])
-    const input = { nested: [{ $num: 'NaN' }, { $num: 'Infinity' }, { $num: '-Infinity' }], ordinary: { $num: 'Infinity', other: 1 }, bytes }
-    const output = reviveSlideNumbers(input) as { nested: number[]; ordinary: unknown; bytes: Uint8Array }
+    const input = {
+      nested: [{ $num: 'NaN' }, { $num: 'Infinity' }, { $num: '-Infinity' }],
+      ordinary: { $num: 'Infinity', other: 1 },
+      bytes,
+    }
+    const output = reviveSlideNumbers(input) as {
+      nested: number[]
+      ordinary: unknown
+      bytes: Uint8Array
+    }
     expect(Number.isNaN(output.nested[0])).toBe(true)
     expect(output.nested.slice(1)).toEqual([Infinity, -Infinity])
     expect(output.ordinary).toEqual(input.ordinary)

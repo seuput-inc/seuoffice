@@ -20,7 +20,13 @@ export function createRequestCallbacks(
     signal.throwIfAborted()
     if (!Number.isSafeInteger(++callbackId)) throw new Error('engine callback identities exhausted')
     const result = await service.__TAURI_INTERNALS__.invoke('engine_host_callback', {
-      token, id, name, nonce, callbackId, operation, input,
+      token,
+      id,
+      name,
+      nonce,
+      callbackId,
+      operation,
+      input,
     })
     signal.throwIfAborted()
     return result

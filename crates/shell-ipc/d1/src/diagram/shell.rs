@@ -27,31 +27,59 @@ pub trait DiagramShell: Send + Sync {
         file_name: &str,
         bytes: &[u8],
     ) -> Option<Result<Option<String>, String>>;
-    fn write_new_document_owned(&self, origin: &shell_contract::ipc::NativeRequestOwner,
-        destination: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken,
-        pending: &shell_contract::runtime::CancelToken, effects: &shell_contract::hosts::OwnedEffectsHost,
+    fn write_new_document_owned(
+        &self,
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        effects: &shell_contract::hosts::OwnedEffectsHost,
         admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
-        file_name: &str, bytes: &[u8]) -> Result<Option<String>, String>;
+        file_name: &str,
+        bytes: &[u8],
+    ) -> Result<Option<String>, String>;
 
     /// `setDiagramFileSavedHook`: a save landed on a new path
     fn file_saved(&self, view: ViewId, path: &str);
-    fn file_saved_owned(&self, origin: &shell_contract::ipc::NativeRequestOwner,
-        destination: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken,
-        pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost,
-        path: &str, done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>);
-    fn file_saved_existing_document(&self, revision: shell_contract::ipc::NativeSaveRevisionAuthority, expected_path: std::path::PathBuf,
-        participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken,
-        pending: shell_contract::runtime::CancelToken, additional: Vec<shell_contract::runtime::CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost,
-        on_revision: std::rc::Rc<dyn Fn(&shell_contract::ipc::NativeSaveRevisionReceipt) -> Result<(), String>>,
-        done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>);
+    fn file_saved_owned(
+        &self,
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+        path: &str,
+        done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>,
+    );
+    fn file_saved_existing_document(
+        &self,
+        revision: shell_contract::ipc::NativeSaveRevisionAuthority,
+        expected_path: std::path::PathBuf,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        on_revision: std::rc::Rc<
+            dyn Fn(&shell_contract::ipc::NativeSaveRevisionReceipt) -> Result<(), String>,
+        >,
+        done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>,
+    );
 
     /// `setDiagramRecoveryTitleHook`: the tab title of an untitled diagram
     fn recovery_title(&self, view: ViewId) -> Option<String>;
 
     /// `setDiagramHelpHook`: draw.io's Help was picked
-    fn help_owned(&self, origin: shell_contract::ipc::NativeRequestOwner,
-        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
-        effects: shell_contract::hosts::OwnedEffectsHost, done: Box<dyn FnOnce(Result<(), String>)>);
+    fn help_owned(
+        &self,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        done: Box<dyn FnOnce(Result<(), String>)>,
+    );
 
     /// `setDiagramOpenFailedHook`: the tab's file did not open after all;
     /// true when the shell closed the tab and shows `message`

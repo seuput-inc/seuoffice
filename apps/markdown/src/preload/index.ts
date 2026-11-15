@@ -116,7 +116,8 @@ const api: MarkdownApi = {
   recoveryOpen: () => ipcRenderer.invoke(MARKDOWN_CHANNELS.recoveryOpen),
   recoveryApplied: (result) => ipcRenderer.invoke(MARKDOWN_CHANNELS.recoveryApplied, result),
   savedInputApplied: (result) => ipcRenderer.invoke(MARKDOWN_CHANNELS.savedInputApplied, result),
-  writeRecoveryCopy: (text, token, error) => ipcRenderer.invoke(MARKDOWN_CHANNELS.recoveryWrite, text, token, error),
+  writeRecoveryCopy: (text, token, error) =>
+    ipcRenderer.invoke(MARKDOWN_CHANNELS.recoveryWrite, text, token, error),
   onRecoveryFlushRequest: (handler) => {
     const listener = (_e: Electron.IpcRendererEvent, token?: string) => handler(token)
     ipcRenderer.on(MARKDOWN_CHANNELS.recoveryFlushRequest, listener)

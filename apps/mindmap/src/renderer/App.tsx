@@ -92,7 +92,13 @@ export default function App() {
   const [recoveryApplied, setRecoveryApplied] = useState<string | null>(null)
   const recoveryAcknowledged = useRef<string | null>(null)
   useEffect(() => {
-    if (status !== 'ready' || !session || !recoveryApplied || recoveryAcknowledged.current === recoveryApplied) return
+    if (
+      status !== 'ready' ||
+      !session ||
+      !recoveryApplied ||
+      recoveryAcknowledged.current === recoveryApplied
+    )
+      return
     recoveryAcknowledged.current = recoveryApplied
     void window.mindmapApi.recoveryInitialized(recoveryApplied, true)
   }, [status, session, recoveryApplied])
@@ -242,7 +248,8 @@ export default function App() {
           performance.measure('mindmap:open', { start: started, end: performance.now() })
           if (cancelled) return
           if (result.status !== 'ok') {
-            if (recoveryToken) void window.mindmapApi.recoveryInitialized(recoveryToken, false, result.status)
+            if (recoveryToken)
+              void window.mindmapApi.recoveryInitialized(recoveryToken, false, result.status)
             setFailure(result.status)
             setStatus('failed')
             return
@@ -258,7 +265,8 @@ export default function App() {
             const result = await openCopiedMap(seed)
             if (cancelled) return
             if (result.status !== 'ok') {
-              if (recoveryToken) void window.mindmapApi.recoveryInitialized(recoveryToken, false, result.status)
+              if (recoveryToken)
+                void window.mindmapApi.recoveryInitialized(recoveryToken, false, result.status)
               setFailure(result.status)
               setStatus('failed')
               return
@@ -284,7 +292,12 @@ export default function App() {
         if (recoveryToken) setRecoveryApplied(recoveryToken)
         setStatus('ready')
       } catch (err) {
-        if (recoveryToken) void window.mindmapApi.recoveryInitialized(recoveryToken, false, err instanceof Error ? err.message : String(err))
+        if (recoveryToken)
+          void window.mindmapApi.recoveryInitialized(
+            recoveryToken,
+            false,
+            err instanceof Error ? err.message : String(err),
+          )
         console.error('[mindmap] open failed:', err)
         if (!cancelled) setStatus('error')
       }
@@ -478,7 +491,8 @@ export default function App() {
           try {
             await exportAs(result.export.format, result.export.path, copyRequestId)
           } finally {
-            if (ownedSaveRequestId === undefined && copyRequestId !== undefined) window.mindmapApi.sendSaveRequestAck(false, copyRequestId)
+            if (ownedSaveRequestId === undefined && copyRequestId !== undefined)
+              window.mindmapApi.sendSaveRequestAck(false, copyRequestId)
           }
           return false
         }
@@ -677,9 +691,12 @@ export default function App() {
         (saved) => {
           if (requestId !== undefined || !saved) api.sendSaveRequestAck(saved, requestId)
         },
-        (error: unknown) => api.sendSaveRequestAck(
-          false, requestId, error instanceof Error ? error.message : String(error),
-        ),
+        (error: unknown) =>
+          api.sendSaveRequestAck(
+            false,
+            requestId,
+            error instanceof Error ? error.message : String(error),
+          ),
       )
     })
     const offClose = api.onCloseSaveRequest(() => {

@@ -525,13 +525,7 @@ pub fn replace_all_in_deck(
                 Some(el) => (
                     el.id().to_owned(),
                     match el {
-                        SlideElement::Text(t) => {
-                            if t.text.is_some() {
-                                1
-                            } else {
-                                0
-                            }
-                        }
+                        SlideElement::Text(t) if t.text.is_some() => 1,
                         SlideElement::Table(_) => 2,
                         SlideElement::Group(_) => 3,
                         _ => 0,

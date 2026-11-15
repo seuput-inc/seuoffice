@@ -118,7 +118,11 @@ impl Fetcher for FakeFetcher {
         }
     }
 
-    fn fetch<'signal>(&mut self, url: &str, init: &FetchInit<'_, 'signal>) -> Result<Box<dyn Response + 'signal>, FetchError> {
+    fn fetch<'signal>(
+        &mut self,
+        url: &str,
+        init: &FetchInit<'_, 'signal>,
+    ) -> Result<Box<dyn Response + 'signal>, FetchError> {
         let mut shown = Map::new();
         if let Some(headers) = init.headers {
             let mut object = Map::new();
@@ -188,5 +192,10 @@ impl Fetcher for FakeFetcher {
         self.0.note(json!(["undici.agent.close"]));
     }
 
-    fn sleep(&mut self, _ms: f64, _: Option<&dyn main_core::packages::electron_utils::safe_remote_url::AbortSignal>) {}
+    fn sleep(
+        &mut self,
+        _ms: f64,
+        _: Option<&dyn main_core::packages::electron_utils::safe_remote_url::AbortSignal>,
+    ) {
+    }
 }

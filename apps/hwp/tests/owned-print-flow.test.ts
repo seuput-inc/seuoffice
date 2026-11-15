@@ -22,7 +22,9 @@ function ports(): PrintJobPorts {
 describe('an owned Save As PDF renderer request', () => {
   it('echoes the same save correlation with the chosen path after gathering pages', async () => {
     const port = ports()
-    await expect(runPrintJob(port, 'pdf', () => {}, '/chosen/copy.pdf', 'save-17')).resolves.toEqual({ ok: true })
+    await expect(
+      runPrintJob(port, 'pdf', () => {}, '/chosen/copy.pdf', 'save-17'),
+    ).resolves.toEqual({ ok: true })
     expect(port.api.printPages).toHaveBeenCalledWith(
       { mode: 'pdf', pages: [{ svg: '<svg/>', width: 100, height: 200 }], images: [] },
       { path: '/chosen/copy.pdf', requestToken: 'save-17' },
@@ -33,7 +35,9 @@ describe('an owned Save As PDF renderer request', () => {
   it('does not turn the correlation into authority to dispatch a document that is not ready', async () => {
     const port = ports()
     port.ready = false
-    await expect(runPrintJob(port, 'pdf', () => {}, '/chosen/copy.pdf', 'save-17')).resolves.toEqual({ ok: false, error: 'the editor is not ready' })
+    await expect(
+      runPrintJob(port, 'pdf', () => {}, '/chosen/copy.pdf', 'save-17'),
+    ).resolves.toEqual({ ok: false, error: 'the editor is not ready' })
     expect(port.api.printPages).not.toHaveBeenCalled()
     expect(port.printing.current).toBe(false)
   })

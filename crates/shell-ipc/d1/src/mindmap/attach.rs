@@ -223,17 +223,27 @@ fn files_read(app: &MindmapApp, args: Args, responder: Responder) {
     let offset = js_number(args.get(1));
     let max_chars = js_number(args.get(2));
     let core = app.0.services.core.clone();
-    app.0.shell.assert_file_saved(path.clone(), Box::new(move |result| {
-        core.post(Box::new(move || {
-            super::with_app(|app| match result {
-                Ok(()) => files_read_checked(app, path, name, offset, max_chars, responder),
-                Err(message) => responder.reply(Ok(app.read_failure(message))),
-            });
-        }));
-    }));
+    app.0.shell.assert_file_saved(
+        path.clone(),
+        Box::new(move |result| {
+            core.post(Box::new(move || {
+                super::with_app(|app| match result {
+                    Ok(()) => files_read_checked(app, path, name, offset, max_chars, responder),
+                    Err(message) => responder.reply(Ok(app.read_failure(message))),
+                });
+            }));
+        }),
+    );
 }
 
-fn files_read_checked(app: &MindmapApp, path: String, name: String, offset: f64, max_chars: f64, responder: Responder) {
+fn files_read_checked(
+    app: &MindmapApp,
+    path: String,
+    name: String,
+    offset: f64,
+    max_chars: f64,
+    responder: Responder,
+) {
     let parse = &app.0.parse;
     let meta = match fs::metadata(&path) {
         Ok(meta) => meta,

@@ -253,7 +253,9 @@ export interface ImageData {
 /** API exposed by preload to the renderer (window.htmlApi) */
 export interface HtmlApi {
   /** Take the md path pending for this view (queued at tab creation); null = new untitled document */
-  consumePending(): Promise<string | { path: string; text: string; savedInputToken: string; recovered: boolean } | null>
+  consumePending(): Promise<
+    string | { path: string; text: string; savedInputToken: string; recovered: boolean } | null
+  >
   /** The text a new untitled tab starts with (a skill template's copy), once; null for none */
   takeSeed?(): Promise<string | null>
   /** open any shell-routed document path (an AI answer's filenav citation) */
@@ -272,9 +274,17 @@ export interface HtmlApi {
    * `originalPath`: the file an untitled restored copy was of (its original is
    * missing); it gives the document's format, never its save target.
    */
-  recoveryOpen?(): Promise<{ text: string; originalPath?: string; recoveryToken?: string } | { recoveryToken: string; text?: never } | null>
+  recoveryOpen?(): Promise<
+    | { text: string; originalPath?: string; recoveryToken?: string }
+    | { recoveryToken: string; text?: never }
+    | null
+  >
   recoveryApplied?(result: { token: string; ok: boolean; error?: string }): Promise<void>
-  savedInputApplied(result: { token: string; outcome: 'applied' | 'recovered' | 'failed'; error?: string }): Promise<void>
+  savedInputApplied(result: {
+    token: string
+    outcome: 'applied' | 'recovered' | 'failed'
+    error?: string
+  }): Promise<void>
   /**
    * Keep `text` (exactly what a save would write now) as this document's
    * crash-recovery copy; null only answers a flush request. Rejects on a disk

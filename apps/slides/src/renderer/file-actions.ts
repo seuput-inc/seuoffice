@@ -90,7 +90,11 @@ async function runSerialized<T>(pass: () => Promise<T>): Promise<T> {
   return current
 }
 
-export async function save(getCtx: () => ActionCtx, auto = false, requestId?: string): Promise<boolean> {
+export async function save(
+  getCtx: () => ActionCtx,
+  auto = false,
+  requestId?: string,
+): Promise<boolean> {
   return runSerialized(async () => {
     // resolved only now: a queued pass must remap selection against the tree the prior save adopted
     const ctx = getCtx()
@@ -175,7 +179,10 @@ export async function saveAs(getCtx: () => ActionCtx): Promise<void> {
   await saveAsWithName(getCtx, null)
 }
 
-export async function saveAsForRequest(getCtx: () => ActionCtx, requestId: string): Promise<boolean> {
+export async function saveAsForRequest(
+  getCtx: () => ActionCtx,
+  requestId: string,
+): Promise<boolean> {
   return saveAsWithName(getCtx, null, requestId)
 }
 
@@ -219,7 +226,11 @@ export async function nameWithAi(getCtx: () => ActionCtx): Promise<void> {
  * A null name means "the deck's current name", which is read inside the queue:
  * a save that landed while this call was waiting may have changed it.
  */
-export async function saveAsWithName(getCtx: () => ActionCtx, name: string | null, requestId?: string): Promise<boolean> {
+export async function saveAsWithName(
+  getCtx: () => ActionCtx,
+  name: string | null,
+  requestId?: string,
+): Promise<boolean> {
   let saved = false
   // Same queue as save(): Save + Save As (or double Save As) write through
   // the same main-process pipe and would interleave without it.
@@ -231,7 +242,8 @@ export async function saveAsWithName(getCtx: () => ActionCtx, name: string | nul
     const r = await window.slidesApi.saveAs(target, requestId)
     saved = r.ok
     // a copy format was picked: no deck was written, the export runs below
-    if (r.exportAs && r.path) return { kind: r.exportAs, path: r.path, requestId: r.saveRequestId ?? requestId }
+    if (r.exportAs && r.path)
+      return { kind: r.exportAs, path: r.path, requestId: r.saveRequestId ?? requestId }
     if (r.ok) {
       if (r.slides) adoptSavedSlides(ctx, r.slides)
       ctx.setPath(r.path ?? ctx.path)
@@ -256,10 +268,14 @@ export async function saveAsWithName(getCtx: () => ActionCtx, name: string | nul
   // path picked in the Save As dialog. The deck keeps its path and dirty state.
   // Outside the save queue: an export writes no deck file.
   try {
-    if (copy?.kind === 'pdf') await exportPdf(getCtx(), copy.path, { ...(copy.requestId !== undefined ? { saveRequestId: copy.requestId } : {}) })
+    if (copy?.kind === 'pdf')
+      await exportPdf(getCtx(), copy.path, {
+        ...(copy.requestId !== undefined ? { saveRequestId: copy.requestId } : {}),
+      })
     else if (copy?.kind === 'png') await exportImages(getCtx(), 'png', copy.path, copy.requestId)
   } finally {
-    if (requestId === undefined && copy?.requestId !== undefined) window.slidesApi.reportCloseSaveResult(false, copy.requestId)
+    if (requestId === undefined && copy?.requestId !== undefined)
+      window.slidesApi.reportCloseSaveResult(false, copy.requestId)
   }
   return saved
 }

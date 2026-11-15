@@ -251,13 +251,18 @@ export function useRecoveryCopies(options: RecoveryCopiesOptions): RecoveryCopie
     const id = window.setInterval(() => void current.tick(), RECOVERY_COPY_TIMING.intervalMs)
     const off = window.mindmapApi.onRecoveryCopyNow?.((generation) => {
       void current.writeNow().then(
-        (outcome) => window.mindmapApi.sendRecoveryCopyNowDone(
-          generation,
-          outcome === 'written' || outcome === 'clean' || outcome === 'unchanged' ? null : `Recovery copy ${outcome}`,
-        ),
-        (error: unknown) => window.mindmapApi.sendRecoveryCopyNowDone(
-          generation, error instanceof Error ? error.message : String(error),
-        ),
+        (outcome) =>
+          window.mindmapApi.sendRecoveryCopyNowDone(
+            generation,
+            outcome === 'written' || outcome === 'clean' || outcome === 'unchanged'
+              ? null
+              : `Recovery copy ${outcome}`,
+          ),
+        (error: unknown) =>
+          window.mindmapApi.sendRecoveryCopyNowDone(
+            generation,
+            error instanceof Error ? error.message : String(error),
+          ),
       )
     })
     const offReset = window.mindmapApi.onRecoveryReset?.(() => current.reset())

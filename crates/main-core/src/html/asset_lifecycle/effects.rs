@@ -1,11 +1,13 @@
+use crate::node_fs::{NodeError, namespaced, node_error, node_error_named};
+use crate::packages::electron_utils::atomic_write::{
+    AtomicByteWriteBackend, atomic_write_file_with_backend, rescue_path_for,
+};
+use jscompat::node_path::host::{basename, dirname, join, resolve};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, LazyLock, Mutex, Weak};
-use jscompat::node_path::host::{basename, dirname, join, resolve};
-use sha2::{Digest, Sha256};
-use crate::node_fs::{NodeError, namespaced, node_error, node_error_named};
-use crate::packages::electron_utils::atomic_write::{AtomicByteWriteBackend, atomic_write_file_with_backend, rescue_path_for};
 
 #[cfg(unix)]
 #[path = "effects_unix.rs"]
@@ -17,13 +19,27 @@ mod native;
 mod private;
 pub use private::{CapturedAssetOutput, PrivateAssetPayload};
 
-pub type AssetAdmission<'a> = dyn FnMut(&mut dyn FnMut() -> Result<(), NodeError>) -> Result<(), NodeError> + 'a;
+pub type AssetAdmission<'a> =
+    dyn FnMut(&mut dyn FnMut() -> Result<(), NodeError>) -> Result<(), NodeError> + 'a;
 type R<T> = Result<T, NodeError>;
-fn refused(message: &str) -> NodeError { NodeError { code: None, message: message.into() } }
+fn refused(message: &str) -> NodeError {
+    NodeError {
+        code: None,
+        message: message.into(),
+    }
+}
 
-pub(crate) struct Effects<'a, 'f> { admit: &'a mut AssetAdmission<'f>, denied: Option<NodeError> }
+pub(crate) struct Effects<'a, 'f> {
+    admit: &'a mut AssetAdmission<'f>,
+    denied: Option<NodeError>,
+}
 impl<'a, 'f> Effects<'a, 'f> {
-    pub(crate) fn new(admit: &'a mut AssetAdmission<'f>) -> Self { Self { admit, denied: None } }
+    pub(crate) fn new(admit: &'a mut AssetAdmission<'f>) -> Self {
+        Self {
+            admit,
+            denied: None,
+        }
+    }
     fn admitted<T>(&mut self, effect: impl FnOnce() -> R<T>) -> R<R<T>> {
         self.admit_effect(effect, true)
     }
@@ -31,18 +47,25 @@ impl<'a, 'f> Effects<'a, 'f> {
         self.admit_effect(effect, false)
     }
     fn admit_effect<T>(&mut self, effect: impl FnOnce() -> R<T>, required: bool) -> R<R<T>> {
-        if let Some(error) = &self.denied { return Err(error.clone()); }
+        if let Some(error) = &self.denied {
+            return Err(error.clone());
+        }
         let mut effect = Some(effect);
         let mut result = None;
         let mut repeated = false;
         let admission = (self.admit)(&mut || {
-            let Some(effect) = effect.take() else { repeated = true; return Err(refused("asset effect repeated")); };
+            let Some(effect) = effect.take() else {
+                repeated = true;
+                return Err(refused("asset effect repeated"));
+            };
             let actual = effect();
             let status = actual.as_ref().map(|_| ()).map_err(Clone::clone);
             result = Some(actual);
             status
         });
-        let outcome = if repeated { Err(refused("asset effect repeated")) } else {
+        let outcome = if repeated {
+            Err(refused("asset effect repeated"))
+        } else {
             match (admission, result) {
                 (Ok(()), Some(actual)) => Ok(actual),
                 (Err(_), Some(Err(actual))) => Ok(Err(actual)),
@@ -50,17 +73,25 @@ impl<'a, 'f> Effects<'a, 'f> {
                 (Ok(()), None) => Err(refused("asset admission did not execute its effect")),
             }
         };
-        if required { if let Err(error) = &outcome { self.denied = Some(error.clone()); } }
+        if required {
+            if let Err(error) = &outcome {
+                self.denied = Some(error.clone());
+            }
+        }
         outcome
     }
-    pub(crate) fn run<T>(&mut self, effect: impl FnOnce() -> R<T>) -> R<T> { self.admitted(effect)? }
+    pub(crate) fn run<T>(&mut self, effect: impl FnOnce() -> R<T>) -> R<T> {
+        self.admitted(effect)?
+    }
     pub(crate) fn finish<T>(&self, result: R<T>) -> R<T> {
         match (&self.denied, result) {
             (None, result) => result,
             (Some(denied), Err(error)) if error.message.starts_with(&denied.message) => Err(error),
             (Some(denied), Err(error)) => {
                 let mut denied = denied.clone();
-                denied.message.push_str(&format!("; asset operation failed: {}", error.message));
+                denied
+                    .message
+                    .push_str(&format!("; asset operation failed: {}", error.message));
                 Err(denied)
             }
             (Some(denied), Ok(_)) => Err(denied.clone()),
@@ -68,25 +99,41 @@ impl<'a, 'f> Effects<'a, 'f> {
     }
 }
 
-static MANIFEST_LOCKS: LazyLock<Mutex<HashMap<String, Weak<Mutex<()>>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static MANIFEST_LOCKS: LazyLock<Mutex<HashMap<String, Weak<Mutex<()>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 pub(crate) fn manifest_lock(document: &str) -> Arc<Mutex<()>> {
     let parent = dirname(&resolve(&[document]));
-    let key = std::fs::canonicalize(namespaced(&parent)).map(|p| p.to_string_lossy().into_owned()).unwrap_or(parent);
+    let key = std::fs::canonicalize(namespaced(&parent))
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or(parent);
     let mut locks = MANIFEST_LOCKS.lock().unwrap_or_else(|e| e.into_inner());
     locks.retain(|_, value| value.strong_count() != 0);
-    if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) { return lock; }
+    if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+        return lock;
+    }
     let lock = Arc::new(Mutex::new(()));
     locks.insert(key, Arc::downgrade(&lock));
     lock
 }
 
 #[derive(Debug)]
-struct AssetDirectory { parent: native::Directory, parent_path: String, directory: native::Directory }
+struct AssetDirectory {
+    parent: native::Directory,
+    parent_path: String,
+    directory: native::Directory,
+}
 impl AssetDirectory {
     fn check(&self) -> R<()> {
-        if !self.parent.matches_path(&self.parent_path, true)? { return Err(refused("asset document parent changed")); }
-        let current = self.parent.child_directory("assets", false, false)?.ok_or_else(|| refused("asset directory disappeared"))?;
-        if !native::version(&self.directory.file, &self.directory.path)?.same_object(&native::version(&current.file, &current.path)?) {
+        if !self.parent.matches_path(&self.parent_path, true)? {
+            return Err(refused("asset document parent changed"));
+        }
+        let current = self
+            .parent
+            .child_directory("assets", false, false)?
+            .ok_or_else(|| refused("asset directory disappeared"))?;
+        if !native::version(&self.directory.file, &self.directory.path)?
+            .same_object(&native::version(&current.file, &current.path)?)
+        {
             return Err(refused("asset directory changed"));
         }
         Ok(())
@@ -96,7 +143,9 @@ impl AssetDirectory {
 #[derive(Debug, Clone)]
 pub struct PreparedAssetOwnership(Arc<AssetDirectory>);
 impl PartialEq for PreparedAssetOwnership {
-    fn eq(&self, other: &Self) -> bool { Arc::ptr_eq(&self.0, &other.0) }
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 #[derive(Clone)]
@@ -106,19 +155,28 @@ pub(crate) struct PinnedSource {
 }
 impl PinnedSource {
     pub(crate) fn capture(root: &str, path: &str) -> R<Self> {
-        Ok(Self { inner: Arc::new(native::pin_source(root, path)?), path: path.to_owned() })
+        Ok(Self {
+            inner: Arc::new(native::pin_source(root, path)?),
+            path: path.to_owned(),
+        })
     }
 }
 
 pub(crate) fn capture_sources(
-    source_document: &str, sources: &[String], resolve_source: impl Fn(&str) -> Option<String>,
+    source_document: &str,
+    sources: &[String],
+    resolve_source: impl Fn(&str) -> Option<String>,
 ) -> R<HashMap<String, (String, PinnedSource)>> {
     let mut result = HashMap::new();
     let mut captured = HashMap::<String, PinnedSource>::new();
     let mut root = None;
     for source in sources {
-        if result.contains_key(source) { continue; }
-        let Some(path) = resolve_source(source) else { continue };
+        if result.contains_key(source) {
+            continue;
+        }
+        let Some(path) = resolve_source(source) else {
+            continue;
+        };
         let pinned = if let Some(existing) = captured.get(&path) {
             existing.clone()
         } else {
@@ -126,9 +184,18 @@ pub(crate) fn capture_sources(
                 let directory = dirname(&resolve(&[source_document]));
                 let canonical = std::fs::canonicalize(namespaced(&directory))
                     .map_err(|error| node_error(&error, "realpath", &directory))?;
-                root = Some(canonical.to_str().ok_or_else(|| refused("asset source root is not Unicode"))?.to_owned());
+                root = Some(
+                    canonical
+                        .to_str()
+                        .ok_or_else(|| refused("asset source root is not Unicode"))?
+                        .to_owned(),
+                );
             }
-            let pinned = PinnedSource::capture(root.as_deref().ok_or_else(|| refused("asset source root is unavailable"))?, &path)?;
+            let pinned = PinnedSource::capture(
+                root.as_deref()
+                    .ok_or_else(|| refused("asset source root is unavailable"))?,
+                &path,
+            )?;
             captured.insert(path.clone(), pinned.clone());
             pinned
         };
@@ -137,10 +204,18 @@ pub(crate) fn capture_sources(
     Ok(result)
 }
 
-struct Stage { directory: native::Directory, name: String, file: Option<File>, content_version: Option<native::Version>, published: bool }
+struct Stage {
+    directory: native::Directory,
+    name: String,
+    file: Option<File>,
+    content_version: Option<native::Version>,
+    published: bool,
+}
 impl Stage {
     fn cleanup(&mut self) -> R<()> {
-        if self.published { return Ok(()); }
+        if self.published {
+            return Ok(());
+        }
         #[cfg(windows)]
         if self.file.is_none() {
             if let Some(expected) = &self.content_version {
@@ -151,12 +226,20 @@ impl Stage {
                 self.file = Some(file);
             }
         }
-        if self.file.is_none() { return Ok(()); }
+        if self.file.is_none() {
+            return Ok(());
+        }
         #[cfg(unix)]
-        let expected = native::version(self.file.as_ref().expect("stage file is present"), &self.directory.path)?;
+        let expected = native::version(
+            self.file.as_ref().expect("stage file is present"),
+            &self.directory.path,
+        )?;
         #[cfg(windows)]
         {
-            native::remove_handle(self.file.as_ref().expect("stage file is present"), &self.directory.path)?;
+            native::remove_handle(
+                self.file.as_ref().expect("stage file is present"),
+                &self.directory.path,
+            )?;
         }
         #[cfg(unix)]
         self.directory.remove(&self.name, Some(&expected))?;
@@ -166,8 +249,12 @@ impl Stage {
     }
     fn write(&mut self, data: &[u8], display: &str) -> R<()> {
         self.file = Some(self.directory.create(&self.name)?);
-        let file = self.file.as_mut().expect("created private payload has a file");
-        file.write_all(data).map_err(|error| node_error(&error, "write", display))?;
+        let file = self
+            .file
+            .as_mut()
+            .expect("created private payload has a file");
+        file.write_all(data)
+            .map_err(|error| node_error(&error, "write", display))?;
         sync(file, display)?;
         #[cfg(windows)]
         {
@@ -175,19 +262,28 @@ impl Stage {
             self.content_version = Some(native::version(file, display)?);
             self.file = None;
             let reopened = self.directory.open_copy(&self.name)?;
-            if !self.content_version.as_ref().expect("private payload witness exists")
-                .same_object(&native::version(&reopened, display)?) {
+            if !self
+                .content_version
+                .as_ref()
+                .expect("private payload witness exists")
+                .same_object(&native::version(&reopened, display)?)
+            {
                 return Err(refused("private asset payload changed before reopening"));
             }
             self.file = Some(reopened);
         }
-        self.content_version = Some(native::version(self.file.as_ref().expect("private payload has a file"), display)?);
+        self.content_version = Some(native::version(
+            self.file.as_ref().expect("private payload has a file"),
+            display,
+        )?);
         Ok(())
     }
 }
 
 fn create_private_stage(
-    parent: &native::Directory, effects: &mut Effects<'_, '_>, diagnostics: &mut Vec<String>,
+    parent: &native::Directory,
+    effects: &mut Effects<'_, '_>,
+    diagnostics: &mut Vec<String>,
     validate: impl FnOnce() -> R<()>,
 ) -> R<Stage> {
     let mut random = [0u8; 16];
@@ -196,13 +292,24 @@ fn create_private_stage(
     let name = format!(".seuoffice-assets-stage-{suffix}");
     let directory = effects.run(|| {
         validate()?;
-        parent.child_directory(&name, true, true)?.ok_or_else(|| refused("private asset staging was not created"))
+        parent
+            .child_directory(&name, true, true)?
+            .ok_or_else(|| refused("private asset staging was not created"))
     })?;
     #[cfg(unix)]
-    diagnostics.push(format!("private asset staging retained at {}", directory.path));
+    diagnostics.push(format!(
+        "private asset staging retained at {}",
+        directory.path
+    ));
     #[cfg(windows)]
     let _ = diagnostics;
-    Ok(Stage { directory, name: "payload".into(), file: None, content_version: None, published: false })
+    Ok(Stage {
+        directory,
+        name: "payload".into(),
+        file: None,
+        content_version: None,
+        published: false,
+    })
 }
 
 pub(crate) struct Session {
@@ -215,34 +322,61 @@ impl Drop for Session {
     fn drop(&mut self) {
         // Session is owned by the worker operation, never by an admission
         // closure. Diagnostics must not run while a native effect gate is held.
-        for diagnostic in &self.diagnostics { eprintln!("[assets] {diagnostic}"); }
+        for diagnostic in &self.diagnostics {
+            eprintln!("[assets] {diagnostic}");
+        }
     }
 }
 impl Session {
     pub(crate) fn open(document: &str, ownership: Option<&PreparedAssetOwnership>) -> R<Self> {
         let parent_path = dirname(&resolve(&[document]));
         let directory = if let Some(ownership) = ownership {
-            if ownership.0.parent_path != parent_path { return Err(refused("asset plan document parent changed")); }
+            if ownership.0.parent_path != parent_path {
+                return Err(refused("asset plan document parent changed"));
+            }
             ownership.0.check()?;
             Some(ownership.0.clone())
         } else {
             match native::Directory::open(&parent_path, true) {
-                Ok(parent) => parent.child_directory("assets", false, false)?.map(|directory| Arc::new(AssetDirectory { parent, parent_path, directory })),
+                Ok(parent) => parent
+                    .child_directory("assets", false, false)?
+                    .map(|directory| {
+                        Arc::new(AssetDirectory {
+                            parent,
+                            parent_path,
+                            directory,
+                        })
+                    }),
                 Err(error) if error.code == Some("ENOENT") => None,
                 Err(error) => return Err(error),
             }
         };
-        Ok(Self { document: document.into(), directory, manifest: None, diagnostics: Vec::new() })
+        Ok(Self {
+            document: document.into(),
+            directory,
+            manifest: None,
+            diagnostics: Vec::new(),
+        })
     }
-    pub(crate) fn ownership(&self) -> Option<PreparedAssetOwnership> { self.directory.as_ref().map(|d| PreparedAssetOwnership(d.clone())) }
-    pub(crate) fn diagnostics(&self) -> Vec<String> { self.diagnostics.clone() }
+    pub(crate) fn ownership(&self) -> Option<PreparedAssetOwnership> {
+        self.directory
+            .as_ref()
+            .map(|d| PreparedAssetOwnership(d.clone()))
+    }
+    pub(crate) fn diagnostics(&self) -> Vec<String> {
+        self.diagnostics.clone()
+    }
     pub(crate) fn retained_asset(&mut self, name: &str, detail: &str) {
-        let directory = self.directory.as_ref().map(|directory| directory.directory.path.as_str());
+        let directory = self
+            .directory
+            .as_ref()
+            .map(|directory| directory.directory.path.as_str());
         let path = match directory {
             Some(directory) => join(&[directory, name]),
             None => join(&[&dirname(&self.document), "assets", name]),
         };
-        self.diagnostics.push(format!("prepared asset retained at {path}: {detail}"));
+        self.diagnostics
+            .push(format!("prepared asset retained at {path}: {detail}"));
     }
     pub(crate) fn failure(&self, mut error: NodeError) -> NodeError {
         for diagnostic in &self.diagnostics {
@@ -253,27 +387,55 @@ impl Session {
         }
         error
     }
-    pub(crate) fn exists(&self) -> bool { self.directory.is_some() }
+    pub(crate) fn exists(&self) -> bool {
+        self.directory.is_some()
+    }
     pub(crate) fn ensure(&mut self, effects: &mut Effects<'_, '_>) -> R<()> {
-        if let Some(directory) = &self.directory { return directory.check(); }
+        if let Some(directory) = &self.directory {
+            return directory.check();
+        }
         let parent_path = dirname(&resolve(&[&self.document]));
         let parent = ensure_parent(&parent_path, effects)?;
         let directory = effects.run(|| {
-            if !parent.matches_path(&parent_path, true)? { return Err(refused("asset document parent changed")); }
-            parent.child_directory("assets", true, false)?.ok_or_else(|| refused("asset directory was not created"))
+            if !parent.matches_path(&parent_path, true)? {
+                return Err(refused("asset document parent changed"));
+            }
+            parent
+                .child_directory("assets", true, false)?
+                .ok_or_else(|| refused("asset directory was not created"))
         })?;
-        self.directory = Some(Arc::new(AssetDirectory { parent, parent_path, directory }));
+        self.directory = Some(Arc::new(AssetDirectory {
+            parent,
+            parent_path,
+            directory,
+        }));
         Ok(())
     }
-    fn dir(&self) -> R<&Arc<AssetDirectory>> { self.directory.as_ref().ok_or_else(|| node_error_named("ENOENT", "open", &join(&[&dirname(&self.document), "assets"]))) }
+    fn dir(&self) -> R<&Arc<AssetDirectory>> {
+        self.directory.as_ref().ok_or_else(|| {
+            node_error_named(
+                "ENOENT",
+                "open",
+                &join(&[&dirname(&self.document), "assets"]),
+            )
+        })
+    }
     pub(crate) fn read_manifest(&mut self, path: &str) -> R<Option<Vec<u8>>> {
         let name = basename(path, None);
-        let Some(directory) = &self.directory else { self.manifest = Some((name, None)); return Ok(None); };
+        let Some(directory) = &self.directory else {
+            self.manifest = Some((name, None));
+            return Ok(None);
+        };
         directory.check()?;
-        let Some(mut file) = directory.directory.read(&name)? else { self.manifest = Some((name, None)); return Ok(None); };
+        let Some(mut file) = directory.directory.read(&name)? else {
+            self.manifest = Some((name, None));
+            return Ok(None);
+        };
         let version = native::version(&file, path)?;
         let bytes = read_bytes(&mut file, path)?;
-        if version != native::version(&file, path)? { return Err(refused("asset manifest changed during read")); }
+        if version != native::version(&file, path)? {
+            return Err(refused("asset manifest changed during read"));
+        }
         self.manifest = Some((name, Some(version)));
         Ok(Some(bytes))
     }
@@ -281,22 +443,47 @@ impl Session {
         let directory = self.dir()?;
         directory.check()?;
         let Some(mut file) = (match directory.directory.read(name) {
-            Err(error) if matches!(error.code, Some("ELOOP" | "EISDIR" | "EINVAL")) => return Ok(false),
+            Err(error) if matches!(error.code, Some("ELOOP" | "EISDIR" | "EINVAL")) => {
+                return Ok(false);
+            }
             other => other,
-        })? else { return Err(node_error_named("ENOENT", "open", &join(&[&directory.directory.path, name]))); };
+        })?
+        else {
+            return Err(node_error_named(
+                "ENOENT",
+                "open",
+                &join(&[&directory.directory.path, name]),
+            ));
+        };
         let version = native::version(&file, name)?;
         let digest = hash_file(&mut file, name)?;
         Ok(digest == hash && version == native::version(&file, name)?)
     }
-    pub(crate) fn remove_owned(&self, name: &str, hash: &str, effects: &mut Effects<'_, '_>) -> R<bool> {
+    pub(crate) fn remove_owned(
+        &self,
+        name: &str,
+        hash: &str,
+        effects: &mut Effects<'_, '_>,
+    ) -> R<bool> {
         let directory = self.dir()?;
         directory.check()?;
         let Some(mut file) = (match directory.directory.read(name) {
-            Err(error) if matches!(error.code, Some("ELOOP" | "EISDIR" | "EINVAL")) => return Ok(false),
+            Err(error) if matches!(error.code, Some("ELOOP" | "EISDIR" | "EINVAL")) => {
+                return Ok(false);
+            }
             other => other,
-        })? else { return Err(node_error_named("ENOENT", "unlink", &join(&[&directory.directory.path, name]))); };
+        })?
+        else {
+            return Err(node_error_named(
+                "ENOENT",
+                "unlink",
+                &join(&[&directory.directory.path, name]),
+            ));
+        };
         let version = native::version(&file, name)?;
-        if hash_file(&mut file, name)? != hash || version != native::version(&file, name)? { return Ok(false); }
+        if hash_file(&mut file, name)? != hash || version != native::version(&file, name)? {
+            return Ok(false);
+        }
         effects.run(|| {
             directory.check()?;
             directory.directory.remove(name, Some(&version))
@@ -306,9 +493,16 @@ impl Session {
     fn stage(&mut self, effects: &mut Effects<'_, '_>) -> R<Stage> {
         self.ensure(effects)?;
         let directory = self.dir()?.clone();
-        create_private_stage(&directory.directory, effects, &mut self.diagnostics, || directory.check())
+        create_private_stage(&directory.directory, effects, &mut self.diagnostics, || {
+            directory.check()
+        })
     }
-    pub(crate) fn copy_pinned(&mut self, source: &PinnedSource, name: &str, effects: &mut Effects<'_, '_>) -> R<String> {
+    pub(crate) fn copy_pinned(
+        &mut self,
+        source: &PinnedSource,
+        name: &str,
+        effects: &mut Effects<'_, '_>,
+    ) -> R<String> {
         let source_path = source.path.as_str();
         let mut stage = self.stage(effects)?;
         let result = (|| {
@@ -318,9 +512,12 @@ impl Session {
                 let copied = source.inner.copy_to(&stage.directory, &stage.name);
                 match stage.directory.open_copy(&stage.name) {
                     Ok(file) => stage.file = Some(file),
-                    Err(error) if error.code == Some("ENOENT") && copied.is_err() => {},
+                    Err(error) if error.code == Some("ENOENT") && copied.is_err() => {}
                     Err(error) => {
-                        self.diagnostics.push(format!("private asset payload may remain at {path}: {}", error.message));
+                        self.diagnostics.push(format!(
+                            "private asset payload may remain at {path}: {}",
+                            error.message
+                        ));
                         return Err(copied.err().unwrap_or(error));
                     }
                 }
@@ -332,15 +529,19 @@ impl Session {
                 let permissions = source.inner.permissions()?;
                 stage.file = Some(stage.directory.create(&stage.name)?);
                 let file = stage.file.as_mut().expect("created stage has a file");
-                file.set_permissions(permissions).map_err(|e| node_error(&e, "fchmod", source_path))?;
+                file.set_permissions(permissions)
+                    .map_err(|e| node_error(&e, "fchmod", source_path))?;
                 source.inner.copy_to(file)?;
             }
             let file = stage.file.as_mut().expect("copied stage has a file");
             sync(file, source_path)?;
-            file.seek(SeekFrom::Start(0)).map_err(|e| node_error(&e, "seek", source_path))?;
+            file.seek(SeekFrom::Start(0))
+                .map_err(|e| node_error(&e, "seek", source_path))?;
             let version = native::version(file, source_path)?;
             let hash = hash_file(file, source_path)?;
-            if native::version(file, source_path)? != version { return Err(refused("private asset payload changed during hashing")); }
+            if native::version(file, source_path)? != version {
+                return Err(refused("private asset payload changed during hashing"));
+            }
             stage.content_version = Some(version);
             let directory = self.dir()?.clone();
             effects.run(|| {
@@ -357,14 +558,23 @@ impl Session {
     fn finish_stage(&mut self, stage: &Stage) {
         #[cfg(windows)]
         {
-            if let Err(error) = native::remove_handle(&stage.directory.file, &stage.directory.path) {
-                self.diagnostics.push(format!("private asset staging retained at {}: {}", stage.directory.path, error.message));
+            if let Err(error) = native::remove_handle(&stage.directory.file, &stage.directory.path)
+            {
+                self.diagnostics.push(format!(
+                    "private asset staging retained at {}: {}",
+                    stage.directory.path, error.message
+                ));
             }
         }
         #[cfg(unix)]
         let _ = stage;
     }
-    pub(crate) fn write_manifest(&mut self, path: &str, bytes: &[u8], effects: &mut Effects<'_, '_>) -> R<()> {
+    pub(crate) fn write_manifest(
+        &mut self,
+        path: &str,
+        bytes: &[u8],
+        effects: &mut Effects<'_, '_>,
+    ) -> R<()> {
         self.ensure(effects)?;
         let name = basename(path, None);
         let expected = match &self.manifest {
@@ -379,10 +589,23 @@ impl Session {
             Err(error) => Err(error),
         };
         let stage = self.stage(effects)?;
-        let mut backend = ManifestWriter { directory, name, path: path.into(), expected, rescue, rescue_expected, stage, effects, diagnostics: Vec::new() };
+        let mut backend = ManifestWriter {
+            directory,
+            name,
+            path: path.into(),
+            expected,
+            rescue,
+            rescue_expected,
+            stage,
+            effects,
+            diagnostics: Vec::new(),
+        };
         let result = atomic_write_file_with_backend(bytes, &mut backend);
         if result.is_err() && backend.stage.file.is_some() && !backend.stage.published {
-            self.diagnostics.push(format!("unpublished asset payload retained at {}", join(&[&backend.stage.directory.path, &backend.stage.name])));
+            self.diagnostics.push(format!(
+                "unpublished asset payload retained at {}",
+                join(&[&backend.stage.directory.path, &backend.stage.name])
+            ));
         }
         self.diagnostics.append(&mut backend.diagnostics);
         self.finish_stage(&backend.stage);
@@ -395,11 +618,17 @@ fn ensure_parent(path: &str, effects: &mut Effects<'_, '_>) -> R<native::Directo
         Ok(parent) => Ok(parent),
         Err(error) if error.code == Some("ENOENT") => {
             let ancestor = dirname(path);
-            if ancestor == path { return Err(error); }
+            if ancestor == path {
+                return Err(error);
+            }
             let parent = ensure_parent(&ancestor, effects)?;
             effects.run(|| {
-                if !parent.matches_path(&ancestor, true)? { return Err(refused("asset ancestor changed")); }
-                parent.child_directory(&basename(path, None), true, false)?.ok_or_else(|| refused("asset parent was not created"))
+                if !parent.matches_path(&ancestor, true)? {
+                    return Err(refused("asset ancestor changed"));
+                }
+                parent
+                    .child_directory(&basename(path, None), true, false)?
+                    .ok_or_else(|| refused("asset parent was not created"))
             })
         }
         Err(error) => Err(error),
@@ -407,15 +636,20 @@ fn ensure_parent(path: &str, effects: &mut Effects<'_, '_>) -> R<native::Directo
 }
 fn read_bytes(file: &mut File, path: &str) -> R<Vec<u8>> {
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).map_err(|e| node_error(&e, "read", path))?;
+    file.read_to_end(&mut bytes)
+        .map_err(|e| node_error(&e, "read", path))?;
     Ok(bytes)
 }
 fn hash_file(file: &mut File, path: &str) -> R<String> {
     let mut hash = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
     loop {
-        let n = file.read(&mut buffer).map_err(|e| node_error(&e, "read", path))?;
-        if n == 0 { break; }
+        let n = file
+            .read(&mut buffer)
+            .map_err(|e| node_error(&e, "read", path))?;
+        if n == 0 {
+            break;
+        }
         hash.update(&buffer[..n]);
     }
     Ok(format!("{:x}", hash.finalize()))
@@ -423,39 +657,77 @@ fn hash_file(file: &mut File, path: &str) -> R<String> {
 fn sync(file: &File, path: &str) -> R<()> {
     if let Err(error) = file.sync_all() {
         #[cfg(unix)]
-        let ignored = matches!(error.raw_os_error(), Some(libc::EPERM | libc::EACCES | libc::EBUSY | libc::EINVAL | libc::ENOSYS | libc::ENOTSUP));
+        let ignored = matches!(
+            error.raw_os_error(),
+            Some(
+                libc::EPERM
+                    | libc::EACCES
+                    | libc::EBUSY
+                    | libc::EINVAL
+                    | libc::ENOSYS
+                    | libc::ENOTSUP
+            )
+        );
         #[cfg(windows)]
         let ignored = matches!(error.raw_os_error(), Some(1 | 5 | 6 | 50 | 87));
-        if !ignored { return Err(node_error(&error, "fsync", path)); }
+        if !ignored {
+            return Err(node_error(&error, "fsync", path));
+        }
     }
     Ok(())
 }
 fn publish(directory: &native::Directory, stage: &Stage, name: &str, replace: bool) -> R<()> {
-    let file = stage.file.as_ref().ok_or_else(|| refused("asset stage has no file"))?;
-    let expected = stage.content_version.as_ref().ok_or_else(|| refused("asset stage has no content witness"))?;
+    let file = stage
+        .file
+        .as_ref()
+        .ok_or_else(|| refused("asset stage has no file"))?;
+    let expected = stage
+        .content_version
+        .as_ref()
+        .ok_or_else(|| refused("asset stage has no content witness"))?;
     if &native::version(file, &stage.directory.path)? != expected {
         return Err(refused("private asset payload changed before publication"));
     }
     #[cfg(windows)]
-    { directory.publish(file, name, replace) }
+    {
+        directory.publish(file, name, replace)
+    }
     #[cfg(unix)]
-    { directory.publish(&stage.directory, &stage.name, file, name, replace) }
+    {
+        directory.publish(&stage.directory, &stage.name, file, name, replace)
+    }
 }
 fn cleanup_stage<T>(stage: &mut Stage, result: R<T>) -> R<T> {
     match (result, stage.cleanup()) {
         (Ok(value), Ok(())) => Ok(value),
         (Err(error), Ok(())) => Err(error),
-        (Ok(_), Err(error)) => Err(NodeError { code: error.code, message: format!("unpublished asset payload retained at {}: {}", join(&[&stage.directory.path, &stage.name]), error.message) }),
+        (Ok(_), Err(error)) => Err(NodeError {
+            code: error.code,
+            message: format!(
+                "unpublished asset payload retained at {}: {}",
+                join(&[&stage.directory.path, &stage.name]),
+                error.message
+            ),
+        }),
         (Err(mut error), Err(cleanup)) => {
-            error.message.push_str(&format!("; unpublished asset payload retained at {}: {}", join(&[&stage.directory.path, &stage.name]), cleanup.message));
+            error.message.push_str(&format!(
+                "; unpublished asset payload retained at {}: {}",
+                join(&[&stage.directory.path, &stage.name]),
+                cleanup.message
+            ));
             Err(error)
         }
     }
 }
 
 struct ManifestWriter<'a, 'b, 'f> {
-    directory: Arc<AssetDirectory>, name: String, path: String, expected: Option<native::Version>,
-    rescue: String, rescue_expected: R<Option<native::Version>>, stage: Stage,
+    directory: Arc<AssetDirectory>,
+    name: String,
+    path: String,
+    expected: Option<native::Version>,
+    rescue: String,
+    rescue_expected: R<Option<native::Version>>,
+    stage: Stage,
     effects: &'a mut Effects<'b, 'f>,
     diagnostics: Vec<String>,
 }
@@ -483,16 +755,19 @@ impl AtomicByteWriteBackend for ManifestWriter<'_, '_, '_> {
         let result = self.effects.admitted(|| {
             directory.check()?;
             match expected {
-                Some(version) if directory.directory.matches(name, version, true)? => {},
-                None if directory.directory.read(name)?.is_none() => {},
+                Some(version) if directory.directory.matches(name, version, true)? => {}
+                None if directory.directory.read(name)?.is_none() => {}
                 _ => return Err(refused("asset manifest object changed before publication")),
             }
             publish(&directory.directory, stage, name, true)
         })?;
-        if result.is_ok() { self.stage.published = true; self.stage.file = None; }
+        if result.is_ok() {
+            self.stage.published = true;
+            self.stage.file = None;
+        }
         Ok(result)
     }
-    fn write_fallback(&mut self, data:&[u8]) -> R<R<()>> {
+    fn write_fallback(&mut self, data: &[u8]) -> R<R<()>> {
         self.validate(&self.name, &self.expected)?;
         let directory = &self.directory;
         let name = &self.name;
@@ -500,13 +775,18 @@ impl AtomicByteWriteBackend for ManifestWriter<'_, '_, '_> {
         let result = self.effects.admitted(|| {
             directory.check()?;
             match expected {
-                Some(version) if directory.directory.matches(name, version, true)? => {},
-                None if directory.directory.read(name)?.is_none() => {},
+                Some(version) if directory.directory.matches(name, version, true)? => {}
+                None if directory.directory.read(name)?.is_none() => {}
                 _ => return Err(refused("asset manifest object changed before fallback")),
             }
             directory.directory.fallback(name)
         })?;
-        Ok(match result { Ok(mut file)=>file.write_all(data).map_err(|error|node_error(&error,"write",&self.path)), Err(error)=>Err(error) })
+        Ok(match result {
+            Ok(mut file) => file
+                .write_all(data)
+                .map_err(|error| node_error(&error, "write", &self.path)),
+            Err(error) => Err(error),
+        })
     }
     fn copy_stage_to_rescue(&mut self) -> R<R<()>> {
         let rescue_expected = match &self.rescue_expected {
@@ -519,8 +799,18 @@ impl AtomicByteWriteBackend for ManifestWriter<'_, '_, '_> {
             let source_path = join(&[&self.stage.directory.path, &self.stage.name]);
             let private_name = "rescue";
             let private_path = join(&[&self.stage.directory.path, private_name]);
-            let expected_source = native::version(self.stage.file.as_ref().ok_or_else(|| refused("asset rescue stage missing"))?, &source_path)?;
-            let source = self.stage.file.take().expect("validated rescue stage is present");
+            let expected_source = native::version(
+                self.stage
+                    .file
+                    .as_ref()
+                    .ok_or_else(|| refused("asset rescue stage missing"))?,
+                &source_path,
+            )?;
+            let source = self
+                .stage
+                .file
+                .take()
+                .expect("validated rescue stage is present");
             drop(source);
             // CopyFileW, not a byte loop: retain the original attributes/EFS
             // semantics in the pinned private container before publication.
@@ -534,7 +824,9 @@ impl AtomicByteWriteBackend for ManifestWriter<'_, '_, '_> {
                     return Err(refused("private asset source changed during rescue copy"));
                 }
                 self.stage.file = Some(source);
-                if let Err(error) = copied { return Ok(Err(error)); }
+                if let Err(error) = copied {
+                    return Ok(Err(error));
+                }
                 let file = private.as_ref().map_err(Clone::clone)?;
                 let directory = &self.directory;
                 let rescue = &self.rescue;
@@ -542,8 +834,8 @@ impl AtomicByteWriteBackend for ManifestWriter<'_, '_, '_> {
                 let result = self.effects.admitted(|| {
                     directory.check()?;
                     match expected {
-                        Some(version) if directory.directory.matches(rescue, version, true)? => {},
-                        None if directory.directory.read(rescue)?.is_none() => {},
+                        Some(version) if directory.directory.matches(rescue, version, true)? => {}
+                        None if directory.directory.read(rescue)?.is_none() => {}
                         _ => return Err(refused("asset rescue object changed before publication")),
                     }
                     directory.directory.publish(file, rescue, true)
@@ -553,11 +845,19 @@ impl AtomicByteWriteBackend for ManifestWriter<'_, '_, '_> {
             })();
             if !published {
                 match &private {
-                    Ok(file) => if let Err(error) = native::remove_handle(file, &private_path) {
-                        self.diagnostics.push(format!("private rescue payload retained at {private_path}: {}", error.message));
-                    },
-                    Err(error) if error.code != Some("ENOENT") => self.diagnostics.push(format!("private rescue payload may remain at {private_path}: {}", error.message)),
-                    Err(_) => {},
+                    Ok(file) => {
+                        if let Err(error) = native::remove_handle(file, &private_path) {
+                            self.diagnostics.push(format!(
+                                "private rescue payload retained at {private_path}: {}",
+                                error.message
+                            ));
+                        }
+                    }
+                    Err(error) if error.code != Some("ENOENT") => self.diagnostics.push(format!(
+                        "private rescue payload may remain at {private_path}: {}",
+                        error.message
+                    )),
+                    Err(_) => {}
                 }
             }
             result
@@ -571,20 +871,40 @@ impl AtomicByteWriteBackend for ManifestWriter<'_, '_, '_> {
             let opened = self.effects.admitted(|| {
                 directory.check()?;
                 match expected {
-                    Some(version) if directory.directory.matches(rescue, version, true)? => {},
-                    None if directory.directory.read(rescue)?.is_none() => {},
+                    Some(version) if directory.directory.matches(rescue, version, true)? => {}
+                    None if directory.directory.read(rescue)?.is_none() => {}
                     _ => return Err(refused("asset rescue object changed before fallback")),
                 }
                 directory.directory.open_rescue(rescue)
             })?;
-            let mut destination = match opened { Ok(file) => file, Err(error) => return Ok(Err(error)) };
-            let source = self.stage.file.as_mut().ok_or_else(|| refused("asset rescue stage missing"))?;
-            let metadata = match source.metadata() { Ok(metadata) => metadata, Err(error) => return Ok(Err(node_error(&error, "fstat", &self.path))) };
-            let target = match destination.metadata() { Ok(metadata) => metadata, Err(error) => return Ok(Err(node_error(&error, "fstat", &self.path))) };
-            if metadata.dev() == target.dev() && metadata.ino() == target.ino() { return Ok(Ok(())); }
-            if let Err(error) = destination.set_len(0) { return Ok(Err(node_error(&error, "open", &self.path))); }
-            source.seek(SeekFrom::Start(0)).map_err(|error| node_error(&error, "seek", &self.path))?;
-            let copied = destination.set_permissions(std::fs::Permissions::from_mode(metadata.mode() & 0o7777))
+            let mut destination = match opened {
+                Ok(file) => file,
+                Err(error) => return Ok(Err(error)),
+            };
+            let source = self
+                .stage
+                .file
+                .as_mut()
+                .ok_or_else(|| refused("asset rescue stage missing"))?;
+            let metadata = match source.metadata() {
+                Ok(metadata) => metadata,
+                Err(error) => return Ok(Err(node_error(&error, "fstat", &self.path))),
+            };
+            let target = match destination.metadata() {
+                Ok(metadata) => metadata,
+                Err(error) => return Ok(Err(node_error(&error, "fstat", &self.path))),
+            };
+            if metadata.dev() == target.dev() && metadata.ino() == target.ino() {
+                return Ok(Ok(()));
+            }
+            if let Err(error) = destination.set_len(0) {
+                return Ok(Err(node_error(&error, "open", &self.path)));
+            }
+            source
+                .seek(SeekFrom::Start(0))
+                .map_err(|error| node_error(&error, "seek", &self.path))?;
+            let copied = destination
+                .set_permissions(std::fs::Permissions::from_mode(metadata.mode() & 0o7777))
                 .and_then(|()| std::io::copy(source, &mut destination).map(|_| ()));
             if let Err(error) = copied {
                 let copy_error = node_error(&error, "copyfile", &self.path);
@@ -595,10 +915,18 @@ impl AtomicByteWriteBackend for ManifestWriter<'_, '_, '_> {
                             directory.directory.remove(rescue, Some(&version))
                         })?;
                         if let Err(error) = removed {
-                            self.diagnostics.push(format!("partial asset rescue retained at {}: {}", join(&[&directory.directory.path, rescue]), error.message));
+                            self.diagnostics.push(format!(
+                                "partial asset rescue retained at {}: {}",
+                                join(&[&directory.directory.path, rescue]),
+                                error.message
+                            ));
                         }
                     }
-                    Err(error) => self.diagnostics.push(format!("partial asset rescue retained at {}: {}", join(&[&directory.directory.path, rescue]), error.message)),
+                    Err(error) => self.diagnostics.push(format!(
+                        "partial asset rescue retained at {}: {}",
+                        join(&[&directory.directory.path, rescue]),
+                        error.message
+                    )),
                 }
                 return Ok(Err(copy_error));
             }
@@ -610,7 +938,11 @@ impl AtomicByteWriteBackend for ManifestWriter<'_, '_, '_> {
             Ok(Some(expected)) => expected,
             Ok(None) => return Ok(()),
             Err(error) => {
-                self.diagnostics.push(format!("obsolete asset rescue retained at {}: {}", join(&[&self.directory.directory.path, &self.rescue]), error.message));
+                self.diagnostics.push(format!(
+                    "obsolete asset rescue retained at {}: {}",
+                    join(&[&self.directory.directory.path, &self.rescue]),
+                    error.message
+                ));
                 return Ok(());
             }
         };
@@ -621,12 +953,23 @@ impl AtomicByteWriteBackend for ManifestWriter<'_, '_, '_> {
             directory.directory.remove(rescue, Some(expected))
         });
         if let Err(error) = result.and_then(|result| result) {
-            self.diagnostics.push(format!("obsolete asset rescue retained at {}: {}", join(&[&directory.directory.path, rescue]), error.message));
+            self.diagnostics.push(format!(
+                "obsolete asset rescue retained at {}: {}",
+                join(&[&directory.directory.path, rescue]),
+                error.message
+            ));
         }
         Ok(())
     }
     fn remove_stage(&mut self) -> R<()> {
-        self.stage.cleanup().map_err(|error| NodeError { code: error.code, message: format!("unpublished asset payload retained at {}: {}", join(&[&self.stage.directory.path, &self.stage.name]), error.message) })
+        self.stage.cleanup().map_err(|error| NodeError {
+            code: error.code,
+            message: format!(
+                "unpublished asset payload retained at {}: {}",
+                join(&[&self.stage.directory.path, &self.stage.name]),
+                error.message
+            ),
+        })
     }
 }
 

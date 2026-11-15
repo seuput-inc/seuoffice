@@ -171,12 +171,27 @@ mod owned_snapshot_tests {
         send::<OpenFilesSnapshot>();
         let mut holder = OpenFilesHolder::new();
         assert_eq!(holder.capture_snapshot(), OpenFilesSnapshot::NoSource);
-        assert!(!holder.capture_snapshot().file_has_unsaved_changes("/fixture.md"));
+        assert!(
+            !holder
+                .capture_snapshot()
+                .file_has_unsaved_changes("/fixture.md")
+        );
         holder.set_open_files_source(Some(Box::new(|| Err(OpenFilesSourceFailed))));
         assert_eq!(holder.capture_snapshot(), OpenFilesSnapshot::Unknown);
-        assert!(holder.capture_snapshot().file_has_unsaved_changes("/fixture.md"));
+        assert!(
+            holder
+                .capture_snapshot()
+                .file_has_unsaved_changes("/fixture.md")
+        );
         holder.set_open_files_source(Some(Box::new(|| Ok(Vec::new()))));
-        assert_eq!(holder.capture_snapshot(), OpenFilesSnapshot::Documents(Vec::new()));
-        assert!(!holder.capture_snapshot().file_has_unsaved_changes("/fixture.md"));
+        assert_eq!(
+            holder.capture_snapshot(),
+            OpenFilesSnapshot::Documents(Vec::new())
+        );
+        assert!(
+            !holder
+                .capture_snapshot()
+                .file_has_unsaved_changes("/fixture.md")
+        );
     }
 }

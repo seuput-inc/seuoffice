@@ -124,18 +124,21 @@ export default function App({ initialTheme }: { initialTheme: UiTheme }) {
     await window.diagramApi.recoveryInitialized(token, ok, error)
   }, [])
 
-  const failOpen = useCallback(async (key: StringKey, params?: Record<string, string | number>) => {
-    await settleRecovery(false, translate(key, params)).catch(console.error)
-    pendingRef.current = null
-    return settleOpenFailure(
-      translate(key, params),
-      (message) => window.diagramApi.openFailed(message),
-      (message) => {
-        setFailure(message)
-        setStatus('failed')
-      },
-    )
-  }, [settleRecovery])
+  const failOpen = useCallback(
+    async (key: StringKey, params?: Record<string, string | number>) => {
+      await settleRecovery(false, translate(key, params)).catch(console.error)
+      pendingRef.current = null
+      return settleOpenFailure(
+        translate(key, params),
+        (message) => window.diagramApi.openFailed(message),
+        (message) => {
+          setFailure(message)
+          setStatus('failed')
+        },
+      )
+    },
+    [settleRecovery],
+  )
 
   // ---- opening: what the frame loads once draw.io is up ----
 
@@ -176,7 +179,9 @@ export default function App({ initialTheme }: { initialTheme: UiTheme }) {
         : { kind: 'xml', xml: createDiagramFile().xml, dirty: false }
     })().catch(async (err: unknown) => {
       console.error('[diagram] open failed:', err)
-      await settleRecovery(false, err instanceof Error ? err.message : String(err)).catch(console.error)
+      await settleRecovery(false, err instanceof Error ? err.message : String(err)).catch(
+        console.error,
+      )
       fail('failEditor')
     })
   }, [fail, failOpen, settleRecovery])
@@ -228,7 +233,9 @@ export default function App({ initialTheme }: { initialTheme: UiTheme }) {
         await settleRecovery(true)
         setStatus('ready')
       } catch (err) {
-        await settleRecovery(false, err instanceof Error ? err.message : String(err)).catch(console.error)
+        await settleRecovery(false, err instanceof Error ? err.message : String(err)).catch(
+          console.error,
+        )
         console.error('[diagram] the editor did not take the diagram:', err)
         fail('failEditor')
       }
@@ -251,54 +258,57 @@ export default function App({ initialTheme }: { initialTheme: UiTheme }) {
     if (dirty && saveState === 'saved') setSaveState('idle')
   }, [dirty, saveState])
 
-  const doSave = useCallback(async (mode: SaveRequestMode, auto = false, requestId?: string): Promise<boolean> => {
-    const client = clientRef.current
-    if (statusRef.current !== 'ready' || !client) return false
-    while (savingRef.current) await new Promise((resolve) => setTimeout(resolve, 50))
-    // nothing changed and the diagram has its file: nothing is written (spec 3.2)
-    if (!requestId && mode === 'save' && pathRef.current && !dirtyRef.current) return true
-    savingRef.current = true
-    copierRef.current?.noteSave()
-    setSaveState('saving')
-    try {
-      const target = await window.diagramApi.saveTarget({
-        mode,
-        requestId,
-        defaultName: pathRef.current ? undefined : (titleRef.current ?? undefined),
-      })
-      if (!target.ok) {
-        console.error('[diagram] save failed:', target.error)
+  const doSave = useCallback(
+    async (mode: SaveRequestMode, auto = false, requestId?: string): Promise<boolean> => {
+      const client = clientRef.current
+      if (statusRef.current !== 'ready' || !client) return false
+      while (savingRef.current) await new Promise((resolve) => setTimeout(resolve, 50))
+      // nothing changed and the diagram has its file: nothing is written (spec 3.2)
+      if (!requestId && mode === 'save' && pathRef.current && !dirtyRef.current) return true
+      savingRef.current = true
+      copierRef.current?.noteSave()
+      setSaveState('saving')
+      try {
+        const target = await window.diagramApi.saveTarget({
+          mode,
+          requestId,
+          defaultName: pathRef.current ? undefined : (titleRef.current ?? undefined),
+        })
+        if (!target.ok) {
+          console.error('[diagram] save failed:', target.error)
+          setSaveState('failed')
+          return false
+        }
+        if ('canceled' in target) {
+          setSaveState('idle')
+          return false
+        }
+        const revision = revisionRef.current
+        const bytes = await client.serialize(exportKindOf(target.format), compressedRef.current)
+        const result = await window.diagramApi.save({ token: target.token, bytes, auto, requestId })
+        if (result.ok && 'path' in result) {
+          await client.request('markSaved', { revision })
+          window.diagramApi.setDirty(dirtyRef.current)
+          formatRef.current = target.format
+          setPath(result.path)
+          setTitle(null)
+          setSaveState(dirtyRef.current ? 'idle' : 'saved')
+          return true
+        }
+        const deferred = !result.ok && result.error === 'external-modified'
+        setSaveState(result.ok || deferred ? 'idle' : 'failed')
+        if (!result.ok && !deferred) console.error('[diagram] save failed:', result.error)
+        return false
+      } catch (err) {
+        console.error('[diagram] save failed:', err)
         setSaveState('failed')
         return false
+      } finally {
+        savingRef.current = false
       }
-      if ('canceled' in target) {
-        setSaveState('idle')
-        return false
-      }
-      const revision = revisionRef.current
-      const bytes = await client.serialize(exportKindOf(target.format), compressedRef.current)
-      const result = await window.diagramApi.save({ token: target.token, bytes, auto, requestId })
-      if (result.ok && 'path' in result) {
-        await client.request('markSaved', { revision })
-        window.diagramApi.setDirty(dirtyRef.current)
-        formatRef.current = target.format
-        setPath(result.path)
-        setTitle(null)
-        setSaveState(dirtyRef.current ? 'idle' : 'saved')
-        return true
-      }
-      const deferred = !result.ok && result.error === 'external-modified'
-      setSaveState(result.ok || deferred ? 'idle' : 'failed')
-      if (!result.ok && !deferred) console.error('[diagram] save failed:', result.error)
-      return false
-    } catch (err) {
-      console.error('[diagram] save failed:', err)
-      setSaveState('failed')
-      return false
-    } finally {
-      savingRef.current = false
-    }
-  }, [])
+    },
+    [],
+  )
 
   // AutoSave: every 30 s and when the window loses focus; an untitled diagram waits for its first save
   useEffect(() => {
@@ -334,13 +344,18 @@ export default function App({ initialTheme }: { initialTheme: UiTheme }) {
     const id = window.setInterval(() => void copier.tick(), RECOVERY_COPY_TIMING.intervalMs)
     const offNow = window.diagramApi.onRecoveryCopyNow((generation) => {
       void copier.writeNow().then(
-        (outcome) => window.diagramApi.sendRecoveryCopyNowDone(
-          generation,
-          outcome === 'written' || outcome === 'clean' || outcome === 'unchanged' ? null : `Recovery copy ${outcome}`,
-        ),
-        (error: unknown) => window.diagramApi.sendRecoveryCopyNowDone(
-          generation, error instanceof Error ? error.message : String(error),
-        ),
+        (outcome) =>
+          window.diagramApi.sendRecoveryCopyNowDone(
+            generation,
+            outcome === 'written' || outcome === 'clean' || outcome === 'unchanged'
+              ? null
+              : `Recovery copy ${outcome}`,
+          ),
+        (error: unknown) =>
+          window.diagramApi.sendRecoveryCopyNowDone(
+            generation,
+            error instanceof Error ? error.message : String(error),
+          ),
       )
     })
     const offReset = window.diagramApi.onRecoveryReset(() => copier.reset())

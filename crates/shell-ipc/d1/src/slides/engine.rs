@@ -162,13 +162,23 @@ pub trait SlidesEngine: Send + Sync {
     /// the deck is no longer referenced (garbage collection in the TypeScript)
     fn release(&self, deck: DeckId);
     /// Transfer retained history media before the old deck is released.
-    fn transfer_history(&self, old: DeckId, replacement: DeckId, views: &[RenderOwner]) -> Result<(), EngineError>;
+    fn transfer_history(
+        &self,
+        old: DeckId,
+        replacement: DeckId,
+        views: &[RenderOwner],
+    ) -> Result<(), EngineError>;
     /// Bind a captured document capability before exposing the session.
     fn bind_view(&self, deck: DeckId, owner: &RenderOwner) -> Result<(), EngineError>;
     /// Remove only this exact document's binding.
     fn unbind_view(&self, deck: DeckId, owner: &RenderOwner) -> Result<(), EngineError>;
     /// Atomically move one view from an old deck to a prepared replacement.
-    fn replace_view(&self, old: DeckId, new: DeckId, owner: &RenderOwner) -> Result<(), EngineError>;
+    fn replace_view(
+        &self,
+        old: DeckId,
+        new: DeckId,
+        owner: &RenderOwner,
+    ) -> Result<(), EngineError>;
     /// `setSlideSize(opened, cx, cy)`
     fn set_slide_size(&self, deck: DeckId, cx: f64, cy: f64) -> Result<(), EngineError>;
     /// `opened.deck.size`
@@ -187,7 +197,12 @@ pub trait SlidesEngine: Send + Sync {
     /// `resetFontMetrics()`
     fn reset_font_metrics(&self) -> Result<(), EngineError>;
     /// `buildAllRenderSlides(opened, fitWidthPx)`
-    fn render_all(&self, deck: DeckId, owner: &RenderOwner, fit_width_px: f64) -> Result<Vec<IpcValue>, EngineError>;
+    fn render_all(
+        &self,
+        deck: DeckId,
+        owner: &RenderOwner,
+        fit_width_px: f64,
+    ) -> Result<Vec<IpcValue>, EngineError>;
     /// `buildRenderSlide` of one page; `reparse` is `rebuildSlideWithReparse`
     fn render_slide(
         &self,
@@ -198,7 +213,12 @@ pub trait SlidesEngine: Send + Sync {
         reparse: bool,
     ) -> Result<Option<IpcValue>, EngineError>;
     /// `runTxn(opened, req)`
-    fn run_txn(&self, deck: DeckId, owner: &RenderOwner, request: &TxnRequest) -> Result<TxnResult, EngineError>;
+    fn run_txn(
+        &self,
+        deck: DeckId,
+        owner: &RenderOwner,
+        request: &TxnRequest,
+    ) -> Result<TxnResult, EngineError>;
     /// `takeSnapshot` of the deck half (a deep copy of the slides and entries)
     fn snapshot(&self, deck: DeckId, meta_dirty: bool) -> Result<Snapshot, EngineError>;
     /// the deck half of `restoreSnapshot`: the live deck becomes a copy of
@@ -210,8 +230,29 @@ pub trait SlidesEngine: Send + Sync {
     fn save_to_file(&self, deck: DeckId, path: &str) -> Result<(), EngineError>;
     /// `commitSaved(opened)`
     fn commit_saved(&self, deck: DeckId) -> Result<(), EngineError>;
-    fn commit_saved_owned(&self, deck: DeckId, origin: &RenderOwner, destination: &RenderOwner, participants: &[RenderOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost) -> Result<(), EngineError>;
-    fn commit_saved_existing_document(&self, deck: DeckId, owner: &RenderOwner, document: &shell_contract::runtime::RendererGeneration, destination: &shell_contract::ipc::NativeSaveDestination, participants: &[RenderOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost) -> Result<(), EngineError>;
+    fn commit_saved_owned(
+        &self,
+        deck: DeckId,
+        origin: &RenderOwner,
+        destination: &RenderOwner,
+        participants: &[RenderOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+    ) -> Result<(), EngineError>;
+    fn commit_saved_existing_document(
+        &self,
+        deck: DeckId,
+        owner: &RenderOwner,
+        document: &shell_contract::runtime::RendererGeneration,
+        destination: &shell_contract::ipc::NativeSaveDestination,
+        participants: &[RenderOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+    ) -> Result<(), EngineError>;
     /// `deckHasRedaction(opened)`
     fn has_redaction(&self, deck: DeckId) -> Result<bool, EngineError>;
     /// `encryptOoxml(bytes, password)`
@@ -221,9 +262,19 @@ pub trait SlidesEngine: Send + Sync {
     /// `decryptOfficeFile(bytes, password)`
     fn decrypt_office_file(&self, bytes: &[u8], password: &str) -> Result<Vec<u8>, EngineError>;
     /// the picture element `source_id` of slide `slide`, when it is one
-    fn picture_media(&self, deck: DeckId, slide: usize, source_id: &str) -> Result<Option<PictureMedia>, EngineError>;
+    fn picture_media(
+        &self,
+        deck: DeckId,
+        slide: usize,
+        source_id: &str,
+    ) -> Result<Option<PictureMedia>, EngineError>;
     /// the picture element's `model3d.target`
-    fn model3d_target(&self, deck: DeckId, slide: usize, source_id: &str) -> Result<Option<String>, EngineError>;
+    fn model3d_target(
+        &self,
+        deck: DeckId,
+        slide: usize,
+        source_id: &str,
+    ) -> Result<Option<String>, EngineError>;
     /// `opened.archive.readBytes(path)`
     fn read_part(&self, deck: DeckId, path: &str) -> Result<Option<Vec<u8>>, EngineError>;
     /// `copySlide(opened, index)`: a bundle another deck can paste
@@ -238,7 +289,13 @@ pub trait SlidesEngine: Send + Sync {
     ) -> Result<Option<Vec<IpcValue>>, EngineError>;
     /// the page of `renderTemplateCover(id, lang)`: `None` for an id the
     /// catalog does not list or a cover that could not be built
-    fn template_cover(&self, owner: &RenderOwner, id: &str, lang: &str, fit_width_px: f64) -> Result<Option<IpcValue>, EngineError>;
+    fn template_cover(
+        &self,
+        owner: &RenderOwner,
+        id: &str,
+        lang: &str,
+        fit_width_px: f64,
+    ) -> Result<Option<IpcValue>, EngineError>;
     /// `fontFileFamilies(path)` of `fonts.ts`: the family names in a font
     /// file's name table (the store's install itself is main-core's)
     fn font_file_families(&self, path: &str) -> Result<Vec<String>, EngineError>;
@@ -252,7 +309,8 @@ pub trait SlidesEngine: Send + Sync {
     fn sections(&self, deck: DeckId) -> Result<IpcValue, EngineError>;
     /// `slideDurableId(slide)` lookup: the page that carries the executor's
     /// durable slide id
-    fn slide_index_of_id(&self, deck: DeckId, slide_id: &str) -> Result<Option<usize>, EngineError>;
+    fn slide_index_of_id(&self, deck: DeckId, slide_id: &str)
+    -> Result<Option<usize>, EngineError>;
     /// `materializeSlide(opened, index)`: bake pending patches and reparse
     /// the page
     fn materialize_slide(&self, deck: DeckId, index: usize) -> Result<(), EngineError>;
@@ -280,7 +338,8 @@ pub trait SlidesEngine: Send + Sync {
         fit_width_px: f64,
     ) -> Result<Option<IpcValue>, EngineError>;
     /// `mapScriptOps(opened, script)` of `pptx-ops`
-    fn map_script_ops(&self, deck: DeckId, script: &IpcValue) -> Result<Vec<IpcValue>, EngineError>;
+    fn map_script_ops(&self, deck: DeckId, script: &IpcValue)
+    -> Result<Vec<IpcValue>, EngineError>;
     /// `resolveGroupChildId` and `findGroupChild`: the frame of a group's
     /// child; `None` when the group or the child is missing
     fn group_child_frame(
@@ -291,29 +350,55 @@ pub trait SlidesEngine: Send + Sync {
         source_id: &str,
     ) -> Result<Option<GroupChildFrame>, EngineError>;
     /// whether the slide has an element with this id (`matchesElementRef`)
-    fn element_index(&self, deck: DeckId, slide: usize, source_id: &str) -> Result<Option<usize>, EngineError>;
+    fn element_index(
+        &self,
+        deck: DeckId,
+        slide: usize,
+        source_id: &str,
+    ) -> Result<Option<usize>, EngineError>;
     /// the id of the element at `index` of the slide after a reparse
-    fn element_id_at(&self, deck: DeckId, slide: usize, index: usize) -> Result<Option<String>, EngineError>;
+    fn element_id_at(
+        &self,
+        deck: DeckId,
+        slide: usize,
+        index: usize,
+    ) -> Result<Option<String>, EngineError>;
     /// whether the element is a chart that did not come from this app
     /// (`type === 'chart' && descr !== 'aislides-chart'`)
-    fn is_imported_chart(&self, deck: DeckId, slide: usize, source_id: &str) -> Result<bool, EngineError>;
+    fn is_imported_chart(
+        &self,
+        deck: DeckId,
+        slide: usize,
+        source_id: &str,
+    ) -> Result<bool, EngineError>;
     /// `chartColorSchemes`'s theme input: accent1..6 of the first slide's
     /// theme when it has at least three, else `None`
     fn theme_accents(&self, deck: DeckId) -> Result<Option<Vec<String>>, EngineError>;
     /// `getChartElementData(slide, sourceId)`
-    fn chart_data(&self, deck: DeckId, slide: usize, source_id: &str) -> Result<IpcValue, EngineError>;
+    fn chart_data(
+        &self,
+        deck: DeckId,
+        slide: usize,
+        source_id: &str,
+    ) -> Result<IpcValue, EngineError>;
     /// `listSlideLayouts` plus the built-in set when the deck needs it
     fn layouts(&self, deck: DeckId) -> Result<IpcValue, EngineError>;
     /// `ensureBuiltinLayout(archive, size, key)`: the path of the layout
     /// part for a `builtin:<key>`; `None` when the key is unknown
-    fn ensure_builtin_layout(&self, deck: DeckId, key: &str) -> Result<Option<String>, EngineError>;
+    fn ensure_builtin_layout(&self, deck: DeckId, key: &str)
+    -> Result<Option<String>, EngineError>;
     /// `getSlideNotes(archive, slidePath)` of an existing slide
     fn slide_notes(&self, deck: DeckId, slide: usize) -> Result<String, EngineError>;
     /// `getSlideComments(archive, slidePath)` of an existing slide
     fn slide_comments(&self, deck: DeckId, slide: usize) -> Result<IpcValue, EngineError>;
     /// `getElementLink(opened, slideIndex, sourceId)`; the arguments are the
     /// renderer's, whatever they are
-    fn element_link(&self, deck: DeckId, slide: &IpcValue, source_id: &IpcValue) -> Result<IpcValue, EngineError>;
+    fn element_link(
+        &self,
+        deck: DeckId,
+        slide: &IpcValue,
+        source_id: &IpcValue,
+    ) -> Result<IpcValue, EngineError>;
     /// `getSlideLinks(opened, slideIndex)`: `{ elementId, target }` items
     fn slide_links(&self, deck: DeckId, slide: &IpcValue) -> Result<IpcValue, EngineError>;
     /// `getRunLinks(opened, slideIndex)`: `{ elementId, ...rest }` items
@@ -327,24 +412,50 @@ pub trait SlidesEngine: Send + Sync {
     /// the `AnimationItem[]` of an existing slide; `labels` are the localized
     /// names by element type (`text`, `shape`, `picture`, `group`, `table`,
     /// `chart`, `passthrough`, `object` for the fallback)
-    fn animations(&self, deck: DeckId, slide: usize, labels: &[(String, String)]) -> Result<IpcValue, EngineError>;
+    fn animations(
+        &self,
+        deck: DeckId,
+        slide: usize,
+        labels: &[(String, String)],
+    ) -> Result<IpcValue, EngineError>;
     /// the Morph pairing keys of an existing slide's elements
     fn shape_keys(&self, deck: DeckId, slide: usize) -> Result<IpcValue, EngineError>;
     /// `narrationSpids(slide).length > 0`
     fn has_narration(&self, deck: DeckId, slide: usize) -> Result<bool, EngineError>;
     /// the slides of a section, `normalizeSections` applied: `id` null or
     /// undefined is the lead (sectionless) slides; `None` for an unknown id
-    fn section_slide_indices(&self, deck: DeckId, id: &IpcValue) -> Result<Option<Vec<usize>>, EngineError>;
+    fn section_slide_indices(
+        &self,
+        deck: DeckId,
+        id: &IpcValue,
+    ) -> Result<Option<Vec<usize>>, EngineError>;
     /// `listMasterParts(archive)`
     fn master_parts(&self, deck: DeckId) -> Result<Vec<MasterPart>, EngineError>;
     /// `parseMasterPart(archive, partPath)` then `buildRenderSlide`: the part
     /// becomes the live master slide the master ops are seeded with; `None`
     /// when it does not parse
-    fn master_parse(&self, deck: DeckId, owner: &RenderOwner, part_path: &str, fit_width_px: f64) -> Result<Option<IpcValue>, EngineError>;
+    fn master_parse(
+        &self,
+        deck: DeckId,
+        owner: &RenderOwner,
+        part_path: &str,
+        fit_width_px: f64,
+    ) -> Result<Option<IpcValue>, EngineError>;
     /// `buildRenderSlide` of the live master slide of `part_path`
-    fn master_render(&self, deck: DeckId, owner: &RenderOwner, part_path: &str, fit_width_px: f64) -> Result<Option<IpcValue>, EngineError>;
+    fn master_render(
+        &self,
+        deck: DeckId,
+        owner: &RenderOwner,
+        part_path: &str,
+        fit_width_px: f64,
+    ) -> Result<Option<IpcValue>, EngineError>;
     /// the live master slide has an element with this id
-    fn master_has_element(&self, deck: DeckId, part_path: &str, source_id: &str) -> Result<bool, EngineError>;
+    fn master_has_element(
+        &self,
+        deck: DeckId,
+        part_path: &str,
+        source_id: &str,
+    ) -> Result<bool, EngineError>;
     /// a transform preview: the live master slide's element moves, nothing
     /// is persisted (`el.transform = { ...el.transform, offset, rot }`)
     fn master_preview_transform(
@@ -357,7 +468,12 @@ pub trait SlidesEngine: Send + Sync {
     ) -> Result<(), EngineError>;
     /// the picture's natural size and dpi: `nativeImage` (`tiffToPng` for a
     /// tiff) and `imageDpiFromBytes(bytes)`; `path` when the image is a file
-    fn image_info(&self, bytes: &[u8], ext: &str, path: Option<&str>) -> Result<ImageInfo, EngineError>;
+    fn image_info(
+        &self,
+        bytes: &[u8],
+        ext: &str,
+        path: Option<&str>,
+    ) -> Result<ImageInfo, EngineError>;
     /// `nativeImage.createThumbnailFromPath(path)` as PNG: a video's poster
     fn video_poster(&self, path: &str) -> Result<Option<Vec<u8>>, EngineError>;
     /// `slide.background.mediaRef` when the slide's background is an image
@@ -381,7 +497,11 @@ pub trait SlidesEngine: Send + Sync {
     /// `listPrivateFontFaces()` of `fonts.ts`, as the renderer receives it
     fn private_font_faces(&self, owner: &RenderOwner) -> Result<IpcValue, EngineError>;
     /// `getPrivateFontData(id)` of `fonts.ts`, as the renderer receives it
-    fn private_font_data(&self, owner: &RenderOwner, id: &IpcValue) -> Result<IpcValue, EngineError>;
+    fn private_font_data(
+        &self,
+        owner: &RenderOwner,
+        id: &IpcValue,
+    ) -> Result<IpcValue, EngineError>;
 }
 
 pub type SlidesEngineHost = Arc<dyn SlidesEngine>;
@@ -472,25 +592,93 @@ pub struct Display {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PresenterWindowAction {
-    ShowFullscreen { window: WindowId, on: bool },
-    Refocus { window: WindowId },
-    SwapDisplays { presenter: WindowId, audience: WindowId, presenter_display: Display, audience_display: Display },
+    ShowFullscreen {
+        window: WindowId,
+        on: bool,
+    },
+    Refocus {
+        window: WindowId,
+    },
+    SwapDisplays {
+        presenter: WindowId,
+        audience: WindowId,
+        presenter_display: Display,
+        audience_display: Display,
+    },
 }
 
 /// The shell side of `slides-main.ts` and `presenter-show.ts`
 pub trait SlidesShell: Send + Sync {
     /// `slidesOpenedHook(wc, path)`
     fn opened(&self, view: ViewId, path: &str);
-    fn file_saved_owned(&self, origin: &RenderOwner, destination: &RenderOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, effects: &shell_contract::hosts::OwnedEffectsHost, path: std::path::PathBuf, participants: &[RenderOwner], additional: &[shell_contract::runtime::CancelToken], done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>);
-    fn file_saved_existing_document(&self, revision: shell_contract::ipc::NativeSaveRevisionAuthority, expected_path: std::path::PathBuf, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, additional: Vec<shell_contract::runtime::CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost, on_revision: std::rc::Rc<dyn Fn(&shell_contract::ipc::NativeSaveRevisionReceipt) -> Result<(), String>>, done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>);
-    fn set_window_title_existing_document(&self, destination: shell_contract::ipc::NativeSaveDestination, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, additional: Vec<shell_contract::runtime::CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost, title: String, done: Box<dyn FnOnce(Result<(), String>)>);
-    fn set_window_title_owned(&self, origin: &RenderOwner, destination: &RenderOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, title: String, effects: &shell_contract::hosts::OwnedEffectsHost, participants: &[RenderOwner], additional: &[shell_contract::runtime::CancelToken], done: Box<dyn FnOnce(Result<(), String>) + Send>);
-    fn presenter_window_owned(&self, origin: &RenderOwner, destination: &RenderOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, action: PresenterWindowAction, done: Box<dyn FnOnce(Result<(), String>) + Send>);
+    fn file_saved_owned(
+        &self,
+        origin: &RenderOwner,
+        destination: &RenderOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+        path: std::path::PathBuf,
+        participants: &[RenderOwner],
+        additional: &[shell_contract::runtime::CancelToken],
+        done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>,
+    );
+    fn file_saved_existing_document(
+        &self,
+        revision: shell_contract::ipc::NativeSaveRevisionAuthority,
+        expected_path: std::path::PathBuf,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        on_revision: std::rc::Rc<
+            dyn Fn(&shell_contract::ipc::NativeSaveRevisionReceipt) -> Result<(), String>,
+        >,
+        done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>,
+    );
+    fn set_window_title_existing_document(
+        &self,
+        destination: shell_contract::ipc::NativeSaveDestination,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        title: String,
+        done: Box<dyn FnOnce(Result<(), String>)>,
+    );
+    fn set_window_title_owned(
+        &self,
+        origin: &RenderOwner,
+        destination: &RenderOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        title: String,
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+        participants: &[RenderOwner],
+        additional: &[shell_contract::runtime::CancelToken],
+        done: Box<dyn FnOnce(Result<(), String>) + Send>,
+    );
+    fn presenter_window_owned(
+        &self,
+        origin: &RenderOwner,
+        destination: &RenderOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        action: PresenterWindowAction,
+        done: Box<dyn FnOnce(Result<(), String>) + Send>,
+    );
     fn prepare_reveal_export(
-        &self, output: shell_contract::ipc::SavedPublication, written: Option<shell_contract::ipc::NativeSavedInput>,
-        participants: Vec<RenderOwner>, cancel: shell_contract::runtime::CancelToken,
-        pending: shell_contract::runtime::CancelToken, additional: Vec<shell_contract::runtime::CancelToken>,
-        effects: shell_contract::hosts::OwnedEffectsHost, accepted: shell_contract::hosts::PdfReloadAccepted,
+        &self,
+        output: shell_contract::ipc::SavedPublication,
+        written: Option<shell_contract::ipc::NativeSavedInput>,
+        participants: Vec<RenderOwner>,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        accepted: shell_contract::hosts::PdfReloadAccepted,
         wake: shell_contract::hosts::GeneratedPathWake,
     ) -> Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String>;
     fn reload_view(&self, view: ViewId);
@@ -506,14 +694,34 @@ pub trait SlidesShell: Send + Sync {
     fn can_write_new_document(&self) -> bool;
     /// `runtime.writeNewDocument(view, name, bytes)`: the path written, or
     /// `None` when no project was chosen
-    fn write_new_document_owned(&self, origin: &RenderOwner, destination: &RenderOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, effects: &shell_contract::hosts::OwnedEffectsHost, admission: main_core::packages::electron_utils::atomic_write::owned::Admission, name: &str, bytes: &[u8]) -> Result<Option<String>, String>;
+    fn write_new_document_owned(
+        &self,
+        origin: &RenderOwner,
+        destination: &RenderOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+        admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<Option<String>, String>;
     /// `isPathOpenElsewhere(path)`: the shell's probe over the other panes
     fn is_path_open_elsewhere(&self, path: &str) -> Result<bool, EngineError>;
     /// `headlessExportTargets.get(id)` then delete: the PDF path the hidden
     /// export window must write
-    fn take_headless_target_owned(&self, owner: &RenderOwner, cancel: &shell_contract::runtime::CancelToken) -> Result<Option<HeadlessExportTarget>, String>;
+    fn take_headless_target_owned(
+        &self,
+        owner: &RenderOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+    ) -> Result<Option<HeadlessExportTarget>, String>;
     /// `headlessExportWaiters` settle: `slides:headless-export-done`
-    fn headless_export_done_owned(&self, owner: &RenderOwner, cancel: &shell_contract::runtime::CancelToken, ok: bool, error: Option<String>) -> Result<(), String>;
+    fn headless_export_done_owned(
+        &self,
+        owner: &RenderOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        ok: bool,
+        error: Option<String>,
+    ) -> Result<(), String>;
     /// `clipboard.readBuffer(format)`
     fn read_clipboard_buffer(&self, format: &str) -> Result<Vec<u8>, EngineError>;
     /// `clipboard.writeBuffer(format, bytes)`
@@ -527,12 +735,20 @@ pub trait SlidesShell: Send + Sync {
     /// the prepare step of `slides:open` and friends, answered through
     /// `done` (from any thread) so a password prompt never blocks the core
     fn prepare_for_open_owned(
-        &self, parent: Option<WindowId>, path: &str, source: RenderOwner, destination: RenderOwner,
-        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        &self,
+        parent: Option<WindowId>,
+        path: &str,
+        source: RenderOwner,
+        destination: RenderOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
         done: Box<dyn FnOnce(Result<PreparedOpen, String>) + Send>,
     );
     fn prepare_for_recovery_open(
-        &self, target: shell_contract::ipc::RecoveryOpenTarget, snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot, path: String,
+        &self,
+        target: shell_contract::ipc::RecoveryOpenTarget,
+        snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
+        path: String,
         done: Box<dyn FnOnce(Result<PreparedOpen, String>) + Send>,
     );
     /// Prompt for and unlock the selected encrypted copy before navigation.
@@ -550,9 +766,39 @@ pub trait SlidesShell: Send + Sync {
         title: String,
         done: Box<dyn FnOnce(Result<Option<(Vec<u8>, String)>, String>) + Send>,
     );
-    fn export_pdf_owned(&self, op: &IpcValue, origin: &RenderOwner, destination: &RenderOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, participants: &[RenderOwner], additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost) -> PdfExportAnswer;
-    fn export_pdf_native_invocation(&self, op: &IpcValue, document: &shell_contract::ipc::NativeInvocationDocument, origin: &RenderOwner, destination: &RenderOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, participants: &[RenderOwner], additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost) -> PdfExportAnswer;
-    fn export_pdf_existing_document(&self, op: &IpcValue, destination: &shell_contract::ipc::NativeSaveDestination, participants: &[RenderOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost) -> PdfExportAnswer;
+    fn export_pdf_owned(
+        &self,
+        op: &IpcValue,
+        origin: &RenderOwner,
+        destination: &RenderOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        participants: &[RenderOwner],
+        additional: &[shell_contract::runtime::CancelToken],
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+    ) -> PdfExportAnswer;
+    fn export_pdf_native_invocation(
+        &self,
+        op: &IpcValue,
+        document: &shell_contract::ipc::NativeInvocationDocument,
+        origin: &RenderOwner,
+        destination: &RenderOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        participants: &[RenderOwner],
+        additional: &[shell_contract::runtime::CancelToken],
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+    ) -> PdfExportAnswer;
+    fn export_pdf_existing_document(
+        &self,
+        op: &IpcValue,
+        destination: &shell_contract::ipc::NativeSaveDestination,
+        participants: &[RenderOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+    ) -> PdfExportAnswer;
     /// the microphone permission question (`systemPreferences`), answered
     /// through `done`
     fn ask_microphone(&self, done: Box<dyn FnOnce(Result<bool, String>) + Send>);
@@ -562,15 +808,30 @@ pub trait SlidesShell: Send + Sync {
     fn display_of(&self, window: Option<WindowId>) -> Result<Display, EngineError>;
     /// Creates the audience window and captures its native owner at creation.
     /// The shell calls [`crate::slides::audience_closed`] when it closes.
-    fn open_audience_window(&self, display: Display, source: RenderOwner, cancel: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<(RenderOwner, WindowId)>, EngineError>) + Send>);
+    fn open_audience_window(
+        &self,
+        display: Display,
+        source: RenderOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<Option<(RenderOwner, WindowId)>, EngineError>) + Send>,
+    );
     /// closes the audience window (leaving simple fullscreen first)
     fn close_audience_window(&self, window: WindowId);
     /// the window title of a detached editor window (`win.setTitle`)
     fn set_window_title(&self, view: ViewId, title: &str);
     /// `takeGenerateHandoff('slides', view)`
-    fn take_generate_handoff_owned(&self, consumer: &RenderOwner, cancel: &shell_contract::runtime::CancelToken) -> Result<Option<TakenHandoff>, String>;
+    fn take_generate_handoff_owned(
+        &self,
+        consumer: &RenderOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+    ) -> Result<Option<TakenHandoff>, String>;
     /// `reportGenerateRunStarted('slides', view, paths)`: recorded
-    fn report_generate_run_started_owned(&self, consumer: &RenderOwner, cancel: &shell_contract::runtime::CancelToken, paths: &[String]) -> Result<bool, String>;
+    fn report_generate_run_started_owned(
+        &self,
+        consumer: &RenderOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        paths: &[String],
+    ) -> Result<bool, String>;
     /// `assertFileSaved(path)`: `Err` carries the message of the throw (the
     /// file is open with unsaved changes)
     fn assert_file_saved(&self, path: String, then: Box<dyn FnOnce(Result<(), String>) + Send>);

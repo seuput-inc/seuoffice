@@ -33,7 +33,11 @@ test('an edit made while save is awaiting its reply still prompts before close',
       if (!(handlers instanceof Map)) throw new Error('Electron invoke handlers are unavailable')
       const original: unknown = handlers.get('diagram:save')
       if (typeof original !== 'function') throw new Error('diagram save handler is not registered')
-      const state = { arrived: false, release: undefined as (() => void) | undefined, dirty: [] as boolean[] }
+      const state = {
+        arrived: false,
+        release: undefined as (() => void) | undefined,
+        dirty: [] as boolean[],
+      }
       Reflect.set(globalThis, '__diagramSaveRace', state)
       ipcMain.on('diagram:dirty-changed', (event, dirty: unknown) => {
         if (event.sender.id === id && typeof dirty === 'boolean') state.dirty.push(dirty)
@@ -56,15 +60,27 @@ test('an edit made while save is awaiting its reply still prompts before close',
     ])
     expect(first.ok, first.error).toBe(true)
     await expect.poll(() => statusText(page)).toBe('Unsaved changes')
-    await expect.poll(() => app.evaluate(() => {
-      const host = globalThis as typeof globalThis & { __diagramSaveRace: { dirty: boolean[] } }
-      return host.__diagramSaveRace.dirty.at(-1)
-    })).toBe(true)
+    await expect
+      .poll(() =>
+        app.evaluate(() => {
+          const host = globalThis as typeof globalThis & { __diagramSaveRace: { dirty: boolean[] } }
+          return host.__diagramSaveRace.dirty.at(-1)
+        }),
+      )
+      .toBe(true)
     await clickMenu(app, 'File', '^Save$')
-    await expect.poll(() => app.evaluate(() => {
-      const host = globalThis as typeof globalThis & { __diagramSaveRace: { arrived: boolean } }
-      return host.__diagramSaveRace.arrived
-    }), { timeout: 30_000 }).toBe(true)
+    await expect
+      .poll(
+        () =>
+          app.evaluate(() => {
+            const host = globalThis as typeof globalThis & {
+              __diagramSaveRace: { arrived: boolean }
+            }
+            return host.__diagramSaveRace.arrived
+          }),
+        { timeout: 30_000 },
+      )
+      .toBe(true)
     const savedSnapshot = await fileText(path)
     expect(savedSnapshot).toContain('Before save')
     expect(savedSnapshot).not.toContain('During save')
@@ -78,10 +94,12 @@ test('an edit made while save is awaiting its reply still prompts before close',
     ])
     expect(second.ok, second.error).toBe(true)
     expect(await liveText(page)).toContain('During save')
-    expect(await app.evaluate(() => {
-      const host = globalThis as typeof globalThis & { __diagramSaveRace: { dirty: boolean[] } }
-      return host.__diagramSaveRace.dirty.length
-    })).toBe(dirtyCount)
+    expect(
+      await app.evaluate(() => {
+        const host = globalThis as typeof globalThis & { __diagramSaveRace: { dirty: boolean[] } }
+        return host.__diagramSaveRace.dirty.length
+      }),
+    ).toBe(dirtyCount)
 
     await app.evaluate(() => {
       const host = globalThis as typeof globalThis & { __diagramSaveRace: { release?: () => void } }
@@ -89,14 +107,20 @@ test('an edit made while save is awaiting its reply still prompts before close',
       if (!state.release) throw new Error('save reply is not waiting')
       state.release()
     })
-    await expect.poll(() => app.evaluate(() => {
-      const host = globalThis as typeof globalThis & { __diagramSaveRace: { dirty: boolean[] } }
-      return host.__diagramSaveRace.dirty.length
-    })).toBeGreaterThan(dirtyCount)
-    expect(await app.evaluate(() => {
-      const host = globalThis as typeof globalThis & { __diagramSaveRace: { dirty: boolean[] } }
-      return host.__diagramSaveRace.dirty.at(-1)
-    })).toBe(true)
+    await expect
+      .poll(() =>
+        app.evaluate(() => {
+          const host = globalThis as typeof globalThis & { __diagramSaveRace: { dirty: boolean[] } }
+          return host.__diagramSaveRace.dirty.length
+        }),
+      )
+      .toBeGreaterThan(dirtyCount)
+    expect(
+      await app.evaluate(() => {
+        const host = globalThis as typeof globalThis & { __diagramSaveRace: { dirty: boolean[] } }
+        return host.__diagramSaveRace.dirty.at(-1)
+      }),
+    ).toBe(true)
     await expect.poll(() => statusText(page)).toBe('Unsaved changes')
     const [tab] = await diagramTabs(shell)
     if (!tab) throw new Error('diagram tab disappeared')
@@ -105,10 +129,14 @@ test('an edit made while save is awaiting its reply still prompts before close',
     expect((await diagramTabs(shell)).map((entry) => entry.id)).toContain(tab.id)
     expect(await fileText(path)).toBe(savedSnapshot)
   } finally {
-    await app.evaluate(() => {
-      const host = globalThis as typeof globalThis & { __diagramSaveRace?: { release?: () => void } }
-      host.__diagramSaveRace?.release?.()
-    }).catch(() => {})
+    await app
+      .evaluate(() => {
+        const host = globalThis as typeof globalThis & {
+          __diagramSaveRace?: { release?: () => void }
+        }
+        host.__diagramSaveRace?.release?.()
+      })
+      .catch(() => {})
     await closeAndSaveVideo(launched, 'diagram-save-race')
     rmSync(dir, { recursive: true, force: true })
   }

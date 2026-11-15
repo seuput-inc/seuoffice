@@ -11,7 +11,10 @@ it('passes the actual page and natural table width to the converter', async () =
   const signal = new AbortController().signal
   convert.mockResolvedValueOnce({ docx: new Uint8Array([1, 2]) })
   const result = await convertHtml('https://html-asset.localhost/chunk.html', driver, signal, true)
-  expect(convert).toHaveBeenCalledWith({ url: 'https://html-asset.localhost/chunk.html' }, driver, { naturalTableWidth: true, signal })
+  expect(convert).toHaveBeenCalledWith({ url: 'https://html-asset.localhost/chunk.html' }, driver, {
+    naturalTableWidth: true,
+    signal,
+  })
   expect(result).toEqual({ header: { $: 'b', k: 'u8', i: 0 }, buffers: ['AQI='] })
   expect(close).toHaveBeenCalledOnce()
 })
@@ -21,7 +24,11 @@ it('uses the ordinary table width behavior for HTML export', async () => {
   const signal = new AbortController().signal
   convert.mockResolvedValueOnce({ docx: new Uint8Array([3]) })
   await convertHtml('https://html-asset.localhost/document.html', driver, signal, false)
-  expect(convert).toHaveBeenCalledWith({ url: 'https://html-asset.localhost/document.html' }, driver, { naturalTableWidth: false, signal })
+  expect(convert).toHaveBeenCalledWith(
+    { url: 'https://html-asset.localhost/document.html' },
+    driver,
+    { naturalTableWidth: false, signal },
+  )
 })
 
 it('destroys the conversion page on abort even while conversion is pending', async () => {
@@ -30,7 +37,12 @@ it('destroys the conversion page on abort even while conversion is pending', asy
   const controller = new AbortController()
   const pending = Promise.withResolvers<{ docx: Uint8Array }>()
   convert.mockReturnValueOnce(pending.promise)
-  const result = convertHtml('https://html-asset.localhost/chunk.html', driver, controller.signal, true)
+  const result = convertHtml(
+    'https://html-asset.localhost/chunk.html',
+    driver,
+    controller.signal,
+    true,
+  )
   controller.abort()
   expect(close).toHaveBeenCalledOnce()
   pending.reject(new DOMException('cancelled', 'AbortError'))

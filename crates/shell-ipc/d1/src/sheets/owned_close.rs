@@ -20,83 +20,161 @@ impl Core {
     }
 
     pub(super) fn request_close_owned(
-        &self, view: ViewId, parent: Option<WindowId>, origin: NativeRequestOwner,
-        cancel: CancelToken, then: Then<bool>,
+        &self,
+        view: ViewId,
+        parent: Option<WindowId>,
+        origin: NativeRequestOwner,
+        cancel: CancelToken,
+        then: Then<bool>,
     ) {
         let captured = {
             let state = self.state.borrow();
-            state.tab(view).and_then(|tab| tab.native_owner.clone()
-                .map(|owner| (owner, tab.document.clone())))
+            state.tab(view).and_then(|tab| {
+                tab.native_owner
+                    .clone()
+                    .map(|owner| (owner, tab.document.clone()))
+            })
         };
         let Some((destination, document)) = captured else {
             return then(Err(thrown("The workbook has no captured native renderer")));
         };
-        let Some(effects) = self.env.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().cloned() else {
+        let Some(effects) = self
+            .env
+            .services
+            .hosts
+            .get::<shell_contract::hosts::OwnedEffectsHost>()
+            .cloned()
+        else {
             return then(Err(thrown("Native close effects are unavailable")));
         };
-        let destination = match destination.context.renderer()
+        let destination = match destination
+            .context
+            .renderer()
             .ok_or_else(|| "The workbook renderer is unavailable".to_owned())
-            .and_then(|generation| effects.capture_owner(view, generation)) {
-                Ok(owner) => owner,
-                Err(error) => return then(Err(thrown(error))),
-            };
-        let scope = match crate::owned_save::OwnedSave::new(origin, destination, cancel, document, effects) {
-            Ok(scope) => scope,
-            Err(error) => return then(Err(error)),
+            .and_then(|generation| effects.capture_owner(view, generation))
+        {
+            Ok(owner) => owner,
+            Err(error) => return then(Err(thrown(error))),
         };
+        let scope =
+            match crate::owned_save::OwnedSave::new(origin, destination, cancel, document, effects)
+            {
+                Ok(scope) => scope,
+                Err(error) => return then(Err(error)),
+            };
         let id = {
             let mut state = self.state.borrow_mut();
             state.next_token = state.next_token.wrapping_add(1);
             state.next_token
         };
         let mut subscriptions = Vec::new();
-        for loss in [scope.authority.loss_token(), scope.destination.loss_token(), Some(scope.cancel.clone())].into_iter().flatten() {
+        for loss in [
+            scope.authority.loss_token(),
+            scope.destination.loss_token(),
+            Some(scope.cancel.clone()),
+        ]
+        .into_iter()
+        .flatten()
+        {
             let pending = scope.pending.clone();
             let env = self.env.clone();
             subscriptions.push(loss.on_cancel(move || {
                 pending.cancel();
-                env.post(move |core| core.finish_owned_close(id, Err(thrown("The workbook close owner was released"))));
+                env.post(move |core| {
+                    core.finish_owned_close(
+                        id,
+                        Err(thrown("The workbook close owner was released")),
+                    )
+                });
             }));
         }
-        self.state.borrow_mut().owned_closes.insert(id, OwnedCloseWaiter { scope: scope.clone(), then, subscriptions });
-        if let Err(error) = scope.check() { return self.finish_owned_close(id, Err(error)); }
+        self.state.borrow_mut().owned_closes.insert(
+            id,
+            OwnedCloseWaiter {
+                scope: scope.clone(),
+                then,
+                subscriptions,
+            },
+        );
+        if let Err(error) = scope.check() {
+            return self.finish_owned_close(id, Err(error));
+        }
         let count = match scope.effect(|| Ok(self.pending_edit_count(view))) {
             Ok(count) => count,
             Err(error) => return self.finish_owned_close(id, Err(error)),
         };
         if main_core::sheets::close_guard::close_guard_decision(
-            count, !self.env.alive(view), self.state.borrow().shutdown.active() || self.env.app_shutting_down(),
-        ) == main_core::sheets::close_guard::CloseGuardDecision::Proceed {
+            count,
+            !self.env.alive(view),
+            self.state.borrow().shutdown.active() || self.env.app_shutting_down(),
+        ) == main_core::sheets::close_guard::CloseGuardDecision::Proceed
+        {
             return self.finish_owned_close(id, Ok(true));
         }
         let tm = &self.env.tm;
         let options = message_box(
-            "warning", tm.with("closeUnsavedMsg", &[("count", jscompat::JsonValue::Number(count))]),
+            "warning",
+            tm.with(
+                "closeUnsavedMsg",
+                &[("count", jscompat::JsonValue::Number(count))],
+            ),
             Some(tm.t("closeUnsavedDetail")),
-            vec![tm.t("menuSave"), tm.t("btnDontSave"), tm.t("btnCancel")], 0, Some(2),
+            vec![tm.t("menuSave"), tm.t("btnDontSave"), tm.t("btnCancel")],
+            0,
+            Some(2),
         );
         let env = self.env.clone();
         scope.message_dialog(
-            &self.env.dialogs, parent, options,
-            Box::new(move |result| env.post(move |core| core.after_owned_close_prompt(id, view, result))),
+            &self.env.dialogs,
+            parent,
+            options,
+            Box::new(move |result| {
+                env.post(move |core| core.after_owned_close_prompt(id, view, result))
+            }),
         );
     }
 
-    fn after_owned_close_prompt(&self, id: u64, view: ViewId, answer: Result<shell_contract::hosts::MessageBoxAnswer, String>) {
-        let scope = self.state.borrow().owned_closes.get(&id).map(|waiter| waiter.scope.clone());
+    fn after_owned_close_prompt(
+        &self,
+        id: u64,
+        view: ViewId,
+        answer: Result<shell_contract::hosts::MessageBoxAnswer, String>,
+    ) {
+        let scope = self
+            .state
+            .borrow()
+            .owned_closes
+            .get(&id)
+            .map(|waiter| waiter.scope.clone());
         let Some(scope) = scope else { return };
-        if let Err(error) = scope.check() { return self.finish_owned_close(id, Err(error)); }
-        let answer = match answer { Ok(answer) => answer.response, Err(error) => return self.finish_owned_close(id, Err(thrown(error))) };
+        if let Err(error) = scope.check() {
+            return self.finish_owned_close(id, Err(error));
+        }
+        let answer = match answer {
+            Ok(answer) => answer.response,
+            Err(error) => return self.finish_owned_close(id, Err(thrown(error))),
+        };
         match answer {
             2 => self.finish_owned_close(id, Ok(false)),
             1 => self.discard_owned_close(id, view, scope),
             _ => {
-                if self.state.borrow().shutdown.active() || self.env.app_shutting_down() || !self.env.alive(view) {
+                if self.state.borrow().shutdown.active()
+                    || self.env.app_shutting_down()
+                    || !self.env.alive(view)
+                {
                     return self.finish_owned_close(id, Ok(true));
                 }
                 let core = self.clone();
-                self.request_owned_save(view, SaveMode::Save, None, scope.authority.clone(), scope.pending.clone(), None, Some(scope.clone()),
-                    Box::new(move |result| core.finish_owned_close(id, result)));
+                self.request_owned_save(
+                    view,
+                    SaveMode::Save,
+                    None,
+                    scope.authority.clone(),
+                    scope.pending.clone(),
+                    None,
+                    Some(scope.clone()),
+                    Box::new(move |result| core.finish_owned_close(id, result)),
+                );
             }
         }
     }
@@ -104,8 +182,13 @@ impl Core {
     fn discard_owned_close(&self, id: u64, view: ViewId, scope: crate::owned_save::OwnedSave) {
         let snapshot = scope.effect(|| {
             let mut state = self.state.borrow_mut();
-            let sessions = state.tab(view).ok_or_else(|| thrown("The workbook tab was closed"))?
-                .sessions.iter().map(|(_, session)| session.clone()).collect::<Vec<_>>();
+            let sessions = state
+                .tab(view)
+                .ok_or_else(|| thrown("The workbook tab was closed"))?
+                .sessions
+                .iter()
+                .map(|(_, session)| session.clone())
+                .collect::<Vec<_>>();
             let recovery = state.recovery_of(view);
             recovery.discarded = true;
             Ok((sessions, recovery.written.clone(), recovery.held.clone()))

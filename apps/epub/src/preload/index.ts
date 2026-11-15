@@ -67,7 +67,8 @@ const core: EpubCoreApi = {
   save: (request) => ipcRenderer.invoke(EPUB_CHANNELS.save, request),
   setDirty: (dirty) => ipcRenderer.send(EPUB_CHANNELS.dirtyChanged, dirty),
   onSaveRequest: (handler) => listen<[SaveMode, string?]>(EPUB_CHANNELS.saveRequest, handler),
-  sendSaveRequestAck: (ok, requestId) => ipcRenderer.send(EPUB_CHANNELS.saveRequestAck, ok, requestId),
+  sendSaveRequestAck: (ok, requestId) =>
+    ipcRenderer.send(EPUB_CHANNELS.saveRequestAck, ok, requestId),
   onCloseSaveRequest: (handler) => listen<[]>(EPUB_CHANNELS.closeSaveRequest, handler),
   sendCloseSaveResult: (ok) => ipcRenderer.send(EPUB_CHANNELS.closeSaveResult, ok),
   onFileRenamed: (handler) => listen<[string]>(EPUB_CHANNELS.fileRenamed, handler),

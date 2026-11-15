@@ -2,11 +2,16 @@
 
 use std::sync::Arc;
 
-use super::{RecoveryCopyInfo, RecoveryIdentity, RecoveryPinnedRead, RecoveryPinnedSnapshot, pair_queue};
 use super::super::atomic_write::owned::{Admission, admitted};
+use super::{
+    RecoveryCopyInfo, RecoveryIdentity, RecoveryPinnedRead, RecoveryPinnedSnapshot, pair_queue,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CapturedPairKind { Published, LegacyObserved }
+pub enum CapturedPairKind {
+    Published,
+    LegacyObserved,
+}
 
 /// This is data evidence, not permission to perform a document or filesystem effect.
 #[derive(Clone)]
@@ -17,11 +22,21 @@ pub struct CapturedPair {
 }
 
 impl CapturedPair {
-    pub fn kind(&self) -> CapturedPairKind { self.kind }
-    pub fn bytes(&self) -> &[u8] { &self.snapshot.bytes }
-    pub fn info(&self, original_mtime: Option<f64>) -> Option<RecoveryCopyInfo> { self.snapshot.copy_info(original_mtime) }
-    pub fn snapshot(&self) -> &Arc<RecoveryPinnedSnapshot> { &self.snapshot }
-    pub fn queue(&self) -> &Arc<pair_queue::RecoveryPairQueue> { &self.queue }
+    pub fn kind(&self) -> CapturedPairKind {
+        self.kind
+    }
+    pub fn bytes(&self) -> &[u8] {
+        &self.snapshot.bytes
+    }
+    pub fn info(&self, original_mtime: Option<f64>) -> Option<RecoveryCopyInfo> {
+        self.snapshot.copy_info(original_mtime)
+    }
+    pub fn snapshot(&self) -> &Arc<RecoveryPinnedSnapshot> {
+        &self.snapshot
+    }
+    pub fn queue(&self) -> &Arc<pair_queue::RecoveryPairQueue> {
+        &self.queue
+    }
 }
 
 /// The callback runs on the identity worker. `admit` is the original saved
@@ -38,7 +53,14 @@ pub fn capture_saved_pair(
     };
     let captured_queue = queue.clone();
     let input = (root, identity, admit, done, captured_queue);
-    let job = |(root, identity, admit, done, queue): (String, RecoveryIdentity, Admission, Box<dyn FnOnce(Result<Option<CapturedPair>, String>) + Send>, Arc<pair_queue::RecoveryPairQueue>), turn: pair_queue::RecoveryPairTurn| {
+    let job = |(root, identity, admit, done, queue): (
+        String,
+        RecoveryIdentity,
+        Admission,
+        Box<dyn FnOnce(Result<Option<CapturedPair>, String>) + Send>,
+        Arc<pair_queue::RecoveryPairQueue>,
+    ),
+               turn: pair_queue::RecoveryPairTurn| {
         let result = (|| {
             turn.require_clean().map_err(|error| error.message)?;
             admitted(&admit, || ()).map_err(|error| error.message)?;
@@ -59,7 +81,11 @@ pub fn capture_saved_pair(
                 }
             };
             admitted(&admit, || ()).map_err(|error| error.message)?;
-            Ok(Some(CapturedPair { kind: CapturedPairKind::LegacyObserved, snapshot: Arc::new(snapshot), queue }))
+            Ok(Some(CapturedPair {
+                kind: CapturedPairKind::LegacyObserved,
+                snapshot: Arc::new(snapshot),
+                queue,
+            }))
         })();
         done(result);
         drop(turn);

@@ -53,7 +53,9 @@ impl SaveDirState {
     /// Publish worker cache changes without overwriting a concurrent resolver.
     /// A rejected cache publication never requires repeating filesystem work.
     pub fn publish_resolution(&mut self, before: &Self, resolved: Self) -> bool {
-        if self != before { return false; }
+        if self != before {
+            return false;
+        }
         *self = resolved;
         true
     }
@@ -82,7 +84,9 @@ fn missing_directory_levels(dir: &str) -> Vec<String> {
     while !is_directory(&current) {
         missing.push(current.clone());
         let parent = dirname(&current);
-        if parent == current { break; }
+        if parent == current {
+            break;
+        }
         current = parent;
     }
     missing
@@ -98,27 +102,45 @@ pub fn create_dir_levels(dir: &str) -> Result<(), NodeError> {
 
 /// Prepare/stat outside admission, then admit each actual mkdir separately.
 /// The outer error is lost authority; an inner error is the original mkdir failure.
-fn create_levels_authorized(dir: &str, admit: &mut crate::node_fs::FileAdmission<'_>) -> Result<Result<(), NodeError>, NodeError> {
+fn create_levels_authorized(
+    dir: &str,
+    admit: &mut crate::node_fs::FileAdmission<'_>,
+) -> Result<Result<(), NodeError>, NodeError> {
     for level in missing_directory_levels(dir).iter().rev() {
         let mut result = None;
-        admit(&mut || { result = Some(fs::create_dir(level).map_err(|error| node_error(&error, "mkdir", level))); })?;
+        admit(&mut || {
+            result =
+                Some(fs::create_dir(level).map_err(|error| node_error(&error, "mkdir", level)));
+        })?;
         match result {
             Some(Ok(())) => {}
             Some(Err(error)) => return Ok(Err(error)),
-            None => return Err(NodeError { code: None, message: "Directory admission did not execute mkdir".into() }),
+            None => {
+                return Err(NodeError {
+                    code: None,
+                    message: "Directory admission did not execute mkdir".into(),
+                });
+            }
         }
     }
     Ok(Ok(()))
 }
 
-pub fn create_dir_levels_authorized(dir: &str, admit: &mut crate::node_fs::FileAdmission<'_>) -> Result<(), NodeError> {
+pub fn create_dir_levels_authorized(
+    dir: &str,
+    admit: &mut crate::node_fs::FileAdmission<'_>,
+) -> Result<(), NodeError> {
     create_levels_authorized(dir, admit)?
 }
 
 fn create_levels_owned(dir: &str, admit: &Admission) -> Result<Result<(), NodeError>, NodeError> {
     for level in missing_directory_levels(dir).into_iter().rev() {
-        let result = admitted(admit, move || fs::create_dir(&level).map_err(|error| node_error(&error, "mkdir", &level)))?;
-        if let Err(error) = result { return Ok(Err(error)); }
+        let result = admitted(admit, move || {
+            fs::create_dir(&level).map_err(|error| node_error(&error, "mkdir", &level))
+        })?;
+        if let Err(error) = result {
+            return Ok(Err(error));
+        }
     }
     Ok(Ok(()))
 }
@@ -151,19 +173,37 @@ pub fn is_usable_save_dir(dir: &str) -> bool {
     writable(dir)
 }
 
-pub fn is_usable_save_dir_authorized(dir: &str, admit: &mut crate::node_fs::FileAdmission<'_>) -> Result<bool, NodeError> {
-    if !is_directory(dir) && create_levels_authorized(dir, admit)?.is_err() { return Ok(false); }
+pub fn is_usable_save_dir_authorized(
+    dir: &str,
+    admit: &mut crate::node_fs::FileAdmission<'_>,
+) -> Result<bool, NodeError> {
+    if !is_directory(dir) && create_levels_authorized(dir, admit)?.is_err() {
+        return Ok(false);
+    }
     Ok(writable(dir))
 }
 
 pub fn is_usable_save_dir_owned(dir: &str, admit: &Admission) -> Result<bool, NodeError> {
-    if !is_directory(dir) && create_levels_owned(dir, admit)?.is_err() { return Ok(false); }
+    if !is_directory(dir) && create_levels_owned(dir, admit)?.is_err() {
+        return Ok(false);
+    }
     Ok(writable(dir))
 }
 
-fn usable_now_with(state: &mut SaveDirState, dir: &str, now_ms: f64, usable: impl FnOnce() -> Result<bool, NodeError>) -> Result<bool, NodeError> {
+fn usable_now_with(
+    state: &mut SaveDirState,
+    dir: &str,
+    now_ms: f64,
+    usable: impl FnOnce() -> Result<bool, NodeError>,
+) -> Result<bool, NodeError> {
     let key = resolve(&[dir]);
-    if state.unusable_until.get(&key).is_some_and(|until| now_ms < *until) { return Ok(false); }
+    if state
+        .unusable_until
+        .get(&key)
+        .is_some_and(|until| now_ms < *until)
+    {
+        return Ok(false);
+    }
     if usable()? {
         state.unusable_until.remove(&key);
         return Ok(true);
@@ -195,11 +235,20 @@ pub fn resolve_default_save_dir(
     fallbacks: &[String],
     now_ms: f64,
 ) -> Result<String, Thrown> {
-    resolve_default_save_dir_with(state, configured, fallbacks, now_ms, |state, dir, now_ms| Ok(usable_now(state, dir, now_ms)))
+    resolve_default_save_dir_with(
+        state,
+        configured,
+        fallbacks,
+        now_ms,
+        |state, dir, now_ms| Ok(usable_now(state, dir, now_ms)),
+    )
 }
 
 fn resolve_default_save_dir_with(
-    state: &mut SaveDirState, configured: Option<&str>, fallbacks: &[String], now_ms: f64,
+    state: &mut SaveDirState,
+    configured: Option<&str>,
+    fallbacks: &[String],
+    now_ms: f64,
     mut usable: impl FnMut(&mut SaveDirState, &str, f64) -> Result<bool, NodeError>,
 ) -> Result<String, Thrown> {
     if let Some(configured) = configured.filter(|c| !c.is_empty())
@@ -230,17 +279,41 @@ fn resolve_default_save_dir_with(
 }
 
 pub fn resolve_default_save_dir_authorized(
-    state: &mut SaveDirState, configured: Option<&str>, fallbacks: &[String], now_ms: f64,
+    state: &mut SaveDirState,
+    configured: Option<&str>,
+    fallbacks: &[String],
+    now_ms: f64,
     admit: &mut crate::node_fs::FileAdmission<'_>,
 ) -> Result<String, Thrown> {
-    resolve_default_save_dir_with(state, configured, fallbacks, now_ms, |state, dir, now_ms| usable_now_with(state, dir, now_ms, || is_usable_save_dir_authorized(dir, admit)))
+    resolve_default_save_dir_with(
+        state,
+        configured,
+        fallbacks,
+        now_ms,
+        |state, dir, now_ms| {
+            usable_now_with(state, dir, now_ms, || {
+                is_usable_save_dir_authorized(dir, admit)
+            })
+        },
+    )
 }
 
 pub fn resolve_default_save_dir_owned(
-    state: &mut SaveDirState, configured: Option<&str>, fallbacks: &[String], now_ms: f64,
+    state: &mut SaveDirState,
+    configured: Option<&str>,
+    fallbacks: &[String],
+    now_ms: f64,
     admit: Admission,
 ) -> Result<String, Thrown> {
-    resolve_default_save_dir_with(state, configured, fallbacks, now_ms, |state, dir, now_ms| usable_now_with(state, dir, now_ms, || is_usable_save_dir_owned(dir, &admit)))
+    resolve_default_save_dir_with(
+        state,
+        configured,
+        fallbacks,
+        now_ms,
+        |state, dir, now_ms| {
+            usable_now_with(state, dir, now_ms, || is_usable_save_dir_owned(dir, &admit))
+        },
+    )
 }
 
 /// `defaultSaveDirFallback()`
@@ -275,7 +348,9 @@ pub fn configured_default_save_dir(
 }
 
 pub fn configured_default_save_dir_authorized(
-    app: &dyn PathProvider, state: &mut SaveDirState, now_ms: f64,
+    app: &dyn PathProvider,
+    state: &mut SaveDirState,
+    now_ms: f64,
     admit: &mut crate::node_fs::FileAdmission<'_>,
 ) -> Result<String, Thrown> {
     let (configured, fallbacks) = configured_save_inputs(app)?;
@@ -283,7 +358,10 @@ pub fn configured_default_save_dir_authorized(
 }
 
 pub fn configured_default_save_dir_owned(
-    app: &dyn PathProvider, state: &mut SaveDirState, now_ms: f64, admit: Admission,
+    app: &dyn PathProvider,
+    state: &mut SaveDirState,
+    now_ms: f64,
+    admit: Admission,
 ) -> Result<String, Thrown> {
     let (configured, fallbacks) = configured_save_inputs(app)?;
     resolve_default_save_dir_owned(state, configured.as_deref(), &fallbacks, now_ms, admit)
@@ -314,7 +392,10 @@ mod authorized_tests {
         let mut live = SaveDirState::new();
         let before = live.clone();
         let mut first = before.clone();
-        first.fallback = Some(SaveDirFallback { blocked: "/documents".into(), using: "/home".into() });
+        first.fallback = Some(SaveDirFallback {
+            blocked: "/documents".into(),
+            using: "/home".into(),
+        });
         first.unusable_until.insert("/documents".into(), 31_000.0);
         let mut second = before.clone();
         second.unusable_until.insert("/configured".into(), 32_000.0);
@@ -333,23 +414,37 @@ mod authorized_tests {
     impl Scratch {
         fn new() -> Self {
             let prefix = std::env::temp_dir().join("save-dir-authorized-");
-            Self(PathBuf::from(crate::node_fs::mkdtemp_random(&prefix.to_string_lossy()).unwrap()))
+            Self(PathBuf::from(
+                crate::node_fs::mkdtemp_random(&prefix.to_string_lossy()).unwrap(),
+            ))
         }
     }
     impl Drop for Scratch {
-        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
     }
-    fn expired() -> NodeError { NodeError { code: None, message: "owner expired".into() } }
+    fn expired() -> NodeError {
+        NodeError {
+            code: None,
+            message: "owner expired".into(),
+        }
+    }
 
     #[test]
     fn owned_revision_admission_is_rechecked_for_every_actual_mkdir() {
-        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
         let scratch = Scratch::new();
         let target = scratch.0.join("first/second/third");
         let calls = Arc::new(AtomicUsize::new(0));
         let observed = calls.clone();
         let admit: Admission = Arc::new(move |effect| {
-            if observed.fetch_add(1, Ordering::SeqCst) != 0 { return Err(expired()); }
+            if observed.fetch_add(1, Ordering::SeqCst) != 0 {
+                return Err(expired());
+            }
             Ok(effect())
         });
         let error = create_dir_levels_owned(&target.to_string_lossy(), &admit).unwrap_err();
@@ -361,7 +456,10 @@ mod authorized_tests {
 
     #[test]
     fn owned_admission_failure_never_becomes_an_unusable_folder_retry() {
-        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
         let scratch = Scratch::new();
         let configured = scratch.0.join("configured").to_string_lossy().into_owned();
         let fallback = scratch.0.join("fallback").to_string_lossy().into_owned();
@@ -373,7 +471,14 @@ mod authorized_tests {
         });
         let mut state = SaveDirState::new();
         let before = state.clone();
-        let error = resolve_default_save_dir_owned(&mut state, Some(&configured), &[fallback.clone()], 0.0, admit).unwrap_err();
+        let error = resolve_default_save_dir_owned(
+            &mut state,
+            Some(&configured),
+            &[fallback.clone()],
+            0.0,
+            admit,
+        )
+        .unwrap_err();
         assert_eq!(error, Thrown("owner expired".into()));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(state, before);
@@ -391,7 +496,17 @@ mod authorized_tests {
         let fallback = scratch.0.join("fallback").to_string_lossy().into_owned();
         let admit: Admission = Arc::new(|effect| Ok(effect()));
         let mut state = SaveDirState::new();
-        assert_eq!(resolve_default_save_dir_owned(&mut state, Some(&configured), &[fallback.clone()], 0.0, admit).unwrap(), fallback);
+        assert_eq!(
+            resolve_default_save_dir_owned(
+                &mut state,
+                Some(&configured),
+                &[fallback.clone()],
+                0.0,
+                admit
+            )
+            .unwrap(),
+            fallback
+        );
         assert!(state.unusable_until.contains_key(&resolve(&[&configured])));
         assert!(std::path::Path::new(&fallback).is_dir());
     }
@@ -403,7 +518,9 @@ mod authorized_tests {
         let mut calls = 0;
         let result = create_dir_levels_authorized(&target.to_string_lossy(), &mut |effect| {
             calls += 1;
-            if calls > 1 { return Err(expired()); }
+            if calls > 1 {
+                return Err(expired());
+            }
             effect();
             Ok(())
         });
@@ -420,10 +537,16 @@ mod authorized_tests {
         let fallback = scratch.0.join("fallback").to_string_lossy().into_owned();
         let mut state = SaveDirState::new();
         let mut calls = 0;
-        let result = resolve_default_save_dir_authorized(&mut state, Some(&configured), &[fallback.clone()], 0.0, &mut |_| {
-            calls += 1;
-            Err(expired())
-        });
+        let result = resolve_default_save_dir_authorized(
+            &mut state,
+            Some(&configured),
+            &[fallback.clone()],
+            0.0,
+            &mut |_| {
+                calls += 1;
+                Err(expired())
+            },
+        );
         assert_eq!(result.unwrap_err(), Thrown("owner expired".into()));
         assert_eq!(calls, 1);
         assert!(!PathBuf::from(&configured).exists());
@@ -437,12 +560,23 @@ mod authorized_tests {
         let blocked = scratch.0.join("blocked");
         fs::write(&blocked, b"not a directory").unwrap();
         let configured = blocked.join("child").to_string_lossy().into_owned();
-        let fallback = scratch.0.join("usable/child").to_string_lossy().into_owned();
+        let fallback = scratch
+            .0
+            .join("usable/child")
+            .to_string_lossy()
+            .into_owned();
         let mut state = SaveDirState::new();
-        let path = resolve_default_save_dir_authorized(&mut state, Some(&configured), &[fallback.clone()], 0.0, &mut |effect| {
-            effect();
-            Ok(())
-        }).unwrap();
+        let path = resolve_default_save_dir_authorized(
+            &mut state,
+            Some(&configured),
+            &[fallback.clone()],
+            0.0,
+            &mut |effect| {
+                effect();
+                Ok(())
+            },
+        )
+        .unwrap();
         assert_eq!(path, fallback);
         assert!(PathBuf::from(path).is_dir());
         assert!(state.unusable_until.contains_key(&resolve(&[&configured])));
@@ -455,7 +589,11 @@ mod authorized_tests {
         fs::create_dir(scratch.0.join("actual")).unwrap();
         std::os::unix::fs::symlink(scratch.0.join("actual"), scratch.0.join("alias")).unwrap();
         let path = scratch.0.join("alias/child");
-        create_dir_levels_authorized(&path.to_string_lossy(), &mut |effect| { effect(); Ok(()) }).unwrap();
+        create_dir_levels_authorized(&path.to_string_lossy(), &mut |effect| {
+            effect();
+            Ok(())
+        })
+        .unwrap();
         assert!(scratch.0.join("actual/child").is_dir());
     }
 }

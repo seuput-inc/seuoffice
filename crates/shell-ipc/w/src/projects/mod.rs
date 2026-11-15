@@ -1777,7 +1777,8 @@ impl Projects {
                         .queue_chat_io(ChatContinuation::Initial { window, selection }, reply);
                 }
                 Ok(IpcStep::ListChats { window, project_id }) => {
-                    return self.queue_chat_io(ChatContinuation::List { window, project_id }, reply);
+                    return self
+                        .queue_chat_io(ChatContinuation::List { window, project_id }, reply);
                 }
                 Ok(IpcStep::OpenChat {
                     sender,
@@ -1807,7 +1808,8 @@ impl Projects {
                     return self.queue_chat_io(ChatContinuation::New { sender, project_id }, reply);
                 }
                 Ok(IpcStep::DeleteChat { sender, chat_ref }) => {
-                    return self.queue_chat_io(ChatContinuation::Delete { sender, chat_ref }, reply);
+                    return self
+                        .queue_chat_io(ChatContinuation::Delete { sender, chat_ref }, reply);
                 }
                 Ok(IpcStep::ChatAppend(request)) => {
                     return self.queue_chat_io(ChatContinuation::Append(request), reply);

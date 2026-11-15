@@ -501,7 +501,7 @@ impl World {
             events: None,
             registrar: None,
             owners: None,
-            cleanup_lifetime: shell_contract::runtime::CancelToken::new(),
+            cleanup_lifetime: shell_contract::runtime::CancelToken::default(),
             startup_issuer: None,
             startup_generation: None,
             startup_error: None,
@@ -3653,7 +3653,7 @@ impl TabHooks for Hooks {
             ));
         };
         let created = shell_contract::runtime::RendererGeneration::new();
-        let pending = shell_contract::runtime::CancelToken::new();
+        let pending = shell_contract::runtime::CancelToken::default();
         let mut view = None;
         let mut actor_token = None;
         let (name, args, kind) = create_call(&ViewSpec::Sheets {
@@ -3975,7 +3975,6 @@ impl TabHooks for Hooks {
         let ready = fixture_ready(&self.0, view, view);
         let binding = ready.reservation.clone();
         let gate = Arc::new(FixturePreclose::default());
-        let cleanup = fixture_preclose_cleanup(&self.0, view, gate.clone());
         let close = fixture_cleanup(&self.0, view);
         let installer: super::host::GeneratedPrecloseInstaller =
             Box::new(move |barrier, failure| gate.install(close, barrier, failure));
@@ -3984,6 +3983,8 @@ impl TabHooks for Hooks {
         let start =
             Box::new(
                 move |adopt: super::host::GeneratedManagerAdoption,
+                      register: super::host::GeneratedManagerRegistration,
+                      cleanup: ViewCreationCleanup,
                       done: Box<
                     dyn FnOnce(ViewCreationResult<super::host::GeneratedViewCommit>),
                 >| {
@@ -4092,6 +4093,29 @@ impl TabHooks for Hooks {
                             }));
                         }
                     };
+                    let mut published = None;
+                    let registered = synthetic_created_effect(
+                        &source, &[target.clone()], &generation, &cancel, &pending, || {
+                            closure.reservation.with_owner(&closure.owner, |transition| {
+                                register(&target, transition, &mut || {
+                                    published = Some(target.clone());
+                                    Ok(())
+                                })
+                            })
+                        },
+                    ).and_then(|result| result.map_err(TabError));
+                    if let Err(error) = registered {
+                        return done(Err(ViewCreationFailure {
+                            error,
+                            cleanup: ViewCreationCleanupState::Pending(cleanup),
+                        }));
+                    }
+                    let Some(target) = published else {
+                        return done(Err(ViewCreationFailure {
+                            error: TabError("Synthetic generated registration was not published".into()),
+                            cleanup: ViewCreationCleanupState::Pending(cleanup),
+                        }));
+                    };
                     match super::host::GeneratedViewCommit::loaded(target.clone(), generation) {
                         Ok(commit) => {
                             let mut reservation = ready.reservation;
@@ -4115,6 +4139,7 @@ impl TabHooks for Hooks {
             view,
             created,
             binding,
+            spare_actor: None,
             installer,
             start,
         })
@@ -4206,7 +4231,7 @@ impl TabHooks for Hooks {
         let start =
             Box::new(
                 move |adopt: super::host::GeneratedManagerAdoption,
-                      _register: super::host::GeneratedManagerRegistration,
+                      register: super::host::GeneratedManagerRegistration,
                       cleanup: ViewCreationCleanup,
                       done: Box<
                     dyn FnOnce(ViewCreationResult<super::host::GeneratedViewCommit>),
@@ -4246,6 +4271,29 @@ impl TabHooks for Hooks {
                     prior.state.borrow_mut().proof = Some(proof);
                     rollback.borrow_mut().push(prior.clone());
                     rollback.borrow_mut().push(successor_receipt);
+                    let mut published = None;
+                    let registered = synthetic_created_effect(
+                        &source, &participants, &generation, &cancel, &pending, || {
+                            closure.reservation.with_owner(&successor, |transition| {
+                                register(&target, transition, &mut || {
+                                    published = Some(target.clone());
+                                    Ok(())
+                                })
+                            })
+                        },
+                    ).and_then(|result| result.map_err(TabError));
+                    if let Err(error) = registered {
+                        return done(Err(ViewCreationFailure {
+                            error,
+                            cleanup: ViewCreationCleanupState::Pending(cleanup),
+                        }));
+                    }
+                    let Some(target) = published else {
+                        return done(Err(ViewCreationFailure {
+                            error: TabError("Synthetic spare registration was not published".into()),
+                            cleanup: ViewCreationCleanupState::Pending(cleanup),
+                        }));
+                    };
                     if let Err(error) = seed_plan.after_commit(&cancel) {
                         return done(Err(ViewCreationFailure {
                             error: TabError(error),
@@ -6813,7 +6861,7 @@ fn install_registered_shell(
         Vec::new(),
         false,
         owner,
-        shell_contract::runtime::CancelToken::new(),
+        shell_contract::runtime::CancelToken::default(),
     );
     state.install_spare_creator_authority(root)?;
     let mut fake = world.0.w();
@@ -7005,6 +7053,91 @@ mod command_tests {
             job();
         }
     }
+    #[test]
+    fn canceled_generated_open_retires_its_view_and_preserves_existing_tab() {
+        use main_core::packages::electron_utils::generate_handoff::GenerateHandoffTarget;
+        use shell_contract::runtime::{CancelToken, RendererGeneration};
+
+        let views = Arc::new(RegisteredViews::default());
+        let shell = shell_contract::ipc::Sender {
+            view: ViewId(1),
+            window: WindowId(1),
+            surface: Surface::Shell,
+        };
+        let shell_generation = RendererGeneration::new();
+        views.0.lock().unwrap().insert(shell.view, (shell, shell_generation.clone()));
+        let registrar_views = views.clone();
+        let registrar: ProbeViewRegistrar = Arc::new(move |sender, generation| {
+            registrar_views.0.lock().unwrap().insert(sender.view, (sender, generation));
+            Ok(())
+        });
+        let mut hosts = Hosts::default();
+        probe_hosts(&mut hosts, &json!({}));
+        hosts.insert(registrar);
+        let ui = Arc::new(QueuedUi::default());
+        let services = shell_contract::hosts::synthetic::SyntheticOwnedEffects::install(Services {
+            ui: ui.clone(),
+            core: Arc::new(TestThread),
+            workers: Arc::new(TestWorkers),
+            events: Arc::new(TestEvents),
+            views,
+            paths: Arc::new(TestPaths),
+            hosts: Arc::new(hosts),
+        });
+        let state = probe_state(&services, Rc::new(Provided::default())).unwrap();
+        let fake = services.hosts.get::<Arc<WorldBox>>().unwrap().0.clone();
+        let effects = services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap();
+        let owner = effects.capture_owner(shell.view, &shell_generation).unwrap();
+        let request = || super::super::open::GeneratedEditorOpen::Generate {
+            target: GenerateHandoffTarget::Slides,
+            handoff: json!({"text": "fixture"}),
+            opener: None,
+        };
+        let first = Rc::new(std::cell::RefCell::new(None));
+        let first_result = first.clone();
+        state.open_generated_editor_owned(
+            request(), owner.clone(), CancelToken::default(),
+            Box::new(move |result| {
+                *first_result.borrow_mut() = Some(result.map(|tab| (tab.tab_id().to_owned(), tab.view())));
+            }),
+        );
+        for _ in 0..64 {
+            if first.borrow().is_some() { break; }
+            ui.run();
+        }
+        let (existing_id, existing_view) = first.borrow_mut().take().unwrap().unwrap();
+        let existing_generation = services.views.renderer_generation(existing_view).unwrap();
+        let cancel = CancelToken::default();
+        let second = Rc::new(std::cell::RefCell::new(None));
+        let second_result = second.clone();
+        state.open_generated_editor_owned(
+            request(), owner, cancel.clone(),
+            Box::new(move |result| *second_result.borrow_mut() = Some(result.map(|tab| tab.view()))),
+        );
+        let generated = {
+            let inner = state.inner.borrow();
+            let manager = inner.manager.as_ref().unwrap();
+            let active = manager.list().into_iter().find(|tab| tab.active).unwrap();
+            assert_ne!(active.id, existing_id);
+            manager.web_contents_for_tab(&active.id).unwrap()
+        };
+        assert!(second.borrow().is_none());
+        cancel.cancel();
+        for _ in 0..64 {
+            ui.run();
+            state.drain_creation_cleanups();
+        }
+        assert!(matches!(&*second.borrow(), Some(Err(_))));
+        assert!(fake.view_destroyed(generated));
+        assert!(!fake.w().generated.contains_key(&generated));
+        let inner = state.inner.borrow();
+        let manager = inner.manager.as_ref().unwrap();
+        assert!(manager.list().iter().all(|tab| manager.web_contents_for_tab(&tab.id) != Some(generated)));
+        assert_eq!(manager.web_contents_for_tab(&existing_id), Some(existing_view));
+        assert!(existing_generation.is_active());
+        assert!(!fake.view_destroyed(existing_view));
+    }
+
     struct TestEvents;
     impl shell_contract::ipc::EventSink for TestEvents {
         fn emit(
@@ -7177,18 +7310,18 @@ mod command_tests {
         let shell_owner = effects
             .capture_owner(shell.view, &shell_generation)
             .unwrap();
-        let binding = NativeInvocationIssuer::new(CancelToken::new())
+        let binding = NativeInvocationIssuer::new(CancelToken::default())
             .issue_existing_document_save(
                 Surface::Docs,
                 shell.view,
                 NativeSaveSelection::ExactPath(path.clone()),
                 shell_owner.clone(),
-                CancelToken::new(),
+                CancelToken::default(),
             )
             .unwrap();
         let selection = NativeSaveDestination::from_exact_selection(binding).unwrap();
-        let cancel = CancelToken::new();
-        let pending = CancelToken::new();
+        let cancel = CancelToken::default();
+        let pending = CancelToken::default();
         let parent = File::open(&dir).unwrap();
         let write = effects
             .begin_native_direct_write(
@@ -7268,7 +7401,7 @@ mod command_tests {
         ));
         assert_eq!(ready.view.document.target().view(), view);
         assert_eq!(rollback.borrow().len(), 1);
-        let cancelled = CancelToken::new();
+        let cancelled = CancelToken::default();
         let refused = captured
             .prepare_fresh(
                 &ViewSpec::Docs { path: None },
@@ -7659,7 +7792,7 @@ mod command_tests {
                 })
             })
             .unwrap();
-        plan.after_commit(&shell_contract::runtime::CancelToken::new())
+        plan.after_commit(&shell_contract::runtime::CancelToken::default())
             .unwrap();
         assert!(fake.w().generated.contains_key(&view));
         let done = Rc::new(std::cell::RefCell::new(None));

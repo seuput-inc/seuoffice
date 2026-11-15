@@ -275,7 +275,12 @@ pub fn hold_ai_run<D: Deck<S>, S: Clone + SameSnapshot, O: Clone, R>(
     review: &mut AiReview<S>,
     owner: f64,
 ) -> Result<bool, D::Error> {
-    let Some(run) = review.run.as_ref().filter(|run| run.owner == owner).cloned() else {
+    let Some(run) = review
+        .run
+        .as_ref()
+        .filter(|run| run.owner == owner)
+        .cloned()
+    else {
         return Ok(false);
     };
     let changed = !same_stack(&session.undo_stack, &run.undo)

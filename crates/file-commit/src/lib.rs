@@ -212,6 +212,13 @@ pub enum DirectOwnedWriteOutcome {
     WrittenWithoutReceipt { error:io::Error,bytes:Vec<u8> },
 }
 
+/// A completed write or a failed write retaining its original descriptor and progress.
+#[must_use]
+pub enum DirectOwnedWriteAttempt {
+    Completed(DirectOwnedWriteOutcome),
+    Partial { error: io::Error, partial: PartialDirectWrite },
+}
+
 /// An interrupted descriptor write retains its exact bytes and progress.
 pub struct PartialDirectWrite { direct: DirectWrite, bytes: Vec<u8>, written: usize }
 /// Retains an abandoned partial-write descriptor without permitting a fresh
@@ -229,25 +236,25 @@ impl PartialDirectWrite {
     pub fn into_parts(self) -> (AbandonedDirectWrite, Vec<u8>, usize) {
         (AbandonedDirectWrite { _direct: self.direct }, self.bytes, self.written)
     }
-    pub fn resume(mut self) -> Result<DirectOwnedWriteOutcome, (io::Error, Self)> {
+    pub fn resume(mut self) -> DirectOwnedWriteAttempt {
         use std::io::Write;
         while self.written < self.bytes.len() {
             match self.direct.file.write(&self.bytes[self.written..]) {
-                Ok(0) => return Err((io::Error::new(io::ErrorKind::WriteZero, "failed to write the saved output"), self)),
+                Ok(0) => return DirectOwnedWriteAttempt::Partial { error: io::Error::new(io::ErrorKind::WriteZero, "failed to write the saved output"), partial: self },
                 Ok(count) => self.written += count,
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                Err(error) => return Err((error, self)),
+                Err(error) => return DirectOwnedWriteAttempt::Partial { error, partial: self },
             }
         }
         match self.direct.finish() {
-            DirectWriteOutcome::Committed(receipt) => Ok(DirectOwnedWriteOutcome::Committed(CommittedWriteSnapshot { receipt, bytes: self.bytes })),
-            DirectWriteOutcome::WrittenWithoutReceipt(error) => Ok(DirectOwnedWriteOutcome::WrittenWithoutReceipt { error, bytes: self.bytes }),
+            DirectWriteOutcome::Committed(receipt) => DirectOwnedWriteAttempt::Completed(DirectOwnedWriteOutcome::Committed(CommittedWriteSnapshot { receipt, bytes: self.bytes })),
+            DirectWriteOutcome::WrittenWithoutReceipt(error) => DirectOwnedWriteAttempt::Completed(DirectOwnedWriteOutcome::WrittenWithoutReceipt { error, bytes: self.bytes }),
         }
     }
 }
 
 impl DirectWrite {
-    pub fn write_owned(self,bytes:Vec<u8>)->Result<DirectOwnedWriteOutcome,(io::Error,PartialDirectWrite)> {
+    pub fn write_owned(self,bytes:Vec<u8>)->DirectOwnedWriteAttempt {
         PartialDirectWrite { direct: self, bytes, written: 0 }.resume()
     }
     /// A write error is distinct from a completed write whose proof failed.
@@ -499,7 +506,7 @@ impl PrivateDirectory {
         for _ in 0..16 {
             let name = std::ffi::CString::new(next_name()?).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid staging name"))?;
             // SAFETY: the parent handle and generated name remain live for openat.
-            let fd = unsafe { libc::openat(self.0.parent.as_raw_fd(), name.as_ptr(), libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC, mode as libc::mode_t) };
+            let fd = unsafe { libc::openat(self.0.parent.as_raw_fd(), name.as_ptr(), libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC, mode as libc::c_uint) };
             if fd < 0 {
                 let error = io::Error::last_os_error();
                 if error.kind() == io::ErrorKind::AlreadyExists { continue; }
@@ -803,5 +810,42 @@ impl PreparedCommit {
         let name=self.receipt.name.to_str().ok_or_else(||io::Error::new(io::ErrorKind::InvalidInput,"non-Unicode destination name"))?;
         rename_handle(&self.leaf,&self.receipt.parent,name,self.receipt.mode==PublicationMode::Replace)?;
         Ok(FileCommitReceipt(self.receipt))
+    }
+}
+
+#[cfg(test)]
+mod direct_write_tests {
+    use super::*;
+
+    #[test]
+    fn failed_owned_write_retains_bytes_and_descriptor_for_retry() {
+        let path = std::env::current_exe().unwrap();
+        let file = File::open(&path).unwrap();
+        let direct = DirectWrite {
+            parent: file.try_clone().unwrap(),
+            file,
+            name: path.file_name().unwrap().to_owned(),
+            path,
+            read: ReadDisposition::Readable,
+            read_error: None,
+        };
+        let bytes = b"retained output".to_vec();
+        let pointer = bytes.as_ptr();
+        let partial = match direct.write_owned(bytes) {
+            DirectOwnedWriteAttempt::Partial { partial, .. } => partial,
+            DirectOwnedWriteAttempt::Completed(_) => panic!("read-only descriptor accepted a write"),
+        };
+        assert_eq!(partial.written(), 0);
+        assert_eq!(partial.bytes(), b"retained output");
+        assert_eq!(partial.bytes().as_ptr(), pointer);
+        let partial = match partial.resume() {
+            DirectOwnedWriteAttempt::Partial { partial, .. } => partial,
+            DirectOwnedWriteAttempt::Completed(_) => panic!("retry unexpectedly completed"),
+        };
+        assert_eq!(partial.written(), 0);
+        let (_descriptor, bytes, written) = partial.into_parts();
+        assert_eq!(bytes.as_ptr(), pointer);
+        assert_eq!(bytes, b"retained output");
+        assert_eq!(written, 0);
     }
 }

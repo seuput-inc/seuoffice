@@ -86,14 +86,23 @@ pub fn write_app_settings_guarded(
     }
     let temp_path = format!("{path}.{}.{}.tmp", std::process::id(), random_uuid());
     let text = json_stringify_pretty(&JsonValue::Object(settings), 2);
-    let mut file = OpenOptions::new().write(true).create_new(true).open(&temp_path)
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp_path)
         .map_err(|error| node_error(&error, "open", &temp_path))?;
-    let staged = file.write_all(text.as_bytes())
+    let staged = file
+        .write_all(text.as_bytes())
         .map_err(|error| node_error(&error, "write", &temp_path))
-        .and_then(|()| file.sync_all().map_err(|error| node_error(&error, "fsync", &temp_path)));
+        .and_then(|()| {
+            file.sync_all()
+                .map_err(|error| node_error(&error, "fsync", &temp_path))
+        });
     drop(file);
     let written = staged.and_then(|()| commit(&temp_path, path));
-    if written.is_err() { let _ = fs::remove_file(&temp_path); }
+    if written.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
     written
 }
 
@@ -328,7 +337,10 @@ pub fn read_agent_project_pref(path: &str, folder: &str) -> AgentProjectPref {
     read_agent_project_pref_from_settings(&read_app_settings(path), folder)
 }
 
-pub fn read_agent_project_pref_from_settings(settings: &Settings, folder: &str) -> AgentProjectPref {
+pub fn read_agent_project_pref_from_settings(
+    settings: &Settings,
+    folder: &str,
+) -> AgentProjectPref {
     let prefs = normalize_agent_project_prefs(settings.get(AGENT_PROJECT_PREFS_KEY));
     let stored = prefs.get(&project_key(&prefs, folder));
     with_defaults(stored)
@@ -342,7 +354,11 @@ pub fn write_agent_project_pref(
 ) -> Result<AgentProjectPref, SettingsError> {
     let mut settings = read_app_settings(path);
     let result = apply_agent_project_pref(&mut settings, folder, patch)?;
-    write_app_setting(path, AGENT_PROJECT_PREFS_KEY, settings.get(AGENT_PROJECT_PREFS_KEY).cloned())?;
+    write_app_setting(
+        path,
+        AGENT_PROJECT_PREFS_KEY,
+        settings.get(AGENT_PROJECT_PREFS_KEY).cloned(),
+    )?;
     Ok(result)
 }
 
@@ -729,7 +745,12 @@ pub fn write_projects_settings_guarded(
     value: Option<&JsonValue>,
     commit: impl FnOnce(&str, &str) -> Result<(), NodeError>,
 ) -> Result<(), NodeError> {
-    write_app_setting_guarded(path, PROJECTS_SETTING_KEY, Some(normalize_projects_settings(value).to_json()), commit)
+    write_app_setting_guarded(
+        path,
+        PROJECTS_SETTING_KEY,
+        Some(normalize_projects_settings(value).to_json()),
+        commit,
+    )
 }
 
 /// `updateProjectsSettings(path, change)`
@@ -769,10 +790,17 @@ mod transaction_tests {
         settings.set("theme", JsonValue::String("dark".into()));
         let mut patch = JsObject::new();
         patch.set("codexNetwork", JsonValue::Bool(true));
-        let updated = apply_agent_project_pref(&mut settings, &folder, &JsonValue::Object(patch)).unwrap();
+        let updated =
+            apply_agent_project_pref(&mut settings, &folder, &JsonValue::Object(patch)).unwrap();
         assert!(updated.codex_network);
-        assert_eq!(read_agent_project_pref_from_settings(&settings, &folder), updated);
-        assert_eq!(settings.get("theme"), Some(&JsonValue::String("dark".into())));
+        assert_eq!(
+            read_agent_project_pref_from_settings(&settings, &folder),
+            updated
+        );
+        assert_eq!(
+            settings.get("theme"),
+            Some(&JsonValue::String("dark".into()))
+        );
     }
 
     #[test]
@@ -785,7 +813,11 @@ mod transaction_tests {
         for refused in [true, false] {
             let result = write_projects_settings_guarded(path, None, |temp, dest| {
                 if refused {
-                    Err(node_error(&std::io::Error::new(std::io::ErrorKind::PermissionDenied, "revoked"), "rename", dest))
+                    Err(node_error(
+                        &std::io::Error::new(std::io::ErrorKind::PermissionDenied, "revoked"),
+                        "rename",
+                        dest,
+                    ))
                 } else {
                     fs::rename(temp, dir.join("missing").join("settings.json"))
                         .map_err(|error| node_error2(&error, "rename", temp, dest))
@@ -805,10 +837,20 @@ mod transaction_tests {
         let target = dir.join("settings.json");
         fs::write(&target, br#"{"theme":"dark"}"#).unwrap();
         let path = target.to_str().unwrap();
-        update_projects_settings_guarded(path, |settings| {
-            settings.install_id = "0123456789abcdef".into();
-        }, |temp, dest| fs::rename(temp, dest).map_err(|error| node_error2(&error, "rename", temp, dest))).unwrap();
-        assert_eq!(read_app_settings(path).get("theme"), Some(&JsonValue::String("dark".into())));
+        update_projects_settings_guarded(
+            path,
+            |settings| {
+                settings.install_id = "0123456789abcdef".into();
+            },
+            |temp, dest| {
+                fs::rename(temp, dest).map_err(|error| node_error2(&error, "rename", temp, dest))
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            read_app_settings(path).get("theme"),
+            Some(&JsonValue::String("dark".into()))
+        );
         assert_eq!(read_projects_settings(path).install_id, "0123456789abcdef");
         fs::remove_dir_all(dir).unwrap();
     }
@@ -829,7 +871,11 @@ mod transaction_tests {
             write_projects_settings_guarded(worker_target.to_str().unwrap(), None, |temp, dest| {
                 let live = worker_gate.lock().unwrap();
                 if !*live {
-                    return Err(node_error(&std::io::Error::new(std::io::ErrorKind::PermissionDenied, "revoked"), "rename", dest));
+                    return Err(node_error(
+                        &std::io::Error::new(std::io::ErrorKind::PermissionDenied, "revoked"),
+                        "rename",
+                        dest,
+                    ));
                 }
                 entered_tx.send(()).unwrap();
                 release_rx.recv().unwrap();
@@ -843,8 +889,15 @@ mod transaction_tests {
         worker.join().unwrap().unwrap();
         revoke.join().unwrap();
         assert!(!*gate.lock().unwrap());
-        assert_eq!(read_app_settings(target.to_str().unwrap()).get("theme"), Some(&JsonValue::String("dark".into())));
-        assert!(read_app_settings(target.to_str().unwrap()).get(PROJECTS_SETTING_KEY).is_some());
+        assert_eq!(
+            read_app_settings(target.to_str().unwrap()).get("theme"),
+            Some(&JsonValue::String("dark".into()))
+        );
+        assert!(
+            read_app_settings(target.to_str().unwrap())
+                .get(PROJECTS_SETTING_KEY)
+                .is_some()
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 }

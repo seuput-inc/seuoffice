@@ -1926,7 +1926,9 @@ export interface PdfApi {
   setDirty(dirty: boolean): void
   /** Main process asks for a save (close prompt, menu Save, export flows) and waits for sendCloseSaveResult.
    *  flushAll: success must mean everything on screen is in the file, including the form field whose card is open */
-  onCloseSaveRequest(handler: (opts: { flushAll: boolean; ownedSaveId?: string }) => void): () => void
+  onCloseSaveRequest(
+    handler: (opts: { flushAll: boolean; ownedSaveId?: string }) => void,
+  ): () => void
   sendCloseSaveResult(ok: boolean, ownedSaveId?: string): void
   /** Shell menu Save As → renderer writes pending edits to targetPath only (original untouched) and replies via sendSaveAsResult */
   onSaveAsRequest(handler: (targetPath: string, ownedSaveId?: string) => void): () => void

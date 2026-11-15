@@ -17,7 +17,8 @@ worker.onmessage = async ({ data }) => {
       fetch(new URL('./office.wasm', import.meta.url)),
       fetch(new URL('./rhwp.wasm', import.meta.url)),
     ])
-    if (!office.ok || !rhwp.ok) throw new Error('Hangul conversion engine assets could not be loaded')
+    if (!office.ok || !rhwp.ok)
+      throw new Error('Hangul conversion engine assets could not be loaded')
     await initEngine(office)
     const engine = await HwpEngine.start(new Uint8Array(await rhwp.arrayBuffer()))
     const result = await docxToHwp(new Uint8Array(data.docx), data.format, engine)

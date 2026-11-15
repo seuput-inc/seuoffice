@@ -95,8 +95,8 @@ fn every_additional_captured_participant_cancels_pending_transport() {
 fn existing_document_print_losses_wake_pending_transport() {
     // Tests cancellation plumbing only; these contexts do not authenticate CEF.
     for expired in 0..9 {
-        let shutdown = CancelToken::new();
-        let operation_cancel = CancelToken::new();
+        let shutdown = CancelToken::default();
+        let operation_cancel = CancelToken::default();
         let renderer = RendererGeneration::new();
         let document = RendererGeneration::new();
         let owner = NativeRequestOwner {
@@ -107,10 +107,10 @@ fn existing_document_print_losses_wake_pending_transport() {
         let binding = NativeInvocationIssuer::new(shutdown.clone()).issue_existing_document_save(
             Surface::Html, owner.view, shell_contract::ipc::NativeSaveSelection::Mode(shell_contract::editors::SaveMode::SaveAs),
             owner, operation_cancel.clone()).unwrap();
-        let cancel = CancelToken::new();
-        let pending = CancelToken::new();
-        let additional = CancelToken::new();
-        let stop = CancelToken::new();
+        let cancel = CancelToken::default();
+        let pending = CancelToken::default();
+        let additional = CancelToken::default();
+        let stop = CancelToken::default();
         let print = RendererGeneration::new();
         let authority = Authority::ExistingDocument { binding: binding.clone(), participants: Vec::new(), additional: vec![additional.clone()], stop: stop.clone() };
         let id = NEXT.fetch_sub(1, Ordering::Relaxed);
@@ -137,13 +137,13 @@ fn existing_document_print_losses_wake_pending_transport() {
 fn multi_owner_print_callback_cancel_wakes_pending_transport() {
     let renderer = RendererGeneration::new();
     let origin = NativeRequestOwner { view: ViewId(903), context: NativeContext::with_owner_loss((), renderer.clone(), renderer.loss_token()) };
-    let callback = CancelToken::new();
-    let stop = CancelToken::new();
+    let callback = CancelToken::default();
+    let stop = CancelToken::default();
     let authority = Authority::OwnedMany { origin, participants: Vec::new(), additional: vec![callback.clone()], stop: stop.clone() };
     let id = NEXT.fetch_sub(1, Ordering::Relaxed);
     let (sender, received) = std::sync::mpsc::sync_channel(1);
     super::super::PENDING.0.lock().unwrap().insert(id, super::super::PendingCall { sender, owner: None });
-    let _subscriptions = subscribe_losses(authority.losses(&CancelToken::new(), &CancelToken::new(), &stop, &RendererGeneration::new()).unwrap(), id);
+    let _subscriptions = subscribe_losses(authority.losses(&CancelToken::default(), &CancelToken::default(), &stop, &RendererGeneration::new()).unwrap(), id);
     callback.cancel();
     assert!(received.try_recv().unwrap().is_err());
     assert!(!super::super::PENDING.0.lock().unwrap().contains_key(&id));

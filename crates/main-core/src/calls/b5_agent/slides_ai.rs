@@ -31,15 +31,15 @@ use crate::packages::electron_utils::remote_image::MAX_REMOTE_IMAGE_BYTES;
 use crate::packages::pipelines::slides_cover_crop::{CoverCrop, cover_crop_fractions};
 use crate::slides::ai_ipc::{
     ActiveStreams, AiIpcHost, AiSender, ImageDecoder, IpcError, MediaRequest, MediaToolOptions,
-    NativeImage, PictureDeck, PictureError, PictureOffset, PictureSource, SearchRequest, SearchStart, StreamRun,
-    StreamStart, ai_analyze_media_begin, ai_analyze_media_finish, ai_generate_image_begin,
-    ai_generate_image_finish, ai_get_settings, ai_image_search_begin, ai_image_search_finish,
-    ai_ipc_setup, ai_list_style_templates, ai_load_style_template, ai_log_run_failure,
-    ai_read_url_begin, ai_read_url_finish, ai_save_sidecar, ai_save_style_template,
-    ai_set_settings, ai_stream_begin, ai_stream_cancel, ai_stream_finish, ai_stream_send,
-    ai_web_search_begin, ai_web_search_finish, broadcast_to_windows, chat_gpt_open_browser,
-    chat_gpt_sign_in_pages, insert_image_begin, insert_image_finish, read_ai_settings,
-    replace_picture_begin, replace_picture_finish, slides_ai_default_fonts,
+    NativeImage, PictureDeck, PictureError, PictureOffset, PictureSource, SearchRequest,
+    SearchStart, StreamRun, StreamStart, ai_analyze_media_begin, ai_analyze_media_finish,
+    ai_generate_image_begin, ai_generate_image_finish, ai_get_settings, ai_image_search_begin,
+    ai_image_search_finish, ai_ipc_setup, ai_list_style_templates, ai_load_style_template,
+    ai_log_run_failure, ai_read_url_begin, ai_read_url_finish, ai_save_sidecar,
+    ai_save_style_template, ai_set_settings, ai_stream_begin, ai_stream_cancel, ai_stream_finish,
+    ai_stream_send, ai_web_search_begin, ai_web_search_finish, broadcast_to_windows,
+    chat_gpt_open_browser, chat_gpt_sign_in_pages, insert_image_begin, insert_image_finish,
+    read_ai_settings, replace_picture_begin, replace_picture_finish, slides_ai_default_fonts,
     slides_ai_tool_capabilities, stored_ai_settings, style_skill_sidecar_path,
     subscription_login_window_text, subscription_set_metered_accepted, with_metered_accepted,
 };
@@ -244,7 +244,8 @@ impl PictureDeck for FakeDeck {
     }
 
     fn size_cx(&self) -> Result<f64, IpcError> {
-        Ok(self.size
+        Ok(self
+            .size
             .get("cx")
             .and_then(Value::as_f64)
             .unwrap_or(f64::NAN))
@@ -312,34 +313,40 @@ impl PictureDeck for FakeDeck {
         Ok(!matches!(self.engine("replace"), Some(Value::Bool(false))))
     }
 
-    fn find_element_id(&self, slide_index: f64, reference: &str) -> Result<Option<String>, IpcError> {
-        Ok((|| self.slide(slide_index)?
-            .get("elements")?
-            .as_array()?
-            .iter()
-            .find(|el| el.get("ref").and_then(Value::as_str) == Some(reference))?
-            .get("id")?
-            .as_str()
-            .map(str::to_owned))())
+    fn find_element_id(
+        &self,
+        slide_index: f64,
+        reference: &str,
+    ) -> Result<Option<String>, IpcError> {
+        Ok((|| {
+            self.slide(slide_index)?
+                .get("elements")?
+                .as_array()?
+                .iter()
+                .find(|el| el.get("ref").and_then(Value::as_str) == Some(reference))?
+                .get("id")?
+                .as_str()
+                .map(str::to_owned)
+        })())
     }
 
     fn picture_frame(&self, slide_index: f64, id: &str) -> Result<Option<(f64, f64)>, IpcError> {
         Ok((|| {
-        let picture = self
-            .slide(slide_index)?
-            .get("elements")?
-            .as_array()?
-            .iter()
-            .find(|el| {
-                el.get("id").and_then(Value::as_str) == Some(id)
-                    && el.get("type").and_then(Value::as_str) == Some("picture")
-            })?;
-        let offset = picture.get("transform")?.get("offset")?;
-        if !matches!(offset, Value::Object(_) | Value::Array(_)) {
-            return None;
-        }
-        let side = |key: &str| offset.get(key).and_then(Value::as_f64).unwrap_or(f64::NAN);
-        Some((side("cx"), side("cy")))
+            let picture = self
+                .slide(slide_index)?
+                .get("elements")?
+                .as_array()?
+                .iter()
+                .find(|el| {
+                    el.get("id").and_then(Value::as_str) == Some(id)
+                        && el.get("type").and_then(Value::as_str) == Some("picture")
+                })?;
+            let offset = picture.get("transform")?.get("offset")?;
+            if !matches!(offset, Value::Object(_) | Value::Array(_)) {
+                return None;
+            }
+            let side = |key: &str| offset.get(key).and_then(Value::as_f64).unwrap_or(f64::NAN);
+            Some((side("cx"), side("cy")))
         })())
     }
 
@@ -352,7 +359,9 @@ impl PictureDeck for FakeDeck {
         if matches!(self.engine("rebuild"), Some(Value::Null)) {
             return Ok(None);
         }
-        Ok(Some(jv(&json!({ "rebuilt": slide_index, "fit": self.fit }))))
+        Ok(Some(jv(
+            &json!({ "rebuilt": slide_index, "fit": self.fit }),
+        )))
     }
 }
 
@@ -987,12 +996,17 @@ impl World {
             }
             "push" => {
                 let slot = self.slots[0].as_mut().ok_or_else(no_session)?;
-                slot.session.push_history().unwrap_or_else(|never| match never {});
+                slot.session
+                    .push_history()
+                    .unwrap_or_else(|never| match never {});
                 Ok(Value::Null)
             }
             "pushRedo" => {
                 let slot = self.slots[0].as_mut().ok_or_else(no_session)?;
-                let snapshot = slot.session.take_snapshot().unwrap_or_else(|never| match never {});
+                let snapshot = slot
+                    .session
+                    .take_snapshot()
+                    .unwrap_or_else(|never| match never {});
                 slot.session.redo_stack.push(snapshot);
                 Ok(Value::Null)
             }
@@ -1039,36 +1053,41 @@ impl World {
             }
             "batch" => {
                 let slot = self.slots[0].as_mut().ok_or_else(no_session)?;
-                slot.session.begin_history_batch().unwrap_or_else(|never| match never {});
+                slot.session
+                    .begin_history_batch()
+                    .unwrap_or_else(|never| match never {});
                 Ok(Value::Null)
             }
             "registerAi" => {
                 let slot = self.slots[0].as_mut().ok_or_else(no_session)?;
-                let snapshot = slot.session.take_snapshot().unwrap_or_else(|never| match never {});
+                let snapshot = slot
+                    .session
+                    .take_snapshot()
+                    .unwrap_or_else(|never| match never {});
                 Ok(json!(
                     slot.session.register_ai_snapshot(&mut self.ids, &snapshot)
                 ))
             }
             "begin" => {
                 let slot = self.slots[0].as_mut().ok_or_else(no_session)?;
-                Ok(json!(begin_ai_run(
-                    &mut slot.session,
-                    &mut slot.review,
-                    owner
-                ).unwrap_or_else(|never| match never {})))
+                Ok(json!(
+                    begin_ai_run(&mut slot.session, &mut slot.review, owner)
+                        .unwrap_or_else(|never| match never {})
+                ))
             }
             "hold" => {
                 let slot = self.slots[0].as_mut().ok_or_else(no_session)?;
-                Ok(json!(hold_ai_run(
-                    &mut slot.session,
-                    &mut slot.review,
-                    owner
-                ).unwrap_or_else(|never| match never {})))
+                Ok(json!(
+                    hold_ai_run(&mut slot.session, &mut slot.review, owner)
+                        .unwrap_or_else(|never| match never {})
+                ))
             }
             "accept" => {
                 let slot = self.slots[0].as_mut().ok_or_else(no_session)?;
                 Ok(
-                    match accept_ai_proposal(&mut slot.session, &mut slot.review, &mut self.ids).unwrap_or_else(|never| match never {}) {
+                    match accept_ai_proposal(&mut slot.session, &mut slot.review, &mut self.ids)
+                        .unwrap_or_else(|never| match never {})
+                    {
                         Some(id) => json!(id),
                         None => Value::Null,
                     },
@@ -1080,7 +1099,8 @@ impl World {
             }
             "drop" => {
                 let slot = self.slots[0].as_mut().ok_or_else(no_session)?;
-                drop_ai_run_of(&mut slot.session, &mut slot.review, &mut self.lives, owner).unwrap_or_else(|never| match never {});
+                drop_ai_run_of(&mut slot.session, &mut slot.review, &mut self.lives, owner)
+                    .unwrap_or_else(|never| match never {});
                 Ok(Value::Null)
             }
             "marker" => {
@@ -1245,7 +1265,9 @@ impl World {
                     return Ok(Value::Null);
                 };
                 Ok(
-                    if hold_ai_run(&mut slot.session, &mut slot.review, sender_id).unwrap_or_else(|never| match never {}) {
+                    if hold_ai_run(&mut slot.session, &mut slot.review, sender_id)
+                        .unwrap_or_else(|never| match never {})
+                    {
                         deck_json(&slot.session)
                     } else {
                         Value::Null
@@ -1260,7 +1282,9 @@ impl World {
                     return Ok(Value::Null);
                 };
                 Ok(
-                    match accept_ai_proposal(&mut slot.session, &mut slot.review, &mut self.ids).unwrap_or_else(|never| match never {}) {
+                    match accept_ai_proposal(&mut slot.session, &mut slot.review, &mut self.ids)
+                        .unwrap_or_else(|never| match never {})
+                    {
                         Some(snapshot_id) => {
                             json!({ "slides": deck_json(&slot.session), "snapshotId": snapshot_id })
                         }
@@ -1423,7 +1447,8 @@ impl World {
             sender_id,
             ticket,
             wake,
-        ).unwrap_or_else(|never| match never {})
+        )
+        .unwrap_or_else(|never| match never {})
     }
 
     /// `ai:insert-image-url` (`insert`) and `ai:replace-picture-url`

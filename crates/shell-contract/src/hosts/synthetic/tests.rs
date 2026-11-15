@@ -106,7 +106,7 @@ fn exact_browser_admission_rejects_replacement_and_foreign_context() {
     let created = owner.context.renderer().unwrap().clone();
     let (_, reservation, first) = crate::ipc::NativeClosureIssuer::new_with_owner(owner.view, created);
     reservation.with_initial_owner(&first, |transition| effects.bind_browser_fixture(&owner, &first, transition)).unwrap();
-    let cancel = CancelToken::new();
+    let cancel = CancelToken::default();
     let mut calls = 0;
     effects.with_exact_browser_owner_effect(&first, &owner, &cancel, &mut || { calls += 1; Ok(()) }).unwrap();
     let foreign = effects.capture_owner(owner.view, owner.context.renderer().unwrap()).unwrap();
@@ -1160,14 +1160,14 @@ fn stale_actor_revision_cannot_truncate_native_save() {
     fs::write(&path, b"original").unwrap();
     let (effects, _, _, _, mut owner) = model();
     owner.context = owner.context.with_document_lease(RendererGeneration::new());
-    let binding = NativeInvocationIssuer::new(CancelToken::new()).issue_existing_document_save(
-        Surface::Pdf, owner.view, NativeSaveSelection::ExactPath(path.clone()), owner, CancelToken::new()).unwrap();
+    let binding = NativeInvocationIssuer::new(CancelToken::default()).issue_existing_document_save(
+        Surface::Pdf, owner.view, NativeSaveSelection::ExactPath(path.clone()), owner, CancelToken::default()).unwrap();
     let selection = NativeSaveDestination::from_exact_selection(binding).unwrap();
     let parent = File::open(&dir).unwrap();
     let prepared = file_commit::prepare_direct(&parent, &path).unwrap();
     let mut validated = false;
-    let rejected = effects.begin_native_direct_write_validated(&selection, &[], &CancelToken::new(),
-        &CancelToken::new(), &[], prepared, &mut || { validated = true; Err("stale revision".into()) });
+    let rejected = effects.begin_native_direct_write_validated(&selection, &[], &CancelToken::default(),
+        &CancelToken::default(), &[], prepared, &mut || { validated = true; Err("stale revision".into()) });
     assert!(validated);
     assert!(matches!(rejected, Err(crate::ipc::DirectWriteStartError::Admission(_))));
     assert_eq!(fs::read(&path).unwrap(), b"original");
@@ -1182,8 +1182,8 @@ fn stale_actor_revision_cannot_truncate_native_save() {
         Ok(stage) => stage, Err((error, _)) => panic!("{error}"),
     };
     let mut validated = false;
-    let rejected = effects.publish_native_staged_write_validated(&selection, &[], &CancelToken::new(),
-        &CancelToken::new(), &[], stage, &mut || { validated = true; Err("stale revision".into()) });
+    let rejected = effects.publish_native_staged_write_validated(&selection, &[], &CancelToken::default(),
+        &CancelToken::default(), &[], stage, &mut || { validated = true; Err("stale revision".into()) });
     assert!(validated);
     let stage = match rejected {
         Err(crate::ipc::StagedWriteError::Admission { stage, .. }) => stage,
@@ -1215,8 +1215,8 @@ fn native_reload_retires_both_pdf_leases_before_deferred_notification() {
     let binding = NativeInvocationIssuer::new(CancelToken::default()).issue_existing_document_save(
         Surface::Pdf, old.view, NativeSaveSelection::ExactPath(path.clone()), old.clone(), CancelToken::default()).unwrap();
     let selection = NativeSaveDestination::from_exact_selection(binding).unwrap();
-    let write_cancel = CancelToken::new();
-    let write_pending = CancelToken::new();
+    let write_cancel = CancelToken::default();
+    let write_pending = CancelToken::default();
     let write = effects.begin_native_direct_write(&selection, &[], &write_cancel, &write_pending, &[],
         file_commit::prepare_direct(&File::open(&dir).unwrap(), &path).unwrap()).unwrap();
     let written = match write.write_owned(b"synthetic pdf".to_vec()) { Ok(written) => written, Err(_) => panic!("fixture write failed") };
@@ -1234,16 +1234,16 @@ fn native_reload_retires_both_pdf_leases_before_deferred_notification() {
     ).unwrap();
     let mut prepared = make_prepared();
     let mut accepted = None;
-    effects.with_saved_reload_acceptance(&input, &saved_path, &[old.clone()], &CancelToken::new(),
-        &CancelToken::new(), &[], &mut |permit| {
+    effects.with_saved_reload_acceptance(&input, &saved_path, &[old.clone()], &CancelToken::default(),
+        &CancelToken::default(), &[], &mut |permit| {
             accepted = Some(prepared.commit(permit)?);
             Ok(())
         }).unwrap();
     let (marker, handoff) = accepted.unwrap();
     let mut other_prepared = make_prepared();
     let mut other_accepted = None;
-    effects.with_saved_reload_acceptance(&input, &saved_path, &[old.clone()], &CancelToken::new(),
-        &CancelToken::new(), &[], &mut |permit| {
+    effects.with_saved_reload_acceptance(&input, &saved_path, &[old.clone()], &CancelToken::default(),
+        &CancelToken::default(), &[], &mut |permit| {
             other_accepted = Some(other_prepared.commit(permit)?);
             Ok(())
         }).unwrap();
@@ -1262,10 +1262,10 @@ fn native_reload_retires_both_pdf_leases_before_deferred_notification() {
         &mut || assert!(!before.load(Ordering::SeqCst)),
         &mut |retirement| retirement.retire()).unwrap();
     let mut parser_calls = 0;
-    let stopped = CancelToken::new();
+    let stopped = CancelToken::default();
     stopped.cancel();
     assert!(effects.with_native_save_reload_parser_effect(&handoff, &successor, &stopped, &mut |_| { parser_calls += 1; Ok(()) }).is_err());
-    effects.with_native_save_reload_parser_effect(&handoff, &successor, &CancelToken::new(), &mut |input| {
+    effects.with_native_save_reload_parser_effect(&handoff, &successor, &CancelToken::default(), &mut |input| {
         assert_eq!(input.bytes(), b"synthetic pdf");
         parser_calls += 1;
         Ok(())
@@ -1525,8 +1525,8 @@ fn native_saved_path_admits_only_live_selected_save_controls() {
         owner, CancelToken::default(),
     ).unwrap();
     let selection = NativeSaveDestination::from_exact_selection(binding).unwrap();
-    let save_cancel = CancelToken::new();
-    let save_pending = CancelToken::new();
+    let save_cancel = CancelToken::default();
+    let save_pending = CancelToken::default();
     let write = effects.begin_native_direct_write(&selection, &[], &save_cancel, &save_pending, &[],
         file_commit::prepare_direct(&parent, &selected).unwrap()).unwrap();
     let written = match write.write_owned(b"saved".to_vec()) { Ok(written) => written, Err(_) => panic!("fixture write failed") };
@@ -1580,12 +1580,12 @@ fn saved_document_admits_retained_bytes_only_for_exact_live_origin() {
     let path = dir.join("saved.pdf");
     let parent = File::open(&dir).unwrap();
     let (effects, _, views, _, source) = model();
-    let issuer = NativeInvocationIssuer::new(CancelToken::new());
+    let issuer = NativeInvocationIssuer::new(CancelToken::default());
     let binding = issuer.issue_existing_document_save(Surface::Docs, source.view,
-        NativeSaveSelection::ExactPath(path.clone()), source, CancelToken::new()).unwrap();
+        NativeSaveSelection::ExactPath(path.clone()), source, CancelToken::default()).unwrap();
     let selection = NativeSaveDestination::from_exact_selection(binding).unwrap();
-    let save_cancel = CancelToken::new();
-    let save_pending = CancelToken::new();
+    let save_cancel = CancelToken::default();
+    let save_pending = CancelToken::default();
     let write = effects.begin_native_direct_write(&selection, &[], &save_cancel, &save_pending, &[],
         file_commit::prepare_direct(&parent, &path).unwrap()).unwrap();
     let written = match write.write_owned(b"committed".to_vec()) { Ok(written) => written, Err(_) => panic!("fixture write failed") };
@@ -1605,9 +1605,9 @@ fn saved_document_admits_retained_bytes_only_for_exact_live_origin() {
     let owner = effects.capture_invocation_docs(view, &generation, &origin).unwrap();
     let foreign = effects.capture_invocation_root(view, &generation, &SyntheticNativeOrigin::new()).unwrap();
     let (_issuer, reservation, browser) = NativeClosureIssuer::new_with_owner(view, generation.clone());
-    let cancel = CancelToken::new();
+    let cancel = CancelToken::default();
     let target = NativeSavedTarget::prepare(input, NativeSavedPath::Selected(output), Surface::Pdf, view,
-        generation, reservation.clone(), browser.clone(), vec![], cancel.clone(), CancelToken::new(), vec![]).unwrap();
+        generation, reservation.clone(), browser.clone(), vec![], cancel.clone(), CancelToken::default(), vec![]).unwrap();
     reservation.with_initial_owner(&browser, |transition| {
         target.validate_in_transition(transition)?.commit();
         Ok(())
@@ -1618,7 +1618,7 @@ fn saved_document_admits_retained_bytes_only_for_exact_live_origin() {
         &mut |input| { assert_eq!(input.bytes(), b"committed"); calls += 1; Ok(()) }).unwrap();
     assert!(effects.with_native_saved_document_same_origin(&document, &foreign, &cancel, &[], &cancel, &cancel, &[],
         &mut |_| { calls += 1; Ok(()) }).is_err());
-    let stopped = CancelToken::new();
+    let stopped = CancelToken::default();
     stopped.cancel();
     assert!(effects.with_native_saved_document_input(&document, &[], &stopped, &cancel, &[],
         &mut |_| { calls += 1; Ok(()) }).is_err());
@@ -1631,7 +1631,7 @@ fn saved_document_admits_retained_bytes_only_for_exact_live_origin() {
     let (actual, reply) = SyntheticReplyAuthority::attach(owner.clone(), &cancel);
     assert!(effects.transition_saved_docs_media(&document, &foreign, &cancel, &owner, &[], &cancel, &cancel, &[],
         &transition, &mut |_, commit| commit(), &mut |_, _| Ok(())).is_err());
-    assert!(effects.transition_saved_docs_media(&document, &actual, &CancelToken::new(), &owner, &[], &cancel, &cancel, &[],
+    assert!(effects.transition_saved_docs_media(&document, &actual, &CancelToken::default(), &owner, &[], &cancel, &cancel, &[],
         &transition, &mut |_, commit| commit(), &mut |_, _| Ok(())).is_err());
     let (renewed, next_actual) = effects.transition_saved_docs_media(&document, &actual, &cancel, &owner, &[], &cancel, &cancel, &[],
         &transition, &mut |_, commit| commit(), &mut |next, next_actual| {
@@ -1652,7 +1652,7 @@ fn saved_document_admits_retained_bytes_only_for_exact_live_origin() {
     assert!(effects.transition_saved_docs_media(&renewed, &next_actual, &cancel, renewed.owner(), &[], &cancel, &cancel, &[],
         &second, &mut |_, commit| commit(), &mut |_, _| Ok(())).is_err());
     let mut after_error = None;
-    let second_cancel = CancelToken::new();
+    let second_cancel = CancelToken::default();
     let (second_actual, second_reply) = SyntheticReplyAuthority::attach(renewed.owner().clone(), &second_cancel);
     assert!(effects.transition_saved_docs_media(&renewed, &second_actual, &second_cancel, renewed.owner(), &[], &cancel, &cancel, &[],
         &second, &mut |_, commit| { commit()?; Err("after commit".into()) }, &mut |next, _| {

@@ -991,9 +991,9 @@ mod tests {
     #[test]
     fn command_preparation_retains_exact_selection_and_cancellation() {
         use shell_contract::ipc::{NativeEditorCommand, NativeInvocationIssuer};
-        let cancel = CancelToken::new();
-        let pending = CancelToken::new();
-        let issuer = NativeInvocationIssuer::new(CancelToken::new());
+        let cancel = CancelToken::default();
+        let pending = CancelToken::default();
+        let issuer = NativeInvocationIssuer::new(CancelToken::default());
         let selected = NativeEditorCommand::OpenFile { surface: shell_contract::Surface::Diagram, path: "/tmp/one.drawio".into() };
         let operation = issuer.issue_command(selected.clone(), cancel.clone());
         let request = OwnedRequest::NativeCommandPreparation {
@@ -1013,8 +1013,8 @@ mod tests {
     #[test]
     fn owned_parser_subscribes_to_every_captured_owner_loss() {
         use shell_contract::{ViewId, ipc::NativeContext, runtime::RendererGeneration};
-        let source_loss = CancelToken::new();
-        let participant_loss = CancelToken::new();
+        let source_loss = CancelToken::default();
+        let participant_loss = CancelToken::default();
         let owner = NativeRequestOwner {
             view: ViewId(1),
             context: NativeContext::with_owner_loss((), RendererGeneration::new(), source_loss.clone()),
@@ -1024,7 +1024,7 @@ mod tests {
             context: NativeContext::with_owner_loss((), RendererGeneration::new(), participant_loss.clone()),
         };
         let request = OwnedRequest::InteractiveMany {
-            owner, participants: vec![participant], cancel: CancelToken::new(), pending: CancelToken::new(),
+            owner, participants: vec![participant], cancel: CancelToken::default(), pending: CancelToken::default(),
         };
         let tokens = request.cancellation_tokens(None);
         assert!(tokens.iter().any(|token| token.same_token(&source_loss)));
@@ -1036,16 +1036,16 @@ mod tests {
         use shell_contract::{Surface, ViewId, ipc::{NativeContext, NativeInvocationIssuer}, runtime::RendererGeneration};
         let owner = NativeRequestOwner {
             view: ViewId(4),
-            context: NativeContext::with_owner_loss((), RendererGeneration::new(), CancelToken::new())
+            context: NativeContext::with_owner_loss((), RendererGeneration::new(), CancelToken::default())
                 .with_document_lease(RendererGeneration::new()),
         };
-        let issuer = NativeInvocationIssuer::new(CancelToken::new());
-        let binding = issuer.issue_existing_document_save(Surface::Html, owner.view, "/tmp/page.html".into(), owner, CancelToken::new()).unwrap();
+        let issuer = NativeInvocationIssuer::new(CancelToken::default());
+        let binding = issuer.issue_existing_document_save(Surface::Html, owner.view, "/tmp/page.html".into(), owner, CancelToken::default()).unwrap();
         let owner_loss = binding.owner().loss_token().unwrap();
         let operation_loss = binding.operation().loss_token();
-        let callback_cancel = CancelToken::new();
+        let callback_cancel = CancelToken::default();
         let request = OwnedRequest::ExistingDocumentSave {
-            binding, participants: Vec::new(), cancel: CancelToken::new(), pending: CancelToken::new(), additional: vec![callback_cancel.clone()],
+            binding, participants: Vec::new(), cancel: CancelToken::default(), pending: CancelToken::default(), additional: vec![callback_cancel.clone()],
         };
         let tokens = request.cancellation_tokens(None);
         assert!(tokens.iter().any(|token| token.same_token(&owner_loss)));

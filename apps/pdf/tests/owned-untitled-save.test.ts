@@ -8,14 +8,20 @@ describe('request-owned untitled save correlation', () => {
     const pick = vi.fn(async () => true)
     const adopt = vi.fn(async () => ({ ok: true as const, path: '/saved.pdf' }))
     const saver = createUntitledSaver({ pickUntitledCopyTarget: pick, adoptUntitledCopy: adopt })
-    await expect(saver.save('/working.pdf', 'Report.pdf', async () => true)).resolves.toEqual({ saved: true, path: '/saved.pdf' })
+    await expect(saver.save('/working.pdf', 'Report.pdf', async () => true)).resolves.toEqual({
+      saved: true,
+      path: '/saved.pdf',
+    })
     expect(pick).toHaveBeenCalledWith('/working.pdf', 'Report.pdf')
     expect(adopt).toHaveBeenCalledWith('/working.pdf')
   })
 
   it('never coalesces a different owner into an already-open dialog', async () => {
     const first = deferred<boolean>()
-    const pick = vi.fn().mockImplementationOnce(() => first.promise).mockResolvedValueOnce(true)
+    const pick = vi
+      .fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockResolvedValueOnce(true)
     const adopt = vi.fn(async () => ({ ok: true as const, path: '/saved.pdf' }))
     const saveFirst = vi.fn(async () => true)
     const saveSecond = vi.fn(async () => true)

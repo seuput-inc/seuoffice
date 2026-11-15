@@ -770,7 +770,11 @@ impl IndexStore for FakeIndex {
 
     fn paths_indexed_as_on_disk(&mut self, paths: &[String]) -> Result<Vec<String>, Thrown> {
         log(&self.logs, vec![Value::from("indexed"), json!(paths)]);
-        Ok(paths.iter().filter(|path| self.indexed.contains(path)).cloned().collect())
+        Ok(paths
+            .iter()
+            .filter(|path| self.indexed.contains(path))
+            .cloned()
+            .collect())
     }
 }
 

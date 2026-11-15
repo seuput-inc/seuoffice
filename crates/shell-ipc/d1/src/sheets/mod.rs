@@ -12,8 +12,8 @@ pub mod engine;
 mod fakes;
 mod i18n;
 mod misc;
-mod owned_close;
 mod open;
+mod owned_close;
 mod read;
 mod recovery;
 mod recovery_policy;
@@ -35,8 +35,8 @@ use shell_contract::{
 
 pub use self::core::HeadlessReport;
 use self::core::{Env, core_at, create_core};
-use self::editors::{SheetsEditors, install_views};
 pub use self::editors::{PreparedSavedWorkbookBarrier, RegisteredTab, SheetsViews, views};
+use self::editors::{SheetsEditors, install_views};
 use self::engine::{ScreenCaptureHost, SheetsShellHost, WorkbookEngineHost};
 use crate::host::{LocaleHost, RecoveryStateHost, Shared, on_view_gone};
 use crate::route::{self, Route};
@@ -55,12 +55,16 @@ fn worker(env: &Env, channel: &'static str, body: fn(&Env, ViewId, Args) -> Repl
         };
         let (view, env) = (cx.sender.view, env.clone());
         let work = env.clone();
-        env.spawn(move || { let _guard = guard; reply.reply(body(&work, view, args)); });
+        env.spawn(move || {
+            let _guard = guard;
+            reply.reply(body(&work, view, args));
+        });
     })
 }
 
 fn open_worker(
-    env: &Env, channel: &'static str,
+    env: &Env,
+    channel: &'static str,
     body: fn(&Env, ViewId, Args, &open::OpenAuthority) -> Reply,
 ) -> Route {
     let env = env.clone();
@@ -77,8 +81,15 @@ fn open_worker(
             core_at(env.slot).bind_save_renderer(cx);
         }
         let authority = open::OpenAuthority {
-            owner: cx.native.clone().map(|context| shell_contract::ipc::NativeRequestOwner { view, context }),
-            headless: core_at(env.slot).state.borrow().tab(view).and_then(|tab| tab.headless_target.clone()),
+            owner: cx
+                .native
+                .clone()
+                .map(|context| shell_contract::ipc::NativeRequestOwner { view, context }),
+            headless: core_at(env.slot)
+                .state
+                .borrow()
+                .tab(view)
+                .and_then(|tab| tab.headless_target.clone()),
             cancel: cx.cancel.clone(),
             pending: shell_contract::runtime::CancelToken::default(),
         };
@@ -93,8 +104,17 @@ fn open_worker(
 }
 
 fn copy_worker(
-    env: &Env, channel: &'static str, kind: &'static str,
-    body: fn(&Env, ViewId, IpcValue, Option<crate::owned_save::OwnedSave>, Option<core::GeneratedTransition>, Option<core::HeadlessPrint>) -> Reply,
+    env: &Env,
+    channel: &'static str,
+    kind: &'static str,
+    body: fn(
+        &Env,
+        ViewId,
+        IpcValue,
+        Option<crate::owned_save::OwnedSave>,
+        Option<core::GeneratedTransition>,
+        Option<core::HeadlessPrint>,
+    ) -> Reply,
 ) -> Route {
     let env = env.clone();
     route::invoke_later(channel, move |cx, mut args, reply| {
@@ -104,13 +124,21 @@ fn copy_worker(
             IpcValue::String(token) => Some(token.clone()),
             _ => return reply.reply(Err(thrown("Invalid owned workbook copy request"))),
         };
-        let target = core_at(env.slot).state.borrow().tab(cx.sender.view).and_then(|tab| tab.headless_target.clone());
+        let target = core_at(env.slot)
+            .state
+            .borrow()
+            .tab(cx.sender.view)
+            .and_then(|tab| tab.headless_target.clone());
         if kind == "pdf" && env.shell.is_headless() && target.is_none() {
-            return reply.reply(Err(thrown("The headless PDF has no native invocation reservation")));
+            return reply.reply(Err(thrown(
+                "The headless PDF has no native invocation reservation",
+            )));
         }
         let headless = if let Some(target) = target {
             if kind != "pdf" || token.is_some() {
-                return reply.reply(Err(thrown("The headless invocation only exports its requested PDF")));
+                return reply.reply(Err(thrown(
+                    "The headless invocation only exports its requested PDF",
+                )));
             }
             if let Err(error) = core_at(env.slot).validate_headless_sender(cx) {
                 return reply.reply(Err(error));
@@ -121,11 +149,18 @@ fn copy_worker(
             };
             Some(core::HeadlessPrint {
                 document: registered,
-                cancel: cx.cancel.clone(), pending: shell_contract::runtime::CancelToken::default(),
+                cancel: cx.cancel.clone(),
+                pending: shell_contract::runtime::CancelToken::default(),
             })
-        } else { None };
+        } else {
+            None
+        };
         let (owned, transition) = if let Some(token) = &token {
-            let path_key = if kind == "pdf" { "saveAsPath" } else { "targetPath" };
+            let path_key = if kind == "pdf" {
+                "saveAsPath"
+            } else {
+                "targetPath"
+            };
             let IpcValue::String(path) = field(&input, path_key) else {
                 return reply.reply(Err(thrown("The owned copy has no selected target")));
             };
@@ -133,10 +168,14 @@ fn copy_worker(
                 Ok((scope, transition)) => (Some(scope), Some(transition)),
                 Err(error) => return reply.reply(Err(error)),
             }
-        } else { (None, None) };
+        } else {
+            (None, None)
+        };
         if let IpcValue::Object(fields) = &mut input {
             fields.retain(|(name, _)| name != "ownedSaveRequestId");
-            if let Some((_, IpcValue::Object(workbook))) = fields.iter_mut().find(|(name, _)| name == "workbook") {
+            if let Some((_, IpcValue::Object(workbook))) =
+                fields.iter_mut().find(|(name, _)| name == "workbook")
+            {
                 workbook.retain(|(name, _)| name != "ownedSaveRequestId");
             }
         }
@@ -148,10 +187,21 @@ fn copy_worker(
         let work = env.clone();
         env.spawn(move || {
             let _guard = guard;
-            let mut result = body(&work, view, input, owned, transition.clone(), headless.clone());
+            let mut result = body(
+                &work,
+                view,
+                input,
+                owned,
+                transition.clone(),
+                headless.clone(),
+            );
             if let Some(token) = token {
                 let settled = result.clone();
-                if let Some(transition) = transition.as_ref().filter(|transition| transition.has_receipt()).cloned() {
+                if let Some(transition) = transition
+                    .as_ref()
+                    .filter(|transition| transition.has_receipt())
+                    .cloned()
+                {
                     let key = token.clone();
                     let admission = work.core(move |core| {
                         transition.terminal(&mut || {
@@ -169,8 +219,15 @@ fn copy_worker(
                         work.post(move |core| core.finish_owned_save(&key, Err(settled)));
                         result = Err(failure);
                     }
-                } else if transition.as_ref().is_some_and(|transition| transition.retired_origin()) {
-                    let failure = result.as_ref().err().cloned().unwrap_or_else(|| thrown("The generated document did not complete"));
+                } else if transition
+                    .as_ref()
+                    .is_some_and(|transition| transition.retired_origin())
+                {
+                    let failure = result
+                        .as_ref()
+                        .err()
+                        .cloned()
+                        .unwrap_or_else(|| thrown("The generated document did not complete"));
                     let key = token.clone();
                     work.post(move |core| core.finish_owned_save(&key, Err(failure)));
                 } else {
@@ -178,13 +235,17 @@ fn copy_worker(
                 }
             }
             reply.reply(result);
-            if let Some(headless) = headless { headless.pending.cancel(); }
+            if let Some(headless) = headless {
+                headless.pending.cancel();
+            }
         });
     })
 }
 
 fn prompt_worker(
-    env: &Env, channel: &'static str, token_index: usize,
+    env: &Env,
+    channel: &'static str,
+    token_index: usize,
     body: fn(&Env, ViewId, Args, Option<crate::owned_save::OwnedSave>) -> Reply,
 ) -> Route {
     let env = env.clone();
@@ -193,11 +254,19 @@ fn prompt_worker(
             IpcValue::Undefined => None,
             IpcValue::String(token) => {
                 let core = core_at(env.slot);
-                let scope = core.state.borrow().owned_saves.get(token).map(|waiter| waiter.scope.clone());
+                let scope = core
+                    .state
+                    .borrow()
+                    .owned_saves
+                    .get(token)
+                    .map(|waiter| waiter.scope.clone());
                 let Some(scope) = scope else {
-                    return reply.reply(Err(thrown("The workbook save prompt is no longer pending")));
+                    return reply
+                        .reply(Err(thrown("The workbook save prompt is no longer pending")));
                 };
-                if let Err(error) = scope.validate_sender(cx) { return reply.reply(Err(error)); }
+                if let Err(error) = scope.validate_sender(cx) {
+                    return reply.reply(Err(error));
+                }
                 Some(scope)
             }
             _ => return reply.reply(Err(thrown("Invalid owned workbook prompt request"))),
@@ -209,15 +278,27 @@ fn prompt_worker(
 }
 
 fn screen_worker(
-    env: &Env, channel: &'static str,
-    body: fn(&Env, ViewId, Args, &shell_contract::ipc::NativeRequestOwner, &shell_contract::runtime::CancelToken) -> Reply,
+    env: &Env,
+    channel: &'static str,
+    body: fn(
+        &Env,
+        ViewId,
+        Args,
+        &shell_contract::ipc::NativeRequestOwner,
+        &shell_contract::runtime::CancelToken,
+    ) -> Reply,
 ) -> Route {
     let env = env.clone();
     route::invoke_later(channel, move |cx, args, reply| {
         let Some(context) = cx.native.clone() else {
-            return reply.reply(Err(thrown("Screen capture requires native request authority")));
+            return reply.reply(Err(thrown(
+                "Screen capture requires native request authority",
+            )));
         };
-        let owner = shell_contract::ipc::NativeRequestOwner { view: cx.sender.view, context };
+        let owner = shell_contract::ipc::NativeRequestOwner {
+            view: cx.sender.view,
+            context,
+        };
         let cancel = cx.cancel.clone();
         let view = cx.sender.view;
         let work = env.clone();
@@ -298,7 +379,11 @@ pub fn routes(services: &Services, provided: &Rc<Provided>) -> Result<Vec<Route>
         core: core.clone(),
         provided: Rc::downgrade(provided),
     }));
-    provided.add::<dyn main_core::packages::electron_utils::recovery_contract::RecoveryEditorContract<ViewId, shell_contract::ipc::RecoveryOpenTarget>>(Rc::new(SheetsViews(core.clone())));
+    provided
+        .add::<dyn main_core::packages::electron_utils::recovery_contract::RecoveryEditorContract<
+                ViewId,
+                shell_contract::ipc::RecoveryOpenTarget,
+            >>(Rc::new(SheetsViews(core.clone())));
 
     let mut routes = Vec::new();
 
@@ -308,12 +393,25 @@ pub fn routes(services: &Services, provided: &Rc<Provided>) -> Result<Vec<Route>
         "sheets:consume-new-blank",
         move |cx, _args| {
             let mut state = c.state.borrow_mut();
-            let matches = state.pending_new_blank.as_ref().is_some_and(|entry| match &entry.target {
-                None => true,
-                Some((view, created)) => *view == cx.sender.view && created.is_active()
-                    && cx.native.as_ref().and_then(|native| native.renderer()).is_some_and(|actual| actual.same_generation(created)),
-            });
-            if !matches { return Ok(IpcValue::Bool(false)); }
+            let matches =
+                state
+                    .pending_new_blank
+                    .as_ref()
+                    .is_some_and(|entry| match &entry.target {
+                        None => true,
+                        Some((view, created)) => {
+                            *view == cx.sender.view
+                                && created.is_active()
+                                && cx
+                                    .native
+                                    .as_ref()
+                                    .and_then(|native| native.renderer())
+                                    .is_some_and(|actual| actual.same_generation(created))
+                        }
+                    });
+            if !matches {
+                return Ok(IpcValue::Bool(false));
+            }
             if let Some(entry) = state.pending_new_blank.take() {
                 entry.identity.set(self::core::QueueOutcome::Consumed);
                 state.blank_revision = std::rc::Rc::new(());
@@ -327,16 +425,30 @@ pub fn routes(services: &Services, provided: &Rc<Provided>) -> Result<Vec<Route>
     routes.push(route::invoke(
         "sheets:has-queued-workbook",
         move |cx, _args| {
-            c.headless_effect(cx, || IpcValue::Bool(c.state.borrow().queued_workbooks.contains_key(&cx.sender.view)))
+            c.headless_effect(cx, || {
+                IpcValue::Bool(
+                    c.state
+                        .borrow()
+                        .queued_workbooks
+                        .contains_key(&cx.sender.view),
+                )
+            })
         },
     ));
     let c = core.clone();
     routes.push(route::invoke(
         "sheets:consume-headless-export",
         move |cx, _args| {
-            c.headless_effect(cx, || match c.state.borrow_mut().headless_targets.remove(&cx.sender.view) {
-                Some(target) => IpcValue::String(target),
-                None => IpcValue::Null,
+            c.headless_effect(cx, || {
+                match c
+                    .state
+                    .borrow_mut()
+                    .headless_targets
+                    .remove(&cx.sender.view)
+                {
+                    Some(target) => IpcValue::String(target),
+                    None => IpcValue::Null,
+                }
             })
         },
     ));
@@ -344,7 +456,12 @@ pub fn routes(services: &Services, provided: &Rc<Provided>) -> Result<Vec<Route>
     routes.push(route::send(
         "sheets:headless-export-done",
         move |cx, args| {
-            let waiter = c.headless_effect(cx, || c.state.borrow_mut().headless_waiters.remove(&cx.sender.view))?;
+            let waiter = c.headless_effect(cx, || {
+                c.state
+                    .borrow_mut()
+                    .headless_waiters
+                    .remove(&cx.sender.view)
+            })?;
             if let Some(settle) = waiter {
                 let result = args.get(0);
                 settle(core::HeadlessReport {
@@ -367,9 +484,10 @@ pub fn routes(services: &Services, provided: &Rc<Provided>) -> Result<Vec<Route>
         Ok(IpcValue::Undefined)
     }));
     let c = core.clone();
-    routes.push(route::invoke("workbook:saved-open-result", move |cx, args| {
-        c.saved_open_result(cx, args.get(0))
-    }));
+    routes.push(route::invoke(
+        "workbook:saved-open-result",
+        move |cx, args| c.saved_open_result(cx, args.get(0)),
+    ));
     let c = core.clone();
     routes.push(route::send("workbook:pending-edits", move |cx, args| {
         misc::pending_edits(&c, cx.sender.view, args.get(0));
@@ -382,15 +500,26 @@ pub fn routes(services: &Services, provided: &Rc<Provided>) -> Result<Vec<Route>
             if let IpcValue::String(token) = args.get(1) {
                 let (scope, transition, in_flight, require_write, writes, failure) = {
                     let state = c.state.borrow();
-                    state.owned_saves.get(token).map(|waiter| (
-                        waiter.scope.clone(), waiter.transition.clone(), waiter.in_flight, waiter.require_write, waiter.writes, waiter.failure.clone(),
-                    ))
-                }.ok_or_else(|| thrown("The workbook save acknowledgement is no longer pending"))?;
+                    state.owned_saves.get(token).map(|waiter| {
+                        (
+                            waiter.scope.clone(),
+                            waiter.transition.clone(),
+                            waiter.in_flight,
+                            waiter.require_write,
+                            waiter.writes,
+                            waiter.failure.clone(),
+                        )
+                    })
+                }
+                .ok_or_else(|| thrown("The workbook save acknowledgement is no longer pending"))?;
                 if transition.has_receipt() {
                     let actual = cx.native.as_ref().and_then(|native| native.renderer());
                     let expected = scope.destination.context.renderer();
-                    if cx.sender.view != scope.destination.view ||
-                        !actual.zip(expected).is_some_and(|(actual, expected)| actual.same_generation(expected)) {
+                    if cx.sender.view != scope.destination.view
+                        || !actual
+                            .zip(expected)
+                            .is_some_and(|(actual, expected)| actual.same_generation(expected))
+                    {
                         return Err(thrown("The save response belongs to another renderer"));
                     }
                 } else {
@@ -400,17 +529,31 @@ pub fn routes(services: &Services, provided: &Rc<Provided>) -> Result<Vec<Route>
                     (Some(error), _) => Err(error),
                     (None, IpcValue::String(message)) => Err(thrown(message.clone())),
                     _ if in_flight => Err(thrown("The workbook save has not finished")),
-                    _ if require_write && writes == 0 && matches!(args.get(0), IpcValue::Bool(true)) =>
-                        Err(thrown("The workbook save acknowledged success without a completed write")),
+                    _ if require_write
+                        && writes == 0
+                        && matches!(args.get(0), IpcValue::Bool(true)) =>
+                    {
+                        Err(thrown(
+                            "The workbook save acknowledged success without a completed write",
+                        ))
+                    }
                     _ => Ok(matches!(args.get(0), IpcValue::Bool(true))),
                 };
                 if transition.has_receipt() {
                     let mut waiter = None;
-                    transition.terminal(&mut || {
-                        waiter = c.state.borrow_mut().owned_saves.remove(token);
-                        if waiter.is_some() { Ok(()) } else { Err("The workbook save request is no longer pending".into()) }
-                    }).map_err(thrown)?;
-                    if let Some(waiter) = waiter { c.complete_owned_save(waiter, result); }
+                    transition
+                        .terminal(&mut || {
+                            waiter = c.state.borrow_mut().owned_saves.remove(token);
+                            if waiter.is_some() {
+                                Ok(())
+                            } else {
+                                Err("The workbook save request is no longer pending".into())
+                            }
+                        })
+                        .map_err(thrown)?;
+                    if let Some(waiter) = waiter {
+                        c.complete_owned_save(waiter, result);
+                    }
                 } else {
                     c.finish_owned_save(token, result);
                 }
@@ -456,17 +599,26 @@ pub fn routes(services: &Services, provided: &Rc<Provided>) -> Result<Vec<Route>
     ));
 
     // ---- on a worker ----
-    routes.push(open_worker(&env, "workbook:select", |env, view, _args, authority| {
-        open::open_selected_workbook(env, view, None, authority).inspect_err(|error| {
-            // A headless export has no dialog to report a failed open through: settle it
-            let message = format!("the input workbook did not open ({error})");
-            let expected = authority.owner.as_ref().and_then(|owner| owner.context.renderer().cloned());
-            env.core(move |core| core.fail_headless_export(view, expected.as_ref(), &message));
-        })
-    }));
-    routes.push(open_worker(&env, "workbook:reopen", |env, view, mut args, authority| {
-        reopen(env, view, args.take(0), authority)
-    }));
+    routes.push(open_worker(
+        &env,
+        "workbook:select",
+        |env, view, _args, authority| {
+            open::open_selected_workbook(env, view, None, authority).inspect_err(|error| {
+                // A headless export has no dialog to report a failed open through: settle it
+                let message = format!("the input workbook did not open ({error})");
+                let expected = authority
+                    .owner
+                    .as_ref()
+                    .and_then(|owner| owner.context.renderer().cloned());
+                env.core(move |core| core.fail_headless_export(view, expected.as_ref(), &message));
+            })
+        },
+    ));
+    routes.push(open_worker(
+        &env,
+        "workbook:reopen",
+        |env, view, mut args, authority| reopen(env, view, args.take(0), authority),
+    ));
     routes.push(open_worker(
         &env,
         "workbook:select-for-merge",
@@ -492,7 +644,11 @@ pub fn routes(services: &Services, provided: &Rc<Provided>) -> Result<Vec<Route>
                 IpcValue::String(token) => Some(token.clone()),
                 _ => return reply.reply(Err(thrown("Invalid owned workbook save request"))),
             };
-            let owned = match token.as_deref().map(|token| core_at(env.slot).owned_save_for(cx, token, &input)).transpose() {
+            let owned = match token
+                .as_deref()
+                .map(|token| core_at(env.slot).owned_save_for(cx, token, &input))
+                .transpose()
+            {
                 Ok(owned) => owned,
                 Err(error) => return reply.reply(Err(error)),
             };
@@ -548,9 +704,24 @@ pub fn routes(services: &Services, provided: &Rc<Provided>) -> Result<Vec<Route>
         "workbook:auto-rename",
         |env, view, mut args| save::auto_rename(env, view, args.take(0), args.take(1)),
     ));
-    routes.push(copy_worker(&env, "workbook:export-csv", "csv", |env, view, input, owned, _, _| save::export_csv(env, view, input, owned)));
-    routes.push(copy_worker(&env, "workbook:export-ods", "ods", |env, view, input, owned, _, _| save::export_ods(env, view, input, owned)));
-    routes.push(copy_worker(&env, "workbook:export-pdf", "pdf", save::export_pdf));
+    routes.push(copy_worker(
+        &env,
+        "workbook:export-csv",
+        "csv",
+        |env, view, input, owned, _, _| save::export_csv(env, view, input, owned),
+    ));
+    routes.push(copy_worker(
+        &env,
+        "workbook:export-ods",
+        "ods",
+        |env, view, input, owned, _, _| save::export_ods(env, view, input, owned),
+    ));
+    routes.push(copy_worker(
+        &env,
+        "workbook:export-pdf",
+        "pdf",
+        save::export_pdf,
+    ));
     routes.push({
         let env = env.clone();
         route::invoke_later("workbook:create-document", move |cx, mut args, reply| {
@@ -569,11 +740,15 @@ pub fn routes(services: &Services, provided: &Rc<Provided>) -> Result<Vec<Route>
         })
     });
     routes.push(prompt_worker(
-        &env, "workbook:csv-save-confirm", 0,
+        &env,
+        "workbook:csv-save-confirm",
+        0,
         |env, view, _args, scope| save::csv_save_confirm(env, view, scope),
     ));
     routes.push(prompt_worker(
-        &env, "workbook:withheld-export-choice", 1,
+        &env,
+        "workbook:withheld-export-choice",
+        1,
         |env, view, args, scope| save::withheld_export_choice(env, view, args.get(0), scope),
     ));
     routes.push(worker(
@@ -674,12 +849,16 @@ pub fn routes(services: &Services, provided: &Rc<Provided>) -> Result<Vec<Route>
         |env, view, args| misc::files_read_image(env, view, args.get(0)),
     ));
     routes.push(screen_worker(
-        &env, "sheets:capture-screen-sources",
+        &env,
+        "sheets:capture-screen-sources",
         |env, view, _args, owner, cancel| misc::capture_screen_sources(env, view, owner, cancel),
     ));
     routes.push(screen_worker(
-        &env, "sheets:capture-screen-source",
-        |env, view, args, owner, cancel| misc::capture_screen_source(env, view, args.get(0), owner, cancel),
+        &env,
+        "sheets:capture-screen-source",
+        |env, view, args, owner, cancel| {
+            misc::capture_screen_source(env, view, args.get(0), owner, cancel)
+        },
     ));
     Ok(routes)
 }
@@ -779,7 +958,12 @@ fn select_for_merge(env: &Env, view: ViewId, authority: &open::OpenAuthority) ->
 }
 
 /// `openWorkbooksForMerge`: chat attachments as merge-source sessions, no dialog
-fn open_for_merge(env: &Env, view: ViewId, input: IpcValue, authority: &open::OpenAuthority) -> Reply {
+fn open_for_merge(
+    env: &Env,
+    view: ViewId,
+    input: IpcValue,
+    authority: &open::OpenAuthority,
+) -> Reply {
     use std::path::Path;
     schema::parse(
         &schema::array(schema::string().min(1)).min(1).max(20),
@@ -854,7 +1038,13 @@ pub fn probe_trigger(
         },
         // `writeSheetsCopiesNow()`
         "workbook:write-sheets-copies-now" => match views() {
-            Some(tabs) => tabs.write_copies_now(Box::new(move |result| then(result.map(|_| IpcValue::Undefined).map_err(|error| crate::value::thrown(error.0))))),
+            Some(tabs) => tabs.write_copies_now(Box::new(move |result| {
+                then(
+                    result
+                        .map(|_| IpcValue::Undefined)
+                        .map_err(|error| crate::value::thrown(error.0)),
+                )
+            })),
             None => then(Err(crate::value::thrown(
                 "the sheets module is not registered",
             ))),

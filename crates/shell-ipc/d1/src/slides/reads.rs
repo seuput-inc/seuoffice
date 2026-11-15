@@ -58,21 +58,30 @@ fn with_slide<R>(
     f: impl FnOnce(&super::state::SlideSession, usize) -> R,
 ) -> Result<Option<R>, IpcError> {
     let state = app.state.borrow();
-    let Some(s) = state.session(cx.sender.view) else { return Ok(None) };
+    let Some(s) = state.session(cx.sender.view) else {
+        return Ok(None);
+    };
     let paths = app.engine.slide_paths(s.deck()).map_err(|e| thrown(e.0))?;
-    let Some(index) = slide_index(slide, paths.len()) else { return Ok(None) };
+    let Some(index) = slide_index(slide, paths.len()) else {
+        return Ok(None);
+    };
     Ok(Some(f(s, index)))
 }
 
 pub fn get_notes(app: &App, cx: &CallContext, args: Args) -> Reply {
     let notes = with_slide(app, cx, args.get(0), |s, i| {
         app.engine.slide_notes(s.deck(), i)
-    })?.transpose().map_err(|error| thrown(error.0))?.unwrap_or_default();
+    })?
+    .transpose()
+    .map_err(|error| thrown(error.0))?
+    .unwrap_or_default();
     Ok(string(notes))
 }
 
 pub fn get_comments(app: &App, cx: &CallContext, args: Args) -> Reply {
-    match with_slide(app, cx, args.get(0), |s, i| app.engine.slide_comments(s.deck(), i))? {
+    match with_slide(app, cx, args.get(0), |s, i| {
+        app.engine.slide_comments(s.deck(), i)
+    })? {
         Some(result) => result.map_err(|error| thrown(error.0)),
         None => Ok(IpcValue::Array(Vec::new())),
     }
@@ -83,9 +92,17 @@ pub fn get_all_comments(app: &App, cx: &CallContext, _args: Args) -> Reply {
     let Some(s) = state.session(cx.sender.view) else {
         return Ok(IpcValue::Array(Vec::new()));
     };
-    let count = app.engine.slide_paths(s.deck()).map_err(|e| thrown(e.0))?.len();
+    let count = app
+        .engine
+        .slide_paths(s.deck())
+        .map_err(|e| thrown(e.0))?
+        .len();
     let comments = (0..count)
-        .map(|i| app.engine.slide_comments(s.deck(), i).map_err(|error| thrown(error.0)))
+        .map(|i| {
+            app.engine
+                .slide_comments(s.deck(), i)
+                .map_err(|error| thrown(error.0))
+        })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(IpcValue::Array(comments))
 }
@@ -103,18 +120,31 @@ fn comment_edit(
         return null();
     };
     let slide = prop(op_value, "slideIndex")?;
-    let Some(index) = slide_index(slide, app.engine.slide_paths(s.deck()).map_err(|e| thrown(e.0))?.len()) else {
+    let Some(index) = slide_index(
+        slide,
+        app.engine
+            .slide_paths(s.deck())
+            .map_err(|e| thrown(e.0))?
+            .len(),
+    ) else {
         return null();
     };
     let o = build(app, slide);
     if app
-        .session_txn(s, &super::session::render_owner(cx)?, TxnRequest::atomic(vec![o]), OpSource::Edit)?
+        .session_txn(
+            s,
+            &super::session::render_owner(cx)?,
+            TxnRequest::atomic(vec![o]),
+            OpSource::Edit,
+        )?
         .is_none()
     {
         return null();
     }
     s.core.mark_meta_dirty();
-    app.engine.slide_comments(s.deck(), index).map_err(|error| thrown(error.0))
+    app.engine
+        .slide_comments(s.deck(), index)
+        .map_err(|error| thrown(error.0))
 }
 
 pub fn add_comment(app: &App, cx: &CallContext, args: Args) -> Reply {
@@ -144,7 +174,9 @@ pub fn get_link(app: &App, cx: &CallContext, args: Args) -> Reply {
     let Some(s) = state.session(cx.sender.view) else {
         return null();
     };
-    app.engine.element_link(s.deck(), args.get(0), args.get(1)).map_err(|error| thrown(error.0))
+    app.engine
+        .element_link(s.deck(), args.get(0), args.get(1))
+        .map_err(|error| thrown(error.0))
 }
 
 /// the schemes a deck link may carry into the package (`DECK_LINK_PROTOCOLS`)
@@ -171,8 +203,15 @@ pub fn set_link(app: &App, cx: &CallContext, args: Args) -> Reply {
             .set("link", field(op_value, "target").clone())
             .build();
         Ok(
-            match app.session_txn(s, &super::session::render_owner(cx)?, TxnRequest::atomic(vec![o]), OpSource::Edit)? {
-                Some(_) => or_null(app.rebuild_slide(s, &super::session::render_owner(cx)?, slide)?),
+            match app.session_txn(
+                s,
+                &super::session::render_owner(cx)?,
+                TxnRequest::atomic(vec![o]),
+                OpSource::Edit,
+            )? {
+                Some(_) => {
+                    or_null(app.rebuild_slide(s, &super::session::render_owner(cx)?, slide)?)
+                }
                 None => IpcValue::Null,
             },
         )
@@ -184,7 +223,11 @@ pub fn get_slide_links(app: &App, cx: &CallContext, args: Args) -> Reply {
     let Some(s) = state.session(cx.sender.view) else {
         return Ok(IpcValue::Array(Vec::new()));
     };
-    let IpcValue::Array(items) = app.engine.slide_links(s.deck(), args.get(0)).map_err(|error| thrown(error.0))? else {
+    let IpcValue::Array(items) = app
+        .engine
+        .slide_links(s.deck(), args.get(0))
+        .map_err(|error| thrown(error.0))?
+    else {
         return Ok(IpcValue::Array(Vec::new()));
     };
     Ok(IpcValue::Array(
@@ -205,7 +248,11 @@ pub fn get_run_links(app: &App, cx: &CallContext, args: Args) -> Reply {
     let Some(s) = state.session(cx.sender.view) else {
         return Ok(IpcValue::Array(Vec::new()));
     };
-    let IpcValue::Array(items) = app.engine.run_links(s.deck(), args.get(0)).map_err(|error| thrown(error.0))? else {
+    let IpcValue::Array(items) = app
+        .engine
+        .run_links(s.deck(), args.get(0))
+        .map_err(|error| thrown(error.0))?
+    else {
         return Ok(IpcValue::Array(Vec::new()));
     };
     Ok(IpcValue::Array(
@@ -232,7 +279,9 @@ pub fn get_header_footer(app: &App, cx: &CallContext, args: Args) -> Reply {
     Ok(with_slide(app, cx, args.get(0), |s, i| {
         app.engine.header_footer(s.deck(), i)
     })?
-    .transpose().map_err(|error| thrown(error.0))?.unwrap_or_else(|| {
+    .transpose()
+    .map_err(|error| thrown(error.0))?
+    .unwrap_or_else(|| {
         obj([
             ("footer", IpcValue::Null),
             ("slideNum", IpcValue::Bool(false)),
@@ -245,14 +294,18 @@ pub fn get_transition(app: &App, cx: &CallContext, args: Args) -> Reply {
     Ok(with_slide(app, cx, args.get(0), |s, i| {
         app.engine.slide_transition(s.deck(), i)
     })?
-    .transpose().map_err(|error| thrown(error.0))?.unwrap_or_else(|| string("none")))
+    .transpose()
+    .map_err(|error| thrown(error.0))?
+    .unwrap_or_else(|| string("none")))
 }
 
 pub fn get_show_timing(app: &App, cx: &CallContext, args: Args) -> Reply {
     Ok(with_slide(app, cx, args.get(0), |s, i| {
         app.engine.show_timing(s.deck(), i)
     })?
-    .transpose().map_err(|error| thrown(error.0))?.unwrap_or_else(|| {
+    .transpose()
+    .map_err(|error| thrown(error.0))?
+    .unwrap_or_else(|| {
         obj([
             ("advanceMs", IpcValue::Null),
             ("narrationIds", IpcValue::Array(Vec::new())),
@@ -277,12 +330,16 @@ pub fn get_animations(app: &App, cx: &CallContext, args: Args) -> Reply {
     Ok(with_slide(app, cx, args.get(0), |s, i| {
         app.engine.animations(s.deck(), i, &labels)
     })?
-    .transpose().map_err(|error| thrown(error.0))?.unwrap_or(IpcValue::Array(Vec::new())))
+    .transpose()
+    .map_err(|error| thrown(error.0))?
+    .unwrap_or(IpcValue::Array(Vec::new())))
 }
 
 pub fn get_shape_keys(app: &App, cx: &CallContext, args: Args) -> Reply {
     Ok(with_slide(app, cx, args.get(0), |s, i| {
         app.engine.shape_keys(s.deck(), i)
     })?
-    .transpose().map_err(|error| thrown(error.0))?.unwrap_or(IpcValue::Array(Vec::new())))
+    .transpose()
+    .map_err(|error| thrown(error.0))?
+    .unwrap_or(IpcValue::Array(Vec::new())))
 }

@@ -91,7 +91,7 @@ impl Options {
             partial: std::env::var(PARTIAL_ENV).is_ok_and(|v| v == "1"),
             measure,
             headless_output,
-            invocation_shutdown: shell_contract::runtime::CancelToken::new(),
+            invocation_shutdown: shell_contract::runtime::CancelToken::default(),
         })
     }
 
@@ -539,7 +539,7 @@ fn main() {
     let setup_paths = paths.clone();
     let setup_core = core.clone();
     let invocation_shutdown = options.invocation_shutdown.clone();
-    let cleanup_shutdown = shell_contract::runtime::CancelToken::new();
+    let cleanup_shutdown = shell_contract::runtime::CancelToken::default();
     let setup_cleanup_shutdown = cleanup_shutdown.clone();
     let build_failure_output = options.headless_output.clone();
     let application = builder

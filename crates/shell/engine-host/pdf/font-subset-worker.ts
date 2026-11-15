@@ -55,7 +55,8 @@ async function subset(font: Uint8Array, text: string): Promise<Uint8Array> {
   let result = 0
   try {
     fontPtr = hb.malloc(font.byteLength)
-    if (!fontPtr && font.byteLength !== 0) throw new Error('HarfBuzz could not allocate font memory')
+    if (!fontPtr && font.byteLength !== 0)
+      throw new Error('HarfBuzz could not allocate font memory')
     new Uint8Array(hb.memory.buffer).set(font, fontPtr)
     blob = hb.hb_blob_create(fontPtr, font.byteLength, 2, 0, 0)
     face = hb.hb_face_create(blob, 0)
@@ -84,13 +85,19 @@ async function subset(font: Uint8Array, text: string): Promise<Uint8Array> {
 }
 
 let started = false
-worker.onmessage = async event => {
+worker.onmessage = async (event) => {
   if (started) return
   started = true
   try {
     const input = event.data
-    if (!input || typeof input !== 'object' || !('fontBase64' in input) || typeof input.fontBase64 !== 'string' ||
-        !('text' in input) || typeof input.text !== 'string') {
+    if (
+      !input ||
+      typeof input !== 'object' ||
+      !('fontBase64' in input) ||
+      typeof input.fontBase64 !== 'string' ||
+      !('text' in input) ||
+      typeof input.text !== 'string'
+    ) {
       throw new TypeError('invalid PDF font subset request')
     }
     const output = await subset(decode(input.fontBase64), input.text)

@@ -21,8 +21,8 @@ use jscompat::{JsonValue, js_regex, slice_utf16, trim};
 
 use super::formats::{SessionFamily, capability_report};
 use super::session_tools::{
-    FamilyDriver, ObjectDraft, ResolveOptions, SharedSessionHost, await_host, content_target, is_true,
-    js_object, string_arg, string_or_empty, sync_handler, with_target,
+    FamilyDriver, ObjectDraft, ResolveOptions, SharedSessionHost, await_host, content_target,
+    is_true, js_object, string_arg, string_or_empty, sync_handler, with_target,
 };
 use crate::packages::i18n::PRODUCT_NAME;
 use crate::packages::zod::{ZodType, z};
@@ -97,7 +97,6 @@ pub fn docs_run_call(wc_id: i64, command: McpEditorCommandName, payload: JsonVal
 /// `DocToolDeps.defaultSaveDir`: directory generated files land in when the
 /// caller gives no path
 pub type DefaultSaveDir<'h> = Rc<dyn Fn() -> String + 'h>;
-
 
 /// `DocToolDeps`
 pub struct DocToolDeps<'h> {
@@ -642,7 +641,9 @@ fn open_in_seuoffice_tool<'h>(deps: Rc<DocToolDeps<'h>>) -> McpToolDefinition<'h
                 return ToolStep::Done(Err(format!("file not found: {file_path}")));
             }
             if !deps.open_in_tab {
-                return ToolStep::Done(Err("opening files is not available in this build".to_owned()));
+                return ToolStep::Done(Err(
+                    "opening files is not available in this build".to_owned()
+                ));
             }
             let call = HostCall {
                 control: "NativeOpen",
@@ -654,7 +655,9 @@ fn open_in_seuoffice_tool<'h>(deps: Rc<DocToolDeps<'h>>) -> McpToolDefinition<'h
                     ("ok", JsonValue::Bool(true)),
                     ("path", JsonValue::String(file_path)),
                 ])))),
-                Ok(_) => ToolStep::Done(Err(format!("could not open {file_path} in {PRODUCT_NAME}"))),
+                Ok(_) => {
+                    ToolStep::Done(Err(format!("could not open {file_path} in {PRODUCT_NAME}")))
+                }
                 Err(error) => ToolStep::Done(Err(error)),
             })
         }),
@@ -1015,18 +1018,39 @@ mod tests {
         std::fs::write(&path, b"synthetic").unwrap();
         let path_text = path.to_string_lossy().into_owned();
         let deps = Rc::new(DocToolDeps {
-            version: "test".into(), default_save_dir: Rc::new(String::new), background: None,
-            open_in_tab: true, docs: false, extra_formats: None, cli: None, resolve_target: false,
+            version: "test".into(),
+            default_save_dir: Rc::new(String::new),
+            background: None,
+            open_in_tab: true,
+            docs: false,
+            extra_formats: None,
+            cli: None,
+            resolve_target: false,
         });
         let mut tool = open_in_seuoffice_tool(deps);
-        let step = (tool.handler)(js_object(vec![("path", JsonValue::String(path_text.clone()))]));
-        let ToolStep::Await { call, then } = step else { panic!("open must await the host") };
+        let step = (tool.handler)(js_object(vec![(
+            "path",
+            JsonValue::String(path_text.clone()),
+        )]));
+        let ToolStep::Await { call, then } = step else {
+            panic!("open must await the host")
+        };
         assert_eq!((call.control, call.method), ("NativeOpen", "openPath"));
         assert_eq!(call.args, vec![JsonValue::String(path_text)]);
-        assert!(matches!(then(Ok(Some(JsonValue::Bool(true)))), ToolStep::Done(Ok(Some(_)))));
-        let step = (tool.handler)(js_object(vec![("path", JsonValue::String(path.to_string_lossy().into_owned()))]));
-        let ToolStep::Await { then, .. } = step else { panic!("open must await the host") };
-        assert!(matches!(then(Err("creation failed".into())), ToolStep::Done(Err(error)) if error == "creation failed"));
+        assert!(matches!(
+            then(Ok(Some(JsonValue::Bool(true)))),
+            ToolStep::Done(Ok(Some(_)))
+        ));
+        let step = (tool.handler)(js_object(vec![(
+            "path",
+            JsonValue::String(path.to_string_lossy().into_owned()),
+        )]));
+        let ToolStep::Await { then, .. } = step else {
+            panic!("open must await the host")
+        };
+        assert!(
+            matches!(then(Err("creation failed".into())), ToolStep::Done(Err(error)) if error == "creation failed")
+        );
         std::fs::remove_file(path).unwrap();
     }
 }

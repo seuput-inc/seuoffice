@@ -156,7 +156,11 @@ impl ChatStoreError {
     }
 
     pub fn need_install_id() -> Self {
-        Self { message: "install identity is required".into(), code: None, kind: ChatStoreErrorKind::NeedInstallId }
+        Self {
+            message: "install identity is required".into(),
+            code: None,
+            kind: ChatStoreErrorKind::NeedInstallId,
+        }
     }
 }
 
@@ -998,7 +1002,10 @@ pub struct OutsideChatAssociation {
 }
 
 fn acknowledge_outside_pending(latest: &mut JsMap<(u64, ProjectId)>, key: &str, serial: u64) {
-    if latest.get(key).is_some_and(|(current, _)| *current == serial) {
+    if latest
+        .get(key)
+        .is_some_and(|(current, _)| *current == serial)
+    {
         latest.delete(key);
     }
 }
@@ -1070,7 +1077,11 @@ impl<G: ChatStoreGuide, H: ChatStoreHost> ProjectChatStore<G, H> {
         std::mem::take(&mut self.pending_outside)
     }
 
-    pub fn finish_outside_write(&mut self, item: OutsideChatAssociation, result: Result<(), String>) {
+    pub fn finish_outside_write(
+        &mut self,
+        item: OutsideChatAssociation,
+        result: Result<(), String>,
+    ) {
         let key = format!("{}\n{}", item.doc_path, item.project_id);
         acknowledge_outside_pending(&mut self.outside_pending_latest, &key, item.serial);
         match result {
@@ -1302,9 +1313,18 @@ impl<G: ChatStoreGuide, H: ChatStoreHost> ProjectChatStore<G, H> {
     }
 
     /// Whether `visible` will reach the install identity, without acquiring it.
-    fn visible_needs_install_id(&self, project_id: &str, root: &str, data_dir: &str, chat_id: &str) -> bool {
-        parse_info(read_folder_text(root, &chat_path(data_dir, &info_name(chat_id))).as_deref(), chat_id)
-            .is_some_and(|info| info.project_id() == project_id)
+    fn visible_needs_install_id(
+        &self,
+        project_id: &str,
+        root: &str,
+        data_dir: &str,
+        chat_id: &str,
+    ) -> bool {
+        parse_info(
+            read_folder_text(root, &chat_path(data_dir, &info_name(chat_id))).as_deref(),
+            chat_id,
+        )
+        .is_some_and(|info| info.project_id() == project_id)
     }
 
     /// Check the same candidate files as `visible_chats`, before any queued
@@ -1312,50 +1332,103 @@ impl<G: ChatStoreGuide, H: ChatStoreHost> ProjectChatStore<G, H> {
     pub fn preflight_list_chats(&mut self, project_id: &str) -> Result<bool, ChatStoreError> {
         self.require_idle_io()?;
         assert_valid_id(project_id, "project id")?;
-        let Some(root) = non_empty(self.guide.project_root(project_id)) else { return Ok(false); };
+        let Some(root) = non_empty(self.guide.project_root(project_id)) else {
+            return Ok(false);
+        };
         let data_dir = data_dir_name(&root);
-        Ok(plain_folder_entries(&root, &[data_dir.as_str(), chats_dir()]).into_iter().any(|name| {
-            name.strip_suffix(chat_info_ext()).is_some_and(|id|
-                is_valid_project_id(id) && self.visible_needs_install_id(project_id, &root, &data_dir, id))
-        }))
+        Ok(
+            plain_folder_entries(&root, &[data_dir.as_str(), chats_dir()])
+                .into_iter()
+                .any(|name| {
+                    name.strip_suffix(chat_info_ext()).is_some_and(|id| {
+                        is_valid_project_id(id)
+                            && self.visible_needs_install_id(project_id, &root, &data_dir, id)
+                    })
+                }),
+        )
     }
 
-    pub fn preflight_chat_info(&mut self, chat_ref: &ProjectChatRef) -> Result<bool, ChatStoreError> {
+    pub fn preflight_chat_info(
+        &mut self,
+        chat_ref: &ProjectChatRef,
+    ) -> Result<bool, ChatStoreError> {
         self.require_idle_io()?;
         assert_valid_id(&chat_ref.project_id, "project id")?;
         assert_valid_id(&chat_ref.chat_id, "chat id")?;
-        let Some(root) = non_empty(self.guide.project_root(&chat_ref.project_id)) else { return Ok(false); };
+        let Some(root) = non_empty(self.guide.project_root(&chat_ref.project_id)) else {
+            return Ok(false);
+        };
         let data_dir = data_dir_name(&root);
-        Ok(self.visible_needs_install_id(&chat_ref.project_id, &root, &data_dir, &chat_ref.chat_id))
+        Ok(
+            self.visible_needs_install_id(
+                &chat_ref.project_id,
+                &root,
+                &data_dir,
+                &chat_ref.chat_id,
+            ),
+        )
     }
 
     pub fn preflight_open_chat(&mut self, args: &JsonValue) -> Result<bool, ChatStoreError> {
         self.require_idle_io()?;
         let project_id = assert_id(prop(args, "projectId").as_deref(), "project id")?;
         let chat_id = assert_id(prop(args, "chatId").as_deref(), "chat id")?;
-        self.preflight_chat_info(&ProjectChatRef { project_id, chat_id })
+        self.preflight_chat_info(&ProjectChatRef {
+            project_id,
+            chat_id,
+        })
     }
 
-    pub fn preflight_chat_for_document(&mut self, project_id: &str, doc_path: &str) -> Result<bool, ChatStoreError> {
+    pub fn preflight_chat_for_document(
+        &mut self,
+        project_id: &str,
+        doc_path: &str,
+    ) -> Result<bool, ChatStoreError> {
         self.require_idle_io()?;
         assert_valid_id(project_id, "project id")?;
-        if !is_absolute(doc_path) { return Err(ChatStoreError::new("expected an absolute document path")); }
-        let Some(root) = non_empty(self.guide.project_root(project_id)) else { return Ok(false); };
-        if self.guide.document_relative_path(project_id, doc_path).is_some() {
+        if !is_absolute(doc_path) {
+            return Err(ChatStoreError::new("expected an absolute document path"));
+        }
+        let Some(root) = non_empty(self.guide.project_root(project_id)) else {
+            return Ok(false);
+        };
+        if self
+            .guide
+            .document_relative_path(project_id, doc_path)
+            .is_some()
+        {
             return self.preflight_list_chats(project_id);
         }
-        let selection = self.guide.get_selection(&SelectionTarget::Document { path: doc_path.to_owned() });
-        let chat_id = if selection.project_id.as_deref() == Some(project_id) { selection.initial_chat_id } else { None };
-        let Some(chat_id) = chat_id.filter(|id| is_valid_project_id(id)) else { return Ok(false); };
+        let selection = self.guide.get_selection(&SelectionTarget::Document {
+            path: doc_path.to_owned(),
+        });
+        let chat_id = if selection.project_id.as_deref() == Some(project_id) {
+            selection.initial_chat_id
+        } else {
+            None
+        };
+        let Some(chat_id) = chat_id.filter(|id| is_valid_project_id(id)) else {
+            return Ok(false);
+        };
         let data_dir = data_dir_name(&root);
         Ok(self.visible_needs_install_id(project_id, &root, &data_dir, &chat_id))
     }
 
     fn metadata_needs_install_id(&mut self, project_id: &str, chat_id: &str, root: &str) -> bool {
-        let chat = Chat { project_id, chat_id, root };
+        let chat = Chat {
+            project_id,
+            chat_id,
+            root,
+        };
         let state = self.state(&chat);
-        let needs = !state.other_project && state.materialized && !self.guide.is_unwritable(project_id)
-            && parse_info(read_folder_text(root, &chat_path(&state.data_dir, &info_name(chat_id))).as_deref(), chat_id).is_none();
+        let needs = !state.other_project
+            && state.materialized
+            && !self.guide.is_unwritable(project_id)
+            && parse_info(
+                read_folder_text(root, &chat_path(&state.data_dir, &info_name(chat_id))).as_deref(),
+                chat_id,
+            )
+            .is_none();
         self.check_in(&chat, state);
         needs
     }
@@ -1364,21 +1437,36 @@ impl<G: ChatStoreGuide, H: ChatStoreHost> ProjectChatStore<G, H> {
         self.require_idle_io()?;
         let project_id = assert_id(prop(args, "projectId").as_deref(), "project id")?;
         let chat_id = assert_id(prop(args, "chatId").as_deref(), "chat id")?;
-        let title = str_prop(args, "title").map_or_else(String::new, |title| one_line(&title, CHAT_TITLE_MAX_CHARS));
-        if title.is_empty() { return Err(ChatStoreError::new("a chat title cannot be empty")); }
+        let title = str_prop(args, "title")
+            .map_or_else(String::new, |title| one_line(&title, CHAT_TITLE_MAX_CHARS));
+        if title.is_empty() {
+            return Err(ChatStoreError::new("a chat title cannot be empty"));
+        }
         let root = self.root_of(&project_id)?;
         Ok(self.metadata_needs_install_id(&project_id, &chat_id, &root))
     }
 
-    pub fn preflight_attach_document(&mut self, chat_ref: &ProjectChatRef, doc_path: &str) -> Result<bool, ChatStoreError> {
+    pub fn preflight_attach_document(
+        &mut self,
+        chat_ref: &ProjectChatRef,
+        doc_path: &str,
+    ) -> Result<bool, ChatStoreError> {
         self.require_idle_io()?;
         let project_id = chat_ref.project_id.as_str();
         let chat_id = chat_ref.chat_id.as_str();
         assert_valid_id(project_id, "project id")?;
         assert_valid_id(chat_id, "chat id")?;
-        if !is_absolute(doc_path) { return Err(ChatStoreError::new("expected an absolute document path")); }
+        if !is_absolute(doc_path) {
+            return Err(ChatStoreError::new("expected an absolute document path"));
+        }
         let root = self.root_of(project_id)?;
-        if self.guide.document_relative_path(project_id, doc_path).is_none() { return Ok(false); }
+        if self
+            .guide
+            .document_relative_path(project_id, doc_path)
+            .is_none()
+        {
+            return Ok(false);
+        }
         Ok(self.metadata_needs_install_id(project_id, chat_id, &root))
     }
 
@@ -1414,7 +1502,11 @@ impl<G: ChatStoreGuide, H: ChatStoreHost> ProjectChatStore<G, H> {
     /// `writeInfo(projectId, chatId, state)`: writes the info's share of `state`:
     /// time, editor and documents of the messages on disk, documents attached
     /// meanwhile, and a pending rename or automatic title.
-    fn write_info(&mut self, chat: &Chat<'_>, state: &mut ChatState) -> Result<ProjectWriteResult, ChatStoreError> {
+    fn write_info(
+        &mut self,
+        chat: &Chat<'_>,
+        state: &mut ChatState,
+    ) -> Result<ProjectWriteResult, ChatStoreError> {
         let entries = &state.unrecorded;
         let attached = &state.attach_docs;
         let rename = state.title.clone();
@@ -1516,7 +1608,11 @@ impl<G: ChatStoreGuide, H: ChatStoreHost> ProjectChatStore<G, H> {
     }
 
     /// `flush(projectId, chatId, root, state)`: writes every pending message, then the info; emits the written messages
-    fn flush(&mut self, chat: &Chat<'_>, state: &mut ChatState) -> Result<ProjectWriteResult, ChatStoreError> {
+    fn flush(
+        &mut self,
+        chat: &Chat<'_>,
+        state: &mut ChatState,
+    ) -> Result<ProjectWriteResult, ChatStoreError> {
         let batch_len = state.pending.len();
         if batch_len > 0 {
             let existing = plain_file_in(
@@ -1565,15 +1661,21 @@ impl<G: ChatStoreGuide, H: ChatStoreHost> ProjectChatStore<G, H> {
         }
         for doc in docs {
             let key = format!("{doc}\n{project_id}");
-            let latest = self.outside_pending_latest.get(&key).map(|(_, id)| id)
+            let latest = self
+                .outside_pending_latest
+                .get(&key)
+                .map(|(_, id)| id)
                 .or_else(|| self.outside_recorded.get(&key));
             if latest.map(String::as_str) == Some(chat_id) {
                 continue;
             }
             if self.deferred_outside {
                 let serial = self.next_outside_serial;
-                self.next_outside_serial = serial.checked_add(1).expect("outside chat serial exhausted");
-                self.outside_pending_latest.set(key, (serial, chat_id.to_owned()));
+                self.next_outside_serial = serial
+                    .checked_add(1)
+                    .expect("outside chat serial exhausted");
+                self.outside_pending_latest
+                    .set(key, (serial, chat_id.to_owned()));
                 self.pending_outside.push(OutsideChatAssociation {
                     doc_path: doc.to_owned(),
                     project_id: project_id.to_owned(),
@@ -1730,7 +1832,9 @@ impl<G: ChatStoreGuide, H: ChatStoreHost> ProjectChatStore<G, H> {
         self.require_idle_io()?;
         let (project_id, chat_id, root) = self.validate_append(args, sender)?;
         if self.pending_append.has(&format!("{project_id}/{chat_id}")) {
-            return Err(ChatStoreError::new("chat append continuation is already pending"));
+            return Err(ChatStoreError::new(
+                "chat append continuation is already pending",
+            ));
         }
         let chat = Chat {
             project_id: &project_id,
@@ -1745,31 +1849,53 @@ impl<G: ChatStoreGuide, H: ChatStoreHost> ProjectChatStore<G, H> {
 
     /// Resume the metadata write only. The earlier message and listener event
     /// have already happened and must not be replayed.
-    pub fn resume_append(&mut self, continuation: AppendContinuation) -> Result<AppendProgress, ChatStoreError> {
+    pub fn resume_append(
+        &mut self,
+        continuation: AppendContinuation,
+    ) -> Result<AppendProgress, ChatStoreError> {
         self.require_idle_io()?;
         let key = format!("{}/{}", continuation.project_id, continuation.chat_id);
         if self.pending_append.get(&key) != Some(&continuation.ticket) {
-            return Err(ChatStoreError::new("chat append continuation is no longer active"));
+            return Err(ChatStoreError::new(
+                "chat append continuation is no longer active",
+            ));
         }
-        if self.guide.project_root(&continuation.project_id).as_deref() != Some(continuation.root.as_str()) {
+        if self.guide.project_root(&continuation.project_id).as_deref()
+            != Some(continuation.root.as_str())
+        {
             self.pending_append.delete(&key);
-            return Err(ChatStoreError::new("project changed while chat append was waiting"));
+            return Err(ChatStoreError::new(
+                "project changed while chat append was waiting",
+            ));
         }
         if data_dir_name(&continuation.root) != continuation.data_dir {
             self.pending_append.delete(&key);
-            return Err(ChatStoreError::new("project data folder changed while chat append was waiting"));
+            return Err(ChatStoreError::new(
+                "project data folder changed while chat append was waiting",
+            ));
         }
-        let chat = Chat { project_id: &continuation.project_id, chat_id: &continuation.chat_id, root: &continuation.root };
+        let chat = Chat {
+            project_id: &continuation.project_id,
+            chat_id: &continuation.chat_id,
+            root: &continuation.root,
+        };
         let mut state = self.state(&chat);
         let result = self.write_info(&chat, &mut state);
         self.check_in(&chat, state);
         match result {
-            Err(error) if error.kind == ChatStoreErrorKind::NeedInstallId => Ok(AppendProgress::NeedInstallId(continuation)),
-            Err(error) => { self.pending_append.delete(&key); Err(error) }
+            Err(error) if error.kind == ChatStoreErrorKind::NeedInstallId => {
+                Ok(AppendProgress::NeedInstallId(continuation))
+            }
+            Err(error) => {
+                self.pending_append.delete(&key);
+                Err(error)
+            }
             Ok(result) => {
                 self.pending_append.delete(&key);
                 Ok(AppendProgress::Done(match result {
-                    ProjectWriteResult::Ok => AppendOutcome::Saved { message: continuation.message },
+                    ProjectWriteResult::Ok => AppendOutcome::Saved {
+                        message: continuation.message,
+                    },
                     ProjectWriteResult::Unwritable => AppendOutcome::Unwritable,
                 }))
             }
@@ -1779,17 +1905,30 @@ impl<G: ChatStoreGuide, H: ChatStoreHost> ProjectChatStore<G, H> {
     /// Abandon the reply without repeating its already-completed append.
     pub fn cancel_append(&mut self, continuation: AppendContinuation) {
         let key = format!("{}/{}", continuation.project_id, continuation.chat_id);
-        if self.pending_append.get(&key) == Some(&continuation.ticket) { self.pending_append.delete(&key); }
+        if self.pending_append.get(&key) == Some(&continuation.ticket) {
+            self.pending_append.delete(&key);
+        }
     }
 
     /// Validate before queuing the install identity; no message is appended.
-    pub fn preflight_append(&mut self, args: &JsonValue, sender: &ChatSender) -> Result<(), ChatStoreError> {
+    pub fn preflight_append(
+        &mut self,
+        args: &JsonValue,
+        sender: &ChatSender,
+    ) -> Result<(), ChatStoreError> {
         self.require_idle_io()?;
         let (project_id, chat_id, root) = self.validate_append(args, sender)?;
-        let chat = Chat { project_id: &project_id, chat_id: &chat_id, root: &root };
+        let chat = Chat {
+            project_id: &project_id,
+            chat_id: &chat_id,
+            root: &root,
+        };
         let state = self.state(&chat);
         let result = if state.other_project {
-            Err(ChatStoreError::new(format!("chat {} belongs to another project", chat.chat_id)))
+            Err(ChatStoreError::new(format!(
+                "chat {} belongs to another project",
+                chat.chat_id
+            )))
         } else {
             Ok(())
         };
@@ -1797,7 +1936,11 @@ impl<G: ChatStoreGuide, H: ChatStoreHost> ProjectChatStore<G, H> {
         result
     }
 
-    fn validate_append(&mut self, args: &JsonValue, sender: &ChatSender) -> Result<(String, String, String), ChatStoreError> {
+    fn validate_append(
+        &mut self,
+        args: &JsonValue,
+        sender: &ChatSender,
+    ) -> Result<(String, String, String), ChatStoreError> {
         let project_id = assert_id(prop(args, "projectId").as_deref(), "project id")?;
         let chat_id = assert_id(prop(args, "chatId").as_deref(), "chat id")?;
         let role = str_prop(args, "role");
@@ -1810,7 +1953,9 @@ impl<G: ChatStoreGuide, H: ChatStoreHost> ProjectChatStore<G, H> {
         if !is_editor(&sender.editor) {
             return Err(ChatStoreError::new("invalid editor"));
         }
-        if let Some(doc_path) = sender.doc_path.as_deref() && !is_absolute(doc_path) {
+        if let Some(doc_path) = sender.doc_path.as_deref()
+            && !is_absolute(doc_path)
+        {
             return Err(ChatStoreError::new("expected an absolute document path"));
         }
         let root = self.root_of(&project_id)?;
@@ -1878,15 +2023,23 @@ impl<G: ChatStoreGuide, H: ChatStoreHost> ProjectChatStore<G, H> {
             return Ok(AppendProgress::Done(AppendOutcome::Unwritable));
         }
         match self.flush(chat, state) {
-            Ok(ProjectWriteResult::Ok) => Ok(AppendProgress::Done(AppendOutcome::Saved { message })),
-            Ok(ProjectWriteResult::Unwritable) => Ok(AppendProgress::Done(AppendOutcome::Unwritable)),
+            Ok(ProjectWriteResult::Ok) => {
+                Ok(AppendProgress::Done(AppendOutcome::Saved { message }))
+            }
+            Ok(ProjectWriteResult::Unwritable) => {
+                Ok(AppendProgress::Done(AppendOutcome::Unwritable))
+            }
             Err(error) if error.kind == ChatStoreErrorKind::NeedInstallId => {
                 let ticket = APPEND_TICKET.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let key = format!("{}/{}", chat.project_id, chat.chat_id);
                 self.pending_append.set(key, ticket);
                 Ok(AppendProgress::NeedInstallId(AppendContinuation {
-                    ticket, project_id: chat.project_id.into(), chat_id: chat.chat_id.into(),
-                    root: chat.root.into(), data_dir: state.data_dir.clone(), message,
+                    ticket,
+                    project_id: chat.project_id.into(),
+                    chat_id: chat.chat_id.into(),
+                    root: chat.root.into(),
+                    data_dir: state.data_dir.clone(),
+                    message,
                 }))
             }
             Err(error) => Err(error),
@@ -2089,48 +2242,122 @@ mod deferred_outside_tests {
     }
 
     #[derive(Default)]
-    struct IdentityGuide { ready: bool, update_ready: bool, appends: usize }
+    struct IdentityGuide {
+        ready: bool,
+        update_ready: bool,
+        appends: usize,
+    }
     impl ChatStoreGuide for IdentityGuide {
-        fn append_data(&mut self, _: &str, _: &str, _: &str, _: Option<&str>) -> ProjectWriteResult { self.appends += 1; ProjectWriteResult::Ok }
-        fn update_data(&mut self, _: &str, _: &str, _: ChatDataChange<'_>, _: Option<&str>) -> Result<DataUpdateOutcome, ChatStoreError> {
-            if self.update_ready { Ok(DataUpdateOutcome::Ok { written: true, text: None }) } else { Err(ChatStoreError::need_install_id()) }
+        fn append_data(
+            &mut self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: Option<&str>,
+        ) -> ProjectWriteResult {
+            self.appends += 1;
+            ProjectWriteResult::Ok
         }
-        fn data_path(&mut self, _: &str, _: &str, _: Option<&str>) -> Option<String> { None }
+        fn update_data(
+            &mut self,
+            _: &str,
+            _: &str,
+            _: ChatDataChange<'_>,
+            _: Option<&str>,
+        ) -> Result<DataUpdateOutcome, ChatStoreError> {
+            if self.update_ready {
+                Ok(DataUpdateOutcome::Ok {
+                    written: true,
+                    text: None,
+                })
+            } else {
+                Err(ChatStoreError::need_install_id())
+            }
+        }
+        fn data_path(&mut self, _: &str, _: &str, _: Option<&str>) -> Option<String> {
+            None
+        }
         fn install_id(&mut self) -> Result<String, ChatStoreError> {
-            if self.ready { Ok("installation".into()) } else { Err(ChatStoreError::need_install_id()) }
+            if self.ready {
+                Ok("installation".into())
+            } else {
+                Err(ChatStoreError::need_install_id())
+            }
         }
-        fn trust_state(&mut self, _: &str) -> ProjectTrustState { ProjectTrustState::Use }
-        fn is_unwritable(&mut self, _: &str) -> bool { false }
+        fn trust_state(&mut self, _: &str) -> ProjectTrustState {
+            ProjectTrustState::Use
+        }
+        fn is_unwritable(&mut self, _: &str) -> bool {
+            false
+        }
         fn mark_unwritable(&mut self, _: &str) {}
-        fn project_root(&mut self, _: &str) -> Option<String> { Some("/synthetic-project".into()) }
-        fn record_outside_chat(&mut self, _: &str, _: &str, _: &str) -> Result<(), String> { Ok(()) }
-        fn document_relative_path(&mut self, _: &str, _: &str) -> Option<String> { None }
+        fn project_root(&mut self, _: &str) -> Option<String> {
+            Some("/synthetic-project".into())
+        }
+        fn record_outside_chat(&mut self, _: &str, _: &str, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn document_relative_path(&mut self, _: &str, _: &str) -> Option<String> {
+            None
+        }
         fn get_selection(&mut self, _: &SelectionTarget) -> ProjectSelection {
-            ProjectSelection { project_id: None, initial_chat_id: None, unregistered_project_hint: None }
+            ProjectSelection {
+                project_id: None,
+                initial_chat_id: None,
+                unregistered_project_hint: None,
+            }
         }
     }
     struct IdentityHost;
     impl ChatStoreHost for IdentityHost {
-        fn trash(&mut self, _: &str) -> Result<(), String> { Ok(()) }
-        fn now_iso(&mut self) -> Result<String, ChatStoreError> { Ok("2025-01-01T00:00:00.000Z".into()) }
-        fn new_id(&mut self) -> String { "chat".into() }
+        fn trash(&mut self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn now_iso(&mut self) -> Result<String, ChatStoreError> {
+            Ok("2025-01-01T00:00:00.000Z".into())
+        }
+        fn new_id(&mut self) -> String {
+            "chat".into()
+        }
         fn warn(&mut self, _: &str, _: Option<&str>) {}
     }
 
     #[test]
     fn missing_identity_does_not_consume_a_sequence_before_resume() {
-        let mut store = ProjectChatStore::new(IdentityGuide::default(), IdentityHost, ChatStoreOptions::default());
-        let args = jscompat::json_parse(r#"{"projectId":"project","chatId":"chat","role":"user","text":"hello"}"#).unwrap();
-        let sender = ChatSender { editor: "home".into(), doc_path: None, key: None };
-        assert_eq!(store.begin_append(&args, &sender).unwrap_err().kind, ChatStoreErrorKind::NeedInstallId);
+        let mut store = ProjectChatStore::new(
+            IdentityGuide::default(),
+            IdentityHost,
+            ChatStoreOptions::default(),
+        );
+        let args = jscompat::json_parse(
+            r#"{"projectId":"project","chatId":"chat","role":"user","text":"hello"}"#,
+        )
+        .unwrap();
+        let sender = ChatSender {
+            editor: "home".into(),
+            doc_path: None,
+            key: None,
+        };
+        assert_eq!(
+            store.begin_append(&args, &sender).unwrap_err().kind,
+            ChatStoreErrorKind::NeedInstallId
+        );
         store.guide.ready = true;
-        let AppendProgress::Done(AppendOutcome::Pending { message }) = store.begin_append(&args, &sender).unwrap() else { panic!("expected pending message") };
+        let AppendProgress::Done(AppendOutcome::Pending { message }) =
+            store.begin_append(&args, &sender).unwrap()
+        else {
+            panic!("expected pending message")
+        };
         assert_eq!(message.get("seq"), Some(&JsonValue::Number(0.0)));
     }
 
     #[test]
     fn invalid_read_is_rejected_before_install_identity_is_requested() {
-        let mut store = ProjectChatStore::new(IdentityGuide::default(), IdentityHost, ChatStoreOptions::default());
+        let mut store = ProjectChatStore::new(
+            IdentityGuide::default(),
+            IdentityHost,
+            ChatStoreOptions::default(),
+        );
         let invalid = jscompat::json_parse(r#"{"projectId":"project","chatId":"../bad"}"#).unwrap();
         let error = store.preflight_open_chat(&invalid).unwrap_err();
         assert_eq!(error.kind, ChatStoreErrorKind::Failure);
@@ -2139,8 +2366,16 @@ mod deferred_outside_tests {
 
     #[test]
     fn missing_identity_keeps_pending_metadata_for_continuation() {
-        let mut store = ProjectChatStore::new(IdentityGuide::default(), IdentityHost, ChatStoreOptions::default());
-        let chat = Chat { project_id: "project", chat_id: "chat", root: "/synthetic-project" };
+        let mut store = ProjectChatStore::new(
+            IdentityGuide::default(),
+            IdentityHost,
+            ChatStoreOptions::default(),
+        );
+        let chat = Chat {
+            project_id: "project",
+            chat_id: "chat",
+            root: "/synthetic-project",
+        };
         let mut state = store.state(&chat);
         state.materialized = true;
         state.title = Some("saved title".into());
@@ -2151,20 +2386,43 @@ mod deferred_outside_tests {
 
     #[test]
     fn post_flush_resume_does_not_append_twice_and_excludes_overlap() {
-        let mut store = ProjectChatStore::new(IdentityGuide { ready: true, ..Default::default() }, IdentityHost, ChatStoreOptions::default());
-        let args = jscompat::json_parse(r#"{"projectId":"project","chatId":"chat","role":"assistant","text":"hello"}"#).unwrap();
-        let sender = ChatSender { editor: "home".into(), doc_path: None, key: None };
-        let AppendProgress::NeedInstallId(token) = store.begin_append(&args, &sender).unwrap() else { panic!("expected continuation") };
+        let mut store = ProjectChatStore::new(
+            IdentityGuide {
+                ready: true,
+                ..Default::default()
+            },
+            IdentityHost,
+            ChatStoreOptions::default(),
+        );
+        let args = jscompat::json_parse(
+            r#"{"projectId":"project","chatId":"chat","role":"assistant","text":"hello"}"#,
+        )
+        .unwrap();
+        let sender = ChatSender {
+            editor: "home".into(),
+            doc_path: None,
+            key: None,
+        };
+        let AppendProgress::NeedInstallId(token) = store.begin_append(&args, &sender).unwrap()
+        else {
+            panic!("expected continuation")
+        };
         assert_eq!(store.guide.appends, 1);
         assert!(store.begin_append(&args, &sender).is_err());
         store.guide.update_ready = true;
-        let AppendProgress::Done(AppendOutcome::Saved { message }) = store.resume_append(token).unwrap() else { panic!("expected saved message") };
+        let AppendProgress::Done(AppendOutcome::Saved { message }) =
+            store.resume_append(token).unwrap()
+        else {
+            panic!("expected saved message")
+        };
         assert_eq!(message.get("seq"), Some(&JsonValue::Number(0.0)));
         assert_eq!(store.guide.appends, 1);
     }
 
     impl ChatIoGuide for IdentityGuide {
-        fn take_io_changes(&mut self) -> ChatGuideChanges { ChatGuideChanges::default() }
+        fn take_io_changes(&mut self) -> ChatGuideChanges {
+            ChatGuideChanges::default()
+        }
         fn set_io_warning_sink(&mut self, _: ChatWarningSink) {}
     }
 
@@ -2173,43 +2431,106 @@ mod deferred_outside_tests {
         fn send<T: Send>() {}
         send::<ChatIo>();
         send::<ChatIoAcknowledgement>();
-        let mut core = ProjectChatStore::new(IdentityGuide::default(), IdentityHost, ChatStoreOptions::default());
-        let io = core.take_io(ChatOperation::New { project_id: "project".into() }).unwrap();
+        let mut core = ProjectChatStore::new(
+            IdentityGuide::default(),
+            IdentityHost,
+            ChatStoreOptions::default(),
+        );
+        let io = core
+            .take_io(ChatOperation::New {
+                project_id: "project".into(),
+            })
+            .unwrap();
         assert!(core.new_chat("project").is_err());
         let ack = io.execute(IdentityGuide::default(), IdentityHost);
         assert!(ack.is_success());
         let completion = core.finish_io(ack).unwrap();
-        assert!(matches!(completion.progress, ChatIoProgress::Done(Ok(ChatIoResult::New(_)))));
+        assert!(matches!(
+            completion.progress,
+            ChatIoProgress::Done(Ok(ChatIoResult::New(_)))
+        ));
         assert!(core.new_chat("project").is_ok());
     }
 
     #[test]
     fn worker_identity_continuation_retains_exact_append_and_emits_once() {
-        let mut core = ProjectChatStore::new(IdentityGuide::default(), IdentityHost, ChatStoreOptions::default());
-        let args = jscompat::json_parse(r#"{"projectId":"project","chatId":"chat","role":"assistant","text":"hello"}"#).unwrap();
-        let sender = ChatSender { editor: "home".into(), doc_path: None, key: None };
-        let io = core.take_io(ChatOperation::Append { args, sender }).unwrap();
-        let ack = io.execute(IdentityGuide { ready: true, ..Default::default() }, IdentityHost);
+        let mut core = ProjectChatStore::new(
+            IdentityGuide::default(),
+            IdentityHost,
+            ChatStoreOptions::default(),
+        );
+        let args = jscompat::json_parse(
+            r#"{"projectId":"project","chatId":"chat","role":"assistant","text":"hello"}"#,
+        )
+        .unwrap();
+        let sender = ChatSender {
+            editor: "home".into(),
+            doc_path: None,
+            key: None,
+        };
+        let io = core
+            .take_io(ChatOperation::Append { args, sender })
+            .unwrap();
+        let ack = io.execute(
+            IdentityGuide {
+                ready: true,
+                ..Default::default()
+            },
+            IdentityHost,
+        );
         assert_eq!(ack.appended.len(), 1);
         assert!(!ack.is_success());
         let first = core.finish_io(ack).unwrap();
-        let ChatIoProgress::NeedInstallId(io) = first.progress else { panic!("expected identity continuation") };
-        let ack = io.execute(IdentityGuide { ready: true, update_ready: true, ..Default::default() }, IdentityHost);
+        let ChatIoProgress::NeedInstallId(io) = first.progress else {
+            panic!("expected identity continuation")
+        };
+        let ack = io.execute(
+            IdentityGuide {
+                ready: true,
+                update_ready: true,
+                ..Default::default()
+            },
+            IdentityHost,
+        );
         assert!(ack.appended.is_empty());
         assert!(ack.is_success());
         let final_result = core.finish_io(ack).unwrap();
-        let ChatIoProgress::Done(Ok(ChatIoResult::Append(AppendOutcome::Saved { message }))) = final_result.progress else { panic!("expected saved append") };
+        let ChatIoProgress::Done(Ok(ChatIoResult::Append(AppendOutcome::Saved { message }))) =
+            final_result.progress
+        else {
+            panic!("expected saved append")
+        };
         assert_eq!(message.get("seq"), Some(&JsonValue::Number(0.0)));
         assert_eq!(first.appended.len(), 1);
     }
 
     #[test]
     fn abandoned_ack_restores_store_without_forwarding_new_settings_effects() {
-        let mut core = ProjectChatStore::new(IdentityGuide::default(), IdentityHost, ChatStoreOptions::default());
-        let args = jscompat::json_parse(r#"{"projectId":"project","chatId":"chat","role":"assistant","text":"hello"}"#).unwrap();
-        let sender = ChatSender { editor: "home".into(), doc_path: Some("/outside/document.md".into()), key: None };
-        let io = core.take_io(ChatOperation::Append { args, sender }).unwrap();
-        let ack = io.execute(IdentityGuide { ready: true, update_ready: true, ..Default::default() }, IdentityHost);
+        let mut core = ProjectChatStore::new(
+            IdentityGuide::default(),
+            IdentityHost,
+            ChatStoreOptions::default(),
+        );
+        let args = jscompat::json_parse(
+            r#"{"projectId":"project","chatId":"chat","role":"assistant","text":"hello"}"#,
+        )
+        .unwrap();
+        let sender = ChatSender {
+            editor: "home".into(),
+            doc_path: Some("/outside/document.md".into()),
+            key: None,
+        };
+        let io = core
+            .take_io(ChatOperation::Append { args, sender })
+            .unwrap();
+        let ack = io.execute(
+            IdentityGuide {
+                ready: true,
+                update_ready: true,
+                ..Default::default()
+            },
+            IdentityHost,
+        );
         assert_eq!(ack.state.pending_outside.len(), 1);
         core.abandon_io(ack).unwrap();
         assert!(core.take_outside_writes().is_empty());
@@ -2218,17 +2539,40 @@ mod deferred_outside_tests {
 
     struct InvalidClock;
     impl ChatStoreHost for InvalidClock {
-        fn trash(&mut self, _: &str) -> Result<(), String> { unreachable!("clock failure happens before file effects") }
-        fn now_iso(&mut self) -> Result<String, ChatStoreError> { Err(ChatStoreError::new("Invalid time value")) }
-        fn new_id(&mut self) -> String { "chat".into() }
+        fn trash(&mut self, _: &str) -> Result<(), String> {
+            unreachable!("clock failure happens before file effects")
+        }
+        fn now_iso(&mut self) -> Result<String, ChatStoreError> {
+            Err(ChatStoreError::new("Invalid time value"))
+        }
+        fn new_id(&mut self) -> String {
+            "chat".into()
+        }
         fn warn(&mut self, _: &str, _: Option<&str>) {}
     }
     #[test]
     fn invalid_clock_is_an_error_not_an_empty_stored_timestamp() {
-        let mut store = ProjectChatStore::new(IdentityGuide { ready: true, ..Default::default() }, InvalidClock, ChatStoreOptions::default());
-        let args = jscompat::json_parse(r#"{"projectId":"project","chatId":"chat","role":"user","text":"hello"}"#).unwrap();
-        let sender = ChatSender { editor: "home".into(), doc_path: None, key: None };
-        assert_eq!(store.begin_append(&args, &sender).unwrap_err().message, "Invalid time value");
+        let mut store = ProjectChatStore::new(
+            IdentityGuide {
+                ready: true,
+                ..Default::default()
+            },
+            InvalidClock,
+            ChatStoreOptions::default(),
+        );
+        let args = jscompat::json_parse(
+            r#"{"projectId":"project","chatId":"chat","role":"user","text":"hello"}"#,
+        )
+        .unwrap();
+        let sender = ChatSender {
+            editor: "home".into(),
+            doc_path: None,
+            key: None,
+        };
+        assert_eq!(
+            store.begin_append(&args, &sender).unwrap_err().message,
+            "Invalid time value"
+        );
         assert!(store.states.get("project/chat").unwrap().pending.is_empty());
     }
 }
@@ -2237,24 +2581,54 @@ mod deferred_outside_tests {
 /// continuation; these arguments are exactly what the chat store consumes.
 #[derive(Debug)]
 pub enum ChatOperation {
-    New { project_id: String },
-    List { project_id: String },
-    Open { args: JsonValue },
-    Rename { args: JsonValue },
-    Attach { chat_ref: ProjectChatRef, doc_path: String },
-    Info { chat_ref: ProjectChatRef },
-    ForDocument { project_id: String, doc_path: String },
-    Delete { chat_ref: ProjectChatRef },
-    Append { args: JsonValue, sender: ChatSender },
-    ResumeAppend { continuation: AppendContinuation },
+    New {
+        project_id: String,
+    },
+    List {
+        project_id: String,
+    },
+    Open {
+        args: JsonValue,
+    },
+    Rename {
+        args: JsonValue,
+    },
+    Attach {
+        chat_ref: ProjectChatRef,
+        doc_path: String,
+    },
+    Info {
+        chat_ref: ProjectChatRef,
+    },
+    ForDocument {
+        project_id: String,
+        doc_path: String,
+    },
+    Delete {
+        chat_ref: ProjectChatRef,
+    },
+    Append {
+        args: JsonValue,
+        sender: ChatSender,
+    },
+    ResumeAppend {
+        continuation: AppendContinuation,
+    },
 }
 impl ChatOperation {
     pub fn project_id(&self) -> Option<&str> {
         match self {
-            Self::New { project_id } | Self::List { project_id } | Self::ForDocument { project_id, .. } => Some(project_id),
-            Self::Attach { chat_ref, .. } | Self::Info { chat_ref } | Self::Delete { chat_ref } => Some(&chat_ref.project_id),
+            Self::New { project_id }
+            | Self::List { project_id }
+            | Self::ForDocument { project_id, .. } => Some(project_id),
+            Self::Attach { chat_ref, .. } | Self::Info { chat_ref } | Self::Delete { chat_ref } => {
+                Some(&chat_ref.project_id)
+            }
             Self::Open { args } | Self::Rename { args } | Self::Append { args, .. } => match args {
-                JsonValue::Object(raw) => match raw.get("projectId") { Some(JsonValue::String(id)) => Some(id), _ => None },
+                JsonValue::Object(raw) => match raw.get("projectId") {
+                    Some(JsonValue::String(id)) => Some(id),
+                    _ => None,
+                },
                 _ => None,
             },
             Self::ResumeAppend { continuation } => Some(&continuation.project_id),
@@ -2291,10 +2665,18 @@ pub trait ChatIoGuide: ChatStoreGuide {
 pub struct ChatWarningSink(std::sync::Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>);
 impl ChatWarningSink {
     pub fn push(&self, label: &str, detail: Option<&str>) {
-        self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push((label.into(), detail.map(str::to_owned)));
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push((label.into(), detail.map(str::to_owned)));
     }
     pub fn drain(&self) -> Vec<(String, Option<String>)> {
-        std::mem::take(&mut *self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+        std::mem::take(
+            &mut *self
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
     }
 }
 
@@ -2362,30 +2744,46 @@ pub struct ChatIoAbandoned {
 impl ChatIoState {
     fn discard_deferred_after(&mut self, checkpoint: u64) {
         self.pending_outside.retain(|item| item.serial < checkpoint);
-        let keys: Vec<_> = self.outside_pending_latest.keys().filter(|key|
-            self.outside_pending_latest.get(key).is_some_and(|(serial, _)| *serial >= checkpoint)
-        ).map(str::to_owned).collect();
-        for key in keys { self.outside_pending_latest.delete(&key); }
+        let keys: Vec<_> = self
+            .outside_pending_latest
+            .keys()
+            .filter(|key| {
+                self.outside_pending_latest
+                    .get(key)
+                    .is_some_and(|(serial, _)| *serial >= checkpoint)
+            })
+            .map(str::to_owned)
+            .collect();
+        for key in keys {
+            self.outside_pending_latest.delete(&key);
+        }
     }
 
     fn take<G: ChatStoreGuide, H: ChatStoreHost>(store: &mut ProjectChatStore<G, H>) -> Self {
         Self {
-            platform: store.platform.clone(), states: std::mem::take(&mut store.states),
+            platform: store.platform.clone(),
+            states: std::mem::take(&mut store.states),
             pending_append: std::mem::take(&mut store.pending_append),
             foreign_cache: std::mem::take(&mut store.foreign_cache),
             outside_recorded: std::mem::take(&mut store.outside_recorded),
             pending_outside: std::mem::take(&mut store.pending_outside),
             outside_pending_latest: std::mem::take(&mut store.outside_pending_latest),
             next_outside_serial: store.next_outside_serial,
-            state_limit: store.state_limit, foreign_limit: store.foreign_limit,
+            state_limit: store.state_limit,
+            foreign_limit: store.foreign_limit,
         }
     }
     fn restore<G: ChatStoreGuide, H: ChatStoreHost>(self, store: &mut ProjectChatStore<G, H>) {
-        store.platform = self.platform; store.states = self.states; store.pending_append = self.pending_append;
-        store.foreign_cache = self.foreign_cache; store.outside_recorded = self.outside_recorded;
-        store.pending_outside = self.pending_outside; store.outside_pending_latest = self.outside_pending_latest;
+        store.platform = self.platform;
+        store.states = self.states;
+        store.pending_append = self.pending_append;
+        store.foreign_cache = self.foreign_cache;
+        store.outside_recorded = self.outside_recorded;
+        store.pending_outside = self.pending_outside;
+        store.outside_pending_latest = self.outside_pending_latest;
         store.next_outside_serial = self.next_outside_serial;
-        store.state_limit = self.state_limit; store.foreign_limit = self.foreign_limit;
+        store.state_limit = self.state_limit;
+        store.foreign_limit = self.foreign_limit;
     }
 }
 
@@ -2394,54 +2792,101 @@ impl<G: ChatStoreGuide, H: ChatStoreHost> ProjectChatStore<G, H> {
         self.require_idle_io()?;
         let ticket = CHAT_IO_TICKET.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.io_lease = Some(ticket);
-        Ok(ChatIo { ticket, outside_checkpoint: self.next_outside_serial, operation, state: ChatIoState::take(self) })
+        Ok(ChatIo {
+            ticket,
+            outside_checkpoint: self.next_outside_serial,
+            operation,
+            state: ChatIoState::take(self),
+        })
     }
 
     fn require_idle_io(&self) -> Result<(), ChatStoreError> {
-        if self.io_lease.is_some() { Err(ChatStoreError::new("chat store worker operation is still active")) } else { Ok(()) }
+        if self.io_lease.is_some() {
+            Err(ChatStoreError::new(
+                "chat store worker operation is still active",
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     /// Disk-free, once-only core acknowledgement. Publish its returned events
     /// and diagnostics after leaving the native authority gate.
-    pub fn finish_io(&mut self, ack: ChatIoAcknowledgement) -> Result<ChatIoCompletion, ChatStoreError> {
-        if self.io_lease != Some(ack.ticket) { return Err(ChatStoreError::new("chat worker acknowledgement is no longer active")); }
+    pub fn finish_io(
+        &mut self,
+        ack: ChatIoAcknowledgement,
+    ) -> Result<ChatIoCompletion, ChatStoreError> {
+        if self.io_lease != Some(ack.ticket) {
+            return Err(ChatStoreError::new(
+                "chat worker acknowledgement is no longer active",
+            ));
+        }
         let progress = match ack.continuation {
-            Some(operation) => ChatIoProgress::NeedInstallId(ChatIo { ticket: ack.ticket, outside_checkpoint: ack.outside_checkpoint, operation, state: ack.state }),
+            Some(operation) => ChatIoProgress::NeedInstallId(ChatIo {
+                ticket: ack.ticket,
+                outside_checkpoint: ack.outside_checkpoint,
+                operation,
+                state: ack.state,
+            }),
             None => {
                 ack.state.restore(self);
                 self.io_lease = None;
                 ChatIoProgress::Done(ack.result)
             }
         };
-        Ok(ChatIoCompletion { progress, appended: ack.appended, warnings: ack.warnings, changes: ack.changes })
+        Ok(ChatIoCompletion {
+            progress,
+            appended: ack.appended,
+            warnings: ack.warnings,
+            changes: ack.changes,
+        })
     }
 
     pub fn cancel_io(&mut self, mut io: ChatIo) -> Result<(), ChatStoreError> {
-        if self.io_lease != Some(io.ticket) { return Err(ChatStoreError::new("chat worker continuation is no longer active")); }
+        if self.io_lease != Some(io.ticket) {
+            return Err(ChatStoreError::new(
+                "chat worker continuation is no longer active",
+            ));
+        }
         io.state.discard_deferred_after(io.outside_checkpoint);
         io.state.restore(self);
         self.io_lease = None;
-        if let ChatOperation::ResumeAppend { continuation } = io.operation { self.cancel_append(continuation); }
+        if let ChatOperation::ResumeAppend { continuation } = io.operation {
+            self.cancel_append(continuation);
+        }
         Ok(())
     }
 
     /// Recover the borrowed store when the owner no longer admits a request
     /// acknowledgement. Already-accepted file effects are not undone or run
     /// again, and no newly deferred settings effect migrates to another owner.
-    pub fn abandon_io(&mut self, mut ack: ChatIoAcknowledgement) -> Result<ChatIoAbandoned, ChatStoreError> {
-        if self.io_lease != Some(ack.ticket) { return Err(ChatStoreError::new("chat worker acknowledgement is no longer active")); }
+    pub fn abandon_io(
+        &mut self,
+        mut ack: ChatIoAcknowledgement,
+    ) -> Result<ChatIoAbandoned, ChatStoreError> {
+        if self.io_lease != Some(ack.ticket) {
+            return Err(ChatStoreError::new(
+                "chat worker acknowledgement is no longer active",
+            ));
+        }
         ack.state.discard_deferred_after(ack.outside_checkpoint);
         ack.state.restore(self);
         self.io_lease = None;
-        if let Some(ChatOperation::ResumeAppend { continuation }) = ack.continuation { self.cancel_append(continuation); }
-        Ok(ChatIoAbandoned { warnings: ack.warnings, changes: ack.changes })
+        if let Some(ChatOperation::ResumeAppend { continuation }) = ack.continuation {
+            self.cancel_append(continuation);
+        }
+        Ok(ChatIoAbandoned {
+            warnings: ack.warnings,
+            changes: ack.changes,
+        })
     }
 
     pub fn publish_io_events(&mut self, notices: &[ChatIoAppended]) {
         for notice in notices {
             for (_, listener) in &mut self.listeners {
                 if let Err(error) = listener.appended(&notice.event, &notice.sender) {
-                    self.host.warn("[projects] chat append listener failed:", Some(&error));
+                    self.host
+                        .warn("[projects] chat append listener failed:", Some(&error));
                 }
             }
         }
@@ -2451,7 +2896,10 @@ impl<G: ChatStoreGuide, H: ChatStoreHost> ProjectChatStore<G, H> {
 struct CollectAppended(std::rc::Rc<std::cell::RefCell<Vec<ChatIoAppended>>>);
 impl ChatAppendedListener for CollectAppended {
     fn appended(&mut self, event: &ChatAppendedEvent, sender: &ChatSender) -> Result<(), String> {
-        self.0.borrow_mut().push(ChatIoAppended { event: event.clone(), sender: sender.clone() });
+        self.0.borrow_mut().push(ChatIoAppended {
+            event: event.clone(),
+            sender: sender.clone(),
+        });
         Ok(())
     }
 }
@@ -2460,23 +2908,44 @@ struct CollectWarnings<H> {
     warnings: ChatWarningSink,
 }
 impl<H: ChatStoreHost> ChatStoreHost for CollectWarnings<H> {
-    fn trash(&mut self, path: &str) -> Result<(), String> { self.host.trash(path) }
-    fn now_iso(&mut self) -> Result<String, ChatStoreError> { self.host.now_iso() }
-    fn new_id(&mut self) -> String { self.host.new_id() }
-    fn warn(&mut self, label: &str, detail: Option<&str>) { self.warnings.push(label, detail); }
+    fn trash(&mut self, path: &str) -> Result<(), String> {
+        self.host.trash(path)
+    }
+    fn now_iso(&mut self) -> Result<String, ChatStoreError> {
+        self.host.now_iso()
+    }
+    fn new_id(&mut self) -> String {
+        self.host.new_id()
+    }
+    fn warn(&mut self, label: &str, detail: Option<&str>) {
+        self.warnings.push(label, detail);
+    }
 }
 
 impl ChatIo {
-    pub fn operation(&self) -> &ChatOperation { &self.operation }
+    pub fn operation(&self) -> &ChatOperation {
+        &self.operation
+    }
 
     /// Runs only on a worker. The production guide/host carry the scoped file
     /// capability and captured-owner effect authorizer; core callbacks remain
     /// in the original store and are never moved into this worker.
-    pub fn execute<G: ChatIoGuide, H: ChatStoreHost>(self, mut guide: G, host: H) -> ChatIoAcknowledgement {
+    pub fn execute<G: ChatIoGuide, H: ChatStoreHost>(
+        self,
+        mut guide: G,
+        host: H,
+    ) -> ChatIoAcknowledgement {
         let appended = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let warnings = ChatWarningSink::default();
         guide.set_io_warning_sink(warnings.clone());
-        let mut store = ProjectChatStore::new(guide, CollectWarnings { host, warnings: warnings.clone() }, ChatStoreOptions::default());
+        let mut store = ProjectChatStore::new(
+            guide,
+            CollectWarnings {
+                host,
+                warnings: warnings.clone(),
+            },
+            ChatStoreOptions::default(),
+        );
         self.state.restore(&mut store);
         store.defer_outside_writes();
         store.on_appended(Box::new(CollectAppended(appended.clone())));
@@ -2484,13 +2953,24 @@ impl ChatIo {
         let mut post_append = None;
         let result = match operation.as_ref().expect("worker operation exists") {
             ChatOperation::New { project_id } => store.new_chat(project_id).map(ChatIoResult::New),
-            ChatOperation::List { project_id } => store.list_chats(project_id).map(ChatIoResult::List),
+            ChatOperation::List { project_id } => {
+                store.list_chats(project_id).map(ChatIoResult::List)
+            }
             ChatOperation::Open { args } => store.open_chat(args).map(ChatIoResult::Open),
             ChatOperation::Rename { args } => store.rename_chat(args).map(ChatIoResult::Write),
-            ChatOperation::Attach { chat_ref, doc_path } => store.attach_document(chat_ref, doc_path).map(ChatIoResult::Write),
+            ChatOperation::Attach { chat_ref, doc_path } => store
+                .attach_document(chat_ref, doc_path)
+                .map(ChatIoResult::Write),
             ChatOperation::Info { chat_ref } => store.chat_info(chat_ref).map(ChatIoResult::Info),
-            ChatOperation::ForDocument { project_id, doc_path } => store.chat_for_document(project_id, doc_path).map(ChatIoResult::ForDocument),
-            ChatOperation::Delete { chat_ref } => store.delete_chat(chat_ref).map(ChatIoResult::Write),
+            ChatOperation::ForDocument {
+                project_id,
+                doc_path,
+            } => store
+                .chat_for_document(project_id, doc_path)
+                .map(ChatIoResult::ForDocument),
+            ChatOperation::Delete { chat_ref } => {
+                store.delete_chat(chat_ref).map(ChatIoResult::Write)
+            }
             ChatOperation::Append { args, sender } => match store.begin_append(args, sender) {
                 Ok(AppendProgress::Done(result)) => Ok(ChatIoResult::Append(result)),
                 Ok(AppendProgress::NeedInstallId(continuation)) => {
@@ -2500,7 +2980,9 @@ impl ChatIo {
                 Err(error) => Err(error),
             },
             ChatOperation::ResumeAppend { .. } => {
-                let Some(ChatOperation::ResumeAppend { continuation }) = operation.take() else { unreachable!("the operation was just matched"); };
+                let Some(ChatOperation::ResumeAppend { continuation }) = operation.take() else {
+                    unreachable!("the operation was just matched");
+                };
                 match store.resume_append(continuation) {
                     Ok(AppendProgress::Done(result)) => Ok(ChatIoResult::Append(result)),
                     Ok(AppendProgress::NeedInstallId(continuation)) => {
@@ -2511,15 +2993,26 @@ impl ChatIo {
                 }
             }
         };
-        let continuation = if result.as_ref().is_err_and(|error| error.kind == ChatStoreErrorKind::NeedInstallId) {
+        let continuation = if result
+            .as_ref()
+            .is_err_and(|error| error.kind == ChatStoreErrorKind::NeedInstallId)
+        {
             post_append.or(operation)
-        } else { None };
+        } else {
+            None
+        };
         let changes = store.guide.take_io_changes();
         let appended = std::mem::take(&mut *appended.borrow_mut());
         let warnings = warnings.drain();
         ChatIoAcknowledgement {
-            ticket: self.ticket, outside_checkpoint: self.outside_checkpoint, state: ChatIoState::take(&mut store), result, continuation,
-            appended, warnings, changes,
+            ticket: self.ticket,
+            outside_checkpoint: self.outside_checkpoint,
+            state: ChatIoState::take(&mut store),
+            result,
+            continuation,
+            appended,
+            warnings,
+            changes,
         }
     }
 }

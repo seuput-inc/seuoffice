@@ -346,10 +346,19 @@ pub struct DocumentLinksSnapshot {
 }
 
 impl DocumentLinksSnapshot {
-    pub fn revision(&self) -> u64 { self.revision }
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
     pub fn into_model<D: DocumentLinksDeps>(self, deps: D) -> DocumentLinks<D> {
-        DocumentLinks { deps, links: self.links, tabs: self.tabs, listeners: Vec::new(),
-            next_listener: 0, version: self.version, revision: self.revision }
+        DocumentLinks {
+            deps,
+            links: self.links,
+            tabs: self.tabs,
+            listeners: Vec::new(),
+            next_listener: 0,
+            version: self.version,
+            revision: self.revision,
+        }
     }
 }
 
@@ -396,15 +405,27 @@ impl<D: DocumentLinksDeps> DocumentLinks<D> {
     }
 
     pub fn snapshot(&self) -> DocumentLinksSnapshot {
-        DocumentLinksSnapshot { links: self.links.clone(), tabs: self.tabs.clone(),
-            version: self.version, revision: self.revision }
+        DocumentLinksSnapshot {
+            links: self.links.clone(),
+            tabs: self.tabs.clone(),
+            version: self.version,
+            revision: self.revision,
+        }
     }
 
-    pub fn capture_events(&mut self) -> Vec<MakeEvent> { self.deps.events() }
+    pub fn capture_events(&mut self) -> Vec<MakeEvent> {
+        self.deps.events()
+    }
 
     /// A short state acknowledgement. Persistence and listeners run afterward.
-    pub fn apply_snapshot(&mut self, expected_revision: u64, prepared: DocumentLinksSnapshot) -> Result<u64, DocumentLinksSnapshot> {
-        if self.revision != expected_revision { return Err(prepared); }
+    pub fn apply_snapshot(
+        &mut self,
+        expected_revision: u64,
+        prepared: DocumentLinksSnapshot,
+    ) -> Result<u64, DocumentLinksSnapshot> {
+        if self.revision != expected_revision {
+            return Err(prepared);
+        }
         let commits = prepared.version.saturating_sub(self.version);
         self.links = prepared.links;
         self.tabs = prepared.tabs;
@@ -415,7 +436,9 @@ impl<D: DocumentLinksDeps> DocumentLinks<D> {
 
     pub fn publish_snapshot_changes(&mut self, commits: u64) {
         for _ in 0..commits {
-            for (_, listener) in &mut self.listeners { listener(); }
+            for (_, listener) in &mut self.listeners {
+                listener();
+            }
         }
     }
 
@@ -705,19 +728,27 @@ pub struct FileLinksDeps<'a> {
 }
 
 impl FileLinksDeps<'_> {
-    pub fn file_path(&self) -> &str { &self.file_path }
+    pub fn file_path(&self) -> &str {
+        &self.file_path
+    }
 }
 
 impl DocumentLinksDeps for FileLinksDeps<'_> {
     fn load(&mut self) -> Vec<DocumentLink> {
         let path = self.file_path.clone();
-        crate::shell::recent_files::metadata::run_sync(&self.file_path,move || Ok(read_document_links_file(&path))).unwrap_or_default()
+        crate::shell::recent_files::metadata::run_sync(&self.file_path, move || {
+            Ok(read_document_links_file(&path))
+        })
+        .unwrap_or_default()
     }
 
     fn save(&mut self, file: &DocumentLinksFile) -> Result<(), String> {
         let path = self.file_path.clone();
         let payload = file.to_json();
-        crate::shell::recent_files::metadata::run_sync(&self.file_path,move || write_json_atomic(&path,&payload)).map_err(|error| error.message)
+        crate::shell::recent_files::metadata::run_sync(&self.file_path, move || {
+            write_json_atomic(&path, &payload)
+        })
+        .map_err(|error| error.message)
     }
 
     fn events(&mut self) -> Vec<MakeEvent> {

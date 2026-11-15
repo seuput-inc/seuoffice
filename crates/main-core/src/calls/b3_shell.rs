@@ -937,7 +937,6 @@ fn gate_call(args: &[Value], cx: &mut Context, last: bool) -> Answer {
 
 // ---- document-password-prompt ----
 
-
 /// `[answers, ops]`: `{ create }`, `{ ask, retry }`, `{ close }`
 fn prompts_call(args: &[Value], cx: &mut Context) -> Answer {
     let answers: VecDeque<Option<String>> = arg(args, 0)
@@ -978,14 +977,29 @@ fn prompts_call(args: &[Value], cx: &mut Context) -> Answer {
         for effect in effects {
             match effect {
                 Effect::CloseWindow { .. } => log.push(vec![Value::from("close")]),
-                Effect::Prompt { ask, file_name, retry, .. } => {
-                    log.push(vec![Value::from("prompt"), Value::from(file_name), Value::Bool(retry)]);
-                    let seq = asks.iter().position(|item| *item == ask).expect("an ask that was made");
+                Effect::Prompt {
+                    ask,
+                    file_name,
+                    retry,
+                    ..
+                } => {
+                    log.push(vec![
+                        Value::from("prompt"),
+                        Value::from(file_name),
+                        Value::Bool(retry),
+                    ]);
+                    let seq = asks
+                        .iter()
+                        .position(|item| *item == ask)
+                        .expect("an ask that was made");
                     done.push(seq);
                     settled.push(pair(seq, answers.pop_front().flatten()));
                 }
                 Effect::Cancelled { ask } => {
-                    let seq = asks.iter().position(|item| *item == ask).expect("an ask that was made");
+                    let seq = asks
+                        .iter()
+                        .position(|item| *item == ask)
+                        .expect("an ask that was made");
                     done.push(seq);
                     settled.push(pair(seq, None));
                 }

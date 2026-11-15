@@ -208,16 +208,25 @@ pub fn read_split_memory(options: &SplitMemoryOptions) -> Option<SplitMemory> {
 pub enum RememberedSplitPlan {
     Home,
     Single(String),
-    Pair { a: String, b: String, duplicate: bool, orientation: super::split_layout::SplitOrientation,
-        ratio: f64, focus: super::split_layout::Pane },
+    Pair {
+        a: String,
+        b: String,
+        duplicate: bool,
+        orientation: super::split_layout::SplitOrientation,
+        ratio: f64,
+        focus: super::split_layout::Pane,
+    },
 }
 
 pub fn plan_remembered_split(
-    memory: Option<SplitMemory>, mut exists: impl FnMut(&str) -> bool,
+    memory: Option<SplitMemory>,
+    mut exists: impl FnMut(&str) -> bool,
     mut canonical: impl FnMut(&str) -> String,
 ) -> RememberedSplitPlan {
-    use super::split_layout::{Pane, SplitOrientation, SPLIT_EVEN_RATIO};
-    let Some(memory) = memory else { return RememberedSplitPlan::Home; };
+    use super::split_layout::{Pane, SPLIT_EVEN_RATIO, SplitOrientation};
+    let Some(memory) = memory else {
+        return RememberedSplitPlan::Home;
+    };
     let a = exists(&memory.a).then_some(memory.a);
     let b = memory.b.filter(|path| exists(path));
     match (a, b) {
@@ -225,9 +234,24 @@ pub fn plan_remembered_split(
         (Some(path), None) | (None, Some(path)) => RememberedSplitPlan::Single(path),
         (Some(a), Some(b)) => {
             let duplicate = canonical(&a) == canonical(&b);
-            let orientation = if memory.orientation.as_deref() == Some("stack") { SplitOrientation::Stack } else { SplitOrientation::Side };
-            let focus = if memory.focus.as_deref() == Some("a") { Pane::A } else { Pane::B };
-            RememberedSplitPlan::Pair { a, b, duplicate, orientation, ratio: memory.ratio.unwrap_or(SPLIT_EVEN_RATIO), focus }
+            let orientation = if memory.orientation.as_deref() == Some("stack") {
+                SplitOrientation::Stack
+            } else {
+                SplitOrientation::Side
+            };
+            let focus = if memory.focus.as_deref() == Some("a") {
+                Pane::A
+            } else {
+                Pane::B
+            };
+            RememberedSplitPlan::Pair {
+                a,
+                b,
+                duplicate,
+                orientation,
+                ratio: memory.ratio.unwrap_or(SPLIT_EVEN_RATIO),
+                focus,
+            }
         }
     }
 }
@@ -235,24 +259,48 @@ pub fn plan_remembered_split(
 #[cfg(test)]
 mod restore_tests {
     use super::*;
-    use crate::shell::split_layout::{Pane, SplitOrientation, SPLIT_EVEN_RATIO};
+    use crate::shell::split_layout::{Pane, SPLIT_EVEN_RATIO, SplitOrientation};
 
     #[test]
     fn remembered_paths_keep_duplicate_and_default_layout() {
-        let memory = SplitMemory { a: "/one".into(), b: Some("/alias".into()),
-            orientation: None, ratio: None, focus: None };
+        let memory = SplitMemory {
+            a: "/one".into(),
+            b: Some("/alias".into()),
+            orientation: None,
+            ratio: None,
+            focus: None,
+        };
         let plan = plan_remembered_split(Some(memory), |_| true, |_| "/same".into());
-        assert_eq!(plan, RememberedSplitPlan::Pair { a: "/one".into(), b: "/alias".into(),
-            duplicate: true, orientation: SplitOrientation::Side, ratio: SPLIT_EVEN_RATIO, focus: Pane::B });
+        assert_eq!(
+            plan,
+            RememberedSplitPlan::Pair {
+                a: "/one".into(),
+                b: "/alias".into(),
+                duplicate: true,
+                orientation: SplitOrientation::Side,
+                ratio: SPLIT_EVEN_RATIO,
+                focus: Pane::B
+            }
+        );
     }
 
     #[test]
     fn missing_paths_fall_back_without_reordering_survivor() {
-        let memory = SplitMemory { a: "/missing".into(), b: Some("/kept".into()),
-            orientation: Some("stack".into()), ratio: Some(0.3), focus: Some("a".into()) };
-        assert_eq!(plan_remembered_split(Some(memory), |path| path == "/kept", str::to_owned),
-            RememberedSplitPlan::Single("/kept".into()));
-        assert_eq!(plan_remembered_split(None, |_| panic!("no path"), str::to_owned), RememberedSplitPlan::Home);
+        let memory = SplitMemory {
+            a: "/missing".into(),
+            b: Some("/kept".into()),
+            orientation: Some("stack".into()),
+            ratio: Some(0.3),
+            focus: Some("a".into()),
+        };
+        assert_eq!(
+            plan_remembered_split(Some(memory), |path| path == "/kept", str::to_owned),
+            RememberedSplitPlan::Single("/kept".into())
+        );
+        assert_eq!(
+            plan_remembered_split(None, |_| panic!("no path"), str::to_owned),
+            RememberedSplitPlan::Home
+        );
     }
 }
 

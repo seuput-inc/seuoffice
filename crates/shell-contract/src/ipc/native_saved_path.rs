@@ -25,10 +25,11 @@ impl NativeSavedPath {
         self.publication().same_publication(publication)
     }
 
-    pub fn same_witness(&self, other:&Self) -> bool {
-        match (self,other) {
-            (Self::Selected(a),Self::Selected(b)) => a.same_publication(b),
-            (Self::DriveMoved(a),Self::DriveMoved(b)) | (Self::DriveFallback(a),Self::DriveFallback(b)) => Arc::ptr_eq(a,b),
+    pub fn same_witness(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Selected(a), Self::Selected(b)) => a.same_publication(b),
+            (Self::DriveMoved(a), Self::DriveMoved(b))
+            | (Self::DriveFallback(a), Self::DriveFallback(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -44,14 +45,25 @@ impl NativeSavedPath {
     /// One canonical admission, including newly captured target owners. A
     /// derived path is admitted by its Drive receipt, never by a raw path grant.
     pub fn with_effect(
-        &self, effects: &OwnedEffectsHost, participants: &[NativeRequestOwner],
-        cancel: &CancelToken, pending: &CancelToken, additional: &[CancelToken],
+        &self,
+        effects: &OwnedEffectsHost,
+        participants: &[NativeRequestOwner],
+        cancel: &CancelToken,
+        pending: &CancelToken,
+        additional: &[CancelToken],
         effect: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String> {
         match self {
             Self::Selected(publication) => {
                 let extra: Vec<_> = additional.iter().collect();
-                publication.with_effect(effects.as_ref(), participants, cancel, pending, &extra, effect)
+                publication.with_effect(
+                    effects.as_ref(),
+                    participants,
+                    cancel,
+                    pending,
+                    &extra,
+                    effect,
+                )
             }
             Self::DriveMoved(receipt) | Self::DriveFallback(receipt) => {
                 let mut extra = Vec::with_capacity(additional.len() + 2);
@@ -59,8 +71,12 @@ impl NativeSavedPath {
                 extra.push(pending);
                 extra.extend(additional);
                 match self {
-                    Self::DriveMoved(_) => receipt.with_moved_effect(participants, &extra, &mut |_| effect()),
-                    Self::DriveFallback(_) => receipt.with_fallback_effect(participants, &extra, &mut |_| effect()),
+                    Self::DriveMoved(_) => {
+                        receipt.with_moved_effect(participants, &extra, &mut |_| effect())
+                    }
+                    Self::DriveFallback(_) => {
+                        receipt.with_fallback_effect(participants, &extra, &mut |_| effect())
+                    }
                     Self::Selected(_) => unreachable!(),
                 }
             }

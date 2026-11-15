@@ -116,7 +116,10 @@ export interface SaveContext {
   ) => void
   /** Save As › PDF: export the active sheet to the path the Save As dialog
       returned (the Export PDF command's layout and writer). Optional in tests. */
-  exportPdfCopy?: (saveAsPath: string, ownedSaveRequestId?: string) => Promise<boolean | { saveAsAgain: true }>
+  exportPdfCopy?: (
+    saveAsPath: string,
+    ownedSaveRequestId?: string,
+  ) => Promise<boolean | { saveAsAgain: true }>
   /** Save As › ODS: export the whole workbook to the path the Save As dialog
       returned. Optional in tests. */
 }
@@ -724,7 +727,14 @@ export async function handleSave(
         return { ok: false }
       }
       if (choice === 'xlsx') {
-        return await handleSave(ctx, 'save-as', quiet, explicitTarget, undefined, ownedSaveRequestId)
+        return await handleSave(
+          ctx,
+          'save-as',
+          quiet,
+          explicitTarget,
+          undefined,
+          ownedSaveRequestId,
+        )
       }
       if (state.flags.preloadComplete) confirmedCsvSaves.add(csvPath)
     }
@@ -745,7 +755,15 @@ export async function handleSave(
       )
     ) {
       const withheld = await window.desktopApi.askWithheldExport('CSV', ownedSaveRequestId)
-      if (withheld === 'xlsx') return await handleSave(ctx, 'save-as', quiet, explicitTarget, undefined, ownedSaveRequestId)
+      if (withheld === 'xlsx')
+        return await handleSave(
+          ctx,
+          'save-as',
+          quiet,
+          explicitTarget,
+          undefined,
+          ownedSaveRequestId,
+        )
       if (withheld === 'cancel') {
         ctx.setMessage(t('appSaveCanceled'))
         return { ok: false }
@@ -791,7 +809,8 @@ export async function handleSave(
   try {
     staged = await stageEditsForSave(window.desktopApi, state.file.sessionId, edits)
   } catch (error: unknown) {
-    if (mode === 'recovery') return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    if (mode === 'recovery')
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
     if (mode === 'template' || mode === 'ods') return { ok: false }
     const message = stripIpcErrorWrapper(error instanceof Error ? error.message : '')
     const failed = message || t('appSaveFailed')
@@ -860,16 +879,22 @@ export async function handleSave(
   }
   if (mode === 'recovery') {
     // Abort an unconsumed transfer, but retain the write error for an urgent flush.
-    const written = await window.desktopApi.writeWorkbookRecovery(payload).catch(async (error: unknown) => {
-      await abortStagedEditsTransfer(
-        window.desktopApi,
-        state.file.sessionId,
-        staged.editsTransferId,
-      )
-      return { ok: false, error: error instanceof Error ? error.message : String(error) }
-    })
+    const written = await window.desktopApi
+      .writeWorkbookRecovery(payload)
+      .catch(async (error: unknown) => {
+        await abortStagedEditsTransfer(
+          window.desktopApi,
+          state.file.sessionId,
+          staged.editsTransferId,
+        )
+        return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      })
     if (written.ok) return { ok: true }
-    return { ok: false, error: 'error' in written ? String(written.error) : 'The workbook recovery copy was not written' }
+    return {
+      ok: false,
+      error:
+        'error' in written ? String(written.error) : 'The workbook recovery copy was not written',
+    }
   }
   try {
     // a quiet (automatic) save leaves the status line alone: a deferral by the
@@ -933,7 +958,9 @@ export async function handleSave(
             univerRef: ctx.univerRef,
             lazyWorkbookRef: ctx.lazyWorkbookRef,
             setMessage: ctx.setMessage,
-            requestSaveAs: () => { saveAsAgain = true },
+            requestSaveAs: () => {
+              saveAsAgain = true
+            },
             redactions: ctx.redactions ?? (() => NO_REDACTIONS),
           },
           result.csvSaveAsPath,
@@ -946,7 +973,10 @@ export async function handleSave(
         // the active sheet is exported to the chosen path instead. Like the
         // CSV pick, the journal stays pending and the session keeps its path.
         const exported = await ctx.exportPdfCopy?.(result.pdfSaveAsPath, ownedSaveRequestId)
-        return { ok: false, ...(typeof exported === 'object' ? { saveAsAgain: true as const } : {}) }
+        return {
+          ok: false,
+          ...(typeof exported === 'object' ? { saveAsAgain: true as const } : {}),
+        }
       }
       if (result.odsSaveAsPath !== undefined) {
         // The ODS pick is the same kind of copy: the whole workbook is

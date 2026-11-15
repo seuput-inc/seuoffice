@@ -571,23 +571,42 @@ impl InPlaceSigner {
     }
 
     /// Restore a worker identity. This does not authorize a signing request.
-    pub fn from_worker_identity(thumbprint: String, chain_der: Vec<Vec<u8>>) -> Result<Self, SystemStoreError> {
+    pub fn from_worker_identity(
+        thumbprint: String,
+        chain_der: Vec<Vec<u8>>,
+    ) -> Result<Self, SystemStoreError> {
         Self::validate_worker_identity(&thumbprint, &chain_der)?;
-        Ok(Self { thumbprint, chain_der })
+        Ok(Self {
+            thumbprint,
+            chain_der,
+        })
     }
 
-    fn validate_worker_identity(thumbprint: &str, chain: &[Vec<u8>]) -> Result<(), SystemStoreError> {
+    fn validate_worker_identity(
+        thumbprint: &str,
+        chain: &[Vec<u8>],
+    ) -> Result<(), SystemStoreError> {
         let invalid = || SystemStoreError::new("cert-invalid");
         if !is_thumbprint(thumbprint) || chain.is_empty() {
             return Err(invalid());
         }
-        let mut parsed = chain.iter().map(|der| openssl::x509::X509::from_der(der).map_err(|_| invalid()));
+        let mut parsed = chain
+            .iter()
+            .map(|der| openssl::x509::X509::from_der(der).map_err(|_| invalid()));
         let leaf = parsed.next().ok_or_else(invalid)??;
-        if leaf.public_key().map_err(|_| invalid())?.id() != openssl::pkey::Id::RSA { return Err(invalid()); }
-        for certificate in parsed { certificate?; }
-        let digest = leaf.digest(openssl::hash::MessageDigest::sha1()).map_err(|_| invalid())?;
+        if leaf.public_key().map_err(|_| invalid())?.id() != openssl::pkey::Id::RSA {
+            return Err(invalid());
+        }
+        for certificate in parsed {
+            certificate?;
+        }
+        let digest = leaf
+            .digest(openssl::hash::MessageDigest::sha1())
+            .map_err(|_| invalid())?;
         let actual: String = digest.iter().map(|byte| format!("{byte:02X}")).collect();
-        if !actual.eq_ignore_ascii_case(thumbprint) { return Err(invalid()); }
+        if !actual.eq_ignore_ascii_case(thumbprint) {
+            return Err(invalid());
+        }
         Ok(())
     }
 
@@ -670,27 +689,52 @@ mod worker_identity_tests {
 
     #[test]
     fn worker_identity_binds_thumbprint_to_synthetic_leaf() {
-        use openssl::{asn1::Asn1Time, bn::BigNum, hash::MessageDigest, pkey::PKey, rsa::Rsa, x509::{X509, X509NameBuilder}};
+        use openssl::{
+            asn1::Asn1Time,
+            bn::BigNum,
+            hash::MessageDigest,
+            pkey::PKey,
+            rsa::Rsa,
+            x509::{X509, X509NameBuilder},
+        };
         let key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
         let mut name = X509NameBuilder::new().unwrap();
         name.append_entry_by_text("CN", "synthetic").unwrap();
         let name = name.build();
         let mut cert = X509::builder().unwrap();
         cert.set_version(2).unwrap();
-        cert.set_serial_number(&BigNum::from_u32(1).unwrap().to_asn1_integer().unwrap()).unwrap();
+        cert.set_serial_number(&BigNum::from_u32(1).unwrap().to_asn1_integer().unwrap())
+            .unwrap();
         cert.set_subject_name(&name).unwrap();
         cert.set_issuer_name(&name).unwrap();
         cert.set_pubkey(&key).unwrap();
-        cert.set_not_before(&Asn1Time::from_unix(0).unwrap()).unwrap();
-        cert.set_not_after(&Asn1Time::from_unix(2_000_000_000).unwrap()).unwrap();
+        cert.set_not_before(&Asn1Time::from_unix(0).unwrap())
+            .unwrap();
+        cert.set_not_after(&Asn1Time::from_unix(2_000_000_000).unwrap())
+            .unwrap();
         cert.sign(&key, MessageDigest::sha256()).unwrap();
         let cert = cert.build();
-        let thumbprint: String = cert.digest(MessageDigest::sha1()).unwrap().iter().map(|b| format!("{b:02X}")).collect();
+        let thumbprint: String = cert
+            .digest(MessageDigest::sha1())
+            .unwrap()
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect();
         let der = cert.to_der().unwrap();
-        let identity = InPlaceSigner::from_worker_identity(thumbprint.clone(), vec![der.clone()]).unwrap();
+        let identity =
+            InPlaceSigner::from_worker_identity(thumbprint.clone(), vec![der.clone()]).unwrap();
         assert_eq!(identity.worker_identity().unwrap(), (thumbprint, vec![der]));
-        assert!(InPlaceSigner::from_worker_identity("0".repeat(40), identity.chain_der.clone()).is_err());
-        assert!(InPlaceSigner::from_worker_identity("not-a-thumbprint".into(), identity.chain_der.clone()).is_err());
+        assert!(
+            InPlaceSigner::from_worker_identity("0".repeat(40), identity.chain_der.clone())
+                .is_err()
+        );
+        assert!(
+            InPlaceSigner::from_worker_identity(
+                "not-a-thumbprint".into(),
+                identity.chain_der.clone()
+            )
+            .is_err()
+        );
         assert!(InPlaceSigner::from_worker_identity("0".repeat(40), vec![vec![1, 2, 3]]).is_err());
     }
 }

@@ -40,7 +40,12 @@ export interface UntitledSaver {
    * place is still being asked for, a second request is this same save: one
    * dialog, one answer, and nothing written if it is cancelled.
    */
-  save(path: string, defaultName: string, saveEdits: () => Promise<boolean>, ownedSaveId?: string): Promise<UntitledSave>
+  save(
+    path: string,
+    defaultName: string,
+    saveEdits: () => Promise<boolean>,
+    ownedSaveId?: string,
+  ): Promise<UntitledSave>
 }
 
 export function createUntitledSaver(api: UntitledSaveApi): UntitledSaver {
@@ -54,17 +59,23 @@ export function createUntitledSaver(api: UntitledSaveApi): UntitledSaver {
     saveEdits: () => Promise<boolean>,
     ownedSaveId?: string,
   ): Promise<UntitledSave> => {
-    const picked = ownedSaveId === undefined
-      ? api.pickUntitledCopyTarget(path, defaultName)
-      : api.pickUntitledCopyTarget(path, defaultName, ownedSaveId)
+    const picked =
+      ownedSaveId === undefined
+        ? api.pickUntitledCopyTarget(path, defaultName)
+        : api.pickUntitledCopyTarget(path, defaultName, ownedSaveId)
     if (!(await picked.catch(() => false))) {
       return { saved: false, why: 'cancelled' }
     }
     writing = true
     if (!(await saveEdits())) return { saved: false, why: 'unsaved' }
-    const adoption = ownedSaveId === undefined ? api.adoptUntitledCopy(path) : api.adoptUntitledCopy(path, ownedSaveId)
-    const adopted = await adoption
-      .catch((err: unknown): AdoptUntitledCopyResult => ({ ok: false, error: String(err) }))
+    const adoption =
+      ownedSaveId === undefined
+        ? api.adoptUntitledCopy(path)
+        : api.adoptUntitledCopy(path, ownedSaveId)
+    const adopted = await adoption.catch((err: unknown): AdoptUntitledCopyResult => ({
+      ok: false,
+      error: String(err),
+    }))
     return adopted.ok
       ? { saved: true, path: adopted.path }
       : { saved: false, why: 'failed', error: adopted.error }

@@ -23,8 +23,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use jscompat::{JsMap, JsObject, JsonValue, slice_utf16};
 
 use super::user_skills_service::{
-    Failure, InstallDone, SkillLibrary, Svc, UserSkillCardSaveInput, UserSkillSaveInput, UserSkillStatePatch,
-    UserSkillsFail, UserSkillsHost, UserSkillsService, import_preview_of,
+    Failure, InstallDone, SkillLibrary, Svc, UserSkillCardSaveInput, UserSkillSaveInput,
+    UserSkillStatePatch, UserSkillsFail, UserSkillsHost, UserSkillsService, import_preview_of,
 };
 use crate::packages::ai_provider::user_skills_folder::skill_bundle_file_name;
 use crate::packages::ai_provider::user_skills_import::{
@@ -835,7 +835,11 @@ impl<H: UserSkillsHost, L: SkillLibrary> UserSkillsIpc<H, L> {
         let Some(JsonValue::String(token)) = token else {
             return invalid();
         };
-        if let Some(entry) = self.installing.get(token).filter(|entry| entry.owner == sender_id) {
+        if let Some(entry) = self
+            .installing
+            .get(token)
+            .filter(|entry| entry.owner == sender_id)
+        {
             entry.value.store(true, Ordering::SeqCst);
         }
         if self
@@ -851,7 +855,10 @@ impl<H: UserSkillsHost, L: SkillLibrary> UserSkillsIpc<H, L> {
 
     /// Reserve an import on core before its filesystem work is queued.
     pub fn install_begin<X: UserSkillsIpcHost>(
-        &mut self, host: &mut X, sender_id: f64, raw: Option<&JsonValue>,
+        &mut self,
+        host: &mut X,
+        sender_id: f64,
+        raw: Option<&JsonValue>,
     ) -> Result<InstallWork, JsonValue> {
         if let Some(refused) = Self::managed(host, sender_id, "skills:install") {
             return Err(refused);
@@ -863,10 +870,13 @@ impl<H: UserSkillsHost, L: SkillLibrary> UserSkillsIpc<H, L> {
             return Err(invalid());
         };
         let selected = match request.get("selected") {
-            Some(JsonValue::Array(items)) => items.iter().filter_map(|item| match item {
-                JsonValue::String(key) => Some(key.clone()),
-                _ => None,
-            }).collect(),
+            Some(JsonValue::Array(items)) => items
+                .iter()
+                .filter_map(|item| match item {
+                    JsonValue::String(key) => Some(key.clone()),
+                    _ => None,
+                })
+                .collect(),
             _ => Vec::new(),
         };
         let mut on_collision = Vec::new();
@@ -877,35 +887,73 @@ impl<H: UserSkillsHost, L: SkillLibrary> UserSkillsIpc<H, L> {
                 }
             }
         }
-        if !self.imports.get(token).is_some_and(|entry| entry.owner == sender_id) {
+        if !self
+            .imports
+            .get(token)
+            .is_some_and(|entry| entry.owner == sender_id)
+        {
             return Err(fail_json("not-found"));
         }
-        let entry = self.imports.delete(token).expect("the import was just found");
+        let entry = self
+            .imports
+            .delete(token)
+            .expect("the import was just found");
         let cancelled = Arc::new(AtomicBool::new(false));
-        self.installing.set(token, Pending { value: cancelled.clone(), owner: sender_id });
-        Ok(InstallWork { token: token.clone(), owner: sender_id, imported: entry.value, selected, on_collision, cancelled })
+        self.installing.set(
+            token,
+            Pending {
+                value: cancelled.clone(),
+                owner: sender_id,
+            },
+        );
+        Ok(InstallWork {
+            token: token.clone(),
+            owner: sender_id,
+            imported: entry.value,
+            selected,
+            on_collision,
+            cancelled,
+        })
     }
 
     /// Commit preview state; cleanup stays on the worker before the reply.
-    pub fn install_finish(&mut self, work: InstallWork, done: Svc<InstallDone>) -> (JsonValue, Option<SkillImport>, bool) {
+    pub fn install_finish(
+        &mut self,
+        work: InstallWork,
+        done: Svc<InstallDone>,
+    ) -> (JsonValue, Option<SkillImport>, bool) {
         self.installing.delete(&work.token);
-        let needs_choice = matches!(&done, Err(failure) if failure.as_fail().reason == "needs-choice");
+        let needs_choice =
+            matches!(&done, Err(failure) if failure.as_fail().reason == "needs-choice");
         let succeeded = done.is_ok();
         let dispose = if needs_choice && !work.cancelled.load(Ordering::SeqCst) {
-            self.imports.set(&work.token, Pending { value: work.imported, owner: work.owner });
+            self.imports.set(
+                &work.token,
+                Pending {
+                    value: work.imported,
+                    owner: work.owner,
+                },
+            );
             None
         } else {
             Some(work.imported)
         };
         let answer = settled(done, |done| {
-            let installed = done.installed.iter().map(|(key, id)| {
-                let mut entry = JsObject::new();
-                entry.set("key", text(key));
-                entry.set("id", text(id));
-                JsonValue::Object(entry)
-            }).collect();
+            let installed = done
+                .installed
+                .iter()
+                .map(|(key, id)| {
+                    let mut entry = JsObject::new();
+                    entry.set("key", text(key));
+                    entry.set("id", text(id));
+                    JsonValue::Object(entry)
+                })
+                .collect();
             let skipped = done.skipped.iter().map(|key| text(key)).collect();
-            ok_with(vec![("installed", JsonValue::Array(installed)), ("skipped", JsonValue::Array(skipped))])
+            ok_with(vec![
+                ("installed", JsonValue::Array(installed)),
+                ("skipped", JsonValue::Array(skipped)),
+            ])
         });
         (answer, dispose, succeeded)
     }
@@ -1094,15 +1142,27 @@ impl<H: UserSkillsHost, L: SkillLibrary> UserSkillsIpc<H, L> {
         let Some(JsonValue::String(token)) = token else {
             return Err(invalid());
         };
-        if !self.updates.get(token).is_some_and(|entry| entry.owner == sender_id) {
+        if !self
+            .updates
+            .get(token)
+            .is_some_and(|entry| entry.owner == sender_id)
+        {
             return Err(fail_json("not-found"));
         }
-        let entry = self.updates.delete(token).expect("the update was just found");
+        let entry = self
+            .updates
+            .delete(token)
+            .expect("the update was just found");
         Ok((entry.value.id, entry.value.check))
     }
 
-    pub fn apply_update_finish<X: UserSkillsIpcHost>(host: &mut X, result: Svc<String>) -> JsonValue {
-        Self::changing(host, result, |id| ok_with(vec![("id", JsonValue::String(id))]))
+    pub fn apply_update_finish<X: UserSkillsIpcHost>(
+        host: &mut X,
+        result: Svc<String>,
+    ) -> JsonValue {
+        Self::changing(host, result, |id| {
+            ok_with(vec![("id", JsonValue::String(id))])
+        })
     }
 
     pub fn apply_update<X: UserSkillsIpcHost>(

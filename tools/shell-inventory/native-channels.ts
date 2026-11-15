@@ -21,9 +21,17 @@ export const NATIVE_CHANNEL_CONTRACTS: readonly NativeChannelContract[] = [
     batch: 'D2',
     surfaces: ['docs'],
     handler: 'crates/shell-ipc/d2/src/docs/export.rs',
-    reason: 'Closing export resolves its existing Docs::Close.saves request scope; ordinary docs:print-pdf-buffer remains the original M contract.',
+    reason:
+      'Closing export resolves its existing Docs::Close.saves request scope; ordinary docs:print-pdf-buffer remains the original M contract.',
     arguments: ['widthTwips', 'heightTwips', 'scale?', 'ownedSaveRequestId'],
-    requiredScenarios: ['normal-completion', 'missing-token', 'foreign-token', 'owner-loss', 'effect-failure', 'unauthorized-surface'],
+    requiredScenarios: [
+      'normal-completion',
+      'missing-token',
+      'foreign-token',
+      'owner-loss',
+      'effect-failure',
+      'unauthorized-surface',
+    ],
     synthetic: {
       suite: 'crates/shell-ipc/d2/src/docs/export/owned/tests.rs',
       sourceCases: [
@@ -44,17 +52,35 @@ export const NATIVE_CHANNEL_CONTRACTS: readonly NativeChannelContract[] = [
     batch: 'D2',
     surfaces: ['pdf'],
     handler: 'crates/shell-ipc/d2/src/pdf/editor/open.rs',
-    reason: 'Native recovery consumes the exact captured seed and returns its path and correlation token together.',
+    reason:
+      'Native recovery consumes the exact captured seed and returns its path and correlation token together.',
     arguments: [],
-    requiredScenarios: ['ordinary-empty', 'captured-consume', 'duplicate-consume', 'foreign-renderer', 'preparation-loss', 'renderer-apply', 'unauthorized-surface'],
+    requiredScenarios: [
+      'ordinary-empty',
+      'captured-consume',
+      'duplicate-consume',
+      'foreign-renderer',
+      'preparation-loss',
+      'renderer-apply',
+      'unauthorized-surface',
+    ],
     synthetic: {
       suite: 'crates/shell-ipc/d2/src/pdf/editor/recovery_open/tests.rs',
       sourceCases: [
         {
           name: 'captured_recovery_completes_before_navigation_and_revocation_blocks_seed',
-          scenarios: ['ordinary-empty', 'captured-consume', 'duplicate-consume', 'foreign-renderer', 'preparation-loss'],
+          scenarios: [
+            'ordinary-empty',
+            'captured-consume',
+            'duplicate-consume',
+            'foreign-renderer',
+            'preparation-loss',
+          ],
         },
-        { name: 'recovery_routes_reject_foreign_surface_in_the_real_dispatcher', scenarios: ['unauthorized-surface'] },
+        {
+          name: 'recovery_routes_reject_foreign_surface_in_the_real_dispatcher',
+          scenarios: ['unauthorized-surface'],
+        },
       ],
     },
   },
@@ -64,17 +90,39 @@ export const NATIVE_CHANNEL_CONTRACTS: readonly NativeChannelContract[] = [
     batch: 'D2',
     surfaces: ['pdf'],
     handler: 'crates/shell-ipc/d2/src/pdf/editor/open.rs',
-    reason: 'The registered PDF renderer settles its exact recovery receipt only after applying its document.',
+    reason:
+      'The registered PDF renderer settles its exact recovery receipt only after applying its document.',
     arguments: ['token', 'ok', 'error?'],
-    requiredScenarios: ['successful-ack', 'missing-token', 'foreign-token', 'foreign-renderer', 'duplicate-ack', 'parse-failure', 'revision-loss', 'renderer-apply', 'unauthorized-surface'],
+    requiredScenarios: [
+      'successful-ack',
+      'missing-token',
+      'foreign-token',
+      'foreign-renderer',
+      'duplicate-ack',
+      'parse-failure',
+      'revision-loss',
+      'renderer-apply',
+      'unauthorized-surface',
+    ],
     synthetic: {
       suite: 'crates/shell-ipc/d2/src/pdf/editor/recovery_open/tests.rs',
       sourceCases: [
         {
           name: 'captured_recovery_completes_before_navigation_and_revocation_blocks_seed',
-          scenarios: ['successful-ack', 'missing-token', 'foreign-token', 'foreign-renderer', 'duplicate-ack', 'parse-failure', 'revision-loss'],
+          scenarios: [
+            'successful-ack',
+            'missing-token',
+            'foreign-token',
+            'foreign-renderer',
+            'duplicate-ack',
+            'parse-failure',
+            'revision-loss',
+          ],
         },
-        { name: 'recovery_routes_reject_foreign_surface_in_the_real_dispatcher', scenarios: ['unauthorized-surface'] },
+        {
+          name: 'recovery_routes_reject_foreign_surface_in_the_real_dispatcher',
+          scenarios: ['unauthorized-surface'],
+        },
       ],
     },
   },

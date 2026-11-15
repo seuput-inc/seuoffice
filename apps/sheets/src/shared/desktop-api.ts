@@ -3625,7 +3625,10 @@ export interface DesktopApi {
   /// the marks: native dialog offering Save as .xlsx, Export without the marks
   /// (the real values; the marks are gone from that file) or Cancel.
   /// Nothing is written by the dialog itself.
-  askWithheldExport(format: WithheldExportFormat, ownedSaveRequestId?: string): Promise<'xlsx' | 'export' | 'cancel'>
+  askWithheldExport(
+    format: WithheldExportFormat,
+    ownedSaveRequestId?: string,
+  ): Promise<'xlsx' | 'export' | 'cancel'>
   /// AI create_document: write a new standalone file into the default save
   /// folder (no dialog) and open it in a new tab.
   createDocument(request: WorkbookCreateDocumentRequest): Promise<WorkbookCreateDocumentResult>
@@ -3639,11 +3642,13 @@ export interface DesktopApi {
   /// Mirrors the pending-edit badge to the main process for the close guard.
   notifyPendingEdits(count: number): void
   /// Main asks the renderer to save before closing; reply via reportCloseSaveResult.
-  onCloseSaveRequest(callback: (request?: {
-    requestId: string
-    mode: 'save' | 'save-as'
-    targetPath?: string
-  }) => void): () => void
+  onCloseSaveRequest(
+    callback: (request?: {
+      requestId: string
+      mode: 'save' | 'save-as'
+      targetPath?: string
+    }) => void,
+  ): () => void
   reportCloseSaveResult(ok: boolean, requestId?: string, error?: string): void
   /// The workbook just opened in this tab keeps no recovery copy (password
   /// protected): main sends the localized notice once per tab.

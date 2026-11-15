@@ -29,7 +29,9 @@ const list = (text: string): string[] =>
     .filter(Boolean)
 
 export const CHANNELS: CanonicalSpec[] = [
-  ...table.matchAll(/\b(native_spec|spec)\(\s*"([^"]+)",\s*&\[([^\]]*)\],\s*(\w+),\s*&\[([^\]]*)\],?\s*\)/g),
+  ...table.matchAll(
+    /\b(native_spec|spec)\(\s*"([^"]+)",\s*&\[([^\]]*)\],\s*(\w+),\s*&\[([^\]]*)\],?\s*\)/g,
+  ),
 ].map((match): CanonicalSpec => ({
   name: match[2],
   kinds: list(match[3]).map((kind) => kind[0].toLowerCase() + kind.slice(1)),

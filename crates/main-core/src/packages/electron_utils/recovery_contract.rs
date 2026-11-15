@@ -49,11 +49,26 @@ pub trait RecoveryEditorContract<C, A> {
     fn kind(&self) -> &str;
     /// The OS is ending the session. Answer once every copy has settled, or
     /// report the failure that prevented a copy from being written.
-    fn write_copies_now(&self, done: Box<dyn FnOnce(Result<(), crate::shell::renderer_disposal::Failure>)>);
+    fn write_copies_now(
+        &self,
+        done: Box<dyn FnOnce(Result<(), crate::shell::renderer_disposal::Failure>)>,
+    );
     /// load `request.file_path` into `contents` (a tab the shell created)
-    fn open_file_with_decision(&self, contents: &C, request: &RecoveryOpenFileRequest, authority: &A, done: RecoveryOpenDone);
+    fn open_file_with_decision(
+        &self,
+        contents: &C,
+        request: &RecoveryOpenFileRequest,
+        authority: &A,
+        done: RecoveryOpenDone,
+    );
     /// Load a copy into `contents` as an untitled tab.
-    fn open_untitled_copy(&self, contents: &C, request: &RecoveryOpenUntitledRequest, authority: &A, done: RecoveryOpenDone);
+    fn open_untitled_copy(
+        &self,
+        contents: &C,
+        request: &RecoveryOpenUntitledRequest,
+        authority: &A,
+        done: RecoveryOpenDone,
+    );
     /// Whether the document in this tab cannot get a safe copy.
     fn is_unprotectable(&self, contents: &C) -> bool;
 }

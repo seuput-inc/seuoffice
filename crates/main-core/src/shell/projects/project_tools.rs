@@ -291,11 +291,12 @@ pub fn finish_project_read(page: Result<KbReadPage, Thrown>) -> ProjectReadResul
             total_chars: page.total_chars,
             offset: JsNum(page.offset),
         },
-        Err(Thrown(message)) if message == UNSAVED_CHANGES_MESSAGE => refused(ProjectReadRefusal::Unsaved),
+        Err(Thrown(message)) if message == UNSAVED_CHANGES_MESSAGE => {
+            refused(ProjectReadRefusal::Unsaved)
+        }
         Err(_) => refused(ProjectReadRefusal::Unreadable),
     }
 }
-
 
 /// the function `visibleTest` returns: the project's "visible to the AI" test
 /// on absolute paths
@@ -645,9 +646,15 @@ impl ProjectFolderTools {
         let Some(visibility) = self.visibility_of(project_id)? else {
             return Ok(ProjectReadStep::Done(refused(ProjectReadRefusal::Outside)));
         };
-        self.prepare_read_in(open_files, owner, project_id, &visibility, path, count_of_number(offset, 0.0))
+        self.prepare_read_in(
+            open_files,
+            owner,
+            project_id,
+            &visibility,
+            path,
+            count_of_number(offset, 0.0),
+        )
     }
-
 
     /// `judge(visibility, segments)`: why the AI may not see these
     /// folder-relative segments, or `None` when it may
@@ -684,7 +691,9 @@ impl ProjectFolderTools {
     ) -> Result<ProjectReadResult, Thrown> {
         match self.prepare_read_in(open_files, owner, project_id, visibility, given, offset)? {
             ProjectReadStep::Done(result) => Ok(result),
-            ProjectReadStep::Read { path, offset } => Ok(finish_project_read(self.pages.read_page(&path, offset))),
+            ProjectReadStep::Read { path, offset } => {
+                Ok(finish_project_read(self.pages.read_page(&path, offset)))
+            }
         }
     }
 
@@ -751,7 +760,9 @@ impl ProjectFolderTools {
             return Ok(ProjectReadStep::Done(refused(judged)));
         }
         if !is_supported_tree_file(&path) {
-            return Ok(ProjectReadStep::Done(refused(ProjectReadRefusal::Unreadable)));
+            return Ok(ProjectReadStep::Done(refused(
+                ProjectReadRefusal::Unreadable,
+            )));
         }
         if file_has_unsaved_changes(open_files, &path) {
             return Ok(ProjectReadStep::Done(refused(ProjectReadRefusal::Unsaved)));

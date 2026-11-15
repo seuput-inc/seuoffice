@@ -1,7 +1,9 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { runPdfiumSession } from '../pdfium-session'
 
-afterEach(() => { vi.unstubAllGlobals() })
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
 
 it('rejects an outstanding worker exchange when the request is aborted', async () => {
   const { promise: posted, resolve: postedResolve } = Promise.withResolvers<void>()
@@ -10,8 +12,12 @@ it('rejects an outstanding worker exchange when the request is aborted', async (
     onerror: unknown
     onmessageerror: unknown
     onmessage: unknown
-    postMessage(): void { postedResolve() }
-    terminate(): void { terminated = true }
+    postMessage(): void {
+      postedResolve()
+    }
+    terminate(): void {
+      terminated = true
+    }
   }
   vi.stubGlobal('Worker', PendingWorker)
   vi.stubGlobal('document', { baseURI: 'https://service/' })

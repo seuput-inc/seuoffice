@@ -16,7 +16,10 @@ it('queues a fresh tokened flush behind an in-flight periodic copy', async () =>
       writes.push([value, token])
       if (writes.length === 1) await gate.promise
     },
-    onFlushRequest: (handler) => { flush = handler; return () => {} },
+    onFlushRequest: (handler) => {
+      flush = handler
+      return () => {}
+    },
   })
   vi.advanceTimersByTime(10)
   await Promise.resolve()
@@ -25,7 +28,10 @@ it('queues a fresh tokened flush behind an in-flight periodic copy', async () =>
   expect(writes).toEqual([['first', undefined]])
   gate.resolve()
   for (let i = 0; i < 10; i += 1) await Promise.resolve()
-  expect(writes).toEqual([['first', undefined], ['latest', 'request-1']])
+  expect(writes).toEqual([
+    ['first', undefined],
+    ['latest', 'request-1'],
+  ])
   stop()
 })
 
@@ -33,11 +39,18 @@ it('reports serialization failure against the matching flush', async () => {
   let flush!: (token?: string) => void
   const write = vi.fn(async (_text: string | null, _token?: string, _error?: string) => {})
   const stop = startRecoveryCopies({
-    read: () => { throw new Error('serialize failed') },
+    read: () => {
+      throw new Error('serialize failed')
+    },
     write,
-    onFlushRequest: (handler) => { flush = handler; return () => {} },
+    onFlushRequest: (handler) => {
+      flush = handler
+      return () => {}
+    },
   })
   flush('request-2')
-  await vi.waitFor(() => expect(write).toHaveBeenCalledWith(null, 'request-2', 'Error: serialize failed'))
+  await vi.waitFor(() =>
+    expect(write).toHaveBeenCalledWith(null, 'request-2', 'Error: serialize failed'),
+  )
   stop()
 })

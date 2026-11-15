@@ -100,7 +100,9 @@ pub fn write_legacy_import_skip_authorized(
     // The original retryable in-place fallback admits its open, then drains
     // the write to that exact descriptor outside the authority gate.
     super::atomic_write::write_json_atomic_authorized(
-        settings_path, &JsonValue::Object(settings), admit,
+        settings_path,
+        &JsonValue::Object(settings),
+        admit,
     )
 }
 
@@ -129,7 +131,10 @@ mod tests {
     fn updating_one_import_preference_keeps_other_known_choices() {
         let JsonValue::Object(settings) = json_parse(
             r#"{"theme":"dark","legacyImportSkipConfirm":{"odt":true,"hwp":false,"unknown":true}}"#,
-        ).unwrap() else { panic!("expected settings object") };
+        )
+        .unwrap() else {
+            panic!("expected settings object")
+        };
         let map = updated_skip_map(&settings, "word97", true);
         assert_eq!(map.get("word97"), Some(&JsonValue::Bool(true)));
         assert_eq!(map.get("odt"), Some(&JsonValue::Bool(true)));

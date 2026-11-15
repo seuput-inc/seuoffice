@@ -932,10 +932,8 @@ fn keepalive_scenario(args: &[Value], cx: &mut Context, first_chunk: bool) -> An
     };
     for step in steps {
         match (step.as_str(), &mut handle) {
-            ("tick", _) => {
-                if timer.active {
-                    timer.cx.logs.push(vec![Value::from("send")]);
-                }
+            ("tick", _) if timer.active => {
+                timer.cx.logs.push(vec![Value::from("send")]);
             }
             ("stop", Handle::Plain(h)) => h.stop(&mut timer),
             ("stop", Handle::First(h)) => h.stop(&mut timer),

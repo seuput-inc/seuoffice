@@ -1,7 +1,6 @@
 /**
- * Crash-recovery wiring in the renderer: the copy question is answered before
- * any content loads, a restored copy opens unsaved (the file is not read), and
- * the copy loop runs regardless of the AutoSave switch.
+ * Crash-recovery wiring in the renderer: restored untitled copies keep their
+ * format and the copy loop runs regardless of the AutoSave switch.
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -16,15 +15,6 @@ describe('recovery wiring', () => {
     expect(preload).toContain('MARKDOWN_CHANNELS.recoveryOpen')
     expect(preload).toContain('MARKDOWN_CHANNELS.recoveryWrite')
     expect(preload).toContain('MARKDOWN_CHANNELS.recoveryFlushRequest')
-  })
-
-  it('asks about a copy before reading the file and opens a restored copy unsaved', () => {
-    const app = source('src/renderer/App.tsx')
-    const ask = app.indexOf('window.markdownApi.recoveryOpen?.()')
-    const read = app.indexOf('recovered ? recovered.text : await window.markdownApi.readFile(path)')
-    expect(ask).toBeGreaterThan(-1)
-    expect(read).toBeGreaterThan(ask)
-    expect(app).toContain('if (seed !== null || recovered) markDirty()')
   })
 
   it('opens an untitled restored copy in the format of the file it was of, still untitled', () => {

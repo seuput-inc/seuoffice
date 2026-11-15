@@ -250,7 +250,9 @@ export function csvWouldExposeWithheld(
 }
 
 export async function handleExportCsv(
-  ctx: CsvExportContext, targetPath?: string, ownedSaveRequestId?: string,
+  ctx: CsvExportContext,
+  targetPath?: string,
+  ownedSaveRequestId?: string,
 ): Promise<void> {
   const runtime = ctx.univerRef.current
   if (!runtime || !activeCsvSheet(runtime)) return

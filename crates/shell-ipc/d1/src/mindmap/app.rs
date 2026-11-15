@@ -153,7 +153,10 @@ impl WaitTable {
 }
 
 /// a copy-now wait: the generation of its timer and what finishing it resumes
-pub(super) type CopyNowWaiter = (u64, Box<dyn FnOnce(Result<(), main_core::shell::renderer_disposal::Failure>)>);
+pub(super) type CopyNowWaiter = (
+    u64,
+    Box<dyn FnOnce(Result<(), main_core::shell::renderer_disposal::Failure>)>,
+);
 
 pub(super) struct PendingAsk {
     gen_id: u64,
@@ -386,7 +389,8 @@ impl MindmapApp {
                         waiter(Wait::Timeout);
                     }
                 }
-                TimerJob::OwnedSaveWait(id) => self.finish_owned_save(id, Err(crate::value::thrown("Timed out saving the map"))),
+                TimerJob::OwnedSaveWait(id) => self
+                    .finish_owned_save(id, Err(crate::value::thrown("Timed out saving the map"))),
                 TimerJob::OwnedDropHold(id) => self.owned_hold_ended(id),
                 TimerJob::CloseWait(view, gen_id) => {
                     let waiter = self.0.state.borrow_mut().close_waiters.expire(view, gen_id);
@@ -394,7 +398,13 @@ impl MindmapApp {
                         waiter(Wait::Timeout);
                     }
                 }
-                TimerJob::CopyNow(view, gen_id) => self.finish_copy_now(view, Some(gen_id), Err(main_core::shell::renderer_disposal::Failure("Timed out writing the mindmap recovery copy".into()))),
+                TimerJob::CopyNow(view, gen_id) => self.finish_copy_now(
+                    view,
+                    Some(gen_id),
+                    Err(main_core::shell::renderer_disposal::Failure(
+                        "Timed out writing the mindmap recovery copy".into(),
+                    )),
+                ),
                 TimerJob::DropHold(view, gen_id) => self.drop_hold_ended(view, gen_id),
                 TimerJob::Resend(kind, view, gen_id) => self.resend(kind, view, gen_id),
                 TimerJob::AskTimeout(kind, view, gen_id) => self.settle_ask(
@@ -534,9 +544,13 @@ impl MindmapApp {
     /// the renderer process dies.
     pub fn create_view(&self, view: ViewId, open_path: Option<&str>) {
         let mut state = self.0.state.borrow_mut();
-        if state.live.contains(&view) { return; }
+        if state.live.contains(&view) {
+            return;
+        }
         state.live.insert(view);
-        state.documents.insert(view, shell_contract::runtime::RendererGeneration::new());
+        state
+            .documents
+            .insert(view, shell_contract::runtime::RendererGeneration::new());
         state.revisions.insert(view, 0);
         if let Some(path) = open_path.filter(|p| !p.is_empty() && PathBuf::from(p).exists()) {
             state.open_path.insert(view, path.to_owned());
@@ -737,7 +751,11 @@ impl MindmapApp {
     /// `writeMindmapCopiesNow`: the OS is ending the session, every map view
     /// with unsaved changes writes a copy now. `done` runs when each has
     /// answered or `timeout` ran out.
-    pub fn write_copies_now(&self, timeout: Duration, done: Box<dyn FnOnce(Result<(), main_core::shell::renderer_disposal::Failure>)>) {
+    pub fn write_copies_now(
+        &self,
+        timeout: Duration,
+        done: Box<dyn FnOnce(Result<(), main_core::shell::renderer_disposal::Failure>)>,
+    ) {
         let views: Vec<ViewId> = {
             let state = self.0.state.borrow();
             let mut views: Vec<ViewId> = state.live.iter().copied().collect();
@@ -754,7 +772,9 @@ impl MindmapApp {
                 alive
             })
             .collect();
-        let initial_failure = unavailable.then(|| main_core::shell::renderer_disposal::Failure("The mindmap view was closed".into()));
+        let initial_failure = unavailable.then(|| {
+            main_core::shell::renderer_disposal::Failure("The mindmap view was closed".into())
+        });
         if views.is_empty() {
             return done(initial_failure.map_or(Ok(()), Err));
         }
@@ -773,28 +793,43 @@ impl MindmapApp {
                     Box::new(move |result| {
                         if let Err(error) = result {
                             let mut first = failure.borrow_mut();
-                            if first.is_none() { *first = Some(error); }
+                            if first.is_none() {
+                                *first = Some(error);
+                            }
                         }
                         left.set(left.get() - 1);
                         if left.get() == 0 {
                             let callback = done.borrow_mut().take();
                             let result = failure.borrow_mut().take().map_or(Ok(()), Err);
-                            if let Some(done) = callback { done(result); }
+                            if let Some(done) = callback {
+                                done(result);
+                            }
                         }
                     }),
                 ),
             );
             if let Some((_, finish)) = previous {
-                finish(Err(main_core::shell::renderer_disposal::Failure("Mindmap recovery request was replaced".into())));
+                finish(Err(main_core::shell::renderer_disposal::Failure(
+                    "Mindmap recovery request was replaced".into(),
+                )));
             }
             self.schedule(timeout, TimerJob::CopyNow(view, gen_id));
-            self.emit(view, "mindmap:recovery-copy-now", vec![crate::value::num(gen_id as f64)]);
+            self.emit(
+                view,
+                "mindmap:recovery-copy-now",
+                vec![crate::value::num(gen_id as f64)],
+            );
         }
     }
 
     /// resolves the view's copy-now waiter: the renderer reported, the view
     /// ended or its time ran out (`only` the waiter of that timer)
-    pub(super) fn finish_copy_now(&self, view: ViewId, only: Option<u64>, result: Result<(), main_core::shell::renderer_disposal::Failure>) {
+    pub(super) fn finish_copy_now(
+        &self,
+        view: ViewId,
+        only: Option<u64>,
+        result: Result<(), main_core::shell::renderer_disposal::Failure>,
+    ) {
         let finish = {
             let mut state = self.0.state.borrow_mut();
             match state.copy_now.get(&view) {
@@ -808,7 +843,6 @@ impl MindmapApp {
             finish(result);
         }
     }
-
 
     /// `sendMindmapMenuCommand`
     pub fn send_menu_command(&self, view: ViewId, command: &str) {
@@ -827,7 +861,13 @@ impl MindmapApp {
     /// `render-process-gone`: a crashed view's recovery copies outlive it
     pub fn view_crashed(&self, view: ViewId) {
         self.recovery_of(view).crashed = true;
-        self.finish_copy_now(view, None, Err(main_core::shell::renderer_disposal::Failure("The mindmap renderer crashed".into())));
+        self.finish_copy_now(
+            view,
+            None,
+            Err(main_core::shell::renderer_disposal::Failure(
+                "The mindmap renderer crashed".into(),
+            )),
+        );
     }
 
     /// `mindmapReadOutline`: the map as outline text, unsaved edits included
@@ -938,15 +978,31 @@ impl MindmapApp {
     /// the view's end (`wc.once('destroyed')`)
     pub(super) fn view_gone(&self, view: ViewId) {
         self.cancel_recovery_open(view);
-        let saved_target = self.0.state.borrow().saved_loads.get(&view).map(|slot| slot.target.clone());
-        if let Some(target) = saved_target { super::saved_open::fail(self, &target, "The mindmap view was closed"); }
+        let saved_target = self
+            .0
+            .state
+            .borrow()
+            .saved_loads
+            .get(&view)
+            .map(|slot| slot.target.clone());
+        if let Some(target) = saved_target {
+            super::saved_open::fail(self, &target, "The mindmap view was closed");
+        }
         self.0.state.borrow_mut().saved_loads.remove(&view);
         let dirty = self.is_dirty(view);
         self.recovery_view_gone(view, dirty);
         self.0.state.borrow_mut().live.remove(&view);
         let document = self.0.state.borrow_mut().documents.remove(&view);
-        if let Some(document) = document { document.revoke(); }
-        self.finish_copy_now(view, None, Err(main_core::shell::renderer_disposal::Failure("The mindmap view was closed".into())));
+        if let Some(document) = document {
+            document.revoke();
+        }
+        self.finish_copy_now(
+            view,
+            None,
+            Err(main_core::shell::renderer_disposal::Failure(
+                "The mindmap view was closed".into(),
+            )),
+        );
         {
             let mut state = self.0.state.borrow_mut();
             state.open_path.remove(&view);

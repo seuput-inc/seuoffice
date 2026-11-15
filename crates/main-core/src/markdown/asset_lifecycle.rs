@@ -23,12 +23,12 @@ use super::fs_util::{
     write_file_excl,
 };
 use super::old_names::{ASSET_MANIFEST_FILENAME_WRITTEN, OLD_ASSET_MANIFEST_FILENAMES};
+pub use crate::html::asset_lifecycle::PreparedAssetOwnership;
+use crate::html::asset_lifecycle::effects::{self, AssetAdmission, Effects, Session};
 use crate::node_fs::{NodeError, namespaced, node_error};
 use crate::packages::electron_utils::atomic_write::atomic_write_file;
 use crate::packages::i18n::existing_or_current;
 use crate::shell::recent_files::StatInfo;
-use crate::html::asset_lifecycle::effects::{self, AssetAdmission, Effects, Session};
-pub use crate::html::asset_lifecycle::PreparedAssetOwnership;
 use jscompat::JsMap;
 
 pub const ASSET_MANIFEST_FILENAME: &str = ".seuoffice-assets.json";
@@ -411,12 +411,20 @@ fn write_manifest_unlocked(
 }
 
 fn read_manifest_scoped(session: &mut Session, manifest_path: &str) -> R<OwnedAssetManifest> {
-    let Some(bytes) = session.read_manifest(manifest_path)? else { return Ok(OwnedAssetManifest::empty()); };
-    let value = json_parse(&String::from_utf8_lossy(&bytes)).map_err(|_| plain_error("asset manifest is invalid JSON"))?;
+    let Some(bytes) = session.read_manifest(manifest_path)? else {
+        return Ok(OwnedAssetManifest::empty());
+    };
+    let value = json_parse(&String::from_utf8_lossy(&bytes))
+        .map_err(|_| plain_error("asset manifest is invalid JSON"))?;
     normalized_manifest(&value)
 }
 
-fn write_manifest_scoped(session: &mut Session, manifest: &OwnedAssetManifest, manifest_path: &str, effects: &mut Effects<'_, '_>) -> R<()> {
+fn write_manifest_scoped(
+    session: &mut Session,
+    manifest: &OwnedAssetManifest,
+    manifest_path: &str,
+    effects: &mut Effects<'_, '_>,
+) -> R<()> {
     let normalized = normalized_manifest(&manifest.to_json())?;
     let text = format!("{}\n", json_stringify_pretty(&normalized.to_json(), 2));
     session.write_manifest(manifest_path, text.as_bytes(), effects)
@@ -695,14 +703,21 @@ fn prune(table: &mut JsMap<Vec<String>>, keep: &dyn Fn(&str) -> bool) {
 }
 
 fn remove_created_records(document_path: &str, created: &[OwnedAssetRecord]) -> R<()> {
-    if created.is_empty() { return Ok(()); }
+    if created.is_empty() {
+        return Ok(());
+    }
     let mut session = Session::open(document_path, None)?;
     let mut admit = |effect: &mut dyn FnMut() -> R<()>| effect();
     let mut effects = Effects::new(&mut admit);
     remove_created_records_in(document_path, created, &mut session, &mut effects)
 }
 
-fn remove_created_records_in(document_path: &str, created: &[OwnedAssetRecord], session: &mut Session, effects: &mut Effects<'_, '_>) -> R<()> {
+fn remove_created_records_in(
+    document_path: &str,
+    created: &[OwnedAssetRecord],
+    session: &mut Session,
+    effects: &mut Effects<'_, '_>,
+) -> R<()> {
     if created.is_empty() {
         return Ok(());
     }
@@ -770,7 +785,13 @@ pub fn prepare_assets_for_save_as(
     text: &str,
     image_sources: &[String],
 ) -> R<PreparedSaveAsAssets> {
-    prepare_assets_for_save_as_authorized(source_document_path, target_document_path, text, image_sources, &mut |effect| effect())
+    prepare_assets_for_save_as_authorized(
+        source_document_path,
+        target_document_path,
+        text,
+        image_sources,
+        &mut |effect| effect(),
+    )
 }
 
 pub fn prepare_assets_for_save_as_authorized(
@@ -800,10 +821,10 @@ pub fn prepare_assets_for_save_as_authorized(
             staging_diagnostics: Vec::new(),
         });
     }
-    let pinned_sources = effects::capture_sources(source_document_path, &all_image_sources, |source| {
-        resolve_safe_relative_image_path(source_document_path, source)
-    })?;
-
+    let pinned_sources =
+        effects::capture_sources(source_document_path, &all_image_sources, |source| {
+            resolve_safe_relative_image_path(source_document_path, source)
+        })?;
 
     let mut created: Vec<OwnedAssetRecord> = Vec::new();
     let mut rewrites: JsMap<String> = JsMap::new();
@@ -825,7 +846,9 @@ pub fn prepare_assets_for_save_as_authorized(
             if rewrites.has(source) {
                 continue;
             }
-            let Some((safe_source, pinned_source)) = pinned_sources.get(source) else { continue; };
+            let Some((safe_source, pinned_source)) = pinned_sources.get(source) else {
+                continue;
+            };
             if let Some(already_copied) = copied_by_real_path.get(&safe_source) {
                 let already_copied = already_copied.clone();
                 rewrites.set(source, already_copied);
@@ -883,9 +906,12 @@ pub fn prepare_assets_for_save_as_authorized(
     if let Err(error) = locked {
         for record in &created {
             match session.remove_owned(&record.name, &record.sha256, &mut effects) {
-                Ok(true) => {},
-                Ok(false) => session.retained_asset(&record.name, "content or identity changed during failed Save As cleanup"),
-                Err(cleanup) if cleanup.code == Some("ENOENT") => {},
+                Ok(true) => {}
+                Ok(false) => session.retained_asset(
+                    &record.name,
+                    "content or identity changed during failed Save As cleanup",
+                ),
+                Err(cleanup) if cleanup.code == Some("ENOENT") => {}
                 Err(cleanup) => session.retained_asset(&record.name, &cleanup.message),
             }
         }
@@ -927,13 +953,28 @@ pub fn rollback_prepared_save_as_assets(plan: &PreparedSaveAsAssets) -> R<()> {
     }
 }
 
-pub fn rollback_prepared_save_as_assets_authorized(plan: &PreparedSaveAsAssets, admit: &mut AssetAdmission<'_>) -> R<()> {
-    if plan.created.is_empty() { return Ok(()); }
-    let ownership = plan.ownership.as_ref().ok_or_else(|| plain_error("prepared assets have no native ownership"))?;
+pub fn rollback_prepared_save_as_assets_authorized(
+    plan: &PreparedSaveAsAssets,
+    admit: &mut AssetAdmission<'_>,
+) -> R<()> {
+    if plan.created.is_empty() {
+        return Ok(());
+    }
+    let ownership = plan
+        .ownership
+        .as_ref()
+        .ok_or_else(|| plain_error("prepared assets have no native ownership"))?;
     let mut session = Session::open(&plan.target_document_path, Some(ownership))?;
     let mut effects = Effects::new(admit);
-    let result = remove_created_records_in(&plan.target_document_path, &plan.created, &mut session, &mut effects);
-    effects.finish(result).map_err(|error| session.failure(error))
+    let result = remove_created_records_in(
+        &plan.target_document_path,
+        &plan.created,
+        &mut session,
+        &mut effects,
+    );
+    effects
+        .finish(result)
+        .map_err(|error| session.failure(error))
 }
 
 /// `pendingOwnedAssetsForDocument(documentPath)`
@@ -1058,20 +1099,34 @@ fn resolve_pending_owned_assets(
     let mut effects = Effects::new(admit);
     let mut session = Session::open(document_path, None)?;
     let mut result = ReconcileResult::default();
-    if let Err(error) =
-        resolve_pending_inner(document_path, pending_at_operation_start, &mut result, &mut session, &mut effects)
-    {
+    if let Err(error) = resolve_pending_inner(
+        document_path,
+        pending_at_operation_start,
+        &mut result,
+        &mut session,
+        &mut effects,
+    ) {
         result.errors.push(error_text(&error).to_owned());
     }
-    effects.finish(Ok(result)).map_err(|error| session.failure(error))
+    effects
+        .finish(Ok(result))
+        .map_err(|error| session.failure(error))
 }
 
 /// `discardPendingOwnedAssets(documentPath)`
 pub fn discard_pending_owned_assets(document_path: &str) -> ReconcileResult {
-    discard_pending_owned_assets_authorized(document_path, &mut |effect| effect()).unwrap_or_else(|error| ReconcileResult { errors: vec![error.message], ..ReconcileResult::default() })
+    discard_pending_owned_assets_authorized(document_path, &mut |effect| effect()).unwrap_or_else(
+        |error| ReconcileResult {
+            errors: vec![error.message],
+            ..ReconcileResult::default()
+        },
+    )
 }
 
-pub fn discard_pending_owned_assets_authorized(document_path: &str, admit: &mut AssetAdmission<'_>) -> R<ReconcileResult> {
+pub fn discard_pending_owned_assets_authorized(
+    document_path: &str,
+    admit: &mut AssetAdmission<'_>,
+) -> R<ReconcileResult> {
     resolve_pending_owned_assets(document_path, None, admit)
 }
 
@@ -1080,10 +1135,22 @@ pub fn resolve_source_pending_after_save_as(
     source_document_path: &str,
     pending_at_save_start: &[String],
 ) -> ReconcileResult {
-    resolve_source_pending_after_save_as_authorized(source_document_path, pending_at_save_start, &mut |effect| effect()).unwrap_or_else(|error| ReconcileResult { errors: vec![error.message], ..ReconcileResult::default() })
+    resolve_source_pending_after_save_as_authorized(
+        source_document_path,
+        pending_at_save_start,
+        &mut |effect| effect(),
+    )
+    .unwrap_or_else(|error| ReconcileResult {
+        errors: vec![error.message],
+        ..ReconcileResult::default()
+    })
 }
 
-pub fn resolve_source_pending_after_save_as_authorized(source_document_path: &str, pending_at_save_start: &[String], admit: &mut AssetAdmission<'_>) -> R<ReconcileResult> {
+pub fn resolve_source_pending_after_save_as_authorized(
+    source_document_path: &str,
+    pending_at_save_start: &[String],
+    admit: &mut AssetAdmission<'_>,
+) -> R<ReconcileResult> {
     resolve_pending_owned_assets(source_document_path, Some(pending_at_save_start), admit)
 }
 
@@ -1217,7 +1284,13 @@ pub fn reconcile_owned_assets(
     image_sources: &[String],
     pending_names: Option<&[String]>,
 ) -> ReconcileResult {
-    reconcile_owned_assets_authorized(document_path, image_sources, pending_names, &mut |effect| effect()).unwrap_or_else(|error| ReconcileResult { errors: vec![error.message], ..ReconcileResult::default() })
+    reconcile_owned_assets_authorized(document_path, image_sources, pending_names, &mut |effect| {
+        effect()
+    })
+    .unwrap_or_else(|error| ReconcileResult {
+        errors: vec![error.message],
+        ..ReconcileResult::default()
+    })
 }
 
 pub fn reconcile_owned_assets_authorized(
@@ -1229,18 +1302,33 @@ pub fn reconcile_owned_assets_authorized(
     let mut effects = Effects::new(admit);
     let mut session = Session::open(document_path, None)?;
     let mut result = ReconcileResult::default();
-    if let Err(error) = reconcile_inner(document_path, image_sources, pending_names, &mut result, &mut session, &mut effects) {
+    if let Err(error) = reconcile_inner(
+        document_path,
+        image_sources,
+        pending_names,
+        &mut result,
+        &mut session,
+        &mut effects,
+    ) {
         result.errors.push(error_text(&error).to_owned());
     }
-    effects.finish(Ok(result)).map_err(|error| session.failure(error))
+    effects
+        .finish(Ok(result))
+        .map_err(|error| session.failure(error))
 }
 
 /// `renameOwnedAssetDocument(oldDocumentPath, newDocumentPath)`
 pub fn rename_owned_asset_document(old_document_path: &str, new_document_path: &str) -> R<()> {
-    rename_owned_asset_document_authorized(old_document_path, new_document_path, &mut |effect| effect())
+    rename_owned_asset_document_authorized(old_document_path, new_document_path, &mut |effect| {
+        effect()
+    })
 }
 
-pub fn rename_owned_asset_document_authorized(old_document_path: &str, new_document_path: &str, admit: &mut AssetAdmission<'_>) -> R<()> {
+pub fn rename_owned_asset_document_authorized(
+    old_document_path: &str,
+    new_document_path: &str,
+    admit: &mut AssetAdmission<'_>,
+) -> R<()> {
     if resolve(&[&dirname(old_document_path)]) != resolve(&[&dirname(new_document_path)]) {
         return Ok(());
     }
@@ -1274,7 +1362,9 @@ pub fn rename_owned_asset_document_authorized(old_document_path: &str, new_docum
         manifest.pending.delete(&old_key);
     }
     let result = write_manifest_scoped(&mut session, &manifest, &manifest_path, &mut effects);
-    effects.finish(result).map_err(|error| session.failure(error))
+    effects
+        .finish(result)
+        .map_err(|error| session.failure(error))
 }
 
 /// `readOwnedAssetManifest(documentPath)`: `None` is `null`

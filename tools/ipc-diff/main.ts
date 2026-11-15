@@ -94,8 +94,14 @@ async function loadGroup(name: string): Promise<Group> {
   }
   for (const entry of mod.group.cases) {
     for (const call of entry.calls) {
-      if (call.kind !== 'trigger' && call.await === undefined && SPECS.get(call.channel)?.namespace === 'native') {
-        throw new Error(`${call.channel}: native-only contracts have no Electron oracle; use actual-handler/native-host evidence`)
+      if (
+        call.kind !== 'trigger' &&
+        call.await === undefined &&
+        SPECS.get(call.channel)?.namespace === 'native'
+      ) {
+        throw new Error(
+          `${call.channel}: native-only contracts have no Electron oracle; use actual-handler/native-host evidence`,
+        )
       }
     }
   }
@@ -184,7 +190,11 @@ async function typescriptSide(group: Group, c: Case, dir: string): Promise<unkno
           try {
             const e = new Encoder()
             const value = e.value(
-              await run({ ...cx, contents: electron.contents }, view.view, references.resolve(call.args) as unknown[]),
+              await run(
+                { ...cx, contents: electron.contents },
+                view.view,
+                references.resolve(call.args) as unknown[],
+              ),
             )
             return { value, buffers: e.buffers.map(hex) }
           } catch (err) {
@@ -313,9 +323,15 @@ async function runGroup(name: string): Promise<void> {
     }
     for (const step of tsRecord.calls) for (const e of step.events ?? []) events.add(e.channel)
     const rustRecord = JSON.parse(rust).record as { calls: { answer: unknown }[] }
-    const expectation = outcomeFailure(c.calls, tsRecord.calls) ?? outcomeFailure(c.calls, rustRecord.calls)
+    const expectation =
+      outcomeFailure(c.calls, tsRecord.calls) ?? outcomeFailure(c.calls, rustRecord.calls)
     if (expectation) {
-      differences.push({ case: i, note: `EXPECT ${c.note ?? ''}: ${expectation}`, typescript: ts, rust })
+      differences.push({
+        case: i,
+        note: `EXPECT ${c.note ?? ''}: ${expectation}`,
+        typescript: ts,
+        rust,
+      })
       continue
     }
     if (ts === rust) {
@@ -387,19 +403,27 @@ function runEveryGroup(): void {
     if (problems.length > 0) failed = true
   }
   const evidencePath = arg('--native-evidence')
-  const receipts = nativeEvidence(evidencePath === undefined ? [] : JSON.parse(readFileSync(resolve(evidencePath), 'utf8')))
+  const receipts = nativeEvidence(
+    evidencePath === undefined ? [] : JSON.parse(readFileSync(resolve(evidencePath), 'utf8')),
+  )
   for (const receipt of receipts) {
-    if (!existsSync(resolve(root, receipt.artifact))) throw new Error(`native evidence artifact is missing: ${receipt.artifact}`)
+    if (!existsSync(resolve(root, receipt.artifact)))
+      throw new Error(`native evidence artifact is missing: ${receipt.artifact}`)
   }
   const nativeBatches = new Set([
     ...CHANNELS.filter((spec) => spec.namespace === 'native').map((spec) => spec.batch),
     ...NATIVE_CHANNEL_CONTRACTS.map((contract) => contract.batch),
   ])
-  const nativeReports = [...nativeBatches].flatMap((batch) => nativeContractCoverage(batch, CHANNELS, receipts))
+  const nativeReports = [...nativeBatches].flatMap((batch) =>
+    nativeContractCoverage(batch, CHANNELS, receipts),
+  )
   writeFileSync(join(out, 'native-contracts.json'), JSON.stringify(nativeReports, null, 2))
   for (const report of nativeReports) {
-    console.log(`NATIVE ${report.batch} ${report.channel}: synthetic ${report.synthetic.status}; native-host ${report.nativeHost.status}`)
-    for (const problem of report.problems) console.log(`NATIVE COVERAGE ${report.channel}: ${problem}`)
+    console.log(
+      `NATIVE ${report.batch} ${report.channel}: synthetic ${report.synthetic.status}; native-host ${report.nativeHost.status}`,
+    )
+    for (const problem of report.problems)
+      console.log(`NATIVE COVERAGE ${report.channel}: ${problem}`)
     if (report.problems.length > 0) failed = true
   }
   process.exitCode = failed ? 1 : 0

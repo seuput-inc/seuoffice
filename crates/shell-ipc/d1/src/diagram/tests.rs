@@ -115,7 +115,6 @@ fn emitted(kit: &Kit, channel: &str) -> Vec<Vec<IpcValue>> {
         .collect()
 }
 
-
 #[test]
 fn recovery_flush_rejects_stale_ack_and_reports_write_failure() {
     let s = setup("diagram-flush-result");
@@ -124,35 +123,58 @@ fn recovery_flush_rejects_stale_ack_and_reports_write_failure() {
     s.ok(tab, "diagram:dirty-changed", vec![IpcValue::Bool(true)]);
     let first = Rc::new(RefCell::new(None));
     let sink = first.clone();
-    views().unwrap().write_copies_now(std::time::Duration::from_secs(5), Box::new(move |result| *sink.borrow_mut() = Some(result)));
+    views().unwrap().write_copies_now(
+        std::time::Duration::from_secs(5),
+        Box::new(move |result| *sink.borrow_mut() = Some(result)),
+    );
     let old = emitted(&s.kit, "diagram:recovery-copy-now")[0][0].clone();
     let second = Rc::new(RefCell::new(None));
     let sink = second.clone();
-    views().unwrap().write_copies_now(std::time::Duration::from_secs(5), Box::new(move |result| *sink.borrow_mut() = Some(result)));
+    views().unwrap().write_copies_now(
+        std::time::Duration::from_secs(5),
+        Box::new(move |result| *sink.borrow_mut() = Some(result)),
+    );
     let current = emitted(&s.kit, "diagram:recovery-copy-now")[0][0].clone();
     assert!(matches!(&*first.borrow(), Some(Err(_))));
-    s.ok(tab, "diagram:recovery-copy-now-done", vec![old, IpcValue::Null]);
+    s.ok(
+        tab,
+        "diagram:recovery-copy-now-done",
+        vec![old, IpcValue::Null],
+    );
     assert!(second.borrow().is_none());
-    s.ok(tab, "diagram:recovery-copy-now-done", vec![current, string("disk failed")]);
-    assert_eq!(second.borrow().as_ref().unwrap().as_ref().unwrap_err().0, "disk failed");
+    s.ok(
+        tab,
+        "diagram:recovery-copy-now-done",
+        vec![current, string("disk failed")],
+    );
+    assert_eq!(
+        second.borrow().as_ref().unwrap().as_ref().unwrap_err().0,
+        "disk failed"
+    );
 }
 #[test]
 fn attachment_read_waits_for_cross_editor_save_guard_without_blocking_core() {
     let dir = temp_dir("diagram-deferred-save-guard");
     let kit = Kit::new(&dir, |hosts| {
         crate::insert_fakes(hosts);
-        super::insert_fakes(hosts, &serde_json::json!({
-            "diagram": {"deferSaveGuard": true}
-        }));
+        super::insert_fakes(
+            hosts,
+            &serde_json::json!({
+                "diagram": {"deferSaveGuard": true}
+            }),
+        );
     });
     let registry = registered(&kit);
     let s = Setup { kit, registry, dir };
     let (tab, _) = s.tab(1, None);
     let path = s.dir.join("note.txt");
     std::fs::write(&path, "secret").unwrap();
-    let reply = crate::testkit::start(&s.registry, tab, "diagram:files-read", vec![
-        string(path.to_string_lossy()), num(0.0), num(20.0),
-    ]);
+    let reply = crate::testkit::start(
+        &s.registry,
+        tab,
+        "diagram:files-read",
+        vec![string(path.to_string_lossy()), num(0.0), num(20.0)],
+    );
     assert!(reply.try_recv().is_err());
     assert!(s.call(tab, "diagram:consume-pending", vec![]).is_ok());
     let guards = s.kit.host::<std::sync::Arc<super::fakes::DeferredGuards>>();
@@ -161,9 +183,12 @@ fn attachment_read_waits_for_cross_editor_save_guard_without_blocking_core() {
     let answer = reply.try_recv().unwrap().unwrap();
     assert_eq!(text(&answer, "error"), "unsaved changes");
 
-    let reply = crate::testkit::start(&s.registry, tab, "diagram:files-read", vec![
-        string(path.to_string_lossy()), num(0.0), num(20.0),
-    ]);
+    let reply = crate::testkit::start(
+        &s.registry,
+        tab,
+        "diagram:files-read",
+        vec![string(path.to_string_lossy()), num(0.0), num(20.0)],
+    );
     assert!(reply.try_recv().is_err());
     let complete = guards.0.lock().unwrap().remove(0);
     complete(Ok(()));
@@ -176,15 +201,20 @@ fn engine_failure_rejects_open_instead_of_reporting_a_document_verdict() {
     let dir = temp_dir("diagram-engine-open");
     let kit = Kit::new(&dir, |hosts| {
         crate::insert_fakes(hosts);
-        super::insert_fakes(hosts, &serde_json::json!({
-            "diagram": {"openDiagram": {"broken.drawio": {"error": "engine unavailable"}}}
-        }));
+        super::insert_fakes(
+            hosts,
+            &serde_json::json!({
+                "diagram": {"openDiagram": {"broken.drawio": {"error": "engine unavailable"}}}
+            }),
+        );
     });
     let registry = registered(&kit);
     let s = Setup { kit, registry, dir };
     let (tab, path) = s.tab(1, Some(("broken.drawio", DIAGRAM)));
     let path = path.unwrap();
-    let error = s.call(tab, "diagram:open-file", vec![string(&path)]).unwrap_err();
+    let error = s
+        .call(tab, "diagram:open-file", vec![string(&path)])
+        .unwrap_err();
     assert_eq!(error.message, "engine unavailable");
     assert_eq!(std::fs::read_to_string(path).unwrap(), DIAGRAM);
 }
@@ -194,9 +224,12 @@ fn engine_failure_rejects_save_and_settles_waiter_without_writing() {
     let dir = temp_dir("diagram-engine-save");
     let kit = Kit::new(&dir, |hosts| {
         crate::insert_fakes(hosts);
-        super::insert_fakes(hosts, &serde_json::json!({
-            "diagram": {"openDiagram": {"target.drawio": {"error": "engine unavailable"}}}
-        }));
+        super::insert_fakes(
+            hosts,
+            &serde_json::json!({
+                "diagram": {"openDiagram": {"target.drawio": {"error": "engine unavailable"}}}
+            }),
+        );
     });
     let registry = registered(&kit);
     let s = Setup { kit, registry, dir };
@@ -204,17 +237,34 @@ fn engine_failure_rejects_save_and_settles_waiter_without_writing() {
     let path = path.unwrap();
     s.ok(tab, "diagram:open-file", vec![string(&path)]);
     let (waiting, then) = outcome();
-    editor_for(&s.registry.provided, ViewId(1)).unwrap().request_save(ViewId(1), SaveMode::SaveAs, then);
+    editor_for(&s.registry.provided, ViewId(1))
+        .unwrap()
+        .request_save(ViewId(1), SaveMode::SaveAs, then);
     let target = s.dir.join("target.drawio");
-    s.kit.dialogs.saves.lock().unwrap().push_back(Some(target.clone()));
-    let selected = s.ok(tab, "diagram:save-target", vec![request([
-        ("mode", string("saveAs")),
-        ("defaultName", IpcValue::Undefined),
-    ])]);
-    let error = s.call(tab, "diagram:save", vec![request([
-        ("token", string(text(&selected, "token"))),
-        ("bytes", bytes(DIAGRAM)),
-    ])]).unwrap_err();
+    s.kit
+        .dialogs
+        .saves
+        .lock()
+        .unwrap()
+        .push_back(Some(target.clone()));
+    let selected = s.ok(
+        tab,
+        "diagram:save-target",
+        vec![request([
+            ("mode", string("saveAs")),
+            ("defaultName", IpcValue::Undefined),
+        ])],
+    );
+    let error = s
+        .call(
+            tab,
+            "diagram:save",
+            vec![request([
+                ("token", string(text(&selected, "token"))),
+                ("bytes", bytes(DIAGRAM)),
+            ])],
+        )
+        .unwrap_err();
     assert_eq!(error.message, "engine unavailable");
     assert_eq!(*waiting.borrow(), Some(Ok(false)));
     assert_eq!(std::fs::read_to_string(path).unwrap(), DIAGRAM);
@@ -228,20 +278,29 @@ fn engine_failure_rejects_project_save_before_creating_file() {
     let output = target.to_string_lossy().into_owned();
     let kit = Kit::new(&dir, |hosts| {
         crate::insert_fakes(hosts);
-        super::insert_fakes(hosts, &serde_json::json!({
-            "diagram": {
-                "openDiagram": {"Plan.drawio": {"error": "engine unavailable"}},
-                "writeNewDocument": {"path": output}
-            }
-        }));
+        super::insert_fakes(
+            hosts,
+            &serde_json::json!({
+                "diagram": {
+                    "openDiagram": {"Plan.drawio": {"error": "engine unavailable"}},
+                    "writeNewDocument": {"path": output}
+                }
+            }),
+        );
     });
     let registry = registered(&kit);
     let s = Setup { kit, registry, dir };
     let (tab, _) = s.tab(1, None);
-    let error = s.call(tab, "diagram:save-into-project", vec![request([
-        ("bytes", bytes(DIAGRAM)),
-        ("defaultName", string("Plan")),
-    ])]).unwrap_err();
+    let error = s
+        .call(
+            tab,
+            "diagram:save-into-project",
+            vec![request([
+                ("bytes", bytes(DIAGRAM)),
+                ("defaultName", string("Plan")),
+            ])],
+        )
+        .unwrap_err();
     assert_eq!(error.message, "engine unavailable");
     assert!(!target.exists());
 }
@@ -461,7 +520,11 @@ fn a_recovery_copy_is_kept_only_while_there_are_unsaved_changes() {
     let selected = path.as_ref().unwrap().clone();
     let before = lookup.clone();
     let selected_before = selected.clone();
-    assert!(!std::thread::spawn(move || before.has_copy(&selected_before)).join().unwrap());
+    assert!(
+        !std::thread::spawn(move || before.has_copy(&selected_before))
+            .join()
+            .unwrap()
+    );
 
     assert_eq!(
         s.ok(tab, "diagram:recovery-copy", copy()),
@@ -476,8 +539,16 @@ fn a_recovery_copy_is_kept_only_while_there_are_unsaved_changes() {
     assert_eq!(s.copies().len(), 1);
     let existing = lookup.clone();
     let selected_after = selected.clone();
-    assert!(std::thread::spawn(move || existing.has_copy(&selected_after)).join().unwrap());
-    assert!(!std::thread::spawn(move || lookup.has_copy(&format!("{selected}.other"))).join().unwrap());
+    assert!(
+        std::thread::spawn(move || existing.has_copy(&selected_after))
+            .join()
+            .unwrap()
+    );
+    assert!(
+        !std::thread::spawn(move || lookup.has_copy(&format!("{selected}.other")))
+            .join()
+            .unwrap()
+    );
     assert_eq!(
         s.ok(
             tab,
@@ -817,10 +888,22 @@ fn hidden_open_preparation_preserves_grant_and_refuses_reused_view() {
     let prepared = super::prepare_hidden_open_path(Some(path)).map(str::to_owned);
     std::fs::remove_file(path).unwrap();
     let views = views().unwrap();
-    views.open_fresh_hidden_view_prepared(ViewId(1), prepared.as_deref()).unwrap();
-    assert!(views.open_fresh_hidden_view_prepared(ViewId(1), None).is_err());
-    assert_eq!(s.ok(sender, "diagram:consume-pending", vec![]), string(path));
-    assert_eq!(s.ok(sender, "diagram:open-file", vec![string(path)]), obj([("status", string("unreadable"))]));
+    views
+        .open_fresh_hidden_view_prepared(ViewId(1), prepared.as_deref())
+        .unwrap();
+    assert!(
+        views
+            .open_fresh_hidden_view_prepared(ViewId(1), None)
+            .is_err()
+    );
+    assert_eq!(
+        s.ok(sender, "diagram:consume-pending", vec![]),
+        string(path)
+    );
+    assert_eq!(
+        s.ok(sender, "diagram:open-file", vec![string(path)]),
+        obj([("status", string("unreadable"))])
+    );
 }
 
 #[test]
@@ -866,14 +949,26 @@ fn headless_report_requires_the_registered_origin() {
     let report: Rc<RefCell<Option<IpcValue>>> = Rc::default();
     let got = report.clone();
     views().unwrap().run_headless_job(
-        ViewId(1), obj([("kind", string("export"))]), Box::new(|_| false),
+        ViewId(1),
+        obj([("kind", string("export"))]),
+        Box::new(|_| false),
         Box::new(move |value| *got.borrow_mut() = Some(value)),
     );
     assert_eq!(s.ok(tab, "diagram:headless-job", vec![]), IpcValue::Null);
-    s.ok(tab, "diagram:headless-done", vec![obj([("ok", IpcValue::Bool(true))])]);
+    s.ok(
+        tab,
+        "diagram:headless-done",
+        vec![obj([("ok", IpcValue::Bool(true))])],
+    );
     assert_eq!(*report.borrow(), None);
     views().unwrap().fail_headless_job(ViewId(1), "closed");
-    assert_eq!(*report.borrow(), Some(obj([("ok", IpcValue::Bool(false)), ("error", string("closed"))])));
+    assert_eq!(
+        *report.borrow(),
+        Some(obj([
+            ("ok", IpcValue::Bool(false)),
+            ("error", string("closed"))
+        ]))
+    );
 }
 
 const PNG: [u8; 8] = [0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0];
@@ -1057,13 +1152,26 @@ fn document_owner_cannot_be_recaptured_after_replacement() {
     let s = setup("diagram-owned-document");
     let (sender, path) = s.tab(91, Some(("owned.drawio", DIAGRAM)));
     let editor = super::editors::DiagramEditors(views().unwrap());
-    let generation = s.kit.services.views.renderer_generation(sender.view).unwrap();
-    let native = NativeRequestOwner { view: sender.view,
-        context: NativeContext::with_owner_loss((), generation, CancelToken::default()) };
-    let captured = editor.capture_document_owner(sender.view, native.clone()).unwrap();
+    let generation = s
+        .kit
+        .services
+        .views
+        .renderer_generation(sender.view)
+        .unwrap();
+    let native = NativeRequestOwner {
+        view: sender.view,
+        context: NativeContext::with_owner_loss((), generation, CancelToken::default()),
+    };
+    let captured = editor
+        .capture_document_owner(sender.view, native.clone())
+        .unwrap();
     views().unwrap().open_view(sender.view, path.as_deref());
     assert!(!captured.context.document_lease().unwrap().is_active());
-    assert!(editor.capture_document_owner(sender.view, captured).is_err());
+    assert!(
+        editor
+            .capture_document_owner(sender.view, captured)
+            .is_err()
+    );
     assert!(editor.capture_document_owner(sender.view, native).is_ok());
 }
 
@@ -1074,11 +1182,22 @@ fn document_owner_rejects_another_native_view_without_changing_path() {
     use shell_contract::runtime::CancelToken;
     let s = setup("diagram-owned-foreign-view");
     let (sender, path) = s.tab(92, Some(("owned.drawio", DIAGRAM)));
-    s.ok(sender, "diagram:open-file", vec![string(path.as_deref().unwrap())]);
+    s.ok(
+        sender,
+        "diagram:open-file",
+        vec![string(path.as_deref().unwrap())],
+    );
     let editor = super::editors::DiagramEditors(views().unwrap());
-    let generation = s.kit.services.views.renderer_generation(sender.view).unwrap();
-    let foreign = NativeRequestOwner { view: ViewId(93),
-        context: NativeContext::with_owner_loss((), generation, CancelToken::default()) };
+    let generation = s
+        .kit
+        .services
+        .views
+        .renderer_generation(sender.view)
+        .unwrap();
+    let foreign = NativeRequestOwner {
+        view: ViewId(93),
+        context: NativeContext::with_owner_loss((), generation, CancelToken::default()),
+    };
     assert!(editor.capture_document_owner(sender.view, foreign).is_err());
     assert_eq!(views().unwrap().file_path(sender.view), path);
 }
@@ -1090,72 +1209,167 @@ fn a_foreign_owned_save_id_cannot_write_or_retarget_a_diagram() {
     let path = path.unwrap();
     s.ok(sender, "diagram:open-file", vec![string(&path)]);
     let before = std::fs::read(&path).unwrap();
-    let result = s.call(sender, "diagram:save", vec![obj([
-        ("requestId", string("another-request")), ("token", string("foreign-token")),
-        ("bytes", bytes(DIAGRAM))
-    ])]);
+    let result = s.call(
+        sender,
+        "diagram:save",
+        vec![obj([
+            ("requestId", string("another-request")),
+            ("token", string("foreign-token")),
+            ("bytes", bytes(DIAGRAM)),
+        ])],
+    );
     assert!(result.is_err());
     assert_eq!(std::fs::read(&path).unwrap(), before);
-    assert_eq!(views().unwrap().file_path(sender.view).as_deref(), Some(path.as_str()));
+    assert_eq!(
+        views().unwrap().file_path(sender.view).as_deref(),
+        Some(path.as_str())
+    );
 }
 
 #[test]
 fn recovery_file_waits_for_exact_renderer_and_initialized_ack() {
-    use main_core::packages::electron_utils::recovery_contract::{RecoveryEditorContract, RecoveryOpenDecision, RecoveryOpenFileRequest};
+    use main_core::packages::electron_utils::recovery_contract::{
+        RecoveryEditorContract, RecoveryOpenDecision, RecoveryOpenFileRequest,
+    };
     use shell_contract::ipc::{RecoveryOpenContext, RecoveryOpenTarget};
     use shell_contract::runtime::{CancelToken, Views};
     let s = setup("diagram-recovery-exact");
     let (tab, path) = s.tab(401, Some(("diagram.drawio", DIAGRAM)));
     let path = path.unwrap();
     let generation = s.kit.services.views.renderer_generation(tab.view).unwrap();
-    let synthetic = s.kit.host::<std::sync::Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>();
-    let origin = synthetic.capture_invocation_root(tab.view, &generation, &shell_contract::hosts::synthetic::SyntheticNativeOrigin::new()).unwrap();
+    let synthetic = s
+        .kit
+        .host::<std::sync::Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>();
+    let origin = synthetic
+        .capture_invocation_root(
+            tab.view,
+            &generation,
+            &shell_contract::hosts::synthetic::SyntheticNativeOrigin::new(),
+        )
+        .unwrap();
     let cancel = CancelToken::default();
-    let (_issuer, closure, browser_owner) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(tab.view, generation.clone());
-    let target = RecoveryOpenTarget::bind(RecoveryOpenContext::Renderer {
-        source: origin.clone(), participants: vec![], cancel: cancel.clone(), pending: cancel,
-    }, tab.view, generation, closure, browser_owner).unwrap();
+    let (_issuer, closure, browser_owner) =
+        shell_contract::ipc::NativeClosureIssuer::new_with_owner(tab.view, generation.clone());
+    let target = RecoveryOpenTarget::bind(
+        RecoveryOpenContext::Renderer {
+            source: origin.clone(),
+            participants: vec![],
+            cancel: cancel.clone(),
+            pending: cancel,
+        },
+        tab.view,
+        generation,
+        closure,
+        browser_owner,
+    )
+    .unwrap();
     let done = Rc::new(RefCell::new(None));
     let completed = done.clone();
-    views().unwrap().open_file_with_decision(&tab.view, &RecoveryOpenFileRequest { file_path: path.clone(), decision: RecoveryOpenDecision::Original },
-        &target, Box::new(move |result| *completed.borrow_mut() = Some(result)));
+    views().unwrap().open_file_with_decision(
+        &tab.view,
+        &RecoveryOpenFileRequest {
+            file_path: path.clone(),
+            decision: RecoveryOpenDecision::Original,
+        },
+        &target,
+        Box::new(move |result| *completed.borrow_mut() = Some(result)),
+    );
     assert!(done.borrow_mut().take().unwrap().is_ok());
     let receipt = target.committed_seed().unwrap();
     target.retain_native_registration(origin.clone()).unwrap();
-    let call = |channel: &str, args: Vec<IpcValue>| crate::testkit::start_with_owner(
-        &s.registry, tab, channel, args, &origin, CancelToken::default()).try_recv().unwrap();
-    assert_eq!(call("diagram:consume-pending", vec![]).unwrap(), string(path.clone()));
+    let call = |channel: &str, args: Vec<IpcValue>| {
+        crate::testkit::start_with_owner(
+            &s.registry,
+            tab,
+            channel,
+            args,
+            &origin,
+            CancelToken::default(),
+        )
+        .try_recv()
+        .unwrap()
+    };
+    assert_eq!(
+        call("diagram:consume-pending", vec![]).unwrap(),
+        string(path.clone())
+    );
     let opened = call("diagram:open-file", vec![string(path)]).unwrap();
     assert_eq!(field(&opened, "status"), &string("ok"));
     let token = text(&opened, "recoveryToken");
     assert!(receipt.settlement().is_none());
-    assert!(call("diagram:recovery-initialized", vec![string("foreign"), IpcValue::Bool(true)]).is_err());
+    assert!(
+        call(
+            "diagram:recovery-initialized",
+            vec![string("foreign"), IpcValue::Bool(true)]
+        )
+        .is_err()
+    );
     assert!(receipt.settlement().is_none());
-    assert!(call("diagram:recovery-initialized", vec![string(&token), IpcValue::Bool(true)]).is_ok());
+    assert!(
+        call(
+            "diagram:recovery-initialized",
+            vec![string(&token), IpcValue::Bool(true)]
+        )
+        .is_ok()
+    );
     assert!(matches!(receipt.settlement(), Some(Ok(()))));
-    assert!(call("diagram:recovery-initialized", vec![string(token), IpcValue::Bool(true)]).is_err());
+    assert!(
+        call(
+            "diagram:recovery-initialized",
+            vec![string(token), IpcValue::Bool(true)]
+        )
+        .is_err()
+    );
 }
 
 #[test]
 fn recovery_preparation_cancelled_before_worker_cannot_commit_seed() {
-    use main_core::packages::electron_utils::recovery_contract::{RecoveryEditorContract, RecoveryOpenDecision, RecoveryOpenFileRequest};
+    use main_core::packages::electron_utils::recovery_contract::{
+        RecoveryEditorContract, RecoveryOpenDecision, RecoveryOpenFileRequest,
+    };
     use shell_contract::ipc::{RecoveryOpenContext, RecoveryOpenTarget};
     use shell_contract::runtime::{CancelToken, Views};
     let s = setup("diagram-recovery-cancel");
     let (tab, path) = s.tab(402, Some(("diagram.drawio", DIAGRAM)));
     let generation = s.kit.services.views.renderer_generation(tab.view).unwrap();
-    let synthetic = s.kit.host::<std::sync::Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>();
-    let origin = synthetic.capture_invocation_root(tab.view, &generation, &shell_contract::hosts::synthetic::SyntheticNativeOrigin::new()).unwrap();
+    let synthetic = s
+        .kit
+        .host::<std::sync::Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>();
+    let origin = synthetic
+        .capture_invocation_root(
+            tab.view,
+            &generation,
+            &shell_contract::hosts::synthetic::SyntheticNativeOrigin::new(),
+        )
+        .unwrap();
     let cancel = CancelToken::default();
-    let (_issuer, closure, browser_owner) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(tab.view, generation.clone());
-    let target = RecoveryOpenTarget::bind(RecoveryOpenContext::Renderer {
-        source: origin, participants: vec![], cancel: cancel.clone(), pending: CancelToken::default(),
-    }, tab.view, generation, closure, browser_owner).unwrap();
+    let (_issuer, closure, browser_owner) =
+        shell_contract::ipc::NativeClosureIssuer::new_with_owner(tab.view, generation.clone());
+    let target = RecoveryOpenTarget::bind(
+        RecoveryOpenContext::Renderer {
+            source: origin,
+            participants: vec![],
+            cancel: cancel.clone(),
+            pending: CancelToken::default(),
+        },
+        tab.view,
+        generation,
+        closure,
+        browser_owner,
+    )
+    .unwrap();
     let done = Rc::new(RefCell::new(None));
     let completed = done.clone();
     s.kit.hold_workers();
-    views().unwrap().open_file_with_decision(&tab.view, &RecoveryOpenFileRequest { file_path: path.unwrap(), decision: RecoveryOpenDecision::Original },
-        &target, Box::new(move |result| *completed.borrow_mut() = Some(result)));
+    views().unwrap().open_file_with_decision(
+        &tab.view,
+        &RecoveryOpenFileRequest {
+            file_path: path.unwrap(),
+            decision: RecoveryOpenDecision::Original,
+        },
+        &target,
+        Box::new(move |result| *completed.borrow_mut() = Some(result)),
+    );
     cancel.cancel();
     s.kit.release_workers();
     assert!(matches!(&*done.borrow(), Some(Err(_))));

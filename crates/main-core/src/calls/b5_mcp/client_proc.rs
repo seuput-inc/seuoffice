@@ -772,10 +772,8 @@ fn local_scenario(args: &[Value]) -> (Answer, Vec<Vec<Value>>) {
             "status" => result = conn.status().to_json(),
             "tail" => result = str_list(&conn.stderr_tail()),
             "planned" => result = conn.planned_launch(&world).to_json(),
-            "appAbort" => {
-                if app_signal.is_some() {
-                    conn.app_abort(&mut world);
-                }
+            "appAbort" if app_signal.is_some() => {
+                conn.app_abort(&mut world);
             }
             "listen" | "unlisten" => {
                 let id = number_of(prop(step, "id")).unwrap_or(0.0) as u64;

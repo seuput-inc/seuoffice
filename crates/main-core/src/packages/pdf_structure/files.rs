@@ -244,10 +244,16 @@ fn unlink(path: &str) -> Result<(), NodeError> {
 
 // ---- writing ----
 
-pub type StoreAdmission<'a> = dyn FnMut(&mut dyn FnMut() -> Result<(), NodeError>) -> Result<(), NodeError> + 'a;
+pub type StoreAdmission<'a> =
+    dyn FnMut(&mut dyn FnMut() -> Result<(), NodeError>) -> Result<(), NodeError> + 'a;
 
 /// Same staging, lock and retry algorithm; admit only namespace mutations.
-pub fn write_json_atomic_guarded(env: &mut dyn StoreEnv, path: &str, value: &JsonValue, admit: &mut StoreAdmission<'_>) -> Result<(), StoreWriteError> {
+pub fn write_json_atomic_guarded(
+    env: &mut dyn StoreEnv,
+    path: &str,
+    value: &JsonValue,
+    admit: &mut StoreAdmission<'_>,
+) -> Result<(), StoreWriteError> {
     write_json_atomic_inner(env, path, value, Some(admit))
 }
 
@@ -262,7 +268,12 @@ pub fn write_json_atomic(
     write_json_atomic_inner(env, path, value, None)
 }
 
-fn write_json_atomic_inner(env: &mut dyn StoreEnv, path: &str, value: &JsonValue, mut admit: Option<&mut StoreAdmission<'_>>) -> Result<(), StoreWriteError> {
+fn write_json_atomic_inner(
+    env: &mut dyn StoreEnv,
+    path: &str,
+    value: &JsonValue,
+    mut admit: Option<&mut StoreAdmission<'_>>,
+) -> Result<(), StoreWriteError> {
     let data = json_stringify(value);
     let dir = dirname(path);
     let tmp = join(&[
@@ -291,10 +302,18 @@ fn stage_and_replace(
     created: &mut bool,
     admit: &mut Option<&mut StoreAdmission<'_>>,
 ) -> Result<(), NodeError> {
-    admitted_action(admit, &mut || fs::create_dir_all(namespaced(dir)).map_err(|e| node_error(&e, "mkdir", dir)))?;
+    admitted_action(admit, &mut || {
+        fs::create_dir_all(namespaced(dir)).map_err(|e| node_error(&e, "mkdir", dir))
+    })?;
     let mut opened = None;
     admitted_action(admit, &mut || {
-        opened = Some(OpenOptions::new().write(true).create_new(true).open(namespaced(tmp)).map_err(|e| node_error(&e, "open", tmp))?);
+        opened = Some(
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(namespaced(tmp))
+                .map_err(|e| node_error(&e, "open", tmp))?,
+        );
         Ok(())
     })?;
     let mut handle = opened.expect("admitted temp creation");
@@ -314,19 +333,37 @@ fn stage_and_replace(
     replaced
 }
 
-fn admitted_rename(from: &str, to: &str, admit: &mut Option<&mut StoreAdmission<'_>>) -> Result<(), NodeError> {
+fn admitted_rename(
+    from: &str,
+    to: &str,
+    admit: &mut Option<&mut StoreAdmission<'_>>,
+) -> Result<(), NodeError> {
     let mut action = || rename(from, to);
-    match admit { Some(admit) => admit(&mut action), None => action() }
+    match admit {
+        Some(admit) => admit(&mut action),
+        None => action(),
+    }
 }
 
-fn admitted_action(admit: &mut Option<&mut StoreAdmission<'_>>, action: &mut dyn FnMut() -> Result<(), NodeError>) -> Result<(), NodeError> {
-    match admit { Some(admit) => admit(action), None => action() }
+fn admitted_action(
+    admit: &mut Option<&mut StoreAdmission<'_>>,
+    action: &mut dyn FnMut() -> Result<(), NodeError>,
+) -> Result<(), NodeError> {
+    match admit {
+        Some(admit) => admit(action),
+        None => action(),
+    }
 }
 
 /// Put `tmp` in the place of `path`, holding the entry's lock. A refused
 /// rename means the target is open somewhere: move it aside, rename into the
 /// freed name, then delete the old entry (allowed while it is open).
-fn replace_entry_guarded(env: &mut dyn StoreEnv, tmp: &str, path: &str, admit: &mut Option<&mut StoreAdmission<'_>>) -> Result<(), NodeError> {
+fn replace_entry_guarded(
+    env: &mut dyn StoreEnv,
+    tmp: &str,
+    path: &str,
+    admit: &mut Option<&mut StoreAdmission<'_>>,
+) -> Result<(), NodeError> {
     let aside = format!("{}.old", &tmp[..tmp.len() - ".tmp".len()]);
     // the old entry is still at `aside` because putting it back failed
     let mut stranded = false;
@@ -398,7 +435,11 @@ fn acquire_lock(env: &mut dyn StoreEnv, path: &str) -> Result<EntryLock, NodeErr
     acquire_lock_guarded(env, path, &mut None)
 }
 
-fn acquire_lock_guarded(env: &mut dyn StoreEnv, path: &str, admit: &mut Option<&mut StoreAdmission<'_>>) -> Result<EntryLock, NodeError> {
+fn acquire_lock_guarded(
+    env: &mut dyn StoreEnv,
+    path: &str,
+    admit: &mut Option<&mut StoreAdmission<'_>>,
+) -> Result<EntryLock, NodeError> {
     let lock_path = lock_path_of(path);
     let owner = format!(
         "{{\"pid\":{},\"id\":\"{}\"}}",
@@ -410,7 +451,13 @@ fn acquire_lock_guarded(env: &mut dyn StoreEnv, path: &str, admit: &mut Option<&
     loop {
         let mut opened = None;
         let handle = admitted_action(admit, &mut || {
-            opened = Some(OpenOptions::new().write(true).create_new(true).open(namespaced(&lock_path)).map_err(|e| node_error(&e, "open", &lock_path))?);
+            opened = Some(
+                OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(namespaced(&lock_path))
+                    .map_err(|e| node_error(&e, "open", &lock_path))?,
+            );
             Ok(())
         });
         let mut handle = match handle {
@@ -453,7 +500,11 @@ fn release_lock(env: &mut dyn StoreEnv, lock: &EntryLock) {
 
 /// Move a dead writer's lock out of the way. True when the caller should try
 /// to take the lock again at once.
-fn break_stale_lock_guarded(env: &mut dyn StoreEnv, lock_path: &str, admit: &mut Option<&mut StoreAdmission<'_>>) -> Result<bool, NodeError> {
+fn break_stale_lock_guarded(
+    env: &mut dyn StoreEnv,
+    lock_path: &str,
+    admit: &mut Option<&mut StoreAdmission<'_>>,
+) -> Result<bool, NodeError> {
     let looked = read_text(lock_path).and_then(|seen| Ok((seen, mtime_ms(lock_path)?)));
     let (seen, modified_at) = match looked {
         Ok(looked) => looked,
@@ -465,8 +516,12 @@ fn break_stale_lock_guarded(env: &mut dyn StoreEnv, lock_path: &str, admit: &mut
     // a rename moves one file once, so two writers cannot both break the same lock
     let grave = format!("{lock_path}.{}.stale", unique_suffix(env));
     if let Err(e) = admitted_rename(lock_path, &grave, admit) {
-        if code_of(&e) == "ENOENT" { return Ok(true); }
-        if code_of(&e) == "ECANCELED" { return Err(e); }
+        if code_of(&e) == "ENOENT" {
+            return Ok(true);
+        }
+        if code_of(&e) == "ECANCELED" {
+            return Err(e);
+        }
         return Ok(false);
     }
     if read_text(&grave).ok().as_deref() != Some(seen.as_str()) {
@@ -704,7 +759,8 @@ mod guarded_tests {
     #[test]
     fn denied_publication_and_cancelled_retry_preserve_original_and_clean_owned_files() {
         for retry in [false, true] {
-            let dir = std::env::temp_dir().join(format!("pdf-store-guarded-{}", jscompat::random_uuid()));
+            let dir =
+                std::env::temp_dir().join(format!("pdf-store-guarded-{}", jscompat::random_uuid()));
             fs::create_dir_all(&dir).unwrap();
             let path = dir.join("links.json");
             fs::write(&path, b"original").unwrap();
@@ -712,14 +768,28 @@ mod guarded_tests {
             let mut admit = |effect: &mut dyn FnMut() -> Result<(), NodeError>| {
                 calls += 1;
                 if retry && calls == 4 {
-                    return Err(NodeError { code: Some("EBUSY".into()), message: "synthetic busy publication".into() });
+                    return Err(NodeError {
+                        code: Some("EBUSY".into()),
+                        message: "synthetic busy publication".into(),
+                    });
                 }
                 if calls == if retry { 6 } else { 4 } {
-                    return Err(NodeError { code: Some("ECANCELED".into()), message: "synthetic owner loss".into() });
+                    return Err(NodeError {
+                        code: Some("ECANCELED".into()),
+                        message: "synthetic owner loss".into(),
+                    });
                 }
                 effect()
             };
-            assert!(write_json_atomic_guarded(&mut SystemEnv, path.to_str().unwrap(), &JsonValue::Null, &mut admit).is_err());
+            assert!(
+                write_json_atomic_guarded(
+                    &mut SystemEnv,
+                    path.to_str().unwrap(),
+                    &JsonValue::Null,
+                    &mut admit
+                )
+                .is_err()
+            );
             assert_eq!(fs::read(&path).unwrap(), b"original");
             assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
             fs::remove_dir_all(&dir).unwrap();

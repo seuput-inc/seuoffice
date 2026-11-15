@@ -100,16 +100,16 @@ mod tests {
 
     #[test]
     fn commands_preserve_selection_and_both_cancellation_lifetimes() {
-        let shutdown = CancelToken::new();
+        let shutdown = CancelToken::default();
         let factory = Factory::new(shutdown.clone());
         let command = NativeEditorCommand::OpenHome;
-        let cancel = CancelToken::new();
+        let cancel = CancelToken::default();
         let operation = factory.issue(command.clone(), cancel.clone()).unwrap();
         assert!(operation.is_native_command());
         assert_eq!(operation.selection(), &shell_contract::ipc::NativeInvocationSelection::NativeCommand(command));
         cancel.cancel();
         assert!(operation.with_active(|| ()).is_none());
         shutdown.cancel();
-        assert!(factory.issue(NativeEditorCommand::OpenHelp { topic: None }, CancelToken::new()).is_err());
+        assert!(factory.issue(NativeEditorCommand::OpenHelp { topic: None }, CancelToken::default()).is_err());
     }
 }

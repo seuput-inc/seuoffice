@@ -352,12 +352,7 @@
       "expected": {
         "slides": 1,
         "warnings": [],
-        "dropped": [
-          [
-            "images",
-            2
-          ]
-        ],
+        "dropped": [["images", 2]],
         "parts": {
           "ppt/media/image1.png": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
           "ppt/presentation.xml": "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n<p:presentation xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\"><p:sldMasterIdLst><p:sldMasterId id=\"2147483648\" r:id=\"rId1\"/></p:sldMasterIdLst><p:sldIdLst><p:sldId id=\"256\" r:id=\"rId2\"/></p:sldIdLst><p:sldSz cx=\"12192000\" cy=\"6858000\"/><p:notesSz cx=\"6858000\" cy=\"9144000\"/></p:presentation>",
@@ -374,42 +369,15 @@
         "slides": 1,
         "warnings": [],
         "dropped": [
-          [
-            "comments",
-            1
-          ],
-          [
-            "footnotes",
-            1
-          ],
-          [
-            "frames-without-geometry",
-            1
-          ],
-          [
-            "images",
-            1
-          ],
-          [
-            "notes",
-            2
-          ],
-          [
-            "objects",
-            1
-          ],
-          [
-            "shapes",
-            2
-          ],
-          [
-            "tables",
-            1
-          ],
-          [
-            "textboxes-flattened",
-            1
-          ]
+          ["comments", 1],
+          ["footnotes", 1],
+          ["frames-without-geometry", 1],
+          ["images", 1],
+          ["notes", 2],
+          ["objects", 1],
+          ["shapes", 2],
+          ["tables", 1],
+          ["textboxes-flattened", 1]
         ],
         "parts": {
           "ppt/presentation.xml": "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n<p:presentation xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\"><p:sldMasterIdLst><p:sldMasterId id=\"2147483648\" r:id=\"rId1\"/></p:sldMasterIdLst><p:sldIdLst><p:sldId id=\"256\" r:id=\"rId2\"/></p:sldIdLst><p:sldSz cx=\"12192000\" cy=\"6858000\"/><p:notesSz cx=\"6858000\" cy=\"9144000\"/></p:presentation>",

@@ -2,8 +2,10 @@ import { readFileSync } from 'node:fs'
 import { createContext, runInContext } from 'node:vm'
 import { afterEach, expect, it, vi } from 'vitest'
 
-const source = readFileSync(new URL('./invoke-system.js', import.meta.url), 'utf8')
-  .replaceAll('__INVOKE_KEY__', JSON.stringify('test-invoke-key'))
+const source = readFileSync(new URL('./invoke-system.js', import.meta.url), 'utf8').replaceAll(
+  '__INVOKE_KEY__',
+  JSON.stringify('test-invoke-key'),
+)
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -33,7 +35,9 @@ function setup(mode = 'preload', bootstrapOverride) {
       })
       return id
     },
-    unregisterCallback(id) { callbackMap.delete(id) },
+    unregisterCallback(id) {
+      callbackMap.delete(id)
+    },
     invoke(cmd, payload) {
       return new Promise((resolve, reject) => {
         const callback = internals.transformCallback(resolve, true)
@@ -47,7 +51,10 @@ function setup(mode = 'preload', bootstrapOverride) {
     invokeTauri(cmd, callback, error, contentType, key, body, headers) {
       requests.push({ cmd, callback, error, contentType, key, body, headers })
     },
-    listenTauri(callback, onResume) { listener = callback; resume = onResume },
+    listenTauri(callback, onResume) {
+      listener = callback
+      resume = onResume
+    },
     sendSync(channel, body) {
       requests.push({ channel, body })
       return new Uint8Array([0, 255, 65]).buffer
@@ -56,27 +63,66 @@ function setup(mode = 'preload', bootstrapOverride) {
   const window = {
     __TAURI_INTERNALS__: internals,
     Headers,
-    crypto: { getRandomValues(array) { array[0] = ++random; return array } },
+    crypto: {
+      getRandomValues(array) {
+        array[0] = ++random
+        return array
+      },
+    },
     fetch: async (url, options) => {
       requests.push({ url, ...options })
-      return new Response('null', { headers: { 'Tauri-Response': 'ok', 'Content-Type': 'application/json' } })
+      return new Response('null', {
+        headers: { 'Tauri-Response': 'ok', 'Content-Type': 'application/json' },
+      })
     },
   }
-  if (mode !== false) window.__seuofficeNativeBridgeBootstrap =
-    bootstrapOverride || (() => native)
-  const context = createContext({ window, Response, Promise, Uint8Array, ArrayBuffer, Map, Headers, TextEncoder, TextDecoder })
+  if (mode !== false) window.__seuofficeNativeBridgeBootstrap = bootstrapOverride || (() => native)
+  const context = createContext({
+    window,
+    Response,
+    Promise,
+    Uint8Array,
+    ArrayBuffer,
+    Map,
+    Headers,
+    TextEncoder,
+    TextDecoder,
+  })
   runInContext(source, context)
-  return { window, internals, requests, callbacks, native, deliver: (...args) => listener(...args), resume: () => resume(), context }
+  return {
+    window,
+    internals,
+    requests,
+    callbacks,
+    native,
+    deliver: (...args) => listener(...args),
+    resume: () => resume(),
+    context,
+  }
 }
 
 it('sends native Raw bytes and JSON Channel payload without a bearer header', () => {
   const { window, internals, requests } = setup()
   const frame = new Uint8Array([0, 255, 7])
   internals.postMessage({ cmd: 'ipc_invoke', callback: 1, error: 2, payload: frame })
-  internals.postMessage({ cmd: 'ipc_listen', callback: 3, error: 4, payload: { onFrame: { toJSON: () => '__CHANNEL__:42' } }, options: { headers: { Example: 'value' } } })
-  expect(requests[0]).toMatchObject({ cmd: 'ipc_invoke', callback: 1, error: 2, key: 'test-invoke-key', contentType: 'application/octet-stream' })
+  internals.postMessage({
+    cmd: 'ipc_listen',
+    callback: 3,
+    error: 4,
+    payload: { onFrame: { toJSON: () => '__CHANNEL__:42' } },
+    options: { headers: { Example: 'value' } },
+  })
+  expect(requests[0]).toMatchObject({
+    cmd: 'ipc_invoke',
+    callback: 1,
+    error: 2,
+    key: 'test-invoke-key',
+    contentType: 'application/octet-stream',
+  })
   expect([...requests[0].body]).toEqual([...frame])
-  expect(JSON.parse(new TextDecoder().decode(requests[1].body))).toEqual({ onFrame: '__CHANNEL__:42' })
+  expect(JSON.parse(new TextDecoder().decode(requests[1].body))).toEqual({
+    onFrame: '__CHANNEL__:42',
+  })
   expect(JSON.parse(requests[1].headers)).toEqual([['example', 'value']])
   expect(window.__seuofficeNativeBridgeBootstrap).toBeUndefined()
   expect(Object.values(window)).not.toContain('test-invoke-key')
@@ -98,7 +144,11 @@ it('adapts native Channel indexes without encoding Raw frames as JSON', () => {
   deliver(7, true, frame, 0n, false)
   deliver(7, false, new TextEncoder().encode('{"ok":true}').buffer, 1n, false)
   deliver(7, false, new ArrayBuffer(0), 2n, true)
-  expect(callbacks).toEqual([[7, { message: frame, index: 0 }], [7, { message: { ok: true }, index: 1 }], [7, { end: true, index: 2 }]])
+  expect(callbacks).toEqual([
+    [7, { message: frame, index: 0 }],
+    [7, { message: { ok: true }, index: 1 }],
+    [7, { end: true, index: 2 }],
+  ])
   expect(() => deliver(7, true, frame, 9007199254740992n, false)).toThrow('safe integer')
   expect(callbacks).toHaveLength(3)
 })
@@ -144,17 +194,29 @@ it('captures and deletes the sync closure before exposing the preload bridge', a
 
 it('keeps native denial distinct from successful zero-byte sync responses', () => {
   const accepted = setup('preload', () => ({
-    mode: 'preload', invokeTauri() {}, listenTauri() {}, sendSync: () => new ArrayBuffer(0),
+    mode: 'preload',
+    invokeTauri() {},
+    listenTauri() {},
+    sendSync: () => new ArrayBuffer(0),
   }))
   expect(accepted.window.__seuofficeNativeSendSync('safe', new Uint8Array())).toHaveLength(0)
   const denied = setup('preload', () => ({
-    mode: 'preload', invokeTauri() {}, listenTauri() {}, sendSync() { throw new Error('Native synchronous request refused') },
+    mode: 'preload',
+    invokeTauri() {},
+    listenTauri() {},
+    sendSync() {
+      throw new Error('Native synchronous request refused')
+    },
   }))
   expect(() => denied.window.__seuofficeNativeSendSync('safe', new Uint8Array())).toThrow('refused')
 })
 
 it('fails malformed initialization and never exposes sync in invoke-only mode', () => {
-  expect(() => setup('preload', () => { throw new Error('native bootstrap failed') })).toThrow('native bootstrap failed')
+  expect(() =>
+    setup('preload', () => {
+      throw new Error('native bootstrap failed')
+    }),
+  ).toThrow('native bootstrap failed')
   expect(() => setup('preload', () => {})).toThrow('native document context was not initialized')
   expect(() => setup('untrusted')).toThrow('native document context was not initialized')
   expect(setup('invoke').window.__seuofficeNativeSendSync).toBeUndefined()
@@ -186,8 +248,12 @@ it('rebinds only the output Channel before restored page traffic', async () => {
   deliver(requests[0].callback, false, new TextEncoder().encode('null').buffer, undefined, false)
   expect(frames).toEqual([[1]])
   internals.postMessage({ cmd: 'ipc_send', callback: 10, error: 11, payload: new Uint8Array([42]) })
-  window.crypto.getRandomValues = () => { throw new Error('authored crypto replacement ran') }
-  internals.transformCallback = () => { throw new Error('authored callback registrar ran') }
+  window.crypto.getRandomValues = () => {
+    throw new Error('authored crypto replacement ran')
+  }
+  internals.transformCallback = () => {
+    throw new Error('authored callback registrar ran')
+  }
   expect(resume()).toBe(true)
   expect(requests.map((request) => request.cmd)).toEqual(['ipc_listen', 'ipc_send', 'ipc_listen'])
   const restored = requests[2]

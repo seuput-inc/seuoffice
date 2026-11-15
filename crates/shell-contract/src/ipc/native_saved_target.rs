@@ -325,42 +325,42 @@ mod tests {
         let source_view = ViewId(1);
         let source_generation = RendererGeneration::new();
         let source_owner = NativeRequestOwner { view: source_view,
-            context: NativeContext::with_owner_loss((), source_generation, CancelToken::new())
+            context: NativeContext::with_owner_loss((), source_generation, CancelToken::default())
                 .with_document_lease(RendererGeneration::new()) };
-        let issuer = NativeInvocationIssuer::new(CancelToken::new());
+        let issuer = NativeInvocationIssuer::new(CancelToken::default());
         let binding = issuer.issue_existing_document_save(Surface::Docs, source_view,
-            NativeSaveSelection::ExactPath(path.clone()), source_owner, CancelToken::new()).unwrap();
+            NativeSaveSelection::ExactPath(path.clone()), source_owner, CancelToken::default()).unwrap();
         let selection = NativeSaveDestination::from_exact_selection(binding).unwrap();
         let other_owner = selection.binding().owner().clone();
         let other_binding = issuer.issue_existing_document_save(Surface::Docs, source_view,
-            NativeSaveSelection::ExactPath(dir.join("other.pdf")), other_owner, CancelToken::new()).unwrap();
+            NativeSaveSelection::ExactPath(dir.join("other.pdf")), other_owner, CancelToken::default()).unwrap();
         let other_selection = NativeSaveDestination::from_exact_selection(other_binding).unwrap();
-        let scope = Arc::new(NativeOutputScope { participants: vec![], cancel: CancelToken::new(), pending: CancelToken::new(), additional: vec![] });
+        let scope = Arc::new(NativeOutputScope { participants: vec![], cancel: CancelToken::default(), pending: CancelToken::default(), additional: vec![] });
         assert!(NativeCommittedOutput::from_publication_admitted(other_selection, commit.clone(), scope.clone()).is_err());
         fs::rename(&path, dir.join("moved.pdf")).unwrap();
         fs::write(&path, b"replacement").unwrap();
         let read = commit.read_bounded(1024, || false).unwrap();
         assert_eq!(read.bytes(), b"synthetic");
         let output = SavedPublication::Native(NativeCommittedOutput::from_publication_admitted(selection.clone(), commit, scope.clone()).unwrap());
-        let cancelled = CancelToken::new();
+        let cancelled = CancelToken::default();
         cancelled.cancel();
-        assert!(matches!(output.read_input(1024, &[], &cancelled, &CancelToken::new(), &[]),
+        assert!(matches!(output.read_input(1024, &[], &cancelled, &CancelToken::default(), &[]),
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted));
-        assert_eq!(output.read_input(1024, &[], &CancelToken::new(), &CancelToken::new(), &[]).unwrap().bytes(), b"synthetic");
+        assert_eq!(output.read_input(1024, &[], &CancelToken::default(), &CancelToken::default(), &[]).unwrap().bytes(), b"synthetic");
         let direct_path = dir.join("direct.pdf");
         let direct = file_commit::prepare_direct(&parent, &direct_path).unwrap().open().unwrap();
-        let snapshot = match direct.write_owned(b"actually written".to_vec()).unwrap() {
-            file_commit::DirectOwnedWriteOutcome::Committed(snapshot) => snapshot,
-            file_commit::DirectOwnedWriteOutcome::WrittenWithoutReceipt { .. } => panic!("synthetic direct write lacked a receipt"),
+        let snapshot = match direct.write_owned(b"actually written".to_vec()) {
+            file_commit::DirectOwnedWriteAttempt::Completed(file_commit::DirectOwnedWriteOutcome::Committed(snapshot)) => snapshot,
+            _ => panic!("synthetic direct write lacked a receipt"),
         };
         assert!(NativeSavedInput::from_written_snapshot(output.clone(), snapshot).is_err());
         let direct = file_commit::prepare_direct(&parent, &direct_path).unwrap().open().unwrap();
-        let snapshot = match direct.write_owned(b"written snapshot".to_vec()).unwrap() {
-            file_commit::DirectOwnedWriteOutcome::Committed(snapshot) => snapshot,
-            file_commit::DirectOwnedWriteOutcome::WrittenWithoutReceipt { .. } => panic!("synthetic direct write lacked a receipt"),
+        let snapshot = match direct.write_owned(b"written snapshot".to_vec()) {
+            file_commit::DirectOwnedWriteAttempt::Completed(file_commit::DirectOwnedWriteOutcome::Committed(snapshot)) => snapshot,
+            _ => panic!("synthetic direct write lacked a receipt"),
         };
         let direct_binding = issuer.issue_existing_document_save(Surface::Docs, source_view,
-            NativeSaveSelection::ExactPath(direct_path), selection.binding().owner().clone(), CancelToken::new()).unwrap();
+            NativeSaveSelection::ExactPath(direct_path), selection.binding().owner().clone(), CancelToken::default()).unwrap();
         let direct_selection = NativeSaveDestination::from_exact_selection(direct_binding).unwrap();
         let direct_output = SavedPublication::Native(NativeCommittedOutput::from_publication_admitted(direct_selection, snapshot.receipt().clone(), scope).unwrap());
         let written = NativeSavedInput::from_written_snapshot(direct_output, snapshot).unwrap();
@@ -377,19 +377,19 @@ mod tests {
         let (_issuer, reservation, browser) = NativeClosureIssuer::new_with_owner(view, created.clone());
         let target = NativeSavedTarget::prepare(input, NativeSavedPath::Selected(output),
             Surface::Pdf, view, created.clone(), reservation.clone(), browser.clone(),
-            vec![], CancelToken::new(), CancelToken::new(), vec![]).unwrap();
-        let owner = NativeRequestOwner { view, context: NativeContext::with_owner_loss((), created.clone(), CancelToken::new()) };
+            vec![], CancelToken::default(), CancelToken::default(), vec![]).unwrap();
+        let owner = NativeRequestOwner { view, context: NativeContext::with_owner_loss((), created.clone(), CancelToken::default()) };
         assert!(target.register_from_native_admitted(owner.clone()).is_err());
         reservation.with_initial_owner(&browser, |transition| {
             target.validate_in_transition(transition)?.commit();
             Ok(())
         }).unwrap();
-        let foreign = NativeRequestOwner { view, context: NativeContext::with_owner_loss((), RendererGeneration::new(), CancelToken::new()) };
+        let foreign = NativeRequestOwner { view, context: NativeContext::with_owner_loss((), RendererGeneration::new(), CancelToken::default()) };
         assert!(target.register_from_native_admitted(foreign).is_err());
         let document = target.register_from_native_admitted(owner.clone()).unwrap();
         assert!(target.register_from_native_admitted(owner.clone()).is_err());
         assert_eq!(document.target().with_registered_state(&owner, || 7), Some(7));
-        let alias = NativeRequestOwner { view, context: NativeContext::with_owner_loss((), created.clone(), CancelToken::new()) };
+        let alias = NativeRequestOwner { view, context: NativeContext::with_owner_loss((), created.clone(), CancelToken::default()) };
         assert_eq!(document.target().with_registered_state(&alias, || 7), None);
         let renewal = document.prepare_owner_successor(alias.clone()).unwrap();
         let renewed = reservation.with_owner(&browser, |transition| {

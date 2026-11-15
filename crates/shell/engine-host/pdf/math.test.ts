@@ -20,7 +20,9 @@ describe('PDF MathML service', () => {
   })
 
   it('does not disguise a service error as a parse failure', () => {
-    vi.spyOn(katex, 'renderToString').mockImplementation(() => { throw new TypeError('renderer failure') })
+    vi.spyOn(katex, 'renderToString').mockImplementation(() => {
+      throw new TypeError('renderer failure')
+    })
     expect(() => latexMathMl({ latex: 'x', display: false })).toThrow('renderer failure')
     expect(() => latexMathMl({ latex: 'x' })).toThrow('invalid LaTeX MathML request')
   })
@@ -38,7 +40,9 @@ describe('PDF locale canonicalization', () => {
   })
 
   it('propagates service failures instead of returning null', () => {
-    vi.spyOn(Intl, 'getCanonicalLocales').mockImplementation(() => { throw new TypeError('locale service failure') })
+    vi.spyOn(Intl, 'getCanonicalLocales').mockImplementation(() => {
+      throw new TypeError('locale service failure')
+    })
     expect(() => canonicalLocale({ tag: 'en' })).toThrow('locale service failure')
     expect(() => canonicalLocale({ tag: 3 })).toThrow('invalid locale request')
   })

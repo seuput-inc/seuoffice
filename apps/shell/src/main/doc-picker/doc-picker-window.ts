@@ -87,7 +87,9 @@ export function createDocPicker(deps: DocPickerDeps) {
   }
 
   ipcMain.handle(DOC_PICKER_CHANNELS.getInit, (event): DocPickerInit | null =>
-    fromWindow(event) ? { lang: deps.lang(), theme: deps.theme(), readyToken: String(generation) } : null,
+    fromWindow(event)
+      ? { lang: deps.lang(), theme: deps.theme(), readyToken: String(generation) }
+      : null,
   )
   ipcMain.handle(DOC_PICKER_CHANNELS.ready, (event, token: unknown) => {
     if (fromWindow(event) && token === String(generation) && shownGeneration !== generation) {

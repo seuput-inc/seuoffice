@@ -105,7 +105,13 @@ const fn native_spec(
     batch: Batch,
     surfaces: &'static [Surface],
 ) -> ChannelSpec {
-    ChannelSpec { name, kinds, batch, surfaces, namespace: ChannelNamespace::Native }
+    ChannelSpec {
+        name,
+        kinds,
+        batch,
+        surfaces,
+        namespace: ChannelNamespace::Native,
+    }
 }
 
 pub const CHANNELS: &[ChannelSpec] = &[

@@ -41,7 +41,11 @@ impl App {
         s.ask_path_on_first_save = true;
     }
 
-    fn landed(&self, s: &SlideSession, owner: &super::engine::RenderOwner) -> Result<Obj, IpcError> {
+    fn landed(
+        &self,
+        s: &SlideSession,
+        owner: &super::engine::RenderOwner,
+    ) -> Result<Obj, IpcError> {
         // path, slides, size, defaultFont
         Ok(match self.open_result(s, self.render_all(s, owner)?)? {
             IpcValue::Object(entries) => {
@@ -113,7 +117,8 @@ fn land(
             let before_count = {
                 let state = app.state.borrow();
                 app.engine
-                    .slide_paths(state.session(view).expect("checked").deck()).map_err(|e| e.0)?
+                    .slide_paths(state.session(view).expect("checked").deck())
+                    .map_err(|e| e.0)?
                     .len()
             };
             // Extract every page first (pure reads), then land them as
@@ -142,7 +147,9 @@ fn land(
                         .collect(),
                 );
                 let snapshot = existing.core.take_snapshot().map_err(|error| error.0)?;
-                let result = app.journaled_txn(existing, owner, OpSource::Generate, &request).map_err(message)?;
+                let result = app
+                    .journaled_txn(existing, owner, OpSource::Generate, &request)
+                    .map_err(message)?;
                 merged = result.records.as_ref().map_or(0, Vec::len);
                 if result.applied {
                     existing.core.push_history_snapshot(snapshot);
@@ -163,7 +170,8 @@ fn land(
             app.name_generated_deck(existing, deck_name);
             let page_count = app.page_marker_list(markers).len();
             let mut result = app
-                .landed(existing, owner).map_err(message)?
+                .landed(existing, owner)
+                .map_err(message)?
                 .set("appendedFrom", num(before_count as f64));
             if let Some(reason) = last_err.filter(|_| merged < page_count) {
                 result = result.set(
@@ -186,7 +194,8 @@ fn land(
             let total = {
                 let state = app.state.borrow();
                 app.engine
-                    .slide_paths(state.session(view).expect("checked").deck()).map_err(|e| e.0)?
+                    .slide_paths(state.session(view).expect("checked").deck())
+                    .map_err(|e| e.0)?
                     .len() as f64
             };
             let limit = if replace { total - 1.0 } else { total };
@@ -223,7 +232,9 @@ fn land(
             }
             let request = TxnRequest::atomic(vec![insert.build()]);
             let snapshot = existing.core.take_snapshot().map_err(|error| error.0)?;
-            let result = app.journaled_txn(existing, owner, OpSource::Generate, &request).map_err(message)?;
+            let result = app
+                .journaled_txn(existing, owner, OpSource::Generate, &request)
+                .map_err(message)?;
             if !result.applied {
                 let key = if replace {
                     "errReplaceFailed"
@@ -245,39 +256,74 @@ fn land(
             } else {
                 "insertedIndex"
             };
-            Ok(app.landed(existing, owner).map_err(message)?.set(key, num(index)).build())
+            Ok(app
+                .landed(existing, owner)
+                .map_err(message)?
+                .set(key, num(index))
+                .build())
         }
         _ => {
-            let transition = super::shared_open::SharedOpen::capture(app, owner, cancel.clone()).map_err(message)?;
+            let transition = super::shared_open::SharedOpen::capture(app, owner, cancel.clone())
+                .map_err(message)?;
             let pages = app.read_cloud_pages(markers).map_err(message)?;
-            if pages.is_empty() { return Err("Cannot read properties of undefined (reading 'bytes')".into()); }
+            if pages.is_empty() {
+                return Err("Cannot read properties of undefined (reading 'bytes')".into());
+            }
             let bytes = app.engine.assemble_pages(&pages).map_err(|error| error.0)?;
             let deck = app.engine.open(&bytes).map_err(|error| error.0)?;
             let replacement = SlideSession::new("", DeckHandle::new(deck, app.engine.clone()), fit);
             let (snapshot, previous) = {
                 let state = app.state.borrow();
                 if let Some(slot) = transition.slot {
-                    let old = state.slot(slot).ok_or("The original shared presentation was released")?;
-                    if Some(old.id) != transition.session || Some(old.deck()) != transition.deck { return Err("The original shared presentation was replaced".into()); }
+                    let old = state
+                        .slot(slot)
+                        .ok_or("The original shared presentation was released")?;
+                    if Some(old.id) != transition.session || Some(old.deck()) != transition.deck {
+                        return Err("The original shared presentation was replaced".into());
+                    }
                     let snapshot = old.core.take_snapshot().map_err(|error| error.0)?;
-                    app.engine.transfer_history(old.deck(), replacement.deck(), &transition.participants).map_err(|error| error.0)?;
+                    app.engine
+                        .transfer_history(old.deck(), replacement.deck(), &transition.participants)
+                        .map_err(|error| error.0)?;
                     (Some(snapshot), Some(app.document_of_session(old)))
-                } else { (None, None) }
+                } else {
+                    (None, None)
+                }
             };
-            let (new_slot, completed_owner) = transition.commit(app, owner, replacement, snapshot, |session| {
-                app.name_generated_deck(session, deck_name);
-                session.core.schedule_deck_broadcast();
-            }).map_err(message)?;
-            let effects = app.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().cloned().ok_or("The native presentation transition host is unavailable")?;
-            effects.with_owned_effect(&completed_owner, &completed_owner, cancel, cancel, &mut || {
-                let state = app.state.borrow();
-                let session = state.slot(new_slot).ok_or("The generated presentation was released")?;
-                app.inherit_template(previous.as_ref(), session);
-                Ok(())
-            })?;
+            let (new_slot, completed_owner) = transition
+                .commit(app, owner, replacement, snapshot, |session| {
+                    app.name_generated_deck(session, deck_name);
+                    session.core.schedule_deck_broadcast();
+                })
+                .map_err(message)?;
+            let effects = app
+                .services
+                .hosts
+                .get::<shell_contract::hosts::OwnedEffectsHost>()
+                .cloned()
+                .ok_or("The native presentation transition host is unavailable")?;
+            effects.with_owned_effect(
+                &completed_owner,
+                &completed_owner,
+                cancel,
+                cancel,
+                &mut || {
+                    let state = app.state.borrow();
+                    let session = state
+                        .slot(new_slot)
+                        .ok_or("The generated presentation was released")?;
+                    app.inherit_template(previous.as_ref(), session);
+                    Ok(())
+                },
+            )?;
             let state = app.state.borrow();
-            let session = state.slot(new_slot).ok_or("The generated presentation was released")?;
-            Ok(app.landed(session, &completed_owner).map_err(message)?.build())
+            let session = state
+                .slot(new_slot)
+                .ok_or("The generated presentation was released")?;
+            Ok(app
+                .landed(session, &completed_owner)
+                .map_err(message)?
+                .build())
         }
     }
 }

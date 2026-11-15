@@ -383,12 +383,18 @@ pub fn node_error_named(code: &'static str, syscall: &str, path: &str) -> NodeEr
 ///   the bytes; a failure after the target was opened removes it.
 /// - Windows: `CopyFileW(from, to, excl)`.
 pub fn copy_file(from: &str, to: &str, excl: bool) -> Result<(), NodeError> {
-    copy_file_authorized(from, to, excl, &mut |effect| { effect(); Ok(()) })?
+    copy_file_authorized(from, to, excl, &mut |effect| {
+        effect();
+        Ok(())
+    })?
 }
 
 pub type FileAdmission<'a> = dyn FnMut(&mut dyn FnMut()) -> Result<(), NodeError> + 'a;
 
-pub(crate) fn admitted_file_effect<T>(admit: &mut FileAdmission<'_>, effect: impl FnOnce() -> T) -> Result<T, NodeError> {
+pub(crate) fn admitted_file_effect<T>(
+    admit: &mut FileAdmission<'_>,
+    effect: impl FnOnce() -> T,
+) -> Result<T, NodeError> {
     let mut effect = Some(effect);
     let mut result = None;
     let mut repeated = false;
@@ -397,9 +403,15 @@ pub(crate) fn admitted_file_effect<T>(admit: &mut FileAdmission<'_>, effect: imp
         None => repeated = true,
     })?;
     if repeated {
-        return Err(NodeError { code: None, message: "file admission invoked an effect more than once".into() });
+        return Err(NodeError {
+            code: None,
+            message: "file admission invoked an effect more than once".into(),
+        });
     }
-    result.ok_or_else(|| NodeError { code: None, message: "file effect was not admitted".into() })
+    result.ok_or_else(|| NodeError {
+        code: None,
+        message: "file effect was not admitted".into(),
+    })
 }
 
 enum CopyFailure {
@@ -422,7 +434,10 @@ pub fn copy_file_authorized(
             use std::os::windows::ffi::OsStrExt;
             use windows_sys::Win32::Storage::FileSystem::CopyFileW;
             let wide = |p: &str| -> Vec<u16> {
-                std::ffi::OsStr::new(&namespaced(p)).encode_wide().chain(std::iter::once(0)).collect()
+                std::ffi::OsStr::new(&namespaced(p))
+                    .encode_wide()
+                    .chain(std::iter::once(0))
+                    .collect()
             };
             let (src, dst) = (wide(from), wide(to));
             admitted_file_effect(admit, || ()).map_err(CopyFailure::Admission)?;
@@ -443,25 +458,41 @@ pub fn copy_file_authorized(
             if info.is_dir() {
                 return Err(CopyFailure::Io(NodeError {
                     code: Some("ENOTSUP"),
-                    message: format!("ENOTSUP: operation not supported on socket, copyfile '{}' -> '{}'", shown(from), shown(to)),
+                    message: format!(
+                        "ENOTSUP: operation not supported on socket, copyfile '{}' -> '{}'",
+                        shown(from),
+                        shown(to)
+                    ),
                 }));
             }
             let mode = info.permissions().mode() & 0o7777;
             let mut options = fs::OpenOptions::new();
             options.write(true).mode(mode);
-            if excl { options.create_new(true); } else { options.create(true); }
+            if excl {
+                options.create_new(true);
+            } else {
+                options.create(true);
+            }
             let mut target = admitted_file_effect(admit, || options.open(namespaced(to)))
-                .map_err(CopyFailure::Admission)?.map_err(|e| fail(&e))?;
+                .map_err(CopyFailure::Admission)?
+                .map_err(|e| fail(&e))?;
             if !excl {
-                let same = target.metadata().map(|t| t.dev() == info.dev() && t.ino() == info.ino()).map_err(|e| fail(&e))?;
-                if same { return Ok(()); }
+                let same = target
+                    .metadata()
+                    .map(|t| t.dev() == info.dev() && t.ino() == info.ino())
+                    .map_err(|e| fail(&e))?;
+                if same {
+                    return Ok(());
+                }
                 target.set_len(0).map_err(|e| fail(&e))?;
             }
-            let copied = target.set_permissions(fs::Permissions::from_mode(mode))
+            let copied = target
+                .set_permissions(fs::Permissions::from_mode(mode))
                 .and_then(|()| io::copy(&mut source, &mut target).map(|_| ()));
             if let Err(e) = copied {
                 drop(target);
-                let _ = admitted_file_effect(admit, || fs::remove_file(namespaced(to))).map_err(CopyFailure::Admission)?;
+                let _ = admitted_file_effect(admit, || fs::remove_file(namespaced(to)))
+                    .map_err(CopyFailure::Admission)?;
                 return Err(fail(&e));
             }
             Ok(())

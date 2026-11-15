@@ -1148,10 +1148,10 @@ fn parse_html_image_tag(text: &[u16], tag_start: usize) -> (usize, Option<Destin
             cursor = value_end + 1;
         } else {
             value_start = cursor;
-            while cursor < length
-                && !is_space_at(text, cursor)
-                && !is_at(text, cursor, '>')
-                && !(is_at(text, cursor, '/') && is_at(text, cursor + 1, '>'))
+            while !(cursor >= length
+                || is_space_at(text, cursor)
+                || is_at(text, cursor, '>')
+                || (is_at(text, cursor, '/') && is_at(text, cursor + 1, '>')))
             {
                 if ['"', '\'', '`', '<', '=']
                     .iter()

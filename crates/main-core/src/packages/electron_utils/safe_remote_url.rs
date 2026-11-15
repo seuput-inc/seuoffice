@@ -184,10 +184,18 @@ pub trait Resolver {
     fn lookup_all(&mut self, host: &str) -> Result<Vec<LookupAddress>, FetchError>;
     /// Implementations with asynchronous DNS may stop waiting when the
     /// signal aborts. Synchronous resolvers still have their result checked.
-    fn lookup_all_abort(&mut self, host: &str, signal: &dyn AbortSignal) -> Result<Vec<LookupAddress>, FetchError> {
-        if signal.aborted() { return Err(FetchError("This operation was aborted".into())); }
+    fn lookup_all_abort(
+        &mut self,
+        host: &str,
+        signal: &dyn AbortSignal,
+    ) -> Result<Vec<LookupAddress>, FetchError> {
+        if signal.aborted() {
+            return Err(FetchError("This operation was aborted".into()));
+        }
         let result = self.lookup_all(host);
-        if signal.aborted() { return Err(FetchError("This operation was aborted".into())); }
+        if signal.aborted() {
+            return Err(FetchError("This operation was aborted".into()));
+        }
         result
     }
 }
@@ -435,7 +443,11 @@ pub trait Fetcher {
     /// `undici.getGlobalDispatcher()`
     fn global_dispatcher(&mut self) -> GlobalDispatcher;
     /// The request of one hop. An `Err` is a thrown error.
-    fn fetch<'signal>(&mut self, url: &str, init: &FetchInit<'_, 'signal>) -> Result<Box<dyn Response + 'signal>, FetchError>;
+    fn fetch<'signal>(
+        &mut self,
+        url: &str,
+        init: &FetchInit<'_, 'signal>,
+    ) -> Result<Box<dyn Response + 'signal>, FetchError>;
     /// `dispatcher.close()` of the hop's pinned agent: graceful, in-flight
     /// bodies keep streaming, only new dispatches are refused
     fn close_dispatcher(&mut self);
@@ -562,7 +574,9 @@ mod cancellation_tests {
 
     struct Signal(Cell<bool>);
     impl AbortSignal for Signal {
-        fn aborted(&self) -> bool { self.0.get() }
+        fn aborted(&self) -> bool {
+            self.0.get()
+        }
     }
     struct NoDns;
     impl Resolver for NoDns {
@@ -572,9 +586,15 @@ mod cancellation_tests {
     }
     struct Body<'a>(Option<&'a dyn AbortSignal>);
     impl Response for Body<'_> {
-        fn status(&self) -> u16 { 200 }
-        fn header(&self, _: &str) -> Option<String> { None }
-        fn has_body(&self) -> bool { true }
+        fn status(&self) -> u16 {
+            200
+        }
+        fn header(&self, _: &str) -> Option<String> {
+            None
+        }
+        fn has_body(&self) -> bool {
+            true
+        }
         fn cancel_body(&mut self) {}
         fn read_chunk(&mut self) -> Result<Option<Vec<u8>>, FetchError> {
             if self.0.is_some_and(AbortSignal::aborted) {
@@ -589,8 +609,14 @@ mod cancellation_tests {
     }
     struct Transport;
     impl Fetcher for Transport {
-        fn global_dispatcher(&mut self) -> GlobalDispatcher { GlobalDispatcher::NotAnObject }
-        fn fetch<'a>(&mut self, _: &str, init: &FetchInit<'_, 'a>) -> Result<Box<dyn Response + 'a>, FetchError> {
+        fn global_dispatcher(&mut self) -> GlobalDispatcher {
+            GlobalDispatcher::NotAnObject
+        }
+        fn fetch<'a>(
+            &mut self,
+            _: &str,
+            init: &FetchInit<'_, 'a>,
+        ) -> Result<Box<dyn Response + 'a>, FetchError> {
             Ok(Box::new(Body(init.signal)))
         }
         fn close_dispatcher(&mut self) {}
@@ -599,9 +625,14 @@ mod cancellation_tests {
     #[test]
     fn response_observes_abort_after_headers() {
         let signal = Signal(Cell::new(false));
-        let mut options = FetchWithSsrfGuardOptions { signal: Some(&signal), ..Default::default() };
-        let mut response = fetch_with_ssrf_guard(&mut NoDns, &mut Transport, "https://1.1.1.1/", &mut options)
-            .unwrap().unwrap();
+        let mut options = FetchWithSsrfGuardOptions {
+            signal: Some(&signal),
+            ..Default::default()
+        };
+        let mut response =
+            fetch_with_ssrf_guard(&mut NoDns, &mut Transport, "https://1.1.1.1/", &mut options)
+                .unwrap()
+                .unwrap();
         signal.0.set(true);
         assert!(response.read_chunk().is_err());
     }

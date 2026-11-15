@@ -164,11 +164,19 @@ fn format_named(name: &str) -> DiagramFormat {
 }
 
 impl DiagramEngine for Fake {
-    fn open_recovery_diagram(&self, name: &str, bytes: &[u8]) -> Result<Result<DiagramFile, OpenFailure>, String> {
+    fn open_recovery_diagram(
+        &self,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<Result<DiagramFile, OpenFailure>, String> {
         self.open_diagram(name, bytes)
     }
 
-    fn open_diagram(&self, name: &str, bytes: &[u8]) -> Result<Result<DiagramFile, OpenFailure>, String> {
+    fn open_diagram(
+        &self,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<Result<DiagramFile, OpenFailure>, String> {
         self.log(json!(["drawio.openDiagram", name, bytes.len()]));
         if let Some(scripted) = self.answer("openDiagram").get(name) {
             if let Some(error) = scripted.get("error").and_then(Value::as_str) {
@@ -288,50 +296,115 @@ impl DiagramShell for Fake {
             .map(str::to_owned)))
     }
 
-    fn write_new_document_owned(&self, _origin: &shell_contract::ipc::NativeRequestOwner,
-        destination: &shell_contract::ipc::NativeRequestOwner, _cancel: &shell_contract::runtime::CancelToken,
-        _pending: &shell_contract::runtime::CancelToken, _effects: &shell_contract::hosts::OwnedEffectsHost,
+    fn write_new_document_owned(
+        &self,
+        _origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        _cancel: &shell_contract::runtime::CancelToken,
+        _pending: &shell_contract::runtime::CancelToken,
+        _effects: &shell_contract::hosts::OwnedEffectsHost,
         admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
-        file_name: &str, bytes: &[u8]) -> Result<Option<String>, String> {
+        file_name: &str,
+        bytes: &[u8],
+    ) -> Result<Option<String>, String> {
         let log = self.log.clone();
         let scripted = self.answer("writeNewDocument").clone();
         let view = destination.view;
         let file_name = file_name.to_owned();
         let size = bytes.len();
         main_core::packages::electron_utils::atomic_write::owned::admitted(&admission, move || {
-            if let Some(log) = log { log.lock().unwrap().push(json!(["diagram.writeNewDocument", view.0, file_name, size])); }
-            if let Some(error) = scripted.get("error").and_then(Value::as_str) { return Err(error.to_owned()); }
-            Ok(scripted.get("path").and_then(Value::as_str).map(str::to_owned))
-        }).map_err(|error| error.message)?
+            if let Some(log) = log {
+                log.lock().unwrap().push(json!([
+                    "diagram.writeNewDocument",
+                    view.0,
+                    file_name,
+                    size
+                ]));
+            }
+            if let Some(error) = scripted.get("error").and_then(Value::as_str) {
+                return Err(error.to_owned());
+            }
+            Ok(scripted
+                .get("path")
+                .and_then(Value::as_str)
+                .map(str::to_owned))
+        })
+        .map_err(|error| error.message)?
     }
 
     fn file_saved(&self, view: ViewId, path: &str) {
         self.log(json!(["diagram.fileSaved", view.0, path]));
     }
 
-    fn file_saved_owned(&self, origin: &shell_contract::ipc::NativeRequestOwner,
-        destination: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken,
-        pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost,
-        path: &str, done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>) {
-        let result = effects.with_owned_effect_many_extra(origin, participants, cancel, pending, &additional.iter().collect::<Vec<_>>(), &mut || {
-            self.file_saved(destination.view, path); Ok(())
-        }).map(|()| shell_contract::hosts::SavedFile { path: path.to_owned(), session: shell_contract::hosts::SavedSessionReceipt::NoPublication });
+    fn file_saved_owned(
+        &self,
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+        path: &str,
+        done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>,
+    ) {
+        let result = effects
+            .with_owned_effect_many_extra(
+                origin,
+                participants,
+                cancel,
+                pending,
+                &additional.iter().collect::<Vec<_>>(),
+                &mut || {
+                    self.file_saved(destination.view, path);
+                    Ok(())
+                },
+            )
+            .map(|()| shell_contract::hosts::SavedFile {
+                path: path.to_owned(),
+                session: shell_contract::hosts::SavedSessionReceipt::NoPublication,
+            });
         done(result);
     }
 
-    fn file_saved_existing_document(&self, revision: shell_contract::ipc::NativeSaveRevisionAuthority, expected_path: std::path::PathBuf,
-        participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken,
-        pending: shell_contract::runtime::CancelToken, additional: Vec<shell_contract::runtime::CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost,
-        _on_revision: std::rc::Rc<dyn Fn(&shell_contract::ipc::NativeSaveRevisionReceipt) -> Result<(), String>>,
-        done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>) {
+    fn file_saved_existing_document(
+        &self,
+        revision: shell_contract::ipc::NativeSaveRevisionAuthority,
+        expected_path: std::path::PathBuf,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        _on_revision: std::rc::Rc<
+            dyn Fn(&shell_contract::ipc::NativeSaveRevisionReceipt) -> Result<(), String>,
+        >,
+        done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>,
+    ) {
         let result = (|| {
             let snapshot = revision.snapshot()?;
-            let path = expected_path.to_str().ok_or("The saved diagram path is not Unicode")?.to_owned();
-            effects.with_native_save_revision_snapshot_effect(&snapshot, &participants, &cancel, &pending, &additional.iter().collect::<Vec<_>>(), &mut || {
-                if snapshot.selection().path() != expected_path { return Err("The native save destination changed".into()); }
-                self.file_saved(snapshot.selection().binding().owner().view, &path); Ok(())
-            })?;
-            Ok(shell_contract::hosts::SavedFile { path, session: shell_contract::hosts::SavedSessionReceipt::NoPublication })
+            let path = expected_path
+                .to_str()
+                .ok_or("The saved diagram path is not Unicode")?
+                .to_owned();
+            effects.with_native_save_revision_snapshot_effect(
+                &snapshot,
+                &participants,
+                &cancel,
+                &pending,
+                &additional.iter().collect::<Vec<_>>(),
+                &mut || {
+                    if snapshot.selection().path() != expected_path {
+                        return Err("The native save destination changed".into());
+                    }
+                    self.file_saved(snapshot.selection().binding().owner().view, &path);
+                    Ok(())
+                },
+            )?;
+            Ok(shell_contract::hosts::SavedFile {
+                path,
+                session: shell_contract::hosts::SavedSessionReceipt::NoPublication,
+            })
         })();
         done(result);
     }
@@ -341,9 +414,14 @@ impl DiagramShell for Fake {
         self.answer("recoveryTitle").as_str().map(str::to_owned)
     }
 
-    fn help_owned(&self, origin: shell_contract::ipc::NativeRequestOwner,
-        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
-        effects: shell_contract::hosts::OwnedEffectsHost, done: Box<dyn FnOnce(Result<(), String>)>) {
+    fn help_owned(
+        &self,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        done: Box<dyn FnOnce(Result<(), String>)>,
+    ) {
         let result = effects.with_owned_effect(&origin, &origin, &cancel, &pending, &mut || {
             self.log(json!(["diagram.help", origin.view.0]));
             Ok(())

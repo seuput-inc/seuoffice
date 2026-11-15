@@ -321,15 +321,16 @@ describe('Save As into another format', () => {
     vi.restoreAllMocks()
   })
 
-  it('asks with the exports offered on Save As, without them on a first save', async () => {
+  it('offers exports when saving an existing document under a new name', async () => {
     const ctx = await openEdited()
-    await save(ctx, true)
-    expect(desktop.pickSaveAsPath).toHaveBeenLastCalledWith(
+    expect(await save(ctx, true)).toBe(false)
+    expect(desktop.pickSaveAsPath.mock.calls[0].slice(0, 4)).toEqual([
       'report.docx',
       '/docs/report.docx',
       'docx',
       true,
-    )
+    ])
+    expectUntouched(ctx)
   })
 
   it('a Word pick still saves the document to the new path', async () => {
@@ -416,9 +417,17 @@ describe('Save As into another format', () => {
     ctx.ownedSaveRequestId = 'captured-close-save'
     pick = { path: '/out/report.html', kind: 'html' }
     let finish: ((value: { ok: boolean; path: string }) => void) | undefined
-    desktop.exportHtml.mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    desktop.exportHtml.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve
+        }),
+    )
     let completed = false
-    const saving = save(ctx, true).then((result) => { completed = true; return result })
+    const saving = save(ctx, true).then((result) => {
+      completed = true
+      return result
+    })
     await vi.waitFor(() => expect(finish).toBeDefined())
     expect(completed).toBe(false)
     expect(desktop.exportHtml.mock.calls[0][3]).toBe('captured-close-save')
@@ -449,9 +458,14 @@ describe('Save As into another format', () => {
     pdfPages = 3
     const ctx = await openEdited()
     ctx.ownedSaveRequestId = 'captured-close-save'
-    expect(await exportSaveAsCopy(ctx, {
-      path: '/out/report.png', kind: 'png', dir: '/out', pdfPath: '/tmp/owned.pdf',
-    })).toBe(true)
+    expect(
+      await exportSaveAsCopy(ctx, {
+        path: '/out/report.png',
+        kind: 'png',
+        dir: '/out',
+        pdfPath: '/tmp/owned.pdf',
+      }),
+    ).toBe(true)
     expect(desktop.exportPdf.mock.calls[0][6]).toBe('captured-close-save')
     expect(desktop.takeExportPdf).toHaveBeenCalledWith('/tmp/owned.pdf', 'captured-close-save')
     expect(desktop.writeExportImage.mock.calls.map((call) => [call[1], call[3]])).toEqual([
@@ -465,8 +479,13 @@ describe('Save As into another format', () => {
   it('keeps the owned token through failed whole-print and bisected chunk retries', async () => {
     const sheet = document.querySelector('.pv-page')!
     document.body.append(sheet.cloneNode(true))
-    desktop.exportPdf.mockResolvedValue({ ok: false, error: 'print failed', path: '/out/report.pdf' })
-    desktop.printPdfBuffer = vi.fn()
+    desktop.exportPdf.mockResolvedValue({
+      ok: false,
+      error: 'print failed',
+      path: '/out/report.pdf',
+    })
+    desktop.printPdfBuffer = vi
+      .fn()
       .mockResolvedValueOnce({ ok: false, error: 'retry smaller' })
       .mockResolvedValue({ ok: true, base64: btoa('%PDF') })
     desktop.saveMergedPdf = vi.fn(async () => ({ ok: true, path: '/out/report.pdf' }))
@@ -476,7 +495,9 @@ describe('Save As into another format', () => {
     expect(desktop.exportPdf.mock.calls[0][6]).toBe('captured-close-save')
     expect(desktop.printPdfBuffer).toHaveBeenCalledTimes(3)
     expect(desktop.printPdfBuffer.mock.calls.map((call) => call[3])).toEqual([
-      'captured-close-save', 'captured-close-save', 'captured-close-save',
+      'captured-close-save',
+      'captured-close-save',
+      'captured-close-save',
     ])
     expect(desktop.saveMergedPdf.mock.calls[0][1]).toHaveLength(2)
     expect(desktop.saveMergedPdf.mock.calls[0][4]).toBe('captured-close-save')
@@ -488,8 +509,12 @@ describe('Save As into another format', () => {
     const ctx = await openEdited()
     ctx.ownedSaveRequestId = 'captured-close-save'
     let completed = false
-    const saving = exportSaveAsCopy(ctx, { path: '/out/report.pdf', kind: 'pdf' })
-      .then((result) => { completed = true; return result })
+    const saving = exportSaveAsCopy(ctx, { path: '/out/report.pdf', kind: 'pdf' }).then(
+      (result) => {
+        completed = true
+        return result
+      },
+    )
     await vi.waitFor(() => expect(ctx.pendingMixedExportRef.current).toBeTruthy())
     const pending = ctx.pendingMixedExportRef.current
     if (!pending) throw new Error('missing preview export')
@@ -503,7 +528,12 @@ describe('Save As into another format', () => {
     sheet.style.height = '1056px'
     document.body.append(sheet)
     let printDone: ((value: { ok: boolean; path: string }) => void) | undefined
-    desktop.exportPdf.mockImplementation(() => new Promise((resolve) => { printDone = resolve }))
+    desktop.exportPdf.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          printDone = resolve
+        }),
+    )
     ctx.pendingMixedExportRef.current = false
     const printing = exportPdf(ctx, pending.outPath, pending.how)
     await vi.waitFor(() => expect(printDone).toBeDefined())

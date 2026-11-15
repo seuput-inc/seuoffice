@@ -223,7 +223,7 @@ async fn is_recorded_process(
         return false;
     }
     let delta = info.started_at - recorded.started_at;
-    if delta > STARTED_AFTER_RECORD_MS || delta < -STARTED_BEFORE_RECORD_MS {
+    if delta > STARTED_AFTER_RECORD_MS || (..-STARTED_BEFORE_RECORD_MS).contains(&delta) {
         return false;
     }
     same_image(rt, &info.image, &recorded.command, platform).await

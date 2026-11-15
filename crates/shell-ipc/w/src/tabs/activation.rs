@@ -1,38 +1,84 @@
 //! One immutable activation batch, retaining every captured participant between steps.
-use std::sync::Arc;
 use shell_contract::{ipc::NativeRequestOwner, runtime::CancelToken};
+use std::sync::Arc;
 pub(super) mod driver;
 
 #[derive(Clone)]
 pub enum TabActivationAuthority {
     Interactive(NativeRequestOwner),
-    NativeInvocation { document: shell_contract::ipc::NativeInvocationDocument, owner: NativeRequestOwner },
-    NativeOperation { operation: shell_contract::ipc::NativeInvocationOperation, owner: NativeRequestOwner },
-    StartupRecovery { startup: shell_contract::ipc::NativeInvocationOperation, shell: NativeRequestOwner,
-        child: shell_contract::ipc::NativeInvocationDocument, owner: NativeRequestOwner },
-    NativeCommand { operation: shell_contract::ipc::NativeInvocationOperation, expected: shell_contract::ipc::NativeEditorCommand, owner: NativeRequestOwner },
-    NativeCommandTarget { document: shell_contract::ipc::NativeInvocationDocument, expected: shell_contract::ipc::NativeEditorCommand, owner: NativeRequestOwner },
-    StartupCommand { startup: shell_contract::ipc::NativeInvocationOperation, shell: NativeRequestOwner,
-        child: shell_contract::ipc::NativeInvocationOperation, expected: shell_contract::ipc::NativeEditorCommand, owner: NativeRequestOwner },
-    StartupCommandTarget { startup: shell_contract::ipc::NativeInvocationOperation, shell: NativeRequestOwner,
-        document: shell_contract::ipc::NativeInvocationDocument, expected: shell_contract::ipc::NativeEditorCommand, owner: NativeRequestOwner },
-    CommandRecovery { command: shell_contract::ipc::NativeInvocationOperation,
-        child: shell_contract::ipc::NativeInvocationDocument, owner: NativeRequestOwner },
-    ExistingDocumentSave { path: shell_contract::ipc::NativeSavedPath,
-        owner: NativeRequestOwner, additional: Vec<CancelToken> },
-    SavedDocument { document: shell_contract::ipc::NativeSavedDocument,
-        owner: NativeRequestOwner, additional: Vec<CancelToken> },
-    NativeSaveReload { receipt: Arc<shell_contract::hosts::NativeSaveReloadReceipt>, owner: NativeRequestOwner },
+    NativeInvocation {
+        document: shell_contract::ipc::NativeInvocationDocument,
+        owner: NativeRequestOwner,
+    },
+    NativeOperation {
+        operation: shell_contract::ipc::NativeInvocationOperation,
+        owner: NativeRequestOwner,
+    },
+    StartupRecovery {
+        startup: shell_contract::ipc::NativeInvocationOperation,
+        shell: NativeRequestOwner,
+        child: shell_contract::ipc::NativeInvocationDocument,
+        owner: NativeRequestOwner,
+    },
+    NativeCommand {
+        operation: shell_contract::ipc::NativeInvocationOperation,
+        expected: shell_contract::ipc::NativeEditorCommand,
+        owner: NativeRequestOwner,
+    },
+    NativeCommandTarget {
+        document: shell_contract::ipc::NativeInvocationDocument,
+        expected: shell_contract::ipc::NativeEditorCommand,
+        owner: NativeRequestOwner,
+    },
+    StartupCommand {
+        startup: shell_contract::ipc::NativeInvocationOperation,
+        shell: NativeRequestOwner,
+        child: shell_contract::ipc::NativeInvocationOperation,
+        expected: shell_contract::ipc::NativeEditorCommand,
+        owner: NativeRequestOwner,
+    },
+    StartupCommandTarget {
+        startup: shell_contract::ipc::NativeInvocationOperation,
+        shell: NativeRequestOwner,
+        document: shell_contract::ipc::NativeInvocationDocument,
+        expected: shell_contract::ipc::NativeEditorCommand,
+        owner: NativeRequestOwner,
+    },
+    CommandRecovery {
+        command: shell_contract::ipc::NativeInvocationOperation,
+        child: shell_contract::ipc::NativeInvocationDocument,
+        owner: NativeRequestOwner,
+    },
+    ExistingDocumentSave {
+        path: shell_contract::ipc::NativeSavedPath,
+        owner: NativeRequestOwner,
+        additional: Vec<CancelToken>,
+    },
+    SavedDocument {
+        document: shell_contract::ipc::NativeSavedDocument,
+        owner: NativeRequestOwner,
+        additional: Vec<CancelToken>,
+    },
+    NativeSaveReload {
+        receipt: Arc<shell_contract::hosts::NativeSaveReloadReceipt>,
+        owner: NativeRequestOwner,
+    },
 }
 
 impl TabActivationAuthority {
     pub fn owner(&self) -> &NativeRequestOwner {
         match self {
-            Self::Interactive(owner) | Self::NativeInvocation { owner, .. } | Self::NativeOperation { owner, .. }
-            | Self::StartupRecovery { owner, .. } | Self::NativeCommand { owner, .. }
-            | Self::NativeCommandTarget { owner, .. } | Self::StartupCommand { owner, .. }
-            | Self::StartupCommandTarget { owner, .. } | Self::CommandRecovery { owner, .. }
-            | Self::ExistingDocumentSave { owner, .. } | Self::SavedDocument { owner, .. }
+            Self::Interactive(owner)
+            | Self::NativeInvocation { owner, .. }
+            | Self::NativeOperation { owner, .. }
+            | Self::StartupRecovery { owner, .. }
+            | Self::NativeCommand { owner, .. }
+            | Self::NativeCommandTarget { owner, .. }
+            | Self::StartupCommand { owner, .. }
+            | Self::StartupCommandTarget { owner, .. }
+            | Self::CommandRecovery { owner, .. }
+            | Self::ExistingDocumentSave { owner, .. }
+            | Self::SavedDocument { owner, .. }
             | Self::NativeSaveReload { owner, .. } => owner,
         }
     }
@@ -52,18 +98,26 @@ pub enum TabUiStepOutcome {
     AppliedWithClosePermit(shell_contract::ipc::NativeBrowserClosePermit),
     Superseded(PlacementSuperseded),
     BrowserSuperseded(shell_contract::ipc::NativeBrowserSuperseded),
-    CommittedCleanupPending { error: String, retry: TabUiStepRetry },
+    CommittedCleanupPending {
+        error: String,
+        retry: TabUiStepRetry,
+    },
 }
 
 pub type TabUiStepDone = Box<dyn FnOnce(Result<TabUiStepOutcome, String>)>;
 pub type TabUiStepRetry = std::rc::Rc<dyn Fn(TabUiStepDone)>;
 
-
 pub type TabUiDone = Box<dyn FnOnce(Result<(), String>)>;
-pub type TabUiRun = Box<dyn FnOnce(
-    TabActivationAuthority, Arc<[NativeRequestOwner]>, CancelToken, CancelToken,
-    Option<shell_contract::ipc::NativeBrowserClosePermit>, TabUiStepDone,
-)>;
+pub type TabUiRun = Box<
+    dyn FnOnce(
+        TabActivationAuthority,
+        Arc<[NativeRequestOwner]>,
+        CancelToken,
+        CancelToken,
+        Option<shell_contract::ipc::NativeBrowserClosePermit>,
+        TabUiStepDone,
+    ),
+>;
 
 /// Constructed by the actual native adapter (or an explicit behavioral test host).
 /// Its runner captures native handles before posting, admits the full participant
@@ -71,8 +125,18 @@ pub type TabUiRun = Box<dyn FnOnce(
 pub struct PreparedTabUiStep(TabUiRun);
 
 impl PreparedTabUiStep {
-    pub fn new(run: TabUiRun) -> Self { Self(run) }
-    pub fn run(self, authority: TabActivationAuthority, participants: Arc<[NativeRequestOwner]>, cancel: CancelToken, pending: CancelToken, close: Option<shell_contract::ipc::NativeBrowserClosePermit>, done: TabUiStepDone) {
+    pub fn new(run: TabUiRun) -> Self {
+        Self(run)
+    }
+    pub fn run(
+        self,
+        authority: TabActivationAuthority,
+        participants: Arc<[NativeRequestOwner]>,
+        cancel: CancelToken,
+        pending: CancelToken,
+        close: Option<shell_contract::ipc::NativeBrowserClosePermit>,
+        done: TabUiStepDone,
+    ) {
         (self.0)(authority, participants, cancel, pending, close, done)
     }
 }
@@ -86,7 +150,11 @@ pub struct PreparedTabUiBatch {
     pub steps: Vec<Option<PreparedTabUiStep>>,
 }
 
-pub type RecoveryCleanup = Arc<dyn Fn(Box<dyn FnOnce(Result<shell_contract::ipc::NativeBrowserRetirement, String>) + Send>) + Send + Sync>;
+pub type RecoveryCleanup = Arc<
+    dyn Fn(Box<dyn FnOnce(Result<shell_contract::ipc::NativeBrowserRetirement, String>) + Send>)
+        + Send
+        + Sync,
+>;
 
 /// The exact in-flight recovery attempt, retained from the sealed opener entry.
 pub trait RecoveryAttempt {
@@ -96,11 +164,23 @@ pub trait RecoveryAttempt {
     fn retain_unbound_cleanup(&self, cleanup: Box<dyn FnOnce()>);
     /// Retain the original failure until native retirement is acknowledged.
     /// Invoke completion before releasing the drain.
-    fn fail(&self, error: String, cleanup: Option<RecoveryCleanup>, on_cleanup_error: std::rc::Rc<dyn Fn(String)>, done: TabUiDone);
+    fn fail(
+        &self,
+        error: String,
+        cleanup: Option<RecoveryCleanup>,
+        on_cleanup_error: std::rc::Rc<dyn Fn(String)>,
+        done: TabUiDone,
+    );
     /// Only before the native constructor or actor preparation was admitted.
     fn fail_before_creation(&self, error: String, done: TabUiDone);
     /// Complete only after the original retirement and its receipt rollback settle.
-    fn fail_after_retirement(&self, error: String, retirement: shell_contract::ipc::NativeBrowserRetirement, on_cleanup_error: std::rc::Rc<dyn Fn(String)>, done: Box<dyn FnOnce()>);
+    fn fail_after_retirement(
+        &self,
+        error: String,
+        retirement: shell_contract::ipc::NativeBrowserRetirement,
+        on_cleanup_error: std::rc::Rc<dyn Fn(String)>,
+        done: Box<dyn FnOnce()>,
+    );
     fn retry_cleanup(&self);
     /// Transfer the already adopted document, not an activation-success claim.
     fn adopted(&self) -> Result<(), String>;
@@ -127,12 +207,22 @@ pub struct TabActivationPublicationSnapshot {
 
 impl TabActivationPublicationSnapshot {
     pub fn changed_args(&self) -> Vec<shell_contract::IpcValue> {
-        vec![shell_contract::IpcValue::Array(self.changed.tabs.iter()
-            .map(|tab| super::wire::to_ipc(&tab.to_value())).collect())]
+        vec![shell_contract::IpcValue::Array(
+            self.changed
+                .tabs
+                .iter()
+                .map(|tab| super::wire::to_ipc(&tab.to_value()))
+                .collect(),
+        )]
     }
     pub fn split_args(&self) -> Vec<shell_contract::IpcValue> {
-        vec![self.split.as_ref().map_or(shell_contract::IpcValue::Null,
-            |split| super::wire::to_ipc(&split.to_value()))]
+        vec![
+            self.split
+                .as_ref()
+                .map_or(shell_contract::IpcValue::Null, |split| {
+                    super::wire::to_ipc(&split.to_value())
+                }),
+        ]
     }
 }
 
@@ -145,22 +235,34 @@ pub struct PreparedTabActivationPublication {
 pub(super) struct SplitMemoryClock(Arc<std::sync::Mutex<Option<u64>>>);
 
 impl SplitMemoryClock {
-    pub(super) fn new() -> Self { Self(Arc::new(std::sync::Mutex::new(Some(0)))) }
+    pub(super) fn new() -> Self {
+        Self(Arc::new(std::sync::Mutex::new(Some(0))))
+    }
     pub(super) fn advance(&self) -> Option<SplitMemoryRevision> {
         let mut current = self.0.lock().ok()?;
         let next = (*current).and_then(|current| current.checked_add(1));
         *current = next;
-        Some(SplitMemoryRevision { clock: self.0.clone(), expected: next? })
+        Some(SplitMemoryRevision {
+            clock: self.0.clone(),
+            expected: next?,
+        })
     }
     pub(super) fn capture(&self) -> Option<SplitMemoryRevision> {
-        Some(SplitMemoryRevision { clock: self.0.clone(), expected: (*self.0.lock().ok()?)? })
+        Some(SplitMemoryRevision {
+            clock: self.0.clone(),
+            expected: (*self.0.lock().ok()?)?,
+        })
     }
 
     pub(super) fn reserve_advance(&self) -> Option<ReservedSplitMemoryRevision> {
         let previous = (*self.0.lock().ok()?)?;
         let expected = previous.checked_add(1)?;
         Some(ReservedSplitMemoryRevision {
-            previous, revision: SplitMemoryRevision { clock: self.0.clone(), expected },
+            previous,
+            revision: SplitMemoryRevision {
+                clock: self.0.clone(),
+                expected,
+            },
         })
     }
 }
@@ -176,7 +278,9 @@ pub struct SplitMemoryRevision {
 impl SplitMemoryRevision {
     pub fn with_current_commit<R>(&self, rename: impl FnOnce() -> R) -> Option<R> {
         let current = self.clock.lock().ok()?;
-        if *current != Some(self.expected) { return None; }
+        if *current != Some(self.expected) {
+            return None;
+        }
         Some(rename())
     }
 }
@@ -187,10 +291,19 @@ pub(super) struct ReservedSplitMemoryRevision {
 }
 
 impl ReservedSplitMemoryRevision {
-    pub(super) fn revision(&self) -> SplitMemoryRevision { self.revision.clone() }
+    pub(super) fn revision(&self) -> SplitMemoryRevision {
+        self.revision.clone()
+    }
 
-    pub(super) fn commit<R>(&self, change: impl FnOnce() -> Result<R, String>) -> Result<R, String> {
-        let mut current = self.revision.clock.lock().map_err(|_| "The split memory revision is unavailable")?;
+    pub(super) fn commit<R>(
+        &self,
+        change: impl FnOnce() -> Result<R, String>,
+    ) -> Result<R, String> {
+        let mut current = self
+            .revision
+            .clock
+            .lock()
+            .map_err(|_| "The split memory revision is unavailable")?;
         if *current != Some(self.previous) {
             return Err("The split state changed before removal was committed".into());
         }
@@ -211,8 +324,15 @@ mod tests {
         let old = clock.advance().unwrap();
         let current = clock.advance().unwrap();
         let writes = Cell::new(0);
-        assert!(old.with_current_commit(|| writes.set(writes.get() + 1)).is_none());
-        assert!(current.with_current_commit(|| writes.set(writes.get() + 1)).is_some());
+        assert!(
+            old.with_current_commit(|| writes.set(writes.get() + 1))
+                .is_none()
+        );
+        assert!(
+            current
+                .with_current_commit(|| writes.set(writes.get() + 1))
+                .is_some()
+        );
         assert_eq!(writes.get(), 1);
     }
 
@@ -222,11 +342,22 @@ mod tests {
         let reserved = clock.reserve_advance().unwrap();
         let before = clock.capture().unwrap();
         assert!(reserved.revision().with_current_commit(|| ()).is_none());
-        assert!(reserved.commit(|| Err::<(), _>("reducer refused".into())).is_err());
+        assert!(
+            reserved
+                .commit(|| Err::<(), _>("reducer refused".into()))
+                .is_err()
+        );
         assert!(before.with_current_commit(|| ()).is_some());
         let newer = clock.advance().unwrap();
         let called = Cell::new(false);
-        assert!(reserved.commit(|| { called.set(true); Ok(()) }).is_err());
+        assert!(
+            reserved
+                .commit(|| {
+                    called.set(true);
+                    Ok(())
+                })
+                .is_err()
+        );
         assert!(!called.get());
         assert!(newer.with_current_commit(|| ()).is_some());
     }
@@ -246,10 +377,17 @@ pub struct DocsDisposal {
 
 impl DocsDisposal {
     pub fn closed(owner: NativeRequestOwner) -> Result<Self, String> {
-        let generation = owner.context.renderer().cloned().ok_or("The disposed document had no captured renderer.")?;
+        let generation = owner
+            .context
+            .renderer()
+            .cloned()
+            .ok_or("The disposed document had no captured renderer.")?;
         Ok(Self { owner, generation })
     }
-    pub fn view(&self) -> shell_contract::ViewId { self.owner.view }
-    pub fn generation(&self) -> &shell_contract::runtime::RendererGeneration { &self.generation }
+    pub fn view(&self) -> shell_contract::ViewId {
+        self.owner.view
+    }
+    pub fn generation(&self) -> &shell_contract::runtime::RendererGeneration {
+        &self.generation
+    }
 }
-

@@ -1433,7 +1433,7 @@ fn links(registry: &mut dyn Registry, cx: &Rc<Ctx>) -> Result<(), RegisterError>
             topic,
             origin,
             cx.cancel.clone(),
-            shell_contract::runtime::CancelToken::new(),
+            shell_contract::runtime::CancelToken::default(),
             Box::new(move |result| {
                 reply.reply(
                     result

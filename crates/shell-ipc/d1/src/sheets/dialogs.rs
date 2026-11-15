@@ -119,15 +119,20 @@ pub fn save_dialog(env: &Env, parent: Option<WindowId>, options: &JsObject<JsonV
 
 /// Worker-side wait for an asynchronously admitted native save dialog.
 pub fn save_dialog_owned(
-    env: &Env, parent: Option<WindowId>, options: &JsObject<JsonValue>,
+    env: &Env,
+    parent: Option<WindowId>,
+    options: &JsObject<JsonValue>,
     scope: &crate::owned_save::OwnedSave,
 ) -> Result<Saved, IpcError> {
     save_dialog_owned_with_fallback(env, parent, options, scope, true)
 }
 
 pub fn save_dialog_scoped(
-    env: &Env, parent: Option<WindowId>, options: &JsObject<JsonValue>,
-    scope: Option<&crate::owned_save::OwnedSave>, fallback: bool,
+    env: &Env,
+    parent: Option<WindowId>,
+    options: &JsObject<JsonValue>,
+    scope: Option<&crate::owned_save::OwnedSave>,
+    fallback: bool,
 ) -> Result<Saved, IpcError> {
     match scope {
         Some(scope) => save_dialog_owned_with_fallback(env, parent, options, scope, fallback),
@@ -137,48 +142,87 @@ pub fn save_dialog_scoped(
 }
 
 fn save_dialog_owned_with_fallback(
-    env: &Env, parent: Option<WindowId>, options: &JsObject<JsonValue>,
-    scope: &crate::owned_save::OwnedSave, fallback: bool,
+    env: &Env,
+    parent: Option<WindowId>,
+    options: &JsObject<JsonValue>,
+    scope: &crate::owned_save::OwnedSave,
+    fallback: bool,
 ) -> Result<Saved, IpcError> {
     scope.check()?;
-    let resolve = || default_save_dir(env).map(Some)
-        .map_err(|error| main_core::packages::electron_utils::default_save_dir::Thrown(error.message));
+    let resolve = || {
+        default_save_dir(env).map(Some).map_err(|error| {
+            main_core::packages::electron_utils::default_save_dir::Thrown(error.message)
+        })
+    };
     let prepared = {
-        let memory = env.shared.dialog_memory.lock().unwrap_or_else(|p| p.into_inner());
+        let memory = env
+            .shared
+            .dialog_memory
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         main_core::packages::electron_utils::dialog_memory::prepare_dialog_options(
-            &memory, options, if fallback { Some(&FallbackDir::Resolve(&resolve)) } else { None },
+            &memory,
+            options,
+            if fallback {
+                Some(&FallbackDir::Resolve(&resolve))
+            } else {
+                None
+            },
         )
     };
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     scope.save_dialog(
-        &env.dialogs, parent, crate::host::file_dialog(&prepared),
-        Box::new(move |result| { let _ = tx.send(result); }),
+        &env.dialogs,
+        parent,
+        crate::host::file_dialog(&prepared),
+        Box::new(move |result| {
+            let _ = tx.send(result);
+        }),
     );
-    let picked = rx.recv().map_err(|_| thrown("The native save dialog did not complete"))?
+    let picked = rx
+        .recv()
+        .map_err(|_| thrown("The native save dialog did not complete"))?
         .map_err(thrown)?;
     scope.check()?;
     if let Some(path) = &picked {
         scope.effect(|| {
-            let mut memory = env.shared.dialog_memory.lock().unwrap_or_else(|p| p.into_inner());
+            let mut memory = env
+                .shared
+                .dialog_memory
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             main_core::packages::electron_utils::dialog_memory::remember_save_path(
-                &mut memory, &crate::host::path_string(path.clone()),
+                &mut memory,
+                &crate::host::path_string(path.clone()),
             );
             Ok(())
         })?;
     }
-    Ok(Saved { canceled: picked.is_none(), path: picked.map(crate::host::path_string) })
+    Ok(Saved {
+        canceled: picked.is_none(),
+        path: picked.map(crate::host::path_string),
+    })
 }
 
 pub fn ask_owned(
-    env: &Env, parent: Option<WindowId>, options: &MessageBox,
+    env: &Env,
+    parent: Option<WindowId>,
+    options: &MessageBox,
     scope: &crate::owned_save::OwnedSave,
 ) -> Result<usize, IpcError> {
     scope.check()?;
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
-    scope.message_dialog(&env.dialogs, parent, options.clone(), Box::new(move |result| {
-        let _ = tx.send(result.map(|answer| answer.response));
-    }));
-    let answer = rx.recv().map_err(|_| thrown("The native message dialog did not complete"))?
+    scope.message_dialog(
+        &env.dialogs,
+        parent,
+        options.clone(),
+        Box::new(move |result| {
+            let _ = tx.send(result.map(|answer| answer.response));
+        }),
+    );
+    let answer = rx
+        .recv()
+        .map_err(|_| thrown("The native message dialog did not complete"))?
         .map_err(thrown)?;
     scope.check()?;
     Ok(answer)
@@ -192,13 +236,15 @@ pub struct OwnedMessages<'a> {
 
 impl main_core::packages::electron_utils::message_box::MessageBox<Win> for OwnedMessages<'_> {
     fn show_message_box_over(
-        &self, parent: &Win,
+        &self,
+        parent: &Win,
         options: &main_core::packages::electron_utils::message_box::MessageBoxOptions,
     ) -> f64 {
         self.show(Some(parent.0), options)
     }
     fn show_message_box(
-        &self, options: &main_core::packages::electron_utils::message_box::MessageBoxOptions,
+        &self,
+        options: &main_core::packages::electron_utils::message_box::MessageBoxOptions,
     ) -> f64 {
         self.show(None, options)
     }
@@ -206,7 +252,8 @@ impl main_core::packages::electron_utils::message_box::MessageBox<Win> for Owned
 
 impl OwnedMessages<'_> {
     fn show(
-        &self, parent: Option<WindowId>,
+        &self,
+        parent: Option<WindowId>,
         options: &main_core::packages::electron_utils::message_box::MessageBoxOptions,
     ) -> f64 {
         match ask_owned(self.env, parent, &contract_box(options), self.scope) {

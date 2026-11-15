@@ -429,7 +429,6 @@ impl<D: Deck<S>, S: Clone, O: Clone, R> Session<D, S, O, R> {
             replacement.ai_run = previous.ai_run;
         }
         replacement.schedule_history_notify();
-        
     }
 
     /// The end of `buildSlideUpdate`: the transaction just queued this edit,
@@ -982,30 +981,45 @@ mod history_failure_tests {
     impl Deck<(i32, bool)> for FallibleDeck {
         type Error = &'static str;
         fn take_snapshot(&self, dirty: bool) -> Result<(i32, bool), Self::Error> {
-            if self.fail_snapshot.get() { Err("snapshot failed") } else { Ok((self.value, dirty)) }
+            if self.fail_snapshot.get() {
+                Err("snapshot failed")
+            } else {
+                Ok((self.value, dirty))
+            }
         }
         fn restore_snapshot(&mut self, snapshot: (i32, bool)) -> Result<bool, Self::Error> {
-            if self.fail_restore { return Err("restore failed"); }
+            if self.fail_restore {
+                return Err("restore failed");
+            }
             self.value = snapshot.0;
             Ok(snapshot.1)
         }
     }
 
     impl crate::slides::ai_proposal::SameSnapshot for (i32, bool) {
-        fn same_snapshot(&self, other: &Self) -> bool { self == other }
+        fn same_snapshot(&self, other: &Self) -> bool {
+            self == other
+        }
     }
 
     #[test]
     fn failed_ai_restore_preserves_run_and_proposal_for_retry() {
-        use crate::slides::ai_proposal::{AiReview, begin_ai_run, hold_ai_run, accept_ai_proposal};
-        let deck = FallibleDeck { value: 1, fail_snapshot: Cell::new(false), fail_restore: false };
+        use crate::slides::ai_proposal::{AiReview, accept_ai_proposal, begin_ai_run, hold_ai_run};
+        let deck = FallibleDeck {
+            value: 1,
+            fail_snapshot: Cell::new(false),
+            fail_restore: false,
+        };
         let mut session: Session<_, _, (), ()> = Session::new("", deck);
         let mut review = AiReview::new();
         assert_eq!(begin_ai_run(&mut session, &mut review, 1.0), Ok(true));
         session.push_history().unwrap();
         session.deck.value = 2;
         session.deck.fail_restore = true;
-        assert_eq!(hold_ai_run(&mut session, &mut review, 1.0), Err("restore failed"));
+        assert_eq!(
+            hold_ai_run(&mut session, &mut review, 1.0),
+            Err("restore failed")
+        );
         assert!(review.run.is_some());
         assert!(session.ai_run);
         assert_eq!(session.deck.value, 2);
@@ -1015,18 +1029,29 @@ mod history_failure_tests {
         assert_eq!(session.deck.value, 1);
         let mut ids = super::SessionIds::default();
         session.deck.fail_restore = true;
-        assert_eq!(accept_ai_proposal(&mut session, &mut review, &mut ids), Err("restore failed"));
+        assert_eq!(
+            accept_ai_proposal(&mut session, &mut review, &mut ids),
+            Err("restore failed")
+        );
         assert!(review.proposal.is_some());
         assert!(session.undo_stack.is_empty());
         assert_eq!(session.deck.value, 1);
         session.deck.fail_restore = false;
-        assert!(accept_ai_proposal(&mut session, &mut review, &mut ids).unwrap().is_some());
+        assert!(
+            accept_ai_proposal(&mut session, &mut review, &mut ids)
+                .unwrap()
+                .is_some()
+        );
         assert_eq!(session.deck.value, 2);
     }
 
     #[test]
     fn failed_snapshot_and_restore_preserve_history_and_retry() {
-        let deck = FallibleDeck { value: 1, fail_snapshot: Cell::new(false), fail_restore: false };
+        let deck = FallibleDeck {
+            value: 1,
+            fail_snapshot: Cell::new(false),
+            fail_restore: false,
+        };
         let mut session: Session<_, _, (), ()> = Session::new("", deck);
         session.push_history().unwrap();
         session.deck.value = 2;
@@ -1039,7 +1064,10 @@ mod history_failure_tests {
         session.deck.fail_snapshot.set(false);
         let id = session.register_ai_snapshot(&mut super::SessionIds::default(), &(3, false));
         session.deck.fail_restore = true;
-        assert_eq!(session.restore_ai_snapshot(id as f64), Err("restore failed"));
+        assert_eq!(
+            session.restore_ai_snapshot(id as f64),
+            Err("restore failed")
+        );
         assert_eq!(session.deck.value, 2);
         assert!(session.meta_dirty);
         assert_eq!(session.undo_stack, vec![(1, false)]);

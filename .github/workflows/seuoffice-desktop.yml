@@ -248,7 +248,6 @@ jobs:
           gh run download "$MIGRATION_RUN" --name rust-migration-receipt --dir migration-receipt
           node tools/verify-rust-release.mjs bundles dist "${TAG#v}" "$GITHUB_SHA" "$GITHUB_SHA" "$CANDIDATE_RUN" migration-receipt "$MIGRATION_RUN"
 
-
       # nothing is published for a commit the test workflows reject; a re-run of
       # this job after a CI re-run waits again. A run started by hand counts too:
       # CI skips a Markdown-only push, and `gh workflow run CI --ref main` covers it

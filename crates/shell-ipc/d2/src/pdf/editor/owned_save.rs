@@ -145,12 +145,12 @@ impl SaveAuthority {
     pub fn save_dialog(&self, dialogs: &shell_contract::DialogsHost, parent: Option<shell_contract::WindowId>, options: shell_contract::hosts::FileDialog, done: Box<dyn FnOnce(Result<Option<SaveDestination>, String>) + Send>) {
         match &self.origin {
             SaveOrigin::Renderer(origin) => match self.participants() {
-                Ok(participants) => dialogs.save_owned_many_extra(parent, options, origin.clone(), participants, self.cancel.clone(), self.pending.clone(), self.additional(), Box::new(move |result| done(result.map(|path| path.map(SaveDestination::Renderer)))),
+                Ok(participants) => dialogs.save_owned_many_extra(parent, options, origin.clone(), participants, self.cancel.clone(), self.pending.clone(), self.additional(), Box::new(move |result| done(result.map(|path| path.map(SaveDestination::Renderer))))),
                 Err(error) => done(Err(error)),
             },
             SaveOrigin::Native(_) => match self.native_scope() {
-                Ok((Some(snapshot), _, _, participants)) => dialogs.save_existing_document_revision(parent, options, snapshot, participants, self.cancel.clone(), self.pending.clone(), self.additional(), Box::new(move |result| done(result.map(|path| path.map(SaveDestination::Native)))),
-                Ok((None, binding, _, participants)) => dialogs.save_existing_document(parent, options, binding, participants, self.cancel.clone(), self.pending.clone(), self.additional(), Box::new(move |result| done(result.map(|path| path.map(SaveDestination::Native)))),
+                Ok((Some(snapshot), _, _, participants)) => dialogs.save_existing_document_revision(parent, options, snapshot, participants, self.cancel.clone(), self.pending.clone(), self.additional(), Box::new(move |result| done(result.map(|path| path.map(SaveDestination::Native))))),
+                Ok((None, binding, _, participants)) => dialogs.save_existing_document(parent, options, binding, participants, self.cancel.clone(), self.pending.clone(), self.additional(), Box::new(move |result| done(result.map(|path| path.map(SaveDestination::Native))))),
                 Err(error) => done(Err(error)),
             },
         }

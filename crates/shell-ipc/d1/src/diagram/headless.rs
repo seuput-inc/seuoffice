@@ -30,8 +30,13 @@ impl DiagramViews {
     /// `runInHiddenWindow`'s state: `view` is the hidden window's view (made
     /// with [`DiagramViews::open_hidden_view`]); `done` gets the page's report,
     /// or a failure report when nothing comes within 170 s
-    pub fn run_headless_job(&self, view: ViewId, job: IpcValue,
-        authorize: Box<dyn Fn(&CallContext) -> bool>, done: Box<dyn FnOnce(IpcValue)>) {
+    pub fn run_headless_job(
+        &self,
+        view: ViewId,
+        job: IpcValue,
+        authorize: Box<dyn Fn(&CallContext) -> bool>,
+        done: Box<dyn FnOnce(IpcValue)>,
+    ) {
         let renderer = self.0.services.views.renderer_generation(view);
         let generation = self.with_state(|state| {
             let generation = state.next_generation();
@@ -67,12 +72,26 @@ impl DiagramViews {
         }
     }
 
-    pub fn fail_headless_job_generation(&self, view: ViewId, generation: &shell_contract::runtime::RendererGeneration, error: &str) {
+    pub fn fail_headless_job_generation(
+        &self,
+        view: ViewId,
+        generation: &shell_contract::runtime::RendererGeneration,
+        error: &str,
+    ) {
         let running = self.with_state(|state| {
-            if !state.headless.get(&view).and_then(|job| job.renderer.as_ref()).is_some_and(|current| current.same_generation(generation)) { return None; }
+            if !state
+                .headless
+                .get(&view)
+                .and_then(|job| job.renderer.as_ref())
+                .is_some_and(|current| current.same_generation(generation))
+            {
+                return None;
+            }
             state.headless.remove(&view)
         });
-        if let Some(running) = running { (running.done)(failed(error)); }
+        if let Some(running) = running {
+            (running.done)(failed(error));
+        }
     }
 
     pub(super) fn headless_job(&self, cx: &CallContext, _args: Args) -> Result<IpcValue, IpcError> {
@@ -88,7 +107,13 @@ impl DiagramViews {
 
     pub(super) fn headless_done(&self, cx: &CallContext, args: Args) -> Result<(), IpcError> {
         let running = self.with_state(|state| {
-            if !state.headless.get(&cx.sender.view).is_some_and(|job| (job.authorize)(cx)) { return None; }
+            if !state
+                .headless
+                .get(&cx.sender.view)
+                .is_some_and(|job| (job.authorize)(cx))
+            {
+                return None;
+            }
             state.headless.remove(&cx.sender.view)
         });
         if let Some(running) = running {

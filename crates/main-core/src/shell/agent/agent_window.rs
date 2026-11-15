@@ -704,7 +704,9 @@ pub fn plan_agent_start(
     if AGENT_BLOCKED_PROVIDERS.contains(&provider) {
         return Err(failed(&AgentStartFailure::ProviderBlocked));
     }
-    let Some(prefs) = host.read_prefs() else { return Err(failed(&AgentStartFailure::InvalidRequest)); };
+    let Some(prefs) = host.read_prefs() else {
+        return Err(failed(&AgentStartFailure::InvalidRequest));
+    };
     // the warning is a precondition the main process checks, not only the window
     if prefs.warning_accepted < AGENT_WARNING_VERSION {
         return Err(failed(&AgentStartFailure::NotAccepted));

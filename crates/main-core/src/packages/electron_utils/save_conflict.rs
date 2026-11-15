@@ -54,7 +54,11 @@ fn read(path: &str) -> Option<Vec<u8>> {
 /// The observation does not guarantee the object stayed unchanged while read.
 pub fn record_observation(metadata: &fs::Metadata, bytes: &[u8]) -> SaveDiskState {
     let info = StatInfo::of(metadata);
-    SaveDiskState { mtime_ms: info.mtime_ms, size: info.size as f64, hash: sha256_hex(bytes) }
+    SaveDiskState {
+        mtime_ms: info.mtime_ms,
+        size: info.size as f64,
+        hash: sha256_hex(bytes),
+    }
 }
 
 /// `recordDiskState(path)`: stat and content hash of the file, or `None` when

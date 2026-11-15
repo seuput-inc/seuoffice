@@ -9,7 +9,9 @@ class FakeWorker {
   onmessage: ((event: { data: unknown }) => void) | null = null
   terminate = vi.fn()
   postMessage = vi.fn()
-  constructor() { FakeWorker.latest = this }
+  constructor() {
+    FakeWorker.latest = this
+  }
 }
 
 afterEach(() => vi.unstubAllGlobals())
@@ -28,10 +30,19 @@ it('preserves bytes and typed losses and terminates after success', async () => 
   vi.stubGlobal('document', { baseURI: 'https://engine-host/' })
   vi.stubGlobal('Worker', FakeWorker)
   const result = runHwp({ bytesBase64: 'AQI=', format: 'hwpx' }, new AbortController().signal)
-  FakeWorker.latest.onmessage?.({ data: { ok: true, bytes: new Uint8Array([9, 8]).buffer, losses: [{ feature: 'chart', kind: 'dropped', count: 2 }] } })
-  const frame = await result as { ok: boolean; header: unknown; buffers: string[] }
-  const buffers = frame.buffers.map(text => Uint8Array.from(atob(text), c => c.charCodeAt(0)))
-  expect(decode(frame.header, buffers)).toEqual({ bytes: new Uint8Array([9, 8]), losses: [{ feature: 'chart', kind: 'dropped', count: 2 }] })
+  FakeWorker.latest.onmessage?.({
+    data: {
+      ok: true,
+      bytes: new Uint8Array([9, 8]).buffer,
+      losses: [{ feature: 'chart', kind: 'dropped', count: 2 }],
+    },
+  })
+  const frame = (await result) as { ok: boolean; header: unknown; buffers: string[] }
+  const buffers = frame.buffers.map((text) => Uint8Array.from(atob(text), (c) => c.charCodeAt(0)))
+  expect(decode(frame.header, buffers)).toEqual({
+    bytes: new Uint8Array([9, 8]),
+    losses: [{ feature: 'chart', kind: 'dropped', count: 2 }],
+  })
   expect(FakeWorker.latest.terminate).toHaveBeenCalledOnce()
 })
 

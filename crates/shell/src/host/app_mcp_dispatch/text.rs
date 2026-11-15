@@ -79,8 +79,8 @@ pub(super) fn dispatch(
                 Ok(owner) => owner,
                 Err(error) => return done(Err(error)),
             };
-            let cancel = shell_contract::runtime::CancelToken::new();
-            let pending = shell_contract::runtime::CancelToken::new();
+            let cancel = shell_contract::runtime::CancelToken::default();
+            let pending = shell_contract::runtime::CancelToken::default();
             let binding = match crate::host::native_commands::issue_existing_save(
                 expected, id, shell_contract::ipc::NativeSaveSelection::ExactPath(path.clone()), owner, cancel.clone(),
             ) {

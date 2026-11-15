@@ -177,7 +177,7 @@ pub fn handle(
     let reply = Arc::new(Mutex::new(Some(responder)));
     let Some(provenance) = request.extensions().get::<SchemeRequestProvenance>().cloned() else { denied(&reply); return; };
     let Some(response) = request.extensions().get::<NativeSchemeResponseTarget>().cloned() else { denied(&reply); return; };
-    let cancel = CancelToken::new();
+    let cancel = CancelToken::default();
     let cancelled = cancel.clone();
     let cancellation = match response.on_cancel(move || cancelled.cancel()) {
         Ok(subscription) => subscription, Err(_) => { denied(&reply); return; }

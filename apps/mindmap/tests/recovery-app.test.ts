@@ -143,7 +143,12 @@ async function bytesOf(...sheets: XmindSheet[]): Promise<Uint8Array> {
 
 it('acknowledges a recovery only after its map session is ready', async () => {
   const bytes = await bytesOf(plainSheet('Recovered'))
-  const fake = fakeApi('C:/maps/restored.xmind', { status: 'ok', bytes, restored: 'file', recoveryToken: 'receipt-1' })
+  const fake = fakeApi('C:/maps/restored.xmind', {
+    status: 'ok',
+    bytes,
+    restored: 'file',
+    recoveryToken: 'receipt-1',
+  })
   expect(fake.initialized).toEqual([])
   await mountApp(fake)
   expect(fake.initialized).toEqual([{ token: 'receipt-1', ok: true, error: undefined }])

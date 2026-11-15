@@ -181,10 +181,21 @@ pub fn pick_cancel(core: &Core, view: ViewId, input: &IpcValue) -> Result<IpcVal
 
 /// `failHeadlessExport`: end a headless run early
 impl Core {
-    pub fn fail_headless_export(&self, view: ViewId, expected: Option<&shell_contract::runtime::RendererGeneration>, message: &str) {
+    pub fn fail_headless_export(
+        &self,
+        view: ViewId,
+        expected: Option<&shell_contract::runtime::RendererGeneration>,
+        message: &str,
+    ) {
         let mut state = self.state.borrow_mut();
-        if let Some(created) = state.tab(view).and_then(|tab| tab.headless_target.as_ref()).map(|target| target.created()) {
-            if !expected.is_some_and(|actual| actual.same_generation(created)) { return; }
+        if let Some(created) = state
+            .tab(view)
+            .and_then(|tab| tab.headless_target.as_ref())
+            .map(|target| target.created())
+        {
+            if !expected.is_some_and(|actual| actual.same_generation(created)) {
+                return;
+            }
         }
         let waiter = state.headless_waiters.remove(&view);
         drop(state);
@@ -220,15 +231,23 @@ pub fn close_save_result(core: &Core, view: ViewId, ok: &IpcValue) {
 
 /// `workbook:recovery-write-now-done`
 pub fn recovery_write_now_done(core: &Core, view: ViewId, nonce: &IpcValue, outcome: &IpcValue) {
-    let IpcValue::String(nonce) = nonce else { return };
+    let IpcValue::String(nonce) = nonce else {
+        return;
+    };
     let result = match outcome {
         IpcValue::Null => Ok(()),
-        IpcValue::String(message) => Err(main_core::shell::renderer_disposal::Failure(message.clone())),
+        IpcValue::String(message) => Err(main_core::shell::renderer_disposal::Failure(
+            message.clone(),
+        )),
         _ => return,
     };
     let waiter = {
         let mut state = core.state.borrow_mut();
-        if !state.write_now_waiters.get(nonce).is_some_and(|(owner, _)| *owner == view) {
+        if !state
+            .write_now_waiters
+            .get(nonce)
+            .is_some_and(|(owner, _)| *owner == view)
+        {
             return;
         }
         state.write_now_waiters.remove(nonce)
@@ -659,16 +678,20 @@ pub fn files_read_image(
 
 /// `sheets:capture-screen-sources`
 pub fn capture_screen_sources(
-    env: &Env, view: ViewId,
-    origin: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken,
+    env: &Env,
+    view: ViewId,
+    origin: &shell_contract::ipc::NativeRequestOwner,
+    cancel: &shell_contract::runtime::CancelToken,
 ) -> Result<IpcValue, IpcError> {
     env.core(move |core| core.require_tab(view))?;
     capture_screen_sources_of(env, view, origin, cancel)
 }
 
 fn capture_screen_sources_of(
-    env: &Env, view: ViewId,
-    origin: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken,
+    env: &Env,
+    view: ViewId,
+    origin: &shell_contract::ipc::NativeRequestOwner,
+    cancel: &shell_contract::runtime::CancelToken,
 ) -> Result<IpcValue, IpcError> {
     let denied = || {
         obj([
@@ -680,13 +703,25 @@ fn capture_screen_sources_of(
     // returns black frames instead of failing; elsewhere there is no gate
     let gated = cfg!(target_os = "macos");
     if gated {
-        let status = env.screen.media_access_status(origin, cancel).map_err(thrown)?;
+        let status = env
+            .screen
+            .media_access_status(origin, cancel)
+            .map_err(thrown)?;
         if status != "granted" && status != "not-determined" {
             return Ok(denied());
         }
     }
-    let sources = env.screen.list_sources(origin, cancel, dialog_parent(env, view)).map_err(thrown)?;
-    if gated && env.screen.media_access_status(origin, cancel).map_err(thrown)? != "granted" {
+    let sources = env
+        .screen
+        .list_sources(origin, cancel, dialog_parent(env, view))
+        .map_err(thrown)?;
+    if gated
+        && env
+            .screen
+            .media_access_status(origin, cancel)
+            .map_err(thrown)?
+            != "granted"
+    {
         return Ok(denied());
     }
     Ok(obj([
@@ -720,7 +755,8 @@ pub fn capture_screen_source(
     env: &Env,
     view: ViewId,
     input: &IpcValue,
-    origin: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken,
+    origin: &shell_contract::ipc::NativeRequestOwner,
+    cancel: &shell_contract::runtime::CancelToken,
 ) -> Result<IpcValue, IpcError> {
     env.core(move |core| core.require_tab(view))?;
     schema::parse(
@@ -731,13 +767,15 @@ pub fn capture_screen_source(
         IpcValue::String(id) => id.clone(),
         _ => String::new(),
     };
-    Ok(match env.screen.capture(origin, cancel, &id).map_err(thrown)? {
-        None => IpcValue::Null,
-        Some(image) => obj([
-            ("mediaType", string("image/png")),
-            ("base64", string(base64_of(&image.png))),
-            ("width", num(image.width)),
-            ("height", num(image.height)),
-        ]),
-    })
+    Ok(
+        match env.screen.capture(origin, cancel, &id).map_err(thrown)? {
+            None => IpcValue::Null,
+            Some(image) => obj([
+                ("mediaType", string("image/png")),
+                ("base64", string(base64_of(&image.png))),
+                ("width", num(image.width)),
+                ("height", num(image.height)),
+            ]),
+        },
+    )
 }

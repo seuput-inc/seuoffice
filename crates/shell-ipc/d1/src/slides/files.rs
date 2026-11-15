@@ -161,7 +161,10 @@ fn mtime_ms(meta: &fs::Metadata) -> f64 {
 
 impl App {
     fn ext_for(&self, path: &str, name: &str) -> Result<String, String> {
-        Ok(self.engine.diagram_picture_ext_of(path).map_err(|error| error.0)?
+        Ok(self
+            .engine
+            .diagram_picture_ext_of(path)
+            .map_err(|error| error.0)?
             .unwrap_or_else(|| ext_of(name)))
     }
 
@@ -320,61 +323,66 @@ pub fn files_read(app: &App, _cx: &CallContext, args: Args, reply: Responder) {
     let parse_failed = app.tm("errParseFailed", &[]);
     let path = path.clone();
     let workers = app.services.workers.clone();
-    app.shell.assert_file_saved(path.clone(), Box::new(move |result| {
-        if let Err(message) = result {
-            return reply.reply(Ok(read_error(message)));
-        }
-        workers.spawn(Box::new(move || {
-        let text = (|| -> Result<String, String> {
-            let meta = fs::metadata(&path).map_err(|e| node_error(&e, "stat", &path).message)?;
-            let stamp = format!(
-                "{}:{}",
-                jscompat::number_to_string(mtime_ms(&meta)),
-                meta.len()
-            );
-            if let Some(text) = cache
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .get(&path, &stamp)
-            {
-                return Ok(text);
+    app.shell.assert_file_saved(
+        path.clone(),
+        Box::new(move |result| {
+            if let Err(message) = result {
+                return reply.reply(Ok(read_error(message)));
             }
-            let cap_ext = match picture_ext_of_name(&basename(&path, None)) {
-                Some(ext) => ext.to_owned(),
-                None => extname(&path),
-            };
-            if meta.len() as f64 > attachable_max_bytes(&cap_ext) {
-                return Err(too_large);
-            }
-            let text = match engine.parse_file_text(&path) {
-                Ok(text) => text,
-                Err(error) if !error.is_empty() => return Err(error),
-                Err(_) => return Err(parse_failed),
-            };
-            cache
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .put(&path, stamp, text.clone());
-            Ok(text)
-        })();
-        reply.reply(Ok(match text {
-            Ok(text) => {
-                let total = text.encode_utf16().count();
-                obj([
-                    ("ok", IpcValue::Bool(true)),
-                    ("name", string(name)),
-                    ("totalChars", num(total as f64)),
-                    ("offset", num(start)),
-                    (
-                        "text",
-                        string(slice_utf16(&text, start, Some(start + size))),
-                    ),
-                ])
-            }
-            Err(message) => read_error(message),
-        }));
-        }));
-    }));
+            workers.spawn(Box::new(move || {
+                let text = (|| -> Result<String, String> {
+                    let meta =
+                        fs::metadata(&path).map_err(|e| node_error(&e, "stat", &path).message)?;
+                    let stamp = format!(
+                        "{}:{}",
+                        jscompat::number_to_string(mtime_ms(&meta)),
+                        meta.len()
+                    );
+                    if let Some(text) = cache
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .get(&path, &stamp)
+                    {
+                        return Ok(text);
+                    }
+                    let cap_ext = match picture_ext_of_name(&basename(&path, None)) {
+                        Some(ext) => ext.to_owned(),
+                        None => extname(&path),
+                    };
+                    if meta.len() as f64 > attachable_max_bytes(&cap_ext) {
+                        return Err(too_large);
+                    }
+                    let text = match engine.parse_file_text(&path) {
+                        Ok(text) => text,
+                        Err(error) if !error.is_empty() => return Err(error),
+                        Err(_) => return Err(parse_failed),
+                    };
+                    cache.lock().unwrap_or_else(PoisonError::into_inner).put(
+                        &path,
+                        stamp,
+                        text.clone(),
+                    );
+                    Ok(text)
+                })();
+                reply.reply(Ok(match text {
+                    Ok(text) => {
+                        let total = text.encode_utf16().count();
+                        obj([
+                            ("ok", IpcValue::Bool(true)),
+                            ("name", string(name)),
+                            ("totalChars", num(total as f64)),
+                            ("offset", num(start)),
+                            (
+                                "text",
+                                string(slice_utf16(&text, start, Some(start + size))),
+                            ),
+                        ])
+                    }
+                    Err(message) => read_error(message),
+                }));
+            }));
+        }),
+    );
 }
 
 pub fn files_read_image(app: &App, _cx: &CallContext, args: Args) -> Reply {

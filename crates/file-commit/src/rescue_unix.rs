@@ -60,7 +60,7 @@ impl PreparedRescueCopy {
     /// source and opened destination are compared before any truncation.
     pub fn open(self) -> Result<RescueOpen, RescueCopyError> {
         let fd = unsafe { libc::openat(self.parent.as_raw_fd(), self.name.as_ptr(),
-            libc::O_WRONLY | libc::O_CREAT | libc::O_CLOEXEC, self.mode as libc::mode_t) };
+            libc::O_WRONLY | libc::O_CREAT | libc::O_CLOEXEC, self.mode as libc::c_uint) };
         if fd < 0 { return Err(RescueCopyError::BeforeOpen { error: io::Error::last_os_error(), prepared: self }); }
         let file = unsafe { File::from_raw_fd(fd) };
         let destination = RescueDestination { parent: self.parent, name: self.name, file };

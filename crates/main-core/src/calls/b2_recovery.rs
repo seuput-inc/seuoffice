@@ -223,9 +223,30 @@ impl RecoveryEditorContract<(), ()> for FakeEditor {
     fn kind(&self) -> &str {
         &self.kind
     }
-    fn write_copies_now(&self, done: Box<dyn FnOnce(Result<(), crate::shell::renderer_disposal::Failure>)>) { done(Ok(())); }
-    fn open_file_with_decision(&self, _: &(), _: &RecoveryOpenFileRequest, _: &(), done: crate::packages::electron_utils::recovery_contract::RecoveryOpenDone) { done(Ok(())); }
-    fn open_untitled_copy(&self, _: &(), _: &RecoveryOpenUntitledRequest, _: &(), done: crate::packages::electron_utils::recovery_contract::RecoveryOpenDone) { done(Ok(())); }
+    fn write_copies_now(
+        &self,
+        done: Box<dyn FnOnce(Result<(), crate::shell::renderer_disposal::Failure>)>,
+    ) {
+        done(Ok(()));
+    }
+    fn open_file_with_decision(
+        &self,
+        _: &(),
+        _: &RecoveryOpenFileRequest,
+        _: &(),
+        done: crate::packages::electron_utils::recovery_contract::RecoveryOpenDone,
+    ) {
+        done(Ok(()));
+    }
+    fn open_untitled_copy(
+        &self,
+        _: &(),
+        _: &RecoveryOpenUntitledRequest,
+        _: &(),
+        done: crate::packages::electron_utils::recovery_contract::RecoveryOpenDone,
+    ) {
+        done(Ok(()));
+    }
     fn is_unprotectable(&self, _: &()) -> bool {
         false
     }

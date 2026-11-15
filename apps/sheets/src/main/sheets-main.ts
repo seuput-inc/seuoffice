@@ -1788,7 +1788,10 @@ export async function openSheetsUntitledCopy(
 
 /** how long an OS shutdown waits for one tab's renderer to write its copy */
 const RECOVERY_WRITE_NOW_TIMEOUT_MS = 8_000
-const recoveryWriteNowWaiters = new Map<string, { owner: number; finish: (error: string | null) => void }>()
+const recoveryWriteNowWaiters = new Map<
+  string,
+  { owner: number; finish: (error: string | null) => void }
+>()
 
 /**
  * Editor contract (the OS is ending the session): every live tab's renderer
@@ -1805,7 +1808,10 @@ export async function writeSheetsCopiesNow(): Promise<void> {
     const nonce = randomUUID()
     let resolve!: () => void
     let reject!: (error: Error) => void
-    const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no })
+    const promise = new Promise<void>((yes, no) => {
+      resolve = yes
+      reject = no
+    })
     let settled = false
     const finish = (error: string | null): void => {
       if (settled) return
@@ -1817,7 +1823,10 @@ export async function writeSheetsCopiesNow(): Promise<void> {
       else reject(new Error(error))
     }
     const onDestroyed = (): void => finish('The workbook view was closed')
-    const timer = setTimeout(() => finish('Timed out writing the workbook recovery copy'), RECOVERY_WRITE_NOW_TIMEOUT_MS)
+    const timer = setTimeout(
+      () => finish('Timed out writing the workbook recovery copy'),
+      RECOVERY_WRITE_NOW_TIMEOUT_MS,
+    )
     recoveryWriteNowWaiters.set(nonce, { owner: contents.id, finish })
     contents.once('destroyed', onDestroyed)
     try {
@@ -2374,7 +2383,8 @@ export function registerSheetsIpc(): void {
   ipcMain.on(IPC_CHANNELS.recoveryWriteNowDone, (event, nonce: unknown, error: unknown) => {
     if (!sheetsTabs.has(event.sender.id) || typeof nonce !== 'string') return
     const waiter = recoveryWriteNowWaiters.get(nonce)
-    if (waiter?.owner === event.sender.id && (error === null || typeof error === 'string')) waiter.finish(error)
+    if (waiter?.owner === event.sender.id && (error === null || typeof error === 'string'))
+      waiter.finish(error)
   })
 
   ipcMain.on(IPC_CHANNELS.pendingEditsChanged, (event, count: unknown) => {

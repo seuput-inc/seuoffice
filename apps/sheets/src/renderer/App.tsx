@@ -1012,7 +1012,8 @@ export function App({
       // a session writes (if any) is the main process's call: a CSV or
       // converted import writes an untitled one.
       if (!state) return
-      const dirty = journalSize(state.editJournal) !== 0 || redactionsPendingSave() || editingCellRef.current
+      const dirty =
+        journalSize(state.editJournal) !== 0 || redactionsPendingSave() || editingCellRef.current
       if (
         !shouldRunSaveTick({
           saveInFlight: saveGateRef.current.busy,
@@ -1026,12 +1027,12 @@ export function App({
           automaticRecoveryDisabled: state.file.automaticRecoveryDisabled === true,
         })
       ) {
-        if (strict && dirty)
-          throw new Error('The workbook recovery copy could not be written now')
+        if (strict && dirty) throw new Error('The workbook recovery copy could not be written now')
         return
       }
       const outcome = await handleSaveRef.current('recovery')
-      if (strict && !outcome.ok) throw new Error(outcome.error ?? 'The workbook recovery copy failed')
+      if (strict && !outcome.ok)
+        throw new Error(outcome.error ?? 'The workbook recovery copy failed')
     }
     const id = window.setInterval(() => void writeCopy(), 30_000)
     const stopWriteNow = window.desktopApi?.onRecoveryWriteNow?.(() => writeCopy(true))
@@ -1283,11 +1284,13 @@ export function App({
   >(() => Promise.resolve({ ok: false }))
   /// Latest MCP bridge handlers (assigned each render; see the install below).
   const mcpSheetHandlersRef = useRef<McpSheetHandlers | null>(null)
-  const closeSaveRef = useRef<(request?: {
-    requestId: string
-    mode: 'save' | 'save-as'
-    targetPath?: string
-  }) => Promise<void>>(() => Promise.resolve())
+  const closeSaveRef = useRef<
+    (request?: {
+      requestId: string
+      mode: 'save' | 'save-as'
+      targetPath?: string
+    }) => Promise<void>
+  >(() => Promise.resolve())
   const commitActiveEditor = useCallback(async (): Promise<boolean> => {
     const editor = univerRef.current?.univerAPI.getActiveWorkbook() as
       ActiveCellEditor | null | undefined
@@ -1547,10 +1550,17 @@ export function App({
       },
       exportPdfCopy: async (saveAsPath, ownedSaveRequestId) => {
         let saveAsAgain = false
-        const written = await handleExportPdfImpl({
-          ...pageLayoutContext(),
-          requestSaveAs: () => { saveAsAgain = true },
-        }, undefined, saveAsPath, ownedSaveRequestId)
+        const written = await handleExportPdfImpl(
+          {
+            ...pageLayoutContext(),
+            requestSaveAs: () => {
+              saveAsAgain = true
+            },
+          },
+          undefined,
+          saveAsPath,
+          ownedSaveRequestId,
+        )
         return saveAsAgain ? { saveAsAgain: true as const } : written
       },
     }
@@ -6082,7 +6092,9 @@ export function App({
           () => opts?.onInitialRangeLoaded?.(),
           (error: unknown) => {
             setMessage(error instanceof Error ? error.message : t('appLoadRangeFailed'))
-            opts?.onInitialRangeLoaded?.(error instanceof Error ? error.message : t('appLoadRangeFailed'))
+            opts?.onInitialRangeLoaded?.(
+              error instanceof Error ? error.message : t('appLoadRangeFailed'),
+            )
           },
         )
         if (state.formulaMode) {
@@ -6181,12 +6193,16 @@ export function App({
         return
       }
       savedLoadId = selected.savedLoadId
-      if (!(await openLazyWorkbook(selected, { onInitialRangeLoaded: (error) => {
-        finishOpening()
-        void reportSavedOpen(error === undefined, error).catch((failure: unknown) => {
-          setMessage(failure instanceof Error ? failure.message : t('appOpenFailed'))
-        })
-      } }))) {
+      if (
+        !(await openLazyWorkbook(selected, {
+          onInitialRangeLoaded: (error) => {
+            finishOpening()
+            void reportSavedOpen(error === undefined, error).catch((failure: unknown) => {
+              setMessage(failure instanceof Error ? failure.message : t('appOpenFailed'))
+            })
+          },
+        }))
+      ) {
         await reportSavedOpen(false, 'The workbook renderer refused to open the saved document.')
         finishOpening()
         setMessage(aiRunLock.active ? t('appAiRunLocked') : t('appOpenFailed'))
@@ -6196,7 +6212,10 @@ export function App({
       setOdsNotice(odsConversionNoticeOf(selected))
       setMessage(selected.emptyCsv ? '' : t('appOpened', { name: selected.name }))
     } catch (error: unknown) {
-      await reportSavedOpen(false, error instanceof Error ? error.message : t('appOpenFailed')).catch((failure: unknown) => {
+      await reportSavedOpen(
+        false,
+        error instanceof Error ? error.message : t('appOpenFailed'),
+      ).catch((failure: unknown) => {
         setMessage(failure instanceof Error ? failure.message : t('appOpenFailed'))
       })
       setMessage(error instanceof Error ? stripIpcErrorWrapper(error.message) : t('appOpenFailed'))
@@ -6230,9 +6249,17 @@ export function App({
       () =>
         guardedSave(gate, refusal, async (): Promise<SaveOutcome> => {
           if (!(await commitActiveEditor())) return { ok: false }
-          return handleSaveImpl(saveContext(), mode, quiet, explicitTarget, defaultName, ownedSaveRequestId)
+          return handleSaveImpl(
+            saveContext(),
+            mode,
+            quiet,
+            explicitTarget,
+            defaultName,
+            ownedSaveRequestId,
+          )
         }),
-      (targetPath) => handleExportOdsImpl(odsExportContext(ownedSaveRequestId), targetPath, ownedSaveRequestId),
+      (targetPath) =>
+        handleExportOdsImpl(odsExportContext(ownedSaveRequestId), targetPath, ownedSaveRequestId),
     )
     if ('saveAsAgain' in outcome && outcome.saveAsAgain) {
       return handleSave('save-as', quiet, undefined, undefined, ownedSaveRequestId)
@@ -6304,17 +6331,23 @@ export function App({
         const result = await handleSave(
           request.mode,
           false,
-          request.targetPath === undefined ? undefined : { path: request.targetPath, overwrite: true },
+          request.targetPath === undefined
+            ? undefined
+            : { path: request.targetPath, overwrite: true },
           undefined,
           request.requestId,
         )
-        const saved = result.ok || (
-          result.reason === 'no-edits' && request.mode === 'save' && request.targetPath === undefined
-        )
+        const saved =
+          result.ok ||
+          (result.reason === 'no-edits' &&
+            request.mode === 'save' &&
+            request.targetPath === undefined)
         window.desktopApi.reportCloseSaveResult(saved, request.requestId, result.error)
       } catch (error: unknown) {
         window.desktopApi.reportCloseSaveResult(
-          false, request.requestId, error instanceof Error ? error.message : String(error),
+          false,
+          request.requestId,
+          error instanceof Error ? error.message : String(error),
         )
       }
       return

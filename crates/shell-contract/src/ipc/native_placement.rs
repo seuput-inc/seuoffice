@@ -5,7 +5,9 @@ use std::sync::Arc;
 pub struct PlacementMoveIdentity(Arc<()>);
 
 impl PlacementMoveIdentity {
-    pub fn same_move(&self, other: &Self) -> bool { Arc::ptr_eq(&self.0, &other.0) }
+    pub fn same_move(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 #[derive(Clone)]
@@ -16,14 +18,25 @@ pub struct PlacementMoveIssuer {
 impl PlacementMoveIssuer {
     pub fn new() -> (Self, PlacementMoveIdentity) {
         let identity = PlacementMoveIdentity(Arc::new(()));
-        (Self { identity: identity.clone() }, identity)
+        (
+            Self {
+                identity: identity.clone(),
+            },
+            identity,
+        )
     }
 
-    pub(crate) fn superseded(self, successor: PlacementMoveIdentity) -> Result<PlacementSuperseded, String> {
+    pub(crate) fn superseded(
+        self,
+        successor: PlacementMoveIdentity,
+    ) -> Result<PlacementSuperseded, String> {
         if self.identity.same_move(&successor) {
             return Err("A placement move cannot supersede itself".into());
         }
-        Ok(PlacementSuperseded { original: self.identity, successor })
+        Ok(PlacementSuperseded {
+            original: self.identity,
+            successor,
+        })
     }
 }
 
@@ -34,8 +47,12 @@ pub struct PlacementSuperseded {
 }
 
 impl PlacementSuperseded {
-    pub fn matches(&self, original: &PlacementMoveIdentity) -> bool { self.original.same_move(original) }
-    pub fn successor_matches(&self, successor: &PlacementMoveIdentity) -> bool { self.successor.same_move(successor) }
+    pub fn matches(&self, original: &PlacementMoveIdentity) -> bool {
+        self.original.same_move(original)
+    }
+    pub fn successor_matches(&self, successor: &PlacementMoveIdentity) -> bool {
+        self.successor.same_move(successor)
+    }
 }
 
 #[cfg(test)]
@@ -47,7 +64,9 @@ mod tests {
         let (original_issuer, original) = PlacementMoveIssuer::new();
         let (_, successor) = PlacementMoveIssuer::new();
         let (_, unrelated) = PlacementMoveIssuer::new();
-        let proof = original_issuer.superseded(successor.clone()).expect("distinct successor");
+        let proof = original_issuer
+            .superseded(successor.clone())
+            .expect("distinct successor");
         assert!(proof.matches(&original));
         assert!(!proof.matches(&unrelated));
         assert!(proof.successor_matches(&successor));

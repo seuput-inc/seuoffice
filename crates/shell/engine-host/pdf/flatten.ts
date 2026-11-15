@@ -19,12 +19,15 @@ interface PdfiumFlatten {
 }
 
 export function flattenAnnotations(bytes: Uint8Array): Promise<Uint8Array> {
-  return withPdfium(raw => {
+  return withPdfium((raw) => {
     const m = raw as PdfiumFlatten
     const ptr = m._malloc(bytes.length)
     m.HEAPU8.set(bytes, ptr)
     const doc = m._FPDF_LoadMemDocument(ptr, bytes.length, 0)
-    if (!doc) { m._free(ptr); throw new Error('PDFium could not load the document') }
+    if (!doc) {
+      m._free(ptr)
+      throw new Error('PDFium could not load the document')
+    }
     try {
       let changed = false
       const count = m._FPDF_GetPageCount(doc)
@@ -33,9 +36,12 @@ export function flattenAnnotations(bytes: Uint8Array): Promise<Uint8Array> {
         if (!page) throw new Error(`could not load page ${i + 1}`)
         try {
           if (m._FPDFPage_GetAnnotCount(page) === 0) continue
-          if (m._FPDFPage_Flatten(page, 0) === 0) throw new Error(`could not flatten annotations on page ${i + 1}`)
+          if (m._FPDFPage_Flatten(page, 0) === 0)
+            throw new Error(`could not flatten annotations on page ${i + 1}`)
           changed = true
-        } finally { m._FPDF_ClosePage(page) }
+        } finally {
+          m._FPDF_ClosePage(page)
+        }
       }
       if (!changed) return bytes
       const writer = m._PDFiumExt_OpenFileWriter()
@@ -46,8 +52,12 @@ export function flattenAnnotations(bytes: Uint8Array): Promise<Uint8Array> {
         try {
           m._PDFiumExt_GetFileWriterData(writer, buf, size)
           return Uint8Array.from(m.HEAPU8.subarray(buf, buf + size))
-        } finally { m._free(buf) }
-      } finally { m._PDFiumExt_CloseFileWriter(writer) }
+        } finally {
+          m._free(buf)
+        }
+      } finally {
+        m._PDFiumExt_CloseFileWriter(writer)
+      }
     } finally {
       m._FPDF_CloseDocument(doc)
       m._free(ptr)

@@ -142,7 +142,13 @@ pub fn show_open_dialog_with_memory<D: Dialog>(
 
 /// Record a successful open selection after its native operation acknowledges it.
 pub fn remember_open_path(memory: &mut DialogMemory, path: &str, directory: bool) {
-    if !path.is_empty() { memory.last_used = Some(if directory { path.to_owned() } else { dirname(path) }); }
+    if !path.is_empty() {
+        memory.last_used = Some(if directory {
+            path.to_owned()
+        } else {
+            dirname(path)
+        });
+    }
 }
 
 /// `saveAsSuggestion(sourcePath, defaultName)`
@@ -174,5 +180,7 @@ pub fn show_save_dialog_with_memory<D: Dialog>(
 
 /// Record only a confirmed save selection, after the native dialog completes.
 pub fn remember_save_path(memory: &mut DialogMemory, file_path: &str) {
-    if !file_path.is_empty() { memory.last_used = Some(dirname(file_path)); }
+    if !file_path.is_empty() {
+        memory.last_used = Some(dirname(file_path));
+    }
 }

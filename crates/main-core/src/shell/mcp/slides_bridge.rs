@@ -647,23 +647,51 @@ mod tests {
     }
 
     impl SlidesBridgeHost for Host {
-        fn web_contents_alive(&mut self, _: i64) -> bool { true }
+        fn web_contents_alive(&mut self, _: i64) -> bool {
+            true
+        }
         fn send_deck_changed(&mut self, _: i64, _: &JsonValue) {}
-        fn now_ms(&mut self) -> f64 { 0.0 }
-        fn set_timeout(&mut self, _: f64) -> u64 { 1 }
+        fn now_ms(&mut self) -> f64 {
+            0.0
+        }
+        fn set_timeout(&mut self, _: f64) -> u64 {
+            1
+        }
         fn settle(&mut self, _: u64, _: Settled) {}
-        fn open_blank_tab(&mut self) -> Result<i64, String> { Ok(1) }
+        fn open_blank_tab(&mut self) -> Result<i64, String> {
+            Ok(1)
+        }
         fn abandon_blank_tab(&mut self, _: i64) {}
-        fn exists_sync(&mut self, _: &str) -> bool { false }
-        fn has_session(&mut self, _: i64) -> bool { true }
-        fn deck(&mut self, _: i64) -> Result<JsonValue, String> { self.deck.clone() }
-        fn attached_ids(&mut self, _: i64) -> Vec<i64> { vec![1] }
-        fn apply_session_txn(&mut self, _: i64, _: &JsonValue) -> Option<JsonValue> { None }
-        fn save_session_deck_to(&mut self, _: i64, _: &str) -> Result<(), String> { Ok(()) }
-        fn element_durable_id(&mut self, _: &JsonValue) -> Option<String> { None }
-        fn slide_durable_id(&mut self, _: &JsonValue) -> String { "s_1".into() }
-        fn slide_comments(&mut self, _: i64, _: &str) -> Result<Vec<JsonValue>, String> { self.comments.clone() }
-        fn slide_hidden(&mut self, _: &JsonValue) -> bool { false }
+        fn exists_sync(&mut self, _: &str) -> bool {
+            false
+        }
+        fn has_session(&mut self, _: i64) -> bool {
+            true
+        }
+        fn deck(&mut self, _: i64) -> Result<JsonValue, String> {
+            self.deck.clone()
+        }
+        fn attached_ids(&mut self, _: i64) -> Vec<i64> {
+            vec![1]
+        }
+        fn apply_session_txn(&mut self, _: i64, _: &JsonValue) -> Option<JsonValue> {
+            None
+        }
+        fn save_session_deck_to(&mut self, _: i64, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn element_durable_id(&mut self, _: &JsonValue) -> Option<String> {
+            None
+        }
+        fn slide_durable_id(&mut self, _: &JsonValue) -> String {
+            "s_1".into()
+        }
+        fn slide_comments(&mut self, _: i64, _: &str) -> Result<Vec<JsonValue>, String> {
+            self.comments.clone()
+        }
+        fn slide_hidden(&mut self, _: &JsonValue) -> bool {
+            false
+        }
     }
 
     #[test]
@@ -686,6 +714,9 @@ mod tests {
         deck.set("slides", JsonValue::Array(vec![JsonValue::Object(slide)]));
         bridge.host_mut().deck = Ok(JsonValue::Object(deck));
         bridge.host_mut().comments = Err("comments unavailable".into());
-        assert_eq!(bridge.read_deck(1, None), Err("comments unavailable".into()));
+        assert_eq!(
+            bridge.read_deck(1, None),
+            Err("comments unavailable".into())
+        );
     }
 }

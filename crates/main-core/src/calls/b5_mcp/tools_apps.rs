@@ -762,7 +762,6 @@ impl SheetsHost {
     }
 }
 
-
 impl SheetsBridgeHost for SheetsHost {
     fn web_contents_alive(&mut self, wc_id: i64) -> bool {
         self.wcs.get(&wc_id).is_some_and(|wc| !wc.destroyed)
@@ -829,7 +828,6 @@ impl SheetsBridgeHost for SheetsHost {
     fn exists_sync(&mut self, path: &str) -> bool {
         fs::metadata(path).is_ok()
     }
-
 
     fn authorize_save(&mut self, wc_id: i64, file_path: &str) {
         push(
@@ -1501,7 +1499,8 @@ impl SlidesBridgeHost for SlidesHost {
     }
 
     fn deck(&mut self, wc_id: i64) -> Result<JsonValue, String> {
-        self.sessions.get(&wc_id)
+        self.sessions
+            .get(&wc_id)
             .map(|session| jv(&session.deck))
             .ok_or_else(|| "the deck session is gone".to_owned())
     }
@@ -1563,9 +1562,13 @@ impl SlidesBridgeHost for SlidesHost {
     }
 
     fn slide_comments(&mut self, wc_id: i64, slide_path: &str) -> Result<Vec<JsonValue>, String> {
-        let session = self.sessions.get(&wc_id)
+        let session = self
+            .sessions
+            .get(&wc_id)
             .ok_or_else(|| "the deck session is gone".to_owned())?;
-        Ok(session.comments.get(slide_path)
+        Ok(session
+            .comments
+            .get(slide_path)
             .and_then(Value::as_array)
             .map(|list| list.iter().map(jv).collect())
             .unwrap_or_default())
@@ -1820,7 +1823,10 @@ fn deps_of(c: &Value, _log: &Log) -> McpRuntimeDeps<'static> {
 fn app_answer(call: &HostCall, log: &Log, open_ok: bool) -> Settled {
     match (call.control, call.method) {
         ("NativeOpen", "openPath") => {
-            let path = match call.args.first() { Some(JsonValue::String(path)) => path.as_str(), _ => "" };
+            let path = match call.args.first() {
+                Some(JsonValue::String(path)) => path.as_str(),
+                _ => "",
+            };
             push(log, vec![Value::from("openPath"), Value::from(path)]);
             Ok(Some(JsonValue::Bool(open_ok)))
         }
@@ -1963,8 +1969,10 @@ fn app_call(args: &[Value], cx: &mut Context) -> Answer {
             } else {
                 match runtime.build_tools() {
                     Ok(tools) => step_answer(
-                        call_tool(tools, name, step.get("args"), &mut |call| app_answer(call, &log, open_ok))
-                            .map_err(|error| error.message),
+                        call_tool(tools, name, step.get("args"), &mut |call| {
+                            app_answer(call, &log, open_ok)
+                        })
+                        .map_err(|error| error.message),
                     ),
                     Err(message) => json!({ "error": message }),
                 }

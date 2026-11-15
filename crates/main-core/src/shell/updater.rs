@@ -631,7 +631,6 @@ impl Updater {
         self.restart.cancel_update_restart();
     }
 
-
     /// the logger electron-updater is given (`autoUpdater.logger = record`), as
     /// the lines it writes: `info`, `warn`, `error` and `debug`
     pub fn logger_write(&self, level: &str, message: &LogMessage) {
@@ -1752,8 +1751,12 @@ mod restart_tests {
     struct Env;
     impl UpdaterEnv for Env {
         fn console_log(&self, _: &[String]) {}
-        fn now_ms(&self) -> f64 { 0.0 }
-        fn perf_now(&self) -> f64 { 0.0 }
+        fn now_ms(&self) -> f64 {
+            0.0
+        }
+        fn perf_now(&self) -> f64 {
+            0.0
+        }
     }
 
     #[test]

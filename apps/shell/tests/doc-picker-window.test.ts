@@ -215,7 +215,11 @@ describe('createDocPicker window', () => {
   it('answers the picker window with its language and theme, and nothing to others', async () => {
     await load()
     await openPicker()
-    expect(invoke(DOC_PICKER_CHANNELS.getInit, atPicker())).toEqual({ lang: 'ko', theme: 'light', readyToken: '1' })
+    expect(invoke(DOC_PICKER_CHANNELS.getInit, atPicker())).toEqual({
+      lang: 'ko',
+      theme: 'light',
+      readyToken: '1',
+    })
     expect(invoke(DOC_PICKER_CHANNELS.getInit, { sender: new FakeWebContents() })).toBeNull()
   })
 

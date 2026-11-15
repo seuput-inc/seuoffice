@@ -138,8 +138,10 @@ impl TemplateSelectionStore {
     }
 
     /// What is stored for the document, exactly as stored; `None` when nothing is. Counts as a use.
-    pub fn get(&self,file_path:&str)->Result<Option<TemplateSelection>,NodeError> {
-        crate::shell::recent_files::metadata::run_borrowed(&self.file_path,|| self.get_unqueued(file_path))
+    pub fn get(&self, file_path: &str) -> Result<Option<TemplateSelection>, NodeError> {
+        crate::shell::recent_files::metadata::run_borrowed(&self.file_path, || {
+            self.get_unqueued(file_path)
+        })
     }
 
     fn get_unqueued(&self, file_path: &str) -> Result<Option<TemplateSelection>, NodeError> {
@@ -172,8 +174,14 @@ impl TemplateSelectionStore {
     /// Remember `input` for the document, or forget the document on `null`. Input
     /// that is not a selection is ignored. Returns what is stored afterwards.
     /// `input` `None` is `undefined`.
-    pub fn set(&self,file_path:&str,input:Option<&JsonValue>)->Result<Option<TemplateSelection>,NodeError> {
-        crate::shell::recent_files::metadata::run_borrowed(&self.file_path,|| self.set_unqueued(file_path,input))
+    pub fn set(
+        &self,
+        file_path: &str,
+        input: Option<&JsonValue>,
+    ) -> Result<Option<TemplateSelection>, NodeError> {
+        crate::shell::recent_files::metadata::run_borrowed(&self.file_path, || {
+            self.set_unqueued(file_path, input)
+        })
     }
 
     fn set_unqueued(
@@ -195,8 +203,14 @@ impl TemplateSelectionStore {
     }
 
     /// Write an already normalized record as it is (its `updatedAt` included), or remove the document's on `None`.
-    pub fn put(&self,file_path:&str,selection:Option<TemplateSelection>)->Result<(),NodeError> {
-        crate::shell::recent_files::metadata::run_borrowed(&self.file_path,|| self.put_unqueued(file_path,selection))
+    pub fn put(
+        &self,
+        file_path: &str,
+        selection: Option<TemplateSelection>,
+    ) -> Result<(), NodeError> {
+        crate::shell::recent_files::metadata::run_borrowed(&self.file_path, || {
+            self.put_unqueued(file_path, selection)
+        })
     }
 
     fn put_unqueued(
@@ -224,12 +238,16 @@ impl TemplateSelectionStore {
     /// The document is also at `to_path` now (Save As, a draft copy): the same
     /// record is written there and the one under `from_path` stays.
     pub fn copy(&self, from_path: &str, to_path: &str) -> Result<(), NodeError> {
-        crate::shell::recent_files::metadata::run_borrowed(&self.file_path,|| self.transfer(from_path,to_path,false))
+        crate::shell::recent_files::metadata::run_borrowed(&self.file_path, || {
+            self.transfer(from_path, to_path, false)
+        })
     }
 
     /// The file went from `from_path` to `to_path` (rename, move): nothing stays under the old path.
     pub fn move_record(&self, from_path: &str, to_path: &str) -> Result<(), NodeError> {
-        crate::shell::recent_files::metadata::run_borrowed(&self.file_path,|| self.transfer(from_path,to_path,true))
+        crate::shell::recent_files::metadata::run_borrowed(&self.file_path, || {
+            self.transfer(from_path, to_path, true)
+        })
     }
 
     fn transfer(
@@ -238,13 +256,16 @@ impl TemplateSelectionStore {
         to_path: &str,
         remove_source: bool,
     ) -> Result<(), NodeError> {
-        self.transfer_with(from_path,to_path,remove_source,&mut write_json_atomic)
+        self.transfer_with(from_path, to_path, remove_source, &mut write_json_atomic)
     }
 
     fn transfer_with(
-        &self,from_path:&str,to_path:&str,remove_source:bool,
-        write:&mut dyn FnMut(&str,&JsonValue)->Result<(),NodeError>,
-    )->Result<(),NodeError> {
+        &self,
+        from_path: &str,
+        to_path: &str,
+        remove_source: bool,
+        write: &mut dyn FnMut(&str, &JsonValue) -> Result<(), NodeError>,
+    ) -> Result<(), NodeError> {
         let mut documents = self.read()?;
         let to_key = canonical_path_key(to_path);
         let from_key = find_key(&documents, from_path);
@@ -279,7 +300,7 @@ impl TemplateSelectionStore {
                 .expect("a key that was found");
             documents.delete(&earlier);
             documents.set(&to_key, entry);
-            return self.write_with(&mut documents, &to_key,write);
+            return self.write_with(&mut documents, &to_key, write);
         }
         let entry = from_key
             .as_ref()
@@ -298,7 +319,7 @@ impl TemplateSelectionStore {
             let used_at = self.now();
             documents.set(&to_key, StoredSelection { used_at, ..entry });
         }
-        self.write_with(&mut documents, &to_key,write)
+        self.write_with(&mut documents, &to_key, write)
     }
 
     /// A missing or corrupt file reads as no records; an entry that does not
@@ -341,13 +362,15 @@ impl TemplateSelectionStore {
 
     /// Atomic (temp file, then rename). Over the cap, the least recently used go, never `keep`.
     fn write(&self, documents: &mut Documents, keep: &str) -> Result<(), NodeError> {
-        self.write_with(documents,keep,&mut write_json_atomic)
+        self.write_with(documents, keep, &mut write_json_atomic)
     }
 
     fn write_with(
-        &self,documents:&mut Documents,keep:&str,
-        write:&mut dyn FnMut(&str,&JsonValue)->Result<(),NodeError>,
-    )->Result<(),NodeError> {
+        &self,
+        documents: &mut Documents,
+        keep: &str,
+        write: &mut dyn FnMut(&str, &JsonValue) -> Result<(), NodeError>,
+    ) -> Result<(), NodeError> {
         let excess = documents.0.len() as f64 - self.max_documents;
         if excess > 0.0 {
             let mut oldest_first: Vec<(String, f64)> = documents
@@ -374,23 +397,37 @@ impl TemplateSelectionStore {
 }
 
 /// Immutable IO inputs. Moving a saved selection does not change unsaved memory.
-pub struct TemplateSelectionMove { file_path:String,max_documents:f64 }
+pub struct TemplateSelectionMove {
+    file_path: String,
+    max_documents: f64,
+}
 
 impl TemplateSelectionMove {
-    pub fn file_path(&self)->&str { &self.file_path }
+    pub fn file_path(&self) -> &str {
+        &self.file_path
+    }
     pub fn apply(
-        self,old:&str,new:&str,now:Option<Box<dyn Fn()->f64>>,
-        write:&mut dyn FnMut(&str,&JsonValue)->Result<(),NodeError>,
-    )->Result<(),NodeError> {
-        let store = TemplateSelectionStore { file_path:self.file_path,max_documents:self.max_documents,
-            now:now.unwrap_or_else(|| Box::new(system_now)) };
-        store.transfer_with(old,new,true,write)
+        self,
+        old: &str,
+        new: &str,
+        now: Option<Box<dyn Fn() -> f64>>,
+        write: &mut dyn FnMut(&str, &JsonValue) -> Result<(), NodeError>,
+    ) -> Result<(), NodeError> {
+        let store = TemplateSelectionStore {
+            file_path: self.file_path,
+            max_documents: self.max_documents,
+            now: now.unwrap_or_else(|| Box::new(system_now)),
+        };
+        store.transfer_with(old, new, true, write)
     }
 }
 
 impl TemplateSelectionStore {
-    pub fn move_plan(&self)->TemplateSelectionMove {
-        TemplateSelectionMove { file_path:self.file_path.clone(),max_documents:self.max_documents }
+    pub fn move_plan(&self) -> TemplateSelectionMove {
+        TemplateSelectionMove {
+            file_path: self.file_path.clone(),
+            max_documents: self.max_documents,
+        }
     }
 }
 
@@ -513,5 +550,5 @@ impl TemplateSelectionMemory {
 }
 
 #[cfg(test)]
-#[path="template_selection_store/saved_tests.rs"]
+#[path = "template_selection_store/saved_tests.rs"]
 mod saved_tests;

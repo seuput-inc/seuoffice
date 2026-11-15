@@ -112,10 +112,25 @@ pub trait PageRenderer: Send + Sync {
     /// `pageToPdf(html)` of `export-main.ts`: the page as a one-page
     /// landscape A4 PDF; blocks, run on a worker
     fn page_to_pdf(&self, html: &str) -> Result<Vec<u8>, String>;
-    fn page_to_pdf_owned(&self, html: &str, origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, participants: &[shell_contract::ipc::NativeRequestOwner], additional: &[shell_contract::runtime::CancelToken]) -> Result<Vec<u8>, String>;
-    fn page_to_pdf_native(&self, html: &str, binding: &shell_contract::ipc::NativeExistingDocumentBinding,
-        participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken,
-        pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken]) -> Result<Vec<u8>, String>;
+    fn page_to_pdf_owned(
+        &self,
+        html: &str,
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        additional: &[shell_contract::runtime::CancelToken],
+    ) -> Result<Vec<u8>, String>;
+    fn page_to_pdf_native(
+        &self,
+        html: &str,
+        binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+    ) -> Result<Vec<u8>, String>;
 }
 
 pub type PageRendererHost = Arc<dyn PageRenderer>;
@@ -128,12 +143,32 @@ pub type PageRendererHost = Arc<dyn PageRenderer>;
 pub trait MindmapShell: Send + Sync {
     /// `fileSavedHook(wc, path)`: a save landed on a new path
     fn file_saved(&self, _view: ViewId, _path: &str) {}
-    fn file_saved_owned(&self, origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost, path: std::path::PathBuf, done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>);
-    fn file_saved_existing_document(&self, revision: shell_contract::ipc::NativeSaveRevisionAuthority, expected_path: std::path::PathBuf,
-        participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken,
-        pending: shell_contract::runtime::CancelToken, additional: Vec<shell_contract::runtime::CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost,
-        on_revision: std::rc::Rc<dyn Fn(&shell_contract::ipc::NativeSaveRevisionReceipt) -> Result<(), String>>,
-        done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>);
+    fn file_saved_owned(
+        &self,
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+        path: std::path::PathBuf,
+        done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>,
+    );
+    fn file_saved_existing_document(
+        &self,
+        revision: shell_contract::ipc::NativeSaveRevisionAuthority,
+        expected_path: std::path::PathBuf,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        on_revision: std::rc::Rc<
+            dyn Fn(&shell_contract::ipc::NativeSaveRevisionReceipt) -> Result<(), String>,
+        >,
+        done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>,
+    );
     /// `makeFromDocumentHook(wc)`
     fn make_from_document(&self, cx: shell_contract::ipc::CallContext);
     /// `recoveryTitleHook(wc)`: the tab title of an untitled map
@@ -152,15 +187,34 @@ pub trait MindmapShell: Send + Sync {
     fn has_new_document_writer(&self) -> bool {
         false
     }
-    fn write_new_document_owned(&self, origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, effects: &shell_contract::hosts::OwnedEffectsHost, admission: main_core::packages::electron_utils::atomic_write::owned::Admission, file_name: &str, bytes: &[u8]) -> Result<Option<String>, String>;
+    fn write_new_document_owned(
+        &self,
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+        admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
+        file_name: &str,
+        bytes: &[u8],
+    ) -> Result<Option<String>, String>;
     /// `isPathOpenElsewhere(path)`: the probe of `save-conflict`
     fn is_path_open_elsewhere(&self, path: &str) -> bool;
     /// `assertFileSaved(path)`: `Err(message)` for a file open with unsaved changes
     fn assert_file_saved(&self, path: String, then: Box<dyn FnOnce(Result<(), String>) + Send>);
     /// `takeGenerateHandoff('mindmap', webContentsId)`
-    fn take_generate_handoff_owned(&self, consumer: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken) -> Result<Option<GenerateHandoff>, String>;
+    fn take_generate_handoff_owned(
+        &self,
+        consumer: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+    ) -> Result<Option<GenerateHandoff>, String>;
     /// `reportGenerateRunStarted('mindmap', webContentsId, paths)`
-    fn report_generate_run_started_owned(&self, consumer: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, paths: &[String]) -> Result<bool, String>;
+    fn report_generate_run_started_owned(
+        &self,
+        consumer: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        paths: &[String],
+    ) -> Result<bool, String>;
 }
 
 pub type MindmapShellHost = Arc<dyn MindmapShell>;
@@ -419,12 +473,27 @@ mod fakes {
                 _ => Ok(b"%PDF-1.7".to_vec()),
             }
         }
-        fn page_to_pdf_owned(&self, html: &str, _origin: &shell_contract::ipc::NativeRequestOwner, _destination: &shell_contract::ipc::NativeRequestOwner, _cancel: &shell_contract::runtime::CancelToken, _pending: &shell_contract::runtime::CancelToken, _participants: &[shell_contract::ipc::NativeRequestOwner], _additional: &[shell_contract::runtime::CancelToken]) -> Result<Vec<u8>, String> {
+        fn page_to_pdf_owned(
+            &self,
+            html: &str,
+            _origin: &shell_contract::ipc::NativeRequestOwner,
+            _destination: &shell_contract::ipc::NativeRequestOwner,
+            _cancel: &shell_contract::runtime::CancelToken,
+            _pending: &shell_contract::runtime::CancelToken,
+            _participants: &[shell_contract::ipc::NativeRequestOwner],
+            _additional: &[shell_contract::runtime::CancelToken],
+        ) -> Result<Vec<u8>, String> {
             self.page_to_pdf(html)
         }
-        fn page_to_pdf_native(&self, html: &str, _binding: &shell_contract::ipc::NativeExistingDocumentBinding,
-            _participants: &[shell_contract::ipc::NativeRequestOwner], _cancel: &shell_contract::runtime::CancelToken,
-            _pending: &shell_contract::runtime::CancelToken, _additional: &[shell_contract::runtime::CancelToken]) -> Result<Vec<u8>, String> {
+        fn page_to_pdf_native(
+            &self,
+            html: &str,
+            _binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+            _participants: &[shell_contract::ipc::NativeRequestOwner],
+            _cancel: &shell_contract::runtime::CancelToken,
+            _pending: &shell_contract::runtime::CancelToken,
+            _additional: &[shell_contract::runtime::CancelToken],
+        ) -> Result<Vec<u8>, String> {
             self.page_to_pdf(html)
         }
     }
@@ -434,7 +503,10 @@ mod fakes {
             self.note(json!(["mindmap-main.fileSavedHook", view.0, path]));
         }
         fn make_from_document(&self, cx: shell_contract::ipc::CallContext) {
-            self.note(json!(["mindmap-main.makeFromDocumentHook", cx.sender.view.0]));
+            self.note(json!([
+                "mindmap-main.makeFromDocumentHook",
+                cx.sender.view.0
+            ]));
         }
         fn recovery_title(&self, view: ViewId) -> Option<String> {
             self.note(json!(["mindmap-main.recoveryTitleHook", view.0]));
@@ -463,37 +535,111 @@ mod fakes {
         fn has_new_document_writer(&self) -> bool {
             self.script.get("writeNewDocument").is_some()
         }
-        fn write_new_document_owned(&self, _origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, _cancel: &shell_contract::runtime::CancelToken, _pending: &shell_contract::runtime::CancelToken, _effects: &shell_contract::hosts::OwnedEffectsHost, admission: main_core::packages::electron_utils::atomic_write::owned::Admission, file_name: &str, bytes: &[u8]) -> Result<Option<String>, String> {
-            let log = self.log.clone(); let call = json!(["mindmap-main.writeNewDocument", destination.view.0, file_name, bytes.len()]);
+        fn write_new_document_owned(
+            &self,
+            _origin: &shell_contract::ipc::NativeRequestOwner,
+            destination: &shell_contract::ipc::NativeRequestOwner,
+            _cancel: &shell_contract::runtime::CancelToken,
+            _pending: &shell_contract::runtime::CancelToken,
+            _effects: &shell_contract::hosts::OwnedEffectsHost,
+            admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
+            file_name: &str,
+            bytes: &[u8],
+        ) -> Result<Option<String>, String> {
+            let log = self.log.clone();
+            let call = json!([
+                "mindmap-main.writeNewDocument",
+                destination.view.0,
+                file_name,
+                bytes.len()
+            ]);
             let scripted = self.script.get("writeNewDocument").cloned();
-            main_core::packages::electron_utils::atomic_write::owned::admitted(&admission, move || {
-                if let Some(log) = log { log.lock().unwrap().push(call); }
-                match scripted {
-                    Some(w) if w.get("error").is_some() => Err(text_of(&w, "error")),
-                    Some(w) => Ok(w.get("path").and_then(Value::as_str).map(str::to_owned)),
-                    None => Ok(None),
-                }
-            }).map_err(|error| error.message)?
+            main_core::packages::electron_utils::atomic_write::owned::admitted(
+                &admission,
+                move || {
+                    if let Some(log) = log {
+                        log.lock().unwrap().push(call);
+                    }
+                    match scripted {
+                        Some(w) if w.get("error").is_some() => Err(text_of(&w, "error")),
+                        Some(w) => Ok(w.get("path").and_then(Value::as_str).map(str::to_owned)),
+                        None => Ok(None),
+                    }
+                },
+            )
+            .map_err(|error| error.message)?
         }
-        fn file_saved_owned(&self, origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost, path: std::path::PathBuf, done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>) {
-            let result = effects.with_owned_effect_many_extra(origin, participants, cancel, pending, &additional.iter().collect::<Vec<_>>(), &mut || {
-                self.file_saved(destination.view, &path.to_string_lossy()); Ok(())
-            }).map(|()| shell_contract::hosts::SavedFile { path, session: shell_contract::hosts::SavedSessionReceipt::NoPublication });
+        fn file_saved_owned(
+            &self,
+            origin: &shell_contract::ipc::NativeRequestOwner,
+            destination: &shell_contract::ipc::NativeRequestOwner,
+            participants: &[shell_contract::ipc::NativeRequestOwner],
+            cancel: &shell_contract::runtime::CancelToken,
+            pending: &shell_contract::runtime::CancelToken,
+            additional: &[shell_contract::runtime::CancelToken],
+            effects: &shell_contract::hosts::OwnedEffectsHost,
+            path: std::path::PathBuf,
+            done: Box<
+                dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>),
+            >,
+        ) {
+            let result = effects
+                .with_owned_effect_many_extra(
+                    origin,
+                    participants,
+                    cancel,
+                    pending,
+                    &additional.iter().collect::<Vec<_>>(),
+                    &mut || {
+                        self.file_saved(destination.view, &path.to_string_lossy());
+                        Ok(())
+                    },
+                )
+                .map(|()| shell_contract::hosts::SavedFile {
+                    path,
+                    session: shell_contract::hosts::SavedSessionReceipt::NoPublication,
+                });
             done(result);
         }
-        fn file_saved_existing_document(&self, revision: shell_contract::ipc::NativeSaveRevisionAuthority, expected_path: std::path::PathBuf,
-            participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken,
-            pending: shell_contract::runtime::CancelToken, additional: Vec<shell_contract::runtime::CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost,
-            _on_revision: std::rc::Rc<dyn Fn(&shell_contract::ipc::NativeSaveRevisionReceipt) -> Result<(), String>>,
-            done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>) {
+        fn file_saved_existing_document(
+            &self,
+            revision: shell_contract::ipc::NativeSaveRevisionAuthority,
+            expected_path: std::path::PathBuf,
+            participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+            cancel: shell_contract::runtime::CancelToken,
+            pending: shell_contract::runtime::CancelToken,
+            additional: Vec<shell_contract::runtime::CancelToken>,
+            effects: shell_contract::hosts::OwnedEffectsHost,
+            _on_revision: std::rc::Rc<
+                dyn Fn(&shell_contract::ipc::NativeSaveRevisionReceipt) -> Result<(), String>,
+            >,
+            done: Box<
+                dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>),
+            >,
+        ) {
             let result = (|| {
                 let snapshot = revision.snapshot()?;
-                let path = expected_path.to_str().ok_or("The saved map path is not Unicode")?;
-                effects.with_native_save_revision_snapshot_effect(&snapshot, &participants, &cancel, &pending, &additional.iter().collect::<Vec<_>>(), &mut || {
-                    if snapshot.selection().path() != expected_path { return Err("The native save destination changed".into()); }
-                    self.file_saved(snapshot.selection().binding().owner().view, path); Ok(())
-                })?;
-                Ok(shell_contract::hosts::SavedFile { path: expected_path, session: shell_contract::hosts::SavedSessionReceipt::NoPublication })
+                let path = expected_path
+                    .to_str()
+                    .ok_or("The saved map path is not Unicode")?;
+                effects.with_native_save_revision_snapshot_effect(
+                    &snapshot,
+                    &participants,
+                    &cancel,
+                    &pending,
+                    &additional.iter().collect::<Vec<_>>(),
+                    &mut || {
+                        if snapshot.selection().path() != expected_path {
+                            return Err("The native save destination changed".into());
+                        }
+                        self.file_saved(snapshot.selection().binding().owner().view, path);
+                        Ok(())
+                    },
+                )?;
+                Ok(shell_contract::hosts::SavedFile {
+                    path: expected_path,
+                    session: shell_contract::hosts::SavedSessionReceipt::NoPublication,
+                })
             })();
             done(result);
         }
@@ -501,7 +647,11 @@ mod fakes {
             self.note(json!(["electron-utils.isPathOpenElsewhere", path]));
             self.list_has("openElsewhere", path)
         }
-        fn assert_file_saved(&self, path: String, then: Box<dyn FnOnce(Result<(), String>) + Send>) {
+        fn assert_file_saved(
+            &self,
+            path: String,
+            then: Box<dyn FnOnce(Result<(), String>) + Send>,
+        ) {
             self.note(json!(["electron-utils.assertFileSaved", path]));
             let result = if self.list_has("unsaved", &path) {
                 Err(
@@ -513,7 +663,11 @@ mod fakes {
             };
             then(result);
         }
-        fn take_generate_handoff_owned(&self, consumer: &shell_contract::ipc::NativeRequestOwner, _cancel: &shell_contract::runtime::CancelToken) -> Result<Option<GenerateHandoff>, String> {
+        fn take_generate_handoff_owned(
+            &self,
+            consumer: &shell_contract::ipc::NativeRequestOwner,
+            _cancel: &shell_contract::runtime::CancelToken,
+        ) -> Result<Option<GenerateHandoff>, String> {
             let view = consumer.view;
             self.note(json!([
                 "generate-handoff.takeGenerateHandoff",
@@ -522,7 +676,12 @@ mod fakes {
             ]));
             Ok(self.handoff.lock().unwrap().take())
         }
-        fn report_generate_run_started_owned(&self, consumer: &shell_contract::ipc::NativeRequestOwner, _cancel: &shell_contract::runtime::CancelToken, paths: &[String]) -> Result<bool, String> {
+        fn report_generate_run_started_owned(
+            &self,
+            consumer: &shell_contract::ipc::NativeRequestOwner,
+            _cancel: &shell_contract::runtime::CancelToken,
+            paths: &[String],
+        ) -> Result<bool, String> {
             let view = consumer.view;
             self.note(json!([
                 "generate-handoff.reportGenerateRunStarted",

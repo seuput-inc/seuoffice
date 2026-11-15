@@ -161,7 +161,9 @@ pub fn fetch_remote_image<'signal>(
     signal: Option<&'signal dyn AbortSignal>,
 ) -> Option<Box<dyn Response + 'signal>> {
     let retry_delays_ms = retry_delays_ms.unwrap_or(&RETRY_DELAYS_MS);
-    if signal.is_some_and(AbortSignal::aborted) { return None; }
+    if signal.is_some_and(AbortSignal::aborted) {
+        return None;
+    }
     // BYOK-generated images live in the local store; only its own files resolve
     if raw_url.starts_with("file:") {
         let local = read_generated_image(tmpdir, raw_url)?;
@@ -178,7 +180,9 @@ pub fn fetch_remote_image<'signal>(
     let headers = remote_image_headers();
     let mut attempt = 0usize;
     loop {
-        if signal.is_some_and(AbortSignal::aborted) { return None; }
+        if signal.is_some_and(AbortSignal::aborted) {
+            return None;
+        }
         let mut options = FetchWithSsrfGuardOptions {
             headers: Some(headers.clone()),
             signal,

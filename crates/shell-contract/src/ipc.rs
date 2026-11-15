@@ -98,7 +98,7 @@ pub struct PdfRevisionRetirementPlan<'a> {
 pub struct AdmittedPdfRevisionRetirement<'a, 'b> {
     inner: &'a mut crate::runtime::AdmittedDocumentRetirement<'b>,
     old: &'a PdfDocumentLease,
-    sources: &'a [&'b NativeRequestOwner],
+    sources: &'a [&'a NativeRequestOwner],
     successor: &'a PdfDocumentLease,
     committed: bool,
 }
@@ -138,7 +138,7 @@ pub struct PdfRevisionSetPlan<'a> {
 }
 pub struct AdmittedPdfRevisionSet<'a, 'b> {
     inner: &'a mut crate::runtime::AdmittedDocumentRetirement<'b>,
-    pairs: &'a [(&'b PdfDocumentLease, &'b PdfDocumentLease)],
+    pairs: &'a [(&'a PdfDocumentLease, &'a PdfDocumentLease)],
     committed: bool,
 }
 impl AdmittedPdfRevisionSet<'_, '_> {
@@ -781,17 +781,17 @@ mod native_context_tests {
     #[test]
     fn media_successor_preserves_request_and_nonmedia_lifetimes() {
         let renderer = RendererGeneration::new();
-        let old_media = CancelToken::new();
-        let new_media = CancelToken::new();
-        let independent = CancelToken::new();
-        let cancel = CancelToken::new();
+        let old_media = CancelToken::default();
+        let new_media = CancelToken::default();
+        let independent = CancelToken::default();
+        let cancel = CancelToken::default();
         let document = RendererGeneration::new();
         let request = Arc::new(47_u32);
         let original = NativeContext::with_owner_loss("request", renderer.clone(), old_media.clone())
             .with_independent_native_loss(independent.clone())
             .with_document_lease(document.clone())
             .with_request_authority(request.clone())
-            .bind_dispatcher_cancellation(ViewId(7), cancel.clone(), CancelToken::new());
+            .bind_dispatcher_cancellation(ViewId(7), cancel.clone(), CancelToken::default());
         let base = NativeContext::with_owner_loss((), renderer, new_media);
         let successor = original.with_media_successor_base(&base).unwrap();
         assert_eq!(successor.downcast_ref::<&str>(), Some(&"request"));

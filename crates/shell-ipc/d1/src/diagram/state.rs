@@ -93,7 +93,11 @@ pub struct ViewState {
     pub owned_closes: HashMap<String, super::owned::close::PendingClose>,
     pub owned_publications: HashMap<String, super::owned::PendingPublication>,
     pub first_save_running: bool,
-    pub first_save_queue: VecDeque<(shell_contract::ipc::CallContext, crate::value::Args, shell_contract::ipc::Responder)>,
+    pub first_save_queue: VecDeque<(
+        shell_contract::ipc::CallContext,
+        crate::value::Args,
+        shell_contract::ipc::Responder,
+    )>,
     pub recovery_preparing: Option<super::recovery_open::Preparing>,
     pub recovery_seed: Option<super::recovery_open::Seed>,
     pub recovery_applying: Option<super::recovery_open::Applying>,
@@ -104,7 +108,9 @@ pub struct ViewState {
 
 impl ViewState {
     pub fn advance_save_revision(&mut self) {
-        self.save_revision = self.save_revision.and_then(|revision| revision.checked_add(1));
+        self.save_revision = self
+            .save_revision
+            .and_then(|revision| revision.checked_add(1));
     }
 
     /// `mayWrite`: the view's file did not fail to open
@@ -205,7 +211,10 @@ impl State {
     }
 
     pub fn view(&mut self, view: ViewId) -> &mut ViewState {
-        self.views.entry(view).or_insert_with(|| ViewState { save_revision: Some(0), ..ViewState::default() })
+        self.views.entry(view).or_insert_with(|| ViewState {
+            save_revision: Some(0),
+            ..ViewState::default()
+        })
     }
 
     /// `stateOf(wcId)` of `recovery-main.ts`

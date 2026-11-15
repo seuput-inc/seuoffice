@@ -19,35 +19,71 @@ async function run(bytes: Uint8Array, request: Request, signal?: AbortSignal): P
   }
   const abort = () => finish(new DOMException('The job was cancelled', 'AbortError'))
   signal?.addEventListener('abort', abort, { once: true })
-  worker.onerror = event => finish(new Error(event.message || 'qpdf worker failed'))
+  worker.onerror = (event) => finish(new Error(event.message || 'qpdf worker failed'))
   worker.onmessageerror = () => finish(new Error('qpdf worker returned an invalid message'))
-  worker.onmessage = event => {
+  worker.onmessage = (event) => {
     const result: unknown = event.data
-    if (result && typeof result === 'object' && 'ok' in result && result.ok instanceof ArrayBuffer) {
+    if (
+      result &&
+      typeof result === 'object' &&
+      'ok' in result &&
+      result.ok instanceof ArrayBuffer
+    ) {
       finish(undefined, result.ok)
-    } else if (result && typeof result === 'object' && 'error' in result &&
-      result.error && typeof result.error === 'object' && 'message' in result.error &&
-      typeof result.error.message === 'string') {
+    } else if (
+      result &&
+      typeof result === 'object' &&
+      'error' in result &&
+      result.error &&
+      typeof result.error === 'object' &&
+      'message' in result.error &&
+      typeof result.error.message === 'string'
+    ) {
       const error = new Error(result.error.message) as Error & { code?: unknown; reason?: unknown }
-      if ('name' in result.error && typeof result.error.name === 'string') error.name = result.error.name
+      if ('name' in result.error && typeof result.error.name === 'string')
+        error.name = result.error.name
       if ('code' in result.error) error.code = result.error.code
       if ('reason' in result.error) error.reason = result.error.reason
       finish(error)
     } else finish(new Error('qpdf worker returned an invalid message'))
   }
-  const data = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength && bytes.buffer instanceof ArrayBuffer
-    ? bytes.buffer : bytes.slice().buffer
-  try { worker.postMessage({ ...request, bytes: data }, [data]) }
-  catch (error) { finish(error instanceof Error ? error : new Error(String(error))) }
+  const data =
+    bytes.byteOffset === 0 &&
+    bytes.byteLength === bytes.buffer.byteLength &&
+    bytes.buffer instanceof ArrayBuffer
+      ? bytes.buffer
+      : bytes.slice().buffer
+  try {
+    worker.postMessage({ ...request, bytes: data }, [data])
+  } catch (error) {
+    finish(error instanceof Error ? error : new Error(String(error)))
+  }
   if (signal?.aborted) abort()
   return promise
 }
 
-export function encryptPdf(bytes: Uint8Array, userPassword: string, ownerPassword?: string, signal?: AbortSignal): Promise<Uint8Array> {
-  return run(bytes, { operation: 'encrypt', userPassword, ...(ownerPassword === undefined ? {} : { ownerPassword }) }, signal)
+export function encryptPdf(
+  bytes: Uint8Array,
+  userPassword: string,
+  ownerPassword?: string,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
+  return run(
+    bytes,
+    {
+      operation: 'encrypt',
+      userPassword,
+      ...(ownerPassword === undefined ? {} : { ownerPassword }),
+    },
+    signal,
+  )
 }
 
-export function decryptPdf(bytes: Uint8Array, password: string, signal?: AbortSignal): Promise<Uint8Array> {
+export function decryptPdf(
+  bytes: Uint8Array,
+  password: string,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
   return run(bytes, { operation: 'decrypt', password }, signal)
 }
 

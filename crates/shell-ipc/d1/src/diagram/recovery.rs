@@ -86,22 +86,41 @@ pub struct DiagramRecoveryLookup {
 impl DiagramRecoveryLookup {
     /// Runs on a worker. Mirrors `diagramHasRecoveryCopy`, including store errors.
     pub fn has_copy(&self, path: &str) -> bool {
-        if !is_recovery_editor_kind(KIND) { return false; }
-        let shared = self.shared.lock().unwrap_or_else(|error| error.into_inner());
+        if !is_recovery_editor_kind(KIND) {
+            return false;
+        }
+        let shared = self
+            .shared
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let user_data_dir = || self.directory.clone();
-        let now_ms = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-            .map_or(0.0, |duration| duration.as_millis() as f64);
+        let now_ms = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0.0, |duration| duration.as_millis() as f64)
+        };
         let store = main_core::packages::electron_utils::recovery_store::create_recovery_store(
             main_core::packages::electron_utils::recovery_store::RecoveryStoreOptions {
-                user_data_dir: &user_data_dir, now_ms: &now_ms, random_uuid: &jscompat::random_uuid,
-            }, &shared);
-        store.copy_info(&file_identity(path)).ok().flatten().is_some()
+                user_data_dir: &user_data_dir,
+                now_ms: &now_ms,
+                random_uuid: &jscompat::random_uuid,
+            },
+            &shared,
+        );
+        store
+            .copy_info(&file_identity(path))
+            .ok()
+            .flatten()
+            .is_some()
     }
 }
 
 impl DiagramViews {
     pub fn recovery_lookup(&self) -> DiagramRecoveryLookup {
-        DiagramRecoveryLookup { shared: self.0.recovery_state.clone(), directory: self.user_data_dir() }
+        DiagramRecoveryLookup {
+            shared: self.0.recovery_state.clone(),
+            directory: self.user_data_dir(),
+        }
     }
 }
 
@@ -278,10 +297,15 @@ impl DiagramViews {
     pub fn view_crashed(&self, view: ViewId) {
         let pending = self.with_state(|state| {
             state.recovery_of(view).crashed = true;
-            state.views.get_mut(&view).and_then(|entry| entry.copy_now.take())
+            state
+                .views
+                .get_mut(&view)
+                .and_then(|entry| entry.copy_now.take())
         });
         if let Some(pending) = pending {
-            (pending.finish)(Err(main_core::shell::renderer_disposal::Failure("The diagram renderer crashed".into())));
+            (pending.finish)(Err(main_core::shell::renderer_disposal::Failure(
+                "The diagram renderer crashed".into(),
+            )));
         }
     }
 
@@ -290,13 +314,19 @@ impl DiagramViews {
     /// it takes its copies with it; with unsaved changes, after a crash or
     /// while the app is ending, they stay.
     /// Complete recovery cleanup from the original actor's detached state.
-    pub(super) fn finish_detached_recovery(&self, recovery: Option<super::state::RecoveryView>, dirty: bool) {
+    pub(super) fn finish_detached_recovery(
+        &self,
+        recovery: Option<super::state::RecoveryView>,
+        dirty: bool,
+    ) {
         let Some(recovery) = recovery else { return };
         let reason = if recovery.dropped.is_some() {
             Some(RecoveryDeleteReason::DontSave)
         } else if !recovery.crashed && !dirty {
             Some(RecoveryDeleteReason::ClosedClean)
-        } else { None };
+        } else {
+            None
+        };
         if let Some(reason) = reason {
             for (_, identity) in recovery.owned {
                 let _ = self.with_store(|store| store.delete_copy(&identity, reason));
@@ -410,7 +440,6 @@ impl DiagramViews {
             state.recovery_of(view).save_as_default = Some(file_path.to_owned());
         });
     }
-
 
     /// `viewFileRenamed(wcId, oldPath, newPath)`: the view's file was renamed
     /// on disk; its copy follows the new path

@@ -86,7 +86,8 @@ const api: HtmlApi = {
   recoveryOpen: () => ipcRenderer.invoke(HTML_CHANNELS.recoveryOpen),
   recoveryApplied: (result) => ipcRenderer.invoke(HTML_CHANNELS.recoveryApplied, result),
   savedInputApplied: (result) => ipcRenderer.invoke(HTML_CHANNELS.savedInputApplied, result),
-  writeRecoveryCopy: (text, token, error) => ipcRenderer.invoke(HTML_CHANNELS.recoveryWrite, text, token, error),
+  writeRecoveryCopy: (text, token, error) =>
+    ipcRenderer.invoke(HTML_CHANNELS.recoveryWrite, text, token, error),
   onRecoveryFlushRequest: (handler) => {
     const listener = (_e: Electron.IpcRendererEvent, token?: string) => handler(token)
     ipcRenderer.on(HTML_CHANNELS.recoveryFlushRequest, listener)

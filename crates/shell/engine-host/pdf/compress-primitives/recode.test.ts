@@ -14,6 +14,16 @@ describe('Chromium good-quality image resize', () => {
     expect(Array.from(resizeGood(source, 2, 1, 1, 1))).toEqual([100, 100, 127, 255])
   })
   it('leaves a non-integer source size unchanged rather than failing the job', async () => {
-    await expect(recodeImage({ kind: 'raw', data: Uint8Array.of(0, 0, 0, 0, 0, 0), width: 1.5, height: 1, components: 3, longSide: 2000, quality: 75 })).resolves.toBeNull()
+    await expect(
+      recodeImage({
+        kind: 'raw',
+        data: Uint8Array.of(0, 0, 0, 0, 0, 0),
+        width: 1.5,
+        height: 1,
+        components: 3,
+        longSide: 2000,
+        quality: 75,
+      }),
+    ).resolves.toBeNull()
   })
 })

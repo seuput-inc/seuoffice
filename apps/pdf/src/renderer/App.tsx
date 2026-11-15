@@ -1420,7 +1420,10 @@ export default function App() {
   const [printInvalid, setPrintInvalid] = useState(false)
   const [printAnnots, setPrintAnnots] = useState(true)
   /** Save As flow: the shell picked the target, the reader still chooses what happens to annotations */
-  const [saveCopyDlg, setSaveCopyDlg] = useState<{ targetPath: string; ownedSaveId?: string } | null>(null)
+  const [saveCopyDlg, setSaveCopyDlg] = useState<{
+    targetPath: string
+    ownedSaveId?: string
+  } | null>(null)
   const [saveCopyMode, setSaveCopyMode] = useState<'keep' | 'flatten' | 'strip'>('keep')
   /** Bumped by "accept all and save": the effect waits for the render that has the new markups. */
   const [acceptSaveRequest, setAcceptSaveRequest] = useState(0)
@@ -2094,7 +2097,11 @@ export default function App() {
     [],
   )
 
-  const recoveryOpenRef = useRef<{ path: string; token: string; applied: PDFDocumentProxy | null } | null>(null)
+  const recoveryOpenRef = useRef<{
+    path: string
+    token: string
+    applied: PDFDocumentProxy | null
+  } | null>(null)
 
   useEffect(() => {
     const recovery = recoveryOpenRef.current
@@ -2169,7 +2176,7 @@ export default function App() {
     void (async () => {
       const recovery = await window.pdfApi.consumeRecoveryPending()
       if (recovery) recoveryOpenRef.current = { ...recovery, applied: null }
-      const path = recovery?.path ?? await window.pdfApi.consumePending()
+      const path = recovery?.path ?? (await window.pdfApi.consumePending())
       if (!path) {
         setStatus('empty')
         return
@@ -5865,7 +5872,11 @@ export default function App() {
 
   // flushAll also writes the field whose card is open: callers that treat success as
   // "everything is in the file" (close-tab Save, flushThen) must not leave it behind
-  const saveInPlace = (autosave = false, flushAll = false, ownedSaveId?: string): Promise<boolean> => {
+  const saveInPlace = (
+    autosave = false,
+    flushAll = false,
+    ownedSaveId?: string,
+  ): Promise<boolean> => {
     if (redactionRequestInFlightRef.current) return Promise.resolve(false)
     // A save is already writing: queue behind it instead of reporting failure — the
     // close prompt's "Save" and ⌘S regularly collide with the blur-triggered autosave
@@ -6058,12 +6069,18 @@ export default function App() {
    * moves the document once the edits are in. Until it is at the chosen place
    * the document is unsaved, which the main process holds (loadDoc reads it).
    */
-  const save = async (autosave = false, flushAll = false, ownedSaveId?: string): Promise<boolean> => {
+  const save = async (
+    autosave = false,
+    flushAll = false,
+    ownedSaveId?: string,
+  ): Promise<boolean> => {
     if (autosave || !untitledCopyRef.current || !filePath || untitledSaver.writing) {
       return saveInPlace(autosave, flushAll, ownedSaveId)
     }
-    const out = await untitledSaver.save(filePath, fileName || 'document.pdf', () =>
-      saveInPlace(false, flushAll, ownedSaveId),
+    const out = await untitledSaver.save(
+      filePath,
+      fileName || 'document.pdf',
+      () => saveInPlace(false, flushAll, ownedSaveId),
       ownedSaveId,
     )
     if (!out.saved) {
@@ -6337,15 +6354,19 @@ export default function App() {
   // window, and the blur-triggered autosave would write the pending edits into the original
   const saveAsFlowRef = useRef(false)
   const saveAsFlowOwnerRef = useRef<string | undefined>(undefined)
-  useEffect(() => window.pdfApi.onSaveAsFlow((inFlight, id) => {
-    if (inFlight) {
-      saveAsFlowOwnerRef.current = id
-      saveAsFlowRef.current = true
-    } else if (saveAsFlowOwnerRef.current === id) {
-      saveAsFlowRef.current = false
-      saveAsFlowOwnerRef.current = undefined
-    }
-  }), [])
+  useEffect(
+    () =>
+      window.pdfApi.onSaveAsFlow((inFlight, id) => {
+        if (inFlight) {
+          saveAsFlowOwnerRef.current = id
+          saveAsFlowRef.current = true
+        } else if (saveAsFlowOwnerRef.current === id) {
+          saveAsFlowRef.current = false
+          saveAsFlowOwnerRef.current = undefined
+        }
+      }),
+    [],
+  )
 
   // Autosave (same strategy as Docs): every 30s and on window blur, silently persist pending
   // edits via the regular save() path while the ribbon toggle (or the shell-wide default) is
@@ -9114,7 +9135,9 @@ export default function App() {
         window.pdfApi.sendCloseSaveResult(false, ownedSaveId)
         return
       }
-      void save(false, flushAll, ownedSaveId).then((ok) => window.pdfApi.sendCloseSaveResult(ok, ownedSaveId))
+      void save(false, flushAll, ownedSaveId).then((ok) =>
+        window.pdfApi.sendCloseSaveResult(ok, ownedSaveId),
+      )
     })
   })
 
@@ -9523,9 +9546,11 @@ export default function App() {
             const recovery = recoveryOpenRef.current
             if (recovery) {
               recoveryOpenRef.current = null
-              void window.pdfApi.recoveryInitialized(recovery.token, false, 'Password entry cancelled').catch((error) => {
-                console.error('[pdf] recovery acknowledgement failed:', error)
-              })
+              void window.pdfApi
+                .recoveryInitialized(recovery.token, false, 'Password entry cancelled')
+                .catch((error) => {
+                  console.error('[pdf] recovery acknowledgement failed:', error)
+                })
             }
             // like docs: cancelling the prompt leaves no document
             setPwInput('')

@@ -75,7 +75,8 @@ pub fn read_i32(data: &[u8], at: usize) -> Res<i32> {
 /// when it is outside 0..2^32-1 or the four bytes are not all inside; a
 /// fraction is cut, NaN writes zeros, as Node's integer writers do.
 pub fn write_u32_f64(data: &mut [u8], value: f64, at: usize) -> Res<()> {
-    if value > 4_294_967_295.0 || value < 0.0 {
+    let value = if value.is_nan() { 0.0 } else { value };
+    if !(0.0..=4_294_967_295.0).contains(&value) {
         return Err(Thrown(format!(
             "The value of \"value\" is out of range (>= 0 and <= 4294967295): {value}"
         )));
@@ -84,7 +85,7 @@ pub fn write_u32_f64(data: &mut [u8], value: f64, at: usize) -> Res<()> {
     let slot = data
         .get_mut(at..end)
         .ok_or_else(|| range_error("u32", at))?;
-    let bits = if value.is_nan() { 0 } else { value as u32 };
+    let bits = value as u32;
     slot.copy_from_slice(&bits.to_le_bytes());
     Ok(())
 }

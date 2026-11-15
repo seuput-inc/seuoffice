@@ -24,10 +24,10 @@ use crate::packages::project_store::{
     ProjectChatRef, ProjectSelection, ProjectTrustState, ProjectWriteResult,
 };
 use crate::shell::projects::chat_store::{
-    CHAT_STATE_CACHE_LIMIT, CHAT_TITLE_CHARS, CHAT_TITLE_MAX_CHARS, ChatAppendedEvent,
-    ChatAppendedListener, ChatDataChange, ChatSender, ChatStoreError, ChatStoreGuide,
-    ChatStoreHost, ChatStoreOptions, FOREIGN_SCAN_CACHE_LIMIT, ListenerId,
-    MAX_PENDING_OPENING_MESSAGES, AppendProgress, ProjectChatStore, default_new_id,
+    AppendProgress, CHAT_STATE_CACHE_LIMIT, CHAT_TITLE_CHARS, CHAT_TITLE_MAX_CHARS,
+    ChatAppendedEvent, ChatAppendedListener, ChatDataChange, ChatSender, ChatStoreError,
+    ChatStoreGuide, ChatStoreHost, ChatStoreOptions, FOREIGN_SCAN_CACHE_LIMIT, ListenerId,
+    MAX_PENDING_OPENING_MESSAGES, ProjectChatStore, default_new_id,
 };
 use crate::shell::projects::folder_files::data_dir_name;
 use crate::shell::projects::paths::{canonical_path, relative_inside};
@@ -411,7 +411,9 @@ impl ChatStoreHost for FakeHost {
         let mut world = self.world.borrow_mut();
         world.clock_ms += 1000.0;
         to_iso_string(world.clock_ms).map_err(|error| ChatStoreError {
-            message: error.to_string(), code: None, kind: crate::shell::projects::chat_store::ChatStoreErrorKind::Failure,
+            message: error.to_string(),
+            code: None,
+            kind: crate::shell::projects::chat_store::ChatStoreErrorKind::Failure,
         })
     }
 

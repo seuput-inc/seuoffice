@@ -22,12 +22,19 @@ worker.onmessage = async (event: MessageEvent<Request>) => {
     const request = event.data
     if (request.operation === 'repair') {
       const output = await repairPdf(new Uint8Array(request.bytes))
-      const data = output.byteOffset === 0 && output.byteLength === output.buffer.byteLength && output.buffer instanceof ArrayBuffer
-        ? output.buffer : output.slice().buffer
+      const data =
+        output.byteOffset === 0 &&
+        output.byteLength === output.buffer.byteLength &&
+        output.buffer instanceof ArrayBuffer
+          ? output.buffer
+          : output.slice().buffer
       worker.postMessage({ ok: data }, [data])
       return
     }
-    if (request.operation === 'decrypt' && await pdfiumOpens(new Uint8Array(request.bytes), request.password) === 'wrong-password') {
+    if (
+      request.operation === 'decrypt' &&
+      (await pdfiumOpens(new Uint8Array(request.bytes), request.password)) === 'wrong-password'
+    ) {
       const error = new Error('the password does not open this PDF') as Error & { code: string }
       error.name = 'PdfLoadError'
       error.code = 'password-required'
@@ -42,24 +49,40 @@ worker.onmessage = async (event: MessageEvent<Request>) => {
       printErr: () => {},
     })
     qpdf.FS.writeFile('/in.pdf', new Uint8Array(request.bytes))
-    const args = request.operation === 'encrypt'
-      ? [
-          '--encrypt', `--user-password=${request.userPassword}`,
-          `--owner-password=${request.ownerPassword ?? crypto.randomUUID()}`, '--bits=256',
-          ...(request.ownerPassword !== undefined ? ['--print=none', '--modify=none', '--extract=n', '--annotate=n'] : []),
-          '--', '/in.pdf', '/out.pdf',
-        ]
-      : [`--password=${request.password}`, '--decrypt', '/in.pdf', '/out.pdf']
+    const args =
+      request.operation === 'encrypt'
+        ? [
+            '--encrypt',
+            `--user-password=${request.userPassword}`,
+            `--owner-password=${request.ownerPassword ?? crypto.randomUUID()}`,
+            '--bits=256',
+            ...(request.ownerPassword !== undefined
+              ? ['--print=none', '--modify=none', '--extract=n', '--annotate=n']
+              : []),
+            '--',
+            '/in.pdf',
+            '/out.pdf',
+          ]
+        : [`--password=${request.password}`, '--decrypt', '/in.pdf', '/out.pdf']
     let code: number
-    try { code = qpdf.callMain(args) } catch { code = 2 }
+    try {
+      code = qpdf.callMain(args)
+    } catch {
+      code = 2
+    }
     if (code !== 0 && code !== 3) throw new Error('qpdf could not write the file')
     let output: Uint8Array
-    try { output = Uint8Array.from(qpdf.FS.readFile('/out.pdf')) }
-    catch { throw new Error('qpdf could not write the file') }
+    try {
+      output = Uint8Array.from(qpdf.FS.readFile('/out.pdf'))
+    } catch {
+      throw new Error('qpdf could not write the file')
+    }
     worker.postMessage({ ok: output.buffer }, [output.buffer])
   } catch (error) {
     const e = error instanceof Error ? error : new Error(String(error))
     const details = e as Error & { code?: unknown; reason?: unknown }
-    worker.postMessage({ error: { name: e.name, message: e.message, code: details.code, reason: details.reason } })
+    worker.postMessage({
+      error: { name: e.name, message: e.message, code: details.code, reason: details.reason },
+    })
   }
 }

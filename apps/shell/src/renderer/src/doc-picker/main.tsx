@@ -21,7 +21,9 @@ function applyTheme(theme: DocPickerTheme): void {
 function ReadyPicker({ lang }: { lang: Parameters<typeof DocPickerWindow>[0]['lang'] }) {
   React.useEffect(() => {
     let frame = requestAnimationFrame(() => {
-      frame = requestAnimationFrame(() => { void api.ready() })
+      frame = requestAnimationFrame(() => {
+        void api.ready()
+      })
     })
     return () => cancelAnimationFrame(frame)
   }, [])

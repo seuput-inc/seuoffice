@@ -271,7 +271,9 @@ export default function App() {
 
   const statusRef = useRef<LoadStatus>('loading')
   const pendingRecoveryApplyRef = useRef<string | null>(null)
-  const pendingSavedApplyRef = useRef<{ token: string; outcome: 'applied' | 'recovered' } | null>(null)
+  const pendingSavedApplyRef = useRef<{ token: string; outcome: 'applied' | 'recovered' } | null>(
+    null,
+  )
   const dirtyRef = useRef(false)
   const savingRef = useRef(false)
   const [roundTripEnabled] = useState(roundTripMarkdownEnabled)
@@ -531,10 +533,18 @@ export default function App() {
         // any content loads; the original path stays the save target
         const recovery = savedInput ? null : ((await window.markdownApi.recoveryOpen?.()) ?? null)
         recoveryToken = recovery?.recoveryToken
-        const recovered = savedInput?.recovered ? { text: savedInput.text, originalPath: undefined } : recovery && typeof recovery.text === 'string' ? recovery : null
+        const recovered = savedInput?.recovered
+          ? { text: savedInput.text, originalPath: undefined }
+          : recovery && typeof recovery.text === 'string'
+            ? recovery
+            : null
         if (cancelled) return
         if (path) {
-          const raw = recovered ? recovered.text : savedInput ? savedInput.text : await window.markdownApi.readFile(path)
+          const raw = recovered
+            ? recovered.text
+            : savedInput
+              ? savedInput.text
+              : await window.markdownApi.readFile(path)
           if (cancelled) return
           loadFromPath(path, raw)
           jumpToWikiFragment(path)
@@ -556,7 +566,11 @@ export default function App() {
           sourceMapRef.current = buildSourceMap(editor, editor.state.doc, seed)
         }
         if (recoveryToken) pendingRecoveryApplyRef.current = recoveryToken
-        if (savedToken) pendingSavedApplyRef.current = { token: savedToken, outcome: savedInput?.recovered ? 'recovered' : 'applied' }
+        if (savedToken)
+          pendingSavedApplyRef.current = {
+            token: savedToken,
+            outcome: savedInput?.recovered ? 'recovered' : 'applied',
+          }
         statusRef.current = 'ready'
         setStatus('ready')
         // a restored copy is unsaved work: the file on disk is untouched
@@ -564,11 +578,27 @@ export default function App() {
       } catch (err) {
         if (savedToken) {
           pendingSavedApplyRef.current = null
-          await window.markdownApi.savedInputApplied({ token: savedToken, outcome: 'failed', error: err instanceof Error ? err.message : String(err) }).catch((error) => console.error('[markdown] saved input failure acknowledgment failed:', error))
+          await window.markdownApi
+            .savedInputApplied({
+              token: savedToken,
+              outcome: 'failed',
+              error: err instanceof Error ? err.message : String(err),
+            })
+            .catch((error) =>
+              console.error('[markdown] saved input failure acknowledgment failed:', error),
+            )
         }
         if (recoveryToken) {
           pendingRecoveryApplyRef.current = null
-          await window.markdownApi.recoveryApplied?.({ token: recoveryToken, ok: false, error: err instanceof Error ? err.message : String(err) }).catch((error) => console.error('[markdown] recovery failure acknowledgment failed:', error))
+          await window.markdownApi
+            .recoveryApplied?.({
+              token: recoveryToken,
+              ok: false,
+              error: err instanceof Error ? err.message : String(err),
+            })
+            .catch((error) =>
+              console.error('[markdown] recovery failure acknowledgment failed:', error),
+            )
         }
         console.error('[markdown] load failed:', err)
         if (!cancelled) {
@@ -601,7 +631,15 @@ export default function App() {
       }
     })().catch((error) => {
       if (saved && !savedAcknowledgmentStarted) {
-        void window.markdownApi.savedInputApplied({ token: saved.token, outcome: 'failed', error: error instanceof Error ? error.message : String(error) }).catch((failure) => console.error('[markdown] saved input failure acknowledgment failed:', failure))
+        void window.markdownApi
+          .savedInputApplied({
+            token: saved.token,
+            outcome: 'failed',
+            error: error instanceof Error ? error.message : String(error),
+          })
+          .catch((failure) =>
+            console.error('[markdown] saved input failure acknowledgment failed:', failure),
+          )
       }
       console.error('[markdown] initial document acknowledgment failed:', error)
       statusRef.current = 'error'

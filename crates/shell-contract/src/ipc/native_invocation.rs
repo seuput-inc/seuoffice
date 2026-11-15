@@ -810,7 +810,7 @@ pub struct AdmittedNativeSaveSelection { key: Arc<()> }
 impl NativeSaveRevisionAuthority {
     pub fn new(selection: NativeSaveDestination, aliases: Vec<NativeRequestOwner>) -> Self {
         Self(Arc::new(Mutex::new(Arc::new(NativeSaveRevisionState {
-            selection, aliases, loss: CancelToken::new(),
+            selection, aliases, loss: CancelToken::default(),
         }))))
     }
     pub fn snapshot(&self) -> Result<NativeSaveRevisionSnapshot, String> {
@@ -839,7 +839,7 @@ impl NativeSaveRevisionSnapshot {
         Ok(PreparedNativeSaveSelection {
             snapshot: self.clone(),
             replacement: Some(Arc::new(NativeSaveRevisionState {
-                selection, aliases: self.state.aliases.clone(), loss: CancelToken::new(),
+                selection, aliases: self.state.aliases.clone(), loss: CancelToken::default(),
             })),
             key: Arc::new(()), committed: false, notified: false,
         })
@@ -874,7 +874,7 @@ impl NativeSaveRevisionSnapshot {
             .map(|owner| Ok((owner.clone(), renew(owner)?))).collect::<Result<Vec<_>, String>>()?.into();
         Ok(PreparedNativeSaveRevision {
             snapshot: self.clone(),
-            replacement: Some(Arc::new(NativeSaveRevisionState { selection, aliases, loss: CancelToken::new() })),
+            replacement: Some(Arc::new(NativeSaveRevisionState { selection, aliases, loss: CancelToken::default() })),
             pairs, request_aliases, committed: false, committed_state: None, notified: false,
         })
     }
@@ -1000,7 +1000,7 @@ impl RecoveryAuthoritySnapshot {
             replace(&mut candidate)?;
         }
         let mut authority = (*self.authority).clone();
-        authority.revision_loss = CancelToken::new();
+        authority.revision_loss = CancelToken::default();
         if let Some(startup) = &mut authority.startup {
             replace(&mut startup.shell)?;
             for owner in &mut startup.participants { replace(owner)?; }
@@ -1228,11 +1228,11 @@ impl RecoveryOpenTarget {
                 Some(operation.reserve_target(view, created.clone())?)
             }
         };
-        let authority = Arc::new(RecoveryAuthority { context: context.clone(), request: request.clone(), startup: startup.clone(), command: command.clone(), revision_loss: CancelToken::new() });
+        let authority = Arc::new(RecoveryAuthority { context: context.clone(), request: request.clone(), startup: startup.clone(), command: command.clone(), revision_loss: CancelToken::default() });
         Ok(Self(Arc::new(RecoveryBinding { context, view, created, closure, browser_owner: owner, invocation, authority: Mutex::new(authority),
             registered: Mutex::new(None), request, startup, command, seed_committed: Mutex::new(false),
-            preparation_finished: CancelToken::new(), settlement: Mutex::new(None),
-            settlement_ready: CancelToken::new(), work: Arc::new(Mutex::new(RecoveryWorkState::default())) })))
+            preparation_finished: CancelToken::default(), settlement: Mutex::new(None),
+            settlement_ready: CancelToken::default(), work: Arc::new(Mutex::new(RecoveryWorkState::default())) })))
     }
     pub fn context(&self) -> &RecoveryOpenContext { &self.0.context }
     pub fn same_binding(&self, other: &Self) -> bool { Arc::ptr_eq(&self.0, &other.0) }

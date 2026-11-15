@@ -7,9 +7,9 @@ use jscompat::{JsObject, JsonValue, js_regex, trim};
 use main_core::mindmap::atomic_write::atomic_write_file;
 use main_core::mindmap::save_as_formats::MapSaveAsKind;
 use main_core::packages::electron_utils::dialog_memory::{FallbackDir, save_as_suggestion};
-use shell_contract::{IpcError, IpcValue};
 use shell_contract::ViewId;
 use shell_contract::ipc::{CallContext, Responder};
+use shell_contract::{IpcError, IpcValue};
 
 use super::app::MindmapApp;
 use super::handlers::pick_save_path;
@@ -182,14 +182,32 @@ fn export_pdf(app: &MindmapApp, cx: &CallContext, args: Args, responder: Respond
     if as_str(field(request, "ownedSaveRequestId")).is_some() {
         let renderer = app.0.renderer.clone();
         let html = html.clone();
-        return export_owned(app, cx, request, MapSaveAsKind::Pdf, Box::new(move |request| {
-            match &request.authority {
-                crate::owned_save::SaveAuthority::Renderer(origin) =>
-                    renderer.page_to_pdf_owned(&html, origin, &request.destination, &request.cancel, &request.pending, &request.participants(&[]), &request.additional),
-                crate::owned_save::SaveAuthority::Native(binding) =>
-                    renderer.page_to_pdf_native(&html, binding, &request.participants(&[]), &request.cancel, &request.pending, &request.additional),
-            }
-        }), responder);
+        return export_owned(
+            app,
+            cx,
+            request,
+            MapSaveAsKind::Pdf,
+            Box::new(move |request| match &request.authority {
+                crate::owned_save::SaveAuthority::Renderer(origin) => renderer.page_to_pdf_owned(
+                    &html,
+                    origin,
+                    &request.destination,
+                    &request.cancel,
+                    &request.pending,
+                    &request.participants(&[]),
+                    &request.additional,
+                ),
+                crate::owned_save::SaveAuthority::Native(binding) => renderer.page_to_pdf_native(
+                    &html,
+                    binding,
+                    &request.participants(&[]),
+                    &request.cancel,
+                    &request.pending,
+                    &request.additional,
+                ),
+            }),
+            responder,
+        );
     }
     let target = match target_of(app, view, MapSaveAsKind::Pdf, request) {
         Err(message) => return responder.reply(Ok(export_failure(message))),
@@ -226,46 +244,90 @@ pub(super) fn routes(app: &MindmapApp) -> Vec<Route> {
             let bytes = match kind {
                 MapSaveAsKind::Png => match as_bytes(field(request, "bytes")) {
                     Some(bytes) if is_png(bytes) && bytes.len() <= MAX_PNG_BYTES => bytes.to_vec(),
-                    _ => return responder.reply(Ok(export_failure("mindmap: bad picture export request"))),
+                    _ => {
+                        return responder
+                            .reply(Ok(export_failure("mindmap: bad picture export request")));
+                    }
                 },
                 MapSaveAsKind::Svg => match is_map_svg(field(request, "svg")) {
                     Some(svg) => format!("{XML_DECLARATION}{svg}").into_bytes(),
-                    None => return responder.reply(Ok(export_failure("mindmap: bad SVG export request"))),
+                    None => {
+                        return responder
+                            .reply(Ok(export_failure("mindmap: bad SVG export request")));
+                    }
                 },
                 MapSaveAsKind::Markdown => match field(request, "text") {
-                    IpcValue::String(text) if utf16_len(text) <= MAX_OUTLINE_CHARS => text.as_bytes().to_vec(),
-                    _ => return responder.reply(Ok(export_failure("mindmap: bad outline export request"))),
+                    IpcValue::String(text) if utf16_len(text) <= MAX_OUTLINE_CHARS => {
+                        text.as_bytes().to_vec()
+                    }
+                    _ => {
+                        return responder
+                            .reply(Ok(export_failure("mindmap: bad outline export request")));
+                    }
                 },
                 _ => return responder.reply(Err(thrown("The map export kind is invalid"))),
             };
             if as_str(field(request, "ownedSaveRequestId")).is_some() {
-                export_owned(&a, cx, request, kind, Box::new(move |_| Ok(bytes)), responder);
+                export_owned(
+                    &a,
+                    cx,
+                    request,
+                    kind,
+                    Box::new(move |_| Ok(bytes)),
+                    responder,
+                );
             } else {
                 responder.reply(Ok(write_export(&a, cx.sender.view, kind, request, &bytes)));
             }
         }));
     }
     let a = app.clone();
-    routes.push(route::invoke_later("mindmap:export-pdf", move |cx, args, responder| export_pdf(&a, cx, args, responder)));
+    routes.push(route::invoke_later(
+        "mindmap:export-pdf",
+        move |cx, args, responder| export_pdf(&a, cx, args, responder),
+    ));
     routes
 }
 
-fn export_owned(app: &MindmapApp, cx: &CallContext, value: &IpcValue, kind: MapSaveAsKind, produce: Box<dyn FnOnce(&crate::owned_save::OwnedSave) -> Result<Vec<u8>, String> + Send>, responder: Responder) {
+fn export_owned(
+    app: &MindmapApp,
+    cx: &CallContext,
+    value: &IpcValue,
+    kind: MapSaveAsKind,
+    produce: Box<dyn FnOnce(&crate::owned_save::OwnedSave) -> Result<Vec<u8>, String> + Send>,
+    responder: Responder,
+) {
     let prepared = (|| {
-        let id = super::owned_save::request_id(as_str(field(value, "ownedSaveRequestId")).ok_or_else(|| thrown("The export has no save request"))?)?;
-        let path = as_str(field(value, "path")).ok_or_else(|| thrown("The export has no selected path"))?.to_owned();
+        let id = super::owned_save::request_id(
+            as_str(field(value, "ownedSaveRequestId"))
+                .ok_or_else(|| thrown("The export has no save request"))?,
+        )?;
+        let path = as_str(field(value, "path"))
+            .ok_or_else(|| thrown("The export has no selected path"))?
+            .to_owned();
         let (request, admission) = app.owned_export(cx, id, kind, &path)?;
         Ok::<_, IpcError>((id, path, request, admission))
     })();
-    let (id, path, request, admission) = match prepared { Ok(value) => value, Err(error) => return responder.reply(Err(error)) };
+    let (id, path, request, admission) = match prepared {
+        Ok(value) => value,
+        Err(error) => return responder.reply(Err(error)),
+    };
     let worker_request = request.clone();
-    app.offload(move || {
-        let bytes = produce(&worker_request).map_err(thrown)?;
-        main_core::packages::electron_utils::atomic_write::owned::write_file(&path, &bytes, admission).map_err(|error| thrown(error.message))?;
-        Ok::<_, IpcError>(path)
-    }, move |app, answer| {
-        let result = answer.and_then(|path| request.effect(|| Ok(export_written(path))));
-        if let Err(error) = &result { app.finish_owned_save(id, Err(error.clone())); }
-        responder.reply(result);
-    });
+    app.offload(
+        move || {
+            let bytes = produce(&worker_request).map_err(thrown)?;
+            main_core::packages::electron_utils::atomic_write::owned::write_file(
+                &path, &bytes, admission,
+            )
+            .map_err(|error| thrown(error.message))?;
+            Ok::<_, IpcError>(path)
+        },
+        move |app, answer| {
+            let result = answer.and_then(|path| request.effect(|| Ok(export_written(path))));
+            if let Err(error) = &result {
+                app.finish_owned_save(id, Err(error.clone()));
+            }
+            responder.reply(result);
+        },
+    );
 }

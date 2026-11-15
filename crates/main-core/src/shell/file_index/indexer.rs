@@ -316,10 +316,10 @@ impl FileIndexer {
             }
             TimerKind::Idle => {
                 self.idle_timer = false;
-                if !(self.scanning
-                    || self.draining
-                    || !self.queue.is_empty()
-                    || !self.waiting.is_empty())
+                if !self.scanning
+                    && !self.draining
+                    && self.queue.is_empty()
+                    && self.waiting.is_empty()
                 {
                     self.recycle_worker(host);
                 }

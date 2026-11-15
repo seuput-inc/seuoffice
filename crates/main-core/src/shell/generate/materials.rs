@@ -17,7 +17,9 @@ use super::limits::{
     LONG_MATERIAL_NOTICE_CHARS, MAX_IMAGE_MATERIAL_BYTES, MAX_MATERIAL_BYTES, MAX_MATERIALS,
     USAGE_NOTICE_CHARS,
 };
-use crate::packages::electron_utils::unsaved_files::{OpenFilesHolder, OpenFilesSnapshot, file_has_unsaved_changes};
+use crate::packages::electron_utils::unsaved_files::{
+    OpenFilesHolder, OpenFilesSnapshot, file_has_unsaved_changes,
+};
 use crate::packages::file_parse::attachable::{attachable_exts, attachable_max_bytes};
 use crate::shell::renderer_disposal::Failure;
 use std::sync::{Arc, Mutex};
@@ -165,13 +167,20 @@ impl MaterialLengthCache {
     }
 
     fn get(&self, key: &str) -> Option<f64> {
-        self.entries.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-            .iter().find(|(k, _)| k == key).map(|(_, v)| *v)
+        self.entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| *v)
     }
 
     /// `rememberLength`: the key is deleted and set again, so it is the newest
     fn remember(&mut self, key: &str, length: f64) {
-        let mut entries = self.entries.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         entries.retain(|(k, _)| k != key);
         entries.push((key.to_owned(), length));
         if entries.len() > LENGTH_CACHE_MAX {
@@ -191,12 +200,25 @@ pub struct MaterialInspectJob {
 
 impl MaterialInspectJob {
     pub fn new(path: String, open_files: OpenFilesSnapshot, cache: MaterialLengthCache) -> Self {
-        Self { path, open_files, cache }
+        Self {
+            path,
+            open_files,
+            cache,
+        }
     }
 
     pub fn execute(self, host: &mut dyn InspectHost) -> Result<MaterialStatus, Failure> {
-        let Self { path, open_files, mut cache } = self;
-        inspect_material_state(host, &mut cache, || open_files.file_has_unsaved_changes(&path), &path)
+        let Self {
+            path,
+            open_files,
+            mut cache,
+        } = self;
+        inspect_material_state(
+            host,
+            &mut cache,
+            || open_files.file_has_unsaved_changes(&path),
+            &path,
+        )
     }
 }
 
@@ -243,7 +265,12 @@ pub fn inspect_material(
     open_files: &OpenFilesHolder,
     path: &str,
 ) -> Result<MaterialStatus, Failure> {
-    inspect_material_state(host, cache, || file_has_unsaved_changes(open_files, path), path)
+    inspect_material_state(
+        host,
+        cache,
+        || file_has_unsaved_changes(open_files, path),
+        path,
+    )
 }
 
 fn inspect_material_state(
@@ -432,16 +459,30 @@ mod worker_tests {
     impl InspectHost for Reads {
         fn stat(&mut self, _: &str) -> Result<FileStat, Failure> {
             self.calls.push("stat");
-            Ok(FileStat { is_file: true, size: 4.0, mtime_ms: Some(1.0) })
+            Ok(FileStat {
+                is_file: true,
+                size: 4.0,
+                mtime_ms: Some(1.0),
+            })
         }
 
         fn parse(&mut self, _: &str) -> Result<ParsedFile, Failure> {
-            assert!(self.cache.entries.try_lock().is_ok(), "parser cannot run under the numeric cache lock");
+            assert!(
+                self.cache.entries.try_lock().is_ok(),
+                "parser cannot run under the numeric cache lock"
+            );
             self.calls.push("parse");
-            Ok(ParsedFile { ok: true, kind: Some("text".into()), text: Some("a𝄞".into()), error: None })
+            Ok(ParsedFile {
+                ok: true,
+                kind: Some("text".into()),
+                text: Some("a𝄞".into()),
+                error: None,
+            })
         }
 
-        fn injected_parse(&self) -> bool { false }
+        fn injected_parse(&self) -> bool {
+            false
+        }
     }
 
     #[test]
@@ -449,10 +490,22 @@ mod worker_tests {
         fn send<T: Send>() {}
         send::<MaterialInspectJob>();
         let cache = MaterialLengthCache::new();
-        let mut host = Reads { cache: cache.clone(), calls: Vec::new() };
-        let first = MaterialInspectJob::new("/fixture.md".into(), OpenFilesSnapshot::NoSource, cache.clone()).execute(&mut host).unwrap();
+        let mut host = Reads {
+            cache: cache.clone(),
+            calls: Vec::new(),
+        };
+        let first = MaterialInspectJob::new(
+            "/fixture.md".into(),
+            OpenFilesSnapshot::NoSource,
+            cache.clone(),
+        )
+        .execute(&mut host)
+        .unwrap();
         assert_eq!(first.text_length, 3.0);
-        let second = MaterialInspectJob::new("/fixture.md".into(), OpenFilesSnapshot::NoSource, cache).execute(&mut host).unwrap();
+        let second =
+            MaterialInspectJob::new("/fixture.md".into(), OpenFilesSnapshot::NoSource, cache)
+                .execute(&mut host)
+                .unwrap();
         assert_eq!(second.text_length, 3.0);
         assert_eq!(host.calls, ["stat", "parse", "stat"]);
     }
@@ -460,11 +513,23 @@ mod worker_tests {
     #[test]
     fn unknown_open_files_block_reading_but_absent_source_does_not() {
         let cache = MaterialLengthCache::new();
-        let mut host = Reads { cache: cache.clone(), calls: Vec::new() };
-        let unknown = MaterialInspectJob::new("/fixture.md".into(), OpenFilesSnapshot::Unknown, cache.clone()).execute(&mut host).unwrap();
+        let mut host = Reads {
+            cache: cache.clone(),
+            calls: Vec::new(),
+        };
+        let unknown = MaterialInspectJob::new(
+            "/fixture.md".into(),
+            OpenFilesSnapshot::Unknown,
+            cache.clone(),
+        )
+        .execute(&mut host)
+        .unwrap();
         assert!(unknown.unsaved);
         assert_eq!(host.calls, ["stat"]);
-        let absent = MaterialInspectJob::new("/fixture.md".into(), OpenFilesSnapshot::NoSource, cache).execute(&mut host).unwrap();
+        let absent =
+            MaterialInspectJob::new("/fixture.md".into(), OpenFilesSnapshot::NoSource, cache)
+                .execute(&mut host)
+                .unwrap();
         assert!(!absent.unsaved);
         assert_eq!(host.calls, ["stat", "stat", "parse"]);
     }
@@ -475,13 +540,24 @@ mod worker_tests {
         impl InspectHost for Ordered {
             fn stat(&mut self, _: &str) -> Result<FileStat, Failure> {
                 self.0.lock().unwrap().push("stat");
-                Ok(FileStat { is_file: true, size: 1.0, mtime_ms: None })
+                Ok(FileStat {
+                    is_file: true,
+                    size: 1.0,
+                    mtime_ms: None,
+                })
             }
             fn parse(&mut self, _: &str) -> Result<ParsedFile, Failure> {
                 self.0.lock().unwrap().push("parse");
-                Ok(ParsedFile { ok: true, kind: Some("text".into()), text: Some("x".into()), error: None })
+                Ok(ParsedFile {
+                    ok: true,
+                    kind: Some("text".into()),
+                    text: Some("x".into()),
+                    error: None,
+                })
             }
-            fn injected_parse(&self) -> bool { false }
+            fn injected_parse(&self) -> bool {
+                false
+            }
         }
         let calls = Arc::new(Mutex::new(Vec::new()));
         let source_calls = calls.clone();

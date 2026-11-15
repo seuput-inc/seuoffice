@@ -54,7 +54,9 @@ pub fn insert_fakes(hosts: &mut shell_contract::Hosts) {
 #[cfg(feature = "probe")]
 pub fn probe_hosts(hosts: &mut shell_contract::Hosts, case: &serde_json::Value) {
     use std::sync::Arc;
-    hosts.insert::<shell_contract::runtime::NativeViewRetirementsHost>(Arc::new(testkit::FakeNativeRetirements::default()));
+    hosts.insert::<shell_contract::runtime::NativeViewRetirementsHost>(Arc::new(
+        testkit::FakeNativeRetirements::default(),
+    ));
     hosts.insert::<host::LocaleHost>(Arc::new(testkit::FixedLocale(
         main_core::packages::i18n::Lang::En,
     )));

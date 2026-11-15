@@ -429,8 +429,12 @@ impl<D: ReadingStateDeps> ReadingState<D> {
         })
     }
 
-    pub fn prepare_move_position_guarded(&mut self, from_path: &str, to_path: &str,
-        admit: &mut crate::packages::electron_utils::atomic_write::WriteAdmission<'_>) -> Result<(String, String), NodeError> {
+    pub fn prepare_move_position_guarded(
+        &mut self,
+        from_path: &str,
+        to_path: &str,
+        admit: &mut crate::packages::electron_utils::atomic_write::WriteAdmission<'_>,
+    ) -> Result<(String, String), NodeError> {
         let Self { deps, loaded } = self;
         let file = Self::load(deps, loaded);
         let from = path_key(from_path, None);

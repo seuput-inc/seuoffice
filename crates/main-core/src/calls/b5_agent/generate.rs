@@ -45,7 +45,8 @@ use crate::shell::generate::generate_api::{
 };
 use crate::shell::generate::generate_window::{
     GenerateText, GenerateWindow, GenerateWindowHost, GenerateWindowOptions, IPC_HANDLE_CHANNELS,
-    NewDocumentOpener, OpenDialogResult, OpenInit, WindowId, WindowNeed, WindowOpen, WindowOutcome, WindowStep,
+    NewDocumentOpener, OpenDialogResult, OpenInit, WindowId, WindowNeed, WindowOpen, WindowOutcome,
+    WindowStep,
 };
 use crate::shell::generate::limits::{
     LONG_MATERIAL_NOTICE_CHARS, MAX_IMAGE_MATERIAL_BYTES, MAX_MATERIAL_BYTES, MAX_MATERIALS,
@@ -66,7 +67,8 @@ use crate::shell::generate::request::{
     validate_generate_request,
 };
 use crate::shell::generate::session::{
-    GenerateSession, GenerateSessionHost, MaterialRef, SessionStep, SessionOutcome, SessionAnswer, SessionNeed,
+    GenerateSession, GenerateSessionHost, MaterialRef, SessionAnswer, SessionNeed, SessionOutcome,
+    SessionStep,
 };
 use crate::shell::generate::title_bar::{GENERATE_TITLE_BAR_HEIGHT, generate_title_bar_overlay};
 use crate::shell::renderer_disposal::Failure;
@@ -855,7 +857,11 @@ impl OpenMaterialsDeps for OpenFake {
 
     fn web_contents_for(&mut self, tab_id: &str) -> Result<Option<FakeContents>, Failure> {
         log_line(&self.log, vec![text("webContentsFor"), text(tab_id)]);
-        let Some(spec) = self.scenario.get("contents").and_then(|contents| contents.get(tab_id)) else {
+        let Some(spec) = self
+            .scenario
+            .get("contents")
+            .and_then(|contents| contents.get(tab_id))
+        else {
             return Ok(None);
         };
         Ok(Some(FakeContents {
@@ -863,7 +869,6 @@ impl OpenMaterialsDeps for OpenFake {
             destroyed: field_bool(spec, "destroyed"),
         }))
     }
-
 
     fn has_save(&self, kind: DocumentTabKind) -> bool {
         list(self.scenario.get("save"))
@@ -984,17 +989,23 @@ fn open_call(args: &[Value], cx: &mut Context) -> Answer {
                             }
                         }
                     };
-                    outcome.map_or_else(|Failure(message)| error_value(&message), |outcome| text(outcome.as_str()))
+                    outcome.map_or_else(
+                        |Failure(message)| error_value(&message),
+                        |outcome| text(outcome.as_str()),
+                    )
                 }
             }
         } else if let Some(id) = field_f64(step, "pathOfUntitled") {
-            path_of_untitled(&mut deps, &tabs, id)
-                .map_or_else(|Failure(message)| error_value(&message), |path| path.map_or(Value::Null, Value::from))
+            path_of_untitled(&mut deps, &tabs, id).map_or_else(
+                |Failure(message)| error_value(&message),
+                |path| path.map_or(Value::Null, Value::from),
+            )
         } else {
             let id = field_f64(step, "showUntitled").unwrap_or(f64::NAN);
-            unit(show_untitled(&mut deps, &tabs, id).and_then(|tab| {
-                tab.map_or(Ok(()), |tab| deps.reveal(&tab))
-            }))
+            unit(
+                show_untitled(&mut deps, &tabs, id)
+                    .and_then(|tab| tab.map_or(Ok(()), |tab| deps.reveal(&tab))),
+            )
         });
     }
     cx.logs.extend(log.take());
@@ -1101,7 +1112,6 @@ impl GenerateSessionHost for SessionFake {
         lang_of(&self.scenario)
     }
 
-
     fn path_of_untitled(
         &mut self,
         _snap: &OpenSnapshot<'_>,
@@ -1132,7 +1142,11 @@ impl GenerateSessionHost for SessionFake {
         }
     }
 
-    fn save_material_begin(&mut self, _snap: &OpenSnapshot<'_>, path: &str) -> Result<SaveMaterialStep, Failure> {
+    fn save_material_begin(
+        &mut self,
+        _snap: &OpenSnapshot<'_>,
+        path: &str,
+    ) -> Result<SaveMaterialStep, Failure> {
         log_line(&self.log, vec![text("saveMaterial"), text(path)]);
         Ok(SaveMaterialStep::Done(
             match self
@@ -1165,23 +1179,18 @@ impl GenerateSessionHost for SessionFake {
         }
     }
 
-
     fn can_convert(&self) -> bool {
         field_bool(&self.scenario, "canConvert")
     }
-
-
 
     fn has_redaction_notice(&self) -> bool {
         field_bool(&self.scenario, "hasNotice")
     }
 
-
     fn push(&mut self, state: &GenerateWindowState) -> Result<(), Failure> {
         log_line(&self.log, vec![text("push"), to_value(state)]);
         Ok(())
     }
-
 
     fn new_id(&mut self) -> String {
         if self.ids.is_empty() {
@@ -1221,7 +1230,10 @@ fn outcome_value(result: Result<SessionOutcome, Failure>) -> Value {
 }
 
 fn carry_session(
-    session: &mut GenerateSession, host: &mut SessionFake, snap: &OpenSnapshot<'_>, mut step: SessionStep,
+    session: &mut GenerateSession,
+    host: &mut SessionFake,
+    snap: &OpenSnapshot<'_>,
+    mut step: SessionStep,
 ) -> Result<SessionOutcome, Failure> {
     loop {
         step = match step {
@@ -1229,10 +1241,18 @@ fn carry_session(
             SessionStep::Need(need, run) => {
                 let answer = match need {
                     SessionNeed::Reveal(_) => SessionAnswer::Revealed(Ok(())),
-                    SessionNeed::Inspect(path) => SessionAnswer::Inspected(host.inspect(snap, &path)),
-                    SessionNeed::Notice(path) => SessionAnswer::Noticed(host.redaction_notice(&path)),
-                    SessionNeed::Convert { kind, path } => SessionAnswer::Converted(host.convert(kind, &path)),
-                    SessionNeed::OpenTarget { handoff, token } => match host.open_target_tab(&handoff) {
+                    SessionNeed::Inspect(path) => {
+                        SessionAnswer::Inspected(host.inspect(snap, &path))
+                    }
+                    SessionNeed::Notice(path) => {
+                        SessionAnswer::Noticed(host.redaction_notice(&path))
+                    }
+                    SessionNeed::Convert { kind, path } => {
+                        SessionAnswer::Converted(host.convert(kind, &path))
+                    }
+                    SessionNeed::OpenTarget { handoff, token } => match host
+                        .open_target_tab(&handoff)
+                    {
                         Err(error) => SessionAnswer::OpenFailed(error),
                         Ok(()) => {
                             let outcome = session.complete_committed_open(run, token.commit())?;
@@ -1240,7 +1260,9 @@ fn carry_session(
                             return Ok(outcome);
                         }
                     },
-                    SessionNeed::OpenConverted { document, token } => match host.open_converted_tab(&document) {
+                    SessionNeed::OpenConverted { document, token } => match host
+                        .open_converted_tab(&document)
+                    {
                         Err(error) => SessionAnswer::OpenFailed(error),
                         Ok(()) => {
                             let outcome = session.complete_committed_open(run, token.commit())?;
@@ -1253,7 +1275,10 @@ fn carry_session(
                         SessionAnswer::Slept
                     }
                     SessionNeed::Save(need) => {
-                        let mut open = OpenFake { scenario: host.scenario.clone(), log: Rc::clone(&host.log) };
+                        let mut open = OpenFake {
+                            scenario: host.scenario.clone(),
+                            log: Rc::clone(&host.log),
+                        };
                         SessionAnswer::Save(open.carry_out(&need))
                     }
                 };
@@ -1290,7 +1315,12 @@ fn session_call(args: &[Value], cx: &mut Context) -> Answer {
         results.push(if step.get("state").is_some() {
             to_value(&session.state(&host))
         } else if let Some(reset) = step.get("reset") {
-            let next = session.reset(&mut host, &snap, &refs_of(reset.get("refs")), ai_kind_of(reset.get("kind")));
+            let next = session.reset(
+                &mut host,
+                &snap,
+                &refs_of(reset.get("refs")),
+                ai_kind_of(reset.get("kind")),
+            );
             outcome_value(carry_session(&mut session, &mut host, &snap, next))
         } else if step.get("refresh").is_some() {
             let next = session.refresh(&mut host, &snap);
@@ -1300,7 +1330,11 @@ fn session_call(args: &[Value], cx: &mut Context) -> Answer {
         } else if let Some(kind) = step.get("setConvert") {
             unit(session.set_convert(&mut host, step_arg(kind)))
         } else if let Some(paths) = step.get("addPaths") {
-            let next = session.add_paths(&mut host, &snap, paths.as_array().map_or(&[][..], Vec::as_slice));
+            let next = session.add_paths(
+                &mut host,
+                &snap,
+                paths.as_array().map_or(&[][..], Vec::as_slice),
+            );
             outcome_value(carry_session(&mut session, &mut host, &snap, next))
         } else if let Some(key) = step.get("remove") {
             unit(session.remove(&mut host, step_arg(key)))
@@ -1437,7 +1471,6 @@ impl OpenMaterialsDeps for WindowFake {
         self.open.web_contents_for(tab_id)
     }
 
-
     fn has_save(&self, kind: DocumentTabKind) -> bool {
         self.open.has_save(kind)
     }
@@ -1501,11 +1534,9 @@ impl GenerateWindowHost for WindowFake {
             .to_owned()
     }
 
-
     fn can_open_converted(&self) -> bool {
         field_bool(&self.scenario, "canConvert")
     }
-
 
     fn starred_group_paths(&mut self, group: &str) -> Vec<String> {
         log_line(&self.log, vec![text("starredGroupPaths"), text(group)]);
@@ -1514,8 +1545,6 @@ impl GenerateWindowHost for WindowFake {
             .filter_map(|p| p.as_str().map(str::to_owned))
             .collect()
     }
-
-
 
     fn new_id(&mut self) -> String {
         "ID".to_owned()
@@ -1629,7 +1658,11 @@ impl GenerateWindowHost for WindowFake {
         })
     }
 
-    fn window_send_state(&mut self, _window: WindowId, state: &GenerateWindowState) -> Result<(), Failure> {
+    fn window_send_state(
+        &mut self,
+        _window: WindowId,
+        state: &GenerateWindowState,
+    ) -> Result<(), Failure> {
         self.sends.push(to_value(state));
         Ok(())
     }
@@ -1692,7 +1725,6 @@ impl GenerateWindowHost for WindowFake {
         log_line(&self.log, vec![text("openExternal"), text(url)]);
         Ok(())
     }
-
 }
 
 fn opener_of(value: Option<&Value>) -> Option<NewDocumentOpener> {
@@ -1715,7 +1747,10 @@ fn explicit_parent(value: Option<&Value>) -> Option<WindowId> {
 }
 
 fn carry_window(
-    window: &mut GenerateWindow, host: &mut WindowFake, snap: &OpenSnapshot<'_>, mut step: WindowStep,
+    window: &mut GenerateWindow,
+    host: &mut WindowFake,
+    snap: &OpenSnapshot<'_>,
+    mut step: WindowStep,
 ) -> Result<WindowOutcome, Failure> {
     loop {
         step = match step {
@@ -1726,24 +1761,46 @@ fn carry_window(
                     WindowNeed::Reveal(tab) => SessionAnswer::Revealed(host.open.reveal(&tab)),
                     WindowNeed::Sleep(_) => SessionAnswer::Slept,
                     WindowNeed::Inspect(job) => SessionAnswer::Inspected(job.execute(host)),
-                    WindowNeed::Notice(job) => SessionAnswer::Noticed(Ok(job.execute(&mut RealNotice { engine: &mut host.engine }))),
-                    WindowNeed::Convert(job) => SessionAnswer::Converted(Ok(job.execute(&mut host.engine))),
-                    WindowNeed::OpenDialog { window, options } => SessionAnswer::Dialog(Ok(host.show_open_dialog(window, &options))),
-                    WindowNeed::OpenTarget { handoff, opener, token, window: original } => match host.open_target_tab(&handoff, opener.as_ref()) {
+                    WindowNeed::Notice(job) => {
+                        SessionAnswer::Noticed(Ok(job.execute(&mut RealNotice {
+                            engine: &mut host.engine,
+                        })))
+                    }
+                    WindowNeed::Convert(job) => {
+                        SessionAnswer::Converted(Ok(job.execute(&mut host.engine)))
+                    }
+                    WindowNeed::OpenDialog { window, options } => {
+                        SessionAnswer::Dialog(Ok(host.show_open_dialog(window, &options)))
+                    }
+                    WindowNeed::OpenTarget {
+                        handoff,
+                        opener,
+                        token,
+                        window: original,
+                    } => match host.open_target_tab(&handoff, opener.as_ref()) {
                         Err(error) => SessionAnswer::OpenFailed(error),
                         Ok(()) => {
                             let committed = window.complete_committed_open(run, token.commit())?;
                             assert_eq!(committed.cleanup_window, original);
-                            if !host.window_is_destroyed(original)? { host.window_close(original)?; }
+                            if !host.window_is_destroyed(original)? {
+                                host.window_close(original)?;
+                            }
                             return Ok(committed.outcome);
                         }
                     },
-                    WindowNeed::OpenConverted { document, opener, token, window: original } => match host.open_converted_tab(&document, opener.as_ref()) {
+                    WindowNeed::OpenConverted {
+                        document,
+                        opener,
+                        token,
+                        window: original,
+                    } => match host.open_converted_tab(&document, opener.as_ref()) {
                         Err(error) => SessionAnswer::OpenFailed(error),
                         Ok(()) => {
                             let committed = window.complete_committed_open(run, token.commit())?;
                             assert_eq!(committed.cleanup_window, original);
-                            if !host.window_is_destroyed(original)? { host.window_close(original)?; }
+                            if !host.window_is_destroyed(original)? {
+                                host.window_close(original)?;
+                            }
                             return Ok(committed.outcome);
                         }
                     },
@@ -1754,7 +1811,12 @@ fn carry_window(
     }
 }
 
-fn finish_window_open(window: &mut GenerateWindow, host: &mut WindowFake, snap: &OpenSnapshot<'_>, opened: WindowOpen) -> Value {
+fn finish_window_open(
+    window: &mut GenerateWindow,
+    host: &mut WindowFake,
+    snap: &OpenSnapshot<'_>,
+    opened: WindowOpen,
+) -> Value {
     // The original setup result does not await its floating refresh.
     let _ = carry_window(window, host, snap, opened.background);
     unit(opened.result)
@@ -1853,9 +1915,10 @@ fn window_call(args: &[Value], cx: &mut Context) -> Answer {
         } else if step.get("close").is_some() {
             unit(window.close_generate_window(&mut host))
         } else if step.get("contents").is_some() {
-            window
-                .generate_window_contents(&host)
-                .map_or_else(|Failure(message)| error_value(&message), |contents| contents.map_or(Value::Null, num))
+            window.generate_window_contents(&host).map_or_else(
+                |Failure(message)| error_value(&message),
+                |contents| contents.map_or(Value::Null, num),
+            )
         } else if let Some(ipc) = step.get("ipc") {
             ipc_step(&mut window, &mut host, &snap, registered, ipc)
         } else if let Some(event) = step.get("event") {
@@ -1907,8 +1970,11 @@ fn ipc_step(
     let first = call_args.first().and_then(step_arg);
     match channel {
         channels::GET_STATE => window.handle_get_state(host, sender).map_or_else(
-            |Failure(message)| error_value(&message), |state| state.map_or(Value::Null, |state| to_value(&state))),
-        channels::GET_THEME => window.handle_get_theme(host, sender)
+            |Failure(message)| error_value(&message),
+            |state| state.map_or(Value::Null, |state| to_value(&state)),
+        ),
+        channels::GET_THEME => window
+            .handle_get_theme(host, sender)
             .map_or_else(|Failure(message)| error_value(&message), Value::from),
         channels::SET_KIND => unit(window.handle_set_kind(host, sender, first)),
         channels::SET_CONVERT => unit(window.handle_set_convert(host, sender, first)),
@@ -2170,13 +2236,24 @@ mod continuation_regressions {
     use crate::shell::generate::session::SessionRun;
 
     fn host() -> SessionFake {
-        SessionFake { scenario: Value::Null, log: new_log(), counts: Vec::new(), ids: Vec::new() }
+        SessionFake {
+            scenario: Value::Null,
+            log: new_log(),
+            counts: Vec::new(),
+            ids: Vec::new(),
+        }
     }
 
     fn ready(path: &str) -> MaterialStatus {
         MaterialStatus {
-            key: path.into(), name: "ready".into(), path: Some(path.into()), ext: "md".into(),
-            size_bytes: Some(1.0), problem: None, unsaved: false, text_length: 1.0,
+            key: path.into(),
+            name: "ready".into(),
+            path: Some(path.into()),
+            ext: "md".into(),
+            size_bytes: Some(1.0),
+            problem: None,
+            unsaved: false,
+            text_length: 1.0,
         }
     }
 
@@ -2203,18 +2280,37 @@ mod continuation_regressions {
     fn removed_and_readded_path_cannot_receive_the_removed_rows_late_result() {
         let mut host = host();
         let holder = OpenFilesHolder::new();
-        let snap = OpenSnapshot { files: &holder, tabs: &[] };
+        let snap = OpenSnapshot {
+            files: &holder,
+            tabs: &[],
+        };
         let mut session = GenerateSession::new(&[MaterialRef::Path("/a.md".into())], None);
         let (_, old) = inspection(session.refresh(&mut host, &snap));
-        session.remove(&mut host, Some(&Value::from(material_key("/a.md")))).unwrap();
+        session
+            .remove(&mut host, Some(&Value::from(material_key("/a.md"))))
+            .unwrap();
         let (_, new) = inspection(session.add_paths(&mut host, &snap, &[Value::from("/a.md")]));
-        assert!(matches!(session.resume(&mut host, &snap, old, SessionAnswer::Inspected(Ok(ready("/a.md")))),
-            SessionStep::Done(Ok(SessionOutcome::Unit))));
+        assert!(matches!(
+            session.resume(
+                &mut host,
+                &snap,
+                old,
+                SessionAnswer::Inspected(Ok(ready("/a.md")))
+            ),
+            SessionStep::Done(Ok(SessionOutcome::Unit))
+        ));
         let state = to_value(&session.state(&host));
         assert_eq!(state["materials"][0]["state"], "checking");
         assert_eq!(state["checking"], true);
-        assert!(matches!(session.resume(&mut host, &snap, new, SessionAnswer::Inspected(Ok(ready("/a.md")))),
-            SessionStep::Done(Ok(SessionOutcome::Unit))));
+        assert!(matches!(
+            session.resume(
+                &mut host,
+                &snap,
+                new,
+                SessionAnswer::Inspected(Ok(ready("/a.md")))
+            ),
+            SessionStep::Done(Ok(SessionOutcome::Unit))
+        ));
         let state = to_value(&session.state(&host));
         assert_eq!(state["materials"][0]["state"], "ready");
         assert_eq!(state["checking"], false);
@@ -2224,25 +2320,42 @@ mod continuation_regressions {
     fn reset_keeps_its_new_rows_when_an_older_inspection_finishes() {
         let mut host = host();
         let holder = OpenFilesHolder::new();
-        let snap = OpenSnapshot { files: &holder, tabs: &[] };
+        let snap = OpenSnapshot {
+            files: &holder,
+            tabs: &[],
+        };
         let mut session = GenerateSession::new(&[MaterialRef::Path("/old.md".into())], None);
         let (_, old) = inspection(session.refresh(&mut host, &snap));
-        let rows = session.reset_begin(&mut host, &[MaterialRef::Path("/new.md".into())], None).unwrap();
+        let rows = session
+            .reset_begin(&mut host, &[MaterialRef::Path("/new.md".into())], None)
+            .unwrap();
         let (_, new) = inspection(session.reset_finish(&mut host, &snap, rows));
-        let _ = session.resume(&mut host, &snap, old, SessionAnswer::Inspected(Ok(ready("/old.md"))));
+        let _ = session.resume(
+            &mut host,
+            &snap,
+            old,
+            SessionAnswer::Inspected(Ok(ready("/old.md"))),
+        );
         let state = to_value(&session.state(&host));
         assert_eq!(state["materials"].as_array().unwrap().len(), 1);
         assert_eq!(state["materials"][0]["path"], "/new.md");
         assert_eq!(state["materials"][0]["state"], "checking");
         session.discard_run(new);
-        assert_eq!(session.state(&host).checking, true, "unread rows remain visibly unchecked");
+        assert_eq!(
+            session.state(&host).checking,
+            true,
+            "unread rows remain visibly unchecked"
+        );
     }
 
     #[test]
     fn canceling_a_refresh_cannot_clear_a_different_pending_make() {
         let mut host = host();
         let holder = OpenFilesHolder::new();
-        let snap = OpenSnapshot { files: &holder, tabs: &[] };
+        let snap = OpenSnapshot {
+            files: &holder,
+            tabs: &[],
+        };
         let mut session = GenerateSession::new(&[MaterialRef::Path("/a.md".into())], None);
         let (_, refresh) = inspection(session.refresh(&mut host, &snap));
         let (_, making) = inspection(session.make(&mut host, &snap, Some(&Value::from("make"))));
@@ -2251,15 +2364,32 @@ mod continuation_regressions {
         assert!(session.state(&host).making);
         session.discard_run(making);
         assert!(!session.state(&host).making);
-        assert_eq!(host.log.borrow().len(), pushes, "revoked continuations cannot publish state");
+        assert_eq!(
+            host.log.borrow().len(),
+            pushes,
+            "revoked continuations cannot publish state"
+        );
         assert!(!session.is_closed());
     }
 
-    fn opening(session: &mut GenerateSession, host: &mut SessionFake, snap: &OpenSnapshot<'_>)
-        -> (crate::shell::generate::session::OpenCommitToken, SessionRun) {
+    fn opening(
+        session: &mut GenerateSession,
+        host: &mut SessionFake,
+        snap: &OpenSnapshot<'_>,
+    ) -> (crate::shell::generate::session::OpenCommitToken, SessionRun) {
         let (path, refresh) = inspection(session.make(host, snap, Some(&Value::from("make"))));
-        let (path, prepare) = inspection(session.resume(host, snap, refresh, SessionAnswer::Inspected(Ok(ready(&path)))));
-        match session.resume(host, snap, prepare, SessionAnswer::Inspected(Ok(ready(&path)))) {
+        let (path, prepare) = inspection(session.resume(
+            host,
+            snap,
+            refresh,
+            SessionAnswer::Inspected(Ok(ready(&path))),
+        ));
+        match session.resume(
+            host,
+            snap,
+            prepare,
+            SessionAnswer::Inspected(Ok(ready(&path))),
+        ) {
             SessionStep::Need(SessionNeed::OpenTarget { token, .. }, run) => (token, run),
             _ => panic!("expected target open after refresh and canonical preparation"),
         }
@@ -2269,15 +2399,25 @@ mod continuation_regressions {
     fn committed_open_is_terminal_without_host_effects() {
         let mut host = host();
         let holder = OpenFilesHolder::new();
-        let snap = OpenSnapshot { files: &holder, tabs: &[] };
+        let snap = OpenSnapshot {
+            files: &holder,
+            tabs: &[],
+        };
         let mut session = GenerateSession::new(&[MaterialRef::Path("/a.md".into())], None);
         let (token, run) = opening(&mut session, &mut host, &snap);
         assert!(session.state(&host).making);
         assert!(!session.is_closed());
-        assert!(matches!(session.make(&mut host, &snap, Some(&Value::from("again"))),
-            SessionStep::Done(Ok(SessionOutcome::Made(false)))));
+        assert!(matches!(
+            session.make(&mut host, &snap, Some(&Value::from("again"))),
+            SessionStep::Done(Ok(SessionOutcome::Made(false)))
+        ));
         let effects = host.log.borrow().len();
-        assert_eq!(session.complete_committed_open(run, token.commit()).unwrap(), SessionOutcome::Made(true));
+        assert_eq!(
+            session
+                .complete_committed_open(run, token.commit())
+                .unwrap(),
+            SessionOutcome::Made(true)
+        );
         assert!(session.is_closed());
         assert_eq!(host.log.borrow().len(), effects);
     }
@@ -2286,12 +2426,19 @@ mod continuation_regressions {
     fn receipt_from_another_open_cannot_complete_this_run() {
         let mut host = host();
         let holder = OpenFilesHolder::new();
-        let snap = OpenSnapshot { files: &holder, tabs: &[] };
+        let snap = OpenSnapshot {
+            files: &holder,
+            tabs: &[],
+        };
         let mut first = GenerateSession::new(&[MaterialRef::Path("/a.md".into())], None);
         let mut second = GenerateSession::new(&[MaterialRef::Path("/a.md".into())], None);
         let (first_token, first_run) = opening(&mut first, &mut host, &snap);
         let (second_token, second_run) = opening(&mut second, &mut host, &snap);
-        assert!(first.complete_committed_open(first_run, second_token.commit()).is_err());
+        assert!(
+            first
+                .complete_committed_open(first_run, second_token.commit())
+                .is_err()
+        );
         assert!(!first.is_closed());
         assert!(!first.state(&host).making);
         second.discard_run(second_run);
@@ -2302,11 +2449,21 @@ mod continuation_regressions {
     fn rejected_open_restores_original_make_failure_without_closing() {
         let mut host = host();
         let holder = OpenFilesHolder::new();
-        let snap = OpenSnapshot { files: &holder, tabs: &[] };
+        let snap = OpenSnapshot {
+            files: &holder,
+            tabs: &[],
+        };
         let mut session = GenerateSession::new(&[MaterialRef::Path("/a.md".into())], None);
         let (_token, run) = opening(&mut session, &mut host, &snap);
-        assert!(matches!(session.resume(&mut host, &snap, run, SessionAnswer::OpenFailed(Failure("constructor rejected".into()))),
-            SessionStep::Done(Ok(SessionOutcome::Made(false)))));
+        assert!(matches!(
+            session.resume(
+                &mut host,
+                &snap,
+                run,
+                SessionAnswer::OpenFailed(Failure("constructor rejected".into()))
+            ),
+            SessionStep::Done(Ok(SessionOutcome::Made(false)))
+        ));
         assert!(!session.is_closed());
         assert!(!session.state(&host).making);
         assert_eq!(to_value(&session.state(&host))["failure"], "make");
@@ -2316,42 +2473,82 @@ mod continuation_regressions {
     fn untitled_reveal_waits_for_actual_completion_and_rejects_failure() {
         let mut host = host();
         let holder = OpenFilesHolder::new();
-        let snap = OpenSnapshot { files: &holder, tabs: &[] };
-        let mut session = GenerateSession::new(&[MaterialRef::Untitled {
-            web_contents_id: 7.0, title: "Untitled".into(),
-        }], None);
+        let snap = OpenSnapshot {
+            files: &holder,
+            tabs: &[],
+        };
+        let mut session = GenerateSession::new(
+            &[MaterialRef::Untitled {
+                web_contents_id: 7.0,
+                title: "Untitled".into(),
+            }],
+            None,
+        );
         let key = Value::from("untitled:7");
         let run = match session.save_begin(&mut host, &snap, Some(&key)) {
-            SessionStep::Need(SessionNeed::Reveal(tab), run) => { assert_eq!(tab, "7"); run }
+            SessionStep::Need(SessionNeed::Reveal(tab), run) => {
+                assert_eq!(tab, "7");
+                run
+            }
             _ => panic!("reveal must yield instead of acknowledging queued work"),
         };
         let effects = host.log.borrow().len();
-        assert!(matches!(session.resume(&mut host, &snap, run,
-            SessionAnswer::Revealed(Err(Failure("native activation rejected".into())))), SessionStep::Done(Err(_))));
-        assert_eq!(host.log.borrow().len(), effects, "failed reveal cannot publish success");
+        assert!(matches!(
+            session.resume(
+                &mut host,
+                &snap,
+                run,
+                SessionAnswer::Revealed(Err(Failure("native activation rejected".into())))
+            ),
+            SessionStep::Done(Err(_))
+        ));
+        assert_eq!(
+            host.log.borrow().len(),
+            effects,
+            "failed reveal cannot publish success"
+        );
     }
 
     fn window_host() -> WindowFake {
         let log = new_log();
         WindowFake {
-            scenario: Value::Null, log: Rc::clone(&log), now_ms: 0.0,
-            open: OpenFake { scenario: Value::Null, log: Rc::clone(&log) },
-            engine: Scripted::new(None, &log), windows: Vec::new(),
-            watchers: Vec::new(), sends: Vec::new(),
+            scenario: Value::Null,
+            log: Rc::clone(&log),
+            now_ms: 0.0,
+            open: OpenFake {
+                scenario: Value::Null,
+                log: Rc::clone(&log),
+            },
+            engine: Scripted::new(None, &log),
+            windows: Vec::new(),
+            watchers: Vec::new(),
+            sends: Vec::new(),
         }
     }
 
     fn init(path: &str) -> OpenInit {
-        OpenInit { refs: vec![MaterialRef::Path(path.into())], kind: None, parent: None, opener: None }
+        OpenInit {
+            refs: vec![MaterialRef::Path(path.into())],
+            kind: None,
+            parent: None,
+            opener: None,
+        }
     }
 
-    fn finish_inspections(window: &mut GenerateWindow, host: &mut WindowFake,
-        snap: &OpenSnapshot<'_>, mut step: WindowStep) -> WindowStep {
+    fn finish_inspections(
+        window: &mut GenerateWindow,
+        host: &mut WindowFake,
+        snap: &OpenSnapshot<'_>,
+        mut step: WindowStep,
+    ) -> WindowStep {
         loop {
             step = match step {
-                WindowStep::Need(WindowNeed::Inspect(job), run) => {
-                    window.resume(host, snap, run, SessionAnswer::Inspected(Ok(ready(&job.path))))
-                }
+                WindowStep::Need(WindowNeed::Inspect(job), run) => window.resume(
+                    host,
+                    snap,
+                    run,
+                    SessionAnswer::Inspected(Ok(ready(&job.path))),
+                ),
                 other => return other,
             };
         }
@@ -2363,14 +2560,28 @@ mod continuation_regressions {
         let mut window = GenerateWindow::new();
         window.configure();
         let holder = OpenFilesHolder::new();
-        let snap = OpenSnapshot { files: &holder, tabs: &[] };
+        let snap = OpenSnapshot {
+            files: &holder,
+            tabs: &[],
+        };
         let opened = window.open_generate_window(&mut host, &snap, init("/old.md"));
         opened.result.unwrap();
-        assert!(matches!(finish_inspections(&mut window, &mut host, &snap, opened.background), WindowStep::Done(Ok(_))));
+        assert!(matches!(
+            finish_inspections(&mut window, &mut host, &snap, opened.background),
+            WindowStep::Done(Ok(_))
+        ));
         let step = window.handle_make(&mut host, &snap, 201.0, Some(&Value::from("make")));
         let (token, run) = match finish_inspections(&mut window, &mut host, &snap, step) {
-            WindowStep::Need(WindowNeed::OpenTarget { token, window: original, .. }, run) => {
-                assert_eq!(original, 1); (token, run)
+            WindowStep::Need(
+                WindowNeed::OpenTarget {
+                    token,
+                    window: original,
+                    ..
+                },
+                run,
+            ) => {
+                assert_eq!(original, 1);
+                (token, run)
             }
             _ => panic!("expected actual constructor boundary"),
         };
@@ -2384,7 +2595,11 @@ mod continuation_regressions {
         assert_eq!(committed.cleanup_window, 1);
         assert_eq!(committed.outcome, WindowOutcome::Made(true));
         assert_eq!(window.generate_window_contents(&host).unwrap(), Some(202.0));
-        assert_eq!(host.log.borrow().len(), effects, "core receipt must not close any native window");
+        assert_eq!(
+            host.log.borrow().len(),
+            effects,
+            "core receipt must not close any native window"
+        );
         assert_eq!(host.sends.len(), sends);
         let state = window.handle_get_state(&mut host, 202.0).unwrap().unwrap();
         assert_eq!(to_value(&state)["materials"][0]["path"], "/new.md");
@@ -2394,7 +2609,10 @@ mod continuation_regressions {
     #[test]
     fn native_setup_errors_remain_errors_and_reset_refresh_still_completes() {
         let holder = OpenFilesHolder::new();
-        let snap = OpenSnapshot { files: &holder, tabs: &[] };
+        let snap = OpenSnapshot {
+            files: &holder,
+            tabs: &[],
+        };
         for failure in ["darkThrows", "createThrows"] {
             let mut host = window_host();
             host.scenario = json!({(failure): true});
@@ -2403,7 +2621,10 @@ mod continuation_regressions {
             let opened = window.open_generate_window(&mut host, &snap, init("/a.md"));
             assert!(opened.result.is_err());
             assert!(host.windows.is_empty());
-            assert!(matches!(opened.background, WindowStep::Done(Ok(WindowOutcome::Unit))));
+            assert!(matches!(
+                opened.background,
+                WindowStep::Done(Ok(WindowOutcome::Unit))
+            ));
         }
         let mut host = window_host();
         let mut window = GenerateWindow::new();
@@ -2415,8 +2636,15 @@ mod continuation_regressions {
         let effects = host.log.borrow().len();
         let opened = window.open_generate_window(&mut host, &snap, init("/new.md"));
         assert!(opened.result.is_err());
-        assert!(matches!(finish_inspections(&mut window, &mut host, &snap, opened.background), WindowStep::Done(Ok(_))));
-        assert_eq!(host.log.borrow().len(), effects, "failed minimized check cannot restore/show/focus");
+        assert!(matches!(
+            finish_inspections(&mut window, &mut host, &snap, opened.background),
+            WindowStep::Done(Ok(_))
+        ));
+        assert_eq!(
+            host.log.borrow().len(),
+            effects,
+            "failed minimized check cannot restore/show/focus"
+        );
         let state = window.handle_get_state(&mut host, 201.0).unwrap().unwrap();
         assert!(!state.checking);
         assert_eq!(to_value(&state)["materials"][0]["path"], "/new.md");

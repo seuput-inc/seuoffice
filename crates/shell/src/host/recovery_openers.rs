@@ -1228,10 +1228,10 @@ mod tests {
         let (issuer,reservation,owner)=shell_contract::ipc::NativeClosureIssuer::new_with_owner(view,created.clone());
         let source=shell_contract::ipc::NativeRequestOwner {
             view:ViewId(900),
-            context:shell_contract::ipc::NativeContext::with_owner_loss((),shell_contract::runtime::RendererGeneration::new(),CancelToken::new()),
+            context:shell_contract::ipc::NativeContext::with_owner_loss((),shell_contract::runtime::RendererGeneration::new(),CancelToken::default()),
         };
         let request=shell_contract::ipc::RecoveryRequestConstraint {
-            source,participants:Vec::new(),cancel:CancelToken::new(),pending:CancelToken::new(),
+            source,participants:Vec::new(),cancel:CancelToken::default(),pending:CancelToken::default(),
         };
         let target=shell_contract::ipc::RecoveryOpenTarget::bind_request(
             shell_contract::ipc::RecoveryOpenContext::NativeStartup(attempt.operation.clone()),

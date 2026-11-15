@@ -357,14 +357,14 @@ pub(crate) fn entries(
         }),
         later(e, "epub:translation-units", Epub::translation_units),
         invoke(e, "epub:pick-result-path", |epub, view, args| {
-            let picked = epub.pick_result_target(view, args.get(0));
+            let picked = epub.pick_result_target(view, args.get(0))?;
             Ok(match field(&picked, "ok") {
                 IpcValue::Bool(true) => field(&picked, "path").clone(),
                 _ => IpcValue::Null,
             })
         }),
         invoke(e, "epub:pick-result-target", |epub, view, args| {
-            Ok(epub.pick_result_target(view, args.get(0)))
+            epub.pick_result_target(view, args.get(0))
         }),
         invoke(e, "epub:check-result-path", |epub, view, args| {
             Ok(from_json(
@@ -519,8 +519,8 @@ fn default_result_name(source_path: &str, lang: &str, kind: &str) -> String {
 }
 
 /// `LANGUAGE_TAG.test(lang)`
-fn language_tag(lang: &str) -> bool {
-    js_regex!(r"^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$").test(lang)
+fn language_tag(lang: &str) -> Result<bool, jscompat::RegexLimit> {
+    jscompat::try_js_regex!(r"^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$").try_test(lang)
 }
 
 /// `chaptersOf(value, count)`: `Ok(None)` when left out, `Err` when bad
@@ -1533,18 +1533,21 @@ impl Epub {
 
     /// `pickResultTarget(contents, request)`: the result book's save dialog;
     /// a refused pick says why and is not granted
-    fn pick_result_target(&self, view: ViewId, request: &IpcValue) -> IpcValue {
+    fn pick_result_target(&self, view: ViewId, request: &IpcValue) -> Result<IpcValue, IpcError> {
         let source = self.view(view, |v| v.session.as_ref().and(v.save_path.clone()));
         let Some(source) = source.flatten() else {
-            return IpcValue::Null;
+            return Ok(IpcValue::Null);
         };
         let kind = match kit::as_str(field(request, "kind")) {
             Some(kind @ ("translated" | "bilingual")) => kind,
-            _ => return IpcValue::Null,
+            _ => return Ok(IpcValue::Null),
         };
-        let Some(lang) = kit::as_str(field(request, "lang")).filter(|l| language_tag(l)) else {
-            return IpcValue::Null;
+        let Some(lang) = kit::as_str(field(request, "lang")) else {
+            return Ok(IpcValue::Null);
         };
+        if !language_tag(lang).map_err(|error| kit::error(error.to_string()))? {
+            return Ok(IpcValue::Null);
+        }
         let suggested = match kit::as_str(field(request, "defaultName")) {
             Some(name) if (1..=255).contains(&session::len16(name)) => {
                 let clean: String = basename(name, None)
@@ -1576,18 +1579,18 @@ impl Epub {
             ("filters", self.epub_filters(lang_ui)),
         ]);
         let Some(picked) = self.save_dialog(view, options) else {
-            return IpcValue::Null;
+            return Ok(IpcValue::Null);
         };
         let target = with_book_extension(&picked);
         if let ResultPathCheck::Refused(reason) = self.result_path_check(view, Some(&target)) {
-            return object(vec![
+            return Ok(object(vec![
                 ("ok", false.into_ipc()),
                 ("path", target.into_ipc()),
                 ("reason", reason.as_str().into_ipc()),
-            ]);
+            ]));
         }
         self.with_view(view, |v| v.result_targets.insert(path_key(&target, None)));
-        object(vec![("ok", true.into_ipc()), ("path", target.into_ipc())])
+        Ok(object(vec![("ok", true.into_ipc()), ("path", target.into_ipc())]))
     }
 
     /// `writeTranslated(wcId, request)`
@@ -1615,11 +1618,18 @@ impl Epub {
             IpcValue::String(m) if m == "easy" => true,
             _ => return answer(failure("invalid-request", Some("bad mode"))),
         };
-        let lang = kit::as_str(field(request, "lang"))
-            .filter(|l| language_tag(l) && session::len16(l) <= 128);
-        let Some(lang) = lang.map(str::to_owned) else {
-            return answer(failure("invalid-request", Some("bad language")));
+        let Some(lang) = kit::as_str(field(request, "lang"))
+            .filter(|l| session::len16(l) <= 128) else {
+                return answer(failure("invalid-request", Some("bad language")));
+            };
+        let valid_language = match language_tag(lang) {
+            Ok(valid) => valid,
+            Err(error) => return answer(failure("failed", Some(&error.to_string()))),
         };
+        if !valid_language {
+            return answer(failure("invalid-request", Some("bad language")));
+        }
+        let lang = lang.to_owned();
         let (bytes, doc_hash_now, count) = {
             let s = session.borrow();
             (s.bytes.clone(), s.doc_hash.clone(), s.spine.len())

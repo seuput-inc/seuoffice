@@ -42,27 +42,29 @@ export function startRecoveryCopies(options: RecoveryCopyLoopOptions): () => voi
       return
     }
     if (!flush) periodicQueued = true
-    chain = chain.then(async () => {
-      if (stopped) return
-      try {
-        const text = options.read()
-        if (text === null && !flush) return
-        await options.write(text, token)
-        skip = 0
-      } catch (error) {
-        console.warn('[recovery] copy not written, retrying later:', error)
-        skip = backoffTicks
-        if (flush && token !== undefined) {
-          try {
-            await options.write(null, token, String(error))
-          } catch {
-            // The host may already have settled the matching failed write.
+    chain = chain
+      .then(async () => {
+        if (stopped) return
+        try {
+          const text = options.read()
+          if (text === null && !flush) return
+          await options.write(text, token)
+          skip = 0
+        } catch (error) {
+          console.warn('[recovery] copy not written, retrying later:', error)
+          skip = backoffTicks
+          if (flush && token !== undefined) {
+            try {
+              await options.write(null, token, String(error))
+            } catch {
+              // The host may already have settled the matching failed write.
+            }
           }
         }
-      }
-    }).finally(() => {
-      if (!flush) periodicQueued = false
-    })
+      })
+      .finally(() => {
+        if (!flush) periodicQueued = false
+      })
   }
 
   const timer = setInterval(() => run(false), options.intervalMs ?? RECOVERY_COPY_INTERVAL_MS)

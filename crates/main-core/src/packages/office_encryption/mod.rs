@@ -26,7 +26,10 @@ impl std::fmt::Display for OfficeDecryptError {
 impl std::error::Error for OfficeDecryptError {}
 
 fn unsupported(message: impl Into<String>) -> OfficeDecryptError {
-    OfficeDecryptError { reason: OfficeDecryptReason::Unsupported, message: message.into() }
+    OfficeDecryptError {
+        reason: OfficeDecryptReason::Unsupported,
+        message: message.into(),
+    }
 }
 
 fn wrong_password() -> OfficeDecryptError {
@@ -43,7 +46,10 @@ pub fn is_cfb_header(bytes: &[u8]) -> bool {
 }
 
 pub fn is_encrypted_ooxml(bytes: &[u8]) -> bool {
-    is_cfb_header(bytes) && bytes.windows(ENCRYPTED_PACKAGE.len()).any(|w| w == ENCRYPTED_PACKAGE)
+    is_cfb_header(bytes)
+        && bytes
+            .windows(ENCRYPTED_PACKAGE.len())
+            .any(|w| w == ENCRYPTED_PACKAGE)
 }
 
 fn content<'a>(container: &'a Container, name: &str) -> Option<&'a [u8]> {
@@ -52,11 +58,15 @@ fn content<'a>(container: &'a Container, name: &str) -> Option<&'a [u8]> {
 }
 
 fn u16_at(bytes: &[u8], offset: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(bytes.get(offset..offset.checked_add(2)?)?.try_into().ok()?))
+    Some(u16::from_le_bytes(
+        bytes.get(offset..offset.checked_add(2)?)?.try_into().ok()?,
+    ))
 }
 
 fn u32_at(bytes: &[u8], offset: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(bytes.get(offset..offset.checked_add(4)?)?.try_into().ok()?))
+    Some(u32::from_le_bytes(
+        bytes.get(offset..offset.checked_add(4)?)?.try_into().ok()?,
+    ))
 }
 
 fn legacy_is_encrypted(container: &Container) -> Option<bool> {
@@ -96,7 +106,10 @@ pub fn is_encrypted_office_file(bytes: &[u8]) -> bool {
     if is_encrypted_ooxml(bytes) {
         return true;
     }
-    cfb::read(bytes).ok().and_then(|file| legacy_is_encrypted(&file)).unwrap_or(false)
+    cfb::read(bytes)
+        .ok()
+        .and_then(|file| legacy_is_encrypted(&file))
+        .unwrap_or(false)
 }
 
 pub fn decrypt_office_file(bytes: &[u8], password: &str) -> Result<Vec<u8>, OfficeDecryptError> {
@@ -157,9 +170,14 @@ mod tests {
         let encrypted = encrypt_ooxml(plain, "test password").unwrap();
         assert!(is_encrypted_ooxml(&encrypted));
         assert!(is_encrypted_office_file(&encrypted));
-        assert_eq!(decrypt_office_file(&encrypted, "test password").unwrap(), &plain[..]);
         assert_eq!(
-            decrypt_office_file(&encrypted, "incorrect").unwrap_err().reason,
+            decrypt_office_file(&encrypted, "test password").unwrap(),
+            &plain[..]
+        );
+        assert_eq!(
+            decrypt_office_file(&encrypted, "incorrect")
+                .unwrap_err()
+                .reason,
             OfficeDecryptReason::WrongPassword,
         );
     }
@@ -174,7 +192,10 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../vendor/msoffice-crypto/tests/fixtures/plain.docx"
         ));
-        assert_eq!(decrypt_office_file(encrypted, "testpass").unwrap(), &plain[..]);
+        assert_eq!(
+            decrypt_office_file(encrypted, "testpass").unwrap(),
+            &plain[..]
+        );
     }
 
     #[test]
@@ -183,8 +204,12 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../vendor/msoffice-crypto/tests/fixtures/plain.docx"
         ));
-        let encrypted = msoffice_crypto::encrypt_ooxml_standard(plain, "standard password").unwrap();
-        assert_eq!(decrypt_office_file(&encrypted, "standard password").unwrap(), &plain[..]);
+        let encrypted =
+            msoffice_crypto::encrypt_ooxml_standard(plain, "standard password").unwrap();
+        assert_eq!(
+            decrypt_office_file(&encrypted, "standard password").unwrap(),
+            &plain[..]
+        );
         assert_eq!(
             decrypt_office_file(&encrypted, "wrong").unwrap_err().reason,
             OfficeDecryptReason::WrongPassword,
@@ -199,7 +224,9 @@ mod tests {
         assert!(is_cfb_header(&damaged));
         assert!(!is_encrypted_office_file(&damaged));
         assert_eq!(
-            decrypt_office_file(&damaged, "password").unwrap_err().reason,
+            decrypt_office_file(&damaged, "password")
+                .unwrap_err()
+                .reason,
             OfficeDecryptReason::Unsupported,
         );
     }
@@ -208,7 +235,9 @@ mod tests {
     fn agile_rejects_decrypted_non_zip_as_wrong_password() {
         let encrypted = encrypt_ooxml(b"not a ZIP", "password").unwrap();
         assert_eq!(
-            decrypt_office_file(&encrypted, "password").unwrap_err().reason,
+            decrypt_office_file(&encrypted, "password")
+                .unwrap_err()
+                .reason,
             OfficeDecryptReason::WrongPassword,
         );
     }

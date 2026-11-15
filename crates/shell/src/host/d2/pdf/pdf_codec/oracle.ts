@@ -12,8 +12,13 @@ export async function relabelOpenTypeOracle(bytes: Uint8Array): Promise<Uint8Arr
     const stream = doc.context.lookup(ref)
     if (!(stream instanceof PDFRawStream)) continue
     let program: Uint8Array
-    try { program = decodePDFRawStream(stream).decode() } catch { continue }
-    if (program[0] !== 0x4f || program[1] !== 0x54 || program[2] !== 0x54 || program[3] !== 0x4f) continue
+    try {
+      program = decodePDFRawStream(stream).decode()
+    } catch {
+      continue
+    }
+    if (program[0] !== 0x4f || program[1] !== 0x54 || program[2] !== 0x54 || program[3] !== 0x4f)
+      continue
     object.delete(PDFName.of('FontFile'))
     object.set(PDFName.of('FontFile3'), ref)
     stream.dict.set(PDFName.of('Subtype'), PDFName.of('OpenType'))

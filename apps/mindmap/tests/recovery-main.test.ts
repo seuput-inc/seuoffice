@@ -250,7 +250,9 @@ describe('writing copies', () => {
     expect(clean.contents.sent.map(([channel]) => channel)).not.toContain(
       MINDMAP_CHANNELS.recoveryCopyNow,
     )
-    const request = dirty.contents.sent.find(([channel]) => channel === MINDMAP_CHANNELS.recoveryCopyNow)
+    const request = dirty.contents.sent.find(
+      ([channel]) => channel === MINDMAP_CHANNELS.recoveryCopyNow,
+    )
     call(MINDMAP_CHANNELS.recoveryCopyNowDone, dirty.contents, request?.[1], null)
     await expect(done).rejects.toThrow('Timed out writing the mindmap recovery copy')
     expect(silent.contents.sent.map(([channel]) => channel)).toContain(
@@ -261,7 +263,9 @@ describe('writing copies', () => {
   it('ignores a stale recovery acknowledgement and reports the current write failure', async () => {
     const dirty = await editedFileView('failure.xmind')
     const done = writeMindmapCopiesNow(200)
-    const request = dirty.contents.sent.find(([channel]) => channel === MINDMAP_CHANNELS.recoveryCopyNow)
+    const request = dirty.contents.sent.find(
+      ([channel]) => channel === MINDMAP_CHANNELS.recoveryCopyNow,
+    )
     const generation = request?.[1]
     expect(typeof generation).toBe('number')
     call(MINDMAP_CHANNELS.recoveryCopyNowDone, dirty.contents, Number(generation) - 1, null)

@@ -155,9 +155,9 @@ mod tests {
     #[test]
     fn saved_snapshot_rejects_a_successor_owner_for_the_same_view() {
         let owner = NativeRequestOwner { view: ViewId(7),
-            context: NativeContext::with_owner_loss((), RendererGeneration::new(), CancelToken::new()) };
+            context: NativeContext::with_owner_loss((), RendererGeneration::new(), CancelToken::default()) };
         let successor = NativeRequestOwner { view: owner.view,
-            context: NativeContext::with_owner_loss((), RendererGeneration::new(), CancelToken::new()) };
+            context: NativeContext::with_owner_loss((), RendererGeneration::new(), CancelToken::default()) };
         assert!(same_captured_owner(&owner, &owner.clone()));
         assert!(!same_captured_owner(&owner, &successor));
     }

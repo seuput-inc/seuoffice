@@ -197,7 +197,10 @@ const dirtyByWc = new Set<number>()
 const closeSaveWaiters = new Map<number, (ok: boolean) => void>()
 const saveWaiters = new Map<number, (ok: boolean) => void>()
 const contentsByWc = new Map<number, WebContents>()
-const copyNowWaiters = new Map<number, { generation: number; finish: (error: string | null) => void }>()
+const copyNowWaiters = new Map<
+  number,
+  { generation: number; finish: (error: string | null) => void }
+>()
 let nextCopyNowGeneration = 0
 /** Save targets handed out by `saveTarget`, by view and token; each is used once */
 const targetsByWc = new Map<number, Map<string, { path: string; format: DiagramFormat }>>()
@@ -468,7 +471,10 @@ export async function writeDiagramCopiesNow(timeoutMs = COPY_NOW_TIMEOUT_MS): Pr
     }
     let resolve!: () => void
     let reject!: (error: Error) => void
-    const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no })
+    const promise = new Promise<void>((yes, no) => {
+      resolve = yes
+      reject = no
+    })
     const generation = ++nextCopyNowGeneration
     let settled = false
     const finish = (error: string | null): void => {
@@ -933,7 +939,8 @@ function registerDiagramIpc(): void {
 
   ipcMain.on(DIAGRAM_CHANNELS.recoveryCopyNowDone, (e, generation: unknown, error: unknown) => {
     const waiter = copyNowWaiters.get(e.sender.id)
-    if (waiter && generation === waiter.generation && (error === null || typeof error === 'string')) waiter.finish(error)
+    if (waiter && generation === waiter.generation && (error === null || typeof error === 'string'))
+      waiter.finish(error)
   })
 
   ipcMain.handle(DIAGRAM_CHANNELS.seedTake, (e): DiagramSeed | null => {

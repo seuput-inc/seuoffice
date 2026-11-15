@@ -188,41 +188,62 @@ fn recovery_flush_rejects_stale_ack_and_propagates_failure() {
     h.ok("mindmap:dirty-changed", vec![IpcValue::Bool(true)]);
     let first = Rc::new(RefCell::new(None));
     let sink = first.clone();
-    h.app.write_copies_now(Duration::from_secs(5), Box::new(move |result| *sink.borrow_mut() = Some(result)));
+    h.app.write_copies_now(
+        Duration::from_secs(5),
+        Box::new(move |result| *sink.borrow_mut() = Some(result)),
+    );
     let stale = h.events("mindmap:recovery-copy-now")[0][0].clone();
     let second = Rc::new(RefCell::new(None));
     let sink = second.clone();
-    h.app.write_copies_now(Duration::from_secs(5), Box::new(move |result| *sink.borrow_mut() = Some(result)));
+    h.app.write_copies_now(
+        Duration::from_secs(5),
+        Box::new(move |result| *sink.borrow_mut() = Some(result)),
+    );
     let current = h.events("mindmap:recovery-copy-now")[0][0].clone();
     assert!(matches!(&*first.borrow(), Some(Err(_))));
-    h.ok("mindmap:recovery-copy-now-done", vec![stale, IpcValue::Null]);
+    h.ok(
+        "mindmap:recovery-copy-now-done",
+        vec![stale, IpcValue::Null],
+    );
     assert!(second.borrow().is_none());
-    h.ok("mindmap:recovery-copy-now-done", vec![current, string("disk failed")]);
-    assert_eq!(second.borrow().as_ref().unwrap().as_ref().unwrap_err().0, "disk failed");
+    h.ok(
+        "mindmap:recovery-copy-now-done",
+        vec![current, string("disk failed")],
+    );
+    assert_eq!(
+        second.borrow().as_ref().unwrap().as_ref().unwrap_err().0,
+        "disk failed"
+    );
 }
 
 #[test]
 fn engine_failure_rejects_open_without_classifying_the_file_as_unreadable() {
-    let h = harness("engine-open-failure", |_| {
-        json!({"mindmap": {"openXmind": [{"error": "engine unavailable"}]}})
-    });
+    let h = harness(
+        "engine-open-failure",
+        |_| json!({"mindmap": {"openXmind": [{"error": "engine unavailable"}]}}),
+    );
     let file = h.dir.join("map.xmind");
     fs::write(&file, "XMIND-1").unwrap();
     h.app.create_view(h.sender.view, Some(&path_str(&file)));
-    let error = h.call("mindmap:open-file", vec![string(path_str(&file))]).unwrap_err();
+    let error = h
+        .call("mindmap:open-file", vec![string(path_str(&file))])
+        .unwrap_err();
     assert_eq!(error.message, "engine unavailable");
     assert_eq!(fs::read_to_string(file).unwrap(), "XMIND-1");
 }
 
 #[test]
 fn engine_failure_rejects_save_and_settles_the_waiter_without_writing() {
-    let h = harness("engine-save-failure", |_| {
-        json!({"mindmap": {"openXmind": [{"status": "ok"}, {"error": "engine unavailable"}]}})
-    });
+    let h = harness(
+        "engine-save-failure",
+        |_| json!({"mindmap": {"openXmind": [{"status": "ok"}, {"error": "engine unavailable"}]}}),
+    );
     let file = open_granted_file(&h, "map.xmind", "XMIND-1");
     let (waiting, then) = slot::<bool>();
     h.editor(1).request_save(ViewId(1), SaveMode::SaveAs, then);
-    let error = h.call("mindmap:save", vec![save_request("XMIND-2", "saveAs")]).unwrap_err();
+    let error = h
+        .call("mindmap:save", vec![save_request("XMIND-2", "saveAs")])
+        .unwrap_err();
     assert_eq!(error.message, "engine unavailable");
     assert_eq!(waiting.borrow().clone(), Some(Ok(false)));
     assert_eq!(fs::read_to_string(file).unwrap(), "XMIND-1");
@@ -237,7 +258,12 @@ fn engine_failure_rejects_project_save_without_creating_a_file() {
         }})
     });
     h.app.create_view(h.sender.view, None);
-    let error = h.call("mindmap:save-into-project", vec![save_request("XMIND-1", "save")]).unwrap_err();
+    let error = h
+        .call(
+            "mindmap:save-into-project",
+            vec![save_request("XMIND-1", "save")],
+        )
+        .unwrap_err();
     assert_eq!(error.message, "engine unavailable");
     assert!(!h.dir.join("project").join("map.xmind").exists());
 }
@@ -399,8 +425,16 @@ fn save_as_an_export_type_grants_that_one_path_to_the_export() {
         ])
     };
     // another path is not the one Save As picked
-    let other = h.call("mindmap:export-png", vec![export(string(path_str(&h.dir.join("x.png"))))]).unwrap_err();
-    assert_eq!(other.message, "This export was not selected by this save request");
+    let other = h
+        .call(
+            "mindmap:export-png",
+            vec![export(string(path_str(&h.dir.join("x.png"))))],
+        )
+        .unwrap_err();
+    assert_eq!(
+        other.message,
+        "This export was not selected by this save request"
+    );
     let done = h.ok(
         "mindmap:export-png",
         vec![export(string(path_str(&target)))],
@@ -414,8 +448,16 @@ fn save_as_an_export_type_grants_that_one_path_to_the_export() {
     );
     assert_eq!(fs::read(&target).unwrap(), png);
     // taken once
-    let twice = h.call("mindmap:export-png", vec![export(string(path_str(&target)))]).unwrap_err();
-    assert_eq!(twice.message, "This export was not selected by this save request");
+    let twice = h
+        .call(
+            "mindmap:export-png",
+            vec![export(string(path_str(&target)))],
+        )
+        .unwrap_err();
+    assert_eq!(
+        twice.message,
+        "This export was not selected by this save request"
+    );
 }
 
 #[test]
@@ -913,14 +955,31 @@ fn owned_seed_rollback_fences_replacement_and_accepts_consumption() {
     let h = plain("owned-seed-rollback");
     h.app.create_view(h.sender.view, None);
     let effects = h.kit.host::<shell_contract::hosts::OwnedEffectsHost>();
-    let generation = h.kit.services.views.renderer_generation(h.sender.view).unwrap();
+    let generation = h
+        .kit
+        .services
+        .views
+        .renderer_generation(h.sender.view)
+        .unwrap();
     let owner = effects.capture_owner(h.sender.view, &generation).unwrap();
-    let (issuer, reservation) = shell_contract::ipc::NativeClosureIssuer::new(h.sender.view, generation.clone());
+    let (issuer, reservation) =
+        shell_contract::ipc::NativeClosureIssuer::new(h.sender.view, generation.clone());
     let cancel = shell_contract::runtime::CancelToken::default();
-    let queue = |text: &str| h.app.queue_seed_owned(
-        h.sender.view, Seed::Outline(text.into()), owner.clone(), &[],
-        cancel.clone(), cancel.clone(), generation.clone(), reservation.clone(), &mut || Ok(()),
-    ).unwrap();
+    let queue = |text: &str| {
+        h.app
+            .queue_seed_owned(
+                h.sender.view,
+                Seed::Outline(text.into()),
+                owner.clone(),
+                &[],
+                cancel.clone(),
+                cancel.clone(),
+                generation.clone(),
+                reservation.clone(),
+                &mut || Ok(()),
+            )
+            .unwrap()
+    };
 
     let first = queue("# same");
     let replacement = queue("# same");
@@ -933,9 +992,17 @@ fn owned_seed_rollback_fences_replacement_and_accepts_consumption() {
 
     let consumed = queue("# consumed");
     let response = crate::testkit::start_with_owner(
-        &h.reg, h.sender, "mindmap:seed-take", vec![], &owner, cancel.clone(),
+        &h.reg,
+        h.sender,
+        "mindmap:seed-take",
+        vec![],
+        &owner,
+        cancel.clone(),
     );
-    assert_eq!(response.try_recv().unwrap().unwrap(), obj([("outline", string("# consumed"))]));
+    assert_eq!(
+        response.try_recv().unwrap().unwrap(),
+        obj([("outline", string("# consumed"))])
+    );
     assert!(consumed.was_consumed());
     consumed.rollback().unwrap();
     consumed.rollback().unwrap();
@@ -943,15 +1010,30 @@ fn owned_seed_rollback_fences_replacement_and_accepts_consumption() {
     let pending = shell_contract::runtime::CancelToken::default();
     pending.cancel();
     let mut initialized = false;
-    assert!(h.app.queue_seed_owned(
-        h.sender.view, Seed::Outline("# denied".into()), owner.clone(), &[],
-        cancel.clone(), pending, generation.clone(), reservation.clone(), &mut || { initialized = true; Ok(()) },
-    ).is_err());
+    assert!(
+        h.app
+            .queue_seed_owned(
+                h.sender.view,
+                Seed::Outline("# denied".into()),
+                owner.clone(),
+                &[],
+                cancel.clone(),
+                pending,
+                generation.clone(),
+                reservation.clone(),
+                &mut || {
+                    initialized = true;
+                    Ok(())
+                },
+            )
+            .is_err()
+    );
     assert!(!initialized);
 
     let displaced = queue("# displaced");
     let failed = queue("# staged");
-    let (forged, _) = shell_contract::ipc::NativeClosureIssuer::new(h.sender.view, generation.clone());
+    let (forged, _) =
+        shell_contract::ipc::NativeClosureIssuer::new(h.sender.view, generation.clone());
     assert!(failed.retire_closed(&forged.closed()).is_err());
     let closed = issuer.closed();
     h.kit.destroy(h.sender.view);
@@ -963,22 +1045,67 @@ fn owned_seed_rollback_fences_replacement_and_accepts_consumption() {
 
 #[test]
 fn prepared_seed_requires_exact_browser_and_preserves_prior_seed_on_failure() {
-    let h=plain("prepared-seed-browser");
-    h.app.create_view(h.sender.view,None);
-    let effects=h.kit.host::<shell_contract::hosts::OwnedEffectsHost>();
-    let generation=h.kit.services.views.renderer_generation(h.sender.view).unwrap();
-    let owner=effects.capture_owner(h.sender.view,&generation).unwrap();
-    let (_,reservation,browser)=shell_contract::ipc::NativeClosureIssuer::new_with_owner(h.sender.view,generation.clone());
-    let (_,foreign,foreign_browser)=shell_contract::ipc::NativeClosureIssuer::new_with_owner(h.sender.view,generation.clone());
-    let cancel=shell_contract::runtime::CancelToken::default();
-    let prepare=|text:&str| h.app.prepare_seed_in_transition(h.sender.view,Seed::Outline(text.into()),owner.clone(),cancel.clone(),generation.clone(),reservation.clone(),browser.clone()).unwrap();
-    let mut initialized=0;
-    assert!(foreign.with_initial_owner(&foreign_browser,|transition|prepare("denied").commit(transition,&mut || { initialized+=1; Ok(()) })).is_err());
-    assert_eq!(initialized,0);
-    let prior=reservation.with_initial_owner(&browser,|transition|prepare("prior").commit(transition,&mut || Ok(()))).unwrap();
-    assert!(reservation.with_initial_owner(&browser,|transition|prepare("failed").commit(transition,&mut || Err("rejected".into()))).is_err());
-    let replacement=reservation.with_initial_owner(&browser,|transition|prepare("new").commit(transition,&mut || { initialized+=1; Ok(()) })).unwrap();
-    assert_eq!(initialized,1);
+    let h = plain("prepared-seed-browser");
+    h.app.create_view(h.sender.view, None);
+    let effects = h.kit.host::<shell_contract::hosts::OwnedEffectsHost>();
+    let generation = h
+        .kit
+        .services
+        .views
+        .renderer_generation(h.sender.view)
+        .unwrap();
+    let owner = effects.capture_owner(h.sender.view, &generation).unwrap();
+    let (_, reservation, browser) =
+        shell_contract::ipc::NativeClosureIssuer::new_with_owner(h.sender.view, generation.clone());
+    let (_, foreign, foreign_browser) =
+        shell_contract::ipc::NativeClosureIssuer::new_with_owner(h.sender.view, generation.clone());
+    let cancel = shell_contract::runtime::CancelToken::default();
+    let prepare = |text: &str| {
+        h.app
+            .prepare_seed_in_transition(
+                h.sender.view,
+                Seed::Outline(text.into()),
+                owner.clone(),
+                cancel.clone(),
+                generation.clone(),
+                reservation.clone(),
+                browser.clone(),
+            )
+            .unwrap()
+    };
+    let mut initialized = 0;
+    assert!(
+        foreign
+            .with_initial_owner(&foreign_browser, |transition| prepare("denied").commit(
+                transition,
+                &mut || {
+                    initialized += 1;
+                    Ok(())
+                }
+            ))
+            .is_err()
+    );
+    assert_eq!(initialized, 0);
+    let prior = reservation
+        .with_initial_owner(&browser, |transition| {
+            prepare("prior").commit(transition, &mut || Ok(()))
+        })
+        .unwrap();
+    assert!(
+        reservation
+            .with_initial_owner(&browser, |transition| prepare("failed")
+                .commit(transition, &mut || Err("rejected".into())))
+            .is_err()
+    );
+    let replacement = reservation
+        .with_initial_owner(&browser, |transition| {
+            prepare("new").commit(transition, &mut || {
+                initialized += 1;
+                Ok(())
+            })
+        })
+        .unwrap();
+    assert_eq!(initialized, 1);
     assert!(prior.rollback().is_err());
     replacement.rollback().unwrap();
     prior.rollback().unwrap();
@@ -986,21 +1113,63 @@ fn prepared_seed_requires_exact_browser_and_preserves_prior_seed_on_failure() {
 
 #[test]
 fn superseded_mindmap_seed_is_not_restored_by_successor_rollback() {
-    let h=plain("prepared-seed-superseded");
-    h.app.create_view(h.sender.view,None);
-    let effects=h.kit.host::<shell_contract::hosts::OwnedEffectsHost>();
-    let generation=h.kit.services.views.renderer_generation(h.sender.view).unwrap();
-    let source=effects.capture_owner(h.sender.view,&generation).unwrap();
-    let (_,reservation,browser)=shell_contract::ipc::NativeClosureIssuer::new_with_owner(h.sender.view,generation.clone());
-    let cancel=shell_contract::runtime::CancelToken::default();
-    let first=h.app.prepare_seed_in_transition(h.sender.view,Seed::Outline("first".into()),source.clone(),cancel.clone(),generation.clone(),reservation.clone(),browser.clone()).unwrap();
-    let first=reservation.with_initial_owner(&browser,|transition|first.commit(transition,&mut ||Ok(()))).unwrap();
-    let replacement=reservation.prepare_replacement(&browser).unwrap();
-    let second=h.app.prepare_seed_in_transition(h.sender.view,Seed::Outline("second".into()),source,cancel,generation,reservation.clone(),replacement.successor().clone()).unwrap();
-    let (_,proof,second)=replacement.commit(|transition,_|second.commit(transition,&mut ||Ok(()))).unwrap();
+    let h = plain("prepared-seed-superseded");
+    h.app.create_view(h.sender.view, None);
+    let effects = h.kit.host::<shell_contract::hosts::OwnedEffectsHost>();
+    let generation = h
+        .kit
+        .services
+        .views
+        .renderer_generation(h.sender.view)
+        .unwrap();
+    let source = effects.capture_owner(h.sender.view, &generation).unwrap();
+    let (_, reservation, browser) =
+        shell_contract::ipc::NativeClosureIssuer::new_with_owner(h.sender.view, generation.clone());
+    let cancel = shell_contract::runtime::CancelToken::default();
+    let first = h
+        .app
+        .prepare_seed_in_transition(
+            h.sender.view,
+            Seed::Outline("first".into()),
+            source.clone(),
+            cancel.clone(),
+            generation.clone(),
+            reservation.clone(),
+            browser.clone(),
+        )
+        .unwrap();
+    let first = reservation
+        .with_initial_owner(&browser, |transition| {
+            first.commit(transition, &mut || Ok(()))
+        })
+        .unwrap();
+    let replacement = reservation.prepare_replacement(&browser).unwrap();
+    let second = h
+        .app
+        .prepare_seed_in_transition(
+            h.sender.view,
+            Seed::Outline("second".into()),
+            source,
+            cancel,
+            generation,
+            reservation.clone(),
+            replacement.successor().clone(),
+        )
+        .unwrap();
+    let (_, proof, second) = replacement
+        .commit(|transition, _| second.commit(transition, &mut || Ok(())))
+        .unwrap();
     first.retire_superseded(&proof).unwrap();
     second.rollback().unwrap();
-    assert!(h.app.0.state.borrow().owned_seeds.get(&h.sender.view).is_none());
+    assert!(
+        h.app
+            .0
+            .state
+            .borrow()
+            .owned_seeds
+            .get(&h.sender.view)
+            .is_none()
+    );
 }
 
 #[test]
@@ -1008,17 +1177,35 @@ fn adopted_seed_close_never_restores_displaced_content() {
     let h = plain("owned-seed-adopted-close");
     h.app.create_view(h.sender.view, None);
     let effects = h.kit.host::<shell_contract::hosts::OwnedEffectsHost>();
-    let generation = h.kit.services.views.renderer_generation(h.sender.view).unwrap();
+    let generation = h
+        .kit
+        .services
+        .views
+        .renderer_generation(h.sender.view)
+        .unwrap();
     let owner = effects.capture_owner(h.sender.view, &generation).unwrap();
-    let (issuer, reservation) = shell_contract::ipc::NativeClosureIssuer::new(h.sender.view, generation.clone());
+    let (issuer, reservation) =
+        shell_contract::ipc::NativeClosureIssuer::new(h.sender.view, generation.clone());
     let cancel = shell_contract::runtime::CancelToken::default();
-    let queue = |text: &str| h.app.queue_seed_owned(
-        h.sender.view, Seed::Outline(text.into()), owner.clone(), &[], cancel.clone(), cancel.clone(),
-        generation.clone(), reservation.clone(), &mut || Ok(()),
-    ).unwrap();
+    let queue = |text: &str| {
+        h.app
+            .queue_seed_owned(
+                h.sender.view,
+                Seed::Outline(text.into()),
+                owner.clone(),
+                &[],
+                cancel.clone(),
+                cancel.clone(),
+                generation.clone(),
+                reservation.clone(),
+                &mut || Ok(()),
+            )
+            .unwrap()
+    };
     let displaced = queue("# old");
     let adopted = queue("# adopted");
-    let (forged, _) = shell_contract::ipc::NativeClosureIssuer::new(h.sender.view, generation.clone());
+    let (forged, _) =
+        shell_contract::ipc::NativeClosureIssuer::new(h.sender.view, generation.clone());
     assert!(adopted.retire_adopted(&forged.closed()).is_err());
     let closed = issuer.closed();
     adopted.retire_adopted(&closed).unwrap();

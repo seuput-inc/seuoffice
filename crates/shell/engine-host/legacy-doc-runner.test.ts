@@ -8,10 +8,15 @@ class FakeWorker {
   onmessage: ((event: { data: unknown }) => void) | null = null
   terminate = vi.fn()
   postMessage = vi.fn()
-  constructor() { FakeWorker.instances.push(this) }
+  constructor() {
+    FakeWorker.instances.push(this)
+  }
 }
 
-afterEach(() => { vi.unstubAllGlobals(); FakeWorker.instances = [] })
+afterEach(() => {
+  vi.unstubAllGlobals()
+  FakeWorker.instances = []
+})
 function setup() {
   vi.stubGlobal('document', { baseURI: 'https://engine-host/' })
   vi.stubGlobal('Worker', FakeWorker)

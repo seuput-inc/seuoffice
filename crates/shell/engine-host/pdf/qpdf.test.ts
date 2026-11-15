@@ -8,7 +8,9 @@ class FakeWorker {
   onmessage: ((event: { data: unknown }) => void) | null = null
   terminate = vi.fn()
   postMessage = vi.fn()
-  constructor(readonly url: URL) { FakeWorker.latest = this }
+  constructor(readonly url: URL) {
+    FakeWorker.latest = this
+  }
 }
 
 afterEach(() => vi.unstubAllGlobals())
@@ -21,7 +23,10 @@ describe('qpdf worker lifecycle', () => {
     const input = new Uint8Array([1, 2, 3])
     const result = encryptPdf(input, 'password', undefined, controller.signal)
     expect(FakeWorker.latest.url.href).toBe('https://engine-host/pdf/qpdf-worker.js')
-    expect(FakeWorker.latest.postMessage).toHaveBeenCalledWith(expect.objectContaining({ operation: 'encrypt', bytes: input.buffer }), [input.buffer])
+    expect(FakeWorker.latest.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: 'encrypt', bytes: input.buffer }),
+      [input.buffer],
+    )
     controller.abort()
     await expect(result).rejects.toMatchObject({ name: 'AbortError' })
     expect(FakeWorker.latest.terminate).toHaveBeenCalledOnce()
@@ -31,7 +36,9 @@ describe('qpdf worker lifecycle', () => {
     vi.stubGlobal('document', { baseURI: 'https://engine-host/' })
     vi.stubGlobal('Worker', FakeWorker)
     const result = encryptPdf(new Uint8Array([1]), 'password')
-    FakeWorker.latest.onmessage?.({ data: { error: { name: 'Error', message: 'qpdf could not write the file' } } })
+    FakeWorker.latest.onmessage?.({
+      data: { error: { name: 'Error', message: 'qpdf could not write the file' } },
+    })
     await expect(result).rejects.toThrow('qpdf could not write the file')
     expect(FakeWorker.latest.terminate).toHaveBeenCalledOnce()
   })
@@ -40,10 +47,14 @@ describe('qpdf worker lifecycle', () => {
     vi.stubGlobal('document', { baseURI: 'https://engine-host/' })
     vi.stubGlobal('Worker', FakeWorker)
     const decrypt = decryptPdf(new Uint8Array([1]), 'wrong')
-    FakeWorker.latest.onmessage?.({ data: { error: { name: 'PdfLoadError', message: 'password', code: 'password-required' } } })
+    FakeWorker.latest.onmessage?.({
+      data: { error: { name: 'PdfLoadError', message: 'password', code: 'password-required' } },
+    })
     await expect(decrypt).rejects.toMatchObject({ name: 'PdfLoadError', code: 'password-required' })
     const repair = repairPdf(new Uint8Array([1]))
-    FakeWorker.latest.onmessage?.({ data: { error: { name: 'RepairFailedError', message: 'unreadable', reason: 'unreadable' } } })
+    FakeWorker.latest.onmessage?.({
+      data: { error: { name: 'RepairFailedError', message: 'unreadable', reason: 'unreadable' } },
+    })
     await expect(repair).rejects.toMatchObject({ name: 'RepairFailedError', reason: 'unreadable' })
   })
 })

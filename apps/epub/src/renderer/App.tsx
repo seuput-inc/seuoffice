@@ -613,7 +613,11 @@ export default function App(): React.JSX.Element {
         // what was typed goes into the book before it is written
         await editor.flush(requestId)
         const mark = editor.saveMark()
-        const result = await api.save({ mode, ...(auto ? { auto } : {}), ...(requestId ? { requestId } : {}) })
+        const result = await api.save({
+          mode,
+          ...(auto ? { auto } : {}),
+          ...(requestId ? { requestId } : {}),
+        })
         if (!result.ok) {
           // an automatic save that defers to another pane of the same book says nothing
           if (!(auto && result.error === 'external-modified')) {

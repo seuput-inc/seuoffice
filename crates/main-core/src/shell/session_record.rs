@@ -20,8 +20,8 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use jscompat::node_path::host::join;
 use jscompat::{
@@ -723,12 +723,16 @@ pub struct SessionWritePlan {
 }
 
 impl SessionWritePlan {
-    pub fn write_owned(&self, admit: crate::packages::electron_utils::atomic_write::owned::Admission) -> Result<(), NodeError> {
+    pub fn write_owned(
+        &self,
+        admit: crate::packages::electron_utils::atomic_write::owned::Admission,
+    ) -> Result<(), NodeError> {
         let revision = self.revision;
         let current = self.current_revision.clone();
-        let guarded = Arc::new(move |effect: crate::packages::electron_utils::atomic_write::owned::ShortEffect| {
-            let current = current.clone();
-            admit(Box::new(move || {
+        let guarded = Arc::new(
+            move |effect: crate::packages::electron_utils::atomic_write::owned::ShortEffect| {
+                let current = current.clone();
+                admit(Box::new(move || {
                 let guard = current.lock().unwrap_or_else(|error| error.into_inner());
                 if *guard != revision {
                     return Box::new(Err::<crate::packages::electron_utils::atomic_write::owned::EffectValue, NodeError>(
@@ -739,9 +743,12 @@ impl SessionWritePlan {
             }))?.downcast::<Result<crate::packages::electron_utils::atomic_write::owned::EffectValue, NodeError>>()
                 .map(|result| *result)
                 .map_err(|_| NodeError { code: None, message: "session admission returned an incompatible result".into() })?
-        });
+            },
+        );
         crate::packages::electron_utils::atomic_write::owned::write_json(
-            &self.file_path, &json_value_from_serde(&record_to_value(&self.record)), guarded,
+            &self.file_path,
+            &json_value_from_serde(&record_to_value(&self.record)),
+            guarded,
         )
     }
 }
@@ -821,7 +828,10 @@ impl SessionRecorder {
     }
 
     fn advance_revision(&self) -> u64 {
-        let mut revision = self.revision.lock().unwrap_or_else(|error| error.into_inner());
+        let mut revision = self
+            .revision
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         *revision = revision.checked_add(1).expect("session revision exhausted");
         *revision
     }
@@ -829,18 +839,36 @@ impl SessionRecorder {
     fn current_plan(&self, revision: u64) -> Option<SessionWritePlan> {
         let record = self.current.as_ref()?;
         let json = snapshot_json(record);
-        if self.last_written.as_deref() == Some(json.as_str()) { return None; }
+        if self.last_written.as_deref() == Some(json.as_str()) {
+            return None;
+        }
         Some(SessionWritePlan {
-            recorder_id: self.recorder_id, revision, file_path: self.file_path.clone(),
-            record: record.clone(), json, current_revision: self.revision.clone(),
+            recorder_id: self.recorder_id,
+            revision,
+            file_path: self.file_path.clone(),
+            record: record.clone(),
+            json,
+            current_revision: self.revision.clone(),
         })
     }
 
     /// Settle only this recorder's current plan after the worker completes.
-    pub fn complete_write(&mut self, plan: &SessionWritePlan, result: Result<(), String>, env: &mut dyn SessionRecorderEnv) {
-        if plan.recorder_id != self.recorder_id { return; }
-        let current = *self.revision.lock().unwrap_or_else(|error| error.into_inner());
-        if plan.revision != current { return; }
+    pub fn complete_write(
+        &mut self,
+        plan: &SessionWritePlan,
+        result: Result<(), String>,
+        env: &mut dyn SessionRecorderEnv,
+    ) {
+        if plan.recorder_id != self.recorder_id {
+            return;
+        }
+        let current = *self
+            .revision
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if plan.revision != current {
+            return;
+        }
         match result {
             Ok(()) => self.last_written = Some(plan.json.clone()),
             Err(error) => env.warn("[session-record] write failed:", &error),
@@ -852,7 +880,6 @@ impl SessionRecorder {
         let revision = self.advance_revision();
         self.current_plan(revision)
     }
-
 
     fn write_plan_now(&mut self, plan: SessionWritePlan, env: &mut dyn SessionRecorderEnv) {
         let result = env.write_json(&plan.file_path, &plan.record);
@@ -873,23 +900,33 @@ impl SessionRecorder {
 
     /// The write timer fired.
     pub fn fire_write_timer(&mut self, env: &mut dyn SessionRecorderEnv) {
-        if let Some(plan) = self.prepare_fire_write_timer() { self.write_plan_now(plan, env); }
+        if let Some(plan) = self.prepare_fire_write_timer() {
+            self.write_plan_now(plan, env);
+        }
     }
 
     pub fn prepare_fire_write_timer(&mut self) -> Option<SessionWritePlan> {
-        if !self.write_timer_pending { return None; }
+        if !self.write_timer_pending {
+            return None;
+        }
         self.prepare_write_now()
     }
 
     /// The crash-loop timer fired.
     pub fn fire_startup_timer(&mut self, env: &mut dyn SessionRecorderEnv) {
-        if let Some(plan) = self.prepare_fire_startup_timer() { self.write_plan_now(plan, env); }
+        if let Some(plan) = self.prepare_fire_startup_timer() {
+            self.write_plan_now(plan, env);
+        }
     }
 
     pub fn prepare_fire_startup_timer(&mut self) -> Option<SessionWritePlan> {
-        if !self.startup_timer_pending { return None; }
+        if !self.startup_timer_pending {
+            return None;
+        }
         self.startup_timer_pending = false;
-        if self.ended { return None; }
+        if self.ended {
+            return None;
+        }
         let current = self.current.as_mut()?;
         current.past_startup = true;
         self.prepare_write_now()
@@ -900,13 +937,19 @@ impl SessionRecorder {
     /// starts from the previous record's tabs, so a crash before the first
     /// tab change still finds them; any other run starts empty.
     pub fn start_run(&mut self, env: &mut dyn SessionRecorderEnv, restore_run: bool) {
-        if self.current.is_some() || self.ended { return; }
+        if self.current.is_some() || self.ended {
+            return;
+        }
         let now = env.now();
-        if let Some(plan) = self.prepare_start_run(now, restore_run) { self.write_plan_now(plan, env); }
+        if let Some(plan) = self.prepare_start_run(now, restore_run) {
+            self.write_plan_now(plan, env);
+        }
     }
 
     pub fn prepare_start_run(&mut self, now: f64, restore_run: bool) -> Option<SessionWritePlan> {
-        if self.current.is_some() || self.ended { return None; }
+        if self.current.is_some() || self.ended {
+            return None;
+        }
         let carried = match &self.previous {
             SessionRecordReadResult::Ok(record) if restore_run => {
                 session_restore_layout(record, false)
@@ -953,8 +996,12 @@ impl SessionRecorder {
         active: Option<&JsonValue>,
         split: Option<&JsonValue>,
     ) -> PreparedSessionUpdate {
-        if self.ended { return PreparedSessionUpdate::Unchanged; }
-        let Some(current) = &self.current else { return PreparedSessionUpdate::Unchanged; };
+        if self.ended {
+            return PreparedSessionUpdate::Unchanged;
+        }
+        let Some(current) = &self.current else {
+            return PreparedSessionUpdate::Unchanged;
+        };
         let mut input: JsObject<JsonValue> = JsObject::new();
         input.set("version", JsonValue::Number(1.0));
         input.set("cleanExit", JsonValue::Bool(false));
@@ -972,7 +1019,9 @@ impl SessionRecorder {
         let reopened = current.clean_exit;
         self.current = Some(parsed);
         let revision = self.advance_revision();
-        let Some(plan) = self.current_plan(revision) else { return PreparedSessionUpdate::Unchanged; };
+        let Some(plan) = self.current_plan(revision) else {
+            return PreparedSessionUpdate::Unchanged;
+        };
         if reopened {
             self.clear_write_timer();
             PreparedSessionUpdate::Immediate(plan)
@@ -1003,11 +1052,15 @@ impl SessionRecorder {
 
     /// `flush`: write a pending change now
     pub fn flush(&mut self, env: &mut dyn SessionRecorderEnv) {
-        if let Some(plan) = self.prepare_flush() { self.write_plan_now(plan, env); }
+        if let Some(plan) = self.prepare_flush() {
+            self.write_plan_now(plan, env);
+        }
     }
 
     pub fn prepare_flush(&mut self) -> Option<SessionWritePlan> {
-        if self.current.is_none() || self.ended { return None; }
+        if self.current.is_none() || self.ended {
+            return None;
+        }
         self.prepare_write_now()
     }
 
@@ -1015,11 +1068,15 @@ impl SessionRecorder {
     /// mark and stop recording. The tab list stays, since a quit that left
     /// undecided copies still counts as abnormal and rebuilds them.
     pub fn mark_clean_exit(&mut self, env: &mut dyn SessionRecorderEnv) {
-        if let Some(plan) = self.prepare_mark_clean_exit() { self.write_plan_now(plan, env); }
+        if let Some(plan) = self.prepare_mark_clean_exit() {
+            self.write_plan_now(plan, env);
+        }
     }
 
     pub fn prepare_mark_clean_exit(&mut self) -> Option<SessionWritePlan> {
-        if self.ended { return None; }
+        if self.ended {
+            return None;
+        }
         let current = self.current.as_mut()?;
         current.clean_exit = true;
         let plan = self.prepare_write_now();
@@ -1047,11 +1104,15 @@ impl SessionRecorder {
     /// `markUpdateRestart`: the quit for "Restart & Install" completed: like
     /// `mark_clean_exit`, with the tabs held at its start and the update mark.
     pub fn mark_update_restart(&mut self, env: &mut dyn SessionRecorderEnv) {
-        if let Some(plan) = self.prepare_mark_update_restart() { self.write_plan_now(plan, env); }
+        if let Some(plan) = self.prepare_mark_update_restart() {
+            self.write_plan_now(plan, env);
+        }
     }
 
     pub fn prepare_mark_update_restart(&mut self) -> Option<SessionWritePlan> {
-        if self.ended { return None; }
+        if self.ended {
+            return None;
+        }
         let current = self.current.as_ref()?;
         let kept = self
             .held_for_update
@@ -1084,11 +1145,15 @@ impl SessionRecorder {
     /// later power loss does not bring back tabs the user closed. A window
     /// opened again from the tray clears the mark with its first tab change.
     pub fn mark_closed_to_tray(&mut self, env: &mut dyn SessionRecorderEnv) {
-        if let Some(plan) = self.prepare_mark_closed_to_tray() { self.write_plan_now(plan, env); }
+        if let Some(plan) = self.prepare_mark_closed_to_tray() {
+            self.write_plan_now(plan, env);
+        }
     }
 
     pub fn prepare_mark_closed_to_tray(&mut self) -> Option<SessionWritePlan> {
-        if self.ended { return None; }
+        if self.ended {
+            return None;
+        }
         let current = self.current.as_ref()?;
         self.current = Some(SessionRecord {
             clean_exit: true,
@@ -1109,11 +1174,15 @@ impl SessionRecorder {
     /// mark, so the next run treats the exit as abnormal even when
     /// `will-quit` still runs.
     pub fn mark_os_session_end(&mut self, env: &mut dyn SessionRecorderEnv) {
-        if let Some(plan) = self.prepare_mark_os_session_end() { self.write_plan_now(plan, env); }
+        if let Some(plan) = self.prepare_mark_os_session_end() {
+            self.write_plan_now(plan, env);
+        }
     }
 
     pub fn prepare_mark_os_session_end(&mut self) -> Option<SessionWritePlan> {
-        if self.current.is_none() || self.ended { return None; }
+        if self.current.is_none() || self.ended {
+            return None;
+        }
         let plan = self.prepare_write_now();
         self.finish();
         plan
@@ -1176,7 +1245,9 @@ impl SessionRecordProcess {
         detached: &[JsonValue],
         untitled_copy_for: Option<&mut UntitledCopyFor<'_>>,
     ) -> PreparedSessionUpdate {
-        let Some(recorder) = &mut self.active else { return PreparedSessionUpdate::Unchanged; };
+        let Some(recorder) = &mut self.active else {
+            return PreparedSessionUpdate::Unchanged;
+        };
         let snapshot = session_snapshot_from(strip, detached, untitled_copy_for);
         recorder.prepare_update_snapshot(&snapshot)
     }
@@ -1229,18 +1300,26 @@ impl SessionRecordProcess {
 mod prepared_tests {
     use super::*;
 
-    struct Env { writes: usize, warnings: usize }
+    struct Env {
+        writes: usize,
+        warnings: usize,
+    }
     impl SessionRecorderEnv for Env {
-        fn now(&mut self) -> f64 { 42.0 }
+        fn now(&mut self) -> f64 {
+            42.0
+        }
         fn write_json(&mut self, _: &str, _: &SessionRecord) -> Result<(), String> {
             self.writes += 1;
             Ok(())
         }
-        fn warn(&mut self, _: &str, _: &str) { self.warnings += 1; }
+        fn warn(&mut self, _: &str, _: &str) {
+            self.warnings += 1;
+        }
     }
 
     fn recorder() -> SessionRecorder {
-        let dir = std::env::temp_dir().join(format!("session-prepared-{}", jscompat::random_uuid()));
+        let dir =
+            std::env::temp_dir().join(format!("session-prepared-{}", jscompat::random_uuid()));
         create_session_recorder(&SessionRecorderOptions {
             user_data_dir: dir.to_string_lossy().into_owned(),
             write_delay_ms: None,
@@ -1251,12 +1330,17 @@ mod prepared_tests {
     #[test]
     fn reopened_update_prepares_without_writing_and_settles_only_after_completion() {
         let mut recorder = recorder();
-        let mut env = Env { writes: 0, warnings: 0 };
+        let mut env = Env {
+            writes: 0,
+            warnings: 0,
+        };
         let start = recorder.prepare_start_run(42.0, false).unwrap();
         recorder.complete_write(&start, Ok(()), &mut env);
         let closed = recorder.prepare_mark_closed_to_tray().unwrap();
         recorder.complete_write(&closed, Ok(()), &mut env);
-        let PreparedSessionUpdate::Immediate(plan) = recorder.prepare_update_snapshot(&SessionSnapshot::default()) else {
+        let PreparedSessionUpdate::Immediate(plan) =
+            recorder.prepare_update_snapshot(&SessionSnapshot::default())
+        else {
             panic!("reopening must prepare an immediate write");
         };
         assert_eq!(env.writes, 0);
@@ -1269,10 +1353,14 @@ mod prepared_tests {
     #[test]
     fn superseded_plan_cannot_publish_or_ack_newer_state() {
         let mut recorder = recorder();
-        let mut env = Env { writes: 0, warnings: 0 };
+        let mut env = Env {
+            writes: 0,
+            warnings: 0,
+        };
         let old = recorder.prepare_start_run(42.0, false).unwrap();
         let new = recorder.prepare_mark_closed_to_tray().unwrap();
-        let admit: crate::packages::electron_utils::atomic_write::owned::Admission = Arc::new(|effect| Ok(effect()));
+        let admit: crate::packages::electron_utils::atomic_write::owned::Admission =
+            Arc::new(|effect| Ok(effect()));
         assert!(old.write_owned(admit).is_err());
         recorder.complete_write(&old, Ok(()), &mut env);
         assert!(recorder.prepare_write_now().is_some());

@@ -162,12 +162,21 @@ impl App {
         fit_width_px: f64,
         unlocked: Option<(Vec<u8>, String)>,
     ) -> Reply {
-        let cancel = owner.loss_token().ok_or_else(|| thrown("The native presentation owner lifetime is unavailable"))?;
+        let cancel = owner
+            .loss_token()
+            .ok_or_else(|| thrown("The native presentation owner lifetime is unavailable"))?;
         let authority = super::open_authority::OpenAuthority::capture(self, owner, cancel)?;
         self.open_and_build_owned(owner, path, fit_width_px, unlocked, &authority)
     }
 
-    fn open_and_build_owned(&self, owner: &super::engine::RenderOwner, path: &str, fit_width_px: f64, unlocked: Option<(Vec<u8>, String)>, authority: &super::open_authority::OpenAuthority) -> Reply {
+    fn open_and_build_owned(
+        &self,
+        owner: &super::engine::RenderOwner,
+        path: &str,
+        fit_width_px: f64,
+        unlocked: Option<(Vec<u8>, String)>,
+        authority: &super::open_authority::OpenAuthority,
+    ) -> Reply {
         let view = owner.view;
         // Same file already open in another window: attach to that session
         let wanted = std::path::absolute(path).unwrap_or_else(|_| path.into());
@@ -175,7 +184,11 @@ impl App {
             let mut state = self.state.borrow_mut();
             let mut found = None;
             // A preselected recovery decision must open its own bytes.
-            for slot in state.live_slots().into_iter().filter(|_| !state.recovery_open_decisions.contains_key(&view)) {
+            for slot in state
+                .live_slots()
+                .into_iter()
+                .filter(|_| !state.recovery_open_decisions.contains_key(&view))
+            {
                 let Some(existing) = state.slot(slot) else {
                     continue;
                 };
@@ -200,7 +213,9 @@ impl App {
                 let existing_path = existing.path().to_owned();
                 drop(state);
                 authority.commit(self, owner, Some(slot), None, staged)?;
-                if let Some(session) = self.state.borrow_mut().slot_mut(slot) { session.core.schedule_history_notify(); }
+                if let Some(session) = self.state.borrow_mut().slot_mut(slot) {
+                    session.core.schedule_history_notify();
+                }
                 self.push_recent(path);
                 self.shell.opened(view, &existing_path);
                 return Ok(result);
@@ -229,7 +244,9 @@ impl App {
         let mut session = SlideSession::new(path, handle, fit_width_px);
         let staged = StagedBinding::new(self.engine.clone(), deck, owner)
             .map_err(|error| thrown(error.0))?;
-        self.engine.adopt_embedded_fonts(deck, owner).map_err(|error| thrown(error.0))?;
+        self.engine
+            .adopt_embedded_fonts(deck, owner)
+            .map_err(|error| thrown(error.0))?;
         if recovered.recovered {
             session.core.meta_dirty = true;
         }
@@ -240,9 +257,14 @@ impl App {
         let payload = if recovered.recovered {
             Some(obj([
                 ("slides", slides.clone()),
-                ("size", self.size_value(self.engine.size(deck).map_err(|error| thrown(error.0))?)),
+                (
+                    "size",
+                    self.size_value(self.engine.size(deck).map_err(|error| thrown(error.0))?),
+                ),
             ]))
-        } else { None };
+        } else {
+            None
+        };
         let result = self.open_result(&session, slides)?;
         let owner = authority.commit(self, owner, None, Some(session), staged)?;
         self.push_recent(path);
@@ -252,7 +274,11 @@ impl App {
             // after it makes the renderer ask the session, which answers "unsaved"
             let owner = owner.clone();
             self.post(move |app| {
-                if let Err(error) = app.services.events.emit_to_owner_checked(&owner, "slides:deck-changed", vec![payload]) {
+                if let Err(error) = app.services.events.emit_to_owner_checked(
+                    &owner,
+                    "slides:deck-changed",
+                    vec![payload],
+                ) {
                     eprintln!("[slides] scoped open notification failed: {error}");
                 }
             });
@@ -270,20 +296,49 @@ impl App {
 
     /// Prepares `path` for open (conversions, password), then runs `then` on
     /// the core thread
-    fn prepare_then(&self, authority: super::open_authority::OpenAuthority, path: String, then: impl FnOnce(&App, Result<(PreparedOpen, super::open_authority::OpenAuthority), IpcError>) + Send + 'static) {
+    fn prepare_then(
+        &self,
+        authority: super::open_authority::OpenAuthority,
+        path: String,
+        then: impl FnOnce(&App, Result<(PreparedOpen, super::open_authority::OpenAuthority), IpcError>)
+        + Send
+        + 'static,
+    ) {
         let parent = self.shell.dialog_parent();
         let index = self.registry_index;
         let services = self.services.clone();
-        self.shell.prepare_for_open_owned(parent, &path, authority.source.clone(), authority.source.clone(), authority.cancel.clone(), authority.cancel.clone(),
+        self.shell.prepare_for_open_owned(
+            parent,
+            &path,
+            authority.source.clone(),
+            authority.source.clone(),
+            authority.cancel.clone(),
+            authority.cancel.clone(),
             Box::new(move |prepared| {
-                super::post_to(&services, index, move |app| then(app, prepared.map(|prepared| (prepared, authority)).map_err(thrown)));
-            }));
+                super::post_to(&services, index, move |app| {
+                    then(
+                        app,
+                        prepared
+                            .map(|prepared| (prepared, authority))
+                            .map_err(thrown),
+                    )
+                });
+            }),
+        );
     }
 
-    fn open_prepared(&self, owner: &super::engine::RenderOwner, fit: f64, prepared: PreparedOpen, authority: &super::open_authority::OpenAuthority) -> Reply {
+    fn open_prepared(
+        &self,
+        owner: &super::engine::RenderOwner,
+        fit: f64,
+        prepared: PreparedOpen,
+        authority: &super::open_authority::OpenAuthority,
+    ) -> Reply {
         match prepared {
             PreparedOpen::Rejected => null(),
-            PreparedOpen::Plain(path) => self.open_and_build_owned(owner, &path, fit, None, authority),
+            PreparedOpen::Plain(path) => {
+                self.open_and_build_owned(owner, &path, fit, None, authority)
+            }
             PreparedOpen::Unlocked {
                 path,
                 bytes,
@@ -299,8 +354,15 @@ fn answer(responder: Responder, reply: Reply, app: &App) {
 }
 
 pub fn open(app: &App, cx: &CallContext, args: Args, responder: Responder) {
-    let owner = match super::session::render_owner(cx) { Ok(owner) => owner, Err(error) => return responder.reply(Err(error)) };
-    let authority = match super::open_authority::OpenAuthority::capture(app, &owner, cx.cancel.clone()) { Ok(authority) => authority, Err(error) => return responder.reply(Err(error)) };
+    let owner = match super::session::render_owner(cx) {
+        Ok(owner) => owner,
+        Err(error) => return responder.reply(Err(error)),
+    };
+    let authority =
+        match super::open_authority::OpenAuthority::capture(app, &owner, cx.cancel.clone()) {
+            Ok(authority) => authority,
+            Err(error) => return responder.reply(Err(error)),
+        };
     let fit = number(args.get(0));
     let options = options([
         ("properties", jstrs(&["openFile"])),
@@ -310,33 +372,89 @@ pub fn open(app: &App, cx: &CallContext, args: Args, responder: Responder) {
         ),
     ]);
     let options = match app.shared.dialog_memory.lock() {
-        Ok(memory) => crate::host::file_dialog(&main_core::packages::electron_utils::dialog_memory::prepare_dialog_options(&memory, &options, None)),
+        Ok(memory) => crate::host::file_dialog(
+            &main_core::packages::electron_utils::dialog_memory::prepare_dialog_options(
+                &memory, &options, None,
+            ),
+        ),
         Err(_) => return responder.reply(Err(thrown("The dialog memory is unavailable"))),
     };
-    let effects = match app.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().cloned() {
-        Some(effects) => effects, None => return responder.reply(Err(thrown("The native dialog effect host is unavailable"))),
+    let effects = match app
+        .services
+        .hosts
+        .get::<shell_contract::hosts::OwnedEffectsHost>()
+        .cloned()
+    {
+        Some(effects) => effects,
+        None => {
+            return responder.reply(Err(thrown("The native dialog effect host is unavailable")));
+        }
     };
-    let services = app.services.clone(); let index = app.registry_index;
-    app.dialogs.open_owned(app.shell.dialog_parent(), options, authority.source.clone(), authority.source.clone(), authority.cancel.clone(), authority.cancel.clone(), Box::new(move |picked| {
-        super::post_to(&services, index, move |app| {
-            let paths = match picked { Ok(paths) => paths, Err(error) => return responder.reply(Err(thrown(error))) };
-            let Some(path) = paths.and_then(|paths| paths.into_iter().next()).map(path_string).filter(|path| !path.is_empty()) else { return responder.reply(null()); };
-            let remembered = effects.with_owned_effect(&authority.source, &authority.source, &authority.cancel, &authority.cancel, &mut || {
-                let mut memory = app.shared.dialog_memory.lock().map_err(|_| "The dialog memory is unavailable".to_owned())?;
-                main_core::packages::electron_utils::dialog_memory::remember_open_path(&mut memory, &path, false); Ok(())
+    let services = app.services.clone();
+    let index = app.registry_index;
+    app.dialogs.open_owned(
+        app.shell.dialog_parent(),
+        options,
+        authority.source.clone(),
+        authority.source.clone(),
+        authority.cancel.clone(),
+        authority.cancel.clone(),
+        Box::new(move |picked| {
+            super::post_to(&services, index, move |app| {
+                let paths = match picked {
+                    Ok(paths) => paths,
+                    Err(error) => return responder.reply(Err(thrown(error))),
+                };
+                let Some(path) = paths
+                    .and_then(|paths| paths.into_iter().next())
+                    .map(path_string)
+                    .filter(|path| !path.is_empty())
+                else {
+                    return responder.reply(null());
+                };
+                let remembered = effects.with_owned_effect(
+                    &authority.source,
+                    &authority.source,
+                    &authority.cancel,
+                    &authority.cancel,
+                    &mut || {
+                        let mut memory = app
+                            .shared
+                            .dialog_memory
+                            .lock()
+                            .map_err(|_| "The dialog memory is unavailable".to_owned())?;
+                        main_core::packages::electron_utils::dialog_memory::remember_open_path(
+                            &mut memory,
+                            &path,
+                            false,
+                        );
+                        Ok(())
+                    },
+                );
+                if let Err(error) = remembered {
+                    return responder.reply(Err(thrown(error)));
+                }
+                app.prepare_then(authority, path, move |app, prepared| {
+                    let reply = prepared.and_then(|(prepared, authority)| {
+                        app.open_prepared(&owner, fit, prepared, &authority)
+                    });
+                    answer(responder, reply, app);
+                });
             });
-            if let Err(error) = remembered { return responder.reply(Err(thrown(error))); }
-            app.prepare_then(authority, path, move |app, prepared| {
-                let reply = prepared.and_then(|(prepared, authority)| app.open_prepared(&owner, fit, prepared, &authority));
-                answer(responder, reply, app);
-            });
-        });
-    }));
+        }),
+    );
 }
 
 pub fn open_path(app: &App, cx: &CallContext, args: Args, responder: Responder) {
-    let owner = match super::session::render_owner(cx) { Ok(owner) => owner, Err(error) => return responder.reply(Err(error)) };
-    let authority = match super::open_authority::OpenAuthority::capture(app, &owner, cx.cancel.clone()) { Ok(authority) => authority, Err(error) => return responder.reply(Err(error)) };
+    let owner = match super::session::render_owner(cx) {
+        Ok(owner) => owner,
+        Err(error) => return responder.reply(Err(error)),
+    };
+    let authority =
+        match super::open_authority::OpenAuthority::capture(app, &owner, cx.cancel.clone()) {
+            Ok(authority) => authority,
+            Err(error) => return responder.reply(Err(error)),
+        };
     let fit = number(args.get(1));
     let Some(path) = args
         .str(0)
@@ -345,35 +463,53 @@ pub fn open_path(app: &App, cx: &CallContext, args: Args, responder: Responder) 
         return responder.reply(null());
     };
     app.prepare_then(authority, path.to_owned(), move |app, prepared| {
-        let reply = prepared.and_then(|(prepared, authority)| app.open_prepared(&owner, fit, prepared, &authority));
+        let reply = prepared
+            .and_then(|(prepared, authority)| app.open_prepared(&owner, fit, prepared, &authority));
         answer(responder, reply, app);
     });
 }
 
 pub fn consume_pending_open(app: &App, cx: &CallContext, args: Args, responder: Responder) {
     let view = cx.sender.view;
-    let owner = match super::session::render_owner(cx) { Ok(owner) => owner, Err(error) => return responder.reply(Err(error)) };
+    let owner = match super::session::render_owner(cx) {
+        Ok(owner) => owner,
+        Err(error) => return responder.reply(Err(error)),
+    };
     let fit = number(args.get(0));
     if app.state.borrow().saved_loads.contains_key(&view) {
         return super::saved_load::consume(app, cx, fit, responder);
     }
     let mut response = Some(responder);
     let recovered = super::recovery::consume_prepared(app, cx, fit, &mut response);
-    let Some(responder) = response else { return; };
+    let Some(responder) = response else {
+        return;
+    };
     match recovered {
         Ok(Some(value)) => return answer(responder, Ok(value), app),
         Err(error) => return answer(responder, Err(error), app),
         Ok(None) => {}
     }
     if app.state.borrow().owned_seeds.contains_key(&view) {
-        let result = app.open_owned_seed(cx, fit).and_then(|value| value.ok_or_else(|| thrown("The presentation seed was released")));
+        let result = app
+            .open_owned_seed(cx, fit)
+            .and_then(|value| value.ok_or_else(|| thrown("The presentation seed was released")));
         return answer(responder, result, app);
     }
-    let authority = match super::open_authority::OpenAuthority::capture(app, &owner, cx.cancel.clone()) { Ok(authority) => authority, Err(error) => return responder.reply(Err(error)) };
+    let authority =
+        match super::open_authority::OpenAuthority::capture(app, &owner, cx.cancel.clone()) {
+            Ok(authority) => authority,
+            Err(error) => return responder.reply(Err(error)),
+        };
     consume_pending_ready(app, owner, authority, fit, responder);
 }
 
-pub(super) fn consume_pending_ready(app: &App, owner: super::engine::RenderOwner, authority: super::open_authority::OpenAuthority, fit: f64, responder: Responder) {
+pub(super) fn consume_pending_ready(
+    app: &App,
+    owner: super::engine::RenderOwner,
+    authority: super::open_authority::OpenAuthority,
+    fit: f64,
+    responder: Responder,
+) {
     let view = owner.view;
     let queued = {
         let state = app.state.borrow();
@@ -415,28 +551,35 @@ pub(super) fn consume_pending_ready(app: &App, owner: super::engine::RenderOwner
         return;
     }
     // A new tab that starts with a given deck: taken once, unsaved
-    let reply = app.open_seed(&owner, fit, &authority).and_then(|seeded| match seeded {
-        Some(result) => Ok(result),
-        None => {
-            // No queued path but the main process already has a session
-            // (remount after a reload): restore from the session
-            let mut state = app.state.borrow_mut();
-            match state.session_mut(view) {
-                Some(session) => {
-                    session.fit_width_px = fit;
-                    let slides = app.render_all(session, &owner)?;
-                    app.open_result(session, slides)
+    let reply = app
+        .open_seed(&owner, fit, &authority)
+        .and_then(|seeded| match seeded {
+            Some(result) => Ok(result),
+            None => {
+                // No queued path but the main process already has a session
+                // (remount after a reload): restore from the session
+                let mut state = app.state.borrow_mut();
+                match state.session_mut(view) {
+                    Some(session) => {
+                        session.fit_width_px = fit;
+                        let slides = app.render_all(session, &owner)?;
+                        app.open_result(session, slides)
+                    }
+                    None => null(),
                 }
-                None => null(),
             }
-        }
-    });
+        });
     answer(responder, reply, app);
 }
 
 impl App {
     /// `openSlidesSeed(wc, fitWidthPx, defaultFontOf)`
-    fn open_seed(&self, owner: &super::engine::RenderOwner, fit: f64, authority: &super::open_authority::OpenAuthority) -> Result<Option<IpcValue>, IpcError> {
+    fn open_seed(
+        &self,
+        owner: &super::engine::RenderOwner,
+        fit: f64,
+        authority: &super::open_authority::OpenAuthority,
+    ) -> Result<Option<IpcValue>, IpcError> {
         let view = owner.view;
         let entry = self
             .state
@@ -462,14 +605,21 @@ impl App {
         let slides = self.render_all(&session, owner)?;
         let payload = obj([
             ("slides", slides.clone()),
-            ("size", self.size_value(self.engine.size(deck).map_err(|error| thrown(error.0))?)),
+            (
+                "size",
+                self.size_value(self.engine.size(deck).map_err(|error| thrown(error.0))?),
+            ),
         ]);
         let result = self.open_result(&session, slides)?;
         let owner = authority.commit(self, owner, None, Some(session), staged)?;
         // An open shows the deck as clean; the deck-changed message right
         // after it makes the renderer ask the session, which answers "unsaved"
         self.post(move |app| {
-            if let Err(error) = app.services.events.emit_to_owner_checked(&owner, "slides:deck-changed", vec![payload]) {
+            if let Err(error) = app.services.events.emit_to_owner_checked(
+                &owner,
+                "slides:deck-changed",
+                vec![payload],
+            ) {
                 eprintln!("[slides] scoped seed notification failed: {error}");
             }
         });
@@ -484,14 +634,16 @@ pub fn new_blank(app: &App, cx: &CallContext, args: Args) -> Reply {
     let bytes = app.engine.create_blank_pptx().map_err(|e| thrown(e.0))?;
     let deck = app.engine.open(&bytes).map_err(|e| thrown(e.0))?;
     let mut session = SlideSession::new("", DeckHandle::new(deck, app.engine.clone()), fit);
-    let staged = StagedBinding::new(app.engine.clone(), deck, &owner)
-        .map_err(|error| thrown(error.0))?;
+    let staged =
+        StagedBinding::new(app.engine.clone(), deck, &owner).map_err(|error| thrown(error.0))?;
     let side = |v: &IpcValue| -> Option<f64> {
         as_num(v).filter(|x| x.fract() == 0.0 && (914_400.0..=51_206_400.0).contains(x))
     };
     let size = args.get(1);
     if let (Some(cx_), Some(cy)) = (side(field(size, "cx")), side(field(size, "cy"))) {
-        app.engine.set_slide_size(deck, cx_, cy).map_err(|error| thrown(error.0))?;
+        app.engine
+            .set_slide_size(deck, cx_, cy)
+            .map_err(|error| thrown(error.0))?;
     }
     session.core.schedule_history_notify();
     let slides = app.render_all(&session, &owner)?;
@@ -734,7 +886,9 @@ impl App {
         s.disk_state = record_disk_state(file_path);
         self.push_recent(file_path);
         self.sync_attached_paths(slot, file_path, &ids);
-        self.engine.commit_saved(s.deck()).map_err(|error| thrown(error.0))?;
+        self.engine
+            .commit_saved(s.deck())
+            .map_err(|error| thrown(error.0))?;
         if s.core.meta_rev.unwrap_or(0) == meta_rev_at_save {
             s.core.meta_dirty = false;
         }
@@ -758,7 +912,6 @@ fn thrown_text(text: String) -> IpcError {
     let message = text.strip_prefix("Error: ").unwrap_or(&text).to_owned();
     thrown(message)
 }
-
 
 // ---- undo / redo / history batches ----
 
@@ -789,43 +942,59 @@ impl App {
     }
 
     fn step_history(&self, owner: &super::engine::RenderOwner, undo: bool) -> Reply {
-        let answer = self.with_session_ids(owner.view, |s, ids| -> Result<Option<IpcValue>, super::engine::EngineError> {
-            if s.master_edit.is_some() || s.core.ai_run {
-                return Ok(None);
-            }
-            let target = if undo {
-                match s.core.history_batch.as_ref() {
-                    Some(batch) if s.core.undo_stack.len() > batch.undo_start => Some(&batch.before),
-                    _ => s.core.undo_stack.last(),
+        let answer = self.with_session_ids(
+            owner.view,
+            |s, ids| -> Result<Option<IpcValue>, super::engine::EngineError> {
+                if s.master_edit.is_some() || s.core.ai_run {
+                    return Ok(None);
                 }
-            } else {
-                s.core.redo_stack.last()
-            }.cloned();
-            let Some(target) = target else { return Ok(None) };
-            let current = s.core.take_snapshot()?;
-            s.core.restore_snapshot(&target)?;
-            let rendered = match self.render_all(s, owner) {
-                Ok(rendered) => rendered,
-                Err(error) => {
-                    s.core.restore_snapshot(&current).map_err(|rollback| super::engine::EngineError(
-                        format!("{}; history rollback failed: {}", error.message, rollback.0)
-                    ))?;
-                    return Err(super::engine::EngineError(error.message));
+                let target = if undo {
+                    match s.core.history_batch.as_ref() {
+                        Some(batch) if s.core.undo_stack.len() > batch.undo_start => {
+                            Some(&batch.before)
+                        }
+                        _ => s.core.undo_stack.last(),
+                    }
+                } else {
+                    s.core.redo_stack.last()
                 }
-            };
-            s.core.settle_stale_history_batch(ids);
-            if undo {
-                s.core.undo_stack.pop();
-                s.core.redo_stack.push(current);
-            } else {
-                s.core.redo_stack.pop();
-                s.core.undo_stack.push(current);
-            }
-            s.core.schedule_history_notify();
-            s.core.schedule_deck_broadcast();
-            Ok(Some(rendered))
-        });
-        Ok(or_null(answer.transpose().map_err(|error| thrown(error.0))?.flatten()))
+                .cloned();
+                let Some(target) = target else {
+                    return Ok(None);
+                };
+                let current = s.core.take_snapshot()?;
+                s.core.restore_snapshot(&target)?;
+                let rendered = match self.render_all(s, owner) {
+                    Ok(rendered) => rendered,
+                    Err(error) => {
+                        s.core.restore_snapshot(&current).map_err(|rollback| {
+                            super::engine::EngineError(format!(
+                                "{}; history rollback failed: {}",
+                                error.message, rollback.0
+                            ))
+                        })?;
+                        return Err(super::engine::EngineError(error.message));
+                    }
+                };
+                s.core.settle_stale_history_batch(ids);
+                if undo {
+                    s.core.undo_stack.pop();
+                    s.core.redo_stack.push(current);
+                } else {
+                    s.core.redo_stack.pop();
+                    s.core.undo_stack.push(current);
+                }
+                s.core.schedule_history_notify();
+                s.core.schedule_deck_broadcast();
+                Ok(Some(rendered))
+            },
+        );
+        Ok(or_null(
+            answer
+                .transpose()
+                .map_err(|error| thrown(error.0))?
+                .flatten(),
+        ))
     }
 }
 
@@ -833,7 +1002,9 @@ pub fn history_batch_begin(app: &App, cx: &CallContext, _args: Args) -> Reply {
     let mut state = app.state.borrow_mut();
     Ok(IpcValue::Bool(match state.session_mut(cx.sender.view) {
         Some(s) => {
-            s.core.begin_history_batch().map_err(|error| thrown(error.0))?;
+            s.core
+                .begin_history_batch()
+                .map_err(|error| thrown(error.0))?;
             true
         }
         None => false,

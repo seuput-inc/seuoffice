@@ -22,7 +22,8 @@ let readyToken: string | undefined
 const api: DocPickerApi = {
   async getInit() {
     const init = (await ipcRenderer.invoke(DOC_PICKER_CHANNELS.getInit)) as DocPickerInit | null
-    if (!init || typeof init.readyToken !== 'string') throw new Error('Document picker is unavailable')
+    if (!init || typeof init.readyToken !== 'string')
+      throw new Error('Document picker is unavailable')
     readyToken = init.readyToken
     return { lang: init.lang, theme: themeOf(init.theme), readyToken: init.readyToken }
   },

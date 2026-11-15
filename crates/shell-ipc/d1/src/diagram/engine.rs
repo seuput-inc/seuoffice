@@ -41,10 +41,18 @@ pub struct ParsedText {
 
 pub trait DiagramEngine: Send + Sync {
     /// `openDiagram(name, bytes, nodePageCodec)` of `@seuoffice/drawio-model`
-    fn open_diagram(&self, name: &str, bytes: &[u8]) -> Result<Result<DiagramFile, OpenFailure>, String>;
+    fn open_diagram(
+        &self,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<Result<DiagramFile, OpenFailure>, String>;
 
     /// Pure parser usable before the recovery renderer exists.
-    fn open_recovery_diagram(&self, name: &str, bytes: &[u8]) -> Result<Result<DiagramFile, OpenFailure>, String>;
+    fn open_recovery_diagram(
+        &self,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<Result<DiagramFile, OpenFailure>, String>;
 
     /// `diagramPictureExtOf(filePath)` of `@seuoffice/file-parse`: `DrawioSvg`
     /// or `DrawioPng` when the file is named so and holds its diagram

@@ -172,7 +172,9 @@ pub fn approved_fingerprint_from_settings(
     folder: &str,
     platform: &str,
 ) -> Option<String> {
-    approvals_from_settings(settings).get(&folder_key(folder, platform)).cloned()
+    approvals_from_settings(settings)
+        .get(&folder_key(folder, platform))
+        .cloned()
 }
 
 pub fn write_project_skills_approval(

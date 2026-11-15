@@ -302,7 +302,11 @@ export default function App() {
   const savingRef = useRef(false)
   const statusRef = useRef<LoadStatus>('loading')
   const pendingRecoveryApplyRef = useRef<{ token: string; text: string } | null>(null)
-  const pendingSavedApplyRef = useRef<{ token: string; text: string; outcome: 'applied' | 'recovered' } | null>(null)
+  const pendingSavedApplyRef = useRef<{
+    token: string
+    text: string
+    outcome: 'applied' | 'recovered'
+  } | null>(null)
   const pushedTextRef = useRef<string | null>(null)
   const previewTimerRef = useRef<number | null>(null)
   /** parse-map version of the copy currently served to the preview; messages from older copies are ignored */
@@ -361,14 +365,19 @@ export default function App() {
           window.htmlApi.consumePending(),
           window.htmlApi.getPreviewInfo(),
         ])
-        const savedInput = typeof pendingValue === 'object' && pendingValue !== null ? pendingValue : null
+        const savedInput =
+          typeof pendingValue === 'object' && pendingValue !== null ? pendingValue : null
         const pending = typeof pendingValue === 'string' ? pendingValue : (savedInput?.path ?? null)
         savedToken = savedInput?.savedInputToken
         // a crash-recovery copy to open instead: asked (per-file prompt) before
         // any content loads; the original path stays the save target
         const recovery = savedInput ? null : ((await window.htmlApi.recoveryOpen?.()) ?? null)
         recoveryToken = recovery?.recoveryToken
-        const recovered = savedInput?.recovered ? { text: savedInput.text } : recovery && typeof recovery.text === 'string' ? recovery : null
+        const recovered = savedInput?.recovered
+          ? { text: savedInput.text }
+          : recovery && typeof recovery.text === 'string'
+            ? recovery
+            : null
         // a new untitled tab may start with given text (a skill template's copy), taken once
         const seed = pending || recovered ? null : ((await window.htmlApi.takeSeed?.()) ?? null)
         const raw = recovered
@@ -397,17 +406,39 @@ export default function App() {
         // restored copy is unsaved work (the file on disk is untouched)
         setSavedText(seed !== null || recovered ? '' : doc.text)
         setPreviewUrl(info.url)
-        if (recoveryToken) pendingRecoveryApplyRef.current = { token: recoveryToken, text: doc.text }
-        if (savedToken) pendingSavedApplyRef.current = { token: savedToken, text: doc.text, outcome: savedInput?.recovered ? 'recovered' : 'applied' }
+        if (recoveryToken)
+          pendingRecoveryApplyRef.current = { token: recoveryToken, text: doc.text }
+        if (savedToken)
+          pendingSavedApplyRef.current = {
+            token: savedToken,
+            text: doc.text,
+            outcome: savedInput?.recovered ? 'recovered' : 'applied',
+          }
         setStatus('ready')
       } catch (err) {
         if (savedToken) {
           pendingSavedApplyRef.current = null
-          await window.htmlApi.savedInputApplied({ token: savedToken, outcome: 'failed', error: err instanceof Error ? err.message : String(err) }).catch((error) => console.error('[html] saved input failure acknowledgment failed:', error))
+          await window.htmlApi
+            .savedInputApplied({
+              token: savedToken,
+              outcome: 'failed',
+              error: err instanceof Error ? err.message : String(err),
+            })
+            .catch((error) =>
+              console.error('[html] saved input failure acknowledgment failed:', error),
+            )
         }
         if (recoveryToken) {
           pendingRecoveryApplyRef.current = null
-          await window.htmlApi.recoveryApplied?.({ token: recoveryToken, ok: false, error: err instanceof Error ? err.message : String(err) }).catch((error) => console.error('[html] recovery failure acknowledgment failed:', error))
+          await window.htmlApi
+            .recoveryApplied?.({
+              token: recoveryToken,
+              ok: false,
+              error: err instanceof Error ? err.message : String(err),
+            })
+            .catch((error) =>
+              console.error('[html] recovery failure acknowledgment failed:', error),
+            )
         }
         console.error('[html] open failed:', err)
         if (!cancelled) setStatus('error')
@@ -426,7 +457,12 @@ export default function App() {
   useEffect(() => {
     const recovery = pendingRecoveryApplyRef.current
     const saved = pendingSavedApplyRef.current
-    if (status !== 'ready' || (recovery && text !== recovery.text) || (saved && text !== saved.text)) return
+    if (
+      status !== 'ready' ||
+      (recovery && text !== recovery.text) ||
+      (saved && text !== saved.text)
+    )
+      return
     if (!recovery && !saved) return
     pendingRecoveryApplyRef.current = null
     pendingSavedApplyRef.current = null
@@ -443,13 +479,20 @@ export default function App() {
       }
     })().catch((error) => {
       if (saved && !savedAcknowledgmentStarted) {
-        void window.htmlApi.savedInputApplied({ token: saved.token, outcome: 'failed', error: error instanceof Error ? error.message : String(error) }).catch((failure) => console.error('[html] saved input failure acknowledgment failed:', failure))
+        void window.htmlApi
+          .savedInputApplied({
+            token: saved.token,
+            outcome: 'failed',
+            error: error instanceof Error ? error.message : String(error),
+          })
+          .catch((failure) =>
+            console.error('[html] saved input failure acknowledgment failed:', failure),
+          )
       }
       console.error('[html] initial document acknowledgment failed:', error)
       setStatus('error')
     })
   }, [status, text])
-
 
   /**
    * Serve the current source to html-preview://. `reload` = false for a commit the frame already

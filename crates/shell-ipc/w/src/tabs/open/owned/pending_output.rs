@@ -94,7 +94,7 @@ impl PendingOutput {
                 shutting_down: false,
                 drains: Vec::new(),
             }),
-            cancel: CancelToken::new(),
+            cancel: CancelToken::default(),
         })
     }
     pub(super) fn cancellation(&self) -> CancelToken {

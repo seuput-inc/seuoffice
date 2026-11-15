@@ -8,10 +8,15 @@ class FakeWorker {
   onmessage: ((event: { data: unknown }) => void) | null = null
   terminate = vi.fn()
   postMessage = vi.fn()
-  constructor() { FakeWorker.instances.push(this) }
+  constructor() {
+    FakeWorker.instances.push(this)
+  }
 }
 
-afterEach(() => { vi.unstubAllGlobals(); FakeWorker.instances = [] })
+afterEach(() => {
+  vi.unstubAllGlobals()
+  FakeWorker.instances = []
+})
 function setup() {
   vi.stubGlobal('document', { baseURI: 'https://engine-host/' })
   vi.stubGlobal('Worker', FakeWorker)
@@ -21,7 +26,10 @@ it('terminates only the cancelled parser and rejects its late reply', async () =
   setup()
   const cancel = new AbortController()
   const first = runDiagramOpen({ fileName: 'first.drawio', bytesBase64: 'AQ==' }, cancel.signal)
-  const second = runDiagramOpen({ fileName: 'second.drawio', bytesBase64: 'Ag==' }, new AbortController().signal)
+  const second = runDiagramOpen(
+    { fileName: 'second.drawio', bytesBase64: 'Ag==' },
+    new AbortController().signal,
+  )
   const [a, b] = FakeWorker.instances
   cancel.abort()
   a.onmessage?.({ data: { ok: true, value: { ok: true, xml: 'late' } } })
@@ -37,7 +45,13 @@ it('terminates only the cancelled parser and rejects its late reply', async () =
 it('preserves a real model result without narrowing it', async () => {
   setup()
   const result = runDiagramOpen({}, new AbortController().signal)
-  const model = { ok: true, xml: '<mxfile/>', format: 'drawio', root: 'mxfile', anyPageCompressed: true }
+  const model = {
+    ok: true,
+    xml: '<mxfile/>',
+    format: 'drawio',
+    root: 'mxfile',
+    anyPageCompressed: true,
+  }
   FakeWorker.instances[0].onmessage?.({ data: { ok: true, value: model } })
   await expect(result).resolves.toEqual(model)
   expect(FakeWorker.instances[0].terminate).toHaveBeenCalledOnce()
@@ -50,7 +64,9 @@ it('does not start a worker after cancellation and preserves worker errors', asy
   expect(() => runDiagramOpen({}, cancel.signal)).toThrow()
   expect(FakeWorker.instances).toHaveLength(0)
   const result = runDiagramOpen({}, new AbortController().signal)
-  FakeWorker.instances[0].onmessage?.({ data: { ok: false, name: 'TypeError', message: 'bad input' } })
+  FakeWorker.instances[0].onmessage?.({
+    data: { ok: false, name: 'TypeError', message: 'bad input' },
+  })
   await expect(result).rejects.toMatchObject({ name: 'TypeError', message: 'bad input' })
   expect(FakeWorker.instances[0].terminate).toHaveBeenCalledOnce()
 })

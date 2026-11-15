@@ -244,8 +244,12 @@ pub fn path_of_untitled<D: OpenMaterialsDeps>(
     web_contents_id: f64,
 ) -> Result<Option<String>, Failure> {
     for tab in tabs {
-        let id = deps.web_contents_for(&tab.id)?.map(|contents| contents.id());
-        if id == Some(web_contents_id) { return Ok(tab.file_path.clone()); }
+        let id = deps
+            .web_contents_for(&tab.id)?
+            .map(|contents| contents.id());
+        if id == Some(web_contents_id) {
+            return Ok(tab.file_path.clone());
+        }
     }
     Ok(None)
 }
@@ -257,7 +261,9 @@ pub fn show_untitled<D: OpenMaterialsDeps>(
     web_contents_id: f64,
 ) -> Result<Option<String>, Failure> {
     for tab in tabs {
-        let id = deps.web_contents_for(&tab.id)?.map(|contents| contents.id());
+        let id = deps
+            .web_contents_for(&tab.id)?
+            .map(|contents| contents.id());
         if id == Some(web_contents_id) {
             return Ok(Some(tab.id.clone()));
         }

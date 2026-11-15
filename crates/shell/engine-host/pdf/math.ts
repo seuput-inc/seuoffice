@@ -4,8 +4,14 @@ import { escapeAttr, xmlClean } from '../../../../packages/pdf-structure/src/epu
 const KATEX_WRAPPER = /^<span class="katex">(<math[\s\S]*<\/math>)<\/span>$/
 
 export function latexMathMl(input: unknown): string | null {
-  if (!input || typeof input !== 'object' || !('latex' in input) || typeof input.latex !== 'string' ||
-      !('display' in input) || typeof input.display !== 'boolean') {
+  if (
+    !input ||
+    typeof input !== 'object' ||
+    !('latex' in input) ||
+    typeof input.latex !== 'string' ||
+    !('display' in input) ||
+    typeof input.display !== 'boolean'
+  ) {
     throw new TypeError('invalid LaTeX MathML request')
   }
   let html: string

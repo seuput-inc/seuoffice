@@ -29,15 +29,28 @@ function registerIpc(): void {
   if (ipcRegistered) return
   ipcRegistered = true
   ipcMain.handle(PDF_PASSWORD_CHANNELS.getState, (event) =>
-    pwWin && !pwWin.isDestroyed() && event.sender === pwWin.webContents ? currentState : null)
+    pwWin && !pwWin.isDestroyed() && event.sender === pwWin.webContents ? currentState : null,
+  )
   ipcMain.handle(PDF_PASSWORD_CHANNELS.submit, (event, password: unknown, token: unknown) => {
-    if (!pwWin || pwWin.isDestroyed() || event.sender !== pwWin.webContents || token !== String(generation)) return
+    if (
+      !pwWin ||
+      pwWin.isDestroyed() ||
+      event.sender !== pwWin.webContents ||
+      token !== String(generation)
+    )
+      return
     if (typeof password !== 'string') return
     pushState({ busy: true })
     settle(password)
   })
   ipcMain.handle(PDF_PASSWORD_CHANNELS.cancel, (event, token: unknown) => {
-    if (!pwWin || pwWin.isDestroyed() || event.sender !== pwWin.webContents || token !== String(generation)) return
+    if (
+      !pwWin ||
+      pwWin.isDestroyed() ||
+      event.sender !== pwWin.webContents ||
+      token !== String(generation)
+    )
+      return
     settle(null)
     closePdfPasswordDialog()
   })

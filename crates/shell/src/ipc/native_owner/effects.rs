@@ -2829,7 +2829,7 @@ mod tests {
     #[test]
     fn committed_preparation_notification_survives_unwind_outside_gate() {
         let generation = RendererGeneration::new();
-        let loss = CancelToken::new();
+        let loss = CancelToken::default();
         let observed = generation.clone();
         let (send, receive) = mpsc::channel();
         let _subscription = loss.on_cancel(move || send.send(observed.with_active(|| ()).is_some()).unwrap());
@@ -2847,34 +2847,34 @@ mod tests {
     #[test]
     fn native_command_root_requires_issuer_selection_and_live_controls() {
         use shell_contract::ipc::{NativeEditorCommand, NativeInvocationIssuer, NativeInvocationSelection};
-        let shutdown = CancelToken::new();
+        let shutdown = CancelToken::default();
         let issuer = NativeInvocationIssuer::new(shutdown.clone());
-        let cancel = CancelToken::new();
-        let pending = CancelToken::new();
+        let cancel = CancelToken::default();
+        let pending = CancelToken::default();
         let created = RendererGeneration::new();
         let command = NativeEditorCommand::OpenHome;
         let operation = issuer.issue_command(command.clone(), cancel.clone());
-        let generic = issuer.issue(NativeInvocationSelection::NativeCommand(command.clone()), CancelToken::new());
+        let generic = issuer.issue(NativeInvocationSelection::NativeCommand(command.clone()), CancelToken::default());
         assert!(with_native_command_creation_effect(&generic, &command, &created, &[], &cancel, &pending, || ()).is_none());
         assert!(with_native_command_creation_effect(&operation, &NativeEditorCommand::OpenHelp { topic: None }, &created, &[], &cancel, &pending, || ()).is_none());
         assert!(with_native_command_creation_effect(&operation, &command, &created, &[], &cancel, &pending, || ()).is_some());
         let help = NativeEditorCommand::OpenHelp { topic: Some("guide".into()) };
-        let help_operation = issuer.issue_command(help.clone(), CancelToken::new());
+        let help_operation = issuer.issue_command(help.clone(), CancelToken::default());
         assert!(with_native_command_creation_effect(&help_operation, &help, &created, &[], &cancel, &pending, || ()).is_some());
         assert!(with_native_command_creation_effect(&help_operation, &NativeEditorCommand::OpenHelp { topic: None }, &created, &[], &cancel, &pending, || ()).is_none());
         let shell_generation = RendererGeneration::new();
         let shell = NativeRequestOwner {
             view: ViewId(91),
-            context: shell_contract::ipc::NativeContext::with_owner_loss((), shell_generation, CancelToken::new()),
+            context: shell_contract::ipc::NativeContext::with_owner_loss((), shell_generation, CancelToken::default()),
         };
-        let startup = issuer.issue_startup(Vec::new(), false, shell, CancelToken::new());
-        let child = issuer.issue_command_child(&startup, command.clone(), CancelToken::new()).unwrap();
+        let startup = issuer.issue_startup(Vec::new(), false, shell, CancelToken::default());
+        let child = issuer.issue_command_child(&startup, command.clone(), CancelToken::default()).unwrap();
         assert!(with_native_command_preparation_effect(&child, &command, &[], &cancel, &pending, || ()).is_none());
         assert!(with_native_command_creation_effect(&child, &command, &created, &[], &cancel, &pending, || ()).is_none());
         let target = child.reserve_target(ViewId(92), created.clone()).unwrap();
         let target_owner = NativeRequestOwner {
             view: ViewId(92),
-            context: shell_contract::ipc::NativeContext::with_owner_loss((), created.clone(), CancelToken::new()),
+            context: shell_contract::ipc::NativeContext::with_owner_loss((), created.clone(), CancelToken::default()),
         };
         target.register_from_native_admitted(target_owner.clone()).unwrap();
         let document = target.registered_document().unwrap();
@@ -2882,6 +2882,6 @@ mod tests {
         pending.cancel();
         assert!(with_native_command_creation_effect(&operation, &command, &created, &[], &cancel, &pending, || ()).is_none());
         shutdown.cancel();
-        assert!(with_native_command_preparation_effect(&operation, &command, &[], &cancel, &CancelToken::new(), || ()).is_none());
+        assert!(with_native_command_preparation_effect(&operation, &command, &[], &cancel, &CancelToken::default(), || ()).is_none());
     }
 }

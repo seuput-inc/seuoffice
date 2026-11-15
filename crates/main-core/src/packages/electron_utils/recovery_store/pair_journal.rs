@@ -13,11 +13,20 @@ pub struct PairImage {
 impl PairImage {
     pub fn from_bytes(copy: &[u8], metadata: Option<Vec<u8>>) -> Self {
         let metadata_sha256 = metadata.as_ref().map(|bytes| Sha256::digest(bytes).into());
-        Self { copy_sha256: Sha256::digest(copy).into(), metadata_sha256, metadata }
+        Self {
+            copy_sha256: Sha256::digest(copy).into(),
+            metadata_sha256,
+            metadata,
+        }
     }
 
-    pub fn from_snapshot(snapshot: &super::RecoveryPinnedSnapshot) -> Result<Self, crate::node_fs::NodeError> {
-        Ok(Self::from_bytes(&snapshot.bytes, snapshot.exact_metadata()?.map(<[u8]>::to_vec)))
+    pub fn from_snapshot(
+        snapshot: &super::RecoveryPinnedSnapshot,
+    ) -> Result<Self, crate::node_fs::NodeError> {
+        Ok(Self::from_bytes(
+            &snapshot.bytes,
+            snapshot.exact_metadata()?.map(<[u8]>::to_vec),
+        ))
     }
 
     fn copy_matches(&self, copy: Option<&[u8]>) -> bool {
@@ -64,19 +73,33 @@ impl PairIntent {
             return InterruptedPair::Next;
         }
         match &self.previous {
-            Some(previous) if previous.copy_matches(copy) && previous.metadata_matches(metadata) => InterruptedPair::Previous,
-            Some(previous) if previous.copy_matches(copy) && self.next.metadata_matches(metadata) => {
+            Some(previous)
+                if previous.copy_matches(copy) && previous.metadata_matches(metadata) =>
+            {
+                InterruptedPair::Previous
+            }
+            Some(previous)
+                if previous.copy_matches(copy) && self.next.metadata_matches(metadata) =>
+            {
                 InterruptedPair::RestorePreviousMetadata(previous.metadata.clone())
             }
             None if copy.is_none() && metadata.is_none() => InterruptedPair::Previous,
-            None if copy.is_none() && self.next.metadata_matches(metadata) => InterruptedPair::RestorePreviousMetadata(None),
+            None if copy.is_none() && self.next.metadata_matches(metadata) => {
+                InterruptedPair::RestorePreviousMetadata(None)
+            }
             _ => InterruptedPair::Conflict,
         }
     }
 
-    pub fn commit_if_matching(&self, copy: Option<&[u8]>, metadata: Option<&[u8]>) -> Option<PairCommit> {
-        (self.classify(copy, metadata) == InterruptedPair::Next)
-            .then(|| PairCommit { generation: self.generation.clone(), image: self.next.clone() })
+    pub fn commit_if_matching(
+        &self,
+        copy: Option<&[u8]>,
+        metadata: Option<&[u8]>,
+    ) -> Option<PairCommit> {
+        (self.classify(copy, metadata) == InterruptedPair::Next).then(|| PairCommit {
+            generation: self.generation.clone(),
+            image: self.next.clone(),
+        })
     }
 }
 
@@ -97,13 +120,37 @@ mod tests {
             previous: Some(PairImage::from_bytes(b"old", Some(b"old meta".to_vec()))),
             next: PairImage::from_bytes(b"new", Some(b"new meta".to_vec())),
         };
-        assert_eq!(intent.classify(Some(b"old"), Some(b"old meta")), InterruptedPair::Previous);
-        assert_eq!(intent.classify(Some(b"old"), Some(b"new meta")), InterruptedPair::RestorePreviousMetadata(Some(b"old meta".to_vec())));
-        assert_eq!(intent.classify(Some(b"new"), Some(b"new meta")), InterruptedPair::Next);
-        assert_eq!(intent.classify(Some(b"other"), Some(b"new meta")), InterruptedPair::Conflict);
-        assert_eq!(intent.classify(Some(b"old"), Some(b"other")), InterruptedPair::Conflict);
-        assert!(intent.commit_if_matching(Some(b"old"), Some(b"new meta")).is_none());
-        assert!(intent.commit_if_matching(Some(b"new"), Some(b"new meta")).unwrap().matches(Some(b"new"), Some(b"new meta")));
+        assert_eq!(
+            intent.classify(Some(b"old"), Some(b"old meta")),
+            InterruptedPair::Previous
+        );
+        assert_eq!(
+            intent.classify(Some(b"old"), Some(b"new meta")),
+            InterruptedPair::RestorePreviousMetadata(Some(b"old meta".to_vec()))
+        );
+        assert_eq!(
+            intent.classify(Some(b"new"), Some(b"new meta")),
+            InterruptedPair::Next
+        );
+        assert_eq!(
+            intent.classify(Some(b"other"), Some(b"new meta")),
+            InterruptedPair::Conflict
+        );
+        assert_eq!(
+            intent.classify(Some(b"old"), Some(b"other")),
+            InterruptedPair::Conflict
+        );
+        assert!(
+            intent
+                .commit_if_matching(Some(b"old"), Some(b"new meta"))
+                .is_none()
+        );
+        assert!(
+            intent
+                .commit_if_matching(Some(b"new"), Some(b"new meta"))
+                .unwrap()
+                .matches(Some(b"new"), Some(b"new meta"))
+        );
     }
 
     #[test]
@@ -114,8 +161,17 @@ mod tests {
             next: PairImage::from_bytes(b"new", Some(b"new meta".to_vec())),
         };
         assert_eq!(intent.classify(None, None), InterruptedPair::Previous);
-        assert_eq!(intent.classify(None, Some(b"new meta")), InterruptedPair::RestorePreviousMetadata(None));
-        assert_eq!(intent.classify(Some(b"new"), Some(b"new meta")), InterruptedPair::Next);
-        assert_eq!(intent.classify(None, Some(b"foreign")), InterruptedPair::Conflict);
+        assert_eq!(
+            intent.classify(None, Some(b"new meta")),
+            InterruptedPair::RestorePreviousMetadata(None)
+        );
+        assert_eq!(
+            intent.classify(Some(b"new"), Some(b"new meta")),
+            InterruptedPair::Next
+        );
+        assert_eq!(
+            intent.classify(None, Some(b"foreign")),
+            InterruptedPair::Conflict
+        );
     }
 }

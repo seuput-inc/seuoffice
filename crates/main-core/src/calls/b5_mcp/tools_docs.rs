@@ -409,7 +409,13 @@ impl Fakes {
     fn answer(&self, call: &HostCall) -> Settled {
         match (call.control, call.method) {
             ("NativeOpen", "openPath") => {
-                push(&self.log, vec![Value::from("openInTab"), Value::from(string_at(&call.args, 0))]);
+                push(
+                    &self.log,
+                    vec![
+                        Value::from("openInTab"),
+                        Value::from(string_at(&call.args, 0)),
+                    ],
+                );
                 if self.open_tab.as_deref() == Some("throws") {
                     Err("cannot open".to_owned())
                 } else {
@@ -768,7 +774,10 @@ fn build_deps<'h>(d: &Value, log: &Log) -> (Rc<DocToolDeps<'h>>, Option<Rc<Scrip
     let cli = d
         .get("cli")
         .map(|outcomes| Rc::new(ScriptedCli::new(Some(outcomes), Rc::clone(log))));
-    let open_in_tab = d.get("openInTab").and_then(Value::as_str).is_some_and(|mode| mode != "none");
+    let open_in_tab = d
+        .get("openInTab")
+        .and_then(Value::as_str)
+        .is_some_and(|mode| mode != "none");
     let deps = DocToolDeps {
         version: d
             .get("version")
@@ -808,7 +817,10 @@ fn document_call(args: &[Value], cx: &mut Context) -> Answer {
     let mut fakes = Fakes::new(Rc::clone(&log));
     fakes.docs = deps_spec.get("docs").cloned();
     fakes.resolver = deps_spec.get("resolve").cloned();
-    fakes.open_tab = deps_spec.get("openInTab").and_then(Value::as_str).map(str::to_owned);
+    fakes.open_tab = deps_spec
+        .get("openInTab")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     let tools = create_document_tools(deps, host);
     let answer = call_tool(tools, &text(&spec, "tool"), spec.get("args"), &fakes);
     if let Some(dir) = cli.and_then(|cli| cli.scratch.borrow().clone()) {

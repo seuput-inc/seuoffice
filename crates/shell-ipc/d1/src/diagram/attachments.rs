@@ -471,29 +471,32 @@ impl DiagramViews {
         };
         let path = path.clone();
         let workers = self.0.services.workers.clone();
-        self.0.shell.assert_file_saved(path.clone(), Box::new(move |result| {
-            if let Err(message) = result {
-                return reply.reply(Ok(read_error(message)));
-            }
-            workers.spawn(Box::new(move || {
-            reply.reply(Ok(match job.text(&path) {
-                Ok(text) => {
-                    let total = text.encode_utf16().count();
-                    obj([
-                        ("ok", IpcValue::Bool(true)),
-                        ("name", string(name)),
-                        ("totalChars", num(total as f64)),
-                        ("offset", num(start)),
-                        (
-                            "text",
-                            string(slice_utf16(&text, start, Some(start + size))),
-                        ),
-                    ])
+        self.0.shell.assert_file_saved(
+            path.clone(),
+            Box::new(move |result| {
+                if let Err(message) = result {
+                    return reply.reply(Ok(read_error(message)));
                 }
-                Err(message) => read_error(message),
-            }));
-            }));
-        }));
+                workers.spawn(Box::new(move || {
+                    reply.reply(Ok(match job.text(&path) {
+                        Ok(text) => {
+                            let total = text.encode_utf16().count();
+                            obj([
+                                ("ok", IpcValue::Bool(true)),
+                                ("name", string(name)),
+                                ("totalChars", num(total as f64)),
+                                ("offset", num(start)),
+                                (
+                                    "text",
+                                    string(slice_utf16(&text, start, Some(start + size))),
+                                ),
+                            ])
+                        }
+                        Err(message) => read_error(message),
+                    }));
+                }));
+            }),
+        );
     }
 
     pub(super) fn files_read_image(

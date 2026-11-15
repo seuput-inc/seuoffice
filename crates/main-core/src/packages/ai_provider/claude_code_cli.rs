@@ -1865,10 +1865,8 @@ impl Turn {
                     ("response", JsonValue::Object(response)),
                 ]));
             }
-            Some("system") => {
-                if is_str(event.get("subtype"), "init") {
-                    self.check_tools(&event);
-                }
+            Some("system") if is_str(event.get("subtype"), "init") => {
+                self.check_tools(&event);
             }
             Some("rate_limit_event") => {
                 let Some(JsonValue::Object(info)) = event.get("rate_limit_info") else {

@@ -60,7 +60,7 @@ pub fn register_native_invocation_fixture(
     let loss = owner.loss_token().ok_or(LOST)?;
     let mut generations = crate::runtime::RendererGenerationGatePlan::from_generations(generations);
     let mut pdf = crate::ipc::PdfDocumentGatePlan::new(&pdf);
-    let mut tokens = crate::runtime::CancelTokenGatePlan::from_tokens([
+    let mut tokens = crate::runtime::CancelTokenGatePlan::new(&[
         operation.cancel(), operation.shutdown(), &loss,
     ]);
     generations.with_active(|| pdf.with_live(|| tokens.with_active(|| {
@@ -216,7 +216,7 @@ fn same_reply_owner(a: &NativeRequestOwner, b: &NativeRequestOwner) -> bool {
 
 impl SyntheticReplyAuthority {
     pub fn attach(mut owner: NativeRequestOwner, cancel: &CancelToken) -> (NativeRequestOwner, Arc<Self>) {
-        owner.context = owner.context.bind_dispatcher_cancellation(owner.view, cancel.clone(), CancelToken::new());
+        owner.context = owner.context.bind_dispatcher_cancellation(owner.view, cancel.clone(), CancelToken::default());
         let authority = Arc::new(Self { state: Mutex::new(SyntheticReplyState {
             owner: owner.clone(), transferred: false, delivered: false, cancel: None,
         }) });
@@ -2552,8 +2552,7 @@ impl OwnedEffects for SyntheticOwnedEffects {
         action: Box<dyn FnOnce() -> Result<(), String> + Send>,
         done: Box<dyn FnOnce(Result<(), String>) + Send>,
     ) {
-        let model = Self { ui: self.ui.clone(), views: self.views.clone(), events: self.events.clone(),
-            docs: self.docs.clone(), event_streams: self.event_streams.clone() };
+        let model = self.clone();
         self.ui.post(Box::new(move || {
             let mut action = Some(action);
             let mut accepted = None;
@@ -2571,8 +2570,7 @@ impl OwnedEffects for SyntheticOwnedEffects {
         cancel: CancelToken, pending: CancelToken, additional: Vec<CancelToken>,
         action: Box<dyn FnOnce() -> Result<(), String> + Send>, done: Box<dyn FnOnce(Result<(), String>) + Send>,
     ) {
-        let model = Self { ui: self.ui.clone(), views: self.views.clone(), events: self.events.clone(),
-            docs: self.docs.clone(), event_streams: self.event_streams.clone() };
+        let model = self.clone();
         self.ui.post(Box::new(move || {
             let mut action = Some(action);
             let mut accepted = None;
@@ -2590,8 +2588,7 @@ impl OwnedEffects for SyntheticOwnedEffects {
         action: Box<dyn FnOnce() -> Result<(), String> + Send>,
         done: Box<dyn FnOnce(Result<(), String>) + Send>,
     ) {
-        let model = Self { ui: self.ui.clone(), views: self.views.clone(), events: self.events.clone(),
-            docs: self.docs.clone(), event_streams: self.event_streams.clone() };
+        let model = self.clone();
         self.ui.post(Box::new(move || {
             let admitted = model.owned(&origin, &destination, &cancel, &pending, || action);
             let result = admitted.and_then(|action| action());
@@ -2614,10 +2611,7 @@ impl OwnedEffects for SyntheticOwnedEffects {
         action: Box<dyn FnOnce() -> Result<(), String> + Send>,
         done: Box<dyn FnOnce(Result<(), String>) + Send>,
     ) {
-        let model = Self {
-            ui: self.ui.clone(), views: self.views.clone(), events: self.events.clone(), docs: self.docs.clone(),
-            event_streams: self.event_streams.clone(),
-        };
+        let model = self.clone();
         self.ui.post(Box::new(move || {
             let mut action = Some(action);
             let mut accepted = None;

@@ -671,8 +671,7 @@ pub fn search_saved_knowledge_with_project(
         .map(|hit| hit.path.clone())
         .collect();
     let indexed = indexed_as_on_disk(&from_project)?;
-    let project_ok_paths =
-        without_unsaved_files(open_files, &indexed, |path| path.clone());
+    let project_ok_paths = without_unsaved_files(open_files, &indexed, |path| path.clone());
     let project_ok: HashSet<&str> = project_ok_paths.iter().map(String::as_str).collect();
     let allowed: HashSet<&str> = pool
         .iter()

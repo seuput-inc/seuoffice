@@ -449,12 +449,12 @@ mod reply_transfer_tests {
     fn request() -> (Arc<ReplyAuthority>, NativeRequestOwner, CancelToken) {
         let renderer = RendererGeneration::new();
         let owner = NativeRequestOwner { view: ViewId(7),
-            context: NativeContext::with_owner_loss((), renderer, CancelToken::new()) };
+            context: NativeContext::with_owner_loss((), renderer, CancelToken::default()) };
         let authority = Arc::new(ReplyAuthority::new(RequestId(11), owner.clone()));
-        let cancel = CancelToken::new();
+        let cancel = CancelToken::default();
         let actual = NativeRequestOwner { view: owner.view,
             context: owner.context.with_request_authority(authority.clone())
-                .bind_dispatcher_cancellation(owner.view, cancel.clone(), CancelToken::new()) };
+                .bind_dispatcher_cancellation(owner.view, cancel.clone(), CancelToken::default()) };
         (authority, actual, cancel)
     }
 
@@ -468,7 +468,7 @@ mod reply_transfer_tests {
         assert!(authority.with_media_transfer(&wrong_request, &cancel, actual.clone(), || {
             committed = true; Ok(())
         }).is_err());
-        assert!(authority.with_media_transfer(&actual, &CancelToken::new(), actual.clone(), || {
+        assert!(authority.with_media_transfer(&actual, &CancelToken::default(), actual.clone(), || {
             committed = true; Ok(())
         }).is_err());
         assert!(authority.with_media_transfer(&actual, &cancel, actual.clone(), || {

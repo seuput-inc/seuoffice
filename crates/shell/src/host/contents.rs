@@ -508,7 +508,7 @@ impl Contents for ShellContents {
         let proof = destination.context.authority_ref::<crate::ipc::native_owner::NativeOwnerAuthority>()
             .ok_or("Print destination is not authenticated.")?;
         let native_origin = proof.origin.clone();
-        let actor = CancelToken::new();
+        let actor = CancelToken::default();
         struct ActorLifetime(CancelToken);
         impl Drop for ActorLifetime { fn drop(&mut self) { self.0.cancel(); } }
         let _actor_lifetime = ActorLifetime(actor.clone());
@@ -636,7 +636,7 @@ impl Contents for ShellContents {
         let proof = captured_owner.context.authority_ref::<crate::ipc::native_owner::NativeOwnerAuthority>()
             .ok_or("Print destination is not authenticated.")?;
         let native_origin = proof.origin.clone();
-        let actor = CancelToken::new();
+        let actor = CancelToken::default();
         struct ActorLifetime(CancelToken);
         impl Drop for ActorLifetime { fn drop(&mut self) { self.0.cancel(); } }
         let _actor_lifetime = ActorLifetime(actor.clone());

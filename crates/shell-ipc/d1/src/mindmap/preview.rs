@@ -276,7 +276,11 @@ impl Fetcher for Recording<'_> {
         self.inner.global_dispatcher()
     }
 
-    fn fetch<'signal>(&mut self, url: &str, init: &FetchInit<'_, 'signal>) -> Result<Box<dyn Response + 'signal>, FetchError> {
+    fn fetch<'signal>(
+        &mut self,
+        url: &str,
+        init: &FetchInit<'_, 'signal>,
+    ) -> Result<Box<dyn Response + 'signal>, FetchError> {
         self.last_url = url.to_owned();
         self.inner.fetch(url, init)
     }

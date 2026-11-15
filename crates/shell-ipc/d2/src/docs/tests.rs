@@ -3047,32 +3047,32 @@ fn saved_disposal_rejects_other_browser_and_settles_after_commit() {
     let source_generation = t.rt.services.views.renderer_generation(source_view).unwrap();
     let source = effects.capture_owner(source_view, &source_generation).unwrap();
     let source = t.editor().capture_document_owner(source_view, source).unwrap();
-    let issuer = NativeInvocationIssuer::new(CancelToken::new());
-    let binding = issuer.issue_existing_document_save(Surface::Docs, source_view, NativeSaveSelection::ExactPath(path.clone()), source, CancelToken::new()).unwrap();
+    let issuer = NativeInvocationIssuer::new(CancelToken::default());
+    let binding = issuer.issue_existing_document_save(Surface::Docs, source_view, NativeSaveSelection::ExactPath(path.clone()), source, CancelToken::default()).unwrap();
     let selection = NativeSaveDestination::from_exact_selection(binding).unwrap();
     let staging = file_commit::PrivateDirectory::create(&parent).unwrap();
     let stage = staging.create_stage(0o600).unwrap().quarantine().ok().unwrap();
     let stage = stage.write_owned(b"saved bytes".to_vec()).ok().unwrap();
     let stage = stage.prepare(&parent, &CString::new("saved.docx").unwrap(), &path, file_commit::PublicationMode::Exclusive).ok().unwrap();
-    let cancel = CancelToken::new();
-    let pending = CancelToken::new();
+    let cancel = CancelToken::default();
+    let pending = CancelToken::default();
     let (output, snapshot) = effects.publish_native_staged_write(&selection, &[], &cancel, &pending, &[], stage).ok().unwrap();
     let input = NativeSavedInput::from_written_snapshot(output.clone(), snapshot).unwrap();
     let generation = RendererGeneration::new();
     let (_, reservation, owner) = NativeClosureIssuer::new_with_owner(t.a.view, generation.clone());
-    let target = NativeSavedTarget::prepare(input, NativeSavedPath::Selected(output), Surface::Docs, t.a.view, generation.clone(), reservation.clone(), owner.clone(), vec![], CancelToken::new(), CancelToken::new(), vec![]).unwrap();
+    let target = NativeSavedTarget::prepare(input, NativeSavedPath::Selected(output), Surface::Docs, t.a.view, generation.clone(), reservation.clone(), owner.clone(), vec![], CancelToken::default(), CancelToken::default(), vec![]).unwrap();
     reservation.with_initial_owner(&owner, |transition| { target.validate_in_transition(transition)?.commit(); Ok(()) }).unwrap();
-    let native_owner = NativeRequestOwner { view: t.a.view, context: NativeContext::with_owner_loss((), generation, CancelToken::new()) };
+    let native_owner = NativeRequestOwner { view: t.a.view, context: NativeContext::with_owner_loss((), generation, CancelToken::default()) };
     let document = target.register_from_native_admitted(native_owner).unwrap();
     std::fs::rename(&path, t.rt.dir.join("saved-original.docx")).unwrap();
     std::fs::write(&path, b"replacement bytes").unwrap();
     let lease = main_core::docs::byte_handoff::MediaViewLease::new(t.a.view.0).unwrap();
-    let decoded = super::saved_load::decode_saved(&document, &t.fake, &t.fake, lease.current().unwrap(), CancelToken::new()).unwrap();
+    let decoded = super::saved_load::decode_saved(&document, &t.fake, &t.fake, lease.current().unwrap(), CancelToken::default()).unwrap();
     assert_eq!(decoded.bytes.as_slice(), b"saved bytes");
     let content = super::saved_load::prepare_content(
         &document, &decoded,
         main_core::packages::electron_utils::recovery_store::SavedRecoveryOpenResult::Original,
-        &t.fake, lease.current().unwrap(), CancelToken::new(),
+        &t.fake, lease.current().unwrap(), CancelToken::default(),
     ).unwrap();
     assert_eq!(content.bytes, b"saved bytes");
     assert!(!content.recovered && !content.recovery_failed);
@@ -3082,7 +3082,7 @@ fn saved_disposal_rejects_other_browser_and_settles_after_commit() {
     let responder = Responder::new(move |result| *reply_slot.lock().unwrap() = Some(result));
     let finished = Rc::new(RefCell::new(None));
     let completion = finished.clone();
-    let cx = CallContext { sender: t.a, request: None, cancel: CancelToken::new(), native: None };
+    let cx = CallContext { sender: t.a, request: None, cancel: CancelToken::default(), native: None };
     let docs = t.editor().0.clone();
     docs.saved_loads.borrow_mut().insert(t.a.view, super::saved_load::SavedLoad {
         target: target.clone(), document: None, waiter: Some((cx, responder)), done: Some(Box::new(move |result| *completion.borrow_mut() = Some(result))),

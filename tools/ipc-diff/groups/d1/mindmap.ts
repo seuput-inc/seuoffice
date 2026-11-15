@@ -1018,12 +1018,22 @@ const cases: Case[] = [
       dirty(true, 2),
       trigger('writeMindmapCopiesNow', [5000], { defer: true }),
       send('mindmap:recovery-copy-now-done', [eventArg(4, 'mindmap:recovery-copy-now', 1), null]),
-      send('mindmap:recovery-copy-now-done', [eventArg(4, 'mindmap:recovery-copy-now', 2), null], 2),
+      send(
+        'mindmap:recovery-copy-now-done',
+        [eventArg(4, 'mindmap:recovery-copy-now', 2), null],
+        2,
+      ),
       { ...answerOf(4), expectAnswer: VOID_ANSWER },
-      { ...trigger('writeMindmapCopiesNow', [5000], { defer: true }), capture: [eventArg(8, 'mindmap:recovery-copy-now', 2)] },
+      {
+        ...trigger('writeMindmapCopiesNow', [5000], { defer: true }),
+        capture: [eventArg(8, 'mindmap:recovery-copy-now', 2)],
+      },
       send('mindmap:recovery-copy-now-done', [eventArg(8, 'mindmap:recovery-copy-now', 1), null]),
       advance(6000),
-      { ...answerOf(8), expectAnswer: rejectedAnswer('Timed out writing the mindmap recovery copy') },
+      {
+        ...answerOf(8),
+        expectAnswer: rejectedAnswer('Timed out writing the mindmap recovery copy'),
+      },
       dirty(false),
       dirty(false, 2),
       trigger('writeMindmapCopiesNow'),
@@ -1042,23 +1052,40 @@ const cases: Case[] = [
     OPEN_A,
     dirty(true),
     trigger('writeMindmapCopiesNow', [5000], { defer: true }),
-    send('mindmap:recovery-copy-now-done', [eventArg(2, 'mindmap:recovery-copy-now'), 'synthetic write failure']),
+    send('mindmap:recovery-copy-now-done', [
+      eventArg(2, 'mindmap:recovery-copy-now'),
+      'synthetic write failure',
+    ]),
     { ...answerOf(2), expectAnswer: rejectedAnswer('synthetic write failure') },
   ]),
-  mindmapCase('stale and wrong-view recovery replies do not settle a newer request', on('a.xmind'), [
+  mindmapCase(
+    'stale and wrong-view recovery replies do not settle a newer request',
+    on('a.xmind'),
+    [
+      OPEN_A,
+      dirty(true),
+      trigger('writeMindmapCopiesNow', [5000], { defer: true }),
+      send('mindmap:recovery-copy-now-done', [eventArg(2, 'mindmap:recovery-copy-now'), null]),
+      { ...answerOf(2), expectAnswer: VOID_ANSWER },
+      trigger('writeMindmapCopiesNow', [5000], { defer: true }),
+      send(
+        'mindmap:recovery-copy-now-done',
+        [eventArg(2, 'mindmap:recovery-copy-now'), 'stale'],
+        1,
+      ),
+      send(
+        'mindmap:recovery-copy-now-done',
+        [eventArg(5, 'mindmap:recovery-copy-now'), 'wrong view'],
+        2,
+      ),
+      send('mindmap:recovery-copy-now-done', [eventArg(5, 'mindmap:recovery-copy-now'), null]),
+      { ...answerOf(5), expectAnswer: VOID_ANSWER },
+    ],
+    { views: [view(1), view(2)] },
+  ),
+  mindmapCase('replacing a recovery request rejects the first, not the second', on('a.xmind'), [
     OPEN_A,
     dirty(true),
-    trigger('writeMindmapCopiesNow', [5000], { defer: true }),
-    send('mindmap:recovery-copy-now-done', [eventArg(2, 'mindmap:recovery-copy-now'), null]),
-    { ...answerOf(2), expectAnswer: VOID_ANSWER },
-    trigger('writeMindmapCopiesNow', [5000], { defer: true }),
-    send('mindmap:recovery-copy-now-done', [eventArg(2, 'mindmap:recovery-copy-now'), 'stale'], 1),
-    send('mindmap:recovery-copy-now-done', [eventArg(5, 'mindmap:recovery-copy-now'), 'wrong view'], 2),
-    send('mindmap:recovery-copy-now-done', [eventArg(5, 'mindmap:recovery-copy-now'), null]),
-    { ...answerOf(5), expectAnswer: VOID_ANSWER },
-  ], { views: [view(1), view(2)] }),
-  mindmapCase('replacing a recovery request rejects the first, not the second', on('a.xmind'), [
-    OPEN_A, dirty(true),
     trigger('writeMindmapCopiesNow', [5000], { defer: true }),
     trigger('writeMindmapCopiesNow', [5000], { defer: true }),
     { ...answerOf(2), expectAnswer: rejectedAnswer('Mindmap recovery request was replaced') },
@@ -1067,23 +1094,35 @@ const cases: Case[] = [
     { ...answerOf(3), expectAnswer: VOID_ANSWER },
   ]),
   mindmapCase('a renderer crash rejects a pending recovery flush', on('a.xmind'), [
-    OPEN_A, dirty(true),
-    { ...trigger('writeMindmapCopiesNow', [5000], { defer: true }), capture: [eventArg(2, 'mindmap:recovery-copy-now')] },
+    OPEN_A,
+    dirty(true),
+    {
+      ...trigger('writeMindmapCopiesNow', [5000], { defer: true }),
+      capture: [eventArg(2, 'mindmap:recovery-copy-now')],
+    },
     trigger('render-process-gone'),
     { ...answerOf(2), expectAnswer: rejectedAnswer('The mindmap renderer crashed') },
   ]),
   mindmapCase('a destroyed view rejects a pending recovery flush', on('a.xmind'), [
-    OPEN_A, dirty(true),
-    { ...trigger('writeMindmapCopiesNow', [5000], { defer: true }), capture: [eventArg(2, 'mindmap:recovery-copy-now')] },
+    OPEN_A,
+    dirty(true),
+    {
+      ...trigger('writeMindmapCopiesNow', [5000], { defer: true }),
+      capture: [eventArg(2, 'mindmap:recovery-copy-now')],
+    },
     trigger('destroyed'),
     { ...answerOf(2), expectAnswer: rejectedAnswer('The mindmap view was closed') },
   ]),
-  mindmapCase('a startup recovery request accepts its own emitted generation', {
-    d1: { open: [{ view: 1 }], ...startup({ call: 'dirty' }, { call: 'copiesNow' }) },
-  }, [
-    send('mindmap:recovery-copy-now-done'),
-    send('mindmap:recovery-copy-now-done', [eventArg(0, 'mindmap:recovery-copy-now'), null]),
-  ]),
+  mindmapCase(
+    'a startup recovery request accepts its own emitted generation',
+    {
+      d1: { open: [{ view: 1 }], ...startup({ call: 'dirty' }, { call: 'copiesNow' }) },
+    },
+    [
+      send('mindmap:recovery-copy-now-done'),
+      send('mindmap:recovery-copy-now-done', [eventArg(0, 'mindmap:recovery-copy-now'), null]),
+    ],
+  ),
 ]
 
 export const group: Group = {

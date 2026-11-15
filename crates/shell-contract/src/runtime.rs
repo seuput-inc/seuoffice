@@ -13,9 +13,9 @@
 //! blocks on the UI thread itself.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use crate::ids::ViewId;
 use crate::ipc::{EventSink, Sender};
@@ -64,7 +64,11 @@ struct CancelObserver {
 
 impl CancelObserver {
     fn notify(&self) {
-        let callback = self.callback.lock().unwrap_or_else(|p| p.into_inner()).take();
+        let callback = self
+            .callback
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
         if let Some(callback) = callback {
             callback();
         }
@@ -77,45 +81,70 @@ pub struct CancelSubscription(Arc<CancelObserver>);
 
 impl Drop for CancelSubscription {
     fn drop(&mut self) {
-        self.0.callback.lock().unwrap_or_else(|p| p.into_inner()).take();
+        self.0
+            .callback
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
     }
 }
 
 impl std::fmt::Debug for CancelToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CancelToken").field("cancelled", &self.is_cancelled()).finish()
+        f.debug_struct("CancelToken")
+            .field("cancelled", &self.is_cancelled())
+            .finish()
     }
 }
 
 impl CancelToken {
-    pub fn cancel(&self) { self.cancel_with_external_loss(true); }
+    pub fn cancel(&self) {
+        self.cancel_with_external_loss(true);
+    }
 
     /// Dispatcher-only lifecycle retirement. Ordinary callers must use cancel:
     /// explicit cancellation, including a later call through an alias, is distinct.
-    pub fn cancel_renderer_retired(&self) { self.cancel_with_external_loss(false); }
+    pub fn cancel_renderer_retired(&self) {
+        self.cancel_with_external_loss(false);
+    }
 
     fn cancel_with_external_loss(&self, external: bool) {
         let observers = {
             let mut observers = self.0.observers.lock().unwrap_or_else(|p| p.into_inner());
-            if external { self.0.external_cancelled.store(true, Ordering::Release); }
-            if self.0.cancelled.swap(true, Ordering::AcqRel) { Vec::new() }
-            else { std::mem::take(&mut *observers) }
+            if external {
+                self.0.external_cancelled.store(true, Ordering::Release);
+            }
+            if self.0.cancelled.swap(true, Ordering::AcqRel) {
+                Vec::new()
+            } else {
+                std::mem::take(&mut *observers)
+            }
         };
         for observer in observers {
-            if let Some(observer) = observer.upgrade() { observer.notify(); }
+            if let Some(observer) = observer.upgrade() {
+                observer.notify();
+            }
         }
         // The source's observer lock is already released. A public cancel after
         // renderer retirement still wakes this independent signal exactly once.
         if external {
-            if let Some(signal) = self.0.external_loss.get() { signal.cancel(); }
+            if let Some(signal) = self.0.external_loss.get() {
+                signal.cancel();
+            }
         }
     }
 
     /// Observe public cancellation separately from expected renderer retirement.
     /// Capture this before admission; lazy allocation never occurs in cancel().
     pub fn external_loss_token(&self) -> CancelToken {
-        let signal = self.0.external_loss.get_or_init(CancelToken::default).clone();
-        if self.0.external_cancelled.load(Ordering::Acquire) { signal.cancel(); }
+        let signal = self
+            .0
+            .external_loss
+            .get_or_init(CancelToken::default)
+            .clone();
+        if self.0.external_cancelled.load(Ordering::Acquire) {
+            signal.cancel();
+        }
         signal
     }
 
@@ -123,28 +152,51 @@ impl CancelToken {
         self.0.cancelled.load(Ordering::Acquire)
     }
 
-    pub fn same_token(&self, other: &Self) -> bool { Arc::ptr_eq(&self.0, &other.0) }
+    pub fn same_token(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
 
-    pub fn with_active_all<T, const N: usize>(mut tokens: [Option<&Self>; N], action: impl FnOnce() -> T) -> Option<T> {
+    pub fn with_active_all<T, const N: usize>(
+        mut tokens: [Option<&Self>; N],
+        action: impl FnOnce() -> T,
+    ) -> Option<T> {
         tokens.sort_unstable_by_key(|token| token.map(|token| Arc::as_ptr(&token.0)));
         let _guards: [Option<_>; N] = std::array::from_fn(|index| {
             let token = tokens[index]?;
-            if index > 0 && tokens[index - 1].is_some_and(|previous| previous.same_token(token)) { return None; }
-            Some(token.0.observers.lock().unwrap_or_else(|error| error.into_inner()))
+            if index > 0 && tokens[index - 1].is_some_and(|previous| previous.same_token(token)) {
+                return None;
+            }
+            Some(
+                token
+                    .0
+                    .observers
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()),
+            )
         });
-        if tokens.iter().flatten().all(|token| !token.is_cancelled()) { Some(action()) } else { None }
+        if tokens.iter().flatten().all(|token| !token.is_cancelled()) {
+            Some(action())
+        } else {
+            None
+        }
     }
 
     /// Run a short commit while cancellation is excluded.
     pub fn with_active<T>(&self, commit: impl FnOnce() -> T) -> Option<T> {
         let _guard = self.0.observers.lock().unwrap_or_else(|p| p.into_inner());
-        if self.is_cancelled() { None } else { Some(commit()) }
+        if self.is_cancelled() {
+            None
+        } else {
+            Some(commit())
+        }
     }
 
     /// The callback runs once, possibly before this function returns. It never
     /// runs while the token's observer lock is held.
     pub fn on_cancel(&self, callback: impl FnOnce() + Send + 'static) -> CancelSubscription {
-        let observer = Arc::new(CancelObserver { callback: Mutex::new(Some(Box::new(callback))) });
+        let observer = Arc::new(CancelObserver {
+            callback: Mutex::new(Some(Box::new(callback))),
+        });
         let cancelled = {
             let mut observers = self.0.observers.lock().unwrap_or_else(|p| p.into_inner());
             if self.is_cancelled() {
@@ -176,7 +228,9 @@ struct RendererGenerationState {
 struct ClearGates<'a, T>(&'a mut Vec<T>);
 
 impl<T> Drop for ClearGates<'_, T> {
-    fn drop(&mut self) { self.0.clear(); }
+    fn drop(&mut self) {
+        self.0.clear();
+    }
 }
 
 /// Prepared before any outer admission gate; reused without allocating while locked.
@@ -200,9 +254,19 @@ impl<'a> CancelTokenGatePlan<'a> {
     pub fn with_active<T>(&mut self, effect: impl FnOnce() -> T) -> Option<T> {
         let held = ClearGates(&mut self.guards);
         for &token in &self.tokens {
-            held.0.push(token.0.observers.lock().unwrap_or_else(|error| error.into_inner()));
+            held.0.push(
+                token
+                    .0
+                    .observers
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()),
+            );
         }
-        if self.tokens.iter().all(|token| !token.is_cancelled()) { Some(effect()) } else { None }
+        if self.tokens.iter().all(|token| !token.is_cancelled()) {
+            Some(effect())
+        } else {
+            None
+        }
     }
 }
 
@@ -221,7 +285,9 @@ pub struct DocumentRetirementPlan<'a> {
 impl Drop for DocumentRetirementPlan<'_> {
     fn drop(&mut self) {
         for notification in &mut self.notifications {
-            if let Some(notification) = notification.take() { notification.cancel(); }
+            if let Some(notification) = notification.take() {
+                notification.cancel();
+            }
         }
     }
 }
@@ -235,11 +301,21 @@ impl<'a> RendererGenerationGatePlan<'a> {
         generations.sort_unstable_by_key(|generation| Arc::as_ptr(&generation.0));
         generations.dedup_by(|a, b| a.same_generation(b));
         let guards = Vec::with_capacity(generations.len());
-        Self { generations, guards }
+        Self {
+            generations,
+            guards,
+        }
     }
 
-    pub fn prepare_retirement(&self, documents: &[&'a RendererGeneration]) -> Result<DocumentRetirementPlan<'a>, String> {
-        if !documents.iter().all(|document| self.generations.iter().any(|generation| generation.same_generation(document))) {
+    pub fn prepare_retirement(
+        &self,
+        documents: &[&'a RendererGeneration],
+    ) -> Result<DocumentRetirementPlan<'a>, String> {
+        if !documents.iter().all(|document| {
+            self.generations
+                .iter()
+                .any(|generation| generation.same_generation(document))
+        }) {
             return Err("Document retirement was not admitted.".into());
         }
         let mut documents = documents.to_vec();
@@ -248,31 +324,53 @@ impl<'a> RendererGenerationGatePlan<'a> {
         let count = documents.len();
         Ok(DocumentRetirementPlan {
             documents: documents.into_iter().map(Some).collect(),
-            notifications: vec![None; count], renewed: vec![false; count],
+            notifications: vec![None; count],
+            renewed: vec![false; count],
         })
     }
 
     pub fn with_active<T>(&mut self, effect: impl FnOnce() -> T) -> Option<T> {
         let held = ClearGates(&mut self.guards);
         for &generation in &self.generations {
-            held.0.push(generation.0.gate.lock().unwrap_or_else(|error| error.into_inner()));
+            held.0.push(
+                generation
+                    .0
+                    .gate
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()),
+            );
         }
-        if self.generations.iter().all(|generation| generation.is_active()) { Some(effect()) } else { None }
+        if self
+            .generations
+            .iter()
+            .all(|generation| generation.is_active())
+        {
+            Some(effect())
+        } else {
+            None
+        }
     }
 
     pub fn with_active_retiring<T>(
-        &mut self, retirement: &mut DocumentRetirementPlan<'a>,
+        &mut self,
+        retirement: &mut DocumentRetirementPlan<'a>,
         effect: impl FnOnce(&mut AdmittedDocumentRetirement<'_>) -> T,
     ) -> Option<T> {
         // A plan cannot be reused with a different, incomplete admission set.
-        if !retirement.documents.iter().flatten().all(|document|
-            self.generations.iter().any(|generation| generation.same_generation(document))) {
+        if !retirement.documents.iter().flatten().all(|document| {
+            self.generations
+                .iter()
+                .any(|generation| generation.same_generation(document))
+        }) {
             return None;
         }
-        self.with_active(|| effect(&mut AdmittedDocumentRetirement {
-            documents: &retirement.documents, notifications: &mut retirement.notifications,
-            renewed: &mut retirement.renewed,
-        }))
+        self.with_active(|| {
+            effect(&mut AdmittedDocumentRetirement {
+                documents: &retirement.documents,
+                notifications: &mut retirement.notifications,
+                renewed: &mut retirement.renewed,
+            })
+        })
     }
 }
 
@@ -287,22 +385,37 @@ pub struct AdmittedDocumentRetirement<'a> {
 impl AdmittedDocumentRetirement<'_> {
     /// Preflight every staged renewal before invalidating any participant.
     /// The caller stages this reference slice before entering admission.
-    pub fn validate_owner_renewals(&self, prepared: &[&crate::ipc::PreparedDocumentOwner]) -> Result<(), String> {
+    pub fn validate_owner_renewals(
+        &self,
+        prepared: &[&crate::ipc::PreparedDocumentOwner],
+    ) -> Result<(), String> {
         self.validate_owner_renewals_iter(prepared.iter().copied())
     }
 
     /// Borrow staged successor slots only for preflight, so the same callback
     /// can subsequently consume them without a self-referential reference vector.
     pub fn validate_owner_renewals_iter<'b>(
-        &self, prepared: impl Iterator<Item = &'b crate::ipc::PreparedDocumentOwner> + Clone,
+        &self,
+        prepared: impl Iterator<Item = &'b crate::ipc::PreparedDocumentOwner> + Clone,
     ) -> Result<(), String> {
         for (position, candidate) in prepared.clone().enumerate() {
-            let index = self.documents.iter().position(|document|
-                document.is_some_and(|document| document.same_generation(&candidate.source_document)))
+            let index = self
+                .documents
+                .iter()
+                .position(|document| {
+                    document.is_some_and(|document| {
+                        document.same_generation(&candidate.source_document)
+                    })
+                })
                 .ok_or("Document renewal was not admitted.")?;
-            if self.renewed[index] || self.notifications[index].is_some()
-                || prepared.clone().take(position).any(|previous|
-                    previous.source_document.same_generation(&candidate.source_document)) {
+            if self.renewed[index]
+                || self.notifications[index].is_some()
+                || prepared.clone().take(position).any(|previous| {
+                    previous
+                        .source_document
+                        .same_generation(&candidate.source_document)
+                })
+            {
                 return Err("Document renewal participants are not distinct and unretired.".into());
             }
         }
@@ -310,8 +423,12 @@ impl AdmittedDocumentRetirement<'_> {
     }
 
     pub fn retire(&mut self, document: &RendererGeneration) -> Result<(), String> {
-        let index = self.documents.iter().position(|candidate|
-            candidate.is_some_and(|candidate| candidate.same_generation(document)))
+        let index = self
+            .documents
+            .iter()
+            .position(|candidate| {
+                candidate.is_some_and(|candidate| candidate.same_generation(document))
+            })
             .ok_or("Document retirement was not admitted.")?;
         document.0.active.store(false, Ordering::SeqCst);
         self.notifications[index] = Some(document.loss_token());
@@ -320,9 +437,17 @@ impl AdmittedDocumentRetirement<'_> {
 
     /// Admit a pre-subscribed successor after this exact old document retired.
     /// This performs no locking, allocation, lookup, or observer registration.
-    pub fn renew_owner(&mut self, prepared: crate::ipc::PreparedDocumentOwner) -> Result<crate::ipc::NativeRequestOwner, String> {
-        let index = self.documents.iter().position(|candidate|
-            candidate.is_some_and(|candidate| candidate.same_generation(&prepared.source_document)))
+    pub fn renew_owner(
+        &mut self,
+        prepared: crate::ipc::PreparedDocumentOwner,
+    ) -> Result<crate::ipc::NativeRequestOwner, String> {
+        let index = self
+            .documents
+            .iter()
+            .position(|candidate| {
+                candidate
+                    .is_some_and(|candidate| candidate.same_generation(&prepared.source_document))
+            })
             .ok_or("Document renewal was not admitted.")?;
         if self.notifications[index].is_none() || self.renewed[index] {
             return Err("Document renewal requires one completed retirement.".into());
@@ -333,9 +458,19 @@ impl AdmittedDocumentRetirement<'_> {
 }
 
 impl RendererGeneration {
-    pub fn new() -> Self { Self(Arc::new(RendererGenerationState { active: AtomicBool::new(true), gate: Mutex::new(()), loss: CancelToken::default() })) }
-    pub fn is_active(&self) -> bool { self.0.active.load(Ordering::SeqCst) }
-    pub fn same_generation(&self, other: &Self) -> bool { Arc::ptr_eq(&self.0, &other.0) }
+    pub fn new() -> Self {
+        Self(Arc::new(RendererGenerationState {
+            active: AtomicBool::new(true),
+            gate: Mutex::new(()),
+            loss: CancelToken::default(),
+        }))
+    }
+    pub fn is_active(&self) -> bool {
+        self.0.active.load(Ordering::SeqCst)
+    }
+    pub fn same_generation(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
     pub fn revoke(&self) {
         self.revoke_deferred().cancel();
     }
@@ -350,12 +485,18 @@ impl RendererGeneration {
     }
 
     /// Fires once when this renderer generation is revoked.
-    pub fn loss_token(&self) -> CancelToken { self.0.loss.clone() }
+    pub fn loss_token(&self) -> CancelToken {
+        self.0.loss.clone()
+    }
 
     /// Run only the final commit while this exact generation cannot be revoked.
     pub fn with_active<T>(&self, commit: impl FnOnce() -> T) -> Option<T> {
         let _guard = self.0.gate.lock().unwrap_or_else(|p| p.into_inner());
-        if self.is_active() { Some(commit()) } else { None }
+        if self.is_active() {
+            Some(commit())
+        } else {
+            None
+        }
     }
 
     /// Acquire both generation gates in stable identity order, locking aliases once.
@@ -363,14 +504,38 @@ impl RendererGeneration {
         Self::with_active_all([Some(self), Some(other)], commit)
     }
 
-    pub fn with_active_all<T, const N: usize>(mut generations: [Option<&Self>; N], commit: impl FnOnce() -> T) -> Option<T> {
-        generations.sort_unstable_by_key(|generation| generation.map(|generation| Arc::as_ptr(&generation.0)));
+    pub fn with_active_all<T, const N: usize>(
+        mut generations: [Option<&Self>; N],
+        commit: impl FnOnce() -> T,
+    ) -> Option<T> {
+        generations.sort_unstable_by_key(|generation| {
+            generation.map(|generation| Arc::as_ptr(&generation.0))
+        });
         let _guards: [Option<_>; N] = std::array::from_fn(|index| {
             let generation = generations[index]?;
-            if index > 0 && generations[index - 1].is_some_and(|previous| previous.same_generation(generation)) { return None; }
-            Some(generation.0.gate.lock().unwrap_or_else(|error| error.into_inner()))
+            if index > 0
+                && generations[index - 1]
+                    .is_some_and(|previous| previous.same_generation(generation))
+            {
+                return None;
+            }
+            Some(
+                generation
+                    .0
+                    .gate
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()),
+            )
         });
-        if generations.iter().flatten().all(|generation| generation.is_active()) { Some(commit()) } else { None }
+        if generations
+            .iter()
+            .flatten()
+            .all(|generation| generation.is_active())
+        {
+            Some(commit())
+        } else {
+            None
+        }
     }
 
     /// Hold the same canonical gates as an ordinary commit, with a restricted
@@ -381,19 +546,46 @@ impl RendererGeneration {
         notifications: &mut [Option<CancelToken>; 2],
         commit: impl FnOnce(&mut AdmittedDocumentRetirement<'_>) -> T,
     ) -> Option<T> {
-        if !documents.iter().flatten().all(|document|
-            generations.iter().flatten().any(|generation| generation.same_generation(document))) {
+        if !documents.iter().flatten().all(|document| {
+            generations
+                .iter()
+                .flatten()
+                .any(|generation| generation.same_generation(document))
+        }) {
             return None;
         }
-        generations.sort_unstable_by_key(|generation| generation.map(|generation| Arc::as_ptr(&generation.0)));
+        generations.sort_unstable_by_key(|generation| {
+            generation.map(|generation| Arc::as_ptr(&generation.0))
+        });
         let _guards: [Option<_>; N] = std::array::from_fn(|index| {
             let generation = generations[index]?;
-            if index > 0 && generations[index - 1].is_some_and(|previous| previous.same_generation(generation)) { return None; }
-            Some(generation.0.gate.lock().unwrap_or_else(|error| error.into_inner()))
+            if index > 0
+                && generations[index - 1]
+                    .is_some_and(|previous| previous.same_generation(generation))
+            {
+                return None;
+            }
+            Some(
+                generation
+                    .0
+                    .gate
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()),
+            )
         });
-        if !generations.iter().flatten().all(|generation| generation.is_active()) { return None; }
+        if !generations
+            .iter()
+            .flatten()
+            .all(|generation| generation.is_active())
+        {
+            return None;
+        }
         let mut renewed = [false, false];
-        Some(commit(&mut AdmittedDocumentRetirement { documents: &documents, notifications, renewed: &mut renewed }))
+        Some(commit(&mut AdmittedDocumentRetirement {
+            documents: &documents,
+            notifications,
+            renewed: &mut renewed,
+        }))
     }
 }
 
@@ -411,23 +603,39 @@ pub struct NativeViewTerminal {
 /// Retain while the core listener must receive terminal observations.
 pub struct NativeViewRetirementSubscription(Arc<AtomicBool>);
 impl NativeViewRetirementSubscription {
-    pub fn new() -> Self { Self(Arc::new(AtomicBool::new(true))) }
-    pub fn is_active(&self) -> bool { self.0.load(Ordering::Acquire) }
-    pub fn state(&self) -> Arc<AtomicBool> { self.0.clone() }
+    pub fn new() -> Self {
+        Self(Arc::new(AtomicBool::new(true)))
+    }
+    pub fn is_active(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+    pub fn state(&self) -> Arc<AtomicBool> {
+        self.0.clone()
+    }
 }
 impl Default for NativeViewRetirementSubscription {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 impl Drop for NativeViewRetirementSubscription {
-    fn drop(&mut self) { self.0.store(false, Ordering::Release); }
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 /// Core-thread native terminal notifications, separate from numeric view removal.
 pub trait NativeViewRetirements: Send + Sync {
-    fn on_native_terminal(&self, listener: Box<dyn Fn(NativeViewTerminal) -> Result<(), String> + Send + Sync>) -> NativeViewRetirementSubscription;
+    fn on_native_terminal(
+        &self,
+        listener: Box<dyn Fn(NativeViewTerminal) -> Result<(), String> + Send + Sync>,
+    ) -> NativeViewRetirementSubscription;
     /// Resolve only the browser owner captured by this authenticated ingress.
     /// The returned identity is not itself a live effect admission.
-    fn authenticated_browser_owner(&self, owner: &crate::ipc::NativeRequestOwner) -> Option<crate::ipc::NativeBrowserOwner>;
+    fn authenticated_browser_owner(
+        &self,
+        owner: &crate::ipc::NativeRequestOwner,
+    ) -> Option<crate::ipc::NativeBrowserOwner>;
     /// Drain retained listener deliveries on the core thread. A delivery ACK
     /// means only that listeners returned, not that their actor cleanup settled.
     fn drain_native_terminals(&self) -> Result<usize, String>;
@@ -495,11 +703,15 @@ mod cancellation_tests {
         let token = CancelToken::default();
         let calls = Arc::new(AtomicUsize::new(0));
         let dropped_calls = calls.clone();
-        let dropped = token.on_cancel(move || { dropped_calls.fetch_add(100, Ordering::Relaxed); });
+        let dropped = token.on_cancel(move || {
+            dropped_calls.fetch_add(100, Ordering::Relaxed);
+        });
         drop(dropped);
         token.cancel();
         let late_calls = calls.clone();
-        let _late = token.on_cancel(move || { late_calls.fetch_add(1, Ordering::Relaxed); });
+        let _late = token.on_cancel(move || {
+            late_calls.fetch_add(1, Ordering::Relaxed);
+        });
         token.cancel();
         assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
@@ -511,11 +723,18 @@ mod cancellation_tests {
         let (send, receive) = mpsc::channel();
         let cancel = token.clone();
         let started = barrier.clone();
-        let worker = std::thread::spawn(move || { started.wait(); cancel.cancel(); });
+        let worker = std::thread::spawn(move || {
+            started.wait();
+            cancel.cancel();
+        });
         barrier.wait();
-        let _subscription = token.on_cancel(move || { send.send(()).unwrap(); });
+        let _subscription = token.on_cancel(move || {
+            send.send(()).unwrap();
+        });
         worker.join().unwrap();
-        receive.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
+        receive
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
         assert!(receive.try_recv().is_err());
     }
 
@@ -526,10 +745,14 @@ mod cancellation_tests {
         let (send, receive) = mpsc::channel();
         let _subscription = token.on_cancel(move || {
             reentered.cancel();
-            let _nested = reentered.on_cancel(move || { send.send(()).unwrap(); });
+            let _nested = reentered.on_cancel(move || {
+                send.send(()).unwrap();
+            });
         });
         token.cancel();
-        receive.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
+        receive
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
     }
 
     #[test]
@@ -597,7 +820,8 @@ mod cancellation_tests {
         let mut current_document = 1;
         let committed = RendererGeneration::with_active_all_retiring(
             [Some(&renderer), Some(&document)],
-            [Some(&document), None], &mut notifications,
+            [Some(&document), None],
+            &mut notifications,
             |retirement| {
                 retirement.retire(&document).unwrap();
                 current_document = 2;
@@ -608,7 +832,9 @@ mod cancellation_tests {
         assert_eq!(committed, Some(()));
         assert_eq!(current_document, 2);
         assert_eq!(document.with_active(|| "old worker"), None);
-        for notification in notifications.into_iter().flatten() { notification.cancel(); }
+        for notification in notifications.into_iter().flatten() {
+            notification.cancel();
+        }
         assert_eq!(receive.recv().unwrap(), None);
     }
 
@@ -616,17 +842,23 @@ mod cancellation_tests {
     fn terminal_retirement_deduplicates_renderer_document_and_created_aliases() {
         let generation = RendererGeneration::new();
         let mut notifications = [None, None];
-        assert_eq!(RendererGeneration::with_active_all_retiring(
-            [Some(&generation), Some(&generation), Some(&generation)],
-            [Some(&generation), Some(&generation)], &mut notifications,
-            |retirement| {
-                retirement.retire(&generation).unwrap();
-                retirement.retire(&generation).unwrap();
-            },
-        ), Some(()));
+        assert_eq!(
+            RendererGeneration::with_active_all_retiring(
+                [Some(&generation), Some(&generation), Some(&generation)],
+                [Some(&generation), Some(&generation)],
+                &mut notifications,
+                |retirement| {
+                    retirement.retire(&generation).unwrap();
+                    retirement.retire(&generation).unwrap();
+                },
+            ),
+            Some(())
+        );
         assert!(!generation.is_active());
         assert_eq!(notifications.iter().flatten().count(), 1);
-        for notification in notifications.into_iter().flatten() { notification.cancel(); }
+        for notification in notifications.into_iter().flatten() {
+            notification.cancel();
+        }
     }
 
     #[test]
@@ -634,16 +866,26 @@ mod cancellation_tests {
         let document = RendererGeneration::new();
         let unrelated = RendererGeneration::new();
         let mut notifications = [None, None];
-        assert_eq!(RendererGeneration::with_active_all_retiring(
-            [Some(&document)], [Some(&document), None], &mut notifications,
-            |retirement| retirement.retire(&unrelated).is_err(),
-        ), Some(true));
+        assert_eq!(
+            RendererGeneration::with_active_all_retiring(
+                [Some(&document)],
+                [Some(&document), None],
+                &mut notifications,
+                |retirement| retirement.retire(&unrelated).is_err(),
+            ),
+            Some(true)
+        );
         assert!(unrelated.is_active());
         assert!(document.is_active());
-        assert!(RendererGeneration::with_active_all_retiring(
-            [Some(&document)], [Some(&unrelated), None], &mut notifications,
-            |_| panic!("unlocked retirement must not be admitted"),
-        ).is_none());
+        assert!(
+            RendererGeneration::with_active_all_retiring(
+                [Some(&document)],
+                [Some(&unrelated), None],
+                &mut notifications,
+                |_| panic!("unlocked retirement must not be admitted"),
+            )
+            .is_none()
+        );
         assert!(notifications.iter().all(Option::is_none));
     }
 
@@ -654,15 +896,28 @@ mod cancellation_tests {
         let mut admission = RendererGenerationGatePlan::new(&refs);
         let mut retirement = admission.prepare_retirement(&refs).unwrap();
         let mut published = false;
-        assert_eq!(admission.with_active_retiring(&mut retirement, |capability| {
-            for document in &documents { capability.retire(document).unwrap(); }
-            published = true;
-        }), Some(()));
+        assert_eq!(
+            admission.with_active_retiring(&mut retirement, |capability| {
+                for document in &documents {
+                    capability.retire(document).unwrap();
+                }
+                published = true;
+            }),
+            Some(())
+        );
         assert!(published);
         assert!(documents.iter().all(|document| !document.is_active()));
-        assert!(documents.iter().all(|document| !document.loss_token().is_cancelled()));
+        assert!(
+            documents
+                .iter()
+                .all(|document| !document.loss_token().is_cancelled())
+        );
         drop(retirement);
-        assert!(documents.iter().all(|document| document.loss_token().is_cancelled()));
+        assert!(
+            documents
+                .iter()
+                .all(|document| document.loss_token().is_cancelled())
+        );
     }
 
     #[test]
@@ -672,7 +927,11 @@ mod cancellation_tests {
         let mut admission = RendererGenerationGatePlan::new(&refs);
         let mut retirement = admission.prepare_retirement(&refs).unwrap();
         documents[2].revoke();
-        assert!(admission.with_active_retiring(&mut retirement, |_| panic!("revoked participant")).is_none());
+        assert!(
+            admission
+                .with_active_retiring(&mut retirement, |_| panic!("revoked participant"))
+                .is_none()
+        );
         assert!(documents[0].is_active() && documents[1].is_active() && documents[3].is_active());
     }
 
@@ -699,31 +958,54 @@ mod cancellation_tests {
     fn renewal_slot_preflight_releases_its_borrow_before_consuming_every_successor() {
         use crate::ipc::{NativeContext, NativeRequestOwner};
         let documents: Vec<_> = (0..4).map(|_| RendererGeneration::new()).collect();
-        let owners: Vec<_> = documents.iter().enumerate().map(|(index, document)|
-            NativeRequestOwner { view: ViewId(index as u32), context:
-                NativeContext::with_owner_loss((), RendererGeneration::new(), CancelToken::default())
-                    .with_document_lease(document.clone()),
-            }).collect();
-        let mut successors: Vec<_> = owners.iter().map(|owner|
-            Some(owner.prepare_document_successor().unwrap())).collect();
+        let owners: Vec<_> = documents
+            .iter()
+            .enumerate()
+            .map(|(index, document)| NativeRequestOwner {
+                view: ViewId(index as u32),
+                context: NativeContext::with_owner_loss(
+                    (),
+                    RendererGeneration::new(),
+                    CancelToken::default(),
+                )
+                .with_document_lease(document.clone()),
+            })
+            .collect();
+        let mut successors: Vec<_> = owners
+            .iter()
+            .map(|owner| Some(owner.prepare_document_successor().unwrap()))
+            .collect();
         let refs: Vec<_> = documents.iter().collect();
         let mut admission = RendererGenerationGatePlan::new(&refs);
         let mut retirement = admission.prepare_retirement(&refs).unwrap();
         let mut published = Vec::with_capacity(documents.len());
         let capacity = published.capacity();
-        assert_eq!(admission.with_active_retiring(&mut retirement, |capability| {
-            capability.validate_owner_renewals_iter(successors.iter().filter_map(Option::as_ref)).unwrap();
-            for (document, successor) in documents.iter().zip(&mut successors) {
-                capability.retire(document).unwrap();
-                published.push(capability.renew_owner(successor.take().unwrap()).unwrap());
-            }
-        }), Some(()));
+        assert_eq!(
+            admission.with_active_retiring(&mut retirement, |capability| {
+                capability
+                    .validate_owner_renewals_iter(successors.iter().filter_map(Option::as_ref))
+                    .unwrap();
+                for (document, successor) in documents.iter().zip(&mut successors) {
+                    capability.retire(document).unwrap();
+                    published.push(capability.renew_owner(successor.take().unwrap()).unwrap());
+                }
+            }),
+            Some(())
+        );
         assert!(successors.iter().all(Option::is_none));
         assert_eq!(published.len(), documents.len());
         assert_eq!(published.capacity(), capacity);
         drop(retirement);
-        assert!(owners.iter().all(|owner| owner.loss_token().unwrap().is_cancelled()));
-        assert!(published.iter().all(|owner| !owner.loss_token().unwrap().is_cancelled()));
+        assert!(
+            owners
+                .iter()
+                .all(|owner| owner.loss_token().unwrap().is_cancelled())
+        );
+        assert!(
+            published
+                .iter()
+                .all(|owner| !owner.loss_token().unwrap().is_cancelled())
+        );
     }
 
     #[test]
@@ -778,7 +1060,9 @@ mod cancellation_tests {
         let (send, receive) = mpsc::channel();
         let subscribe = std::thread::spawn(move || {
             subscribed.wait();
-            subscriber.external_loss_token().on_cancel(move || send.send(()).unwrap())
+            subscriber
+                .external_loss_token()
+                .on_cancel(move || send.send(()).unwrap())
         });
         let cancel = token.clone();
         let started = barrier.clone();
@@ -790,7 +1074,9 @@ mod cancellation_tests {
         barrier.wait();
         let _subscription = subscribe.join().unwrap();
         worker.join().unwrap();
-        receive.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
+        receive
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
         assert!(receive.try_recv().is_err());
     }
 }

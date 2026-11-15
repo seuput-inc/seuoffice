@@ -102,8 +102,8 @@ fn is_job_id(s: &str) -> bool {
     js_regex!(r"^[A-Za-z0-9_-]{1,64}$").test(s)
 }
 
-fn is_language_tag(s: &str) -> bool {
-    js_regex!(r"^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$").test(s)
+fn is_language_tag(s: &str) -> Result<bool, jscompat::RegexLimit> {
+    jscompat::try_js_regex!(r"^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$").try_test(s)
 }
 
 /// `blockKeyOf(v)`
@@ -738,8 +738,9 @@ impl Structure {
         let mut epub = None;
         if format == "epub" {
             match epub_options_of(field(&req, "epub")) {
-                Some(e) => epub = Some(e),
-                None => return r.reply(Ok(fail("invalid-request", "bad EPUB options"))),
+                Ok(Some(e)) => epub = Some(e),
+                Ok(None) => return r.reply(Ok(fail("invalid-request", "bad EPUB options"))),
+                Err(error) => return r.reply(Ok(fail("failed", &error.to_string()))),
             }
         }
         let out = match self.claim_target(owner, &src.path, field(&req, "outPath"), &format) {
@@ -834,9 +835,16 @@ impl Structure {
             Ok(o) => o,
             Err(f) => return r.reply(Ok(f)),
         };
-        let Some(payload) = write_back_payload_of(field(&req, "payload")) else {
-            self.release_target(owner, &out, false);
-            return r.reply(Ok(fail("invalid-request", "bad translated PDF payload")));
+        let payload = match write_back_payload_of(field(&req, "payload")) {
+            Ok(Some(payload)) => payload,
+            Ok(None) => {
+                self.release_target(owner, &out, false);
+                return r.reply(Ok(fail("invalid-request", "bad translated PDF payload")));
+            }
+            Err(error) => {
+                self.release_target(owner, &out, false);
+                return r.reply(Ok(fail("failed", &error.to_string())));
+            }
         };
         let me = self.clone();
         self.cached_tree(owner, &src.path, &src.pages_key.clone(), move |hit| {
@@ -1695,38 +1703,47 @@ fn translation_of(v: &IpcValue) -> Result<Option<IpcValue>, ()> {
 }
 
 /// `writeBackPayloadOf(v)`: the target language and whether it is bilingual
-fn write_back_payload_of(v: &IpcValue) -> Option<IpcValue> {
-    if !is_record(v) || !as_str(field(v, "lang")).is_some_and(is_language_tag) {
-        return None;
+fn write_back_payload_of(v: &IpcValue) -> Result<Option<IpcValue>, jscompat::RegexLimit> {
+    if !is_record(v) {
+        return Ok(None);
+    }
+    let Some(lang) = as_str(field(v, "lang")) else {
+        return Ok(None);
+    };
+    if !is_language_tag(lang)? {
+        return Ok(None);
     }
     let bilingual = field(v, "bilingual");
     if bilingual != &IpcValue::Undefined && !matches!(bilingual, IpcValue::Bool(_)) {
-        return None;
+        return Ok(None);
     }
     let mut out = vec![("lang".to_owned(), field(v, "lang").clone())];
     if bilingual == &IpcValue::Bool(true) {
         out.push(("bilingual".to_owned(), true.into_ipc()));
     }
-    Some(IpcValue::Object(out))
+    Ok(Some(IpcValue::Object(out)))
 }
 
 /// `epubOptionsOf(v)`
-fn epub_options_of(v: &IpcValue) -> Option<IpcValue> {
+fn epub_options_of(v: &IpcValue) -> Result<Option<IpcValue>, jscompat::RegexLimit> {
     if !is_record(v) || !as_str(field(v, "title")).is_some_and(|t| js_len(t) <= MAX_TEXT) {
-        return None;
+        return Ok(None);
     }
     if !opt_text(field(v, "author"), MAX_TEXT) || !opt_text(field(v, "pageImageAlt"), 200) {
-        return None;
+        return Ok(None);
     }
     for k in ["cover", "pageBreaks"] {
         if !matches!(field(v, k), IpcValue::Undefined | IpcValue::Bool(_)) {
-            return None;
+            return Ok(None);
         }
     }
     for k in ["language", "uiLanguage"] {
         let tag = field(v, k);
-        if tag != &IpcValue::Undefined && !as_str(tag).is_some_and(is_language_tag) {
-            return None;
+        if tag != &IpcValue::Undefined {
+            let Some(lang) = as_str(tag) else { return Ok(None); };
+            if !is_language_tag(lang)? {
+                return Ok(None);
+            }
         }
     }
     let mut out = vec![("title".to_owned(), field(v, "title").clone())];
@@ -1742,7 +1759,7 @@ fn epub_options_of(v: &IpcValue) -> Option<IpcValue> {
             out.push((k.to_owned(), field(v, k).clone()));
         }
     }
-    Some(IpcValue::Object(out))
+    Ok(Some(IpcValue::Object(out)))
 }
 
 #[cfg(test)]

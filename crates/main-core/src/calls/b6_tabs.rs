@@ -20,12 +20,13 @@ use crate::shell::detached_windows::{
 };
 use crate::shell::split_layout::{Pane, Rect, SplitDropIntent, SplitOrientation};
 use crate::shell::tab_manager::{
-    Deferred, DetachedTab, DiagramIdentity, EditorCalls, EditorOpen, EnsureAfterReady, EnsureStep, HwpCopy,
-    HwpUntitledCopy, LiveTab, LoadedTabView, OpenDocsOptions, OpenDocumentsRun, OpenDocumentsStep,
-    HelpOpenCommit, Opener, Ready, RestoredSession, RestoredSplit, SplitViewState, TabCloseStep, TabHost, TabKind,
-    TabLoadResult, TabManager, TabResult, TemplateCopy, UnloadedTabOpenContext, UnloadedTabSpec,
-    ViewSpec, canonical_path, prepare_plain_editor_view, resume_plain_editor_view, help_topic_param, help_view_url,
-    help_window_open,
+    Deferred, DetachedTab, DiagramIdentity, EditorCalls, EditorOpen, EnsureAfterReady, EnsureStep,
+    HelpOpenCommit, HwpCopy, HwpUntitledCopy, LiveTab, LoadedTabView, OpenDocsOptions,
+    OpenDocumentsRun, OpenDocumentsStep, Opener, Ready, RestoredSession, RestoredSplit,
+    SplitViewState, TabCloseStep, TabHost, TabKind, TabLoadResult, TabManager, TabResult,
+    TemplateCopy, UnloadedTabOpenContext, UnloadedTabSpec, ViewSpec, canonical_path,
+    help_topic_param, help_view_url, help_window_open, prepare_plain_editor_view,
+    resume_plain_editor_view,
 };
 
 pub(super) fn call(name: &str, args: &[Value], cx: &mut Context) -> Option<Answer> {
@@ -510,7 +511,9 @@ impl EditorCalls<View> for World {
         ]);
         let state = self.state(wc_id);
         if state.query_fails {
-            return Err(crate::shell::tab_manager::TabError("dirty query failed".into()));
+            return Err(crate::shell::tab_manager::TabError(
+                "dirty query failed".into(),
+            ));
         }
         Ok(state.dirty)
     }
@@ -900,9 +903,8 @@ impl TabHost<View, ()> for World {
             return Err("no such opener".to_owned());
         };
         if spec.plain {
-            let view =
-                fixture_plain_editor_view(self, context.kind, context.file_path.as_deref())
-                    .map_err(|e| e.0)?;
+            let view = fixture_plain_editor_view(self, context.kind, context.file_path.as_deref())
+                .map_err(|e| e.0)?;
             return Ok(LoadedTabView { view, ready: None });
         }
         if spec.fails {
@@ -1693,9 +1695,13 @@ fn run_op(
                 TimerKind::Spare => {
                     w.spare_timer = None;
                     if tm.prepare_spare_sheets_view(w) {
-                        match w.create_view(&ViewSpec::Sheets { opening_workbook: None }) {
+                        match w.create_view(&ViewSpec::Sheets {
+                            opening_workbook: None,
+                        }) {
                             Ok(view) => {
-                                if !tm.resume_spare_sheets_view(w, &view, ()) { w.close_view(&view); }
+                                if !tm.resume_spare_sheets_view(w, &view, ()) {
+                                    w.close_view(&view);
+                                }
                             }
                             Err(error) => return error_value(&error.0),
                         }
@@ -1786,8 +1792,11 @@ fn run_op(
             let opened = match TabManager::<View>::template_editor_open(&copy) {
                 None => Ok(None),
                 Some(request) => {
-                    if copy.editor == "pdf" { w.mark_pdf_untitled_copy(&copy.path); }
-                    fixture_open_editor(w, tm, request).map(|id| tm.finish_template_copy(w, &copy, id))
+                    if copy.editor == "pdf" {
+                        w.mark_pdf_untitled_copy(&copy.path);
+                    }
+                    fixture_open_editor(w, tm, request)
+                        .map(|id| tm.finish_template_copy(w, &copy, id))
                 }
             };
             match opened {
@@ -1797,8 +1806,7 @@ fn run_op(
             }
         }
         "plainView" => {
-            match fixture_plain_editor_view(w, kind_of(str_of(o, "kind")), str_of(o, "path"))
-            {
+            match fixture_plain_editor_view(w, kind_of(str_of(o, "kind")), str_of(o, "path")) {
                 Ok(view) => Value::from(view.0),
                 Err(error) => error_value(&error.0),
             }
@@ -1929,18 +1937,16 @@ fn run_op(
             tm.end_exclusive_prompt(w);
             Value::Null
         }
-        "duplicate" => {
-            match tm.prepare_duplicate_pane_open(w, str_of(o, "tab").unwrap_or("")) {
-                None => Value::Null,
-                Some(plan) => {
-                    let created = match plan.creation_spec() {
-                        Some(spec) => w.create_view(&spec).map(Some),
-                        None => Ok(None),
-                    };
-                    match tm.resume_editor_open(w, plan, created) {
-                        Ok(id) => Value::from(id),
-                        Err(error) => error_value(&error.0),
-                    }
+        "duplicate" => match tm.prepare_duplicate_pane_open(w, str_of(o, "tab").unwrap_or("")) {
+            None => Value::Null,
+            Some(plan) => {
+                let created = match plan.creation_spec() {
+                    Some(spec) => w.create_view(&spec).map(Some),
+                    None => Ok(None),
+                };
+                match tm.resume_editor_open(w, plan, created) {
+                    Ok(id) => Value::from(id),
+                    Err(error) => error_value(&error.0),
                 }
             }
         },
@@ -2270,11 +2276,17 @@ fn fixture_plain_editor_view(w: &mut World, kind: TabKind, path: Option<&str>) -
     Ok(view)
 }
 
-fn fixture_open_help(w: &mut World, tm: &mut TabManager<View, ()>, topic: Option<&str>) -> TabResult<String> {
+fn fixture_open_help(
+    w: &mut World,
+    tm: &mut TabManager<View, ()>,
+    topic: Option<&str>,
+) -> TabResult<String> {
     let dev_url = w.renderer_dev_url();
     match tm.prepare_help_open_pure(dev_url.as_deref(), topic)? {
         Err((id, view, navigate)) => {
-            if let (Some(view), Some(url)) = (view, navigate) { w.load_url(&view, &url); }
+            if let (Some(view), Some(url)) = (view, navigate) {
+                w.load_url(&view, &url);
+            }
             tm.activate_tab(w, &id);
             Ok(id)
         }
@@ -2284,20 +2296,38 @@ fn fixture_open_help(w: &mut World, tm: &mut TabManager<View, ()>, topic: Option
             w.load_url(&view, &url);
             w.add_child_view(&view);
             w.set_visible(&view, false);
-            let title = w.untitled_title_for(TabKind::Help).unwrap_or_else(|| format!("{} Help", crate::packages::i18n::PRODUCT_NAME));
+            let title = w
+                .untitled_title_for(TabKind::Help)
+                .unwrap_or_else(|| format!("{} Help", crate::packages::i18n::PRODUCT_NAME));
             match tm.commit_help_open(plan, view, title) {
-                HelpOpenCommit::Created { id, .. } => { tm.activate_tab(w, &id); Ok(id) }
-                HelpOpenCommit::Existing { id, view, unused, navigate } => {
-                    w.remove_child_view(&unused); w.close_view(&unused);
-                    if let (Some(view), Some(url)) = (view, navigate) { w.load_url(&view, &url); }
-                    tm.activate_tab(w, &id); Ok(id)
+                HelpOpenCommit::Created { id, .. } => {
+                    tm.activate_tab(w, &id);
+                    Ok(id)
+                }
+                HelpOpenCommit::Existing {
+                    id,
+                    view,
+                    unused,
+                    navigate,
+                } => {
+                    w.remove_child_view(&unused);
+                    w.close_view(&unused);
+                    if let (Some(view), Some(url)) = (view, navigate) {
+                        w.load_url(&view, &url);
+                    }
+                    tm.activate_tab(w, &id);
+                    Ok(id)
                 }
             }
         }
     }
 }
 
-fn fixture_open_editor(w: &mut World, tm: &mut TabManager<View, ()>, request: EditorOpen) -> TabResult<String> {
+fn fixture_open_editor(
+    w: &mut World,
+    tm: &mut TabManager<View, ()>,
+    request: EditorOpen,
+) -> TabResult<String> {
     let plan = tm.prepare_editor_open(w, request);
     let created = match plan.creation_spec() {
         Some(spec) => w.create_view(&spec).map(Some),
@@ -2318,22 +2348,85 @@ fn open_tab(o: &Value, w: &mut World, tm: &mut TabManager<View, ()>) -> Value {
             } else {
                 None
             };
-            fixture_open_editor(w, tm, EditorOpen::Docs { path: path.map(str::to_owned), options })
+            fixture_open_editor(
+                w,
+                tm,
+                EditorOpen::Docs {
+                    path: path.map(str::to_owned),
+                    options,
+                },
+            )
         }
-        "sheets" => fixture_open_editor(w, tm, EditorOpen::Sheets { path: path.map(str::to_owned), new_blank: bool_of(o, "newBlank").unwrap_or(false) }),
-        "slides" => fixture_open_editor(w, tm, EditorOpen::Slides { path: path.map(str::to_owned) }),
-        "pdf" => fixture_open_editor(w, tm, EditorOpen::Pdf { path: path.unwrap_or("").into() }),
-        "markdown" => fixture_open_editor(w, tm, EditorOpen::Markdown { path: path.map(str::to_owned) }),
-        "html" => fixture_open_editor(w, tm, EditorOpen::Html { path: path.map(str::to_owned) }),
-        "mindmap" => fixture_open_editor(w, tm, EditorOpen::Mindmap { path: path.map(str::to_owned) }),
-        "epub" => fixture_open_editor(w, tm, EditorOpen::Epub { path: path.unwrap_or("").into() }),
-        "diagram" => fixture_open_editor(w, tm, EditorOpen::Diagram { path: path.map(str::to_owned) }),
+        "sheets" => fixture_open_editor(
+            w,
+            tm,
+            EditorOpen::Sheets {
+                path: path.map(str::to_owned),
+                new_blank: bool_of(o, "newBlank").unwrap_or(false),
+            },
+        ),
+        "slides" => fixture_open_editor(
+            w,
+            tm,
+            EditorOpen::Slides {
+                path: path.map(str::to_owned),
+            },
+        ),
+        "pdf" => fixture_open_editor(
+            w,
+            tm,
+            EditorOpen::Pdf {
+                path: path.unwrap_or("").into(),
+            },
+        ),
+        "markdown" => fixture_open_editor(
+            w,
+            tm,
+            EditorOpen::Markdown {
+                path: path.map(str::to_owned),
+            },
+        ),
+        "html" => fixture_open_editor(
+            w,
+            tm,
+            EditorOpen::Html {
+                path: path.map(str::to_owned),
+            },
+        ),
+        "mindmap" => fixture_open_editor(
+            w,
+            tm,
+            EditorOpen::Mindmap {
+                path: path.map(str::to_owned),
+            },
+        ),
+        "epub" => fixture_open_editor(
+            w,
+            tm,
+            EditorOpen::Epub {
+                path: path.unwrap_or("").into(),
+            },
+        ),
+        "diagram" => fixture_open_editor(
+            w,
+            tm,
+            EditorOpen::Diagram {
+                path: path.map(str::to_owned),
+            },
+        ),
         "hwp" => {
             let copy = o.get("copy").map(|c| HwpCopy {
                 title: str_of(c, "title").unwrap_or("").to_owned(),
                 imported_pdf: bool_of(c, "importedPdf") == Some(true),
             });
-            fixture_open_editor(w, tm, EditorOpen::Hwp { path: path.map(str::to_owned), copy })
+            fixture_open_editor(
+                w,
+                tm,
+                EditorOpen::Hwp {
+                    path: path.map(str::to_owned),
+                    copy,
+                },
+            )
         }
         "help" => fixture_open_help(w, tm, str_of(o, "topic")),
         "present" => {
@@ -2357,10 +2450,13 @@ mod dirty_failure_tests {
     fn failed_slides_dirty_check_rejects_close_and_keeps_tab() {
         let mut world = World::new(&Value::Null);
         let mut tabs = TabManager::<View>::new();
-        let id = fixture_open_editor(&mut world, &mut tabs, EditorOpen::Slides { path: None }).unwrap();
+        let id =
+            fixture_open_editor(&mut world, &mut tabs, EditorOpen::Slides { path: None }).unwrap();
         let view = tabs.web_contents_for_tab(&id).unwrap();
         world.state(view.0).query_fails = true;
-        assert!(matches!(tabs.close_tab(&mut world, &id), TabCloseStep::Rejected(message) if message == "dirty query failed"));
+        assert!(
+            matches!(tabs.close_tab(&mut world, &id), TabCloseStep::Rejected(message) if message == "dirty query failed")
+        );
         assert_eq!(tabs.web_contents_for_tab(&id), Some(view));
         assert!(tabs.dirty_tabs(&mut world, TabKind::Slides).is_err());
     }

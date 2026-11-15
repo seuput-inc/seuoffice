@@ -101,7 +101,11 @@ impl App {
             let matches = state.recovery_open_decisions.get(&view).is_some_and(|request| {
                 matches!((std::path::absolute(&request.file_path), std::path::absolute(path)), (Ok(left), Ok(right)) if left == right)
             });
-            if matches { state.recovery_open_decisions.remove(&view) } else { None }
+            if matches {
+                state.recovery_open_decisions.remove(&view)
+            } else {
+                None
+            }
         };
         let answer = match forced {
             Some(request) => match request.decision {
@@ -143,7 +147,11 @@ impl App {
         };
         // an encrypted deck's copy is encrypted with the same password (a
         // copy the current password cannot open is left alone, not opened)
-        if self.engine.is_encrypted_ooxml(&copy).map_err(|error| crate::value::thrown(error.0))? {
+        if self
+            .engine
+            .is_encrypted_ooxml(&copy)
+            .map_err(|error| crate::value::thrown(error.0))?
+        {
             let Some(password) = password else {
                 self.copy_not_opened(&identity);
                 return Ok(RecoveredOpen {
@@ -293,7 +301,9 @@ const AUTOSAVE_BACKOFF_TICKS: u32 = 10;
 /// are tried too. Called by the shell on the core thread.
 pub fn run_recovery_pass(ignore_backoff: bool) {
     let app = super::APPS.with(|apps| apps.borrow().last().cloned());
-    if let Some(app) = app && let Err(error) = app.run_recovery_pass(ignore_backoff) {
+    if let Some(app) = app
+        && let Err(error) = app.run_recovery_pass(ignore_backoff)
+    {
         eprintln!("[slides] recovery copy failed: {error}");
     }
 }
@@ -334,7 +344,11 @@ impl App {
             undo_top: top(&s.core.undo_stack),
             redo_len: s.core.redo_stack.len(),
             redo_top: top(&s.core.redo_stack),
-            slide_count: self.engine.slide_paths(s.deck()).map_err(|error| error.0)?.len(),
+            slide_count: self
+                .engine
+                .slide_paths(s.deck())
+                .map_err(|error| error.0)?
+                .len(),
         })
     }
 
@@ -395,7 +409,10 @@ impl App {
         let engine = self.engine.clone();
         let password = s.password.clone();
         self.with_recovery_store(|store| {
-            if store.is_discarded(&identity).map_err(|error| error.message)? {
+            if store
+                .is_discarded(&identity)
+                .map_err(|error| error.message)?
+            {
                 return Err("The presentation recovery copy was discarded".into());
             }
             let key = store.copy_path(&identity).map_err(|error| error.message)?;
@@ -410,7 +427,9 @@ impl App {
             }
             // the ticket comes before serializing: a save or Don't Save that
             // lands meanwhile wins
-            let ticket = store.begin_write(&identity).map_err(|error| error.message)?;
+            let ticket = store
+                .begin_write(&identity)
+                .map_err(|error| error.message)?;
             let options = RecoveryWriteOptions {
                 ticket: Some(ticket),
                 title,
@@ -438,7 +457,9 @@ impl App {
                     s.copy_mark.set(Some(mark));
                     Ok(())
                 }
-                Ok(RecoveryWriteResult::Superseded) => Err("The presentation recovery copy was superseded".into()),
+                Ok(RecoveryWriteResult::Superseded) => {
+                    Err("The presentation recovery copy was superseded".into())
+                }
                 Err(error) => {
                     // a run that began while the copy was starting is not a failing slot
                     if !s.core.ai_run {
@@ -463,21 +484,27 @@ impl App {
                     Some(s) => match self.session_dirty(s) {
                         Ok(dirty) => (dirty, s.master_edit.is_some()),
                         Err(error) => {
-                            if first_failure.is_none() { first_failure = Some(error.0); }
+                            if first_failure.is_none() {
+                                first_failure = Some(error.0);
+                            }
                             continue;
                         }
                     },
                     None => (false, false),
                 }
             };
-            if !dirty { continue; }
+            if !dirty {
+                continue;
+            }
             if master_edit {
                 if ignore_backoff && first_failure.is_none() {
                     first_failure = Some("The presentation is editing its master slide".to_owned());
                 }
                 continue;
             }
-            if let Err(error) = self.write_session_copy(slot, ignore_backoff) && first_failure.is_none() {
+            if let Err(error) = self.write_session_copy(slot, ignore_backoff)
+                && first_failure.is_none()
+            {
                 first_failure = Some(error);
             }
         }
@@ -487,4 +514,7 @@ impl App {
 
 #[path = "recovery_open.rs"]
 mod opening;
-pub(super) use opening::{PreparedRecovery, RecoveryApplying, abandon as abandon_recovery, consume as consume_prepared, initialized as recovery_initialized};
+pub(super) use opening::{
+    PreparedRecovery, RecoveryApplying, abandon as abandon_recovery, consume as consume_prepared,
+    initialized as recovery_initialized,
+};

@@ -169,7 +169,9 @@ pub struct DetachedSnapshotPlan<V, W> {
 }
 
 impl<V, W> DetachedSnapshotPlan<V, W> {
-    pub fn entries(&self) -> &[DetachedSnapshotEntry<V, W>] { &self.entries }
+    pub fn entries(&self) -> &[DetachedSnapshotEntry<V, W>] {
+        &self.entries
+    }
 }
 
 pub struct DetachedWindowObservation {
@@ -426,26 +428,56 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq, B: Clone> DetachedWindows<V, W,
 
     /// Captures only core state. Native window observations are collected afterwards.
     pub fn prepare_session_snapshot(&self) -> DetachedSnapshotPlan<V, W> {
-        let entries = self.live_ids().into_iter().filter_map(|rec| self.rec(rec).map(|entry| DetachedSnapshotEntry {
-            rec, view: entry.view.clone(), window: entry.window.clone(), wc_id: entry.wc_id,
-            kind: entry.kind, file_path: entry.file_path.clone(),
-        })).collect();
-        DetachedSnapshotPlan { revision: self.snapshot_revision.clone(), entries }
+        let entries = self
+            .live_ids()
+            .into_iter()
+            .filter_map(|rec| {
+                self.rec(rec).map(|entry| DetachedSnapshotEntry {
+                    rec,
+                    view: entry.view.clone(),
+                    window: entry.window.clone(),
+                    wc_id: entry.wc_id,
+                    kind: entry.kind,
+                    file_path: entry.file_path.clone(),
+                })
+            })
+            .collect();
+        DetachedSnapshotPlan {
+            revision: self.snapshot_revision.clone(),
+            entries,
+        }
     }
 
     /// Called under the caller's native reservation admission; performs no host I/O.
-    pub fn commit_session_snapshot(&self, plan: &DetachedSnapshotPlan<V, W>, observations: &[DetachedWindowObservation]) -> Result<DetachedSessionSnapshot, String> {
-        if !std::rc::Rc::ptr_eq(&self.snapshot_revision, &plan.revision) || observations.len() != plan.entries.len() {
+    pub fn commit_session_snapshot(
+        &self,
+        plan: &DetachedSnapshotPlan<V, W>,
+        observations: &[DetachedWindowObservation],
+    ) -> Result<DetachedSessionSnapshot, String> {
+        if !std::rc::Rc::ptr_eq(&self.snapshot_revision, &plan.revision)
+            || observations.len() != plan.entries.len()
+        {
             return Err("The detached window set changed during snapshot capture".into());
         }
-        let mut tabs = Vec::new(); let mut paths = Vec::new();
+        let mut tabs = Vec::new();
+        let mut paths = Vec::new();
         for (entry, observation) in plan.entries.iter().zip(observations) {
-            if entry.rec != observation.rec { return Err("A detached window observation does not match its entry".into()); }
-            if observation.destroyed { continue; }
-            if let Some(path) = entry.file_path.as_ref().filter(|path| !path.is_empty()) { paths.push(path.clone()); }
-            if entry.kind == TabKind::Home || entry.kind == TabKind::Help { continue; }
+            if entry.rec != observation.rec {
+                return Err("A detached window observation does not match its entry".into());
+            }
+            if observation.destroyed {
+                continue;
+            }
+            if let Some(path) = entry.file_path.as_ref().filter(|path| !path.is_empty()) {
+                paths.push(path.clone());
+            }
+            if entry.kind == TabKind::Home || entry.kind == TabKind::Help {
+                continue;
+            }
             tabs.push(SessionDetachedTab {
-                id: format!("{ID_PREFIX}{}", entry.wc_id), kind: entry.kind, title: observation.title.clone(),
+                id: format!("{ID_PREFIX}{}", entry.wc_id),
+                kind: entry.kind,
+                title: observation.title.clone(),
                 file_path: entry.file_path.clone().filter(|path| !path.is_empty()),
             });
         }
@@ -863,7 +895,9 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq, B: Clone> DetachedWindows<V, W,
         wc_id: i64,
         file_path: &str,
     ) {
-        let Some(window) = self.detached_set_file_record(wc_id, file_path) else { return; };
+        let Some(window) = self.detached_set_file_record(wc_id, file_path) else {
+            return;
+        };
         if !host.win_destroyed(&window) {
             host.win_set_title(&window, &basename(file_path, None));
         }
@@ -875,9 +909,13 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq, B: Clone> DetachedWindows<V, W,
         let id = RecId(*self.detached.get(&wc_id.to_string())?);
         let record = self.rec_mut(id)?;
         let changed = record.file_path.as_deref() != Some(file_path);
-        if changed { record.file_path = Some(file_path.to_owned()); }
+        if changed {
+            record.file_path = Some(file_path.to_owned());
+        }
         let window = record.window.clone();
-        if changed { self.invalidate_snapshot(); }
+        if changed {
+            self.invalidate_snapshot();
+        }
         Some(window)
     }
 
@@ -888,17 +926,21 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq, B: Clone> DetachedWindows<V, W,
         wc_id: i64,
         title: &str,
     ) {
-        let Some(window) = self.detached_untitled_window(wc_id) else { return; };
+        let Some(window) = self.detached_untitled_window(wc_id) else {
+            return;
+        };
         if host.win_destroyed(&window) {
             return;
         }
         host.win_set_title(&window, title);
     }
 
-    pub fn detached_untitled_window(&self,wc_id:i64)->Option<W> {
+    pub fn detached_untitled_window(&self, wc_id: i64) -> Option<W> {
         let id = RecId(*self.detached.get(&wc_id.to_string())?);
         let record = self.rec(id)?;
-        if truthy(record.file_path.as_deref()).is_some() { return None; }
+        if truthy(record.file_path.as_deref()).is_some() {
+            return None;
+        }
         Some(record.window.clone())
     }
 
@@ -927,7 +969,9 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq, B: Clone> DetachedWindows<V, W,
                 let result = (rec.kind, rec.view.clone());
                 let changed = rec.file_path.as_deref() != Some(new_path);
                 if changed {
-                    if let Some(rec) = self.rec_mut(id) { rec.file_path = Some(new_path.to_owned()); }
+                    if let Some(rec) = self.rec_mut(id) {
+                        rec.file_path = Some(new_path.to_owned());
+                    }
                     self.invalidate_snapshot();
                 }
                 if !host.win_destroyed(&window) {
@@ -1397,7 +1441,10 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq, B: Clone> DetachedWindows<V, W,
 
     /// `takeTornTab`: the held pointer came back over the strip; take the
     /// document out of the torn-off window (destroying it)
-    pub fn take_torn_tab(&mut self, host: &mut dyn DetachedHost<V, W, B>) -> Option<DetachedTab<V, B>> {
+    pub fn take_torn_tab(
+        &mut self,
+        host: &mut dyn DetachedHost<V, W, B>,
+    ) -> Option<DetachedTab<V, B>> {
         let rec = self.torn.take().map(|t| t.rec)?;
         let r = self.rec(rec)?;
         let window = r.window.clone();
@@ -1433,9 +1480,19 @@ mod snapshot_tests {
     fn one_detached() -> DetachedWindows<u32, u32, ()> {
         let mut windows = DetachedWindows::new();
         windows.records.push(Some(DetachedRecord {
-            window: 7, view: 4, binding: (), wc_id: 4, kind: TabKind::Slides, file_path: Some("/old.pptx".into()),
-            released: false, hovering: false, dock_timer: false, close_confirmed: false,
-            prompt_in_flight: false, close_phase: None, closed: false,
+            window: 7,
+            view: 4,
+            binding: (),
+            wc_id: 4,
+            kind: TabKind::Slides,
+            file_path: Some("/old.pptx".into()),
+            released: false,
+            hovering: false,
+            dock_timer: false,
+            close_confirmed: false,
+            prompt_in_flight: false,
+            close_phase: None,
+            closed: false,
         }));
         windows.detached.set("4".into(), 0);
         windows
@@ -1445,23 +1502,41 @@ mod snapshot_tests {
     fn snapshot_is_pure_and_rejects_path_aba() {
         let mut windows = one_detached();
         let plan = windows.prepare_session_snapshot();
-        let observation = [DetachedWindowObservation { rec: RecId(0), destroyed: false, title: "Deck".into() }];
-        let snapshot = windows.commit_session_snapshot(&plan, &observation).unwrap();
+        let observation = [DetachedWindowObservation {
+            rec: RecId(0),
+            destroyed: false,
+            title: "Deck".into(),
+        }];
+        let snapshot = windows
+            .commit_session_snapshot(&plan, &observation)
+            .unwrap();
         assert_eq!(snapshot.paths, vec!["/old.pptx"]);
         assert_eq!(snapshot.tabs[0].title, "Deck");
         windows.detached_set_file_record(4, "/old.pptx");
         assert!(windows.commit_session_snapshot(&plan, &observation).is_ok());
         windows.detached_set_file_record(4, "/new.pptx");
         windows.detached_set_file_record(4, "/old.pptx");
-        assert!(windows.commit_session_snapshot(&plan, &observation).is_err());
+        assert!(
+            windows
+                .commit_session_snapshot(&plan, &observation)
+                .is_err()
+        );
     }
 
     #[test]
     fn snapshot_rejects_observation_for_another_entry() {
         let windows = one_detached();
         let plan = windows.prepare_session_snapshot();
-        let observation = [DetachedWindowObservation { rec: RecId(1), destroyed: false, title: "wrong".into() }];
-        assert!(windows.commit_session_snapshot(&plan, &observation).is_err());
+        let observation = [DetachedWindowObservation {
+            rec: RecId(1),
+            destroyed: false,
+            title: "wrong".into(),
+        }];
+        assert!(
+            windows
+                .commit_session_snapshot(&plan, &observation)
+                .is_err()
+        );
     }
 
     #[test]

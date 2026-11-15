@@ -58,23 +58,30 @@ pub struct PreparedNativeDiagram {
 
 impl PreparedNativeDiagram {
     pub fn commit(
-        &mut self, transition: &shell_contract::ipc::NativeBrowserTransition<'_>,
+        &mut self,
+        transition: &shell_contract::ipc::NativeBrowserTransition<'_>,
         next: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String> {
         if !transition.matches_owner(&self.owner) || self.committed {
             return Err("The diagram browser transition does not match".into());
         }
-        let views = super::lookup(self.instance).ok_or("The original diagram actor is unavailable on this core thread")?;
+        let views = super::lookup(self.instance)
+            .ok_or("The original diagram actor is unavailable on this core thread")?;
         views.with_state(|state| {
             if state.views.contains_key(&self.view) || state.views.len() == state.views.capacity() {
                 return Err("The reserved diagram actor is unavailable".into());
             }
             next()?;
             let staged = super::state::ViewState {
-                tracked: true, save_revision: Some(0),
+                tracked: true,
+                save_revision: Some(0),
                 unopened: self.path.as_ref().map(|_| Unopened::Pending),
-                open_path: self.path.take(), allowed: self.allowed.take(), import: self.import.take(),
-                document: self.document.take(), browser_owner: Some(self.owner.clone()), ..Default::default()
+                open_path: self.path.take(),
+                allowed: self.allowed.take(),
+                import: self.import.take(),
+                document: self.document.take(),
+                browser_owner: Some(self.owner.clone()),
+                ..Default::default()
             };
             state.views.insert(self.view, staged);
             self.committed = true;
@@ -85,23 +92,42 @@ impl PreparedNativeDiagram {
 
 impl DiagramViews {
     pub fn prepare_native_tab(
-        &self, view: ViewId, created: &shell_contract::runtime::RendererGeneration,
-        open_path: Option<&str>, owner: shell_contract::ipc::NativeBrowserOwner,
+        &self,
+        view: ViewId,
+        created: &shell_contract::runtime::RendererGeneration,
+        open_path: Option<&str>,
+        owner: shell_contract::ipc::NativeBrowserOwner,
     ) -> Result<PreparedNativeDiagram, String> {
         if !owner.reservation().matches(view, created) {
             return Err("The diagram reservation does not match".into());
         }
         self.with_state(|state| {
-            if state.views.contains_key(&view) { return Err("The diagram actor already exists".into()); }
-            state.views.try_reserve(1).map_err(|_| "The diagram actor could not be reserved".to_owned())
+            if state.views.contains_key(&view) {
+                return Err("The diagram actor already exists".into());
+            }
+            state
+                .views
+                .try_reserve(1)
+                .map_err(|_| "The diagram actor could not be reserved".to_owned())
         })?;
         let path = prepare_hidden_open_path(open_path).map(str::to_owned);
         let allowed = path.as_ref().map(|path| HashSet::from([path.clone()]));
-        let import = path.as_deref().filter(|path| detect_format(path) == Some(Detected::Vsdx))
-            .map(|path| Import { path: path.to_owned(), title: diagram_base_name(path) });
+        let import = path
+            .as_deref()
+            .filter(|path| detect_format(path) == Some(Detected::Vsdx))
+            .map(|path| Import {
+                path: path.to_owned(),
+                title: diagram_base_name(path),
+            });
         Ok(PreparedNativeDiagram {
-            instance: self.0.id, view, owner, path, allowed, import,
-            document: Some(shell_contract::runtime::RendererGeneration::new()), committed: false,
+            instance: self.0.id,
+            view,
+            owner,
+            path,
+            allowed,
+            import,
+            document: Some(shell_contract::runtime::RendererGeneration::new()),
+            committed: false,
         })
     }
 }
@@ -148,8 +174,14 @@ impl DiagramViews {
         self.set_view_open_decision(view, Decision::Original);
     }
 
-    pub fn open_fresh_hidden_view_prepared(&self, view: ViewId, path: Option<&str>) -> Result<(), String> {
-        if self.with_state(|state| state.views.contains_key(&view) || state.recovery.contains_key(&view)) {
+    pub fn open_fresh_hidden_view_prepared(
+        &self,
+        view: ViewId,
+        path: Option<&str>,
+    ) -> Result<(), String> {
+        if self.with_state(|state| {
+            state.views.contains_key(&view) || state.recovery.contains_key(&view)
+        }) {
             return Err("The diagram hidden view is already in use".into());
         }
         self.open_hidden_view_prepared(view, path);
@@ -399,7 +431,11 @@ impl DiagramViews {
                     WaitEnd::Answer(false) => "could not save the diagram",
                     WaitEnd::TimedOut => "timed out saving the diagram",
                 };
-                views.with_state(|state| { let entry = state.view(view); entry.save_path = previous; entry.advance_save_revision(); });
+                views.with_state(|state| {
+                    let entry = state.view(view);
+                    entry.save_path = previous;
+                    entry.advance_save_revision();
+                });
                 done(Err(failure.into()));
             }),
         );
@@ -432,7 +468,11 @@ impl DiagramViews {
     /// `writeDiagramCopiesNow(timeoutMs)`: the OS is ending the session; every
     /// diagram view with unsaved changes writes a copy now. `done` runs when
     /// every view answered (`recovery-copy-now-done`) or `timeout` passed.
-    pub fn write_copies_now(&self, timeout: Duration, done: Box<dyn FnOnce(Result<(), main_core::shell::renderer_disposal::Failure>)>) {
+    pub fn write_copies_now(
+        &self,
+        timeout: Duration,
+        done: Box<dyn FnOnce(Result<(), main_core::shell::renderer_disposal::Failure>)>,
+    ) {
         let mut waiting: Vec<ViewId> = self.with_state(|state| {
             state
                 .views
@@ -448,7 +488,9 @@ impl DiagramViews {
             alive
         });
         waiting.sort();
-        let initial_failure = unavailable.then(|| main_core::shell::renderer_disposal::Failure("The diagram view was closed".into()));
+        let initial_failure = unavailable.then(|| {
+            main_core::shell::renderer_disposal::Failure("The diagram view was closed".into())
+        });
         if waiting.is_empty() {
             return done(initial_failure.map_or(Ok(()), Err));
         }
@@ -463,13 +505,17 @@ impl DiagramViews {
                 move |result: Result<(), main_core::shell::renderer_disposal::Failure>| {
                     if let Err(error) = result {
                         let mut first = failure.borrow_mut();
-                        if first.is_none() { *first = Some(error); }
+                        if first.is_none() {
+                            *first = Some(error);
+                        }
                     }
                     remaining.set(remaining.get() - 1);
                     if remaining.get() == 0 {
                         let callback = done.borrow_mut().take();
                         let result = failure.borrow_mut().take().map_or(Ok(()), Err);
-                        if let Some(done) = callback { done(result); }
+                        if let Some(done) = callback {
+                            done(result);
+                        }
                     }
                 }
             };
@@ -482,7 +528,9 @@ impl DiagramViews {
                 (previous, generation)
             });
             if let Some(previous) = previous {
-                (previous.finish)(Err(main_core::shell::renderer_disposal::Failure("Diagram recovery request was replaced".into())));
+                (previous.finish)(Err(main_core::shell::renderer_disposal::Failure(
+                    "Diagram recovery request was replaced".into(),
+                )));
             }
             self.after(timeout, move |views| {
                 let waiter = views.with_state(|state| {
@@ -494,13 +542,18 @@ impl DiagramViews {
                     }
                 });
                 if let Some(waiter) = waiter {
-                    (waiter.finish)(Err(main_core::shell::renderer_disposal::Failure("Timed out writing the diagram recovery copy".into())));
+                    (waiter.finish)(Err(main_core::shell::renderer_disposal::Failure(
+                        "Timed out writing the diagram recovery copy".into(),
+                    )));
                 }
             });
-            self.emit(view, "diagram:recovery-copy-now", vec![crate::value::num(generation as f64)]);
+            self.emit(
+                view,
+                "diagram:recovery-copy-now",
+                vec![crate::value::num(generation as f64)],
+            );
         }
     }
-
 
     /// `queueDiagramSeedFor(contents, seed)`: content for a new, unsaved
     /// diagram view, taken once by `seed-take`

@@ -561,21 +561,17 @@ fn watcher_call(world: Option<&Value>, cx: &mut Context) -> Value {
                 timer = true;
                 log(vec![Value::from("setTimeout"), Value::from(ms)]);
             }
-            Some("fire") => {
-                if timer {
-                    timer = false;
-                    if let Some(dirs) = watcher.on_timer() {
-                        log(vec![
-                            Value::from("onChange"),
-                            Value::Array(dirs.into_iter().map(Value::from).collect()),
-                        ]);
-                    }
+            Some("fire") if timer => {
+                timer = false;
+                if let Some(dirs) = watcher.on_timer() {
+                    log(vec![
+                        Value::from("onChange"),
+                        Value::Array(dirs.into_iter().map(Value::from).collect()),
+                    ]);
                 }
             }
-            Some("error") => {
-                if watch_ok {
-                    close_watcher(&mut watcher, &mut timer, &mut log);
-                }
+            Some("error") if watch_ok => {
+                close_watcher(&mut watcher, &mut timer, &mut log);
             }
             Some("close") => close_watcher(&mut watcher, &mut timer, &mut log),
             Some("active") => result = Value::Bool(watcher.active()),

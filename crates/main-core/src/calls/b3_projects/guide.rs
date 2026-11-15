@@ -32,7 +32,8 @@ use crate::packages::project_store::{
     ProjectTrustDecision, ProjectTrustPrompt, UndoMemoryConsolidationArgs, real_path_native,
 };
 use crate::shell::projects::chat_store::{
-    AppendProgress, ChatSender, ChatStoreError, ChatStoreErrorKind, ChatStoreHost, ChatStoreOptions, ProjectChatStore,
+    AppendProgress, ChatSender, ChatStoreError, ChatStoreErrorKind, ChatStoreHost,
+    ChatStoreOptions, ProjectChatStore,
 };
 use crate::shell::projects::memory::LocalDateParts;
 use crate::shell::projects::project_guide::{
@@ -448,7 +449,11 @@ impl ChatStoreHost for ChatHost {
     fn now_iso(&mut self) -> Result<String, ChatStoreError> {
         let at = self.clock.get();
         self.clock.set(at + self.tick);
-        to_iso_string(at).map_err(|error| ChatStoreError { message: error.to_string(), code: None, kind: ChatStoreErrorKind::Failure })
+        to_iso_string(at).map_err(|error| ChatStoreError {
+            message: error.to_string(),
+            code: None,
+            kind: ChatStoreErrorKind::Failure,
+        })
     }
 
     fn new_id(&mut self) -> String {
@@ -495,32 +500,56 @@ fn chat_answer<T: serde::Serialize>(result: Result<T, ChatStoreError>) -> Value 
 // The isolated scenario is synchronous and has one settings writer. Production
 // uses the per-file FIFO and guarded owner continuation instead.
 fn chat_identity(guide: &ProjectGuide) -> Result<(), ChatStoreError> {
-    guide.install_id().map(|_| ()).map_err(|error| ChatStoreError {
-        message: error.message(), code: error.code(), kind: ChatStoreErrorKind::Failure,
-    })
+    guide
+        .install_id()
+        .map(|_| ())
+        .map_err(|error| ChatStoreError {
+            message: error.message(),
+            code: error.code(),
+            kind: ChatStoreErrorKind::Failure,
+        })
 }
 
-fn chat_attempt<T>(guide: &ProjectGuide, mut run: impl FnMut() -> Result<T, ChatStoreError>) -> Result<T, ChatStoreError> {
+fn chat_attempt<T>(
+    guide: &ProjectGuide,
+    mut run: impl FnMut() -> Result<T, ChatStoreError>,
+) -> Result<T, ChatStoreError> {
     match run() {
-        Err(error) if error.kind == ChatStoreErrorKind::NeedInstallId => { chat_identity(guide)?; run() }
+        Err(error) if error.kind == ChatStoreErrorKind::NeedInstallId => {
+            chat_identity(guide)?;
+            run()
+        }
         result => result,
     }
 }
 
-fn chat_append(guide: &ProjectGuide, store: &mut ChatStore, args: &jscompat::JsonValue, sender: &ChatSender) -> Result<crate::shell::projects::chat_store::AppendOutcome, ChatStoreError> {
+fn chat_append(
+    guide: &ProjectGuide,
+    store: &mut ChatStore,
+    args: &jscompat::JsonValue,
+    sender: &ChatSender,
+) -> Result<crate::shell::projects::chat_store::AppendOutcome, ChatStoreError> {
     let mut progress = chat_attempt(guide, || store.begin_append(args, sender))?;
     loop {
         match progress {
             AppendProgress::Done(result) => return Ok(result),
             AppendProgress::NeedInstallId(token) => {
-                if let Err(error) = chat_identity(guide) { store.cancel_append(token); return Err(error); }
+                if let Err(error) = chat_identity(guide) {
+                    store.cancel_append(token);
+                    return Err(error);
+                }
                 progress = store.resume_append(token)?;
             }
         }
     }
 }
 
-fn chat_op(name: &str, op: &Value, store: &mut ChatStore, guide: &ProjectGuide) -> Result<Value, CallError> {
+fn chat_op(
+    name: &str,
+    op: &Value,
+    store: &mut ChatStore,
+    guide: &ProjectGuide,
+) -> Result<Value, CallError> {
     let project_id = text_of(op, "projectId")?;
     Ok(match name {
         "chatNew" => chat_answer(
@@ -541,17 +570,28 @@ fn chat_op(name: &str, op: &Value, store: &mut ChatStore, guide: &ProjectGuide) 
                         doc_path: opt_text(op, "docPath").map(str::to_owned),
                         key: None,
                     };
-                    chat_answer(chat_append(guide, store, &json_value_from_serde(&args), &sender))
+                    chat_answer(chat_append(
+                        guide,
+                        store,
+                        &json_value_from_serde(&args),
+                        &sender,
+                    ))
                 }
-                "chatOpen" => chat_answer(chat_attempt(guide, || store.open_chat(&json_value_from_serde(&args)))),
+                "chatOpen" => chat_answer(chat_attempt(guide, || {
+                    store.open_chat(&json_value_from_serde(&args))
+                })),
                 "chatRename" => {
                     args["title"] = Value::from(text_of(op, "title")?);
-                    chat_answer(chat_attempt(guide, || store.rename_chat(&json_value_from_serde(&args))))
+                    chat_answer(chat_attempt(guide, || {
+                        store.rename_chat(&json_value_from_serde(&args))
+                    }))
                 }
-                _ => chat_answer(chat_attempt(guide, || store.chat_info(&ProjectChatRef {
-                    project_id: project_id.to_owned(),
-                    chat_id: chat_id.to_owned(),
-                }))),
+                _ => chat_answer(chat_attempt(guide, || {
+                    store.chat_info(&ProjectChatRef {
+                        project_id: project_id.to_owned(),
+                        chat_id: chat_id.to_owned(),
+                    })
+                })),
             }
         }
     })

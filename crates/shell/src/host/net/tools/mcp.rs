@@ -183,7 +183,7 @@ impl McpTabs for ShellMcpTabs {
             let Some(tabs) = provided.all::<TabsState>().into_iter().next() else {
                 return done(Err("SeuOffice is not ready".into()));
             };
-            let cancel = shell_contract::runtime::CancelToken::new();
+            let cancel = shell_contract::runtime::CancelToken::default();
             let operation = match crate::host::native_commands::issue(
                 shell_contract::ipc::NativeEditorCommand::NewDocument { surface: shell_contract::Surface::Docs, directory: None },
                 cancel.clone(),
@@ -226,7 +226,7 @@ impl McpTabs for ShellMcpTabs {
             let Some(tabs) = provided.all::<TabsState>().into_iter().next() else {
                 return done(Err("SeuOffice is not ready".into()));
             };
-            let cancel = shell_contract::runtime::CancelToken::new();
+            let cancel = shell_contract::runtime::CancelToken::default();
             let operation = match crate::host::native_commands::issue(
                 shell_contract::ipc::NativeEditorCommand::NewDocument { surface: shell_contract::Surface::Sheets, directory: None },
                 cancel.clone(),

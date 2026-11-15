@@ -13,9 +13,7 @@ use shell_contract::ipc::CallContext;
 use shell_contract::{IpcError, IpcValue};
 
 use super::engine::TxnRequest;
-use super::session::{
-    EMU_PER_PX_96, Obj, js_round, null, number, op, prop, target,
-};
+use super::session::{EMU_PER_PX_96, Obj, js_round, null, number, op, prop, target};
 use super::state::{App, ElementClipboard, LastSlidePaste, SlideClipboard, SlideSession};
 use crate::value::{Args, as_num, as_str, field, num, obj, string, thrown, truthy};
 
@@ -31,7 +29,10 @@ impl ClipboardHost for Marker<'_> {
     type Image = Vec<u8>;
 
     fn read_buffer(&self, format: &str) -> Result<Vec<u8>, HostThrew> {
-        self.0.shell.read_clipboard_buffer(format).map_err(|_| HostThrew)
+        self.0
+            .shell
+            .read_clipboard_buffer(format)
+            .map_err(|_| HostThrew)
     }
 
     fn read_html(&self) -> Result<String, HostThrew> {
@@ -63,7 +64,11 @@ fn json_string(value: &IpcValue) -> Option<JsonValue> {
 impl App {
     /// `clipboardMarker(format)`
     fn clipboard_marker(&self, format: &str) -> Result<bool, IpcError> {
-        Ok(!self.shell.read_clipboard_buffer(format).map_err(|error| thrown(error.0))?.is_empty())
+        Ok(!self
+            .shell
+            .read_clipboard_buffer(format)
+            .map_err(|error| thrown(error.0))?
+            .is_empty())
     }
 
     fn slide_marker_present(&self) -> Result<bool, IpcError> {
@@ -102,11 +107,18 @@ pub fn copy_slides(app: &App, cx: &CallContext, args: Args) -> Reply {
     if indexes.is_empty() {
         return Ok(IpcValue::Bool(false));
     }
-    let len = app.engine.slide_paths(session.deck()).map_err(|e| thrown(e.0))?.len();
+    let len = app
+        .engine
+        .slide_paths(session.deck())
+        .map_err(|e| thrown(e.0))?
+        .len();
     let mut bundles = Vec::new();
     for index in &indexes {
         let bundle = match super::session::slide_index(index, len) {
-            Some(i) => app.engine.copy_slide(session.deck(), i).map_err(|error| thrown(error.0))?,
+            Some(i) => app
+                .engine
+                .copy_slide(session.deck(), i)
+                .map_err(|error| thrown(error.0))?,
             None => None,
         };
         match bundle {
@@ -140,7 +152,10 @@ fn perform_slide_paste(
     before: Option<Vec<String>>,
     restored: Vec<f64>,
 ) -> Result<Option<Pasted>, IpcError> {
-    let before = match before { Some(paths) => paths, None => app.slide_paths_of(s)? };
+    let before = match before {
+        Some(paths) => paths,
+        None => app.slide_paths_of(s)?,
+    };
     let picture = as_str(field(paste, "mode")) == Some("picture");
     if picture && clipboard.pngs.is_none() {
         return Ok(None);
@@ -207,7 +222,9 @@ fn perform_slide_paste(
                 clipboard.bundles.len() as f64
             }),
         )
-        .set_if(!created.is_empty(), "sourceIds", || IpcValue::Array(created.clone()))
+        .set_if(!created.is_empty(), "sourceIds", || {
+            IpcValue::Array(created.clone())
+        })
         .build();
     Ok(Some(Pasted { value, index }))
 }
@@ -224,7 +241,8 @@ pub fn paste_slide(app: &App, cx: &CallContext, args: Args) -> Reply {
         return null();
     };
     s.core.push_history().map_err(|error| thrown(error.0))?;
-    let Some(done) = perform_slide_paste(app, s, &owner, &clipboard, paste, None, Vec::new())? else {
+    let Some(done) = perform_slide_paste(app, s, &owner, &clipboard, paste, None, Vec::new())?
+    else {
         s.core.undo_stack.pop();
         return null();
     };
@@ -263,7 +281,9 @@ pub fn repaste_slide(app: &App, cx: &CallContext, args: Args) -> Reply {
         return null();
     };
     let before = app.slide_paths_of(s)?;
-    s.core.restore_snapshot(&snapshot).map_err(|error| thrown(error.0))?;
+    s.core
+        .restore_snapshot(&snapshot)
+        .map_err(|error| thrown(error.0))?;
     s.core.undo_stack.pop();
     s.core.push_history_snapshot(snapshot);
     let again = obj([
@@ -279,7 +299,8 @@ pub fn repaste_slide(app: &App, cx: &CallContext, args: Args) -> Reply {
         &again,
         Some(before),
         rec.changed.clone(),
-    )? else {
+    )?
+    else {
         s.core.undo_stack.pop();
         return null();
     };
@@ -349,7 +370,11 @@ pub fn copy_elements(app: &App, cx: &CallContext, args: Args) -> Reply {
         return Ok(num(0.0));
     };
     let slide_index = prop(op, "slideIndex")?;
-    let len = app.engine.slide_paths(s.deck()).map_err(|e| thrown(e.0))?.len();
+    let len = app
+        .engine
+        .slide_paths(s.deck())
+        .map_err(|e| thrown(e.0))?
+        .len();
     let Some(slide) = super::session::slide_index(slide_index, len) else {
         return Ok(num(0.0));
     };
@@ -427,7 +452,15 @@ pub fn paste_elements(app: &App, cx: &CallContext, args: Args) -> Reply {
         return null();
     };
     let slide_index = prop(op_value, "slideIndex")?;
-    if super::session::slide_index(slide_index, app.engine.slide_paths(s.deck()).map_err(|e| thrown(e.0))?.len()).is_none() {
+    if super::session::slide_index(
+        slide_index,
+        app.engine
+            .slide_paths(s.deck())
+            .map_err(|e| thrown(e.0))?
+            .len(),
+    )
+    .is_none()
+    {
         return null();
     }
     let size = app.engine.size(s.deck()).map_err(|e| thrown(e.0))?;
@@ -444,7 +477,13 @@ pub fn paste_elements(app: &App, cx: &CallContext, args: Args) -> Reply {
             .set("dy", num(shift))
             .build(),
     ]);
-    let Some(r) = app.session_txn(s, &super::session::render_owner(cx)?, request, OpSource::Edit)? else {
+    let Some(r) = app.session_txn(
+        s,
+        &super::session::render_owner(cx)?,
+        request,
+        OpSource::Edit,
+    )?
+    else {
         return null();
     };
     record_paste(&mut clip.cascade, &target_key);
@@ -455,17 +494,23 @@ pub fn paste_elements(app: &App, cx: &CallContext, args: Args) -> Reply {
         .and_then(|r| r.first())
         .and_then(|rec| rec.created.clone())
         .unwrap_or_default();
-    Ok(match app.rebuild_slide(s, &super::session::render_owner(cx)?, slide_index)? {
-        Some(slide) => obj([("slide", slide), ("sourceIds", IpcValue::Array(created))]),
-        None => IpcValue::Null,
-    })
+    Ok(
+        match app.rebuild_slide(s, &super::session::render_owner(cx)?, slide_index)? {
+            Some(slide) => obj([("slide", slide), ("sourceIds", IpcValue::Array(created))]),
+            None => IpcValue::Null,
+        },
+    )
 }
 
 pub fn duplicate_elements(app: &App, cx: &CallContext, args: Args) -> Reply {
     let op_value = args.get(0);
     app.with_session(cx.sender.view, |app, s| {
         let slide_index = prop(op_value, "slideIndex")?;
-        let len = app.engine.slide_paths(s.deck()).map_err(|e| thrown(e.0))?.len();
+        let len = app
+            .engine
+            .slide_paths(s.deck())
+            .map_err(|e| thrown(e.0))?
+            .len();
         let Some(slide) = super::session::slide_index(slide_index, len) else {
             return null();
         };
@@ -488,7 +533,13 @@ pub fn duplicate_elements(app: &App, cx: &CallContext, args: Args) -> Reply {
                 .set("dy", num(to_emu(number(field(op_value, "dyPx")))))
                 .build(),
         ]);
-        let Some(r) = app.session_txn(s, &super::session::render_owner(cx)?, request, OpSource::Edit)? else {
+        let Some(r) = app.session_txn(
+            s,
+            &super::session::render_owner(cx)?,
+            request,
+            OpSource::Edit,
+        )?
+        else {
             return null();
         };
         s.fit_width_px = number(field(op_value, "fitWidthPx"));
@@ -498,10 +549,12 @@ pub fn duplicate_elements(app: &App, cx: &CallContext, args: Args) -> Reply {
             .and_then(|r| r.first())
             .and_then(|rec| rec.created.clone())
             .unwrap_or_default();
-        Ok(match app.rebuild_slide(s, &super::session::render_owner(cx)?, slide_index)? {
-            Some(slide) => obj([("slide", slide), ("sourceIds", IpcValue::Array(created))]),
-            None => IpcValue::Null,
-        })
+        Ok(
+            match app.rebuild_slide(s, &super::session::render_owner(cx)?, slide_index)? {
+                Some(slide) => obj([("slide", slide), ("sourceIds", IpcValue::Array(created))]),
+                None => IpcValue::Null,
+            },
+        )
     })
 }
 

@@ -2673,7 +2673,7 @@ pub(crate) fn app_menu_activate(id: u32, cx: shell_contract::ipc::CallContext) {
                 let Some(home)=services.hosts.get::<HomeAppHost>() else {
                     return eprintln!("Could not open help: home services are unavailable");
                 };
-                home.open_help_owned(None,origin,cancel,shell_contract::runtime::CancelToken::new(),Box::new(|result| {
+                home.open_help_owned(None,origin,cancel,shell_contract::runtime::CancelToken::default(),Box::new(|result| {
                     if let Err(error)=result { eprintln!("Could not open help: {error}"); }
                 }));
             },||eprintln!("Could not open help: the core thread is unavailable"));

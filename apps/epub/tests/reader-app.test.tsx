@@ -240,10 +240,15 @@ describe('native recovery initialization', () => {
       acknowledgements.push([receipt, ok, container.querySelector('.epub-reader') !== null])
     }
     let release!: (value: EpubOpenFileResult) => void
-    fake.api.openFile = () => new Promise((resolve) => { release = resolve })
+    fake.api.openFile = () =>
+      new Promise((resolve) => {
+        release = resolve
+      })
     await mount(fake)
     expect(acknowledgements).toEqual([])
-    await act(async () => { release(OPEN) })
+    await act(async () => {
+      release(OPEN)
+    })
     await settle()
     expect(acknowledgements).toEqual([['receipt-1', true, true]])
   })

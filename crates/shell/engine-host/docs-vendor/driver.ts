@@ -1,4 +1,8 @@
-import type { BrowserDriver, ScreenshotOptions, Viewport } from '../../../../packages/html2docx/src/driver'
+import type {
+  BrowserDriver,
+  ScreenshotOptions,
+  Viewport,
+} from '../../../../packages/html2docx/src/driver'
 
 /** Each callback is scoped to one request and one dedicated CEF page. */
 export type PageCall = (operation: string, input: unknown) => Promise<unknown>
@@ -15,8 +19,11 @@ export class CefHtmlDriver implements BrowserDriver {
   }
 
   evaluate: BrowserDriver['evaluate'] = async (fn, arg) => {
-    const expression = typeof fn === 'string' ? fn : `(${fn.toString()})(${arg === undefined ? '' : JSON.stringify(arg)})`
-    return await this.call('html.evaluate', { expression }) as never
+    const expression =
+      typeof fn === 'string'
+        ? fn
+        : `(${fn.toString()})(${arg === undefined ? '' : JSON.stringify(arg)})`
+    return (await this.call('html.evaluate', { expression })) as never
   }
 
   async addScript(source: string): Promise<void> {
@@ -30,10 +37,13 @@ export class CefHtmlDriver implements BrowserDriver {
   async screenshot(options: ScreenshotOptions): Promise<Uint8Array> {
     const result = await this.call('html.screenshot', options)
     if (typeof result !== 'string') throw new Error('HTML screenshot returned invalid data')
-    return Uint8Array.from(atob(result), character => character.charCodeAt(0))
+    return Uint8Array.from(atob(result), (character) => character.charCodeAt(0))
   }
 
-  async screenshotElement(selector: string, options: Pick<ScreenshotOptions, 'omitBackground'>): Promise<Uint8Array | null> {
+  async screenshotElement(
+    selector: string,
+    options: Pick<ScreenshotOptions, 'omitBackground'>,
+  ): Promise<Uint8Array | null> {
     const box = await this.evaluate((sel: string) => {
       const node = document.querySelector(sel)
       if (!node) return null

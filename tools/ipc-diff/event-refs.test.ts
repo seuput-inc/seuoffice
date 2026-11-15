@@ -4,7 +4,10 @@ import { caseElectron } from './fakes.ts'
 import type { Call } from './types.ts'
 
 const request = (view: number, generation: number) => ({
-  view, channel: 'editor:recovery-copy-now', args: [generation], buffers: [],
+  view,
+  channel: 'editor:recovery-copy-now',
+  args: [generation],
+  buffers: [],
 })
 
 describe('per-side renderer event references', () => {
@@ -41,7 +44,9 @@ describe('per-side renderer event references', () => {
   })
 
   it('rejects matching but incorrect success on both sides', () => {
-    const calls: Call[] = [{ channel: '', args: [], await: 0, expectAnswer: rejectedAnswer('write failed') }]
+    const calls: Call[] = [
+      { channel: '', args: [], await: 0, expectAnswer: rejectedAnswer('write failed') },
+    ]
     const incorrect = [{ answer: { value: { $: 'u' }, buffers: [] } }]
     expect(outcomeFailure(calls, incorrect)).toContain('expected')
     expect(outcomeFailure(calls, [{ answer: rejectedAnswer('write failed') }])).toBeUndefined()
@@ -52,7 +57,9 @@ describe('per-side renderer event references', () => {
     const first = electron.contents(1)
     const second = electron.contents(2)
     let closes = 0
-    first.once('destroyed', () => { closes++ })
+    first.once('destroyed', () => {
+      closes++
+    })
     await first.emit('render-process-gone')
     expect(first.isCrashed()).toBe(true)
     expect(second.isCrashed()).toBe(false)

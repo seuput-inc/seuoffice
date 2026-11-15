@@ -6,7 +6,12 @@ export type ReaderResult = { text: string } | { error: { name: string; message: 
 
 export async function readDocument(name: ReaderName, input: unknown): Promise<ReaderResult> {
   try {
-    if (input === null || typeof input !== 'object' || !('bytesBase64' in input) || typeof input.bytesBase64 !== 'string') {
+    if (
+      input === null ||
+      typeof input !== 'object' ||
+      !('bytesBase64' in input) ||
+      typeof input.bytesBase64 !== 'string'
+    ) {
       throw new TypeError('reader input has no string bytesBase64')
     }
     const binary = atob(input.bytesBase64)

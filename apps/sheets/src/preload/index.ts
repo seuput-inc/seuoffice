@@ -221,11 +221,19 @@ const desktopApi: DesktopApi = {
     return result === null ? null : parseWorkbookFile(result)
   },
   async savedOpenResult(id, ok, error) {
-    if (typeof id !== 'string' || id.length === 0 || typeof ok !== 'boolean' ||
-        (error !== undefined && typeof error !== 'string')) {
+    if (
+      typeof id !== 'string' ||
+      id.length === 0 ||
+      typeof ok !== 'boolean' ||
+      (error !== undefined && typeof error !== 'string')
+    ) {
       throw new Error('Invalid saved workbook open result.')
     }
-    await ipcRenderer.invoke(IPC_CHANNELS.savedOpenResult, { id, ok, ...(error === undefined ? {} : { error }) })
+    await ipcRenderer.invoke(IPC_CHANNELS.savedOpenResult, {
+      id,
+      ok,
+      ...(error === undefined ? {} : { error }),
+    })
   },
   async updateWorkbookPassword(sessionId, newPassword) {
     if (
@@ -688,7 +696,10 @@ const desktopApi: DesktopApi = {
     return result as { canceled: true }
   },
   async confirmCsvSave(ownedSaveRequestId) {
-    const result: unknown = await ipcRenderer.invoke(IPC_CHANNELS.csvSaveConfirm, ownedSaveRequestId)
+    const result: unknown = await ipcRenderer.invoke(
+      IPC_CHANNELS.csvSaveConfirm,
+      ownedSaveRequestId,
+    )
     if (result !== 'csv' && result !== 'xlsx' && result !== 'cancel') {
       throw new Error('Invalid CSV save confirmation response.')
     }
@@ -696,7 +707,11 @@ const desktopApi: DesktopApi = {
   },
   async askWithheldExport(format, ownedSaveRequestId) {
     if (format !== 'CSV' && format !== 'PDF') throw new Error('Invalid export format.')
-    const result: unknown = await ipcRenderer.invoke(IPC_CHANNELS.withheldExportChoice, format, ownedSaveRequestId)
+    const result: unknown = await ipcRenderer.invoke(
+      IPC_CHANNELS.withheldExportChoice,
+      format,
+      ownedSaveRequestId,
+    )
     if (result !== 'xlsx' && result !== 'export' && result !== 'cancel') {
       throw new Error('Invalid export choice response.')
     }
@@ -781,9 +796,12 @@ const desktopApi: DesktopApi = {
       if (request === undefined) return callback()
       if (typeof request !== 'object' || request === null) return
       const value = request as Record<string, unknown>
-      if (typeof value.requestId !== 'string' ||
-          (value.mode !== 'save' && value.mode !== 'save-as') ||
-          (value.targetPath !== undefined && typeof value.targetPath !== 'string')) return
+      if (
+        typeof value.requestId !== 'string' ||
+        (value.mode !== 'save' && value.mode !== 'save-as') ||
+        (value.targetPath !== undefined && typeof value.targetPath !== 'string')
+      )
+        return
       callback({
         requestId: value.requestId,
         mode: value.mode,
@@ -808,9 +826,12 @@ const desktopApi: DesktopApi = {
       if (typeof nonce !== 'string') return
       void callback().then(
         () => ipcRenderer.send(IPC_CHANNELS.recoveryWriteNowDone, nonce, null),
-        (error: unknown) => ipcRenderer.send(
-          IPC_CHANNELS.recoveryWriteNowDone, nonce, error instanceof Error ? error.message : String(error),
-        ),
+        (error: unknown) =>
+          ipcRenderer.send(
+            IPC_CHANNELS.recoveryWriteNowDone,
+            nonce,
+            error instanceof Error ? error.message : String(error),
+          ),
       )
     }
     ipcRenderer.on(IPC_CHANNELS.recoveryWriteNow, listener)

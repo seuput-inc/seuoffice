@@ -72,7 +72,11 @@ fn autofit_both(
     id: &IpcValue,
     rendered: Option<IpcValue>,
 ) -> Result<Option<IpcValue>, IpcError> {
-    let len = app.engine.slide_paths(s.deck()).map_err(|error| thrown(error.0))?.len();
+    let len = app
+        .engine
+        .slide_paths(s.deck())
+        .map_err(|error| thrown(error.0))?
+        .len();
     let (Some(index), Some(id)) = (slide_index(slide, len), as_str(id)) else {
         return Ok(rendered);
     };
@@ -80,7 +84,8 @@ fn autofit_both(
         .engine
         .autofit_resize(s.deck(), owner, index, id, rendered, s.fit_width_px)
         .map_err(|error| thrown(error.0))?;
-    app.engine.sync_autofit_scale(s.deck(), owner, index, id, resized, s.fit_width_px)
+    app.engine
+        .sync_autofit_scale(s.deck(), owner, index, id, resized, s.fit_width_px)
         .map_err(|error| thrown(error.0))
 }
 
@@ -110,7 +115,13 @@ pub fn edit_text(app: &App, cx: &CallContext, args: Args) -> Reply {
             op_value,
         )
         .build();
-        let Some(r) = app.push_and_journal(s, &super::session::render_owner(cx)?, OpSource::Edit, &TxnRequest::atomic(vec![o]))? else {
+        let Some(r) = app.push_and_journal(
+            s,
+            &super::session::render_owner(cx)?,
+            OpSource::Edit,
+            &TxnRequest::atomic(vec![o]),
+        )?
+        else {
             return null();
         };
         let rebuilt = app.rebuild_slide(s, &super::session::render_owner(cx)?, slide)?;
@@ -163,14 +174,26 @@ pub fn set_element_font(app: &App, cx: &CallContext, args: Args) -> Reply {
             .collect();
         // all non-text elements: nothing happened, the pushed history is popped
         if app
-            .push_and_journal(s, &super::session::render_owner(cx)?, OpSource::Edit, &TxnRequest::per_op(ops))?
+            .push_and_journal(
+                s,
+                &super::session::render_owner(cx)?,
+                OpSource::Edit,
+                &TxnRequest::per_op(ops),
+            )?
             .is_none()
         {
             return null();
         }
         let mut rendered = app.rebuild_slide(s, &super::session::render_owner(cx)?, slide)?;
         for id in &ids {
-            rendered = autofit_both(app, s, &super::session::render_owner(cx)?, slide, id, rendered)?;
+            rendered = autofit_both(
+                app,
+                s,
+                &super::session::render_owner(cx)?,
+                slide,
+                id,
+                rendered,
+            )?;
         }
         Ok(or_null(rendered))
     })
@@ -215,22 +238,44 @@ pub fn set_element_paragraph_format(app: &App, cx: &CallContext, args: Args) -> 
             })
             .collect();
         if app
-            .push_and_journal(s, &super::session::render_owner(cx)?, OpSource::Edit, &TxnRequest::per_op(ops))?
+            .push_and_journal(
+                s,
+                &super::session::render_owner(cx)?,
+                OpSource::Edit,
+                &TxnRequest::per_op(ops),
+            )?
             .is_none()
         {
             return null();
         }
         if truthy(field(op_value, "indentDelta")) {
             // level changes affect inherited defaults; bake into bytes then reparse
-            let len = app.engine.slide_paths(s.deck()).map_err(|error| thrown(error.0))?.len();
+            let len = app
+                .engine
+                .slide_paths(s.deck())
+                .map_err(|error| thrown(error.0))?
+                .len();
             if let Some(index) = slide_index(slide, len) {
-                app.engine.materialize_slide(s.deck(), index).map_err(|error| thrown(error.0))?;
+                app.engine
+                    .materialize_slide(s.deck(), index)
+                    .map_err(|error| thrown(error.0))?;
             }
-            return Ok(or_null(app.rebuild_slide(s, &super::session::render_owner(cx)?, slide)?));
+            return Ok(or_null(app.rebuild_slide(
+                s,
+                &super::session::render_owner(cx)?,
+                slide,
+            )?));
         }
         let mut rendered = app.rebuild_slide(s, &super::session::render_owner(cx)?, slide)?;
         for id in &ids {
-            rendered = autofit_both(app, s, &super::session::render_owner(cx)?, slide, id, rendered)?;
+            rendered = autofit_both(
+                app,
+                s,
+                &super::session::render_owner(cx)?,
+                slide,
+                id,
+                rendered,
+            )?;
         }
         Ok(or_null(rendered))
     })
@@ -245,7 +290,12 @@ pub fn set_text_body_props(app: &App, cx: &CallContext, args: Args) -> Reply {
             .set("props", p(op_value, "props"))
             .build();
         if app
-            .session_txn(s, &super::session::render_owner(cx)?, TxnRequest::atomic(vec![o]), OpSource::Edit)?
+            .session_txn(
+                s,
+                &super::session::render_owner(cx)?,
+                TxnRequest::atomic(vec![o]),
+                OpSource::Edit,
+            )?
             .is_none()
         {
             return null();
@@ -274,16 +324,28 @@ fn transform_payload(
     fit: &IpcValue,
     item: &IpcValue,
 ) -> Result<Option<IpcValue>, IpcError> {
-    let len = app.engine.slide_paths(s.deck()).map_err(|error| thrown(error.0))?.len();
-    let Some(index) = slide_index(slide, len) else { return Ok(None) };
+    let len = app
+        .engine
+        .slide_paths(s.deck())
+        .map_err(|error| thrown(error.0))?
+        .len();
+    let Some(index) = slide_index(slide, len) else {
+        return Ok(None);
+    };
     let group_id = field(item, "groupId");
     let frame = if truthy(group_id) {
-        let Some(frame) = app.engine.group_child_frame(
-            s.deck(),
-            index,
-            as_str(group_id).unwrap_or(""),
-            as_str(field(item, "sourceId")).unwrap_or(""),
-        ).map_err(|error| thrown(error.0))? else { return Ok(None) };
+        let Some(frame) = app
+            .engine
+            .group_child_frame(
+                s.deck(),
+                index,
+                as_str(group_id).unwrap_or(""),
+                as_str(field(item, "sourceId")).unwrap_or(""),
+            )
+            .map_err(|error| thrown(error.0))?
+        else {
+            return Ok(None);
+        };
         Some(frame)
     } else {
         None
@@ -340,9 +402,19 @@ fn transform_payload(
     ))
 }
 
-fn dry_fails(app: &App, s: &SlideSession, owner: &super::engine::RenderOwner, payload: &IpcValue) -> Result<bool, IpcError> {
-    Ok(app.engine
-        .run_txn(s.deck(), owner, &TxnRequest::atomic(vec![payload.clone()]).dry())
+fn dry_fails(
+    app: &App,
+    s: &SlideSession,
+    owner: &super::engine::RenderOwner,
+    payload: &IpcValue,
+) -> Result<bool, IpcError> {
+    Ok(app
+        .engine
+        .run_txn(
+            s.deck(),
+            owner,
+            &TxnRequest::atomic(vec![payload.clone()]).dry(),
+        )
         .map_err(|error| thrown(error.0))?
         .failure_count()
         > 0)
@@ -382,9 +454,18 @@ pub fn edit_transform(app: &App, cx: &CallContext, args: Args) -> Reply {
         let request = TxnRequest::atomic(vec![payload]);
         // journal only the settled commit
         let applied = if preview {
-            app.engine.run_txn(s.deck(), &super::session::render_owner(cx)?, &request).map_err(|error| thrown(error.0))?.applied
+            app.engine
+                .run_txn(s.deck(), &super::session::render_owner(cx)?, &request)
+                .map_err(|error| thrown(error.0))?
+                .applied
         } else {
-            app.journaled_txn(s, &super::session::render_owner(cx)?, OpSource::Edit, &request)?.applied
+            app.journaled_txn(
+                s,
+                &super::session::render_owner(cx)?,
+                OpSource::Edit,
+                &request,
+            )?
+            .applied
         };
         if !applied {
             if pushed {
@@ -398,7 +479,11 @@ pub fn edit_transform(app: &App, cx: &CallContext, args: Args) -> Reply {
             }
             return null();
         }
-        Ok(or_null(app.rebuild_slide(s, &super::session::render_owner(cx)?, slide)?))
+        Ok(or_null(app.rebuild_slide(
+            s,
+            &super::session::render_owner(cx)?,
+            slide,
+        )?))
     })
 }
 
@@ -409,7 +494,9 @@ pub fn cancel_transform_preview(app: &App, cx: &CallContext, args: Args) -> Repl
             return null();
         }
         if let Some(snapshot) = s.core.undo_stack.last().cloned() {
-            s.core.restore_snapshot(&snapshot).map_err(|error| thrown(error.0))?;
+            s.core
+                .restore_snapshot(&snapshot)
+                .map_err(|error| thrown(error.0))?;
             s.core.undo_stack.pop();
         }
         s.transform_preview = false;
@@ -418,7 +505,11 @@ pub fn cancel_transform_preview(app: &App, cx: &CallContext, args: Args) -> Repl
         }
         s.core.schedule_history_notify();
         s.core.schedule_deck_broadcast();
-        Ok(or_null(app.rebuild_slide(s, &super::session::render_owner(cx)?, prop(op_value, "slideIndex")?)?))
+        Ok(or_null(app.rebuild_slide(
+            s,
+            &super::session::render_owner(cx)?,
+            prop(op_value, "slideIndex")?,
+        )?))
     })
 }
 
@@ -437,8 +528,15 @@ pub fn edit_transform_multi(app: &App, cx: &CallContext, args: Args) -> Reply {
             return null();
         }
         Ok(
-            match app.session_txn(s, &super::session::render_owner(cx)?, TxnRequest::atomic(ops), OpSource::Edit)? {
-                Some(_) => or_null(app.rebuild_slide(s, &super::session::render_owner(cx)?, slide)?),
+            match app.session_txn(
+                s,
+                &super::session::render_owner(cx)?,
+                TxnRequest::atomic(ops),
+                OpSource::Edit,
+            )? {
+                Some(_) => {
+                    or_null(app.rebuild_slide(s, &super::session::render_owner(cx)?, slide)?)
+                }
                 None => IpcValue::Null,
             },
         )
@@ -473,7 +571,12 @@ fn gesture_edit(
             s.core.push_history().map_err(|error| thrown(error.0))?;
             pushed = true;
         }
-        let r = app.journaled_txn(s, &super::session::render_owner(cx)?, OpSource::Edit, &TxnRequest::atomic(vec![payload]))?;
+        let r = app.journaled_txn(
+            s,
+            &super::session::render_owner(cx)?,
+            OpSource::Edit,
+            &TxnRequest::atomic(vec![payload]),
+        )?;
         if !r.applied {
             if pushed {
                 s.core.undo_stack.pop();
@@ -483,7 +586,11 @@ fn gesture_edit(
             }
             return null();
         }
-        Ok(or_null(app.rebuild_slide(s, &super::session::render_owner(cx)?, slide)?))
+        Ok(or_null(app.rebuild_slide(
+            s,
+            &super::session::render_owner(cx)?,
+            slide,
+        )?))
     })
 }
 
@@ -559,7 +666,11 @@ pub fn apply_txn(app: &App, cx: &CallContext, args: Args) -> Reply {
     apply_txn_view(app, &super::session::render_owner(cx)?, args.get(0))
 }
 
-pub(super) fn apply_txn_view(app: &App, owner: &super::engine::RenderOwner, req: &IpcValue) -> Reply {
+pub(super) fn apply_txn_view(
+    app: &App,
+    owner: &super::engine::RenderOwner,
+    req: &IpcValue,
+) -> Reply {
     app.with_session(owner.view, |app, s| {
         let ops = match field(req, "ops") {
             IpcValue::Array(ops) => ops.clone(),
@@ -593,7 +704,10 @@ pub(super) fn apply_txn_view(app: &App, owner: &super::engine::RenderOwner, req:
             withhold: truthy(field(req, "withhold")),
         };
         if truthy(field(req, "dryRun")) {
-            let r = app.engine.run_txn(s.deck(), owner, &request.dry()).map_err(|error| thrown(error.0))?;
+            let r = app
+                .engine
+                .run_txn(s.deck(), owner, &request.dry())
+                .map_err(|error| thrown(error.0))?;
             let mut o = Obj::new()
                 .set("applied", IpcValue::Bool(false))
                 .set("dryRun", IpcValue::Bool(true))
@@ -607,7 +721,10 @@ pub(super) fn apply_txn_view(app: &App, owner: &super::engine::RenderOwner, req:
             return Ok(o.build());
         }
         // plan before pushing history (a no-op request must not clear the redo stack)
-        let plan = app.engine.run_txn(s.deck(), owner, &request.dry()).map_err(|error| thrown(error.0))?;
+        let plan = app
+            .engine
+            .run_txn(s.deck(), owner, &request.dry())
+            .map_err(|error| thrown(error.0))?;
         let invalid = plan.failure_count();
         let refused = match isolation {
             Isolation::Atomic => invalid > 0,
@@ -637,7 +754,11 @@ pub(super) fn apply_txn_view(app: &App, owner: &super::engine::RenderOwner, req:
             let Some(id) = rec.slide_id.as_deref().filter(|id| !id.is_empty()) else {
                 continue;
             };
-            let Some(index) = app.engine.slide_index_of_id(s.deck(), id).map_err(|error| thrown(error.0))? else {
+            let Some(index) = app
+                .engine
+                .slide_index_of_id(s.deck(), id)
+                .map_err(|error| thrown(error.0))?
+            else {
                 continue;
             };
             let name = as_str(field(&rec.op, "op")).unwrap_or("");
@@ -659,7 +780,9 @@ pub(super) fn apply_txn_view(app: &App, owner: &super::engine::RenderOwner, req:
             if name == "setParagraphFormat"
                 && truthy(field(field(&rec.op, "format"), "indentDelta"))
             {
-                app.engine.materialize_slide(s.deck(), index).map_err(|error| thrown(error.0))?;
+                app.engine
+                    .materialize_slide(s.deck(), index)
+                    .map_err(|error| thrown(error.0))?;
                 rendered.retain(|(i, _)| *i != index);
                 continue;
             }
@@ -715,7 +838,10 @@ pub(super) fn apply_txn_view(app: &App, owner: &super::engine::RenderOwner, req:
 pub fn apply_edit_script(app: &App, cx: &CallContext, args: Args) -> Reply {
     let op_value = args.get(0);
     app.with_session(cx.sender.view, |app, s| {
-        let ops = app.engine.map_script_ops(s.deck(), op_value).map_err(|error| thrown(error.0))?;
+        let ops = app
+            .engine
+            .map_script_ops(s.deck(), op_value)
+            .map_err(|error| thrown(error.0))?;
         if ops.is_empty() {
             return null();
         }
@@ -727,7 +853,12 @@ pub fn apply_edit_script(app: &App, cx: &CallContext, args: Args) -> Reply {
         };
         let plan = app
             .engine
-            .run_txn(s.deck(), &super::session::render_owner(cx)?, &TxnRequest::atomic(ops.clone()).dry()).map_err(|error| thrown(error.0))?;
+            .run_txn(
+                s.deck(),
+                &super::session::render_owner(cx)?,
+                &TxnRequest::atomic(ops.clone()).dry(),
+            )
+            .map_err(|error| thrown(error.0))?;
         if plan.failure_count() > 0 {
             return Ok(obj([(
                 "error",
@@ -735,7 +866,12 @@ pub fn apply_edit_script(app: &App, cx: &CallContext, args: Args) -> Reply {
             )]));
         }
         let snapshot = s.core.take_snapshot().map_err(|error| thrown(error.0))?;
-        let r = app.journaled_txn(s, &super::session::render_owner(cx)?, OpSource::Script, &TxnRequest::atomic(ops))?;
+        let r = app.journaled_txn(
+            s,
+            &super::session::render_owner(cx)?,
+            OpSource::Script,
+            &TxnRequest::atomic(ops),
+        )?;
         if !r.applied {
             return Ok(obj([(
                 "error",
@@ -760,10 +896,24 @@ pub fn apply_edit_script(app: &App, cx: &CallContext, args: Args) -> Reply {
                     if truthy(field(&rec.after, "levelDirty")) {
                         continue;
                     }
-                    rendered = autofit_both(app, s, &super::session::render_owner(cx)?, slide, el, rendered)?;
+                    rendered = autofit_both(
+                        app,
+                        s,
+                        &super::session::render_owner(cx)?,
+                        slide,
+                        el,
+                        rendered,
+                    )?;
                 }
                 Some("setFont" | "setParagraphFormat") => {
-                    rendered = autofit_both(app, s, &super::session::render_owner(cx)?, slide, el, rendered)?;
+                    rendered = autofit_both(
+                        app,
+                        s,
+                        &super::session::render_owner(cx)?,
+                        slide,
+                        el,
+                        rendered,
+                    )?;
                 }
                 _ => {}
             }
@@ -797,7 +947,12 @@ pub fn apply_theme(app: &App, cx: &CallContext, args: Args) -> Reply {
         // plan first so an invalid request doesn't clear the redo stack
         let plan = app
             .engine
-            .run_txn(s.deck(), &super::session::render_owner(cx)?, &TxnRequest::atomic(vec![payload.clone()]).dry()).map_err(|error| thrown(error.0))?;
+            .run_txn(
+                s.deck(),
+                &super::session::render_owner(cx)?,
+                &TxnRequest::atomic(vec![payload.clone()]).dry(),
+            )
+            .map_err(|error| thrown(error.0))?;
         if plan.failure_count() > 0 {
             return Ok(obj([(
                 "error",
@@ -805,7 +960,12 @@ pub fn apply_theme(app: &App, cx: &CallContext, args: Args) -> Reply {
             )]));
         }
         let snapshot = s.core.take_snapshot().map_err(|error| thrown(error.0))?;
-        let r = app.journaled_txn(s, &super::session::render_owner(cx)?, OpSource::Edit, &TxnRequest::atomic(vec![payload]))?;
+        let r = app.journaled_txn(
+            s,
+            &super::session::render_owner(cx)?,
+            OpSource::Edit,
+            &TxnRequest::atomic(vec![payload]),
+        )?;
         if !r.applied {
             return Ok(obj([(
                 "error",
@@ -826,7 +986,9 @@ pub fn apply_theme(app: &App, cx: &CallContext, args: Args) -> Reply {
             return null();
         }
         // reparse so every element's resolved colors/fonts refresh
-        app.engine.reparse_deck(s.deck()).map_err(|error| thrown(error.0))?;
+        app.engine
+            .reparse_deck(s.deck())
+            .map_err(|error| thrown(error.0))?;
         // the session-level flag preserves the "unsaved" state (reset on save)
         s.core.mark_meta_dirty();
         s.fit_width_px = number(field(op_value, "fitWidthPx"));
@@ -888,13 +1050,18 @@ impl App {
 
 pub fn media_data(app: &App, cx: &CallContext, args: Args) -> Reply {
     app.with_session(cx.sender.view, |app, s| {
-        let len = app.engine.slide_paths(s.deck()).map_err(|error| thrown(error.0))?.len();
+        let len = app
+            .engine
+            .slide_paths(s.deck())
+            .map_err(|error| thrown(error.0))?
+            .len();
         let Some(index) = slide_index(args.get(0), len) else {
             return null();
         };
-        let Some(media) =
-            app.engine
-                .picture_media(s.deck(), index, as_str(args.get(1)).unwrap_or("")).map_err(|error| thrown(error.0))?
+        let Some(media) = app
+            .engine
+            .picture_media(s.deck(), index, as_str(args.get(1)).unwrap_or(""))
+            .map_err(|error| thrown(error.0))?
         else {
             return null();
         };
@@ -904,7 +1071,11 @@ pub fn media_data(app: &App, cx: &CallContext, args: Args) -> Reply {
                 ("dataUrl", string(media.target)),
             ]));
         }
-        let Some(bytes) = app.engine.read_part(s.deck(), &media.target).map_err(|error| thrown(error.0))? else {
+        let Some(bytes) = app
+            .engine
+            .read_part(s.deck(), &media.target)
+            .map_err(|error| thrown(error.0))?
+        else {
             return null();
         };
         let ext = media.target.rsplit('.').next().unwrap_or("").to_lowercase();
@@ -929,14 +1100,23 @@ pub fn model3d_data(app: &App, cx: &CallContext, args: Args) -> Reply {
         let Some(s) = state.session(cx.sender.view) else {
             return null();
         };
-        let len = app.engine.slide_paths(s.deck()).map_err(|error| thrown(error.0))?.len();
+        let len = app
+            .engine
+            .slide_paths(s.deck())
+            .map_err(|error| thrown(error.0))?
+            .len();
         let target = match slide_index(args.get(0), len) {
-            Some(i) => app.engine.model3d_target(s.deck(), i, as_str(args.get(1)).unwrap_or(""))
+            Some(i) => app
+                .engine
+                .model3d_target(s.deck(), i, as_str(args.get(1)).unwrap_or(""))
                 .map_err(|error| thrown(error.0))?,
             None => None,
         };
         let bytes = match target {
-            Some(target) => app.engine.read_part(s.deck(), &target).map_err(|error| thrown(error.0))?,
+            Some(target) => app
+                .engine
+                .read_part(s.deck(), &target)
+                .map_err(|error| thrown(error.0))?,
             None => None,
         };
         let oversized = bytes.as_ref().is_some_and(|b| b.len() > MEDIA_MAX_BYTES);
@@ -953,9 +1133,17 @@ pub fn model3d_data(app: &App, cx: &CallContext, args: Args) -> Reply {
 
 /// `resolveLayoutPath(session, layoutPath)`: 'builtin:<key>' virtual paths
 /// get injected into the package on first use
-fn resolve_layout_path(app: &App, s: &SlideSession, layout: &IpcValue) -> Result<Option<IpcValue>, IpcError> {
+fn resolve_layout_path(
+    app: &App,
+    s: &SlideSession,
+    layout: &IpcValue,
+) -> Result<Option<IpcValue>, IpcError> {
     match as_str(layout).and_then(|l| l.strip_prefix("builtin:")) {
-        Some(key) => Ok(app.engine.ensure_builtin_layout(s.deck(), key).map_err(|error| thrown(error.0))?.map(string)),
+        Some(key) => Ok(app
+            .engine
+            .ensure_builtin_layout(s.deck(), key)
+            .map_err(|error| thrown(error.0))?
+            .map(string)),
         None => Ok(match layout {
             IpcValue::Undefined | IpcValue::Null => None,
             other => Some(other.clone()),
@@ -966,8 +1154,16 @@ fn resolve_layout_path(app: &App, s: &SlideSession, layout: &IpcValue) -> Result
 pub fn get_layouts(app: &App, cx: &CallContext, _args: Args) -> Reply {
     app.with_session(cx.sender.view, |app, s| {
         Ok(obj([
-            ("layouts", app.engine.layouts(s.deck()).map_err(|error| thrown(error.0))?),
-            ("size", app.size_value(app.engine.size(s.deck()).map_err(|error| thrown(error.0))?)),
+            (
+                "layouts",
+                app.engine
+                    .layouts(s.deck())
+                    .map_err(|error| thrown(error.0))?,
+            ),
+            (
+                "size",
+                app.size_value(app.engine.size(s.deck()).map_err(|error| thrown(error.0))?),
+            ),
         ]))
     })
 }
@@ -975,7 +1171,10 @@ pub fn get_layouts(app: &App, cx: &CallContext, _args: Args) -> Reply {
 pub fn add_slide_with_layout(app: &App, cx: &CallContext, args: Args) -> Reply {
     let op_value = args.get(0);
     app.with_session(cx.sender.view, |app, s| {
-        let before = app.engine.slide_paths(s.deck()).map_err(|error| thrown(error.0))?;
+        let before = app
+            .engine
+            .slide_paths(s.deck())
+            .map_err(|error| thrown(error.0))?;
         // 'builtin:' resolution may inject a layout part: do it before the undo snapshot
         let snapshot = s.core.take_snapshot().map_err(|error| thrown(error.0))?;
         let layout = resolve_layout_path(app, s, prop(op_value, "layoutPath")?)?;
@@ -985,10 +1184,17 @@ pub fn add_slide_with_layout(app: &App, cx: &CallContext, args: Args) -> Reply {
                 .set("target", target(source, None))
                 .set("layoutPath", layout)
                 .build();
-            app.journaled_txn(s, &super::session::render_owner(cx)?, OpSource::Edit, &TxnRequest::atomic(vec![o]))?.applied
-        } else { false };
+            app.journaled_txn(
+                s,
+                &super::session::render_owner(cx)?,
+                OpSource::Edit,
+                &TxnRequest::atomic(vec![o]),
+            )?
+            .applied
+        } else {
+            false
+        };
         if !applied {
-            
             return null();
         }
         s.core.push_history_snapshot(snapshot);
@@ -1016,14 +1222,23 @@ pub fn set_slide_layout(app: &App, cx: &CallContext, args: Args) -> Reply {
             if let Some(layout) = layout.filter(truthy) {
                 o = o.set("layoutPath", layout);
             }
-            app.journaled_txn(s, &super::session::render_owner(cx)?, OpSource::Edit, &TxnRequest::atomic(vec![o.build()]))?.applied
+            app.journaled_txn(
+                s,
+                &super::session::render_owner(cx)?,
+                OpSource::Edit,
+                &TxnRequest::atomic(vec![o.build()]),
+            )?
+            .applied
         };
         if !applied {
-            
             return null();
         }
         s.core.push_history_snapshot(snapshot);
-        Ok(or_null(app.rebuild_slide(s, &super::session::render_owner(cx)?, slide)?))
+        Ok(or_null(app.rebuild_slide(
+            s,
+            &super::session::render_owner(cx)?,
+            slide,
+        )?))
     })
 }
 
@@ -1033,16 +1248,23 @@ pub fn edit_table_style(app: &App, cx: &CallContext, args: Args) -> Reply {
     let op_value = args.get(0);
     app.with_session(cx.sender.view, |app, s| {
         let slide = prop(op_value, "slideIndex")?;
-        let len = app.engine.slide_paths(s.deck()).map_err(|error| thrown(error.0))?.len();
+        let len = app
+            .engine
+            .slide_paths(s.deck())
+            .map_err(|error| thrown(error.0))?
+            .len();
         let Some(index) = slide_index(slide, len) else {
             return null();
         };
         // a reparse regenerates element ids: look up the new id by element index
-        let el_index = app.engine.element_index(
-            s.deck(),
-            index,
-            as_str(field(op_value, "sourceId")).unwrap_or(""),
-        ).map_err(|error| thrown(error.0))?;
+        let el_index = app
+            .engine
+            .element_index(
+                s.deck(),
+                index,
+                as_str(field(op_value, "sourceId")).unwrap_or(""),
+            )
+            .map_err(|error| thrown(error.0))?;
         let mut o =
             op("setTableStyle").set("target", target(slide, Some(field(op_value, "sourceId"))));
         if let IpcValue::Object(entries) = op_value {
@@ -1053,16 +1275,27 @@ pub fn edit_table_style(app: &App, cx: &CallContext, args: Args) -> Reply {
             }
         }
         if app
-            .push_and_journal(s, &super::session::render_owner(cx)?, OpSource::Edit, &TxnRequest::atomic(vec![o.build()]))?
+            .push_and_journal(
+                s,
+                &super::session::render_owner(cx)?,
+                OpSource::Edit,
+                &TxnRequest::atomic(vec![o.build()]),
+            )?
             .is_none()
         {
             return null();
         }
         // the patch is written on the anchor; a reparse is needed before it shows in the model
-        let Some(rebuilt) = app.rebuild_slide_with_reparse(s, &super::session::render_owner(cx)?, slide)? else {
+        let Some(rebuilt) =
+            app.rebuild_slide_with_reparse(s, &super::session::render_owner(cx)?, slide)?
+        else {
             return null();
         };
-        let new_id = el_index.map(|i| app.engine.element_id_at(s.deck(), index, i)).transpose().map_err(|error| thrown(error.0))?.flatten();
+        let new_id = el_index
+            .map(|i| app.engine.element_id_at(s.deck(), index, i))
+            .transpose()
+            .map_err(|error| thrown(error.0))?
+            .flatten();
         Ok(obj([
             ("slide", rebuilt),
             ("sourceId", new_id.map_or(IpcValue::Null, string)),
@@ -1089,10 +1322,14 @@ const FALLBACK_ACCENTS: [&str; 6] = [
 ];
 
 /// `chartColorSchemes(opened)`: `[{ key, label, colors }]`
-fn color_schemes(app: &App, s: &SlideSession) -> Result<Vec<(String, String, Vec<String>)>, IpcError> {
+fn color_schemes(
+    app: &App,
+    s: &SlideSession,
+) -> Result<Vec<(String, String, Vec<String>)>, IpcError> {
     let acc: Vec<String> = app
         .engine
-        .theme_accents(s.deck()).map_err(|error| thrown(error.0))?
+        .theme_accents(s.deck())
+        .map_err(|error| thrown(error.0))?
         .unwrap_or_else(|| FALLBACK_ACCENTS.iter().map(|c| (*c).to_owned()).collect());
     let mut rot: Vec<String> = acc.iter().skip(3).cloned().collect();
     rot.extend(acc.iter().take(3).cloned());
@@ -1164,11 +1401,16 @@ pub fn chart_color_schemes(app: &App, cx: &CallContext, _args: Args) -> Reply {
 
 pub fn get_chart_data(app: &App, cx: &CallContext, args: Args) -> Reply {
     app.with_session(cx.sender.view, |app, s| {
-        let len = app.engine.slide_paths(s.deck()).map_err(|error| thrown(error.0))?.len();
+        let len = app
+            .engine
+            .slide_paths(s.deck())
+            .map_err(|error| thrown(error.0))?
+            .len();
         let Some(index) = slide_index(args.get(0), len) else {
             return null();
         };
-        app.engine.chart_data(s.deck(), index, as_str(args.get(1)).unwrap_or(""))
+        app.engine
+            .chart_data(s.deck(), index, as_str(args.get(1)).unwrap_or(""))
             .map_err(|error| thrown(error.0))
     })
 }
@@ -1183,14 +1425,22 @@ pub fn edit_chart(app: &App, cx: &CallContext, args: Args) -> Reply {
             return null();
         };
         let slide = prop(op_value, "slideIndex")?;
-        let len = app.engine.slide_paths(s.deck()).map_err(|error| thrown(error.0))?.len();
+        let len = app
+            .engine
+            .slide_paths(s.deck())
+            .map_err(|error| thrown(error.0))?
+            .len();
         let Some(index) = slide_index(slide, len) else {
             return null();
         };
         let id = as_str(field(op_value, "sourceId")).unwrap_or("");
         (
-            app.engine.element_index(s.deck(), index, id).map_err(|error| thrown(error.0))?,
-            app.engine.is_imported_chart(s.deck(), index, id).map_err(|error| thrown(error.0))?,
+            app.engine
+                .element_index(s.deck(), index, id)
+                .map_err(|error| thrown(error.0))?,
+            app.engine
+                .is_imported_chart(s.deck(), index, id)
+                .map_err(|error| thrown(error.0))?,
             s.core.ai_run,
         )
     };
@@ -1276,20 +1526,33 @@ pub fn edit_chart(app: &App, cx: &CallContext, args: Args) -> Reply {
             .set("patch", patch.build())
             .build();
         if app
-            .session_txn(s, &super::session::render_owner(cx)?, TxnRequest::atomic(vec![o]), OpSource::Edit)?
+            .session_txn(
+                s,
+                &super::session::render_owner(cx)?,
+                TxnRequest::atomic(vec![o]),
+                OpSource::Edit,
+            )?
             .is_none()
         {
             return null();
         }
         // the chart part XML is updated; reparse the whole page to refresh the model
-        let Some(rebuilt) = app.rebuild_slide_with_reparse(s, &super::session::render_owner(cx)?, slide)? else {
+        let Some(rebuilt) =
+            app.rebuild_slide_with_reparse(s, &super::session::render_owner(cx)?, slide)?
+        else {
             return null();
         };
-        let len = app.engine.slide_paths(s.deck()).map_err(|error| thrown(error.0))?.len();
+        let len = app
+            .engine
+            .slide_paths(s.deck())
+            .map_err(|error| thrown(error.0))?
+            .len();
         let new_id = slide_index(slide, len)
             .zip(el_index)
             .map(|(i, e)| app.engine.element_id_at(s.deck(), i, e))
-            .transpose().map_err(|error| thrown(error.0))?.flatten();
+            .transpose()
+            .map_err(|error| thrown(error.0))?
+            .flatten();
         Ok(obj([
             ("slide", rebuilt),
             ("sourceId", new_id.map_or(IpcValue::Null, string)),

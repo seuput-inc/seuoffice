@@ -128,7 +128,10 @@ export function caseElectron(dir: string, c: Case): CaseElectron {
         }
         if (event === 'render-process-gone') crashed = true
         const current = listeners.get(event) ?? []
-        listeners.set(event, current.filter((entry) => !entry.once))
+        listeners.set(
+          event,
+          current.filter((entry) => !entry.once),
+        )
         return Promise.all(current.map((entry) => entry.listener(...args)))
       },
       send(channel: string, ...args: unknown[]) {

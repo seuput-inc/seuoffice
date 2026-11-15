@@ -73,7 +73,6 @@ pub enum OwnedPdfGrantAuthority {
     },
 }
 
-
 pub struct OwnedPdfGrant {
     pub path: PathBuf,
     pub request_token: String,
@@ -216,17 +215,32 @@ pub trait DocumentEditors {
     );
 
     fn file_renamed_existing_document(
-        &self, view: ViewId, old_path: &Path, new_path: &Path,
-        authority: &crate::ipc::NativeSaveRevisionAuthority, expected_path: &Path, destination: &NativeRequestOwner,
-        participants: &[NativeRequestOwner], cancel: &CancelToken, pending: &CancelToken,
-        additional: &[CancelToken], then: Then<Option<crate::ipc::NativeSaveRevisionReceipt>>,
+        &self,
+        view: ViewId,
+        old_path: &Path,
+        new_path: &Path,
+        authority: &crate::ipc::NativeSaveRevisionAuthority,
+        expected_path: &Path,
+        destination: &NativeRequestOwner,
+        participants: &[NativeRequestOwner],
+        cancel: &CancelToken,
+        pending: &CancelToken,
+        additional: &[CancelToken],
+        then: Then<Option<crate::ipc::NativeSaveRevisionReceipt>>,
     );
 
     fn file_renamed_recovery(
-        &self, view: ViewId, old_path: &Path, new_path: &Path,
-        receipt: &crate::ipc::RecoverySeedReceipt, receiver: &NativeRequestOwner,
-        destination: &NativeRequestOwner, participants: &[NativeRequestOwner],
-        cancel: &CancelToken, pending: &CancelToken, then: Then<()>,
+        &self,
+        view: ViewId,
+        old_path: &Path,
+        new_path: &Path,
+        receipt: &crate::ipc::RecoverySeedReceipt,
+        receiver: &NativeRequestOwner,
+        destination: &NativeRequestOwner,
+        participants: &[NativeRequestOwner],
+        cancel: &CancelToken,
+        pending: &CancelToken,
+        then: Then<()>,
     );
 
     /// `send<App>ExportRequest(contents, format)`: the File > Export menu;
@@ -245,13 +259,23 @@ pub trait DocumentEditors {
     }
 
     fn take_owned_pdf_grant(
-        &self, _view: ViewId, _request_token: &str, _generation: &crate::runtime::RendererGeneration,
-        _actual: Option<&NativeRequestOwner>, _caller_cancel: &CancelToken,
-    ) -> Option<OwnedPdfGrant> { None }
+        &self,
+        _view: ViewId,
+        _request_token: &str,
+        _generation: &crate::runtime::RendererGeneration,
+        _actual: Option<&NativeRequestOwner>,
+        _caller_cancel: &CancelToken,
+    ) -> Option<OwnedPdfGrant> {
+        None
+    }
 
     fn take_native_headless_pdf_grant(
-        &self, _view: ViewId, _native: Option<&crate::ipc::NativeContext>,
-    ) -> Result<Option<NativeHeadlessPdfGrant>, String> { Ok(None) }
+        &self,
+        _view: ViewId,
+        _native: Option<&crate::ipc::NativeContext>,
+    ) -> Result<Option<NativeHeadlessPdfGrant>, String> {
+        Ok(None)
+    }
 
     /// docs only: the view's writer is gone (`tornDownWcIds`)
     fn torn_down(&self, _view: ViewId) -> bool {
@@ -286,14 +310,26 @@ mod tests {
         fn owns(&self, view: ViewId) -> bool {
             self.views.contains(&view.0) || self.saved.owns(view)
         }
-        fn saved_surface(&self) -> crate::Surface { self.surface }
-        fn prepare_saved_document(&self, target: crate::ipc::NativeSavedTarget) -> Result<Box<dyn PreparedSavedDocument>, IpcError> {
+        fn saved_surface(&self) -> crate::Surface {
+            self.surface
+        }
+        fn prepare_saved_document(
+            &self,
+            target: crate::ipc::NativeSavedTarget,
+        ) -> Result<Box<dyn PreparedSavedDocument>, IpcError> {
             if target.surface() != self.surface {
-                return Err(IpcError { name: Some("Error".into()), message: "The saved target has another editor family".into() });
+                return Err(IpcError {
+                    name: Some("Error".into()),
+                    message: "The saved target has another editor family".into(),
+                });
             }
             self.saved.prepare(target)
         }
-        fn load_saved_document(&self, document: crate::ipc::NativeSavedDocument, then: Then<SavedDocumentLoadOutcome>) {
+        fn load_saved_document(
+            &self,
+            document: crate::ipc::NativeSavedDocument,
+            then: Then<SavedDocumentLoadOutcome>,
+        ) {
             self.saved.load(document, &self.effects, then);
         }
         fn capture_document_owner(
@@ -320,8 +356,13 @@ mod tests {
             self.request_save(view, mode, then)
         }
         fn request_save_native(
-            &self, view: ViewId, mode: SaveMode, binding: crate::ipc::NativeExistingDocumentBinding,
-            cancel: CancelToken, pending: CancelToken, then: Then<bool>,
+            &self,
+            view: ViewId,
+            mode: SaveMode,
+            binding: crate::ipc::NativeExistingDocumentBinding,
+            cancel: CancelToken,
+            pending: CancelToken,
+            then: Then<bool>,
         ) {
             let result = self.effects.with_existing_document_save_effect(&binding, &[], &cancel, &pending, &mut || {
                 if !matches!(binding.operation().selection(), crate::ipc::NativeInvocationSelection::NativeCommand(
@@ -333,7 +374,10 @@ mod tests {
             });
             match result {
                 Ok(()) => self.request_save(view, mode, then),
-                Err(message) => then(Err(IpcError { name: Some("Error".into()), message })),
+                Err(message) => then(Err(IpcError {
+                    name: Some("Error".into()),
+                    message,
+                })),
             }
         }
         fn request_close(&self, view: ViewId, _parent: Option<WindowId>, then: Then<bool>) {
@@ -370,8 +414,13 @@ mod tests {
             self.save_to_path(view, path, then)
         }
         fn save_to_path_native(
-            &self, view: ViewId, path: PathBuf, binding: crate::ipc::NativeExistingDocumentBinding,
-            cancel: CancelToken, pending: CancelToken, then: Then<()>,
+            &self,
+            view: ViewId,
+            path: PathBuf,
+            binding: crate::ipc::NativeExistingDocumentBinding,
+            cancel: CancelToken,
+            pending: CancelToken,
+            then: Then<()>,
         ) {
             let result = self.effects.with_existing_document_save_effect(&binding, &[], &cancel, &pending, &mut || {
                 if !matches!(binding.operation().selection(), crate::ipc::NativeInvocationSelection::NativeCommand(
@@ -383,7 +432,10 @@ mod tests {
             });
             match result {
                 Ok(()) => self.save_to_path(view, path, then),
-                Err(message) => then(Err(IpcError { name: Some("Error".into()), message })),
+                Err(message) => then(Err(IpcError {
+                    name: Some("Error".into()),
+                    message,
+                })),
             }
         }
         fn file_renamed(&self, view: ViewId, old_path: &Path, new_path: &Path) {
@@ -409,51 +461,110 @@ mod tests {
             then(Ok(()))
         }
         fn file_renamed_many_owned_extra(
-            &self, view: ViewId, old_path: &Path, new_path: &Path,
-            origin: &NativeRequestOwner, destination: &NativeRequestOwner, participants: &[NativeRequestOwner],
-            cancel: &CancelToken, pending: &CancelToken, additional: &[CancelToken], then: Then<()>,
+            &self,
+            view: ViewId,
+            old_path: &Path,
+            new_path: &Path,
+            origin: &NativeRequestOwner,
+            destination: &NativeRequestOwner,
+            participants: &[NativeRequestOwner],
+            cancel: &CancelToken,
+            pending: &CancelToken,
+            additional: &[CancelToken],
+            then: Then<()>,
         ) {
-            let mut captured = Vec::with_capacity(participants.len()+1);
+            let mut captured = Vec::with_capacity(participants.len() + 1);
             captured.push(destination.clone());
             captured.extend_from_slice(participants);
             let additional = additional.iter().collect::<Vec<_>>();
             let result = crate::hosts::synthetic::with_owned_effect_many_extra(
-                origin,&captured,cancel,pending,&additional,
-                &mut || { self.file_renamed(view,old_path,new_path); Ok(()) });
-            then(result.map_err(|message| IpcError { name:Some("Error".into()),message }));
+                origin,
+                &captured,
+                cancel,
+                pending,
+                &additional,
+                &mut || {
+                    self.file_renamed(view, old_path, new_path);
+                    Ok(())
+                },
+            );
+            then(result.map_err(|message| IpcError {
+                name: Some("Error".into()),
+                message,
+            }));
         }
         fn file_renamed_existing_document(
-            &self, view: ViewId, old: &Path, new: &Path,
-            authority: &crate::ipc::NativeSaveRevisionAuthority, expected_path: &Path,
-            destination: &NativeRequestOwner, participants: &[NativeRequestOwner],
-            cancel: &CancelToken, pending: &CancelToken, additional: &[CancelToken],
+            &self,
+            view: ViewId,
+            old: &Path,
+            new: &Path,
+            authority: &crate::ipc::NativeSaveRevisionAuthority,
+            expected_path: &Path,
+            destination: &NativeRequestOwner,
+            participants: &[NativeRequestOwner],
+            cancel: &CancelToken,
+            pending: &CancelToken,
+            additional: &[CancelToken],
             then: Then<Option<crate::ipc::NativeSaveRevisionReceipt>>,
         ) {
             let mut captured = participants.to_vec();
             captured.push(destination.clone());
             let additional = additional.iter().collect::<Vec<_>>();
             let result = authority.snapshot().and_then(|snapshot| {
-                if snapshot.selection().path() != expected_path { return Err("The native save path changed".into()); }
-                self.effects.with_native_save_revision_snapshot_effect(&snapshot, &captured, cancel, pending, &additional, &mut || {
-                    if destination.view != view || !self.owns(view) { return Err("The synthetic editor was replaced".into()); }
-                    self.file_renamed(view, old, new);
-                    Ok(())
-                })
+                if snapshot.selection().path() != expected_path {
+                    return Err("The native save path changed".into());
+                }
+                self.effects.with_native_save_revision_snapshot_effect(
+                    &snapshot,
+                    &captured,
+                    cancel,
+                    pending,
+                    &additional,
+                    &mut || {
+                        if destination.view != view || !self.owns(view) {
+                            return Err("The synthetic editor was replaced".into());
+                        }
+                        self.file_renamed(view, old, new);
+                        Ok(())
+                    },
+                )
             });
-            then(result.map(|()| None).map_err(|message| IpcError { name: Some("Error".into()), message }));
+            then(result.map(|()| None).map_err(|message| IpcError {
+                name: Some("Error".into()),
+                message,
+            }));
         }
         fn file_renamed_recovery(
-            &self, view: ViewId, old_path: &Path, new_path: &Path,
-            receipt: &crate::ipc::RecoverySeedReceipt, receiver: &NativeRequestOwner,
-            destination: &NativeRequestOwner, participants: &[NativeRequestOwner],
-            cancel: &CancelToken, pending: &CancelToken, then: Then<()>,
+            &self,
+            view: ViewId,
+            old_path: &Path,
+            new_path: &Path,
+            receipt: &crate::ipc::RecoverySeedReceipt,
+            receiver: &NativeRequestOwner,
+            destination: &NativeRequestOwner,
+            participants: &[NativeRequestOwner],
+            cancel: &CancelToken,
+            pending: &CancelToken,
+            then: Then<()>,
         ) {
             let mut captured = Vec::with_capacity(participants.len() + 1);
             captured.push(destination.clone());
             captured.extend_from_slice(participants);
-            let result = crate::hosts::synthetic::with_recovery_open_many(receipt, receiver, &captured, cancel, pending,
-                &mut || { self.file_renamed(view, old_path, new_path); Ok(()) });
-            then(result.map_err(|message| IpcError { name: Some("Error".into()), message }));
+            let result = crate::hosts::synthetic::with_recovery_open_many(
+                receipt,
+                receiver,
+                &captured,
+                cancel,
+                pending,
+                &mut || {
+                    self.file_renamed(view, old_path, new_path);
+                    Ok(())
+                },
+            );
+            then(result.map_err(|message| IpcError {
+                name: Some("Error".into()),
+                message,
+            }));
         }
         fn export_request(&self, view: ViewId, format: &str) {
             self.asked

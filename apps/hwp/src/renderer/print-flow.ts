@@ -156,7 +156,10 @@ export async function runPrintJob(
     const job = await gatherPrintJob(ports.bridge, mode, onProgress, ports.hold)
     return await (path === undefined
       ? ports.api.printPages(job)
-      : ports.api.printPages(job, { path, ...(requestToken === undefined ? {} : { requestToken }) }))
+      : ports.api.printPages(job, {
+          path,
+          ...(requestToken === undefined ? {} : { requestToken }),
+        }))
   } catch (error) {
     return { ok: false, error: errorText(error) }
   } finally {

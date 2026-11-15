@@ -629,7 +629,11 @@ impl Fetcher for FakeFetcher {
         self.dispatcher.clone()
     }
 
-    fn fetch<'signal>(&mut self, url: &str, init: &FetchInit<'_, 'signal>) -> Result<Box<dyn Response + 'signal>, FetchError> {
+    fn fetch<'signal>(
+        &mut self,
+        url: &str,
+        init: &FetchInit<'_, 'signal>,
+    ) -> Result<Box<dyn Response + 'signal>, FetchError> {
         self.last_url = url.to_owned();
         if self.terse {
             log(&self.sink, vec![Value::from("fetch"), Value::from(url)]);

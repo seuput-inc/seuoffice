@@ -935,7 +935,7 @@ impl Handler for OpenDocsTab {
             blank,
             origin,
             cx.cancel.clone(),
-            shell_contract::runtime::CancelToken::new(),
+            shell_contract::runtime::CancelToken::default(),
             Box::new(move |result| {
                 reply.reply(result.map(|()| IpcValue::Undefined).map_err(error))
             }),
@@ -1466,7 +1466,7 @@ mod owned_docs_tests {
                 surface: Surface::Docs,
             },
             request: None,
-            cancel: CancelToken::new(),
+            cancel: CancelToken::default(),
             native: Some(NativeContext::with_owner_loss(
                 (),
                 generation.clone(),
@@ -1530,7 +1530,7 @@ mod owned_docs_tests {
                 surface: Surface::Docs,
             },
             request: None,
-            cancel: CancelToken::new(),
+            cancel: CancelToken::default(),
             native: None,
         };
         let (send, receive) = mpsc::channel();

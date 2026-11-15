@@ -334,7 +334,6 @@ impl MindmapApp {
         self.recovery_of(view).save_as_default = Some(path.to_owned());
     }
 
-
     /// `viewFileRenamed`: the view's file was renamed on disk: its copy follows the new path
     pub(super) fn view_file_renamed(&self, view: ViewId, old_path: &str, new_path: &str) {
         let from = file_identity(old_path);

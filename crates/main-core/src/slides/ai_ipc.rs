@@ -111,7 +111,9 @@ impl IpcError {
 }
 
 impl From<std::convert::Infallible> for IpcError {
-    fn from(never: std::convert::Infallible) -> Self { match never {} }
+    fn from(never: std::convert::Infallible) -> Self {
+        match never {}
+    }
 }
 
 /// An ordinary engine exception is caught by the original picture handler;
@@ -123,7 +125,9 @@ pub enum PictureError {
 }
 
 impl From<IpcError> for PictureError {
-    fn from(error: IpcError) -> Self { Self::Transport(error) }
+    fn from(error: IpcError) -> Self {
+        Self::Transport(error)
+    }
 }
 
 impl From<JsTypeError> for IpcError {
@@ -1337,7 +1341,11 @@ pub trait PictureDeck {
         keep_src_rect: bool,
     ) -> Result<bool, PictureError>;
     /// `slide.elements.find((el) => matchesElementRef(el, reference))?.id`
-    fn find_element_id(&self, slide_index: f64, reference: &str) -> Result<Option<String>, IpcError>;
+    fn find_element_id(
+        &self,
+        slide_index: f64,
+        reference: &str,
+    ) -> Result<Option<String>, IpcError>;
     /// `slide.elements.find((el) => el.id === id && el.type === 'picture')?.transform?.offset`:
     /// the frame's `cx` and `cy` (NaN for one that is not a number)
     fn picture_frame(&self, slide_index: f64, id: &str) -> Result<Option<(f64, f64)>, IpcError>;
@@ -1485,10 +1493,15 @@ pub fn insert_image_finish<D: Deck<S> + PictureDeck, S: Clone, O: Clone, R>(
     op: &JsonValue,
     ticket: PictureTicket,
     downloaded: Option<Vec<u8>>,
-) -> Result<Option<JsonValue>, IpcError> where D::Error: Into<IpcError> {
+) -> Result<Option<JsonValue>, IpcError>
+where
+    D::Error: Into<IpcError>,
+{
     let slide_index = ticket.slide_index;
     let run = ticket.run;
-    let Some((buf, ext)) = picture_bytes(ticket.source, downloaded) else { return Ok(None) };
+    let Some((buf, ext)) = picture_bytes(ticket.source, downloaded) else {
+        return Ok(None);
+    };
     if review.run.as_ref().map(|current| current.id) != run {
         return Ok(None);
     }
@@ -1508,7 +1521,6 @@ pub fn insert_image_finish<D: Deck<S> + PictureDeck, S: Clone, O: Clone, R>(
             cy: math_max(1.0, to_emu(h_px)),
         };
         let Some(id) = session.deck.add_picture(slide_index, &buf, &ext, offset)? else {
-            
             return Ok(None);
         };
         changed = true;
@@ -1529,13 +1541,21 @@ pub fn insert_image_finish<D: Deck<S> + PictureDeck, S: Clone, O: Clone, R>(
     })();
     match inserted {
         Ok(value) => {
-            if changed { session.push_history_snapshot(snapshot); }
+            if changed {
+                session.push_history_snapshot(snapshot);
+            }
             Ok(value)
         }
         Err(error) => {
             if let Err(rollback) = session.deck.restore_snapshot(snapshot) {
                 let rollback: IpcError = rollback.into();
-                return Err(IpcError { code: rollback.code, message: format!("Picture edit failed ({error:?}); rollback failed: {}", rollback.message) });
+                return Err(IpcError {
+                    code: rollback.code,
+                    message: format!(
+                        "Picture edit failed ({error:?}); rollback failed: {}",
+                        rollback.message
+                    ),
+                });
             }
             match error {
                 PictureError::Engine => Ok(None),
@@ -1586,11 +1606,16 @@ pub fn replace_picture_finish<D: Deck<S> + PictureDeck, S: Clone, O: Clone, R>(
     op: &JsonValue,
     ticket: PictureTicket,
     downloaded: Option<Vec<u8>>,
-) -> Result<Option<JsonValue>, IpcError> where D::Error: Into<IpcError> {
+) -> Result<Option<JsonValue>, IpcError>
+where
+    D::Error: Into<IpcError>,
+{
     let slide_index = ticket.slide_index;
     let run = ticket.run;
     let target_id = ticket.target_id;
-    let Some((buf, ext)) = picture_bytes(ticket.source, downloaded) else { return Ok(None) };
+    let Some((buf, ext)) = picture_bytes(ticket.source, downloaded) else {
+        return Ok(None);
+    };
     if review.run.as_ref().map(|current| current.id) != run {
         return Ok(None);
     }
@@ -1606,14 +1631,14 @@ pub fn replace_picture_finish<D: Deck<S> + PictureDeck, S: Clone, O: Clone, R>(
             keep_src_rect,
         )?;
         if !ok {
-            
             return Ok(None);
         }
         changed = true;
         // A replacement with a different aspect ratio would be stretched into
         // the surviving frame: center-crop it to cover the frame instead.
         if !keep_src_rect
-            && let Some((frame_cx, frame_cy)) = session.deck.picture_frame(slide_index, &target_id)?
+            && let Some((frame_cx, frame_cy)) =
+                session.deck.picture_frame(slide_index, &target_id)?
         {
             let (natural_w, natural_h) = images.create_from_buffer(&buf).size();
             if let Some(crop) = cover_crop_fractions(natural_w, natural_h, frame_cx, frame_cy) {
@@ -1626,13 +1651,21 @@ pub fn replace_picture_finish<D: Deck<S> + PictureDeck, S: Clone, O: Clone, R>(
     })();
     match replaced {
         Ok(value) => {
-            if changed { session.push_history_snapshot(snapshot); }
+            if changed {
+                session.push_history_snapshot(snapshot);
+            }
             Ok(value)
         }
         Err(error) => {
             if let Err(rollback) = session.deck.restore_snapshot(snapshot) {
                 let rollback: IpcError = rollback.into();
-                return Err(IpcError { code: rollback.code, message: format!("Picture edit failed ({error:?}); rollback failed: {}", rollback.message) });
+                return Err(IpcError {
+                    code: rollback.code,
+                    message: format!(
+                        "Picture edit failed ({error:?}); rollback failed: {}",
+                        rollback.message
+                    ),
+                });
             }
             match error {
                 PictureError::Engine => Ok(None),

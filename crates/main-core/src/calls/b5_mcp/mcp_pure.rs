@@ -637,11 +637,13 @@ struct BridgeHost {
 impl BridgeHost {
     fn open_blank_tab(&mut self) -> Result<i64, String> {
         let id = self.blank.pop_front().unwrap_or(0);
-        push(&self.log, vec![Value::from("deps.openBlankTab"), Value::from(id)]);
+        push(
+            &self.log,
+            vec![Value::from("deps.openBlankTab"), Value::from(id)],
+        );
         Ok(id)
     }
 }
-
 
 impl DocsBridgeHost for BridgeHost {
     fn web_contents_alive(&mut self, wc_id: i64) -> bool {
@@ -709,7 +711,6 @@ impl DocsBridgeHost for BridgeHost {
     fn exists_sync(&mut self, path: &str) -> bool {
         fs::metadata(path).is_ok()
     }
-
 
     fn authorize_save(&mut self, wc_id: i64, file_path: &str) {
         push(

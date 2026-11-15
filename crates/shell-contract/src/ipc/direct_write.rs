@@ -323,8 +323,8 @@ impl AdmittedDirectWrite {
     pub fn write_owned(self, bytes: Vec<u8>) -> Result<CompletedDirectWrite, (io::Error, PartialAdmittedDirectWrite)> {
         let Self { scope, descriptor } = self;
         match descriptor.write_owned(bytes) {
-            Ok(outcome) => Ok(CompletedDirectWrite { scope, outcome }),
-            Err((error, partial)) => Err((error, PartialAdmittedDirectWrite { scope, partial })),
+            file_commit::DirectOwnedWriteAttempt::Completed(outcome) => Ok(CompletedDirectWrite { scope, outcome }),
+            file_commit::DirectOwnedWriteAttempt::Partial { error, partial } => Err((error, PartialAdmittedDirectWrite { scope, partial })),
         }
     }
 }
@@ -339,8 +339,8 @@ impl PartialAdmittedDirectWrite {
             return Err(DirectWriteResumeError::Admission { error, partial: Self { scope, partial } });
         }
         match partial.resume() {
-            Ok(outcome) => Ok(CompletedDirectWrite { scope, outcome }),
-            Err((error, partial)) => Err(DirectWriteResumeError::Io { error, partial: Self { scope, partial } }),
+            file_commit::DirectOwnedWriteAttempt::Completed(outcome) => Ok(CompletedDirectWrite { scope, outcome }),
+            file_commit::DirectOwnedWriteAttempt::Partial { error, partial } => Err(DirectWriteResumeError::Io { error, partial: Self { scope, partial } }),
         }
     }
 

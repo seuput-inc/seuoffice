@@ -1844,7 +1844,10 @@ export interface SlidesApi {
    *  sibling split-view copy moved the disk past this one, an auto save defers
    *  silently (`reason: 'external-modified'`) where a user's save asks first.
    *  While an AI run's edits wait for review nothing is written (`reason: 'ai-review'`). */
-  save: (auto?: boolean, requestId?: string) => Promise<{
+  save: (
+    auto?: boolean,
+    requestId?: string,
+  ) => Promise<{
     ok: boolean
     path?: string
     error?: string
@@ -1856,7 +1859,10 @@ export interface SlidesApi {
    * returns `ok: false` with `exportAs` and the picked `path`: the renderer
    * runs that export, and the deck keeps its path and unsaved state.
    */
-  saveAs: (defaultName: string, requestId?: string) => Promise<{
+  saveAs: (
+    defaultName: string,
+    requestId?: string,
+  ) => Promise<{
     ok: boolean
     path?: string
     error?: string
@@ -1880,7 +1886,9 @@ export interface SlidesApi {
     slides?: RenderSlide[]
   }>
   /** The close guard chose "Save": the main process asks the renderer to run the full save flow */
-  onCloseSaveRequest: (handler: (request?: { id: string; mode: 'save' | 'saveAs' }) => void) => () => void
+  onCloseSaveRequest: (
+    handler: (request?: { id: string; mode: 'save' | 'saveAs' }) => void,
+  ) => () => void
   /** Undo/redo stack occupancy pushed by the main process (drives the QAT button gray states) */
   onHistoryChanged: (handler: (state: HistoryChange) => void) => () => void
   /** Another window attached to the same file changed the deck (shared session): fresh render state to apply */

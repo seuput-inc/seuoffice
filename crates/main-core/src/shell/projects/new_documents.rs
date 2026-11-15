@@ -163,7 +163,9 @@ pub struct PreparedNewDocumentPreset {
 }
 
 impl Drop for PreparedNewDocumentPreset {
-    fn drop(&mut self) { self.slots.set(self.slots.get() - 1); }
+    fn drop(&mut self) {
+        self.slots.set(self.slots.get() - 1);
+    }
 }
 
 pub struct ValidatedNewDocumentPreset<'a, G: NewDocumentsGuide> {
@@ -176,7 +178,12 @@ impl<G: NewDocumentsGuide> ValidatedNewDocumentPreset<'_, G> {
         let entry = self.prepared.entry.take().expect("validated preset entry");
         let identity = entry.identity.clone();
         let previous = self.placer.presets.insert(self.prepared.id, entry);
-        NewDocumentPresetReceipt { id: self.prepared.id, identity, previous, restored: false }
+        NewDocumentPresetReceipt {
+            id: self.prepared.id,
+            identity,
+            previous,
+            restored: false,
+        }
     }
 }
 
@@ -195,10 +202,17 @@ pub struct NewDocumentPlacementSeed {
 
 impl NewDocumentPlacementSeed {
     pub fn preset_project(&self) -> Option<ProjectId> {
-        self.preset.as_ref().map(|placement| placement.project_id.clone())
+        self.preset
+            .as_ref()
+            .map(|placement| placement.project_id.clone())
     }
 
-    pub fn resolve(self, project_id: String, root: String, file_name: &str) -> Result<NewDocumentWrite, WriteGuardError> {
+    pub fn resolve(
+        self,
+        project_id: String,
+        root: String,
+        file_name: &str,
+    ) -> Result<NewDocumentWrite, WriteGuardError> {
         NewDocumentWrite::new(self.resolve_placement(project_id, root), file_name)
     }
 
@@ -206,7 +220,9 @@ impl NewDocumentPlacementSeed {
         match self.preset {
             Some(preset) if preset.project_id == project_id && preset.root == root => preset,
             _ => NewDocumentPlacement {
-                project_id, dir: new_document_folder(&root, self.document.as_deref(), &self.platform), root,
+                project_id,
+                dir: new_document_folder(&root, self.document.as_deref(), &self.platform),
+                root,
             },
         }
     }
@@ -219,7 +235,9 @@ pub struct NewDocumentWrite {
 }
 
 impl NewDocumentWrite {
-    pub fn placement(&self) -> &NewDocumentPlacement { &self.placement }
+    pub fn placement(&self) -> &NewDocumentPlacement {
+        &self.placement
+    }
 
     pub fn execute(
         &self,
@@ -227,39 +245,72 @@ impl NewDocumentWrite {
         mut write: impl FnMut(&str, &str, &[u8]) -> Result<ProjectWriteResult, WriteGuardError>,
     ) -> Result<String, WriteGuardError> {
         for n in 1..=NEW_DOCUMENT_NAME_ATTEMPTS {
-            let target = join(&[&self.placement.dir, &numbered_file_name(&self.file_name, f64::from(n))]);
-            if entry_exists(&target) { continue; }
+            let target = join(&[
+                &self.placement.dir,
+                &numbered_file_name(&self.file_name, f64::from(n)),
+            ]);
+            if entry_exists(&target) {
+                continue;
+            }
             match write(&self.placement.project_id, &target, bytes) {
                 Ok(_) => return Ok(target),
-                Err(WriteGuardError::Refused(refused)) if refused.reason == ProjectWriteRefusal::Exists => {}
+                Err(WriteGuardError::Refused(refused))
+                    if refused.reason == ProjectWriteRefusal::Exists => {}
                 Err(error) => return Err(error),
             }
         }
-        Err(ProjectWriteRefused::new(ProjectWriteRefusal::Exists, join(&[&self.placement.dir, &self.file_name])).into())
+        Err(ProjectWriteRefused::new(
+            ProjectWriteRefusal::Exists,
+            join(&[&self.placement.dir, &self.file_name]),
+        )
+        .into())
     }
     pub fn execute_with_receipt(
-        &self,bytes:&[u8],
-        mut write:impl FnMut(&str,&str,&[u8])->Result<file_commit::FileCommitReceipt,WriteGuardError>,
-    )->Result<file_commit::FileCommitReceipt,WriteGuardError> {
+        &self,
+        bytes: &[u8],
+        mut write: impl FnMut(
+            &str,
+            &str,
+            &[u8],
+        ) -> Result<file_commit::FileCommitReceipt, WriteGuardError>,
+    ) -> Result<file_commit::FileCommitReceipt, WriteGuardError> {
         for n in 1..=NEW_DOCUMENT_NAME_ATTEMPTS {
-            let target=join(&[&self.placement.dir,&numbered_file_name(&self.file_name,f64::from(n))]);
-            if entry_exists(&target) { continue; }
-            match write(&self.placement.project_id,&target,bytes) {
-                Ok(commit) if commit.path()==std::path::Path::new(&target)=>return Ok(commit),
-                Ok(_) => return Err(NodeError { code:None,message:"project commit path changed".into() }.into()),
-                Err(WriteGuardError::Refused(refused)) if refused.reason==ProjectWriteRefusal::Exists=>{},
-                Err(error)=>return Err(error),
+            let target = join(&[
+                &self.placement.dir,
+                &numbered_file_name(&self.file_name, f64::from(n)),
+            ]);
+            if entry_exists(&target) {
+                continue;
+            }
+            match write(&self.placement.project_id, &target, bytes) {
+                Ok(commit) if commit.path() == std::path::Path::new(&target) => return Ok(commit),
+                Ok(_) => {
+                    return Err(NodeError {
+                        code: None,
+                        message: "project commit path changed".into(),
+                    }
+                    .into());
+                }
+                Err(WriteGuardError::Refused(refused))
+                    if refused.reason == ProjectWriteRefusal::Exists => {}
+                Err(error) => return Err(error),
             }
         }
-        Err(ProjectWriteRefused::new(ProjectWriteRefusal::Exists,join(&[&self.placement.dir,&self.file_name])).into())
+        Err(ProjectWriteRefused::new(
+            ProjectWriteRefusal::Exists,
+            join(&[&self.placement.dir, &self.file_name]),
+        )
+        .into())
     }
-
 
     fn new(placement: NewDocumentPlacement, file_name: &str) -> Result<Self, WriteGuardError> {
         if !is_bare_file_name(file_name) {
             return Err(ProjectWriteRefused::new(ProjectWriteRefusal::BadPath, file_name).into());
         }
-        Ok(Self { placement, file_name: file_name.to_owned() })
+        Ok(Self {
+            placement,
+            file_name: file_name.to_owned(),
+        })
     }
 }
 
@@ -335,11 +386,22 @@ impl<G: NewDocumentsGuide> NewDocumentPlacer<G> {
     }
 
     pub fn prepare_preset(
-        &mut self, web_contents_id: i64, placement: Result<Option<NewDocumentPlacement>, NodeError>,
+        &mut self,
+        web_contents_id: i64,
+        placement: Result<Option<NewDocumentPlacement>, NodeError>,
     ) -> Result<PreparedNewDocumentPreset, String> {
-        let slots = self.prepared_slots.get().checked_add(1).ok_or("Too many prepared project presets")?;
-        self.presets.try_reserve(slots).map_err(|error| error.to_string())?;
-        let expected = self.presets.get(&web_contents_id).map(|entry| entry.identity.clone());
+        let slots = self
+            .prepared_slots
+            .get()
+            .checked_add(1)
+            .ok_or("Too many prepared project presets")?;
+        self.presets
+            .try_reserve(slots)
+            .map_err(|error| error.to_string())?;
+        let expected = self
+            .presets
+            .get(&web_contents_id)
+            .map(|entry| entry.identity.clone());
         self.prepared_slots.set(slots);
         Ok(PreparedNewDocumentPreset {
             id: web_contents_id,
@@ -347,11 +409,15 @@ impl<G: NewDocumentsGuide> NewDocumentPlacer<G> {
                 identity: std::rc::Rc::new(std::cell::Cell::new(false)),
                 placement: placement.ok().flatten(),
             }),
-            expected, slots: self.prepared_slots.clone(),
+            expected,
+            slots: self.prepared_slots.clone(),
         })
     }
 
-    pub fn validate_preset(&mut self, prepared: PreparedNewDocumentPreset) -> Result<ValidatedNewDocumentPreset<'_, G>, String> {
+    pub fn validate_preset(
+        &mut self,
+        prepared: PreparedNewDocumentPreset,
+    ) -> Result<ValidatedNewDocumentPreset<'_, G>, String> {
         if !std::rc::Rc::ptr_eq(&self.prepared_slots, &prepared.slots) {
             return Err("The project preset belongs to another placer".into());
         }
@@ -361,8 +427,13 @@ impl<G: NewDocumentsGuide> NewDocumentPlacer<G> {
             (Some(current), Some(expected)) => std::rc::Rc::ptr_eq(current, expected),
             _ => false,
         };
-        if !same { return Err("The project preset changed before publication".into()); }
-        Ok(ValidatedNewDocumentPreset { placer: self, prepared })
+        if !same {
+            return Err("The project preset changed before publication".into());
+        }
+        Ok(ValidatedNewDocumentPreset {
+            placer: self,
+            prepared,
+        })
     }
 
     pub fn preset_owned(
@@ -371,36 +442,61 @@ impl<G: NewDocumentsGuide> NewDocumentPlacer<G> {
         placement: Result<Option<NewDocumentPlacement>, NodeError>,
     ) -> NewDocumentPresetReceipt {
         self.presets.reserve(self.prepared_slots.get() + 1);
-        let entry = PresetEntry { identity: std::rc::Rc::new(std::cell::Cell::new(false)), placement: placement.ok().flatten() };
+        let entry = PresetEntry {
+            identity: std::rc::Rc::new(std::cell::Cell::new(false)),
+            placement: placement.ok().flatten(),
+        };
         let identity = entry.identity.clone();
         let previous = self.presets.insert(web_contents_id, entry);
-        NewDocumentPresetReceipt { id: web_contents_id, identity, previous, restored: false }
+        NewDocumentPresetReceipt {
+            id: web_contents_id,
+            identity,
+            previous,
+            restored: false,
+        }
     }
 
-    pub fn rollback_preset(&mut self, receipt: &mut NewDocumentPresetReceipt) -> Result<(), String> {
-        if receipt.restored { return Ok(()); }
+    pub fn rollback_preset(
+        &mut self,
+        receipt: &mut NewDocumentPresetReceipt,
+    ) -> Result<(), String> {
+        if receipt.restored {
+            return Ok(());
+        }
         if receipt.identity.get() {
             receipt.previous = None;
             receipt.restored = true;
             return Ok(());
         }
-        if self.presets.get(&receipt.id).is_none_or(|entry| !std::rc::Rc::ptr_eq(&entry.identity, &receipt.identity)) {
+        if self
+            .presets
+            .get(&receipt.id)
+            .is_none_or(|entry| !std::rc::Rc::ptr_eq(&entry.identity, &receipt.identity))
+        {
             return Err("The new-document preset was replaced".into());
         }
         self.presets.remove(&receipt.id);
-        if let Some(previous) = receipt.previous.take() { self.presets.insert(receipt.id, previous); }
+        if let Some(previous) = receipt.previous.take() {
+            self.presets.insert(receipt.id, previous);
+        }
         receipt.restored = true;
         Ok(())
     }
 
     pub fn retire_preset(&mut self, receipt: &mut NewDocumentPresetReceipt) -> Result<(), String> {
-        if receipt.restored { return Ok(()); }
-        if self.presets.get(&receipt.id).is_some_and(|entry| std::rc::Rc::ptr_eq(&entry.identity,&receipt.identity)) {
+        if receipt.restored {
+            return Ok(());
+        }
+        if self
+            .presets
+            .get(&receipt.id)
+            .is_some_and(|entry| std::rc::Rc::ptr_eq(&entry.identity, &receipt.identity))
+        {
             self.presets.remove(&receipt.id);
         }
         receipt.identity.set(true);
-        receipt.previous=None;
-        receipt.restored=true;
+        receipt.previous = None;
+        receipt.restored = true;
         Ok(())
     }
 
@@ -414,7 +510,9 @@ impl<G: NewDocumentsGuide> NewDocumentPlacer<G> {
 
     /// `forget(webContentsId)`: the tab closed
     pub fn forget(&mut self, web_contents_id: i64) {
-        if let Some(entry) = self.presets.remove(&web_contents_id) { entry.identity.set(true); }
+        if let Some(entry) = self.presets.remove(&web_contents_id) {
+            entry.identity.set(true);
+        }
     }
 
     /// `saveDialogFolder(webContentsId)`: the folder an untitled document's
@@ -435,7 +533,8 @@ impl<G: NewDocumentsGuide> NewDocumentPlacer<G> {
         file_name: &str,
     ) -> Result<Option<NewDocumentWrite>, WriteGuardError> {
         self.placement_for(web_contents_id)?
-            .map(|placement| NewDocumentWrite::new(placement, file_name)).transpose()
+            .map(|placement| NewDocumentWrite::new(placement, file_name))
+            .transpose()
     }
 
     pub fn capture_placement(&mut self, web_contents_id: i64) -> NewDocumentPlacementSeed {
@@ -456,8 +555,14 @@ impl<G: NewDocumentsGuide> NewDocumentPlacer<G> {
         file_name: &str,
         bytes: &[u8],
     ) -> Result<Option<String>, WriteGuardError> {
-        let Some(write) = self.prepare_write_for(web_contents_id, file_name)? else { return Ok(None); };
-        write.execute(bytes, |id, target, bytes| self.deps.guide.write_new_document(id, target, bytes)).map(Some)
+        let Some(write) = self.prepare_write_for(web_contents_id, file_name)? else {
+            return Ok(None);
+        };
+        write
+            .execute(bytes, |id, target, bytes| {
+                self.deps.guide.write_new_document(id, target, bytes)
+            })
+            .map(Some)
     }
 
     /// `write(placement, fileName, bytes)`: write `bytes` as `fileName` (or
@@ -470,12 +575,16 @@ impl<G: NewDocumentsGuide> NewDocumentPlacer<G> {
         bytes: &[u8],
     ) -> Result<String, WriteGuardError> {
         let write = NewDocumentWrite::new(placement.clone(), file_name)?;
-        write.execute(bytes, |id, target, bytes| self.deps.guide.write_new_document(id, target, bytes))
+        write.execute(bytes, |id, target, bytes| {
+            self.deps.guide.write_new_document(id, target, bytes)
+        })
     }
 
     /// `presetOf(webContentsId)`
     fn preset_of(&self, web_contents_id: i64) -> Option<NewDocumentPlacement> {
-        self.presets.get(&web_contents_id).and_then(|entry| entry.placement.clone())
+        self.presets
+            .get(&web_contents_id)
+            .and_then(|entry| entry.placement.clone())
     }
 }
 
@@ -486,8 +595,15 @@ mod owned_write_tests {
 
     struct Guide;
     impl NewDocumentsGuide for Guide {
-        fn project_root(&mut self, _: &str) -> Option<String> { None }
-        fn write_new_document(&mut self, _: &str, _: &str, _: &[u8]) -> Result<ProjectWriteResult, WriteGuardError> {
+        fn project_root(&mut self, _: &str) -> Option<String> {
+            None
+        }
+        fn write_new_document(
+            &mut self,
+            _: &str,
+            _: &str,
+            _: &[u8],
+        ) -> Result<ProjectWriteResult, WriteGuardError> {
             Ok(ProjectWriteResult::Ok)
         }
     }
@@ -495,12 +611,18 @@ mod owned_write_tests {
     #[test]
     fn preset_rollback_restores_displaced_entry_without_touching_replacements() {
         let mut placer = NewDocumentPlacer::new(NewDocumentPlacerDeps {
-            guide: Guide, window_project: Box::new(|_| Ok(None)),
-            document_of: Box::new(|_| None), platform: "linux".into(),
+            guide: Guide,
+            window_project: Box::new(|_| Ok(None)),
+            document_of: Box::new(|_| None),
+            platform: "linux".into(),
         });
-        let placement = |dir: &str| Some(NewDocumentPlacement {
-            project_id: "project".into(), root: "/project".into(), dir: dir.into(),
-        });
+        let placement = |dir: &str| {
+            Some(NewDocumentPlacement {
+                project_id: "project".into(),
+                root: "/project".into(),
+                dir: dir.into(),
+            })
+        };
         placer.preset(1, Ok(placement("/project/first")));
         let mut receipt = placer.preset_owned(1, Ok(placement("/project/second")));
         placer.rollback_preset(&mut receipt).unwrap();
@@ -514,24 +636,36 @@ mod owned_write_tests {
         placer.preset(1, Ok(placement("/project/fifth")));
         placer.rollback_preset(&mut retired).unwrap();
         assert_eq!(placer.preset_of(1), placement("/project/fifth"));
-        let mut adopted=placer.preset_owned(1,Ok(placement("/project/sixth")));
-        placer.preset(1,Ok(placement("/project/successor")));
+        let mut adopted = placer.preset_owned(1, Ok(placement("/project/sixth")));
+        placer.preset(1, Ok(placement("/project/successor")));
         placer.retire_preset(&mut adopted).unwrap();
-        assert_eq!(placer.preset_of(1),placement("/project/successor"));
+        assert_eq!(placer.preset_of(1), placement("/project/successor"));
     }
 
     #[test]
     fn prepared_preset_rejects_replacement_and_preserves_other_pending_commits() {
         let mut placer = NewDocumentPlacer::new(NewDocumentPlacerDeps {
-            guide: Guide, window_project: Box::new(|_| Ok(None)),
-            document_of: Box::new(|_| None), platform: "linux".into(),
+            guide: Guide,
+            window_project: Box::new(|_| Ok(None)),
+            document_of: Box::new(|_| None),
+            platform: "linux".into(),
         });
-        let placement = |dir: &str| Some(NewDocumentPlacement {
-            project_id: "project".into(), root: "/project".into(), dir: dir.into(),
-        });
-        let stale = placer.prepare_preset(1, Ok(placement("/project/stale"))).unwrap();
-        let first = placer.prepare_preset(2, Ok(placement("/project/first"))).unwrap();
-        let second = placer.prepare_preset(3, Ok(placement("/project/second"))).unwrap();
+        let placement = |dir: &str| {
+            Some(NewDocumentPlacement {
+                project_id: "project".into(),
+                root: "/project".into(),
+                dir: dir.into(),
+            })
+        };
+        let stale = placer
+            .prepare_preset(1, Ok(placement("/project/stale")))
+            .unwrap();
+        let first = placer
+            .prepare_preset(2, Ok(placement("/project/first")))
+            .unwrap();
+        let second = placer
+            .prepare_preset(3, Ok(placement("/project/second")))
+            .unwrap();
         placer.preset(1, Ok(placement("/project/current")));
         assert!(placer.validate_preset(stale).is_err());
         placer.validate_preset(second).unwrap().commit();
@@ -548,26 +682,50 @@ mod owned_write_tests {
         let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
         let folder = std::env::temp_dir().join(format!("seuoffice-placement-{suffix}"));
         std::fs::create_dir(&folder).unwrap();
-        let root = std::fs::canonicalize(&folder).unwrap().to_string_lossy().into_owned();
-        let write = NewDocumentWrite::new(NewDocumentPlacement {
-            project_id: "project".into(), root: root.clone(), dir: root.clone(),
-        }, "draft.md").unwrap();
-        let guard = ProjectWriteGuard::new(crate::packages::ai_provider::agent_session_policy::process_platform());
+        let root = std::fs::canonicalize(&folder)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let write = NewDocumentWrite::new(
+            NewDocumentPlacement {
+                project_id: "project".into(),
+                root: root.clone(),
+                dir: root.clone(),
+            },
+            "draft.md",
+        )
+        .unwrap();
+        let guard = ProjectWriteGuard::new(
+            crate::packages::ai_provider::agent_session_policy::process_platform(),
+        );
         let raced = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let path = write.execute(b"new document", |_, target, bytes| {
-            let collision = target.to_owned();
-            let raced = raced.clone();
-            guard.write_new_document_authorized(&root, target, bytes, std::sync::Arc::new(move |effect| {
-                if !raced.swap(true,std::sync::atomic::Ordering::AcqRel) {
-                    std::fs::write(&collision, b"other document").unwrap();
-                }
-                Ok(effect())
-            }))?;
-            Ok(ProjectWriteResult::Ok)
-        }).unwrap();
-        assert_eq!(std::path::Path::new(&path).file_name().unwrap(), "draft (2).md");
+        let path = write
+            .execute(b"new document", |_, target, bytes| {
+                let collision = target.to_owned();
+                let raced = raced.clone();
+                guard.write_new_document_authorized(
+                    &root,
+                    target,
+                    bytes,
+                    std::sync::Arc::new(move |effect| {
+                        if !raced.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                            std::fs::write(&collision, b"other document").unwrap();
+                        }
+                        Ok(effect())
+                    }),
+                )?;
+                Ok(ProjectWriteResult::Ok)
+            })
+            .unwrap();
+        assert_eq!(
+            std::path::Path::new(&path).file_name().unwrap(),
+            "draft (2).md"
+        );
         assert_eq!(std::fs::read(&path).unwrap(), b"new document");
-        assert_eq!(std::fs::read(std::path::Path::new(&root).join("draft.md")).unwrap(), b"other document");
+        assert_eq!(
+            std::fs::read(std::path::Path::new(&root).join("draft.md")).unwrap(),
+            b"other document"
+        );
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2);
         std::fs::remove_dir_all(folder).unwrap();
     }

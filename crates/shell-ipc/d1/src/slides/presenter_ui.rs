@@ -32,7 +32,7 @@ pub(in crate::slides) fn show_fullscreen(app: &App, cx: &CallContext, args: Args
     }) { Ok(source) => source, Err(error) => return responder.reply(Err(error)) };
     let Some(window) = app.shell.host_window_for(source.view) else { return responder.reply(Ok(IpcValue::Undefined)); };
     let on = crate::value::truthy(args.get(0));
-    let pending = CancelToken::new();
+    let pending = CancelToken::default();
     let (ticket, previous) = { let mut state = app.state.borrow_mut(); state.show_fs_ticket += 1; (state.show_fs_ticket, state.show_fs_pending.replace(pending.clone())) };
     if let Some(previous) = previous { previous.cancel(); }
     if on {

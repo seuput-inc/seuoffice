@@ -997,16 +997,18 @@ export function App() {
   const askOpenRef = useRef(false)
 
   const save = useCallback(
-    (auto = false, requestId?: string): Promise<boolean> => fileActions.save(() => ctxRef.current, auto, requestId),
+    (auto = false, requestId?: string): Promise<boolean> =>
+      fileActions.save(() => ctxRef.current, auto, requestId),
     [],
   )
 
   // Close guard (closing tab/window) chose "Save": run the full save flow and report the result
   useEffect(() => {
     return window.slidesApi.onCloseSaveRequest?.((request) => {
-      const pass = request?.mode === 'saveAs'
-        ? fileActions.saveAsForRequest(() => ctxRef.current, request.id)
-        : save(false, request?.id)
+      const pass =
+        request?.mode === 'saveAs'
+          ? fileActions.saveAsForRequest(() => ctxRef.current, request.id)
+          : save(false, request?.id)
       void pass.then(
         (ok) => window.slidesApi.reportCloseSaveResult(ok, request?.id),
         () => window.slidesApi.reportCloseSaveResult(false, request?.id),
@@ -1385,13 +1387,16 @@ export function App() {
           recoveryToken = r.recoveryToken
           applyOpen(r)
           if (recoveryToken) setRecoveryApplied(recoveryToken)
-        }
-        else void bootBlank()
+        } else void bootBlank()
       })
       // Open failures (corrupt file etc.) also land on a blank deck, or it stays at "Opening…" forever
       .catch((error: unknown) => {
         if (recoveryToken) {
-          void window.slidesApi.recoveryInitialized(recoveryToken, false, error instanceof Error ? error.message : String(error))
+          void window.slidesApi.recoveryInitialized(
+            recoveryToken,
+            false,
+            error instanceof Error ? error.message : String(error),
+          )
         } else if (bootHandledRef.current) return
         bootHandledRef.current = true
         void bootBlank()

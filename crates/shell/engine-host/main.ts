@@ -17,7 +17,17 @@ import { renderAll, renderSlide, templateCatalog } from './slides'
 import { measurePageText, measureAutofit } from './slides-layout'
 import { runDocumentEditSession } from './pdf/document-edit-primitives'
 
-type HostReply = { ok: unknown } | { error: { name: string; message: string; code?: unknown; reason?: unknown; validRange?: unknown } }
+type HostReply =
+  | { ok: unknown }
+  | {
+      error: {
+        name: string
+        message: string
+        code?: unknown
+        reason?: unknown
+        validRange?: unknown
+      }
+    }
 interface ServiceWindow extends Window {
   __SEUOFFICE_ENGINE_TOKEN__: string
   __TAURI_INTERNALS__: {
@@ -43,8 +53,12 @@ export async function answer(
     if (name === 'pdf.canonicalLocale') return { ok: canonicalLocale(input) }
     if (name === 'pdf.subsetFont') return { ok: await subsetFont(input, signal) }
     if (name === 'slides.templateCatalog') return { ok: templateCatalog() }
-    if (name === 'slides.renderAll' || name === 'slides.renderSlide' ||
-        name === 'slides.measurePageText' || name === 'slides.measureAutofit') {
+    if (
+      name === 'slides.renderAll' ||
+      name === 'slides.renderSlide' ||
+      name === 'slides.measurePageText' ||
+      name === 'slides.measureAutofit'
+    ) {
       if (!callback) throw new Error('the slide operation has no native request capability')
       const operation = {
         'slides.renderAll': renderAll,
@@ -60,9 +74,12 @@ export async function answer(
     }
     if (name === 'pdf.pdfiumSession' || name === 'pdf.structureOperation') {
       if (!callback) throw new Error('the PDF operation has no native request capability')
-      return { ok: name === 'pdf.pdfiumSession'
-        ? await runPdfiumSession(input, signal, callback)
-        : await pdfStructureService(input, signal, callback) }
+      return {
+        ok:
+          name === 'pdf.pdfiumSession'
+            ? await runPdfiumSession(input, signal, callback)
+            : await pdfStructureService(input, signal, callback),
+      }
     }
     if (name === 'pdf.qpdfEncrypt' || name === 'pdf.qpdfDecrypt' || name === 'pdf.repair') {
       return { ok: await pdfBinaryService(name, input, signal) }
@@ -71,11 +88,17 @@ export async function answer(
     if (name === 'docs.hwp') return { ok: await runHwp(input, signal) }
     if (name === 'docs.htmlToDocx') {
       if (!callback) throw new Error('the HTML conversion has no native request capability')
-      if (!input || typeof input !== 'object' || !('path' in input) || typeof input.path !== 'string') {
+      if (
+        !input ||
+        typeof input !== 'object' ||
+        !('path' in input) ||
+        typeof input.path !== 'string'
+      ) {
         throw new TypeError('invalid HTML conversion path')
       }
       const naturalTableWidth = 'naturalTableWidth' in input ? input.naturalTableWidth : true
-      if (typeof naturalTableWidth !== 'boolean') throw new TypeError('invalid HTML table width option')
+      if (typeof naturalTableWidth !== 'boolean')
+        throw new TypeError('invalid HTML table width option')
       return { ok: await runHtml(naturalTableWidth, signal, callback) }
     }
     if (name === 'legacy-doc.convert') return { ok: await runLegacyDoc(input, signal) }
@@ -93,8 +116,15 @@ export async function answer(
   } catch (error) {
     const thrown = error instanceof Error ? error : new Error(String(error))
     const details = thrown as Error & { code?: unknown; reason?: unknown; validRange?: unknown }
-    return { error: { name: thrown.name, message: thrown.message,
-      code: details.code, reason: details.reason, validRange: details.validRange } }
+    return {
+      error: {
+        name: thrown.name,
+        message: thrown.message,
+        code: details.code,
+        reason: details.reason,
+        validRange: details.validRange,
+      },
+    }
   }
 }
 
@@ -108,7 +138,13 @@ service.__seuofficeEngineRequest = async (id, name, input, nonce) => {
     const callback = createRequestCallbacks(id, name, nonce, controller.signal)
     const reply = await answer(name, input, controller.signal, callback)
     if (!controller.signal.aborted) {
-      await service.__TAURI_INTERNALS__.invoke('engine_host_reply', { token, id, name, nonce, reply })
+      await service.__TAURI_INTERNALS__.invoke('engine_host_reply', {
+        token,
+        id,
+        name,
+        nonce,
+        reply,
+      })
     }
   } finally {
     requests.delete(id)

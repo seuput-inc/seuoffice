@@ -24,14 +24,19 @@ impl Drop for Completion {
     }
 }
 
-static QUEUES: LazyLock<Mutex<HashMap<String, Weak<SettingsQueue>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static QUEUES: LazyLock<Mutex<HashMap<String, Weak<SettingsQueue>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// All in-process users of the same settings path share this queue.
 pub fn for_path(path: &str) -> Arc<SettingsQueue> {
     let mut queues = QUEUES.lock().unwrap_or_else(|p| p.into_inner());
-    if let Some(queue) = queues.get(path).and_then(Weak::upgrade) { return queue; }
+    if let Some(queue) = queues.get(path).and_then(Weak::upgrade) {
+        return queue;
+    }
     queues.retain(|_, queue| queue.strong_count() != 0);
-    let queue = Arc::new(SettingsQueue { state: Mutex::new(State::default()) });
+    let queue = Arc::new(SettingsQueue {
+        state: Mutex::new(State::default()),
+    });
     queues.insert(path.to_owned(), Arc::downgrade(&queue));
     queue
 }
@@ -42,9 +47,16 @@ impl SettingsQueue {
         let start = {
             let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
             state.jobs.push_back(Box::new(job));
-            if state.running { false } else { state.running = true; true }
+            if state.running {
+                false
+            } else {
+                state.running = true;
+                true
+            }
         };
-        if start { self.dispatch(); }
+        if start {
+            self.dispatch();
+        }
     }
 
     fn dispatch(self: &Arc<Self>) {
@@ -52,7 +64,10 @@ impl SettingsQueue {
             let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
             match state.jobs.pop_front() {
                 Some(job) => job,
-                None => { state.running = false; return; }
+                None => {
+                    state.running = false;
+                    return;
+                }
             }
         };
         let completion = Completion(self.clone());
@@ -102,7 +117,9 @@ mod tests {
         let (arrive_tx, arrive_rx) = mpsc::channel();
         for desired in ["A", "B", "A"] {
             let arrive = arrive_tx.clone();
-            queue.submit(move |completion| { assert!(arrive.send((desired, completion)).is_ok()); });
+            queue.submit(move |completion| {
+                assert!(arrive.send((desired, completion)).is_ok());
+            });
         }
         let mut current = "A";
         let mut writes = Vec::new();
@@ -110,7 +127,9 @@ mod tests {
             let (desired, completion) = arrive_rx.recv().unwrap();
             if desired != current {
                 writes.push(desired);
-                if desired != "B" { current = desired; }
+                if desired != "B" {
+                    current = desired;
+                }
             }
             drop(completion);
         }
@@ -123,8 +142,12 @@ mod tests {
         let queue = for_path("/synthetic/dropped");
         let (first_tx, first_rx) = mpsc::channel();
         let (second_tx, second_rx) = mpsc::channel();
-        queue.submit(move |completion| { assert!(first_tx.send(completion).is_ok()); });
-        queue.submit(move |_completion| { second_tx.send(()).unwrap(); });
+        queue.submit(move |completion| {
+            assert!(first_tx.send(completion).is_ok());
+        });
+        queue.submit(move |_completion| {
+            second_tx.send(()).unwrap();
+        });
         let abandoned = first_rx.recv().unwrap();
         assert!(second_rx.try_recv().is_err());
         drop(abandoned);
@@ -140,7 +163,9 @@ mod tests {
             release_rx.recv().unwrap();
             panic!("simulated settings failure");
         });
-        queue.submit(move |_completion| { done_tx.send(()).unwrap(); });
+        queue.submit(move |_completion| {
+            done_tx.send(()).unwrap();
+        });
         release_tx.send(()).unwrap();
         done_rx.recv().unwrap();
     }

@@ -235,7 +235,7 @@ impl RecoveryShell {
         }
         let mut identity = editor_recovery_identity(editors, tab_kind, contents);
         if identity.is_none()
-            && !tab_file_path.is_some_and(|p| !p.is_empty())
+            && tab_file_path.is_none_or(|p| p.is_empty())
             && let Some(id) = tab_id.filter(|id| !id.is_empty())
         {
             identity = self

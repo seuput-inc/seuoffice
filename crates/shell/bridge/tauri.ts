@@ -44,7 +44,6 @@ function trace(stage: string): void {
   if (TRACING) console.log(`[bridge +${(performance.now() - t0).toFixed(0)}ms] ${stage}`)
 }
 
-
 /**
  * Takes the Tauri internals for the bridge and takes them off the page's
  * enumerable globals. They cannot be deleted: Tauri's own `invoke` reads
@@ -121,13 +120,18 @@ type NativeSendSync = (channel: string, frame: Uint8Array) => Uint8Array
 
 /** Take the native closure before authored page scripts run. */
 function takeNativeSendSync(): [NativeSendSync, BindChannelResume] {
-  const holder = window as unknown as { __seuofficeNativeSendSync?: NativeSendSync & { __seuofficeResumeChannel?: BindChannelResume } }
+  const holder = window as unknown as {
+    __seuofficeNativeSendSync?: NativeSendSync & { __seuofficeResumeChannel?: BindChannelResume }
+  }
   const send = holder.__seuofficeNativeSendSync
   if (typeof send !== 'function' || !Reflect.deleteProperty(holder, '__seuofficeNativeSendSync')) {
     throw new Error('the shell bridge found no private synchronous transport')
   }
   const bindResume = send.__seuofficeResumeChannel
-  if (typeof bindResume !== 'function' || !Reflect.deleteProperty(send, '__seuofficeResumeChannel')) {
+  if (
+    typeof bindResume !== 'function' ||
+    !Reflect.deleteProperty(send, '__seuofficeResumeChannel')
+  ) {
     throw new Error('the shell bridge found no private Channel resume binding')
   }
   return [send, bindResume]

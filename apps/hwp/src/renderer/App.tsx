@@ -242,7 +242,8 @@ export default function App() {
     void (async () => {
       try {
         const recovery = (await window.hwpApi.consumeRecovery?.()) ?? null
-        if (recovery && !window.hwpApi.recoveryInitialized) throw new Error('HWP recovery acknowledgement is unavailable')
+        if (recovery && !window.hwpApi.recoveryInitialized)
+          throw new Error('HWP recovery acknowledgement is unavailable')
         recoveryTokenRef.current = recovery?.token ?? null
         const [path, theme, lang] = await Promise.all([
           recovery ? Promise.resolve(recovery.path) : window.hwpApi.consumePending(),
@@ -305,7 +306,10 @@ export default function App() {
         if (recoveryToken) {
           recoveryTokenRef.current = null
           try {
-            await window.hwpApi.recoveryInitialized?.(recoveryToken, { ok: false, error: detailOf(error) })
+            await window.hwpApi.recoveryInitialized?.(recoveryToken, {
+              ok: false,
+              error: detailOf(error),
+            })
           } catch (ackError) {
             setPhase('failed')
             setNotice({ tone: 'error', key: 'openFailed', detail: detailOf(ackError) })
@@ -465,8 +469,13 @@ export default function App() {
       const done = new Promise<void>((resolve) => (release = resolve))
       savingDoneRef.current = done
       try {
-        const outcome = await runSave(savePortOf(editor), window.hwpApi, mode, automatic, () =>
-          aiHold.isHeld(), requestToken,
+        const outcome = await runSave(
+          savePortOf(editor),
+          window.hwpApi,
+          mode,
+          automatic,
+          () => aiHold.isHeld(),
+          requestToken,
         )
         if (outcome.kind === 'export') {
           // a copy, as File > Export as PDF writes it; nothing about the document changes
@@ -695,12 +704,18 @@ export default function App() {
     const timer = setInterval(() => void copier.tick(), RECOVERY_TICK_MS)
     const offFlush = window.hwpApi.onRecoveryFlush((token) => {
       void copier.flush().then(
-        (result) => window.hwpApi.sendRecoveryFlushed(
-          token,
-          result === 'written' || result === 'clean' || result === 'unchanged'
-            ? undefined : `HWP recovery copy ${result}`,
-        ),
-        (error: unknown) => window.hwpApi.sendRecoveryFlushed(token, error instanceof Error ? error.message : String(error)),
+        (result) =>
+          window.hwpApi.sendRecoveryFlushed(
+            token,
+            result === 'written' || result === 'clean' || result === 'unchanged'
+              ? undefined
+              : `HWP recovery copy ${result}`,
+          ),
+        (error: unknown) =>
+          window.hwpApi.sendRecoveryFlushed(
+            token,
+            error instanceof Error ? error.message : String(error),
+          ),
       )
     })
     const offReset = window.hwpApi.onRecoveryReset(() => copier.reset())

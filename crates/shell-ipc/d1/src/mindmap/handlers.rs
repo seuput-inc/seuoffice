@@ -73,7 +73,6 @@ pub(super) fn pick_save_path(
     }
 }
 
-
 /// `importFreeMind`: a `.mm` for the renderer to import: its bytes, read and
 /// never written
 fn import_free_mind(app: &MindmapApp, view: ViewId, path: &str) -> Reply {
@@ -120,7 +119,9 @@ fn open_file(app: &MindmapApp, cx: &CallContext, args: Args) -> Reply {
     let Some(path) = args.str(0).filter(|_| granted) else {
         return Err(thrown("mindmap: path not granted to this view"));
     };
-    if let Some(response) = app.open_recovery_file(cx, path)? { return Ok(response); }
+    if let Some(response) = app.open_recovery_file(cx, path)? {
+        return Ok(response);
+    }
     let _opened_owner = app.replace_save_document(cx)?;
     if is_freemind(path) {
         return import_free_mind(app, view, path);
@@ -133,7 +134,9 @@ fn open_file(app: &MindmapApp, cx: &CallContext, args: Args) -> Reply {
         if copy.status == OpenStatus::Ok {
             // the restored map is written only by a save; the copy is the whole file
             let original_opens = match bytes.as_ref() {
-                Some(bytes) => app.0.engine.open_xmind(bytes).map_err(thrown)?.status == OpenStatus::Ok,
+                Some(bytes) => {
+                    app.0.engine.open_xmind(bytes).map_err(thrown)?.status == OpenStatus::Ok
+                }
                 None => false,
             };
             app.0.state.borrow_mut().unopened.remove(&view);
@@ -182,7 +185,6 @@ fn open_file(app: &MindmapApp, cx: &CallContext, args: Args) -> Reply {
     app.remember_disk_state(view, path);
     Ok(obj([("status", string("ok")), ("bytes", buffer(bytes))]))
 }
-
 
 fn open_link(app: &MindmapApp, args: Args) -> Reply {
     let options = SafeExternalUrlOptions {
@@ -293,35 +295,62 @@ pub(super) fn routes(app: &MindmapApp) -> Vec<Route> {
     let mut routes = Vec::new();
 
     let a = app.clone();
-    routes.push(route::invoke_later("mindmap:consume-pending", move |cx, _args, reply| {
-        let reply = match super::saved_open::dispatch(&a, cx, super::saved_open::WaitKind::Pending, reply) {
-            Ok(()) => return, Err(reply) => reply,
-        };
-        let result = a.recovery_pending_path(cx).map(|path| path.unwrap_or_else(|| match a.0.state.borrow().open_path.get(&cx.sender.view) {
-            Some(path) => string(path.clone()), None => IpcValue::Null,
-        }));
-        reply.reply(result);
-    }));
+    routes.push(route::invoke_later(
+        "mindmap:consume-pending",
+        move |cx, _args, reply| {
+            let reply = match super::saved_open::dispatch(
+                &a,
+                cx,
+                super::saved_open::WaitKind::Pending,
+                reply,
+            ) {
+                Ok(()) => return,
+                Err(reply) => reply,
+            };
+            let result = a.recovery_pending_path(cx).map(|path| {
+                path.unwrap_or_else(|| match a.0.state.borrow().open_path.get(&cx.sender.view) {
+                    Some(path) => string(path.clone()),
+                    None => IpcValue::Null,
+                })
+            });
+            reply.reply(result);
+        },
+    ));
     let a = app.clone();
-    routes.push(route::invoke("mindmap:recovery-initialized", move |cx, args| super::recovery_open::initialized(&a, cx, args)));
-
-
-    let a = app.clone();
-    routes.push(route::invoke_later("mindmap:open-file", move |cx, args, reply| {
-        let path = args.str(0).unwrap_or("").to_owned();
-        let reply = match super::saved_open::dispatch(&a, cx, super::saved_open::WaitKind::Open(path), reply) {
-            Ok(()) => return, Err(reply) => reply,
-        };
-        reply.reply(open_file(&a, cx, args));
-    }));
+    routes.push(route::invoke(
+        "mindmap:recovery-initialized",
+        move |cx, args| super::recovery_open::initialized(&a, cx, args),
+    ));
 
     let a = app.clone();
-    routes.push(route::invoke_later("mindmap:save", move |cx, args, responder| {
-        super::owned_save::save(&a, cx, args, responder)
-    }));
+    routes.push(route::invoke_later(
+        "mindmap:open-file",
+        move |cx, args, reply| {
+            let path = args.str(0).unwrap_or("").to_owned();
+            let reply = match super::saved_open::dispatch(
+                &a,
+                cx,
+                super::saved_open::WaitKind::Open(path),
+                reply,
+            ) {
+                Ok(()) => return,
+                Err(reply) => reply,
+            };
+            reply.reply(open_file(&a, cx, args));
+        },
+    ));
 
     let a = app.clone();
-    routes.push(route::invoke_later("mindmap:save-into-project", move |cx, args, responder| super::owned_save::save_into_project(&a, cx, args, responder)));
+    routes.push(route::invoke_later(
+        "mindmap:save",
+        move |cx, args, responder| super::owned_save::save(&a, cx, args, responder),
+    ));
+
+    let a = app.clone();
+    routes.push(route::invoke_later(
+        "mindmap:save-into-project",
+        move |cx, args, responder| super::owned_save::save_into_project(&a, cx, args, responder),
+    ));
 
     let a = app.clone();
     routes.push(route::invoke("mindmap:open-link", move |_cx, args| {
@@ -357,7 +386,12 @@ pub(super) fn routes(app: &MindmapApp) -> Vec<Route> {
     let a = app.clone();
     routes.push(route::send("mindmap:save-request-ack", move |cx, args| {
         if let Some(id) = args.str(1) {
-            return a.save_ack_owned(cx, id, matches!(args.get(0), IpcValue::Bool(true)), args.str(2));
+            return a.save_ack_owned(
+                cx,
+                id,
+                matches!(args.get(0), IpcValue::Bool(true)),
+                args.str(2),
+            );
         }
         let waiter = a.0.state.borrow_mut().save_waiters.take(cx.sender.view);
         if let Some(waiter) = waiter {
@@ -384,13 +418,17 @@ pub(super) fn routes(app: &MindmapApp) -> Vec<Route> {
     routes.push(route::send(
         "mindmap:recovery-copy-now-done",
         move |cx, args| {
-            let Some(generation) = args.num(0) else { return Ok(()) };
+            let Some(generation) = args.num(0) else {
+                return Ok(());
+            };
             if !generation.is_finite() || generation < 0.0 || generation.fract() != 0.0 {
                 return Ok(());
             }
             let result = match args.get(1) {
                 IpcValue::Null => Ok(()),
-                IpcValue::String(message) => Err(main_core::shell::renderer_disposal::Failure(message.clone())),
+                IpcValue::String(message) => Err(main_core::shell::renderer_disposal::Failure(
+                    message.clone(),
+                )),
                 _ => return Ok(()),
             };
             a.finish_copy_now(cx.sender.view, Some(generation as u64), result);
@@ -405,7 +443,11 @@ pub(super) fn routes(app: &MindmapApp) -> Vec<Route> {
             return Ok(IpcValue::Null);
         }
         let consumer = super::owned_save::native_owner(cx)?;
-        let Some(handoff) = a.0.shell.take_generate_handoff_owned(&consumer, &cx.cancel).map_err(thrown)? else {
+        let Some(handoff) =
+            a.0.shell
+                .take_generate_handoff_owned(&consumer, &cx.cancel)
+                .map_err(thrown)?
+        else {
             return Ok(IpcValue::Null);
         };
         a.0.state
@@ -440,7 +482,15 @@ pub(super) fn routes(app: &MindmapApp) -> Vec<Route> {
                 return Ok(());
             }
             // the store keeps the first run with at least one handed-over file attached
-            if a.0.shell.report_generate_run_started_owned(&super::owned_save::native_owner(cx)?, &cx.cancel, &paths).map_err(thrown)? {
+            if a.0
+                .shell
+                .report_generate_run_started_owned(
+                    &super::owned_save::native_owner(cx)?,
+                    &cx.cancel,
+                    &paths,
+                )
+                .map_err(thrown)?
+            {
                 a.0.state.borrow_mut().taken_handoff.remove(&view);
             }
             Ok(())
@@ -449,7 +499,9 @@ pub(super) fn routes(app: &MindmapApp) -> Vec<Route> {
 
     let a = app.clone();
     routes.push(route::invoke("mindmap:seed-take", move |cx, _args| {
-        if let Some(seed) = a.take_recovery_seed(cx)? { return Ok(seed); }
+        if let Some(seed) = a.take_recovery_seed(cx)? {
+            return Ok(seed);
+        }
         let view = cx.sender.view;
         if a.opens_file(view) {
             return Ok(IpcValue::Null);

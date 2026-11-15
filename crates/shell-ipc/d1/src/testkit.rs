@@ -112,18 +112,33 @@ impl Workers for HeldWorkers {
 }
 
 /// Every emitted event, in order
-pub struct Events(pub Mutex<Vec<(Target, &'static str, Vec<IpcValue>)>>, Arc<FakeViews>);
+pub struct Events(
+    pub Mutex<Vec<(Target, &'static str, Vec<IpcValue>)>>,
+    Arc<FakeViews>,
+);
 
 impl EventSink for Events {
     fn emit(&self, target: Target, channel: &'static str, args: Vec<IpcValue>) {
         self.0.lock().unwrap().push((target, channel, args));
     }
 
-    fn emit_to_owner_checked(&self, owner: &shell_contract::ipc::NativeRequestOwner, channel: &'static str, args: Vec<IpcValue>) -> Result<(), String> {
-        let generation = owner.context.renderer().filter(|generation| generation.is_active())
+    fn emit_to_owner_checked(
+        &self,
+        owner: &shell_contract::ipc::NativeRequestOwner,
+        channel: &'static str,
+        args: Vec<IpcValue>,
+    ) -> Result<(), String> {
+        let generation = owner
+            .context
+            .renderer()
+            .filter(|generation| generation.is_active())
             .ok_or_else(|| "renderer generation unavailable".to_owned())?;
-        if self.1.sender_of(owner.view).is_none() || !self.1.renderer_generation(owner.view)
-            .is_some_and(|current| current.is_active() && current.same_generation(generation)) {
+        if self.1.sender_of(owner.view).is_none()
+            || !self
+                .1
+                .renderer_generation(owner.view)
+                .is_some_and(|current| current.is_active() && current.same_generation(generation))
+        {
             return Err("renderer generation does not own the view".into());
         }
         self.emit(Target::View(owner.view), channel, args);
@@ -133,7 +148,16 @@ impl EventSink for Events {
 
 #[derive(Default)]
 pub struct FakeNativeRetirements {
-    listeners: Mutex<Vec<(Arc<std::sync::atomic::AtomicBool>, Arc<dyn Fn(shell_contract::runtime::NativeViewTerminal) -> Result<(), String> + Send + Sync>)>>,
+    listeners: Mutex<
+        Vec<(
+            Arc<std::sync::atomic::AtomicBool>,
+            Arc<
+                dyn Fn(shell_contract::runtime::NativeViewTerminal) -> Result<(), String>
+                    + Send
+                    + Sync,
+            >,
+        )>,
+    >,
     pending: Mutex<VecDeque<shell_contract::runtime::NativeViewTerminal>>,
 }
 impl FakeNativeRetirements {
@@ -142,21 +166,48 @@ impl FakeNativeRetirements {
     }
 }
 impl shell_contract::runtime::NativeViewRetirements for FakeNativeRetirements {
-    fn on_native_terminal(&self, listener: Box<dyn Fn(shell_contract::runtime::NativeViewTerminal) -> Result<(), String> + Send + Sync>) -> shell_contract::runtime::NativeViewRetirementSubscription {
+    fn on_native_terminal(
+        &self,
+        listener: Box<
+            dyn Fn(shell_contract::runtime::NativeViewTerminal) -> Result<(), String> + Send + Sync,
+        >,
+    ) -> shell_contract::runtime::NativeViewRetirementSubscription {
         let subscription = shell_contract::runtime::NativeViewRetirementSubscription::new();
-        self.listeners.lock().unwrap().push((subscription.state(), Arc::from(listener)));
+        self.listeners
+            .lock()
+            .unwrap()
+            .push((subscription.state(), Arc::from(listener)));
         subscription
     }
-    fn authenticated_browser_owner(&self, _: &shell_contract::ipc::NativeRequestOwner) -> Option<shell_contract::ipc::NativeBrowserOwner> { None }
+    fn authenticated_browser_owner(
+        &self,
+        _: &shell_contract::ipc::NativeRequestOwner,
+    ) -> Option<shell_contract::ipc::NativeBrowserOwner> {
+        None
+    }
     fn drain_native_terminals(&self) -> Result<usize, String> {
         let mut count = 0;
         loop {
-            let Some(event) = self.pending.lock().map_err(|_| "test terminal queue poisoned")?.pop_front() else { break };
-            let listeners = self.listeners.lock().map_err(|_| "test terminal listeners poisoned")?.clone();
+            let Some(event) = self
+                .pending
+                .lock()
+                .map_err(|_| "test terminal queue poisoned")?
+                .pop_front()
+            else {
+                break;
+            };
+            let listeners = self
+                .listeners
+                .lock()
+                .map_err(|_| "test terminal listeners poisoned")?
+                .clone();
             for (active, listener) in listeners {
                 if active.load(std::sync::atomic::Ordering::Acquire) {
                     if let Err(error) = listener(event.clone()) {
-                        self.pending.lock().map_err(|_| "test terminal queue poisoned")?.push_front(event);
+                        self.pending
+                            .lock()
+                            .map_err(|_| "test terminal queue poisoned")?
+                            .push_front(event);
                         return Err(error);
                     }
                 }
@@ -166,7 +217,10 @@ impl shell_contract::runtime::NativeViewRetirements for FakeNativeRetirements {
         Ok(count)
     }
     fn pending_native_terminals(&self) -> Result<usize, String> {
-        self.pending.lock().map(|pending| pending.len()).map_err(|_| "test terminal queue poisoned".into())
+        self.pending
+            .lock()
+            .map(|pending| pending.len())
+            .map_err(|_| "test terminal queue poisoned".into())
     }
     fn wake_native_terminals(&self) {
         let _ = self.drain_native_terminals();
@@ -179,8 +233,10 @@ pub struct FakeViews {
     pub views: Mutex<Vec<Sender>>,
     #[allow(clippy::type_complexity)]
     pub listeners: Mutex<Vec<Box<dyn Fn(ViewId) + Send + Sync>>>,
-    generations: Mutex<std::collections::HashMap<ViewId, shell_contract::runtime::RendererGeneration>>,
-    replacements: Mutex<Vec<Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>>>,
+    generations:
+        Mutex<std::collections::HashMap<ViewId, shell_contract::runtime::RendererGeneration>>,
+    replacements:
+        Mutex<Vec<Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>>>,
 }
 
 impl Views for FakeViews {
@@ -201,11 +257,17 @@ impl Views for FakeViews {
         self.listeners.lock().unwrap().push(listener);
     }
 
-    fn renderer_generation(&self, view: ViewId) -> Option<shell_contract::runtime::RendererGeneration> {
+    fn renderer_generation(
+        &self,
+        view: ViewId,
+    ) -> Option<shell_contract::runtime::RendererGeneration> {
         self.generations.lock().unwrap().get(&view).cloned()
     }
 
-    fn on_renderer_replaced(&self, listener: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>) {
+    fn on_renderer_replaced(
+        &self,
+        listener: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>,
+    ) {
         self.replacements.lock().unwrap().push(listener);
     }
 }
@@ -231,33 +293,151 @@ pub struct FakeDialogs {
     pub messages: Mutex<VecDeque<usize>>,
 }
 
-fn synthetic_owned_dialog_admit(origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken) -> Result<(), String> {
-    let source = origin.context.renderer().ok_or("synthetic dialog source is unbound")?;
-    let target = destination.context.renderer().ok_or("synthetic dialog destination is unbound")?;
+fn synthetic_owned_dialog_admit(
+    origin: &shell_contract::ipc::NativeRequestOwner,
+    destination: &shell_contract::ipc::NativeRequestOwner,
+    cancel: &shell_contract::runtime::CancelToken,
+    pending: &shell_contract::runtime::CancelToken,
+) -> Result<(), String> {
+    let source = origin
+        .context
+        .renderer()
+        .ok_or("synthetic dialog source is unbound")?;
+    let target = destination
+        .context
+        .renderer()
+        .ok_or("synthetic dialog destination is unbound")?;
     let source_loss = origin.loss_token();
     let target_loss = destination.loss_token();
-    source.with_active_pair(target, || shell_contract::runtime::CancelToken::with_active_all([Some(cancel), Some(pending), source_loss.as_ref(), target_loss.as_ref()], || ()))
-        .flatten().ok_or_else(|| "Renderer document is no longer available.".into())
+    source
+        .with_active_pair(target, || {
+            shell_contract::runtime::CancelToken::with_active_all(
+                [
+                    Some(cancel),
+                    Some(pending),
+                    source_loss.as_ref(),
+                    target_loss.as_ref(),
+                ],
+                || (),
+            )
+        })
+        .flatten()
+        .ok_or_else(|| "Renderer document is no longer available.".into())
 }
 
 impl Dialogs for FakeDialogs {
     shell_contract::synthetic_recovery_dialog_methods!();
-    fn message_prepared(&self, parent: Option<shell_contract::WindowId>, options: shell_contract::hosts::MessageBox, target: shell_contract::ipc::RecoveryOpenTarget, snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot, done: Box<dyn FnOnce(Result<shell_contract::hosts::MessageBoxAnswer, String>) + Send>) { done(shell_contract::hosts::synthetic::recovery_dialog(&target, &snapshot, || self.message(parent, &options))); }
-    fn save_prepared(&self, parent: Option<shell_contract::WindowId>, options: shell_contract::hosts::FileDialog, target: shell_contract::ipc::RecoveryOpenTarget, snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot, done: Box<dyn FnOnce(Result<Option<shell_contract::ipc::RecoveryPreparedDestination>, String>) + Send>) { done(shell_contract::hosts::synthetic::recovery_save(&target, &snapshot, || self.save(parent, &options))); }
-    fn open_owned(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<Vec<std::path::PathBuf>>, String>) + Send>) {
-        done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.open(parent, &options)));
+    fn message_prepared(
+        &self,
+        parent: Option<shell_contract::WindowId>,
+        options: shell_contract::hosts::MessageBox,
+        target: shell_contract::ipc::RecoveryOpenTarget,
+        snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
+        done: Box<dyn FnOnce(Result<shell_contract::hosts::MessageBoxAnswer, String>) + Send>,
+    ) {
+        done(shell_contract::hosts::synthetic::recovery_dialog(
+            &target,
+            &snapshot,
+            || self.message(parent, &options),
+        ));
     }
-    fn save_owned(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>) {
-        done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.save(parent, &options)));
+    fn save_prepared(
+        &self,
+        parent: Option<shell_contract::WindowId>,
+        options: shell_contract::hosts::FileDialog,
+        target: shell_contract::ipc::RecoveryOpenTarget,
+        snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
+        done: Box<
+            dyn FnOnce(Result<Option<shell_contract::ipc::RecoveryPreparedDestination>, String>)
+                + Send,
+        >,
+    ) {
+        done(shell_contract::hosts::synthetic::recovery_save(
+            &target,
+            &snapshot,
+            || self.save(parent, &options),
+        ));
     }
-    fn message_owned(&self, parent: Option<WindowId>, options: MessageBox, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>) {
-        done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.message(parent, &options)));
+    fn open_owned(
+        &self,
+        parent: Option<WindowId>,
+        options: FileDialog,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        destination: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<Option<Vec<std::path::PathBuf>>, String>) + Send>,
+    ) {
+        done(
+            synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending)
+                .map(|()| self.open(parent, &options)),
+        );
     }
-    fn save_owned_many(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>) {
-        done(shell_contract::hosts::synthetic::admit_many(&origin, &participants, &cancel, &pending, || self.save(parent, &options)));
+    fn save_owned(
+        &self,
+        parent: Option<WindowId>,
+        options: FileDialog,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        destination: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>,
+    ) {
+        done(
+            synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending)
+                .map(|()| self.save(parent, &options)),
+        );
     }
-    fn message_owned_many(&self, parent: Option<WindowId>, options: MessageBox, origin: shell_contract::ipc::NativeRequestOwner, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>) {
-        done(shell_contract::hosts::synthetic::admit_many(&origin, &participants, &cancel, &pending, || self.message(parent, &options)));
+    fn message_owned(
+        &self,
+        parent: Option<WindowId>,
+        options: MessageBox,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        destination: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>,
+    ) {
+        done(
+            synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending)
+                .map(|()| self.message(parent, &options)),
+        );
+    }
+    fn save_owned_many(
+        &self,
+        parent: Option<WindowId>,
+        options: FileDialog,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>,
+    ) {
+        done(shell_contract::hosts::synthetic::admit_many(
+            &origin,
+            &participants,
+            &cancel,
+            &pending,
+            || self.save(parent, &options),
+        ));
+    }
+    fn message_owned_many(
+        &self,
+        parent: Option<WindowId>,
+        options: MessageBox,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>,
+    ) {
+        done(shell_contract::hosts::synthetic::admit_many(
+            &origin,
+            &participants,
+            &cancel,
+            &pending,
+            || self.message(parent, &options),
+        ));
     }
     fn open(&self, parent: Option<WindowId>, options: &FileDialog) -> Option<Vec<PathBuf>> {
         self.log
@@ -335,7 +515,11 @@ impl OsShell for FakeOsShell {
             .push(format!("trashItem {}", path.display()));
         Ok(())
     }
-    fn trash_item_authorized(&self, path: &std::path::Path, admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>) -> Result<(), String> {
+    fn trash_item_authorized(
+        &self,
+        path: &std::path::Path,
+        admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>,
+    ) -> Result<(), String> {
         admit(&mut || self.trash_item(path))
     }
 }
@@ -407,27 +591,91 @@ impl Contents for FakeContents {
         Ok(b"\x89PNG".to_vec())
     }
 
-    fn print_to_pdf_owned(&self, _: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, options: IpcValue) -> Result<Vec<u8>, String> {
-        if cancel.is_cancelled() || pending.is_cancelled() { return Err("Print request expired.".into()); }
+    fn print_to_pdf_owned(
+        &self,
+        _: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        options: IpcValue,
+    ) -> Result<Vec<u8>, String> {
+        if cancel.is_cancelled() || pending.is_cancelled() {
+            return Err("Print request expired.".into());
+        }
         self.print_to_pdf(destination.view, options)
     }
-    fn print_to_pdf_existing_document(&self, binding: &shell_contract::ipc::NativeExistingDocumentBinding, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], options: IpcValue) -> Result<Vec<u8>, String> {
+    fn print_to_pdf_existing_document(
+        &self,
+        binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+        options: IpcValue,
+    ) -> Result<Vec<u8>, String> {
         let extra = additional.iter().collect::<Vec<_>>();
         let mut admitted = false;
-        shell_contract::hosts::synthetic::with_existing_document_save_extra(binding, participants, cancel, pending, &extra, &mut || { admitted = true; Ok(()) })?;
-        if !admitted { return Err("Print request expired.".into()); }
+        shell_contract::hosts::synthetic::with_existing_document_save_extra(
+            binding,
+            participants,
+            cancel,
+            pending,
+            &extra,
+            &mut || {
+                admitted = true;
+                Ok(())
+            },
+        )?;
+        if !admitted {
+            return Err("Print request expired.".into());
+        }
         self.print_to_pdf(binding.owner().view, options)
     }
-    fn print_to_pdf_owned_many_extra(&self, origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], options: IpcValue) -> Result<Vec<u8>, String> {
-        let mut owners = participants.to_vec(); owners.push(destination.clone());
+    fn print_to_pdf_owned_many_extra(
+        &self,
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+        options: IpcValue,
+    ) -> Result<Vec<u8>, String> {
+        let mut owners = participants.to_vec();
+        owners.push(destination.clone());
         let extra = additional.iter().collect::<Vec<_>>();
-        shell_contract::hosts::synthetic::with_owned_effect_many_extra(origin, &owners, cancel, pending, &extra, &mut || Ok(()))?;
+        shell_contract::hosts::synthetic::with_owned_effect_many_extra(
+            origin,
+            &owners,
+            cancel,
+            pending,
+            &extra,
+            &mut || Ok(()),
+        )?;
         self.print_to_pdf(destination.view, options)
     }
-    fn print_to_pdf_native_invocation(&self, document: &shell_contract::ipc::NativeInvocationDocument, owner: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, options: IpcValue) -> Result<Vec<u8>, String> {
+    fn print_to_pdf_native_invocation(
+        &self,
+        document: &shell_contract::ipc::NativeInvocationDocument,
+        owner: &shell_contract::ipc::NativeRequestOwner,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        options: IpcValue,
+    ) -> Result<Vec<u8>, String> {
         let mut options = Some(options);
         let mut admitted = None;
-        shell_contract::hosts::synthetic::with_native_invocation(document, owner, participants, cancel, pending, &mut || { admitted = options.take(); Ok(()) })?;
+        shell_contract::hosts::synthetic::with_native_invocation(
+            document,
+            owner,
+            participants,
+            cancel,
+            pending,
+            &mut || {
+                admitted = options.take();
+                Ok(())
+            },
+        )?;
         self.print_to_pdf(owner.view, admitted.ok_or("Print request expired.")?)
     }
     fn print_to_pdf(&self, view: ViewId, options: IpcValue) -> Result<Vec<u8>, String> {
@@ -580,10 +828,15 @@ impl Kit {
             views.retain(|existing| existing.view != sender.view);
             views.push(sender);
         }
-        let old = self.views.generations.lock().unwrap().insert(sender.view, shell_contract::runtime::RendererGeneration::new());
+        let old = self.views.generations.lock().unwrap().insert(
+            sender.view,
+            shell_contract::runtime::RendererGeneration::new(),
+        );
         if let Some(old) = old {
             old.revoke();
-            for listener in self.views.replacements.lock().unwrap().iter() { listener(sender.view, old.clone()); }
+            for listener in self.views.replacements.lock().unwrap().iter() {
+                listener(sender.view, old.clone());
+            }
         }
         sender
     }
@@ -591,7 +844,9 @@ impl Kit {
     /// The view is gone: its listeners run, as the shell runs them
     pub fn destroy(&self, view: ViewId) {
         self.views.views.lock().unwrap().retain(|s| s.view != view);
-        if let Some(generation) = self.views.generations.lock().unwrap().remove(&view) { generation.revoke(); }
+        if let Some(generation) = self.views.generations.lock().unwrap().remove(&view) {
+            generation.revoke();
+        }
         for listener in self.views.listeners.lock().unwrap().iter() {
             listener(view);
         }
@@ -635,29 +890,54 @@ pub fn start(
         request: None,
         cancel: CancelToken::default(),
         native: if sender.surface == Surface::Slides {
-            registry.views.as_ref().and_then(|views| views.renderer_generation(sender.view))
+            registry
+                .views
+                .as_ref()
+                .and_then(|views| views.renderer_generation(sender.view))
                 .map(|generation| shell_contract::ipc::NativeContext::with_renderer((), generation))
-        } else { None },
+        } else {
+            None
+        },
     };
     start_with_context(registry, cx, channel, args)
 }
 
 /// Invoke with an explicitly captured synthetic origin, never native attestation.
 pub fn start_with_owner(
-    registry: &TestRegistry, sender: Sender, channel: &str, args: Vec<IpcValue>,
-    owner: &shell_contract::ipc::NativeRequestOwner, cancel: CancelToken,
+    registry: &TestRegistry,
+    sender: Sender,
+    channel: &str,
+    args: Vec<IpcValue>,
+    owner: &shell_contract::ipc::NativeRequestOwner,
+    cancel: CancelToken,
 ) -> mpsc::Receiver<Result<IpcValue, IpcError>> {
     assert_eq!(sender.view, owner.view, "synthetic sender and owner differ");
-    assert!(owner.context.authority_ref::<shell_contract::hosts::synthetic::SyntheticNativeOrigin>().is_some(),
-        "an explicitly synthetic origin is required");
-    let cx = CallContext { sender, request: None, cancel, native: Some(owner.context.clone()) };
+    assert!(
+        owner
+            .context
+            .authority_ref::<shell_contract::hosts::synthetic::SyntheticNativeOrigin>()
+            .is_some(),
+        "an explicitly synthetic origin is required"
+    );
+    let cx = CallContext {
+        sender,
+        request: None,
+        cancel,
+        native: Some(owner.context.clone()),
+    };
     start_with_context(registry, cx, channel, args)
 }
 
 fn start_with_context(
-    registry: &TestRegistry, cx: CallContext, channel: &str, args: Vec<IpcValue>,
+    registry: &TestRegistry,
+    cx: CallContext,
+    channel: &str,
+    args: Vec<IpcValue>,
 ) -> mpsc::Receiver<Result<IpcValue, IpcError>> {
-    let (_, handler) = registry.handlers.get(channel).unwrap_or_else(|| panic!("no handler for {channel}"));
+    let (_, handler) = registry
+        .handlers
+        .get(channel)
+        .unwrap_or_else(|| panic!("no handler for {channel}"));
     let (tx, rx) = mpsc::channel();
     handler.call(
         &cx,
