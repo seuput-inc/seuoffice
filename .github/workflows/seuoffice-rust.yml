@@ -1,35 +1,33 @@
-name: seuoffice shell NSS validation
+name: seuoffice quit completion baseline validation
 on:
   workflow_dispatch:
     inputs:
       source_sha:
-        description: Exact reviewed source commit SHA
+        description: Exact reviewed baseline source commit SHA
         required: true
         type: string
 permissions:
   contents: read
 concurrency:
-  group: nss-validation-${{ inputs.source_sha }}
+  group: quit-completion-baseline-${{ inputs.source_sha }}
   cancel-in-progress: false
+env:
+  SOURCE_SHA: ${{ inputs.source_sha }}
+  SOURCE_BASE: cf98d4c9c64722d43f1876835de86d73ded7cf87
+  DEFINITION_BASE: 6c8f74e24c474898f5ff599a19f4579bb0b3ec13
 jobs:
-  nss:
+  baseline-red:
+    name: Direct completion unit, expected runtime RED only
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 15
     defaults:
       run:
+        shell: bash
         working-directory: source
-    container:
-      image: buildpack-deps@sha256:890e8b5c0040e1deff5cc7dc7b4414e67069f79e3301afc4ec5bd49d64ef13e5
-    env:
-      SOURCE_SHA: ${{ inputs.source_sha }}
-      IMAGE_DIGEST: sha256:890e8b5c0040e1deff5cc7dc7b4414e67069f79e3301afc4ec5bd49d64ef13e5
     steps:
       - name: Validate immutable source input
-        shell: bash
         working-directory: .
-        run: |
-          set -euo pipefail
-          test "$SOURCE_SHA" = cf98d4c9c64722d43f1876835de86d73ded7cf87
+        run: test "$SOURCE_SHA" = b129cf168b85488358493491c4161011cd76d9af
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
@@ -45,82 +43,209 @@ jobs:
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: 1.95.0
+      - name: Bind exact packet, parents, compiler, and correspondence limits
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/quit-results"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          definition = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'definition'
+          results = pathlib.Path(os.environ['RUNNER_TEMP']) / 'quit-results'
+          packet = pathlib.Path('tools/quit-completion-validation')
+          manifest_path = packet / 'quit-unit-manifest.json'
+          manifest_bytes = manifest_path.read_bytes()
+          manifest_sha = hashlib.sha256(manifest_bytes).hexdigest()
+          if manifest_sha != '8aba4dcabbf4addfad573677a2477185d0d183c61bd28c5899e7afef12d66314':
+              raise RuntimeError('packet manifest differs from the reviewed baseline')
+          manifest = json.loads(manifest_bytes)
+          paths = {name: packet / name for name in manifest['files']}
+          paths['completion.rs'] = pathlib.Path(manifest['actualProductSourcePath'])
+          paths['quit-completion-hosted-tests.rs'] = pathlib.Path('quit-completion-hosted-tests.rs')
+          observed = {}
+          for name, path in paths.items():
+              data = path.read_bytes()
+              actual = {'sha256': hashlib.sha256(data).hexdigest(), 'bytes': len(data)}
+              if actual != manifest['files'][name]:
+                  raise RuntimeError('reviewed packet bytes changed: ' + name)
+              observed[str(path)] = actual
+          source_sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          source_parent = subprocess.check_output(['git', 'rev-parse', 'HEAD^'], text=True).strip()
+          definition_sha = subprocess.check_output(['git', '-C', str(definition), 'rev-parse', 'HEAD'], text=True).strip()
+          definition_parent = subprocess.check_output(['git', '-C', str(definition), 'rev-parse', 'HEAD^'], text=True).strip()
+          if (source_sha != os.environ['SOURCE_SHA'] or source_parent != os.environ['SOURCE_BASE']
+                  or definition_sha != os.environ['GITHUB_SHA'] or definition_parent != os.environ['DEFINITION_BASE']):
+              raise RuntimeError('source or definition identity/parent mismatch')
+          changed_source = subprocess.check_output(['git', 'diff', '--name-only', source_parent, 'HEAD'], text=True).splitlines()
+          if set(changed_source) != {str(path) for path in paths.values()} | {str(manifest_path)}:
+              raise RuntimeError('source includes changes outside the six packet files')
+          changed_definition = subprocess.check_output(['git', '-C', str(definition), 'diff', '--name-only', definition_parent, 'HEAD'], text=True).splitlines()
+          if changed_definition != ['.github/workflows/seuoffice-rust.yml']:
+              raise RuntimeError('definition includes unrelated changes')
+          compiler = subprocess.check_output(['rustc', '-vV'], text=True)
+          (results / 'rustc-version.log').write_text(compiler)
+          if not compiler.startswith('rustc 1.95.0 '):
+              raise RuntimeError('compiler is not the pinned Rust 1.95.0')
+          caller = pathlib.Path(manifest['actualProductCallerPath'])
+          caller_sha = hashlib.sha256(caller.read_bytes()).hexdigest() if caller.exists() else None
+          core = pathlib.Path(manifest['corePostCorrespondence']['path'])
+          core_sha = hashlib.sha256(core.read_bytes()).hexdigest()
+          identity = {
+              'sourceSha': source_sha, 'sourceParent': source_parent,
+              'definitionSha': definition_sha, 'definitionParent': definition_parent,
+              'definitionSha256': hashlib.sha256((definition / '.github/workflows/seuoffice-rust.yml').read_bytes()).hexdigest(),
+              'manifestSha256': manifest_sha, 'packetFiles': observed,
+              'callerPublishedSha256': caller_sha,
+              'callerMatchesMainBefore': caller_sha == manifest['callerBeforeSha256'],
+              'callerMatchesMainAfter': caller_sha == manifest['callerAfterSha256'],
+              'publishedCoreThreadSha256': core_sha,
+              'coreThreadMatchesMainEvidence': core_sha == manifest['corePostCorrespondence']['fileSha256'],
+              'callerPatchApplied': False, 'wholeShellCompiled': False,
+              'actualFinalizerCoreThreadQuitIntegrationCompiled': False,
+              'scope': 'exact Completion module only; caller/CoreThread packet is correspondence evidence, not compiled integration'
+          }
+          (results / 'identity.json').write_text(json.dumps(identity, indent=2) + '\n')
+          print(json.dumps(identity, indent=2))
+          PY
+      - name: Directly compile the exact actual product module
+        run: |
+          set -euo pipefail
+          set +e
+          rustc --edition=2024 --test quit-completion-hosted-tests.rs -o "$RUNNER_TEMP/quit-results/completion-tests" > "$RUNNER_TEMP/quit-results/compiler.log" 2>&1
+          compile_status=$?
+          set -e
+          printf '%s\n' "$compile_status" > "$RUNNER_TEMP/quit-results/compiler-status.txt"
+          cat "$RUNNER_TEMP/quit-results/compiler.log"
+          test "$compile_status" -eq 0
+      - name: Collect unfiltered four-test runtime outcome
+        run: |
+          set -euo pipefail
+          set +e
+          "$RUNNER_TEMP/quit-results/completion-tests" --list --color never > "$RUNNER_TEMP/quit-results/test-list.log" 2>&1
+          list_status=$?
+          "$RUNNER_TEMP/quit-results/completion-tests" --test-threads=1 --color never > "$RUNNER_TEMP/quit-results/tests.log" 2>&1
+          test_status=$?
+          set -e
+          printf '%s\n' "$list_status" > "$RUNNER_TEMP/quit-results/list-status.txt"
+          printf '%s\n' "$test_status" > "$RUNNER_TEMP/quit-results/test-status.txt"
+          cat "$RUNNER_TEMP/quit-results/test-list.log" "$RUNNER_TEMP/quit-results/tests.log"
+      - name: Require compile success and exactly the frozen runtime RED
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, re
+          results = pathlib.Path(os.environ['RUNNER_TEMP']) / 'quit-results'
+          results.mkdir(parents=True, exist_ok=True)
+          receipt = {'verdict': 'NOT_VERIFIED', 'baselineRedObserved': False, 'productionGreen': False}
+          try:
+              identity = json.loads((results / 'identity.json').read_text())
+              manifest = json.loads(pathlib.Path('tools/quit-completion-validation/quit-unit-manifest.json').read_text())
+              expected = manifest['baselineExpected']
+              for label in ('compiler', 'list', 'test'):
+                  status_file = results / (label + '-status.txt')
+                  receipt[label + 'ExitCode'] = int(status_file.read_text()) if status_file.exists() else None
+              if receipt['compilerExitCode'] != expected['compileExitCode'] or receipt['listExitCode'] != 0:
+                  raise RuntimeError('compiler or test inventory failure is not a runtime reproduction')
+              if receipt['testExitCode'] != expected['testProcessExitCode']:
+                  raise RuntimeError('unexpected test process exit code')
+              failures = expected['runtimeAssertionFailures']
+              controls = expected['positiveControls']
+              if len(failures) != 2 or len(controls) != 2 or len(set(failures + controls)) != 4:
+                  raise RuntimeError('frozen baseline must contain two failures and two controls')
+              inventory = re.findall(r'^(\S+): test$', (results / 'test-list.log').read_text(), re.M)
+              expected_names = set(failures + controls)
+              if len(inventory) != 4 or set(inventory) != expected_names:
+                  raise RuntimeError('missing, extra, filtered, or empty test inventory')
+              text = (results / 'tests.log').read_text()
+              pairs = re.findall(r'^test (\S+) \.\.\. (ok|FAILED)$', text, re.M)
+              expected_results = {name: 'FAILED' for name in failures}
+              expected_results.update({name: 'ok' for name in controls})
+              if len(pairs) != 4 or dict(pairs) != expected_results:
+                  raise RuntimeError('runtime failures or positive controls differ from the frozen baseline')
+              blocks = re.findall(r'^---- (\S+) stdout ----\n(.*?)(?=^---- \S+ stdout ----|\Z)', text, re.M | re.S)
+              reason = expected['runtimeFailureReason']
+              if (len(blocks) != 2 or {name for name, _ in blocks} != set(failures)
+                      or any(reason not in body for _, body in blocks) or text.count(reason) != 2):
+                  raise RuntimeError('the two failures are not the expected runtime assertions')
+              if not re.search(r'^test result: FAILED\. 2 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out;', text, re.M):
+                  raise RuntimeError('unfiltered baseline summary mismatch')
+              receipt.update({
+                  'verdict': 'EXPECTED_BASELINE_RUNTIME_RED_VERIFIED',
+                  'baselineRedObserved': True, 'runtimeResults': dict(pairs),
+                  'sourceSha': identity['sourceSha'], 'definitionSha': identity['definitionSha'],
+                  'manifestSha256': identity['manifestSha256'],
+                  'scope': 'four standalone Completion tests only; not full app or formal proof'
+              })
+          except Exception as error:
+              receipt['error'] = str(error)
+              raise
+          finally:
+              (results / 'baseline-verdict.json').write_text(json.dumps(receipt, indent=2) + '\n')
+              print(json.dumps(receipt, indent=2))
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: quit-completion-baseline-${{ github.run_id }}
+          path: ${{ runner.temp }}/quit-results
+          if-no-files-found: error
+  frozen-prepush:
+    name: Genuine frozen prepush, broader than the isolated RED unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+    steps:
+      - name: Validate immutable source input
+        working-directory: .
+        run: test "$SOURCE_SHA" = b129cf168b85488358493491c4161011cd76d9af
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          path: definition
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: source
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version-file: source/.nvmrc
-      - name: Record definition and source identity
-        shell: bash
+      - name: Run unchanged policy against both actual base scopes
         run: |
           set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/quit-prepush"
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse HEAD^)" = "$SOURCE_BASE"
           test "$(git -C "$GITHUB_WORKSPACE/definition" rev-parse HEAD)" = "$GITHUB_SHA"
-          mkdir -p "$RUNNER_TEMP/nss-results"
-          printf 'definition_sha=%s\nsource_sha=%s\nimage_digest=%s\n' "$GITHUB_SHA" "$SOURCE_SHA" "$IMAGE_DIGEST" | tee "$RUNNER_TEMP/nss-results/identity.txt"
-          sha256sum "$GITHUB_WORKSPACE/definition/.github/workflows/seuoffice-rust.yml" | tee "$RUNNER_TEMP/nss-results/definition.sha256"
-          sha256sum tools/nss-helper/{contract.json,produce.py,patch_nss.py,test_patch.py,launcher.rs,hosted-validation.py,hosted-proof.py,external-fixture.py,fixture_utils.py,test_fixture_utils.py,test_token_wrapper.c,test_softhsm_init.c} crates/shell/src/host/d2/pdf/crypto/{nss_export_helper.c,nss_export_helper_test.c,worker/nss_bundle.rs,worker/nss_exchange.rs,worker/nss_bridge.rs} crates/shell/src/{signer_child_guard.rs,index_worker_process.rs} crates/shell/{nss_manifest.rs,nss_build.rs,build.rs} | tee "$RUNNER_TEMP/nss-results/sources.sha256"
-          printf '%s  %s\n' dea540c84dd6753db67bc42da5bc5a2847d078c5f854136157dd4b562ae81d44 tools/nss-helper/hosted-validation.py 64c82ffe03995e6a518998c90ae354920473d48e0f35caaa01afadd5b938c4d6 tools/prepush.mjs | sha256sum -c -
-          test "$(git merge-base HEAD 58c2e103b307481d16de808ead697db1b03d9de9)" = 58c2e103b307481d16de808ead697db1b03d9de9
-          test "$(git -C "$GITHUB_WORKSPACE/definition" merge-base HEAD c572e34152811bf96657419d36cb7e919eb25695)" = c572e34152811bf96657419d36cb7e919eb25695
-      - name: Run genuine frozen prepush for both reviewed trees
-        shell: bash
-        run: |
-          set -euo pipefail
+          test "$(git -C "$GITHUB_WORKSPACE/definition" rev-parse HEAD^)" = "$DEFINITION_BASE"
+          printf '%s  %s\n' 64c82ffe03995e6a518998c90ae354920473d48e0f35caaa01afadd5b938c4d6 tools/prepush.mjs | sha256sum -c -
+          printf 'source_sha=%s\nsource_base=%s\ndefinition_sha=%s\ndefinition_base=%s\n' "$SOURCE_SHA" "$SOURCE_BASE" "$GITHUB_SHA" "$DEFINITION_BASE" > "$RUNNER_TEMP/quit-prepush/identity.txt"
           source_status=0
           (
             npm ci --ignore-scripts &&
-            node tools/prepush.mjs --base 58c2e103b307481d16de808ead697db1b03d9de9
-          ) 2>&1 | tee "$RUNNER_TEMP/nss-results/prepush-source.log" || source_status=$?
+            node tools/prepush.mjs --base "$SOURCE_BASE"
+          ) 2>&1 | tee "$RUNNER_TEMP/quit-prepush/prepush-source.log" || source_status=$?
           definition_status=0
           (
             cd "$GITHUB_WORKSPACE/definition" &&
             npm ci --ignore-scripts &&
-            node "$GITHUB_WORKSPACE/source/tools/prepush.mjs" --base c572e34152811bf96657419d36cb7e919eb25695
-          ) 2>&1 | tee "$RUNNER_TEMP/nss-results/prepush-definition.log" || definition_status=$?
-          printf 'source_status=%s\ndefinition_status=%s\n' "$source_status" "$definition_status" | tee "$RUNNER_TEMP/nss-results/prepush-status.txt"
+            node "$GITHUB_WORKSPACE/source/tools/prepush.mjs" --base "$DEFINITION_BASE"
+          ) 2>&1 | tee "$RUNNER_TEMP/quit-prepush/prepush-definition.log" || definition_status=$?
+          printf 'source_status=%s\ndefinition_status=%s\n' "$source_status" "$definition_status" | tee "$RUNNER_TEMP/quit-prepush/status.txt"
           test "$source_status" -eq 0
           test "$definition_status" -eq 0
-      - name: Verify finite fixture input and owned child cleanup
-        shell: bash
-        run: |
-          set -euo pipefail
-          export TMPDIR="$RUNNER_TEMP"
-          python3 -B tools/nss-helper/test_fixture_utils.py 2>&1 | tee "$RUNNER_TEMP/nss-results/fixture-tests.log"
-      - name: Prepare pinned helper tools and source archives
-        shell: bash
-        run: |
-          set -euo pipefail
-          export HOME="$RUNNER_TEMP/nss-home"
-          mkdir -p "$HOME" "$RUNNER_TEMP/nss-inputs" "$RUNNER_TEMP/nss-tools"
-          curl -fsSL https://archive.ubuntu.com/ubuntu/pool/universe/p/patchelf/patchelf_0.18.0-1.1build1_amd64.deb -o "$RUNNER_TEMP/nss-inputs/patchelf.deb"
-          echo '962a43e33cd56061522554898557a038ccbb8aa4e1e0f421b2d6f6adf1f80c60  '"$RUNNER_TEMP/nss-inputs/patchelf.deb" | sha256sum -c -
-          dpkg-deb -x "$RUNNER_TEMP/nss-inputs/patchelf.deb" "$RUNNER_TEMP/nss-tools"
-          curl -fsSL 'https://security.ubuntu.com/ubuntu/pool/main/b/bison/bison_3.8.2+dfsg-1ubuntu0.24.04.1_amd64.deb' -o "$RUNNER_TEMP/nss-inputs/bison.deb"
-          curl -fsSL 'https://security.ubuntu.com/ubuntu/pool/main/g/gawk/gawk_5.2.1-2ubuntu0.1_amd64.deb' -o "$RUNNER_TEMP/nss-inputs/gawk.deb"
-          curl -fsSL 'https://archive.ubuntu.com/ubuntu/pool/main/libs/libsigsegv/libsigsegv2_2.14-1ubuntu2_amd64.deb' -o "$RUNNER_TEMP/nss-inputs/libsigsegv.deb"
-          printf '%s  %s\n' 9d75084d1293f68f3c1a2ee677dea5baa4e010bac2d4c455d8e23177e97aa353 "$RUNNER_TEMP/nss-inputs/bison.deb" baaf6853bea746485bff4ae0e506599b3c5093ebe6ec9b9584e4272f94f75b93 "$RUNNER_TEMP/nss-inputs/gawk.deb" 889f338bea4ebfd999939d946da4ac0a45668264a5aae78e023feeb0529505b8 "$RUNNER_TEMP/nss-inputs/libsigsegv.deb" | sha256sum -c -
-          dpkg -i "$RUNNER_TEMP/nss-inputs/libsigsegv.deb"
-          dpkg -i "$RUNNER_TEMP/nss-inputs/gawk.deb" "$RUNNER_TEMP/nss-inputs/bison.deb"
-          sha256sum "$(command -v bison)" "$(command -v gawk)" "$RUNNER_TEMP/nss-tools/usr/bin/patchelf" | tee "$RUNNER_TEMP/nss-results/additional-tools.sha256"
-          curl -fsSL 'https://github.com/opendnssec/opendnssec/releases/download/2.1.14/softhsm-2.6.1.tar.gz' -o "$RUNNER_TEMP/nss-inputs/softhsm-2.6.1.tar.gz"
-          echo '61249473054bcd1811519ef9a989a880a7bdcc36d317c9c25457fc614df475f2  '"$RUNNER_TEMP/nss-inputs/softhsm-2.6.1.tar.gz" | sha256sum -c -
-          python3 - <<'PY'
-          import json, os, pathlib, urllib.request
-          root = pathlib.Path(os.environ['RUNNER_TEMP'])
-          pins = json.loads(pathlib.Path('tools/nss-helper/contract.json').read_text())['sources']
-          for name in ('nss', 'sqlite', 'glibc'):
-              pin = pins[name]
-              urllib.request.urlretrieve(pin['url'], root / 'nss-inputs' / pin['filename'])
-          PY
-      - name: Build and validate the NSS artifact set
-        shell: bash
-        run: |
-          set -euo pipefail
-          export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
-          export HOME="$RUNNER_TEMP/nss-home"
-          python3 tools/nss-helper/hosted-validation.py --image-digest "$IMAGE_DIGEST" --inputs "$RUNNER_TEMP/nss-inputs" --patchelf "$RUNNER_TEMP/nss-tools/usr/bin/patchelf" --work "$RUNNER_TEMP/nss-work" --output "$RUNNER_TEMP/nss-output" --results "$RUNNER_TEMP/nss-results" --fixture-setup tools/nss-helper/external-fixture.py 2>&1 | tee "$RUNNER_TEMP/nss-results/validation.log"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: nss-validation-${{ github.run_id }}
-          path: ${{ runner.temp }}/nss-results
+          name: quit-completion-frozen-prepush-${{ github.run_id }}
+          path: ${{ runner.temp }}/quit-prepush
           if-no-files-found: error
