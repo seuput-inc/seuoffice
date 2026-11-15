@@ -1,0 +1,35 @@
+{
+  "schema": "seuoffice-nss-export-diagnostics-input/v1",
+  "sourceParent": "cf98d4c9c64722d43f1876835de86d73ded7cf87",
+  "definitionParent": "6c8f74e24c474898f5ff599a19f4579bb0b3ec13",
+  "files": [
+    {
+      "path": "tools/nss-helper/external-fixture.py",
+      "packet": "external-fixture.py",
+      "sha256": "d1c51b4f7d9d8b62c372ba55c36587527b3db505007fd51622b0ee63700a3a3f",
+      "size": 5900
+    },
+    {
+      "path": "tools/nss-helper/fixture_utils.py",
+      "packet": "fixture_utils.py",
+      "sha256": "c2d8fa83fedfba543828d002697eabc775fd4ada823187a6a8aaaa63920b8351",
+      "size": 2363
+    },
+    {
+      "path": "tools/nss-helper/test_fixture_utils.py",
+      "packet": "test_fixture_utils.py",
+      "sha256": "e75a244548b6dd8ff14a1eaa5ccd56a190699700245a9de0cb690c15d107bfc2",
+      "size": 4359
+    }
+  ],
+  "oldRun": "43704421119",
+  "oldArtifact": "14157433699",
+  "oldArtifactSha256": "e55a2414e634c074c518ffe4ac083df33161f57e64507a052f7c460d12b139b1",
+  "oldFailureExactCause": "UNKNOWN",
+  "scope": "Controlled synthetic fixture only; same token and PIN fd for export; all fixture subprocesses phase/status/bounded stderr via existing helper; stdout/args/PIN never logged",
+  "newTestsRun": false,
+  "localRustRun": false,
+  "newLocalQueue": false,
+  "sourceFileCount": 3,
+  "quitFilesIncluded": false
+}

@@ -1,0 +1,29 @@
+{
+  "schema": "seuoffice-nss-external-export-diagnosis/v1",
+  "observedFailure": {
+    "run": "43704421119",
+    "source": "cf98d4c9c64722d43f1876835de86d73ded7cf87",
+    "definition": "6c8f74e24c474898f5ff599a19f4579bb0b3ec13",
+    "artifact": "14157433699",
+    "artifactSha256": "e55a2414e634c074c518ffe4ac083df33161f57e64507a052f7c460d12b139b1",
+    "exportLine": "external-fixture.py:86",
+    "exitCode": 255,
+    "stderr": "not preserved by this invocation in original run",
+    "exactRuntimeErrorCause": "UNKNOWN",
+    "observedProgress": "init-token, modutil, both synthetic token certificate creations, and token key listing completed before export failure",
+    "prepush": { "source": 0, "definition": 0 }
+  },
+  "pinnedSourceEvidence": {
+    "url": "https://raw.githubusercontent.com/nss-dev/nss/NSS_3_108_RTM/cmd/certutil/certutil.c",
+    "defaultSlot": "line2758 slotname=internal",
+    "explicitTokenSelection": "lines2868-2872 use-h to select token",
+    "lookupAuthentication": "lines559-641 listCerts authenticates the selected non-friendly token before named certificate lookup",
+    "manual": "https://fedoraproject.org/wiki/NSS_Tools_%3A_certutil"
+  },
+  "sourceContractIssue": "External token creation and key listing select SyntheticExternal and use the bounded PIN fd; failed export selected the default internal slot and omitted the PIN fd",
+  "candidateChange": "Select the same SyntheticExternal token and PIN-fd helper for export; opt in the entire controlled external fixture boundary to existing shared phase/returncode/bounded stderr diagnostics, never stdout/arguments/PIN input",
+  "candidateEffectRuntimeVerified": false,
+  "abiMismatchClaim": false,
+  "nativeUserStoreOrProductLauncherChanged": false,
+  "unchangedInputRerun": false
+}
