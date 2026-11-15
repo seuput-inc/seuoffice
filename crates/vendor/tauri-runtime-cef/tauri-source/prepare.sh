@@ -14,7 +14,7 @@ patch_file="$here/0001-window-builder-runtime-access.patch"
 [ "$(sha256 "$patch_file")" = "c8f75c9eb064541ea0e5f5d60d87b2c3dda2f53ec566a4509bd71e056927166e" ] || { echo 'Tauri patch checksum mismatch' >&2; exit 1; }
 work=$(mktemp -d "$OMP_SCRATCH_DIR/tauri-source.XXXXXXXX")
 trap 'status=$?; if [ "$status" -ne 0 ]; then echo "Failed Tauri stage retained at $work" >&2; fi' EXIT HUP INT TERM
-tar -xzf "$TAURI_CRATE_ARCHIVE" -C "$work"
+tar -xzf - -C "$work" < "$TAURI_CRATE_ARCHIVE"
 source_dir="$work/tauri-3.0.0-alpha.6"
 [ -f "$source_dir/Cargo.toml" ] || { echo 'Unexpected Tauri archive layout' >&2; exit 1; }
 (cd "$source_dir" && patch -t -N -p1 < "$patch_file")
