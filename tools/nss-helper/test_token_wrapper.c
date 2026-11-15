@@ -2,6 +2,7 @@
  * certificates and export are delegated to the real provider. The fixed PIN
  * is synthetic test data; no real token or hardware PIN is consulted. */
 #define _POSIX_C_SOURCE 200809L
+#include <errno.h>
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,8 +37,15 @@ static CK_RV session_info(CK_SESSION_HANDLE session, CK_SESSION_INFO_PTR info) {
 }
 static CK_RV login(CK_SESSION_HANDLE session, CK_USER_TYPE user, CK_UTF8CHAR_PTR pin, CK_ULONG length) {
     CK_RV rv;
+    int saved_errno;
     if (!protected_enabled()) return upstream->C_Login(session, user, pin, length);
+    saved_errno = errno;
+    fprintf(stderr, "synthetic-login reached\n");
+    errno = saved_errno;
     { static CK_UTF8CHAR synthetic_pin[] = "1234"; rv = upstream->C_Login(session, user, synthetic_pin, sizeof synthetic_pin - 1); }
+    saved_errno = errno;
+    fprintf(stderr, "synthetic-login rv=%lu\n", (unsigned long)rv);
+    errno = saved_errno;
     if (rv == CKR_OK || rv == CKR_USER_ALREADY_LOGGED_IN) synthetic_logged_in = 1;
     return rv;
 }

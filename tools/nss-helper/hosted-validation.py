@@ -80,7 +80,7 @@ def main():
     run(['python3', HERE / 'produce.py', '--nss', inputs / pins['nss']['filename'],
          '--sqlite', inputs / pins['sqlite']['filename'], '--glibc', inputs / pins['glibc']['filename'],
          '--toolchain', config, '--work', a.work, '--output', a.output,
-         '--arch', 'x86_64', '--kernel-min', '3.2.0'])
+         '--arch', 'x86_64', '--kernel-min', '3.2.0', '--synthetic-fixture-diagnostics'])
     callback_receipt_path = a.work / 'nss-helper-test-receipt.json'
     callback_receipt = json.loads(callback_receipt_path.read_text())
     if (callback_receipt.get('format') != 1 or callback_receipt.get('status') != 'passed'

@@ -45,6 +45,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef NSS_SYNTHETIC_DIAGNOSTICS
+#include <stdio.h>
+#include <prerror.h>
+#endif
 #include <cert.h>
 #include <certdb.h>
 #include <nss.h>
@@ -54,6 +58,15 @@
 #include <secitem.h>
 #include <secoidt.h>
 #include <secport.h>
+
+#ifdef NSS_SYNTHETIC_DIAGNOSTICS
+#define DIAG(phase) do { int error = PORT_GetError(); \
+    int os_error = PR_GetOSError(), saved_errno = errno; \
+    fprintf(stderr, "nss-helper phase=" phase " error=%d\n", error); \
+    PR_SetError(error, os_error); errno = saved_errno; } while (0)
+#else
+#define DIAG(phase) ((void)0)
+#endif
 
 #define VERSION 2
 #define EXPORT_OP 1
@@ -216,39 +229,47 @@ static unsigned char export_identity(const char *dir, const char *nick, struct p
     SEC_PKCS12ExportContext *context = NULL;
     SEC_PKCS12SafeInfo *key_safe, *cert_safe;
     int initialized = 0;
-    if (dir_len > SIZE_MAX - 5) goto done;
-    db = malloc(dir_len + 5); if (!db) goto done;
+#ifdef NSS_SYNTHETIC_DIAGNOSTICS
+    { int saved_errno = errno; fprintf(stderr, "nss-helper phase=export_entry\n"); errno = saved_errno; }
+#endif
+    if (dir_len > SIZE_MAX - 5) { DIAG("directory_overflow"); goto done; }
+    db = malloc(dir_len + 5); if (!db) { DIAG("database_alloc"); goto done; }
     memcpy(db, "sql:", 4); memcpy(db + 4, dir, dir_len + 1);
     PK11_SetPasswordFunc(password_callback);
-    if (NSS_Initialize(db, "", "", "secmod.db", 0) != SECSuccess) { status = classify_error(); goto done; }
+    if (NSS_Initialize(db, "", "", "secmod.db", 0) != SECSuccess) { DIAG("initialize"); status = classify_error(); goto done; }
     initialized = 1;
     PORT_SetUCS2_ASCIIConversionFunction(unicode_callback);
-    internal = PK11_GetInternalKeySlot(); if (!internal) { status = classify_error(); goto done; }
-    if (PK11_Authenticate(internal, PR_TRUE, store) != SECSuccess) { status = LOCKED; goto done; }
+    internal = PK11_GetInternalKeySlot(); if (!internal) { DIAG("internal_slot"); status = classify_error(); goto done; }
+    if (PK11_Authenticate(internal, PR_TRUE, store) != SECSuccess) { DIAG("authenticate"); status = LOCKED; goto done; }
     certs = PK11_FindCertsFromNickname(nick, store);
-    if (!certs) { status = classify_error(); goto done; }
-    if (CERT_FilterCertListForUserCerts(certs) != SECSuccess || CERT_LIST_EMPTY(certs)) { status = classify_error(); goto done; }
-    if (PK11_GenerateRandom(random, sizeof random) != SECSuccess) { status = classify_error(); goto done; }
+    if (!certs) { DIAG("find"); status = classify_error(); goto done; }
+    if (CERT_FilterCertListForUserCerts(certs) != SECSuccess) { DIAG("filter"); status = classify_error(); goto done; }
+    if (CERT_LIST_EMPTY(certs)) { DIAG("filter_empty"); status = classify_error(); goto done; }
+    if (PK11_GenerateRandom(random, sizeof random) != SECSuccess) { DIAG("random"); status = classify_error(); goto done; }
     for (i = 0; i < sizeof random; ++i) { generated[2*i] = hex[random[i] >> 4]; generated[2*i+1] = hex[random[i] & 15]; }
     generated[64] = 0;
     pass.type = siBuffer; pass.data = (unsigned char *)generated; pass.len = 64;
-    if (!CERT_LIST_HEAD(certs)->cert) goto done;
+    if (!CERT_LIST_HEAD(certs)->cert) { DIAG("head_cert_null"); goto done; }
     slot = CERT_LIST_HEAD(certs)->cert->slot;
-    if (!slot) goto done;
+    if (!slot) { DIAG("head_slot_null"); goto done; }
     context = SEC_PKCS12CreateExportContext(NULL, NULL, slot, store);
-    if (!context) { status = classify_error(); goto done; }
-    if (SEC_PKCS12AddPasswordIntegrity(context, &pass, PK11_IsFIPS() ? SEC_OID_HMAC_SHA256 : SEC_OID_SHA256) != SECSuccess) { status = classify_error(); goto done; }
+    if (!context) { DIAG("context"); status = classify_error(); goto done; }
+    if (SEC_PKCS12AddPasswordIntegrity(context, &pass, PK11_IsFIPS() ? SEC_OID_HMAC_SHA256 : SEC_OID_SHA256) != SECSuccess) { DIAG("integrity"); status = classify_error(); goto done; }
     for (node = CERT_LIST_HEAD(certs); !CERT_LIST_END(node, certs); node = CERT_LIST_NEXT(node)) {
         CERTCertificate *cert = node->cert;
-        if (!cert || !cert->slot) goto done;
+        if (!cert || !cert->slot) { DIAG("cert_or_slot_null"); goto done; }
         key_safe = SEC_PKCS12CreateUnencryptedSafe(context);
+        if (!key_safe) DIAG("key_safe");
         cert_safe = SEC_PKCS12CreatePasswordPrivSafe(context, &pass, SEC_OID_AES_128_CBC);
-        if (!key_safe || !cert_safe || SEC_PKCS12AddCertAndKey(context, cert_safe, NULL, cert,
+        if (!cert_safe) DIAG("cert_safe");
+        if (!key_safe || !cert_safe) { status = classify_error(); goto done; }
+        if (SEC_PKCS12AddCertAndKey(context, cert_safe, NULL, cert,
                 CERT_GetDefaultCertDB(), key_safe, NULL, PR_TRUE, &pass, SEC_OID_AES_256_CBC) != SECSuccess) {
-            status = classify_error(); goto done;
+            DIAG("add_cert_key"); status = classify_error(); goto done;
         }
     }
-    if (SEC_PKCS12Encode(context, output_callback, output) != SECSuccess || output->failed || !output->len) { status = classify_error(); goto done; }
+    if (SEC_PKCS12Encode(context, output_callback, output) != SECSuccess) { DIAG("encode"); status = classify_error(); goto done; }
+    if (output->failed || !output->len) { DIAG("output_empty_or_failed"); status = classify_error(); goto done; }
     status = OK;
 done:
     if (context) SEC_PKCS12DestroyExportContext(context);

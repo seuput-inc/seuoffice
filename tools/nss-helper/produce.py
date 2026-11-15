@@ -160,6 +160,7 @@ def main():
     p.add_argument('--output', required=True, type=Path)
     p.add_argument('--arch', choices=['x86_64', 'aarch64'], required=True)
     p.add_argument('--kernel-min', required=True)
+    p.add_argument('--synthetic-fixture-diagnostics', action='store_true')
     a = p.parse_args()
     for name, (filename, expected, _) in PINS.items():
         f = getattr(a, name).resolve(strict=True)
@@ -227,7 +228,8 @@ def main():
     shutil.copyfile(HELPER, program / 'nss_export_helper.c')
     (program / 'manifest.mn').write_text('CORE_DEPTH = ../..\nMODULE = nss\nCSRCS = nss_export_helper.c\nREQUIRES = dbm seccmd\nPROGRAM = seu-nss-export\n')
     (program / 'Makefile').write_text('include manifest.mn\ninclude $(CORE_DEPTH)/coreconf/config.mk\ninclude ../platlibs.mk\ninclude $(CORE_DEPTH)/coreconf/rules.mk\ninclude ../platrules.mk\n')
-    run([make, '-j2', 'USE_SYSTEM_ZLIB=', 'USE_STATIC_LIBS=1'], program, nenv)
+    helper_flags = ['XCFLAGS=-DNSS_SYNTHETIC_DIAGNOSTICS'] if a.synthetic_fixture_diagnostics else []
+    run([make, '-j2', 'USE_SYSTEM_ZLIB=', 'USE_STATIC_LIBS=1', *helper_flags], program, nenv)
     helper = one((modified / 'dist').glob('*/bin/seu-nss-export'), 'helper')
     libdir = one((modified / 'dist').glob('*/lib'), 'NSS libdir')
     glibclib = one(sysroot.glob('**/libc.so.6'), 'libc')
@@ -324,6 +326,8 @@ def main():
     abi = {'target': a.arch + '-unknown-linux-gnu', 'kernel_min': a.kernel_min,
            'glibc': '2.39-5-ge0910f1d3278f05439fb434ee528fc9be1b6bd5e',
            'flags': 'BUILD_OPT=1 USE_64=1 USE_STATIC_LIBS=1 GLIBC_CFLAGS=-g,-O2,-U_FORTIFY_SOURCE GLIBC_CONFIG=--without-selinux SYSROOT_CRT_PREFIX=1'}
+    if a.synthetic_fixture_diagnostics:
+        abi['flags'] += ' XCFLAGS=-DNSS_SYNTHETIC_DIAGNOSTICS'
     (out / 'licenses').mkdir()
     notice_specs = [
         ('nss', nss_a / 'COPYING', 'nss.txt', PINS['nss'][2] + '#nss/COPYING'),
