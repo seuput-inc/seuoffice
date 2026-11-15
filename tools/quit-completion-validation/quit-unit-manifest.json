@@ -1,6 +1,6 @@
 {
   "schema": "seuoffice-quit-completion-validation-input/v1",
-  "phase": "baseline-before-drop-guard",
+  "phase": "drop-guard-after-observed-baseline-red",
   "sourceKind": "exact Main candidate working-tree unit; not a compiled product commit",
   "actualProductSourcePath": "crates/shell/src/host/quit/completion.rs",
   "actualProductCallerPath": "crates/shell/src/host/quit.rs",
@@ -21,8 +21,8 @@
       "bytes": 1054
     },
     "completion.rs": {
-      "sha256": "8bf247896195f3637909c3f929bf6e1697a7458d1f446fd48fa4eb05cae31da9",
-      "bytes": 2649
+      "sha256": "b83827de22896245f5c6f7adb9d3229d22e54f32b1d51f9da476def0574c2c44",
+      "bytes": 2936
     },
     "quit-completion-hosted-tests.rs": {
       "sha256": "ad897c92d8aab9e7c105a947f4c0892e82aeefde3e08e9fe8d204f7c4423dda7",
@@ -52,8 +52,8 @@
     ],
     "runtimeFailureReason": "assertion failed: matches!(receive.try_recv(), Ok(Err(_)))"
   },
-  "baselineRedObserved": false,
-  "behavioralDropGuardApplied": false,
+  "baselineRedObserved": true,
+  "behavioralDropGuardApplied": true,
   "fixGate": "real hosted compile success and exactly these runtime failures before modifying guard",
   "forbiddenClaims": [
     "whole shell compilation",
@@ -62,5 +62,31 @@
     "Windows lag resolution",
     "unbounded proof"
   ],
-  "rootAuthorization": "hub-office-existing-publisher-next-quit-unit-approved-20261115-1"
+  "rootAuthorization": "hub-office-existing-publisher-next-quit-unit-approved-20261115-1",
+  "observedBaseline": {
+    "run": "43706883391",
+    "source": "b129cf168b85488358493491c4161011cd76d9af",
+    "definition": "5ddd15726d2bf821ed761086f1904f4764ed642f",
+    "artifact": "14159080654",
+    "artifactSha256": "727f479abf12b1a9640346c872b60fbfc412b46e0d184919208300bb6ef80d37",
+    "compilerExitCode": 0,
+    "testExitCode": 101,
+    "exactExpectedLossFailures": 2,
+    "positiveControlsPassed": 2,
+    "broaderPrepushSourceStatus": 1,
+    "broaderPrepushDefinitionStatus": 0,
+    "broaderPrepushFailure": "Missing pinned crates/.rhwp-source/v0.9.0/Cargo.toml; cargo fmt target discovery failure; no policy bypass"
+  },
+  "greenExpected": {
+    "compileExitCode": 0,
+    "testProcessExitCode": 0,
+    "passed": 4,
+    "failed": 0,
+    "ignored": 0,
+    "filtered": 0,
+    "sameFourTestBodiesSha256": "49bf432e1a957fbb721705ee5bdabd9bd6caea131419dc6dd54dec7eba868a78"
+  },
+  "behaviorChange": "Option<F> owns original callback; finish takes it before invocation; Drop invokes an unresolved callback once with Err; retained callback remains pending",
+  "sourceParent": "b129cf168b85488358493491c4161011cd76d9af",
+  "definitionParent": "5ddd15726d2bf821ed761086f1904f4764ed642f"
 }

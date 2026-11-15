@@ -1,14 +1,23 @@
 pub(super) struct Completion<F: FnOnce(Result<(), String>)> {
-    done: F,
+    done: Option<F>,
 }
 
 impl<F: FnOnce(Result<(), String>)> Completion<F> {
     pub(super) fn new(done: F) -> Self {
-        Self { done }
+        Self { done: Some(done) }
     }
 
-    pub(super) fn finish(self, result: Result<(), String>) {
-        (self.done)(result);
+    pub(super) fn finish(mut self, result: Result<(), String>) {
+        let done = self.done.take().unwrap();
+        done(result);
+    }
+}
+
+impl<F: FnOnce(Result<(), String>)> Drop for Completion<F> {
+    fn drop(&mut self) {
+        if let Some(done) = self.done.take() {
+            done(Err("session flush completion was discarded".into()));
+        }
     }
 }
 
