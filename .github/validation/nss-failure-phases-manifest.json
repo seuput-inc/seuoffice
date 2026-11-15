@@ -1,0 +1,73 @@
+{
+  "schema": "seuoffice-nss-failure-phases/v1",
+  "sourceParent": "4e30e7d08f223d2e4cc307599c66ba4d16758f9a",
+  "definitionParent": "dd1564724ffec7d6e571db0fa3652113c1163c2d",
+  "frozenPolicySourceBase": "54d63f2eb1d9b09c64e8afe70a324cad21863101",
+  "frozenPolicyDefinitionBase": "0c4de3f8d29b273a50663b772ed97f2a1867812f",
+  "files": [
+    {
+      "path": "crates/shell/src/host/d2/pdf/crypto/nss_export_helper.c",
+      "baseObservedSha256": "e5e5db01c7dd25fa80e080e32454af9ea4447902190872e2126d201625abe0ca",
+      "sha256": "ed0f4f75e2f9782624e04f0c74dbdba46f01585d82b1ae53aa46a5f60f8acb85",
+      "size": 14643,
+      "packet": "nss_export_helper.c"
+    },
+    {
+      "path": "tools/nss-helper/produce.py",
+      "baseObservedSha256": "939d8bdb415bf18d359b5932721e94e186561b6325d4a6cfed898d74bd811762",
+      "sha256": "c53b72400116bc6a9751fede0f0e0a8e9c2b8ef9a52f81c2e5d540d263690361",
+      "size": 21943,
+      "packet": "produce.py"
+    },
+    {
+      "path": "tools/nss-helper/hosted-validation.py",
+      "baseObservedSha256": "8e934995b8a0760dfd571a5814c6de4b047dcfd7af435bd39d3c9298bd5e294c",
+      "sha256": "0dd040cab61234d77aad706a671edb8801bdf8344a764b39326138b1c3e97307",
+      "size": 12759,
+      "packet": "hosted-validation.py"
+    },
+    {
+      "path": "tools/nss-helper/test_token_wrapper.c",
+      "baseObservedSha256": "32b1a07b392a7179d5cc1fc7c1e46b0d6ca06ec6e29fa623ba0422e80efe6807",
+      "sha256": "45cd47f5dc8c34ffb54e5879d4eca640ac3cb9932dfc759b706d98369f070043",
+      "size": 3080,
+      "packet": "test_token_wrapper.c"
+    }
+  ],
+  "observedFailure": {
+    "run": 43714136670,
+    "source": "4e30e7d08f223d2e4cc307599c66ba4d16758f9a",
+    "definition": "dd1564724ffec7d6e571db0fa3652113c1163c2d",
+    "nativeArtifact": 14161862912,
+    "nativeSha256": "0684108b808257869fa09997330f37595bcac962a323110293a9369cc7f943aa",
+    "returncode": 1,
+    "status": 2,
+    "prompts": 1,
+    "protectedPhaseStderr": "empty",
+    "fixtureTestsPassed": 10,
+    "sourcePrepush": 1,
+    "definitionPrepush": 0,
+    "cause": "unknown"
+  },
+  "observationOnly": true,
+  "diagnosticBuild": {
+    "optIn": "produce.py --synthetic-fixture-diagnostics from hosted-validation.py only",
+    "compileFlag": "XCFLAGS=-DNSS_SYNTHETIC_DIAGNOSTICS",
+    "default": "helper diagnostic code and stdio guarded by #ifdef, no runtime switch; default producer flags unchanged",
+    "upstreamHook": "NSS_3_108_RTM/coreconf/command.mk:15-16 and rules.mk:279-287, staticread only",
+    "output": "fixed entry/failed-phase literals and integer NSS error; synthetic provider fixed login reach/CK_RV; no values from user or protocol",
+    "errorState": "preserves PR error/os-error and errno around helper failure logging, errno around entry and provider logging",
+    "binaryEquivalenceObserved": false
+  },
+  "retainedV3Inputs": {
+    "proofSha256": "eb101d86a96f4338cbc5452460f6488926a104202c6bc35928398a5d894ef86d",
+    "testsSha256": "60f2cdeb14d039fc940e2a81bf2f103263422eba9fcf76e22ff803e3ff32673f",
+    "bundleSha256": "99823ee7b85e5ef82b2569d2b9993e3e6aaab2c4913721c86895a5638d38d21f",
+    "fixtureTests": 10,
+    "stderr": "same concurrent drain through EOF, bounded16KiB, original-byte interval-union redaction"
+  },
+  "unchanged": "protocol/status assertions/timeouts/helper crypto and export ordering/launcher and fork_exec/provider crypto/PIN source/pins/403 closed",
+  "requiredJobs": "independent mandatory native-observation and genuine frozen-prepush; no needs-policy/continue-on-error/skip/relabel; overallFAIL on policyFAIL",
+  "localChecksRun": false,
+  "productGreen": false
+}

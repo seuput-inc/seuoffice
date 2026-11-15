@@ -1,4 +1,4 @@
-name: seuoffice NSS real-helper stderr observation
+name: seuoffice NSS synthetic failure-phase observation
 on:
   workflow_dispatch:
     inputs:
@@ -9,12 +9,14 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: nss-child-stderr-${{ inputs.source_sha }}
+  group: nss-failure-phases-${{ inputs.source_sha }}
   cancel-in-progress: false
 env:
   SOURCE_SHA: ${{ inputs.source_sha }}
   SOURCE_BASE: 54d63f2eb1d9b09c64e8afe70a324cad21863101
   DEFINITION_BASE: 0c4de3f8d29b273a50663b772ed97f2a1867812f
+  SOURCE_PARENT: 4e30e7d08f223d2e4cc307599c66ba4d16758f9a
+  DEFINITION_PARENT: dd1564724ffec7d6e571db0fa3652113c1163c2d
   IMAGE_DIGEST: sha256:890e8b5c0040e1deff5cc7dc7b4414e67069f79e3301afc4ec5bd49d64ef13e5
 jobs:
   native-observation:
@@ -32,19 +34,19 @@ jobs:
         working-directory: .
         run: |
           set -euo pipefail
-          test "$SOURCE_SHA" = 4e30e7d08f223d2e4cc307599c66ba4d16758f9a
+          test "$SOURCE_SHA" = fff703ca06b625ab0e94c1c67bc0673cc0f7e760
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
           path: definition
           persist-credentials: false
-          fetch-depth: 2
+          fetch-depth: 3
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ inputs.source_sha }}
           path: source
           persist-credentials: false
-          fetch-depth: 2
+          fetch-depth: 3
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: 1.95.0
@@ -59,22 +61,26 @@ jobs:
           sha256sum "$GITHUB_WORKSPACE/definition/.github/workflows/seuoffice-rust.yml" | tee "$RUNNER_TEMP/nss-results/definition.sha256"
           sha256sum tools/nss-helper/{contract.json,produce.py,patch_nss.py,test_patch.py,launcher.rs,hosted-validation.py,hosted-proof.py,external-fixture.py,fixture_utils.py,test_fixture_utils.py,test_token_wrapper.c,test_softhsm_init.c} crates/shell/src/host/d2/pdf/crypto/{nss_export_helper.c,nss_export_helper_test.c,worker/nss_bundle.rs,worker/nss_exchange.rs,worker/nss_bridge.rs} crates/shell/src/{signer_child_guard.rs,index_worker_process.rs} crates/shell/{nss_manifest.rs,nss_build.rs,build.rs} | tee "$RUNNER_TEMP/nss-results/sources.sha256"
           printf '%s  %s\n' 64c82ffe03995e6a518998c90ae354920473d48e0f35caaa01afadd5b938c4d6 tools/prepush.mjs | sha256sum -c -
-          test "$(git rev-parse HEAD^)" = "$SOURCE_BASE"
-          test "$(git -C "$GITHUB_WORKSPACE/definition" rev-parse HEAD^)" = "$DEFINITION_BASE"
+          test "$(git rev-parse HEAD^)" = "$SOURCE_PARENT"
+          test "$(git rev-parse HEAD^^)" = "$SOURCE_BASE"
+          test "$(git -C "$GITHUB_WORKSPACE/definition" rev-parse HEAD^)" = "$DEFINITION_PARENT"
+          test "$(git -C "$GITHUB_WORKSPACE/definition" rev-parse HEAD^^)" = "$DEFINITION_BASE"
           python3 - <<'PY'
           import hashlib, json, os, pathlib, subprocess
           definition = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'definition'
           results = pathlib.Path(os.environ['RUNNER_TEMP']) / 'nss-results'
-          manifest_path = definition / '.github/validation/nss-child-stderr-manifest.json'
+          manifest_path = definition / '.github/validation/nss-failure-phases-manifest.json'
           manifest_bytes = manifest_path.read_bytes()
           manifest_sha = hashlib.sha256(manifest_bytes).hexdigest()
-          if manifest_sha != 'd05d267ce29b232e075009a7c5a9a5666ce1a28aa8bdcc918a1c734eedb62f8c':
-              raise RuntimeError('final real-spawn input manifest changed')
+          if manifest_sha != '77010c6f6c4f03675e46bb6e0915b1987668b01ccbde159cc4f18cb26e0228c5':
+              raise RuntimeError('failure-phase input manifest changed')
           (results / manifest_path.name).write_bytes(manifest_bytes)
           manifest = json.loads(manifest_bytes)
-          if (manifest['sourceParent'] != os.environ['SOURCE_BASE']
-                  or manifest['definitionParent'] != os.environ['DEFINITION_BASE']):
-              raise RuntimeError('real-spawn input parent mismatch')
+          if (manifest['sourceParent'] != os.environ['SOURCE_PARENT']
+                  or manifest['definitionParent'] != os.environ['DEFINITION_PARENT']
+                  or manifest['frozenPolicySourceBase'] != os.environ['SOURCE_BASE']
+                  or manifest['frozenPolicyDefinitionBase'] != os.environ['DEFINITION_BASE']):
+              raise RuntimeError('publication parent or frozen policy base mismatch')
           observed = {}
           for entry in manifest['files']:
               base = subprocess.check_output(['git', 'show', manifest['sourceParent'] + ':' + entry['path']])
@@ -89,13 +95,40 @@ jobs:
           if len(changed) != 4 or set(changed) != set(observed):
               raise RuntimeError('source contains changes outside the four reviewed files')
           changed_definition = subprocess.check_output(['git', '-C', str(definition), 'diff', '--name-only', manifest['definitionParent'], 'HEAD'], text=True).splitlines()
-          if set(changed_definition) != {'.github/workflows/seuoffice-rust.yml', '.github/validation/nss-child-stderr-manifest.json'} or len(changed_definition) != 2:
+          if set(changed_definition) != {'.github/workflows/seuoffice-rust.yml', '.github/validation/nss-failure-phases-manifest.json'} or len(changed_definition) != 2:
               raise RuntimeError('definition contains unrelated changes')
+          retained_path = definition / '.github/validation/nss-child-stderr-manifest.json'
+          retained_bytes = retained_path.read_bytes()
+          if hashlib.sha256(retained_bytes).hexdigest() != 'd05d267ce29b232e075009a7c5a9a5666ce1a28aa8bdcc918a1c734eedb62f8c':
+              raise RuntimeError('retained V3 manifest changed')
+          retained = json.loads(retained_bytes)
+          if (retained['sourceParent'] != os.environ['SOURCE_BASE']
+                  or retained['definitionParent'] != os.environ['DEFINITION_BASE']):
+              raise RuntimeError('retained V3 policy bases changed')
+          for entry in retained['files']:
+              data = subprocess.check_output(['git', 'show', manifest['sourceParent'] + ':' + entry['path']])
+              if len(data) != entry['size'] or hashlib.sha256(data).hexdigest() != entry['sha256']:
+                  raise RuntimeError('retained V3 source input changed: ' + entry['path'])
+              if entry['path'] not in observed and pathlib.Path(entry['path']).read_bytes() != data:
+                  raise RuntimeError('retained V3 source no longer identical: ' + entry['path'])
+          retained_hashes = {
+              'tools/nss-helper/hosted-proof.py': manifest['retainedV3Inputs']['proofSha256'],
+              'tools/nss-helper/test_fixture_utils.py': manifest['retainedV3Inputs']['testsSha256'],
+              'crates/shell/src/host/d2/pdf/crypto/worker/nss_bundle.rs': manifest['retainedV3Inputs']['bundleSha256']}
+          for path, expected in retained_hashes.items():
+              if hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest() != expected:
+                  raise RuntimeError('retained V3 proof, tests or spawn seam changed: ' + path)
+          (results / retained_path.name).write_bytes(retained_bytes)
           binding = {'sourceSha': os.environ['SOURCE_SHA'], 'definitionSha': os.environ['GITHUB_SHA'],
                      'sourceParent': manifest['sourceParent'], 'definitionParent': manifest['definitionParent'],
                      'sourceFiles': observed, 'manifestSha256': manifest_sha,
-                     'observedFailure': manifest['observedFailure'], 'testBuild': manifest['testBuild'],
-                     'redactionReview': manifest['redactionReview'],
+                     'frozenPolicySourceBase': manifest['frozenPolicySourceBase'],
+                     'frozenPolicyDefinitionBase': manifest['frozenPolicyDefinitionBase'],
+                     'observedFailure': manifest['observedFailure'],
+                     'diagnosticBuild': manifest['diagnosticBuild'],
+                     'retainedV3Inputs': manifest['retainedV3Inputs'],
+                     'retainedManifestSha256': hashlib.sha256(retained_bytes).hexdigest(),
+                     'testBuild': retained['testBuild'], 'redactionReview': retained['redactionReview'],
                      'observationOnly': True, 'policyOrProductGreen': False, 'newRuntimeObserved': False}
           (results / 'input-binding.json').write_text(json.dumps(binding, indent=2) + '\n')
           print(json.dumps(binding, indent=2))
@@ -164,19 +197,19 @@ jobs:
     steps:
       - name: Validate immutable source input
         working-directory: .
-        run: test "$SOURCE_SHA" = 4e30e7d08f223d2e4cc307599c66ba4d16758f9a
+        run: test "$SOURCE_SHA" = fff703ca06b625ab0e94c1c67bc0673cc0f7e760
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
           path: definition
           persist-credentials: false
-          fetch-depth: 2
+          fetch-depth: 3
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ inputs.source_sha }}
           path: source
           persist-credentials: false
-          fetch-depth: 2
+          fetch-depth: 3
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: 1.95.0
@@ -189,21 +222,35 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/nss-prepush"
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-          test "$(git rev-parse HEAD^)" = "$SOURCE_BASE"
+          test "$(git rev-parse HEAD^)" = "$SOURCE_PARENT"
+          test "$(git rev-parse HEAD^^)" = "$SOURCE_BASE"
           test "$(git -C "$GITHUB_WORKSPACE/definition" rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(git -C "$GITHUB_WORKSPACE/definition" rev-parse HEAD^)" = "$DEFINITION_BASE"
+          test "$(git -C "$GITHUB_WORKSPACE/definition" rev-parse HEAD^)" = "$DEFINITION_PARENT"
+          test "$(git -C "$GITHUB_WORKSPACE/definition" rev-parse HEAD^^)" = "$DEFINITION_BASE"
           printf '%s  %s\n' 64c82ffe03995e6a518998c90ae354920473d48e0f35caaa01afadd5b938c4d6 tools/prepush.mjs | sha256sum -c -
           sha256sum "$GITHUB_WORKSPACE/definition/.github/workflows/seuoffice-rust.yml" > "$RUNNER_TEMP/nss-prepush/definition.sha256"
           printf 'source_sha=%s\nsource_base=%s\ndefinition_sha=%s\ndefinition_base=%s\n' "$SOURCE_SHA" "$SOURCE_BASE" "$GITHUB_SHA" "$DEFINITION_BASE" > "$RUNNER_TEMP/nss-prepush/identity.txt"
+          printf 'source_parent=%s\ndefinition_parent=%s\n' "$SOURCE_PARENT" "$DEFINITION_PARENT" >> "$RUNNER_TEMP/nss-prepush/identity.txt"
           python3 - <<'PY'
           import hashlib, json, os, pathlib
           results = pathlib.Path(os.environ['RUNNER_TEMP']) / 'nss-prepush'
           definition = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'definition'
-          manifest_path = definition / '.github/validation/nss-child-stderr-manifest.json'
+          manifest_path = definition / '.github/validation/nss-failure-phases-manifest.json'
           manifest_bytes = manifest_path.read_bytes()
-          if hashlib.sha256(manifest_bytes).hexdigest() != 'd05d267ce29b232e075009a7c5a9a5666ce1a28aa8bdcc918a1c734eedb62f8c':
+          if hashlib.sha256(manifest_bytes).hexdigest() != '77010c6f6c4f03675e46bb6e0915b1987668b01ccbde159cc4f18cb26e0228c5':
               raise RuntimeError('final policy input manifest changed')
           (results / manifest_path.name).write_bytes(manifest_bytes)
+          manifest = json.loads(manifest_bytes)
+          if (manifest['sourceParent'] != os.environ['SOURCE_PARENT']
+                  or manifest['definitionParent'] != os.environ['DEFINITION_PARENT']
+                  or manifest['frozenPolicySourceBase'] != os.environ['SOURCE_BASE']
+                  or manifest['frozenPolicyDefinitionBase'] != os.environ['DEFINITION_BASE']):
+              raise RuntimeError('policy publication parents or frozen scope changed')
+          retained_path = definition / '.github/validation/nss-child-stderr-manifest.json'
+          retained_bytes = retained_path.read_bytes()
+          if hashlib.sha256(retained_bytes).hexdigest() != 'd05d267ce29b232e075009a7c5a9a5666ce1a28aa8bdcc918a1c734eedb62f8c':
+              raise RuntimeError('retained V3 policy manifest changed')
+          (results / retained_path.name).write_bytes(retained_bytes)
           tool_sha = hashlib.sha256(pathlib.Path('tools/build-rhwp-core.mjs').read_bytes()).hexdigest()
           vendor = pathlib.Path('vendor/rhwp-core/package.json')
           vendor_sha = hashlib.sha256(vendor.read_bytes()).hexdigest()
