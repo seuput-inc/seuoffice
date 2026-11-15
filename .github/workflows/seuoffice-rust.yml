@@ -29,7 +29,7 @@ jobs:
         working-directory: .
         run: |
           set -euo pipefail
-          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$SOURCE_SHA" = c7e269167031e7215903dcd17c276b7636498fb6
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
@@ -52,7 +52,13 @@ jobs:
           mkdir -p "$RUNNER_TEMP/nss-results"
           printf 'definition_sha=%s\nsource_sha=%s\nimage_digest=%s\n' "$GITHUB_SHA" "$SOURCE_SHA" "$IMAGE_DIGEST" | tee "$RUNNER_TEMP/nss-results/identity.txt"
           sha256sum "$GITHUB_WORKSPACE/definition/.github/workflows/seuoffice-rust.yml" | tee "$RUNNER_TEMP/nss-results/definition.sha256"
-          sha256sum tools/nss-helper/{contract.json,produce.py,patch_nss.py,test_patch.py,launcher.rs,hosted-validation.py,hosted-proof.py,external-fixture.py,test_token_wrapper.c,test_softhsm_init.c} crates/shell/src/host/d2/pdf/crypto/{nss_export_helper.c,nss_export_helper_test.c,worker/nss_bundle.rs,worker/nss_exchange.rs,worker/nss_bridge.rs} crates/shell/src/{signer_child_guard.rs,index_worker_process.rs} crates/shell/{nss_manifest.rs,nss_build.rs,build.rs} | tee "$RUNNER_TEMP/nss-results/sources.sha256"
+          sha256sum tools/nss-helper/{contract.json,produce.py,patch_nss.py,test_patch.py,launcher.rs,hosted-validation.py,hosted-proof.py,external-fixture.py,fixture_utils.py,test_fixture_utils.py,test_token_wrapper.c,test_softhsm_init.c} crates/shell/src/host/d2/pdf/crypto/{nss_export_helper.c,nss_export_helper_test.c,worker/nss_bundle.rs,worker/nss_exchange.rs,worker/nss_bridge.rs} crates/shell/src/{signer_child_guard.rs,index_worker_process.rs} crates/shell/{nss_manifest.rs,nss_build.rs,build.rs} | tee "$RUNNER_TEMP/nss-results/sources.sha256"
+      - name: Verify finite fixture input and owned child cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          export TMPDIR="$RUNNER_TEMP"
+          python3 -B tools/nss-helper/test_fixture_utils.py 2>&1 | tee "$RUNNER_TEMP/nss-results/fixture-tests.log"
       - name: Prepare pinned helper tools and source archives
         shell: bash
         run: |
