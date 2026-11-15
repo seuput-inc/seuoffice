@@ -12,14 +12,16 @@ import subprocess
 import sys
 
 HERE = Path(__file__).resolve().parent
+# Raw members of contract.json's SHA-256-pinned release archive, not web-reader
+# text (which may include URL/Content-Type headers or normalize final newlines).
 HASHES = {
-    'lib/pk11wrap/pk11load.c': 'bcb592f74c90821feaf284d783601b01cf856443b1a7c8c6e306451aaa68aba3',
+    'lib/pk11wrap/pk11load.c': '98b09be1abe2ce2bb45fcacb996d99b99ec9611a9c352eef631d5ac2c4a084c2',
     'lib/freebl/genload.c': '5444e4233fec5daf87931a4d87a8b597ffd27432d3e2c734ef79805e4c7b2b88',
-    'lib/freebl/shvfy.c': 'f13bde361ce6a618c3035065162b27a95e0716da7c2a9fc4cc07839d3596e3eb',
-    'lib/freebl/loader.c': '9bb6fa5692c7596ceba6c23a08cb88bfa12466c44665ddcef677590428bdfcb2',
+    'lib/freebl/shvfy.c': 'cab3fe57a3fa81ba0354dab809c2b072b138e4df00e2f88bf7fd3dccbd914724',
+    'lib/freebl/loader.c': 'f50ee2e194421d6c0b93dedd7be93105745c395f35cfccf9391eb1eeae477769',
     'lib/freebl/lowhash_vector.c': '62c30e09a9032896d2b7deb7018707708b0d347ac1fdb419053529b9f3961487',
-    'lib/softoken/lgglue.c': 'c6ce311fbea0aa41631ee1d221c039bd9840537695e20ba5f78e309111531fcf',
-    'lib/softoken/fipstokn.c': 'dc564720e9dceb2b34d18cf2f1d13344ea9be00026d81efa0cffa07cef6394db',
+    'lib/softoken/lgglue.c': 'b180693e779ebe3539ddd29a5e6ed39392384de8a53fca5942c9d6e11b6bdc78',
+    'lib/softoken/fipstokn.c': '9cfe23e265da3131cfdbab5006c95cdae3e0732a68947167ff15799227971901',
 }
 
 def need(condition, message):
