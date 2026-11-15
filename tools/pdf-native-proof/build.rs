@@ -3,6 +3,7 @@ use std::{env, fs, path::PathBuf};
 fn main() {
     let root = PathBuf::from(env::var_os("PDF_PROOF_ROOT").expect("PDF_PROOF_ROOT is required"));
     let pdf = root.join("crates/shell/src/host/d2/pdf");
+    let modules = PathBuf::from(env::var_os("PDF_PROOF_MODULE_ROOT").expect("PDF_PROOF_MODULE_ROOT is required"));
     let source = format!(r#"
 extern crate self as shell_contract;
 #[path = {options:?}] pub mod pdf_sign_options;
@@ -35,11 +36,12 @@ mod host {{ pub mod d2 {{ pub mod pdf {{
     }} }}
 }} }} }}
 "#,
-        codec = pdf.join("pdf_codec.rs"), parser = pdf.join("crypto/pdf_lib.rs"),
+        codec = modules.join("pdf_codec/mod.rs"), parser = modules.join("pdf_lib/mod.rs"),
         consumer = pdf.join("native_engine/signatures/pdf.rs"), options = root.join("crates/shell-contract/src/pdf_sign_options.rs"));
-    for path in [pdf.join("pdf_codec.rs"), pdf.join("pdf_codec"), pdf.join("crypto/pdf_lib.rs"), pdf.join("crypto/pdf_lib"), pdf.join("native_engine/signatures/pdf.rs")] {
+    for path in [modules.join("pdf_codec"), modules.join("pdf_lib"), pdf.join("native_engine/signatures/pdf.rs")] {
         println!("cargo:rerun-if-changed={}", path.display());
     }
     println!("cargo:rerun-if-changed={}", root.join("crates/shell-contract/src/pdf_sign_options.rs").display());
+    println!("cargo:rerun-if-env-changed=PDF_PROOF_MODULE_ROOT");
     fs::write(PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("modules.rs"), source).unwrap();
 }

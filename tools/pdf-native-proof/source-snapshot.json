@@ -49,6 +49,7 @@
     "crates/shell/src/host/d2/pdf/crypto/pdf_lib/stream.rs": "f3fc2433dd6fb31fe9145d326bd940ed910151d0a27d726b6425de59725ec064",
     "crates/shell/src/host/d2/pdf/crypto/pdf_lib/stream/flate.rs": "c7d3e4d363178786aae9e10aa85c96c69423b1c0913510dbbe39b23478f15ee0",
     "crates/shell/src/host/d2/pdf/crypto/pdf_lib/upng.rs": "9fbe35a3de3e52e9008ff532203e11cb21935c239515d692574ffcbc61f7ba98",
+    "crates/shell/src/host/d2/pdf/crypto/pdf_lib/upng/inflate.rs": "719297ee735a391ae7530d41576b94ac8eb7ea9b72de8f2a8d8ad09e792f00b7",
     "crates/shell/src/host/d2/pdf/native_engine/signatures/pdf.rs": "d8036c470200a08d6ba332a23a98fd458f87c615d0f3fd7c457419fed8161017",
     "crates/shell/src/host/d2/pdf/pdf_codec.rs": "d6619634f41527db60a396f30c9e3e551bca11bcc357fd43be82e5c423ee4cbd",
     "crates/shell/src/host/d2/pdf/pdf_codec/predecrypt.rs": "0c0cd292ae670897ffe32aafc681ab62ac49dfb7a148e5973cb68d345df01d76",
@@ -92,12 +93,12 @@
     "crates/vendor/regress/tests/unicode_property_escapes.rs": "b07c73fc9209c3c43c2265b55a2a5a865fbd71fed303c78581ae5c849692f2ac",
     "crates/vendor/regress/tests/unicodesets.rs": "e8672367ff270d7896ed58d2b93ebcbc99c3b9a2476b27f56f384db36c96b492",
     "package-lock.json": "33ec03728e6b6bbc7b58b6411f064b273c47588940cc912e3e58a04037937e18",
-    "tools/pdf-native-proof/build.rs": "de14fabad32f4d0fb09350a0c7aff353251ab386b93fb7a098c8d0bef5d4e913",
+    "tools/pdf-native-proof/build.rs": "e2937648ed48d9db2bc501931fec8192e84d0b23f57d8406e8d1af0435aad939",
     "tools/pdf-native-proof/compare.ts": "4ba2b9fd37b16942fc961fdf5b32343d54c769d7f23ea847698e93590a0ba4e2",
     "tools/pdf-native-proof/dependencies.cjs": "1460b99a9acd25fc887f395b0d12ed1edcb43c7ee20e08a03042622b6f20bfb9",
     "tools/pdf-native-proof/main.rs": "a05d03699674599cf2596e602b7813fc5e31a9a1f6e31f30a6585c16abbe7961",
-    "tools/pdf-native-proof/run.py": "4ce54206bf6822f98aae3d60e1f3cef9bd0843713cdce0f3e0270af39122f2f5",
-    "tools/pdf-native-proof/test-static.mjs": "549cd88a76bc29d6434bfec5ce89827c757e3d0ba96cb1a0ea8a4fb0d57305ff",
+    "tools/pdf-native-proof/run.py": "7520e76d4c5b50fc4782f029d33d3df01a49e299c1ec5d808e2b260e63f8de4c",
+    "tools/pdf-native-proof/test-static.mjs": "1ad92257beb988ecabcc09d2eadbb3fad21636c3f197e57e43b3dcde28e39719",
     "tools/pdf-native-proof/test_static.py": "338aa714e29173eef5e1c9141647365fdc024ab0cab787f01e8fae512ad374cb"
   },
   "changed": [
@@ -111,6 +112,7 @@
     "crates/shell/src/host/d2/pdf/crypto/pdf_lib/stream.rs",
     "crates/shell/src/host/d2/pdf/crypto/pdf_lib/stream/flate.rs",
     "crates/shell/src/host/d2/pdf/crypto/pdf_lib/upng.rs",
+    "crates/shell/src/host/d2/pdf/crypto/pdf_lib/upng/inflate.rs",
     "crates/shell/src/host/d2/pdf/native_engine/signatures/pdf.rs",
     "crates/shell/src/host/d2/pdf/pdf_codec.rs",
     "crates/shell/src/host/d2/pdf/pdf_codec/predecrypt.rs",
@@ -125,5 +127,6 @@
     "tools/pdf-native-proof/test_static.py"
   ],
   "local_native_executed": false,
-  "static_check": "20261115-040533-5ac1"
+  "prior_failed_hosted_run": 43676766462,
+  "harness_revision": "standard-mod-rs-layout-and-production-chrono"
 }

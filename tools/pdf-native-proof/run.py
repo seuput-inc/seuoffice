@@ -23,6 +23,7 @@ SOURCES = [
     'crates/shell/src/host/d2/pdf/crypto/pdf_lib/stream.rs',
     'crates/shell/src/host/d2/pdf/crypto/pdf_lib/stream/flate.rs',
     'crates/shell/src/host/d2/pdf/crypto/pdf_lib/upng.rs',
+    'crates/shell/src/host/d2/pdf/crypto/pdf_lib/upng/inflate.rs',
     'crates/shell/src/host/d2/pdf/pdf_codec.rs',
     'crates/shell/src/host/d2/pdf/pdf_codec/predecrypt.rs',
     'crates/shell/src/host/d2/pdf/pdf_codec/transform.rs',
@@ -69,6 +70,31 @@ def locked_version(packages, name):
     return versions.pop()
 
 
+def materialize_modules(directory):
+    """Retain exact source bytes while giving Rust its normal mod.rs layout."""
+    directory.mkdir()
+    pdf = 'crates/shell/src/host/d2/pdf/'
+    modules = {}
+    for source in SOURCES:
+        if source == pdf + 'pdf_codec.rs':
+            target = 'pdf_codec/mod.rs'
+        elif source.startswith(pdf + 'pdf_codec/'):
+            target = source[len(pdf):]
+        elif source == pdf + 'crypto/pdf_lib.rs':
+            target = 'pdf_lib/mod.rs'
+        elif source.startswith(pdf + 'crypto/pdf_lib/'):
+            target = source[len(pdf + 'crypto/'):]
+        else:
+            continue
+        destination = directory / target
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        content = (ROOT / source).read_bytes()
+        with destination.open('xb') as output:
+            output.write(content)
+        modules[target] = {'source': source, 'sha256': hashlib.sha256(content).hexdigest()}
+    return modules
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--scratch', required=True, help='dedicated existing directory outside the checkout')
@@ -98,6 +124,9 @@ def main():
     production_packages = lock_packages(production_lock)
     flate_version = locked_version(production_packages, 'flate2')
     json_version = locked_version(production_packages, 'serde_json')
+    chrono_version = locked_version(production_packages, 'chrono')
+    module_root = scratch / 'modules'
+    evidence['module_sources'] = materialize_modules(module_root)
     def js_inventory():
         return subprocess.run(['node', str(HERE / 'dependencies.cjs')], cwd=ROOT, env=env,
                               check=True, capture_output=True, timeout=120).stdout
@@ -128,12 +157,14 @@ path = {toml_path(HERE / 'main.rs')}
 jscompat = {{ path = {toml_path(ROOT / 'crates/jscompat')} }}
 flate2 = {{ version = "={flate_version}", features = ["zlib-rs"] }}
 serde_json = {{ version = "={json_version}", features = ["preserve_order", "float_roundtrip"] }}
+chrono = {{ version = "={chrono_version}", features = ["clock"] }}
 [patch.crates-io]
 regress = {{ path = {toml_path(ROOT / 'crates/vendor/regress')} }}
 [workspace]
 '''
     (scratch / 'Cargo.toml').write_text(cargo)
     env['PDF_PROOF_ROOT'] = str(ROOT)
+    env['PDF_PROOF_MODULE_ROOT'] = str(module_root)
     env['CARGO_TARGET_DIR'] = str(scratch / 'target')
     env['CARGO_HOME'] = str(scratch / 'cargo-home')
     env['PDF_PROOF_SCRATCH'] = str(scratch)
