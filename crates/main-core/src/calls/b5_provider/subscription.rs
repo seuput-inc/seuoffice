@@ -716,8 +716,11 @@ pub(super) fn call(name: &str, args: &[Value], cx: &mut Context) -> Option<Answe
                 if let Some(record) = o.get("seedRecord") {
                     let bytes = serde_json::to_vec(record)
                         .map_err(|error| JsError::error(error.to_string()))?;
-                    fs::write(std::path::Path::new(&dir).join("ai-temp-dir-probe.json"), bytes)
-                        .map_err(|error| JsError::error(error.to_string()))?;
+                    fs::write(
+                        std::path::Path::new(&dir).join("ai-temp-dir-probe.json"),
+                        bytes,
+                    )
+                    .map_err(|error| JsError::error(error.to_string()))?;
                 }
                 let system = o.get("system").and_then(Value::as_bool) == Some(true);
                 if system {
