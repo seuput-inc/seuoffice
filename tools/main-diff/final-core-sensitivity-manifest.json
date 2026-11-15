@@ -2,7 +2,7 @@
   "contract": "final-core-sensitivity-manifest/v1",
   "scope": "ten-final-original-misses-retained-sensitivity-only",
   "canonicalObjectHashContract": "sha256-json-stringify-utf8/v1",
-  "productSha": "3e5a4b02fd395c09a63bf64791b9d33e67570b26",
+  "productSha": "5e215c4910887ed4b65c241b10d64c1f978a63e3",
   "parentProductSha": "ed559ed6a54c8b4c5ef0afecfe6f980d4d2b85a1",
   "modules": {
     "tools/main-diff/faults.mjs": "c3d271eb6a29334e1f4a0a372128aac66ad912dbf3723217ffe3182524c2249f",
@@ -17,7 +17,7 @@
     {
       "path": "crates/main-core/src/calls/b5_provider/subscription.rs",
       "parentSha256": "eb62ea2fe8ee11819986e85281e3c5809c9b86df88a7b864be2e27e98b875503",
-      "productSha256": "fcddcc4d5491fd12374109f18eec0805b672f0fafd20afe5fa9382d50462bc9b"
+      "productSha256": "09129f24af8bdc1b867ae2f3951e354ce270982a7d7bbc5c8f2c363bd7338b6f"
     },
     {
       "path": "docs/seuoffice/core-fault-followups.md",
@@ -54,11 +54,11 @@
     "nativeExecuted": false
   },
   "prerequisite": {
-    "runId": "43661410435",
+    "runId": "43665406854",
     "attempt": 1,
-    "definitionSha": "0bb185157ba56c8dbdc2a685b2280ef0abb293ef",
-    "definitionRef": "ci/stage2-final-ten-validation",
-    "productSha": "3e5a4b02fd395c09a63bf64791b9d33e67570b26",
+    "definitionSha": "0b6edb067a23c305d68bd5f302101560a24c5038",
+    "definitionRef": "ci/stage2-final-ten-format-validation",
+    "productSha": "5e215c4910887ed4b65c241b10d64c1f978a63e3",
     "requiredJobs": [
       "main-hosted-prepush",
       "main-baseline-only (ubuntu-latest, linux)",

@@ -1,10 +1,10 @@
 # Ten final original-miss sensitivity targets
 
-This versioned definition validates product `3e5a4b02fd395c09a63bf64791b9d33e67570b26`, not the older ed559/375 products. Its explicit mode is `final-core-retained-sensitivity`. The previous 24-target definition, all original/recovery runs, their failures and batch1 hold remain unchanged.
+This versioned definition validates product `5e215c4910887ed4b65c241b10d64c1f978a63e3`, not the older ed559/375 products. The sole successor source change is the exact formatter diff from failed run43661410435; its original failure and successful 3e5 baseline observations remain separate. Every catalog, case source and expected wire is unchanged. Its explicit mode is `final-core-retained-sensitivity`. The previous 24-target definition, all original/recovery runs, their failures and batch1 hold remain unchanged.
 
 ## Exact prerequisite and routing
 
-The only prerequisite is the latest product's own three-lane run `43661410435`, attempt 1, definition `0bb185157ba56c8dbdc2a685b2280ef0abb293ef` on `ci/stage2-final-ten-validation`. A pending run, another product/definition/ref/attempt, failed lane or skipped mandatory producer step fails closed. The prepare job reads the complete jobs/artifacts API pages and binds their raw bytes into the plan. The owner separately audits all three original lane artifacts; this API check is not a substitute for that raw acceptance.
+The only prerequisite is the latest product's own three-lane run `43665406854`, attempt 1, definition `0b6edb067a23c305d68bd5f302101560a24c5038` on `ci/stage2-final-ten-format-validation`. A pending run, another product/definition/ref/attempt, failed lane or skipped mandatory producer step fails closed. The prepare job reads the complete jobs/artifacts API pages and binds their raw bytes into the plan. The owner separately audits all three original lane artifacts; this API check is not a substitute for that raw acceptance.
 
 The workflow has one explicit mode and one exact product input. It selects only prepare, ten Linux sensitivity jobs and aggregate. It uses a distinct product-specific concurrency group with cancellation disabled, max-parallel 8 and a 120-minute target timeout. It does not select full engine/fault matrices, rerun CI, cancel old runs, resume batch1 or change runner profiles.
 

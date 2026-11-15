@@ -190,7 +190,7 @@ test('the latest product requires its own completed three-lane run', () => {
   const f = prerequisite()
   const receipt = auditPrerequisite(manifest, f.run, f.jobs, f.artifacts)
   assert.equal(receipt.productSha, manifest.productSha)
-  assert.equal(receipt.runId, '43661410435')
+  assert.equal(receipt.runId, '43665406854')
   for (const patch of [
     { status: 'in_progress', conclusion: null },
     { conclusion: 'failure' },

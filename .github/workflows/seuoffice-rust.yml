@@ -10,7 +10,7 @@ on:
         options:
           - final-core-retained-sensitivity
       product_sha:
-        description: Exact 3e5a4b02 validation product, not a branch or a legacy gate
+        description: Exact 5e215c49 validation product, not a branch or a legacy gate
         required: true
         type: string
 
