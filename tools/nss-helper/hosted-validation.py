@@ -175,7 +175,9 @@ def main():
                NSS_SQLITE_LIBDIR=str((a.work / 'sqlite-prefix/lib').resolve(strict=True)),
                NSS_CC=str(cc), NSS_TEST_INCLUDE_DIRS=f'{nss_include}:{nspr_include}')
     tool_lib = scratch / 'fixture-libs'
-    shutil.copytree(libdir, tool_lib, symlinks=True)
+    # NSS dist exports point back into the build tree. The relocated fixture
+    # directory needs their bytes, not links relative to the old dist path.
+    shutil.copytree(libdir, tool_lib, symlinks=False)
     sqlite = (a.work / 'sqlite-prefix/lib/libsqlite3.so.0').resolve(strict=True)
     shutil.copyfile(sqlite, tool_lib / 'libsqlite3.so.0')
     fixture_library_path = os.pathsep.join(str(path) for path in (
