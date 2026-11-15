@@ -104,7 +104,11 @@ export function bindReceiptCorpus(manifest, proposal, corpus) {
   const strict = corpus.strictRecoverySnapshot
   assert.equal(canonicalObjectSha256(strict), proposal.sourceSnapshot.strictReceiptSha256)
   assert.equal(strict.fullRecoveryAccepted, false)
-  const byHash = new Map(Object.values(corpus).map((body) => [canonicalObjectSha256(body), body]))
+  const byHash = new Map(
+    Object.entries(corpus)
+      .filter(([name]) => name !== 'next24Manifest')
+      .map(([, body]) => [canonicalObjectSha256(body), body]),
+  )
   for (const candidate of proposal.eligibleReuseCandidates) {
     for (const reference of candidate.receipts) {
       if (reference.kind === 'strict-completed-job') {
@@ -141,6 +145,35 @@ export function bindReceiptCorpus(manifest, proposal, corpus) {
           assert.equal(body.productSha, reference.productSha)
           assert.equal(body.definitionSha, reference.definitionSha)
           assert.equal(body.runId, reference.runId)
+          if (body.contract === 'next24-strict-raw-acceptance/v1') {
+            const targetManifest = corpus.next24Manifest
+            assert.equal(
+              canonicalObjectSha256(targetManifest),
+              body.manifestSha256,
+              'Wrong bounded target receipt manifest',
+            )
+            assert.equal(targetManifest.productSha, body.productSha)
+            assert.equal(body.allRequiredNativeProducerAndAuditStepsSucceeded, true)
+            const rows = targetManifest.jobs.flatMap((job) =>
+              job.entries
+                .filter(
+                  (entry) =>
+                    `${job.catalog}#${entry.index}` === candidate.id &&
+                    entry.mutationSha256 === candidate.mutationSha256,
+                )
+                .flatMap(() =>
+                  body.bindings.filter(
+                    (binding) =>
+                      binding.key === job.key &&
+                      binding.jobId === reference.jobId &&
+                      binding.artifactId === reference.artifactId &&
+                      binding.archiveSha256 === reference.archiveSha256 &&
+                      binding.indices.some((index) => `${job.catalog}#${index}` === candidate.id),
+                  ),
+                ),
+            )
+            assert.equal(rows.length, 1, 'Candidate is absent from the bounded target receipt')
+          }
         }
       }
     }

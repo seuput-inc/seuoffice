@@ -1,21 +1,21 @@
 {
   "contract": "main-hosted-prepush-baseline/v1",
   "scope": "source-prepush-and-complete-core-baseline-only-not-fault-or-reuse-acceptance",
-  "productSha": "ed559ed6a54c8b4c5ef0afecfe6f980d4d2b85a1",
+  "productSha": "3e5a4b02fd395c09a63bf64791b9d33e67570b26",
   "baseSha": "375b08bd0e1f7e8432e6514468cc9d25be01b100",
   "prepushScriptSha256": "64c82ffe03995e6a518998c90ae354920473d48e0f35caaa01afadd5b938c4d6",
   "registrySha256": "00be7494a08534991a60b4e1cc3cd94eaa826a8f6808b7943d7963f87c6b46ac",
   "baselineModuleSha256": "ad2ef44314d8aca2637648f19148d3b68f9c5d5b8cc2bab9728908d6ea1c33fc",
   "canonicalObjectHashContract": "sha256-json-stringify-utf8/v1",
   "producerCanonicalObjectHash": {
-    "productSha": "ed559ed6a54c8b4c5ef0afecfe6f980d4d2b85a1",
+    "productSha": "3e5a4b02fd395c09a63bf64791b9d33e67570b26",
     "path": "tools/main-diff/mutation-evidence.mjs",
     "method": "createMutationEvidence(...).begin",
     "expression": "hash(JSON.stringify(fault))",
     "moduleSha256": "119135f6a2e4ac7cafc0ac17e05af39db073dcb8601ecf25a17f7ffb975841c0"
   },
   "receiptCorpus": "hosted-validation-receipts.json",
-  "receiptCorpusSha256": "d182c71113c7b5810b4e931cb446c67d7729adb26bbb537bd51e757ea36d48a6",
+  "receiptCorpusSha256": "22a9a45222b7e616cf89fdce718ef3e4a9fbfbac57d3ae1fd2beb8e57a0fe818",
   "catalogSha256": {
     "tools/main-diff/faults/b1.json": "ca59a2385be3accd629d7bc52010b1c75d80dd15321009d217c48380e7f98ed2",
     "tools/main-diff/faults/b2-cli.json": "aad0efeab562b1c03a3a42b90763ce2d5b071f1612490c4cb31ed23b422c5e20",
@@ -6903,13 +6903,13 @@
       {
         "group": "b4-fonts",
         "name": "family-info.familyInfoFor",
-        "checks": 21,
+        "checks": 24,
         "single": false
       },
       {
         "group": "b4-fonts",
         "name": "metrics.familyVerticalMetrics",
-        "checks": 29,
+        "checks": 31,
         "single": false
       },
       {
@@ -12957,7 +12957,7 @@
       {
         "group": "b5-provider",
         "name": "subscription/temp-dirs.cleanupTrackedTempDirs",
-        "checks": 15,
+        "checks": 16,
         "single": false
       },
       {
@@ -12993,7 +12993,7 @@
       {
         "group": "b5-provider",
         "name": "subscription/locate.locateSubscriptionProgram",
-        "checks": 69,
+        "checks": 70,
         "single": false
       },
       {
@@ -13437,7 +13437,7 @@
       {
         "group": "b5-provider",
         "name": "claude-code-cli.readLines",
-        "checks": 17,
+        "checks": 18,
         "single": false
       },
       {
@@ -13989,7 +13989,7 @@
       {
         "group": "b5-kb",
         "name": "knowledge-base.readKnowledgeFilePage",
-        "checks": 11,
+        "checks": 12,
         "single": false
       },
       {
@@ -14019,7 +14019,7 @@
       {
         "group": "b5-kb",
         "name": "knowledge-base.parseKbCreateRequest",
-        "checks": 26,
+        "checks": 27,
         "single": false
       },
       {
@@ -14125,6 +14125,16 @@
       "afterSha256": "ca573c211cd3a9f47b5f45a7923066766d9162197bbf93b9462fdf45ea154731"
     },
     {
+      "path": "crates/main-core/src/calls/b5_kb.rs",
+      "beforeSha256": "649cb4d1a77ed39e1689f0e65ba7d9b55918e70de2cf76a9757a8740b3bed6d8",
+      "afterSha256": "5b1ffa143b9b593c9ab343a0a451c0db1ce553732b2bc3044614200fce1ed3b3"
+    },
+    {
+      "path": "crates/main-core/src/calls/b5_provider/subscription.rs",
+      "beforeSha256": "eb62ea2fe8ee11819986e85281e3c5809c9b86df88a7b864be2e27e98b875503",
+      "afterSha256": "fcddcc4d5491fd12374109f18eec0805b672f0fafd20afe5fa9382d50462bc9b"
+    },
+    {
       "path": "crates/main-core/src/calls/b5_provider/world.rs",
       "beforeSha256": "4f7820bca4b2ae379f52f87ee7f8eea560f179dfa23bc3e89c2fac597aa242e4",
       "afterSha256": "f1f9f6fca80e8fc6eb5f4bf978f53d315be5b881b7f02cec9b7cde7bd52b1964"
@@ -14132,7 +14142,7 @@
     {
       "path": "docs/seuoffice/core-fault-followups.md",
       "beforeSha256": "121c3b74ad9935419a290da68e359edbe27bd3e2fff5baa52935fb5af3248eb7",
-      "afterSha256": "e6031c1135aacaa7610d7709c2c3f77d297c0855465daa0ff5c81415ccedc715"
+      "afterSha256": "dac25bb66bbd1024e43a660ca0051cdc4aac20f91e9ded6d4aa9a087565b474a"
     },
     {
       "path": "tools/main-diff/apps545-followup.md",
@@ -14175,6 +14185,11 @@
       "afterSha256": "1754724f68e13b388e4784fb7ac39e4946e6c8ed980dc3bf3dc69936e89dacf0"
     },
     {
+      "path": "tools/main-diff/groups/b4-fonts.ts",
+      "beforeSha256": "291f371d650f802cc6dff1f05e8b1e713f8d381dbfb033f3ab6f05a7aa08b579",
+      "afterSha256": "52020ef975443669eb757d94f93740f3a0a1bb735e896c6c678dc3cee47cc5ee"
+    },
+    {
       "path": "tools/main-diff/groups/b4-pdf-store.ts",
       "beforeSha256": "6352e039b52ae9d9abe7f48d9e92bf588c7f73316c2da6c9097c670c85b5b458",
       "afterSha256": "7189c685ffa6abf75ca8af50254251014fec8a7909aea9ad522ed816c36a40fd"
@@ -14195,6 +14210,11 @@
       "afterSha256": "a429f38d89857e6cd8e9d8c5891469385f36f3ef1d6c0559f5390c48c0f82c5f"
     },
     {
+      "path": "tools/main-diff/groups/b5-kb.ts",
+      "beforeSha256": "58e0339ff263d7d04a8388e9e5de2ab033519e73bfb2c3c3145119d8a1d789dd",
+      "afterSha256": "37f0c3d4a2d4f47cd2f3b3075d8be4664fcf2e0f445fe7afb31d27c2a412ded4"
+    },
+    {
       "path": "tools/main-diff/groups/b5-mcp/client-proc.ts",
       "beforeSha256": "81e50545ae327f9db9ea919f238e7551ad60dfe8ddfc775c503ef301526c6820",
       "afterSha256": "cffddc2fb01df727741c98cda4b06280952f7c813149f44cac609771442181f1"
@@ -14203,6 +14223,16 @@
       "path": "tools/main-diff/groups/b5-provider/chatgpt.ts",
       "beforeSha256": "a02cc93a3c47124645099edeced8cb2efbffd82926eb5a5b782253d01c375ab6",
       "afterSha256": "1755288312cca699ccd27793870fb88bed579617a11f42544182cfc1c061ddc1"
+    },
+    {
+      "path": "tools/main-diff/groups/b5-provider/claude.ts",
+      "beforeSha256": "15be1b6dc68e7bf0a1f6b5021978cf45a2b9cf07bd9b24f2b0a8060003302242",
+      "afterSha256": "ee2a1eed998e54909554a21d8f40bb1c2237191b2d83223d1a409cc873bf5f61"
+    },
+    {
+      "path": "tools/main-diff/groups/b5-provider/subscription.ts",
+      "beforeSha256": "7df2a57cd14ec203c488a10b926d7ad8a29beb48d8624d190341cc7ddcff138f",
+      "afterSha256": "27b8e360be5cd5f0cc11f2b9c69d0eb5d89be1d3a56e0da80f68007488151549"
     },
     {
       "path": "tools/main-diff/groups/b5-provider/world.ts",
@@ -14230,7 +14260,7 @@
       "afterSha256": "1fa042d016888f2ddb3623b2ffc210c89b6690e938a81056b0533a601267ac49"
     }
   ],
-  "reuseProposalSha256": "302f08a6b14e165a21de96d2642237c3e6c74d73001c8d248b6a4d7887771695",
+  "reuseProposalSha256": "461870cf00331bd5e276f7d8077cbe9d88417881fc7d6cc4cf0f949813c4f633",
   "reuseManifest": "hosted-validation-reuse.json",
   "nativeBaselinePassed": false,
   "reuseAccepted": false,

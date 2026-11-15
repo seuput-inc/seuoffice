@@ -227,8 +227,8 @@ test('the fixed historical corpus binds actual completed IDs but grants no curre
     readFileSync(new URL('./hosted-validation-receipts.json', import.meta.url)),
   )
   const binding = bindReceiptCorpus(manifest, proposal, corpus)
-  assert.equal(binding.candidateBindings, 2764)
-  assert.equal(binding.receiptBodies, 7)
+  assert.equal(binding.candidateBindings, 4398)
+  assert.equal(binding.receiptBodies, 8)
   assert.equal(binding.currentProductReuseAccepted, false)
   const withoutRows = structuredClone(corpus)
   withoutRows.strictRecoverySnapshot.accepted = []
@@ -255,4 +255,74 @@ test('the real CLI rejects mixed input before writing a plan or starting a nativ
   assert.equal(run.status, 1)
   assert.match(run.stderr, /ALL_FAULTS conflicts with validation/)
   assert.equal(run.stdout, '')
+})
+
+test('a bounded target receipt cannot bind an unexecuted candidate ID', () => {
+  const proposal = JSON.parse(
+    readFileSync(new URL('./hosted-validation-reuse.json', import.meta.url)),
+  )
+  const corpus = JSON.parse(
+    readFileSync(new URL('./hosted-validation-receipts.json', import.meta.url)),
+  )
+  const candidate = structuredClone(
+    proposal.eligibleReuseCandidates.find((entry) =>
+      entry.receipts.some((receipt) => receipt.runId === '43652914727'),
+    ),
+  )
+  candidate.receipts = candidate.receipts.filter((receipt) => receipt.runId === '43652914727')
+  const reference = candidate.receipts[0]
+  const recorded = corpus.next24Manifest.jobs.find((entry) =>
+    entry.indices.some((index) => `${entry.catalog}#${index}` === candidate.id),
+  )
+  assert.ok(recorded)
+  candidate.id = `${recorded.catalog}#999999`
+  const changedProposal = { ...proposal, eligibleReuseCandidates: [candidate] }
+  assert.equal(reference.receiptSha256, canonicalObjectSha256(corpus.next24))
+  assert.throws(
+    () => bindReceiptCorpus(manifest, changedProposal, corpus),
+    /bounded target receipt/,
+  )
+})
+
+test('a bounded target receipt cannot bind another producer job or artifact', () => {
+  const proposal = JSON.parse(
+    readFileSync(new URL('./hosted-validation-reuse.json', import.meta.url)),
+  )
+  const corpus = JSON.parse(
+    readFileSync(new URL('./hosted-validation-receipts.json', import.meta.url)),
+  )
+  const candidate = structuredClone(
+    proposal.eligibleReuseCandidates.find((entry) =>
+      entry.receipts.some((receipt) => receipt.runId === '43652914727'),
+    ),
+  )
+  candidate.receipts = candidate.receipts.filter((receipt) => receipt.runId === '43652914727')
+  candidate.receipts[0].jobId += 1
+  assert.throws(
+    () =>
+      bindReceiptCorpus(manifest, { ...proposal, eligibleReuseCandidates: [candidate] }, corpus),
+    /bounded target receipt/,
+  )
+})
+
+test('a target plan cannot impersonate the raw completed receipt', () => {
+  const proposal = JSON.parse(
+    readFileSync(new URL('./hosted-validation-reuse.json', import.meta.url)),
+  )
+  const corpus = JSON.parse(
+    readFileSync(new URL('./hosted-validation-receipts.json', import.meta.url)),
+  )
+  const candidate = structuredClone(
+    proposal.eligibleReuseCandidates.find((entry) =>
+      entry.receipts.some((receipt) => receipt.runId === '43652914727'),
+    ),
+  )
+  const receipt = candidate.receipts.find((entry) => entry.runId === '43652914727')
+  receipt.receiptSha256 = canonicalObjectSha256(corpus.next24Manifest)
+  delete receipt.definitionSha
+  delete receipt.runId
+  candidate.receipts = [receipt]
+  assert.throws(() =>
+    bindReceiptCorpus(manifest, { ...proposal, eligibleReuseCandidates: [candidate] }, corpus),
+  )
 })
