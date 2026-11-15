@@ -49,6 +49,20 @@ static CK_RV login(CK_SESSION_HANDLE session, CK_USER_TYPE user, CK_UTF8CHAR_PTR
     if (rv == CKR_OK || rv == CKR_USER_ALREADY_LOGGED_IN) synthetic_logged_in = 1;
     return rv;
 }
+static CK_RV wrap_key(CK_SESSION_HANDLE session, CK_MECHANISM_PTR mechanism,
+                      CK_OBJECT_HANDLE wrapping_key, CK_OBJECT_HANDLE key,
+                      CK_BYTE_PTR output, CK_ULONG_PTR output_length) {
+    CK_ULONG mechanism_type = mechanism ? mechanism->mechanism : 0;
+    const char *phase = output ? "output" : "query";
+    CK_RV rv = upstream->C_WrapKey(session, mechanism, wrapping_key, key, output, output_length);
+    int saved_errno = errno;
+    if (protected_enabled()) {
+        fprintf(stderr, "synthetic-wrap phase=%s mechanism=%lu rv=%lu\n",
+                phase, (unsigned long)mechanism_type, (unsigned long)rv);
+    }
+    errno = saved_errno;
+    return rv;
+}
 CK_RV C_GetFunctionList(CK_FUNCTION_LIST_PTR_PTR output) {
     void *handle;
     CK_C_GetFunctionList get_list;
@@ -71,6 +85,7 @@ CK_RV C_GetFunctionList(CK_FUNCTION_LIST_PTR_PTR output) {
     wrapped.C_GetTokenInfo = token_info;
     wrapped.C_GetSessionInfo = session_info;
     wrapped.C_Login = login;
+    wrapped.C_WrapKey = wrap_key;
     *output = &wrapped;
     return CKR_OK;
 }
