@@ -48,8 +48,11 @@ def header_digests(directories):
 
 
 def run(args, *, env, data=None):
-    return subprocess.run([str(v) for v in args], input=data, env=env, check=True,
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
+    result = subprocess.run([str(v) for v in args], input=data, env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode:
+        raise RuntimeError(f'{args[0]} exited {result.returncode}: {result.stderr.decode("utf-8", errors="replace")}')
+    return result.stdout
 
 def read_exact(pipe, count, proc):
     if count > MAX_FRAME: raise RuntimeError('oversized helper frame')

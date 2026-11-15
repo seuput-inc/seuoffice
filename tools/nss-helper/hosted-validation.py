@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import tarfile
 import produce
@@ -161,17 +162,42 @@ def main():
     for mode in ('--test-sigchld-ignore', '--test-sigchld-no-wait'):
         run([install / 'bin/nss-launcher', mode], env=env)
     pristine = pristine_root / 'dist'
-    certutil = one(pristine.glob('*/bin/certutil'), 'pristine certutil')
+    # Fixture tools were linked against our built sysroot, not the container's
+    # libc. Keep that loader/library selection local to these three tools.
+    tool_commands = scratch / 'fixture-tools'
+    tool_commands.mkdir()
+    glibc_lib = one((a.work / 'sysroot').glob('**/libc.so.6'), 'fixture glibc').parent
+    loader_name = 'ld-linux-x86-64.so.2' if a.arch == 'x86_64' else 'ld-linux-aarch64.so.1'
+    fixture_loader = one((a.work / 'sysroot').glob('**/' + loader_name), 'fixture loader')
     libdir = one(pristine.glob('*/lib'), 'pristine NSS library directory')
     nspr_include = one(pristine.glob('*/include'), 'pristine NSPR include directory')
     nss_include = (pristine / 'public/nss').resolve(strict=True)
-    env.update(NSS_CERTUTIL=str(certutil), NSS_TEST_LIBDIR=str(libdir),
+    env.update(NSS_TEST_LIBDIR=str(libdir),
                NSS_SQLITE_LIBDIR=str((a.work / 'sqlite-prefix/lib').resolve(strict=True)),
                NSS_CC=str(cc), NSS_TEST_INCLUDE_DIRS=f'{nss_include}:{nspr_include}')
     tool_lib = scratch / 'fixture-libs'
     shutil.copytree(libdir, tool_lib, symlinks=True)
     sqlite = (a.work / 'sqlite-prefix/lib/libsqlite3.so.0').resolve(strict=True)
     shutil.copyfile(sqlite, tool_lib / 'libsqlite3.so.0')
+    fixture_library_path = os.pathsep.join(str(path) for path in (
+        tool_lib, (a.work / 'sqlite-prefix/lib').resolve(strict=True), glibc_lib,
+    ))
+    fixture_tools = []
+    for name in ('certutil', 'modutil', 'pk12util'):
+        program = one(pristine.glob('*/bin/' + name), 'pristine ' + name)
+        wrapper = tool_commands / name
+        wrapper.write_text('#!/bin/sh\nexec ' + shlex.join([
+            str(fixture_loader), '--inhibit-cache', '--library-path',
+            fixture_library_path, str(program),
+        ]) + ' "$@"\n')
+        wrapper.chmod(0o700)
+        fixture_tools.append({'name': name, 'binary_sha256': digest(program), 'wrapper_sha256': digest(wrapper)})
+    certutil = tool_commands / 'certutil'
+    env['NSS_CERTUTIL'] = str(certutil)
+    (results / 'fixture-tools.json').write_text(json.dumps({
+        'scope': 'hosted synthetic fixture setup only',
+        'loader_sha256': digest(fixture_loader), 'tools': fixture_tools,
+    }, indent=2) + '\n')
     receipt = scratch / 'install/nss-proof-receipt.json'
     run(['python3', HERE / 'hosted-proof.py', '--bundle', install / 'lib/SeuOffice/nss',
          '--scratch', scratch / 'install', '--launcher', install / 'bin/nss-launcher',
