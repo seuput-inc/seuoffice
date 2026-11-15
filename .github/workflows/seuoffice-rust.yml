@@ -1,23 +1,23 @@
-name: seuoffice quit completion baseline validation
+name: seuoffice quit completion guard validation
 on:
   workflow_dispatch:
     inputs:
       source_sha:
-        description: Exact reviewed baseline source commit SHA
+        description: Exact reviewed guard source commit SHA
         required: true
         type: string
 permissions:
   contents: read
 concurrency:
-  group: quit-completion-baseline-${{ inputs.source_sha }}
+  group: quit-completion-guard-${{ inputs.source_sha }}
   cancel-in-progress: false
 env:
   SOURCE_SHA: ${{ inputs.source_sha }}
-  SOURCE_BASE: cf98d4c9c64722d43f1876835de86d73ded7cf87
-  DEFINITION_BASE: 6c8f74e24c474898f5ff599a19f4579bb0b3ec13
+  SOURCE_BASE: b129cf168b85488358493491c4161011cd76d9af
+  DEFINITION_BASE: 5ddd15726d2bf821ed761086f1904f4764ed642f
 jobs:
-  baseline-red:
-    name: Direct completion unit, expected runtime RED only
+  guard-green:
+    name: Direct completion unit, four unchanged tests GREEN only
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -27,7 +27,7 @@ jobs:
     steps:
       - name: Validate immutable source input
         working-directory: .
-        run: test "$SOURCE_SHA" = b129cf168b85488358493491c4161011cd76d9af
+        run: test "$SOURCE_SHA" = 93512bb24608f00ca8ad93a31e56d9f362667009
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
@@ -55,9 +55,13 @@ jobs:
           manifest_path = packet / 'quit-unit-manifest.json'
           manifest_bytes = manifest_path.read_bytes()
           manifest_sha = hashlib.sha256(manifest_bytes).hexdigest()
-          if manifest_sha != '8aba4dcabbf4addfad573677a2477185d0d183c61bd28c5899e7afef12d66314':
-              raise RuntimeError('packet manifest differs from the reviewed baseline')
+          if manifest_sha != '614d04a78c4105cf4d934bb267620c93ffa113b00f9845cdcad0840977cfe3a7':
+              raise RuntimeError('packet manifest differs from the reviewed guard input')
           manifest = json.loads(manifest_bytes)
+          if (not manifest['baselineRedObserved'] or not manifest['behavioralDropGuardApplied']
+                  or manifest['sourceParent'] != os.environ['SOURCE_BASE']
+                  or manifest['definitionParent'] != os.environ['DEFINITION_BASE']):
+              raise RuntimeError('guard input is not bound to the observed baseline and exact parents')
           paths = {name: packet / name for name in manifest['files']}
           paths['completion.rs'] = pathlib.Path(manifest['actualProductSourcePath'])
           paths['quit-completion-hosted-tests.rs'] = pathlib.Path('quit-completion-hosted-tests.rs')
@@ -68,6 +72,14 @@ jobs:
               if actual != manifest['files'][name]:
                   raise RuntimeError('reviewed packet bytes changed: ' + name)
               observed[str(path)] = actual
+          marker = b'#[cfg(test)]'
+          current_tests = paths['completion.rs'].read_bytes().split(marker, 1)[1]
+          baseline_module = subprocess.check_output(['git', 'show', os.environ['SOURCE_BASE'] + ':' + manifest['actualProductSourcePath']])
+          if baseline_module.split(marker, 1)[1] != current_tests:
+              raise RuntimeError('the four regression test bodies changed after baseline RED')
+          test_bodies_sha = hashlib.sha256(current_tests).hexdigest()
+          if test_bodies_sha != manifest['greenExpected']['sameFourTestBodiesSha256']:
+              raise RuntimeError('frozen regression test body hash mismatch')
           source_sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
           source_parent = subprocess.check_output(['git', 'rev-parse', 'HEAD^'], text=True).strip()
           definition_sha = subprocess.check_output(['git', '-C', str(definition), 'rev-parse', 'HEAD'], text=True).strip()
@@ -76,8 +88,8 @@ jobs:
                   or definition_sha != os.environ['GITHUB_SHA'] or definition_parent != os.environ['DEFINITION_BASE']):
               raise RuntimeError('source or definition identity/parent mismatch')
           changed_source = subprocess.check_output(['git', 'diff', '--name-only', source_parent, 'HEAD'], text=True).splitlines()
-          if set(changed_source) != {str(path) for path in paths.values()} | {str(manifest_path)}:
-              raise RuntimeError('source includes changes outside the six packet files')
+          if set(changed_source) != {manifest['actualProductSourcePath'], str(manifest_path)} or len(changed_source) != 2:
+              raise RuntimeError('guard source includes changes outside the two reviewed files')
           changed_definition = subprocess.check_output(['git', '-C', str(definition), 'diff', '--name-only', definition_parent, 'HEAD'], text=True).splitlines()
           if changed_definition != ['.github/workflows/seuoffice-rust.yml']:
               raise RuntimeError('definition includes unrelated changes')
@@ -94,6 +106,7 @@ jobs:
               'definitionSha': definition_sha, 'definitionParent': definition_parent,
               'definitionSha256': hashlib.sha256((definition / '.github/workflows/seuoffice-rust.yml').read_bytes()).hexdigest(),
               'manifestSha256': manifest_sha, 'packetFiles': observed,
+              'testBodiesSha256': test_bodies_sha, 'observedBaseline': manifest['observedBaseline'],
               'callerPublishedSha256': caller_sha,
               'callerMatchesMainBefore': caller_sha == manifest['callerBeforeSha256'],
               'callerMatchesMainAfter': caller_sha == manifest['callerAfterSha256'],
@@ -128,49 +141,43 @@ jobs:
           printf '%s\n' "$list_status" > "$RUNNER_TEMP/quit-results/list-status.txt"
           printf '%s\n' "$test_status" > "$RUNNER_TEMP/quit-results/test-status.txt"
           cat "$RUNNER_TEMP/quit-results/test-list.log" "$RUNNER_TEMP/quit-results/tests.log"
-      - name: Require compile success and exactly the frozen runtime RED
+      - name: Require compile success and four unchanged passing tests
         if: always()
         run: |
           python3 - <<'PY'
           import json, os, pathlib, re
           results = pathlib.Path(os.environ['RUNNER_TEMP']) / 'quit-results'
           results.mkdir(parents=True, exist_ok=True)
-          receipt = {'verdict': 'NOT_VERIFIED', 'baselineRedObserved': False, 'productionGreen': False}
+          receipt = {'verdict': 'NOT_VERIFIED', 'guardGreenObserved': False, 'productionGreen': False}
           try:
               identity = json.loads((results / 'identity.json').read_text())
               manifest = json.loads(pathlib.Path('tools/quit-completion-validation/quit-unit-manifest.json').read_text())
-              expected = manifest['baselineExpected']
+              expected = manifest['greenExpected']
               for label in ('compiler', 'list', 'test'):
                   status_file = results / (label + '-status.txt')
                   receipt[label + 'ExitCode'] = int(status_file.read_text()) if status_file.exists() else None
               if receipt['compilerExitCode'] != expected['compileExitCode'] or receipt['listExitCode'] != 0:
-                  raise RuntimeError('compiler or test inventory failure is not a runtime reproduction')
+                  raise RuntimeError('compiler or test inventory failure is not guard verification')
               if receipt['testExitCode'] != expected['testProcessExitCode']:
                   raise RuntimeError('unexpected test process exit code')
-              failures = expected['runtimeAssertionFailures']
-              controls = expected['positiveControls']
-              if len(failures) != 2 or len(controls) != 2 or len(set(failures + controls)) != 4:
-                  raise RuntimeError('frozen baseline must contain two failures and two controls')
+              names = manifest['baselineExpected']['runtimeAssertionFailures'] + manifest['baselineExpected']['positiveControls']
+              if len(names) != 4 or len(set(names)) != 4:
+                  raise RuntimeError('the four frozen regression names must remain unchanged')
               inventory = re.findall(r'^(\S+): test$', (results / 'test-list.log').read_text(), re.M)
-              expected_names = set(failures + controls)
+              expected_names = set(names)
               if len(inventory) != 4 or set(inventory) != expected_names:
                   raise RuntimeError('missing, extra, filtered, or empty test inventory')
               text = (results / 'tests.log').read_text()
               pairs = re.findall(r'^test (\S+) \.\.\. (ok|FAILED)$', text, re.M)
-              expected_results = {name: 'FAILED' for name in failures}
-              expected_results.update({name: 'ok' for name in controls})
+              expected_results = {name: 'ok' for name in expected_names}
               if len(pairs) != 4 or dict(pairs) != expected_results:
-                  raise RuntimeError('runtime failures or positive controls differ from the frozen baseline')
-              blocks = re.findall(r'^---- (\S+) stdout ----\n(.*?)(?=^---- \S+ stdout ----|\Z)', text, re.M | re.S)
-              reason = expected['runtimeFailureReason']
-              if (len(blocks) != 2 or {name for name, _ in blocks} != set(failures)
-                      or any(reason not in body for _, body in blocks) or text.count(reason) != 2):
-                  raise RuntimeError('the two failures are not the expected runtime assertions')
-              if not re.search(r'^test result: FAILED\. 2 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out;', text, re.M):
-                  raise RuntimeError('unfiltered baseline summary mismatch')
+                  raise RuntimeError('the four original regression tests did not all pass')
+              if not re.search(r'^test result: ok\. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;', text, re.M):
+                  raise RuntimeError('unfiltered four-test GREEN summary mismatch')
               receipt.update({
-                  'verdict': 'EXPECTED_BASELINE_RUNTIME_RED_VERIFIED',
-                  'baselineRedObserved': True, 'runtimeResults': dict(pairs),
+                  'verdict': 'GUARD_FOUR_TESTS_GREEN_VERIFIED',
+                  'guardGreenObserved': True, 'runtimeResults': dict(pairs),
+                  'observedBaseline': manifest['observedBaseline'], 'testBodiesSha256': identity['testBodiesSha256'],
                   'sourceSha': identity['sourceSha'], 'definitionSha': identity['definitionSha'],
                   'manifestSha256': identity['manifestSha256'],
                   'scope': 'four standalone Completion tests only; not full app or formal proof'
@@ -179,17 +186,17 @@ jobs:
               receipt['error'] = str(error)
               raise
           finally:
-              (results / 'baseline-verdict.json').write_text(json.dumps(receipt, indent=2) + '\n')
+              (results / 'guard-verdict.json').write_text(json.dumps(receipt, indent=2) + '\n')
               print(json.dumps(receipt, indent=2))
           PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: quit-completion-baseline-${{ github.run_id }}
+          name: quit-completion-guard-${{ github.run_id }}
           path: ${{ runner.temp }}/quit-results
           if-no-files-found: error
   frozen-prepush:
-    name: Genuine frozen prepush, broader than the isolated RED unit
+    name: Genuine frozen prepush, broader than the isolated GREEN unit
     runs-on: ubuntu-latest
     timeout-minutes: 180
     defaults:
@@ -199,7 +206,7 @@ jobs:
     steps:
       - name: Validate immutable source input
         working-directory: .
-        run: test "$SOURCE_SHA" = b129cf168b85488358493491c4161011cd76d9af
+        run: test "$SOURCE_SHA" = 93512bb24608f00ca8ad93a31e56d9f362667009
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
@@ -219,6 +226,36 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version-file: source/.nvmrc
+      - name: Verify unchanged canonical rhwp source preparation inputs
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/quit-prepush"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
+          tool = pathlib.Path('tools/build-rhwp-core.mjs')
+          manifest = pathlib.Path('vendor/rhwp-core/package.json')
+          tool_sha = hashlib.sha256(tool.read_bytes()).hexdigest()
+          manifest_sha = hashlib.sha256(manifest.read_bytes()).hexdigest()
+          if (tool_sha != '8ee967e10d3f848a3d68d1a22a5bef5220c1a2de02bac20fa5813f8b075aa2ee'
+                  or manifest_sha != 'fab293a2e4695f82110444fbd15874ffad0180fdf81b998b670833f6a21e5bd6'):
+              raise RuntimeError('canonical rhwp preparation tool or manifest changed')
+          pins = json.loads(manifest.read_text())['rhwp']
+          if pins['tag'] != 'v0.9.0' or pins['commit'] != 'c9095c5f67632e6721e800ccc7fb43ea49d26682':
+              raise RuntimeError('canonical rhwp source pin changed')
+          patches = [{'path': 'vendor/rhwp-core/patches/' + name,
+                      'sha256': hashlib.sha256((pathlib.Path('vendor/rhwp-core/patches') / name).read_bytes()).hexdigest()}
+                     for name in pins['patches']]
+          patch_set_sha = hashlib.sha256(json.dumps(patches, separators=(',', ':')).encode()).hexdigest()
+          if patch_set_sha != '633b31a0011d9bb7773de9e257df389ea0ab5dc5ba8c66afc1097d3d03763691':
+              raise RuntimeError('canonical rhwp ordered patch set changed')
+          receipt = {'toolSha256': tool_sha, 'manifestSha256': manifest_sha, 'pins': pins,
+                     'patches': patches, 'orderedPatchSetSha256': patch_set_sha,
+                     'command': 'node tools/build-rhwp-core.mjs --source-only',
+                     'toolOrPinOrPolicyChanged': False}
+          results = pathlib.Path(os.environ['RUNNER_TEMP']) / 'quit-prepush'
+          (results / 'rhwp-preparation-inputs.json').write_text(json.dumps(receipt, indent=2) + '\n')
+          print(json.dumps(receipt, indent=2))
+          PY
       - name: Run unchanged policy against both actual base scopes
         run: |
           set -euo pipefail
@@ -232,6 +269,9 @@ jobs:
           source_status=0
           (
             npm ci --ignore-scripts &&
+            node tools/build-rhwp-core.mjs --source-only &&
+            test -f crates/.rhwp-source/v0.9.0/Cargo.toml &&
+            test "$(git -C crates/.rhwp-source/v0.9.0 rev-parse HEAD)" = c9095c5f67632e6721e800ccc7fb43ea49d26682 &&
             node tools/prepush.mjs --base "$SOURCE_BASE"
           ) 2>&1 | tee "$RUNNER_TEMP/quit-prepush/prepush-source.log" || source_status=$?
           definition_status=0
