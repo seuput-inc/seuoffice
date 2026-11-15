@@ -167,8 +167,7 @@ def main():
     tool_commands = scratch / 'fixture-tools'
     tool_commands.mkdir()
     glibc_lib = one((a.work / 'sysroot').glob('**/libc.so.6'), 'fixture glibc').parent
-    loader_name = 'ld-linux-x86-64.so.2' if a.arch == 'x86_64' else 'ld-linux-aarch64.so.1'
-    fixture_loader = one((a.work / 'sysroot').glob('**/' + loader_name), 'fixture loader')
+    fixture_loader = one((a.work / 'sysroot').glob('**/ld-linux-x86-64.so.2'), 'fixture loader')
     libdir = one(pristine.glob('*/lib'), 'pristine NSS library directory')
     nspr_include = one(pristine.glob('*/include'), 'pristine NSPR include directory')
     nss_include = (pristine / 'public/nss').resolve(strict=True)
