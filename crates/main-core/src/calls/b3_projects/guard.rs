@@ -816,6 +816,11 @@ fn guard_error(mask: &Mask, error: &WriteGuardError) -> Value {
     let reason = match error {
         WriteGuardError::Refused(refused) => Some(refused.reason.as_str()),
         WriteGuardError::Fs(_) => None,
+        #[cfg(unix)]
+        WriteGuardError::Cleanup { original, .. } => match original.as_ref() {
+            WriteGuardError::Refused(refused) => Some(refused.reason.as_str()),
+            _ => None,
+        },
     };
     op_error(mask, error.code(), &error.message(), reason)
 }

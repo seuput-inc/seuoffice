@@ -58,10 +58,12 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.61.1",
+    "buffer": "6.0.3",
     "concurrently": "^9.2.5",
     "cross-env": "^10.1.0",
     "eslint": "^10.8.0",
     "eslint-plugin-react-hooks": "^7.1.1",
+    "fflate": "0.8.3",
     "globals": "^17.8.0",
     "pixelmatch": "^7.2.0",
     "playwright-core": "^1.61.1",

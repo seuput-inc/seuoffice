@@ -634,6 +634,14 @@ struct BridgeHost {
     next_timer: u64,
     settled: Vec<(u64, Settled)>,
 }
+impl BridgeHost {
+    fn open_blank_tab(&mut self) -> Result<i64, String> {
+        let id = self.blank.pop_front().unwrap_or(0);
+        push(&self.log, vec![Value::from("deps.openBlankTab"), Value::from(id)]);
+        Ok(id)
+    }
+}
+
 
 impl DocsBridgeHost for BridgeHost {
     fn web_contents_alive(&mut self, wc_id: i64) -> bool {
@@ -702,14 +710,6 @@ impl DocsBridgeHost for BridgeHost {
         fs::metadata(path).is_ok()
     }
 
-    fn open_blank_tab(&mut self) -> i64 {
-        let id = self.blank.pop_front().unwrap_or(0);
-        push(
-            &self.log,
-            vec![Value::from("deps.openBlankTab"), Value::from(id)],
-        );
-        id
-    }
 
     fn authorize_save(&mut self, wc_id: i64, file_path: &str) {
         push(
@@ -800,7 +800,8 @@ fn bridge_call(args: &[Value], cx: &mut Context) -> Answer {
                 }
             }
         } else if let Some(label) = step.get("open").and_then(Value::as_str) {
-            started = Some((label.to_owned(), bridge.open_blank_tab()));
+            let opened = bridge.host_mut().open_blank_tab();
+            started = Some((label.to_owned(), bridge.open_attached_tab(opened)));
         } else if let Some(label) = step.get("run").and_then(Value::as_str) {
             let command = command_of(step.get("command").and_then(Value::as_str).unwrap_or(""));
             let payload = step.get("payload").map(jv);

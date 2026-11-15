@@ -756,6 +756,12 @@ struct SheetsHost {
     next_timer: u64,
     settled: Vec<(u64, BridgeSettled)>,
 }
+impl SheetsHost {
+    fn open_blank_tab(&mut self) -> Result<i64, String> {
+        next_blank(&mut self.blank, &self.log)
+    }
+}
+
 
 impl SheetsBridgeHost for SheetsHost {
     fn web_contents_alive(&mut self, wc_id: i64) -> bool {
@@ -824,9 +830,6 @@ impl SheetsBridgeHost for SheetsHost {
         fs::metadata(path).is_ok()
     }
 
-    fn open_blank_tab(&mut self) -> Result<i64, String> {
-        next_blank(&mut self.blank, &self.log)
-    }
 
     fn authorize_save(&mut self, wc_id: i64, file_path: &str) {
         push(
@@ -889,7 +892,8 @@ fn sheets_bridge_call(args: &[Value], cx: &mut Context) -> Answer {
                 }
             }
         } else if let Some(label) = step.get("open").and_then(Value::as_str) {
-            started = Some((label.to_owned(), bridge.open_blank_tab()));
+            let opened = bridge.host_mut().open_blank_tab();
+            started = Some((label.to_owned(), bridge.open_attached_tab(opened)));
         } else if let Some(label) = step.get("run").and_then(Value::as_str) {
             let command =
                 sheets_command_of(step.get("command").and_then(Value::as_str).unwrap_or(""));
@@ -1496,10 +1500,10 @@ impl SlidesBridgeHost for SlidesHost {
         self.sessions.contains_key(&wc_id)
     }
 
-    fn deck(&mut self, wc_id: i64) -> JsonValue {
-        self.sessions
-            .get(&wc_id)
-            .map_or(JsonValue::Null, |session| jv(&session.deck))
+    fn deck(&mut self, wc_id: i64) -> Result<JsonValue, String> {
+        self.sessions.get(&wc_id)
+            .map(|session| jv(&session.deck))
+            .ok_or_else(|| "the deck session is gone".to_owned())
     }
 
     fn attached_ids(&mut self, wc_id: i64) -> Vec<i64> {
@@ -1558,13 +1562,13 @@ impl SlidesBridgeHost for SlidesHost {
         }
     }
 
-    fn slide_comments(&mut self, wc_id: i64, slide_path: &str) -> Vec<JsonValue> {
-        self.sessions
-            .get(&wc_id)
-            .and_then(|s| s.comments.get(slide_path))
+    fn slide_comments(&mut self, wc_id: i64, slide_path: &str) -> Result<Vec<JsonValue>, String> {
+        let session = self.sessions.get(&wc_id)
+            .ok_or_else(|| "the deck session is gone".to_owned())?;
+        Ok(session.comments.get(slide_path)
             .and_then(Value::as_array)
             .map(|list| list.iter().map(jv).collect())
-            .unwrap_or_default()
+            .unwrap_or_default())
     }
 
     fn slide_hidden(&mut self, slide: &JsonValue) -> bool {
@@ -1783,16 +1787,12 @@ fn settings_of(value: Option<&Value>) -> Option<JsonValue> {
     }
 }
 
-fn deps_of(c: &Value, log: &Log) -> McpRuntimeDeps<'static> {
+fn deps_of(c: &Value, _log: &Log) -> McpRuntimeDeps<'static> {
     let save_dir = c
         .get("saveDir")
         .and_then(Value::as_str)
         .unwrap_or("/save")
         .to_owned();
-    let (open_log, open_ok) = (
-        Rc::clone(log),
-        c.get("openPath").and_then(Value::as_bool) != Some(false),
-    );
     let wired = |key: &str| on(c, key);
     McpRuntimeDeps {
         version: c
@@ -1801,10 +1801,6 @@ fn deps_of(c: &Value, log: &Log) -> McpRuntimeDeps<'static> {
             .unwrap_or("1.2.3")
             .to_owned(),
         default_save_dir: Rc::new(move || save_dir.clone()),
-        open_path: Rc::new(move |path: &str| {
-            push(&open_log, vec![Value::from("openPath"), Value::from(path)]);
-            open_ok
-        }),
         docs_control: wired("docs"),
         slides_control: wired("slides"),
         sheets_control: wired("sheets"),
@@ -1821,8 +1817,13 @@ fn deps_of(c: &Value, log: &Log) -> McpRuntimeDeps<'static> {
 
 /// what the controls of the TypeScript's fake deps answer: the list of open
 /// documents and diagrams is empty, nothing else is called
-fn app_answer(call: &HostCall) -> Settled {
+fn app_answer(call: &HostCall, log: &Log, open_ok: bool) -> Settled {
     match (call.control, call.method) {
+        ("NativeOpen", "openPath") => {
+            let path = match call.args.first() { Some(JsonValue::String(path)) => path.as_str(), _ => "" };
+            push(log, vec![Value::from("openPath"), Value::from(path)]);
+            Ok(Some(JsonValue::Bool(open_ok)))
+        }
         ("OpenDocumentsControl" | "DiagramControl", "list") => {
             Ok(Some(JsonValue::Array(Vec::new())))
         }
@@ -1899,6 +1900,7 @@ fn app_call(args: &[Value], cx: &mut Context) -> Answer {
     }));
     let mut labels: HashMap<u32, String> = HashMap::new();
     let mut outcomes = Map::new();
+    let mut open_ok = true;
     let mut answers = Vec::new();
     for step in spec
         .get("steps")
@@ -1907,6 +1909,7 @@ fn app_call(args: &[Value], cx: &mut Context) -> Answer {
         .unwrap_or_default()
     {
         if let Some(c) = step.get("configure") {
+            open_ok = c.get("openPath").and_then(Value::as_bool) != Some(false);
             runtime.configure_mcp_runtime(deps_of(c, &log));
         } else if step.get("start").is_some() {
             let started = runtime.start_mcp_from_settings(settings_of(step.get("start")).as_ref());
@@ -1960,7 +1963,7 @@ fn app_call(args: &[Value], cx: &mut Context) -> Answer {
             } else {
                 match runtime.build_tools() {
                     Ok(tools) => step_answer(
-                        call_tool(tools, name, step.get("args"), &mut |call| app_answer(call))
+                        call_tool(tools, name, step.get("args"), &mut |call| app_answer(call, &log, open_ok))
                             .map_err(|error| error.message),
                     ),
                     Err(message) => json!({ "error": message }),

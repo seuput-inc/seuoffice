@@ -20,9 +20,9 @@ use super::engine::TxnRequest;
 use super::lifecycle::read_file;
 use super::session::{EMU_PER_PX_96, Obj, js_round, null, number, op, prop, slide_index, target};
 use super::state::{App, SlideSession};
-use super::{Route, later, now};
+use super::{Route, later, now_render as now};
 use crate::value::{
-    Args, as_bytes, as_num, as_str, buffer, field, is_nullish, num, obj, or_null, string, truthy,
+    Args, as_bytes, as_num, as_str, buffer, field, is_nullish, num, obj, or_null, string, thrown, truthy,
 };
 
 type Reply = Result<IpcValue, IpcError>;
@@ -40,7 +40,7 @@ pub fn routes(app: &App) -> Vec<Route> {
     vec![
         now(app, "slides:edit-background", edit_background),
         now(app, "slides:edit-image-fill", edit_image_fill),
-        now(app, "slides:pick-picture-file", pick_picture_file),
+        super::now(app, "slides:pick-picture-file", pick_picture_file),
         now(app, "slides:insert-image", insert_image),
         later(app, "slides:insert-media", insert_media),
         later(app, "slides:add-media-bytes", add_media_bytes),
@@ -117,33 +117,34 @@ fn frame_value(frame: Frame) -> IpcValue {
 fn inserted(
     app: &App,
     s: &SlideSession,
+    owner: &super::engine::RenderOwner,
     slide: &IpcValue,
     r: &super::engine::TxnResult,
-) -> IpcValue {
+) -> Result<IpcValue, IpcError> {
     let created = r
         .records
         .as_ref()
         .and_then(|r| r.first())
         .and_then(|r| r.created.as_ref())
         .and_then(|c| c.first());
-    match app.rebuild_slide(s, slide) {
+    Ok(match app.rebuild_slide(s, owner, slide)? {
         Some(rebuilt) => obj([
             ("slide", rebuilt),
             (
                 "sourceId",
-                created.map_or(IpcValue::Undefined, |id| string(id.as_str())),
+                created.cloned().unwrap_or(IpcValue::Undefined),
             ),
         ]),
         None => IpcValue::Null,
-    }
+    })
 }
 
 fn unsupported(ext: &IpcValue) -> IpcValue {
     obj([("error", string("unsupported")), ("ext", ext.clone())])
 }
 
-fn scale_of(app: &App, s: &SlideSession, fit: &IpcValue) -> f64 {
-    number(fit) / (app.engine.size(s.deck()).cx / EMU_PER_PX_96)
+fn scale_of(app: &App, s: &SlideSession, fit: &IpcValue) -> Result<f64, IpcError> {
+    Ok(number(fit) / (app.engine.size(s.deck()).map_err(|error| thrown(error.0))?.cx / EMU_PER_PX_96))
 }
 
 // ---- backgrounds and fills ----
@@ -151,7 +152,7 @@ fn scale_of(app: &App, s: &SlideSession, fit: &IpcValue) -> f64 {
 pub fn edit_background(app: &App, cx: &CallContext, args: Args) -> Reply {
     let op_value = args.get(0);
     app.with_session(cx.sender.view, |app, s| {
-        let before = app.engine.slide_paths(s.deck());
+        let before = app.engine.slide_paths(s.deck()).map_err(|error| thrown(error.0))?;
         let slide = prop(op_value, "slideIndex")?;
         let targets: Vec<usize> = if as_num(slide) == Some(-1.0) {
             (0..before.len()).collect()
@@ -176,13 +177,14 @@ pub fn edit_background(app: &App, cx: &CallContext, args: Args) -> Reply {
                     v => v,
                 };
                 let Some(media) = slide_index(source_slide, before.len())
-                    .and_then(|i| app.engine.background_image(s.deck(), i))
+                    .map(|i| app.engine.background_image(s.deck(), i))
+                    .transpose().map_err(|error| thrown(error.0))?.flatten()
                 else {
                     return null();
                 };
                 obj([("mediaPath", string(media))])
             };
-            s.core.push_history();
+            s.core.push_history().map_err(|error| thrown(error.0))?;
             // the picked bytes land as one media part; further slides only add a
             // rel to it (each op reports the landed media path)
             let mut landed: Option<IpcValue> = None;
@@ -199,7 +201,7 @@ pub fn edit_background(app: &App, cx: &CallContext, args: Args) -> Reply {
                     )
                     .set("tile", IpcValue::Bool(tile))
                     .build();
-                let r = app.journaled_txn(s, OpSource::Edit, &TxnRequest::atomic(vec![o]));
+                let r = app.journaled_txn(s, &super::session::render_owner(cx)?, OpSource::Edit, &TxnRequest::atomic(vec![o]))?;
                 if r.applied {
                     let used = r
                         .records
@@ -246,8 +248,8 @@ pub fn edit_background(app: &App, cx: &CallContext, args: Args) -> Reply {
                     common(op("setBackground").set("target", target(&num(*i as f64), None))).build()
                 })
                 .collect();
-            s.core.push_history();
-            let r = app.journaled_txn(s, OpSource::Edit, &TxnRequest::atomic(ops));
+            s.core.push_history().map_err(|error| thrown(error.0))?;
+            let r = app.journaled_txn(s, &super::session::render_owner(cx)?, OpSource::Edit, &TxnRequest::atomic(ops))?;
             if !r.applied {
                 s.core.undo_stack.pop();
                 return null();
@@ -255,7 +257,7 @@ pub fn edit_background(app: &App, cx: &CallContext, args: Args) -> Reply {
         }
         s.fit_width_px = number(field(op_value, "fitWidthPx"));
         let changed: Vec<f64> = targets.iter().map(|i| *i as f64).collect();
-        Ok(app.build_slide_update(s, &before, &changed))
+        app.build_slide_update(s, &super::session::render_owner(cx)?, &before, &changed)
     })
 }
 
@@ -263,7 +265,7 @@ pub fn edit_image_fill(app: &App, cx: &CallContext, args: Args) -> Reply {
     let op_value = args.get(0);
     app.with_session(cx.sender.view, |app, s| {
         let slide = prop(op_value, "slideIndex")?;
-        let len = app.engine.slide_paths(s.deck()).len();
+        let len = app.engine.slide_paths(s.deck()).map_err(|error| thrown(error.0))?.len();
         let targets = match prop(op_value, "targets")? {
             IpcValue::Array(items) => items.clone(),
             _ => return Err(prop(&IpcValue::Undefined, "length").unwrap_err()),
@@ -284,7 +286,7 @@ pub fn edit_image_fill(app: &App, cx: &CallContext, args: Args) -> Reply {
             };
             (read_file(&path)?, file_ext(&path))
         };
-        s.core.push_history();
+        s.core.push_history().map_err(|error| thrown(error.0))?;
         let tile = as_str(field(op_value, "mode")) == Some("tile");
         let mut landed: Option<IpcValue> = None;
         let mut applied = 0;
@@ -304,7 +306,7 @@ pub fn edit_image_fill(app: &App, cx: &CallContext, args: Args) -> Reply {
                     field(t, "groupId").clone()
                 })
                 .build();
-            let r = app.journaled_txn(s, OpSource::Edit, &TxnRequest::atomic(vec![o]));
+            let r = app.journaled_txn(s, &super::session::render_owner(cx)?, OpSource::Edit, &TxnRequest::atomic(vec![o]))?;
             if r.applied {
                 applied += 1;
                 let used = r
@@ -321,7 +323,7 @@ pub fn edit_image_fill(app: &App, cx: &CallContext, args: Args) -> Reply {
             s.core.undo_stack.pop();
             return null();
         }
-        Ok(or_null(app.rebuild_slide(s, slide)))
+        Ok(or_null(app.rebuild_slide(s, &super::session::render_owner(cx)?, slide)?))
     })
 }
 
@@ -342,7 +344,7 @@ pub fn insert_image(app: &App, cx: &CallContext, args: Args) -> Reply {
     let slide = args.get(0);
     let fit = args.get(1);
     app.with_session(cx.sender.view, |app, s| {
-        let len = app.engine.slide_paths(s.deck()).len();
+        let len = app.engine.slide_paths(s.deck()).map_err(|error| thrown(error.0))?.len();
         if slide_index(slide, len).is_none() {
             return null();
         }
@@ -351,8 +353,8 @@ pub fn insert_image(app: &App, cx: &CallContext, args: Args) -> Reply {
         };
         let bytes = read_file(&path)?;
         let ext = file_ext(&path);
-        let size = app.engine.size(s.deck());
-        let info = app.engine.image_info(&bytes, &ext, Some(&path));
+        let size = app.engine.size(s.deck()).map_err(|error| thrown(error.0))?;
+        let info = app.engine.image_info(&bytes, &ext, Some(&path)).map_err(|error| thrown(error.0))?;
         let offset = picture_frame(
             Size {
                 width: size.cx,
@@ -369,11 +371,11 @@ pub fn insert_image(app: &App, cx: &CallContext, args: Args) -> Reply {
             .set("ext", string(ext.as_str()))
             .set("offset", frame_value(offset))
             .build();
-        let Some(r) = app.session_txn(s, TxnRequest::atomic(vec![o]), OpSource::Edit) else {
+        let Some(r) = app.session_txn(s, &super::session::render_owner(cx)?, TxnRequest::atomic(vec![o]), OpSource::Edit)? else {
             return Ok(unsupported(&string(ext)));
         };
         s.fit_width_px = number(fit);
-        Ok(inserted(app, s, slide, &r))
+        inserted(app, s, &super::session::render_owner(cx)?, slide, &r)
     })
 }
 
@@ -381,12 +383,12 @@ pub fn add_image_bytes(app: &App, cx: &CallContext, args: Args) -> Reply {
     let op_value = args.get(0);
     app.with_session(cx.sender.view, |app, s| {
         let slide = prop(op_value, "slideIndex")?;
-        let len = app.engine.slide_paths(s.deck()).len();
+        let len = app.engine.slide_paths(s.deck()).map_err(|error| thrown(error.0))?.len();
         if slide_index(slide, len).is_none() {
             return null();
         }
-        let size = app.engine.size(s.deck());
-        let scale = scale_of(app, s, field(op_value, "fitWidthPx"));
+        let size = app.engine.size(s.deck()).map_err(|error| thrown(error.0))?;
+        let scale = scale_of(app, s, field(op_value, "fitWidthPx"))?;
         let to_emu = |v: &IpcValue| js_round((number(v) / scale) * EMU_PER_PX_96);
         let bytes = decode(field(op_value, "base64"));
         let has = |key: &str| match op_value {
@@ -397,7 +399,7 @@ pub fn add_image_bytes(app: &App, cx: &CallContext, args: Args) -> Reply {
             let natural = field(op_value, "naturalPx");
             let center = field(op_value, "centerPx");
             let ext = as_str(field(op_value, "ext")).unwrap_or("");
-            let info = app.engine.image_info(&bytes, ext, None);
+            let info = app.engine.image_info(&bytes, ext, None).map_err(|error| thrown(error.0))?;
             picture_frame(
                 Size {
                     width: size.cx,
@@ -434,11 +436,11 @@ pub fn add_image_bytes(app: &App, cx: &CallContext, args: Args) -> Reply {
                 field(op_value, "name").clone()
             })
             .build();
-        let Some(r) = app.session_txn(s, TxnRequest::atomic(vec![o]), OpSource::Edit) else {
+        let Some(r) = app.session_txn(s, &super::session::render_owner(cx)?, TxnRequest::atomic(vec![o]), OpSource::Edit)? else {
             return Ok(unsupported(field(op_value, "ext")));
         };
         s.fit_width_px = number(field(op_value, "fitWidthPx"));
-        Ok(inserted(app, s, slide, &r))
+        inserted(app, s, &super::session::render_owner(cx)?, slide, &r)
     })
 }
 
@@ -446,7 +448,7 @@ pub fn replace_picture_bytes(app: &App, cx: &CallContext, args: Args) -> Reply {
     let op_value = args.get(0);
     app.with_session(cx.sender.view, |app, s| {
         let slide = prop(op_value, "slideIndex")?;
-        let len = app.engine.slide_paths(s.deck()).len();
+        let len = app.engine.slide_paths(s.deck()).map_err(|error| thrown(error.0))?.len();
         if slide_index(slide, len).is_none() {
             return null();
         }
@@ -461,12 +463,12 @@ pub fn replace_picture_bytes(app: &App, cx: &CallContext, args: Args) -> Reply {
             )
             .build();
         if app
-            .session_txn(s, TxnRequest::atomic(vec![o]), OpSource::Edit)
+            .session_txn(s, &super::session::render_owner(cx)?, TxnRequest::atomic(vec![o]), OpSource::Edit)?
             .is_none()
         {
             return Ok(unsupported(field(op_value, "ext")));
         }
-        Ok(or_null(app.rebuild_slide(s, slide)))
+        Ok(or_null(app.rebuild_slide(s, &super::session::render_owner(cx)?, slide)?))
     })
 }
 
@@ -474,11 +476,11 @@ pub fn add_ink(app: &App, cx: &CallContext, args: Args) -> Reply {
     let op_value = args.get(0);
     app.with_session(cx.sender.view, |app, s| {
         let slide = prop(op_value, "slideIndex")?;
-        let len = app.engine.slide_paths(s.deck()).len();
+        let len = app.engine.slide_paths(s.deck()).map_err(|error| thrown(error.0))?.len();
         if slide_index(slide, len).is_none() {
             return null();
         }
-        let scale = scale_of(app, s, field(op_value, "fitWidthPx"));
+        let scale = scale_of(app, s, field(op_value, "fitWidthPx"))?;
         let to_emu = |v: &IpcValue| js_round((number(v) / scale) * EMU_PER_PX_96);
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -499,11 +501,11 @@ pub fn add_ink(app: &App, cx: &CallContext, args: Args) -> Reply {
             .set("name", string(format!("aislides-ink {}", base36(stamp))))
             .set("descr", field(op_value, "payload").clone())
             .build();
-        let Some(r) = app.session_txn(s, TxnRequest::atomic(vec![o]), OpSource::Edit) else {
+        let Some(r) = app.session_txn(s, &super::session::render_owner(cx)?, TxnRequest::atomic(vec![o]), OpSource::Edit)? else {
             return null();
         };
         s.fit_width_px = number(field(op_value, "fitWidthPx"));
-        Ok(inserted(app, s, slide, &r))
+        inserted(app, s, &super::session::render_owner(cx)?, slide, &r)
     })
 }
 
@@ -556,10 +558,11 @@ struct Embed<'a> {
 fn embed_media(
     app: &App,
     s: &mut SlideSession,
+    owner: &super::engine::RenderOwner,
     slide: &IpcValue,
     e: Embed<'_>,
-) -> Option<(IpcValue, IpcValue, Option<String>)> {
-    let size = app.engine.size(s.deck());
+) -> Result<Option<(IpcValue, IpcValue, Option<String>)>, IpcError> {
+    let size = app.engine.size(s.deck()).map_err(|error| thrown(error.0))?;
     let slide_size = Size {
         width: size.cx,
         height: size.cy,
@@ -592,20 +595,24 @@ fn embed_media(
             || string(e.name.clone().unwrap_or_default()),
         )
         .build();
-    let txn = app.session_txn(s, TxnRequest::atomic(vec![o]), OpSource::Edit)?;
+    let Some(txn) = app.session_txn(s, owner, TxnRequest::atomic(vec![o]), OpSource::Edit)? else { return Ok(None) };
     s.fit_width_px = number(&e.fit);
-    let rebuilt = app.rebuild_slide(s, slide)?;
+    let Some(rebuilt) = app.rebuild_slide(s, owner, slide)? else { return Ok(None) };
     let id = txn
         .records
         .as_ref()
         .and_then(|r| r.first())
         .and_then(|r| r.created.as_ref())
         .and_then(|c| c.first())
-        .map_or(IpcValue::Undefined, |id| string(id.as_str()));
-    Some((rebuilt, id, warning))
+        .cloned().unwrap_or(IpcValue::Undefined);
+    Ok(Some((rebuilt, id, warning)))
 }
 
 pub fn insert_media(app: &App, cx: &CallContext, args: Args, responder: Responder) {
+    let owner = match super::session::render_owner(cx) {
+        Ok(owner) => owner,
+        Err(error) => return responder.reply(Err(error)),
+    };
     let view = cx.sender.view;
     let slide = args.get(0).clone();
     let kind = as_str(args.get(1)).unwrap_or("").to_owned();
@@ -615,7 +622,8 @@ pub fn insert_media(app: &App, cx: &CallContext, args: Args, responder: Responde
         let Some(s) = state.session(view) else {
             return responder.reply(null());
         };
-        if slide_index(&slide, app.engine.slide_paths(s.deck()).len()).is_none() {
+        let paths = match app.engine.slide_paths(s.deck()) { Ok(paths) => paths, Err(error) => return responder.reply(Err(thrown(error.0))) };
+        if slide_index(&slide, paths.len()).is_none() {
             return responder.reply(null());
         }
     }
@@ -648,9 +656,14 @@ pub fn insert_media(app: &App, cx: &CallContext, args: Args, responder: Responde
             Ok(bytes) => bytes,
             Err(error) => return responder.reply(Err(error)),
         };
-        let poster = (kind == "video")
-            .then(|| engine.video_poster(&path))
-            .flatten();
+        let poster = if kind == "video" {
+            match engine.video_poster(&path) {
+                Ok(poster) => poster,
+                Err(error) => return responder.reply(Err(thrown(error.0))),
+            }
+        } else {
+            None
+        };
         super::post_to(&services, index, move |app| {
             let ext = file_ext(&path);
             // warn up front, before the file lands on the slide
@@ -671,6 +684,7 @@ pub fn insert_media(app: &App, cx: &CallContext, args: Args, responder: Responde
                 let embedded = embed_media(
                     app,
                     s,
+                    &owner,
                     &slide,
                     Embed {
                         kind: &kind,
@@ -682,7 +696,7 @@ pub fn insert_media(app: &App, cx: &CallContext, args: Args, responder: Responde
                         center: None,
                         fit,
                     },
-                );
+                )?;
                 Ok(match embedded {
                     Some((slide, id, _)) => obj([("slide", slide), ("sourceId", id)]),
                     None => IpcValue::Null,
@@ -694,6 +708,10 @@ pub fn insert_media(app: &App, cx: &CallContext, args: Args, responder: Responde
 }
 
 pub fn add_media_bytes(app: &App, cx: &CallContext, args: Args, responder: Responder) {
+    let owner = match super::session::render_owner(cx) {
+        Ok(owner) => owner,
+        Err(error) => return responder.reply(Err(error)),
+    };
     let view = cx.sender.view;
     let op_value = args.get(0).clone();
     let (slot, ai_run) = {
@@ -702,7 +720,8 @@ pub fn add_media_bytes(app: &App, cx: &CallContext, args: Args, responder: Respo
             return responder.reply(null());
         };
         let slide = field(&op_value, "slideIndex");
-        if slide_index(slide, app.engine.slide_paths(s.deck()).len()).is_none() {
+        let paths = match app.engine.slide_paths(s.deck()) { Ok(paths) => paths, Err(error) => return responder.reply(Err(thrown(error.0))) };
+        if slide_index(slide, paths.len()).is_none() {
             return responder.reply(null());
         }
         (state.slot_of(view), s.core.ai_run)
@@ -721,7 +740,13 @@ pub fn add_media_bytes(app: &App, cx: &CallContext, args: Args, responder: Respo
             Some(path) => match read_file(path) {
                 Ok(bytes) => {
                     let video = as_str(field(&op_value, "kind")) == Some("video");
-                    (bytes, video.then(|| engine.video_poster(path)).flatten())
+                    let poster = if video {
+                        match engine.video_poster(path) {
+                            Ok(poster) => poster,
+                            Err(error) => return responder.reply(Err(thrown(error.0))),
+                        }
+                    } else { None };
+                    (bytes, poster)
                 }
                 Err(_) => return responder.reply(null()),
             },
@@ -738,7 +763,7 @@ pub fn add_media_bytes(app: &App, cx: &CallContext, args: Args, responder: Respo
                     return null();
                 }
                 let slide = field(&op_value, "slideIndex");
-                let scale = scale_of(app, s, field(&op_value, "fitWidthPx"));
+                let scale = scale_of(app, s, field(&op_value, "fitWidthPx"))?;
                 let to_emu = |v: &IpcValue| js_round((number(v) / scale) * EMU_PER_PX_96);
                 let center = field(&op_value, "centerPx");
                 let natural = field(&op_value, "natural");
@@ -746,6 +771,7 @@ pub fn add_media_bytes(app: &App, cx: &CallContext, args: Args, responder: Respo
                 let embedded = embed_media(
                     app,
                     s,
+                    &owner,
                     slide,
                     Embed {
                         kind,
@@ -763,7 +789,7 @@ pub fn add_media_bytes(app: &App, cx: &CallContext, args: Args, responder: Respo
                         }),
                         fit: field(&op_value, "fitWidthPx").clone(),
                     },
-                );
+                )?;
                 Ok(match embedded {
                     Some((slide, id, warning)) => {
                         let mut o = Obj::new().set("slide", slide).set("sourceId", id);
@@ -839,7 +865,7 @@ pub fn add_model3d(app: &App, cx: &CallContext, args: Args) -> Reply {
     let mut refused: Option<usize> = None;
     let reply = app.with_session(cx.sender.view, |app, s| {
         let slide = prop(op_value, "slideIndex")?;
-        if slide_index(slide, app.engine.slide_paths(s.deck()).len()).is_none() {
+        if slide_index(slide, app.engine.slide_paths(s.deck()).map_err(|error| thrown(error.0))?.len()).is_none() {
             return null();
         }
         let bytes = prop(op_value, "bytes")?;
@@ -857,7 +883,7 @@ pub fn add_model3d(app: &App, cx: &CallContext, args: Args) -> Reply {
             refused = Some(IMAGE_MAX_BYTES);
             return null();
         }
-        let size = app.engine.size(s.deck());
+        let size = app.engine.size(s.deck()).map_err(|error| thrown(error.0))?;
         let cy = js_round(size.cy * 0.5);
         let cx = js_round(cy * number(field(op_value, "aspect")));
         let o = op("addModel3d")
@@ -878,11 +904,11 @@ pub fn add_model3d(app: &App, cx: &CallContext, args: Args) -> Reply {
             )
             .set("name", field(op_value, "name").clone())
             .build();
-        let Some(r) = app.session_txn(s, TxnRequest::atomic(vec![o]), OpSource::Edit) else {
+        let Some(r) = app.session_txn(s, &super::session::render_owner(cx)?, TxnRequest::atomic(vec![o]), OpSource::Edit)? else {
             return null();
         };
         s.fit_width_px = number(field(op_value, "fitWidthPx"));
-        Ok(inserted(app, s, slide, &r))
+        inserted(app, s, &super::session::render_owner(cx)?, slide, &r)
     });
     if let Some(limit) = refused {
         app.refuse_oversized_media(limit);
@@ -895,7 +921,7 @@ pub fn set_model3d_view(app: &App, cx: &CallContext, args: Args) -> Reply {
     let mut refused = false;
     let reply = app.with_session(cx.sender.view, |app, s| {
         let slide = prop(op_value, "slideIndex")?;
-        if slide_index(slide, app.engine.slide_paths(s.deck()).len()).is_none() {
+        if slide_index(slide, app.engine.slide_paths(s.deck()).map_err(|error| thrown(error.0))?.len()).is_none() {
             return null();
         }
         let poster = field(op_value, "posterBase64");
@@ -918,8 +944,8 @@ pub fn set_model3d_view(app: &App, cx: &CallContext, args: Args) -> Reply {
             .set_if(truthy(poster), "posterExt", || string("png"))
             .build();
         Ok(
-            match app.session_txn(s, TxnRequest::atomic(vec![o]), OpSource::Edit) {
-                Some(_) => or_null(app.rebuild_slide(s, slide)),
+            match app.session_txn(s, &super::session::render_owner(cx)?, TxnRequest::atomic(vec![o]), OpSource::Edit)? {
+                Some(_) => or_null(app.rebuild_slide(s, &super::session::render_owner(cx)?, slide)?),
                 None => IpcValue::Null,
             },
         )
@@ -952,7 +978,7 @@ pub fn save_recording(app: &App, cx: &CallContext, args: Args) -> Reply {
                 }
             }
         }
-        let len = app.engine.slide_paths(s.deck()).len();
+        let len = app.engine.slide_paths(s.deck()).map_err(|error| thrown(error.0))?.len();
         let recorded: Vec<&IpcValue> = recorded_slides
             .iter()
             .filter(|r| slide_index(field(r, "slideIndex"), len).is_some())
@@ -979,8 +1005,8 @@ pub fn save_recording(app: &App, cx: &CallContext, args: Args) -> Reply {
             );
         }
         Ok(
-            match app.session_txn(s, TxnRequest::atomic(ops), OpSource::Edit) {
-                Some(_) => app.rebuild_every_slide(s),
+            match app.session_txn(s, &super::session::render_owner(cx)?, TxnRequest::atomic(ops), OpSource::Edit)? {
+                Some(_) => app.rebuild_every_slide(s, &super::session::render_owner(cx)?)?,
                 None => IpcValue::Null,
             },
         )
@@ -993,17 +1019,19 @@ pub fn save_recording(app: &App, cx: &CallContext, args: Args) -> Reply {
 
 pub fn clear_narration(app: &App, cx: &CallContext, args: Args) -> Reply {
     app.with_session(cx.sender.view, |app, s| {
-        let len = app.engine.slide_paths(s.deck()).len();
+        let len = app.engine.slide_paths(s.deck()).map_err(|error| thrown(error.0))?.len();
         let indexes = match args.get(0) {
             IpcValue::Array(items) => items.clone(),
             _ => Vec::new(),
         };
-        let targets: Vec<&IpcValue> = indexes
-            .iter()
-            .filter(|i| {
-                slide_index(i, len).is_some_and(|idx| app.engine.has_narration(s.deck(), idx))
-            })
-            .collect();
+        let mut targets = Vec::new();
+        for i in &indexes {
+            if let Some(idx) = slide_index(i, len) {
+                if app.engine.has_narration(s.deck(), idx).map_err(|error| thrown(error.0))? {
+                    targets.push(i);
+                }
+            }
+        }
         if targets.is_empty() {
             return null();
         }
@@ -1012,8 +1040,8 @@ pub fn clear_narration(app: &App, cx: &CallContext, args: Args) -> Reply {
             .map(|i| op("clearNarration").set("target", target(i, None)).build())
             .collect();
         Ok(
-            match app.session_txn(s, TxnRequest::atomic(ops), OpSource::Edit) {
-                Some(_) => app.rebuild_every_slide(s),
+            match app.session_txn(s, &super::session::render_owner(cx)?, TxnRequest::atomic(ops), OpSource::Edit)? {
+                Some(_) => app.rebuild_every_slide(s, &super::session::render_owner(cx)?)?,
                 None => IpcValue::Null,
             },
         )
@@ -1070,7 +1098,7 @@ fn plan_slide_moves(count: usize, selected: &[f64], insert_at: f64) -> Vec<(i64,
 pub fn move_slides(app: &App, cx: &CallContext, args: Args) -> Reply {
     let op_value = args.get(0);
     app.with_session(cx.sender.view, |app, s| {
-        let before = app.engine.slide_paths(s.deck());
+        let before = app.engine.slide_paths(s.deck()).map_err(|error| thrown(error.0))?;
         let indexes: Vec<f64> = match prop(op_value, "slideIndexes")? {
             IpcValue::Array(items) => items.iter().map(number).collect(),
             _ => Vec::new(),
@@ -1089,15 +1117,15 @@ pub fn move_slides(app: &App, cx: &CallContext, args: Args) -> Reply {
             })
             .collect();
         if app
-            .session_txn(s, TxnRequest::atomic(ops), OpSource::Edit)
+            .session_txn(s, &super::session::render_owner(cx)?, TxnRequest::atomic(ops), OpSource::Edit)?
             .is_none()
         {
             return null();
         }
         s.core.mark_meta_dirty();
-        let update = app.build_slide_update(s, &before, &[]);
+        let update = app.build_slide_update(s, &super::session::render_owner(cx)?, &before, &[])?;
         Ok(Obj::from_value(update)
-            .set("sections", app.engine.sections(s.deck()))
+            .set("sections", app.engine.sections(s.deck()).map_err(|error| thrown(error.0))?)
             .build())
     })
 }
@@ -1105,10 +1133,10 @@ pub fn move_slides(app: &App, cx: &CallContext, args: Args) -> Reply {
 pub fn remove_section_slides(app: &App, cx: &CallContext, args: Args) -> Reply {
     let op_value = args.get(0);
     app.with_session(cx.sender.view, |app, s| {
-        let before = app.engine.slide_paths(s.deck());
+        let before = app.engine.slide_paths(s.deck()).map_err(|error| thrown(error.0))?;
         let total = before.len();
         let id = prop(op_value, "id")?;
-        let Some(indices) = app.engine.section_slide_indices(s.deck(), id) else {
+        let Some(indices) = app.engine.section_slide_indices(s.deck(), id).map_err(|error| thrown(error.0))? else {
             return null();
         };
         if indices.len() >= total {
@@ -1131,15 +1159,15 @@ pub fn remove_section_slides(app: &App, cx: &CallContext, args: Args) -> Reply {
             return null();
         }
         if app
-            .session_txn(s, TxnRequest::atomic(ops), OpSource::Edit)
+            .session_txn(s, &super::session::render_owner(cx)?, TxnRequest::atomic(ops), OpSource::Edit)?
             .is_none()
         {
             return null();
         }
         s.core.mark_meta_dirty();
-        let update = app.build_slide_update(s, &before, &[]);
+        let update = app.build_slide_update(s, &super::session::render_owner(cx)?, &before, &[])?;
         Ok(Obj::from_value(update)
-            .set("sections", app.engine.sections(s.deck()))
+            .set("sections", app.engine.sections(s.deck()).map_err(|error| thrown(error.0))?)
             .build())
     })
 }

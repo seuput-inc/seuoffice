@@ -1006,13 +1006,14 @@ export function App({
   // save removes the copy; reopening a file that has one asks to restore it first.
   // The OS ending the session asks for one right away (onRecoveryWriteNow).
   useEffect(() => {
-    const writeCopy = async (): Promise<void> => {
+    const writeCopy = async (strict = false): Promise<void> => {
       const state = lazyWorkbookRef.current
       // The in-cell editor's pending text is not in the journal yet. Which copy
       // a session writes (if any) is the main process's call: a CSV or
       // converted import writes an untitled one.
+      if (!state) return
+      const dirty = journalSize(state.editJournal) !== 0 || redactionsPendingSave() || editingCellRef.current
       if (
-        !state ||
         !shouldRunSaveTick({
           saveInFlight: saveGateRef.current.busy,
           hasWorkbook: true,
@@ -1024,12 +1025,16 @@ export function App({
           kind: 'recovery',
           automaticRecoveryDisabled: state.file.automaticRecoveryDisabled === true,
         })
-      )
+      ) {
+        if (strict && dirty)
+          throw new Error('The workbook recovery copy could not be written now')
         return
-      await handleSaveRef.current('recovery')
+      }
+      const outcome = await handleSaveRef.current('recovery')
+      if (strict && !outcome.ok) throw new Error(outcome.error ?? 'The workbook recovery copy failed')
     }
     const id = window.setInterval(() => void writeCopy(), 30_000)
-    const stopWriteNow = window.desktopApi?.onRecoveryWriteNow?.(writeCopy)
+    const stopWriteNow = window.desktopApi?.onRecoveryWriteNow?.(() => writeCopy(true))
     return () => {
       window.clearInterval(id)
       stopWriteNow?.()
@@ -1278,7 +1283,11 @@ export function App({
   >(() => Promise.resolve({ ok: false }))
   /// Latest MCP bridge handlers (assigned each render; see the install below).
   const mcpSheetHandlersRef = useRef<McpSheetHandlers | null>(null)
-  const closeSaveRef = useRef<() => Promise<void>>(() => Promise.resolve())
+  const closeSaveRef = useRef<(request?: {
+    requestId: string
+    mode: 'save' | 'save-as'
+    targetPath?: string
+  }) => Promise<void>>(() => Promise.resolve())
   const commitActiveEditor = useCallback(async (): Promise<boolean> => {
     const editor = univerRef.current?.univerAPI.getActiveWorkbook() as
       ActiveCellEditor | null | undefined
@@ -1472,12 +1481,12 @@ export function App({
     }
   }
 
-  function odsExportContext(): OdsExportContext {
+  function odsExportContext(ownedSaveRequestId?: string): OdsExportContext {
     return {
       lazyWorkbookRef,
       setMessage,
       pendingEdits: async () => (await handleSaveRef.current('ods')).request ?? null,
-      requestSaveAs: () => void handleSaveRef.current('save-as'),
+      requestSaveAs: () => handleSave('save-as', false, undefined, undefined, ownedSaveRequestId),
     }
   }
 
@@ -1536,8 +1545,14 @@ export function App({
       stashViewRestore: (view) => {
         viewRestoreRef.current = view
       },
-      exportPdfCopy: (saveAsPath) =>
-        handleExportPdfImpl(pageLayoutContext(), undefined, saveAsPath),
+      exportPdfCopy: async (saveAsPath, ownedSaveRequestId) => {
+        let saveAsAgain = false
+        const written = await handleExportPdfImpl({
+          ...pageLayoutContext(),
+          requestSaveAs: () => { saveAsAgain = true },
+        }, undefined, saveAsPath, ownedSaveRequestId)
+        return saveAsAgain ? { saveAsAgain: true as const } : written
+      },
     }
   }
 
@@ -4256,7 +4271,7 @@ export function App({
       (() => undefined)
     // Close guard chose Save: run the journal save and report the outcome.
     const unsubscribeCloseSave =
-      window.desktopApi?.onCloseSaveRequest?.(() => void closeSaveRef.current()) ??
+      window.desktopApi?.onCloseSaveRequest?.((request) => void closeSaveRef.current(request)) ??
       (() => undefined)
     const gridHost = document.getElementById('univer-container')
     const disposePictureTransfer = gridHost
@@ -5682,7 +5697,7 @@ export function App({
     opened: WorkbookFile,
     opts?: {
       continueChat?: boolean
-      onInitialRangeLoaded?: () => void
+      onInitialRangeLoaded?: (error?: string) => void
       /** the reopen of a save that began before the run: it finishes under the lock the run took */
       afterSave?: boolean
     },
@@ -5945,9 +5960,13 @@ export function App({
         await page.attach({ runtime, state, redactionStates })
       }
       requestAnimationFrame(() => {
+        if (lazyWorkbookRef.current !== state) {
+          opts?.onInitialRangeLoaded?.('The workbook was replaced before its initial range loaded.')
+          return
+        }
         const workbook = runtime.univerAPI.getActiveWorkbook()
         if (!workbook) {
-          opts?.onInitialRangeLoaded?.()
+          opts?.onInitialRangeLoaded?.('The workbook renderer did not create a workbook.')
           return
         }
         // Register existing file tables under their displayName so Univer
@@ -6010,7 +6029,7 @@ export function App({
         })
         const worksheet = workbook.getActiveSheet()
         if (!worksheet) {
-          opts?.onInitialRangeLoaded?.()
+          opts?.onInitialRangeLoaded?.('The workbook renderer did not create a worksheet.')
           return
         }
         // apply the opening sheet's formula view (sheetView/@showFormulas)
@@ -6063,7 +6082,7 @@ export function App({
           () => opts?.onInitialRangeLoaded?.(),
           (error: unknown) => {
             setMessage(error instanceof Error ? error.message : t('appLoadRangeFailed'))
-            opts?.onInitialRangeLoaded?.()
+            opts?.onInitialRangeLoaded?.(error instanceof Error ? error.message : t('appLoadRangeFailed'))
           },
         )
         if (state.formulaMode) {
@@ -6085,7 +6104,7 @@ export function App({
         }
       })
     } else {
-      opts?.onInitialRangeLoaded?.()
+      opts?.onInitialRangeLoaded?.('The workbook renderer is unavailable.')
     }
     return true
   }
@@ -6140,6 +6159,15 @@ export function App({
       setOpeningWorkbook(false)
       focusSheetGrid()
     }
+    let savedLoadId: string | undefined
+    let savedResultSent = false
+    const reportSavedOpen = async (ok: boolean, error?: string): Promise<void> => {
+      if (savedLoadId === undefined || savedResultSent) return
+      savedResultSent = true
+      const report = window.desktopApi?.savedOpenResult
+      if (!report) throw new Error('The saved workbook acknowledgement bridge is unavailable.')
+      await report(savedLoadId, ok, error)
+    }
     try {
       if (!window.desktopApi) {
         throw new Error(t('appBridgeUnavailable'))
@@ -6152,7 +6180,14 @@ export function App({
         finishOpening()
         return
       }
-      if (!(await openLazyWorkbook(selected, { onInitialRangeLoaded: finishOpening }))) {
+      savedLoadId = selected.savedLoadId
+      if (!(await openLazyWorkbook(selected, { onInitialRangeLoaded: (error) => {
+        finishOpening()
+        void reportSavedOpen(error === undefined, error).catch((failure: unknown) => {
+          setMessage(failure instanceof Error ? failure.message : t('appOpenFailed'))
+        })
+      } }))) {
+        await reportSavedOpen(false, 'The workbook renderer refused to open the saved document.')
         finishOpening()
         setMessage(aiRunLock.active ? t('appAiRunLocked') : t('appOpenFailed'))
         return
@@ -6161,6 +6196,9 @@ export function App({
       setOdsNotice(odsConversionNoticeOf(selected))
       setMessage(selected.emptyCsv ? '' : t('appOpened', { name: selected.name }))
     } catch (error: unknown) {
+      await reportSavedOpen(false, error instanceof Error ? error.message : t('appOpenFailed')).catch((failure: unknown) => {
+        setMessage(failure instanceof Error ? failure.message : t('appOpenFailed'))
+      })
       setMessage(error instanceof Error ? stripIpcErrorWrapper(error.message) : t('appOpenFailed'))
       finishOpening()
     }
@@ -6171,6 +6209,7 @@ export function App({
     quiet = false,
     explicitTarget?: { path: string; overwrite: boolean },
     defaultName?: string,
+    ownedSaveRequestId?: string,
   ): Promise<SaveOutcome> {
     // Manual and AI saves take the same gate as the timers: a recovery copy
     // written beside a real save would outlive it as a phantom Restore prompt.
@@ -6187,14 +6226,18 @@ export function App({
     }
     // A Save As that ends on the ODS format exports after the gate has let
     // the save go (see saveThenExportOds).
-    return saveThenExportOds(
+    const outcome = await saveThenExportOds(
       () =>
         guardedSave(gate, refusal, async (): Promise<SaveOutcome> => {
           if (!(await commitActiveEditor())) return { ok: false }
-          return handleSaveImpl(saveContext(), mode, quiet, explicitTarget, defaultName)
+          return handleSaveImpl(saveContext(), mode, quiet, explicitTarget, defaultName, ownedSaveRequestId)
         }),
-      (targetPath) => handleExportOdsImpl(odsExportContext(), targetPath),
+      (targetPath) => handleExportOdsImpl(odsExportContext(ownedSaveRequestId), targetPath, ownedSaveRequestId),
     )
+    if ('saveAsAgain' in outcome && outcome.saveAsAgain) {
+      return handleSave('save-as', quiet, undefined, undefined, ownedSaveRequestId)
+    }
+    return outcome
   }
   /**
    * Review › Change Password. The new password goes onto the file's saved
@@ -6255,7 +6298,27 @@ export function App({
     if (stem === null) return
     await handleSave('save-as', false, undefined, stem)
   }
-  closeSaveRef.current = async () => {
+  closeSaveRef.current = async (request) => {
+    if (request !== undefined) {
+      try {
+        const result = await handleSave(
+          request.mode,
+          false,
+          request.targetPath === undefined ? undefined : { path: request.targetPath, overwrite: true },
+          undefined,
+          request.requestId,
+        )
+        const saved = result.ok || (
+          result.reason === 'no-edits' && request.mode === 'save' && request.targetPath === undefined
+        )
+        window.desktopApi.reportCloseSaveResult(saved, request.requestId, result.error)
+      } catch (error: unknown) {
+        window.desktopApi.reportCloseSaveResult(
+          false, request.requestId, error instanceof Error ? error.message : String(error),
+        )
+      }
+      return
+    }
     if (!(await commitActiveEditor())) {
       window.desktopApi?.reportCloseSaveResult?.(false)
       return

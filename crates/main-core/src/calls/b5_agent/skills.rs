@@ -980,8 +980,8 @@ impl AgentWindowHost for World<'_> {
         }
     }
 
-    fn read_prefs(&self) -> AgentPrefs {
-        prefs_of(self.dep("prefs"))
+    fn read_prefs(&self) -> Option<AgentPrefs> {
+        Some(prefs_of(self.dep("prefs")))
     }
 
     fn write_prefs(&mut self, prefs: &AgentPrefs) {

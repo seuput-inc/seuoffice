@@ -96,8 +96,6 @@ pub trait DocsBridgeHost {
     fn settle(&mut self, op: u64, outcome: Settled);
     /// `existsSync(path)`
     fn exists_sync(&mut self, path: &str) -> bool;
-    /// `deps.openBlankTab()`: open a fresh blank docs tab; its webContents id
-    fn open_blank_tab(&mut self) -> i64;
     /// `deps.authorizeSave(wcId, filePath)`: grant the tab's renderer write
     /// access to the resolved save target (`docs:save-to` checks it)
     fn authorize_save(&mut self, wc_id: i64, file_path: &str);
@@ -343,8 +341,12 @@ impl<H: DocsBridgeHost> DocsBridge<H> {
     /// `openBlankTab()` of the control: resolve only once the tab accepts
     /// commands, so the agent's first content call never races the renderer
     /// boot. Resolves with the tab's id (a number).
-    pub fn open_blank_tab(&mut self) -> Submitted {
-        let wc_id = self.host.open_blank_tab();
+
+    pub fn open_attached_tab(&mut self, opened: Result<i64, String>) -> Submitted {
+        let wc_id = match opened {
+            Ok(id) => id,
+            Err(error) => return Submitted::Rejected(error),
+        };
         let op = self.new_op();
         match self.wait_for_ready(op, wc_id, Then::OpenBlank) {
             Wait::Ready => Submitted::Resolved(Some(JsonValue::Number(wc_id as f64))),

@@ -54,6 +54,19 @@ impl AppWebview {
     })
   }
 
+  pub(crate) fn native_explicit_visible(&self) -> Option<bool> {
+    let xid = self.host.window_handle();
+    if xid == 0 { return None; }
+    with_cef_display(None, |xlib, display| unsafe {
+      let mut attributes = std::mem::MaybeUninit::<xlib::XWindowAttributes>::uninit();
+      if (xlib.XGetWindowAttributes)(display, xid as xlib::Window, attributes.as_mut_ptr()) == 0 {
+        return None;
+      }
+      // IsUnviewable is still mapped: an ancestor, not this child, hides it.
+      Some(attributes.assume_init().map_state != xlib::IsUnmapped)
+    })
+  }
+
   fn xid(&self) -> xlib::Window {
     let xid = self.host.window_handle();
     assert_ne!(xid, 0, "failed to get XID");

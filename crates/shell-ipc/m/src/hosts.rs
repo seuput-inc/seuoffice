@@ -40,6 +40,8 @@ pub enum PrintProfile {
     /// mindmap's export session, which refuses every request but `data:`
     /// URLs and the one page file loaded
     MindmapExport,
+    /// Mindmap's interactive print dialog uses the same request policy with scripts on.
+    MindmapPrint,
 }
 
 /// `new BrowserWindow({ show: false, ... })` for printing
@@ -120,6 +122,24 @@ pub trait MHost: Send + Sync {
     /// `runtime.openGeneratedPath?.(path)`: false when the runtime has none
     /// or did not open it
     fn open_generated_path(&self, path: &str) -> bool;
+    /// Complete the actual owned generated-path open or folder reveal asynchronously.
+    fn export_written_owned(
+        &self, path: std::path::PathBuf, origin: shell_contract::ipc::NativeRequestOwner,
+        destination: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        effects: shell_contract::hosts::OwnedEffectsHost, accepted: shell_contract::hosts::PdfReloadAccepted,
+        wake: shell_contract::hosts::GeneratedPathWake,
+        done: Box<dyn FnOnce(Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String>) + Send>,
+    );
+    fn export_written_existing_document(
+        &self, selection: shell_contract::ipc::NativeSaveDestination,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        effects: shell_contract::hosts::OwnedEffectsHost, additional: Vec<shell_contract::runtime::CancelToken>,
+        accepted: shell_contract::hosts::PdfReloadAccepted,
+        wake: shell_contract::hosts::GeneratedPathWake,
+        done: Box<dyn FnOnce(Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String>) + Send>,
+    );
     /// `configuredDefaultSaveDir(app)`
     fn default_save_dir(&self) -> String;
 
@@ -140,6 +160,25 @@ pub trait MHost: Send + Sync {
     /// `webContents.getPrintersAsync()`
     fn printers(&self, view: ViewId) -> Vec<Printer>;
     fn print_window(&self, spec: &PrintWindowSpec) -> Box<dyn PrintSurface>;
+    fn print_window_owned(
+        &self, spec: &PrintWindowSpec,
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+    ) -> Result<Box<dyn PrintSurface>, String>;
+    /// A native invocation's actual registered document owns the hidden print browser.
+    fn print_window_native_invocation(
+        &self, spec: &PrintWindowSpec, document: &shell_contract::ipc::NativeInvocationDocument,
+        sender: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
+    ) -> Result<Box<dyn PrintSurface>, String>;
+    fn print_window_existing_document(
+        &self, spec: &PrintWindowSpec, binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+    ) -> Result<Box<dyn PrintSurface>, String>;
     /// `execFile`/`spawn` of a printing tool (`/usr/bin/lp`, `lpoptions`)
     fn run_command(&self, file: &str, args: &[String], stdin: Option<&[u8]>) -> CommandOutcome;
 }

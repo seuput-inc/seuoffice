@@ -4,12 +4,8 @@
 use std::collections::HashSet;
 use std::fs;
 
-use jscompat::node_path::host::{basename, dirname, join};
+use jscompat::node_path::host::basename;
 use jscompat::{JsObject, JsonValue};
-use main_core::mindmap::atomic_write::atomic_write_file;
-use main_core::mindmap::save_as_formats::{
-    MapSaveAsKind, save_as_default_path, save_as_filters, save_as_target,
-};
 use main_core::packages::electron_utils::dialog_memory::{
     FallbackDir, show_save_dialog_with_memory,
 };
@@ -19,9 +15,9 @@ use main_core::packages::electron_utils::safe_external_url::{
 use shell_contract::ipc::{CallContext, Reply};
 use shell_contract::{IpcValue, ViewId};
 
-use super::app::{Answer, Ask, MAP_EXTENSION, MindmapApp, SaveMode, Wait, Waiter};
+use super::app::{Answer, Ask, MindmapApp, Wait};
 use super::hosts::OpenStatus;
-use super::util::{file_name_base, has_key, js_string, one_line, slice, utf16_len};
+use super::util::{has_key, js_string, one_line, slice, utf16_len};
 use crate::host::HostDialog;
 use crate::route::{self, Route};
 use crate::value::{Args, as_bytes, buffer, field, num, obj, string, thrown};
@@ -77,195 +73,6 @@ pub(super) fn pick_save_path(
     }
 }
 
-/// `importSaveAsDefault`: an imported map's first save is an `.xmind` of the
-/// same name beside its `.mm`
-fn import_save_as_default(app: &MindmapApp, view: ViewId) -> Option<String> {
-    let (path, title) = app.0.state.borrow().imported.get(&view).cloned()?;
-    let base = file_name_base(Some(&title));
-    let name = if base.is_empty() {
-        app.tm("untitledFile")
-    } else {
-        base
-    };
-    Some(join(&[&dirname(&path), &format!("{name}{MAP_EXTENSION}")]))
-}
-
-/// `resolveSaveTarget`: where a save goes, and as what; `Ok(None)` is a
-/// cancelled dialog. An `Err` is what the TypeScript's `try` caught.
-fn resolve_save_target(
-    app: &MindmapApp,
-    view: ViewId,
-    mode: SaveMode,
-    default_name: Option<&str>,
-) -> Result<Option<(String, MapSaveAsKind)>, String> {
-    let current = app.file_path(view);
-    if mode == SaveMode::Save
-        && let Some(current) = &current
-    {
-        return Ok(Some((current.clone(), MapSaveAsKind::Xmind)));
-    }
-    let offer_exports = mode == SaveMode::SaveAs;
-    let default_path = match &current {
-        Some(current) => join(&[&dirname(current), &basename(current, None)]),
-        None => {
-            // a restored map whose file is gone is offered that file's old
-            // place, an imported map the place of the .mm it came from
-            let restored = app
-                .view_save_as_default(view)
-                .or_else(|| import_save_as_default(app, view));
-            match restored {
-                Some(path) => path,
-                None => {
-                    // an untitled map whose panel has a project starts in that folder (spec 6)
-                    let dir = match app.0.shell.new_document_dir(view) {
-                        Some(dir) => dir,
-                        None => app.default_save_dir()?,
-                    };
-                    let base = file_name_base(default_name);
-                    let name = if base.is_empty() {
-                        app.tm("untitledFile")
-                    } else {
-                        base
-                    };
-                    join(&[&dir, &format!("{name}{MAP_EXTENSION}")])
-                }
-            }
-        }
-    };
-    let filters = save_as_filters(offer_exports, &mut |key| app.tm(key));
-    let mut options = JsObject::new();
-    options.set("title", JsonValue::String(app.tm("dlgSaveTitle")));
-    options.set(
-        "defaultPath",
-        JsonValue::String(save_as_default_path(&default_path, offer_exports)),
-    );
-    options.set(
-        "filters",
-        JsonValue::Array(
-            filters
-                .into_iter()
-                .map(|filter| {
-                    let mut item = JsObject::new();
-                    item.set("name", JsonValue::String(filter.name));
-                    item.set(
-                        "extensions",
-                        JsonValue::Array(
-                            filter
-                                .extensions
-                                .into_iter()
-                                .map(|e| JsonValue::String(e.to_owned()))
-                                .collect(),
-                        ),
-                    );
-                    JsonValue::Object(item)
-                })
-                .collect(),
-        ),
-    );
-    let Some(picked) = pick_save_path(app, view, &options, None) else {
-        return Ok(None);
-    };
-    Ok(Some(save_as_target(&picked, offer_exports)))
-}
-
-fn done(waiter: Option<Waiter>, result: IpcValue, wrote: bool) -> Reply {
-    // only a written map is a save: a cancel or a Save As copy is not
-    if let Some(waiter) = waiter {
-        waiter(Wait::Answer(wrote));
-    }
-    Ok(result)
-}
-
-enum Saved {
-    Path(String),
-    Canceled,
-    Export(MapSaveAsKind, String),
-}
-
-fn save(app: &MindmapApp, cx: &CallContext, args: Args) -> Reply {
-    let view = cx.sender.view;
-    let waiter = app.0.state.borrow_mut().save_waiters.take(view);
-    if !app.may_write(view) {
-        return done(
-            waiter,
-            failure("mindmap: the file did not open, nothing is written"),
-            false,
-        );
-    }
-    let request = args.get(0);
-    let Some(bytes) = as_bytes(field(request, "bytes")) else {
-        return done(waiter, failure("mindmap: bad save request"), false);
-    };
-    // The bytes come from a renderer. They replace the user's file only when they are a map that opens.
-    let check = app.0.engine.open_xmind(bytes);
-    if check.status != OpenStatus::Ok {
-        return done(
-            waiter,
-            failure(format!(
-                "mindmap: refusing to write a file that would not open ({})",
-                check.status.as_str()
-            )),
-            false,
-        );
-    }
-    let mode = if field(request, "mode") == &string("saveAs") {
-        SaveMode::SaveAs
-    } else {
-        SaveMode::Save
-    };
-    // Request input is untrusted: only an explicit automatic-save flag counts
-    let auto = matches!(field(request, "auto"), IpcValue::Bool(true));
-    // A copy pair saving onto the map's own path settles the conflict first
-    if mode == SaveMode::Save
-        && let Some(current) = app.file_path(view)
-        && app.conflict_stops_save(view, &current, auto)
-    {
-        return done(waiter, failure("external-modified"), false);
-    }
-    let default_name = match field(request, "defaultName") {
-        IpcValue::String(name) => Some(name.as_str()),
-        _ => None,
-    };
-    let outcome = (|| -> Result<Saved, String> {
-        let Some((path, kind)) = resolve_save_target(app, view, mode, default_name)? else {
-            return Ok(Saved::Canceled);
-        };
-        if kind != MapSaveAsKind::Xmind {
-            // Save As > an export type: a copy, written by the export channel to
-            // exactly this path. The map keeps its file, state and recovery copy.
-            app.0
-                .state
-                .borrow_mut()
-                .save_as_grants
-                .insert(view, (kind, path.clone()));
-            return Ok(Saved::Export(kind, path));
-        }
-        let previous = app.file_path(view);
-        atomic_write_file(&path, bytes).map_err(|error| error.message)?;
-        app.adopt_written_path(view, &path, previous.as_deref());
-        Ok(Saved::Path(path))
-    })();
-    match outcome {
-        Ok(Saved::Canceled) => done(
-            waiter,
-            obj([
-                ("ok", IpcValue::Bool(true)),
-                ("canceled", IpcValue::Bool(true)),
-            ]),
-            false,
-        ),
-        Ok(Saved::Export(kind, path)) => done(
-            waiter,
-            ok_with(
-                "export",
-                obj([("format", string(kind.as_str())), ("path", string(path))]),
-            ),
-            false,
-        ),
-        Ok(Saved::Path(path)) => done(waiter, ok_with("path", string(path)), true),
-        Err(message) => done(waiter, failure(message), false),
-    }
-}
 
 /// `importFreeMind`: a `.mm` for the renderer to import: its bytes, read and
 /// never written
@@ -313,6 +120,8 @@ fn open_file(app: &MindmapApp, cx: &CallContext, args: Args) -> Reply {
     let Some(path) = args.str(0).filter(|_| granted) else {
         return Err(thrown("mindmap: path not granted to this view"));
     };
+    if let Some(response) = app.open_recovery_file(cx, path)? { return Ok(response); }
+    let _opened_owner = app.replace_save_document(cx)?;
     if is_freemind(path) {
         return import_free_mind(app, view, path);
     }
@@ -320,14 +129,15 @@ fn open_file(app: &MindmapApp, cx: &CallContext, args: Args) -> Reply {
     let restored = app.resolve_view_open(view, path, app.window_of(view));
     let bytes = fs::read(path).ok();
     if let Some(restored) = restored {
-        let copy = app.0.engine.open_xmind(&restored);
+        let copy = app.0.engine.open_xmind(&restored).map_err(thrown)?;
         if copy.status == OpenStatus::Ok {
             // the restored map is written only by a save; the copy is the whole file
+            let original_opens = match bytes.as_ref() {
+                Some(bytes) => app.0.engine.open_xmind(bytes).map_err(thrown)?.status == OpenStatus::Ok,
+                None => false,
+            };
             app.0.state.borrow_mut().unopened.remove(&view);
-            if bytes
-                .as_ref()
-                .is_some_and(|b| app.0.engine.open_xmind(b).status == OpenStatus::Ok)
-            {
+            if original_opens {
                 // the file still opens: it stays the save target
                 app.0
                     .state
@@ -357,7 +167,7 @@ fn open_file(app: &MindmapApp, cx: &CallContext, args: Args) -> Reply {
         app.refuse_writes(view);
         return Ok(obj([("status", string("unreadable"))]));
     };
-    let opened = app.0.engine.open_xmind(&bytes);
+    let opened = app.0.engine.open_xmind(&bytes).map_err(thrown)?;
     if opened.status != OpenStatus::Ok {
         app.refuse_writes(view);
         return Ok(obj([("status", string(opened.status.as_str()))]));
@@ -373,61 +183,6 @@ fn open_file(app: &MindmapApp, cx: &CallContext, args: Args) -> Reply {
     Ok(obj([("status", string("ok")), ("bytes", buffer(bytes))]))
 }
 
-fn save_into_project(app: &MindmapApp, cx: &CallContext, args: Args) -> Reply {
-    let view = cx.sender.view;
-    let skipped = || {
-        obj([
-            ("ok", IpcValue::Bool(false)),
-            ("skipped", IpcValue::Bool(true)),
-        ])
-    };
-    if !app.0.shell.has_new_document_writer()
-        || !app.may_write(view)
-        || app.file_path(view).is_some()
-    {
-        return Ok(skipped());
-    }
-    let request = args.get(0);
-    let Some(bytes) = as_bytes(field(request, "bytes")) else {
-        return Ok(failure("mindmap: bad save request"));
-    };
-    // the bytes come from a renderer: only a map that opens is written
-    let check = app.0.engine.open_xmind(bytes);
-    if check.status != OpenStatus::Ok {
-        return Ok(failure(format!(
-            "mindmap: refusing to write a map that would not open ({})",
-            check.status.as_str()
-        )));
-    }
-    let name = match field(request, "defaultName") {
-        IpcValue::String(name) => Some(name.as_str()),
-        _ => None,
-    };
-    let base = file_name_base(name);
-    let base = if base.is_empty() {
-        app.tm("untitledFile")
-    } else {
-        base
-    };
-    match app
-        .0
-        .shell
-        .write_new_document(view, &format!("{base}{MAP_EXTENSION}"), bytes)
-    {
-        Ok(written) => {
-            // no project chosen, or a save that asked where landed meanwhile
-            let Some(written) = written.filter(|w| !w.is_empty()) else {
-                return Ok(skipped());
-            };
-            if app.file_path(view).is_some() {
-                return Ok(skipped());
-            }
-            app.adopt_written_path(view, &written, None);
-            Ok(ok_with("path", string(written)))
-        }
-        Err(message) => Ok(failure(message)),
-    }
-}
 
 fn open_link(app: &MindmapApp, args: Args) -> Reply {
     let options = SafeExternalUrlOptions {
@@ -538,31 +293,35 @@ pub(super) fn routes(app: &MindmapApp) -> Vec<Route> {
     let mut routes = Vec::new();
 
     let a = app.clone();
-    routes.push(route::invoke(
-        "mindmap:consume-pending",
-        move |cx, _args| {
-            Ok(match a.0.state.borrow().open_path.get(&cx.sender.view) {
-                Some(path) => string(path.clone()),
-                None => IpcValue::Null,
-            })
-        },
-    ));
+    routes.push(route::invoke_later("mindmap:consume-pending", move |cx, _args, reply| {
+        let reply = match super::saved_open::dispatch(&a, cx, super::saved_open::WaitKind::Pending, reply) {
+            Ok(()) => return, Err(reply) => reply,
+        };
+        let result = a.recovery_pending_path(cx).map(|path| path.unwrap_or_else(|| match a.0.state.borrow().open_path.get(&cx.sender.view) {
+            Some(path) => string(path.clone()), None => IpcValue::Null,
+        }));
+        reply.reply(result);
+    }));
+    let a = app.clone();
+    routes.push(route::invoke("mindmap:recovery-initialized", move |cx, args| super::recovery_open::initialized(&a, cx, args)));
+
 
     let a = app.clone();
-    routes.push(route::invoke("mindmap:open-file", move |cx, args| {
-        open_file(&a, cx, args)
+    routes.push(route::invoke_later("mindmap:open-file", move |cx, args, reply| {
+        let path = args.str(0).unwrap_or("").to_owned();
+        let reply = match super::saved_open::dispatch(&a, cx, super::saved_open::WaitKind::Open(path), reply) {
+            Ok(()) => return, Err(reply) => reply,
+        };
+        reply.reply(open_file(&a, cx, args));
     }));
 
     let a = app.clone();
-    routes.push(route::invoke("mindmap:save", move |cx, args| {
-        save(&a, cx, args)
+    routes.push(route::invoke_later("mindmap:save", move |cx, args, responder| {
+        super::owned_save::save(&a, cx, args, responder)
     }));
 
     let a = app.clone();
-    routes.push(route::invoke(
-        "mindmap:save-into-project",
-        move |cx, args| save_into_project(&a, cx, args),
-    ));
+    routes.push(route::invoke_later("mindmap:save-into-project", move |cx, args, responder| super::owned_save::save_into_project(&a, cx, args, responder)));
 
     let a = app.clone();
     routes.push(route::invoke("mindmap:open-link", move |_cx, args| {
@@ -573,6 +332,8 @@ pub(super) fn routes(app: &MindmapApp) -> Vec<Route> {
     routes.push(route::send("mindmap:dirty-changed", move |cx, args| {
         let view = cx.sender.view;
         let mut state = a.0.state.borrow_mut();
+        let revision = state.revisions.entry(view).or_default();
+        *revision = revision.saturating_add(1);
         if matches!(args.get(0), IpcValue::Bool(true)) && !state.unopened.contains_key(&view) {
             state.dirty.insert(view);
         } else {
@@ -595,6 +356,9 @@ pub(super) fn routes(app: &MindmapApp) -> Vec<Route> {
     // resolves the normal path
     let a = app.clone();
     routes.push(route::send("mindmap:save-request-ack", move |cx, args| {
+        if let Some(id) = args.str(1) {
+            return a.save_ack_owned(cx, id, matches!(args.get(0), IpcValue::Bool(true)), args.str(2));
+        }
         let waiter = a.0.state.borrow_mut().save_waiters.take(cx.sender.view);
         if let Some(waiter) = waiter {
             waiter(Wait::Answer(matches!(args.get(0), IpcValue::Bool(true))));
@@ -606,7 +370,7 @@ pub(super) fn routes(app: &MindmapApp) -> Vec<Route> {
     routes.push(route::send(
         "mindmap:make-from-document",
         move |cx, _args| {
-            a.0.shell.make_from_document(cx.sender.view);
+            a.0.shell.make_from_document(cx.clone());
             Ok(())
         },
     ));
@@ -619,8 +383,17 @@ pub(super) fn routes(app: &MindmapApp) -> Vec<Route> {
     let a = app.clone();
     routes.push(route::send(
         "mindmap:recovery-copy-now-done",
-        move |cx, _args| {
-            a.finish_copy_now(cx.sender.view, None);
+        move |cx, args| {
+            let Some(generation) = args.num(0) else { return Ok(()) };
+            if !generation.is_finite() || generation < 0.0 || generation.fract() != 0.0 {
+                return Ok(());
+            }
+            let result = match args.get(1) {
+                IpcValue::Null => Ok(()),
+                IpcValue::String(message) => Err(main_core::shell::renderer_disposal::Failure(message.clone())),
+                _ => return Ok(()),
+            };
+            a.finish_copy_now(cx.sender.view, Some(generation as u64), result);
             Ok(())
         },
     ));
@@ -631,7 +404,8 @@ pub(super) fn routes(app: &MindmapApp) -> Vec<Route> {
         if a.opens_file(view) {
             return Ok(IpcValue::Null);
         }
-        let Some(handoff) = a.0.shell.take_generate_handoff(view) else {
+        let consumer = super::owned_save::native_owner(cx)?;
+        let Some(handoff) = a.0.shell.take_generate_handoff_owned(&consumer, &cx.cancel).map_err(thrown)? else {
             return Ok(IpcValue::Null);
         };
         a.0.state
@@ -666,7 +440,7 @@ pub(super) fn routes(app: &MindmapApp) -> Vec<Route> {
                 return Ok(());
             }
             // the store keeps the first run with at least one handed-over file attached
-            if a.0.shell.report_generate_run_started(view, &paths) {
+            if a.0.shell.report_generate_run_started_owned(&super::owned_save::native_owner(cx)?, &cx.cancel, &paths).map_err(thrown)? {
                 a.0.state.borrow_mut().taken_handoff.remove(&view);
             }
             Ok(())
@@ -675,11 +449,12 @@ pub(super) fn routes(app: &MindmapApp) -> Vec<Route> {
 
     let a = app.clone();
     routes.push(route::invoke("mindmap:seed-take", move |cx, _args| {
+        if let Some(seed) = a.take_recovery_seed(cx)? { return Ok(seed); }
         let view = cx.sender.view;
         if a.opens_file(view) {
             return Ok(IpcValue::Null);
         }
-        Ok(a.take_seed(view)
+        Ok(a.take_seed_for(cx)?
             .map_or(IpcValue::Null, |seed| seed.to_value()))
     }));
 

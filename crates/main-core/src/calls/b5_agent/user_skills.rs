@@ -143,6 +143,7 @@ pub(super) fn unreal(value: Value, root: &str) -> Value {
 fn warning_of(value: &Value) -> SkillWarning {
     let text = |key: &str| str_of(value.get(key)).unwrap_or("").to_owned();
     SkillWarning {
+        rule: text("rule"),
         message_key: text("messageKey"),
         file: text("file"),
         line: number_of(value.get("line")),

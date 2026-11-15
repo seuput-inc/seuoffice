@@ -51,7 +51,23 @@ pub enum FrameEventKind {
   /// notifications, including cancelled navigation. It does not assert DOM,
   /// application, network-idle, or renderer responsiveness.
   LoadingStateChanged { is_loading: bool },
-  /// The renderer terminated. Prior document generations cannot be reused.
+  /// The OS process running this main-frame renderer at context creation.
+  /// This observation may become stale after navigation or process termination.
+  RendererProcessIdentified { pid: u32 },
+  /// An exact native context has been authenticated for this browser creation.
+  NativeContextRegistered { origin: crate::NativeContextToken },
+  /// The exact previously registered context has lost its native authority.
+  NativeContextRevoked { origin: crate::NativeContextToken },
+  /// Blink's first visually non-empty layout for this exact native context.
+  /// This is Electron's ready-to-show producer, not load completion.
+  FirstVisuallyNonEmptyLayout { origin: crate::NativeContextToken },
+  /// Native renderer DidFinishLoad matched to the original registered document.
+  NativeDocumentReady { origin: crate::NativeContextToken },
+  /// The actual renderer-process incarnation exited while this exact
+  /// registered document still belonged to it. The origin is revoked.
+  NativeRendererTerminated { origin: crate::NativeContextToken, process: crate::NativeRendererProcessIdentity },
+  /// Stock browser-only termination observation, without process provenance.
+  /// It must not authorize or revoke a specific document.
   RendererTerminated,
 }
 

@@ -535,6 +535,7 @@ import {
   forgetRecoveryCopy,
   type ExportHow,
   type FileActionContext,
+  type LoadFileOutcome,
   type PendingPdfExport,
 } from './file-actions'
 import { BlockIndex } from './pagination-index'
@@ -822,9 +823,10 @@ export function App() {
   const [docLoading, setDocLoading] = useState(false)
   /** true until the pending-open / new-blank boot checks settle; the start screen stays hidden meanwhile */
   const bootPendingRef = useRef<Promise<
-    [OpenDocxResult, boolean, AiDocContent | null, OpenFileResult | null]
+    [OpenDocxResult, boolean | { blank: true; recoveryReceipt: string }, AiDocContent | null, OpenFileResult | null]
   > | null>(null)
   const bootHandledRef = useRef(false)
+  const recoveryPasswordReceiptRef = useRef<string | null>(null)
   /** password prompt for an ECMA-376 encrypted docx; submit retries via openDocxDecrypt */
   const [docPwdPrompt, setDocPwdPrompt] = useState<{
     path: string
@@ -2227,24 +2229,30 @@ export function App() {
   useEffect(() => {
     if (tornDown) return
     let skip = 0
-    let running = false
+    let running: Promise<unknown> | null = null
     const timer = window.setInterval(() => {
       if (running) return
       if (skip > 0) {
         skip--
         return
       }
-      running = true
-      void writeRecoveryCopyImpl(fileCtxRef.current)
-        .then((outcome) => {
-          if (outcome === 'failed') skip = RECOVERY_BACKOFF_TICKS
-        })
-        .finally(() => {
-          running = false
-        })
+      const current = writeRecoveryCopyImpl(fileCtxRef.current).then((outcome) => {
+        if (outcome === 'failed') skip = RECOVERY_BACKOFF_TICKS
+      })
+      running = current
+      void current.finally(() => {
+        if (running === current) running = null
+      })
     }, 30_000)
     const offNow = window.desktop.onWriteRecoveryNow?.((done) => {
-      void writeRecoveryCopyImpl(fileCtxRef.current, { force: true }).finally(done)
+      const current = (running ?? Promise.resolve()).then(() => writeRecoveryCopyImpl(fileCtxRef.current, { force: true }))
+      running = current
+      void current.then(
+        (outcome) => done(outcome === 'failed' ? 'Docs recovery copy failed' : undefined),
+        (error) => done(String(error)),
+      ).finally(() => {
+        if (running === current) running = null
+      })
     })
     // a dropped copy whose close did not go through: the next tick copies again
     const offDropped = window.desktop.onRecoveryCopyDropped?.(forgetRecoveryCopy)
@@ -2530,14 +2538,47 @@ export function App() {
       window.desktop.consumeDocCopy?.().catch(() => null) ?? Promise.resolve(null),
     ])
     void bootPendingRef.current
-      .then(async ([pending, , aiContent, copy]) => {
+      .then(async ([pending, blank, aiContent, copy]) => {
         if (bootHandledRef.current) return
         bootHandledRef.current = true
         // A failed open (corrupt file etc.) falls back to a blank document —
         // otherwise the tab shows "Opening…" forever with only a status-bar
         // line explaining why (genoffice#102).
         // 'password': the prompt is up; its cancel path lands on blank instead.
-        const outcome = pending ? await loadFile(pending) : copy ? await loadFile(copy) : 'canceled'
+        if (typeof blank === 'object') {
+          let applied = false
+          let error: string | undefined
+          try {
+            applied = !pending && !copy && (await resetFile()) === true
+            if (!applied) error = 'blank initialization failed'
+          } catch (cause) {
+            error = String(cause)
+          }
+          await window.desktop.recoveryInitialized?.(blank.recoveryReceipt, applied, error)
+          return
+        }
+        const initial = pending ?? copy
+        const receipt = initial?.recoveryReceipt
+        if (receipt && initial && 'recoveryError' in initial && initial.recoveryError) {
+          await window.desktop.recoveryInitialized?.(receipt, false, initial.recoveryError)
+          await resetFile()
+          return
+        }
+        if (receipt) recoveryPasswordReceiptRef.current = receipt
+        let outcome: LoadFileOutcome
+        try {
+          outcome = initial ? await loadFile(initial) : 'canceled'
+        } catch (error) {
+          if (receipt) {
+            recoveryPasswordReceiptRef.current = null
+            await window.desktop.recoveryInitialized?.(receipt, false, String(error))
+          }
+          throw error
+        }
+        if (receipt && outcome !== 'password') {
+          recoveryPasswordReceiptRef.current = null
+          await window.desktop.recoveryInitialized?.(receipt, outcome === 'ok', outcome === 'ok' ? undefined : outcome)
+        }
         if (outcome === 'canceled') await resetFile()
         if (aiContent && !pending) {
           // fileCtxRef refreshes per render: wait until resetFile's setDoc landed
@@ -2598,7 +2639,19 @@ export function App() {
         return
       }
       setDocPwdPrompt(null)
-      await commitOpenedFile(res.result)
+      const receipt = recoveryPasswordReceiptRef.current
+      let outcome: LoadFileOutcome
+      try {
+        outcome = await loadFile(res.result)
+      } catch (error) {
+        recoveryPasswordReceiptRef.current = null
+        if (receipt) await window.desktop.recoveryInitialized?.(receipt, false, String(error))
+        throw error
+      }
+      if (receipt) {
+        recoveryPasswordReceiptRef.current = null
+        await window.desktop.recoveryInitialized?.(receipt, outcome === 'ok', outcome === 'ok' ? undefined : outcome)
+      }
       return
     }
     setDocPwdPrompt({
@@ -2611,6 +2664,9 @@ export function App() {
 
   const cancelDocPwd = () => {
     setDocPwdPrompt(null)
+    const receipt = recoveryPasswordReceiptRef.current
+    recoveryPasswordReceiptRef.current = null
+    if (receipt) void window.desktop.recoveryInitialized?.(receipt, false, 'password canceled')
     // canceling a boot-time open leaves no document: land on blank, not "Opening…"
     if (!fileCtxRef.current.doc) void resetFile()
   }
@@ -3246,12 +3302,15 @@ export function App() {
     const pending = pendingMixedExportRef.current
     if (pending === false) return
     if (!showPagePreview) {
+      // The export requested this render; a pre-commit effect is not a user cancellation.
+      if (pending.awaitingPreviewMount) return
       // preview dismissed while the export was parked: settle as canceled
       pendingMixedExportRef.current = false
       pending.resolve(false)
       setStatus(t('appExportPdfCanceled'))
       return
     }
+    pending.awaitingPreviewMount = false
     // The ref keeps holding `pending` while the wait runs; every settle path
     // must claim it (identity check + clear in one sync segment), so a loop
     // superseded by a newer deferral dies silently instead of double-settling
@@ -6289,14 +6348,16 @@ export function App() {
 
   // close guard: the main process queries dirty state before closing a tab/window; choosing "Save" runs a full save and reports back
   useEffect(() => {
-    const offCheck = window.desktop.onCloseCheck?.(() => {
+    const offCheck = window.desktop.onCloseCheck?.((token) => {
       window.desktop.reportCloseCheck({
         dirty: !!doc && (anyDirtyRef.current || dirtyRef.current),
         autoSave: autoSave && !!doc?.filePath,
         filePath: doc?.filePath ?? null,
-      })
+      }, token)
     })
-    const offSave = window.desktop.onCloseSaveRequest?.(() => {
+    const offSave = window.desktop.onCloseSaveRequest?.((request) => {
+      let first = true
+      let reason = ''
       // Closing must not report success while edits are still unpersisted, so a
       // save that raced with typing is retried until the file catches up.
       // A pathless document's first save asks where: cancelling resolves false and
@@ -6304,12 +6365,25 @@ export function App() {
       // again. Reporting "persisted" just because the snapshot had no path yet
       // would close over mid-save edits.
       void saveUntilPersisted({
-        save: () => save(false),
+        save: () => {
+          if (!request) return save(false)
+          const saveAs = first && request.mode === 'save-as'
+          first = false
+          return saveImpl(
+            { ...fileCtxRef.current, ownedSaveRequestId: request.requestId },
+            saveAs, false, undefined,
+            request.targetPath ? {
+              path: request.targetPath,
+              overwrite: request.overwrite === true,
+              onError: (message) => { reason = message },
+            } : undefined,
+          )
+        },
         wasIncomplete: () => saveIncompleteRef.current,
         hasPath: () => true,
       }).then(
-        (ok) => window.desktop.reportCloseSaveResult(ok === true),
-        () => window.desktop.reportCloseSaveResult(false),
+        (ok) => window.desktop.reportCloseSaveResult(ok === true, request?.requestId, reason || undefined),
+        (error) => window.desktop.reportCloseSaveResult(false, request?.requestId, error instanceof Error ? error.message : String(error)),
       )
     })
     return () => {

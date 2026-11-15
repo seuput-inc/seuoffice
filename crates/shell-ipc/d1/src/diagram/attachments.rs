@@ -462,11 +462,6 @@ impl DiagramViews {
         if is_image_ext(&ext) {
             return reply.reply(Ok(read_error(attach(lang, Attach::ErrImageNoText))));
         }
-        // a file open with unsaved changes is not read (before the cache): a
-        // withholding mark only reaches the file on save
-        if let Err(message) = self.0.shell.assert_file_saved(path) {
-            return reply.reply(Ok(read_error(message)));
-        }
         let start = floor_or(args.get(1), 0.0).max(0.0);
         let size = floor_or(args.get(2), 1.0).clamp(1.0, ATTACHMENT_READ_MAX_CHARS);
         let job = TextJob {
@@ -475,7 +470,12 @@ impl DiagramViews {
             cache: self.0.text_cache.clone(),
         };
         let path = path.clone();
-        self.0.services.workers.spawn(Box::new(move || {
+        let workers = self.0.services.workers.clone();
+        self.0.shell.assert_file_saved(path.clone(), Box::new(move |result| {
+            if let Err(message) = result {
+                return reply.reply(Ok(read_error(message)));
+            }
+            workers.spawn(Box::new(move || {
             reply.reply(Ok(match job.text(&path) {
                 Ok(text) => {
                     let total = text.encode_utf16().count();
@@ -491,6 +491,7 @@ impl DiagramViews {
                     ])
                 }
                 Err(message) => read_error(message),
+            }));
             }));
         }));
     }

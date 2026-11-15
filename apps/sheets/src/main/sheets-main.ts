@@ -1096,6 +1096,9 @@ function registerSheetsSession(webContents: WebContents, client: XlsxSidecarClie
   // a dead renderer's copies are what the shell reopens the tab from
   webContents.on('render-process-gone', () => {
     tabRecoveryFor(webContents.id).crashed = true
+    for (const waiter of recoveryWriteNowWaiters.values()) {
+      if (waiter.owner === webContents.id) waiter.finish('The workbook renderer crashed')
+    }
   })
   webContents.once('destroyed', () => {
     const entry = sheetsTabs.get(webContents.id)
@@ -1785,38 +1788,48 @@ export async function openSheetsUntitledCopy(
 
 /** how long an OS shutdown waits for one tab's renderer to write its copy */
 const RECOVERY_WRITE_NOW_TIMEOUT_MS = 8_000
-const recoveryWriteNowWaiters = new Map<string, () => void>()
+const recoveryWriteNowWaiters = new Map<string, { owner: number; finish: (error: string | null) => void }>()
 
 /**
  * Editor contract (the OS is ending the session): every live tab's renderer
- * writes its copy now. Resolves once all answered or timed out; never throws.
+ * writes its copy now. Rejects when a view closes, times out, or fails to write.
  */
 export async function writeSheetsCopiesNow(): Promise<void> {
   const waits: Promise<void>[] = []
   for (const entry of sheetsTabs.values()) {
     const contents = entry.webContents
-    if (contents.isDestroyed() || tabRecovery.get(contents.id)?.crashed) continue
+    if (contents.isDestroyed() || tabRecovery.get(contents.id)?.crashed) {
+      waits.push(Promise.reject(new Error('A workbook view is unavailable')))
+      continue
+    }
     const nonce = randomUUID()
-    waits.push(
-      new Promise<void>((resolve) => {
-        const timer = setTimeout(() => {
-          recoveryWriteNowWaiters.delete(nonce)
-          resolve()
-        }, RECOVERY_WRITE_NOW_TIMEOUT_MS)
-        recoveryWriteNowWaiters.set(nonce, () => {
-          clearTimeout(timer)
-          recoveryWriteNowWaiters.delete(nonce)
-          resolve()
-        })
-        try {
-          contents.send(IPC_CHANNELS.recoveryWriteNow, nonce)
-        } catch {
-          recoveryWriteNowWaiters.get(nonce)?.()
-        }
-      }),
-    )
+    let resolve!: () => void
+    let reject!: (error: Error) => void
+    const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no })
+    let settled = false
+    const finish = (error: string | null): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      contents.removeListener('destroyed', onDestroyed)
+      recoveryWriteNowWaiters.delete(nonce)
+      if (error === null) resolve()
+      else reject(new Error(error))
+    }
+    const onDestroyed = (): void => finish('The workbook view was closed')
+    const timer = setTimeout(() => finish('Timed out writing the workbook recovery copy'), RECOVERY_WRITE_NOW_TIMEOUT_MS)
+    recoveryWriteNowWaiters.set(nonce, { owner: contents.id, finish })
+    contents.once('destroyed', onDestroyed)
+    try {
+      contents.send(IPC_CHANNELS.recoveryWriteNow, nonce)
+    } catch (error: unknown) {
+      finish(error instanceof Error ? error.message : String(error))
+    }
+    waits.push(promise)
   }
-  await Promise.all(waits)
+  const results = await Promise.allSettled(waits)
+  const failed = results.find((result) => result.status === 'rejected')
+  if (failed?.status === 'rejected') throw failed.reason
 }
 
 /** a password workbook is open in this tab: it has no copy */
@@ -1828,7 +1841,7 @@ function sheetsTabIsUnprotectable(contentsId: number): boolean {
 
 registerRecoveryEditor({
   kind: 'sheets',
-  writeCopiesNow: () => writeSheetsCopiesNow().catch(() => undefined),
+  writeCopiesNow: () => writeSheetsCopiesNow(),
   openFileWithDecision: openSheetsFileWithDecision,
   openUntitledCopy: openSheetsUntitledCopy,
   isUnprotectable: (contents) => sheetsTabIsUnprotectable(contents.id),
@@ -2358,9 +2371,10 @@ export function registerSheetsIpc(): void {
   )
 
   // the renderer finished the copy an OS shutdown asked for (writeSheetsCopiesNow)
-  ipcMain.on(IPC_CHANNELS.recoveryWriteNowDone, (event, nonce: unknown) => {
-    if (!sheetsTabs.has(event.sender.id)) return
-    if (typeof nonce === 'string') recoveryWriteNowWaiters.get(nonce)?.()
+  ipcMain.on(IPC_CHANNELS.recoveryWriteNowDone, (event, nonce: unknown, error: unknown) => {
+    if (!sheetsTabs.has(event.sender.id) || typeof nonce !== 'string') return
+    const waiter = recoveryWriteNowWaiters.get(nonce)
+    if (waiter?.owner === event.sender.id && (error === null || typeof error === 'string')) waiter.finish(error)
   })
 
   ipcMain.on(IPC_CHANNELS.pendingEditsChanged, (event, count: unknown) => {
@@ -3908,7 +3922,7 @@ export function registerSheetsIpc(): void {
       return { ok: written }
     } catch (error) {
       console.warn('[sheets] recovery copy failed:', error)
-      return { ok: false }
+      throw error
     }
   })
 

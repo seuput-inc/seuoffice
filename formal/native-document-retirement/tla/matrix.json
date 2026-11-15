@@ -1,0 +1,16 @@
+{
+  "runs": [
+    { "name": "two-workers-two-aliased-owners", "config": "MC.cfg", "expect": "pass", "timeoutSec": 300 },
+    { "name": "two-workers-two-distinct-owners", "config": "MC.cfg", "constants": { "Alias": "FALSE" }, "expect": "pass", "timeoutSec": 300 },
+    { "name": "alias-unwind-before-retirement", "config": "MC.cfg", "constants": { "UnwindPoint": "\"before\"" }, "expect": "pass", "timeoutSec": 300 },
+    { "name": "distinct-unwind-before-retirement", "config": "MC.cfg", "constants": { "Alias": "FALSE", "UnwindPoint": "\"before\"" }, "expect": "pass", "timeoutSec": 300 },
+    { "name": "alias-unwind-after-retirement", "config": "MC.cfg", "constants": { "UnwindPoint": "\"after\"" }, "expect": "pass", "timeoutSec": 300 },
+    { "name": "distinct-unwind-after-retirement", "config": "MC.cfg", "constants": { "Alias": "FALSE", "UnwindPoint": "\"after\"" }, "expect": "pass", "timeoutSec": 300 },
+    { "name": "distinct-second-old-document-worker-and-observer", "config": "MC.cfg", "constants": { "Alias": "FALSE", "EffectDocument": "2", "ObservedDocument": "2" }, "expect": "pass", "timeoutSec": 300 },
+    { "name": "distinct-three-retired-documents", "config": "MC.cfg", "constants": { "Alias": "FALSE", "DocumentCount": "3", "EffectDocument": "3", "ObservedDocument": "3" }, "expect": "pass", "timeoutSec": 300 },
+    { "name": "notify-before-unlock-reentrant-deadlock", "config": "MC_deadlock.cfg", "constants": { "NotifyBeforeUnlock": "TRUE" }, "expect": "temporal", "property": "EventuallyTerminal", "timeoutSec": 300 },
+    { "name": "invalidate-after-unlock-old-worker-effect", "config": "MC_stale.cfg", "constants": { "InvalidateAfterUnlock": "TRUE" }, "expect": "invariant", "property": "NoStaleEffects", "timeoutSec": 300 },
+    { "name": "alias-double-lock-deadlock", "config": "MC_deadlock.cfg", "constants": { "AliasDoubleLock": "TRUE" }, "expect": "temporal", "property": "EventuallyTerminal", "timeoutSec": 300 },
+    { "name": "drop-only-second-document-notification", "config": "MC_notifications.cfg", "constants": { "DropSecond": "TRUE" }, "expect": "invariant", "property": "NotificationConservation", "timeoutSec": 300 }
+  ]
+}

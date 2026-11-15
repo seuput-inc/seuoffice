@@ -270,6 +270,8 @@ export default function App() {
   const [zoom, setZoom] = useState(100)
 
   const statusRef = useRef<LoadStatus>('loading')
+  const pendingRecoveryApplyRef = useRef<string | null>(null)
+  const pendingSavedApplyRef = useRef<{ token: string; outcome: 'applied' | 'recovered' } | null>(null)
   const dirtyRef = useRef(false)
   const savingRef = useRef(false)
   const [roundTripEnabled] = useState(roundTripMarkdownEnabled)
@@ -489,12 +491,13 @@ export default function App() {
       // the initial load must not be undoable — Cmd+Z right after opening
       // would otherwise blank the document (and Cmd+S overwrite the file)
       const body = stripLegacyFencedDivs(envelope.body)
-      editor
+      const applied = editor
         ?.chain()
         .setMeta('addToHistory', false)
         .setContent(body, { contentType: 'markdown' })
         .setTextSelection(1)
         .run()
+      if (editor && !applied) throw new Error('the document could not be applied')
       if (editor) {
         sourceMapRef.current = buildSourceMap(editor, editor.state.doc, body)
         originalSourceRef.current = roundTripEnabled
@@ -516,15 +519,22 @@ export default function App() {
     if (!editor) return
     let cancelled = false
     void (async () => {
+      let recoveryToken: string | undefined
+      let savedToken: string | undefined
       try {
-        const path = await window.markdownApi.consumePending()
+        const pending = await window.markdownApi.consumePending()
+        const savedInput = typeof pending === 'object' && pending !== null ? pending : null
+        const path = typeof pending === 'string' ? pending : (savedInput?.path ?? null)
+        savedToken = savedInput?.savedInputToken
         if (cancelled) return
         // a crash-recovery copy to open instead: asked (per-file prompt) before
         // any content loads; the original path stays the save target
-        const recovered = (await window.markdownApi.recoveryOpen?.()) ?? null
+        const recovery = savedInput ? null : ((await window.markdownApi.recoveryOpen?.()) ?? null)
+        recoveryToken = recovery?.recoveryToken
+        const recovered = savedInput?.recovered ? { text: savedInput.text, originalPath: undefined } : recovery && typeof recovery.text === 'string' ? recovery : null
         if (cancelled) return
         if (path) {
-          const raw = recovered ? recovered.text : await window.markdownApi.readFile(path)
+          const raw = recovered ? recovered.text : savedInput ? savedInput.text : await window.markdownApi.readFile(path)
           if (cancelled) return
           loadFromPath(path, raw)
           jumpToWikiFragment(path)
@@ -545,11 +555,21 @@ export default function App() {
             .run()
           sourceMapRef.current = buildSourceMap(editor, editor.state.doc, seed)
         }
+        if (recoveryToken) pendingRecoveryApplyRef.current = recoveryToken
+        if (savedToken) pendingSavedApplyRef.current = { token: savedToken, outcome: savedInput?.recovered ? 'recovered' : 'applied' }
         statusRef.current = 'ready'
         setStatus('ready')
         // a restored copy is unsaved work: the file on disk is untouched
         if (seed !== null || recovered) markDirty()
       } catch (err) {
+        if (savedToken) {
+          pendingSavedApplyRef.current = null
+          await window.markdownApi.savedInputApplied({ token: savedToken, outcome: 'failed', error: err instanceof Error ? err.message : String(err) }).catch((error) => console.error('[markdown] saved input failure acknowledgment failed:', error))
+        }
+        if (recoveryToken) {
+          pendingRecoveryApplyRef.current = null
+          await window.markdownApi.recoveryApplied?.({ token: recoveryToken, ok: false, error: err instanceof Error ? err.message : String(err) }).catch((error) => console.error('[markdown] recovery failure acknowledgment failed:', error))
+        }
         console.error('[markdown] load failed:', err)
         if (!cancelled) {
           statusRef.current = 'error'
@@ -561,6 +581,33 @@ export default function App() {
       cancelled = true
     }
   }, [editor, roundTripEnabled, loadFromPath, markDirty, jumpToWikiFragment])
+
+  useEffect(() => {
+    const recovery = pendingRecoveryApplyRef.current
+    const saved = pendingSavedApplyRef.current
+    if (status !== 'ready' || (!recovery && !saved)) return
+    pendingRecoveryApplyRef.current = null
+    pendingSavedApplyRef.current = null
+    let savedAcknowledgmentStarted = false
+    void (async () => {
+      if (recovery) {
+        const acknowledge = window.markdownApi.recoveryApplied
+        if (!acknowledge) throw new Error('Recovery acknowledgment unavailable')
+        await acknowledge({ token: recovery, ok: true })
+      }
+      if (saved) {
+        savedAcknowledgmentStarted = true
+        await window.markdownApi.savedInputApplied({ token: saved.token, outcome: saved.outcome })
+      }
+    })().catch((error) => {
+      if (saved && !savedAcknowledgmentStarted) {
+        void window.markdownApi.savedInputApplied({ token: saved.token, outcome: 'failed', error: error instanceof Error ? error.message : String(error) }).catch((failure) => console.error('[markdown] saved input failure acknowledgment failed:', failure))
+      }
+      console.error('[markdown] initial document acknowledgment failed:', error)
+      statusRef.current = 'error'
+      setStatus('error')
+    })
+  }, [status])
 
   const onFrontmatterChange = useCallback(
     (inner: string) => {

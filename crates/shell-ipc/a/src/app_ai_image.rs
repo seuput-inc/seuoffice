@@ -185,7 +185,7 @@ fn path_text(path: std::path::PathBuf) -> String {
 /// polling address of a queued FLUX job: the public suffix list with its
 /// private section, so two tenants of one hosting suffix (`appspot.com`,
 /// `github.io`) are two sites. An IP address has no domain.
-fn registrable_domain(host: &str) -> Option<String> {
+pub fn registrable_domain(host: &str) -> Option<String> {
     let lower = host.to_ascii_lowercase();
     if lower.contains(':') || lower.starts_with('[') || lower.parse::<std::net::Ipv4Addr>().is_ok()
     {

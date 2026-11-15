@@ -428,4 +428,19 @@ impl<D: ReadingStateDeps> ReadingState<D> {
             file.positions.set(path_key(to_path, None), stored);
         })
     }
+
+    pub fn prepare_move_position_guarded(&mut self, from_path: &str, to_path: &str,
+        admit: &mut crate::packages::electron_utils::atomic_write::WriteAdmission<'_>) -> Result<(String, String), NodeError> {
+        let Self { deps, loaded } = self;
+        let file = Self::load(deps, loaded);
+        let from = path_key(from_path, None);
+        admit(&mut || {
+            if let Some(stored) = file.positions.get(&from).cloned() {
+                delete(&mut file.positions, &from);
+                file.positions.set(path_key(to_path, None), stored);
+            }
+        })?;
+        let path = Self::file_path(deps);
+        Ok((path, file.to_text()))
+    }
 }

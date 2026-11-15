@@ -52,6 +52,8 @@ impl Views for Inline {
         Vec::new()
     }
     fn on_destroyed(&self, _: Box<dyn Fn(ViewId) + Send + Sync>) {}
+    fn renderer_generation(&self, _: ViewId) -> Option<shell_contract::runtime::RendererGeneration> { None }
+    fn on_renderer_replaced(&self, _: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>) {}
 }
 
 pub struct Dir(pub PathBuf);
@@ -492,6 +494,9 @@ impl shell_contract::hosts::OsShell for FakeOs {
     fn trash_item(&self, _path: &Path) -> Result<(), String> {
         Ok(())
     }
+    fn trash_item_authorized(&self, path: &std::path::Path, admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>) -> Result<(), String> {
+        admit(&mut || self.trash_item(path))
+    }
 }
 
 pub struct Rig {
@@ -518,7 +523,7 @@ pub fn rig(name: &str) -> Rig {
     std::fs::create_dir_all(&dir).unwrap();
     let inline = Arc::new(Inline);
     let events = Arc::new(Events::default());
-    let services = Services {
+    let services = shell_contract::hosts::synthetic::SyntheticOwnedEffects::install(Services {
         ui: inline.clone(),
         core: inline.clone(),
         workers: inline.clone(),
@@ -526,7 +531,7 @@ pub fn rig(name: &str) -> Rig {
         views: inline,
         paths: Arc::new(Dir(dir.clone())),
         hosts: Arc::new(Hosts::default()),
-    };
+    });
     let client = FakeClient::new();
     let shell = FakeShell::new();
     let ui = Arc::new(FakeUi::default());
@@ -560,19 +565,15 @@ pub fn context() -> CallContext {
         },
         request: None,
         cancel: CancelToken::default(),
+        native: None,
     }
 }
 
-/// Calls a handler and returns its answer; the fakes run every job at once,
-/// so the answer is there when the call returns
+/// Calls a handler and waits for its answer, including queued settings writes.
 pub fn call(f: impl FnOnce(&CallContext, Responder)) -> Result<IpcValue, IpcError> {
-    let out = Arc::new(Mutex::new(None));
-    let slot = out.clone();
-    f(
-        &context(),
-        Responder::new(move |r| *slot.lock().unwrap() = Some(r)),
-    );
-    out.lock().unwrap().take().expect("answered")
+    let (send, receive) = std::sync::mpsc::channel();
+    f(&context(), Responder::new(move |result| { let _ = send.send(result); }));
+    receive.recv_timeout(std::time::Duration::from_secs(5)).expect("answered")
 }
 
 pub fn obj(entries: &[(&str, IpcValue)]) -> IpcValue {

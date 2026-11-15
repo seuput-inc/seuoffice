@@ -24,6 +24,47 @@ use super::{Ctx, int_text, js_filter, js_len, js_str, js_strs, options};
 use crate::kit::{self, Entry, IntoIpc, as_str, field, obj};
 
 const MAX_PATH: usize = 4096;
+type HwpImportReady = main_core::shell::tab_manager::ViewCreationReady<
+    (ViewId, shell_contract::runtime::RendererGeneration),
+    shell_contract::ipc::NativeClosureReceipt,
+    shell_contract::ipc::NativeClosureReservation,
+>;
+
+fn retain_hwp_import(
+    directory: String, ready: HwpImportReady, done: Box<dyn FnOnce(Result<(), String>) + Send>,
+) {
+    let (view, generation) = ready.view;
+    let reservation = ready.reservation;
+    if !reservation.matches(view, &generation) {
+        return (ready.cleanup)(Box::new(move |_| {
+            done(Err("HWP import reservation does not match its attached view".into()));
+        }));
+    }
+    let watched_directory = directory.clone();
+    let watched_reservation = reservation.clone();
+    let watched_generation = generation.clone();
+    let watch = (ready.closure)(Box::new(move |receipt| {
+        if receipt.matches(&watched_reservation, view, &watched_generation)
+            && receipt.outcome() == shell_contract::ipc::NativeClosureOutcome::Closed {
+            let _ = std::fs::remove_dir_all(watched_directory);
+        }
+    }));
+    match watch {
+        Ok(()) => done(Ok(())),
+        Err(error) => {
+            (ready.cleanup)(Box::new(move |result| {
+                if let Ok(receipt) = result {
+                    if receipt.matches(&reservation, view, &generation)
+                        && receipt.outcome() == shell_contract::ipc::NativeClosureOutcome::Closed {
+                        let _ = std::fs::remove_dir_all(directory);
+                    }
+                }
+                done(Err(error));
+            }));
+        }
+    }
+}
+
 
 /// `requestPdfConvertDialog(contents, format, outPath)`: the pdf tab opens
 /// its conversion dialog
@@ -436,8 +477,9 @@ impl Export {
                         Some(self.host),
                         state,
                         Box::new(move |entered| match entered {
-                            None => self.end(),
-                            Some(p) => self.convert(picked, Some(p)),
+                            Ok(None) => self.end(),
+                            Ok(Some(p)) => self.convert(picked, Some(p)),
+                            Err(message) => self.failed(ConvertError::Other(message)),
                         }),
                     )
                 }
@@ -603,6 +645,69 @@ mod tests {
     }
 
     #[test]
+    fn imported_hwp_copy_waits_for_the_exact_native_closure() {
+        use shell_contract::ipc::NativeClosureIssuer;
+        use shell_contract::runtime::RendererGeneration;
+        use std::sync::{Arc, Mutex};
+
+        let t = tools(json!({}));
+        let directory = t.rt.dir.join("import-lease");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("input.pdf"), b"%PDF").unwrap();
+        let view = ViewId(7);
+        let generation = RendererGeneration::new();
+        let (issuer, reservation) = NativeClosureIssuer::new(view, generation.clone());
+        let (foreign, _) = NativeClosureIssuer::new(view, generation.clone());
+        let callbacks: Arc<Mutex<Vec<Box<dyn FnOnce(shell_contract::ipc::NativeClosureReceipt) + Send>>>> = Arc::default();
+        let queued = callbacks.clone();
+        let make_ready = || super::HwpImportReady {
+            view: (view, generation.clone()), reservation: reservation.clone(),
+            closure: {
+                let queued = queued.clone();
+                Arc::new(move |callback| { queued.lock().unwrap().push(callback); Ok(()) })
+            },
+            cleanup: Arc::new(|done| done(Err("not needed".into()))),
+        };
+        let outcome = Arc::new(Mutex::new(None));
+        let reply = outcome.clone();
+        super::retain_hwp_import(directory.to_string_lossy().into_owned(), make_ready(),
+            Box::new(move |result| *reply.lock().unwrap() = Some(result)));
+        assert!(matches!(&*outcome.lock().unwrap(), Some(Ok(()))));
+        assert!(directory.exists());
+        callbacks.lock().unwrap().pop().unwrap()(foreign.closed());
+        assert!(directory.exists());
+        super::retain_hwp_import(directory.to_string_lossy().into_owned(), make_ready(), Box::new(|result| assert!(result.is_ok())));
+        callbacks.lock().unwrap().pop().unwrap()(issuer.closed());
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn imported_hwp_copy_handles_close_before_subscription() {
+        use shell_contract::ipc::NativeClosureIssuer;
+        use shell_contract::runtime::RendererGeneration;
+        use std::sync::{Arc, Mutex};
+
+        let t = tools(json!({}));
+        let directory = t.rt.dir.join("already-closed-import");
+        std::fs::create_dir_all(&directory).unwrap();
+        let view = ViewId(9);
+        let generation = RendererGeneration::new();
+        let (issuer, reservation) = NativeClosureIssuer::new(view, generation.clone());
+        let receipt = issuer.closed();
+        let ready = super::HwpImportReady {
+            view: (view, generation), reservation,
+            closure: Arc::new(move |callback| { callback(receipt.clone()); Ok(()) }),
+            cleanup: Arc::new(|done| done(Err("not needed".into()))),
+        };
+        let result = Arc::new(Mutex::new(None));
+        let answer = result.clone();
+        super::retain_hwp_import(directory.to_string_lossy().into_owned(), ready,
+            Box::new(move |value| *answer.lock().unwrap() = Some(value)));
+        assert!(matches!(&*result.lock().unwrap(), Some(Ok(()))));
+        assert!(!directory.exists());
+    }
+
+    #[test]
     fn the_conversion_screen_works_only_on_the_views_own_pdf() {
         let mut t = tools(json!({ "find_tab": ["tab-1", null] }));
         let pdf = t.pdf_view(5);
@@ -673,22 +778,22 @@ mod tests {
         let pdf = t.pdf_view(5);
         let out = t.rt.dir.join("a.docx");
         t.rt.script().save.push_back(Some(out.clone()));
+        let win = t.rt.view(901, Surface::ShellPdfPassword);
         let pending =
             t.rt.invoke("pdf:convert-office", pdf, vec!["docx".into_ipc()]);
         let tools = t.tools();
         // the prompt is up: the reply waits
         assert!(pending.take().is_none());
-        let win = t.rt.view(901, Surface::ShellPdfPassword);
         assert_eq!(
             j(&t.call("pdf-password:get-state", win, vec![]))["retry"],
             json!(false)
         );
-        t.call("pdf-password:submit", win, vec!["wrong".into_ipc()]);
+        t.call("pdf-password:submit", win, vec!["wrong".into_ipc(), "1".into_ipc()]);
         assert_eq!(
             j(&t.call("pdf-password:get-state", win, vec![]))["retry"],
             json!(true)
         );
-        t.call("pdf-password:submit", win, vec!["right".into_ipc()]);
+        t.call("pdf-password:submit", win, vec!["right".into_ipc(), "2".into_ipc()]);
         assert_eq!(
             pending.take(),
             Some(Ok(shell_contract::IpcValue::Undefined))
@@ -731,6 +836,7 @@ mod tests {
         t.rt.script().save.push_back(Some(t.rt.dir.join("a.xlsx")));
         let ended = std::rc::Rc::new(std::cell::Cell::new(0));
         let e = ended.clone();
+        let win = t.rt.view(901, Surface::ShellPdfPassword);
         tools.export_office(PdfExport::Xlsx, None, Box::new(move || e.set(e.get() + 1)));
         t.rt.drain();
         let e = ended.clone();
@@ -738,8 +844,7 @@ mod tests {
         assert_eq!(ended.get(), 1);
         assert_eq!(messages(&t)[0].message, "pdfPptxBusyMsg");
         // cancelling the prompt ends the first quietly
-        let win = t.rt.view(901, Surface::ShellPdfPassword);
-        t.call("pdf-password:cancel", win, vec![]);
+        t.call("pdf-password:cancel", win, vec!["1".into_ipc()]);
         assert_eq!(ended.get(), 2);
         assert_eq!(messages(&t).len(), 1);
         // the next one fails with the explanation for its error

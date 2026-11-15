@@ -31,7 +31,7 @@ pub struct FontEnv {
 }
 
 /// `s.normalize('NFKC')`
-pub(crate) fn nfkc(text: &str) -> String {
+pub fn nfkc(text: &str) -> String {
     icu_normalizer::ComposingNormalizerBorrowed::new_nfkc()
         .normalize(text)
         .into_owned()
@@ -361,6 +361,11 @@ pub(crate) fn face_offsets(file: &fs::File) -> Result<Vec<i64>, Thrown> {
 }
 
 impl FontIndex {
+    /// Family-name matches in scan order, without PostScript or fallback matches.
+    pub fn family_faces(&self, family: &str) -> impl Iterator<Item = &FaceRef> {
+        self.by_family.get(&norm(family)).into_iter().flat_map(|indices| indices.iter().map(|&index| &self.faces[index]))
+    }
+
     pub(crate) fn index_file(&mut self, path: &str) {
         let Ok(file) = fs::File::open(path) else {
             return;
@@ -530,6 +535,25 @@ fn extract_face(buf: Vec<u8>, offset: i64) -> Result<Vec<u8>, Thrown> {
         buffer_copy(&buf, &mut out, e.new_off, e.t_off, e.t_off + e.t_len)?;
     }
     Ok(out)
+}
+/// Extract one TTC face at its offset; standalone fonts pass through unchanged.
+pub fn extract_sfnt_face(bytes: Vec<u8>, offset: i64) -> Result<Vec<u8>, String> {
+    if u32_at(&bytes, 0).map_err(|_| "truncated font header")? == TTC_TAG {
+        let count_at = offset.checked_add(4).ok_or("face directory overflow")?;
+        let count = u16_at(&bytes, count_at).map_err(|_| "truncated face directory")?;
+        let mut total = 12usize.checked_add(16usize.checked_mul(count as usize).ok_or("face directory overflow")?).ok_or("face directory overflow")?;
+        let base = usize::try_from(offset).map_err(|_| "invalid face offset")?;
+        if base.checked_add(total).is_none_or(|end| end > bytes.len()) { return Err("truncated face directory".into()); }
+        for index in 0..count {
+            let entry = offset.checked_add(12 + 16 * index).filter(|entry| *entry <= i64::MAX - 12).ok_or("face directory overflow")?;
+            let start = usize::try_from(u32_at(&bytes, entry + 8).map_err(|_| "truncated face directory")?).map_err(|_| "invalid table offset")?;
+            let len = usize::try_from(u32_at(&bytes, entry + 12).map_err(|_| "truncated face directory")?).map_err(|_| "invalid table length")?;
+            if start.checked_add(len).is_none_or(|end| end > bytes.len()) { return Err("font table outside collection".into()); }
+            total = total.checked_add(len.checked_add(3).ok_or("font table overflow")? & !3).ok_or("font face overflow")?;
+        }
+        if total > 512 * 1024 * 1024 { return Err("font face exceeds extraction limit".into()); }
+    }
+    extract_face(bytes, offset).map_err(|_| "invalid font face".into())
 }
 
 /// `writeUInt32BE(value, offset)`
@@ -760,5 +784,34 @@ impl FontLocator {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod extraction_tests {
+    use super::*;
+
+    #[test]
+    fn extraction_preserves_standalone_and_relocates_collection_tables() {
+        let standalone = vec![0, 1, 0, 0];
+        assert_eq!(extract_sfnt_face(standalone.clone(), 0).unwrap(), standalone);
+        let mut ttc = vec![0u8; 68];
+        ttc[0..4].copy_from_slice(b"ttcf");
+        ttc[16..20].copy_from_slice(&0x0001_0000u32.to_be_bytes());
+        ttc[20..22].copy_from_slice(&1u16.to_be_bytes());
+        ttc[28..32].copy_from_slice(b"test");
+        ttc[36..40].copy_from_slice(&64u32.to_be_bytes());
+        ttc[40..44].copy_from_slice(&4u32.to_be_bytes());
+        ttc[64..68].copy_from_slice(b"data");
+        let face = extract_sfnt_face(ttc, 16).unwrap();
+        assert_eq!(&face[0..4], &[0, 1, 0, 0]);
+        assert_eq!(&face[20..24], &28u32.to_be_bytes());
+        assert_eq!(&face[28..32], b"data");
+    }
+
+    #[test]
+    fn extraction_rejects_truncation_and_overflow() {
+        assert!(extract_sfnt_face(b"ttcf".to_vec(), i64::MAX).is_err());
+        assert!(extract_sfnt_face(b"ttcf".to_vec(), 0).is_err());
     }
 }

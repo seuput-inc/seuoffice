@@ -62,6 +62,11 @@ name = "macos-application-bootstrap"
 path = "tests/macos-application-bootstrap.rs"
 harness = false
 
+[[test]]
+name = "macos-native-focus"
+path = "tests/macos-native-focus.rs"
+harness = false
+
 [dependencies.base64]
 version = "0.22"
 
@@ -107,6 +112,9 @@ version = "1"
 
 [dependencies.sha2]
 version = "0.10"
+
+[dependencies.getrandom]
+version = "0.3"
 
 [dependencies.tauri]
 version = "3.0.0-alpha.6"
@@ -229,6 +237,10 @@ features = [
     "Win32_System_Com",
     "Win32_Globalization",
     "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_UI_Accessibility",
+    "Win32_UI_Controls",
+    "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",

@@ -72,7 +72,7 @@ use crate::packages::pipelines::slides_cover_crop::{CoverCrop, cover_crop_fracti
 use crate::slides::ai_default_fonts::{SettingsPathProvider, read_slides_ai_fonts};
 use crate::slides::ai_proposal::AiReview;
 use crate::slides::media_mime::raster_image_ext;
-use crate::slides::session_state::{Deck, EngineThrew, Session};
+use crate::slides::session_state::{Deck, Session};
 
 /// `AI_SETTINGS_PATH`: the file under userData
 pub const AI_SETTINGS_FILE: &str = "ai-settings.json";
@@ -108,6 +108,22 @@ impl IpcError {
             message: message.into(),
         }
     }
+}
+
+impl From<std::convert::Infallible> for IpcError {
+    fn from(never: std::convert::Infallible) -> Self { match never {} }
+}
+
+/// An ordinary engine exception is caught by the original picture handler;
+/// a transport failure must be reported to its caller.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PictureError {
+    Engine,
+    Transport(IpcError),
+}
+
+impl From<IpcError> for PictureError {
+    fn from(error: IpcError) -> Self { Self::Transport(error) }
 }
 
 impl From<JsTypeError> for IpcError {
@@ -1292,9 +1308,9 @@ pub struct PictureOffset {
 /// call of the engine that throws is an `Err`.
 pub trait PictureDeck {
     /// `session.opened.deck.slides[index]` is there
-    fn has_slide(&self, index: f64) -> bool;
+    fn has_slide(&self, index: f64) -> Result<bool, IpcError>;
     /// `session.opened.deck.size.cx`
-    fn size_cx(&self) -> f64;
+    fn size_cx(&self) -> Result<f64, IpcError>;
     /// `addPicture(opened, slide, { bytes, ext, offset })`: the id of the new
     /// element, `None` when the engine added nothing
     fn add_picture(
@@ -1303,14 +1319,14 @@ pub trait PictureDeck {
         bytes: &[u8],
         ext: &str,
         offset: PictureOffset,
-    ) -> Result<Option<String>, EngineThrew>;
+    ) -> Result<Option<String>, PictureError>;
     /// `editPictureSrcRect(slide, id, crop)`
     fn edit_picture_src_rect(
         &mut self,
         slide_index: f64,
         id: &str,
         crop: &CoverCrop,
-    ) -> Result<(), EngineThrew>;
+    ) -> Result<(), PictureError>;
     /// `replacePictureBytes(opened, slide, id, bytes, ext, keepSrcRect ? { keepSrcRect: true } : undefined)`
     fn replace_picture_bytes(
         &mut self,
@@ -1319,16 +1335,16 @@ pub trait PictureDeck {
         bytes: &[u8],
         ext: &str,
         keep_src_rect: bool,
-    ) -> Result<bool, EngineThrew>;
+    ) -> Result<bool, PictureError>;
     /// `slide.elements.find((el) => matchesElementRef(el, reference))?.id`
-    fn find_element_id(&self, slide_index: f64, reference: &str) -> Option<String>;
+    fn find_element_id(&self, slide_index: f64, reference: &str) -> Result<Option<String>, IpcError>;
     /// `slide.elements.find((el) => el.id === id && el.type === 'picture')?.transform?.offset`:
     /// the frame's `cx` and `cy` (NaN for one that is not a number)
-    fn picture_frame(&self, slide_index: f64, id: &str) -> Option<(f64, f64)>;
+    fn picture_frame(&self, slide_index: f64, id: &str) -> Result<Option<(f64, f64)>, IpcError>;
     /// `session.fitWidthPx = px`
     fn set_fit_width_px(&mut self, px: f64);
     /// `rebuildSlide(session, slideIndex)`: the render slide, `None` for `null`
-    fn rebuild_slide(&mut self, slide_index: f64) -> Option<JsonValue>;
+    fn rebuild_slide(&mut self, slide_index: f64) -> Result<Option<JsonValue>, IpcError>;
 }
 
 /// Where the bytes of a picture come from.
@@ -1428,7 +1444,7 @@ fn picture_start<D: Deck<S> + PictureDeck, S: Clone, O: Clone, R>(
         return Ok(None);
     }
     let slide_index = number_of(prop_of(op, "slideIndex"));
-    if !session.deck.has_slide(slide_index) {
+    if !session.deck.has_slide(slide_index)? {
         return Ok(None);
     }
     Ok(Some(slide_index))
@@ -1469,21 +1485,22 @@ pub fn insert_image_finish<D: Deck<S> + PictureDeck, S: Clone, O: Clone, R>(
     op: &JsonValue,
     ticket: PictureTicket,
     downloaded: Option<Vec<u8>>,
-) -> Option<JsonValue> {
+) -> Result<Option<JsonValue>, IpcError> where D::Error: Into<IpcError> {
     let slide_index = ticket.slide_index;
     let run = ticket.run;
-    let (buf, ext) = picture_bytes(ticket.source, downloaded)?;
+    let Some((buf, ext)) = picture_bytes(ticket.source, downloaded) else { return Ok(None) };
     if review.run.as_ref().map(|current| current.id) != run {
-        return None;
+        return Ok(None);
     }
     let fit_width_px = number_of(prop(op, "fitWidthPx"));
     let (x_px, y_px) = (number_of(prop(op, "xPx")), number_of(prop(op, "yPx")));
     let (w_px, h_px) = (number_of(prop(op, "wPx")), number_of(prop(op, "hPx")));
-    let base_width_px = session.deck.size_cx() / EMU_PER_PX_96;
+    let base_width_px = session.deck.size_cx()? / EMU_PER_PX_96;
     let scale = fit_width_px / base_width_px;
     let to_emu = |px: f64| math_round((px / scale) * EMU_PER_PX_96);
-    session.push_history();
-    let inserted = (|| -> Result<Option<JsonValue>, EngineThrew> {
+    let snapshot = session.take_snapshot().map_err(Into::into)?;
+    let mut changed = false;
+    let inserted = (|| -> Result<Option<JsonValue>, PictureError> {
         let offset = PictureOffset {
             x: to_emu(x_px),
             y: to_emu(y_px),
@@ -1491,10 +1508,10 @@ pub fn insert_image_finish<D: Deck<S> + PictureDeck, S: Clone, O: Clone, R>(
             cy: math_max(1.0, to_emu(h_px)),
         };
         let Some(id) = session.deck.add_picture(slide_index, &buf, &ext, offset)? else {
-            session.undo_stack.pop();
-            session.schedule_history_notify();
+            
             return Ok(None);
         };
+        changed = true;
         // The requested frame rarely matches the image's aspect ratio; never
         // stretch: fill the frame and center-crop the overflow (object-fit:
         // cover) so the layout box stays exactly where the model placed it.
@@ -1507,10 +1524,25 @@ pub fn insert_image_finish<D: Deck<S> + PictureDeck, S: Clone, O: Clone, R>(
         session.deck.set_fit_width_px(fit_width_px);
         Ok(session
             .deck
-            .rebuild_slide(slide_index)
+            .rebuild_slide(slide_index)?
             .map(|slide| object(vec![("slide", slide), ("sourceId", text(id))])))
     })();
-    inserted.unwrap_or(None)
+    match inserted {
+        Ok(value) => {
+            if changed { session.push_history_snapshot(snapshot); }
+            Ok(value)
+        }
+        Err(error) => {
+            if let Err(rollback) = session.deck.restore_snapshot(snapshot) {
+                let rollback: IpcError = rollback.into();
+                return Err(IpcError { code: rollback.code, message: format!("Picture edit failed ({error:?}); rollback failed: {}", rollback.message) });
+            }
+            match error {
+                PictureError::Engine => Ok(None),
+                PictureError::Transport(error) => Err(error),
+            }
+        }
+    }
 }
 
 /// `ai:replace-picture-url`, up to the download: downloads an image from a URL
@@ -1533,7 +1565,7 @@ pub fn replace_picture_begin<D: Deck<S> + PictureDeck, S: Clone, O: Clone, R>(
     let reference = string_of(prop(op, "sourceId"))?;
     let target_id = session
         .deck
-        .find_element_id(slide_index, &reference)
+        .find_element_id(slide_index, &reference)?
         .unwrap_or(reference);
     // same guard as ai:insert-image-url: no write after the run it belongs to ended
     let run = review.run.as_ref().map(|run| run.id);
@@ -1554,17 +1586,18 @@ pub fn replace_picture_finish<D: Deck<S> + PictureDeck, S: Clone, O: Clone, R>(
     op: &JsonValue,
     ticket: PictureTicket,
     downloaded: Option<Vec<u8>>,
-) -> Option<JsonValue> {
+) -> Result<Option<JsonValue>, IpcError> where D::Error: Into<IpcError> {
     let slide_index = ticket.slide_index;
     let run = ticket.run;
     let target_id = ticket.target_id;
-    let (buf, ext) = picture_bytes(ticket.source, downloaded)?;
+    let Some((buf, ext)) = picture_bytes(ticket.source, downloaded) else { return Ok(None) };
     if review.run.as_ref().map(|current| current.id) != run {
-        return None;
+        return Ok(None);
     }
     let keep_src_rect = prop(op, "keepSrcRect").is_some_and(JsonValue::truthy);
-    session.push_history();
-    let replaced = (|| -> Result<Option<JsonValue>, EngineThrew> {
+    let snapshot = session.take_snapshot().map_err(Into::into)?;
+    let mut changed = false;
+    let replaced = (|| -> Result<Option<JsonValue>, PictureError> {
         let ok = session.deck.replace_picture_bytes(
             slide_index,
             &target_id,
@@ -1573,14 +1606,14 @@ pub fn replace_picture_finish<D: Deck<S> + PictureDeck, S: Clone, O: Clone, R>(
             keep_src_rect,
         )?;
         if !ok {
-            session.undo_stack.pop();
-            session.schedule_history_notify();
+            
             return Ok(None);
         }
+        changed = true;
         // A replacement with a different aspect ratio would be stretched into
         // the surviving frame: center-crop it to cover the frame instead.
         if !keep_src_rect
-            && let Some((frame_cx, frame_cy)) = session.deck.picture_frame(slide_index, &target_id)
+            && let Some((frame_cx, frame_cy)) = session.deck.picture_frame(slide_index, &target_id)?
         {
             let (natural_w, natural_h) = images.create_from_buffer(&buf).size();
             if let Some(crop) = cover_crop_fractions(natural_w, natural_h, frame_cx, frame_cy) {
@@ -1589,7 +1622,22 @@ pub fn replace_picture_finish<D: Deck<S> + PictureDeck, S: Clone, O: Clone, R>(
                     .edit_picture_src_rect(slide_index, &target_id, &crop)?;
             }
         }
-        Ok(session.deck.rebuild_slide(slide_index))
+        Ok(session.deck.rebuild_slide(slide_index)?)
     })();
-    replaced.unwrap_or(None)
+    match replaced {
+        Ok(value) => {
+            if changed { session.push_history_snapshot(snapshot); }
+            Ok(value)
+        }
+        Err(error) => {
+            if let Err(rollback) = session.deck.restore_snapshot(snapshot) {
+                let rollback: IpcError = rollback.into();
+                return Err(IpcError { code: rollback.code, message: format!("Picture edit failed ({error:?}); rollback failed: {}", rollback.message) });
+            }
+            match error {
+                PictureError::Engine => Ok(None),
+                PictureError::Transport(error) => Err(error),
+            }
+        }
+    }
 }

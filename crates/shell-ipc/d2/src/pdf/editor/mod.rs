@@ -13,10 +13,14 @@ pub mod editors;
 pub mod hosts;
 mod media;
 mod open;
+mod owned_save;
 mod pages;
 #[cfg(feature = "probe")]
 pub(crate) mod probe;
 mod recovery;
+mod recovery_open;
+mod rename;
+pub mod reload;
 mod save;
 mod sign;
 #[cfg(test)]
@@ -27,6 +31,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 use std::sync::{Arc, Mutex};
+use std::collections::VecDeque;
 
 use jscompat::node_path::host;
 use main_core::packages::electron_utils::default_save_dir::{
@@ -60,13 +65,46 @@ fn resolve<T>(waiting: &Waiting<T>, value: T) {
     }
 }
 
-/// `CertEntry`: a certificate the person picked, by opaque id
+struct CachedCertificate {
+    session: Box<dyn hosts::SigningSession>,
+    summaries: Vec<IpcValue>,
+    chain: Vec<Vec<u8>>,
+}
+
+enum CertificateState {
+    Empty,
+    Opening(shell_contract::runtime::CancelToken),
+    Ready(CachedCertificate),
+    Busy(shell_contract::runtime::CancelToken),
+    Invalid,
+}
+
+struct CertificateCache {
+    state: CertificateState,
+    epoch: u64,
+    waiting: VecDeque<Box<dyn FnOnce()>>,
+}
+
+impl Default for CertificateCache {
+    fn default() -> Self { Self { state: CertificateState::Empty, epoch: 0, waiting: VecDeque::new() } }
+}
+
+impl Drop for CertificateCache {
+    fn drop(&mut self) {
+        match &self.state {
+            CertificateState::Opening(token) | CertificateState::Busy(token) => token.cancel(),
+            CertificateState::Ready(certificate) => certificate.session.revoke_token().cancel(),
+            CertificateState::Empty | CertificateState::Invalid => {}
+        }
+    }
+}
+
 #[derive(Clone)]
 enum CertEntry {
     File(String),
     System {
         reference: main_core::pdf::system_certificates::SystemCertificateRef,
-        identity: Option<main_core::pdf::system_certificates::SystemIdentity>,
+        cache: Rc<RefCell<CertificateCache>>,
     },
 }
 
@@ -75,16 +113,32 @@ enum CertEntry {
 struct View {
     /// `openPathByWc`
     open_path: Option<String>,
+    /// Native identity of this file slot, including an initially empty editor.
+    document_lease: Option<shell_contract::ipc::PdfDocumentLease>,
+    /// Request revision, separate from the retained certificate's slot identity.
+    document_revision: Option<shell_contract::ipc::PdfDocumentLease>,
+    browser_owner: Option<shell_contract::ipc::NativeBrowserOwner>,
+    recovery_closing: bool,
+    recovery_preparing: Option<shell_contract::ipc::RecoveryOpenTarget>,
+    recovery_seed: Option<recovery_open::PendingSeed>,
+    reload_renderer: Option<shell_contract::runtime::RendererGeneration>,
+    saved_reload: Option<reload::PendingSavedReload>,
+    saved_document: Option<reload::SavedDocument>,
+    saved_failed: Option<String>,
     /// `dirtyByWc`
     dirty: bool,
     /// `closeSaveWaiters`
     close_save: Option<(Waiting<bool>, Timer)>,
     /// `saveAsWaiters`
     save_as: Option<(Waiting<editors::SaveAsOutcome>, Timer)>,
+    owned_save: Option<owned_save::SaveAuthority>,
+    owned_save_subscription: Option<shell_contract::runtime::CancelSubscription>,
     /// `saveAsTargetByWc`
     save_as_target: Option<String>,
     /// `imageTargetByWc`
     image_target: Option<String>,
+    /// Identifies the one signing flow whose asynchronous cleanup may mutate this view.
+    sign_operation: Option<u64>,
     /// `redactionPathByWc`
     redaction_path: Option<String>,
     /// `redactionFlows`
@@ -98,9 +152,9 @@ struct View {
     /// `certEntriesByWc`
     certs: HashMap<String, CertEntry>,
     /// `untitledCopyTargetByWc`: the copy and where it goes
-    untitled_copy_target: Option<(String, String)>,
+    untitled_copy_target: Option<(String, String, Option<shell_contract::ipc::NativeRequestOwner>)>,
     /// `copyFlushWaiters`
-    copy_flush: Option<(Waiting<()>, Timer)>,
+    copy_flush: HashMap<String, (Waiting<Result<(), main_core::shell::renderer_disposal::Failure>>, Timer)>,
 }
 
 /// The process-wide part
@@ -280,6 +334,88 @@ impl Editor {
         f(self.st.borrow_mut().views.entry(view).or_default())
     }
 
+    /// Replace the file slot under the same gate used by signing commits. Notify
+    /// observers only after releasing the actor's state borrow.
+    fn replace_document(&self, view: ViewId, path: Option<String>) {
+        self.replace_document_for(view, path, None);
+    }
+
+    fn replace_recovery_document(&self, view: ViewId, path: Option<String>, target: &shell_contract::ipc::RecoveryOpenTarget) -> Result<(), String> {
+        let mut state = self.st.borrow_mut();
+        let slot = state.views.get_mut(&view).ok_or("PDF recovery slot is unavailable")?;
+        if slot.recovery_closing || !slot.browser_owner.as_ref().is_some_and(|owner| owner.same_owner(target.browser_owner()))
+            || !slot.recovery_preparing.as_ref().is_some_and(|current| current.same_binding(target))
+            || !slot.document_lease.as_ref().is_some_and(|lease| lease.is_live())
+            || !slot.document_revision.as_ref().is_some_and(|lease| lease.is_live()) {
+            return Err("PDF recovery slot changed".into());
+        }
+        slot.open_path = path;
+        Ok(())
+    }
+
+    fn replace_document_for(&self, view: ViewId, path: Option<String>, current_recovery: Option<&shell_contract::ipc::RecoveryOpenTarget>) {
+        let displaced = {
+            let state = self.st.borrow();
+            state.views.get(&view).and_then(|slot| slot.recovery_seed.as_ref().and_then(recovery_open::PendingSeed::unclosed_target)
+                .or_else(|| slot.recovery_preparing.clone()))
+                .filter(|target| current_recovery.is_none_or(|current| !target.same_binding(current)))
+        };
+        if let Some(target) = &displaced {
+            let dirty = self.is_dirty(view);
+            self.rec.borrow_mut().retain_unclosed(view, target.clone(), dirty);
+        }
+        let mut displaced_seed = None;
+        let mut displaced_saved = None;
+        let mut previous_saved_document = None;
+        let loss = {
+            let mut state = self.st.borrow_mut();
+            let slot = state.views.entry(view).or_default();
+            displaced_saved = slot.saved_reload.take();
+            previous_saved_document = slot.saved_document.take();
+            slot.saved_failed = None;
+            if displaced.is_some() {
+                displaced_seed = slot.recovery_seed.take();
+                slot.recovery_preparing = None;
+            }
+            let loss = slot.document_lease.take().map(|lease| lease.revoke_deferred());
+            let revision_loss = slot.document_revision.take().map(|lease| lease.revoke_deferred());
+            slot.document_lease = Some(shell_contract::ipc::PdfDocumentLease::new());
+            slot.document_revision = Some(shell_contract::ipc::PdfDocumentLease::new());
+            slot.open_path = path;
+            (loss, revision_loss)
+        };
+        if let Some(token) = loss.0 { token.cancel(); }
+        if let Some(token) = loss.1 { token.cancel(); }
+        drop(displaced_seed);
+        if let Some(pending) = displaced_saved { reload::fail_pending(pending, "PDF document was replaced"); }
+        drop(previous_saved_document);
+    }
+
+    fn bind_pdf_owner(&self, view: ViewId, context: shell_contract::ipc::NativeContext) -> Option<shell_contract::ipc::NativeRequestOwner> {
+        let lease = self.st.borrow().views.get(&view)?.document_lease.clone()?;
+        if !lease.is_live() { return None; }
+        Some(shell_contract::ipc::NativeRequestOwner { view, context: context.with_pdf_document(lease) })
+    }
+
+    fn bind_sign_owner(&self, view: ViewId, context: shell_contract::ipc::NativeContext) -> Option<shell_contract::ipc::NativeRequestOwner> {
+        let revision = self.st.borrow().views.get(&view)?.document_revision.clone()?;
+        if !revision.is_live() { return None; }
+        self.bind_pdf_owner(view, context.with_pdf_revision(revision))
+    }
+
+    fn advance_document_revision(&self, view: ViewId) {
+        let (loss, saved) = {
+            let mut state = self.st.borrow_mut();
+            let Some(slot) = state.views.get_mut(&view) else { return };
+            if slot.document_lease.is_none() { return; }
+            let loss = slot.document_revision.take().map(|revision| revision.revoke_deferred());
+            slot.document_revision = Some(shell_contract::ipc::PdfDocumentLease::new());
+            (loss, slot.saved_document.take())
+        };
+        if let Some(loss) = loss { loss.cancel(); }
+        drop(saved);
+    }
+
     fn open_path(&self, view: ViewId) -> Option<String> {
         self.st.borrow().views.get(&view)?.open_path.clone()
     }
@@ -379,6 +515,25 @@ impl Editor {
         write: impl FnOnce() -> Result<T, String> + Send + 'static,
         then: impl FnOnce(Result<T, String>) + 'static,
     ) {
+        self.write_own_file_owned(view, path, None, write, then)
+    }
+
+    fn write_own_file_owned<T: Send + 'static>(
+        &self, view: ViewId, path: &str, authority: Option<owned_save::SaveAuthority>,
+        write: impl FnOnce() -> Result<T, String> + Send + 'static,
+        then: impl FnOnce(Result<T, String>) + 'static,
+    ) {
+        let native_advanced = match authority.as_ref().map(|owned| owned.advance_native_write_revisions(self, view, path)).transpose() {
+            Ok(Some(advanced)) => advanced,
+            Ok(None) => false,
+            Err(error) => return then(Err(error)),
+        };
+        if !native_advanced {
+            let affected: Vec<ViewId> = self.st.borrow().views.iter()
+                .filter_map(|(id, slot)| (slot.open_path.as_deref() == Some(path)).then_some(*id))
+                .collect();
+            for id in affected { self.advance_document_revision(id); }
+        }
         *self
             .st
             .borrow_mut()
@@ -402,7 +557,8 @@ impl Editor {
                     .flatten();
                 (result, written)
             },
-            move |(result, written)| {
+            move |(mut result, written)| {
+                let mut effects = || {
                 if result.is_ok() {
                     {
                         let mut st = ed.st.borrow_mut();
@@ -412,12 +568,16 @@ impl Editor {
                         }
                     }
                     ed.remember_disk_state(view, &target, written.clone());
-                    ed.with_view(view, |v| match written {
+                    ed.with_view(view, |v| match written.clone() {
                         Some(w) => v.own_writes.insert(target.clone(), w),
                         None => v.own_writes.remove(&target),
                     });
                     ed.rebase_watch(view, &target);
                 }
+                Ok(())
+                };
+                let admitted = match &authority { Some(owned) => owned.commit(&mut effects), None => effects() };
+                if let Err(message) = admitted { result = Err(message); }
                 {
                     let mut st = ed.st.borrow_mut();
                     let left = st
@@ -439,21 +599,43 @@ impl Editor {
 
     /// The view is gone: the TypeScript's `destroyed` listener of `grantAndTrack`
     fn destroyed(&self, view: ViewId) {
+        if self.st.borrow().views.get(&view).is_some_and(|slot| slot.recovery_preparing.is_some() || slot.recovery_seed.is_some()) {
+            return;
+        }
+        self.destroyed_after_recovery_closed(view);
+    }
+
+    fn destroyed_after_recovery_closed(&self, view: ViewId) {
         // before the dirty flag goes: a tab closed clean drops its copy
+        let recovery_target = self.st.borrow().views.get(&view).and_then(|slot| {
+            slot.recovery_seed.as_ref().and_then(recovery_open::PendingSeed::unclosed_target)
+                .or_else(|| slot.recovery_preparing.clone())
+        });
         let dirty = self.is_dirty(view);
-        self.rec.borrow_mut().destroyed(view, dirty);
-        let gone = {
+        if let Some(target) = recovery_target {
+            self.rec.borrow_mut().retain_unclosed(view, target, dirty);
+        } else {
+            self.rec.borrow_mut().destroyed(view, dirty);
+        }
+        let (gone, loss, revision_loss) = {
             let mut st = self.st.borrow_mut();
+            let loss = st.views.get(&view).and_then(|v| v.document_lease.as_ref())
+                .map(|lease| lease.revoke_deferred());
+            let revision_loss = st.views.get(&view).and_then(|v| v.document_revision.as_ref())
+                .map(|revision| revision.revoke_deferred());
             let gone = st.views.remove(&view);
             if let Some(open) = gone.as_ref().and_then(|v| v.open_path.as_ref()) {
                 st.unsaved_untitled_copy.remove(open);
             }
-            gone
+            (gone, loss, revision_loss)
         };
+        if let Some(loss) = loss { loss.cancel(); }
+        if let Some(loss) = revision_loss { loss.cancel(); }
         let Some(mut gone) = gone else { return };
-        if let Some((waiting, timer)) = gone.copy_flush.take() {
+        if let Some(pending) = gone.saved_reload.take() { reload::fail_pending(pending, "PDF reload view was destroyed"); }
+        for (_, (waiting, timer)) in gone.copy_flush.drain() {
             kit::clear(timer);
-            resolve(&waiting, ());
+            resolve(&waiting, Err(main_core::shell::renderer_disposal::Failure("PDF recovery view destroyed".into())));
         }
         if let Some(watch) = gone.watch.take() {
             watch.close(self, view);
@@ -482,6 +664,9 @@ pub(crate) fn entries(
     let ed = Editor::new(services, grants)?;
     let editors = Rc::new(PdfEditors(ed.clone()));
     provided.add::<dyn shell_contract::editors::DocumentEditors>(editors.clone());
+    #[cfg(any(test, feature = "probe"))]
+    provided.add::<dyn main_core::packages::electron_utils::recovery_contract::RecoveryEditorContract<ViewId, ()>>(editors.clone());
+    provided.add::<dyn main_core::packages::electron_utils::recovery_contract::RecoveryEditorContract<ViewId, shell_contract::ipc::RecoveryOpenTarget>>(editors.clone());
     // the PDF-only calls (flushPdfSave, requestPdfSaveAs, ...) by their own type
     provided.add::<PdfEditors>(editors);
     let mut all = open::entries(&ed);

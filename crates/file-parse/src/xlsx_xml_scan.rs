@@ -13,7 +13,7 @@ use jscompat::{is_js_space, js_regex, to_number};
 
 /// What a token matches from a `<` at `at`: where it ends and what it holds.
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum Markup<'t> {
+pub enum Markup<'t> {
     /// a comment, a CDATA section (its text), a processing instruction or a doctype
     Skipped { cdata: Option<&'t str> },
     /// a start, end or self-closed tag
@@ -25,7 +25,7 @@ pub(crate) enum Markup<'t> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Token<'t> {
+pub struct Token<'t> {
     pub start: usize,
     pub end: usize,
     pub markup: Markup<'t>,
@@ -125,7 +125,7 @@ fn token_at(xml: &str, at: usize) -> Option<Token<'_>> {
 }
 
 /// Every token of the scanner, in order: a `<` that starts none is passed over.
-fn tokens(xml: &str) -> impl Iterator<Item = Token<'_>> {
+pub fn tokens(xml: &str) -> impl Iterator<Item = Token<'_>> {
     let mut at = 0;
     std::iter::from_fn(move || {
         while let Some(found) = xml[at..].find('<') {
@@ -197,6 +197,10 @@ impl XmlElement {
             .iter()
             .find(|(key, _)| key == name)
             .map(|(_, value)| value.as_str())
+    }
+
+    pub(crate) fn attributes(&self) -> &[(String, String)] {
+        &self.attributes
     }
 }
 

@@ -91,19 +91,21 @@ const aiSubscription: SubscriptionApi = {
 
 const api: HwpApi = {
   consumePending: () => ipcRenderer.invoke(HWP_CHANNELS.consumePending),
+  consumeRecovery: () => ipcRenderer.invoke(HWP_CHANNELS.consumeRecovery),
+  recoveryInitialized: (token, result) => ipcRenderer.invoke(HWP_CHANNELS.recoveryInitialized, token, result),
   untitledCopy: () => ipcRenderer.invoke(HWP_CHANNELS.untitledCopy),
   readFile: (path) => ipcRenderer.invoke(HWP_CHANNELS.readFile, path),
   trackingDropped: () => ipcRenderer.invoke(HWP_CHANNELS.trackingDropped),
   structureUnverified: () => ipcRenderer.invoke(HWP_CHANNELS.structureUnverified),
-  beginSave: (mode) => ipcRenderer.invoke(HWP_CHANNELS.beginSave, mode),
-  newTabs: (bytes, format) => ipcRenderer.invoke(HWP_CHANNELS.newTabs, bytes, format),
-  commitSave: (bytes, tabs, options) =>
-    ipcRenderer.invoke(HWP_CHANNELS.commitSave, bytes, tabs, options),
-  abortSave: () => ipcRenderer.send(HWP_CHANNELS.abortSave),
+  beginSave: (mode, requestToken) => ipcRenderer.invoke(HWP_CHANNELS.beginSave, mode, requestToken),
+  newTabs: (bytes, format, requestToken) => ipcRenderer.invoke(HWP_CHANNELS.newTabs, bytes, format, requestToken),
+  commitSave: (bytes, tabs, options, requestToken) =>
+    ipcRenderer.invoke(HWP_CHANNELS.commitSave, bytes, tabs, options, requestToken),
+  abortSave: (requestToken) => ipcRenderer.send(HWP_CHANNELS.abortSave, requestToken),
   requestFileCommand: (command) => ipcRenderer.send(HWP_CHANNELS.fileCommand, command),
   setDirty: (dirty) => ipcRenderer.send(HWP_CHANNELS.dirtyChanged, dirty),
   onSaveRequest: (handler) => {
-    const listener = (_e: Electron.IpcRendererEvent, mode: SaveMode) => handler(mode)
+    const listener = (_e: Electron.IpcRendererEvent, mode: SaveMode, requestToken?: string) => handler(mode, requestToken)
     ipcRenderer.on(HWP_CHANNELS.saveRequest, listener)
     return () => ipcRenderer.removeListener(HWP_CHANNELS.saveRequest, listener)
   },
@@ -164,7 +166,7 @@ const api: HwpApi = {
     ipcRenderer.on(HWP_CHANNELS.recoveryFlush, listener)
     return () => ipcRenderer.removeListener(HWP_CHANNELS.recoveryFlush, listener)
   },
-  sendRecoveryFlushed: (token) => ipcRenderer.send(HWP_CHANNELS.recoveryFlushed, token),
+  sendRecoveryFlushed: (token, error) => ipcRenderer.send(HWP_CHANNELS.recoveryFlushed, token, error),
   onRecoveryReset: (handler) => {
     const listener = () => handler()
     ipcRenderer.on(HWP_CHANNELS.recoveryReset, listener)

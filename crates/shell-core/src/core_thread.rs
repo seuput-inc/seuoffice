@@ -51,9 +51,14 @@ impl CoreThread {
 
 impl Thread for CoreThread {
     fn post(&self, job: Job) {
-        if let Some(queue) = self.queue.lock().unwrap().as_ref() {
-            let _ = queue.send(job);
-        }
+        let rejected = {
+            let queue = self.queue.lock().unwrap();
+            match queue.as_ref() {
+                Some(queue) => queue.send(job).err().map(|error| error.0),
+                None => Some(job),
+            }
+        };
+        drop(rejected);
     }
 
     fn is_current(&self) -> bool {
@@ -142,6 +147,7 @@ mod tests {
                 sender,
                 ChannelKind::Invoke,
                 None,
+                None,
                 spec.name,
                 vec![],
                 Box::new(move |r| replies.send(r).unwrap()),
@@ -161,5 +167,69 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .expect("the core thread ended with the panic");
         core.stop();
+    }
+
+    struct ReenterOnDrop {
+        core: std::sync::Weak<CoreThread>,
+        observed: mpsc::Sender<bool>,
+    }
+    impl Drop for ReenterOnDrop {
+        fn drop(&mut self) {
+            let unlocked = self.core.upgrade().is_some_and(|core| core.queue.try_lock().is_ok());
+            self.observed.send(unlocked).unwrap();
+        }
+    }
+
+    fn assert_rejected_job_dropped_outside_queue_lock(core: &Arc<CoreThread>) {
+        let (observed, received) = mpsc::channel();
+        let guard = ReenterOnDrop { core: Arc::downgrade(core), observed };
+        core.post(Box::new(move || drop(guard)));
+        assert!(received.recv_timeout(std::time::Duration::from_secs(5)).unwrap());
+    }
+
+    #[test]
+    fn stopped_queue_drops_rejected_job_outside_its_mutex() {
+        let core = CoreThread::spawn("stopped-queue-drop");
+        core.stop();
+        assert_rejected_job_dropped_outside_queue_lock(&core);
+    }
+
+    #[test]
+    fn disconnected_queue_drops_rejected_job_outside_its_mutex() {
+        let (send, receive) = mpsc::channel::<Job>();
+        drop(receive);
+        let core = Arc::new(CoreThread {
+            queue: Mutex::new(Some(send)), id: thread::current().id(), join: Mutex::new(None),
+        });
+        assert_rejected_job_dropped_outside_queue_lock(&core);
+    }
+
+    #[test]
+    fn stop_drains_every_accepted_job_before_returning() {
+        let core = CoreThread::spawn("queue-drain");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        for i in 0..64 {
+            let seen = seen.clone();
+            core.post(Box::new(move || seen.lock().unwrap().push(i)));
+        }
+        core.stop();
+        assert_eq!(*seen.lock().unwrap(), (0..64).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn rejected_job_drop_can_post_again_to_the_same_stopped_core() {
+        struct Repost { core: Arc<CoreThread>, done: mpsc::Sender<()> }
+        impl Drop for Repost {
+            fn drop(&mut self) {
+                self.core.post(Box::new(|| {}));
+                self.done.send(()).unwrap();
+            }
+        }
+        let core = CoreThread::spawn("queue-reentrant-rejection");
+        core.stop();
+        let (send, receive) = mpsc::channel();
+        let guard = Repost { core: core.clone(), done: send };
+        thread::spawn(move || core.post(Box::new(move || drop(guard))));
+        receive.recv_timeout(std::time::Duration::from_secs(5)).expect("rejection held its queue lock");
     }
 }

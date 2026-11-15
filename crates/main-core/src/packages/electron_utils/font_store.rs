@@ -9,7 +9,7 @@ use jscompat::node_path::host::{basename, join};
 use crate::node_fs::{NodeError, node_error};
 
 /// Reads the family names out of one font file.
-pub type FontFileFamilies<'a> = dyn Fn(&str) -> Vec<String> + 'a;
+pub type FontFileFamilies<'a> = dyn Fn(&str) -> Result<Vec<String>, NodeError> + 'a;
 
 /// `FontStoreEnv`: where the files live, and the injected name-table reader
 /// (`None` for a host that offers no local install).
@@ -40,7 +40,7 @@ pub fn install_local_font_files(
         if !SFNT_MAGIC.contains(&head.as_str()) {
             continue;
         }
-        let families = read_families(path);
+        let families = read_families(path)?;
         let Some(primary) = families.first().filter(|p| !p.is_empty()) else {
             continue;
         };

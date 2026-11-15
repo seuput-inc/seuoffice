@@ -21,7 +21,7 @@ use jscompat::{JsonValue, js_regex, slice_utf16, trim};
 
 use super::formats::{SessionFamily, capability_report};
 use super::session_tools::{
-    FamilyDriver, ObjectDraft, ResolveOptions, SharedSessionHost, content_target, is_true,
+    FamilyDriver, ObjectDraft, ResolveOptions, SharedSessionHost, await_host, content_target, is_true,
     js_object, string_arg, string_or_empty, sync_handler, with_target,
 };
 use crate::packages::i18n::PRODUCT_NAME;
@@ -98,8 +98,6 @@ pub fn docs_run_call(wc_id: i64, command: McpEditorCommandName, payload: JsonVal
 /// caller gives no path
 pub type DefaultSaveDir<'h> = Rc<dyn Fn() -> String + 'h>;
 
-/// `DocToolDeps.openInTab`: open a file in the SeuOffice UI
-pub type OpenInTab<'h> = Rc<dyn Fn(&str) -> Result<(), String> + 'h>;
 
 /// `DocToolDeps`
 pub struct DocToolDeps<'h> {
@@ -110,7 +108,7 @@ pub struct DocToolDeps<'h> {
     /// generation" setting
     pub background: Option<bool>,
     /// open a file in the SeuOffice UI (optional in tests)
-    pub open_in_tab: Option<OpenInTab<'h>>,
+    pub open_in_tab: bool,
     /// whether the shell wired the visible-editor control (`DocsControl`) for
     /// the MCP-driven document session (optional in tests)
     pub docs: bool,
@@ -632,22 +630,33 @@ fn open_in_seuoffice_tool<'h>(deps: Rc<DocToolDeps<'h>>) -> McpToolDefinition<'h
             "path",
             z::string().describe("absolute path to the file to open"),
         )])),
-        handler: sync_handler(move |args: JsonValue| {
-            let file_path = string_or_empty(&args, "path")?;
+        handler: Box::new(move |args: JsonValue| {
+            let file_path = match string_or_empty(&args, "path") {
+                Ok(path) => path,
+                Err(error) => return ToolStep::Done(Err(error)),
+            };
             if !is_absolute(&file_path) {
-                return Err("path must be absolute".to_owned());
+                return ToolStep::Done(Err("path must be absolute".to_owned()));
             }
             if !exists_sync(&file_path) {
-                return Err(format!("file not found: {file_path}"));
+                return ToolStep::Done(Err(format!("file not found: {file_path}")));
             }
-            let Some(open_in_tab) = &deps.open_in_tab else {
-                return Err("opening files is not available in this build".to_owned());
+            if !deps.open_in_tab {
+                return ToolStep::Done(Err("opening files is not available in this build".to_owned()));
+            }
+            let call = HostCall {
+                control: "NativeOpen",
+                method: "openPath",
+                args: vec![JsonValue::String(file_path.clone())],
             };
-            open_in_tab(&file_path)?;
-            Ok(Some(js_object(vec![
-                ("ok", JsonValue::Bool(true)),
-                ("path", JsonValue::String(file_path)),
-            ])))
+            await_host(call, move |result| match result {
+                Ok(Some(JsonValue::Bool(true))) => ToolStep::Done(Ok(Some(js_object(vec![
+                    ("ok", JsonValue::Bool(true)),
+                    ("path", JsonValue::String(file_path)),
+                ])))),
+                Ok(_) => ToolStep::Done(Err(format!("could not open {file_path} in {PRODUCT_NAME}"))),
+                Err(error) => ToolStep::Done(Err(error)),
+            })
         }),
     }
 }
@@ -998,5 +1007,26 @@ mod tests {
     fn docx_ext_is_what_the_registry_generates() {
         let ext = generate_extension(SessionFamily::Docx).expect("docx generates");
         assert_eq!(format!(".{ext}"), DOCX_EXT);
+    }
+
+    #[test]
+    fn open_tool_waits_for_terminal_host_result() {
+        let path = std::env::temp_dir().join(format!("mcp-open-{}.docx", jscompat::random_uuid()));
+        std::fs::write(&path, b"synthetic").unwrap();
+        let path_text = path.to_string_lossy().into_owned();
+        let deps = Rc::new(DocToolDeps {
+            version: "test".into(), default_save_dir: Rc::new(String::new), background: None,
+            open_in_tab: true, docs: false, extra_formats: None, cli: None, resolve_target: false,
+        });
+        let mut tool = open_in_seuoffice_tool(deps);
+        let step = (tool.handler)(js_object(vec![("path", JsonValue::String(path_text.clone()))]));
+        let ToolStep::Await { call, then } = step else { panic!("open must await the host") };
+        assert_eq!((call.control, call.method), ("NativeOpen", "openPath"));
+        assert_eq!(call.args, vec![JsonValue::String(path_text)]);
+        assert!(matches!(then(Ok(Some(JsonValue::Bool(true)))), ToolStep::Done(Ok(Some(_)))));
+        let step = (tool.handler)(js_object(vec![("path", JsonValue::String(path.to_string_lossy().into_owned()))]));
+        let ToolStep::Await { then, .. } = step else { panic!("open must await the host") };
+        assert!(matches!(then(Err("creation failed".into())), ToolStep::Done(Err(error)) if error == "creation failed"));
+        std::fs::remove_file(path).unwrap();
     }
 }

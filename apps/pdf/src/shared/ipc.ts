@@ -51,6 +51,8 @@ export const PDF_READ_CHUNK_BYTES = 8 * 1024 * 1024
 
 export const PDF_CHANNELS = {
   consumePending: 'pdf:consume-pending',
+  consumeRecoveryPending: 'pdf:consume-recovery-pending',
+  recoveryInitialized: 'pdf:recovery-initialized',
   readFile: 'pdf:read-file',
   readFileChunk: 'pdf:read-file-chunk',
   decryptPdf: 'pdf:decrypt',
@@ -940,6 +942,8 @@ export interface PdfAttachmentOps {
 }
 
 export interface SavePdfRequest {
+  /** Correlation only; native retained owners provide authority. */
+  ownedSaveId?: string
   path: string
   /**
    * Save As destination. When set, `path` is only read (source bytes) and the edited PDF
@@ -1712,6 +1716,8 @@ export interface PdfDiskFileChange {
 export interface PdfApi {
   /** Take the pdf path pending for this view (queued at tab creation); null if none */
   consumePending(): Promise<string | null>
+  consumeRecoveryPending(): Promise<{ path: string; token: string } | null>
+  recoveryInitialized(token: string, ok: boolean, error?: string): Promise<void>
   /** open any shell-routed document path (an AI answer's filenav citation) */
   openSourcePath(path: string): Promise<void>
   /** Read pdf bytes. Only paths granted to this view are allowed */
@@ -1806,13 +1812,13 @@ export interface PdfApi {
    * An untitled copy's first explicit save, step one: asks where the document
    * goes. Nothing is written; false when the dialog was cancelled.
    */
-  pickUntitledCopyTarget?(path: string, defaultName: string): Promise<boolean>
+  pickUntitledCopyTarget?(path: string, defaultName: string, ownedSaveId?: string): Promise<boolean>
   /**
    * Step two, after the edits were saved into the copy: copies it to the
    * picked place and makes that file this tab's document. When that fails the
    * document stays the untitled copy, unsaved, and the answer says why.
    */
-  adoptUntitledCopy?(path: string): Promise<AdoptUntitledCopyResult>
+  adoptUntitledCopy?(path: string, ownedSaveId?: string): Promise<AdoptUntitledCopyResult>
   /** Dry-run match of pending text edits against the file: reason null = would apply */
   validateTextEdits(request: ValidateTextEditsRequest): Promise<TextEditValidation[]>
   /** EDIT_FONTS ids whose font file exists on this machine */
@@ -1920,14 +1926,14 @@ export interface PdfApi {
   setDirty(dirty: boolean): void
   /** Main process asks for a save (close prompt, menu Save, export flows) and waits for sendCloseSaveResult.
    *  flushAll: success must mean everything on screen is in the file, including the form field whose card is open */
-  onCloseSaveRequest(handler: (opts: { flushAll: boolean }) => void): () => void
-  sendCloseSaveResult(ok: boolean): void
+  onCloseSaveRequest(handler: (opts: { flushAll: boolean; ownedSaveId?: string }) => void): () => void
+  sendCloseSaveResult(ok: boolean, ownedSaveId?: string): void
   /** Shell menu Save As → renderer writes pending edits to targetPath only (original untouched) and replies via sendSaveAsResult */
-  onSaveAsRequest(handler: (targetPath: string) => void): () => void
+  onSaveAsRequest(handler: (targetPath: string, ownedSaveId?: string) => void): () => void
   /** true = written, false = failed, 'cancelled' = the person closed the annotation choice */
-  sendSaveAsResult(ok: boolean | 'cancelled'): void
+  sendSaveAsResult(ok: boolean | 'cancelled', ownedSaveId?: string): void
   /** True while the shell's Save As flow (dialog included) is open — the renderer pauses autosave, since the dialog's window blur would otherwise trigger a save into the original */
-  onSaveAsFlow(handler: (inFlight: boolean) => void): () => void
+  onSaveAsFlow(handler: (inFlight: boolean, ownedSaveId?: string) => void): () => void
   /** The shell-wide AutoSave default; a per-window override is kept in localStorage */
   getAutoSaveDefault(): Promise<AutoSaveDefault>
   onAutoSaveDefaultChanged(handler: (value: AutoSaveDefault) => void): () => void
@@ -1948,8 +1954,8 @@ export interface PdfApi {
   /** Report a document that cannot get a safe copy; answers the one-time notice for this tab, or null */
   reportUnprotectable?(unprotectable: boolean): Promise<string | null>
   /** The OS is ending the session: write the copy now and answer with sendRecoveryFlushDone */
-  onRecoveryFlushRequest?(handler: () => void): () => void
-  sendRecoveryFlushDone?(): void
+  onRecoveryFlushRequest?(handler: (token?: string) => void): () => void
+  sendRecoveryFlushDone?(token?: string, error?: string): void
   /** "Don't Save" was answered (true) or the shell reports the close was cancelled (false) */
   onRecoveryDropped?(handler: (dropped: boolean) => void): () => void
   /** The user edits again after "Don't Save": the close was cancelled, copies resume */

@@ -12,10 +12,22 @@ use std::sync::{Arc, Mutex};
 const MAX_NATIVE_FRAMES: usize = 256;
 const MAX_NATIVE_FRAME_ID_BYTES: usize = 512;
 
+struct ContextSeed(String);
+
+impl std::fmt::Debug for ContextSeed {
+  fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    formatter.write_str("ContextSeed([redacted])")
+  }
+}
+
 #[derive(Debug, Default)]
 struct NativeFrameState {
   browser_id: Option<i32>,
+  context_seed: Option<ContextSeed>,
+  trusted_init_mode: Option<crate::TrustedInitMode>,
   generation: u64,
+  navigation_generation: u64,
+  issued_navigation: u64,
   exhausted: bool,
   loading: bool,
   observed_load_state: bool,
@@ -28,7 +40,12 @@ struct NativeFrameState {
 /// No lock is held while calling CEF or awaiting a renderer response.
 #[derive(Clone, Debug)]
 pub struct FrameNavigationState {
+  pub(crate) trusted_activation: crate::cef_impl::trusted_activation::TrustedActivation,
+  pub(crate) native_contexts: crate::native_context::ContextRegistry,
   state: Arc<Mutex<NativeFrameState>>,
+  pub(crate) browser_close: crate::NativeBrowserClose,
+  pub(crate) native_reload: crate::native_reload::NativeReloadTracker,
+  pub(crate) observed_navigation: crate::native_observed_navigation::Registry,
 }
 
 /// Opaque process-local proof of an observed native browser/document lifetime.
@@ -55,10 +72,41 @@ impl std::fmt::Debug for NativeDocumentToken {
   }
 }
 
+/// A native browser lifetime and its observed main-frame navigation epoch.
+///
+/// Available while a document loads. Unlike `NativeDocumentToken`, this is not
+/// proof that a request originated in the document being loaded. CEF's
+/// `on_before_browse` can miss same-document and no-network navigations, so an
+/// unchanged epoch does not prove that no navigation occurred. A consumer must
+/// control the browser's navigations and recheck the token before using it for a
+/// document-scoped operation.
+#[derive(Clone)]
+pub struct NativeNavigationToken {
+  state: Arc<Mutex<NativeFrameState>>,
+  generation: u64,
+}
+
+impl PartialEq for NativeNavigationToken {
+  fn eq(&self, other: &Self) -> bool {
+    Arc::ptr_eq(&self.state, &other.state) && self.generation == other.generation
+  }
+}
+impl Eq for NativeNavigationToken {}
+impl std::fmt::Debug for NativeNavigationToken {
+  fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    formatter.debug_struct("NativeNavigationToken").finish_non_exhaustive()
+  }
+}
+
 impl FrameNavigationState {
   pub(crate) fn new() -> Self {
     Self {
+      trusted_activation: Default::default(),
+      native_contexts: Default::default(),
       state: Arc::default(),
+      browser_close: Default::default(),
+      native_reload: Default::default(),
+      observed_navigation: Default::default(),
     }
   }
 
@@ -68,17 +116,114 @@ impl FrameNavigationState {
     Arc::ptr_eq(&self.state, &other.state)
   }
 
+  /// Admit a short, non-reentrant in-memory effect for this browser creation.
+  /// The effect must not call CEF, wait, or re-enter any browser-state API.
+  /// Browser close serializes with this gate; navigation does not revoke it.
+  pub fn with_live_browser<T>(&self, effect: impl FnOnce() -> T) -> Option<T> {
+    let state = self.state.lock().ok()?;
+    if state.exhausted || state.browser_id.is_none() { return None; }
+    Some(effect())
+  }
+
+  pub fn when_closed(&self, callback: impl FnOnce(crate::NativeBrowserCloseOutcome) + Send + 'static)
+    -> Result<crate::NativeBrowserCloseSubscription, String> {
+    self.browser_close.when_closed(callback)
+  }
+
+  pub(crate) fn next_navigation_issuance(&self, browser_id: i32) -> Option<u64> {
+    let mut state = self.state.lock().ok()?;
+    if state.exhausted || state.browser_id != Some(browser_id) { return None; }
+    let next = state.issued_navigation.checked_add(1)?;
+    state.issued_navigation = next;
+    Some(next)
+  }
+
+  pub(crate) fn has_navigation_issuance(&self, browser_id: i32, issuance: u64) -> bool {
+    self.state.lock().is_ok_and(|state|
+      !state.exhausted && state.browser_id == Some(browser_id) && state.issued_navigation == issuance)
+  }
+
+  /// Redeems a browser-issued request attestation exactly once for this browser
+  /// lifetime. A renderer-supplied capability is not an attestation.
+  pub fn redeem_native_context(&self, headers: &http::HeaderMap) -> Option<crate::NativeContextToken> {
+    let handle = headers.get(crate::NATIVE_ATTESTATION_HEADER)?.to_str().ok()?;
+    let token = self.native_contexts.redeem(handle)?;
+    self.is_same_browser(token.browser_state()).then_some(token)
+  }
+
+  /// Captures the observed main-navigation epoch even while a page loads.
+  /// It does not establish request-to-document provenance.
+  pub fn navigation(&self) -> Option<NativeNavigationToken> {
+    let state = self.state.lock().ok()?;
+    if state.exhausted || state.browser_id.is_none() { return None; }
+    Some(NativeNavigationToken { state: Arc::clone(&self.state), generation: state.navigation_generation })
+  }
+
+
+  pub(crate) fn set_trusted_init_mode(&self, mode: crate::TrustedInitMode) -> bool {
+    let Ok(mut state) = self.state.lock() else { return false };
+    if state.exhausted || state.trusted_init_mode.is_some() { return false; }
+    state.trusted_init_mode = Some(mode);
+    true
+  }
+
+  pub(crate) fn trusted_init_mode(&self) -> Option<crate::TrustedInitMode> {
+    let state = self.state.lock().ok()?;
+    (!state.exhausted).then_some(state.trusted_init_mode).flatten()
+  }
+  pub(crate) fn set_context_seed(&self, seed: String) -> bool {
+    let Ok(mut state) = self.state.lock() else { return false };
+    if state.exhausted || state.context_seed.is_some() { return false; }
+    if !self.trusted_activation.configure(seed.clone()) { return false; }
+    state.context_seed = Some(ContextSeed(seed));
+    true
+  }
+
+  pub(crate) fn accepts_context_seed(&self, seed: &str) -> bool {
+    let Ok(state) = self.state.lock() else { return false };
+    let Some(expected) = state.context_seed.as_ref() else { return false };
+    if state.exhausted || expected.0.len() != seed.len() { return false; }
+    expected.0.bytes().zip(seed.bytes()).fold(0u8, |diff, (a, b)| diff | (a ^ b)) == 0
+  }
+
+  pub(crate) fn bind_browser(&self, browser_id: i32) -> bool {
+    let Ok(mut state) = self.state.lock() else { return false };
+    if state.exhausted || state.browser_id.is_some_and(|id| id != browser_id) { return false; }
+    state.browser_id = Some(browser_id);
+    true
+  }
+
+  pub(crate) fn bound_browser_id(&self) -> Option<i32> {
+    let state = self.state.lock().ok()?;
+    if state.exhausted { None } else { state.browser_id }
+  }
+
   pub(crate) fn has_browser_id(&self, browser_id: i32) -> bool {
     self
       .state
       .lock()
-      .is_ok_and(|state| state.browser_id == Some(browser_id))
+      .is_ok_and(|state| !state.exhausted && state.browser_id == Some(browser_id))
+  }
+
+  pub(crate) fn try_has_browser_id(&self, browser_id: i32) -> bool {
+    self.state.try_lock().is_ok_and(|state| !state.exhausted && state.browser_id == Some(browser_id))
+  }
+
+  pub(crate) fn invalidate_browser_lifetime(&self) {
+    if let Ok(mut state) = self.state.lock() { state.exhausted = true; }
+    self.observed_navigation.close();
   }
 
   pub(crate) fn close(&self) {
+    self.native_reload.closed();
+    self.observed_navigation.close();
     if let Ok(mut state) = self.state.lock() {
       state.exhausted = true;
     }
+    self.native_contexts.cancel_browser_intents(self);
+    self.native_contexts.remove_invocation_target(self);
+    self.native_contexts.revoke_browser(self);
+    self.trusted_activation.fail();
   }
 
   pub(crate) fn observe_document(&self, browser: &cef::Browser) -> Option<NativeDocumentToken> {
@@ -162,7 +307,22 @@ impl FrameNavigationState {
         .is_some_and(|id| state.frames.get(id) == Some(&true))
   }
 
+  // CDP observes same-document, BFCache and no-network starts that CEF's
+  // on_before_browse does not necessarily report.
+  pub(crate) fn on_protocol_navigation(&self, same_document: bool) {
+    let Ok(mut state) = self.state.lock() else { return };
+    if state.exhausted { return; }
+    let (Some(generation), Some(navigation)) =
+      (state.generation.checked_add(1), state.navigation_generation.checked_add(1))
+    else { state.exhausted = true; return };
+    state.generation = generation;
+    state.navigation_generation = navigation;
+    if !same_document { state.loading = true; }
+  }
+
   pub(crate) fn on_frame_event(&self, event: &crate::FrameEvent) {
+    // Document revocation comes from the RFH-bound native pre-mutation hook.
+    // Delayed CEF/CDP loading events cannot revoke a successor registration.
     self.apply(
       event.browser_id,
       &event.frame_id,
@@ -192,6 +352,15 @@ impl FrameNavigationState {
     // exhaustion. IPC admission and event delivery are gated on this identity,
     // so an unexpected first notification must never leave it unrecorded.
     state.browser_id = Some(browser_id);
+    if matches!(kind, FrameEventKind::RendererProcessIdentified { .. }
+      | FrameEventKind::NativeContextRegistered { .. }
+      | FrameEventKind::NativeContextRevoked { .. }
+      | FrameEventKind::NativeDocumentReady { .. }
+      | FrameEventKind::NativeRendererTerminated { .. }
+      | FrameEventKind::RendererTerminated
+      | FrameEventKind::FirstVisuallyNonEmptyLayout { .. }) {
+      return;
+    }
     let browser_wide = matches!(
       kind,
       FrameEventKind::MainFrameChanged
@@ -214,6 +383,15 @@ impl FrameNavigationState {
       return;
     };
     state.generation = generation;
+    if matches!(kind, FrameEventKind::RendererTerminated)
+      || is_main && matches!(kind, FrameEventKind::NavigationStarted { .. } | FrameEventKind::NavigationFailed { .. })
+    {
+      let Some(next) = state.navigation_generation.checked_add(1) else {
+        state.exhausted = true;
+        return;
+      };
+      state.navigation_generation = next;
+    }
     match kind {
       FrameEventKind::Created => {
         state.frames.insert(frame_id.to_string(), false);
@@ -239,7 +417,13 @@ impl FrameNavigationState {
       }
       FrameEventKind::DocumentCommitted { .. }
       | FrameEventKind::NavigationFailed { .. }
-      | FrameEventKind::AddressChanged { .. } => {}
+      | FrameEventKind::AddressChanged { .. }
+      | FrameEventKind::RendererProcessIdentified { .. }
+      | FrameEventKind::NativeContextRegistered { .. }
+      | FrameEventKind::NativeContextRevoked { .. }
+      | FrameEventKind::NativeDocumentReady { .. }
+      | FrameEventKind::NativeRendererTerminated { .. }
+      | FrameEventKind::FirstVisuallyNonEmptyLayout { .. } => {}
       FrameEventKind::RendererTerminated => {
         state.frames.clear();
         state.main_frame = None;
@@ -299,6 +483,62 @@ mod tests {
       false,
       &frames.iter().map(|id| id.to_string()).collect(),
     )
+  }
+
+  #[test]
+  fn navigation_epoch_exists_during_loading_and_is_revoked_on_new_navigation_and_close() {
+    let state = FrameNavigationState::new();
+    assert!(state.navigation().is_none());
+    assert!(state.bind_browser(1));
+    let before = state.navigation().unwrap();
+    let url = url::Url::parse("https://example.test/doc").unwrap();
+    apply(&state, "main", Event::NavigationStarted { url: url.clone() });
+    let loading = state.navigation().unwrap();
+    assert_ne!(before, loading);
+    apply(&state, "main", Event::MainFrameChanged);
+    assert_eq!(state.navigation(), Some(loading.clone()));
+    apply(&state, "main", Event::DocumentCommitted { url: url.clone() });
+    assert_eq!(state.navigation(), Some(loading.clone()));
+    assert!(state.document().is_none());
+    apply(&state, "main", Event::NavigationFailed { url });
+    assert_ne!(state.navigation(), Some(loading));
+    state.close();
+    assert!(state.navigation().is_none());
+  }
+
+  #[test]
+  fn closed_browser_does_not_accept_late_identity_events() {
+    let state = FrameNavigationState::new();
+    assert!(state.bind_browser(1));
+    assert!(state.has_browser_id(1));
+    assert!(!state.has_browser_id(2));
+    state.close();
+    assert!(!state.has_browser_id(1));
+    assert!(!state.bind_browser(1));
+  }
+
+  #[test]
+  fn protocol_navigation_revokes_prior_tokens_without_before_browse() {
+    let state = ready_main();
+    let document = state.document().unwrap();
+    let navigation = state.navigation().unwrap();
+    state.on_protocol_navigation(true);
+    assert_ne!(state.document(), Some(document));
+    assert_ne!(state.navigation(), Some(navigation));
+    let document = state.document().unwrap();
+    state.on_protocol_navigation(false);
+    assert!(state.document().is_none());
+    apply(&state, "main", Event::LoadingStateChanged { is_loading: false });
+    assert_ne!(state.document(), Some(document));
+  }
+
+  #[test]
+  fn renderer_identity_observation_does_not_revoke_document() {
+    let barrier = ready_main();
+    let generation = barrier.ready_generation().unwrap();
+    apply(&barrier, "main", Event::RendererProcessIdentified { pid: 42 });
+    assert_eq!(barrier.ready_generation(), Some(generation));
+    assert!(admits(&barrier, generation, &["main"]));
   }
 
   #[test]
@@ -398,22 +638,16 @@ mod tests {
     assert!(barrier.ready_generation().is_none());
   }
   #[test]
-  fn missing_main_frame_and_renderer_termination_revoke_prior_generations() {
+  fn missing_main_frame_invalidates_generation_but_stock_termination_cannot_relabel_it() {
     let barrier = ready_main();
     let generation = barrier.ready_generation().unwrap();
     barrier.apply(1, "", false, &Event::MainFrameChanged);
     assert!(barrier.ready_generation().is_none());
     apply(&barrier, "main", Event::MainFrameChanged);
     assert_ne!(barrier.ready_generation().unwrap(), generation);
+    let current = barrier.ready_generation().unwrap();
     barrier.apply(1, "", false, &Event::RendererTerminated);
-    assert!(barrier.ready_generation().is_none());
-    barrier.apply(
-      1,
-      "",
-      false,
-      &Event::LoadingStateChanged { is_loading: false },
-    );
-    assert!(barrier.ready_generation().is_none());
+    assert_eq!(barrier.ready_generation(), Some(current));
     apply(&barrier, "replacement", Event::Created);
     apply(&barrier, "replacement", Event::Attached);
     barrier.apply(1, "replacement", true, &Event::MainFrameChanged);
@@ -433,6 +667,18 @@ mod tests {
     assert!(first.document().is_none());
     apply(&first, "child", Event::Attached);
     assert_ne!(before, first.document().unwrap());
+  }
+
+  #[test]
+  fn browser_gate_survives_navigation_and_rejects_exact_close() {
+    let original = ready_main();
+    let replacement = ready_main();
+    assert_eq!(original.with_live_browser(|| 1), Some(1));
+    original.on_protocol_navigation(false);
+    assert_eq!(original.with_live_browser(|| 2), Some(2));
+    original.invalidate_browser_lifetime();
+    assert_eq!(original.with_live_browser(|| 3), None);
+    assert_eq!(replacement.with_live_browser(|| 4), Some(4));
   }
   #[test]
   fn a_rejected_first_event_still_records_the_native_browser_identity() {

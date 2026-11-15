@@ -604,6 +604,12 @@ export const mindmapTriggers: NonNullable<Group['triggers']> = {
     queries().mindmapReadBytes(cx.contents(view) as never),
   'd1/mindmap:writeMindmapCopiesNow': (_cx, _view, args) =>
     main().writeMindmapCopiesNow(typeof args[0] === 'number' ? args[0] : 5000),
+  'd1/mindmap:render-process-gone': async (cx, view) => {
+    await cx.contents(view).emit('render-process-gone', {}, { reason: 'crashed' })
+  },
+  'd1/mindmap:destroyed': async (cx, view) => {
+    await cx.contents(view).emit('destroyed')
+  },
   'd1/mindmap:discardMindmapRecovery': (cx, view) =>
     main().discardMindmapRecovery(cx.contents(view) as never),
   'd1/mindmap:mindmapFilePath': (_cx, view) => main().mindmapFilePath(view),

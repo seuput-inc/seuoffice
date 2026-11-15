@@ -229,10 +229,9 @@ impl Editor {
         }
         if redacting {
             self.grant_only(view, &target);
-            self.with_view(view, |v| {
-                v.open_path = Some(target.clone());
-                v.redaction_path = Some(target.clone());
-            });
+            self.advance_document_revision(view);
+            self.with_view(view, |slot| slot.open_path = Some(target.clone()));
+            self.with_view(view, |v| v.redaction_path = Some(target.clone()));
             self.forget_disk_state(view, &path);
             self.st.borrow_mut().unsaved_untitled_copy.remove(&path);
             // never carry the old copy over: restoring it would undo the redaction
@@ -268,12 +267,144 @@ impl Editor {
             },
         );
     }
+
+    fn after_save_owned(self: &Rc<Self>, view: ViewId, path: String, target: String, redacting: bool, skips: SaveSkips, authority: super::owned_save::SaveAuthority, reply: Responder) {
+        if !redacting { return self.after_save_owned_ready(view, path, target, redacting, skips, authority, None, reply); }
+        let editor = self.clone();
+        let completed = authority.clone();
+        let back = Box::new(move |result: Result<shell_contract::hosts::SavedFile<String>, String>| match result {
+            Ok(saved) => editor.after_save_owned_ready(view, path, saved.path, true, skips, completed, Some(saved.session), reply),
+            Err(message) => reply.reply(Ok(failed(message))),
+        });
+        authority.redaction_saved(&self.shell, view, &target, back);
+    }
+
+    fn after_save_owned_ready(self: &Rc<Self>, view: ViewId, path: String, target: String, redacting: bool, skips: SaveSkips, authority: super::owned_save::SaveAuthority, session: Option<shell_contract::hosts::SavedSessionReceipt>, reply: Responder) {
+        let mut cleanup = Vec::new();
+        let mut pending = None;
+        let changed = authority.commit(&mut || {
+            if target == path { self.st.borrow_mut().unsaved_blank.remove(&path); }
+            if redacting {
+                self.grant_only(view, &target);
+                self.with_view(view, |slot| { slot.open_path = Some(target.clone()); slot.redaction_path = Some(target.clone()); });
+                self.forget_disk_state(view, &path);
+                self.st.borrow_mut().unsaved_untitled_copy.remove(&path);
+                self.rec.borrow_mut().moved_to_new_file_owned(view, &path, &target, &mut cleanup);
+            } else if target == path {
+                pending = self.rec.borrow_mut().saved_in_place_owned(view, &path, &mut cleanup);
+            }
+            Ok(())
+        });
+        if let Err(message) = changed { return reply.reply(Ok(failed(message))); }
+        let note_deps = super::open::AfterSaveDeps::owned(self, authority.clone());
+        let completes_save = target != path || !self.is_untitled_copy(&path);
+        let platform = self.shell.platform();
+        let store = self.rec.borrow().store.clone();
+        let worker_authority = authority.clone();
+        let identity = pending.as_ref().map(|pending| pending.identity.clone());
+        let editor = self.clone();
+        kit::on_worker(&self.services, move || {
+            if target == path && !redacting {
+                main_core::pdf::note_link::NoteLinkService::new(platform).after_save(&note_deps, &target, &mut |what, error| eprintln!("{what} {}", error.0));
+            }
+            for effect in cleanup {
+                if let Err(message) = effect.run(&store, &worker_authority) { eprintln!("[pdf] recovery cleanup failed: {message}"); }
+            }
+            worker_authority.current()?;
+            match pending {
+                Some(pending) => match read_file(&target) {
+                    Ok(bytes) if !pdf_looks_encrypted(&bytes) => store.write_owned(&pending.identity, &bytes, pending.title, pending.ticket, &worker_authority).map(Some),
+                    Ok(_) => Ok(None),
+                    Err(message) => { eprintln!("[pdf] recovery copy failed: {message}"); Ok(None) }
+                },
+                None => Ok(None),
+            }
+        }, move |result: Result<Option<main_core::packages::electron_utils::recovery_store::RecoveryWriteResult>, String>| {
+            let admitted = authority.commit(&mut || {
+                if let (Some(identity), Ok(Some(result))) = (&identity, &result) {
+                    editor.rec.borrow_mut().copy_landed(view, identity.clone(), Ok(result.clone()));
+                }
+                if let Err(message) = &result { eprintln!("[pdf] recovery copy failed: {message}"); }
+                if completes_save { authority.mark_written(); }
+                Ok(())
+            });
+            if let Err(message) = admitted { return reply.reply(Ok(failed(message))); }
+            if redacting { editor.advance_document_revision(view); }
+            let done = Box::new(move |result: Result<(), String>| match result {
+                Ok(()) => reply.reply(Ok(saved(skips))),
+                Err(message) => reply.reply(Ok(failed(message))),
+            });
+            match session { Some(session) => session.finalize(done), None => done(Ok(())) }
+        });
+    }
+    fn after_adopt_owned(self: &Rc<Self>, view: ViewId, path: String, target: String, authority: super::owned_save::SaveAuthority, reply: Responder) {
+        let editor = self.clone();
+        let completed = authority.clone();
+        let back = Box::new(move |result: Result<shell_contract::hosts::SavedFile<String>, String>| match result {
+            Ok(saved) => editor.after_adopt_owned_ready(view, path, saved.path, completed, saved.session, reply),
+            Err(message) => reply.reply(Ok(failed(message))),
+        });
+        authority.redaction_saved(&self.shell, view, &target, back);
+    }
+
+    fn after_adopt_owned_ready(self: &Rc<Self>, view: ViewId, path: String, target: String, authority: super::owned_save::SaveAuthority, session: shell_contract::hosts::SavedSessionReceipt, reply: Responder) {
+        let mut cleanup = Vec::new();
+        let changed = authority.commit(&mut || {
+            {
+                let mut state = self.st.borrow_mut();
+                state.untitled_copy.remove(&path);
+                state.unsaved_untitled_copy.remove(&path);
+            }
+            self.grant_only(view, &target);
+            self.with_view(view, |slot| slot.open_path = Some(target.clone()));
+            self.rec.borrow_mut().adopted_owned(view, &path, &target, &mut cleanup);
+            if target != path { self.forget_disk_state(view, &path); }
+            Ok(())
+        });
+        if let Err(message) = changed { return reply.reply(Ok(failed(message))); }
+        let store = self.rec.borrow().store.clone();
+        let worker_authority = authority.clone();
+        let editor = self.clone();
+        kit::on_worker(&self.services, move || {
+            for effect in cleanup {
+                if let Err(message) = effect.run(&store, &worker_authority) { eprintln!("[pdf] recovery cleanup failed: {message}"); }
+            }
+        }, move |()| {
+            let admitted = authority.commit(&mut || {
+                authority.mark_written();
+                Ok(())
+            });
+            if let Err(message) = admitted { return reply.reply(Ok(failed(message))); }
+            editor.advance_document_revision(view);
+            session.finalize(Box::new(move |result| match result {
+                Ok(()) => reply.reply(Ok(obj([("ok", true.into_ipc()), ("path", target.into_ipc())]))),
+                Err(message) => reply.reply(Ok(failed(message))),
+            }));
+        });
+    }
 }
 
-fn save(e: &Rc<Editor>, view: ViewId, request: IpcValue, reply: Responder) {
+fn save(e: &Rc<Editor>, view: ViewId, request: IpcValue, context: Option<shell_contract::ipc::NativeContext>, cancel: shell_contract::runtime::CancelToken, reply: Responder, conflict_confirmed: bool, direct_authority: Option<super::owned_save::SaveAuthority>) {
+    let authority = {
+        let state = e.st.borrow();
+        let owned = state.views.get(&view).and_then(|slot| slot.owned_save.as_ref());
+        match (kit::as_str(field(&request, "ownedSaveId")), owned) {
+            (Some(id), Some(owned)) if owned.id == id => match owned.clone().with_request_scope(view, context.clone(), &cancel) { Ok(owned) => Some(owned), Err(message) => return reply.reply(Ok(failed(message))) },
+            (None, None) => direct_authority,
+            _ => return reply.reply(Ok(failed("pdf: save request does not match pending operation"))),
+        }
+    };
+    if let Some(owned) = &authority {
+        if let Err(message) = owned.current() { return reply.reply(Ok(failed(message))); }
+    }
+    let callback_cancel = cancel.clone();
+    let cancel = authority.as_ref().map_or(cancel, |owned| owned.pending.clone());
     let Some(path) = e.granted(view, field(&request, "path")) else {
         return reply.reply(Ok(failed(NOT_GRANTED)));
     };
+    if authority.is_some() && e.open_path(view).as_deref() != Some(path.as_str()) {
+        return reply.reply(Ok(failed("pdf: source does not match the captured document")));
+    }
     // Save As targets must have been granted by a main-process dialog pick
     let target = kit::as_str(field(&request, "targetPath")).map_or(path.clone(), str::to_owned);
     let granted_target =
@@ -283,6 +414,30 @@ fn save(e: &Rc<Editor>, view: ViewId, request: IpcValue, reply: Responder) {
             .and_then(|v| v.save_as_target.clone());
     if target != path && granted_target.as_deref() != Some(target.as_str()) {
         return reply.reply(Ok(failed("pdf: target path not granted to this view")));
+    }
+    if let Some(owned) = &authority {
+        if let Err(message) = owned.validate_target(std::path::Path::new(&target)) { return reply.reply(Ok(failed(message))); }
+    }
+    if !conflict_confirmed && target == path {
+        if let Some(owned) = &authority {
+            let recorded = e.st.borrow().views.get(&view).and_then(|slot| slot.disk_states.get(&path).cloned());
+            let conflicted = e.shell.is_path_open_elsewhere(&path) && main_core::packages::electron_utils::save_conflict::is_modified_since(recorded.as_ref(), &path);
+            if conflicted {
+                if field(&request, "auto") == &IpcValue::Bool(true) { return reply.reply(Ok(failed("external-modified"))); }
+                let labels = main_core::packages::electron_utils::save_conflict_labels::save_conflict_labels(&e.lang());
+                let options = shell_contract::hosts::MessageBox { kind: Some("warning".into()), message: labels.message.into(), detail: Some(labels.detail.into()), buttons: vec![labels.overwrite.into(), labels.cancel.into()], default_id: Some(0), cancel_id: Some(1), ..Default::default() };
+                let editor = e.clone();
+                let confirmed_authority = owned.clone();
+                let back = kit::back_on_core(&e.services, move |answer: Result<shell_contract::hosts::MessageBoxAnswer, String>| {
+                    match answer {
+                        Ok(answer) if answer.response == 0 => save(&editor, view, request, context, callback_cancel, reply, true, Some(confirmed_authority)),
+                        Ok(_) => reply.reply(Ok(failed("external-modified"))),
+                        Err(message) => reply.reply(Ok(failed(message))),
+                    }
+                });
+                return owned.message_dialog(&e.dialogs, e.contents.window_of(view), options, back);
+            }
+        }
     }
     let annotations = match field(&request, "annotations") {
         IpcValue::Undefined | IpcValue::Null => "keep",
@@ -310,29 +465,48 @@ fn save(e: &Rc<Editor>, view: ViewId, request: IpcValue, reply: Responder) {
         let engine = e.engine.clone();
         let plain = with_field(&request, "copyOnly", false.into_ipc());
         let ed = e.clone();
+        let completion_authority = authority.clone();
         let written = target.clone();
         return kit::on_worker(
             &e.services,
             move || {
-                match restored {
-                    Some(bytes) => engine
-                        .save_pdf_bytes_to_path(&bytes, &written, &plain)
-                        .map(|_| ()),
-                    None => engine.copy_pdf_to_path(&path, &written),
-                }?;
+                if let Some(owned) = &authority {
+                    owned.current()?;
+                    let bytes = match restored {
+                        Some(bytes) => engine.prepare_pdf_save(&bytes, &plain, true, &cancel)?.0,
+                        None => read_file(&path)?,
+                    };
+                    owned.write(&written, &bytes)?;
+                } else {
+                    match restored {
+                        Some(bytes) => engine.save_pdf_bytes_to_path(&bytes, &written, &plain, &cancel).map(|_| ()),
+                        None => engine.copy_pdf_to_path(&path, &written, &cancel),
+                    }?;
+                }
                 Ok(record_disk_state(&written))
             },
             move |result: Result<_, String>| match result {
                 Ok(state) => {
-                    ed.remember_disk_state(view, &target, state);
-                    reply.reply(Ok(obj([("ok", true.into_ipc())])))
+                    if let Some(owned) = &completion_authority {
+                        let mut reply = Some(reply);
+                        let admitted = owned.commit(&mut || {
+                            ed.remember_disk_state(view, &target, state.clone());
+                            owned.mark_written();
+                            reply.take().unwrap().reply(Ok(obj([("ok", true.into_ipc())])));
+                            Ok(())
+                        });
+                        if let Err(message) = admitted { if let Some(reply) = reply { reply.reply(Ok(failed(message))); } }
+                    } else {
+                        ed.remember_disk_state(view, &target, state);
+                        reply.reply(Ok(obj([("ok", true.into_ipc())])))
+                    }
                 }
                 Err(m) => reply.reply(Ok(failed(m))),
             },
         );
     }
     // a copy pair saving onto the document's own path settles the conflict first
-    if target == path {
+    if target == path && authority.is_none() && !conflict_confirmed {
         let auto = field(&request, "auto") == &IpcValue::Bool(true);
         if e.conflict_stops_save(view, &path, auto) {
             return reply.reply(Ok(failed("external-modified")));
@@ -390,18 +564,40 @@ fn save(e: &Rc<Editor>, view: ViewId, request: IpcValue, reply: Responder) {
     }
     let restored = e.view_bytes(view, &path);
     let engine = e.engine.clone();
+    let completion_authority = authority.clone();
     let ed = e.clone();
     let (source, written) = (path.clone(), target.clone());
-    e.write_own_file(
+    e.write_own_file_owned(
         view,
         &target.clone(),
-        move || match restored {
-            Some(bytes) => engine.save_pdf_bytes_to_path(&bytes, &written, &request),
-            None => engine.save_pdf_to_path(&source, &written, &request),
+        completion_authority.clone(),
+        move || {
+            if let Some(owned) = &authority {
+                owned.current()?;
+                let (bytes, skips) = match restored {
+                    Some(bytes) => engine.prepare_pdf_save(&bytes, &request, true, &cancel)?,
+                    None => engine.prepare_pdf_save(&read_file(&source)?, &request, false, &cancel)?,
+                };
+                owned.write(&written, &bytes)?;
+                Ok(skips)
+            } else {
+                match restored {
+                    Some(bytes) => engine.save_pdf_bytes_to_path(&bytes, &written, &request, &cancel),
+                    None => engine.save_pdf_to_path(&source, &written, &request, &cancel),
+                }
+            }
         },
-        move |result| match result {
-            Ok(skips) => ed.after_save(view, path, target, redacting, skips, reply),
-            Err(m) => reply.reply(Ok(failed(m))),
+        move |result| {
+            if let Some(owned) = &completion_authority {
+                if let Err(message) = owned.current() { return reply.reply(Ok(failed(message))); }
+            }
+            match result {
+                Ok(skips) => match completion_authority {
+                    Some(owned) => ed.after_save_owned(view, path, target, redacting, skips, owned, reply),
+                    None => ed.after_save(view, path, target, redacting, skips, reply),
+                },
+                Err(m) => reply.reply(Ok(failed(m))),
+            }
         },
     );
 }
@@ -411,7 +607,13 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
 
     let e = ed.clone();
     all.push(kit::invoke_later("pdf:save", move |cx, mut args, reply| {
-        save(&e, cx.sender.view, args.take(0), reply)
+        let direct = if kit::as_str(field(args.get(0), "ownedSaveId")).is_none() {
+            match e.direct_save_authority(cx.sender.view, cx.native.clone(), cx.cancel.clone()) {
+                Ok(authority) => authority,
+                Err(message) => return reply.reply(Ok(failed(message))),
+            }
+        } else { None };
+        save(&e, cx.sender.view, args.take(0), cx.native, cx.cancel, reply, false, direct)
     }));
 
     let e = ed.clone();
@@ -498,11 +700,12 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
             }
             let restored = e.view_bytes(view, &path);
             let engine = e.engine.clone();
+            let cancel = cx.cancel.clone();
             kit::on_worker(
                 &e.services,
                 move || match restored {
-                    Some(bytes) => engine.pdf_bytes_with_edits_from(&bytes, &request),
-                    None => engine.pdf_bytes_with_edits(&path, &request),
+                    Some(bytes) => engine.pdf_bytes_with_edits_from(&bytes, &request, &cancel),
+                    None => engine.pdf_bytes_with_edits(&path, &request, &cancel),
                 },
                 move |result| match result {
                     Ok(bytes) => reply.reply(Ok(u8_array(bytes))),
@@ -517,10 +720,21 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
 
     // the first explicit save of an untitled copy, step one: where it goes
     let e = ed.clone();
-    all.push(kit::invoke(
+    all.push(kit::invoke_later(
         "pdf:pick-untitled-copy-target",
-        move |cx, args| {
+        move |cx, args, reply| {
             let view = cx.sender.view;
+            if args.str(2).is_some() {
+                return e.pick_owned_untitled(view, args.get(0), args.str(1), args.str(2), cx.native.clone(), &cx.cancel, reply);
+            }
+            if let Err(message) = e.owned_save_authority(view, None) { return reply.reply(Ok(failed(message))); }
+            match e.direct_save_authority(view, cx.native.clone(), cx.cancel.clone()) {
+                Ok(Some(authority)) => return e.pick_untitled_with_authority(view, args.get(0), args.str(1), authority, reply),
+                Ok(None) => {}
+                Err(message) => return reply.reply(Ok(failed(message))),
+            }
+            let answer = (|| {
+            if let Err(message) = e.owned_save_authority(view, None) { return Err(kit::error(message)); }
             let Some(path) = e
                 .granted(view, args.get(0))
                 .filter(|p| e.is_untitled_copy(p))
@@ -566,8 +780,10 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
             } else {
                 format!("{picked}.pdf")
             };
-            e.with_view(view, |v| v.untitled_copy_target = Some((path, target)));
+            e.with_view(view, |v| v.untitled_copy_target = Some((path, target, None)));
             Ok(true.into_ipc())
+            })();
+            reply.reply(answer);
         },
     ));
 
@@ -576,6 +792,11 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
     all.push(kit::invoke_later(
         "pdf:adopt-untitled-copy",
         move |cx, args, reply| {
+            let authority = match e.owned_save_authority(cx.sender.view, args.str(1)) {
+                Ok(Some(owned)) => match owned.with_request_scope(cx.sender.view, cx.native.clone(), &cx.cancel) { Ok(owned) => Some(owned), Err(message) => return reply.reply(Ok(failed(message))) },
+                Ok(None) => match e.direct_save_authority(cx.sender.view, cx.native.clone(), cx.cancel.clone()) { Ok(authority) => authority, Err(message) => return reply.reply(Ok(failed(message))) },
+                Err(message) => return reply.reply(Ok(failed(message))),
+            };
             let view = cx.sender.view;
             let Some(path) = e.granted(view, args.get(0)) else {
                 return reply.reply(Ok(failed(NOT_GRANTED)));
@@ -584,18 +805,34 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
                 return reply.reply(Ok(failed("pdf: not an untitled document")));
             }
             let picked = e.with_view(view, |v| v.untitled_copy_target.take());
-            let Some((_, target)) = picked.filter(|(p, _)| *p == path) else {
+            let Some((_, target, receipt)) = picked.filter(|(p, _, _)| *p == path) else {
                 return reply.reply(Ok(failed("pdf: no place was picked for this document")));
+            };
+            let authority = match (authority, receipt) {
+                (Some(authority), Some(receipt)) => match authority.with_destination_receipt(receipt) { Ok(authority) => Some(authority), Err(message) => return reply.reply(Ok(failed(message))) },
+                (None, None) => None,
+                _ => return reply.reply(Ok(failed("pdf: target grant has no native document owner"))),
             };
             let ed = e.clone();
             let (from, to) = (path.clone(), target.clone());
-            e.write_own_file(
+            let completion_authority = authority.clone();
+            e.write_own_file_owned(
                 view,
                 &target.clone(),
-                move || main_core::node_fs::copy_file(&from, &to, false).map_err(|e| e.message),
+                authority.clone(),
+                move || match authority {
+                    Some(owned) => owned.write(&to, &read_file(&from)?),
+                    None => main_core::node_fs::copy_file(&from, &to, false).map_err(|e| e.message),
+                },
                 move |result| {
                     if let Err(m) = result {
                         return reply.reply(Ok(failed(m)));
+                    }
+                    if let Some(owned) = &completion_authority {
+                        if let Err(message) = owned.current() { return reply.reply(Ok(failed(message))); }
+                    }
+                    if let Some(owned) = completion_authority {
+                        return ed.after_adopt_owned(view, path, target, owned, reply);
                     }
                     {
                         let mut st = ed.st.borrow_mut();
@@ -603,7 +840,8 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
                         st.unsaved_untitled_copy.remove(&path);
                     }
                     ed.grant_only(view, &target);
-                    ed.with_view(view, |v| v.open_path = Some(target.clone()));
+                    ed.advance_document_revision(view);
+                    ed.with_view(view, |slot| slot.open_path = Some(target.clone()));
                     ed.rec.borrow_mut().adopted(view, &path, &target);
                     if target != path {
                         ed.forget_disk_state(view, &path);
@@ -685,12 +923,19 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
 
     let e = ed.clone();
     all.push(kit::send("pdf:close-save-result", move |cx, args| {
+        let already_saved = !e.is_dirty(cx.sender.view) && e.open_path(cx.sender.view).is_some_and(|path| !e.is_untitled_copy(&path));
+        let matches = e.st.borrow().views.get(&cx.sender.view).and_then(|slot| slot.owned_save.as_ref())
+            .map_or(args.str(1).is_none(), |owned| args.str(1) == Some(owned.id.as_str()) && owned.current().is_ok() && (args.bool(0) != Some(true) || owned.did_write() || already_saved));
+        if !matches { return Ok(()); }
         e.close_save_result(cx.sender.view, args.bool(0) == Some(true));
         Ok(())
     }));
 
     let e = ed.clone();
     all.push(kit::send("pdf:save-as-result", move |cx, args| {
+        let matches = e.st.borrow().views.get(&cx.sender.view).and_then(|slot| slot.owned_save.as_ref())
+            .map_or(args.str(1).is_none(), |owned| args.str(1) == Some(owned.id.as_str()) && owned.current().is_ok() && (args.bool(0) != Some(true) || owned.did_write()));
+        if !matches { return Ok(()); }
         let outcome = match args.get(0) {
             IpcValue::Bool(true) => SaveAsOutcome::Saved,
             IpcValue::String(s) if s == "cancelled" => SaveAsOutcome::Cancelled,
@@ -735,6 +980,7 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
             };
             let engine = e.engine.clone();
             let ed = e.clone();
+            let cancel = cx.cancel.clone();
             kit::on_worker(
                 &e.services,
                 move || -> Result<Option<Vec<u8>>, String> {
@@ -747,8 +993,8 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
                         return Ok(None);
                     }
                     match restored {
-                        Some(r) => engine.pdf_bytes_with_edits_from(&r, &request),
-                        None => engine.pdf_bytes_with_edits_of(&source, &request),
+                        Some(r) => engine.pdf_bytes_with_edits_from(&r, &request, &cancel),
+                        None => engine.pdf_bytes_with_edits_of(&source, &request, &cancel),
                     }
                     .map(Some)
                 },
@@ -793,10 +1039,16 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
     ));
 
     let e = ed.clone();
-    all.push(kit::send("pdf:recovery-flush-done", move |cx, _| {
-        e.copy_flush_done(cx.sender.view);
+    all.push(kit::send("pdf:recovery-flush-done", move |cx, args| {
+        if let Some(token) = args.str(0) {
+            let result = args.str(1).map_or(Ok(()), |message| Err(main_core::shell::renderer_disposal::Failure(message.to_owned())));
+            e.copy_flush_done(cx.sender.view, token, result);
+        }
         Ok(())
     }));
 
     all
 }
+
+#[cfg(test)]
+mod tests;

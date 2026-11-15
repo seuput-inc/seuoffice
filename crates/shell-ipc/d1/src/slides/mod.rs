@@ -32,9 +32,17 @@ pub mod i18n;
 pub mod inserts;
 pub mod lifecycle;
 pub mod master;
+mod owned_save;
+mod owned_close;
+mod owned_seed;
+pub use owned_seed::{PreparedSlidesSeed, SlidesSeedRollback};
+mod open_authority;
+mod shared_open;
 pub mod presenter;
 pub mod reads;
 pub mod recovery;
+mod recent;
+mod saved_load;
 pub mod session;
 pub mod state;
 #[cfg(test)]
@@ -50,6 +58,8 @@ use shell_contract::hosts::{ClipboardHost, ContentsHost, DialogsHost, OsShellHos
 use shell_contract::ipc::{CallContext, RegisterError, Responder};
 use shell_contract::provided::Provided;
 use shell_contract::runtime::Services;
+use shell_contract::ipc::NativeRequestOwner;
+use shell_contract::runtime::CancelToken;
 use shell_contract::slides::{SlidesDocument, SlidesDocuments, SlidesTemplateSelectionHooks};
 use shell_contract::{Batch, IpcError, IpcValue, ViewId, WindowId};
 
@@ -58,6 +68,8 @@ use crate::route::{self, Route};
 use crate::value::{Args, string, thrown};
 use engine::{SlidesEngineHost, SlidesShellHost};
 use state::{App, AppState};
+use main_core::packages::electron_utils::generate_handoff::HandoffWebContents;
+use main_core::slides::seed_queue::SlidesSeedOptions;
 
 type Reply = Result<IpcValue, IpcError>;
 
@@ -82,6 +94,199 @@ pub(crate) fn post_to(services: &Services, index: usize, job: impl FnOnce(&App) 
         });
     }));
 }
+/// The slides views registered on the core thread.
+#[derive(Clone)]
+pub struct SlidesViews(App);
+
+/// Ordinary presentation actor prepared before its native browser is submitted.
+pub struct PreparedNativeSlides {
+    app_index: usize,
+    view: ViewId,
+    owner: shell_contract::ipc::NativeBrowserOwner,
+    path: Option<String>,
+    committed: bool,
+}
+impl PreparedNativeSlides {
+    pub fn commit(
+        &mut self, transition: &shell_contract::ipc::NativeBrowserTransition<'_>,
+        next: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<(), String> {
+        if self.committed || !transition.matches_owner(&self.owner) {
+            return Err("The presentation browser transition does not match".into());
+        }
+        with_app(self.app_index, |app| {
+            let mut state = app.state.borrow_mut();
+            if state.native_actor_owners.contains_key(&self.view)
+                || state.native_actor_owners.len() == state.native_actor_owners.capacity()
+                || (self.path.is_some() && state.pending_by_view.len() == state.pending_by_view.capacity()) {
+                return Err("The reserved presentation actor is unavailable".into());
+            }
+            next()?;
+            state.native_actor_owners.insert(self.view, self.owner.clone());
+            if let Some(path) = self.path.take() { state.pending_by_view.insert(self.view, path); }
+            state.active_view = Some(self.view);
+            self.committed = true;
+            Ok(())
+        }).ok_or_else(|| "The original presentation actor is unavailable on this core thread".to_owned())?
+    }
+}
+
+impl SlidesViews {
+    pub fn prepare_native_tab(
+        &self, view: ViewId, created: &shell_contract::runtime::RendererGeneration,
+        path: Option<&str>, owner: shell_contract::ipc::NativeBrowserOwner,
+    ) -> Result<PreparedNativeSlides, String> {
+        if !owner.reservation().matches(view, created) {
+            return Err("The presentation reservation does not match".into());
+        }
+        let path = path.filter(|value| !value.is_empty()).map(str::to_owned);
+        {
+            let mut state = self.0.state.borrow_mut();
+            if state.native_actor_owners.contains_key(&view) { return Err("The presentation actor already exists".into()); }
+            state.native_actor_owners.try_reserve(1).map_err(|_| "The presentation actor could not be reserved")?;
+            if path.is_some() { state.pending_by_view.try_reserve(1).map_err(|_| "The presentation path could not be reserved")?; }
+        }
+        Ok(PreparedNativeSlides { app_index: self.0.registry_index, view, owner, path, committed: false })
+    }
+}
+
+pub fn views() -> Option<SlidesViews> {
+    APPS.with(|apps| apps.borrow().last().cloned().map(SlidesViews))
+}
+
+struct SeedContents {
+    view: ViewId,
+    alive: bool,
+}
+
+impl HandoffWebContents for SeedContents {
+    fn id(&self) -> f64 {
+        f64::from(self.view.0)
+    }
+
+    fn is_destroyed(&self) -> bool {
+        !self.alive
+    }
+
+    fn once_destroyed(&mut self) {
+        // The batch's shared view-destroyed listener already forgets every seed.
+    }
+}
+
+impl SlidesViews {
+    pub fn register_tab(&self, view: ViewId) {
+        if self.0.services.views.sender_of(view).is_some() {
+            self.set_active_view(view);
+        }
+    }
+
+    pub fn queue_open(&self, view: ViewId, path: &str) {
+        self.0.queue_open(view, path);
+    }
+
+    pub fn is_dirty(&self, view: ViewId) -> Result<bool, IpcError> {
+        self.0.is_view_dirty(view)
+    }
+
+    pub fn has_session(&self, view: ViewId) -> bool {
+        self.0.services.views.sender_of(view).is_some()
+            && self.0.state.borrow().has_session(view)
+    }
+
+
+    pub fn deck_model(&self, view: ViewId) -> Result<jscompat::JsonValue, IpcError> {
+        let deck = self.0.state.borrow().session(view)
+            .map(|session| session.deck())
+            .ok_or_else(|| thrown("the deck session is gone"))?;
+        self.0.engine.deck_model(deck).map_err(|error| thrown(error.0))
+    }
+
+    pub fn deck_withholds(&self, view: ViewId) -> Result<bool, IpcError> {
+        use jscompat::JsonValue;
+        use main_core::shell::mcp::slides_bridge::element_withholds;
+        let model = self.deck_model(view)?;
+        let JsonValue::Object(deck) = model else {
+            return Err(thrown("the deck model is invalid"));
+        };
+        let slides_value = deck.get("slides");
+        let Some(JsonValue::Array(slides)) = slides_value.as_deref() else {
+            return Err(thrown("the deck model has no slides"));
+        };
+        Ok(slides.iter().any(|slide| {
+            let JsonValue::Object(slide) = slide else { return false };
+            match slide.get("elements").as_deref() {
+                Some(JsonValue::Array(elements)) => elements.iter().any(element_withholds),
+                _ => false,
+            }
+        }))
+    }
+
+    pub fn attached_views(&self, view: ViewId) -> Vec<ViewId> {
+        let state = self.0.state.borrow();
+        state.slot_of(view).map_or_else(Vec::new, |slot| state.attached_ids(slot))
+    }
+
+    pub fn slide_comments(&self, view: ViewId, path: &str) -> Result<jscompat::JsonValue, IpcError> {
+        let deck = self.0.state.borrow().session(view)
+            .map(|session| session.deck())
+            .ok_or_else(|| thrown("the deck session is gone"))?;
+        let index = self.0.engine.slide_paths(deck).map_err(|error| thrown(error.0))?.iter().position(|item| item == path)
+            .ok_or_else(|| thrown("the slide is no longer open"))?;
+        let comments = self.0.engine.slide_comments(deck, index).map_err(|error| thrown(error.0))?;
+        crate::value::to_json(&comments).ok_or_else(|| thrown("the slide comments are not JSON"))
+    }
+    pub fn apply_transaction(&self, owner: &engine::RenderOwner, request: &IpcValue) -> Result<IpcValue, IpcError> {
+        if !self.has_session(owner.view) {
+            return Err(thrown("the deck session is gone"));
+        }
+        let result = edit_ops::apply_txn_view(&self.0, owner, request);
+        self.0.pump();
+        result
+    }
+
+    pub fn save_to_path(&self, view: ViewId, path: &str) -> Result<(), IpcError> {
+        if !self.has_session(view) {
+            return Err(thrown("the deck session is gone"));
+        }
+        self.0.save_session_deck_to(view, path)
+    }
+
+    pub fn set_active_view(&self, view: ViewId) {
+        self.0.state.borrow_mut().active_view = Some(view);
+    }
+
+    pub fn active_view(&self) -> Option<ViewId> {
+        self.0.state.borrow().active_view
+    }
+
+    pub fn recovery_identity(&self, view: ViewId) -> Option<main_core::packages::electron_utils::recovery_store::RecoveryIdentity> {
+        let mut state = self.0.state.borrow_mut();
+        let slot = state.slot_of(view)?;
+        let session = state.slot_mut(slot)?;
+        Some(self.0.recovery_identity_of(session))
+    }
+
+    pub fn discard_recovery(&self, view: ViewId) {
+        self.0.discard_recovery(view);
+    }
+
+    pub fn queue_seed(&self, view: ViewId, bytes: &[u8], suggested_name: &str) {
+        let mut contents = SeedContents {
+            view,
+            alive: self.0.services.views.sender_of(view).is_some(),
+        };
+        self.0.state.borrow_mut().seeds.queue_slides_seed_for(
+            &mut contents,
+            bytes.to_vec(),
+            SlidesSeedOptions {
+                ask_path_on_first_save: Some(true),
+                suggested_name: Some(suggested_name.to_owned()),
+                ..SlidesSeedOptions::default()
+            },
+        );
+    }
+}
+
 
 /// The audience window of a presenter show closed (`win.on('closed')`): the
 /// shell calls this from the window's close
@@ -100,6 +305,16 @@ type OnFn = fn(&App, &CallContext, Args) -> Result<(), IpcError>;
 pub(crate) fn now(app: &App, channel: &'static str, f: NowFn) -> Route {
     let app = app.clone();
     route::invoke(channel, move |cx, args| {
+        let reply = f(&app, cx, args);
+        app.pump();
+        reply
+    })
+}
+/// Routes that render or mutate a deck must authenticate before invoking their handler.
+pub(crate) fn now_render(app: &App, channel: &'static str, f: NowFn) -> Route {
+    let app = app.clone();
+    route::invoke(channel, move |cx, args| {
+        session::render_owner(cx)?;
         let reply = f(&app, cx, args);
         app.pump();
         reply
@@ -132,6 +347,8 @@ struct SlidesEditors {
 }
 
 impl DocumentEditors for SlidesEditors {
+    fn saved_surface(&self) -> shell_contract::Surface { shell_contract::Surface::Slides }
+
     fn owns(&self, view: ViewId) -> bool {
         self.app.state.borrow().has_session(view)
     }
@@ -140,6 +357,19 @@ impl DocumentEditors for SlidesEditors {
         let state = self.app.state.borrow();
         let session = state.session(view)?;
         (!session.path().is_empty()).then(|| PathBuf::from(session.path()))
+    }
+
+    fn capture_document_owner(&self, view: ViewId, native: NativeRequestOwner) -> Result<NativeRequestOwner, IpcError> {
+        self.app.capture_save_owner(view, native)
+    }
+
+    fn prepare_saved_document(&self, target: shell_contract::ipc::NativeSavedTarget) -> Result<Box<dyn shell_contract::editors::PreparedSavedDocument>, IpcError> {
+        saved_load::prepare(&self.app, target)
+    }
+
+    fn load_saved_document(&self, document: shell_contract::ipc::NativeSavedDocument, then: Then<shell_contract::editors::SavedDocumentLoadOutcome>) {
+        saved_load::load(&self.app, document, then);
+        self.app.pump();
     }
 
     /// `requestRendererSave`: the renderer runs its full save flow and
@@ -157,6 +387,21 @@ impl DocumentEditors for SlidesEditors {
                 .app
                 .request_save_as(view, Box::new(move |ok| then(Ok(ok)))),
         }
+        self.app.pump();
+    }
+
+    fn request_save_owned(&self, view: ViewId, mode: SaveMode, origin: NativeRequestOwner, cancel: CancelToken, then: Then<bool>) {
+        self.app.request_save_owned(view, mode, origin, cancel, None, then);
+        self.app.pump();
+    }
+
+    fn request_save_native(&self, view: ViewId, mode: SaveMode, binding: shell_contract::ipc::NativeExistingDocumentBinding, cancel: CancelToken, pending: CancelToken, then: Then<bool>) {
+        self.app.request_save_native(view, mode, binding, cancel, pending, then);
+        self.app.pump();
+    }
+
+    fn request_close_owned(&self, view: ViewId, parent: Option<WindowId>, origin: NativeRequestOwner, cancel: CancelToken, then: Then<bool>) {
+        self.app.request_close_owned(view, parent, origin, cancel, then);
         self.app.pump();
     }
 
@@ -179,6 +424,16 @@ impl DocumentEditors for SlidesEditors {
         then(result)
     }
 
+    fn save_to_path_owned(&self, view: ViewId, path: PathBuf, origin: NativeRequestOwner, cancel: CancelToken, then: Then<()>) {
+        self.app.save_to_path_owned(view, &path.to_string_lossy(), origin, cancel, then);
+        self.app.pump();
+    }
+
+    fn save_to_path_native(&self, view: ViewId, path: PathBuf, binding: shell_contract::ipc::NativeExistingDocumentBinding, cancel: CancelToken, pending: CancelToken, then: Then<()>) {
+        self.app.save_to_path_native(view, &path, binding, cancel, pending, then);
+        self.app.pump();
+    }
+
     /// `slidesFileRenamed(wc, oldPath, newPath)`
     fn file_renamed(&self, view: ViewId, old_path: &Path, new_path: &Path) {
         self.app.file_renamed(
@@ -186,6 +441,30 @@ impl DocumentEditors for SlidesEditors {
             &old_path.to_string_lossy(),
             &new_path.to_string_lossy(),
         );
+    }
+
+    fn file_renamed_owned(&self, view: ViewId, old_path: &Path, new_path: &Path, origin: &NativeRequestOwner, destination: &NativeRequestOwner, cancel: &CancelToken, pending: &CancelToken, then: Then<()>) {
+        self.app.rename_path_owned(view, &old_path.to_string_lossy(), &new_path.to_string_lossy(), origin, destination, cancel, pending, then);
+        self.app.pump();
+    }
+    fn file_renamed_many_owned_extra(&self, view: ViewId, old_path: &Path, new_path: &Path, origin: &NativeRequestOwner, destination: &NativeRequestOwner, participants: &[NativeRequestOwner], cancel: &CancelToken, pending: &CancelToken, additional: &[CancelToken], then: Then<()>) {
+        self.app.rename_path_many_owned_extra(view, &old_path.to_string_lossy(), &new_path.to_string_lossy(), origin, destination, participants, cancel, pending, additional, then);
+        self.app.pump();
+    }
+
+    fn file_renamed_existing_document(&self, view: ViewId, old_path: &Path, new_path: &Path,
+        authority: &shell_contract::ipc::NativeSaveRevisionAuthority, expected_path: &Path, destination: &NativeRequestOwner,
+        participants: &[NativeRequestOwner], cancel: &CancelToken, pending: &CancelToken, additional: &[CancelToken], then: Then<Option<shell_contract::ipc::NativeSaveRevisionReceipt>>) {
+        self.app.rename_path_revision(view, &old_path.to_string_lossy(), &new_path.to_string_lossy(), authority, expected_path, destination, participants, cancel, pending, additional, Box::new(move |result| then(result.map(|()| None))));
+        self.app.pump();
+    }
+
+    fn file_renamed_recovery(&self, view: ViewId, old_path: &Path, new_path: &Path,
+        receipt: &shell_contract::ipc::RecoverySeedReceipt, receiver: &NativeRequestOwner,
+        destination: &NativeRequestOwner, participants: &[NativeRequestOwner],
+        cancel: &CancelToken, pending: &CancelToken, then: Then<()>) {
+        self.app.rename_path_recovery(view, &old_path.to_string_lossy(), &new_path.to_string_lossy(), receipt, receiver, destination, participants, cancel, pending, then);
+        self.app.pump();
     }
 
     /// The File menu's `slides:menu` command: `pdf`, `png` and `jpg` are the
@@ -209,6 +488,30 @@ impl SlidesDocuments for SlidesDocs {
     fn document(&self, view: ViewId) -> Option<SlidesDocument> {
         let state = self.app.state.borrow();
         state.session(view).map(|s| self.app.document_of_session(s))
+    }
+}
+
+impl shell_contract::slides::SlidesRecentFiles for SlidesDocs {
+    fn prepare_moved_owned(&self, origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, cancel: &CancelToken, pending: &CancelToken, effects: &shell_contract::hosts::OwnedEffectsHost) -> Result<shell_contract::slides::OwnedRecentMove, String> {
+        self.app.prepare_recent_move(origin, destination, &[], cancel, pending, &[], effects)
+    }
+    fn prepare_moved_many_owned(&self, origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &CancelToken, pending: &CancelToken, effects: &shell_contract::hosts::OwnedEffectsHost) -> Result<shell_contract::slides::OwnedRecentMove, String> {
+        self.app.prepare_recent_move(origin, destination, participants, cancel, pending, &[], effects)
+    }
+    fn prepare_moved_many_owned_extra(&self, origin: &NativeRequestOwner, destination: &NativeRequestOwner,
+        participants: &[NativeRequestOwner], cancel: &CancelToken, pending: &CancelToken,
+        additional: &[CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost) -> Result<shell_contract::slides::OwnedRecentMove, String> {
+        self.app.prepare_recent_move(origin, destination, participants, cancel, pending, additional, effects)
+    }
+    fn prepare_moved_recovery(&self, receipt: &shell_contract::ipc::RecoverySeedReceipt, snapshot: &shell_contract::ipc::RecoveryAuthoritySnapshot, receiver: &NativeRequestOwner,
+        destination: &NativeRequestOwner, participants: &[NativeRequestOwner], cancel: &CancelToken,
+        pending: &CancelToken, effects: &shell_contract::hosts::OwnedEffectsHost) -> Result<shell_contract::slides::OwnedRecentMove, String> {
+        self.app.prepare_recent_move_recovery(receipt, snapshot, receiver, destination, participants, cancel, pending, effects)
+    }
+    fn prepare_moved_existing_document(&self, binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+        participants: &[NativeRequestOwner], cancel: &CancelToken, pending: &CancelToken, additional: &[CancelToken],
+        effects: &shell_contract::hosts::OwnedEffectsHost) -> Result<shell_contract::slides::OwnedRecentMove, String> {
+        self.app.prepare_recent_move_existing(binding, participants, cancel, pending, additional, effects)
     }
 }
 
@@ -247,6 +550,13 @@ impl App {
     /// A view is gone: the work of `trackSlidesWebContents`'s
     /// `once('destroyed')` and of the presenter show
     fn view_gone(&self, view: ViewId) {
+        if self.state.borrow().native_actor_owners.contains_key(&view) { return; }
+        saved_load::abandon(self, view);
+        let pending = self.state.borrow_mut().pending_recovery_seeds.remove(&view);
+        if let Some(pending) = pending {
+            (pending.done)(Err(main_core::shell::renderer_disposal::Failure("The presentation view was closed".into())));
+        }
+        recovery::abandon_recovery(self, view);
         self.close_narration_microphone(view);
         self.release_recovery(view);
         self.close_presenter_show(view);
@@ -254,11 +564,16 @@ impl App {
         let waiter = {
             let mut state = self.state.borrow_mut();
             state.detach_view(view);
+            if state.active_view == Some(view) {
+                state.active_view = None;
+            }
             state.pending_by_view.remove(&view);
+            state.recovery_open_decisions.remove(&view);
             state.last_slide_paste.remove(&view);
             state.auto_save_pref.remove(&view);
-            state.save_as_image_targets.forget(f64::from(view.0));
             state.seeds.forget(f64::from(view.0));
+            owned_seed::forget_seed_on_view_gone(&mut state, view);
+            state.headless_targets.remove(&view);
             let at = state.close_waiters.iter().rposition(|w| w.0 == view);
             at.map(|at| state.close_waiters.remove(at).2)
         };
@@ -313,7 +628,11 @@ pub fn routes(services: &Services, provided: &Rc<Provided>) -> Result<Vec<Route>
     };
     APPS.with(|apps| apps.borrow_mut().push(app.clone()));
     provided.add::<dyn DocumentEditors>(Rc::new(SlidesEditors { app: app.clone() }));
+    provided.add::<dyn main_core::packages::electron_utils::recovery_contract::RecoveryEditorContract<ViewId, shell_contract::ipc::RecoveryOpenTarget>>(
+        Rc::new(SlidesViews(app.clone())),
+    );
     provided.add::<dyn SlidesDocuments>(Rc::new(SlidesDocs { app: app.clone() }));
+    provided.add::<dyn shell_contract::slides::SlidesRecentFiles>(Rc::new(SlidesDocs { app: app.clone() }));
     let gone = app.clone();
     on_view_gone(services, move |view| gone.view_gone(view));
     app.schedule_recovery_tick();
@@ -327,15 +646,12 @@ pub fn routes(services: &Services, provided: &Rc<Provided>) -> Result<Vec<Route>
             "slides:consume-pending-open",
             lifecycle::consume_pending_open,
         ),
+        now(&app, "slides:recovery-initialized", recovery::recovery_initialized),
         now(&app, "slides:new-blank", lifecycle::new_blank),
         now(&app, "slides:recent", lifecycle::recent),
-        now(&app, "slides:save", lifecycle::save),
-        now(&app, "slides:save-as", lifecycle::save_as),
-        now(
-            &app,
-            "slides:save-into-project",
-            lifecycle::save_into_project,
-        ),
+        later(&app, "slides:save", owned_save::save),
+        later(&app, "slides:save-as", owned_save::save_as),
+        later(&app, "slides:save-into-project", owned_save::save_into_project),
         now(&app, "slides:is-dirty", lifecycle::is_dirty),
         on(&app, "slides:autosave-pref", lifecycle::autosave_pref),
         on(
@@ -398,7 +714,7 @@ pub fn routes(services: &Services, provided: &Rc<Provided>) -> Result<Vec<Route>
         ),
         now(&app, "slides:private-font-data", export::private_font_data),
         now(&app, "slides:template-bytes", export::template_bytes),
-        now(
+        later(
             &app,
             "slides:template-cover-render",
             export::template_cover_render,
@@ -438,14 +754,14 @@ pub fn routes(services: &Services, provided: &Rc<Provided>) -> Result<Vec<Route>
         later(&app, "slides:files-read", files::files_read),
         now(&app, "slides:files-read-image", files::files_read_image),
         // presenter and show
-        now(&app, "slides:presenter-start", presenter::presenter_start),
+        later(&app, "slides:presenter-start", presenter::presenter_start),
         on(&app, "slides:presenter-sync", presenter::presenter_sync),
         on(&app, "slides:presenter-ink", presenter::presenter_ink),
-        now(&app, "slides:presenter-swap", presenter::presenter_swap),
+        later(&app, "slides:presenter-swap", presenter::presenter_swap),
         now(&app, "slides:presenter-end", presenter::presenter_end),
         now(&app, "slides:audience-ready", presenter::audience_ready),
         on(&app, "slides:audience-nav", presenter::audience_nav),
-        now(&app, "slides:show-fullscreen", presenter::show_fullscreen),
+        later(&app, "slides:show-fullscreen", presenter::show_fullscreen),
         // clipboards
         now(
             &app,
@@ -494,16 +810,18 @@ pub fn insert_fakes(hosts: &mut shell_contract::Hosts, case: &serde_json::Value)
 /// loaded: opens `path` in `view` at the editor's default width and tells the
 /// renderer with `slides:opened`. A deck that cannot be opened is ignored, as
 /// the TypeScript's `catch` does. Called by the shell on the core thread.
-pub fn open_file_in_window(view: shell_contract::ViewId, path: &str) {
+pub fn open_file_in_window(owner: engine::RenderOwner, path: &str) {
     let app = APPS.with(|apps| apps.borrow().last().cloned());
     if let Some(app) = app {
-        if let Ok(result) = app.open_and_build(view, path, 1280.0, None) {
+        if let Ok(result) = app.open_and_build(&owner, path, 1280.0, None) {
             // the history notice is queued for the end of the task: it goes out while
             // the TypeScript awaits the recent list, before the open's answer is sent
             app.pump();
             let index = app.registry_index;
             post_to(&app.services.clone(), index, move |app| {
-                app.emit(view, "slides:opened", vec![result]);
+                if let Err(error) = app.services.events.emit_to_owner_checked(&owner, "slides:opened", vec![result]) {
+                    eprintln!("[slides] scoped opened notification failed: {error}");
+                }
                 app.pump();
             });
         }
@@ -524,6 +842,7 @@ pub fn open_file_in_window(view: shell_contract::ViewId, path: &str) {
 pub fn probe_trigger(
     name: &str,
     view: shell_contract::ViewId,
+    owner: Option<engine::RenderOwner>,
     args: &serde_json::Value,
     _services: &Services,
     _provided: &std::rc::Rc<shell_contract::provided::Provided>,
@@ -575,7 +894,11 @@ pub fn probe_trigger(
             then(Ok(shell_contract::IpcValue::Undefined));
         }
         "openFileInWindow" => {
-            open_file_in_window(view, &text);
+            let Some(owner) = owner.filter(|owner| owner.view == view) else {
+                then(Err(thrown("missing captured presentation window owner")));
+                return true;
+            };
+            open_file_in_window(owner, &text);
             then(Ok(shell_contract::IpcValue::Undefined));
         }
         _ => return false,

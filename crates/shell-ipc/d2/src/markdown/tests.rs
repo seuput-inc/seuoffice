@@ -232,6 +232,16 @@ fn an_unnamed_first_save_with_a_suggestion_lands_beside_the_others() {
 }
 
 #[test]
+fn guarded_project_write_failure_does_not_fall_back_to_a_dialog() {
+    let mut rt = rt_with(json!({ "write_new_document": { "error": "project is read-only" } }));
+    let view = view_on(&rt, 1, None);
+    let request = obj([("text", s("new")), ("suggestedName", s("Plan"))]);
+    assert_eq!(rt.invoke_now("markdown:save", view, vec![request]),
+        Ok(failure("project is read-only")));
+    assert!(!rt.script().calls.iter().any(|call| matches!(call, HostCall::Save(..))));
+}
+
+#[test]
 fn seeds_and_note_appends_reach_only_their_views() {
     let mut rt = rt();
     let path = note(&rt, "n.md", "x");
@@ -756,6 +766,22 @@ fn a_headless_pdf_export_takes_its_path_once() {
     assert_eq!(*got.borrow(), Some(Ok(())));
 }
 
+#[test]
+fn a_failed_hidden_markdown_load_does_not_leave_an_export_target() {
+    let mut rt = rt();
+    let input = note(&rt, "hidden.md", "x");
+    let v = rt.view(1, Surface::Markdown);
+    let (got, then) = catch::<()>();
+    md(&rt).export_pdf_headless(v.view, &input, "/out.pdf", Duration::from_secs(5),
+        Box::new(move |result| then(result.map_err(crate::kit::error))));
+    assert!(md(&rt).fail_headless_export(v.view, "native navigation failed".into()));
+    assert_eq!(rt.invoke_now("markdown:consume-headless-export", v, vec![]), Ok(IpcValue::Null));
+    assert!(!md(&rt).fail_headless_export(v.view, "late crash".into()));
+    rt.send("markdown:headless-export-done", v, vec![obj([("ok", true.into_ipc())])]);
+    rt.advance(Duration::from_secs(5));
+    assert_eq!(got.borrow().as_ref().unwrap().as_ref().unwrap_err().message, "native navigation failed");
+}
+
 /// The start-up check of this batch, for the two text editors: every html
 /// and markdown channel of D2 a renderer invokes or sends to has a handler of
 /// that kind, and nothing else is registered
@@ -837,4 +863,252 @@ fn triggers_queue_note_appends_and_run_headless_exports() {
     let renamed = vault(&rt).join("u.md");
     trigger(&mut rt, "file-renamed", 1, json!([path, renamed]));
     assert_eq!(rt.events().last().unwrap().channel, "markdown:file-renamed");
+}
+
+#[test]
+fn accepted_generated_seed_survives_issuer_close_but_not_target_replacement(){
+    use shell_contract::runtime::CancelToken;
+    let mut rt=rt();
+    let issuer=view_on(&rt,1,None);
+    let target=view_on(&rt,2,None);
+    let effects=rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap().clone();
+    let source=effects.capture_owner(issuer.view,&rt.services.views.renderer_generation(issuer.view).unwrap()).unwrap();
+    let created=rt.services.views.renderer_generation(target.view).unwrap();
+    let (_,reservation)=shell_contract::ipc::NativeClosureIssuer::new(target.view,created.clone());
+    let cancelled=CancelToken::default();cancelled.cancel();
+    let mut initialized=0;
+    assert!(md(&rt).queue_seed_owned(target.view,"denied".into(),source.clone(),&[],cancelled,CancelToken::default(),created.clone(),reservation.clone(),&mut||{initialized+=1;Ok(())}).is_err());
+    assert!(md(&rt).owned_seeds.get(target.view).is_none());
+    assert_eq!(initialized,0);
+    let pending=CancelToken::default();pending.cancel();
+    assert!(md(&rt).queue_seed_owned(target.view,"expired".into(),source.clone(),&[],CancelToken::default(),pending,created.clone(),reservation.clone(),&mut||{initialized+=1;Ok(())}).is_err());
+    assert!(md(&rt).owned_seeds.get(target.view).is_none());
+    assert_eq!(initialized,0);
+    let participant=view_on(&rt,4,None);
+    let participant_owner=effects.capture_owner(participant.view,&rt.services.views.renderer_generation(participant.view).unwrap()).unwrap();
+    rt.destroy(participant.view);
+    assert!(md(&rt).queue_seed_owned(target.view,"revoked participant".into(),source.clone(),&[participant_owner],CancelToken::default(),CancelToken::default(),created.clone(),reservation.clone(),&mut||{initialized+=1;Ok(())}).is_err());
+    assert!(md(&rt).owned_seeds.get(target.view).is_none());
+    assert_eq!(initialized,0);
+    let accepted_pending=CancelToken::default();
+    md(&rt).queue_seed_owned(target.view,"accepted".into(),source,&[],CancelToken::default(),accepted_pending.clone(),created,reservation,&mut||{initialized+=1;Ok(())}).unwrap();
+    accepted_pending.cancel();
+    assert_eq!(initialized,1);
+    rt.destroy(issuer.view);
+    let consumer=effects.capture_owner(target.view,&rt.services.views.renderer_generation(target.view).unwrap()).unwrap();
+    let got=rt.invoke_native("markdown:seed-take",target,vec![],consumer.context.clone(),CancelToken::default()).take().unwrap();
+    assert_eq!(got,Ok(s("accepted")));
+    assert_eq!(rt.invoke_native("markdown:seed-take",target,vec![],consumer.context,CancelToken::default()).take().unwrap(),Ok(IpcValue::Null));
+    let issuer=view_on(&rt,3,None);
+    let source=effects.capture_owner(issuer.view,&rt.services.views.renderer_generation(issuer.view).unwrap()).unwrap();
+    let created=rt.services.views.renderer_generation(target.view).unwrap();
+    let (_,reservation)=shell_contract::ipc::NativeClosureIssuer::new(target.view,created.clone());
+    md(&rt).queue_seed_owned(target.view,"old epoch".into(),source,&[],CancelToken::default(),CancelToken::default(),created,reservation,&mut||Ok(())).unwrap();
+    rt.replace_renderer(target.view);
+    let consumer=effects.capture_owner(target.view,&rt.services.views.renderer_generation(target.view).unwrap()).unwrap();
+    assert_eq!(rt.invoke_native("markdown:seed-take",target,vec![],consumer.context,CancelToken::default()).take().unwrap(),Ok(IpcValue::Null));
+    assert!(md(&rt).owned_seeds.get(target.view).is_some());
+}
+
+#[test]
+fn generated_seed_rollback_restores_only_its_own_insertion() {
+    use shell_contract::runtime::CancelToken;
+    let mut rt=rt();
+    let issuer=view_on(&rt,11,None);
+    let target=view_on(&rt,12,None);
+    let effects=rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap().clone();
+    let source=effects.capture_owner(issuer.view,&rt.services.views.renderer_generation(issuer.view).unwrap()).unwrap();
+    let created=rt.services.views.renderer_generation(target.view).unwrap();
+    let (_,reservation)=shell_contract::ipc::NativeClosureIssuer::new(target.view,created.clone());
+    let first=md(&rt).queue_seed_owned(target.view,"first".into(),source.clone(),&[],CancelToken::default(),CancelToken::default(),created.clone(),reservation.clone(),&mut||Ok(())).unwrap();
+    let second=md(&rt).queue_seed_owned(target.view,"second".into(),source.clone(),&[],CancelToken::default(),CancelToken::default(),created.clone(),reservation,&mut||Ok(())).unwrap();
+    assert!(!first.was_consumed());
+    assert!(!second.was_consumed());
+    assert!(first.rollback().is_err());
+    second.rollback().unwrap();
+    second.rollback().unwrap();
+    assert!(!second.was_consumed());
+    assert_eq!(md(&rt).owned_seeds.get(target.view).unwrap().text,"first");
+    let consumer=effects.capture_owner(target.view,&created).unwrap();
+    assert_eq!(rt.invoke_native("markdown:seed-take",target,vec![],consumer.context,CancelToken::default()).take().unwrap(),Ok(s("first")));
+    assert!(first.was_consumed());
+    first.rollback().unwrap();
+    first.rollback().unwrap();
+    assert!(md(&rt).owned_seeds.get(target.view).is_none());
+}
+
+#[test]
+fn generated_seed_rollback_tracks_legacy_replacement_and_real_destruction() {
+    use shell_contract::runtime::CancelToken;
+    let mut rt=rt();
+    let issuer=view_on(&rt,21,None);
+    let target=view_on(&rt,22,None);
+    let effects=rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap().clone();
+    let source=effects.capture_owner(issuer.view,&rt.services.views.renderer_generation(issuer.view).unwrap()).unwrap();
+    let created=rt.services.views.renderer_generation(target.view).unwrap();
+    let (_,reservation)=shell_contract::ipc::NativeClosureIssuer::new(target.view,created.clone());
+    md(&rt).queue_seed(target.view,"original legacy");
+    let restored=md(&rt).queue_seed_owned(target.view,"temporary".into(),source.clone(),&[],CancelToken::default(),CancelToken::default(),created.clone(),reservation.clone(),&mut||Ok(())).unwrap();
+    restored.rollback().unwrap();
+    assert_eq!(md(&rt).seeds.get(target.view).as_deref(),Some("original legacy"));
+    let replaced=md(&rt).queue_seed_owned(target.view,"owned".into(),source.clone(),&[],CancelToken::default(),CancelToken::default(),created.clone(),reservation,&mut||Ok(())).unwrap();
+    md(&rt).queue_seed(target.view,"newer legacy");
+    assert!(replaced.rollback().is_err());
+    assert_eq!(md(&rt).seeds.get(target.view).as_deref(),Some("newer legacy"));
+    let replaced_target=view_on(&rt,23,None);
+    let replaced_generation=rt.services.views.renderer_generation(replaced_target.view).unwrap();
+    let (_,replaced_reservation)=shell_contract::ipc::NativeClosureIssuer::new(replaced_target.view,replaced_generation.clone());
+    let epoch_only=md(&rt).queue_seed_owned(replaced_target.view,"epoch".into(),source.clone(),&[],CancelToken::default(),CancelToken::default(),replaced_generation,replaced_reservation,&mut||Ok(())).unwrap();
+    rt.replace_renderer(replaced_target.view);
+    assert!(epoch_only.rollback().is_err());
+    assert!(!epoch_only.was_consumed());
+    let (close_issuer,close_reservation)=shell_contract::ipc::NativeClosureIssuer::new(target.view,created.clone());
+    let (forger,_)=shell_contract::ipc::NativeClosureIssuer::new(target.view,created.clone());
+    let retired=md(&rt).queue_seed_owned(target.view,"to retire".into(),source,&[],CancelToken::default(),CancelToken::default(),created,close_reservation,&mut||Ok(())).unwrap();
+    rt.destroy(target.view);
+    assert!(retired.rollback().is_err());
+    let wrong=forger.closed();
+    assert!(retired.retire_closed(&wrong).is_err());
+    retired.retire_closed(&close_issuer.closed()).unwrap();
+    retired.rollback().unwrap();
+    retired.rollback().unwrap();
+    assert!(!retired.was_consumed());
+}
+
+#[test]
+fn owned_save_as_waits_for_the_actual_approved_copy(){
+    use shell_contract::runtime::CancelToken;
+    let mut rt=rt();let original=note(&rt,"owned-source.md","# original");
+    let target=view_on(&rt,1,Some(&original));let issuer=view_on(&rt,2,None);
+    let effects=rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap().clone();
+    let source=effects.capture_owner(issuer.view,&rt.services.views.renderer_generation(issuer.view).unwrap()).unwrap();
+    let native=effects.capture_owner(target.view,&rt.services.views.renderer_generation(target.view).unwrap()).unwrap().context;
+    let (got,then)=catch();
+    editor_for(&rt.provided(),target.view).unwrap().request_save_owned(target.view,SaveMode::SaveAs,source,CancelToken::default(),then);
+    let output=vault(&rt).join("owned-copy.docx");let output_s=output.to_string_lossy().into_owned();rt.script().save.push_back(Some(output.clone()));
+    let request=obj([("mode",s("saveAs")),("text",s("# changed")),("pdfHtml",s("<h1>changed</h1>"))]);
+    let prepared=rt.invoke_native("markdown:save",target,vec![request],native.clone(),CancelToken::default()).take().unwrap().unwrap();
+    assert_eq!(field(&prepared,"exportAs"),&s("docx"));
+    assert!(got.borrow().is_none());assert!(!output.exists());
+    let wrong=obj([("base64",s("UEsDBA==")),("saveAsTarget",s("/wrong.docx"))]);
+    assert_eq!(rt.invoke_native("markdown:export-docx",target,vec![wrong],native.clone(),CancelToken::default()).take().unwrap(),Ok(failure("markdown: save target not approved")));
+    assert!(got.borrow().is_none());
+    let approved=obj([("base64",s("UEsDBA==")),("saveAsTarget",s(&output_s))]);
+    assert_eq!(rt.invoke_native("markdown:export-docx",target,vec![approved],native,CancelToken::default()).take().unwrap(),Ok(ok_path(&output_s)));
+    assert_eq!(*got.borrow(),Some(Ok(true)));
+    assert_eq!(std::fs::read(output).unwrap(),b"PK\x03\x04");
+    assert_eq!(std::fs::read_to_string(&original).unwrap(),"# original");
+    assert_eq!(md(&rt).docs.save_path(target.view).as_deref(),Some(original.as_str()));
+}
+
+#[test]
+fn owned_save_as_issuer_loss_settles_before_renderer_followup(){
+    use shell_contract::runtime::CancelToken;
+    let mut rt=rt();let original=note(&rt,"cancel-source.md","# source");
+    let target=view_on(&rt,1,Some(&original));let issuer=view_on(&rt,2,None);
+    let effects=rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap().clone();
+    let source=effects.capture_owner(issuer.view,&rt.services.views.renderer_generation(issuer.view).unwrap()).unwrap();
+    let native=effects.capture_owner(target.view,&rt.services.views.renderer_generation(target.view).unwrap()).unwrap().context;
+    let (got,then)=catch();
+    editor_for(&rt.provided(),target.view).unwrap().request_save_owned(target.view,SaveMode::SaveAs,source,CancelToken::default(),then);
+    let output=vault(&rt).join("cancelled-copy.docx");let output_s=output.to_string_lossy().into_owned();rt.script().save.push_back(Some(output.clone()));
+    rt.invoke_native("markdown:save",target,vec![obj([("mode",s("saveAs")),("text",s("# changed")),("pdfHtml",s("<h1>changed</h1>"))])],native.clone(),CancelToken::default()).take().unwrap().unwrap();
+    assert!(got.borrow().is_none());
+    rt.destroy(issuer.view);rt.drain();
+    assert!(got.borrow().as_ref().is_some_and(Result::is_err));
+    let approved=obj([("base64",s("UEsDBA==")),("saveAsTarget",s(&output_s))]);
+    let result=rt.invoke_native("markdown:export-docx",target,vec![approved],native,CancelToken::default()).take().unwrap().unwrap();
+    assert_eq!(field(&result,"ok"),&false.into_ipc());assert!(!output.exists());
+}
+
+#[test]
+fn owned_png_save_as_acknowledges_only_after_page_publication_and_reveal(){
+    use shell_contract::runtime::CancelToken;
+    let mut rt=rt();let original=note(&rt,"pages-source.md","# original");
+    let target=view_on(&rt,1,Some(&original));let issuer=view_on(&rt,2,None);
+    let effects=rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap().clone();
+    let source=effects.capture_owner(issuer.view,&rt.services.views.renderer_generation(issuer.view).unwrap()).unwrap();
+    let native=effects.capture_owner(target.view,&rt.services.views.renderer_generation(target.view).unwrap()).unwrap().context;
+    let (got,then)=catch();
+    editor_for(&rt.provided(),target.view).unwrap().request_save_owned(target.view,SaveMode::SaveAs,source,CancelToken::default(),then);
+    let output=vault(&rt).join("pages-copy.png");let output_s=output.to_string_lossy().into_owned();rt.script().save.push_back(Some(output.clone()));
+    rt.invoke_native("markdown:save",target,vec![obj([("mode",s("saveAs")),("text",s("# changed")),("pdfHtml",s("<h1>changed</h1>"))])],native.clone(),CancelToken::default()).take().unwrap().unwrap();
+    let prepared=rt.invoke_native("markdown:prepare-image-export",target,vec![obj([("html",s("<h1>changed</h1>")),("saveAsTarget",s(&output_s))])],native.clone(),CancelToken::default()).take().unwrap().unwrap();
+    let id=field(&prepared,"id").clone();assert!(got.borrow().is_none());
+    let written=rt.invoke_native("markdown:write-export-image",target,vec![id.clone(),1.0.into_ipc(),s("iVBORw0KGgo=")],native.clone(),CancelToken::default()).take().unwrap().unwrap();
+    assert_eq!(field(&written,"ok"),&true.into_ipc());assert!(!output.exists());assert!(got.borrow().is_none());
+    let finished=rt.invoke_native("markdown:finish-image-export",target,vec![id,true.into_ipc()],native,CancelToken::default()).take().unwrap().unwrap();
+    assert_eq!(finished,ok_path(&vault(&rt).to_string_lossy()));assert_eq!(*got.borrow(),Some(Ok(true)));
+    assert_eq!(std::fs::read(&output).unwrap(),[137,80,78,71,13,10,26,10]);
+    assert!(rt.script().calls.contains(&HostCall::ShowItemInFolder(output)));
+    assert_eq!(std::fs::read_to_string(original).unwrap(),"# original");
+}
+
+#[test]
+fn owned_png_issuer_loss_drops_private_pages_without_publishing(){
+    use shell_contract::runtime::CancelToken;
+    let mut rt=rt();let original=note(&rt,"cancel-pages-source.md","# original");
+    let target=view_on(&rt,1,Some(&original));let issuer=view_on(&rt,2,None);
+    let effects=rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap().clone();
+    let source=effects.capture_owner(issuer.view,&rt.services.views.renderer_generation(issuer.view).unwrap()).unwrap();
+    let native=effects.capture_owner(target.view,&rt.services.views.renderer_generation(target.view).unwrap()).unwrap().context;
+    let (got,then)=catch();
+    editor_for(&rt.provided(),target.view).unwrap().request_save_owned(target.view,SaveMode::SaveAs,source,CancelToken::default(),then);
+    let output=vault(&rt).join("cancelled-pages.png");let output_s=output.to_string_lossy().into_owned();rt.script().save.push_back(Some(output.clone()));
+    rt.invoke_native("markdown:save",target,vec![obj([("mode",s("saveAs")),("text",s("# changed")),("pdfHtml",s("<h1>changed</h1>"))])],native.clone(),CancelToken::default()).take().unwrap().unwrap();
+    let prepared=rt.invoke_native("markdown:prepare-image-export",target,vec![obj([("html",s("<h1>changed</h1>")),("saveAsTarget",s(&output_s))])],native.clone(),CancelToken::default()).take().unwrap().unwrap();
+    let id=field(&prepared,"id").clone();
+    rt.invoke_native("markdown:write-export-image",target,vec![id.clone(),1.0.into_ipc(),s("iVBORw0KGgo=")],native.clone(),CancelToken::default()).take().unwrap().unwrap();
+    rt.destroy(issuer.view);rt.drain();
+    assert!(got.borrow().as_ref().is_some_and(Result::is_err));assert!(!output.exists());
+    let result=rt.invoke_native("markdown:finish-image-export",target,vec![id,true.into_ipc()],native,CancelToken::default()).take().unwrap().unwrap();
+    assert_eq!(field(&result,"ok"),&false.into_ipc());assert!(!output.exists());
+    assert!(!rt.script().calls.contains(&HostCall::ShowItemInFolder(output)));
+}
+
+#[test]
+fn prepared_markdown_seed_requires_exact_browser_and_commits_after_initializer() {
+    let rt = rt();
+    let issuer = view_on(&rt, 21, None);
+    let target = view_on(&rt, 22, None);
+    let effects = rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap().clone();
+    let source = effects.capture_owner(issuer.view, &rt.services.views.renderer_generation(issuer.view).unwrap()).unwrap();
+    let created = rt.services.views.renderer_generation(target.view).unwrap();
+    let (_, reservation, browser) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(target.view, created.clone());
+    let (_, foreign, foreign_browser) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(target.view, created.clone());
+    let mut prepared = md(&rt).prepare_seed_in_transition(target.view, "new".into(), source, created, reservation.clone(), browser.clone()).unwrap();
+    let preallocated = prepared.receipt();
+    md(&rt).seeds.insert(target.view, "old".into());
+    let mut initialized = 0;
+    assert!(foreign.with_initial_owner(&foreign_browser, |transition| prepared.commit(transition, &mut || { initialized += 1; Ok(()) })).is_err());
+    assert_eq!(initialized, 0);
+    assert!(reservation.with_initial_owner(&browser, |transition| prepared.commit(transition, &mut || Err("rejected".into()))).is_err());
+    assert_eq!(md(&rt).seeds.get(target.view).as_deref(), Some("old"));
+    assert!(md(&rt).owned_seeds.get(target.view).is_none());
+    let receipt = reservation.with_initial_owner(&browser, |transition| prepared.commit(transition, &mut || { initialized += 1; Ok(()) })).unwrap();
+    assert!(std::rc::Rc::ptr_eq(&preallocated, &receipt));
+    assert_eq!(initialized, 1);
+    assert_eq!(md(&rt).owned_seeds.get(target.view).unwrap().text, "new");
+    assert!(md(&rt).seeds.get(target.view).is_none());
+    receipt.rollback().unwrap();
+    assert_eq!(md(&rt).seeds.get(target.view).as_deref(), Some("old"));
+}
+
+#[test]
+fn superseded_markdown_seed_never_retires_a_current_or_successor_seed() {
+    let rt = rt();
+    let issuer = view_on(&rt, 31, None);
+    let target = view_on(&rt, 32, None);
+    let effects = rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap().clone();
+    let source = effects.capture_owner(issuer.view, &rt.services.views.renderer_generation(issuer.view).unwrap()).unwrap();
+    let created = rt.services.views.renderer_generation(target.view).unwrap();
+    let (_, reservation, browser) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(target.view, created.clone());
+    let mut prepared = md(&rt).prepare_seed_in_transition(target.view, "original".into(), source, created, reservation.clone(), browser.clone()).unwrap();
+    let receipt = reservation.with_initial_owner(&browser, |transition| prepared.commit(transition, &mut || Ok(()))).unwrap();
+    let (_, proof, ()) = reservation.prepare_replacement(&browser).unwrap().commit(|_, _| Ok(())).unwrap();
+    assert!(receipt.retire_superseded(&proof).is_err());
+    assert_eq!(md(&rt).owned_seeds.get(target.view).unwrap().text, "original");
+    md(&rt).queue_seed(target.view, "successor");
+    receipt.retire_superseded(&proof).unwrap();
+    assert_eq!(md(&rt).seeds.get(target.view).as_deref(), Some("successor"));
 }

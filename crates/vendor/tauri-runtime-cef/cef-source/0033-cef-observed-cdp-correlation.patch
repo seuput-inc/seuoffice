@@ -1,0 +1,63 @@
+# Pinned CEF source. Frame and loader IDs are correlation, not V8/CDP authority.
+diff --git a/include/cef_client.h b/include/cef_client.h
+--- a/include/cef_client.h
++++ b/include/cef_client.h
+@@ -1,2 +1,3 @@
+-      const CefString& document, CefRefPtr<CefNativeRendererProcess> process,
++      const CefString& document, const CefString& devtools_frame,
++      const CefString& devtools_loader, CefRefPtr<CefNativeRendererProcess> process,
+       CefRefPtr<CefNativeObservedDocument> lifetime) {}
+diff --git a/libcef/browser/browser_contents_delegate.cc b/libcef/browser/browser_contents_delegate.cc
+--- a/libcef/browser/browser_contents_delegate.cc
++++ b/libcef/browser/browser_contents_delegate.cc
+@@ -1,2 +1,4 @@
+     CefRefPtr<CefNativeObservedDocument> lifetime;
+     std::string document;
++    std::string devtools_frame;
++    std::string devtools_loader;
+diff --git a/libcef/browser/browser_contents_delegate.cc b/libcef/browser/browser_contents_delegate.cc
+--- a/libcef/browser/browser_contents_delegate.cc
++++ b/libcef/browser/browser_contents_delegate.cc
+@@ -1,2 +1,6 @@
+-        if (lifetime) document = original_document.ToString();
+-        else committed = false;
++        if (lifetime) {
++          document = original_document.ToString();
++          devtools_frame = host->devtools_frame_token().ToString();
++          devtools_loader = static_cast<content::NavigationRequest*>(navigation_handle)
++                                 ->devtools_navigation_token().ToString();
++        } else committed = false;
+diff --git a/libcef/browser/browser_contents_delegate.cc b/libcef/browser/browser_contents_delegate.cc
+--- a/libcef/browser/browser_contents_delegate.cc
++++ b/libcef/browser/browser_contents_delegate.cc
+@@ -1,2 +1,3 @@
+                        std::string url, std::string document,
++                       std::string devtools_frame, std::string devtools_loader,
+                        CefRefPtr<CefNativeRendererProcess> process,
+diff --git a/libcef/browser/browser_contents_delegate.cc b/libcef/browser/browser_contents_delegate.cc
+--- a/libcef/browser/browser_contents_delegate.cc
++++ b/libcef/browser/browser_contents_delegate.cc
+@@ -1 +1,2 @@
+-                                           error_code, url, document, process, lifetime);
++                                           error_code, url, document, devtools_frame,
++                                           devtools_loader, process, lifetime);
+diff --git a/libcef/browser/browser_contents_delegate.cc b/libcef/browser/browser_contents_delegate.cc
+--- a/libcef/browser/browser_contents_delegate.cc
++++ b/libcef/browser/browser_contents_delegate.cc
+@@ -1 +1 @@
+-                                        document, process, lifetime))) {
++                                        document, devtools_frame, devtools_loader, process, lifetime))) {
+diff --git a/libcef/browser/browser_contents_delegate.cc b/libcef/browser/browser_contents_delegate.cc
+--- a/libcef/browser/browser_contents_delegate.cc
++++ b/libcef/browser/browser_contents_delegate.cc
+@@ -1 +1,2 @@
+-                                      false, net::ERR_FAILED, CefString(), CefString(), nullptr, nullptr);
++                                      false, net::ERR_FAILED, CefString(), CefString(),
++                                      CefString(), CefString(), nullptr, nullptr);
+diff --git a/libcef/browser/browser_contents_delegate.cc b/libcef/browser/browser_contents_delegate.cc
+--- a/libcef/browser/browser_contents_delegate.cc
++++ b/libcef/browser/browser_contents_delegate.cc
+@@ -1 +1,2 @@
+-          receipt.second, false, net::ERR_ABORTED, CefString(), CefString(), nullptr, nullptr);
++          receipt.second, false, net::ERR_ABORTED, CefString(), CefString(),
++          CefString(), CefString(), nullptr, nullptr);

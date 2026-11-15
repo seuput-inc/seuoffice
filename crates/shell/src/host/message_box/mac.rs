@@ -8,7 +8,6 @@
 
 use block2::RcBlock;
 use objc2::MainThreadMarker;
-use objc2::rc::Retained;
 use objc2_app_kit::{
     NSAlert, NSAlertStyle, NSApplication, NSControlStateValueOff, NSControlStateValueOn,
     NSModalResponse, NSWindow,
@@ -16,6 +15,9 @@ use objc2_app_kit::{
 use objc2_foundation::NSString;
 use shell_contract::hosts::MessageBoxAnswer;
 use tauri::Window;
+use std::sync::Arc;
+use crate::host::dialog::owned::{Session, macos::register_alert};
+use tauri_runtime_cef::WindowCefExt;
 
 use super::{Kind, Spec};
 
@@ -39,15 +41,22 @@ fn style_of(kind: Kind) -> NSAlertStyle {
     }
 }
 
-pub fn show(spec: &Spec, parent: Option<&Window>) -> MessageBoxAnswer {
-    let cancelled = || MessageBoxAnswer {
-        response: spec.cancel_id,
-        checkbox_checked: false,
-    };
-    let Some(mtm) = MainThreadMarker::new() else {
-        eprintln!("shell: dialog.showMessageBox: not on the main thread");
-        return cancelled();
-    };
+
+pub(super) fn show_owned(spec: &Spec, parent: Option<&Window>, session: &Arc<Session>) -> Result<MessageBoxAnswer, String> {
+    show_impl(spec, parent, Some(session))
+}
+
+fn show_impl(spec: &Spec, parent: Option<&Window>, session: Option<&Arc<Session>>) -> Result<MessageBoxAnswer, String> {
+    match parent {
+        Some(parent) => parent.native_window_handle().map_err(|error| error.to_string())?
+            .with_ns_window(|window| show_with_parent(spec, Some(window), session))
+            .map_err(|error| error.to_string())?,
+        None => show_with_parent(spec, None, session),
+    }
+}
+
+fn show_with_parent(spec: &Spec, parent_window: Option<&NSWindow>, session: Option<&Arc<Session>>) -> Result<MessageBoxAnswer, String> {
+    let mtm = MainThreadMarker::new().ok_or("not on the main thread")?;
 
     let alert = NSAlert::new(mtm);
     // the title is not shown by an NSAlert, as in Electron
@@ -86,31 +95,44 @@ pub fn show(spec: &Spec, parent: Option<&Window>) -> MessageBoxAnswer {
         }
     }
 
-    let parent_window: Option<Retained<NSWindow>> = parent
-        .and_then(|w| w.ns_window().ok())
-        .filter(|p| !p.is_null())
-        // SAFETY: Tauri hands out the window's NSWindow, alive while the Window is
-        .and_then(|p| unsafe { Retained::retain(p.cast::<NSWindow>()) });
+    let registration = session.map(|session| register_alert(session, &alert)).transpose()?;
+    if let Some(session) = session { session.check()?; }
     let response: NSModalResponse = match &parent_window {
         Some(window) => {
             let app = NSApplication::sharedApplication(mtm);
             let end = {
                 let app = app.clone();
-                RcBlock::new(move |code: NSModalResponse| app.stopModalWithCode(code))
+                let owned = session.map(|session| (session.id, alert.window()));
+                RcBlock::new(move |code: NSModalResponse| {
+                    if let Some((id, exact)) = &owned {
+                        if !crate::host::dialog::owned::macos::alert_is_registered(*id, exact)
+                            || !app.modalWindow().as_deref().is_some_and(|modal| std::ptr::eq(modal, &**exact)) {
+                            return;
+                        }
+                    }
+                    app.stopModalWithCode(code);
+                })
             };
             alert.beginSheetModalForWindow_completionHandler(window, Some(&end));
-            app.runModalForWindow(&alert.window())
+            if session.is_some_and(|session| session.cancelled()) { 0 }
+            else { app.runModalForWindow(&alert.window()) }
         }
         None => alert.runModal(),
     };
+    if session.is_some() {
+        let window = alert.window();
+        if let Some(parent) = window.sheetParent() { parent.endSheet_returnCode(&window, response); }
+        window.orderOut(None);
+    }
+    drop(registration);
 
     let checked = alert
         .suppressionButton()
         .is_some_and(|b| b.state() == NSControlStateValueOn);
-    MessageBoxAnswer {
+    Ok(MessageBoxAnswer {
         response: index_of(response, spec.buttons.len(), spec.cancel_id),
         checkbox_checked: spec.checkbox.is_some() && checked,
-    }
+    })
 }
 
 #[cfg(test)]

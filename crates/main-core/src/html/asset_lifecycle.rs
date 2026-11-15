@@ -4,10 +4,8 @@
 //! and the list (`.seuoffice-assets.json`) of the files the app made there,
 //! what the saved text still points at, and what is deleted when nothing does.
 //!
-//! The TypeScript is asynchronous and serialises the work on one list through
-//! a promise queue per list (`withManifestLock`); here each function runs to
-//! its end, which is the same order, and the lock is the call of `run` with the
-//! list's path.
+//! Read-modify-write cycles share one manifest lock across HTML and Markdown.
+//! Request-owned variants stage IO outside admission and admit only native effects.
 //!
 //! Text offsets are UTF-16 code units, as in JavaScript: the scanners walk a
 //! `Vec<u16>` of the text (the line-start quirks of `markdownCodeRanges` show
@@ -36,6 +34,10 @@ use crate::html::atomic_write::atomic_write_file;
 use crate::html::old_names::{ASSET_MANIFEST_FILENAME_WRITTEN, OLD_ASSET_MANIFEST_FILENAMES};
 use crate::node_fs::{NodeError, namespaced, node_error, node_error_fd};
 use crate::packages::i18n::existing_or_current;
+
+pub(crate) mod effects;
+pub use effects::{CapturedAssetOutput, PreparedAssetOwnership, PrivateAssetPayload};
+use effects::{AssetAdmission, Effects, Session};
 
 pub const ASSET_MANIFEST_FILENAME: &str = ".seuoffice-assets.json";
 
@@ -319,6 +321,10 @@ pub struct PreparedSaveAsAssets {
     pub image_sources: Vec<String>,
     pub rewrites: Vec<AssetRewrite>,
     pub created: Vec<OwnedAssetRecord>,
+    #[serde(skip)]
+    pub ownership: Option<PreparedAssetOwnership>,
+    #[serde(skip)]
+    pub staging_diagnostics: Vec<String>,
 }
 
 /// `emptyManifest()`
@@ -604,9 +610,25 @@ fn write_manifest_unlocked(
     atomic_write_file(manifest_path, text.as_bytes())
 }
 
+fn read_manifest_scoped(session: &mut Session, manifest_path: &str) -> Res<OwnedAssetManifest> {
+    let Some(bytes) = session.read_manifest(manifest_path)? else { return Ok(empty_manifest()); };
+    match json_parse(&String::from_utf8_lossy(&bytes)) {
+        Ok(value) => normalized_manifest(&value),
+        Err(_) => Err(plain("asset manifest is invalid JSON")),
+    }
+}
+
+fn write_manifest_scoped(session: &mut Session, manifest: &OwnedAssetManifest, manifest_path: &str, effects: &mut Effects<'_, '_>) -> Res<()> {
+    let normalized = normalized_manifest(&manifest.to_js())?;
+    let text = format!("{}\n", json_stringify_pretty(&normalized.to_js(), 2));
+    session.write_manifest(manifest_path, text.as_bytes(), effects)
+}
+
 /// `withManifestLock(documentPath, run)`: `run` gets the manifest path,
 /// resolved once with the lock held.
 fn with_manifest_lock<T>(document_path: &str, run: impl FnOnce(&str) -> Res<T>) -> Res<T> {
+    let lock = effects::manifest_lock(document_path);
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
     run(&manifest_path_in(&assets_dir_for(document_path)))
 }
 
@@ -1683,11 +1705,19 @@ fn prune_references(table: &mut JsObject<Vec<String>>, should_drop: &dyn Fn(&str
 
 /// `removeCreatedRecords(documentPath, created)`
 fn remove_created_records(document_path: &str, created: &[OwnedAssetRecord]) -> Res<()> {
+    if created.is_empty() { return Ok(()); }
+    let mut admit = |effect: &mut dyn FnMut() -> Res<()>| effect();
+    let mut effects = Effects::new(&mut admit);
+    let mut session = Session::open(document_path, None)?;
+    remove_created_records_in(document_path, created, &mut session, &mut effects)
+}
+
+fn remove_created_records_in(document_path: &str, created: &[OwnedAssetRecord], session: &mut Session, effects: &mut Effects<'_, '_>) -> Res<()> {
     if created.is_empty() {
         return Ok(());
     }
     with_manifest_lock(document_path, |manifest_path| {
-        let mut manifest = read_manifest_unlocked(document_path, manifest_path)?;
+        let mut manifest = read_manifest_scoped(session, manifest_path)?;
         let created_names: HashSet<&str> =
             created.iter().map(|record| record.name.as_str()).collect();
         let key = document_key(document_path);
@@ -1718,27 +1748,17 @@ fn remove_created_records(document_path: &str, created: &[OwnedAssetRecord]) -> 
             if !current {
                 continue;
             }
-            let path = join(&[&assets_dir_for(document_path), &record.name]);
-            let removed = (|| -> Res<bool> {
-                let info = lstat(&path)?;
-                if !info.is_file()
-                    || info.file_type().is_symlink()
-                    || sha256_file(&path)? != record.sha256
-                {
-                    return Ok(false);
-                }
-                rm(&path)?;
-                Ok(true)
-            })();
+            let removed = session.remove_owned(&record.name, &record.sha256, effects);
             match removed {
                 Ok(true) => {
                     remove_names.insert(record.name.clone());
                 }
-                Ok(false) => {}
+                Ok(false) => session.retained_asset(&record.name, "content or identity changed before rollback"),
                 Err(error) => {
                     if error_code(&error) == "ENOENT" {
                         remove_names.insert(record.name.clone());
                     }
+                    else { session.retained_asset(&record.name, &error.message); }
                 }
             }
         }
@@ -1747,7 +1767,7 @@ fn remove_created_records(document_path: &str, created: &[OwnedAssetRecord]) -> 
             .retain(|file| !remove_names.contains(&file.name));
         prune_references(&mut manifest.documents, &|name| remove_names.contains(name));
         prune_references(&mut manifest.pending, &|name| remove_names.contains(name));
-        write_manifest_unlocked(document_path, &manifest, manifest_path)
+        write_manifest_scoped(session, &manifest, manifest_path, effects)
     })
 }
 
@@ -1757,6 +1777,16 @@ pub fn prepare_assets_for_save_as(
     target_document_path: &str,
     text: &str,
     image_sources: &[String],
+) -> Res<PreparedSaveAsAssets> {
+    prepare_assets_for_save_as_authorized(source_document_path, target_document_path, text, image_sources, &mut |effect| effect())
+}
+
+pub fn prepare_assets_for_save_as_authorized(
+    source_document_path: &str,
+    target_document_path: &str,
+    text: &str,
+    image_sources: &[String],
+    admit: &mut AssetAdmission<'_>,
 ) -> Res<PreparedSaveAsAssets> {
     let mut all_image_sources: Vec<String> = image_sources.to_vec();
     let mut known_sources: HashSet<String> = all_image_sources.iter().cloned().collect();
@@ -1774,14 +1804,22 @@ pub fn prepare_assets_for_save_as(
             image_sources: all_image_sources,
             rewrites: Vec::new(),
             created: Vec::new(),
+            ownership: None,
+            staging_diagnostics: Vec::new(),
         });
     }
+    let pinned_sources = effects::capture_sources(source_document_path, &all_image_sources, |source| {
+        resolve_safe_relative_image_path(source_document_path, source)
+    })?;
+
 
     let mut created: Vec<OwnedAssetRecord> = Vec::new();
     let mut rewrites: JsMap<String> = JsMap::new();
-    let target_assets_dir = ensure_assets_dir(target_document_path)?;
+    let mut effects = Effects::new(admit);
+    let mut session = Session::open(target_document_path, None)?;
+    session.ensure(&mut effects)?;
     let locked = with_manifest_lock(target_document_path, |manifest_path| {
-        let mut manifest = read_manifest_unlocked(target_document_path, manifest_path)?;
+        let mut manifest = read_manifest_scoped(&mut session, manifest_path)?;
         let mut reserved_names: HashSet<String> = manifest
             .files
             .iter()
@@ -1792,10 +1830,7 @@ pub fn prepare_assets_for_save_as(
             if rewrites.has(source) {
                 continue;
             }
-            let Some(safe_source) = resolve_safe_relative_image_path(source_document_path, source)
-            else {
-                continue;
-            };
+            let Some((safe_source, pinned_source)) = pinned_sources.get(source) else { continue; };
             if let Some(already_copied) = copied_by_real_path.get(&safe_source) {
                 let already_copied = already_copied.clone();
                 rewrites.set(source.clone(), already_copied);
@@ -1809,13 +1844,7 @@ pub fn prepare_assets_for_save_as(
                 if reserved_names.contains(&name) {
                     continue;
                 }
-                let target = join(&[&target_assets_dir, &name]);
-                let attempt = copy_file_excl(&safe_source, &target).and_then(|()| {
-                    Ok(OwnedAssetRecord {
-                        name: name.clone(),
-                        sha256: sha256_file(&target)?,
-                    })
-                });
+                let attempt = session.copy_pinned(pinned_source, &name, &mut effects).map(|sha256| OwnedAssetRecord { name: name.clone(), sha256 });
                 match attempt {
                     Ok(record) => {
                         copied = Some(record);
@@ -1846,7 +1875,7 @@ pub fn prepare_assets_for_save_as(
                 union_sorted(&current, std::slice::from_ref(&copied.name)),
             );
             let authored = format!("assets/{}", copied.name);
-            copied_by_real_path.set(safe_source, authored.clone());
+            copied_by_real_path.set(safe_source.clone(), authored.clone());
             rewrites.set(source.clone(), authored);
         }
         let rewritten_destinations: HashSet<String> = extract_html_image_sources(
@@ -1862,13 +1891,18 @@ pub fn prepare_assets_for_save_as(
                 ));
             }
         }
-        write_manifest_unlocked(target_document_path, &manifest, manifest_path)
+        write_manifest_scoped(&mut session, &manifest, manifest_path, &mut effects)
     });
     if let Err(error) = locked {
         for record in &created {
-            let _ = rm(&join(&[&target_assets_dir, &record.name]));
+            match session.remove_owned(&record.name, &record.sha256, &mut effects) {
+                Ok(true) => {},
+                Ok(false) => session.retained_asset(&record.name, "content or identity changed during failed Save As cleanup"),
+                Err(cleanup) if cleanup.code == Some("ENOENT") => {},
+                Err(cleanup) => session.retained_asset(&record.name, &cleanup.message),
+            }
         }
-        return Err(error);
+        return effects.finish(Err(session.failure(error)));
     }
 
     let rewrite_list = rewrites
@@ -1892,12 +1926,27 @@ pub fn prepare_assets_for_save_as(
             .collect(),
         rewrites: rewrite_list,
         created,
+        ownership: session.ownership(),
+        staging_diagnostics: session.diagnostics(),
     })
 }
 
 /// `rollbackPreparedSaveAsAssets(plan)`
 pub fn rollback_prepared_save_as_assets(plan: &PreparedSaveAsAssets) -> Res<()> {
-    remove_created_records(&plan.target_document_path, &plan.created)
+    if plan.ownership.is_some() {
+        rollback_prepared_save_as_assets_authorized(plan, &mut |effect| effect())
+    } else {
+        remove_created_records(&plan.target_document_path, &plan.created)
+    }
+}
+
+pub fn rollback_prepared_save_as_assets_authorized(plan: &PreparedSaveAsAssets, admit: &mut AssetAdmission<'_>) -> Res<()> {
+    if plan.created.is_empty() { return Ok(()); }
+    let ownership = plan.ownership.as_ref().ok_or_else(|| plain("prepared assets have no native ownership"))?;
+    let mut session = Session::open(&plan.target_document_path, Some(ownership))?;
+    let mut effects = Effects::new(admit);
+    let result = remove_created_records_in(&plan.target_document_path, &plan.created, &mut session, &mut effects);
+    effects.finish(result).map_err(|error| session.failure(error))
 }
 
 /// `pendingOwnedAssetsForDocument(documentPath)`
@@ -1917,10 +1966,13 @@ pub fn pending_owned_assets_for_document(document_path: &str) -> Vec<String> {
 fn resolve_pending_owned_assets(
     document_path: &str,
     pending_at_operation_start: Option<&[String]>,
-) -> ReconcileResult {
+    admit: &mut AssetAdmission<'_>,
+) -> Res<ReconcileResult> {
+    let mut effects = Effects::new(admit);
+    let mut session = Session::open(document_path, None)?;
     let mut result = ReconcileResult::default();
     let locked = with_manifest_lock(document_path, |manifest_path| {
-        let mut manifest = read_manifest_unlocked(document_path, manifest_path)?;
+        let mut manifest = read_manifest_scoped(&mut session, manifest_path)?;
         let key = document_key(document_path);
         let current_pending = manifest.pending.get(&key).cloned().unwrap_or_default();
         let requested: &[String] = pending_at_operation_start.unwrap_or(&current_pending);
@@ -1944,7 +1996,7 @@ fn resolve_pending_owned_assets(
             manifest.pending.set(key, kept);
         }
 
-        let Some(assets_dir) = existing_assets_dir(document_path)? else {
+        if !session.exists() {
             return Ok(());
         };
         let owned_names: HashSet<String> = manifest
@@ -1960,13 +2012,8 @@ fn resolve_pending_owned_assets(
             let Some(record) = manifest.files.iter().find(|record| &record.name == name) else {
                 continue;
             };
-            let path = join(&[&assets_dir, name]);
             let step = (|| -> Res<()> {
-                let info = lstat(&path)?;
-                if !info.is_file()
-                    || info.file_type().is_symlink()
-                    || sha256_file(&path)? != record.sha256
-                {
+                if !session.owned(name, &record.sha256)? {
                     relinquished.insert(name.clone());
                     result.preserved.push(name.clone());
                     return Ok(());
@@ -1975,7 +2022,10 @@ fn resolve_pending_owned_assets(
                     result.preserved.push(name.clone());
                     return Ok(());
                 }
-                rm(&path)?;
+                if !session.remove_owned(name, &record.sha256, &mut effects)? {
+                    result.preserved.push(name.clone());
+                    return Ok(());
+                }
                 relinquished.insert(name.clone());
                 result.deleted.push(name.clone());
                 Ok(())
@@ -1995,19 +2045,23 @@ fn resolve_pending_owned_assets(
             .retain(|record| !relinquished.contains(&record.name));
         prune_references(&mut manifest.documents, &|name| relinquished.contains(name));
         prune_references(&mut manifest.pending, &|name| relinquished.contains(name));
-        write_manifest_unlocked(document_path, &manifest, manifest_path)
+        write_manifest_scoped(&mut session, &manifest, manifest_path, &mut effects)
     });
     if let Err(error) = locked {
         result.errors.push(error.message);
     }
-    result
+    effects.finish(Ok(result)).map_err(|error| session.failure(error))
 }
 
 /// `discardPendingOwnedAssets(documentPath)`: the user explicitly discarded
 /// unsaved edits. Remove only this document's pending app-owned files;
 /// saved/shared references and changed files survive.
 pub fn discard_pending_owned_assets(document_path: &str) -> ReconcileResult {
-    resolve_pending_owned_assets(document_path, None)
+    discard_pending_owned_assets_authorized(document_path, &mut |effect| effect()).unwrap_or_else(|error| ReconcileResult { errors: vec![error.message], ..ReconcileResult::default() })
+}
+
+pub fn discard_pending_owned_assets_authorized(document_path: &str, admit: &mut AssetAdmission<'_>) -> Res<ReconcileResult> {
+    resolve_pending_owned_assets(document_path, None, admit)
 }
 
 /// `resolveSourcePendingAfterSaveAs(sourceDocumentPath, pendingAtSaveStart)`:
@@ -2017,7 +2071,11 @@ pub fn resolve_source_pending_after_save_as(
     source_document_path: &str,
     pending_at_save_start: &[String],
 ) -> ReconcileResult {
-    resolve_pending_owned_assets(source_document_path, Some(pending_at_save_start))
+    resolve_source_pending_after_save_as_authorized(source_document_path, pending_at_save_start, &mut |effect| effect()).unwrap_or_else(|error| ReconcileResult { errors: vec![error.message], ..ReconcileResult::default() })
+}
+
+pub fn resolve_source_pending_after_save_as_authorized(source_document_path: &str, pending_at_save_start: &[String], admit: &mut AssetAdmission<'_>) -> Res<ReconcileResult> {
+    resolve_pending_owned_assets(source_document_path, Some(pending_at_save_start), admit)
 }
 
 /// `reconcileOwnedAssets(documentPath, imageSources, options)`
@@ -2026,23 +2084,28 @@ pub fn reconcile_owned_assets(
     image_sources: &[String],
     pending_names: Option<&[String]>,
 ) -> ReconcileResult {
+    reconcile_owned_assets_authorized(document_path, image_sources, pending_names, &mut |effect| effect()).unwrap_or_else(|error| ReconcileResult { errors: vec![error.message], ..ReconcileResult::default() })
+}
+
+pub fn reconcile_owned_assets_authorized(
+    document_path: &str,
+    image_sources: &[String],
+    pending_names: Option<&[String]>,
+    admit: &mut AssetAdmission<'_>,
+) -> Res<ReconcileResult> {
+    let mut effects = Effects::new(admit);
+    let mut session = Session::open(document_path, None)?;
     let mut result = ReconcileResult::default();
     let locked = with_manifest_lock(document_path, |manifest_path| {
-        let mut manifest = read_manifest_unlocked(document_path, manifest_path)?;
-        let Some(assets_dir) = existing_assets_dir(document_path)? else {
+        let mut manifest = read_manifest_scoped(&mut session, manifest_path)?;
+        if !session.exists() {
             return Ok(());
         };
 
         let mut valid_records: Vec<OwnedAssetRecord> = Vec::new();
         let mut relinquished: HashSet<String> = HashSet::new();
         for record in &manifest.files {
-            let path = join(&[&assets_dir, &record.name]);
-            let checked = (|| -> Res<bool> {
-                let info = lstat(&path)?;
-                Ok(info.is_file()
-                    && !info.file_type().is_symlink()
-                    && sha256_file(&path)? == record.sha256)
-            })();
+            let checked = session.owned(&record.name, &record.sha256);
             match checked {
                 Ok(true) => valid_records.push(record.clone()),
                 Ok(false) => {
@@ -2111,18 +2174,7 @@ pub fn reconcile_owned_assets(
             if referenced.contains(&record.name) {
                 continue;
             }
-            let path = join(&[&assets_dir, &record.name]);
-            let step = (|| -> Res<bool> {
-                let info = lstat(&path)?;
-                if !info.is_file()
-                    || info.file_type().is_symlink()
-                    || sha256_file(&path)? != record.sha256
-                {
-                    return Ok(false);
-                }
-                rm(&path)?;
-                Ok(true)
-            })();
+            let step = session.remove_owned(&record.name, &record.sha256, &mut effects);
             match step {
                 Ok(true) => {
                     deleted.insert(record.name.clone());
@@ -2145,7 +2197,7 @@ pub fn reconcile_owned_assets(
             .retain(|record| !deleted.contains(&record.name));
         prune_references(&mut manifest.documents, &|name| deleted.contains(name));
         prune_references(&mut manifest.pending, &|name| deleted.contains(name));
-        if let Err(error) = write_manifest_unlocked(document_path, &manifest, manifest_path) {
+        if let Err(error) = write_manifest_scoped(&mut session, &manifest, manifest_path, &mut effects) {
             result.errors.push(error.message);
         }
         Ok(())
@@ -2153,16 +2205,22 @@ pub fn reconcile_owned_assets(
     if let Err(error) = locked {
         result.errors.push(error.message);
     }
-    result
+    effects.finish(Ok(result)).map_err(|error| session.failure(error))
 }
 
 /// `renameOwnedAssetDocument(oldDocumentPath, newDocumentPath)`
 pub fn rename_owned_asset_document(old_document_path: &str, new_document_path: &str) -> Res<()> {
+    rename_owned_asset_document_authorized(old_document_path, new_document_path, &mut |effect| effect())
+}
+
+pub fn rename_owned_asset_document_authorized(old_document_path: &str, new_document_path: &str, admit: &mut AssetAdmission<'_>) -> Res<()> {
     if resolve(&[&dirname(old_document_path)]) != resolve(&[&dirname(new_document_path)]) {
         return Ok(());
     }
-    with_manifest_lock(new_document_path, |manifest_path| {
-        let mut manifest = read_manifest_unlocked(new_document_path, manifest_path)?;
+    let mut effects = Effects::new(admit);
+    let mut session = Session::open(new_document_path, None)?;
+    let result = with_manifest_lock(new_document_path, |manifest_path| {
+        let mut manifest = read_manifest_scoped(&mut session, manifest_path)?;
         let old_key = document_key(old_document_path);
         let new_key = document_key(new_document_path);
         let old_references = manifest.documents.get(&old_key).cloned();
@@ -2188,8 +2246,9 @@ pub fn rename_owned_asset_document(old_document_path: &str, new_document_path: &
                 .set(new_key.clone(), union_sorted(&current, &old_pending));
             delete(&mut manifest.pending, &old_key);
         }
-        write_manifest_unlocked(new_document_path, &manifest, manifest_path)
-    })
+        write_manifest_scoped(&mut session, &manifest, manifest_path, &mut effects)
+    });
+    effects.finish(result).map_err(|error| session.failure(error))
 }
 
 /// `readOwnedAssetManifest(documentPath)`

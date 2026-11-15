@@ -695,13 +695,13 @@ export class EpubEditController {
     return { spineIndex: live.spineIndex, path: live.path, edits }
   }
 
-  private async send(batch: TypedBatch | null): Promise<boolean> {
+  private async send(batch: TypedBatch | null, requestId?: string): Promise<boolean> {
     if (!batch || batch.edits.length === 0) {
       this.typedDone()
       return true
     }
     const result = await this.host.api
-      .applyEdits({ spineIndex: batch.spineIndex, edits: batch.edits })
+      .applyEdits({ spineIndex: batch.spineIndex, edits: batch.edits, ...(requestId ? { requestId } : {}) })
       .catch((err): EpubEditResult => ({ ok: false, error: 'failed', message: String(err) }))
     if (result.ok) {
       this.note(result)
@@ -712,6 +712,7 @@ export class EpubEditController {
       }
     } else {
       this.refused(result)
+      if (requestId) return false
       // the screen goes back to what the book holds
       const fresh = await this.host.api.readChapter(batch.spineIndex).catch(() => null)
       if (fresh?.ok && !fresh.broken && this.live?.path === fresh.path) {
@@ -730,9 +731,11 @@ export class EpubEditController {
   }
 
   /** Sends the typed text that is not sent yet. Saves, closes and AI reads call this first. */
-  flush(): Promise<void> {
+  flush(requestId?: string): Promise<void> {
     // read when its turn comes, so edits queued before it see the text they were made on
-    return this.run(() => this.send(this.capture())).then(() => undefined)
+    return this.run(() => this.send(this.capture(), requestId)).then((ok) => {
+      if (requestId && !ok) throw new Error('Could not flush the book for the save request')
+    })
   }
 
   private run<T>(task: () => Promise<T>): Promise<T> {

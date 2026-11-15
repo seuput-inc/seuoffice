@@ -203,8 +203,10 @@ describe('createDocPicker window', () => {
       nodeIntegration: false,
       sandbox: true,
     })
-    // shown once the page is ready
-    win.fireReady()
+    invoke(DOC_PICKER_CHANNELS.ready, { sender: new FakeWebContents() }, '1')
+    invoke(DOC_PICKER_CHANNELS.ready, atPicker(), '0')
+    expect(win.shown).toBe(false)
+    invoke(DOC_PICKER_CHANNELS.ready, atPicker(), '1')
     expect(win.shown).toBe(true)
     void invoke(DOC_PICKER_CHANNELS.cancel, atPicker())
     await expect(pending).resolves.toEqual({ ok: false, reason: 'cancelled' })
@@ -213,7 +215,7 @@ describe('createDocPicker window', () => {
   it('answers the picker window with its language and theme, and nothing to others', async () => {
     await load()
     await openPicker()
-    expect(invoke(DOC_PICKER_CHANNELS.getInit, atPicker())).toEqual({ lang: 'ko', theme: 'light' })
+    expect(invoke(DOC_PICKER_CHANNELS.getInit, atPicker())).toEqual({ lang: 'ko', theme: 'light', readyToken: '1' })
     expect(invoke(DOC_PICKER_CHANNELS.getInit, { sender: new FakeWebContents() })).toBeNull()
   })
 

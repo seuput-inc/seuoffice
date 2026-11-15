@@ -966,6 +966,14 @@ impl ResultStore {
         )?)
     }
 
+    fn write_admitted(&mut self, path: &str, value: JsObject<JsonValue>,
+        admit: &mut Option<&mut super::files::StoreAdmission<'_>>) -> StoreResult<()> {
+        match admit {
+            Some(admit) => Ok(super::files::write_json_atomic_guarded(self.env.as_mut(), path, &JsonValue::Object(value), &mut **admit)?),
+            None => self.write(path, value),
+        }
+    }
+
     fn remove(&mut self, path: &str) -> StoreResult<()> {
         Ok(remove_entry(self.env.as_mut(), path)?)
     }
@@ -1044,8 +1052,13 @@ impl ResultStore {
     /// `putAiRead(docHash, entry)`: `{ format: FORMAT, ...entry }`; the entry
     /// keeps the key order it was given
     fn put_ai_read(&mut self, doc_hash: &str, page_fp: &str, entry: &JsonValue) -> StoreResult<()> {
+        self.put_ai_read_admitted(doc_hash, page_fp, entry, &mut None)
+    }
+
+    fn put_ai_read_admitted(&mut self, doc_hash: &str, page_fp: &str, entry: &JsonValue,
+        admit: &mut Option<&mut super::files::StoreAdmission<'_>>) -> StoreResult<()> {
         let path = self.ai_read_page_path(doc_hash, page_fp)?;
-        self.write(&path, with_format(entry))
+        self.write_admitted(&path, with_format(entry), admit)
     }
 
     // ---- translations ----
@@ -1276,6 +1289,12 @@ impl ResultStore {
         saved_at: f64,
         mode: TranslationMode,
     ) -> StoreResult<()> {
+        self.put_meta_admitted(doc_hash, lang, provider, model, saved_at, mode, &mut None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn put_meta_admitted(&mut self, doc_hash: &str, lang: &str, provider: &str, model: &str,
+        saved_at: f64, mode: TranslationMode, admit: &mut Option<&mut super::files::StoreAdmission<'_>>) -> StoreResult<()> {
         let path = self.translation_meta_path(doc_hash, lang, mode)?;
         let mut entry = JsObject::new();
         entry.set("format", JsonValue::Number(1.0));
@@ -1283,7 +1302,7 @@ impl ResultStore {
         entry.set("provider", JsonValue::String(provider.to_owned()));
         entry.set("model", JsonValue::String(model.to_owned()));
         entry.set("savedAt", JsonValue::Number(saved_at));
-        self.write(&path, entry)
+        self.write_admitted(&path, entry, admit)
     }
 
     /// `putBlock(docHash, lang, b, mode)`
@@ -1294,6 +1313,11 @@ impl ResultStore {
         b: &BlockWrite<'_>,
         mode: TranslationMode,
     ) -> StoreResult<()> {
+        self.put_block_admitted(doc_hash, lang, b, mode, &mut None)
+    }
+
+    fn put_block_admitted(&mut self, doc_hash: &str, lang: &str, b: &BlockWrite<'_>, mode: TranslationMode,
+        admit: &mut Option<&mut super::files::StoreAdmission<'_>>) -> StoreResult<()> {
         let path = self.translation_block_path(doc_hash, lang, b.key, mode)?;
         let edited = b.edited == Some(true);
         let mut entry = JsObject::new();
@@ -1327,7 +1351,7 @@ impl ResultStore {
             );
             entry.set("sentenceEnds", numbers_value(&ends.sentence_ends));
         }
-        self.write(&path, entry)
+        self.write_admitted(&path, entry, admit)
     }
 
     /// `readBlocks(docHash, lang, onlyPages, mode)`
@@ -1364,6 +1388,16 @@ impl ResultStore {
     /// `writeJob(docHash, job)`: write the job's record; every write is also
     /// its heartbeat
     pub fn write_job(&mut self, doc_hash: &str, job: &JobRecordInput) -> StoreResult<()> {
+        self.write_job_admitted(doc_hash, job, &mut None)
+    }
+
+    pub fn write_job_guarded(&mut self, doc_hash: &str, job: &JobRecordInput,
+        admit: &mut super::files::StoreAdmission<'_>) -> StoreResult<()> {
+        self.write_job_admitted(doc_hash, job, &mut Some(admit))
+    }
+
+    fn write_job_admitted(&mut self, doc_hash: &str, job: &JobRecordInput,
+        admit: &mut Option<&mut super::files::StoreAdmission<'_>>) -> StoreResult<()> {
         let field = job_key_field(job.kind);
         if field == Some(KeyField::Lang) && !job.lang.as_deref().is_some_and(is_valid_seg) {
             return type_error(format!(
@@ -1428,7 +1462,7 @@ impl ResultStore {
             record.set("progress", progress.to_value());
         }
         let path = self.job_path(doc_hash, job.kind, key, mode)?;
-        self.write(&path, record)
+        self.write_admitted(&path, record, admit)
     }
 
     /// `heartbeatJob(docHash, kind, key, mode)`: refresh a running job's
@@ -1630,8 +1664,13 @@ impl ResultStore {
 
     /// `putPassage(docHash, card)`
     fn put_passage(&mut self, doc_hash: &str, card: &PassageCard) -> StoreResult<()> {
+        self.put_passage_admitted(doc_hash, card, &mut None)
+    }
+
+    fn put_passage_admitted(&mut self, doc_hash: &str, card: &PassageCard,
+        admit: &mut Option<&mut super::files::StoreAdmission<'_>>) -> StoreResult<()> {
         let path = self.passage_path(doc_hash, &card.id)?;
-        self.write(&path, with_format(&card.to_value()))
+        self.write_admitted(&path, with_format(&card.to_value()), admit)
     }
 
     // ---- AI highlights ----
@@ -1820,10 +1859,15 @@ impl ResultStore {
 
     /// `putRun(docHash, run, savedAt)`: `{ format, ...run, savedAt }`
     fn put_run(&mut self, doc_hash: &str, run: &HighlightRun, saved_at: f64) -> StoreResult<()> {
+        self.put_run_admitted(doc_hash, run, saved_at, &mut None)
+    }
+
+    fn put_run_admitted(&mut self, doc_hash: &str, run: &HighlightRun, saved_at: f64,
+        admit: &mut Option<&mut super::files::StoreAdmission<'_>>) -> StoreResult<()> {
         let dir = self.highlight_run_dir(doc_hash, &run.run_id)?;
         let mut entry = with_format(&run.to_value());
         entry.set("savedAt", JsonValue::Number(saved_at));
-        self.write(&join(&[&dir, RUN_FILE]), entry)
+        self.write_admitted(&join(&[&dir, RUN_FILE]), entry, admit)
     }
 
     /// `putHighlightBlock(docHash, runId, b)`
@@ -1833,8 +1877,13 @@ impl ResultStore {
         run_id: &str,
         b: &HighlightBlockEntry,
     ) -> StoreResult<()> {
+        self.put_highlight_block_admitted(doc_hash, run_id, b, &mut None)
+    }
+
+    fn put_highlight_block_admitted(&mut self, doc_hash: &str, run_id: &str, b: &HighlightBlockEntry,
+        admit: &mut Option<&mut super::files::StoreAdmission<'_>>) -> StoreResult<()> {
         let path = self.highlight_block_path(doc_hash, run_id, &b.key)?;
-        self.write(&path, with_format(&b.to_value()))
+        self.write_admitted(&path, with_format(&b.to_value()), admit)
     }
 
     /// `readHighlightBlockList(docHash, runId, onlyPages)`
@@ -1938,10 +1987,15 @@ impl ResultStore {
         entry: &InsightsEntry,
         saved_at: f64,
     ) -> StoreResult<()> {
+        self.put_insights_admitted(doc_hash, entry, saved_at, &mut None)
+    }
+
+    fn put_insights_admitted(&mut self, doc_hash: &str, entry: &InsightsEntry, saved_at: f64,
+        admit: &mut Option<&mut super::files::StoreAdmission<'_>>) -> StoreResult<()> {
         let path = self.insights_path(doc_hash, &entry.lang)?;
         let mut out = with_format(&entry.to_value());
         out.set("savedAt", JsonValue::Number(saved_at));
-        self.write(&path, out)
+        self.write_admitted(&path, out, admit)
     }
 
     // ---- note links ----
@@ -2027,10 +2081,18 @@ impl ResultStore {
         pdf_path: &str,
         doc_hash: &str,
     ) -> StoreResult<bool> {
+        self.update_note_link_doc_hash_inner(pdf_path, doc_hash, None)
+    }
+
+    pub fn update_note_link_doc_hash_guarded(&mut self, pdf_path: &str, doc_hash: &str, admit: &mut super::files::StoreAdmission<'_>) -> StoreResult<bool> {
+        self.update_note_link_doc_hash_inner(pdf_path, doc_hash, Some(admit))
+    }
+
+    fn update_note_link_doc_hash_inner(&mut self, pdf_path: &str, doc_hash: &str, admit: Option<&mut super::files::StoreAdmission<'_>>) -> StoreResult<bool> {
         seg(doc_hash, "document hash")?;
         let platform = self.env.platform();
         let pdf_key = note_link_key(pdf_path, platform);
-        self.change_note_links(|links, now| {
+        self.change_note_links_guarded(admit, |links, now| {
             let Some(link) = links.get(&pdf_key) else {
                 return false;
             };
@@ -2050,12 +2112,19 @@ impl ResultStore {
         &mut self,
         change: impl FnOnce(&mut JsObject<NoteLink>, &mut dyn FnMut() -> f64) -> bool,
     ) -> StoreResult<bool> {
+        self.change_note_links_guarded(None, change)
+    }
+
+    fn change_note_links_guarded(&mut self, admit: Option<&mut super::files::StoreAdmission<'_>>, change: impl FnOnce(&mut JsObject<NoteLink>, &mut dyn FnMut() -> f64) -> bool) -> StoreResult<bool> {
         let path = self.note_links_path();
         let mut current = self.read_note_links();
         if !change(&mut current.links, &mut *self.now) {
             return Ok(false);
         }
-        write_json_atomic(self.env.as_mut(), &path, &current.to_value())?;
+        match admit {
+            Some(admit) => super::files::write_json_atomic_guarded(self.env.as_mut(), &path, &current.to_value(), admit)?,
+            None => write_json_atomic(self.env.as_mut(), &path, &current.to_value())?,
+        }
         Ok(true)
     }
 
@@ -2069,6 +2138,16 @@ impl ResultStore {
     /// `easy/`. An entry already in the new document is replaced only by a
     /// newer one. Old entries stay; job records are not copied.
     pub fn migrate_document(&mut self, input: &MigrateInput) -> StoreResult<MigrateResult> {
+        self.migrate_document_admitted(input, &mut None)
+    }
+
+    pub fn migrate_document_guarded(&mut self, input: &MigrateInput,
+        admit: &mut super::files::StoreAdmission<'_>) -> StoreResult<MigrateResult> {
+        self.migrate_document_admitted(input, &mut Some(admit))
+    }
+
+    fn migrate_document_admitted(&mut self, input: &MigrateInput,
+        admit: &mut Option<&mut super::files::StoreAdmission<'_>>) -> StoreResult<MigrateResult> {
         let mut result = MigrateResult {
             ai_read_pages: 0.0,
             translation_blocks: 0.0,
@@ -2106,7 +2185,7 @@ impl ResultStore {
             {
                 continue;
             }
-            self.put_ai_read(new_doc_hash, &entry.page_fingerprint, &entry.to_value())?;
+            self.put_ai_read_admitted(new_doc_hash, &entry.page_fingerprint, &entry.to_value(), admit)?;
             result.ai_read_pages += 1.0;
         }
 
@@ -2116,6 +2195,7 @@ impl ResultStore {
             &pages,
             keep.as_ref(),
             TranslationMode::Translate,
+            admit,
         )?;
         result.translation_blocks = blocks;
         result.languages = languages;
@@ -2125,6 +2205,7 @@ impl ResultStore {
             &pages,
             keep.as_ref(),
             TranslationMode::Easy,
+            admit,
         )?;
         if blocks > 0.0 {
             result.easy_blocks = Some(blocks);
@@ -2134,7 +2215,7 @@ impl ResultStore {
         }
 
         let (passages, highlight_blocks, insights) =
-            self.migrate_reading(old_doc_hash, new_doc_hash, &pages)?;
+            self.migrate_reading(old_doc_hash, new_doc_hash, &pages, admit)?;
         if passages > 0.0 {
             result.passages = Some(passages);
         }
@@ -2158,6 +2239,7 @@ impl ResultStore {
         pages: &HashSet<String>,
         keep: Option<&HashSet<String>>,
         mode: TranslationMode,
+        admit: &mut Option<&mut super::files::StoreAdmission<'_>>,
     ) -> StoreResult<(f64, Vec<String>)> {
         let mut blocks_moved = 0.0;
         let mut languages = Vec::new();
@@ -2170,13 +2252,14 @@ impl ResultStore {
                 let new_meta = self.read(&new_meta_path);
                 let current = as_meta(new_meta.as_ref(), &lang);
                 if current.is_none_or(|c| c.saved_at < meta.saved_at) {
-                    self.put_meta(
+                    self.put_meta_admitted(
                         new_doc_hash,
                         &lang,
                         &meta.provider,
                         &meta.model,
                         meta.saved_at,
                         mode,
+                        admit,
                     )?;
                     touched = true;
                 }
@@ -2209,7 +2292,7 @@ impl ResultStore {
                         .map(|e| numbers_value(&e.sentence_ends)),
                     saved_at: block.saved_at,
                 };
-                self.put_block(new_doc_hash, &lang, &write, mode)?;
+                self.put_block_admitted(new_doc_hash, &lang, &write, mode, admit)?;
                 blocks_moved += 1.0;
                 touched = true;
             }
@@ -2229,6 +2312,7 @@ impl ResultStore {
         old_doc_hash: &str,
         new_doc_hash: &str,
         pages: &HashSet<String>,
+        admit: &mut Option<&mut super::files::StoreAdmission<'_>>,
     ) -> StoreResult<(f64, f64, f64)> {
         let mut passages = 0.0;
         let mut highlight_blocks = 0.0;
@@ -2243,7 +2327,7 @@ impl ResultStore {
             {
                 continue;
             }
-            self.put_passage(new_doc_hash, &card)?;
+            self.put_passage_admitted(new_doc_hash, &card, admit)?;
             passages += 1.0;
         }
 
@@ -2251,7 +2335,7 @@ impl ResultStore {
             if let Some((run, saved_at)) = self.read_stored_run(old_doc_hash, &run_id) {
                 let current = self.read_stored_run(new_doc_hash, &run_id);
                 if current.is_none_or(|(_, current_saved_at)| current_saved_at < saved_at) {
-                    self.put_run(new_doc_hash, &run, saved_at)?;
+                    self.put_run_admitted(new_doc_hash, &run, saved_at, admit)?;
                 }
             }
             for block in self.read_highlight_block_list(old_doc_hash, &run_id, Some(pages)) {
@@ -2262,7 +2346,7 @@ impl ResultStore {
                 {
                     continue;
                 }
-                self.put_highlight_block(new_doc_hash, &run_id, &block)?;
+                self.put_highlight_block_admitted(new_doc_hash, &run_id, &block, admit)?;
                 highlight_blocks += 1.0;
             }
         }
@@ -2279,7 +2363,7 @@ impl ResultStore {
             {
                 continue;
             }
-            self.put_insights(new_doc_hash, &entry, saved_at)?;
+            self.put_insights_admitted(new_doc_hash, &entry, saved_at, admit)?;
             insights += 1.0;
         }
         Ok((passages, highlight_blocks, insights))

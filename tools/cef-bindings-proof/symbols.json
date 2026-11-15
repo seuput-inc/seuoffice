@@ -1,0 +1,32 @@
+{
+  "cpp": [
+    "CefNativeContextEvaluation", "CefNativeContextEvaluationCallback",
+    "CefNativeContextChannel", "CefNativeContextSyncReply", "CefNativeContextSender",
+    "CefApprovedNavigationCallback", "LoadApprovedMainFrameURL",
+    "OnNativeContextRegistered", "OnNativeContextWillRevoke", "OnNativeContextDidRevoke",
+    "OnNativeContextRevoked", "OnNativeContextListen", "OnNativeContextTauriRequest",
+    "OnNativeContextSyncRequest", "OnNativeContextFirstNonEmptyLayout",
+    "OnNativeContextCreated", "OnNativeContextReleased", "OnNativeContextIdentityLost",
+    "OnWebContentsLostFocus"
+  ],
+  "capi": [
+    "cef_native_context_evaluation_t", "cef_native_context_evaluation_callback_t",
+    "cef_native_context_channel_t", "cef_native_context_sync_reply_t", "cef_native_context_sender_t",
+    "cef_approved_navigation_callback_t", "load_approved_main_frame_url",
+    "on_native_context_registered", "on_native_context_will_revoke", "on_native_context_did_revoke",
+    "on_native_context_revoked", "on_native_context_listen", "on_native_context_tauri_request",
+    "on_native_context_sync_request", "on_native_context_first_non_empty_layout",
+    "on_native_context_created", "on_native_context_released", "on_native_context_identity_lost",
+    "on_web_contents_lost_focus"
+  ],
+  "rust": [
+    "NativeContextEvaluation", "NativeContextEvaluationCallback",
+    "NativeContextChannel", "NativeContextSyncReply", "NativeContextSender",
+    "ApprovedNavigationCallback", "load_approved_main_frame_url",
+    "on_native_context_registered", "on_native_context_will_revoke", "on_native_context_did_revoke",
+    "on_native_context_revoked", "on_native_context_listen", "on_native_context_tauri_request",
+    "on_native_context_sync_request", "on_native_context_first_non_empty_layout",
+    "on_native_context_created", "on_native_context_released", "on_native_context_identity_lost",
+    "on_web_contents_lost_focus"
+  ]
+}

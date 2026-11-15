@@ -61,6 +61,8 @@ impl Views for NoViews {
         Vec::new()
     }
     fn on_destroyed(&self, _: Box<dyn Fn(ViewId) + Send + Sync>) {}
+    fn renderer_generation(&self, _: ViewId) -> Option<shell_contract::runtime::RendererGeneration> { None }
+    fn on_renderer_replaced(&self, _: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>) {}
 }
 
 struct Dir(PathBuf);
@@ -111,6 +113,9 @@ impl OsShell for FakeOs {
     fn show_item_in_folder(&self, _: &std::path::Path) {}
     fn trash_item(&self, _: &std::path::Path) -> Result<(), String> {
         Ok(())
+    }
+    fn trash_item_authorized(&self, path: &std::path::Path, admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>) -> Result<(), String> {
+        admit(&mut || self.trash_item(path))
     }
 }
 
@@ -206,7 +211,7 @@ fn world(name: &str, settings: Option<&str>, net: Value) -> World {
         owner: thread::current().id(),
     });
     let events = Arc::new(Events::default());
-    let services = Services {
+    let services = shell_contract::hosts::synthetic::SyntheticOwnedEffects::install(Services {
         ui: core.clone(),
         core,
         workers: Arc::new(Threads),
@@ -214,7 +219,7 @@ fn world(name: &str, settings: Option<&str>, net: Value) -> World {
         views: Arc::new(NoViews),
         paths: Arc::new(Dir(dir.clone())),
         hosts: Arc::new(Hosts::default()),
-    };
+    });
     let net_log: Log = Arc::default();
     let driver = Driver::new(&services, FakeNet::new(&net, Some(net_log.clone())));
     let os = Arc::new(FakeOs::default());
@@ -257,6 +262,7 @@ fn cx() -> CallContext {
         },
         request: None,
         cancel: CancelToken::default(),
+        native: None,
     }
 }
 
@@ -608,6 +614,32 @@ fn cancelling_without_a_login_is_not_a_failure() {
         provider("bogus"),
     );
     assert_eq!(field(&bad, "reason"), Some(&text("invalid")));
+}
+
+#[test]
+fn shared_connection_observes_login_and_logout_on_the_shared_driver() {
+    let w = world("shared-chatgpt", None, json!({}));
+    std::fs::write(w.dir.join("userData/chatgpt-connection.json"), json!({
+        "hostId":"urn:uuid:00000000-0000-0000-0000-000000000001",
+        "clientId":"synthetic-client",
+        "session":{"accessToken":"synthetic-access","refreshToken":"synthetic-refresh","expiresAt":4102444800000.0,"scopes":[]}
+    }).to_string()).unwrap();
+    let connection = w.shared.chatgpt_connection().unwrap();
+    let driver = w.shared.driver();
+    let rt = driver.rt();
+    let seen = Rc::new(std::cell::RefCell::new(None));
+    let out = seen.clone();
+    let first = connection.clone();
+    let first_rt = rt.clone();
+    driver.run(async move { first.state(&first_rt).await }, move |result| *out.borrow_mut() = Some(result.unwrap().signed_in));
+    w.pump_until(|| seen.borrow().is_some());
+    assert_eq!(*seen.borrow(), Some(true));
+    assert_eq!(field(&w.ok(SubscriptionPort::ai_subscription_logout, provider("chatgpt")), "ok"), Some(&IpcValue::Bool(true)));
+    *seen.borrow_mut() = None;
+    let out = seen.clone();
+    driver.run(async move { connection.state(&rt).await }, move |result| *out.borrow_mut() = Some(result.unwrap().signed_in));
+    w.pump_until(|| seen.borrow().is_some());
+    assert_eq!(*seen.borrow(), Some(false));
 }
 
 #[test]

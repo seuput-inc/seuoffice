@@ -27,7 +27,7 @@ use serde_json::{Value, json};
 use shell_contract::ids::{RequestId, ViewId};
 use shell_contract::runtime::{Thread, run_on};
 use shell_contract::value::IpcValue;
-use shell_core::outlet::{Outlet, reply_frame};
+use shell_contract::ipc::Reply;
 use tauri::AppHandle;
 
 use crate::ipc::Ipc;
@@ -136,22 +136,18 @@ impl Measure {
         id: RequestId,
         channel: &str,
         args: Vec<IpcValue>,
+        deliver: Box<dyn FnOnce(Reply) + Send>,
     ) {
         let first = args.into_iter().next().unwrap_or(IpcValue::Undefined);
         trace!("measure", "view {}: '{channel}' #{}", view.0, id.0);
         match channel {
             // through the core thread, as every handler's answer
             "measure:echo" => {
-                let outlet = ipc.outlet.clone();
-                let channel = channel.to_owned();
-                ipc.core.post(Box::new(move || {
-                    outlet.deliver(view, reply_frame(id, &channel, &Ok(first)));
-                }));
+                ipc.core.post(Box::new(move || deliver(Ok(first))));
             }
             "measure:block" => {
                 // answered first: the page times from the answer
-                ipc.outlet
-                    .deliver(view, reply_frame(id, channel, &Ok(IpcValue::Undefined)));
+                deliver(Ok(IpcValue::Undefined));
                 let on_ui = matches!(&first, IpcValue::String(kind) if kind == "ui");
                 let ui = self.ui.clone();
                 ipc.core.post(Box::new(move || {
@@ -169,18 +165,10 @@ impl Measure {
                     ),
                     _ => json!({ "error": "the report is not a string" }),
                 };
-                ipc.outlet
-                    .deliver(view, reply_frame(id, channel, &Ok(IpcValue::Undefined)));
+                deliver(Ok(IpcValue::Undefined));
                 self.finish(report, 0);
             }
-            other => ipc.outlet.deliver(
-                view,
-                reply_frame(
-                    id,
-                    other,
-                    &Err(shell_contract::error::IpcError::no_handler(other)),
-                ),
-            ),
+            other => deliver(Err(shell_contract::error::IpcError::no_handler(other))),
         }
     }
 }

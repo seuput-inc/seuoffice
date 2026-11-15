@@ -17,7 +17,6 @@ use jscompat::JsonValue;
 use main_core::packages::electron_utils::recovery_store::RecoveryIdentity;
 use main_core::packages::electron_utils::save_conflict::SaveDiskState;
 use main_core::slides::paste_cascade::PasteCascade;
-use main_core::slides::save_as_formats::SaveAsImageTargets;
 use main_core::slides::seed_queue::SeedQueue;
 use main_core::slides::session_state::{Deck, PartPath, Session, SessionIds};
 use shell_contract::hosts::{ClipboardHost, ContentsHost, DialogsHost, OsShellHost};
@@ -52,12 +51,58 @@ impl DeckHandle {
     }
 }
 
+/// Holds a new binding until the prepared session can replace the old one.
+pub struct StagedBinding {
+    engine: SlidesEngineHost,
+    deck: DeckId,
+    owner: super::engine::RenderOwner,
+    armed: bool,
+}
+
+impl StagedBinding {
+    pub fn new(engine: SlidesEngineHost, deck: DeckId, owner: &super::engine::RenderOwner) -> Result<Self, super::engine::EngineError> {
+        engine.bind_view(deck, owner)?;
+        Ok(Self { engine, deck, owner: owner.clone(), armed: true })
+    }
+
+    pub fn commit(mut self, previous: Option<(DeckId, super::engine::RenderOwner)>) -> Result<(), super::engine::EngineError> {
+        if let Some((old, previous_owner)) = previous.filter(|(old, _)| *old != self.deck) {
+            let same = previous_owner.context.renderer().zip(self.owner.context.renderer())
+                .is_some_and(|(a, b)| a.same_generation(b));
+            if same {
+                self.engine.replace_view(old, self.deck, &self.owner)?;
+            } else {
+                self.engine.unbind_view(old, &previous_owner)?;
+            }
+        }
+        self.armed = false;
+        Ok(())
+    }
+}
+
+impl Drop for StagedBinding {
+    fn drop(&mut self) {
+        if self.armed {
+            if let Err(error) = self.engine.unbind_view(self.deck, &self.owner) {
+                eprintln!("[slides] staged binding cleanup failed: {}", error.0);
+            }
+        }
+    }
+}
+
+impl From<super::engine::EngineError> for main_core::slides::ai_ipc::IpcError {
+    fn from(error: super::engine::EngineError) -> Self {
+        Self { code: None, message: error.0 }
+    }
+}
+
 impl Deck<Snapshot> for DeckHandle {
-    fn take_snapshot(&self, meta_dirty: bool) -> Snapshot {
+    type Error = super::engine::EngineError;
+    fn take_snapshot(&self, meta_dirty: bool) -> Result<Snapshot, Self::Error> {
         self.engine.snapshot(self.id, meta_dirty)
     }
 
-    fn restore_snapshot(&mut self, fresh: Snapshot) -> bool {
+    fn restore_snapshot(&mut self, fresh: Snapshot) -> Result<bool, Self::Error> {
         self.engine.restore(self.id, &fresh)
     }
 }
@@ -103,6 +148,7 @@ pub struct SlideSession {
     /// fixed for the life of this session object (`SlidesDocument::id`)
     pub id: u64,
     pub core: CoreSession,
+    pub ai_review: main_core::slides::ai_proposal::AiReview<Snapshot>,
     pub fit_width_px: f64,
     /// the disk snapshot of `path` this deck last read or wrote
     pub disk_state: Option<SaveDiskState>,
@@ -127,6 +173,7 @@ impl SlideSession {
         SlideSession {
             id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             core: Session::new(path, deck),
+            ai_review: main_core::slides::ai_proposal::AiReview::new(),
             fit_width_px,
             disk_state: None,
             password: None,
@@ -184,7 +231,12 @@ pub struct NarrationMicrophone {
 /// `PresenterShow`
 pub struct PresenterShow {
     pub audience: Option<(ViewId, shell_contract::WindowId)>,
+    pub audience_owner: Option<super::engine::RenderOwner>,
     pub last_sync: Option<IpcValue>,
+    pub owner: super::engine::RenderOwner,
+    pub ticket: u64,
+    pub starting: bool,
+    pub start_waiters: Vec<shell_contract::ipc::Responder>,
 }
 
 /// The parts of [`AppState`] a handler holds next to a session
@@ -194,18 +246,52 @@ pub struct StateRest<'a> {
     pub element_clipboard: &'a mut Option<ElementClipboard>,
 }
 
+pub(super) struct PendingRecoverySeed {
+    pub ticket: u64,
+    pub target: shell_contract::ipc::RecoveryOpenTarget,
+    pub snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
+    pub done: main_core::packages::electron_utils::recovery_contract::RecoveryOpenDone,
+    pub subscriptions: Vec<shell_contract::runtime::CancelSubscription>,
+}
+
+struct Attachment {
+    slot: usize,
+    owner: super::engine::RenderOwner,
+    save_lifetime: shell_contract::runtime::RendererGeneration,
+}
+
+impl Drop for Attachment {
+    fn drop(&mut self) { self.save_lifetime.revoke(); }
+}
+
+pub(super) struct RetiredBinding {
+    _attachment: Option<Attachment>,
+    _session: Option<SlideSession>,
+}
+
 /// All of the module state the slides handlers share
 #[derive(Default)]
 pub struct AppState {
     slots: Vec<Option<SlideSession>>,
-    attach: HashMap<ViewId, usize>,
+    attach: HashMap<ViewId, Attachment>,
     /// `viewerWcIds`
     pub viewers: HashSet<ViewId>,
     pub ids: SessionIds,
+    pub ai_window_lives: main_core::slides::ai_proposal::WindowLives,
     /// `pendingOpenPath`
     pub pending_open_path: Option<String>,
+    pub(super) owned_seeds: HashMap<ViewId, super::owned_seed::OwnedSeed>,
+    pub(super) saved_loads: HashMap<ViewId, super::saved_load::SavedLoad>,
+    pub(super) saved_actor_identities: HashMap<ViewId, Rc<()>>,
+    pub(super) native_actor_owners: HashMap<ViewId, shell_contract::ipc::NativeBrowserOwner>,
+    pub(super) headless_targets: HashMap<ViewId, shell_contract::ipc::NativeInvocationDocument>,
     /// `pendingByWc`
     pub pending_by_view: HashMap<ViewId, String>,
+    pub active_view: Option<ViewId>,
+    pub recovery_open_decisions: HashMap<ViewId, main_core::packages::electron_utils::recovery_contract::RecoveryOpenFileRequest>,
+    pub(super) pending_recovery_seeds: HashMap<ViewId, PendingRecoverySeed>,
+    pub(super) recovery_seeds: HashMap<ViewId, (shell_contract::ipc::RecoveryOpenTarget, Option<shell_contract::ipc::RecoverySeedReceipt>, super::recovery::PreparedRecovery)>,
+    pub(super) recovery_applying: HashMap<ViewId, super::recovery::RecoveryApplying>,
     pub slide_clipboard: Option<SlideClipboard>,
     pub last_slide_paste: HashMap<ViewId, LastSlidePaste>,
     pub element_clipboard: Option<ElementClipboard>,
@@ -219,9 +305,12 @@ pub struct AppState {
     /// the continuation waits for the renderer's `slides:save-as`, with the
     /// ticket its timeout finds it by; one per view
     pub save_as_waiters: HashMap<ViewId, SaveAsWaiter>,
+    pub(super) owned_saves: HashMap<String, super::owned_save::PendingSave>,
+    pub(super) owned_writes: HashMap<String, super::owned_save::PendingWrite>,
+    pub(super) generated_publications: HashMap<String, super::export::owned::PendingGeneratedPublication>,
+    pub(super) owned_closes: HashMap<String, super::owned_close::PendingClose>,
     /// `autoSavePrefByWc`
     pub auto_save_pref: HashMap<ViewId, bool>,
-    pub save_as_image_targets: SaveAsImageTargets,
     pub narration: HashMap<ViewId, NarrationMicrophone>,
     pub next_ticket: u64,
     /// `covers` of `template-cover.ts`, answers kept per (id, language)
@@ -236,17 +325,42 @@ pub struct AppState {
     /// bumped by every show-fullscreen call: a delayed release only runs
     /// when no newer call came (the debounce of `showFsRelease`)
     pub show_fs_ticket: u64,
+    pub show_fs_pending: Option<shell_contract::runtime::CancelToken>,
 }
 
 impl AppState {
+    pub(super) fn reserve_saved_actor(&mut self, view: ViewId) -> Result<(), String> {
+        if self.saved_actor_identities.contains_key(&view) {
+            return Err("The saved presentation actor already exists".into());
+        }
+        self.saved_actor_identities.try_reserve(1).map_err(|_| "The saved presentation actor could not be reserved".into())
+    }
+
+    pub(super) fn saved_actor(&self, view: ViewId) -> Option<Rc<()>> {
+        self.saved_actor_identities.get(&view).cloned()
+    }
+
+    /// Call only after the actor and browser transition have been validated.
+    pub(super) fn install_saved_actor(&mut self, view: ViewId, identity: Rc<()>) -> Option<Rc<()>> {
+        self.saved_actor_identities.insert(view, identity)
+    }
+
+    pub(super) fn claim_saved_actor(&mut self, view: ViewId, identity: &Rc<()>) -> bool {
+        if !self.saved_actor_identities.get(&view).is_some_and(|current| Rc::ptr_eq(current, identity)) {
+            return false;
+        }
+        self.saved_actor_identities.remove(&view);
+        true
+    }
+
     /// `sessions.get(view)`
     pub fn session(&self, view: ViewId) -> Option<&SlideSession> {
-        let slot = *self.attach.get(&view)?;
+        let slot = self.attach.get(&view)?.slot;
         self.slots.get(slot)?.as_ref()
     }
 
     pub fn session_mut(&mut self, view: ViewId) -> Option<&mut SlideSession> {
-        let slot = *self.attach.get(&view)?;
+        let slot = self.attach.get(&view)?.slot;
         self.slots.get_mut(slot)?.as_mut()
     }
 
@@ -257,7 +371,7 @@ impl AppState {
     /// The sender's session together with the clipboards a paste reads
     /// while it edits the session
     pub fn session_split(&mut self, view: ViewId) -> Option<(&mut SlideSession, StateRest<'_>)> {
-        let slot = *self.attach.get(&view)?;
+        let slot = self.attach.get(&view)?.slot;
         let session = self.slots.get_mut(slot)?.as_mut()?;
         Some((
             session,
@@ -271,7 +385,26 @@ impl AppState {
 
     /// The slot a view is attached to
     pub fn slot_of(&self, view: ViewId) -> Option<usize> {
-        self.attach.get(&view).copied()
+        self.attach.get(&view).map(|attachment| attachment.slot)
+    }
+
+    pub fn owner_of(&self, view: ViewId) -> Option<&super::engine::RenderOwner> {
+        self.attach.get(&view).map(|attachment| &attachment.owner)
+    }
+
+    pub(super) fn save_lifetime(&self, view: ViewId) -> Option<&shell_contract::runtime::RendererGeneration> {
+        self.attach.get(&view).map(|attachment| &attachment.save_lifetime)
+    }
+
+    pub fn binding_of(&self, view: ViewId) -> Option<(DeckId, super::engine::RenderOwner)> {
+        Some((self.session(view)?.deck(), self.owner_of(view)?.clone()))
+    }
+
+    pub fn attached_owners(&self, slot: usize) -> Vec<super::engine::RenderOwner> {
+        let mut owners: Vec<_> = self.attach.values().filter(|attachment| attachment.slot == slot)
+            .map(|attachment| attachment.owner.clone()).collect();
+        owners.sort_by_key(|owner| owner.view.0);
+        owners
     }
 
     pub fn slot(&self, slot: usize) -> Option<&SlideSession> {
@@ -286,33 +419,125 @@ impl AppState {
         self.slots.len()
     }
 
-    /// `sessions.set(view, session)`: a new session in a new slot; answers
-    /// the slot. The session the view held before loses the view and is
-    /// dropped when no view is left on it.
-    pub fn set_session(&mut self, view: ViewId, session: SlideSession) -> usize {
+    /// Install the first session of a newly authenticated editor document.
+    pub(super) fn set_initial_session(&mut self, owner: super::engine::RenderOwner, session: SlideSession) -> Result<usize, String> {
+        if self.attach.contains_key(&owner.view) { return Err("The editor already has a presentation".into()); }
         self.slots.push(Some(session));
         let slot = self.slots.len() - 1;
-        self.attach_view(view, slot);
-        slot
+        self.attach_initial_view(owner, slot)?;
+        Ok(slot)
     }
 
-    /// `sessions.set(view, existing)`: the view joins the slot's session
-    pub fn attach_view(&mut self, view: ViewId, slot: usize) {
-        let previous = self.attach.insert(view, slot);
-        if let Some(previous) = previous.filter(|p| *p != slot) {
-            self.drop_if_unattached(previous);
+    pub(super) fn reserve_open_slot(&mut self) -> usize {
+        self.attach.reserve(1);
+        self.slots.push(None);
+        self.slots.len() - 1
+    }
+
+    pub(super) fn attach_retiring(&mut self, owner: super::engine::RenderOwner, slot: usize, replacement: Option<SlideSession>, successor: Option<shell_contract::ipc::PreparedDocumentOwner>, expected: Option<&shell_contract::runtime::RendererGeneration>, retirement: &mut shell_contract::runtime::AdmittedDocumentRetirement<'_>) -> Result<(RetiredBinding, super::engine::RenderOwner), String> {
+        match (self.attach.get(&owner.view), expected) {
+            (Some(previous), Some(expected)) if previous.save_lifetime.same_generation(expected) => {}
+            (None, None) => {}
+            _ => return Err("The presentation changed before its open transition".into()),
         }
+        if slot >= self.slots.len() || (replacement.is_none() && self.slots[slot].is_none()) {
+            return Err("The prepared presentation slot was released".into());
+        }
+        if expected.is_some() && successor.is_none() { return Err("The presentation successor was not prepared".into()); }
+        let owner = if let Some(expected) = expected {
+            retirement.retire(expected)?;
+            retirement.renew_owner(successor.ok_or("The presentation successor was released")?)?
+        } else { owner };
+        let lifetime = owner.context.document_lease().ok_or("The presentation successor has no document lease")?.clone();
+        if let Some(replacement) = replacement { self.slots[slot] = Some(replacement); }
+        let previous = self.attach.insert(owner.view, Attachment { slot, owner: owner.clone(), save_lifetime: lifetime });
+        let old_slot = previous.as_ref().map(|attachment| attachment.slot);
+        let old_session = old_slot.filter(|old| *old != slot && !self.attach.values().any(|attachment| attachment.slot == *old))
+            .and_then(|old| self.slots.get_mut(old)).and_then(Option::take);
+        Ok((RetiredBinding { _attachment: previous, _session: old_session }, owner))
+    }
+
+    pub(super) fn replace_shared_retiring<F: FnOnce(&mut SlideSession)>(&mut self, plan: &mut super::shared_open::SharedOpen, participants: &[super::engine::RenderOwner], new_slot: usize, replacement: &mut Option<SlideSession>, snapshot: &mut Option<Snapshot>, finalize: &mut Option<F>, retired: &mut Vec<RetiredBinding>, retired_session: &mut Option<SlideSession>, completed: &mut Vec<super::engine::RenderOwner>, retirement: &mut shell_contract::runtime::AdmittedDocumentRetirement<'_>) -> Result<(), String> {
+        let old_slot = plan.slot.ok_or("The shared presentation slot was not captured")?;
+        let revision = plan.revision.as_ref().ok_or("The shared presentation revision was not captured")?;
+        let old = self.slot(old_slot).ok_or("The shared presentation was released")?;
+        if Some(old.id) != plan.session || Some(old.deck()) != plan.deck || old.path() != revision.path || old.core.op_seq != revision.op_seq || old.core.meta_rev != revision.meta_rev
+            || self.attach.values().filter(|attachment| attachment.slot == old_slot).count() != participants.len()
+            || participants.len() != plan.ids.len() || participants.len() != plan.successors.len()
+            || plan.successors.iter().any(Option::is_none) || replacement.is_none() || snapshot.is_none() || finalize.is_none()
+            || new_slot >= self.slots.len() || self.slots[new_slot].is_some() {
+            return Err("The shared presentation changed before replacement".into());
+        }
+        for (index, participant) in participants.iter().enumerate() {
+            let held = self.attach.get(&participant.view).ok_or("An attached presentation was released")?;
+            if participant.view != plan.ids[index] || held.slot != old_slot
+                || !participant.context.document_lease().is_some_and(|document| document.same_generation(&held.save_lifetime))
+                || !held.owner.context.renderer().zip(participant.context.renderer()).is_some_and(|(actual, captured)| actual.same_generation(captured)) {
+                return Err("An attached presentation changed before replacement".into());
+            }
+        }
+        retirement.validate_owner_renewals_iter(plan.successors.iter().filter_map(Option::as_ref))?;
+        for participant in participants {
+            retirement.retire(participant.context.document_lease().ok_or("An attached document lease was released")?)?;
+        }
+        let mut fresh = replacement.take().ok_or("The generated presentation was released")?;
+        let old = self.slot_mut(old_slot).ok_or("The shared presentation was released")?;
+        Session::carry_history_with_snapshot(&mut old.core, &mut fresh.core, snapshot.take().ok_or("The presentation history was released")?);
+        if old.path().is_empty() {
+            fresh.recovery_id = old.recovery_id.clone();
+            fresh.ai_review = std::mem::take(&mut old.ai_review);
+        }
+        finalize.take().ok_or("The generated presentation finalizer was released")?(&mut fresh);
+        self.slots[new_slot] = Some(fresh);
+        for successor in &mut plan.successors {
+            let owner = retirement.renew_owner(successor.take().ok_or("An attached document successor was released")?)?;
+            let lifetime = owner.context.document_lease().ok_or("An attached successor has no document lease")?.clone();
+            let previous = self.attach.insert(owner.view, Attachment { slot: new_slot, owner: owner.clone(), save_lifetime: lifetime });
+            if let Some(previous) = &previous {
+                if let Some(show) = self.presenter_shows.get_mut(&owner.view)
+                    && show.owner.context.document_lease().is_some_and(|document| document.same_generation(&previous.save_lifetime)) {
+                    show.owner = owner.clone();
+                }
+                if let Some(presenter) = self.audience_presenter.get(&owner.view)
+                    && let Some(show) = self.presenter_shows.get_mut(presenter)
+                    && show.audience_owner.as_ref().and_then(|audience| audience.context.document_lease()).is_some_and(|document| document.same_generation(&previous.save_lifetime)) {
+                    show.audience_owner = Some(owner.clone());
+                }
+            }
+            retired.push(RetiredBinding { _attachment: previous, _session: None });
+            completed.push(owner);
+        }
+        *retired_session = self.slots[old_slot].take();
+        Ok(())
+    }
+
+    /// Join an existing deck only when this editor has no previous document.
+    pub(super) fn attach_initial_view(&mut self, owner: super::engine::RenderOwner, slot: usize) -> Result<(), String> {
+        if self.attach.contains_key(&owner.view) || self.slot(slot).is_none() { return Err("The editor attachment is no longer initial".into()); }
+        let lifetime = owner.context.document_lease().cloned().unwrap_or_else(shell_contract::runtime::RendererGeneration::new);
+        self.attach.insert(owner.view, Attachment { slot, owner, save_lifetime: lifetime });
+        Ok(())
+    }
+
+    /// Detach under the actor transition; defer lease revocation and deck drop.
+    pub(super) fn detach_view_retiring(&mut self, view: ViewId) -> RetiredBinding {
+        let attachment = self.attach.remove(&view);
+        let session = attachment.as_ref().and_then(|attachment| {
+            if self.attach.values().any(|other| other.slot == attachment.slot) { return None; }
+            self.slots.get_mut(attachment.slot).and_then(Option::take)
+        });
+        RetiredBinding { _attachment: attachment, _session: session }
     }
 
     /// `sessions.delete(view)`
     pub fn detach_view(&mut self, view: ViewId) {
-        if let Some(slot) = self.attach.remove(&view) {
-            self.drop_if_unattached(slot);
+        if let Some(attachment) = self.attach.remove(&view) {
+            self.drop_if_unattached(attachment.slot);
         }
     }
 
     fn drop_if_unattached(&mut self, slot: usize) {
-        if !self.attach.values().any(|s| *s == slot)
+        if !self.attach.values().any(|attachment| attachment.slot == slot)
             && let Some(entry) = self.slots.get_mut(slot)
         {
             *entry = None;
@@ -325,7 +550,7 @@ impl AppState {
         let mut ids: Vec<ViewId> = self
             .attach
             .iter()
-            .filter(|(_, s)| **s == slot)
+            .filter(|(_, attachment)| attachment.slot == slot)
             .map(|(view, _)| *view)
             .collect();
         ids.sort_by_key(|view| view.0);
@@ -340,15 +565,6 @@ impl AppState {
             .collect()
     }
 
-    /// `sessions.set(id, replacement)` for every view that shared `old`
-    pub fn repoint(&mut self, old: usize, new: usize) {
-        for slot in self.attach.values_mut() {
-            if *slot == old {
-                *slot = new;
-            }
-        }
-        self.drop_if_unattached(old);
-    }
 
     /// The slots that hold a session, once each
     pub fn live_slots(&self) -> Vec<usize> {

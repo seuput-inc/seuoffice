@@ -13,7 +13,7 @@ mod save;
 #[cfg(test)]
 mod tests;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -59,15 +59,19 @@ pub trait MarkdownPrintWindow: Send {
 pub trait MarkdownEngine: Send + Sync {
     /// a new hidden print window
     fn print_window(&self) -> Box<dyn MarkdownPrintWindow>;
+    fn print_window_owned(&self,origin:&shell_contract::ipc::NativeRequestOwner,destination:&shell_contract::ipc::NativeRequestOwner,cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken)->Result<Box<dyn MarkdownPrintWindow>,String>;
+    fn print_window_native(&self,binding:&shell_contract::ipc::NativeExistingDocumentBinding,participants:&[shell_contract::ipc::NativeRequestOwner],cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,additional:&[shell_contract::runtime::CancelToken])->Result<Box<dyn MarkdownPrintWindow>,String>;
+    fn print_window_invocation(&self,document:&shell_contract::ipc::NativeInvocationDocument,owner:&shell_contract::ipc::NativeRequestOwner,cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken)->Result<Box<dyn MarkdownPrintWindow>,String>;
     /// `docxToOdt(docx)` (packages/odt-engine)
     fn docx_to_odt(&self, docx: Vec<u8>) -> Result<OdtConversion, String>;
+    fn docx_to_odt_cancellable(&self,docx:Vec<u8>,cancel:&shell_contract::runtime::CancelToken)->Result<OdtConversion,String>;
     /// the DNS lookups `fetchRemoteImage` makes (Node's `dns.lookup`)
     fn resolver(&self) -> Box<dyn Resolver + Send>;
     /// the HTTP client `fetchRemoteImage` uses (Node's `fetch`/undici)
     fn fetcher(&self) -> Box<dyn Fetcher + Send>;
     /// Electron's `net.fetch(url)` that `saveImageFromUrl` uses, the app
     /// schemes (`md-asset://`) included; `Err` is what it throws
-    fn net_fetch(&self, url: &str) -> Result<Box<dyn Response>, String>;
+    fn net_fetch(&self, view: ViewId, url: &str, cancel: &shell_contract::runtime::CancelToken) -> Result<Box<dyn Response>, String>;
     /// the `fetch` `uploadImageToHost` sends its request with
     fn upload_fetch(&self, url: &str, init: &FetchInit<'_>) -> Result<FetchResponse, FetchFailure>;
 }
@@ -92,11 +96,22 @@ pub trait MarkdownShell: Send + Sync {
     /// `runtime.newDocumentDir(webContentsId)`
     fn new_document_dir(&self, view: ViewId) -> Option<PathBuf>;
     /// `runtime.writeNewDocument(webContentsId, fileName, bytes)`
-    fn write_new_document(&self, view: ViewId, file_name: &str, bytes: &[u8]) -> Option<PathBuf>;
+    fn write_new_document(&self, view: ViewId, file_name: &str, bytes: &[u8]) -> Result<Option<PathBuf>, String>;
+    fn write_new_document_owned(&self, origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, effects: &shell_contract::hosts::OwnedEffectsHost, admission: main_core::packages::electron_utils::atomic_write::owned::Admission, file_name: &str, bytes: &[u8]) -> Result<Option<PathBuf>, String>;
+    /// Replace this view's document-scoped asset roots; both None revoke them.
+    fn asset_paths_changed(&self, view: ViewId, tracked: bool, open: Option<&str>, save: Option<&str>) -> Result<(), String>;
+    fn asset_paths_changed_owned(&self,origin:&shell_contract::ipc::NativeRequestOwner,captured:&[shell_contract::ipc::NativeRequestOwner],cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,additional:&[shell_contract::runtime::CancelToken],effects:&shell_contract::hosts::OwnedEffectsHost,tracked:bool,open:Option<&str>,save:Option<&str>)->Result<(),String>;
+    fn prepare_native_save_asset_paths(&self,destination:&shell_contract::ipc::NativeRequestOwner,tracked:bool,open:Option<&str>,save:Option<&str>)->Result<crate::html::RecoveryAssetStage,String>;
+    fn prepare_saved_document_asset_paths(&self,destination:&shell_contract::ipc::NativeRequestOwner,open:Option<&str>,save:Option<&str>)->Result<crate::html::SavedAssetStage,String>;
+    fn prepare_recovery_asset_paths(&self,target:&shell_contract::ipc::RecoveryOpenTarget,tracked:bool,open:Option<&str>,save:Option<&str>)->Result<Box<dyn FnMut()->Result<(),String>+Send>,String>;
+    fn prepare_rename_asset_paths_recovery(&self,receipt:&shell_contract::ipc::RecoverySeedReceipt,receiver:&shell_contract::ipc::NativeRequestOwner,destination:&shell_contract::ipc::NativeRequestOwner,participants:&[shell_contract::ipc::NativeRequestOwner],cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,tracked:bool,open:Option<&str>,save:Option<&str>)->Result<crate::html::RecoveryAssetStage,String>;
     /// `fileSavedHook(contents, path)`
     fn file_saved(&self, view: ViewId, path: &Path);
+    fn file_saved_owned(&self, origin:shell_contract::ipc::NativeRequestOwner, destination:shell_contract::ipc::NativeRequestOwner, participants:Vec<shell_contract::ipc::NativeRequestOwner>, cancel:shell_contract::runtime::CancelToken, pending:shell_contract::runtime::CancelToken, additional:Vec<shell_contract::runtime::CancelToken>, effects:shell_contract::hosts::OwnedEffectsHost, path:PathBuf, then:Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<PathBuf>,String>)>);
+    fn file_saved_native(&self,destination:shell_contract::ipc::NativeSaveDestination,participants:Vec<shell_contract::ipc::NativeRequestOwner>,cancel:shell_contract::runtime::CancelToken,pending:shell_contract::runtime::CancelToken,additional:Vec<shell_contract::runtime::CancelToken>,effects:shell_contract::hosts::OwnedEffectsHost,then:Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<PathBuf>,String>)>);
     /// `docxExportedHook(path)`: a "convert and open in Docs" export landed
     fn docx_exported(&self, path: &Path);
+    fn export_written_owned(&self,origin:shell_contract::ipc::NativeRequestOwner,destination:shell_contract::ipc::NativeRequestOwner,cancel:shell_contract::runtime::CancelToken,pending:shell_contract::runtime::CancelToken,effects:shell_contract::hosts::OwnedEffectsHost,path:PathBuf,kind:&'static str,then:Box<dyn FnOnce(Result<(),String>)>);
     /// `randomUUID()` of the page image exports (session ids, folder names)
     /// and of the Docs conversions (session folder, file names)
     fn random_uuid(&self) -> String {
@@ -112,12 +127,219 @@ pub type MarkdownShellHost = Arc<dyn MarkdownShell>;
 pub struct MarkdownEditors {
     docs: Rc<TextDocs>,
     seeds: ViewMap<String>,
+    owned_seeds: OwnedSeedMap,
     /// `queueMarkdownNoteAppendFor`'s pending texts by view: the note and its texts
     notes: ViewMap<(String, Vec<String>)>,
     services: Services,
 }
 
-text_document_editors!(MarkdownEditors);
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SeedOutcome { Pending, Consumed, Retired, Replaced }
+
+#[derive(Clone)]
+struct OwnedSeedMap {
+    map: Rc<RefCell<std::collections::HashMap<ViewId, OwnedSeed>>>,
+    prepared: Rc<Cell<usize>>,
+}
+
+impl OwnedSeedMap {
+    fn new(_services: &Services) -> Self {
+        Self { map: Rc::default(), prepared: Rc::default() }
+    }
+    fn get(&self, view: ViewId) -> Option<OwnedSeed> { self.map.borrow().get(&view).cloned() }
+    fn insert(&self, view: ViewId, seed: OwnedSeed) -> Option<OwnedSeed> { self.map.borrow_mut().insert(view, seed) }
+    fn remove(&self, view: ViewId) -> Option<OwnedSeed> { self.map.borrow_mut().remove(&view) }
+}
+
+#[derive(Clone)]
+struct OwnedSeed {
+    text:String,
+    _source:shell_contract::ipc::NativeRequestOwner,
+    created:shell_contract::runtime::RendererGeneration,
+    effects:shell_contract::hosts::OwnedEffectsHost,
+    identity: Rc<()>,
+    outcome: Rc<Cell<SeedOutcome>>,
+}
+
+/// Core-thread rollback of one exact generated-seed insertion.
+pub struct MarkdownSeedRollback {
+    seeds: OwnedSeedMap,
+    view: ViewId,
+    created: shell_contract::runtime::RendererGeneration,
+    reservation: shell_contract::ipc::NativeClosureReservation,
+    browser: Option<shell_contract::ipc::NativeBrowserOwner>,
+    committed: Cell<bool>,
+    identity: Rc<()>,
+    outcome: Rc<Cell<SeedOutcome>>,
+    previous: RefCell<Option<OwnedSeed>>,
+    legacy_seeds: ViewMap<String>,
+    previous_legacy: RefCell<Option<String>>,
+    close_proven: Cell<bool>,
+    completed: Cell<bool>,
+}
+
+pub struct PreparedMarkdownSeed {
+    seeds: OwnedSeedMap,
+    legacy_seeds: ViewMap<String>,
+    browser: shell_contract::ipc::NativeBrowserOwner,
+    seed: Option<OwnedSeed>,
+    rollback: Option<Rc<MarkdownSeedRollback>>,
+}
+
+impl Drop for PreparedMarkdownSeed {
+    fn drop(&mut self) {
+        if self.seed.is_some() {
+            self.seeds.prepared.set(self.seeds.prepared.get() - 1);
+        }
+    }
+}
+
+impl PreparedMarkdownSeed {
+    pub fn receipt(&self) -> Rc<MarkdownSeedRollback> {
+        self.rollback.as_ref().expect("the generated Markdown receipt was already committed").clone()
+    }
+
+    pub fn commit(
+        &mut self,
+        transition: &shell_contract::ipc::NativeBrowserTransition<'_>,
+        initialize: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<Rc<MarkdownSeedRollback>, String> {
+        let seed = self.seed.as_ref().ok_or("the generated Markdown seed was already committed")?;
+        let rollback = self.rollback.as_ref().ok_or("the generated Markdown receipt is unavailable")?;
+        if !transition.matches(&rollback.reservation)
+            || !(transition.matches_owner(&self.browser) || transition.proposes_owner(&self.browser))
+            || !rollback.reservation.matches(rollback.view, &seed.created)
+        {
+            return Err("the generated Markdown seed belongs to another browser".into());
+        }
+        let mut entries = self.seeds.map.try_borrow_mut().map_err(|_| "the generated Markdown seed map is busy")?;
+        initialize()?;
+        let seed = self.seed.take().expect("the seed was validated before initialization");
+        let rollback = self.rollback.take().expect("the receipt was validated before initialization");
+        *rollback.previous_legacy.borrow_mut() = self.legacy_seeds.remove(rollback.view);
+        *rollback.previous.borrow_mut() = entries.insert(rollback.view, seed);
+        rollback.committed.set(true);
+        self.seeds.prepared.set(self.seeds.prepared.get() - 1);
+        Ok(rollback)
+    }
+}
+
+impl MarkdownSeedRollback {
+    /// Whether this exact seed was consumed by its authenticated renderer.
+    pub fn was_consumed(&self) -> bool {
+        self.outcome.get() == SeedOutcome::Consumed
+    }
+
+    pub fn retire_superseded(&self, proof: &shell_contract::ipc::NativeBrowserSuperseded) -> Result<(), String> {
+        let browser = self.browser.as_ref().ok_or("the generated Markdown seed has no browser owner")?;
+        if !self.committed.get() || !proof.matches(&self.reservation, browser) {
+            return Err("the browser supersession does not match the generated Markdown seed".into());
+        }
+        if self.completed.get() { return Ok(()); }
+        if self.outcome.get() == SeedOutcome::Pending
+            && self.seeds.get(self.view).is_some_and(|current| Rc::ptr_eq(&current.identity, &self.identity))
+        {
+            return Err("the generated Markdown seed is still current".into());
+        }
+        if let Some(previous) = self.previous.borrow_mut().take() {
+            if previous.outcome.get() == SeedOutcome::Pending { previous.outcome.set(SeedOutcome::Replaced); }
+        }
+        self.previous_legacy.borrow_mut().take();
+        if self.outcome.get() == SeedOutcome::Pending { self.outcome.set(SeedOutcome::Retired); }
+        self.completed.set(true);
+        Ok(())
+    }
+
+    /// Record native evidence without altering the displaced seed.
+    pub fn retire_closed(&self, proof: &shell_contract::ipc::NativeClosureReceipt) -> Result<(), String> {
+        if !proof.matches(&self.reservation, self.view, &self.created) {
+            return Err("the native close receipt does not match the generated Markdown seed".into());
+        }
+        match self.outcome.get() {
+            SeedOutcome::Consumed | SeedOutcome::Retired => return Ok(()),
+            SeedOutcome::Replaced => return Err("the generated Markdown seed was replaced".into()),
+            SeedOutcome::Pending => {}
+        }
+        match self.seeds.get(self.view) {
+            Some(current) if Rc::ptr_eq(&current.identity, &self.identity) => {
+                self.close_proven.set(true);
+                Ok(())
+            }
+            Some(_) => Err("the generated Markdown seed was replaced".into()),
+            None => Err("the generated Markdown seed is no longer available".into()),
+        }
+    }
+
+    /// Retire an adopted target without restoring the displaced seed.
+    pub fn retire_adopted(&self, proof: &shell_contract::ipc::NativeClosureReceipt) -> Result<(), String> {
+        if !proof.matches(&self.reservation, self.view, &self.created) {
+            return Err("the native close receipt does not match the generated Markdown seed".into());
+        }
+        match self.outcome.get() {
+            SeedOutcome::Consumed | SeedOutcome::Retired => return Ok(()),
+            SeedOutcome::Replaced => return Err("the generated Markdown seed was replaced".into()),
+            SeedOutcome::Pending => {}
+        }
+        match self.seeds.get(self.view) {
+            Some(current) if Rc::ptr_eq(&current.identity, &self.identity) => {
+                let removed = self.seeds.remove(self.view);
+                self.outcome.set(SeedOutcome::Retired);
+                if let Some(previous) = self.previous.borrow_mut().take() {
+                    if previous.outcome.get() == SeedOutcome::Pending {
+                        previous.outcome.set(SeedOutcome::Replaced);
+                    }
+                }
+                self.previous_legacy.borrow_mut().take();
+                self.completed.set(true);
+                drop(removed);
+                Ok(())
+            }
+            Some(_) => Err("the generated Markdown seed was replaced".into()),
+            None => Err("the generated Markdown seed is no longer available".into()),
+        }
+    }
+
+    pub fn rollback(&self) -> Result<(), String> {
+        if self.completed.get() { return Ok(()); }
+        match self.outcome.get() {
+            SeedOutcome::Consumed | SeedOutcome::Retired => { self.completed.set(true); return Ok(()); }
+            SeedOutcome::Replaced => return Err("the generated Markdown seed was replaced".into()),
+            SeedOutcome::Pending => {}
+        }
+        match self.seeds.get(self.view) {
+            Some(current) if Rc::ptr_eq(&current.identity, &self.identity) => {
+                if !current.created.is_active() && !self.close_proven.get() {
+                    return Err("the generated Markdown seed lifetime ended without a close receipt".into());
+                }
+                let removed = self.seeds.remove(self.view);
+                if let Some(previous) = self.previous.borrow_mut().take() {
+                    self.seeds.insert(self.view, previous);
+                }
+                if let Some(previous) = self.previous_legacy.borrow_mut().take() {
+                    self.legacy_seeds.insert(self.view, previous);
+                }
+                self.outcome.set(SeedOutcome::Retired);
+                drop(removed);
+                self.completed.set(true);
+                Ok(())
+            }
+            Some(_) => Err("the generated Markdown seed was replaced".into()),
+            None => Err("the generated Markdown seed is no longer available".into()),
+        }
+    }
+}
+
+impl Drop for MarkdownSeedRollback {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.get_mut().take() {
+            if previous.outcome.get() == SeedOutcome::Pending {
+                previous.outcome.set(SeedOutcome::Replaced);
+            }
+        }
+    }
+}
+
+text_document_editors!(MarkdownEditors, shell_contract::Surface::Markdown);
 
 /// `samePath(a, b)`: case-folded where the file system usually is
 fn same_path(a: &str, b: &str) -> bool {
@@ -136,8 +358,58 @@ impl MarkdownEditors {
     /// `queueMarkdownSeedFor(contents, text)`: text a new untitled tab starts with
     pub fn queue_seed(&self, view: ViewId, text: &str) {
         if !self.docs.is_destroyed(view) {
+            let previous = self.owned_seeds.remove(view);
+            if let Some(seed) = &previous { seed.outcome.set(SeedOutcome::Replaced); }
             self.seeds.insert(view, text.to_owned());
+            drop(previous);
         }
+    }
+
+    pub fn prepare_seed_in_transition(
+        &self,
+        view: ViewId,
+        text: String,
+        source: shell_contract::ipc::NativeRequestOwner,
+        created: shell_contract::runtime::RendererGeneration,
+        reservation: shell_contract::ipc::NativeClosureReservation,
+        browser: shell_contract::ipc::NativeBrowserOwner,
+    ) -> Result<PreparedMarkdownSeed, String> {
+        if !reservation.matches(view, &created) || !browser.reservation().same_reservation(&reservation) {
+            return Err("the generated Markdown reservation does not match its target".into());
+        }
+        let effects = self.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().cloned().ok_or("owned document effects are unavailable")?;
+        let identity = Rc::new(());
+        let outcome = Rc::new(Cell::new(SeedOutcome::Pending));
+        let seed = OwnedSeed { text, _source: source, created: created.clone(), effects, identity: identity.clone(), outcome: outcome.clone() };
+        let count = self.owned_seeds.prepared.get().checked_add(1).ok_or("the generated Markdown seed capacity is exhausted")?;
+        self.owned_seeds.map.borrow_mut().try_reserve(count).map_err(|error| error.to_string())?;
+        let rollback = Rc::new(MarkdownSeedRollback {
+            seeds: self.owned_seeds.clone(), view, created, reservation, browser: Some(browser.clone()), committed: Cell::new(false), identity, outcome,
+            previous: RefCell::new(None), legacy_seeds: self.seeds.clone(),
+            previous_legacy: RefCell::new(None), close_proven: Cell::new(false), completed: Cell::new(false),
+        });
+        self.owned_seeds.prepared.set(count);
+        Ok(PreparedMarkdownSeed { seeds: self.owned_seeds.clone(), legacy_seeds: self.seeds.clone(), browser, seed: Some(seed), rollback: Some(rollback) })
+    }
+
+    /// Generated content belongs to the exact native view created for that request.
+    pub fn queue_seed_owned(&self,view:ViewId,text:String,source:shell_contract::ipc::NativeRequestOwner,participants:&[shell_contract::ipc::NativeRequestOwner],cancel:shell_contract::runtime::CancelToken,pending:shell_contract::runtime::CancelToken,created:shell_contract::runtime::RendererGeneration,reservation:shell_contract::ipc::NativeClosureReservation,initialize:&mut dyn FnMut()->Result<(),String>)->Result<MarkdownSeedRollback,String>{
+        if !reservation.matches(view,&created){return Err("the generated Markdown reservation does not match its target".into())}
+        let effects=self.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().cloned().ok_or("owned document effects are unavailable")?;
+        self.owned_seeds.map.borrow_mut().try_reserve(self.owned_seeds.prepared.get().saturating_add(1)).map_err(|error|error.to_string())?;
+        let identity=Rc::new(());
+        let outcome=Rc::new(Cell::new(SeedOutcome::Pending));
+        let seed=OwnedSeed{text,_source:source.clone(),created:created.clone(),effects:effects.clone(),identity:identity.clone(),outcome:outcome.clone()};
+        let mut seed=Some(seed);
+        let mut previous=None;
+        let mut previous_legacy=None;
+        effects.with_created_many_effect(&source,participants,&created,&cancel,&pending,&mut||{
+            let seed=seed.take().ok_or("generated seed was admitted more than once")?;
+            initialize()?;
+            previous_legacy=self.seeds.remove(view);
+            previous=self.owned_seeds.insert(view,seed);Ok(())
+        })?;
+        Ok(MarkdownSeedRollback{seeds:self.owned_seeds.clone(),view,created,reservation,browser:None,committed:Cell::new(true),identity,outcome,previous:RefCell::new(previous),legacy_seeds:self.seeds.clone(),previous_legacy:RefCell::new(previous_legacy),close_proven:Cell::new(false),completed:Cell::new(false)})
     }
 
     /// `queueMarkdownNoteAppendFor(contents, notePath, text)`: text for the
@@ -173,6 +445,13 @@ impl MarkdownEditors {
         self.docs
             .headless_export(view, input, out_path.into_ipc(), timeout, then)
     }
+
+    pub fn export_pdf_headless_invocation(
+        &self, view: ViewId, input: &str, out_path: &str, timeout: Duration,
+        invocation: shell_contract::ipc::NativeInvocationTarget, then: Box<dyn FnOnce(Result<(), String>)>,
+    ) {
+        self.docs.headless_export_invocation(view, input, out_path.into_ipc(), timeout, invocation, then)
+    }
 }
 
 const CHANNELS: DocChannels = DocChannels {
@@ -191,6 +470,7 @@ const CHANNELS: DocChannels = DocChannels {
     recovery_flush_request: "markdown:recovery-flush-request",
     recovery_open: "markdown:recovery-open",
     recovery_write: "markdown:recovery-write",
+    recovery_applied: "markdown:recovery-applied",
     consume_headless_export: "markdown:consume-headless-export",
     headless_export_done: "markdown:headless-export-done",
 };
@@ -222,6 +502,12 @@ pub(crate) fn entries(
         shell.clone(),
         shell.clone(),
     );
+    let assets = shell.clone();
+    let owned_assets=shell.clone();
+    let native_assets=shell.clone();
+    let saved_assets=shell.clone();
+    let recovery_assets=shell.clone();
+    let rename_recovery_assets=shell.clone();
     let docs = TextDocs::new(
         services,
         CHANNELS,
@@ -233,6 +519,12 @@ pub(crate) fn entries(
             open_elsewhere: Box::new(move |p| s4.is_path_open_elsewhere(p)),
             discard_pending_assets: |path| discard_pending_owned_assets(path).errors,
             rename_assets: |old, new| rename_owned_asset_document(old, new).map_err(|e| e.message),
+            asset_paths: Box::new(move |view, tracked, open, save| assets.asset_paths_changed(view, tracked, open, save)),
+            asset_paths_owned: Box::new(move|owner,tracked,open,save|owned_assets.asset_paths_changed_owned(owner.origin().ok_or("the save has no renderer origin")?,&owner.captured_participants(),&owner.cancel(),&owner.pending(),&owner.callback_cancels(),owner.effects(),tracked,open,save)),
+            native_save_asset_paths: Arc::new(move|binding,tracked,open,save|native_assets.prepare_native_save_asset_paths(binding,tracked,open,save)),
+            saved_asset_paths: Arc::new(move|binding,open,save|saved_assets.prepare_saved_document_asset_paths(binding,open,save)),
+            recovery_asset_paths:Box::new(move|target,tracked,open,save|recovery_assets.prepare_recovery_asset_paths(target,tracked,open,save)),
+            rename_recovery_asset_paths:Arc::new(move|scope,tracked,open,save|rename_recovery_assets.prepare_rename_asset_paths_recovery(&scope.receipt,&scope.receiver,&scope.destination,&scope.participants,&scope.cancel,&scope.pending,tracked,open,save)),
             presenting: Box::new(|_| false),
         },
         ("Untitled", "제목 없음"),
@@ -240,10 +532,12 @@ pub(crate) fn entries(
     let editors = Rc::new(MarkdownEditors {
         docs: Rc::clone(&docs),
         seeds: ViewMap::new(services),
+        owned_seeds: OwnedSeedMap::new(services),
         notes: ViewMap::new(services),
         services: services.clone(),
     });
     provided.add::<dyn DocumentEditors>(editors.clone());
+    provided.add::<dyn main_core::packages::electron_utils::recovery_contract::RecoveryEditorContract<ViewId,shell_contract::ipc::RecoveryOpenTarget>>(editors.clone());
     // the app's own calls (seed, note append, headless export, tracking) for the shell
     provided.add::<MarkdownEditors>(editors.clone());
 
@@ -276,6 +570,25 @@ pub(crate) fn entries(
         let view = cx.sender.view;
         if e.docs.open_path(view).is_some() {
             return Ok(IpcValue::Null);
+        }
+        if let Some(seed)=e.owned_seeds.get(view){
+            let matches=cx.native.as_ref().and_then(shell_contract::ipc::NativeContext::renderer).is_some_and(|renderer|renderer.same_generation(&seed.created));
+            if !matches { return Ok(IpcValue::Null) }
+            let Some(native)=cx.native.clone() else{return Ok(IpcValue::Null)};
+            let destination=shell_contract::ipc::NativeRequestOwner{view,context:native};
+            let mut text=None;
+            let admitted=seed.effects.with_owned_effect(&destination,&destination,&cx.cancel,&cx.cancel,&mut||{
+                if !e.owned_seeds.get(view).is_some_and(|current|Rc::ptr_eq(&current.identity,&seed.identity)){
+                    return Err("the generated Markdown seed was replaced".into());
+                }
+                if let Some(current)=e.owned_seeds.remove(view){
+                    current.outcome.set(SeedOutcome::Consumed);
+                    text=Some(current.text);
+                }
+                Ok(())
+            });
+            if admitted.is_err(){return Ok(IpcValue::Null)}
+            return Ok(text.into_ipc());
         }
         Ok(e.seeds.remove(view).into_ipc())
     }));
@@ -517,7 +830,8 @@ fn lock(index: &SharedIndex) -> std::sync::MutexGuard<'_, WikiIndex> {
 #[cfg(any(test, feature = "probe"))]
 pub(crate) fn fakes(hosts: &mut shell_contract::Hosts, case: &serde_json::Value) {
     let probe = hosts.get::<crate::html::fake::ProbeLog>().cloned();
-    let fake = Arc::new(fake::FakeMarkdown::new(case, probe));
+    let os=hosts.get::<OsShellHost>().expect("fake OS shell is installed").clone();
+    let fake = Arc::new(fake::FakeMarkdown::new(case, probe,os));
     hosts.insert::<MarkdownEngineHost>(fake.clone());
     hosts.insert::<MarkdownShellHost>(fake.clone());
     hosts.insert::<Arc<fake::FakeMarkdown>>(fake);

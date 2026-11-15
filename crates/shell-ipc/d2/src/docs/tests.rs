@@ -1,5 +1,6 @@
 //! What a docs renderer sees: answers, events and files, across channels.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -38,6 +39,38 @@ fn obj(entries: &[(&str, IpcValue)]) -> IpcValue {
     )
 }
 
+struct BackgroundWorkers;
+
+impl shell_contract::runtime::Workers for BackgroundWorkers {
+    fn spawn(&self, job: Box<dyn FnOnce() + Send>) {
+        let _ = std::thread::spawn(job);
+    }
+}
+
+struct DiscardWorkers;
+
+impl shell_contract::runtime::Workers for DiscardWorkers {
+    fn spawn(&self, job: Box<dyn FnOnce() + Send>) {
+        drop(job);
+    }
+}
+
+#[derive(Default)]
+struct HeldWorkers {
+    hold: std::sync::atomic::AtomicBool,
+    jobs: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
+}
+
+impl shell_contract::runtime::Workers for HeldWorkers {
+    fn spawn(&self, job: Box<dyn FnOnce() + Send>) {
+        if self.hold.load(std::sync::atomic::Ordering::SeqCst) {
+            self.jobs.lock().unwrap().push(job);
+        } else {
+            let _ = std::thread::spawn(job);
+        }
+    }
+}
+
 struct T {
     rt: Rt,
     fake: Fake,
@@ -46,6 +79,10 @@ struct T {
 
 impl T {
     fn new(case: serde_json::Value) -> Self {
+        Self::with_workers(case, None)
+    }
+
+    fn with_workers(case: serde_json::Value, workers: Option<Arc<dyn shell_contract::runtime::Workers>>) -> Self {
         let fake = Fake::new(&case);
         let f = fake.clone();
         let mut rt = Rt::new(move |h| {
@@ -55,11 +92,14 @@ impl T {
                 SharedRecoveryState::new("run"),
             )));
         });
+        if let Some(workers) = workers { rt.services.workers = workers; }
+        fake.bind_query_runtime(&rt.services);
         for sub in ["userData", "documents", "temp", "home"] {
             std::fs::create_dir_all(rt.dir.join(sub)).unwrap();
         }
         rt.register(super::entries).unwrap();
         let a = rt.view(1, Surface::Docs);
+        rt.provided().all::<DocsEditors>()[0].register_view(a.view).unwrap();
         T { rt, fake, a }
     }
 
@@ -99,6 +139,136 @@ impl T {
 }
 
 #[test]
+fn prepared_view_registration_is_admitted_before_replacing_the_lease() {
+    let t = T::new(json!({}));
+    let editor = t.editor();
+    let view = t.a.view;
+    let generation = t.rt.services.views.renderer_generation(view).unwrap();
+    let (_issuer, reservation, browser) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(view, generation.clone());
+    editor.0.revoke_media_view(view);
+    let mut prepared = editor.prepare_view_registration(view, generation, None, &reservation, &browser).unwrap();
+    reservation.with_initial_owner(&browser, |transition| prepared.commit_admitted(transition, None)).unwrap();
+    let receipt = prepared.finish().unwrap();
+    let permit = receipt.lease().current().unwrap();
+    assert!(editor.media_permit(view).unwrap().same_session(&permit));
+    assert!(receipt.discard().unwrap());
+    assert!(!permit.is_active());
+    assert!(editor.media_permit(view).is_none());
+}
+
+#[test]
+fn prepared_view_discard_does_not_revoke_a_successor() {
+    let t = T::new(json!({}));
+    let editor = t.editor();
+    let view = t.a.view;
+    let generation = t.rt.services.views.renderer_generation(view).unwrap();
+    let (_issuer, reservation, browser) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(view, generation.clone());
+    editor.0.revoke_media_view(view);
+    let mut prepared = editor.prepare_view_registration(view, generation, None, &reservation, &browser).unwrap();
+    reservation.with_initial_owner(&browser, |transition| prepared.commit_admitted(transition, None)).unwrap();
+    let receipt = prepared.finish().unwrap();
+    let successor = receipt.lease().stage_document().unwrap();
+    assert!(!receipt.discard().unwrap());
+    assert!(successor.is_active());
+}
+
+#[test]
+fn prepared_open_rolls_back_only_its_exact_queue_entry() {
+    let t = T::new(json!({}));
+    let editor = t.editor();
+    let view = t.a.view;
+    let generation = t.rt.services.views.renderer_generation(view).unwrap();
+    let (_issuer, reservation, browser) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(view, generation.clone());
+    editor.queue_open(view, "old.docx".into());
+    let mut open = editor.prepare_queue_open(view, "same.docx".into(), generation.clone(), &reservation).unwrap();
+    reservation.with_initial_owner(&browser, |transition| open.commit_admitted(transition, &browser)).unwrap();
+    let receipt = open.finish().unwrap();
+    receipt.discard().unwrap();
+    assert_eq!(editor.0.window_opens.get(view).as_deref(), Some("old.docx"));
+
+    let mut open = editor.prepare_queue_open(view, "same.docx".into(), generation, &reservation).unwrap();
+    reservation.with_owner(&browser, |transition| open.commit_admitted(transition, &browser)).unwrap();
+    let receipt = open.finish().unwrap();
+    editor.queue_open(view, "same.docx".into());
+    assert!(receipt.discard().is_err());
+    assert_eq!(editor.0.window_opens.get(view).as_deref(), Some("same.docx"));
+}
+
+#[test]
+fn destroyed_view_without_exact_close_proof_does_not_acknowledge_cleanup() {
+    let mut t = T::new(json!({}));
+    let editor = t.editor();
+    let view = t.a.view;
+    let generation = t.rt.services.views.renderer_generation(view).unwrap();
+    let (issuer, reservation, browser) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(view, generation.clone());
+    let mut open = editor.prepare_queue_open(view, "pending.docx".into(), generation.clone(), &reservation).unwrap();
+    reservation.with_initial_owner(&browser, |transition| open.commit_admitted(transition, &browser)).unwrap();
+    let receipt = open.finish().unwrap();
+    t.rt.destroy(view);
+    assert!(receipt.discard().is_err());
+    let (forged, _) = shell_contract::ipc::NativeClosureIssuer::new(view, generation);
+    assert!(receipt.retire_closed(&forged.closed()).is_err());
+    receipt.retire_closed(&issuer.closed()).unwrap();
+    assert!(receipt.discard().is_ok());
+}
+
+#[test]
+fn registration_receipt_rejects_unproven_removal_and_replacement() {
+    let t = T::new(json!({}));
+    let editor = t.editor();
+    let view = t.a.view;
+    let generation = t.rt.services.views.renderer_generation(view).unwrap();
+    let (_issuer, reservation, browser) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(view, generation.clone());
+    editor.0.revoke_media_view(view);
+    let mut registration = editor.prepare_view_registration(view, generation.clone(), None, &reservation, &browser).unwrap();
+    reservation.with_initial_owner(&browser, |transition| registration.commit_admitted(transition, None)).unwrap();
+    let receipt = registration.finish().unwrap();
+    editor.0.revoke_media_view(view);
+    assert!(!receipt.discard().unwrap());
+
+    let mut registration = editor.prepare_view_registration(view, generation, None, &reservation, &browser).unwrap();
+    reservation.with_owner(&browser, |transition| registration.commit_admitted(transition, None)).unwrap();
+    let receipt = registration.finish().unwrap();
+    let successor = editor.register_view(view).unwrap();
+    assert!(!receipt.discard().unwrap());
+    assert!(successor.current().is_some());
+}
+
+#[test]
+fn blank_seed_receipt_preserves_same_generation_successor() {
+    let t = T::new(json!({}));
+    let editor = t.editor();
+    let view = t.a.view;
+    let generation = t.rt.services.views.renderer_generation(view).unwrap();
+    let (_issuer, reservation, browser) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(view, generation.clone());
+    let mut first = editor.prepare_blank_seed(view, generation.clone(), &reservation).unwrap();
+    reservation.with_initial_owner(&browser, |transition| first.commit_admitted(transition, &browser)).unwrap();
+    let receipt = first.finish().unwrap();
+    let mut successor = editor.prepare_blank_seed(view, generation, &reservation).unwrap();
+    reservation.with_owner(&browser, |transition| successor.commit_admitted(transition, &browser)).unwrap();
+    let _successor = successor.finish().unwrap();
+    assert!(receipt.rollback().is_err());
+    assert!(editor.0.owned_new_blank.get(view).is_some());
+}
+
+#[test]
+fn adopted_blank_requires_the_original_closed_reservation() {
+    let t = T::new(json!({}));
+    let editor = t.editor();
+    let view = t.a.view;
+    let generation = t.rt.services.views.renderer_generation(view).unwrap();
+    let (issuer, reservation, browser) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(view, generation.clone());
+    let mut blank = editor.prepare_blank_seed(view, generation.clone(), &reservation).unwrap();
+    reservation.with_initial_owner(&browser, |transition| blank.commit_admitted(transition, &browser)).unwrap();
+    let receipt = blank.finish().unwrap();
+    let (forged, _) = shell_contract::ipc::NativeClosureIssuer::new(view, generation);
+    assert!(receipt.retire_adopted(&forged.closed()).is_err());
+    assert!(editor.0.owned_new_blank.get(view).is_some());
+    receipt.retire_adopted(&issuer.closed()).unwrap();
+    assert!(editor.0.owned_new_blank.get(view).is_none());
+}
+
+#[test]
 fn opening_a_file_grants_its_save_and_lists_it_as_recent() {
     let mut t = T::new(json!({}));
     let path = t.file("a.docx", b"plain docx");
@@ -133,6 +303,48 @@ fn opening_a_file_grants_its_save_and_lists_it_as_recent() {
     assert_eq!(get(&saved, "ok"), &IpcValue::Bool(true));
     assert_eq!(get(&saved, "passwordIntentPending"), &IpcValue::Bool(false));
     assert_eq!(std::fs::read(&path).unwrap(), b"new body");
+}
+
+#[test]
+fn failed_byte_handoff_rejects_open_without_granting_the_file() {
+    let mut t = T::new(json!({ "hand_off_bytes": { "error": "media worker stopped" } }));
+    let path = t.file("a.docx", b"plain docx");
+    let error = t.rt.invoke_now("docs:open-path", t.a, vec![s(&path)]).unwrap_err();
+    assert_eq!(error.to_string(), "Error: media worker stopped");
+    assert_eq!(t.call("docs:recent", vec![]), IpcValue::Array(vec![]));
+    assert!(!t.calls().contains(&json!(["fileOpenedHook", 1, path]).to_string()));
+}
+
+#[test]
+fn failed_open_keeps_the_current_media_generation() {
+    let mut t = T::new(json!({}));
+    let path = t.file("open.docx", b"original document");
+    t.open(&path);
+    let original = t.editor().media_permit(t.a.view).unwrap();
+    let missing = t.rt.dir.join("missing.docx").to_string_lossy().into_owned();
+    assert_eq!(t.open(&missing), IpcValue::Null);
+    let current = t.editor().media_permit(t.a.view).unwrap();
+    assert!(original.is_active());
+    assert!(current.same_session(&original));
+}
+
+#[test]
+fn lazy_worker_failure_rejects_open_instead_of_falling_back_to_disk() {
+    let mut t = T::new(json!({ "open_lazy_docx": { "error": "media worker stopped" } }));
+    let path = t.file("a.docx", b"plain docx");
+    let error = t.rt.invoke_now("docs:open-path", t.a, vec![s(&path)]).unwrap_err();
+    assert_eq!(error.to_string(), "Error: media worker stopped");
+    assert_eq!(t.call("docs:recent", vec![]), IpcValue::Array(vec![]));
+}
+
+#[test]
+fn lazy_worker_failure_after_save_is_reported_without_undoing_the_write() {
+    let mut t = T::new(json!({ "point_lazy_media_at": { "error": "media worker stopped" } }));
+    let path = t.file("a.docx", b"plain docx");
+    t.open(&path);
+    let error = t.rt.invoke_now("docs:save", t.a, vec![s(&path), ab(b"new body")]).unwrap_err();
+    assert_eq!(error.to_string(), "Error: media worker stopped");
+    assert_eq!(std::fs::read(path).unwrap(), b"new body");
 }
 
 #[test]
@@ -515,6 +727,122 @@ fn the_close_guard_saves_discards_or_cancels_by_the_answer() {
 }
 
 #[test]
+fn dirty_query_returns_renderer_state_and_rejects_timeout_or_missing_view() {
+    let mut t = T::new(json!({}));
+    let editor = t.editor();
+    let answers = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let output = answers.clone();
+    editor.query_dirty(t.a.view, Box::new(move |result| output.borrow_mut().push(result)));
+    assert!(answers.borrow().is_empty());
+    t.rt.send("docs:close-check-result", t.a, vec![obj(&[("dirty", true.into_ipc())])]);
+    assert_eq!(answers.borrow_mut().pop().unwrap(), Ok(true));
+
+    let output = answers.clone();
+    editor.query_dirty(t.a.view, Box::new(move |result| output.borrow_mut().push(result)));
+    t.rt.advance(Duration::from_millis(2_000));
+    assert!(answers.borrow_mut().pop().unwrap().is_err());
+
+    t.rt.destroy(t.a.view);
+    let output = answers.clone();
+    editor.query_dirty(t.a.view, Box::new(move |result| output.borrow_mut().push(result)));
+    assert!(answers.borrow_mut().pop().unwrap().is_err());
+}
+
+fn owned_dirty_query(t: &T, source: Sender, cancel: shell_contract::runtime::CancelToken, answers: Rc<RefCell<Vec<Result<bool, shell_contract::IpcError>>>>) -> String {
+    let generation = t.rt.services.views.renderer_generation(source.view).unwrap();
+    let owner = shell_contract::ipc::NativeRequestOwner {
+        view: source.view,
+        context: shell_contract::ipc::NativeContext::with_owner_loss((), generation.clone(), generation.loss_token()),
+    };
+    t.editor().query_dirty_owned(t.a.view, owner, cancel, Box::new(move |answer| answers.borrow_mut().push(answer)));
+    t.rt.events().iter().rev().find(|event| event.channel == "docs:close-check")
+        .and_then(|event| event.args.first()).and_then(kit::as_str).unwrap().to_owned()
+}
+
+#[test]
+fn owned_dirty_query_requires_exact_token_sender_and_renderer() {
+    let mut t = T::new(json!({}));
+    let source = t.rt.view(2, Surface::Home);
+    let other = t.rt.view(3, Surface::Docs);
+    let answers = Rc::new(RefCell::new(Vec::new()));
+    let cancel = shell_contract::runtime::CancelToken::default();
+    let token = owned_dirty_query(&t, source, cancel, answers.clone());
+    let state = obj(&[("dirty", true.into_ipc())]);
+    t.rt.send("docs:close-check-result", other, vec![state.clone(), s(&token)]);
+    t.rt.send("docs:close-check-result", t.a, vec![state.clone(), s("wrong")]);
+    assert!(answers.borrow().is_empty());
+    t.rt.send("docs:close-check-result", t.a, vec![state.clone(), s(&token)]);
+    assert_eq!(*answers.borrow(), vec![Ok(true)]);
+    t.rt.send("docs:close-check-result", t.a, vec![state, s(&token)]);
+    assert_eq!(answers.borrow().len(), 1);
+}
+
+#[test]
+fn owned_dirty_queries_reject_source_loss_target_replacement_cancellation_and_timeout() {
+    let mut t = T::new(json!({}));
+    let source = t.rt.view(2, Surface::Home);
+    let answers = Rc::new(RefCell::new(Vec::new()));
+    let token = owned_dirty_query(&t, source, shell_contract::runtime::CancelToken::default(), answers.clone());
+    t.rt.replace_renderer(source.view);
+    assert!(answers.borrow_mut().pop().unwrap().is_err());
+    t.rt.send("docs:close-check-result", t.a, vec![obj(&[("dirty", false.into_ipc())]), s(&token)]);
+    assert!(answers.borrow().is_empty());
+
+    let old = t.rt.services.views.renderer_generation(t.a.view).unwrap();
+    let token = owned_dirty_query(&t, source, shell_contract::runtime::CancelToken::default(), answers.clone());
+    t.rt.replace_renderer(t.a.view);
+    assert!(answers.borrow_mut().pop().unwrap().is_err());
+    t.rt.send_from_generation("docs:close-check-result", t.a, vec![obj(&[("dirty", false.into_ipc())]), s(&token)], old);
+    assert!(answers.borrow().is_empty());
+
+    let cancel = shell_contract::runtime::CancelToken::default();
+    owned_dirty_query(&t, source, cancel.clone(), answers.clone());
+    cancel.cancel();
+    t.rt.drain();
+    assert!(answers.borrow_mut().pop().unwrap().is_err());
+
+    owned_dirty_query(&t, source, shell_contract::runtime::CancelToken::default(), answers.clone());
+    t.rt.advance(Duration::from_millis(2000));
+    assert!(answers.borrow_mut().pop().unwrap().is_err());
+}
+
+#[test]
+fn owned_dirty_queries_are_independent_and_allow_same_source_target() {
+    let mut t = T::new(json!({}));
+    let first = Rc::new(RefCell::new(Vec::new()));
+    let second = Rc::new(RefCell::new(Vec::new()));
+    let a = owned_dirty_query(&t, t.a, shell_contract::runtime::CancelToken::default(), first.clone());
+    let b = owned_dirty_query(&t, t.a, shell_contract::runtime::CancelToken::default(), second.clone());
+    assert_ne!(a, b);
+    t.rt.send("docs:close-check-result", t.a, vec![obj(&[("dirty", false.into_ipc())]), s(&b)]);
+    assert!(first.borrow().is_empty());
+    assert_eq!(*second.borrow(), vec![Ok(false)]);
+    t.rt.send("docs:close-check-result", t.a, vec![obj(&[("dirty", true.into_ipc())]), s(&a)]);
+    assert_eq!(*first.borrow(), vec![Ok(true)]);
+}
+
+#[test]
+fn owned_dirty_query_rejects_owner_loss_before_ack_without_waiting_for_core_notification() {
+    let mut t = T::new(json!({}));
+    let source = t.rt.view(2, Surface::Home);
+    let generation = t.rt.services.views.renderer_generation(source.view).unwrap();
+    let loss = shell_contract::runtime::CancelToken::default();
+    let owner = shell_contract::ipc::NativeRequestOwner {
+        view: source.view,
+        context: shell_contract::ipc::NativeContext::with_owner_loss((), generation, loss.clone()),
+    };
+    let answers = Rc::new(RefCell::new(Vec::new()));
+    let output = answers.clone();
+    t.editor().query_dirty_owned(t.a.view, owner, shell_contract::runtime::CancelToken::default(), Box::new(move |result| output.borrow_mut().push(result)));
+    let token = t.rt.events().iter().rev().find(|event| event.channel == "docs:close-check")
+        .and_then(|event| event.args.first()).and_then(kit::as_str).unwrap().to_owned();
+    loss.cancel();
+    t.rt.send("docs:close-check-result", t.a, vec![obj(&[("dirty", false.into_ipc())]), s(&token)]);
+    assert_eq!(answers.borrow().len(), 1);
+    assert!(answers.borrow()[0].is_err());
+}
+
+#[test]
 fn a_renderer_that_never_answers_is_asked_about_and_a_save_times_out() {
     let mut t = T::new(json!({}));
     let a = t.a;
@@ -568,6 +896,96 @@ fn closing_twice_joins_one_check_and_a_destroyed_view_closes() {
 }
 
 #[test]
+fn owned_close_does_not_join_or_settle_a_legacy_close() {
+    let mut t = T::new(json!({}));
+    let path = t.file("owned-close.docx", b"plain docx");
+    t.open(&path);
+    let source = t.rt.view(22, Surface::Home);
+    let generation = t.rt.services.views.renderer_generation(source.view).unwrap();
+    let origin = t.rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap()
+        .capture_owner(source.view, &generation).unwrap();
+    let editor = editor_for(&t.rt.provided(), t.a.view).unwrap();
+    let owned = Rc::new(RefCell::new(Vec::new()));
+    let legacy = Rc::new(RefCell::new(Vec::new()));
+    let output = legacy.clone();
+    editor.request_close(t.a.view, None, Box::new(move |result| output.borrow_mut().push(result)));
+    let output = owned.clone();
+    editor.request_close_owned(t.a.view, None, origin,
+        shell_contract::runtime::CancelToken::default(),
+        Box::new(move |result| output.borrow_mut().push(result)));
+    let token = t.rt.events().iter().rev().find(|event| event.channel == "docs:close-check"
+        && event.args.first().and_then(kit::as_str).is_some())
+        .and_then(|event| event.args.first()).and_then(kit::as_str).unwrap().to_owned();
+    t.rt.send("docs:close-check-result", t.a,
+        vec![obj(&[("dirty", false.into_ipc())]), s(&token)]);
+    assert_eq!(*owned.borrow(), vec![Ok(true)]);
+    t.rt.script().message.push_back(2);
+    assert!(legacy.borrow().is_empty());
+    t.rt.send("docs:close-check-result", t.a, vec![obj(&[("dirty", true.into_ipc())])]);
+    assert_eq!(*legacy.borrow(), vec![Ok(false)]);
+}
+
+#[test]
+fn owned_close_source_cancellation_rejects_late_dirty_result() {
+    let mut t = T::new(json!({}));
+    let path = t.file("cancel-close.docx", b"plain docx");
+    t.open(&path);
+    let source = t.rt.view(22, Surface::Home);
+    let generation = t.rt.services.views.renderer_generation(source.view).unwrap();
+    let origin = t.rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap()
+        .capture_owner(source.view, &generation).unwrap();
+    let cancel = shell_contract::runtime::CancelToken::default();
+    let answers = Rc::new(RefCell::new(Vec::new()));
+    let sink = answers.clone();
+    editor_for(&t.rt.provided(), t.a.view).unwrap().request_close_owned(
+        t.a.view, None, origin, cancel.clone(), Box::new(move |result| sink.borrow_mut().push(result)),
+    );
+    let token = t.rt.events().iter().rev().find(|event| event.channel == "docs:close-check")
+        .and_then(|event| event.args.first()).and_then(kit::as_str).unwrap().to_owned();
+    cancel.cancel();
+    t.rt.drain();
+    assert_eq!(answers.borrow().len(), 1);
+    assert!(answers.borrow()[0].is_err());
+    t.rt.send("docs:close-check-result", t.a,
+        vec![obj(&[("dirty", false.into_ipc())]), s(&token)]);
+    assert_eq!(answers.borrow().len(), 1);
+}
+
+#[test]
+fn captured_many_close_rejects_extra_participant_loss_before_dirty_reply() {
+    let mut t = T::new(json!({}));
+    let path = t.file("many-close.docx", b"plain docx");
+    t.open(&path);
+    let source = t.rt.view(22, Surface::Home);
+    let extra = t.rt.view(23, Surface::Home);
+    let effects = t.rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap().clone();
+    let capture = |view| {
+        let generation = t.rt.services.views.renderer_generation(view).unwrap();
+        effects.capture_owner(view, &generation).unwrap()
+    };
+    let origin = capture(source.view);
+    let participant = capture(extra.view);
+    let destination = capture(t.a.view);
+    let answers = Rc::new(RefCell::new(Vec::new()));
+    let output = answers.clone();
+    t.editor().request_close_captured_many(
+        t.a.view, None, origin, vec![participant], destination,
+        shell_contract::runtime::CancelToken::default(),
+        shell_contract::runtime::CancelToken::default(),
+        Box::new(move |result| output.borrow_mut().push(result)),
+    );
+    let token = t.rt.events().iter().rev().find(|event| event.channel == "docs:close-check")
+        .and_then(|event| event.args.first()).and_then(kit::as_str).unwrap().to_owned();
+    t.rt.destroy(extra.view);
+    t.rt.drain();
+    assert_eq!(answers.borrow().len(), 1);
+    assert!(answers.borrow()[0].is_err());
+    t.rt.send("docs:close-check-result", t.a,
+        vec![obj(&[("dirty", false.into_ipc())]), s(&token)]);
+    assert_eq!(answers.borrow().len(), 1);
+}
+
+#[test]
 fn crash_copies_are_written_and_a_save_drops_them() {
     let mut t = T::new(json!({}));
     let path = t.file("r.docx", b"x");
@@ -616,6 +1034,7 @@ fn a_copy_left_from_a_crash_is_offered_when_its_file_opens() {
     t.call("docs:write-recovery", vec![s(&path), ab(b"unsaved edits")]);
     // another tab opens the file: restore
     let b = t.rt.view(2, Surface::Docs);
+    t.editor().register_view(b.view).unwrap();
     t.rt.script().message.push_back(0);
     let opened =
         t.rt.invoke_now("docs:open-path", b, vec![s(&path)])
@@ -628,15 +1047,29 @@ fn a_copy_left_from_a_crash_is_offered_when_its_file_opens() {
 }
 
 #[test]
+fn failed_lazy_adoption_rejects_recovery_open() {
+    let mut t = T::new(json!({ "adopt_lazy_media_hashes": { "error": "media worker stopped" } }));
+    let path = t.file("k.docx", b"on disk");
+    t.open(&path);
+    t.call("docs:write-recovery", vec![s(&path), ab(b"unsaved edits")]);
+    let view = t.rt.view(2, Surface::Docs);
+    t.editor().register_view(view.view).unwrap();
+    t.rt.script().message.push_back(0);
+    let error = t.rt.invoke_now("docs:open-path", view, vec![s(&path)]).unwrap_err();
+    assert_eq!(error.to_string(), "Error: media worker stopped");
+}
+
+#[test]
 fn session_end_asks_every_booted_renderer_for_a_copy() {
     let mut t = T::new(json!({}));
     let a = t.a;
     let b = t.rt.view(2, Surface::Docs);
+    t.editor().register_view(b.view).unwrap();
     t.call("docs:consume-copy", vec![]);
     t.rt.invoke_now("docs:consume-copy", b, vec![]).unwrap();
-    let done = Rc::new(std::cell::Cell::new(false));
+    let done = Rc::new(RefCell::new(None));
     let d = done.clone();
-    t.editor().write_copies_now(Box::new(move || d.set(true)));
+    t.editor().write_copies_now(Box::new(move |result| *d.borrow_mut() = Some(result)));
     let events = t.rt.events();
     assert_eq!(events.len(), 2);
     let token_of = |view: ViewId| {
@@ -646,11 +1079,68 @@ fn session_end_asks_every_booted_renderer_for_a_copy() {
             .map(|e| e.args[0].clone())
             .unwrap()
     };
+    t.rt.send("docs:write-recovery-now-done", b, vec![token_of(ViewId(1))]);
+    assert!(done.borrow().is_none(), "another view cannot acknowledge the request");
     t.rt.send("docs:write-recovery-now-done", a, vec![token_of(ViewId(1))]);
-    assert!(!done.get());
-    // the other one never answers: its 5 s end the wait
+    assert!(done.borrow().is_none());
     t.rt.advance(Duration::from_millis(5000));
-    assert!(done.get());
+    assert!(done.borrow().as_ref().unwrap().is_err());
+}
+
+#[test]
+fn replaced_docs_recovery_ignores_old_completion() {
+    let mut t = T::new(json!({}));
+    let view = t.a;
+    t.call("docs:consume-copy", vec![]);
+    let first = Rc::new(RefCell::new(None));
+    let done = first.clone();
+    t.editor().write_copies_now(Box::new(move |result| *done.borrow_mut() = Some(result)));
+    let old = t.rt.events()[0].args[0].clone();
+    let second = Rc::new(RefCell::new(None));
+    let done = second.clone();
+    t.editor().write_copies_now(Box::new(move |result| *done.borrow_mut() = Some(result)));
+    assert!(matches!(&*first.borrow(), Some(Err(_))));
+    let current = t.rt.events()[0].args[0].clone();
+    t.rt.send("docs:write-recovery-now-done", view, vec![old]);
+    assert!(second.borrow().is_none());
+    t.rt.send("docs:write-recovery-now-done", view, vec![current]);
+    assert!(matches!(&*second.borrow(), Some(Ok(()))));
+}
+
+#[test]
+fn docs_recovery_reports_dispatch_failure() {
+    let mut t = T::new(json!({}));
+    t.call("docs:consume-copy", vec![]);
+    t.rt.fail_next_checked_event("stream unavailable");
+    let result = Rc::new(RefCell::new(None));
+    let done = result.clone();
+    t.editor().write_copies_now(Box::new(move |value| *done.borrow_mut() = Some(value)));
+    assert!(matches!(&*result.borrow(), Some(Err(error)) if error.0 == "stream unavailable"));
+    assert!(t.rt.events().is_empty());
+}
+
+#[test]
+fn docs_recovery_fails_on_renderer_generation_replacement() {
+    let mut t = T::new(json!({}));
+    let view = t.a;
+    t.call("docs:consume-copy", vec![]);
+    let first = Rc::new(RefCell::new(None));
+    let done = first.clone();
+    t.editor().write_copies_now(Box::new(move |result| *done.borrow_mut() = Some(result)));
+    let old = t.rt.events()[0].args[0].clone();
+    let previous_generation = t.rt.services.views.renderer_generation(view.view).unwrap();
+    t.rt.replace_renderer(view.view);
+    assert!(matches!(&*first.borrow(), Some(Err(_))));
+    let second = Rc::new(RefCell::new(None));
+    let done = second.clone();
+    t.editor().write_copies_now(Box::new(move |result| *done.borrow_mut() = Some(result)));
+    let current = t.rt.events()[0].args[0].clone();
+    t.rt.send_from_generation("docs:write-recovery-now-done", view, vec![current.clone()], previous_generation);
+    assert!(second.borrow().is_none());
+    t.rt.send("docs:write-recovery-now-done", view, vec![old]);
+    assert!(second.borrow().is_none());
+    t.rt.send("docs:write-recovery-now-done", view, vec![current]);
+    assert!(matches!(&*second.borrow(), Some(Ok(()))));
 }
 
 #[test]
@@ -691,7 +1181,8 @@ fn a_decided_open_waits_for_boot_then_goes_out_as_docs_opened() {
     let mut t = T::new(json!({}));
     let editor = t.editor();
     let doc = t.file("dec.docx", b"d");
-    editor.open_file_with_decision(ViewId(1), doc.clone(), RecoveryOpenDecision::Original);
+    editor.open_file_with_decision(ViewId(1), doc.clone(), RecoveryOpenDecision::Original,
+        captured_docs_owner(&t), shell_contract::runtime::CancelToken::default());
     assert!(t.channels().is_empty());
     assert_eq!(
         get(&t.call("docs:consume-pending-open", vec![]), "path"),
@@ -699,12 +1190,56 @@ fn a_decided_open_waits_for_boot_then_goes_out_as_docs_opened() {
     );
     t.call("docs:consume-copy", vec![]);
     t.rt.events();
-    editor.open_file_with_decision(ViewId(1), doc.clone(), RecoveryOpenDecision::Original);
+    editor.open_file_with_decision(ViewId(1), doc.clone(), RecoveryOpenDecision::Original,
+        captured_docs_owner(&t), shell_contract::runtime::CancelToken::default());
     // the shell's call is no channel call: its worker's answer waits on the core queue
     t.rt.drain();
     let events = t.rt.events();
     assert_eq!(events[0].channel, "docs:opened");
     assert_eq!(get(&events[0].args[0], "path"), &s(&doc));
+}
+
+#[test]
+fn recovery_contract_is_discoverable_and_opens_the_requested_document() {
+    use main_core::packages::electron_utils::recovery_contract::{RecoveryEditorContract, RecoveryOpenFileRequest};
+    let mut t = T::with_workers(json!({}), Some(Arc::new(BackgroundWorkers)));
+    let path = t.file("recovery.docx", b"saved document");
+    let source = t.rt.view(22, Surface::Home);
+    let source_generation = t.rt.services.views.renderer_generation(source.view).unwrap();
+    let origin = t.rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap()
+        .capture_owner(source.view, &source_generation).unwrap();
+    let created = t.rt.services.views.renderer_generation(t.a.view).unwrap();
+    let (_issuer, closure, browser_owner) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(t.a.view, created.clone());
+    let target = shell_contract::ipc::RecoveryOpenTarget::bind(shell_contract::ipc::RecoveryOpenContext::Renderer {
+        source: origin, participants: Vec::new(), cancel: shell_contract::runtime::CancelToken::default(),
+        pending: shell_contract::runtime::CancelToken::default(),
+    }, t.a.view, created.clone(), closure, browser_owner).unwrap();
+    let contract = t.rt.provided().all::<dyn RecoveryEditorContract<ViewId, shell_contract::ipc::RecoveryOpenTarget>>()
+        .into_iter().find(|editor| editor.kind() == "docs").unwrap();
+    let answer = Rc::new(RefCell::new(None));
+    let completed = answer.clone();
+    contract.open_file_with_decision(&ViewId(1), &RecoveryOpenFileRequest {
+        file_path: path.clone(), decision: RecoveryOpenDecision::Original,
+    }, &target, Box::new(move |result| *completed.borrow_mut() = Some(result)));
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while answer.borrow().is_none() {
+        t.rt.drain();
+        assert!(std::time::Instant::now() < deadline, "captured recovery did not settle");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(answer.borrow().as_ref().unwrap().is_ok());
+    std::fs::rename(&path, format!("{path}.before-replacement")).unwrap();
+    std::fs::write(&path, b"replacement").unwrap();
+    let synthetic = t.rt.services.hosts.get::<Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>().unwrap().clone();
+    let provenance = shell_contract::hosts::synthetic::SyntheticNativeOrigin::new();
+    target.retain_native_registration(synthetic.capture_invocation_root(t.a.view, &created, &provenance).unwrap()).unwrap();
+    let receiver = synthetic.capture_invocation_docs(t.a.view, &created, &provenance).unwrap();
+    let pending = t.rt.invoke_native("docs:consume-pending-open", t.a, vec![], receiver.context,
+        shell_contract::runtime::CancelToken::default());
+    let result = await_owned_reply(&mut t, &pending).unwrap();
+    assert_eq!(get(&result, "path"), &s(&path));
+    assert_eq!(get(&result, "dataUrl"), &s("handoff:736176656420646f63756d656e74"));
+    assert!(target.committed_seed().unwrap().settlement().is_none());
 }
 
 #[test]
@@ -741,6 +1276,7 @@ fn a_headless_export_reads_its_target_and_settles_on_the_report() {
 fn only_the_active_tab_patches_the_view_menu() {
     let mut t = T::new(json!({ "active_docs_view": 1 }));
     let (a, b) = (t.a, t.rt.view(2, Surface::Docs));
+    t.editor().register_view(b.view).unwrap();
     let state = obj(&[
         ("aiSidebar", true.into_ipc()),
         ("darkCanvas", false.into_ipc()),
@@ -795,6 +1331,17 @@ fn a_torn_down_tab_loses_its_writes() {
 }
 
 #[test]
+fn failed_lazy_forget_does_not_interrupt_teardown() {
+    let mut t = T::new(json!({ "forget_lazy_media_owner": { "error": "media worker stopped" } }));
+    let path = t.file("t.docx", b"on disk");
+    t.open(&path);
+    t.editor().teardown(ViewId(1), false);
+    assert_eq!(t.channels(), vec!["docs:teardown"]);
+    assert_eq!(get(&t.call("docs:save", vec![s(&path), ab(b"changed")]), "ok"), &IpcValue::Bool(false));
+    assert_eq!(std::fs::read(path).unwrap(), b"on disk");
+}
+
+#[test]
 fn a_renamed_file_keeps_its_grant_under_the_new_name() {
     let mut t = T::new(json!({}));
     let old = t.file("old.docx", b"x");
@@ -815,6 +1362,26 @@ fn a_renamed_file_keeps_its_grant_under_the_new_name() {
         &IpcValue::Bool(true)
     );
     assert_eq!(editor.document_path(ViewId(1)), Some(PathBuf::from(&new)));
+}
+
+#[test]
+fn failed_lazy_media_move_disables_saving_without_discarding_recovery() {
+    let mut t = T::new(json!({ "move_lazy_media_source": { "error": "media worker stopped" } }));
+    let old = t.file("old.docx", b"on disk");
+    t.open(&old);
+    t.call("docs:write-recovery", vec![s(&old), ab(b"unsaved edits")]);
+    let autosave = t.rt.dir.join("userData/docs-autosave");
+    let count = || std::fs::read_dir(&autosave).unwrap().count();
+    let before = count();
+    assert!(before > 0);
+    let new = t.rt.dir.join("new.docx").to_string_lossy().into_owned();
+    std::fs::rename(&old, &new).unwrap();
+    let editor = editor_for(&t.rt.provided(), ViewId(1)).unwrap();
+    editor.file_renamed(ViewId(1), Path::new(&old), Path::new(&new));
+    assert!(editor.torn_down(ViewId(1)));
+    assert_eq!(get(&t.call("docs:save", vec![s(&new), ab(b"changed")]), "ok"), &IpcValue::Bool(false));
+    assert_eq!(std::fs::read(&new).unwrap(), b"on disk");
+    assert_eq!(count(), before);
 }
 
 #[test]
@@ -1100,6 +1667,18 @@ fn capture_rect_checks_its_rectangle() {
 }
 
 #[test]
+fn ai_doc_creation_reports_tab_open_failure() {
+    let mut t = T::new(json!({"open_ai_doc_tab": "tab creation failed"}));
+    let result = t.call("docs:create-document", vec![obj(&[
+        ("type", s("docx")),
+        ("title", s("T")),
+        ("content", s("<p>content</p>")),
+    ])]);
+    assert_eq!(get(&result, "ok"), &IpcValue::Bool(false));
+    assert_eq!(get(&result, "error"), &s("tab creation failed"));
+}
+
+#[test]
 fn ai_documents_open_in_a_tab_or_are_written_beside_the_others() {
     let mut t = T::new(json!({}));
     assert_eq!(
@@ -1294,6 +1873,7 @@ fn an_untitled_copy_reopens_in_a_new_tab_that_keeps_writing_it() {
     // the crashed tab is gone; a new one restores its copy before it booted
     t.editor().teardown(ViewId(1), true);
     let b = t.rt.view(2, Surface::Docs);
+    t.editor().register_view(b.view).unwrap();
     t.editor().open_untitled_copy(
         ViewId(2),
         main_core::packages::electron_utils::recovery_store::RecoveryIdentity::Untitled(
@@ -1356,4 +1936,1312 @@ fn other_apps_create_ai_documents_through_the_editor() {
     let path = kit::as_str(get(&reply, "path")).unwrap().to_owned();
     assert!(path.ends_with("Page.html"), "{path}");
     assert_eq!(std::fs::read_to_string(path).unwrap(), "<b>x</b>");
+}
+
+#[test]
+fn save_to_path_waits_for_renderer_and_real_file() {
+    use std::cell::RefCell;
+    use jscompat::JsonValue;
+    use main_core::shell::mcp::tools::document_tools::McpEditorCommandName;
+    use main_core::shell::mcp::tools::sheets_tools::SheetsCommandName;
+    use shell_contract::editors::Then;
+    use shell_ipc_a::mcp::McpBridgeControl;
+
+    #[derive(Default)]
+    struct Bridge {
+        pending: RefCell<Option<Then<Option<JsonValue>>>>,
+        request: RefCell<Option<(i64, McpEditorCommandName, JsonValue)>>,
+    }
+    impl McpBridgeControl for Bridge {
+        fn docs_open_blank_tab(&self, _: Then<Option<JsonValue>>) { unreachable!() }
+        fn docs_run_command(&self, id: i64, command: McpEditorCommandName, payload: Option<JsonValue>, then: Then<Option<JsonValue>>) {
+            *self.request.borrow_mut() = Some((id, command, payload.unwrap()));
+            *self.pending.borrow_mut() = Some(then);
+        }
+        fn sheets_open_blank_tab(&self, _: Then<Option<JsonValue>>) { unreachable!() }
+        fn sheets_run_command(&self, _: i64, _: SheetsCommandName, _: Option<JsonValue>, _: Then<Option<JsonValue>>) { unreachable!() }
+    }
+
+    let mut t = T::new(json!({}));
+    let bridge = Rc::new(Bridge::default());
+    t.rt.provided().add::<dyn McpBridgeControl>(bridge.clone());
+    let path = t.rt.dir.join("created.docx");
+    let result = Rc::new(RefCell::new(None));
+    let sink = result.clone();
+    t.editor().save_to_path(ViewId(1), path.clone(), Box::new(move |answer| *sink.borrow_mut() = Some(answer)));
+    assert!(result.borrow().is_none());
+    let request = bridge.request.borrow();
+    let (id, command, payload) = request.as_ref().unwrap();
+    assert_eq!(*id, 1);
+    assert_eq!(*command, McpEditorCommandName::SaveDocument);
+    assert_eq!(payload.get("overwrite").as_deref(), Some(&JsonValue::Bool(true)));
+    drop(request);
+    std::fs::write(&path, b"docx").unwrap();
+    let mut reply = jscompat::JsObject::new();
+    reply.set("ok", JsonValue::Bool(true));
+    reply.set("path", JsonValue::String(path.to_string_lossy().into_owned()));
+    bridge.pending.borrow_mut().take().unwrap()(Ok(Some(JsonValue::Object(reply))));
+    assert!(result.borrow().is_none());
+    t.rt.drain();
+    assert_eq!(*result.borrow(), Some(Ok(())));
+
+    let missing = t.rt.dir.join("not-written.docx");
+    *result.borrow_mut() = None;
+    let sink = result.clone();
+    t.editor().save_to_path(ViewId(1), missing.clone(), Box::new(move |answer| *sink.borrow_mut() = Some(answer)));
+    let mut reply = jscompat::JsObject::new();
+    reply.set("ok", JsonValue::Bool(true));
+    reply.set("path", JsonValue::String(missing.to_string_lossy().into_owned()));
+    bridge.pending.borrow_mut().take().unwrap()(Ok(Some(JsonValue::Object(reply))));
+    t.rt.drain();
+    assert!(result.borrow().as_ref().unwrap().is_err());
+
+    *result.borrow_mut() = None;
+    let sink = result.clone();
+    t.editor().save_to_path(ViewId(1), path.clone(), Box::new(move |answer| *sink.borrow_mut() = Some(answer)));
+    let mut reply = jscompat::JsObject::new();
+    reply.set("ok", JsonValue::Bool(true));
+    reply.set("path", JsonValue::String(path.to_string_lossy().into_owned()));
+    bridge.pending.borrow_mut().take().unwrap()(Ok(Some(JsonValue::Object(reply))));
+    t.rt.destroy(ViewId(1));
+    t.rt.drain();
+    assert!(result.borrow().as_ref().unwrap().is_err());
+}
+
+#[test]
+fn save_to_path_fails_without_bridge_or_for_a_closed_view() {
+    let mut t = T::new(json!({}));
+    let path = t.rt.dir.join("missing.docx");
+    let answer = Rc::new(std::cell::RefCell::new(None));
+    let sink = answer.clone();
+    t.editor().save_to_path(ViewId(1), path.clone(), Box::new(move |result| *sink.borrow_mut() = Some(result)));
+    assert!(answer.borrow().as_ref().unwrap().is_err());
+    t.rt.destroy(ViewId(1));
+    let sink = answer.clone();
+    t.editor().save_to_path(ViewId(1), path, Box::new(move |result| *sink.borrow_mut() = Some(result)));
+    assert!(answer.borrow().as_ref().unwrap().is_err());
+}
+
+#[test]
+fn owned_ai_creation_writes_real_markdown_before_opening() {
+    let mut t = T::with_workers(json!({ "open_generated_path": true }), Some(Arc::new(BackgroundWorkers)));
+    let source_path = t.file("source.docx", b"plain docx");
+    let opened = t.rt.invoke("docs:open-path", t.a, vec![s(&source_path)]);
+    assert!(await_owned_reply(&mut t, &opened).is_ok());
+    let source = t.a;
+    let generation = t.rt.services.views.renderer_generation(source.view).unwrap();
+    let effects = t.rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap();
+    let native = effects.capture_owner(source.view, &generation).unwrap();
+    let owner = t.editor().capture_document_owner(source.view, native).unwrap();
+    let cancel = shell_contract::runtime::CancelToken::default();
+    let pending = shell_contract::runtime::CancelToken::default();
+    let admission = t.editor().0.capture_create_admission(source.view, &owner, &owner, &cancel, &pending).unwrap();
+    let answers = Arc::new(Mutex::new(None));
+    let completed = answers.clone();
+    t.editor().create_ai_document_owned(
+        obj(&[("type", s("md")), ("title", s("Owned markdown")), ("content", s("# 제목\n\nreal bytes\n"))]),
+        source.view, owner.clone(), owner, cancel, pending, admission,
+        Box::new(move |result| *completed.lock().unwrap() = Some(result)),
+    );
+    let answer = await_ai_creation(&mut t, &answers).unwrap();
+    assert_eq!(get(&answer, "ok"), &IpcValue::Bool(true));
+    let path = kit::as_str(get(&answer, "path")).unwrap();
+    assert_eq!(std::fs::read(path).unwrap(), "# 제목\n\nreal bytes\n".as_bytes());
+    assert!(t.calls().iter().any(|call| call.contains("openGeneratedPath") && call.contains("Owned markdown")));
+}
+
+#[test]
+fn revoked_ai_creator_cannot_write_or_open_a_new_document() {
+    let (mut t, _) = background_document();
+    let source = t.a;
+    let generation = t.rt.services.views.renderer_generation(source.view).unwrap();
+    let effects = t.rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap();
+    let native = effects.capture_owner(source.view, &generation).unwrap();
+    let owner = t.editor().capture_document_owner(source.view, native).unwrap();
+    let cancel = shell_contract::runtime::CancelToken::default();
+    let pending = shell_contract::runtime::CancelToken::default();
+    let admission = t.editor().0.capture_create_admission(source.view, &owner, &owner, &cancel, &pending).unwrap();
+    cancel.cancel();
+    let answers = Arc::new(Mutex::new(None));
+    let completed = answers.clone();
+    t.editor().create_ai_document_owned(
+        obj(&[("type", s("html")), ("title", s("Revoked")), ("content", s("<p>must not land</p>"))]),
+        source.view, owner.clone(), owner, cancel, pending, admission,
+        Box::new(move |result| *completed.lock().unwrap() = Some(result)),
+    );
+    assert!(await_ai_creation(&mut t, &answers).is_err());
+    assert!(!t.calls().iter().any(|call| call.contains("writeNewDocument") || call.contains("openGeneratedPath")));
+}
+
+fn await_ai_creation(t: &mut T, answer: &Arc<Mutex<Option<Result<IpcValue, String>>>>) -> Result<IpcValue, String> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        t.rt.drain();
+        if let Some(answer) = answer.lock().unwrap().take() { return answer; }
+        assert!(std::time::Instant::now() < deadline, "the owned creation did not settle");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn await_owned_reply(t: &mut T, pending: &crate::testing::Pending) -> shell_contract::ipc::Reply {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        t.rt.drain();
+        if let Some(reply) = pending.take() { return reply; }
+        assert!(std::time::Instant::now() < deadline, "the owned save did not settle");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn background_document() -> (T, String) {
+    let mut t = T::with_workers(json!({}), Some(Arc::new(BackgroundWorkers)));
+    let path = t.file("owned-original.docx", b"original bytes");
+    let open = t.rt.invoke("docs:open-path", t.a, vec![s(&path)]);
+    assert_eq!(get(&await_owned_reply(&mut t, &open).unwrap(), "path"), &s(&path));
+    (t, path)
+}
+
+fn owned_save_request(
+    t: &mut T, target: PathBuf,
+) -> (
+    String, shell_contract::ipc::NativeRequestOwner,
+    shell_contract::runtime::CancelToken,
+    Rc<RefCell<Option<Result<(), shell_contract::IpcError>>>>,
+) {
+    let source = t.rt.view(22, Surface::Home);
+    let effects = t.rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap().clone();
+    let generation = t.rt.services.views.renderer_generation(source.view).unwrap();
+    let origin = effects.capture_owner(source.view, &generation).unwrap();
+    let cancel = shell_contract::runtime::CancelToken::default();
+    let answers = Rc::new(RefCell::new(None));
+    let completed = answers.clone();
+    t.editor().save_to_path_owned(t.a.view, target, origin, cancel.clone(),
+        Box::new(move |result| *completed.borrow_mut() = Some(result)));
+    t.rt.drain();
+    let token = t.rt.events().into_iter().find(|event| event.channel == "docs:close-save-request")
+        .and_then(|event| event.args.first().map(|value| get(value, "requestId").clone()))
+        .and_then(|value| kit::as_str(&value).map(str::to_owned)).unwrap();
+    let generation = t.rt.services.views.renderer_generation(t.a.view).unwrap();
+    let destination = effects.capture_owner(t.a.view, &generation).unwrap();
+    (token, destination, cancel, answers)
+}
+
+fn acknowledge_owned_save(t: &mut T, token: &str, destination: &shell_contract::ipc::NativeRequestOwner, ok: bool) {
+    let generation = destination.context.renderer().unwrap().clone();
+    t.rt.send_from_generation("docs:close-save-result", t.a,
+        vec![ok.into_ipc(), s(token)], generation);
+}
+
+#[test]
+fn owned_save_waits_for_real_file_write_and_matching_renderer_ack() {
+    let (mut t, original) = background_document();
+    let target = t.rt.dir.join("nested/owned-save.docx");
+    let (token, destination, _, answers) = owned_save_request(&mut t, target.clone());
+    assert!(answers.borrow().is_none());
+    assert!(!target.exists());
+    let pending = t.rt.invoke_native("docs:save-to", t.a,
+        vec![s(&target.to_string_lossy()), ab(b"actual owned bytes"), true.into_ipc(), s(&token)],
+        destination.context.clone(), shell_contract::runtime::CancelToken::default());
+    let saved = await_owned_reply(&mut t, &pending).unwrap();
+    assert_eq!(get(&saved, "ok"), &IpcValue::Bool(true));
+    assert_eq!(std::fs::read(&target).unwrap(), b"actual owned bytes");
+    assert_eq!(std::fs::read(original).unwrap(), b"original bytes");
+    assert!(answers.borrow().is_none());
+    acknowledge_owned_save(&mut t, "another-request", &destination, true);
+    assert!(answers.borrow().is_none());
+    acknowledge_owned_save(&mut t, &token, &destination, true);
+    assert!(answers.borrow().as_ref().unwrap().is_ok());
+}
+
+#[test]
+fn renderer_success_without_native_owned_write_is_rejected() {
+    let (mut t, _) = background_document();
+    let target = t.rt.dir.join("never-written.docx");
+    let (token, destination, _, answers) = owned_save_request(&mut t, target.clone());
+    acknowledge_owned_save(&mut t, &token, &destination, true);
+    assert!(answers.borrow().as_ref().unwrap().is_err());
+    assert!(!target.exists());
+}
+
+#[test]
+fn canceled_owned_save_cannot_publish_from_a_late_renderer() {
+    let (mut t, _) = background_document();
+    let target = t.rt.dir.join("canceled.docx");
+    let (token, destination, cancel, answers) = owned_save_request(&mut t, target.clone());
+    cancel.cancel();
+    t.rt.drain();
+    assert!(answers.borrow().as_ref().unwrap().is_err());
+    let pending = t.rt.invoke_native("docs:save-to", t.a,
+        vec![s(&target.to_string_lossy()), ab(b"must not land"), true.into_ipc(), s(&token)],
+        destination.context.clone(), shell_contract::runtime::CancelToken::default());
+    assert!(await_owned_reply(&mut t, &pending).is_err());
+    assert!(!target.exists());
+}
+
+#[test]
+fn final_owned_save_commit_rechecks_the_current_write_grant() {
+    use main_core::packages::electron_utils::atomic_write::owned::{self, Admission};
+    let (mut t, path) = background_document();
+    let view = t.a.view;
+    let effects = t.rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap().clone();
+    let generation = t.rt.services.views.renderer_generation(view).unwrap();
+    let owner = effects.capture_owner(view, &generation).unwrap();
+    let docs = t.editor().0.clone();
+    let scope = super::owned_save::capture_close(&docs, view, None, owner,
+        shell_contract::runtime::CancelToken::default()).unwrap();
+    let admit = super::owned_write::admission(&docs, scope, &path, super::owned_write::Permission::ExistingDocument);
+    let (ready, waiting) = std::sync::mpsc::sync_channel(1);
+    let once = std::sync::atomic::AtomicBool::new(false);
+    let admission: Admission = Arc::new(move |effect| {
+        if !once.swap(true, std::sync::atomic::Ordering::SeqCst) { ready.send(()).unwrap(); }
+        admit(effect)
+    });
+    let target = path.clone();
+    let (send, result) = std::sync::mpsc::sync_channel(1);
+    let worker = std::thread::spawn(move || {
+        send.send(owned::write_file(&target, b"must not replace", admission)).unwrap();
+    });
+    waiting.recv_timeout(Duration::from_secs(10)).unwrap();
+    docs.doc_writable.remove(view);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let result = loop {
+        t.rt.drain();
+        if let Ok(result) = result.try_recv() { break result; }
+        assert!(std::time::Instant::now() < deadline, "final grant rejection did not settle");
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    worker.join().unwrap();
+    assert!(result.unwrap_err().message.contains("not an opened document"));
+    assert_eq!(std::fs::read(&path).unwrap(), b"original bytes");
+    assert!(!t.rt.dir.join("owned-original.docx.unsaved.tmp").exists());
+}
+
+#[test]
+fn revoked_actual_media_permit_rejects_a_late_owned_save() {
+    let (mut t, original) = background_document();
+    let target = t.rt.dir.join("revoked-document.docx");
+    let (token, destination, _, answers) = owned_save_request(&mut t, target.clone());
+    t.editor().media_permit(t.a.view).unwrap().revoke();
+    t.rt.drain();
+    assert!(answers.borrow().as_ref().unwrap().is_err());
+    let pending = t.rt.invoke_native("docs:save-to", t.a,
+        vec![s(&target.to_string_lossy()), ab(b"must not land"), true.into_ipc(), s(&token)],
+        destination.context, shell_contract::runtime::CancelToken::default());
+    assert!(await_owned_reply(&mut t, &pending).is_err());
+    assert!(!target.exists());
+    assert_eq!(std::fs::read(original).unwrap(), b"original bytes");
+}
+
+fn captured_docs_owner(t: &T) -> shell_contract::ipc::NativeRequestOwner {
+    let generation = t.rt.services.views.renderer_generation(t.a.view).unwrap();
+    t.rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap()
+        .capture_owner(t.a.view, &generation).unwrap()
+}
+
+fn disposal_admission(t: &T, owner: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken) -> super::editors::DisposalAdmission {
+    let effects = t.rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap().clone();
+    let browser = t.editor().0.media_views.borrow().get(&t.a.view).unwrap().owner.clone();
+    Box::new(move |effect| effects.with_owned_effect(&owner, &owner, &cancel, &cancel, &mut ||
+        browser.reservation().with_owner(&browser, |transition| effect(transition))))
+}
+
+fn await_disposal(t: &mut T, answer: &Rc<RefCell<Option<super::editors::DocsDisposalOutcome>>>) -> super::editors::DocsDisposalOutcome {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        t.rt.drain();
+        if let Some(answer) = answer.borrow_mut().take() { return answer; }
+        assert!(std::time::Instant::now() < deadline, "captured Docs disposal did not settle");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn captured_disposal_retires_only_the_original_actor_and_acknowledges_cleanup() {
+    let (mut t, path) = background_document();
+    let editor = t.editor();
+    let permit = editor.media_permit(t.a.view).unwrap();
+    let owner = captured_docs_owner(&t);
+    let disposal = editor.capture_disposal(t.a.view, &owner).unwrap();
+    let answer = Rc::new(RefCell::new(None));
+    let completed = answer.clone();
+    disposal.run(disposal_admission(&t, owner, shell_contract::runtime::CancelToken::default()),
+        Box::new(move |result| *completed.borrow_mut() = Some(result)));
+    assert!(!permit.is_active());
+    assert!(editor.torn_down(t.a.view));
+    assert!(matches!(await_disposal(&mut t, &answer), super::editors::DocsDisposalOutcome::Retired { cleanup: Ok(()) }));
+    assert_eq!(std::fs::read(path).unwrap(), b"original bytes");
+    assert!(!editor.0.can_doc_write(t.a.view, &editor.document_path(t.a.view).unwrap().to_string_lossy()));
+}
+
+#[test]
+fn captured_cleanup_retires_exact_actor_after_request_owner_is_lost() {
+    let (mut t, _) = background_document();
+    let editor = t.editor();
+    let permit = editor.media_permit(t.a.view).unwrap();
+    let owner = captured_docs_owner(&t);
+    let actor = editor.capture_disposal(t.a.view, &owner).unwrap();
+    let browser = editor.0.media_views.borrow().get(&t.a.view).unwrap().owner.clone();
+    owner.loss_token().unwrap().cancel();
+    let answer = Rc::new(RefCell::new(None));
+    let completed = answer.clone();
+    actor.run_cleanup(Box::new(move |effect| browser.reservation().with_owner(&browser, |transition| effect(transition))),
+        Box::new(move |result| *completed.borrow_mut() = Some(result)));
+    assert!(!permit.is_active());
+    assert!(matches!(await_disposal(&mut t, &answer), super::editors::DocsDisposalOutcome::Retired { cleanup: Ok(()) }));
+}
+
+#[test]
+fn terminal_browser_receipt_retires_only_captured_actor() {
+    let (mut t, _) = background_document();
+    let editor = t.editor();
+    let generation = t.rt.services.views.renderer_generation(t.a.view).unwrap();
+    let (issuer, reservation, browser) =
+        shell_contract::ipc::NativeClosureIssuer::new_with_owner(t.a.view, generation.clone());
+    reservation.with_initial_owner(&browser, |_| {
+        editor.0.media_views.borrow_mut().get_mut(&t.a.view).unwrap().owner = browser.clone();
+        Ok(())
+    }).unwrap();
+    let permit = editor.media_permit(t.a.view).unwrap();
+    let owner = captured_docs_owner(&t);
+    let actor = editor.capture_disposal(t.a.view, &owner).unwrap();
+    let (foreign, _, _) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(t.a.view, generation);
+    let rejected = Rc::new(RefCell::new(None));
+    let reply = rejected.clone();
+    actor.run_closed(foreign.closed(), Box::new(move |result| *reply.borrow_mut() = Some(result)));
+    let actor = match rejected.borrow_mut().take().unwrap() {
+        super::editors::DocsDisposalOutcome::NotRetired { actor, .. } => actor,
+        _ => panic!("foreign browser retired the Docs actor"),
+    };
+    assert!(permit.is_active());
+    let answer = Rc::new(RefCell::new(None));
+    let completed = answer.clone();
+    owner.loss_token().unwrap().cancel();
+    actor.run_closed(issuer.closed(), Box::new(move |result| *completed.borrow_mut() = Some(result)));
+    assert!(matches!(await_disposal(&mut t, &answer), super::editors::DocsDisposalOutcome::Retired { cleanup: Ok(()) }));
+    assert!(!permit.is_active());
+}
+
+#[test]
+fn captured_disposal_cannot_retire_a_document_opened_after_capture() {
+    let mut t = T::new(json!({}));
+    let original = t.file("before-disposal.docx", b"before");
+    t.open(&original);
+    let owner = captured_docs_owner(&t);
+    let disposal = t.editor().capture_disposal(t.a.view, &owner).unwrap();
+    let replacement = t.file("after-disposal.docx", b"after");
+    t.open(&replacement);
+    let current = t.editor().media_permit(t.a.view).unwrap();
+    let invoked = Rc::new(std::cell::Cell::new(false));
+    let attempt = invoked.clone();
+    let answer = Rc::new(RefCell::new(None));
+    let completed = answer.clone();
+    disposal.run(Box::new(move |_| { attempt.set(true); Ok(()) }),
+        Box::new(move |result| *completed.borrow_mut() = Some(result)));
+    assert!(matches!(answer.borrow().as_ref().unwrap(), super::editors::DocsDisposalOutcome::NotRetired { .. }));
+    assert!(!invoked.get());
+    assert!(current.is_active());
+    assert!(!t.editor().torn_down(t.a.view));
+    assert_eq!(get(&t.call("docs:save", vec![s(&replacement), ab(b"still writable")]), "ok"), &IpcValue::Bool(true));
+    assert_eq!(std::fs::read(replacement).unwrap(), b"still writable");
+}
+
+#[test]
+fn disposal_rechecks_the_exact_actor_inside_admission() {
+    let t = T::new(json!({}));
+    let editor = t.editor();
+    let view = t.a.view;
+    let owner = captured_docs_owner(&t);
+    let disposal = editor.capture_disposal(view, &owner).unwrap();
+    let successor = Rc::new(RefCell::new(None));
+    let created = successor.clone();
+    let replace = editor.clone();
+    let browser = editor.0.media_views.borrow().get(&view).unwrap().owner.clone();
+    let answer = Rc::new(RefCell::new(None));
+    let completed = answer.clone();
+    disposal.run(Box::new(move |effect| {
+        *created.borrow_mut() = Some(replace.register_view(view)?);
+        browser.reservation().with_owner(&browser, |transition| effect(transition))
+    }), Box::new(move |result| *completed.borrow_mut() = Some(result)));
+    assert!(matches!(answer.borrow().as_ref().unwrap(), super::editors::DocsDisposalOutcome::NotRetired { .. }));
+    assert!(successor.borrow().as_ref().unwrap().current().is_some());
+    assert!(!editor.torn_down(view));
+}
+
+#[test]
+fn canceled_disposal_admission_does_not_retire_the_captured_actor() {
+    let (mut t, _) = background_document();
+    let owner = captured_docs_owner(&t);
+    let editor = t.editor();
+    let permit = editor.media_permit(t.a.view).unwrap();
+    let disposal = editor.capture_disposal(t.a.view, &owner).unwrap();
+    let cancel = shell_contract::runtime::CancelToken::default();
+    cancel.cancel();
+    let answer = Rc::new(RefCell::new(None));
+    let completed = answer.clone();
+    disposal.run(disposal_admission(&t, owner.clone(), cancel),
+        Box::new(move |result| *completed.borrow_mut() = Some(result)));
+    let actor = match await_disposal(&mut t, &answer) {
+        super::editors::DocsDisposalOutcome::NotRetired { actor, .. } => actor,
+        _ => panic!("canceled admission retired the actor"),
+    };
+    assert!(permit.is_active());
+    assert!(!editor.torn_down(t.a.view));
+    let completed = answer.clone();
+    actor.run(disposal_admission(&t, owner, shell_contract::runtime::CancelToken::default()),
+        Box::new(move |result| *completed.borrow_mut() = Some(result)));
+    assert!(matches!(await_disposal(&mut t, &answer), super::editors::DocsDisposalOutcome::Retired { cleanup: Ok(()) }));
+}
+
+#[test]
+fn discarded_disposal_worker_reports_failure_after_actor_retirement() {
+    let mut t = T::with_workers(json!({}), Some(Arc::new(DiscardWorkers)));
+    let owner = captured_docs_owner(&t);
+    let editor = t.editor();
+    let actor = editor.capture_disposal(t.a.view, &owner).unwrap();
+    let answer = Rc::new(RefCell::new(None));
+    let completed = answer.clone();
+    actor.run(disposal_admission(&t, owner, shell_contract::runtime::CancelToken::default()),
+        Box::new(move |result| *completed.borrow_mut() = Some(result)));
+    assert!(editor.torn_down(t.a.view));
+    match await_disposal(&mut t, &answer) {
+        super::editors::DocsDisposalOutcome::Retired { cleanup: Err(error) } => assert!(error.contains("discarded")),
+        _ => panic!("discarded cleanup did not report a retired failure"),
+    }
+}
+
+#[test]
+fn disposal_reports_actual_recovery_errors_after_terminal_actor_retirement() {
+    let (mut t, _) = background_document();
+    let editor = t.editor();
+    let docs = editor.0.clone();
+    let failed = docs.with_store(|store| docs.book.borrow_mut().begin_copy(
+        store, t.a.view, &super::recovery::CopyTarget::Untitled("../outside"),
+        &|| "00000000-0000-4000-8000-000000000999".into(),
+    ));
+    assert!(failed.is_err());
+    docs.book.borrow_mut().note_closed_saved(t.a.view);
+    let owner = captured_docs_owner(&t);
+    let disposal = editor.capture_disposal(t.a.view, &owner).unwrap();
+    let answer = Rc::new(RefCell::new(None));
+    let completed = answer.clone();
+    disposal.run(disposal_admission(&t, owner, shell_contract::runtime::CancelToken::default()),
+        Box::new(move |result| *completed.borrow_mut() = Some(result)));
+    match await_disposal(&mut t, &answer) {
+        super::editors::DocsDisposalOutcome::Retired { cleanup: Err(error) } => assert!(error.contains("invalid recovery copy extension")),
+        _ => panic!("the recovery cleanup failure was not reported"),
+    }
+    assert!(editor.torn_down(t.a.view));
+    assert!(editor.recovery_identity(t.a.view).is_none());
+}
+
+#[test]
+fn owned_rename_retains_all_participants_at_the_actual_state_and_notification_effects() {
+    let mut t = T::new(json!({}));
+    let old = t.file("rename-owned.docx", b"document");
+    t.open(&old);
+    let destination = captured_docs_owner(&t);
+    let extra = t.rt.view(22, Surface::Home);
+    let effects = t.rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap().clone();
+    let generation = t.rt.services.views.renderer_generation(extra.view).unwrap();
+    let participant = effects.capture_owner(extra.view, &generation).unwrap();
+    let new = t.rt.dir.join("renamed-owned.docx");
+    std::fs::rename(&old, &new).unwrap();
+    t.rt.events();
+    let answer = Rc::new(RefCell::new(None));
+    let completed = answer.clone();
+    t.editor().file_renamed_many_owned_extra(t.a.view, Path::new(&old), &new,
+        &destination, &destination, &[participant],
+        &shell_contract::runtime::CancelToken::default(), &shell_contract::runtime::CancelToken::default(), &[],
+        Box::new(move |result| *completed.borrow_mut() = Some(result)));
+    t.rt.drain();
+    assert!(answer.borrow().as_ref().unwrap().is_ok());
+    assert_eq!(t.editor().document_path(t.a.view).as_ref(), Some(&new));
+    assert!(t.rt.events().iter().any(|event| event.channel == "docs:renamed"
+        && event.args.first().is_some_and(|value| get(value, "newPath") == &s(&new.to_string_lossy()))));
+    assert!(t.editor().media_permit(t.a.view).unwrap().is_active());
+}
+
+#[test]
+fn revoked_extra_participant_blocks_owned_rename_state_and_notification() {
+    let mut t = T::new(json!({}));
+    let old = t.file("rename-blocked.docx", b"document");
+    t.open(&old);
+    let destination = captured_docs_owner(&t);
+    let extra = t.rt.view(22, Surface::Home);
+    let effects = t.rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap().clone();
+    let generation = t.rt.services.views.renderer_generation(extra.view).unwrap();
+    let participant = effects.capture_owner(extra.view, &generation).unwrap();
+    generation.revoke();
+    let new = t.rt.dir.join("must-not-be-acknowledged.docx");
+    t.rt.events();
+    let answer = Rc::new(RefCell::new(None));
+    let completed = answer.clone();
+    t.editor().file_renamed_many_owned_extra(t.a.view, Path::new(&old), &new,
+        &destination, &destination, &[participant],
+        &shell_contract::runtime::CancelToken::default(), &shell_contract::runtime::CancelToken::default(), &[],
+        Box::new(move |result| *completed.borrow_mut() = Some(result)));
+    t.rt.drain();
+    assert!(answer.borrow().as_ref().unwrap().is_err());
+    assert_eq!(t.editor().document_path(t.a.view), Some(PathBuf::from(&old)));
+    assert!(!t.rt.events().iter().any(|event| event.channel == "docs:renamed"));
+    assert_eq!(std::fs::read(old).unwrap(), b"document");
+}
+
+#[test]
+fn cancelled_callback_blocks_owned_rename_state_and_notification() {
+    let mut t = T::new(json!({}));
+    let old = t.file("rename-cancelled.docx", b"document");
+    t.open(&old);
+    let destination = captured_docs_owner(&t);
+    let extra = shell_contract::runtime::CancelToken::default();
+    extra.cancel();
+    let new = t.rt.dir.join("must-not-rename.docx");
+    t.rt.events();
+    let answer = Rc::new(RefCell::new(None));
+    let completed = answer.clone();
+    t.editor().file_renamed_many_owned_extra(t.a.view, Path::new(&old), &new,
+        &destination, &destination, &[], &shell_contract::runtime::CancelToken::default(),
+        &shell_contract::runtime::CancelToken::default(), &[extra],
+        Box::new(move |result| *completed.borrow_mut() = Some(result)));
+    t.rt.drain();
+    assert!(answer.borrow().as_ref().unwrap().is_err());
+    assert_eq!(t.editor().document_path(t.a.view), Some(PathBuf::from(&old)));
+    assert!(!t.rt.events().iter().any(|event| event.channel == "docs:renamed"));
+}
+
+#[test]
+fn native_save_rename_rejects_cancelled_callback_without_changing_document() {
+    use shell_contract::ipc::{NativeInvocationIssuer, NativeSaveDestination, NativeSaveRevisionAuthority, NativeSaveSelection};
+    let mut t = T::new(json!({}));
+    let old = t.file("native-rename-cancelled.docx", b"document");
+    t.open(&old);
+    let destination = captured_docs_owner(&t);
+    let mut source = destination.clone();
+    source.context = source.context.with_document_lease(shell_contract::runtime::RendererGeneration::new());
+    let binding = NativeInvocationIssuer::new(shell_contract::runtime::CancelToken::default())
+        .issue_existing_document_save(Surface::Docs, source.view, NativeSaveSelection::ExactPath(PathBuf::from(&old)),
+            source, shell_contract::runtime::CancelToken::default()).unwrap();
+    let authority = NativeSaveRevisionAuthority::new(NativeSaveDestination::from_exact_selection(binding).unwrap(), Vec::new());
+    let extra = shell_contract::runtime::CancelToken::default();
+    extra.cancel();
+    let new = t.rt.dir.join("native-rename-must-not-publish.docx");
+    t.rt.events();
+    let answer = Rc::new(RefCell::new(None));
+    let completed = answer.clone();
+    t.editor().file_renamed_existing_document(t.a.view, Path::new(&old), &new, &authority, Path::new(&old), &destination, &[],
+        &shell_contract::runtime::CancelToken::default(), &shell_contract::runtime::CancelToken::default(), &[extra],
+        Box::new(move |result| *completed.borrow_mut() = Some(result)));
+    t.rt.drain();
+    assert!(answer.borrow().as_ref().unwrap().is_err());
+    assert_eq!(t.editor().document_path(t.a.view), Some(PathBuf::from(&old)));
+    assert!(!t.rt.events().iter().any(|event| event.channel == "docs:renamed"));
+}
+
+#[test]
+fn recovery_rename_rejects_revoked_captured_participant_without_changing_document() {
+    let mut t = T::new(json!({}));
+    let old = t.file("recovery-rename.docx", b"document");
+    t.open(&old);
+    let extra = t.rt.view(22, Surface::Home);
+    let effects = t.rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap().clone();
+    let extra_generation = t.rt.services.views.renderer_generation(extra.view).unwrap();
+    let participant = effects.capture_owner(extra.view, &extra_generation).unwrap();
+    let created = t.rt.services.views.renderer_generation(t.a.view).unwrap();
+    let source = captured_docs_owner(&t);
+    let cancel = shell_contract::runtime::CancelToken::default();
+    let (_issuer, closure, browser_owner) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(t.a.view, created.clone());
+    let target = shell_contract::ipc::RecoveryOpenTarget::bind(
+        shell_contract::ipc::RecoveryOpenContext::Renderer { source: source.clone(), participants: Vec::new(),
+            cancel: cancel.clone(), pending: cancel.clone() },
+        t.a.view, created.clone(), closure, browser_owner,
+    ).unwrap();
+    let receipt = effects.commit_recovery_seed(&target, &mut || Ok(())).unwrap();
+    let synthetic = t.rt.services.hosts.get::<Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>().unwrap().clone();
+    let provenance = shell_contract::hosts::synthetic::SyntheticNativeOrigin::new();
+    let root = synthetic.capture_invocation_root(t.a.view, &created, &provenance).unwrap();
+    target.retain_native_registration(root).unwrap();
+    let receiver = synthetic.capture_invocation_docs(t.a.view, &created, &provenance).unwrap();
+    let destination = receiver.clone();
+    extra_generation.revoke();
+    let new = t.rt.dir.join("recovery-rename-next.docx");
+    t.rt.events();
+    let result = Rc::new(RefCell::new(None));
+    let output = result.clone();
+    t.editor().file_renamed_recovery(t.a.view, Path::new(&old), &new, &receipt, &receiver, &destination,
+        &[participant], &cancel, &cancel, Box::new(move |value| *output.borrow_mut() = Some(value)));
+    assert!(result.borrow().as_ref().unwrap().is_err());
+    assert_eq!(t.editor().document_path(t.a.view), Some(PathBuf::from(&old)));
+    assert!(!t.rt.events().iter().any(|event| event.channel == "docs:renamed"));
+}
+
+#[test]
+fn recovery_rename_updates_the_captured_document_and_notifies_it() {
+    let mut t = T::new(json!({}));
+    let old = t.file("recovery-rename-ok.docx", b"document");
+    t.open(&old);
+    let effects = t.rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap().clone();
+    let created = t.rt.services.views.renderer_generation(t.a.view).unwrap();
+    let source = captured_docs_owner(&t);
+    let cancel = shell_contract::runtime::CancelToken::default();
+    let (_issuer, closure, browser_owner) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(t.a.view, created.clone());
+    let target = shell_contract::ipc::RecoveryOpenTarget::bind(
+        shell_contract::ipc::RecoveryOpenContext::Renderer { source, participants: Vec::new(),
+            cancel: cancel.clone(), pending: cancel.clone() },
+        t.a.view, created.clone(), closure, browser_owner,
+    ).unwrap();
+    let receipt = effects.commit_recovery_seed(&target, &mut || Ok(())).unwrap();
+    let synthetic = t.rt.services.hosts.get::<Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>().unwrap().clone();
+    let provenance = shell_contract::hosts::synthetic::SyntheticNativeOrigin::new();
+    target.retain_native_registration(synthetic.capture_invocation_root(t.a.view, &created, &provenance).unwrap()).unwrap();
+    let receiver = synthetic.capture_invocation_docs(t.a.view, &created, &provenance).unwrap();
+    let new = t.rt.dir.join("recovery-renamed.docx");
+    std::fs::rename(&old, &new).unwrap();
+    t.rt.events();
+    let result = Rc::new(RefCell::new(None));
+    let output = result.clone();
+    t.editor().file_renamed_recovery(t.a.view, Path::new(&old), &new, &receipt, &receiver, &receiver,
+        &[], &cancel, &cancel, Box::new(move |value| *output.borrow_mut() = Some(value)));
+    assert!(result.borrow().as_ref().unwrap().is_ok());
+    assert_eq!(t.editor().document_path(t.a.view).as_ref(), Some(&new));
+    assert!(t.rt.events().iter().any(|event| event.channel == "docs:renamed"));
+}
+
+#[test]
+fn headless_abort_drains_the_existing_target_input_and_timer_once() {
+    let mut t = T::new(json!({ "is_headless": true }));
+    let path = t.file("headless-input.docx", b"document");
+    let out = t.rt.dir.join("headless-output.html").to_string_lossy().into_owned();
+    let results = Rc::new(RefCell::new(Vec::new()));
+    let completed = results.clone();
+    let editor = t.editor();
+    editor.begin_headless_export(t.a.view, path, out.clone(), "html", Duration::from_secs(1),
+        Box::new(move |result| completed.borrow_mut().push(result)));
+    assert!(editor.fail_headless_export(t.a.view, "native navigation failed".into()));
+    assert!(!editor.fail_headless_export(t.a.view, "another failure".into()));
+    assert!(t.rt.invoke_now("docs:consume-headless-export", t.a, vec![]).is_err());
+    assert!(t.rt.invoke_now("docs:consume-pending-open", t.a, vec![]).is_err());
+    t.rt.advance(Duration::from_secs(2));
+    t.rt.send("docs:headless-export-done", t.a, vec![obj(&[("ok", true.into_ipc())])]);
+    assert_eq!(*results.borrow(), vec![Err("native navigation failed".to_owned())]);
+    assert!(!Path::new(&out).exists());
+}
+
+#[test]
+fn canceled_native_headless_reservation_cannot_seed_or_authorize_an_export() {
+    use shell_contract::ipc::{NativeInvocationIssuer, NativeInvocationSelection};
+    let mut t = T::new(json!({ "is_headless": true }));
+    let path = t.file("native-headless-input.docx", b"document");
+    let out = t.rt.dir.join("native-headless-output.pdf");
+    let cancel = shell_contract::runtime::CancelToken::default();
+    let issuer = NativeInvocationIssuer::new(shell_contract::runtime::CancelToken::default());
+    let operation = issuer.issue(NativeInvocationSelection::HeadlessExport {
+        surface: Surface::Docs, input: path.clone().into(), output: out.clone(), format: "pdf".into(),
+        page: None, ops: None, batch: None,
+    }, cancel.clone());
+    let generation = t.rt.services.views.renderer_generation(t.a.view).unwrap();
+    let target = operation.reserve_target(t.a.view, generation).unwrap();
+    cancel.cancel();
+    let results = Rc::new(RefCell::new(Vec::new()));
+    let completed = results.clone();
+    t.editor().begin_headless_export_native(t.a.view, path, out.to_string_lossy().into_owned(), "pdf",
+        Duration::from_secs(1), &target, Box::new(move |result| completed.borrow_mut().push(result)));
+    assert!(results.borrow().first().unwrap().is_err());
+    assert!(t.rt.invoke_now("docs:consume-headless-export", t.a, vec![]).is_err());
+    assert!(t.rt.invoke_now("docs:consume-pending-open", t.a, vec![]).is_err());
+    assert!(!out.exists());
+    t.rt.advance(Duration::from_secs(2));
+    assert_eq!(results.borrow().len(), 1);
+}
+
+#[test]
+fn native_headless_reservation_cannot_authorize_another_output() {
+    use shell_contract::ipc::{NativeInvocationIssuer, NativeInvocationSelection};
+    let mut t = T::new(json!({ "is_headless": true }));
+    let path = t.file("selected-headless.docx", b"document");
+    let selected = t.rt.dir.join("selected.pdf");
+    let other = t.rt.dir.join("other.pdf");
+    let issuer = NativeInvocationIssuer::new(shell_contract::runtime::CancelToken::default());
+    let operation = issuer.issue(NativeInvocationSelection::HeadlessExport {
+        surface: Surface::Docs, input: path.clone().into(), output: selected, format: "pdf".into(),
+        page: None, ops: None, batch: None,
+    }, shell_contract::runtime::CancelToken::default());
+    let generation = t.rt.services.views.renderer_generation(t.a.view).unwrap();
+    let target = operation.reserve_target(t.a.view, generation).unwrap();
+    let results = Rc::new(RefCell::new(Vec::new()));
+    let completed = results.clone();
+    t.editor().begin_headless_export_native(t.a.view, path, other.to_string_lossy().into_owned(), "pdf",
+        Duration::from_secs(1), &target, Box::new(move |result| completed.borrow_mut().push(result)));
+    assert!(results.borrow().first().unwrap().is_err());
+    assert!(t.rt.invoke_now("docs:consume-headless-export", t.a, vec![]).is_err());
+    assert!(t.rt.invoke_now("docs:consume-pending-open", t.a, vec![]).is_err());
+    assert!(!other.exists());
+}
+
+#[test]
+fn captured_recovery_waits_for_real_copy_preparation_before_navigation() {
+    use main_core::packages::electron_utils::recovery_contract::{RecoveryEditorContract, RecoveryOpenUntitledRequest};
+    use main_core::packages::electron_utils::recovery_store::RecoveryIdentity;
+    let mut t = T::with_workers(json!({}), Some(Arc::new(BackgroundWorkers)));
+    let metadata = obj(&[("title", s("Recovered notes")), ("format", s("docx"))]);
+    let write = t.rt.invoke("docs:write-recovery", t.a, vec![IpcValue::Null, ab(b"saved recovery"), metadata]);
+    assert_eq!(get(&await_owned_reply(&mut t, &write).unwrap(), "ok"), &IpcValue::Bool(true));
+    let identity = t.editor().recovery_identity(t.a.view).unwrap();
+    t.editor().teardown(t.a.view, true);
+    let restored_view = t.rt.view(2, Surface::Docs);
+    t.editor().register_view(restored_view.view).unwrap();
+    let source = t.rt.view(22, Surface::Home);
+    let source_generation = t.rt.services.views.renderer_generation(source.view).unwrap();
+    let origin = t.rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap()
+        .capture_owner(source.view, &source_generation).unwrap();
+    let created = t.rt.services.views.renderer_generation(restored_view.view).unwrap();
+    let (_issuer, closure, browser_owner) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(restored_view.view, created.clone());
+    let target = shell_contract::ipc::RecoveryOpenTarget::bind(shell_contract::ipc::RecoveryOpenContext::Renderer {
+        source: origin, participants: Vec::new(), cancel: shell_contract::runtime::CancelToken::default(),
+        pending: shell_contract::runtime::CancelToken::default(),
+    }, restored_view.view, created.clone(), closure, browser_owner).unwrap();
+    let editor = t.rt.provided().all::<dyn RecoveryEditorContract<ViewId, shell_contract::ipc::RecoveryOpenTarget>>()
+        .into_iter().find(|editor| editor.kind() == "docs").unwrap();
+    let answer = Rc::new(RefCell::new(None));
+    let completed = answer.clone();
+    editor.open_untitled_copy(&restored_view.view, &RecoveryOpenUntitledRequest {
+        copy: RecoveryIdentity::Untitled(identity.clone()), title: String::new(), save_as_default_path: None,
+    }, &target, Box::new(move |result| *completed.borrow_mut() = Some(result)));
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while answer.borrow().is_none() {
+        t.rt.drain();
+        assert!(std::time::Instant::now() < deadline, "captured recovery did not settle");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(answer.borrow().as_ref().unwrap().is_ok());
+    let synthetic = t.rt.services.hosts.get::<Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>().unwrap().clone();
+    let provenance = shell_contract::hosts::synthetic::SyntheticNativeOrigin::new();
+    let root = synthetic.capture_invocation_root(restored_view.view, &created, &provenance).unwrap();
+    target.retain_native_registration(root).unwrap();
+    let receiver = synthetic.capture_invocation_docs(restored_view.view, &created, &provenance).unwrap();
+    let restored = t.rt.invoke_native("docs:consume-copy", restored_view, vec![], receiver.context,
+        shell_contract::runtime::CancelToken::default());
+    let restored = await_owned_reply(&mut t, &restored).unwrap();
+    assert_eq!(get(&restored, "name"), &s("Recovered notes.docx"));
+    assert_eq!(get(&restored, "dataUrl"), &s("handoff:7361766564207265636f76657279"));
+    let receipt = target.committed_seed().unwrap();
+    assert!(receipt.settlement().is_none());
+    let token = get(&restored, "recoveryReceipt").clone();
+    let receiver = synthetic.capture_invocation_docs(restored_view.view, &created, &provenance).unwrap();
+    let ack = t.rt.invoke_native("docs:recovery-initialized", restored_view, vec![token, IpcValue::Bool(true)],
+        receiver.context, shell_contract::runtime::CancelToken::default());
+    assert!(ack.take().unwrap().is_ok());
+    assert!(receipt.settlement().unwrap().is_ok());
+    assert_eq!(t.editor().recovery_identity(restored_view.view), Some(identity));
+}
+
+#[test]
+fn canceled_captured_recovery_does_not_seed_the_target() {
+    use main_core::packages::electron_utils::recovery_contract::{RecoveryEditorContract, RecoveryOpenFileRequest};
+    let mut t = T::with_workers(json!({}), Some(Arc::new(BackgroundWorkers)));
+    let path = t.file("canceled-recovery.docx", b"unchanged");
+    let source = t.rt.view(22, Surface::Home);
+    let generation = t.rt.services.views.renderer_generation(source.view).unwrap();
+    let origin = t.rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap()
+        .capture_owner(source.view, &generation).unwrap();
+    let cancel = shell_contract::runtime::CancelToken::default();
+    let created = t.rt.services.views.renderer_generation(t.a.view).unwrap();
+    let (_issuer, closure, browser_owner) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(t.a.view, created.clone());
+    let target = shell_contract::ipc::RecoveryOpenTarget::bind(shell_contract::ipc::RecoveryOpenContext::Renderer {
+        source: origin, participants: Vec::new(), cancel: cancel.clone(),
+        pending: shell_contract::runtime::CancelToken::default(),
+    }, t.a.view, created, closure, browser_owner).unwrap();
+    let contract = t.rt.provided().all::<dyn RecoveryEditorContract<ViewId, shell_contract::ipc::RecoveryOpenTarget>>()
+        .into_iter().find(|editor| editor.kind() == "docs").unwrap();
+    cancel.cancel();
+    let answer = Rc::new(RefCell::new(None));
+    let completed = answer.clone();
+    contract.open_file_with_decision(&t.a.view, &RecoveryOpenFileRequest {
+        file_path: path.clone(), decision: RecoveryOpenDecision::Original,
+    }, &target, Box::new(move |result| *completed.borrow_mut() = Some(result)));
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while answer.borrow().is_none() {
+        t.rt.drain();
+        assert!(std::time::Instant::now() < deadline, "canceled recovery did not settle");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(answer.borrow().as_ref().unwrap().is_err());
+    let pending = t.rt.invoke("docs:consume-pending-open", t.a, vec![]);
+    assert_eq!(await_owned_reply(&mut t, &pending).unwrap(), IpcValue::Null);
+    assert_eq!(std::fs::read(path).unwrap(), b"unchanged");
+}
+
+#[test]
+fn discarded_recovery_worker_settles_the_core_callback_once() {
+    use main_core::packages::electron_utils::recovery_contract::{RecoveryEditorContract, RecoveryOpenFileRequest};
+    let mut t = T::with_workers(json!({}), Some(Arc::new(DiscardWorkers)));
+    let path = t.file("discarded-recovery.docx", b"unchanged");
+    let source = t.rt.view(22, Surface::Home);
+    let generation = t.rt.services.views.renderer_generation(source.view).unwrap();
+    let origin = t.rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap()
+        .capture_owner(source.view, &generation).unwrap();
+    let created = t.rt.services.views.renderer_generation(t.a.view).unwrap();
+    let (_issuer, closure, browser_owner) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(t.a.view, created.clone());
+    let target = shell_contract::ipc::RecoveryOpenTarget::bind(shell_contract::ipc::RecoveryOpenContext::Renderer {
+        source: origin, participants: Vec::new(), cancel: shell_contract::runtime::CancelToken::default(),
+        pending: shell_contract::runtime::CancelToken::default(),
+    }, t.a.view, created, closure, browser_owner).unwrap();
+    let contract = t.rt.provided().all::<dyn RecoveryEditorContract<ViewId, shell_contract::ipc::RecoveryOpenTarget>>()
+        .into_iter().find(|editor| editor.kind() == "docs").unwrap();
+    let results = Rc::new(RefCell::new(Vec::new()));
+    let completed = results.clone();
+    contract.open_file_with_decision(&t.a.view, &RecoveryOpenFileRequest {
+        file_path: path.clone(), decision: RecoveryOpenDecision::Original,
+    }, &target, Box::new(move |result| completed.borrow_mut().push(result)));
+    t.rt.drain();
+    assert_eq!(results.borrow().len(), 1);
+    assert!(results.borrow()[0].is_err());
+    assert_eq!(std::fs::read(path).unwrap(), b"unchanged");
+}
+
+#[test]
+fn blank_recovery_waits_for_authenticated_renderer_initialization() {
+    let mut t = T::new(json!({}));
+    let source = t.rt.view(22, Surface::Home);
+    let generation = t.rt.services.views.renderer_generation(source.view).unwrap();
+    let effects = t.rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap().clone();
+    let origin = effects.capture_owner(source.view, &generation).unwrap();
+    let created = t.rt.services.views.renderer_generation(t.a.view).unwrap();
+    let (_issuer, closure, browser_owner) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(t.a.view, created.clone());
+    let target = shell_contract::ipc::RecoveryOpenTarget::bind(shell_contract::ipc::RecoveryOpenContext::Renderer {
+        source: origin, participants: Vec::new(), cancel: shell_contract::runtime::CancelToken::default(),
+        pending: shell_contract::runtime::CancelToken::default(),
+    }, t.a.view, created.clone(), closure, browser_owner).unwrap();
+    let result = Rc::new(RefCell::new(None));
+    let completed = result.clone();
+    t.editor().queue_blank_recovery(t.a.view, &target, "Original tab title".into(),
+        Box::new(move |value| *completed.borrow_mut() = Some(value)));
+    assert!(result.borrow().as_ref().unwrap().is_ok());
+    let receipt = target.committed_seed().unwrap();
+    assert!(receipt.settlement().is_none());
+    let synthetic = t.rt.services.hosts.get::<Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>().unwrap().clone();
+    let provenance = shell_contract::hosts::synthetic::SyntheticNativeOrigin::new();
+    target.retain_native_registration(synthetic.capture_invocation_root(t.a.view, &created, &provenance).unwrap()).unwrap();
+    let wrong = shell_contract::ipc::NativeContext::with_renderer((), shell_contract::runtime::RendererGeneration::new());
+    let refused = t.rt.invoke_native("docs:consume-new-blank", t.a, vec![], wrong,
+        shell_contract::runtime::CancelToken::default()).take().unwrap();
+    assert!(refused.is_err());
+    assert!(receipt.settlement().is_none());
+    let receiver = synthetic.capture_invocation_docs(t.a.view, &created, &provenance).unwrap();
+    let blank = t.rt.invoke_native("docs:consume-new-blank", t.a, vec![], receiver.context.clone(),
+        shell_contract::runtime::CancelToken::default()).take().unwrap().unwrap();
+    assert!(receipt.settlement().is_none());
+    let drained = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let notified = drained.clone();
+    target.drain_work(t.rt.services.core.clone(), Box::new(move || notified.store(true, std::sync::atomic::Ordering::SeqCst))).unwrap();
+    t.rt.drain();
+    assert!(!drained.load(std::sync::atomic::Ordering::SeqCst));
+    let token = get(&blank, "recoveryReceipt").clone();
+    let result = t.rt.invoke_native("docs:recovery-initialized", t.a, vec![token.clone(), IpcValue::Bool(false), s("blank failed")],
+        receiver.context.clone(), shell_contract::runtime::CancelToken::default()).take().unwrap();
+    assert!(result.is_ok());
+    t.rt.drain();
+    assert!(drained.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(receipt.settlement(), Some(Err("blank failed".into())));
+    let duplicate = t.rt.invoke_native("docs:recovery-initialized", t.a, vec![token, IpcValue::Bool(true)],
+        receiver.context, shell_contract::runtime::CancelToken::default()).take().unwrap();
+    assert!(duplicate.is_err());
+    assert_eq!(receipt.settlement(), Some(Err("blank failed".into())));
+}
+
+#[test]
+fn blank_recovery_rejects_a_different_native_selection() {
+    use shell_contract::ipc::{NativeInvocationIssuer, NativeInvocationSelection, RecoveryOpenContext, RecoveryOpenTarget};
+    let t = T::new(json!({}));
+    let issuer = NativeInvocationIssuer::new(shell_contract::runtime::CancelToken::default());
+    let operation = issuer.issue(NativeInvocationSelection::RecoveryBlank {
+        surface: Surface::Docs, title: "Selected".into(),
+    }, shell_contract::runtime::CancelToken::default());
+    let created = t.rt.services.views.renderer_generation(t.a.view).unwrap();
+    let (_issuer, closure, browser_owner) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(t.a.view, created.clone());
+    let target = RecoveryOpenTarget::bind(RecoveryOpenContext::NativeStartup(operation), t.a.view, created, closure, browser_owner).unwrap();
+    let result = Rc::new(RefCell::new(None));
+    let completed = result.clone();
+    t.editor().queue_blank_recovery(t.a.view, &target, "Other".into(),
+        Box::new(move |value| *completed.borrow_mut() = Some(value)));
+    assert!(result.borrow().as_ref().unwrap().is_err());
+    assert!(target.committed_seed().is_none());
+}
+
+#[test]
+fn recovery_file_uses_the_copy_pinned_before_navigation() {
+    use main_core::packages::electron_utils::recovery_contract::{RecoveryEditorContract, RecoveryOpenFileRequest};
+    use main_core::packages::electron_utils::recovery_store::recovery_copy_path;
+    let mut t = T::with_workers(json!({}), Some(Arc::new(BackgroundWorkers)));
+    let path = t.file("pinned-recovery.docx", b"original");
+    let opened = t.rt.invoke("docs:open-path", t.a, vec![s(&path)]);
+    assert!(await_owned_reply(&mut t, &opened).is_ok());
+    let write = t.rt.invoke("docs:write-recovery", t.a, vec![s(&path), ab(b"captured draft")]);
+    assert_eq!(get(&await_owned_reply(&mut t, &write).unwrap(), "ok"), &IpcValue::Bool(true));
+    let copy = recovery_copy_path(&t.editor().0.user_data(&[]), &super::recovery::file_identity(&path)).unwrap();
+    let restored = t.rt.view(2, Surface::Docs);
+    t.editor().register_view(restored.view).unwrap();
+    let source = t.rt.view(22, Surface::Home);
+    let source_generation = t.rt.services.views.renderer_generation(source.view).unwrap();
+    let effects = t.rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap().clone();
+    let origin = effects.capture_owner(source.view, &source_generation).unwrap();
+    let created = t.rt.services.views.renderer_generation(restored.view).unwrap();
+    let (_issuer, closure, browser_owner) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(restored.view, created.clone());
+    let target = shell_contract::ipc::RecoveryOpenTarget::bind(shell_contract::ipc::RecoveryOpenContext::Renderer {
+        source: origin, participants: Vec::new(), cancel: shell_contract::runtime::CancelToken::default(),
+        pending: shell_contract::runtime::CancelToken::default(),
+    }, restored.view, created.clone(), closure, browser_owner).unwrap();
+    let contract = t.rt.provided().all::<dyn RecoveryEditorContract<ViewId, shell_contract::ipc::RecoveryOpenTarget>>()
+        .into_iter().find(|editor| editor.kind() == "docs").unwrap();
+    let answer = Rc::new(RefCell::new(None));
+    let completed = answer.clone();
+    contract.open_file_with_decision(&restored.view, &RecoveryOpenFileRequest {
+        file_path: path, decision: RecoveryOpenDecision::Restore,
+    }, &target, Box::new(move |result| *completed.borrow_mut() = Some(result)));
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while answer.borrow().is_none() {
+        t.rt.drain();
+        assert!(std::time::Instant::now() < deadline, "captured recovery did not settle");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(answer.borrow().as_ref().unwrap().is_ok());
+    std::fs::write(copy, b"replacement draft").unwrap();
+    let synthetic = t.rt.services.hosts.get::<Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>().unwrap().clone();
+    let provenance = shell_contract::hosts::synthetic::SyntheticNativeOrigin::new();
+    target.retain_native_registration(synthetic.capture_invocation_root(restored.view, &created, &provenance).unwrap()).unwrap();
+    let receiver = synthetic.capture_invocation_docs(restored.view, &created, &provenance).unwrap();
+    let pending = t.rt.invoke_native("docs:consume-pending-open", restored, vec![], receiver.context,
+        shell_contract::runtime::CancelToken::default());
+    let opened = await_owned_reply(&mut t, &pending).unwrap();
+    assert_eq!(get(&opened, "dataUrl"), &s("handoff:6361707475726564206472616674"));
+    assert!(target.committed_seed().unwrap().settlement().is_none());
+}
+
+#[test]
+fn synthetic_media_transition_rejects_cancellation_and_retains_the_exact_successor() {
+    let mut t = T::new(json!({}));
+    let editor = t.editor();
+    let lease = editor.0.media_views.borrow().get(&t.a.view).unwrap().lease.clone();
+    let old = lease.current().unwrap();
+    let candidate = lease.prepare_document().unwrap();
+    let successor = candidate.permit().clone();
+    let stage = super::media_transition::DocsMediaStageAdapter {
+        lease: lease.clone(), old: old.clone(), prior: None, candidate,
+    };
+    let generation = t.rt.services.views.renderer_generation(t.a.view).unwrap();
+    let synthetic = t.rt.services.hosts.get::<Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>().unwrap().clone();
+    let provenance = shell_contract::hosts::synthetic::SyntheticNativeOrigin::new();
+    let owner = synthetic.capture_invocation_docs(t.a.view, &generation, &provenance).unwrap();
+    let cleanup = Rc::new(RefCell::new(Some(editor.capture_disposal(t.a.view, &owner).unwrap())));
+    let browser = editor.0.media_views.borrow().get(&t.a.view).unwrap().owner.clone();
+    let effects = t.rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap().clone();
+    let canceled = shell_contract::runtime::CancelToken::default();
+    canceled.cancel();
+    assert!(effects.stage_docs_media(&owner, &[], &canceled, &canceled, &stage, None).is_err());
+    assert!(lease.pending().is_none());
+    let pending = shell_contract::runtime::CancelToken::default();
+    let foreign_lease = main_core::docs::byte_handoff::MediaViewLease::new(t.a.view.0).unwrap();
+    let foreign = super::media_transition::DocsMediaStageAdapter {
+        lease: lease.clone(), old: old.clone(), prior: None, candidate: foreign_lease.prepare_document().unwrap(),
+    };
+    assert!(effects.stage_docs_media(&owner, &[], &pending, &pending, &foreign, None).is_err());
+    assert!(lease.pending().is_none());
+    effects.stage_docs_media(&owner, &[], &pending, &pending, &stage, None).unwrap();
+    assert!(lease.pending().unwrap().same_session(&successor));
+    let transition = super::media_transition::DocsMediaTransitionAdapter {
+        lease: lease.clone(), old: old.clone(), successor: successor.clone(),
+    };
+    assert!(effects.transition_docs_media(&owner, &[], &canceled, &canceled, &transition, None, &mut |_, commit| commit()).is_err());
+    assert!(old.is_active());
+    assert!(lease.current().unwrap().same_session(&old));
+    assert!(super::disposal::retain_successor(Some(&cleanup), &lease, &old, &successor, &owner,
+        &mut || Err("commit rejected".into())).is_err());
+    assert!(lease.current().unwrap().same_session(&old));
+    let accepted = effects.transition_docs_media(&owner, &[], &pending, &pending, &transition, None,
+        &mut |next, commit| super::disposal::retain_successor(Some(&cleanup), &lease, &old, &successor, next, commit)).unwrap();
+    editor.0.retain_synthetic_successor(t.a.view, &accepted);
+    assert!(!old.is_active());
+    assert!(lease.current().unwrap().same_session(&successor));
+    assert_eq!(effects.docs_document_identity(&accepted), Some((t.a.view, successor.owner().generation)));
+    assert!(effects.transition_docs_media(&owner, &[], &pending, &pending, &transition, None, &mut |_, commit| commit()).is_err());
+    let recaptured = synthetic.capture_invocation_docs(t.a.view, &generation, &provenance).unwrap();
+    assert_eq!(effects.docs_document_identity(&recaptured), Some((t.a.view, successor.owner().generation)));
+    let actor = cleanup.borrow_mut().take().unwrap();
+    let answer = Rc::new(RefCell::new(None));
+    let completed = answer.clone();
+    actor.run_cleanup(Box::new(move |effect| browser.reservation().with_owner(&browser, |transition| effect(transition))),
+        Box::new(move |result| *completed.borrow_mut() = Some(result)));
+    assert!(matches!(await_disposal(&mut t, &answer), super::editors::DocsDisposalOutcome::Retired { cleanup: Ok(()) }));
+    assert!(!successor.is_active());
+}
+
+#[test]
+fn canceled_recovery_drain_waits_for_copy_worker_and_core_continuation() {
+    use main_core::packages::electron_utils::recovery_contract::{RecoveryEditorContract, RecoveryOpenUntitledRequest};
+    use main_core::packages::electron_utils::recovery_store::RecoveryIdentity;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let workers = Arc::new(HeldWorkers::default());
+    let mut t = T::with_workers(json!({}), Some(workers.clone()));
+    let metadata = obj(&[("title", s("Recovery")), ("format", s("docx"))]);
+    let write = t.rt.invoke("docs:write-recovery", t.a, vec![IpcValue::Null, ab(b"draft"), metadata]);
+    assert!(await_owned_reply(&mut t, &write).is_ok());
+    let identity = t.editor().recovery_identity(t.a.view).unwrap();
+    t.editor().teardown(t.a.view, true);
+    let restored = t.rt.view(2, Surface::Docs);
+    t.editor().register_view(restored.view).unwrap();
+    let source = t.rt.view(22, Surface::Home);
+    let generation = t.rt.services.views.renderer_generation(source.view).unwrap();
+    let effects = t.rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap().clone();
+    let origin = effects.capture_owner(source.view, &generation).unwrap();
+    let created = t.rt.services.views.renderer_generation(restored.view).unwrap();
+    let (_issuer, closure, browser_owner) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(restored.view, created.clone());
+    let target = shell_contract::ipc::RecoveryOpenTarget::bind(shell_contract::ipc::RecoveryOpenContext::Renderer {
+        source: origin, participants: Vec::new(), cancel: shell_contract::runtime::CancelToken::default(),
+        pending: shell_contract::runtime::CancelToken::default(),
+    }, restored.view, created.clone(), closure, browser_owner).unwrap();
+    let contract = t.rt.provided().all::<dyn RecoveryEditorContract<ViewId, shell_contract::ipc::RecoveryOpenTarget>>()
+        .into_iter().find(|editor| editor.kind() == "docs").unwrap();
+    let answer = Rc::new(RefCell::new(None));
+    let completed = answer.clone();
+    contract.open_untitled_copy(&restored.view, &RecoveryOpenUntitledRequest {
+        copy: RecoveryIdentity::Untitled(identity), title: String::new(), save_as_default_path: None,
+    }, &target, Box::new(move |result| *completed.borrow_mut() = Some(result)));
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while answer.borrow().is_none() {
+        t.rt.drain();
+        assert!(std::time::Instant::now() < deadline, "recovery preparation did not settle");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(answer.borrow().as_ref().unwrap().is_ok());
+    let synthetic = t.rt.services.hosts.get::<Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>().unwrap().clone();
+    let provenance = shell_contract::hosts::synthetic::SyntheticNativeOrigin::new();
+    target.retain_native_registration(synthetic.capture_invocation_root(restored.view, &created, &provenance).unwrap()).unwrap();
+    let receiver = synthetic.capture_invocation_docs(restored.view, &created, &provenance).unwrap();
+    workers.hold.store(true, Ordering::SeqCst);
+    let _reply = t.rt.invoke_native("docs:consume-copy", restored, vec![], receiver.context,
+        shell_contract::runtime::CancelToken::default());
+    created.revoke();
+    let drained = Arc::new(AtomicBool::new(false));
+    let notified = drained.clone();
+    target.drain_work(t.rt.services.core.clone(), Box::new(move || notified.store(true, Ordering::SeqCst))).unwrap();
+    t.rt.drain();
+    assert!(!drained.load(Ordering::SeqCst));
+    let job = workers.jobs.lock().unwrap().pop().expect("copy worker was not queued");
+    job();
+    t.rt.drain();
+    assert!(drained.load(Ordering::SeqCst));
+}
+
+#[cfg(unix)]
+#[test]
+fn saved_disposal_rejects_other_browser_and_settles_after_commit() {
+    use std::ffi::CString;
+    use shell_contract::ipc::{CallContext, NativeClosureIssuer, NativeContext, NativeInvocationIssuer,
+        NativeRequestOwner, NativeSaveDestination, NativeSavedInput, NativeSavedPath, NativeSavedTarget, NativeSaveSelection, Responder};
+    use shell_contract::runtime::{CancelToken, RendererGeneration};
+
+    let mut t = T::new(json!({}));
+    let parent = std::fs::File::open(&t.rt.dir).unwrap();
+    let path = t.rt.dir.join("saved.docx");
+    let effects = t.rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap().clone();
+    let source_view = t.a.view;
+    let source_generation = t.rt.services.views.renderer_generation(source_view).unwrap();
+    let source = effects.capture_owner(source_view, &source_generation).unwrap();
+    let source = t.editor().capture_document_owner(source_view, source).unwrap();
+    let issuer = NativeInvocationIssuer::new(CancelToken::new());
+    let binding = issuer.issue_existing_document_save(Surface::Docs, source_view, NativeSaveSelection::ExactPath(path.clone()), source, CancelToken::new()).unwrap();
+    let selection = NativeSaveDestination::from_exact_selection(binding).unwrap();
+    let staging = file_commit::PrivateDirectory::create(&parent).unwrap();
+    let stage = staging.create_stage(0o600).unwrap().quarantine().ok().unwrap();
+    let stage = stage.write_owned(b"saved bytes".to_vec()).ok().unwrap();
+    let stage = stage.prepare(&parent, &CString::new("saved.docx").unwrap(), &path, file_commit::PublicationMode::Exclusive).ok().unwrap();
+    let cancel = CancelToken::new();
+    let pending = CancelToken::new();
+    let (output, snapshot) = effects.publish_native_staged_write(&selection, &[], &cancel, &pending, &[], stage).ok().unwrap();
+    let input = NativeSavedInput::from_written_snapshot(output.clone(), snapshot).unwrap();
+    let generation = RendererGeneration::new();
+    let (_, reservation, owner) = NativeClosureIssuer::new_with_owner(t.a.view, generation.clone());
+    let target = NativeSavedTarget::prepare(input, NativeSavedPath::Selected(output), Surface::Docs, t.a.view, generation.clone(), reservation.clone(), owner.clone(), vec![], CancelToken::new(), CancelToken::new(), vec![]).unwrap();
+    reservation.with_initial_owner(&owner, |transition| { target.validate_in_transition(transition)?.commit(); Ok(()) }).unwrap();
+    let native_owner = NativeRequestOwner { view: t.a.view, context: NativeContext::with_owner_loss((), generation, CancelToken::new()) };
+    let document = target.register_from_native_admitted(native_owner).unwrap();
+    std::fs::rename(&path, t.rt.dir.join("saved-original.docx")).unwrap();
+    std::fs::write(&path, b"replacement bytes").unwrap();
+    let lease = main_core::docs::byte_handoff::MediaViewLease::new(t.a.view.0).unwrap();
+    let decoded = super::saved_load::decode_saved(&document, &t.fake, &t.fake, lease.current().unwrap(), CancelToken::new()).unwrap();
+    assert_eq!(decoded.bytes.as_slice(), b"saved bytes");
+    let content = super::saved_load::prepare_content(
+        &document, &decoded,
+        main_core::packages::electron_utils::recovery_store::SavedRecoveryOpenResult::Original,
+        &t.fake, lease.current().unwrap(), CancelToken::new(),
+    ).unwrap();
+    assert_eq!(content.bytes, b"saved bytes");
+    assert!(!content.recovered && !content.recovery_failed);
+    let (_, _, foreign) = NativeClosureIssuer::new_with_owner(t.a.view, RendererGeneration::new());
+    let replied = Arc::new(Mutex::new(None));
+    let reply_slot = replied.clone();
+    let responder = Responder::new(move |result| *reply_slot.lock().unwrap() = Some(result));
+    let finished = Rc::new(RefCell::new(None));
+    let completion = finished.clone();
+    let cx = CallContext { sender: t.a, request: None, cancel: CancelToken::new(), native: None };
+    let docs = t.editor().0.clone();
+    docs.saved_loads.borrow_mut().insert(t.a.view, super::saved_load::SavedLoad {
+        target: target.clone(), document: None, waiter: Some((cx, responder)), done: Some(Box::new(move |result| *completion.borrow_mut() = Some(result))),
+        token: "saved-token".into(), response: None, started: false, applying: false, recovered: false, recovery: None, staged: Default::default(), failure: None, owner_loss: None, callbacks: Default::default(), _losses: vec![],
+    });
+    let received = Rc::new(std::cell::Cell::new(0));
+    let captured = received.clone();
+    let worker = super::saved_load::worker_callback(&docs, &target, move |value: u32| captured.set(value)).unwrap();
+    worker(7);
+    assert_eq!(received.get(), 0);
+    t.rt.drain();
+    assert_eq!(received.get(), 7);
+    assert!(super::saved_load::prepare_disposal(&docs, t.a.view, &foreign).is_err());
+    assert!(docs.saved_loads.borrow().contains_key(&t.a.view));
+    let detached = super::saved_load::prepare_disposal(&docs, t.a.view, &owner).unwrap().commit().unwrap();
+    assert!(replied.lock().unwrap().is_none());
+    assert!(finished.borrow().is_none());
+    detached.fail("closed");
+    assert!(replied.lock().unwrap().as_ref().unwrap().is_err());
+    assert!(finished.borrow().as_ref().unwrap().is_err());
+}
+
+#[test]
+fn generated_cleanup_ack_waits_for_original_completion() {
+    use shell_contract::hosts::{GeneratedObserveFailure, GeneratedPathObserver, GeneratedPathOutcome, GeneratedPathPending, GeneratedPathWake, GeneratedStartFailure, GeneratedTerminalAck, GeneratedTerminalDelivery, PreparedGeneratedPath};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Ack(Arc<AtomicUsize>);
+    impl GeneratedTerminalAck for Ack {
+        fn complete(&self) -> Result<(), String> { self.0.fetch_add(1, Ordering::SeqCst); Ok(()) }
+        fn restore(&self, _: Result<GeneratedPathOutcome, String>) { panic!("unacknowledged test delivery was dropped"); }
+    }
+    #[derive(Default)]
+    struct Pending(Mutex<Option<(GeneratedPathObserver, GeneratedPathWake)>>);
+    impl GeneratedPathPending for Pending {
+        fn observe(&self, observer: GeneratedPathObserver, wake: GeneratedPathWake) -> Result<(), GeneratedObserveFailure> {
+            let mut slot = self.0.lock().unwrap();
+            if slot.is_some() { return Err(GeneratedObserveFailure { error: "already observing".into(), observer, wake }); }
+            *slot = Some((observer, wake));
+            Ok(())
+        }
+        fn wake_observer(&self) -> Result<(), String> {
+            if let Some((_, wake)) = self.0.lock().unwrap().as_ref() { wake(); }
+            Ok(())
+        }
+        fn take_redelivery(&self) -> Result<Option<GeneratedTerminalDelivery>, String> { Ok(None) }
+        fn retry(&self, done: Box<dyn FnOnce(Result<(), String>) + Send>) { done(Ok(())); }
+        fn cancel_and_drain(&self, done: Box<dyn FnOnce(Result<(), String>) + Send>) { done(Ok(())); }
+    }
+    struct Prepared(Arc<Pending>);
+    impl PreparedGeneratedPath for Prepared {
+        fn task(&self) -> Arc<dyn GeneratedPathPending> { self.0.clone() }
+        fn start(self: Box<Self>) -> Result<(), GeneratedStartFailure> {
+            assert!(self.0.0.lock().unwrap().is_some());
+            Ok(())
+        }
+    }
+    let mut t = T::new(json!({}));
+    let docs = t.editor().0.clone();
+    let pending = Arc::new(Pending::default());
+    let acked = Arc::new(AtomicUsize::new(0));
+    let completed: Rc<RefCell<Option<super::cleanup_mailbox::Finished>>> = Rc::new(RefCell::new(None));
+    let captured = completed.clone();
+    let ticket = super::cleanup_mailbox::begin(&docs, Box::new(move |result, done| {
+        assert!(matches!(result, Ok(GeneratedPathOutcome::NotOpened)));
+        *captured.borrow_mut() = Some(done);
+    })).unwrap();
+    ticket.attach(&docs, Box::new(Prepared(pending.clone())));
+    let (observer, _) = pending.0.lock().unwrap().take().unwrap();
+    observer(GeneratedTerminalDelivery::new(Ok(GeneratedPathOutcome::NotOpened), Arc::new(Ack(acked.clone()))));
+    t.rt.drain();
+    assert_eq!(acked.load(Ordering::SeqCst), 0);
+    completed.borrow_mut().take().unwrap().complete();
+    assert_eq!(acked.load(Ordering::SeqCst), 1);
+    super::cleanup_mailbox::wake(&docs);
+    t.rt.drain();
+    assert_eq!(acked.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn generated_completion_survives_a_discarded_core_post() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct Ack;
+    impl shell_contract::hosts::GeneratedTerminalAck for Ack {
+        fn complete(&self) -> Result<(), String> { Ok(()) }
+        fn restore(&self, _: Result<shell_contract::hosts::GeneratedPathOutcome, String>) { panic!("unacknowledged test delivery was dropped"); }
+    }
+    #[derive(Default)]
+    struct Core {
+        discard: AtomicBool,
+        jobs: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
+    }
+    impl shell_contract::runtime::Thread for Core {
+        fn post(&self, job: Box<dyn FnOnce() + Send>) {
+            if self.discard.swap(false, Ordering::SeqCst) { drop(job); }
+            else { self.jobs.lock().unwrap().push(job); }
+        }
+        fn is_current(&self) -> bool { true }
+    }
+    let fake = Fake::new(&json!({}));
+    let host = fake.clone();
+    let mut rt = Rt::new(move |hosts| {
+        hosts.insert::<DocsEngineHost>(Arc::new(host.clone()));
+        hosts.insert::<DocsShellHost>(Arc::new(host));
+        hosts.insert::<Arc<Mutex<SharedRecoveryState>>>(Arc::new(Mutex::new(SharedRecoveryState::new("run"))));
+    });
+    let core = Arc::new(Core::default());
+    rt.services.core = core.clone();
+    fake.bind_query_runtime(&rt.services);
+    rt.register(super::entries).unwrap();
+    let docs = rt.provided().all::<DocsEditors>()[0].0.clone();
+    let calls = Rc::new(std::cell::Cell::new(0));
+    let counted = calls.clone();
+    let ticket = super::cleanup_mailbox::begin(&docs, Box::new(move |result, done| {
+        assert!(matches!(result, Ok(shell_contract::hosts::GeneratedPathOutcome::NotOpened)));
+        counted.set(counted.get() + 1);
+        done.complete();
+    })).unwrap();
+    core.discard.store(true, Ordering::SeqCst);
+    ticket.deliver(&docs, shell_contract::hosts::GeneratedTerminalDelivery::new(
+        Ok(shell_contract::hosts::GeneratedPathOutcome::NotOpened), Arc::new(Ack),
+    ));
+    assert_eq!(calls.get(), 0);
+    super::cleanup_mailbox::wake(&docs);
+    let job = core.jobs.lock().unwrap().pop().unwrap();
+    job();
+    assert_eq!(calls.get(), 1);
+    super::cleanup_mailbox::wake(&docs);
+    assert_eq!(calls.get(), 1);
+}
+
+#[test]
+fn generated_ack_failure_keeps_actor_task_for_retry() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Ack(AtomicUsize);
+    impl shell_contract::hosts::GeneratedTerminalAck for Ack {
+        fn complete(&self) -> Result<(), String> {
+            if self.0.fetch_add(1, Ordering::SeqCst) == 0 { Err("ack unavailable".into()) } else { Ok(()) }
+        }
+        fn restore(&self, _: Result<shell_contract::hosts::GeneratedPathOutcome, String>) { panic!("unacknowledged test delivery was dropped"); }
+    }
+    let mut t = T::new(json!({}));
+    let docs = t.editor().0.clone();
+    let replies = Rc::new(std::cell::Cell::new(0));
+    let captured = replies.clone();
+    let ticket = super::cleanup_mailbox::begin(&docs, Box::new(move |result, done| {
+        assert!(matches!(result, Ok(shell_contract::hosts::GeneratedPathOutcome::NotOpened)));
+        captured.set(captured.get() + 1);
+        done.complete();
+    })).unwrap();
+    let ack = Arc::new(Ack(AtomicUsize::new(0)));
+    ticket.deliver(&docs, shell_contract::hosts::GeneratedTerminalDelivery::new(
+        Ok(shell_contract::hosts::GeneratedPathOutcome::NotOpened), ack.clone(),
+    ));
+    t.rt.drain();
+    assert_eq!(replies.get(), 1);
+    assert_eq!(ack.0.load(Ordering::SeqCst), 1);
+    assert!(!t.fake.calls.lock().unwrap().iter().any(|call| call == &json!(["generatedActorCleanupComplete"])));
+    super::cleanup_mailbox::wake(&docs);
+    assert_eq!(replies.get(), 1);
+    assert_eq!(ack.0.load(Ordering::SeqCst), 2);
+    assert!(t.fake.calls.lock().unwrap().iter().any(|call| call == &json!(["generatedActorCleanupComplete"])));
 }

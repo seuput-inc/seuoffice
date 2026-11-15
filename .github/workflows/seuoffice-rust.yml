@@ -159,6 +159,11 @@ jobs:
       - name: Gate harness lint
         if: ${{ !cancelled() }}
         run: npx eslint tools/docx-diff tools/pptx-diff tools/odt-diff tools/fileparse-diff tools/epub-diff
+      - name: IPC harness typecheck and tests
+        if: ${{ !cancelled() }}
+        run: |
+          npm --prefix tools/ipc-diff run typecheck
+          npm --prefix tools/ipc-diff run test
 
       - name: Fault planning regressions
         if: ${{ !cancelled() }}
@@ -330,6 +335,7 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
+          rustup target add wasm32-wasip1
 
       - uses: actions/setup-node@v4
         with:
@@ -339,6 +345,9 @@ jobs:
       - name: Install
         run: npm ci
 
+      - name: Build the document engine for IPC consumers
+        run: npm run build:wasm
+
       - name: Faults
         shell: bash
         env:
@@ -347,7 +356,7 @@ jobs:
         run: |
           mkdir -p tools/ipc-diff/out
           node tools/ipc-diff/faults.mjs "$FAULTS" 2>&1 | tee tools/ipc-diff/out/faults.txt
-          exit ${PIPESTATUS[0]}
+          exit "${PIPESTATUS[0]}"
 
       - name: Keep the result
         if: ${{ always() }}

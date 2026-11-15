@@ -12,13 +12,20 @@
 //! document's `ready`): the reply arrives on the thread that would block, so
 //! such a flow returns a step the caller carries out and answers with a
 //! `resume_*` method ([`TabCloseStep`], [`OpenDocumentsStep`], [`EnsureStep`]).
-//! The three timers of the TypeScript are
-//! steps the caller drives: the spare Sheets view timer
-//! ([`TabManager::fire_spare_sheets_timer`]) and the two `setImmediate`
-//! layouts ([`TabManager::run_deferred`]). The window and view events are
+//! The three timers of the TypeScript are steps the caller drives: the spare
+//! Sheets view timer uses `prepare_spare_sheets_view` followed by its actual
+//! creation and `resume_spare_sheets_view`, and the two `setImmediate`
+//! layouts use [`TabManager::run_deferred`]. The window and view events are
 //! methods too (`on_window_resize`, `on_enter_html_full_screen`, ...), called
 //! by the adapter that registered the listener the host was asked to install.
 
+
+mod activation;
+pub use activation::{ActivationEnvironment, PreparedTabActivation, TabActivationEffect};
+mod startup;
+pub use startup::{PreparedStartupHydration, PreparedStartupMutation, StartupMutationResult};
+mod close_ack;
+pub use close_ack::{GeneratedRemovalPreview, GeneratedRemovalSurvivor, PreparedDocsClose, StagedDocsClose, TabRemovalState};
 use jscompat::node_path::host::basename;
 use jscompat::{js_regex, math_max, math_min, math_round, text_decoder_decode, truthy};
 use serde_json::{Map, Value};
@@ -30,6 +37,7 @@ use super::split_layout::{
 };
 use crate::node_fs::namespaced;
 use crate::packages::electron_utils::renderer_scheme::{RendererUrlError, renderer_url};
+use crate::packages::electron_utils::generate_handoff::{GenerateHandoffTarget, GenerateConvertTarget};
 use crate::packages::electron_utils::safe_external_url::safe_external_url;
 use crate::packages::i18n::PRODUCT_NAME;
 
@@ -120,6 +128,40 @@ impl From<RendererUrlError> for TabError {
 }
 
 pub type TabResult<T> = Result<T, TabError>;
+
+pub type ViewCreationCleanup<R> = std::sync::Arc<dyn Fn(Box<dyn FnOnce(Result<R, String>) + Send>) + Send + Sync>;
+pub type ViewClosureWatch<R> = std::sync::Arc<dyn Fn(Box<dyn FnOnce(R) + Send>) -> Result<(), String> + Send + Sync>;
+
+pub enum ViewCreationCleanupState<R> {
+    Complete,
+    Acknowledged(R),
+    Pending(ViewCreationCleanup<R>),
+}
+
+pub struct ViewCreationFailure<R> {
+    pub error: TabError,
+    pub cleanup: ViewCreationCleanupState<R>,
+}
+
+pub struct ViewCreationReady<V, R, B> {
+    pub view: V,
+    pub cleanup: ViewCreationCleanup<R>,
+    pub closure: ViewClosureWatch<R>,
+    pub reservation: B,
+}
+
+pub type ViewCreationResult<V, R, B> = Result<ViewCreationReady<V, R, B>, ViewCreationFailure<R>>;
+
+
+pub struct PreparedHelpOpen {
+    topic: Option<String>,
+    url: String,
+}
+
+pub enum HelpOpenCommit<V> {
+    Existing { id: String, view: Option<V>, unused: V, navigate: Option<String> },
+    Created { id: String, view: V, url: String },
+}
 
 /// `SplitViewState`
 #[derive(Debug, Clone, PartialEq)]
@@ -265,8 +307,9 @@ impl SessionStripState {
 
 /// `DetachedTab`: a tab lifted out of the strip with its live view
 #[derive(Debug, Clone, PartialEq)]
-pub struct DetachedTab<V> {
+pub struct DetachedTab<V, B> {
     pub view: V,
+    pub binding: B,
     pub kind: TabKind,
     pub title: String,
     pub file_path: Option<String>,
@@ -449,7 +492,7 @@ pub trait EditorCalls<V> {
     /// `pdfIsDirty`, `markdownIsDirty`, `htmlIsDirty`, `hwpIsDirty`,
     /// `slidesIsDirty`, `mindmapIsDirty`, `epubIsDirty` or `diagramIsDirty`
     /// (by `kind`) of the view with this webContents id
-    fn family_is_dirty(&mut self, kind: TabKind, wc_id: i64) -> bool;
+    fn family_is_dirty(&mut self, kind: TabKind, wc_id: i64) -> TabResult<bool>;
     /// `hwpMemoModalOpen(wcId)`
     fn hwp_memo_modal_open(&mut self, wc_id: i64) -> bool;
     /// `setActiveDocsResolver(() => view.webContents)`; `None` is `() => null`.
@@ -470,7 +513,7 @@ pub trait EditorCalls<V> {
 
 /// What `TabManager` calls: the shell `BrowserWindow`, the views, the
 /// callbacks it was given and the editor modules.
-pub trait TabHost<V>: EditorCalls<V> {
+pub trait TabHost<V, B>: EditorCalls<V> {
     // ---- the shell window ----
     /// `shellWindow.isDestroyed()`
     fn window_destroyed(&mut self) -> bool;
@@ -542,7 +585,7 @@ pub trait TabHost<V>: EditorCalls<V> {
     /// `markDocsNewBlank(wcId)`
     fn mark_docs_new_blank(&mut self, wc_id: i64);
     /// `queueDocsAiContent(wcId, content)`
-    fn queue_docs_ai_content(&mut self, wc_id: i64, content: &Value);
+    fn queue_docs_ai_content(&mut self, wc_id: i64, content: &Value) -> TabResult<()>;
     /// `queueDocsCopy(wcId, { path, name })`
     fn queue_docs_copy(&mut self, wc_id: i64, path: &str, name: &str);
     /// `setSheetsNewBlank()`
@@ -584,11 +627,13 @@ pub trait TabHost<V>: EditorCalls<V> {
 }
 
 /// one row of the strip
-struct TabRecord<V> {
+#[derive(Clone)]
+struct TabRecord<V, B> {
     id: String,
     kind: TabKind,
     /// `None` for the Home tab and for an unloaded tab until its opener runs
     view: Option<V>,
+    binding: Option<B>,
     title: String,
     file_path: Option<String>,
     present: bool,
@@ -597,6 +642,7 @@ struct TabRecord<V> {
 }
 
 /// a tab loaded through its opener, until its document reports ready
+#[derive(Clone)]
 struct LazyLoadState {
     ready: Ready,
     settled: bool,
@@ -604,6 +650,7 @@ struct LazyLoadState {
 }
 
 /// What a suspended `closeTab` waits for.
+#[derive(Clone)]
 enum ClosePhase<V> {
     /// the answer of `docsQueryDirty`
     Query { view: V },
@@ -657,6 +704,7 @@ pub enum OpenDocumentsStep<V, K> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum DirtyAsk<V> {
     Known(bool),
+    Rejected(String),
     /// the docs editor must be asked: `await docsQueryDirty(view.webContents)`
     QueryDocs(V),
 }
@@ -685,7 +733,10 @@ pub fn dirty_ask<V: Clone, H: EditorCalls<V> + ?Sized>(
         | TabKind::Slides
         | TabKind::Mindmap
         | TabKind::Epub
-        | TabKind::Diagram => DirtyAsk::Known(host.family_is_dirty(kind, wc_id)),
+        | TabKind::Diagram => match host.family_is_dirty(kind, wc_id) {
+            Ok(dirty) => DirtyAsk::Known(dirty),
+            Err(error) => DirtyAsk::Rejected(error.0),
+        },
         TabKind::Home | TabKind::Help => DirtyAsk::Known(false),
     }
 }
@@ -733,9 +784,141 @@ pub struct EnsureAfterReady<V> {
     view: Option<V>,
 }
 
+/// Owned inputs for the original editor-open algorithm across native construction.
+#[derive(Debug)]
+pub enum EditorOpen {
+    Docs { path: Option<String>, options: Option<OpenDocsOptions> },
+    Sheets { path: Option<String>, new_blank: bool },
+    Slides { path: Option<String> },
+    Pdf { path: String },
+    Markdown { path: Option<String> },
+    Html { path: Option<String> },
+    Mindmap { path: Option<String> },
+    Epub { path: String },
+    Diagram { path: Option<String> },
+    Hwp { path: Option<String>, copy: Option<HwpCopy> },
+    Generate { target: GenerateHandoffTarget, handoff: Value },
+    Conversion { target: GenerateConvertTarget, document: Value },
+}
+
+impl EditorOpen {
+    pub fn view_spec(&self) -> ViewSpec<'_> {
+        match self {
+            Self::Docs { path, .. } => ViewSpec::Docs { path: path.as_deref() },
+            Self::Sheets { path, .. } => ViewSpec::Sheets { opening_workbook: Some(truthy(path.as_deref()).is_some()) },
+            Self::Slides { path } => ViewSpec::Slides { path: path.as_deref() },
+            Self::Pdf { path } => ViewSpec::Pdf { path },
+            Self::Markdown { path } => ViewSpec::Markdown { path: path.as_deref() },
+            Self::Html { path } => ViewSpec::Html { path: path.as_deref() },
+            Self::Mindmap { path } => ViewSpec::Mindmap { path: path.as_deref() },
+            Self::Epub { path } => ViewSpec::Epub { path },
+            Self::Diagram { path } => ViewSpec::Diagram { path: path.as_deref() },
+            Self::Hwp { path, copy } => ViewSpec::Hwp {
+                path: path.as_deref(),
+                untitled_copy: match copy {
+                    Some(copy) if copy.imported_pdf => HwpUntitledCopy::BaseName(copy.title.clone()),
+                    other => HwpUntitledCopy::Flag(other.is_some()),
+                },
+            },
+            Self::Generate { target, .. } => match target {
+                GenerateHandoffTarget::Slides => ViewSpec::Slides { path: None },
+                GenerateHandoffTarget::Html => ViewSpec::Html { path: None },
+                GenerateHandoffTarget::Mindmap => ViewSpec::Mindmap { path: None },
+            },
+            Self::Conversion { target, .. } => match target {
+                GenerateConvertTarget::Markdown => ViewSpec::Markdown { path: None },
+                GenerateConvertTarget::Slides => ViewSpec::Slides { path: None },
+                GenerateConvertTarget::Mindmap => ViewSpec::Mindmap { path: None },
+            },
+        }
+    }
+}
+
+pub enum EditorSeed {
+    Generate(Value),
+    Conversion(Value),
+    DocsAi { new_blank: bool, content: Option<Value> },
+}
+
+/// A single-use open reservation. The caller must resume or cancel it.
+pub struct PreparedTabOpen<V, B> {
+    request: EditorOpen,
+    spare: Option<(V, B)>,
+    seed: Option<EditorSeed>,
+}
+
+/// Metadata captured before admitting a new editor into the tab strip.
+pub struct PreparedEditorAdoption<V, B> {
+    plan: PreparedTabOpen<V, B>,
+    pub view: V,
+    pub kind: TabKind,
+    pub title: String,
+    pub file_path: Option<String>,
+    pub workbook: Option<String>,
+    pub reused: bool,
+}
+
+pub struct PreparedEditorAdoptionCommit<V> {
+    expected_id: u64,
+    id: String,
+    result_id: String,
+    full_screen: Option<V>,
+    pane_focus: Option<V>,
+}
+impl<V> PreparedEditorAdoptionCommit<V> {
+    pub fn tab_id(&self) -> &str { &self.result_id }
+}
+
+
+impl<V, B> PreparedEditorAdoption<V, B> {
+    pub fn reserved_binding(&self) -> Option<&B> { self.plan.reserved_binding() }
+    pub fn into_plan(self) -> PreparedTabOpen<V, B> { self.plan }
+}
+
+impl<V, B> PreparedTabOpen<V, B> {
+    pub fn requires_sheets_new_blank(&self) -> bool {
+        matches!(&self.request, EditorOpen::Sheets { new_blank: true, .. })
+    }
+
+    pub fn initialization_inputs(&mut self) -> (Option<EditorSeed>, Option<String>, Option<String>, bool) {
+        let (docs, workbook) = match &self.request {
+            EditorOpen::Docs { path, .. } => (truthy(path.as_deref()).map(str::to_owned), None),
+            EditorOpen::Sheets { path, .. } => (None, truthy(path.as_deref()).map(str::to_owned)),
+            _ => (None, None),
+        };
+        let reused = self.spare.is_some();
+        (self.take_seed(), docs, workbook, reused)
+    }
+    pub fn creation_spec(&self) -> Option<ViewSpec<'_>> {
+        if self.spare.is_some() { None } else { Some(self.request.view_spec()) }
+    }
+    pub fn reserved_view(&self) -> Option<&V> { self.spare.as_ref().map(|(view, _)| view) }
+    pub fn reserved_binding(&self) -> Option<&B> { self.spare.as_ref().map(|(_, binding)| binding) }
+    pub fn take_seed(&mut self) -> Option<EditorSeed> {
+        if let Some(seed) = self.seed.take() { return Some(seed); }
+        if let EditorOpen::Docs { options, .. } = &mut self.request
+            && let Some(options) = options.take()
+            && (options.new_blank || options.ai_content.is_some()) {
+            return Some(EditorSeed::DocsAi { new_blank: options.new_blank, content: options.ai_content });
+        }
+        None
+    }
+}
+
+pub struct PreparedTabLoad {
+    opener: Opener,
+    context: UnloadedTabOpenContext,
+}
+
+impl PreparedTabLoad {
+    pub fn opener(&self) -> &Opener { &self.opener }
+    pub fn context(&self) -> &UnloadedTabOpenContext { &self.context }
+}
+
 /// The state of `TabManager`, owned by the caller.
-pub struct TabManager<V> {
-    tabs: Vec<TabRecord<V>>,
+#[derive(Clone)]
+pub struct TabManager<V, B> {
+    tabs: Vec<TabRecord<V, B>>,
     active_id: String,
     next_id: u64,
     html_full_screen_id: Option<String>,
@@ -743,7 +926,7 @@ pub struct TabManager<V> {
     /// `closingIds`: the tabs whose close is suspended on an answer
     pending_closes: Vec<(String, ClosePhase<V>)>,
     full_screen_tracked: Vec<V>,
-    spare_sheets_view: Option<V>,
+    spare_sheets_view: Option<(V, B)>,
     spare_sheets_timer: bool,
     split: Option<SplitViewState>,
     previous_active_id: Option<String>,
@@ -782,14 +965,15 @@ fn truthy_opt(text: &Option<String>) -> bool {
     truthy(text.as_deref()).is_some()
 }
 
-impl<V: Clone + PartialEq> TabManager<V> {
+impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
     /// the constructor: Home, the only tab
-    pub fn new() -> TabManager<V> {
+    pub fn new() -> TabManager<V, B> {
         TabManager {
             tabs: vec![TabRecord {
                 id: HOME_ID.to_owned(),
                 kind: TabKind::Home,
                 view: None,
+                binding: None,
                 title: PRODUCT_NAME.to_owned(),
                 file_path: None,
                 present: false,
@@ -817,19 +1001,19 @@ impl<V: Clone + PartialEq> TabManager<V> {
     // ---- window events ----
 
     /// the shell window's `resize`: a layout now and one on the next tick
-    pub fn on_window_resize(&mut self, host: &mut dyn TabHost<V>) {
+    pub fn on_window_resize(&mut self, host: &mut dyn TabHost<V, B>) {
         self.layout(host);
         host.defer(Deferred::Layout);
     }
 
     /// the shell window's `restore`: a reconcile now and one on the next tick
-    pub fn on_window_restore(&mut self, host: &mut dyn TabHost<V>) {
+    pub fn on_window_restore(&mut self, host: &mut dyn TabHost<V, B>) {
         self.reconcile_after_window_restore(host);
         host.defer(Deferred::ReconcileAfterWindowRestore);
     }
 
     /// the `setImmediate` callback of `step`
-    pub fn run_deferred(&mut self, host: &mut dyn TabHost<V>, step: Deferred) {
+    pub fn run_deferred(&mut self, host: &mut dyn TabHost<V, B>, step: Deferred) {
         match step {
             Deferred::Layout => self.layout(host),
             Deferred::ReconcileAfterWindowRestore => self.reconcile_after_window_restore(host),
@@ -838,7 +1022,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
 
     // ---- the spare Sheets view ----
 
-    fn schedule_spare_sheets_view(&mut self, host: &mut dyn TabHost<V>, delay_ms: f64) {
+    fn schedule_spare_sheets_view(&mut self, host: &mut dyn TabHost<V, B>, delay_ms: f64) {
         if host.no_spare_view_env() || self.spare_sheets_timer || self.spare_sheets_view.is_some() {
             return;
         }
@@ -854,58 +1038,55 @@ impl<V: Clone + PartialEq> TabManager<V> {
         self.spare_sheets_timer = true;
     }
 
-    /// the callback of the spare-view timer
-    pub fn fire_spare_sheets_timer(&mut self, host: &mut dyn TabHost<V>) -> TabResult<()> {
+
+    pub fn prepare_spare_sheets_view(&mut self, host: &mut dyn TabHost<V, B>) -> bool {
         self.spare_sheets_timer = false;
-        if self.spare_sheets_view.is_some() || host.window_destroyed() || self.split.is_some() {
-            return Ok(());
+        self.spare_sheets_view.is_none() && !host.window_destroyed() && self.split.is_none()
+            && self.tab_by_id(&self.active_id).is_some_and(|active| active.kind == TabKind::Sheets)
+    }
+
+    pub fn commit_prepared_spare_sheets_view(&mut self, view: V, binding: B) -> Result<(), (V, B)> {
+        if self.spare_sheets_view.is_some() || self.split.is_some()
+            || self.tab_by_id(&self.active_id).is_none_or(|active| active.kind != TabKind::Sheets) {
+            return Err((view, binding));
         }
-        let active_view = match self.tab_by_id(&self.active_id) {
-            Some(active) if active.kind == TabKind::Sheets => active.view.clone(),
-            _ => return Ok(()),
-        };
-        let view = host.create_view(&ViewSpec::Sheets {
-            opening_workbook: None,
-        })?;
-        // registering the session made the spare the menu-action target
-        host.set_active_sheets_web_contents(active_view.as_ref());
-        host.add_child_view(&view);
-        host.set_visible(&view, false);
-        // the window may be minimized or mid-restore when the spare spawns; a
-        // degenerate rect would leave the spare zero-sized until its next layout
-        let bounds = self.content_bounds(host);
-        if is_settled_rect(&bounds) {
-            host.set_bounds(&view, &bounds);
-        }
-        host.once_render_process_gone(&view);
-        self.spare_sheets_view = Some(view);
+        self.spare_sheets_view = Some((view, binding));
         Ok(())
     }
 
+    pub fn resume_spare_sheets_view(&mut self, host: &mut dyn TabHost<V, B>, view: &V, binding: B) -> bool {
+        if self.spare_sheets_view.is_some() || host.window_destroyed() || host.view_destroyed(view)
+            || self.split.is_some() || self.tab_by_id(&self.active_id).is_none_or(|active| active.kind != TabKind::Sheets) {
+            return false;
+        }
+        let active_view = self.tab_by_id(&self.active_id).and_then(|active| active.view.clone());
+        host.set_active_sheets_web_contents(active_view.as_ref());
+        host.add_child_view(view);
+        host.set_visible(view, false);
+        let bounds = self.content_bounds(host);
+        if is_settled_rect(&bounds) { host.set_bounds(view, &bounds); }
+        host.once_render_process_gone(view);
+        self.spare_sheets_view = Some((view.clone(), binding));
+        true
+    }
+
     /// the spare view's `render-process-gone`
-    pub fn on_spare_render_process_gone(&mut self, host: &mut dyn TabHost<V>, view: &V) {
-        if self.spare_sheets_view.as_ref() != Some(view) {
+    pub fn on_spare_render_process_gone(&mut self, host: &mut dyn TabHost<V, B>, view: &V) {
+        if self.spare_sheets_view.as_ref().is_none_or(|(spare, _)| spare != view) {
             return;
         }
         self.spare_sheets_view = None;
         host.close_view(view);
     }
 
-    fn take_spare_sheets_view(&mut self, host: &mut dyn TabHost<V>) -> Option<V> {
-        let view = self.spare_sheets_view.take();
-        match view {
-            Some(view) if !host.view_destroyed(&view) => Some(view),
-            _ => None,
-        }
-    }
 
-    fn discard_spare_sheets_view(&mut self, host: &mut dyn TabHost<V>) {
+    fn discard_spare_sheets_view(&mut self, host: &mut dyn TabHost<V, B>) {
         if self.spare_sheets_timer {
             host.clear_spare_timer();
         }
         self.spare_sheets_timer = false;
         let spare = self.spare_sheets_view.take();
-        let Some(spare) = spare else {
+        let Some((spare, _binding)) = spare else {
             return;
         };
         host.remove_child_view(&spare);
@@ -914,13 +1095,13 @@ impl<V: Clone + PartialEq> TabManager<V> {
 
     // ---- geometry ----
 
-    fn untitled(&self, host: &mut dyn TabHost<V>, kind: TabKind, fallback: &str) -> String {
+    fn untitled(&self, host: &mut dyn TabHost<V, B>, kind: TabKind, fallback: &str) -> String {
         host.untitled_title_for(kind)
             .unwrap_or_else(|| fallback.to_owned())
     }
 
     /// the shell window's own content size: what a covering view fills
-    fn window_rect(&self, host: &mut dyn TabHost<V>) -> Rect {
+    fn window_rect(&self, host: &mut dyn TabHost<V, B>) -> Rect {
         let (width, height) = host.window_content_size();
         Rect {
             x: 0.0,
@@ -931,7 +1112,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     }
 
     /// the layout space normal tab views live in: the window below the strip
-    fn content_bounds(&self, host: &mut dyn TabHost<V>) -> Rect {
+    fn content_bounds(&self, host: &mut dyn TabHost<V, B>) -> Rect {
         let (width, height) = host.window_content_size();
         // the strip is `zoom`ed by the interface scale, so its rendered height
         // grows with it
@@ -945,7 +1126,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     }
 
     /// the tab whose view covers the whole window right now
-    fn cover_tab_id(&self, host: &mut dyn TabHost<V>) -> Option<String> {
+    fn cover_tab_id(&self, host: &mut dyn TabHost<V, B>) -> Option<String> {
         if let Some(id) = &self.html_full_screen_id {
             return Some(id.clone());
         }
@@ -964,7 +1145,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
         self.tabs.iter().position(|t| t.id == id)
     }
 
-    fn tab_by_id(&self, id: &str) -> Option<&TabRecord<V>> {
+    fn tab_by_id(&self, id: &str) -> Option<&TabRecord<V, B>> {
         self.tabs.iter().find(|t| t.id == id)
     }
 
@@ -978,7 +1159,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
         self.tabs.iter().position(|t| t.view.as_ref() == Some(view))
     }
 
-    fn index_of_wc(&self, host: &mut dyn TabHost<V>, wc_id: i64) -> Option<usize> {
+    fn index_of_wc(&self, host: &mut dyn TabHost<V, B>, wc_id: i64) -> Option<usize> {
         for (i, tab) in self.tabs.iter().enumerate() {
             if let Some(view) = &tab.view
                 && host.view_id(view) == wc_id
@@ -990,7 +1171,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     }
 
     /// `setContentBleed`
-    pub fn set_content_bleed(&mut self, host: &mut dyn TabHost<V>, wc_id: i64, on: bool) {
+    pub fn set_content_bleed(&mut self, host: &mut dyn TabHost<V, B>, wc_id: i64, on: bool) {
         if on {
             if !self.bleed_wc_ids.contains(&wc_id) {
                 self.bleed_wc_ids.push(wc_id);
@@ -1002,7 +1183,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     }
 
     /// the view's `enter-html-full-screen`
-    pub fn on_enter_html_full_screen(&mut self, host: &mut dyn TabHost<V>, view: &V) {
+    pub fn on_enter_html_full_screen(&mut self, host: &mut dyn TabHost<V, B>, view: &V) {
         let Some(i) = self.index_of_view(view) else {
             return;
         };
@@ -1011,7 +1192,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     }
 
     /// the view's `leave-html-full-screen`
-    pub fn on_leave_html_full_screen(&mut self, host: &mut dyn TabHost<V>, view: &V) {
+    pub fn on_leave_html_full_screen(&mut self, host: &mut dyn TabHost<V, B>, view: &V) {
         let id = self.index_of_view(view).map(|i| self.tabs[i].id.clone());
         if let Some(id) = id
             && self.html_full_screen_id.as_deref() == Some(id.as_str())
@@ -1021,7 +1202,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
         self.layout(host);
     }
 
-    fn track_html_full_screen(&mut self, host: &mut dyn TabHost<V>, view: &V) {
+    fn track_html_full_screen(&mut self, host: &mut dyn TabHost<V, B>, view: &V) {
         if self.full_screen_tracked.contains(view) {
             return;
         }
@@ -1029,7 +1210,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
         host.listen_html_full_screen(view);
     }
 
-    fn track_pane_focus(&mut self, host: &mut dyn TabHost<V>, view: &V) {
+    fn track_pane_focus(&mut self, host: &mut dyn TabHost<V, B>, view: &V) {
         if self.pane_focus_tracked.contains(view) {
             return;
         }
@@ -1038,7 +1219,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     }
 
     /// the view's `focus` event: the pane showing it takes the focus
-    pub fn on_pane_focus(&mut self, host: &mut dyn TabHost<V>, view: &V) {
+    pub fn on_pane_focus(&mut self, host: &mut dyn TabHost<V, B>, view: &V) {
         let Some(i) = self.index_of_view(view) else {
             return;
         };
@@ -1055,83 +1236,24 @@ impl<V: Clone + PartialEq> TabManager<V> {
 
     /// Re-fit every visible view after a window resize, an activation or a split
     /// change.
-    pub fn layout(&mut self, host: &mut dyn TabHost<V>) {
-        // deferred resize layouts can land after the shell window was closed
-        if host.window_destroyed() {
-            return;
-        }
-        let bounds = self.content_bounds(host);
-        // a minimized or mid-restore window can report a degenerate client rect
-        if !is_settled_rect(&bounds) {
-            return;
-        }
-        // pane references can go stale while a close prompt is settling; drop them
-        let stale = match &self.split {
-            Some(split) => {
-                !self
-                    .tab_by_id(&split.a_tab_id)
-                    .is_some_and(|t| t.view.is_some())
-                    || !self
-                        .tab_by_id(&split.b_tab_id)
-                        .is_some_and(|t| t.view.is_some())
-            }
-            None => false,
+    pub fn layout(&mut self, host: &mut dyn TabHost<V, B>) {
+        if host.window_destroyed() { return; }
+        let environment = ActivationEnvironment {
+            window_destroyed: false, window_focused: false, window_size: host.window_content_size(),
+            ui_scale: host.ui_scale(), no_spare_view: true,
+            target_bleeds: self.tab_by_id(&self.active_id).and_then(|tab| tab.view.as_ref())
+                .is_some_and(|view| self.bleed_wc_ids.contains(&host.view_id(view))),
         };
-        if stale {
-            self.split = None;
-        }
-        let cover = self.cover_tab_id(host);
-        if let Some(cover) = cover {
-            for t in &self.tabs {
-                if let Some(view) = &t.view {
-                    host.set_visible(view, t.id == cover);
-                }
-            }
-            if let Some(view) = self.tab_by_id(&cover).and_then(|t| t.view.as_ref()) {
-                let rect = self.window_rect(host);
-                host.set_bounds(view, &rect);
-            }
-            return;
-        }
-        if let Some(split) = &self.split
-            && (self.active_id == split.a_tab_id || self.active_id == split.b_tab_id)
-        {
-            for t in &self.tabs {
-                if let Some(view) = &t.view {
-                    host.set_visible(view, t.id == split.a_tab_id || t.id == split.b_tab_id);
-                }
-            }
-            let rects = pane_rects(&bounds, split.orientation, split.ratio);
-            if let Some(view) = self
-                .tab_by_id(&split.a_tab_id)
-                .and_then(|t| t.view.as_ref())
-            {
-                host.set_bounds(view, &rects.a);
-            }
-            if let Some(view) = self
-                .tab_by_id(&split.b_tab_id)
-                .and_then(|t| t.view.as_ref())
-            {
-                host.set_bounds(view, &rects.b);
-            }
-            return;
-        }
-        for t in &self.tabs {
-            if let Some(view) = &t.view {
-                host.set_visible(view, t.id == self.active_id);
-            }
-        }
-        if let Some(view) = self
-            .tab_by_id(&self.active_id)
-            .and_then(|t| t.view.as_ref())
-        {
-            host.set_bounds(view, &bounds);
-        }
+        let mut split = self.split.take();
+        let mut effects = Vec::with_capacity(self.tabs.len() + 2);
+        self.append_activation_layout(&self.active_id, &mut split, environment, &mut effects);
+        self.split = split;
+        for effect in effects { effect.apply(host); }
     }
 
     /// Re-fit the active view after the native window returns from the
     /// taskbar: no visibility toggles, no focus, no menu, no onChanged.
-    pub fn reconcile_after_window_restore(&mut self, host: &mut dyn TabHost<V>) {
+    pub fn reconcile_after_window_restore(&mut self, host: &mut dyn TabHost<V, B>) {
         if host.window_destroyed() || host.window_minimized() {
             return;
         }
@@ -1172,7 +1294,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     /// [`TabManager::resume_open_documents`]).
     pub fn open_documents(
         &self,
-        host: &mut dyn TabHost<V>,
+        host: &mut dyn TabHost<V, B>,
     ) -> OpenDocumentsStep<V, OpenDocumentsRun<V>> {
         // an unloaded tab is listed like any other (clean: it has no edits yet)
         let entries = self
@@ -1204,7 +1326,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     /// the answer of the `docsQueryDirty` of [`TabManager::open_documents`]
     pub fn resume_open_documents(
         &self,
-        host: &mut dyn TabHost<V>,
+        host: &mut dyn TabHost<V, B>,
         mut run: OpenDocumentsRun<V>,
         answer: Result<bool, String>,
     ) -> OpenDocumentsStep<V, OpenDocumentsRun<V>> {
@@ -1219,7 +1341,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     }
 
     fn open_documents_advance(
-        host: &mut dyn TabHost<V>,
+        host: &mut dyn TabHost<V, B>,
         mut run: OpenDocumentsRun<V>,
     ) -> OpenDocumentsStep<V, OpenDocumentsRun<V>> {
         while run.at < run.entries.len() {
@@ -1232,6 +1354,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
                 DirtyAsk::QueryDocs(view) => {
                     return OpenDocumentsStep::QueryDocsDirty { view, next: run };
                 }
+                DirtyAsk::Rejected(error) => return OpenDocumentsStep::Rejected(error),
             }
         }
         OpenDocumentsStep::Done(run.entries.into_iter().map(|(tab, _, _)| tab).collect())
@@ -1240,7 +1363,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     // ---- opening tabs ----
 
     /// `openHomeTab`
-    pub fn open_home_tab(&mut self, host: &mut dyn TabHost<V>) {
+    pub fn open_home_tab(&mut self, host: &mut dyn TabHost<V, B>) {
         self.activate_tab(host, HOME_ID);
     }
 
@@ -1248,7 +1371,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     /// one (at the topic when given)
     pub fn open_help_tab(
         &mut self,
-        host: &mut dyn TabHost<V>,
+        host: &mut dyn TabHost<V, B>,
         topic: Option<&str>,
     ) -> TabResult<String> {
         let wanted = help_topic_param(topic);
@@ -1277,6 +1400,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
             id: id.clone(),
             kind: TabKind::Help,
             view: Some(view),
+            binding: None,
             title,
             file_path: None,
             present: false,
@@ -1287,12 +1411,38 @@ impl<V: Clone + PartialEq> TabManager<V> {
         Ok(id)
     }
 
+
+    pub fn prepare_help_open_pure(&self, dev_url: Option<&str>, topic: Option<&str>) -> TabResult<Result<PreparedHelpOpen, (String, Option<V>, Option<String>)>> {
+        let wanted = help_topic_param(topic);
+        let url = help_view_url(dev_url, wanted)?;
+        if let Some(existing) = self.tabs.iter().find(|tab| tab.kind == TabKind::Help) {
+            return Ok(Err((existing.id.clone(), existing.view.clone(), wanted.map(|_| url))));
+        }
+        Ok(Ok(PreparedHelpOpen { topic: wanted.map(str::to_owned), url }))
+    }
+
+
+    pub fn commit_help_open(&mut self, plan: PreparedHelpOpen, view: V, title: String) -> HelpOpenCommit<V> {
+        if let Some(existing) = self.tabs.iter().find(|tab| tab.kind == TabKind::Help) {
+            return HelpOpenCommit::Existing {
+                id: existing.id.clone(), view: existing.view.clone(), unused: view,
+                navigate: plan.topic.map(|_| plan.url),
+            };
+        }
+        let id = self.alloc_id();
+        self.tabs.push(TabRecord {
+            id: id.clone(), kind: TabKind::Help, view: Some(view.clone()), binding: None, title,
+            file_path: None, present: false, opener: None, lazy: None,
+        });
+        HelpOpenCommit::Created { id, view, url: plan.url }
+    }
+
     /// the part every `open*Tab` shares after its view is made: add it hidden,
     /// track it, push the tab and activate it
     #[allow(clippy::too_many_arguments)]
     fn finish_open(
         &mut self,
-        host: &mut dyn TabHost<V>,
+        host: &mut dyn TabHost<V, B>,
         id: String,
         view: V,
         kind: TabKind,
@@ -1306,6 +1456,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
             id: id.clone(),
             kind,
             view: Some(view),
+            binding: None,
             title,
             file_path,
             present,
@@ -1317,7 +1468,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     }
 
     /// add a new view to the window, hidden
-    fn add_hidden(host: &mut dyn TabHost<V>, view: &V) {
+    fn add_hidden(host: &mut dyn TabHost<V, B>, view: &V) {
         host.add_child_view(view);
         host.set_visible(view, false);
     }
@@ -1325,7 +1476,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     /// `path ? basename(path) : untitled(kind, fallback)`
     fn title_for(
         &self,
-        host: &mut dyn TabHost<V>,
+        host: &mut dyn TabHost<V, B>,
         path: Option<&str>,
         kind: TabKind,
         fallback: &str,
@@ -1336,127 +1487,324 @@ impl<V: Clone + PartialEq> TabManager<V> {
         }
     }
 
-    /// `openDocsTab`
-    pub fn open_docs_tab(
-        &mut self,
-        host: &mut dyn TabHost<V>,
-        open_path: Option<&str>,
-        options: Option<&OpenDocsOptions>,
-    ) -> TabResult<String> {
-        let view = host.create_view(&ViewSpec::Docs { path: open_path })?;
-        let id = self.alloc_id();
-        if let Some(options) = options {
-            if options.new_blank {
-                let wc_id = host.view_id(&view);
-                host.mark_docs_new_blank(wc_id);
+    pub fn prepare_editor_adoption(
+        &self, host: &mut dyn TabHost<V, B>, plan: PreparedTabOpen<V, B>, view: V,
+    ) -> Result<PreparedEditorAdoption<V, B>, (PreparedTabOpen<V, B>, TabError)> {
+        if plan.spare.as_ref().is_some_and(|(spare, _)| spare != &view) {
+            return Err((plan, TabError("editor open supplied an unexpected second view".into())));
+        }
+        if plan.seed.is_some() || matches!(&plan.request, EditorOpen::Docs { options: Some(options), .. }
+            if options.new_blank || options.ai_content.is_some()) {
+            return Err((plan, TabError("editor initialization has not been committed".into())));
+        }
+        let reused = plan.spare.is_some();
+        let mut workbook = None;
+        let (kind, file_path, title) = match &plan.request {
+            EditorOpen::Docs { path, .. } => (TabKind::Docs, path.clone(), self.title_for(host, path.as_deref(), TabKind::Docs, &format!("{PRODUCT_NAME} Docs"))),
+            EditorOpen::Sheets { path, .. } => {
+                workbook = truthy(path.as_deref()).map(str::to_owned);
+                (TabKind::Sheets, path.clone(), self.title_for(host, path.as_deref(), TabKind::Sheets, "AI Sheets"))
             }
-            if let Some(content) = &options.ai_content {
-                let wc_id = host.view_id(&view);
-                host.queue_docs_ai_content(wc_id, content);
+            EditorOpen::Slides { path } => (TabKind::Slides, path.clone(), self.title_for(host, path.as_deref(), TabKind::Slides, "AI Slides")),
+            EditorOpen::Pdf { path } => (TabKind::Pdf, Some(path.clone()), basename(path, None)),
+            EditorOpen::Markdown { path } => (TabKind::Markdown, path.clone(), self.title_for(host, path.as_deref(), TabKind::Markdown, "AI Markdown")),
+            EditorOpen::Html { path } => (TabKind::Html, path.clone(), self.title_for(host, path.as_deref(), TabKind::Html, "AI HTML")),
+            EditorOpen::Mindmap { path } => (TabKind::Mindmap, path.clone(), self.title_for(host, path.as_deref(), TabKind::Mindmap, "Mind Map")),
+            EditorOpen::Epub { path } => (TabKind::Epub, Some(path.clone()), basename(path, None)),
+            EditorOpen::Diagram { path } => {
+                let identity = if truthy(path.as_deref()).is_some() {
+                    let wc = host.view_id(&view);
+                    host.diagram_tab_identity(wc)
+                } else { None };
+                let imported = identity.as_ref().is_some_and(|identity| identity.imported);
+                let title = if imported { identity.map(|identity| identity.title).unwrap_or_default() }
+                    else { self.title_for(host, path.as_deref(), TabKind::Diagram, "Diagram") };
+                (TabKind::Diagram, if imported { None } else { path.clone() }, title)
+            }
+            EditorOpen::Hwp { path, copy } => {
+                let title = copy.as_ref().map(|copy| copy.title.clone())
+                    .unwrap_or_else(|| self.title_for(host, path.as_deref(), TabKind::Hwp, "HWP"));
+                (TabKind::Hwp, if copy.is_some() { None } else { path.clone() }, title)
+            }
+            EditorOpen::Generate { .. } | EditorOpen::Conversion { .. } =>
+                return Err((plan, TabError("editor request was not normalized".into()))),
+        };
+        Ok(PreparedEditorAdoption { plan, view, kind, title, file_path, workbook, reused })
+    }
+
+    pub fn prepare_editor_adoption_commit(&mut self, prepared: &PreparedEditorAdoption<V, B>) -> Result<PreparedEditorAdoptionCommit<V>, String> {
+        let expected_id = self.next_id;
+        expected_id.checked_add(1).ok_or("The tab identifier space is exhausted")?;
+        self.tabs.try_reserve(1).map_err(|_| "The tab cannot be reserved")?;
+        let full_screen = (!self.full_screen_tracked.contains(&prepared.view)).then(|| prepared.view.clone());
+        let pane_focus = (!self.pane_focus_tracked.contains(&prepared.view)).then(|| prepared.view.clone());
+        if full_screen.is_some() { self.full_screen_tracked.try_reserve(1).map_err(|_| "The view cannot be reserved")?; }
+        if pane_focus.is_some() { self.pane_focus_tracked.try_reserve(1).map_err(|_| "The view cannot be reserved")?; }
+        let id = format!("t{expected_id}");
+        Ok(PreparedEditorAdoptionCommit { expected_id, result_id: id.clone(), id, full_screen, pane_focus })
+    }
+
+    pub fn validate_editor_adoption_commit(&self, prepared: &PreparedEditorAdoption<V, B>, commit: &PreparedEditorAdoptionCommit<V>) -> Result<(), String> {
+        if self.next_id != commit.expected_id || self.tabs.len() == self.tabs.capacity()
+            || commit.full_screen.is_some() == self.full_screen_tracked.contains(&prepared.view)
+            || commit.pane_focus.is_some() == self.pane_focus_tracked.contains(&prepared.view)
+            || (commit.full_screen.is_some() && self.full_screen_tracked.len() == self.full_screen_tracked.capacity())
+            || (commit.pane_focus.is_some() && self.pane_focus_tracked.len() == self.pane_focus_tracked.capacity()) {
+            return Err("The editor adoption changed before admission".into());
+        }
+        Ok(())
+    }
+
+    pub fn commit_validated_editor_adoption(&mut self, prepared: PreparedEditorAdoption<V, B>, binding: B, commit: PreparedEditorAdoptionCommit<V>) -> String {
+        let PreparedEditorAdoption { view, kind, title, file_path, .. } = prepared;
+        self.next_id += 1;
+        if let Some(view) = commit.full_screen { self.full_screen_tracked.push(view); }
+        if let Some(view) = commit.pane_focus { self.pane_focus_tracked.push(view); }
+        self.tabs.push(TabRecord { id: commit.id, kind, view: Some(view), binding: Some(binding), title, file_path,
+            present: false, opener: None, lazy: None });
+        commit.result_id
+    }
+
+    pub fn replace_tab_binding_admitted(
+        &mut self, id: &str, view: &V, old: &B, replacement: B,
+        register: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<(), String> {
+        let index = self.index_of(id).ok_or("The saved tab is unavailable")?;
+        let tab = &self.tabs[index];
+        if tab.view.as_ref() != Some(view) || tab.binding.as_ref() != Some(old) {
+            return Err("The saved tab binding changed before registration".into());
+        }
+        register()?;
+        self.tabs[index].binding = Some(replacement);
+        Ok(())
+    }
+
+    pub fn commit_editor_adoption(&mut self, prepared: PreparedEditorAdoption<V, B>, binding: B) -> String {
+        let PreparedEditorAdoption { plan: _, view, kind, title, file_path, .. } = prepared;
+        let id = self.alloc_id();
+        if !self.full_screen_tracked.contains(&view) { self.full_screen_tracked.push(view.clone()); }
+        if !self.pane_focus_tracked.contains(&view) { self.pane_focus_tracked.push(view.clone()); }
+        self.tabs.push(TabRecord { id: id.clone(), kind, view: Some(view), binding: Some(binding), title, file_path,
+            present: false, opener: None, lazy: None });
+        id
+    }
+
+    pub fn prepare_editor_open(&mut self, host: &mut dyn TabHost<V, B>, request: EditorOpen) -> PreparedTabOpen<V, B> {
+        if matches!(&request, EditorOpen::Sheets { new_blank: true, .. }) { host.set_sheets_new_blank(); }
+        let mut plan = self.prepare_editor_open_pure(request);
+        if plan.spare.as_ref().is_some_and(|(view, _)| host.view_destroyed(view)) { plan.spare = None; }
+        plan
+    }
+
+    /// Reserves a spare in core state without invoking host or UI operations.
+    pub fn prepare_editor_open_pure(&mut self, request: EditorOpen) -> PreparedTabOpen<V, B> {
+        let (request, seed) = match request {
+            EditorOpen::Generate { target, handoff } => {
+                let request = match target {
+                    GenerateHandoffTarget::Slides => EditorOpen::Slides { path: None },
+                    GenerateHandoffTarget::Html => EditorOpen::Html { path: None },
+                    GenerateHandoffTarget::Mindmap => EditorOpen::Mindmap { path: None },
+                };
+                (request, Some(EditorSeed::Generate(handoff)))
+            }
+            EditorOpen::Conversion { target, document } => {
+                let request = match target {
+                    GenerateConvertTarget::Markdown => EditorOpen::Markdown { path: None },
+                    GenerateConvertTarget::Slides => EditorOpen::Slides { path: None },
+                    GenerateConvertTarget::Mindmap => EditorOpen::Mindmap { path: None },
+                };
+                (request, Some(EditorSeed::Conversion(document)))
+            }
+            request => (request, None),
+        };
+        let spare = match &request {
+            EditorOpen::Sheets { .. } => self.spare_sheets_view.take(),
+            _ => None,
+        };
+        PreparedTabOpen { request, spare, seed }
+    }
+
+    pub fn can_restore_editor_spare(&self, plan: &PreparedTabOpen<V, B>) -> bool {
+        plan.spare.is_some() && self.spare_sheets_view.is_none() && self.split.is_none()
+    }
+
+    /// Returns an un-restorable spare to the caller for cleanup outside admission.
+    pub fn cancel_editor_open_pure(&mut self, plan: PreparedTabOpen<V, B>, can_restore: bool) -> Option<(V, B)> {
+        let spare = plan.spare?;
+        if can_restore && self.spare_sheets_view.is_none() && self.split.is_none() {
+            self.spare_sheets_view = Some(spare);
+            None
+        } else {
+            Some(spare)
+        }
+    }
+
+    pub fn cancel_editor_open(&mut self, host: &mut dyn TabHost<V, B>, plan: PreparedTabOpen<V, B>) {
+        if let Some((view, binding)) = plan.spare {
+            if self.spare_sheets_view.is_none() && self.split.is_none()
+                && !host.window_destroyed() && !host.view_destroyed(&view) {
+                self.spare_sheets_view = Some((view, binding));
+            } else {
+                host.remove_child_view(&view);
+                host.close_view(&view);
             }
         }
-        Self::add_hidden(host, &view);
-        let title = self.title_for(
-            host,
-            open_path,
-            TabKind::Docs,
-            &format!("{PRODUCT_NAME} Docs"),
-        );
-        Ok(self.finish_open(
-            host,
-            id,
-            view,
-            TabKind::Docs,
-            title,
-            open_path.map(str::to_owned),
-            false,
-        ))
+    }
+
+    pub fn resume_editor_open(&mut self, host: &mut dyn TabHost<V, B>, plan: PreparedTabOpen<V, B>, created: TabResult<Option<V>>) -> TabResult<String> {
+        let created = match created {
+            Ok(created) => created,
+            Err(error) => { self.cancel_editor_open(host, plan); return Err(error); }
+        };
+        let reused = plan.spare.is_some();
+        let view = match (plan.spare, created) {
+            (Some((spare, _binding)), None) => spare,
+            (None, Some(view)) => view,
+            (Some(spare), Some(extra)) => {
+                host.remove_child_view(&extra);
+                host.close_view(&extra);
+                self.cancel_editor_open(host, PreparedTabOpen { request: plan.request, spare: Some(spare), seed: plan.seed });
+                return Err(TabError("editor open supplied an unexpected second view".into()));
+            }
+            (None, None) => return Err(TabError("editor open returned no view".into())),
+        };
+        if let EditorOpen::Sheets { path, .. } = &plan.request {
+            if let Some(path) = truthy(path.as_deref()) {
+                host.queue_workbook_for_view(&view, path);
+                if reused { host.nudge_queued_workbook(&view); }
+            }
+        }
+        let id = self.alloc_id();
+        let (kind, path, title) = match plan.request {
+            EditorOpen::Docs { path, options } => {
+                if let Some(options) = options {
+                    if options.new_blank { let wc = host.view_id(&view); host.mark_docs_new_blank(wc); }
+                    if let Some(content) = options.ai_content {
+                        let wc = host.view_id(&view);
+                        if let Err(error) = host.queue_docs_ai_content(wc, &content) {
+                            host.remove_child_view(&view);
+                            host.close_view(&view);
+                            return Err(error);
+                        }
+                    }
+                }
+                Self::add_hidden(host, &view);
+                let title = self.title_for(host, path.as_deref(), TabKind::Docs, &format!("{PRODUCT_NAME} Docs"));
+                (TabKind::Docs, path, title)
+            }
+            EditorOpen::Sheets { path, .. } => {
+                if !reused { Self::add_hidden(host, &view); }
+                let title = self.title_for(host, path.as_deref(), TabKind::Sheets, "AI Sheets");
+                (TabKind::Sheets, path, title)
+            }
+            EditorOpen::Diagram { path } => {
+                Self::add_hidden(host, &view);
+                self.track_html_full_screen(host, &view);
+                self.track_pane_focus(host, &view);
+                let identity = if truthy(path.as_deref()).is_some() {
+                    let wc = host.view_id(&view);
+                    host.diagram_tab_identity(wc)
+                } else { None };
+                let imported = identity.as_ref().is_some_and(|identity| identity.imported);
+                let title = if imported { identity.map(|identity| identity.title).unwrap_or_default() }
+                    else if let Some(path) = truthy(path.as_deref()) { basename(path, None) }
+                    else { self.untitled(host, TabKind::Diagram, "Diagram") };
+                self.tabs.push(TabRecord { id: id.clone(), kind: TabKind::Diagram, view: Some(view), binding: None, title,
+                    file_path: if imported { None } else { path }, present: false, opener: None, lazy: None });
+                self.activate_tab(host, &id);
+                return Ok(id);
+            }
+            EditorOpen::Hwp { path, copy } => {
+                Self::add_hidden(host, &view);
+                let title = match &copy {
+                    Some(copy) => copy.title.clone(),
+                    None => self.title_for(host, path.as_deref(), TabKind::Hwp, "HWP"),
+                };
+                (TabKind::Hwp, if copy.is_some() { None } else { path }, title)
+            }
+            EditorOpen::Slides { path } => {
+                Self::add_hidden(host, &view);
+                let title = self.title_for(host, path.as_deref(), TabKind::Slides, "AI Slides");
+                (TabKind::Slides, path, title)
+            }
+            EditorOpen::Pdf { path } => {
+                Self::add_hidden(host, &view);
+                let title = basename(&path, None);
+                (TabKind::Pdf, Some(path), title)
+            }
+            EditorOpen::Markdown { path } => {
+                Self::add_hidden(host, &view);
+                let title = self.title_for(host, path.as_deref(), TabKind::Markdown, "AI Markdown");
+                (TabKind::Markdown, path, title)
+            }
+            EditorOpen::Html { path } => {
+                Self::add_hidden(host, &view);
+                let title = self.title_for(host, path.as_deref(), TabKind::Html, "AI HTML");
+                (TabKind::Html, path, title)
+            }
+            EditorOpen::Mindmap { path } => {
+                Self::add_hidden(host, &view);
+                let title = self.title_for(host, path.as_deref(), TabKind::Mindmap, "Mind Map");
+                (TabKind::Mindmap, path, title)
+            }
+            EditorOpen::Epub { path } => {
+                Self::add_hidden(host, &view);
+                let title = basename(&path, None);
+                (TabKind::Epub, Some(path), title)
+            }
+            EditorOpen::Generate { .. } | EditorOpen::Conversion { .. } => unreachable!("generated editor requests are normalized during preparation"),
+        };
+        let seed = plan.seed.map(|seed| (seed, view.clone()));
+        let id = self.finish_open(host, id, view, kind, title, path, false);
+        match seed {
+            Some((EditorSeed::Generate(handoff), view)) => host.queue_generate_handoff_for(&view, &handoff),
+            Some((EditorSeed::Conversion(document), view)) => host.queue_converted_content(&view, &document),
+            Some((EditorSeed::DocsAi { new_blank, content }, view)) => {
+                let wc = host.view_id(&view);
+                if new_blank { host.mark_docs_new_blank(wc); }
+                if let Some(content) = content {
+                    if let Err(error) = host.queue_docs_ai_content(wc, &content) {
+                        self.close_tab_without_prompt(host, &id);
+                        return Err(error);
+                    }
+                }
+            }
+            None => {}
+        }
+        Ok(id)
+    }
+
+    fn open_editor(&mut self, host: &mut dyn TabHost<V, B>, request: EditorOpen) -> TabResult<String> {
+        let plan = self.prepare_editor_open(host, request);
+        let created = match plan.creation_spec() {
+            Some(spec) => host.create_view(&spec).map(Some),
+            None => Ok(None),
+        };
+        self.resume_editor_open(host, plan, created)
+    }
+
+    /// `openDocsTab`
+    pub fn open_docs_tab(&mut self, host: &mut dyn TabHost<V, B>, path: Option<&str>, options: Option<&OpenDocsOptions>) -> TabResult<String> {
+        self.open_editor(host, EditorOpen::Docs { path: path.map(str::to_owned), options: options.cloned() })
     }
 
     /// `openSheetsTab`
-    pub fn open_sheets_tab(
-        &mut self,
-        host: &mut dyn TabHost<V>,
-        open_path: Option<&str>,
-        new_blank: bool,
-    ) -> TabResult<String> {
-        if new_blank {
-            host.set_sheets_new_blank();
-        }
-        let spare = self.take_spare_sheets_view(host);
-        let view = match &spare {
-            Some(view) => view.clone(),
-            None => host.create_view(&ViewSpec::Sheets {
-                opening_workbook: Some(truthy(open_path).is_some()),
-            })?,
-        };
-        // bind the path to this tab's webContents: a multi-select Open creates
-        // several sheets tabs in one loop
-        if let Some(path) = truthy(open_path) {
-            host.queue_workbook_for_view(&view, path);
-            if spare.is_some() {
-                host.nudge_queued_workbook(&view);
-            }
-        }
-        let id = self.alloc_id();
-        if spare.is_none() {
-            Self::add_hidden(host, &view);
-        }
-        let title = self.title_for(host, open_path, TabKind::Sheets, "AI Sheets");
-        Ok(self.finish_open(
-            host,
-            id,
-            view,
-            TabKind::Sheets,
-            title,
-            open_path.map(str::to_owned),
-            false,
-        ))
+    pub fn open_sheets_tab(&mut self, host: &mut dyn TabHost<V, B>, path: Option<&str>, new_blank: bool) -> TabResult<String> {
+        self.open_editor(host, EditorOpen::Sheets { path: path.map(str::to_owned), new_blank })
     }
 
     /// `openSlidesTab`
-    pub fn open_slides_tab(
-        &mut self,
-        host: &mut dyn TabHost<V>,
-        open_path: Option<&str>,
-    ) -> TabResult<String> {
-        let view = host.create_view(&ViewSpec::Slides { path: open_path })?;
-        let id = self.alloc_id();
-        Self::add_hidden(host, &view);
-        let title = self.title_for(host, open_path, TabKind::Slides, "AI Slides");
-        Ok(self.finish_open(
-            host,
-            id,
-            view,
-            TabKind::Slides,
-            title,
-            open_path.map(str::to_owned),
-            false,
-        ))
+    pub fn open_slides_tab(&mut self, host: &mut dyn TabHost<V, B>, path: Option<&str>) -> TabResult<String> {
+        self.open_editor(host, EditorOpen::Slides { path: path.map(str::to_owned) })
     }
 
     /// `openPdfTab`
-    pub fn open_pdf_tab(
-        &mut self,
-        host: &mut dyn TabHost<V>,
-        open_path: &str,
-    ) -> TabResult<String> {
-        let view = host.create_view(&ViewSpec::Pdf { path: open_path })?;
-        let id = self.alloc_id();
-        Self::add_hidden(host, &view);
-        Ok(self.finish_open(
-            host,
-            id,
-            view,
-            TabKind::Pdf,
-            basename(open_path, None),
-            Some(open_path.to_owned()),
-            false,
-        ))
+    pub fn open_pdf_tab(&mut self, host: &mut dyn TabHost<V, B>, path: &str) -> TabResult<String> {
+        self.open_editor(host, EditorOpen::Pdf { path: path.to_owned() })
     }
 
     /// `reloadTab`: remount the tab's renderer so it re-reads its file
-    pub fn reload_tab(&mut self, host: &mut dyn TabHost<V>, id: &str) {
+    pub fn reload_tab(&mut self, host: &mut dyn TabHost<V, B>, id: &str) {
         let Some(tab) = self.tab_by_id(id) else {
             return;
         };
@@ -1475,129 +1823,28 @@ impl<V: Clone + PartialEq> TabManager<V> {
     }
 
     /// `openMarkdownTab`
-    pub fn open_markdown_tab(
-        &mut self,
-        host: &mut dyn TabHost<V>,
-        open_path: Option<&str>,
-    ) -> TabResult<String> {
-        let view = host.create_view(&ViewSpec::Markdown { path: open_path })?;
-        let id = self.alloc_id();
-        Self::add_hidden(host, &view);
-        let title = self.title_for(host, open_path, TabKind::Markdown, "AI Markdown");
-        Ok(self.finish_open(
-            host,
-            id,
-            view,
-            TabKind::Markdown,
-            title,
-            open_path.map(str::to_owned),
-            false,
-        ))
+    pub fn open_markdown_tab(&mut self, host: &mut dyn TabHost<V, B>, path: Option<&str>) -> TabResult<String> {
+        self.open_editor(host, EditorOpen::Markdown { path: path.map(str::to_owned) })
     }
 
     /// `openHtmlTab`
-    pub fn open_html_tab(
-        &mut self,
-        host: &mut dyn TabHost<V>,
-        open_path: Option<&str>,
-    ) -> TabResult<String> {
-        let view = host.create_view(&ViewSpec::Html { path: open_path })?;
-        let id = self.alloc_id();
-        Self::add_hidden(host, &view);
-        let title = self.title_for(host, open_path, TabKind::Html, "AI HTML");
-        Ok(self.finish_open(
-            host,
-            id,
-            view,
-            TabKind::Html,
-            title,
-            open_path.map(str::to_owned),
-            false,
-        ))
+    pub fn open_html_tab(&mut self, host: &mut dyn TabHost<V, B>, path: Option<&str>) -> TabResult<String> {
+        self.open_editor(host, EditorOpen::Html { path: path.map(str::to_owned) })
     }
 
     /// `openMindmapTab`
-    pub fn open_mindmap_tab(
-        &mut self,
-        host: &mut dyn TabHost<V>,
-        open_path: Option<&str>,
-    ) -> TabResult<String> {
-        let view = host.create_view(&ViewSpec::Mindmap { path: open_path })?;
-        let id = self.alloc_id();
-        Self::add_hidden(host, &view);
-        let title = self.title_for(host, open_path, TabKind::Mindmap, "Mind Map");
-        Ok(self.finish_open(
-            host,
-            id,
-            view,
-            TabKind::Mindmap,
-            title,
-            open_path.map(str::to_owned),
-            false,
-        ))
+    pub fn open_mindmap_tab(&mut self, host: &mut dyn TabHost<V, B>, path: Option<&str>) -> TabResult<String> {
+        self.open_editor(host, EditorOpen::Mindmap { path: path.map(str::to_owned) })
     }
 
     /// `openEpubTab`: a book always has its file
-    pub fn open_epub_tab(
-        &mut self,
-        host: &mut dyn TabHost<V>,
-        open_path: &str,
-    ) -> TabResult<String> {
-        let view = host.create_view(&ViewSpec::Epub { path: open_path })?;
-        let id = self.alloc_id();
-        Self::add_hidden(host, &view);
-        Ok(self.finish_open(
-            host,
-            id,
-            view,
-            TabKind::Epub,
-            basename(open_path, None),
-            Some(open_path.to_owned()),
-            false,
-        ))
+    pub fn open_epub_tab(&mut self, host: &mut dyn TabHost<V, B>, path: &str) -> TabResult<String> {
+        self.open_editor(host, EditorOpen::Epub { path: path.to_owned() })
     }
 
     /// `openDiagramTab`
-    pub fn open_diagram_tab(
-        &mut self,
-        host: &mut dyn TabHost<V>,
-        open_path: Option<&str>,
-    ) -> TabResult<String> {
-        let view = host.create_view(&ViewSpec::Diagram { path: open_path })?;
-        let id = self.alloc_id();
-        Self::add_hidden(host, &view);
-        self.track_html_full_screen(host, &view);
-        self.track_pane_focus(host, &view);
-        let identity = if truthy(open_path).is_some() {
-            let wc_id = host.view_id(&view);
-            host.diagram_tab_identity(wc_id)
-        } else {
-            None
-        };
-        let imported = identity.as_ref().is_some_and(|i| i.imported);
-        let title = if imported {
-            identity.map(|i| i.title).unwrap_or_default()
-        } else if let Some(path) = truthy(open_path) {
-            basename(path, None)
-        } else {
-            self.untitled(host, TabKind::Diagram, "Diagram")
-        };
-        self.tabs.push(TabRecord {
-            id: id.clone(),
-            kind: TabKind::Diagram,
-            view: Some(view),
-            title,
-            file_path: if imported {
-                None
-            } else {
-                open_path.map(str::to_owned)
-            },
-            present: false,
-            opener: None,
-            lazy: None,
-        });
-        self.activate_tab(host, &id);
-        Ok(id)
+    pub fn open_diagram_tab(&mut self, host: &mut dyn TabHost<V, B>, path: Option<&str>) -> TabResult<String> {
+        self.open_editor(host, EditorOpen::Diagram { path: path.map(str::to_owned) })
     }
 
     /// `webContentsForTab`
@@ -1609,81 +1856,63 @@ impl<V: Clone + PartialEq> TabManager<V> {
     /// the request queued for that tab's webContents
     pub fn open_generate_target_tab(
         &mut self,
-        host: &mut dyn TabHost<V>,
+        host: &mut dyn TabHost<V, B>,
         target: &str,
         handoff: &Value,
     ) -> TabResult<String> {
-        let id = if target == "slides" {
-            self.open_slides_tab(host, None)?
-        } else if target == "html" {
-            self.open_html_tab(host, None)?
-        } else {
-            self.open_mindmap_tab(host, None)?
-        };
-        let Some(contents) = self.web_contents_for_tab(&id) else {
-            return Err(TabError("the new tab could not be opened".to_owned()));
-        };
-        host.queue_generate_handoff_for(&contents, handoff);
-        Ok(id)
+        let target = GenerateHandoffTarget::parse(target).unwrap_or(GenerateHandoffTarget::Mindmap);
+        self.open_editor(host, EditorOpen::Generate { target, handoff: handoff.clone() })
     }
 
     /// `openConversionResult`: a new untitled tab of the result's editor,
     /// with the converted content queued
     pub fn open_conversion_result(
         &mut self,
-        host: &mut dyn TabHost<V>,
+        host: &mut dyn TabHost<V, B>,
         target: &str,
         doc: &Value,
     ) -> TabResult<String> {
-        let id = if target == "markdown" {
-            self.open_markdown_tab(host, None)?
-        } else if target == "slides" {
-            self.open_slides_tab(host, None)?
-        } else {
-            self.open_mindmap_tab(host, None)?
+        let target = match target {
+            "markdown" => GenerateConvertTarget::Markdown,
+            "slides" => GenerateConvertTarget::Slides,
+            "mindmap" => GenerateConvertTarget::Mindmap,
+            _ => GenerateConvertTarget::Mindmap,
         };
-        let Some(contents) = self.web_contents_for_tab(&id) else {
-            return Err(TabError("the new tab could not be opened".to_owned()));
-        };
-        host.queue_converted_content(&contents, doc);
-        Ok(id)
+        self.open_editor(host, EditorOpen::Conversion { target, document: doc.clone() })
     }
 
     /// `openHwpTab`
-    pub fn open_hwp_tab(
-        &mut self,
-        host: &mut dyn TabHost<V>,
-        open_path: Option<&str>,
-        untitled_copy: Option<&HwpCopy>,
-    ) -> TabResult<String> {
-        let copy = untitled_copy;
-        let view = host.create_view(&ViewSpec::Hwp {
-            path: open_path,
-            untitled_copy: match copy {
-                Some(copy) if copy.imported_pdf => HwpUntitledCopy::BaseName(copy.title.clone()),
-                other => HwpUntitledCopy::Flag(other.is_some()),
-            },
-        })?;
-        let id = self.alloc_id();
-        Self::add_hidden(host, &view);
-        // an untitled copy reads a temp file but is not that file
-        let title = match copy {
-            Some(copy) => copy.title.clone(),
-            None => self.title_for(host, open_path, TabKind::Hwp, "HWP"),
-        };
-        Ok(self.finish_open(
-            host,
-            id,
-            view,
-            TabKind::Hwp,
-            title,
-            if copy.is_some() {
-                None
-            } else {
-                open_path.map(str::to_owned)
-            },
-            false,
-        ))
+    pub fn open_hwp_tab(&mut self, host: &mut dyn TabHost<V, B>, path: Option<&str>, copy: Option<&HwpCopy>) -> TabResult<String> {
+        self.open_editor(host, EditorOpen::Hwp { path: path.map(str::to_owned), copy: copy.cloned() })
+    }
+
+    pub fn template_editor_open(copy: &TemplateCopy) -> Option<EditorOpen> {
+        Some(match copy.editor.as_str() {
+            "docs" => EditorOpen::Docs { path: None, options: None },
+            "markdown" => EditorOpen::Markdown { path: None },
+            "html" => EditorOpen::Html { path: None },
+            "mindmap" => EditorOpen::Mindmap { path: None },
+            "slides" => EditorOpen::Slides { path: None },
+            "hwp" => EditorOpen::Hwp { path: Some(copy.path.clone()), copy: Some(HwpCopy { title: copy.title.clone(), imported_pdf: false }) },
+            "pdf" => EditorOpen::Pdf { path: copy.path.clone() },
+            _ => return None,
+        })
+    }
+
+    pub fn finish_template_copy(&mut self, host: &mut dyn TabHost<V, B>, copy: &TemplateCopy, id: String) -> Option<(String, V)> {
+        let contents = self.web_contents_for_tab(&id)?;
+        let text = || text_decoder_decode(&copy.bytes).into_owned();
+        match copy.editor.as_str() {
+            "docs" => { let wc_id = host.view_id(&contents); host.queue_docs_copy(wc_id, &copy.path, &copy.file_name); }
+            "markdown" => host.queue_markdown_seed_for(&contents, &text()),
+            "html" => host.queue_html_seed_for(&contents, &text()),
+            "mindmap" => host.queue_mindmap_seed_for(&contents, &copy.bytes),
+            "slides" => host.queue_slides_seed_for(&contents, &copy.bytes, &copy.file_name),
+            _ => {}
+        }
+        let wc_id = host.view_id(&contents);
+        self.set_tab_title_for(host, wc_id, &copy.title);
+        Some((id, contents))
     }
 
     /// `openTemplateCopy`: a skill template's copy as a new, untitled
@@ -1691,56 +1920,20 @@ impl<V: Clone + PartialEq> TabManager<V> {
     /// could not be made
     pub fn open_template_copy(
         &mut self,
-        host: &mut dyn TabHost<V>,
+        host: &mut dyn TabHost<V, B>,
         copy: &TemplateCopy,
     ) -> TabResult<Option<(String, V)>> {
-        let id = match copy.editor.as_str() {
-            "docs" => self.open_docs_tab(host, None, None)?,
-            "markdown" => self.open_markdown_tab(host, None)?,
-            "html" => self.open_html_tab(host, None)?,
-            "mindmap" => self.open_mindmap_tab(host, None)?,
-            "slides" => self.open_slides_tab(host, None)?,
-            "hwp" => self.open_hwp_tab(
-                host,
-                Some(copy.path.as_str()),
-                Some(&HwpCopy {
-                    title: copy.title.clone(),
-                    imported_pdf: false,
-                }),
-            )?,
-            "pdf" => {
-                host.mark_pdf_untitled_copy(&copy.path);
-                self.open_pdf_tab(host, &copy.path)?
-            }
-            _ => return Ok(None),
-        };
-        let Some(contents) = self.web_contents_for_tab(&id) else {
-            return Ok(None);
-        };
-        // the decoder drops a leading byte order mark
-        let text = || text_decoder_decode(&copy.bytes).into_owned();
-        match copy.editor.as_str() {
-            "docs" => {
-                let wc_id = host.view_id(&contents);
-                host.queue_docs_copy(wc_id, &copy.path, &copy.file_name);
-            }
-            "markdown" => host.queue_markdown_seed_for(&contents, &text()),
-            "html" => host.queue_html_seed_for(&contents, &text()),
-            "mindmap" => host.queue_mindmap_seed_for(&contents, &copy.bytes),
-            "slides" => host.queue_slides_seed_for(&contents, &copy.bytes, &copy.file_name),
-            _ => {}
-        }
-        // a tab without a file takes the copy's title
-        let wc_id = host.view_id(&contents);
-        self.set_tab_title_for(host, wc_id, &copy.title);
-        Ok(Some((id, contents)))
+        let Some(request) = Self::template_editor_open(copy) else { return Ok(None); };
+        if copy.editor == "pdf" { host.mark_pdf_untitled_copy(&copy.path); }
+        let id = self.open_editor(host, request)?;
+        Ok(self.finish_template_copy(host, copy, id))
     }
 
     /// `openHtmlPresentTab`: a chrome-free html tab showing the owner tab's
     /// live preview
     pub fn open_html_present_tab(
         &mut self,
-        host: &mut dyn TabHost<V>,
+        host: &mut dyn TabHost<V, B>,
         owner_wc_id: i64,
         title: &str,
     ) -> TabResult<String> {
@@ -1748,17 +1941,21 @@ impl<V: Clone + PartialEq> TabManager<V> {
             owner: owner_wc_id,
             title,
         })?;
+        Ok(self.resume_html_present_tab(host, view, title))
+    }
+
+    pub fn resume_html_present_tab(&mut self, host: &mut dyn TabHost<V, B>, view: V, title: &str) -> String {
         let id = self.alloc_id();
         Self::add_hidden(host, &view);
         let title = match truthy(Some(title)) {
             Some(title) => title.to_owned(),
             None => self.untitled(host, TabKind::Html, "AI HTML"),
         };
-        Ok(self.finish_open(host, id, view, TabKind::Html, title, None, true))
+        self.finish_open(host, id, view, TabKind::Html, title, None, true)
     }
 
     /// `cycleTab`: step through the strip in order and wrap at the ends
-    pub fn cycle_tab(&mut self, host: &mut dyn TabHost<V>, direction: i32) {
+    pub fn cycle_tab(&mut self, host: &mut dyn TabHost<V, B>, direction: i32) {
         if self.tabs.len() < 2 {
             return;
         }
@@ -1776,7 +1973,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     /// `addUnloadedTab`
     pub fn add_unloaded_tab(
         &mut self,
-        host: &mut dyn TabHost<V>,
+        host: &mut dyn TabHost<V, B>,
         spec: &UnloadedTabSpec,
     ) -> String {
         let id = self.push_unloaded_tab(host, spec);
@@ -1784,7 +1981,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
         id
     }
 
-    fn push_unloaded_tab(&mut self, host: &mut dyn TabHost<V>, spec: &UnloadedTabSpec) -> String {
+    fn push_unloaded_tab(&mut self, host: &mut dyn TabHost<V, B>, spec: &UnloadedTabSpec) -> String {
         let id = self.alloc_id();
         let title = match &spec.title {
             Some(title) => title.clone(),
@@ -1797,6 +1994,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
             id: id.clone(),
             kind: spec.kind,
             view: None,
+            binding: None,
             title,
             file_path: spec.file_path.clone(),
             present: false,
@@ -1814,7 +2012,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     /// `hydrateSession`: rebuild a restored session; returns the new tab ids
     pub fn hydrate_session(
         &mut self,
-        host: &mut dyn TabHost<V>,
+        host: &mut dyn TabHost<V, B>,
         session: &RestoredSession,
     ) -> Vec<String> {
         let ids: Vec<String> = session
@@ -1860,7 +2058,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     /// it, and resolve once its document is ready. The two awaits that can
     /// wait on a person or a renderer are steps ([`EnsureStep`]): the
     /// opener's `needsUser` and `lazy.ready`.
-    pub fn ensure_tab_loaded(&mut self, host: &mut dyn TabHost<V>, id: &str) -> EnsureStep<V> {
+    pub fn ensure_tab_loaded(&mut self, host: &mut dyn TabHost<V, B>, id: &str) -> EnsureStep<V> {
         if self.index_of(id).is_none() || id == HOME_ID {
             return EnsureStep::Done(TabLoadResult::Missing);
         }
@@ -1882,7 +2080,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     /// the answer of `opener.needsUser` of [`EnsureStep::NeedsUser`]
     pub fn resume_ensure_needs_user(
         &mut self,
-        host: &mut dyn TabHost<V>,
+        host: &mut dyn TabHost<V, B>,
         next: EnsureAfterNeedsUser<V>,
         answer: Result<bool, String>,
     ) -> EnsureStep<V> {
@@ -1902,7 +2100,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     /// the end of `lazy.ready` of [`EnsureStep::AwaitReady`]
     pub fn resume_ensure_ready(
         &mut self,
-        host: &mut dyn TabHost<V>,
+        host: &mut dyn TabHost<V, B>,
         next: EnsureAfterReady<V>,
         answer: Result<(), String>,
     ) -> EnsureStep<V> {
@@ -1913,7 +2111,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     }
 
     /// the part after the opener's `needsUser` check
-    fn ensure_after_opener(&mut self, host: &mut dyn TabHost<V>, id: &str) -> EnsureStep<V> {
+    fn ensure_after_opener(&mut self, host: &mut dyn TabHost<V, B>, id: &str) -> EnsureStep<V> {
         // the answer may have taken a while: the tab can be gone or loaded by now
         if self.index_of(id).is_none() {
             return EnsureStep::Done(TabLoadResult::Missing);
@@ -1929,7 +2127,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     }
 
     /// `const lazy = tab.lazy` and what follows it
-    fn ensure_lazy(&mut self, host: &mut dyn TabHost<V>, id: &str) -> EnsureStep<V> {
+    fn ensure_lazy(&mut self, host: &mut dyn TabHost<V, B>, id: &str) -> EnsureStep<V> {
         let Some(index) = self.index_of(id) else {
             return EnsureStep::Done(TabLoadResult::Missing);
         };
@@ -1958,7 +2156,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     }
 
     /// `const contents = tab.view?.webContents` and the answer
-    fn ensure_finish(host: &mut dyn TabHost<V>, view: Option<V>) -> EnsureStep<V> {
+    fn ensure_finish(host: &mut dyn TabHost<V, B>, view: Option<V>) -> EnsureStep<V> {
         let Some(view) = view else {
             return EnsureStep::Done(TabLoadResult::Missing);
         };
@@ -1992,134 +2190,108 @@ impl<V: Clone + PartialEq> TabManager<V> {
     /// Make an unloaded tab's editor view through its opener, once. True when
     /// the tab has its view afterwards (or never needed one); false when the
     /// opener failed, leaving the tab unloaded for the next try.
-    fn load_tab(&mut self, host: &mut dyn TabHost<V>, id: &str) -> bool {
-        let Some(index) = self.index_of(id) else {
-            return true;
+    fn load_tab(&mut self, host: &mut dyn TabHost<V, B>, id: &str) -> bool {
+        let plan = match self.prepare_tab_load(id) {
+            Ok(Some(plan)) => plan,
+            Ok(None) => return true,
+            Err(_) => return false,
         };
-        let Some(opener) = self.tabs[index].opener else {
-            return true;
-        };
-        if self.tabs[index].view.is_some() {
-            return true;
-        }
-        if self.loading_ids.iter().any(|l| l == id) {
-            return false;
+        let loaded = host.opener_open(plan.opener(), plan.context());
+        self.resume_tab_load(host, plan, loaded).is_ok()
+    }
+
+    pub fn prepare_tab_load(&mut self, id: &str) -> Result<Option<PreparedTabLoad>, String> {
+        let Some(index) = self.index_of(id) else { return Ok(None) };
+        let Some(opener) = self.tabs[index].opener else { return Ok(None) };
+        if self.tabs[index].view.is_some() { return Ok(None); }
+        if self.loading_ids.iter().any(|loading| loading == id) {
+            return Err("the tab is already opening".into());
         }
         self.loading_ids.push(id.to_owned());
-        let context = self.open_context(index);
-        let loaded = match host.opener_open(&opener, &context) {
+        Ok(Some(PreparedTabLoad { opener, context: self.open_context(index) }))
+    }
+
+    /// Reserve only the unloaded row captured before a generated close.
+    pub fn prepare_captured_tab_load(
+        &mut self, opener: &Opener, context: &UnloadedTabOpenContext,
+    ) -> Result<PreparedTabLoad, String> {
+        let index = self.index_of(&context.tab_id).ok_or("the captured survivor disappeared")?;
+        if self.tabs[index].view.is_some() || self.tabs[index].opener.as_ref() != Some(opener)
+            || self.open_context(index) != *context {
+            return Err("the captured survivor changed before hydration".into());
+        }
+        self.prepare_tab_load(&context.tab_id)?.ok_or_else(|| "the captured survivor cannot be hydrated".into())
+    }
+
+    pub fn cancel_tab_load(&mut self, plan: PreparedTabLoad) {
+        self.loading_ids.retain(|id| id != &plan.context.tab_id);
+    }
+
+    /// Adopt a recovery view only after the native producer has reported the
+    /// actual load and initialization completion. Native attachment/listeners
+    /// are performed by the captured adapter, not this state reducer.
+    pub fn resume_tab_load_settled(&mut self, plan: PreparedTabLoad, view: V) -> Result<V, String> {
+        self.loading_ids.retain(|id| id != &plan.context.tab_id);
+        let index = self.index_of(&plan.context.tab_id).ok_or("the tab was closed while its document opened")?;
+        if self.tabs[index].opener != Some(plan.opener) || self.tabs[index].view.is_some()
+            || self.open_context(index) != plan.context {
+            return Err("the tab changed while its document opened".into());
+        }
+        if !self.full_screen_tracked.contains(&view) { self.full_screen_tracked.push(view.clone()); }
+        if !self.pane_focus_tracked.contains(&view) { self.pane_focus_tracked.push(view.clone()); }
+        let tab = &mut self.tabs[index];
+        tab.view = Some(view.clone());
+        tab.opener = None;
+        tab.lazy = None;
+        Ok(view)
+    }
+
+    pub fn resume_tab_load(&mut self, host: &mut dyn TabHost<V, B>, plan: PreparedTabLoad, loaded: Result<LoadedTabView<V>, String>) -> Result<V, String> {
+        self.loading_ids.retain(|id| id != &plan.context.tab_id);
+        let loaded = match loaded {
             Ok(loaded) => loaded,
-            Err(error) => {
-                host.warn("[tabs] a restored tab could not be opened:", &error);
-                self.loading_ids.retain(|l| l != id);
-                return false;
-            }
+            Err(error) => { host.warn("[tabs] a restored tab could not be opened:", &error); return Err(error); }
         };
-        self.loading_ids.retain(|l| l != id);
+        let Some(index) = self.index_of(&plan.context.tab_id) else {
+            host.close_view(&loaded.view);
+            return Err("the tab was closed while its document opened".into());
+        };
+        if self.tabs[index].opener != Some(plan.opener) || self.tabs[index].view.is_some()
+            || self.open_context(index) != plan.context {
+            host.close_view(&loaded.view);
+            return Err("the tab changed while its document opened".into());
+        }
         let LoadedTabView { view, ready } = loaded;
         Self::add_hidden(host, &view);
         self.track_html_full_screen(host, &view);
         self.track_pane_focus(host, &view);
-        let ready = match ready {
-            Some(ready) => ready,
-            None => host.page_loaded(&view),
-        };
+        let ready = ready.unwrap_or_else(|| host.page_loaded(&view));
         let tab = &mut self.tabs[index];
-        tab.view = Some(view);
+        tab.view = Some(view.clone());
         tab.opener = None;
         tab.lazy = Some(LazyLoadState {
-            ready,
-            settled: false,
-            needs_user: if opener.has_needs_user {
-                Some(opener)
-            } else {
-                None
-            },
+            ready, settled: false,
+            needs_user: if plan.opener.has_needs_user { Some(plan.opener) } else { None },
         });
-        true
+        Ok(view)
     }
 
     // ---- activation ----
 
     /// `activateTab`
-    pub fn activate_tab(&mut self, host: &mut dyn TabHost<V>, id: &str) {
-        let Some(index) = self.index_of(id) else {
-            return;
-        };
-        // an unloaded tab makes its editor first; a failed opener leaves the window as it was
-        if !self.load_tab(host, id) {
-            return;
+    pub fn activate_tab(&mut self, host: &mut dyn TabHost<V, B>, id: &str) {
+        if self.index_of(id).is_none() || !self.load_tab(host, id) { return; }
+        let environment = self.activation_environment(host, id);
+        let result = self.prepare_loaded_activation(id, environment)
+            .and_then(|prepared| self.commit_loaded_activation(prepared));
+        match result {
+            Ok(effects) => for effect in effects { effect.apply(host); },
+            Err(error) => host.warn("[tabs] a tab could not be activated:", &error),
         }
-        let previous = self.active_id.clone();
-        let (target_kind, target_present) = {
-            let target = &self.tabs[index];
-            (target.kind, target.present)
-        };
-        if let Some(split) = self.split.clone() {
-            let mode = activation_mode(
-                Some((split.a_tab_id.as_str(), split.b_tab_id.as_str())),
-                id,
-                target_kind.as_str(),
-                target_present,
-            );
-            if mode == SplitActivationMode::ReplacePane {
-                // a strip document tab takes over the focused pane; the replaced
-                // document stays open in the strip
-                let side = split.focus;
-                self.split = Some(if side == Pane::A {
-                    SplitViewState {
-                        a_tab_id: id.to_owned(),
-                        ..split
-                    }
-                } else {
-                    SplitViewState {
-                        b_tab_id: id.to_owned(),
-                        ..split
-                    }
-                });
-                if previous != id {
-                    self.previous_active_id = Some(previous);
-                }
-                self.active_id = id.to_owned();
-                self.layout(host);
-                self.refresh_active_targets(host);
-                self.focus_active_view(host);
-                host.on_changed();
-                self.notify_split_changed(host);
-                return;
-            }
-            if mode == SplitActivationMode::Pane {
-                let side = if id == split.a_tab_id {
-                    Pane::A
-                } else {
-                    Pane::B
-                };
-                if split.focus != side {
-                    self.split = Some(SplitViewState {
-                        focus: side,
-                        ..split
-                    });
-                    self.notify_split_changed(host);
-                }
-            }
-        }
-        if previous != id {
-            self.previous_active_id = Some(previous);
-        }
-        self.active_id = id.to_owned();
-        if target_kind == TabKind::Sheets && self.split.is_none() {
-            self.schedule_spare_sheets_view(host, 3000.0);
-        } else {
-            self.discard_spare_sheets_view(host);
-        }
-        self.layout(host);
-        self.refresh_active_targets(host);
-        self.focus_active_view(host);
-        host.on_changed();
     }
 
     /// `focusActiveView`: hand keyboard focus to the active tab's view
-    pub fn focus_active_view(&mut self, host: &mut dyn TabHost<V>) {
+    pub fn focus_active_view(&mut self, host: &mut dyn TabHost<V, B>) {
         if host.window_destroyed() || !host.window_focused() {
             return;
         }
@@ -2134,7 +2306,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
 
     /// `refreshActiveTargets`: re-point the process-global active-editor
     /// targets and the app menu at this window's active tab
-    pub fn refresh_active_targets(&mut self, host: &mut dyn TabHost<V>) {
+    pub fn refresh_active_targets(&mut self, host: &mut dyn TabHost<V, B>) {
         let Some(target) = self.tab_by_id(&self.active_id) else {
             return;
         };
@@ -2169,7 +2341,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
 
     // ---- the two-pane split ----
 
-    fn notify_split_changed(&mut self, host: &mut dyn TabHost<V>) {
+    fn notify_split_changed(&mut self, host: &mut dyn TabHost<V, B>) {
         host.on_split_changed(self.split.as_ref());
     }
 
@@ -2198,7 +2370,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     }
 
     /// `splitRoleOf`: which pane role the given view plays right now
-    pub fn split_role_of(&self, host: &mut dyn TabHost<V>, wc_id: i64) -> Option<SplitPaneRole> {
+    pub fn split_role_of(&self, host: &mut dyn TabHost<V, B>, wc_id: i64) -> Option<SplitPaneRole> {
         let split = self.split.as_ref()?;
         let i = self.index_of_wc(host, wc_id)?;
         let id = &self.tabs[i].id;
@@ -2227,7 +2399,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     }
 
     /// Make the given pane the focused one without stealing keyboard focus.
-    fn focus_pane(&mut self, host: &mut dyn TabHost<V>, side: Pane) {
+    fn focus_pane(&mut self, host: &mut dyn TabHost<V, B>, side: Pane) {
         let Some(split) = self.split.clone() else {
             return;
         };
@@ -2256,7 +2428,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     }
 
     /// `focusPaneByWebContents`: focus the pane showing this view's document
-    pub fn focus_pane_by_web_contents(&mut self, host: &mut dyn TabHost<V>, wc_id: i64) {
+    pub fn focus_pane_by_web_contents(&mut self, host: &mut dyn TabHost<V, B>, wc_id: i64) {
         let Some(split) = self.split.clone() else {
             return;
         };
@@ -2320,7 +2492,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     /// install a split state and make one of its tabs active (clamps the ratio)
     fn set_split(
         &mut self,
-        host: &mut dyn TabHost<V>,
+        host: &mut dyn TabHost<V, B>,
         next: SplitViewState,
         active_tab_id: Option<&str>,
     ) {
@@ -2357,7 +2529,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     /// `splitWith`: apply a drop intent decided by `decide_split_drop`
     pub fn split_with(
         &mut self,
-        host: &mut dyn TabHost<V>,
+        host: &mut dyn TabHost<V, B>,
         tab_id: &str,
         intent: Option<SplitDropIntent>,
     ) -> TabResult<()> {
@@ -2472,7 +2644,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     /// `beginSplit`: rebuild a remembered split at launch
     pub fn begin_split(
         &mut self,
-        host: &mut dyn TabHost<V>,
+        host: &mut dyn TabHost<V, B>,
         a_tab_id: &str,
         b_tab_id: &str,
         orientation: SplitOrientation,
@@ -2519,7 +2691,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
 
     /// `setSplitRatio`: an in-between share resizes the panes; 0 closes the
     /// first pane and 1 closes the second
-    pub fn set_split_ratio(&mut self, host: &mut dyn TabHost<V>, ratio: f64) {
+    pub fn set_split_ratio(&mut self, host: &mut dyn TabHost<V, B>, ratio: f64) {
         let Some(split) = self.split.clone() else {
             return;
         };
@@ -2548,7 +2720,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     }
 
     /// `unsplit`: the focused pane's document becomes the single visible tab
-    pub fn unsplit(&mut self, host: &mut dyn TabHost<V>) {
+    pub fn unsplit(&mut self, host: &mut dyn TabHost<V, B>) {
         let Some(split) = &self.split else {
             return;
         };
@@ -2556,7 +2728,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
         self.unsplit_keeping(host, focus);
     }
 
-    fn unsplit_keeping(&mut self, host: &mut dyn TabHost<V>, side: Pane) {
+    fn unsplit_keeping(&mut self, host: &mut dyn TabHost<V, B>, side: Pane) {
         let Some(split) = self.split.clone() else {
             return;
         };
@@ -2575,11 +2747,32 @@ impl<V: Clone + PartialEq> TabManager<V> {
         self.notify_split_changed(host);
     }
 
+
+    pub fn prepare_duplicate_pane_open(&mut self, host: &mut dyn TabHost<V, B>, tab_id: &str) -> Option<PreparedTabOpen<V, B>> {
+        let tab = self.tab_by_id(tab_id)?;
+        if tab.view.is_none() || tab.present { return None; }
+        let path = tab.file_path.clone();
+        let has_path = truthy(path.as_deref()).is_some();
+        let request = match tab.kind {
+            TabKind::Docs => EditorOpen::Docs { path, options: (!has_path).then_some(OpenDocsOptions { new_blank: true, ai_content: None }) },
+            TabKind::Sheets => EditorOpen::Sheets { path, new_blank: !has_path },
+            TabKind::Slides => EditorOpen::Slides { path },
+            TabKind::Pdf => EditorOpen::Pdf { path: path.filter(|path| !path.is_empty())? },
+            TabKind::Markdown => EditorOpen::Markdown { path },
+            TabKind::Html => EditorOpen::Html { path },
+            TabKind::Mindmap => EditorOpen::Mindmap { path },
+            TabKind::Hwp => EditorOpen::Hwp { path, copy: None },
+            TabKind::Epub => EditorOpen::Epub { path: path.filter(|path| !path.is_empty())? },
+            TabKind::Diagram => EditorOpen::Diagram { path },
+            TabKind::Home | TabKind::Help => return None,
+        };
+        Some(self.prepare_editor_open(host, request))
+    }
     /// `openDuplicatePaneTab`: a second view of the same document for the
     /// same-document split; `None` for a kind that cannot be duplicated
     pub fn open_duplicate_pane_tab(
         &mut self,
-        host: &mut dyn TabHost<V>,
+        host: &mut dyn TabHost<V, B>,
         tab_id: &str,
     ) -> TabResult<Option<String>> {
         let Some(tab) = self.tab_by_id(tab_id) else {
@@ -2637,27 +2830,8 @@ impl<V: Clone + PartialEq> TabManager<V> {
 
     /// `endExclusivePrompt`: put the arrangement back exactly as it was
     /// before the outermost begin
-    pub fn end_exclusive_prompt(&mut self, host: &mut dyn TabHost<V>) {
-        if self.prompt_depth == 0 {
-            return;
-        }
-        self.prompt_depth -= 1;
-        if self.prompt_depth > 0 {
-            return;
-        }
-        let split = self.prompt_split_snapshot.take();
-        let active_id = self.prompt_active_id_snapshot.take();
-        let Some(active_id) = active_id else {
-            return;
-        };
-        let same = self.split == split;
-        if same && self.active_id == active_id {
-            return;
-        }
-        self.split = split;
-        if self.tabs.iter().any(|t| t.id == active_id) {
-            self.active_id = active_id;
-        }
+    pub fn end_exclusive_prompt(&mut self, host: &mut dyn TabHost<V, B>) {
+        if !self.end_exclusive_prompt_state() { return; }
         self.layout(host);
         self.refresh_active_targets(host);
         self.focus_active_view(host);
@@ -2668,7 +2842,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     // ---- reorder and lookups by view ----
 
     /// `reorderTab`: move a tab to a new index in the strip; Home is pinned at 0
-    pub fn reorder_tab(&mut self, host: &mut dyn TabHost<V>, id: &str, to_index: f64) {
+    pub fn reorder_tab(&mut self, host: &mut dyn TabHost<V, B>, id: &str, to_index: f64) {
         if id == HOME_ID {
             return;
         }
@@ -2697,7 +2871,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     /// rendered by `wc_id`
     pub fn describe_web_contents(
         &self,
-        host: &mut dyn TabHost<V>,
+        host: &mut dyn TabHost<V, B>,
         wc_id: i64,
     ) -> Option<(TabKind, String, Option<String>)> {
         let i = self.index_of_wc(host, wc_id)?;
@@ -2710,39 +2884,57 @@ impl<V: Clone + PartialEq> TabManager<V> {
     }
 
     /// `tabIdForWebContents`
-    pub fn tab_id_for_web_contents(&self, host: &mut dyn TabHost<V>, wc_id: i64) -> Option<String> {
+    pub fn tab_id_for_web_contents(&self, host: &mut dyn TabHost<V, B>, wc_id: i64) -> Option<String> {
         self.index_of_wc(host, wc_id)
             .map(|i| self.tabs[i].id.clone())
     }
 
     /// `setTabFileFor`: a module opened a file inside an existing tab
-    pub fn set_tab_file_for(&mut self, host: &mut dyn TabHost<V>, wc_id: i64, file_path: &str) {
+    pub fn set_tab_file_for(&mut self, host: &mut dyn TabHost<V, B>, wc_id: i64, file_path: &str) {
         let Some(i) = self.index_of_wc(host, wc_id) else {
             return;
         };
-        let tab = &mut self.tabs[i];
-        tab.file_path = Some(file_path.to_owned());
-        tab.title = basename(file_path, None);
+        self.set_tab_file_at(i, file_path);
         host.on_changed();
     }
 
+    /// State-only save acknowledgement. The caller publishes the changed list.
+    pub fn set_tab_file_by_id(&mut self, tab_id: &str, file_path: &str) -> bool {
+        let Some(index) = self.tabs.iter().position(|tab| tab.id == tab_id) else { return false; };
+        self.set_tab_file_at(index, file_path);
+        true
+    }
+
+    fn set_tab_file_at(&mut self, index: usize, file_path: &str) {
+        let tab = &mut self.tabs[index];
+        tab.file_path = Some(file_path.to_owned());
+        tab.title = basename(file_path, None);
+    }
+
     /// `setTabTitleFor`: an untitled document named itself before its first save
-    pub fn set_tab_title_for(&mut self, host: &mut dyn TabHost<V>, wc_id: i64, title: &str) {
+    pub fn set_tab_title_for(&mut self, host: &mut dyn TabHost<V, B>, wc_id: i64, title: &str) {
         let Some(i) = self.index_of_wc(host, wc_id) else {
             return;
         };
-        let tab = &mut self.tabs[i];
-        if truthy_opt(&tab.file_path) || tab.title == title {
-            return;
-        }
+        if self.set_tab_title_at(i,title) { host.on_changed(); }
+    }
+
+    pub fn set_tab_title_by_id(&mut self,id:&str,title:&str)->bool {
+        let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else { return false; };
+        self.set_tab_title_at(index,title)
+    }
+
+    fn set_tab_title_at(&mut self,index:usize,title:&str)->bool {
+        let tab = &mut self.tabs[index];
+        if truthy_opt(&tab.file_path) || tab.title == title { return false; }
         tab.title = title.to_owned();
-        host.on_changed();
+        true
     }
 
     /// `renameTabFile`: a file was renamed on disk; returns the affected views
     pub fn rename_tab_file(
         &mut self,
-        host: &mut dyn TabHost<V>,
+        host: &mut dyn TabHost<V, B>,
         old_path: &str,
         new_path: &str,
     ) -> Vec<(TabKind, V)> {
@@ -2769,7 +2961,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     /// `dirtyMindmapTabs`, `dirtyHwpTabs`, `dirtyEpubTabs`, `dirtyDiagramTabs`
     /// and `dirtySlidesTabs`: the tabs of `kind` whose renderer reports unsaved
     /// edits, as `(tab id, view)`
-    pub fn dirty_tabs(&self, host: &mut dyn TabHost<V>, kind: TabKind) -> Vec<(String, V)> {
+    pub fn dirty_tabs(&self, host: &mut dyn TabHost<V, B>, kind: TabKind) -> TabResult<Vec<(String, V)>> {
         let mut out = Vec::new();
         for t in &self.tabs {
             if t.kind != kind {
@@ -2781,17 +2973,17 @@ impl<V: Clone + PartialEq> TabManager<V> {
             let wc_id = host.view_id(view);
             let dirty = match kind {
                 TabKind::Sheets => host.sheets_pending_edit_count(wc_id) > 0.0,
-                _ => host.family_is_dirty(kind, wc_id),
+                _ => host.family_is_dirty(kind, wc_id)?,
             };
             if dirty {
                 out.push((t.id.clone(), view.clone()));
             }
         }
-        out
+        Ok(out)
     }
 
     /// `dirtyOrMemoHwpTabs`: unsaved edits, or an open memo editor
-    pub fn dirty_or_memo_hwp_tabs(&self, host: &mut dyn TabHost<V>) -> Vec<(String, V)> {
+    pub fn dirty_or_memo_hwp_tabs(&self, host: &mut dyn TabHost<V, B>) -> TabResult<Vec<(String, V)>> {
         let mut out = Vec::new();
         for t in &self.tabs {
             if t.kind != TabKind::Hwp {
@@ -2801,11 +2993,11 @@ impl<V: Clone + PartialEq> TabManager<V> {
                 continue;
             };
             let wc_id = host.view_id(view);
-            if host.family_is_dirty(TabKind::Hwp, wc_id) || host.hwp_memo_modal_open(wc_id) {
+            if host.family_is_dirty(TabKind::Hwp, wc_id)? || host.hwp_memo_modal_open(wc_id) {
                 out.push((t.id.clone(), view.clone()));
             }
         }
-        out
+        Ok(out)
     }
 
     /// `docsTabs`, `slidesTabs` and `sheetsTabs`: all live tabs of `kind`
@@ -2825,7 +3017,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     }
 
     /// `closeActiveTab`: `closeTab` of the active tab (no-op for Home)
-    pub fn close_active_tab(&mut self, host: &mut dyn TabHost<V>) -> TabCloseStep<V> {
+    pub fn close_active_tab(&mut self, host: &mut dyn TabHost<V, B>) -> TabCloseStep<V> {
         let id = self.active_id.clone();
         self.close_tab(host, &id)
     }
@@ -2833,7 +3025,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     /// `closeTab`: runs the family's unsaved-changes prompt when the tab is
     /// dirty. The awaits are steps: see [`TabCloseStep`]; a run that needs
     /// none ends in [`TabCloseStep::Done`] at once.
-    pub fn close_tab(&mut self, host: &mut dyn TabHost<V>, id: &str) -> TabCloseStep<V> {
+    pub fn close_tab(&mut self, host: &mut dyn TabHost<V, B>, id: &str) -> TabCloseStep<V> {
         if id == HOME_ID {
             return TabCloseStep::Done;
         }
@@ -2848,32 +3040,18 @@ impl<V: Clone + PartialEq> TabManager<V> {
         let mut close_guard: Option<TabKind> = None;
         if let Some(view) = &view {
             let wc_id = host.view_id(view);
-            let ask = match kind {
-                TabKind::Sheets => host.sheets_pending_edit_count(wc_id) > 0.0,
-                TabKind::Pdf | TabKind::Markdown | TabKind::Html | TabKind::Slides => {
-                    host.family_is_dirty(kind, wc_id)
-                }
-                TabKind::Hwp => {
-                    host.family_is_dirty(kind, wc_id) || host.hwp_memo_modal_open(wc_id)
-                }
-                _ => false,
+            let dirty = match kind {
+                TabKind::Sheets => Ok(host.sheets_pending_edit_count(wc_id) > 0.0),
+                TabKind::Pdf | TabKind::Markdown | TabKind::Html | TabKind::Slides
+                | TabKind::Hwp | TabKind::Mindmap | TabKind::Epub | TabKind::Diagram =>
+                    host.family_is_dirty(kind, wc_id),
+                _ => Ok(false),
             };
-            if ask {
-                close_guard = Some(kind);
-            }
-            if close_guard.is_none()
-                && kind == TabKind::Mindmap
-                && host.family_is_dirty(kind, wc_id)
-            {
-                close_guard = Some(kind);
-            }
-            if close_guard.is_none() && kind == TabKind::Epub && host.family_is_dirty(kind, wc_id) {
-                close_guard = Some(kind);
-            }
-            if close_guard.is_none()
-                && kind == TabKind::Diagram
-                && host.family_is_dirty(kind, wc_id)
-            {
+            let dirty = match dirty {
+                Ok(dirty) => dirty,
+                Err(error) => return TabCloseStep::Rejected(error.0),
+            };
+            if dirty || (kind == TabKind::Hwp && host.hwp_memo_modal_open(wc_id)) {
                 close_guard = Some(kind);
             }
         }
@@ -2902,7 +3080,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     /// open step ends at once.
     pub fn resume_close(
         &mut self,
-        host: &mut dyn TabHost<V>,
+        host: &mut dyn TabHost<V, B>,
         id: &str,
         answer: Result<bool, String>,
     ) -> TabCloseStep<V> {
@@ -2941,7 +3119,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     /// exactly as it was afterwards (`resume_close` does that).
     fn begin_close_prompt(
         &mut self,
-        host: &mut dyn TabHost<V>,
+        host: &mut dyn TabHost<V, B>,
         id: &str,
         kind: TabKind,
         view: V,
@@ -2961,7 +3139,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
 
     /// `closeTabWithoutPrompt`: false when there is no such tab or one is
     /// mid-prompt, or an open memo editor would lose its text
-    pub fn close_tab_without_prompt(&mut self, host: &mut dyn TabHost<V>, id: &str) -> bool {
+    pub fn close_tab_without_prompt(&mut self, host: &mut dyn TabHost<V, B>, id: &str) -> bool {
         if id == HOME_ID {
             return false;
         }
@@ -2987,14 +3165,8 @@ impl<V: Clone + PartialEq> TabManager<V> {
     }
 
     /// detach and drop one tab and re-activate a neighbour (no guards, no prompts)
-    fn remove_tab(&mut self, host: &mut dyn TabHost<V>, id: &str) {
-        let Some(idx) = self.index_of(id) else {
-            return;
-        };
-        if self.html_full_screen_id.as_deref() == Some(id) {
-            self.html_full_screen_id = None;
-        }
-        let removed = self.tabs.remove(idx);
+    fn remove_tab(&mut self, host: &mut dyn TabHost<V, B>, id: &str) {
+        let Some((idx, removed)) = self.take_removed_tab(id) else { return; };
         if truthy_opt(&removed.file_path) && !removed.present {
             host.on_tab_closed(
                 removed.kind,
@@ -3022,45 +3194,25 @@ impl<V: Clone + PartialEq> TabManager<V> {
 
     /// what `removeTab` and `detachTab` do after the tab left the list: the
     /// split drops, or the neighbour takes over
-    fn after_leaving_strip(&mut self, host: &mut dyn TabHost<V>, id: &str, idx: usize) {
-        let survivor = self
-            .split
-            .as_ref()
-            .and_then(|s| split_survivor(&s.a_tab_id, &s.b_tab_id, id))
-            .map(|(_, tab_id)| tab_id.to_owned());
-        if let Some(survivor) = survivor {
-            // removing a pane document drops the split; the other pane's
-            // document takes the whole window (or stays backgrounded under a
-            // cover tab)
-            self.split = None;
-            if self.active_id == id && self.tabs.iter().any(|t| t.id == survivor) {
-                self.activate_tab(host, &survivor);
-            } else {
-                self.layout(host);
-                self.refresh_active_targets(host);
-                host.on_changed();
-            }
-            self.notify_split_changed(host);
-        } else if self.active_id == id {
-            let before = if idx >= 1 {
-                self.tabs.get(idx - 1)
-            } else {
-                None
-            };
-            let fallback = before.or_else(|| self.tabs.first()).map(|t| t.id.clone());
-            if let Some(fallback) = fallback {
-                self.activate_tab(host, &fallback);
-            }
-        } else {
+    fn after_leaving_strip(&mut self, host: &mut dyn TabHost<V, B>, id: &str, idx: usize) {
+        let removal = self.after_leaving_strip_state(id, idx);
+        if let Some(target) = removal.activate {
+            self.activate_tab(host, &target);
+        } else if removal.layout {
+            self.layout(host);
+            self.refresh_active_targets(host);
+            host.on_changed();
+        } else if removal.changed {
             host.on_changed();
         }
+        if removal.split_changed { self.notify_split_changed(host); }
     }
 
     // ---- detach and attach ----
 
     /// `detachTab`: remove a tab from the strip WITHOUT destroying its view
     /// and hand it to the caller; `None` while a close prompt is pending on it
-    pub fn detach_tab(&mut self, host: &mut dyn TabHost<V>, id: &str) -> Option<DetachedTab<V>> {
+    pub fn detach_tab(&mut self, host: &mut dyn TabHost<V, B>, id: &str) -> Option<DetachedTab<V, B>> {
         if id == HOME_ID {
             return None;
         }
@@ -3072,7 +3224,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
             }
         }
         // an unloaded tab leaves with a live document: it loads first
-        if !self.load_tab(host, id) || self.tabs[idx].view.is_none() {
+        if !self.load_tab(host, id) || self.tabs[idx].view.is_none() || self.tabs[idx].binding.is_none() {
             return None;
         }
         let tab = self.tabs.remove(idx);
@@ -3080,11 +3232,13 @@ impl<V: Clone + PartialEq> TabManager<V> {
             self.html_full_screen_id = None;
         }
         let view = tab.view.clone()?;
+        let binding = tab.binding?;
         host.set_visible(&view, false);
         host.remove_child_view(&view);
         self.after_leaving_strip(host, id, idx);
         Some(DetachedTab {
             view,
+            binding,
             kind: tab.kind,
             title: tab.title,
             file_path: tab.file_path,
@@ -3103,14 +3257,15 @@ impl<V: Clone + PartialEq> TabManager<V> {
     /// omitted index appends); with `activate` false the tab comes back quietly
     pub fn attach_tab(
         &mut self,
-        host: &mut dyn TabHost<V>,
-        record: DetachedTab<V>,
+        host: &mut dyn TabHost<V, B>,
+        record: DetachedTab<V, B>,
         index: Option<f64>,
         activate: bool,
     ) -> String {
         let id = self.alloc_id();
         let DetachedTab {
             view,
+            binding,
             kind,
             title,
             file_path,
@@ -3131,6 +3286,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
                 id: id.clone(),
                 kind,
                 view: Some(view),
+                binding: Some(binding),
                 title,
                 file_path,
                 present: false,
@@ -3163,7 +3319,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     /// handed out
     pub fn find_tab_by_path(
         &mut self,
-        host: &mut dyn TabHost<V>,
+        host: &mut dyn TabHost<V, B>,
         path: Option<&str>,
     ) -> Option<LiveTab<V>> {
         let wanted = canonical_path(path);
@@ -3208,7 +3364,7 @@ impl<V: Clone + PartialEq> TabManager<V> {
     /// drawing an untitled tab was made from
     pub fn find_diagram_tab_by_path(
         &self,
-        host: &mut dyn TabHost<V>,
+        host: &mut dyn TabHost<V, B>,
         path: Option<&str>,
     ) -> Option<String> {
         if let Some(own) = self.find_tab_of_kind_by_path(TabKind::Diagram, path) {
@@ -3255,51 +3411,34 @@ impl<V: Clone + PartialEq> TabManager<V> {
     }
 }
 
-impl<V: Clone + PartialEq> Default for TabManager<V> {
+impl<V: Clone + PartialEq, B: Clone + PartialEq> Default for TabManager<V, B> {
     fn default() -> Self {
         TabManager::new()
     }
 }
 
-/// `createPlainEditorView`: the editor view a plain open of `file_path`
-/// makes, without adding a tab; the opener of a document that has no
-/// recovery copy to settle
-pub fn create_plain_editor_view<V: Clone + PartialEq>(
-    host: &mut dyn TabHost<V>,
-    kind: TabKind,
-    file_path: Option<&str>,
-) -> TabResult<V> {
-    match kind {
-        TabKind::Docs => host.create_view(&ViewSpec::Docs { path: file_path }),
-        TabKind::Sheets => {
-            let view = host.create_view(&ViewSpec::Sheets {
-                opening_workbook: Some(truthy(file_path).is_some()),
-            })?;
-            if let Some(path) = truthy(file_path) {
-                host.queue_workbook_for_view(&view, path);
-            }
-            Ok(view)
-        }
-        TabKind::Slides => host.create_view(&ViewSpec::Slides { path: file_path }),
-        TabKind::Pdf => match truthy(file_path) {
-            Some(path) => host.create_view(&ViewSpec::Pdf { path }),
-            None => Err(TabError("a PDF tab needs its file".to_owned())),
-        },
-        TabKind::Markdown => host.create_view(&ViewSpec::Markdown { path: file_path }),
-        TabKind::Html => host.create_view(&ViewSpec::Html { path: file_path }),
-        TabKind::Mindmap => host.create_view(&ViewSpec::Mindmap { path: file_path }),
-        TabKind::Hwp => host.create_view(&ViewSpec::Hwp {
-            path: file_path,
-            untitled_copy: HwpUntitledCopy::Flag(false),
-        }),
-        TabKind::Epub => match truthy(file_path) {
-            Some(path) => host.create_view(&ViewSpec::Epub { path }),
-            None => Err(TabError("an EPUB tab needs its file".to_owned())),
-        },
-        TabKind::Diagram => host.create_view(&ViewSpec::Diagram { path: file_path }),
-        TabKind::Home | TabKind::Help => Err(TabError("not a document tab".to_owned())),
+pub fn prepare_plain_editor_view(kind: TabKind, file_path: Option<&str>) -> TabResult<ViewSpec<'_>> {
+    Ok(match kind {
+        TabKind::Docs => ViewSpec::Docs { path: file_path },
+        TabKind::Sheets => ViewSpec::Sheets { opening_workbook: Some(truthy(file_path).is_some()) },
+        TabKind::Slides => ViewSpec::Slides { path: file_path },
+        TabKind::Pdf => ViewSpec::Pdf { path: truthy(file_path).ok_or_else(|| TabError("a PDF tab needs its file".into()))? },
+        TabKind::Markdown => ViewSpec::Markdown { path: file_path },
+        TabKind::Html => ViewSpec::Html { path: file_path },
+        TabKind::Mindmap => ViewSpec::Mindmap { path: file_path },
+        TabKind::Hwp => ViewSpec::Hwp { path: file_path, untitled_copy: HwpUntitledCopy::Flag(false) },
+        TabKind::Epub => ViewSpec::Epub { path: truthy(file_path).ok_or_else(|| TabError("an EPUB tab needs its file".into()))? },
+        TabKind::Diagram => ViewSpec::Diagram { path: file_path },
+        TabKind::Home | TabKind::Help => return Err(TabError("not a document tab".into())),
+    })
+}
+
+pub fn resume_plain_editor_view<V, B>(host: &mut dyn TabHost<V, B>, kind: TabKind, file_path: Option<&str>, view: &V) {
+    if kind == TabKind::Sheets {
+        if let Some(path) = truthy(file_path) { host.queue_workbook_for_view(view, path); }
     }
 }
+
 
 /// `canonicalPath`: the path after resolving links, or as given when it
 /// cannot be resolved
@@ -3347,4 +3486,23 @@ pub fn help_window_open(url: &str, open_external: &mut dyn FnMut(&str)) -> &'sta
         open_external(&target);
     }
     "deny"
+}
+
+#[cfg(test)]
+mod spare_binding_tests {
+    use super::{EditorOpen, TabManager};
+    use std::sync::Arc;
+
+    #[test]
+    fn cancellation_restores_the_exact_reserved_spare_binding() {
+        let original = Arc::new(());
+        let mut manager = TabManager::<u32, Arc<()>>::new();
+        manager.spare_sheets_view = Some((7, original.clone()));
+        let plan = manager.prepare_editor_open_pure(EditorOpen::Sheets { path: None, new_blank: false });
+        assert_eq!(plan.reserved_view(), Some(&7));
+        assert!(Arc::ptr_eq(plan.reserved_binding().expect("reserved binding"), &original));
+        assert!(manager.cancel_editor_open_pure(plan, true).is_none());
+        let next = manager.prepare_editor_open_pure(EditorOpen::Sheets { path: None, new_blank: false });
+        assert!(Arc::ptr_eq(next.reserved_binding().expect("restored binding"), &original));
+    }
 }

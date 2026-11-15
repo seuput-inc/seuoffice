@@ -1,0 +1,499 @@
+diff --git a/libcef/renderer/native_v8_bridge.h b/libcef/renderer/native_v8_bridge.h
+new file mode 100644
+--- /dev/null
++++ b/libcef/renderer/native_v8_bridge.h
+@@ -0,0 +1,38 @@
++// Copyright 2026 The Chromium Embedded Framework Authors.
++// Use of this source code is governed by a BSD-style license.
++#ifndef CEF_LIBCEF_RENDERER_NATIVE_V8_BRIDGE_H_
++#define CEF_LIBCEF_RENDERER_NATIVE_V8_BRIDGE_H_
++
++#include <cstdint>
++#include <memory>
++#include <string>
++#include <utility>
++#include <vector>
++#include "cef/include/cef_render_process_handler.h"
++#include "v8/include/v8.h"
++
++// Renderer-thread-only. No CefV8 wrapper survives a JavaScript call.
++class CefNativeV8Bridge final {
++ public:
++  enum class Mode { kInvoke, kPreload };
++  CefNativeV8Bridge(v8::Isolate* isolate, v8::Local<v8::Context> context,
++                    CefRefPtr<CefNativeContextSender> sender, Mode mode);
++  ~CefNativeV8Bridge();
++  CefNativeV8Bridge(const CefNativeV8Bridge&) = delete;
++  CefNativeV8Bridge& operator=(const CefNativeV8Bridge&) = delete;
++
++  bool Install();
++  bool ExecuteTrustedScripts(const std::vector<std::pair<std::string, bool>>& scripts,
++                             bool is_main);
++  bool FinishInitialization();
++  bool Deliver(uint32_t callback, bool raw, const std::vector<uint8_t>& body);
++  bool DeliverChannel(uint32_t callback, uint64_t index, bool raw,
++                      const std::vector<uint8_t>& body, bool end);
++  void Release();
++  bool IsReleased() const;
++
++ private:
++  class State;
++  std::shared_ptr<State> state_;
++};
++#endif  // CEF_LIBCEF_RENDERER_NATIVE_V8_BRIDGE_H_
+diff --git a/libcef/renderer/native_v8_bridge.cc b/libcef/renderer/native_v8_bridge.cc
+new file mode 100644
+--- /dev/null
++++ b/libcef/renderer/native_v8_bridge.cc
+@@ -0,0 +1,299 @@
++// Copyright 2026 The Chromium Embedded Framework Authors.
++// Use of this source code is governed by a BSD-style license.
++#include "cef/libcef/renderer/native_v8_bridge.h"
++
++#include <array>
++#include <cstring>
++#include <limits>
++#include <map>
++#include <optional>
++#include <string>
++#include <utility>
++#include "base/check.h"
++#include "base/no_destructor.h"
++
++class CefNativeV8Bridge::State : public std::enable_shared_from_this<State> {
++ public:
++  enum class Phase { kInitializing, kConsumed, kReady, kRetired };
++  enum class Operation { kBootstrap, kInvoke, kListen, kSync };
++  struct Action { std::weak_ptr<State> owner; Operation operation; };
++
++  State(v8::Isolate* isolate, v8::Local<v8::Context> context,
++        CefRefPtr<CefNativeContextSender> sender, Mode mode)
++      : isolate_(isolate), context_(isolate, context),
++        sender_(std::move(sender)), mode_(mode) {}
++
++  static std::map<uint64_t, Action>& Actions() {
++    static base::NoDestructor<std::map<uint64_t, Action>> actions;
++    return *actions;
++  }
++  static uint64_t AllocateAction() {
++    static uint64_t next = 0;
++    CHECK_NE(next, std::numeric_limits<uint64_t>::max());
++    return ++next;
++  }
++  static v8::Local<v8::String> Text(v8::Isolate* isolate, const char* text) {
++    return v8::String::NewFromUtf8(isolate, text).ToLocalChecked();
++  }
++  bool Live() const { return phase_ != Phase::kRetired; }
++  bool ExactEntry() const {
++    if (!Live() || context_.IsEmpty() || !sender_ || !sender_->IsAdmitted()) return false;
++    const auto expected = context_.Get(isolate_);
++    return isolate_->GetCurrentContext() == expected &&
++           isolate_->GetEnteredOrMicrotaskContext() == expected;
++  }
++  v8::MaybeLocal<v8::Function> Function(v8::Local<v8::Context> context,
++                                       Operation operation) {
++    const uint64_t id = AllocateAction();
++    Actions().emplace(id, Action{weak_from_this(), operation});
++    actions_.push_back(id);
++    return v8::Function::New(context, Call,
++        v8::BigInt::NewFromUnsigned(isolate_, id));
++  }
++  bool Install() {
++    if (!ExactEntry() || phase_ != Phase::kInitializing) return false;
++    v8::HandleScope handles(isolate_);
++    auto context = context_.Get(isolate_);
++    v8::Local<v8::Function> bootstrap;
++    if (!Function(context, Operation::kBootstrap).ToLocal(&bootstrap)) return false;
++    return context->Global()->DefineOwnProperty(context,
++        Text(isolate_, "__seuofficeNativeBridgeBootstrap"), bootstrap,
++        static_cast<v8::PropertyAttribute>(v8::ReadOnly | v8::DontEnum))
++        .FromMaybe(false) && Live();
++  }
++  bool ExecuteTrustedScripts(
++      const std::vector<std::pair<std::string, bool>>& scripts, bool is_main) {
++    if (!ExactEntry() || phase_ != Phase::kInitializing) return false;
++    v8::HandleScope handles(isolate_);
++    auto context = context_.Get(isolate_);
++    v8::Context::Scope entered(context);
++    for (const auto& [source, main_only] : scripts) {
++      if (main_only && !is_main) continue;
++      if (!Live() || source.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
++        return false;
++      v8::TryCatch caught(isolate_);
++      v8::Local<v8::String> text;
++      if (!v8::String::NewFromUtf8(isolate_, source.data(), v8::NewStringType::kNormal,
++            static_cast<int>(source.size())).ToLocal(&text)) return false;
++      v8::Local<v8::Script> script;
++      if (!v8::Script::Compile(context, text).ToLocal(&script)) return false;
++      if (!Live()) return false;
++      const auto result = script->Run(context);
++      if (!Live()) return false;
++      if (result.IsEmpty()) return false;
++    }
++    return true;
++  }
++  bool FinishInitialization() {
++    if (!Live()) return false;
++    if (phase_ != Phase::kConsumed || listener_.IsEmpty()) {
++      Release();
++      return false;
++    }
++    v8::HandleScope handles(isolate_);
++    auto context = context_.Get(isolate_);
++    const bool bootstrap_left = context->Global()->HasOwnProperty(context,
++        Text(isolate_, "__seuofficeNativeBridgeBootstrap")).FromMaybe(true);
++    const bool sync_left = context->Global()->HasOwnProperty(context,
++        Text(isolate_, "__seuofficeNativeSendSync")).FromMaybe(true);
++    if (!Live() || bootstrap_left || sync_left) {
++      Release();
++      return false;
++    }
++    phase_ = Phase::kReady;
++    return true;
++  }
++  void Release() {
++    if (!Live()) return;
++    phase_ = Phase::kRetired;
++    for (const auto id : actions_) Actions().erase(id);
++    actions_.clear();
++    listener_.Reset();
++    context_.Reset();
++    sender_ = nullptr;
++  }
++  bool Deliver(uint32_t callback, bool raw, const std::vector<uint8_t>& body,
++               std::optional<uint64_t> index = std::nullopt, bool end = false) {
++    if (phase_ != Phase::kReady || listener_.IsEmpty() || !sender_ || !sender_->IsAdmitted()) return false;
++    // A nested context release may destroy the owning bridge. The caller holds
++    // this State alive; V8 locals remain rooted without a CEF context tracker.
++    v8::HandleScope handles(isolate_);
++    auto context = context_.Get(isolate_);
++    v8::Context::Scope entered(context);
++    v8::TryCatch caught(isolate_);
++    auto listener = listener_.Get(isolate_);
++    auto backing = v8::ArrayBuffer::NewBackingStore(isolate_, body.size());
++    if (!body.empty()) std::memcpy(backing->Data(), body.data(), body.size());
++    v8::Local<v8::Value> args[] = {
++        v8::Integer::NewFromUnsigned(isolate_, callback),
++        v8::Boolean::New(isolate_, raw),
++        v8::ArrayBuffer::New(isolate_, std::move(backing)),
++        index ? v8::BigInt::NewFromUnsigned(isolate_, *index).As<v8::Value>()
++              : v8::Undefined(isolate_).As<v8::Value>(),
++        v8::Boolean::New(isolate_, end)};
++    const auto result = listener->Call(context, v8::Undefined(isolate_), 5, args);
++    // Release resets all persistent handles synchronously. No context/value
++    // operation, exception formatting, or CEF wrapper runs after reentrant release.
++    if (!Live()) return false;
++    return !result.IsEmpty();
++  }
++
++ private:
++  static bool String(const v8::FunctionCallbackInfo<v8::Value>& args,
++                     int index, std::string& out) {
++    if (!args[index]->IsString()) return false;
++    v8::String::Utf8Value value(args.GetIsolate(), args[index]);
++    if (!*value) return false;
++    out.assign(*value, value.length());
++    return true;
++  }
++  static bool Binary(v8::Local<v8::Value> value, CefRefPtr<CefBinaryValue>& result) {
++    std::shared_ptr<v8::BackingStore> backing;
++    size_t offset = 0;
++    size_t length = 0;
++    if (value->IsArrayBuffer()) {
++      auto buffer = value.As<v8::ArrayBuffer>();
++      if (buffer->WasDetached()) return false;
++      backing = buffer->GetBackingStore();
++      length = buffer->ByteLength();
++    } else if (value->IsUint8Array()) {
++      auto view = value.As<v8::Uint8Array>();
++      auto buffer = view->Buffer();
++      if (buffer->WasDetached()) return false;
++      backing = buffer->GetBackingStore();
++      offset = view->ByteOffset();
++      length = view->ByteLength();
++    } else { return false; }
++    if (!backing || offset > backing->ByteLength() ||
++        length > backing->ByteLength() - offset) return false;
++    const auto* data = static_cast<const uint8_t*>(backing->Data());
++    result = length ? CefBinaryValue::Create(data + offset, length) : nullptr;
++    return length == 0 || result;
++  }
++  static void Fail(v8::Isolate* isolate, const char* message) {
++    isolate->ThrowException(v8::Exception::Error(Text(isolate, message)));
++  }
++  static void Call(const v8::FunctionCallbackInfo<v8::Value>& args) {
++    if (!args.Data()->IsBigInt()) return;
++    bool lossless = false;
++    const auto id = args.Data().As<v8::BigInt>()->Uint64Value(&lossless);
++    const auto found = Actions().find(id);
++    if (!lossless || found == Actions().end()) {
++      Fail(args.GetIsolate(), "Native context is released");
++      return;
++    }
++    const auto operation = found->second.operation;
++    auto state = found->second.owner.lock();
++    if (!state || !state->ExactEntry()) {
++      Fail(args.GetIsolate(), "Native context is not current");
++      return;
++    }
++    state->Invoke(operation, args);
++  }
++  void Invoke(Operation operation, const v8::FunctionCallbackInfo<v8::Value>& args) {
++    if (operation == Operation::kBootstrap) {
++      if (phase_ != Phase::kInitializing || args.Length() != 0) {
++        Fail(isolate_, "Native bootstrap is closed");
++        return;
++      }
++      phase_ = Phase::kConsumed;
++      auto context = context_.Get(isolate_);
++      auto object = v8::Object::New(isolate_);
++      const auto readonly = static_cast<v8::PropertyAttribute>(v8::ReadOnly | v8::DontDelete);
++      if (!object->DefineOwnProperty(context, Text(isolate_, "mode"),
++          Text(isolate_, mode_ == Mode::kPreload ? "preload" : "invoke"), readonly).FromMaybe(false)) {
++        Release(); return;
++      }
++      const std::array<std::pair<const char*, Operation>, 3> methods{{
++          {"invokeTauri", Operation::kInvoke}, {"listenTauri", Operation::kListen},
++          {"sendSync", Operation::kSync}}};
++      for (const auto& [name, method] : methods) {
++        v8::Local<v8::Function> function;
++        if (!Function(context, method).ToLocal(&function) ||
++            !object->DefineOwnProperty(context, Text(isolate_, name), function, readonly).FromMaybe(false)) {
++          Release(); return;
++        }
++      }
++      args.GetReturnValue().Set(object);
++      return;
++    }
++    if (phase_ != Phase::kConsumed && phase_ != Phase::kReady) {
++      Fail(isolate_, "Native bridge is not initialized"); return;
++    }
++    if (operation == Operation::kListen) {
++      if (args.Length() != 1 || !args[0]->IsFunction() || !listener_.IsEmpty()) {
++        Fail(isolate_, "Invalid native stream listener"); return;
++      }
++      listener_.Reset(isolate_, args[0].As<v8::Function>());
++      const auto sender = sender_;
++      if (!sender->Listen()) { Release(); Fail(isolate_, "Native stream refused"); }
++      return;
++    }
++    if (operation == Operation::kInvoke) {
++      std::string cmd, type, key;
++      if ((args.Length() != 6 && args.Length() != 7) || !String(args, 0, cmd) || !args[1]->IsUint32() ||
++          !args[2]->IsUint32() || !String(args, 3, type) || !String(args, 4, key) ||
++          (type != "application/json" && type != "application/octet-stream")) {
++        Fail(isolate_, "Invalid native Tauri request"); return;
++      }
++      std::string headers = "[]";
++      if (args.Length() == 7 && !String(args, 6, headers)) {
++        Fail(isolate_, "Invalid Tauri request headers"); return;
++      }
++      CefRefPtr<CefBinaryValue> body;
++      if (!Binary(args[5], body)) { Fail(isolate_, "Invalid native request bytes"); return; }
++      const auto callback = args[1].As<v8::Uint32>()->Value();
++      const auto error = args[2].As<v8::Uint32>()->Value();
++      const auto sender = sender_;
++      if (!sender->SendTauri(cmd, callback, error, type == "application/octet-stream", key, headers, body))
++        Fail(isolate_, "Native Tauri request refused");
++      return;
++    }
++    std::string channel;
++    if (mode_ != Mode::kPreload || args.Length() != 2 || !String(args, 0, channel)) {
++      Fail(isolate_, "Invalid native synchronous request"); return;
++    }
++    CefRefPtr<CefBinaryValue> body;
++    if (!Binary(args[1], body)) { Fail(isolate_, "Invalid native request bytes"); return; }
++    const auto sender = sender_;
++    CefRefPtr<CefBinaryValue> result;
++    const bool accepted = sender->SendSync(channel, body, result);
++    // NoInterrupt must not dispatch V8 or release callbacks during this wait.
++    if (!Live()) return;
++    if (!accepted) { Fail(isolate_, "Native synchronous request refused"); return; }
++    const size_t size = result ? result->GetSize() : 0;
++    auto backing = v8::ArrayBuffer::NewBackingStore(isolate_, size);
++    if (size && result->GetData(backing->Data(), size, 0) != size) {
++      Fail(isolate_, "Invalid native synchronous response"); return;
++    }
++    args.GetReturnValue().Set(v8::ArrayBuffer::New(isolate_, std::move(backing)));
++  }
++
++  v8::Isolate* const isolate_;
++  v8::Global<v8::Context> context_;
++  v8::Global<v8::Function> listener_;
++  CefRefPtr<CefNativeContextSender> sender_;
++  const Mode mode_;
++  Phase phase_ = Phase::kInitializing;
++  std::vector<uint64_t> actions_;
++};
++
++CefNativeV8Bridge::CefNativeV8Bridge(v8::Isolate* isolate, v8::Local<v8::Context> context,
++    CefRefPtr<CefNativeContextSender> sender, Mode mode)
++    : state_(std::make_shared<State>(isolate, context, std::move(sender), mode)) {}
++CefNativeV8Bridge::~CefNativeV8Bridge() { Release(); }
++bool CefNativeV8Bridge::Install() { auto state = state_; return state->Install(); }
++bool CefNativeV8Bridge::ExecuteTrustedScripts(
++    const std::vector<std::pair<std::string, bool>>& scripts, bool is_main) {
++  auto state = state_; return state->ExecuteTrustedScripts(scripts, is_main);
++}
++bool CefNativeV8Bridge::FinishInitialization() { auto state = state_; return state->FinishInitialization(); }
++bool CefNativeV8Bridge::Deliver(uint32_t callback, bool raw, const std::vector<uint8_t>& body) {
++  auto state = state_; return state->Deliver(callback, raw, body);
++}
++bool CefNativeV8Bridge::DeliverChannel(uint32_t callback, uint64_t index, bool raw,
++    const std::vector<uint8_t>& body, bool end) {
++  auto state = state_; return state->Deliver(callback, raw, body, index, end);
++}
++void CefNativeV8Bridge::Release() { auto state = state_; state->Release(); }
++bool CefNativeV8Bridge::IsReleased() const { return !state_->Live(); }
+diff --git a/BUILD.gn b/BUILD.gn
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -915,6 +915,8 @@
+     "libcef/renderer/native_context_evaluator.cc",
+     "libcef/renderer/native_context_evaluator.h",
+     "libcef/renderer/native_context_evaluator_mojo.h",
+     "libcef/renderer/native_context_sender.h",
++    "libcef/renderer/native_v8_bridge.cc",
++    "libcef/renderer/native_v8_bridge.h",
+     "libcef/renderer/render_frame_observer.cc",
+     "libcef/renderer/render_frame_observer.h",
+diff --git a/libcef/renderer/native_v8_bridge_test.h b/libcef/renderer/native_v8_bridge_test.h
+new file mode 100644
+--- /dev/null
++++ b/libcef/renderer/native_v8_bridge_test.h
+@@ -0,0 +1,16 @@
++// Copyright 2026 The Chromium Embedded Framework Authors.
++// Use of this source code is governed by a BSD-style license.
++#ifndef CEF_LIBCEF_RENDERER_NATIVE_V8_BRIDGE_TEST_H_
++#define CEF_LIBCEF_RENDERER_NATIVE_V8_BRIDGE_TEST_H_
++#include <string>
++#include "cef/libcef/renderer/native_v8_bridge.h"
++
++enum class CefNativeV8BridgeTestCase {
++  kReentrantRelease, kBorrowedBootstrap, kBorrowedMethod, kDuplicateBootstrap, kInitializationThrows, kMalformedBody
++};
++// The traffic fixture supplies a fresh real browser-admitted context per case.
++// Empty means success. This helper does not replace actual navigation/release tests.
++std::string CefRunNativeV8BridgeLifecycleTest(v8::Isolate* isolate,
++    v8::Local<v8::Context> context, CefRefPtr<CefNativeContextSender> sender,
++    CefNativeV8BridgeTestCase test_case);
++#endif  // CEF_LIBCEF_RENDERER_NATIVE_V8_BRIDGE_TEST_H_
+diff --git a/libcef/renderer/native_v8_bridge_test.cc b/libcef/renderer/native_v8_bridge_test.cc
+new file mode 100644
+--- /dev/null
++++ b/libcef/renderer/native_v8_bridge_test.cc
+@@ -0,0 +1,114 @@
++// Copyright 2026 The Chromium Embedded Framework Authors.
++// Use of this source code is governed by a BSD-style license.
++#include "cef/libcef/renderer/native_v8_bridge_test.h"
++#include <map>
++#include <memory>
++#include "base/no_destructor.h"
++
++namespace {
++using Bridge = CefNativeV8Bridge;
++std::map<uint64_t, std::weak_ptr<Bridge>>& Hooks() {
++  static base::NoDestructor<std::map<uint64_t, std::weak_ptr<Bridge>>> hooks;
++  return *hooks;
++}
++void ReleaseHook(const v8::FunctionCallbackInfo<v8::Value>& args) {
++  if (!args.Data()->IsBigInt()) return;
++  bool exact = false;
++  const auto id = args.Data().As<v8::BigInt>()->Uint64Value(&exact);
++  const auto it = Hooks().find(id);
++  if (exact && it != Hooks().end())
++    if (auto bridge = it->second.lock()) bridge->Release();
++}
++struct ScopedHook {
++  explicit ScopedHook(const std::shared_ptr<Bridge>& bridge) {
++    static uint64_t next = 0;
++    id = ++next;
++    Hooks().emplace(id, bridge);
++  }
++  ~ScopedHook() { Hooks().erase(id); }
++  uint64_t id;
++};
++v8::Local<v8::String> Text(v8::Isolate* isolate, const char* value) {
++  return v8::String::NewFromUtf8(isolate, value).ToLocalChecked();
++}
++bool True(v8::Isolate* isolate, v8::Local<v8::Context> context, const char* source) {
++  v8::TryCatch caught(isolate);
++  v8::Local<v8::Script> script;
++  v8::Local<v8::Value> value;
++  return v8::Script::Compile(context, Text(isolate, source)).ToLocal(&script) &&
++      script->Run(context).ToLocal(&value) && value->IsTrue();
++}
++}  // namespace
++
++std::string CefRunNativeV8BridgeLifecycleTest(v8::Isolate* isolate,
++    v8::Local<v8::Context> context, CefRefPtr<CefNativeContextSender> sender,
++    CefNativeV8BridgeTestCase test_case) {
++  if (!sender || !sender->IsAdmitted()) return "fixture context was not admitted";
++  v8::HandleScope handles(isolate);
++  v8::Context::Scope entered(context);
++  auto bridge = std::make_shared<Bridge>(isolate, context, sender, Bridge::Mode::kPreload);
++  if (!bridge->Install()) return "native bootstrap installation failed";
++  if (test_case == CefNativeV8BridgeTestCase::kInitializationThrows) {
++    if (bridge->ExecuteTrustedScripts({{"throw new Error('intentional init failure')", true}}, true))
++      return "initialization throw was accepted";
++    bridge->Release();
++    bridge->Release();
++    if (bridge->FinishInitialization() || bridge->Deliver(1, true, {}))
++      return "released initialization still accepted work";
++    return {};
++  }
++  if (test_case == CefNativeV8BridgeTestCase::kBorrowedBootstrap) {
++    v8::Local<v8::Value> value;
++    if (!context->Global()->Get(context, Text(isolate, "__seuofficeNativeBridgeBootstrap")).ToLocal(&value) ||
++        !value->IsFunction()) return "bootstrap was not a native function";
++    auto other = v8::Context::New(isolate);
++    {
++      v8::Context::Scope cross_frame(other);
++      v8::TryCatch caught(isolate);
++      const auto result = value.As<v8::Function>()->Call(other, v8::Undefined(isolate), 0, nullptr);
++      if (!result.IsEmpty() || !caught.HasCaught()) return "borrowed bootstrap crossed contexts";
++    }
++  }
++  const ScopedHook hook(bridge);
++  v8::Local<v8::Function> release;
++  if (!v8::Function::New(context, ReleaseHook, v8::BigInt::NewFromUnsigned(isolate, hook.id)).ToLocal(&release) ||
++      !context->Global()->DefineOwnProperty(context, Text(isolate, "__releaseBridgeTest"), release).FromMaybe(false))
++    return "release hook installation failed";
++  const char* initialize = test_case == CefNativeV8BridgeTestCase::kDuplicateBootstrap
++      ? "{const b=globalThis.__seuofficeNativeBridgeBootstrap;const n=b();delete globalThis.__seuofficeNativeBridgeBootstrap;let denied=false;try{b()}catch{denied=true}globalThis.__duplicateDenied=denied;n.listenTauri(()=>{}); }"
++      : "{const n=globalThis.__seuofficeNativeBridgeBootstrap();globalThis.__testNative=n;delete globalThis.__seuofficeNativeBridgeBootstrap;n.listenTauri((id,raw,body)=>{if(id!==7||!raw||!(body instanceof ArrayBuffer)||body.byteLength!==0)throw new Error('invalid empty Raw');globalThis.__releaseBridgeTest()}); }";
++  if (test_case == CefNativeV8BridgeTestCase::kMalformedBody)
++    initialize = "{const n=globalThis.__seuofficeNativeBridgeBootstrap();delete globalThis.__seuofficeNativeBridgeBootstrap;let count=0;try{n.invokeTauri('ipc_send',1,2,'application/octet-stream','invalid',{})}catch{count++}try{n.sendSync('webframe:get-zoom-factor',null)}catch{count++}globalThis.__malformedDenied=count;n.listenTauri(()=>{}); }";
++  if (!bridge->ExecuteTrustedScripts({{initialize, true}}, true) || !bridge->FinishInitialization())
++    return "trusted initialization failed";
++  if (test_case == CefNativeV8BridgeTestCase::kBorrowedMethod) {
++    v8::Local<v8::Value> object, function;
++    if (!context->Global()->Get(context, Text(isolate, "__testNative")).ToLocal(&object) ||
++        !object->IsObject() ||
++        !object.As<v8::Object>()->Get(context, Text(isolate, "sendSync")).ToLocal(&function) ||
++        !function->IsFunction()) return "native method was unavailable";
++    auto other = v8::Context::New(isolate);
++    v8::Context::Scope cross_frame(other);
++    v8::TryCatch caught(isolate);
++    v8::Local<v8::Value> args[] = {Text(isolate, "webframe:get-zoom-factor"), v8::ArrayBuffer::New(isolate, 0)};
++    const auto result = function.As<v8::Function>()->Call(other, v8::Undefined(isolate), 2, args);
++    if (!result.IsEmpty() || !caught.HasCaught()) return "borrowed native method crossed contexts";
++  }
++  if (test_case == CefNativeV8BridgeTestCase::kDuplicateBootstrap) {
++    if (!True(isolate, context, "globalThis.__duplicateDenied === true"))
++      return "duplicate bootstrap did not throw";
++  } else if (test_case == CefNativeV8BridgeTestCase::kMalformedBody) {
++    if (!True(isolate, context, "globalThis.__malformedDenied === 2"))
++      return "malformed native byte values were accepted";
++  } else {
++    if (bridge->Deliver(7, true, {})) return "delivery reported success after reentrant release";
++    if (!bridge->IsReleased()) return "empty Raw callback did not reentrantly release";
++    if (bridge->Deliver(8, true, {0}) || bridge->FinishInitialization())
++      return "released bridge retained callback authority";
++    if (!True(isolate, context, "(()=>{try{globalThis.__testNative.sendSync('webframe:get-zoom-factor',new Uint8Array());return false}catch{return true}})()"))
++      return "released native method was callable";
++  }
++  bridge->Release();
++  bridge->Release();
++  return {};
++}

@@ -14,15 +14,27 @@
 //! this module are [`editors::DocsEditors`].
 
 mod adapters;
+mod blank_seed;
 mod close;
+mod cleanup_mailbox;
 pub mod editors;
+mod dirty_owned;
+mod disposal;
 mod export;
 pub mod hosts;
+mod media_transition;
 mod misc;
 mod open;
+mod open_queue;
+mod owned_save;
+mod owned_write;
 mod passwords;
+mod prepared_registration;
+mod recovery_owned;
 mod recovery;
+mod renderer_save;
 mod save;
+mod saved_load;
 #[cfg(test)]
 mod tests;
 // lib.rs routes `d2/docs:` trigger steps here
@@ -72,6 +84,7 @@ pub(crate) type UntitledOpen = (Vec<(String, IpcValue)>, Vec<u8>);
 /// What `docs-main.ts` kept at module level, and the hosts it reached
 pub(crate) struct Docs {
     services: Services,
+    provided: Weak<Provided>,
     dialogs: DialogsHost,
     os: OsShellHost,
     contents: ContentsHost,
@@ -91,6 +104,9 @@ pub(crate) struct Docs {
     pdf_writable: ViewMap<HashSet<String>>,
     /// `tornDownWcIds`: never shrinks (view ids are not reused)
     torn_down: RefCell<HashSet<ViewId>>,
+    media_views: RefCell<HashMap<ViewId, DocsMediaSlot>>,
+    #[cfg(any(test, feature = "probe"))]
+    synthetic_media: RefCell<HashMap<ViewId, SyntheticMediaBinding>>,
     /// `openDocByWc`
     open_doc: ViewMap<String>,
     /// `imageExportTemps` (removed from disk when the view goes)
@@ -111,22 +127,48 @@ pub(crate) struct Docs {
     booted: RefCell<HashSet<ViewId>>,
     /// `pendingUntitledRecoveries`
     pending_untitled: ViewMap<Option<UntitledOpen>>,
+    recovery_seed: RefCell<HashMap<ViewId, recovery_owned::PendingSeed>>,
+    saved_loads: RefCell<HashMap<ViewId, saved_load::SavedLoad>>,
+    saved_reservations: std::cell::Cell<usize>,
+    cleanup_mailbox: cleanup_mailbox::CleanupMailbox,
     /// `pendingWindowOpens`
-    window_opens: ViewMap<String>,
+    window_opens: open_queue::OpenQueue,
     /// `pendingNewBlankIds`
     new_blank: RefCell<HashSet<ViewId>>,
+    owned_new_blank: blank_seed::BlankSeeds,
     /// `pendingDocCopies`: the copy's file and the name it shows
     doc_copies: ViewMap<(String, String)>,
     /// `headlessExportTargets`: out path and format
     headless_targets: ViewMap<(String, String)>,
     /// `headlessExportWaiters`
-    headless_waiters: RefCell<HashMap<ViewId, HeadlessThen>>,
+    headless_waiters: RefCell<HashMap<ViewId, (Option<(shell_contract::ipc::NativeInvocationTarget, shell_contract::runtime::CancelToken)>, HeadlessThen)>>,
     /// the close guard and the other renderer round trips
     close: Close,
     /// `viewMenuStateByWebContents`: aiSidebar, darkCanvas, odt
     view_menu: ViewMap<[bool; 3]>,
     /// keeps the view-destroyed listener registered for as long as this lives
     _destroyed: RefCell<Option<DestroyedHook>>,
+    _replaced: RefCell<Option<Rc<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration)>>>,
+}
+
+#[derive(Clone)]
+struct DocsMediaSlot {
+    lease: main_core::docs::byte_handoff::MediaViewLease,
+    owner: shell_contract::ipc::NativeBrowserOwner,
+    cleanup: Option<std::rc::Weak<RefCell<Option<disposal::DocsActorDisposal>>>>,
+    retirement: Rc<disposal::ActorRetirement>,
+}
+
+impl std::ops::Deref for DocsMediaSlot {
+    type Target = main_core::docs::byte_handoff::MediaViewLease;
+    fn deref(&self) -> &Self::Target { &self.lease }
+}
+
+#[cfg(any(test, feature = "probe"))]
+struct SyntheticMediaBinding {
+    _publication: Option<shell_contract::hosts::synthetic::SyntheticDocsBinding>,
+    _loss: Option<main_core::docs::byte_handoff::MediaLossSubscription>,
+    _successor: Option<shell_contract::ipc::NativeRequestOwner>,
 }
 
 /// What a headless export's caller gets: done, or the renderer's reason
@@ -140,6 +182,7 @@ pub(crate) fn entries(
 ) -> Result<Vec<Entry>, RegisterError> {
     let docs = Rc::new(Docs {
         services: services.clone(),
+        provided: Rc::downgrade(provided),
         dialogs: services.hosts.need::<DialogsHost>(Batch::D2)?,
         os: services.hosts.need::<OsShellHost>(Batch::D2)?,
         contents: services.hosts.need::<ContentsHost>(Batch::D2)?,
@@ -157,6 +200,9 @@ pub(crate) fn entries(
         doc_writable: ViewMap::new(services),
         pdf_writable: ViewMap::new(services),
         torn_down: RefCell::default(),
+        media_views: RefCell::default(),
+        #[cfg(any(test, feature = "probe"))]
+        synthetic_media: RefCell::default(),
         open_doc: ViewMap::new(services),
         image_temps: RefCell::default(),
         image_dirs: ViewMap::new(services),
@@ -167,14 +213,20 @@ pub(crate) fn entries(
         open_decisions: ViewMap::new(services),
         booted: RefCell::default(),
         pending_untitled: ViewMap::new(services),
-        window_opens: ViewMap::new(services),
+        recovery_seed: RefCell::default(),
+        saved_loads: RefCell::default(),
+        saved_reservations: std::cell::Cell::new(0),
+        cleanup_mailbox: cleanup_mailbox::CleanupMailbox::default(),
+        window_opens: open_queue::OpenQueue::new(services),
         new_blank: RefCell::default(),
+        owned_new_blank: blank_seed::BlankSeeds::new(services),
         doc_copies: ViewMap::new(services),
         headless_targets: ViewMap::new(services),
         headless_waiters: RefCell::default(),
         close: Close::default(),
         view_menu: ViewMap::new(services),
         _destroyed: RefCell::default(),
+        _replaced: RefCell::default(),
     });
     let weak: Weak<Docs> = Rc::downgrade(&docs);
     let hook = kit::on_view_destroyed(services, move |view| {
@@ -183,10 +235,17 @@ pub(crate) fn entries(
         }
     });
     *docs._destroyed.borrow_mut() = Some(hook);
+    let weak = Rc::downgrade(&docs);
+    let hook = kit::on_renderer_replaced(services, move |view, generation| {
+        if let Some(docs) = weak.upgrade() { docs.close.renderer_replaced(view, &generation); }
+    });
+    *docs._replaced.borrow_mut() = Some(hook);
     // the trait for every area; the concrete editor for the shell's docs-only
     // calls (teardown, the first-document queues, crash recovery)
     let editor = Rc::new(editors::DocsEditors(docs.clone()));
     provided.add::<dyn shell_contract::editors::DocumentEditors>(editor.clone());
+    provided.add::<dyn shell_contract::hosts::DocsHeadlessPrint>(editor.clone());
+    provided.add::<dyn main_core::packages::electron_utils::recovery_contract::RecoveryEditorContract<ViewId, shell_contract::ipc::RecoveryOpenTarget>>(editor.clone());
     provided.add::<editors::DocsEditors>(editor);
 
     let mut all = open::entries(&docs);
@@ -329,6 +388,118 @@ impl Docs {
 
     fn is_torn_down(&self, view: ViewId) -> bool {
         self.torn_down.borrow().contains(&view)
+    }
+
+    #[cfg(any(test, feature = "probe"))]
+    fn synthetic_media_binding(
+        &self,
+        view: ViewId,
+        permit: &main_core::docs::byte_handoff::MediaPermit,
+    ) -> Result<Option<SyntheticMediaBinding>, String> {
+        let Some(model) = self.services.hosts.get::<Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>() else {
+            return Ok(None);
+        };
+        let renderer = self.services.views.renderer_generation(view)
+            .ok_or("The document renderer is no longer available.")?;
+        let document = shell_contract::runtime::RendererGeneration::new();
+        let revoked = document.clone();
+        let loss = permit.on_revoke(move || revoked.revoke());
+        let publication = model.bind_docs_document(
+            view, &renderer, permit.owner().generation, document,
+        )?;
+        Ok(Some(SyntheticMediaBinding { _publication: Some(publication), _loss: Some(loss), _successor: None }))
+    }
+
+    #[cfg(any(test, feature = "probe"))]
+    fn retain_synthetic_successor(&self, view: ViewId, successor: &shell_contract::ipc::NativeRequestOwner) {
+        if self.services.hosts.get::<Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>().is_some() {
+            let previous = self.synthetic_media.borrow_mut().insert(view, SyntheticMediaBinding {
+                _publication: None, _loss: None, _successor: Some(successor.clone()),
+            });
+            drop(previous);
+        }
+    }
+
+    #[cfg(any(test, feature = "probe"))]
+    fn register_media_view(&self, view: ViewId) -> Result<main_core::docs::byte_handoff::MediaViewLease, String> {
+        if !self.services.views.sender_of(view).is_some_and(|sender| sender.surface == shell_contract::Surface::Docs) {
+            return Err("The document view is no longer available.".to_owned());
+        }
+        let lease = main_core::docs::byte_handoff::MediaViewLease::new(view.0)?;
+        let generation = self.services.views.renderer_generation(view).ok_or("The document renderer is unavailable.")?;
+        let (_issuer, reservation, owner) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(view, generation);
+        let previous = reservation.with_initial_owner(&owner, |_| Ok(self.media_views.borrow_mut().insert(
+            view, DocsMediaSlot { lease: lease.clone(), owner: owner.clone(), cleanup: None, retirement: disposal::ActorRetirement::new() },
+        )))?;
+        if let Some(previous) = previous {
+            previous.mark_replaced();
+            let permit = previous.last_permit();
+            let pending = previous.pending();
+            previous.revoke();
+            let _ = self.engine.forget_lazy_media_owner(permit);
+            if let Some(pending) = pending { let _ = self.engine.forget_lazy_media_owner(pending); }
+        }
+        self.torn_down.borrow_mut().remove(&view);
+        #[cfg(any(test, feature = "probe"))]
+        if let Some(permit) = lease.current() {
+            if let Some(binding) = self.synthetic_media_binding(view, &permit)? {
+                let previous = self.synthetic_media.borrow_mut().insert(view, binding);
+                drop(previous);
+            }
+        }
+        Ok(lease)
+    }
+
+    fn media_permit(&self, view: ViewId) -> Option<main_core::docs::byte_handoff::MediaPermit> {
+        if self.is_torn_down(view) || !self.services.views.sender_of(view).is_some_and(|sender| sender.surface == shell_contract::Surface::Docs) {
+            return None;
+        }
+        self.media_views.borrow().get(&view).and_then(|lease| lease.current())
+    }
+
+    fn begin_media_document(&self, view: ViewId) -> Result<main_core::docs::byte_handoff::MediaPermit, String> {
+        let lease = self.media_views.borrow().get(&view).map(|slot| slot.lease.clone()).ok_or("The document media view is not registered.")?;
+        let previous = lease.pending();
+        let permit = lease.stage_document()?;
+        if let Some(previous) = previous { let _ = self.engine.forget_lazy_media_owner(previous); }
+        Ok(permit)
+    }
+
+    fn commit_media_document(&self, view: ViewId, permit: &main_core::docs::byte_handoff::MediaPermit) -> Result<(), String> {
+        let lease = self.media_views.borrow().get(&view).map(|slot| slot.lease.clone()).ok_or("The document media view is not registered.")?;
+        let previous = lease.commit_document(permit)?;
+        let _ = self.engine.forget_lazy_media_owner(previous);
+        #[cfg(any(test, feature = "probe"))]
+        if let Some(binding) = self.synthetic_media_binding(view, permit)? {
+            let previous = self.synthetic_media.borrow_mut().insert(view, binding);
+            drop(previous);
+        }
+        Ok(())
+    }
+
+    fn abort_media_document(&self, view: ViewId, permit: &main_core::docs::byte_handoff::MediaPermit) {
+        if let Some(lease) = self.media_views.borrow().get(&view) {
+            lease.abort_document(permit);
+        }
+        permit.revoke();
+        let _ = self.engine.forget_lazy_media_owner(permit.clone());
+    }
+
+    fn revoke_media_view(&self, view: ViewId) {
+        if let Some(lease) = self.media_views.borrow_mut().remove(&view) {
+            let permit = lease.last_permit();
+            let pending = lease.pending();
+            lease.revoke();
+            if let Some(pending) = pending { let _ = self.engine.forget_lazy_media_owner(pending); }
+            if let Err(error) = self.engine.forget_lazy_media_owner(permit) {
+                eprintln!("[docs] could not release document media: {error}");
+            }
+        }
+        #[cfg(any(test, feature = "probe"))]
+        {
+            let binding = self.synthetic_media.borrow_mut().remove(&view);
+            drop(binding);
+        }
     }
 
     /// `hostWindowFor(sender)`: the view's window, else the shell window
@@ -492,22 +663,23 @@ impl Docs {
         if self.shell.is_headless() {
             return;
         }
-        let recent: Vec<JsonValue> = match read_json(&self.recent_path()) {
-            Some(JsonValue::Array(items)) => items,
-            _ => Vec::new(),
-        };
-        if recent.first() == Some(&js_str(path)) {
-            return;
-        }
-        let mut next = vec![js_str(path)];
-        next.extend(recent.into_iter().filter(|p| *p != js_str(path)));
-        next.truncate(100);
-        // the document is saved already: a lost recents entry must not fail it
-        let _ = main_core::packages::electron_utils::atomic_write::write_json_atomic(
-            &self.recent_path(),
-            &JsonValue::Array(next),
-        );
-        self.shell.rebuild_docs_menu();
+        let recent_path = self.recent_path();
+        let io_path = recent_path.clone();
+        let path = path.to_owned();
+        let changed = main_core::shell::recent_files::metadata::run_sync(&recent_path, move || {
+            let recent: Vec<JsonValue> = match read_json(&io_path) {
+                Some(JsonValue::Array(items)) => items,
+                _ => Vec::new(),
+            };
+            if recent.first() == Some(&js_str(&path)) { return Ok(false); }
+            let mut next = vec![js_str(&path)];
+            next.extend(recent.into_iter().filter(|item| *item != js_str(&path)));
+            next.truncate(100);
+            main_core::packages::electron_utils::atomic_write::write_json_atomic(&io_path, &JsonValue::Array(next))?;
+            Ok(true)
+        }).unwrap_or(true);
+        // The document is saved; metadata IO failure still refreshes the menu.
+        if changed { self.shell.rebuild_docs_menu(); }
     }
 
     /// `rememberDiskState` with the stat a worker took (`None`: unstatable)
@@ -566,16 +738,19 @@ impl Docs {
     /// `dropDocWriter` and the `destroyed` listeners of `createDocsView`:
     /// the per-view state the view maps do not drop themselves
     fn view_destroyed(&self, view: ViewId) {
+        if self.media_views.borrow().get(&view).is_some_and(|lease| lease.current().is_some()) {
+            return;
+        }
+        self.revoke_media_view(view);
         if let Some(temps) = self.image_temps.borrow_mut().remove(&view) {
             for p in temps {
                 let _ = std::fs::remove_file(p);
             }
         }
-        self.engine.forget_lazy_media_owner(view);
         self.booted.borrow_mut().remove(&view);
         self.torn_down.borrow_mut().insert(view);
         let waiter = self.headless_waiters.borrow_mut().remove(&view);
-        if let Some(settle) = waiter {
+        if let Some((_, settle)) = waiter {
             settle(Err("docs renderer stopped (destroyed)".into()));
         }
         close::view_destroyed(self, view);

@@ -1,0 +1,385 @@
+diff --git a/libcef/common/mojom/cef.mojom b/libcef/common/mojom/cef.mojom
+--- a/libcef/common/mojom/cef.mojom
++++ b/libcef/common/mojom/cef.mojom
+@@ -131,8 +131,15 @@
++// One receiver belongs to one captured native V8 context, not a CEF frame.
++interface NativeContextEvaluator {
++  Evaluate(string nonce, string source) => (string nonce, string code, string payload);
++  Cancel(string nonce);
++};
++
+ // Dedicated renderer-context channel. The receiver is bound to the actual RFH.
+ // Tokens identify native objects; this message is not an activation grant.
+ interface NativeContextHost {
+   Register(blink.mojom.DocumentToken document_token,
+-           blink.mojom.V8ContextToken context_token, int32 world_id);
++           blink.mojom.V8ContextToken context_token, int32 world_id,
++           pending_remote<NativeContextEvaluator> evaluator);
+ };
+ 
+ // Interface for communicating with browser management in the browser process.
+diff --git a/include/cef_client.h b/include/cef_client.h
+--- a/include/cef_client.h
++++ b/include/cef_client.h
+@@ -60,5 +60,37 @@
+ #include "include/cef_request_handler.h"
+ 
++#if CEF_API_ADDED(15401)
++///
++/// Completion for an exact native-context evaluation. Browser UI thread only.
++/// An empty |code| means |payload| is a by-value JSON result. Otherwise |code|
++/// is a structured error and |payload| describes it. |nonce| is the caller's
++/// original request identity, never a renderer-selected context identifier.
++///
++/*--cef(source=client,added=15401)--*/
++class CefNativeContextEvaluationCallback : public virtual CefBaseRefCounted {
++ public:
++  /*--cef()--*/
++  virtual void OnComplete(const CefString& nonce, const CefString& code,
++                          const CefString& payload) = 0;
++};
++
++///
++/// Browser-process handle bound to one authenticated context's private pipe.
++/// All methods run on the browser UI thread. No current-frame evaluation fallback.
++///
++/*--cef(source=library,added=15401)--*/
++class CefNativeContextEvaluation : public virtual CefBaseRefCounted {
++ public:
++  /*--cef()--*/
++  virtual void Evaluate(const CefString& nonce, const CefString& source,
++                        CefRefPtr<CefNativeContextEvaluationCallback> callback) = 0;
++  /*--cef()--*/
++  virtual void Cancel(const CefString& nonce) = 0;
++  /*--cef()--*/
++  virtual bool IsCurrentDocument() = 0;
++};
++#endif
++
+ ///
+ /// Implement this interface to provide handler implementations.
+ ///
+@@ -219,4 +247,5 @@
+                                           const CefString& context_token,
+                                           uint64_t issuance, const CefString& intent,
+-                                          int world_id) {}
++                                          int world_id,
++                                          CefRefPtr<CefNativeContextEvaluation> evaluation) {}
+ 
+diff --git a/libcef/renderer/native_context_evaluator_mojo.h b/libcef/renderer/native_context_evaluator_mojo.h
+new file mode 100644
+--- /dev/null
++++ b/libcef/renderer/native_context_evaluator_mojo.h
+@@ -0,0 +1,55 @@
++// Copyright 2026 The Chromium Embedded Framework Authors.
++// Use of this source code is governed by a BSD-style license.
++#ifndef CEF_LIBCEF_RENDERER_NATIVE_CONTEXT_EVALUATOR_MOJO_H_
++#define CEF_LIBCEF_RENDERER_NATIVE_CONTEXT_EVALUATOR_MOJO_H_
++
++#include <memory>
++#include <utility>
++#include "base/functional/bind.h"
++#include "cef/libcef/common/mojom/cef.mojom.h"
++#include "cef/libcef/renderer/native_context_evaluator.h"
++#include "mojo/public/cpp/bindings/receiver.h"
++
++// Exact-context receiver, owned by the renderer observer's captured token.
++// Release does not execute script. Pending native replies become stale before
++// persistent V8 handles are dropped; it never resolves into a successor context.
++class CefNativeContextEvaluatorMojo final
++    : public cef::mojom::NativeContextEvaluator {
++ public:
++  CefNativeContextEvaluatorMojo(v8::Isolate* isolate,
++                                v8::Local<v8::Context> context)
++      : evaluator_(std::make_shared<CefNativeContextEvaluator>(isolate, context)),
++        receiver_(this) {}
++  ~CefNativeContextEvaluatorMojo() override { Release(); }
++
++  mojo::PendingRemote<cef::mojom::NativeContextEvaluator> BindNewPipeAndPassRemote() {
++    auto remote = receiver_.BindNewPipeAndPassRemote();
++    receiver_.set_disconnect_handler(base::BindOnce(
++        &CefNativeContextEvaluatorMojo::Release, base::Unretained(this)));
++    return remote;
++  }
++
++  void Release() {
++    receiver_.reset();
++    auto evaluator = evaluator_;
++    if (evaluator) evaluator->Release();
++  }
++
++ private:
++  void Evaluate(const std::string& nonce, const std::string& source,
++                EvaluateCallback callback) override {
++    auto evaluator = evaluator_;
++    evaluator->Evaluate(nonce, source, base::BindOnce(
++        [](EvaluateCallback reply, std::string nonce, std::string code,
++           std::string payload) {
++          std::move(reply).Run(nonce, code, payload);
++        }, std::move(callback)));
++  }
++  void Cancel(const std::string& nonce) override {
++    auto evaluator = evaluator_;
++    evaluator->Cancel(nonce);
++  }
++  std::shared_ptr<CefNativeContextEvaluator> evaluator_;
++  mojo::Receiver<cef::mojom::NativeContextEvaluator> receiver_;
++};
++#endif  // CEF_LIBCEF_RENDERER_NATIVE_CONTEXT_EVALUATOR_MOJO_H_
+diff --git a/libcef/browser/native_context_evaluation.h b/libcef/browser/native_context_evaluation.h
+new file mode 100644
+--- /dev/null
++++ b/libcef/browser/native_context_evaluation.h
+@@ -0,0 +1,124 @@
++// Copyright 2026 The Chromium Embedded Framework Authors.
++// Use of this source code is governed by a BSD-style license.
++#ifndef CEF_LIBCEF_BROWSER_NATIVE_CONTEXT_EVALUATION_H_
++#define CEF_LIBCEF_BROWSER_NATIVE_CONTEXT_EVALUATION_H_
++
++#include <limits>
++#include <map>
++#include <string>
++#include <utility>
++#include "base/functional/bind.h"
++#include "base/memory/weak_ptr.h"
++#include "base/strings/string_number_conversions.h"
++#include "cef/include/cef_client.h"
++#include "cef/libcef/browser/thread_util.h"
++#include "content/browser/renderer_host/render_frame_host_impl.h"
++#include "content/browser/renderer_host/frame_tree_node.h"
++#include "cef/libcef/common/mojom/cef.mojom.h"
++#include "mojo/public/cpp/bindings/remote.h"
++
++// Browser UI sequence only. Renderer routing is the exact-context private pipe.
++// Invalidate is safe in the native pre-mutation hook: it invokes no client code.
++class CefNativeContextEvaluationImpl final : public CefNativeContextEvaluation {
++ public:
++  explicit CefNativeContextEvaluationImpl(
++      base::WeakPtr<content::RenderFrameHostImpl> owner,
++      blink::DocumentToken document,
++      mojo::PendingRemote<cef::mojom::NativeContextEvaluator> remote)
++      : owner_(std::move(owner)), document_(document), remote_(std::move(remote)) {
++    remote_.set_disconnect_handler(base::BindOnce(
++        &CefNativeContextEvaluationImpl::Close, weak_.GetWeakPtr()));
++  }
++
++  bool IsCurrentDocument() override {
++    CEF_REQUIRE_UIT_RETURN(false);
++    auto* owner = owner_.get();
++    return live_ && remote_.is_connected() && owner &&
++        owner->IsInPrimaryMainFrame() && owner->IsActive() &&
++        owner->IsRenderFrameLive() &&
++        !owner->HasPendingCommitForCrossDocumentNavigation() &&
++        owner->GetDocumentToken() == document_ && owner->frame_tree_node() &&
++        !owner->frame_tree_node()->navigation_request() &&
++        owner->frame_tree_node()->current_frame_host() == owner;
++  }
++
++  void Evaluate(const CefString& nonce, const CefString& source,
++                CefRefPtr<CefNativeContextEvaluationCallback> callback) override {
++    CEF_REQUIRE_UIT();
++    if (!callback) return;
++    CefRefPtr<CefNativeContextEvaluationImpl> keep_alive(this);
++    const std::string caller = nonce.ToString();
++    if (!live_ || !remote_.is_connected()) {
++      callback->OnComplete(nonce, "stale_context", "Context is not live");
++      return;
++    }
++    for (const auto& [ordinal, pending] : pending_) {
++      if (pending.nonce == caller) {
++        callback->OnComplete(nonce, "duplicate_request", "Request is already pending");
++        return;
++      }
++    }
++    if (next_ == std::numeric_limits<uint64_t>::max()) {
++      callback->OnComplete(nonce, "internal", "Evaluation ordinal exhausted");
++      return;
++    }
++    const std::string ordinal = base::NumberToString(++next_);
++    pending_.emplace(ordinal, Pending{caller, callback});
++    remote_->Evaluate(ordinal, source.ToString(), base::BindOnce(
++        &CefNativeContextEvaluationImpl::OnReply, weak_.GetWeakPtr(), ordinal));
++  }
++
++  void Cancel(const CefString& nonce) override {
++    CEF_REQUIRE_UIT();
++    if (!live_) return;
++    for (const auto& [ordinal, pending] : pending_) {
++      if (pending.nonce == nonce.ToString()) {
++        remote_->Cancel(ordinal);
++        return;
++      }
++    }
++  }
++
++  void Invalidate() {
++    CEF_REQUIRE_UIT();
++    live_ = false;
++    remote_.reset();
++  }
++
++  void Close() {
++    CEF_REQUIRE_UIT();
++    CefRefPtr<CefNativeContextEvaluationImpl> keep_alive(this);
++    Invalidate();
++    auto pending = std::move(pending_);
++    for (auto& [ordinal, request] : pending)
++      request.callback->OnComplete(request.nonce, "stale_context", "Context released");
++  }
++
++ private:
++  struct Pending {
++    std::string nonce;
++    CefRefPtr<CefNativeContextEvaluationCallback> callback;
++  };
++  void OnReply(const std::string& ordinal, const std::string& reply_ordinal,
++               const std::string& code, const std::string& payload) {
++    if (!live_) return;
++    auto it = pending_.find(ordinal);
++    if (it == pending_.end()) return;
++    auto request = std::move(it->second);
++    pending_.erase(it);
++    if (ordinal != reply_ordinal) {
++      request.callback->OnComplete(request.nonce, "internal", "Evaluation reply identity mismatch");
++      return;
++    }
++    request.callback->OnComplete(request.nonce, code, payload);
++  }
++  bool live_ = true;
++  uint64_t next_ = 0;
++  base::WeakPtr<content::RenderFrameHostImpl> owner_;
++  const blink::DocumentToken document_;
++  std::map<std::string, Pending> pending_;
++  mojo::Remote<cef::mojom::NativeContextEvaluator> remote_;
++  base::WeakPtrFactory<CefNativeContextEvaluationImpl> weak_{this};
++  IMPLEMENT_REFCOUNTING_DELETE_ON_UIT(CefNativeContextEvaluationImpl);
++};
++#endif  // CEF_LIBCEF_BROWSER_NATIVE_CONTEXT_EVALUATION_H_
+diff --git a/libcef/renderer/render_frame_observer.h b/libcef/renderer/render_frame_observer.h
+--- a/libcef/renderer/render_frame_observer.h
++++ b/libcef/renderer/render_frame_observer.h
+@@ -8,3 +8,4 @@
+ #define LIBCEF_RENDERER_RENDER_FRAME_OBSERVER_H_
+ 
++#include <memory>
+ #include <map>
+@@ -17,3 +18,4 @@
+ #include "content/public/renderer/render_frame_observer.h"
+ 
++class CefNativeContextEvaluatorMojo;
+ class CefFrameImpl;
+@@ -47,3 +49,5 @@
+   std::map<std::string, mojo::Remote<cef::mojom::NativeContextHost>>
+       native_context_channels_;
++  std::map<std::string, std::unique_ptr<CefNativeContextEvaluatorMojo>>
++      native_context_evaluators_;
+ };
+diff --git a/libcef/renderer/render_frame_observer.cc b/libcef/renderer/render_frame_observer.cc
+--- a/libcef/renderer/render_frame_observer.cc
++++ b/libcef/renderer/render_frame_observer.cc
+@@ -20,3 +20,4 @@
+ #include "cef/libcef/renderer/dom_document_impl.h"
++#include "cef/libcef/renderer/native_context_evaluator_mojo.h"
+ #include "cef/libcef/renderer/render_frame_observer.h"
+ #include "cef/libcef/renderer/v8_impl.h"
+@@ -34,6 +35,10 @@
+     : content::RenderFrameObserver(render_frame) {}
+ 
+-CefRenderFrameObserver::~CefRenderFrameObserver() = default;
++CefRenderFrameObserver::~CefRenderFrameObserver() {
++  for (auto& [token, evaluator] : native_context_evaluators_)
++    evaluator->Release();
++  native_context_evaluators_.clear();
++}
+ 
+ void CefRenderFrameObserver::DidCommitProvisionalLoad(
+     ui::PageTransition transition) {
+@@ -158,5 +163,9 @@
+           mojo::Remote<cef::mojom::NativeContextHost> channel;
++          auto evaluator = std::make_unique<CefNativeContextEvaluatorMojo>(
++              isolate, context);
++          auto evaluation_remote = evaluator->BindNewPipeAndPassRemote();
++          native_context_evaluators_.emplace(context_token, std::move(evaluator));
+           render_frame()->GetBrowserInterfaceBroker().GetInterface(
+               channel.BindNewPipeAndPassReceiver());
+-          channel->Register(document.Token(), *state, world_id);
++          channel->Register(document.Token(), *state, world_id, std::move(evaluation_remote));
+           native_context_channels_.emplace(context_token, std::move(channel));
+@@ -206,3 +215,6 @@
+           auto identity = std::move(it->second);
++          if (auto evaluator = native_context_evaluators_.find(context_token);
++              evaluator != native_context_evaluators_.end()) evaluator->second->Release();
++          native_context_evaluators_.erase(context_token);
+           native_context_channels_.erase(context_token);
+           native_contexts_.erase(it);
+@@ -216,3 +228,6 @@
+       if (!matched) {
++        for (auto& [token, evaluator] : native_context_evaluators_)
++          evaluator->Release();
++        native_context_evaluators_.clear();
+         native_context_channels_.clear();
+         native_contexts_.clear();
+diff --git a/libcef/browser/native_context_service.h b/libcef/browser/native_context_service.h
+--- a/libcef/browser/native_context_service.h
++++ b/libcef/browser/native_context_service.h
+@@ -11,3 +11,4 @@
+ #include "cef/libcef/browser/approved_navigation.h"
++#include "cef/libcef/browser/native_context_evaluation.h"
+ #include "cef/libcef/browser/browser_info_manager.h"
+ #include "cef/libcef/browser/frame_host_impl.h"
+@@ -33,3 +34,4 @@
+                 const blink::V8ContextToken& context_token,
+-                int32_t world_id) override {
++                int32_t world_id,
++                mojo::PendingRemote<cef::mojom::NativeContextEvaluator> evaluator) override {
+     DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+@@ -37,2 +39,3 @@
+     attempted_ = true;
++    if (!evaluator.is_valid()) return;
+     auto* rfh = static_cast<content::RenderFrameHostImpl*>(render_frame_host());
+@@ -62,9 +65,10 @@
+     world_ = world_id;
+     registered_ = true;
++    evaluation_ = new CefNativeContextEvaluationImpl(std::move(evaluator));
+     pre_navigation_ = rfh->frame_tree_node()->AddCefPreNavigationRevoker(
+         base::BindRepeating(&CefNativeContextService::BeforeNavigation,
+                             base::Unretained(this)));
+     client->OnNativeContextRegistered(browser, frame, frame_id_, child_id_,
+                                       document_token.ToString(),
+-                                      context_token.ToString(), intent->first, intent->second, world_id);
++                                      context_token.ToString(), intent->first, intent->second, world_id, evaluation_);
+   }
+@@ -80,3 +84,4 @@
+     if (!registered_ || (affected && affected != render_frame_host())) return;
++    if (evaluation_) evaluation_->Invalidate();
+     client_->OnNativeContextWillRevoke(browser_, frame_, frame_id_, child_id_,
+                                         document_, context_, world_);
+@@ -104,3 +109,5 @@
+     registered_ = false;
++    auto evaluation = std::move(evaluation_);
++    if (evaluation) evaluation->Invalidate();
+     auto client = std::move(client_);
+     auto browser = std::move(browser_);
+@@ -116,3 +123,4 @@
+     client->OnNativeContextRevoked(browser, frame, frame_id_, child_id_, document,
+                                    context, world_);
++    if (evaluation) evaluation->Close();
+   }
+@@ -123,3 +130,4 @@
+   CefRefPtr<CefFrame> frame_;
+   CefRefPtr<CefClient> client_;
++  CefRefPtr<CefNativeContextEvaluationImpl> evaluation_;
+ };
+diff --git a/BUILD.gn b/BUILD.gn
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -663,3 +663,4 @@
+     "libcef/browser/native_context_service.h",
++    "libcef/browser/native_context_evaluation.h",
+     "libcef/browser/navigation_entry_impl.cc",
+     "libcef/browser/navigation_entry_impl.h",
+@@ -906,3 +906,4 @@
+     "libcef/renderer/native_context_evaluator.h",
++    "libcef/renderer/native_context_evaluator_mojo.h",
+     "libcef/renderer/render_frame_observer.cc",
+     "libcef/renderer/render_frame_observer.h",

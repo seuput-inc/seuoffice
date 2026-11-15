@@ -44,6 +44,9 @@ use super::shell_tabs::{ShellTabs, shell_tabs};
 use super::w::post_core;
 
 pub fn install(_hosts: &mut Hosts, _cx: &HostContext) {
+    if crate::headless::is_headless() {
+        return;
+    }
     // the heartbeat starts with the event loop, a beat every HEARTBEAT_MS
     std::thread::Builder::new()
         .name("seuoffice-heartbeat".into())
@@ -101,17 +104,22 @@ fn beat(services: &Services) {
 
 /// The quit path: the run ends on purpose, so the next start reports nothing
 pub fn mark_ended() {
-    post_core(|_, _| {
-        HEARTBEAT.with(|h| {
-            if let Some(handle) = h.borrow_mut().as_mut() {
-                handle.mark_ended(HeartbeatEnd::Quit);
-            }
-        });
+    post_core(|_, _| mark_ended_on_core());
+}
+
+pub(crate) fn mark_ended_on_core() {
+    HEARTBEAT.with(|h| {
+        if let Some(handle) = h.borrow_mut().as_mut() {
+            handle.mark_ended(HeartbeatEnd::Quit);
+        }
     });
 }
 
 /// A view's main frame lost its renderer; called on the UI thread
 pub fn renderer_terminated(view: ViewId) {
+    if crate::headless::is_headless() {
+        return;
+    }
     post_core(move |provided, services| gone(view, provided, services));
 }
 

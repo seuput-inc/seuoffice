@@ -15,6 +15,7 @@ pub mod font_metrics;
 pub mod google_drive;
 pub mod i18n;
 pub mod mcp_sdk;
+pub mod office_encryption;
 pub mod pdf_structure;
 pub mod pipelines;
 pub mod project_store;

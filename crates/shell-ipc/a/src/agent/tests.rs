@@ -79,7 +79,11 @@ impl Gate {
 }
 
 #[derive(Default)]
-struct FakeViews(Mutex<HashSet<u32>>);
+struct FakeViews(
+    Mutex<HashSet<u32>>,
+    Mutex<std::collections::HashMap<ViewId, shell_contract::runtime::RendererGeneration>>,
+    Mutex<Vec<Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>>>,
+);
 
 impl Views for FakeViews {
     fn sender_of(&self, view: ViewId) -> Option<Sender> {
@@ -93,6 +97,13 @@ impl Views for FakeViews {
         Vec::new()
     }
     fn on_destroyed(&self, _: Box<dyn Fn(ViewId) + Send + Sync>) {}
+    fn renderer_generation(&self, view: ViewId) -> Option<shell_contract::runtime::RendererGeneration> {
+        if !self.0.lock().unwrap().contains(&view.0) { return None; }
+        Some(self.1.lock().unwrap().entry(view).or_insert_with(shell_contract::runtime::RendererGeneration::new).clone())
+    }
+    fn on_renderer_replaced(&self, listener: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>) {
+        self.2.lock().unwrap().push(listener);
+    }
 }
 
 struct Dir(PathBuf);
@@ -175,7 +186,34 @@ struct FakeDialogs {
     asked: Mutex<Vec<(Option<WindowId>, Vec<String>)>>,
 }
 
+fn synthetic_owned_dialog_admit(origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken) -> Result<(), String> {
+    let source = origin.context.renderer().ok_or("synthetic dialog source is unbound")?;
+    let target = destination.context.renderer().ok_or("synthetic dialog destination is unbound")?;
+    let source_loss = origin.loss_token();
+    let target_loss = destination.loss_token();
+    source.with_active_pair(target, || shell_contract::runtime::CancelToken::with_active_all([Some(cancel), Some(pending), source_loss.as_ref(), target_loss.as_ref()], || ()))
+        .flatten().ok_or_else(|| "Renderer document is no longer available.".into())
+}
+
 impl Dialogs for FakeDialogs {
+    shell_contract::synthetic_recovery_dialog_methods!();
+    fn message_prepared(&self, parent: Option<shell_contract::WindowId>, options: shell_contract::hosts::MessageBox, target: shell_contract::ipc::RecoveryOpenTarget, snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot, done: Box<dyn FnOnce(Result<shell_contract::hosts::MessageBoxAnswer, String>) + Send>) { done(shell_contract::hosts::synthetic::recovery_dialog(&target, &snapshot, || self.message(parent, &options))); }
+    fn save_prepared(&self, parent: Option<shell_contract::WindowId>, options: shell_contract::hosts::FileDialog, target: shell_contract::ipc::RecoveryOpenTarget, snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot, done: Box<dyn FnOnce(Result<Option<shell_contract::ipc::RecoveryPreparedDestination>, String>) + Send>) { done(shell_contract::hosts::synthetic::recovery_save(&target, &snapshot, || self.save(parent, &options))); }
+    fn open_owned(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<Vec<std::path::PathBuf>>, String>) + Send>) {
+        done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.open(parent, &options)));
+    }
+    fn save_owned(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>) {
+        done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.save(parent, &options)));
+    }
+    fn message_owned(&self, parent: Option<WindowId>, options: MessageBox, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>) {
+        done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.message(parent, &options)));
+    }
+    fn save_owned_many(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>) {
+        done(shell_contract::hosts::synthetic::admit_many(&origin, &participants, &cancel, &pending, || self.save(parent, &options)));
+    }
+    fn message_owned_many(&self, parent: Option<WindowId>, options: MessageBox, origin: shell_contract::ipc::NativeRequestOwner, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>) {
+        done(shell_contract::hosts::synthetic::admit_many(&origin, &participants, &cancel, &pending, || self.message(parent, &options)));
+    }
     fn open(&self, parent: Option<WindowId>, options: &FileDialog) -> Option<Vec<PathBuf>> {
         self.asked
             .lock()
@@ -203,6 +241,29 @@ impl Contents for FakeContents {
     }
     fn capture_png(&self, _: ViewId) -> Result<Vec<u8>, String> {
         Err("none".into())
+    }
+    fn print_to_pdf_owned(&self, _: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, options: IpcValue) -> Result<Vec<u8>, String> {
+        if cancel.is_cancelled() || pending.is_cancelled() { return Err("Print request expired.".into()); }
+        self.print_to_pdf(destination.view, options)
+    }
+    fn print_to_pdf_existing_document(&self, binding: &shell_contract::ipc::NativeExistingDocumentBinding, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], options: IpcValue) -> Result<Vec<u8>, String> {
+        let extra = additional.iter().collect::<Vec<_>>();
+        let mut admitted = false;
+        shell_contract::hosts::synthetic::with_existing_document_save_extra(binding, participants, cancel, pending, &extra, &mut || { admitted = true; Ok(()) })?;
+        if !admitted { return Err("Print request expired.".into()); }
+        self.print_to_pdf(binding.owner().view, options)
+    }
+    fn print_to_pdf_owned_many_extra(&self, origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], options: IpcValue) -> Result<Vec<u8>, String> {
+        let mut owners = participants.to_vec(); owners.push(destination.clone());
+        let extra = additional.iter().collect::<Vec<_>>();
+        shell_contract::hosts::synthetic::with_owned_effect_many_extra(origin, &owners, cancel, pending, &extra, &mut || Ok(()))?;
+        self.print_to_pdf(destination.view, options)
+    }
+    fn print_to_pdf_native_invocation(&self, document: &shell_contract::ipc::NativeInvocationDocument, owner: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, options: IpcValue) -> Result<Vec<u8>, String> {
+        let mut options = Some(options);
+        let mut admitted = None;
+        shell_contract::hosts::synthetic::with_native_invocation(document, owner, participants, cancel, pending, &mut || { admitted = options.take(); Ok(()) })?;
+        self.print_to_pdf(owner.view, admitted.ok_or("Print request expired.")?)
     }
     fn print_to_pdf(&self, _: ViewId, _: IpcValue) -> Result<Vec<u8>, String> {
         Err("none".into())
@@ -323,6 +384,10 @@ impl AgentServices for Svc {
     }
     fn enabled_for_agent(&self, _: &str) -> Result<Vec<JsonValue>, String> {
         Ok(self.enabled.lock().unwrap().clone())
+    }
+    fn enabled_for_agent_task(&self, folder: &str) -> Result<Box<dyn FnOnce() -> Result<Vec<JsonValue>, String> + Send>, String> {
+        let enabled = self.enabled_for_agent(folder)?;
+        Ok(Box::new(move || Ok(enabled)))
     }
     fn build_skill_bundle(
         &self,
@@ -454,7 +519,7 @@ fn world(name: &str) -> World {
     let queue = Arc::new(Queue::default());
     let workers = Arc::new(ThreadWorkers::default());
     let busy = workers.0.clone();
-    let services = Services {
+    let services = shell_contract::hosts::synthetic::SyntheticOwnedEffects::install(Services {
         ui: queue.clone(),
         core: queue.clone(),
         workers,
@@ -462,7 +527,7 @@ fn world(name: &str) -> World {
         views: views.clone(),
         paths: Arc::new(Dir(dir.clone())),
         hosts: Arc::new(Hosts::default()),
-    };
+    });
     let svc = Arc::new(Svc::new());
     *svc.statuses.lock().unwrap() = obj(vec![(
         "claude-code",
@@ -590,6 +655,7 @@ impl World {
             },
             request: None,
             cancel: CancelToken::default(),
+            native: None,
         };
         invoke(
             &self.port,
@@ -731,6 +797,51 @@ fn set_prefs_cannot_add_folders_or_claim_a_newer_warning() {
     );
     assert!(w.settings().contains("codex"));
     assert!(!w.settings().contains("/evil"));
+}
+
+#[test]
+fn queued_agent_preferences_merge_in_invocation_order() {
+    let w = world("prefs-fifo");
+    w.open_window();
+    w.write_settings(r#"{"agent":{"warningAccepted":0,"provider":"claude-code","mode":"ask-commands","recentFolders":[]}}"#);
+    let first = w.begin(WINDOW_VIEW, AgentWindowPort::agent_window_set_prefs,
+        vec![ipc(&obj(vec![("provider", string("codex"))]))]);
+    let second = w.begin(WINDOW_VIEW, AgentWindowPort::agent_window_set_prefs,
+        vec![ipc(&obj(vec![("warningAccepted", JsonValue::Number(1.0))]))]);
+    w.finish(&first).unwrap();
+    let result = w.finish(&second).unwrap();
+    assert_eq!(field(&result, "provider"), Some(text("codex")));
+    assert_eq!(field(&result, "warningAccepted"), Some(IpcValue::Number(1.0)));
+    assert!(w.settings().contains("codex"));
+}
+
+#[test]
+fn cancelled_queued_preference_write_does_not_change_settings() {
+    let w = world("prefs-cancel");
+    w.open_window();
+    w.accept_warning();
+    let path = w.dir.join("userData/app-settings.json").to_string_lossy().into_owned();
+    let (started_tx, started_rx) = channel();
+    let gate = Arc::new(Gate::default());
+    let hold = gate.clone();
+    main_core::shell::app_settings::queue::for_path(&path).submit(move |completion| {
+        started_tx.send(()).unwrap();
+        hold.wait();
+        drop(completion);
+    });
+    started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let cancel = CancelToken::default();
+    let cx = CallContext {
+        sender: Sender { view: ViewId(WINDOW_VIEW), window: WindowId(WINDOW_VIEW), surface: Surface::ShellAgent },
+        request: None, cancel: cancel.clone(), native: None,
+    };
+    let (tx, rx) = channel();
+    w.port.agent_window_set_prefs(&cx, vec![ipc(&obj(vec![("provider", string("codex"))]))],
+        shell_contract::ipc::Responder::new(move |reply| { let _ = tx.send(reply); }));
+    cancel.cancel();
+    gate.release();
+    assert_eq!(w.finish(&rx).unwrap(), IpcValue::Null);
+    assert!(!w.settings().contains("codex"));
 }
 
 #[test]
@@ -950,6 +1061,27 @@ fn stop_ends_the_session_and_its_servers() {
 }
 
 #[test]
+fn settings_continue_while_agent_start_waits_for_program() {
+    let w = world("settings-during-start");
+    let gate = Arc::new(Gate::default());
+    *w.svc.gate.lock().unwrap() = Some(gate.clone());
+    w.accept_warning();
+    w.open_window();
+    let started = w.begin(WINDOW_VIEW, AgentWindowPort::agent_window_start, vec![ipc(&obj(vec![
+        ("provider", string("claude-code")),
+        ("mode", string("ask-commands")),
+        ("folder", string(&w.project())),
+    ]))]);
+    w.until(|| w.program().iter().any(|line| line.starts_with("run ")));
+    let updated = w.call(AgentWindowPort::agent_window_set_prefs,
+        vec![ipc(&obj(vec![("provider", string("codex"))]))]);
+    assert_eq!(field(&updated, "provider"), Some(text("codex")));
+    assert!(started.try_recv().is_err());
+    gate.release();
+    assert_eq!(field(&w.finish(&started).unwrap(), "ok"), Some(IpcValue::Bool(true)));
+}
+
+#[test]
 fn stop_and_answer_land_while_a_start_waits_and_the_late_start_does_not_resurrect_the_session() {
     let w = world("stop-during-start");
     w.svc.app_mcp.store(true, Ordering::SeqCst);
@@ -1124,6 +1256,7 @@ fn a_skill_card_cannot_be_shown_once_the_window_is_gone() {
     let hooks = w.svc.hooks.lock().unwrap()[0].clone();
     // the window's page is destroyed
     w.frame.views.0.lock().unwrap().remove(&WINDOW_VIEW);
+    if let Some(generation) = w.frame.views.1.lock().unwrap().remove(&ViewId(WINDOW_VIEW)) { generation.revoke(); }
     let (done, rx) = channel();
     hooks.propose_install(
         "x".into(),

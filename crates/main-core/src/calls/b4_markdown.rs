@@ -768,6 +768,8 @@ fn plan_arg(args: &[Value], i: usize) -> Result<PreparedSaveAsAssets, CallError>
         image_sources: Vec::new(),
         rewrites: Vec::new(),
         created,
+        ownership: None,
+        staging_diagnostics: Vec::new(),
     })
 }
 

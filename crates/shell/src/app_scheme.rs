@@ -29,7 +29,7 @@ pub const SHELL_HOST: &str = "shell";
 
 /// Every host the shell serves: the renderer hosts of `main_core` and the shell's own
 pub fn hosts() -> impl Iterator<Item = &'static str> {
-    RENDERER_HOSTS.iter().copied().chain([SHELL_HOST])
+    RENDERER_HOSTS.iter().copied().chain([SHELL_HOST, crate::engine_host::SCHEME_HOST])
 }
 
 pub fn scheme_of(host: &str) -> String {
@@ -50,6 +50,14 @@ fn apps_dir() -> PathBuf {
 /// checkout reads `apps/<app>/out/renderer`, where electron-vite builds them.
 /// `help` is the shell's own bundle (help mode), as in the Electron build.
 fn root_of(host: &str, resources: Option<&PathBuf>) -> PathBuf {
+    if host == crate::engine_host::SCHEME_HOST {
+        if let Some(packaged) = resources.map(|resources| resources.join("engine-host"))
+            && packaged.is_dir()
+        {
+            return packaged;
+        }
+        return PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/out/engine-host"));
+    }
     let app = if host == "help" { SHELL_HOST } else { host };
     if let Some(resources) = resources {
         let packaged = resources.join("modules").join(app).join("renderer");
@@ -193,9 +201,15 @@ pub fn serve(
     let Ok(bytes) = std::fs::read(&file) else {
         return status(StatusCode::NOT_FOUND);
     };
-    let builder = http::Response::builder()
+    let mut builder = http::Response::builder()
         .header(http::header::CONTENT_TYPE, mime_of(&file))
         .header(http::header::ACCEPT_RANGES, "bytes");
+    if host == crate::engine_host::SCHEME_HOST {
+        builder = builder
+            .header("Cross-Origin-Opener-Policy", "same-origin")
+            .header("Cross-Origin-Embedder-Policy", "require-corp")
+            .header("Cross-Origin-Resource-Policy", "same-origin");
+    }
     let range = request
         .headers()
         .get(http::header::RANGE)
@@ -255,6 +269,9 @@ mod tests {
         let resources = std::env::temp_dir().join(format!("w-app-scheme-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&resources);
         let folder = |host: &str| {
+            if host == crate::engine_host::SCHEME_HOST {
+                return resources.join("engine-host");
+            }
             let app = if host == "help" { SHELL_HOST } else { host };
             resources.join("modules").join(app).join("renderer")
         };

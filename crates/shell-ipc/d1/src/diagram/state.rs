@@ -58,7 +58,7 @@ pub struct Waiter {
 /// `copyNowWaiters`
 pub struct CopyNow {
     pub generation: u64,
-    pub finish: Box<dyn FnOnce()>,
+    pub finish: Box<dyn FnOnce(Result<(), main_core::shell::renderer_disposal::Failure>)>,
 }
 
 #[derive(Default)]
@@ -71,6 +71,7 @@ pub struct ViewState {
     pub allowed: Option<HashSet<String>>,
     /// `savePathByWc`
     pub save_path: Option<String>,
+    pub save_revision: Option<u64>,
     pub unopened: Option<Unopened>,
     pub import: Option<Import>,
     /// `dirtyByWc.has`
@@ -86,9 +87,26 @@ pub struct ViewState {
     pub seed: Option<String>,
     /// `docDiskStates`
     pub disk_states: HashMap<String, SaveDiskState>,
+    pub document: Option<shell_contract::runtime::RendererGeneration>,
+    pub owned_saves: HashMap<String, super::owned::PendingSave>,
+    pub owned_renames: HashMap<String, shell_contract::editors::Then<()>>,
+    pub owned_closes: HashMap<String, super::owned::close::PendingClose>,
+    pub owned_publications: HashMap<String, super::owned::PendingPublication>,
+    pub first_save_running: bool,
+    pub first_save_queue: VecDeque<(shell_contract::ipc::CallContext, crate::value::Args, shell_contract::ipc::Responder)>,
+    pub recovery_preparing: Option<super::recovery_open::Preparing>,
+    pub recovery_seed: Option<super::recovery_open::Seed>,
+    pub recovery_applying: Option<super::recovery_open::Applying>,
+    pub(super) saved_load: Option<super::saved_load::SavedLoad>,
+    pub(super) saved_actor_identity: Option<std::rc::Rc<()>>,
+    pub(super) browser_owner: Option<shell_contract::ipc::NativeBrowserOwner>,
 }
 
 impl ViewState {
+    pub fn advance_save_revision(&mut self) {
+        self.save_revision = self.save_revision.and_then(|revision| revision.checked_add(1));
+    }
+
     /// `mayWrite`: the view's file did not fail to open
     pub fn may_write(&self) -> bool {
         self.unopened.is_none()
@@ -155,7 +173,9 @@ pub struct ApplyJob {
 /// `running` of `headless-main.ts`
 pub struct HeadlessJob {
     pub generation: u64,
+    pub renderer: Option<shell_contract::runtime::RendererGeneration>,
     pub job: IpcValue,
+    pub authorize: Box<dyn Fn(&shell_contract::ipc::CallContext) -> bool>,
     pub done: Box<dyn FnOnce(IpcValue)>,
 }
 
@@ -185,7 +205,7 @@ impl State {
     }
 
     pub fn view(&mut self, view: ViewId) -> &mut ViewState {
-        self.views.entry(view).or_default()
+        self.views.entry(view).or_insert_with(|| ViewState { save_revision: Some(0), ..ViewState::default() })
     }
 
     /// `stateOf(wcId)` of `recovery-main.ts`

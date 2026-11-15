@@ -42,7 +42,7 @@ pub trait QuickLookEngines {
     fn parse_file_to_text(&self, path: &str) -> Result<ParsedFile, String>;
     /// `assertZipInflatesWithinLimits(bytes)` then `JSZip.loadAsync(bytes)`;
     /// `None` where either threw
-    fn open_zip(&self, bytes: &[u8]) -> Option<Box<dyn ZipArchive>>;
+    fn open_zip(&self, bytes: Vec<u8>) -> Option<Box<dyn ZipArchive>>;
 }
 
 /// The payloads the preview kept, the oldest out first
@@ -160,7 +160,7 @@ const ZIP_THUMBNAIL_CANDIDATES: [&str; 12] = [
 ];
 
 /// `extractZipThumbnail(bytes)`
-fn extract_zip_thumbnail(engines: &dyn QuickLookEngines, bytes: &[u8]) -> Option<String> {
+fn extract_zip_thumbnail(engines: &dyn QuickLookEngines, bytes: Vec<u8>) -> Option<String> {
     let archive = engines.open_zip(bytes)?;
     for candidate in ZIP_THUMBNAIL_CANDIDATES {
         let Ok(entry) = archive.entry(candidate) else {
@@ -182,7 +182,7 @@ fn extract_zip_thumbnail(engines: &dyn QuickLookEngines, bytes: &[u8]) -> Option
 pub fn extract_embedded_thumbnail(
     engines: &dyn QuickLookEngines,
     ext: &str,
-    bytes: &[u8],
+    bytes: Vec<u8>,
 ) -> Option<String> {
     if bytes.len() < 4 {
         return None;
@@ -190,7 +190,7 @@ pub fn extract_embedded_thumbnail(
     let is_zip = bytes[0] == 0x50 && bytes[1] == 0x4b;
     let is_ole = bytes[..4] == [0xd0, 0xcf, 0x11, 0xe0];
     if ext == "hwp" && is_ole {
-        return extract_hwp5_thumbnail(bytes);
+        return extract_hwp5_thumbnail(&bytes);
     }
     if is_zip
         && matches!(
@@ -329,7 +329,7 @@ pub fn extract_quick_look(
     ) {
         fs::read(file_path)
             .ok()
-            .and_then(|bytes| extract_embedded_thumbnail(engines, &ext, &bytes))
+            .and_then(|bytes| extract_embedded_thumbnail(engines, &ext, bytes))
     } else {
         None
     };

@@ -1,0 +1,624 @@
+# Private pinned source patch. Not a shippable binary or authority proof.
+# Generated ABI/bindings integration, complete gate lock-order audit and
+# hosted native regression execution are required before enabling ingress.
+
+diff --git a/include/cef_browser.h b/include/cef_browser.h
+--- a/include/cef_browser.h
++++ b/include/cef_browser.h
+@@ -281,5 +281,21 @@ class CefDownloadImageCallback : public virtual CefBaseRefCounted {
+ };
+ 
++#if CEF_API_ADDED(15401)
++///
++/// Browser UI-thread completion for an approved native navigation request.
++/// Only short state updates are allowed; defer application code and waits.
++///
++/*--cef(source=client,added=15401)--*/
++class CefApprovedNavigationCallback : public virtual CefBaseRefCounted {
++ public:
++  ///
++  /// Called once when the request starts or is rejected or superseded.
++  ///
++  /*--cef()--*/
++  virtual void OnComplete(bool accepted) = 0;
++};
++#endif
++
+ ///
+ /// Class used to represent the browser process aspects of a browser. The
+ /// methods of this class can only be called in the browser process. They may be
+@@ -1095,5 +1111,18 @@ class CefBrowserHost : public virtual CefBaseRefCounted {
+   virtual void SetAxViewportCollapse(bool enabled) = 0;
+ #endif
++
++#if CEF_API_ADDED(15401)
++  ///
++  /// Queue one browser-owned main-frame load with an opaque, single-use
++  /// |intent|. Browser process UI thread only. Never expose the intent to a
++  /// renderer. |callback| reports acceptance or rejection exactly once.
++  /// Registration may occur before the completion callback.
++  ///
++  /*--cef(added=15401)--*/
++  virtual void LoadApprovedMainFrameURL(
++      const CefString& url, uint64_t issuance, const CefString& intent,
++      CefRefPtr<CefApprovedNavigationCallback> callback) = 0;
++#endif
+ };
+ 
+ #endif  // CEF_INCLUDE_CEF_BROWSER_H_
+diff --git a/libcef/browser/browser_host_base.h b/libcef/browser/browser_host_base.h
+--- a/libcef/browser/browser_host_base.h
++++ b/libcef/browser/browser_host_base.h
+@@ -273,6 +273,9 @@ class CefBrowserHostBase : public CefBrowserHost,
+   bool IsRenderProcessUnresponsive() override;
+   cef_runtime_style_t GetRuntimeStyle() override;
+   void SetAxViewportCollapse(bool enabled) override;
++  void LoadApprovedMainFrameURL(
++      const CefString& url, uint64_t issuance, const CefString& intent,
++      CefRefPtr<CefApprovedNavigationCallback> callback) override;
+ 
+   // CefBrowser methods:
+   bool IsValid() override;
+diff --git a/libcef/browser/browser_info.h b/libcef/browser/browser_info.h
+--- a/libcef/browser/browser_info.h
++++ b/libcef/browser/browser_info.h
+@@ -154,6 +154,7 @@ class CefBrowserInfo : public base::RefCountedThreadSafe<CefBrowserInfo> {
+   // thread once the navigation lock is released. Must be called on the UI
+   // thread.
+   bool IsNavigationLocked(base::OnceClosure pending_action);
++  bool DeferNavigationIfLocked(base::OnceClosure& pending_action);
+ 
+   using FrameNotifyOnceAction =
+       base::OnceCallback<void(CefRefPtr<CefFrameHandler>)>;
+diff --git a/libcef/browser/browser_info.cc b/libcef/browser/browser_info.cc
+--- a/libcef/browser/browser_info.cc
++++ b/libcef/browser/browser_info.cc
+@@ -439,6 +439,15 @@ scoped_refptr<CefBrowserInfo::NavigationLock>
+   return lock;
+ }
+ 
++bool CefBrowserInfo::DeferNavigationIfLocked(base::OnceClosure& action) {
++  CEF_REQUIRE_UIT();
++  if (navigation_lock_) {
++    navigation_lock_->pending_action_ = std::move(action);
++    return true;
++  }
++  return false;
++}
++
+ bool CefBrowserInfo::IsNavigationLocked(base::OnceClosure pending_action) {
+   CEF_REQUIRE_UIT();
+   if (navigation_lock_) {
+diff --git a/libcef/browser/browser_host_base.cc b/libcef/browser/browser_host_base.cc
+--- a/libcef/browser/browser_host_base.cc
++++ b/libcef/browser/browser_host_base.cc
+@@ -13,6 +13,7 @@
+ #include "cef/libcef/browser/browser_info_manager.h"
+ #include "cef/libcef/browser/browser_platform_delegate.h"
+ #include "cef/libcef/browser/context.h"
++#include "cef/libcef/browser/approved_navigation.h"
+ #include "cef/libcef/browser/hang_monitor.h"
+ #include "cef/libcef/browser/image_impl.h"
+ #include "cef/libcef/browser/navigation_entry_impl.h"
+@@ -43,6 +44,19 @@
+ 
+ namespace {
+ 
++class ApprovedLoadCompletion {
++ public:
++  explicit ApprovedLoadCompletion(CefRefPtr<CefApprovedNavigationCallback> cb)
++      : callback_(std::move(cb)) {}
++  ~ApprovedLoadCompletion() { Finish(false); }
++  void Finish(bool accepted) {
++    auto callback = std::move(callback_);
++    if (callback) callback->OnComplete(accepted);
++  }
++ private:
++  CefRefPtr<CefApprovedNavigationCallback> callback_;
++};
++
+ // Associates a CefBrowserHostBase instance with a WebContents. This object will
+ // be deleted automatically when the WebContents is destroyed.
+ class WebContentsUserDataAdapter : public base::SupportsUserData::Data {
+@@ -1374,6 +1388,34 @@ bool CefBrowserHostBase::HasObserver(Observer* observer) const {
+   return observers_.HasObserver(observer);
+ }
+ 
++void CefBrowserHostBase::LoadApprovedMainFrameURL(
++    const CefString& url, uint64_t issuance, const CefString& intent,
++    CefRefPtr<CefApprovedNavigationCallback> callback) {
++  CEF_REQUIRE_UIT_RETURN_VOID();
++  if (!callback) return;
++  auto completion = std::make_shared<ApprovedLoadCompletion>(callback);
++  if (WillBeDestroyed() || !GetWebContents() || intent.empty()) return;
++  GURL target = url_util::MakeGURL(url, /*fixup=*/false);
++  if (!url_util::FixupGURL(target)) return;
++  auto* approval = CefApprovedNavigation::GetOrCreate(GetWebContents());
++  const std::string native_intent = intent.ToString();
++  if (!approval->Reserve(issuance, native_intent)) return;
++  base::OnceClosure action = base::BindOnce(
++      [](CefRefPtr<CefBrowserHostBase> host, GURL target,
++         uint64_t issuance, std::string intent, std::shared_ptr<ApprovedLoadCompletion> done) {
++        if (host->WillBeDestroyed() || !host->GetWebContents()) return;
++        auto* approval = CefApprovedNavigation::Get(host->GetWebContents());
++        const bool started = approval && approval->Load(target, issuance, intent);
++        if (started && !host->WillBeDestroyed())
++          host->OnSetFocus(FOCUS_SOURCE_NAVIGATION);
++        done->Finish(started);
++      },
++      CefRefPtr<CefBrowserHostBase>(this), std::move(target), issuance, native_intent,
++      std::move(completion));
++  if (browser_info_->DeferNavigationIfLocked(action)) return;
++  std::move(action).Run();
++}
++
+ void CefBrowserHostBase::LoadMainFrameURL(
+     const content::OpenURLParams& params) {
+   auto callback =
+@@ -1513,6 +1555,12 @@ void CefBrowserHostBase::OnBeforeClose() {
+   CEF_REQUIRE_UIT();
++  base::ScopedClosureRunner cef_revoke;
++  if (auto* contents = GetWebContents()) {
++    if (auto* node = content::FrameTreeNode::From(contents->GetPrimaryMainFrame())) {
++      cef_revoke = node->RevokeCefAdmission();
++    }
++  }
+   if (client_) {
+     if (auto handler = client_->GetLifeSpanHandler()) {
+       handler->OnBeforeClose(this);
+     }
+   }
+diff --git a/libcef/browser/approved_navigation.h b/libcef/browser/approved_navigation.h
+--- /dev/null
++++ b/libcef/browser/approved_navigation.h
+@@ -0,0 +1,163 @@
++// Private browser-process-only navigation provenance for the CEF host.
++#ifndef CEF_LIBCEF_BROWSER_APPROVED_NAVIGATION_H_
++#define CEF_LIBCEF_BROWSER_APPROVED_NAVIGATION_H_
++
++#include <map>
++#include <memory>
++#include <optional>
++#include <string>
++#include <utility>
++
++#include "base/supports_user_data.h"
++#include "base/synchronization/lock.h"
++#include "cef/libcef/browser/thread_util.h"
++#include "content/browser/renderer_host/frame_tree_node.h"
++#include "content/browser/renderer_host/render_frame_host_impl.h"
++#include "content/public/browser/navigation_controller.h"
++#include "content/public/browser/navigation_handle.h"
++#include "content/public/browser/navigation_ui_data.h"
++#include "content/public/browser/web_contents.h"
++#include "content/public/browser/web_contents_observer.h"
++
++class CefApprovedNavigation final : public base::SupportsUserData::Data,
++                                    public content::WebContentsObserver {
++ public:
++  static CefApprovedNavigation* GetOrCreate(content::WebContents* contents) {
++    auto* result = Get(contents);
++    if (!result) {
++      auto instance = std::make_unique<CefApprovedNavigation>(contents);
++      result = instance.get();
++      contents->SetUserData(Key(), std::move(instance));
++    }
++    return result;
++  }
++
++  static CefApprovedNavigation* Get(content::WebContents* contents) {
++    return static_cast<CefApprovedNavigation*>(contents->GetUserData(Key()));
++  }
++
++  explicit CefApprovedNavigation(content::WebContents* contents)
++      : content::WebContentsObserver(contents), state_(std::make_shared<State>()) {}
++
++  bool Reserve(uint64_t issuance, const std::string& intent) {
++    CEF_REQUIRE_UIT_RETURN(false);
++    if (intent.empty() || !web_contents() || issuance <= state_->last_issued) return false;
++    auto* node = content::FrameTreeNode::From(web_contents()->GetPrimaryMainFrame());
++    if (!node) return false;
++    auto cef_revoke = node->RevokeCefAdmission();
++    state_->navigation_id.reset();
++    state_->intent = intent;
++    state_->last_issued = issuance;
++    state_->started = false;
++    return true;
++  }
++
++  bool Load(const GURL& url, uint64_t issuance, const std::string& intent) {
++    CEF_REQUIRE_UIT_RETURN(false);
++    if (!web_contents() || state_->last_issued != issuance ||
++        state_->intent != intent || state_->started) return false;
++    auto state = state_;
++    content::NavigationController::LoadURLParams params(url);
++    params.transition_type = static_cast<ui::PageTransition>(
++        ui::PAGE_TRANSITION_TYPED | ui::PAGE_TRANSITION_FROM_API);
++    params.navigation_ui_data = std::make_unique<NavigationData>(state, issuance, intent);
++    auto handle = web_contents()->GetController().LoadURLWithParams(params);
++    if (!handle) {
++      if (state->last_issued == issuance) state->started = true;
++      if (state->last_issued == issuance && state->intent == intent) {
++        state->navigation_id.reset();
++        state->intent.clear();
++      }
++      return false;
++    }
++    return state->last_issued == issuance && state->intent == intent &&
++           (!state->navigation_id || *state->navigation_id == handle->GetNavigationId());
++  }
++
++  std::optional<std::pair<uint64_t, std::string>> Consume(
++      content::RenderFrameHostImpl* host, const blink::DocumentToken& document) {
++    CEF_REQUIRE_UIT_RETURN(std::nullopt);
++    if (state_->redeemed || !state_->navigation_id || state_->intent.empty() || !host ||
++        host->GetParent() || !host->MatchesLatestDocumentForCef(document) ||
++        !host->frame_tree_node() ||
++        !host->frame_tree_node()->IsLatestNavigationForCef(
++            *state_->navigation_id)) {
++      return std::nullopt;
++    }
++    state_->redeemed = true;
++    return std::make_pair(state_->last_issued, state_->intent);
++  }
++
++  void DidStartNavigation(content::NavigationHandle* navigation) override {
++    if (!navigation->IsInPrimaryMainFrame() || navigation->IsSameDocument())
++      return;
++    state_->navigation_id.reset();
++    state_->redeemed = false;
++    state_->intent.clear();
++    std::optional<std::pair<uint64_t, std::string>> identity;
++    {
++      base::AutoLock lock(state_->data_lock);
++      const auto it = state_->data.find(navigation->GetNavigationUIData());
++      if (it != state_->data.end()) identity = it->second;
++    }
++    if (!identity || identity->first != state_->last_issued ||
++        navigation->IsRendererInitiated() ||
++        navigation->IsPrerenderedPageActivation() || state_->started) return;
++    state_->started = true;
++    state_->navigation_id = navigation->GetNavigationId();
++    state_->intent = identity->second;
++  }
++
++  void DidFinishNavigation(content::NavigationHandle* navigation) override {
++    if (state_->navigation_id &&
++        *state_->navigation_id == navigation->GetNavigationId() &&
++        (!navigation->HasCommitted() || navigation->IsErrorPage())) {
++      state_->navigation_id.reset();
++      state_->intent.clear();
++    }
++  }
++
++  void WebContentsDestroyed() override {
++    state_->navigation_id.reset();
++    state_->intent.clear();
++  }
++
++ private:
++  struct State {
++    base::Lock data_lock;
++    std::map<const content::NavigationUIData*, std::pair<uint64_t, std::string>> data;
++    uint64_t last_issued = 0;
++    std::optional<int64_t> navigation_id;
++    bool redeemed = false;
++    bool started = false;
++    std::string intent;
++  };
++
++  class NavigationData final : public content::NavigationUIData {
++   public:
++    NavigationData(std::shared_ptr<State> state, uint64_t issuance, std::string intent)
++        : state_(std::move(state)), issuance_(issuance), intent_(std::move(intent)) {
++      base::AutoLock lock(state_->data_lock);
++      state_->data.emplace(this, std::make_pair(issuance_, intent_));
++    }
++    ~NavigationData() override {
++      base::AutoLock lock(state_->data_lock);
++      state_->data.erase(this);
++    }
++    std::unique_ptr<content::NavigationUIData> Clone() override {
++      return std::make_unique<NavigationData>(state_, issuance_, intent_);
++    }
++   private:
++    std::shared_ptr<State> state_;
++    uint64_t issuance_;
++    std::string intent_;
++  };
++
++  static const void* Key() {
++    static int key;
++    return &key;
++  }
++  std::shared_ptr<State> state_;
++};
++
++#endif  // CEF_LIBCEF_BROWSER_APPROVED_NAVIGATION_H_
+diff --git a/BUILD.gn b/BUILD.gn
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -528,6 +528,7 @@ source_set("libcef_static") {
+     "libcef/browser/audio_capturer.h",
+     "libcef/browser/audio_loopback_stream_creator.cc",
+     "libcef/browser/audio_loopback_stream_creator.h",
++    "libcef/browser/approved_navigation.h",
+     "libcef/browser/browser_contents_delegate.cc",
+     "libcef/browser/browser_contents_delegate.h",
+     "libcef/browser/browser_context.cc",
+diff --git a/include/cef_client.h b/include/cef_client.h
+--- a/include/cef_client.h
++++ b/include/cef_client.h
+@@ -210,8 +210,9 @@
+   virtual void OnNativeContextRegistered(CefRefPtr<CefBrowser> browser,
+                                           CefRefPtr<CefFrame> frame,
+                                           const CefString& frame_id,
+                                           int renderer_child_id,
+                                           const CefString& document_token,
+                                           const CefString& context_token,
++                                          uint64_t issuance, const CefString& intent,
+                                           int world_id) {}
+ 
+diff --git a/libcef/browser/native_context_service.h b/libcef/browser/native_context_service.h
+--- a/libcef/browser/native_context_service.h
++++ b/libcef/browser/native_context_service.h
+@@ -8,6 +8,7 @@
+ #include <utility>
+ 
+ #include "cef/include/cef_client.h"
++#include "cef/libcef/browser/approved_navigation.h"
+ #include "cef/libcef/browser/browser_info_manager.h"
+ #include "cef/libcef/browser/frame_host_impl.h"
+ #include "cef/libcef/browser/frame_service_base.h"
+@@ -44,7 +45,12 @@ class CefNativeContextService final
+     if (!browser || !browser->GetHost()) return;
+     auto client = browser->GetHost()->GetClient();
+     if (!client || !CEF_API_IS_ADDED(15401)) return;
++    auto* contents = content::WebContents::FromRenderFrameHost(rfh);
++    auto* approval = contents ? CefApprovedNavigation::Get(contents) : nullptr;
++    auto intent = approval ? approval->Consume(rfh, document_token) : std::nullopt;
++    if (!intent)
++      return;
+     browser_ = browser;
+     frame_ = frame;
+     frame_id_ = frame_id;
+     client_ = client;
+@@ -57,7 +63,7 @@ class CefNativeContextService final
+     registered_ = true;
+     client->OnNativeContextRegistered(browser, frame, frame_id_, child_id_,
+                                       document_token.ToString(),
+-                                      context_token.ToString(), world_id);
++                                      context_token.ToString(), intent->first, intent->second, world_id);
+   }
+ 
+   void DidStartNavigation(content::NavigationHandle* navigation) override {
+@@ -67,7 +73,7 @@ class CefNativeContextService final
+   void DidFinishNavigation(content::NavigationHandle* navigation) override {
+     if (navigation->GetFrameTreeNodeId() ==
+             render_frame_host()->GetFrameTreeNodeId() &&
+-        !navigation->HasCommitted()) Revoke();
++        (!navigation->HasCommitted() || navigation->IsErrorPage())) Revoke();
+   }
+ 
+   void RenderFrameHostChanged(content::RenderFrameHost* old_host,
+diff --git a/include/cef_client.h b/include/cef_client.h
+--- a/include/cef_client.h
++++ b/include/cef_client.h
+@@ -220,5 +220,33 @@
+                                           int world_id) {}
+ 
++  ///
++  /// Before a frame-tree navigation mutation, synchronously close the
++  /// admission gate for this exact previously registered native context.
++  /// Only short registry state mutation is allowed here. Defer all callbacks,
++  /// UI waits, nested message loops and application code until after return.
++  ///
++  /*--cef(added=15401)--*/
++  virtual void OnNativeContextWillRevoke(CefRefPtr<CefBrowser> browser,
++                                          CefRefPtr<CefFrame> frame,
++                                          const CefString& frame_id,
++                                          int renderer_child_id,
++                                          const CefString& document_token,
++                                          const CefString& context_token,
++                                          int world_id) {}
++
++  ///
++  /// The critical mutation scope has unwound. Only schedule draining retained
++  /// revocations here; do not invoke subscribers or enter a nested event loop.
++  ///
++  /*--cef(added=15401)--*/
++  virtual void OnNativeContextDidRevoke(CefRefPtr<CefBrowser> browser,
++                                         CefRefPtr<CefFrame> frame,
++                                         const CefString& frame_id,
++                                         int renderer_child_id,
++                                         const CefString& document_token,
++                                         const CefString& context_token,
++                                         int world_id) {}
++
+   ///
+   /// The exact context channel was revoked. No later registration on that
+   /// channel can restore it. This callback is on the browser UI thread.
+diff --git a/libcef/browser/native_context_service.h b/libcef/browser/native_context_service.h
+--- a/libcef/browser/native_context_service.h
++++ b/libcef/browser/native_context_service.h
+@@ -60,6 +60,9 @@
+     context_ = context_token.ToString();
+     world_ = world_id;
+     registered_ = true;
++    pre_navigation_ = rfh->frame_tree_node()->AddCefPreNavigationRevoker(
++        base::BindRepeating(&CefNativeContextService::BeforeNavigation,
++                            base::Unretained(this)));
+     client->OnNativeContextRegistered(browser, frame, frame_id_, child_id_,
+                                       document_token.ToString(),
+                                       context_token.ToString(), intent->first, intent->second, world_id);
+@@ -72,7 +75,23 @@
+   void DidStartNavigation(content::NavigationHandle* navigation) override {
+     if (navigation->GetFrameTreeNodeId() ==
+             render_frame_host()->GetFrameTreeNodeId() &&
+         !navigation->IsSameDocument()) Revoke();
+   }
+ 
++  void BeforeNavigation(content::RenderFrameHostImpl* affected,
++                        std::vector<base::OnceClosure>* completions) {
++    DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
++    if (!registered_ || (affected && affected != render_frame_host())) return;
++    client_->OnNativeContextWillRevoke(browser_, frame_, frame_id_, child_id_,
++                                        document_, context_, world_);
++    completions->push_back(base::BindOnce(
++        [](CefRefPtr<CefClient> client, CefRefPtr<CefBrowser> browser,
++           CefRefPtr<CefFrame> frame, std::string frame_id, int child,
++           std::string document, std::string context, int world) {
++          client->OnNativeContextDidRevoke(browser, frame, frame_id, child,
++                                             document, context, world);
++        }, client_, browser_, frame_, frame_id_, child_id_, document_,
++        context_, world_));
++  }
++
+   void DidFinishNavigation(content::NavigationHandle* navigation) override {
+@@ -1,6 +1,12 @@
+   void Revoke() {
+     DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
++    auto mutation = content::FrameTreeNode::BeginCefAdmissionMutation();
++    std::vector<base::OnceClosure> completions;
++    BeforeNavigation(nullptr, &completions);
++    for (auto& completion : completions) {
++      content::FrameTreeNode::DeferCefAdmissionCompletion(std::move(completion));
++    }
+     attempted_ = true;
+     if (!registered_) return;
+     registered_ = false;
+     auto client = std::move(client_);
+@@ -105,6 +115,7 @@
+   bool attempted_ = false;
+   bool registered_ = false;
++  base::CallbackListSubscription pre_navigation_;
+   int child_id_ = 0;
+   int world_ = 0;
+   std::string frame_id_;
+   std::string document_;
+diff --git a/tests/ceftests/navigation_unittest.cc b/tests/ceftests/navigation_unittest.cc
+--- a/tests/ceftests/navigation_unittest.cc
++++ b/tests/ceftests/navigation_unittest.cc
+@@ -3714,6 +3714,122 @@
+ // Entry point for creating navigation renderer test objects.
+ // Called from client_app_delegates.cc.
++#if CEF_API_ADDED(15401)
++namespace {
++class ApprovedNativeNavigationTest : public TestHandler {
++ public:
++  void RunTest() override {
++    AddResource("https://approved.example/one", "<html>one</html>", "text/html");
++    AddResource("https://replacement.example/two", "<html>two</html>", "text/html");
++    CreateBrowser(CefString());
++    SetTestTimeout();
++  }
++
++  void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
++    TestHandler::OnAfterCreated(browser);
++    browser_ = browser;
++    browser->GetHost()->LoadApprovedMainFrameURL(
++        "https://approved.example/one", 1, "host-intent-one", new Completion(this, 0));
++  }
++
++  void OnNativeContextRegistered(CefRefPtr<CefBrowser> browser,
++      CefRefPtr<CefFrame> frame, const CefString& frame_id, int child,
++      const CefString& document, const CefString& context,
++      uint64_t issuance, const CefString& intent, int world) override {
++    EXPECT_TRUE(browser->IsSame(browser_));
++    EXPECT_FALSE(frame_id.empty());
++    EXPECT_FALSE(document.empty());
++    EXPECT_FALSE(context.empty());
++    EXPECT_EQ(0, world);
++    EXPECT_GT(child, 0);
++    EXPECT_EQ(registered_ + 1, issuance);
++    EXPECT_EQ(issuance == 1 ? "host-intent-one" : "host-intent-two",
++              intent.ToString());
++    ++registered_;
++    Schedule();
++  }
++
++  void OnNativeContextWillRevoke(CefRefPtr<CefBrowser> browser,
++      CefRefPtr<CefFrame> frame, const CefString& frame_id, int child,
++      const CefString& document, const CefString& context, int world) override {
++    EXPECT_FALSE(frame_id.empty());
++    ++will_revoke_;
++  }
++
++  void OnNativeContextDidRevoke(CefRefPtr<CefBrowser> browser,
++      CefRefPtr<CefFrame> frame, const CefString& frame_id, int child,
++      const CefString& document, const CefString& context, int world) override {
++    ++did_revoke_;
++    Schedule();
++  }
++
++  void OnBeforeClose(CefRefPtr<CefBrowser> browser) override {
++    browser_ = nullptr;
++    TestHandler::OnBeforeClose(browser);
++  }
++
++ private:
++  class Completion : public CefApprovedNavigationCallback {
++   public:
++    Completion(CefRefPtr<ApprovedNativeNavigationTest> owner, int operation)
++        : owner_(owner), operation_(operation) {}
++    void OnComplete(bool accepted) override {
++      owner_->Complete(operation_, accepted);
++    }
++   private:
++    CefRefPtr<ApprovedNativeNavigationTest> owner_;
++    const int operation_;
++    IMPLEMENT_REFCOUNTING(Completion);
++  };
++
++  void Complete(int operation, bool accepted) {
++    EXPECT_FALSE(completed_[operation]);
++    completed_[operation] = true;
++    EXPECT_EQ(operation != 1, accepted);
++    Schedule();
++  }
++
++  void Schedule() {
++    CefPostTask(TID_UI, base::BindOnce(&ApprovedNativeNavigationTest::Advance, this));
++  }
++
++  void Advance() {
++    if (!browser_ || finished_) return;
++    if (!replacement_ && registered_ == 1 && completed_[0]) {
++      replacement_ = true;
++      browser_->GetHost()->LoadApprovedMainFrameURL(
++          "https://replacement.example/two", 1, "replayed-intent",
++          new Completion(this, 1));
++      browser_->GetHost()->LoadApprovedMainFrameURL(
++          "https://replacement.example/two", 2, "host-intent-two",
++          new Completion(this, 2));
++    }
++    if (registered_ == 2 && completed_[0] && completed_[1] && completed_[2] &&
++        will_revoke_ > 0 && did_revoke_ > 0) {
++      finished_ = true;
++      EXPECT_GE(will_revoke_, did_revoke_);
++      DestroyTest();
++    }
++  }
++
++  CefRefPtr<CefBrowser> browser_;
++  int registered_ = 0;
++  int will_revoke_ = 0;
++  int did_revoke_ = 0;
++  bool completed_[3] = {};
++  bool replacement_ = false;
++  bool finished_ = false;
++  IMPLEMENT_REFCOUNTING(ApprovedNativeNavigationTest);
++};
++}  // namespace
++
++TEST(NavigationTest, ApprovedNativeIntentReplacementAndReplay) {
++  CefRefPtr<ApprovedNativeNavigationTest> handler = new ApprovedNativeNavigationTest();
++  handler->ExecuteTest();
++  ReleaseAndWaitForDestructor(handler);
++}
++#endif
++
+ void CreateNavigationRendererTests(ClientAppRenderer::DelegateSet& delegates) {
+   delegates.insert(new HistoryNavRendererTest);
+   delegates.insert(new OrderNavRendererTest);
+   delegates.insert(new LoadNavRendererTest);

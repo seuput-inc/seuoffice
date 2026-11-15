@@ -1,15 +1,6 @@
-//! `packages/ai-provider/src/user-skills/{errors,source-record,import}.ts`:
-//! what the app's skills folder needs to take skills in, as far as it needs no
-//! archive, no GitHub and no network: the error kinds, the shapes of a prepared
-//! import and of a GitHub update check, the app's skills by name, the GitHub
-//! source record, and the commit of a staged install with its undo.
-//!
-//! Left to the caller's `SkillLibrary` (`shell::user_skills::user_skills_service`):
-//! `archive.ts` (244 lines, JSZip reading), `github.ts` (423, the fetches),
-//! `warnings.ts` (131, the preview's pattern table), `update.ts` (244, the
-//! GitHub update check and apply) and the `prepare*Import`,
-//! `installImportedSkills` and `disposeSkillImport` of `import.ts` (about 600
-//! of its 941 lines), `export.ts`' zip building (about 70 lines).
+//! Skill import models, staged installation, export and source records.
+//! Preparation accepts archive and preview callbacks so filesystem policy can
+//! stay in this module while the caller supplies the remaining services.
 //!
 //! A Node file call that throws is a [`NodeError`]; a `SkillImportError` is a
 //! [`SkillImportError`]; the `RangeError` of a SKILL.md read is a
@@ -283,6 +274,7 @@ pub const SKILL_STAGING_PREFIX: &str = ".ieum-staging-";
 /// `SkillWarning`
 #[derive(Debug, Clone, PartialEq)]
 pub struct SkillWarning {
+    pub rule: String,
     pub message_key: String,
     pub file: String,
     pub line: f64,
@@ -321,6 +313,49 @@ pub enum SkillImportSource {
     SkillFile { file: String },
     Text { text: String },
     Github { address: String },
+}
+
+fn skill_archive_layout<'a>(names: impl IntoIterator<Item = &'a str>) -> bool {
+    use std::collections::HashSet;
+    let mut folders = HashSet::new();
+    let mut skills = HashSet::new();
+    for name in names {
+        let is_dir = name.ends_with('/');
+        let path = name.strip_suffix('/').unwrap_or(name);
+        let parts: Vec<_> = path.split('/').collect();
+        let top = parts[0];
+        if top.is_empty() || top == "__MACOSX" || top.starts_with('.') { continue; }
+        if parts.len() == 1 {
+            if !is_dir && top.eq_ignore_ascii_case("SKILL.md") { return true; }
+            if is_dir { folders.insert(top); }
+        } else {
+            folders.insert(top);
+            if parts.len() == 2 && parts[1].eq_ignore_ascii_case("SKILL.md") { skills.insert(top); }
+        }
+    }
+    !folders.is_empty() && folders.iter().all(|folder| skills.contains(folder))
+}
+
+/// Classify a dropped skill file or a ZIP whose layout contains only skill folders.
+/// Unreadable, oversized, malformed and Codex-home inputs are not skill drops.
+pub fn dropped_skill_source_of(path: &str, home_dir: &str) -> Option<SkillImportSource> {
+    use std::io::Read;
+    let name = path.rsplit(['/', '\\']).next().unwrap_or("");
+    let named = name.eq_ignore_ascii_case("SKILL.md");
+    if !named && !name.to_ascii_lowercase().ends_with(".zip") { return None; }
+    if super::user_skill_md::is_inside_codex_home(path, home_dir) { return None; }
+    if named { return Some(SkillImportSource::SkillFile { file: path.to_owned() }); }
+    const LIMIT: u64 = 50 * 1024 * 1024;
+    let metadata = fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > LIMIT { return None; }
+    let mut bytes = Vec::new();
+    fs::File::open(path).ok()?.take(LIMIT + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > LIMIT { return None; }
+    let limits = ooxml_pkg::ZipLimits { max_parts: 20_000, max_part_bytes: MAX_USER_SKILL_BYTES as f64, max_total_bytes: (4 * MAX_USER_SKILL_BYTES) as f64 };
+    ooxml_pkg::assert_zip_inflates_within_limits(&bytes, &limits).ok()?;
+    let entries = ooxml_pkg::jszip::load(&bytes, false).ok()?;
+    skill_archive_layout(entries.iter().map(|entry| entry.unsafe_original_name.as_str()))
+        .then(|| SkillImportSource::Zip { file: path.to_owned() })
 }
 
 /// `SkillImportOrigin`: where an import came from
@@ -403,6 +438,499 @@ pub struct InstallImportedSkillsResult {
     pub skipped: Vec<String>,
 }
 
+pub fn diff_skill_folders(installed: &str, updated: &str) -> Result<Vec<SkillFileChange>, Thrown> {
+    fn files(dir: &str) -> Result<Vec<super::user_skills_folder::SkillFolderFile>, Thrown> {
+        let listing = list_skill_folder_files(dir, Some(&default_limits()))
+            .ok_or_else(|| SkillImportError::new("failed", format!("Cannot read {dir}")))?;
+        if listing.too_large {
+            return Err(SkillImportError::new("too-large", "A skill folder is too large").into());
+        }
+        Ok(listing.files.into_iter().filter(|file| file.rel != IEUM_SOURCE_FILE).collect())
+    }
+    let before = files(installed)?;
+    let after = files(updated)?;
+    let before_by_name: std::collections::HashMap<_, _> = before.iter().map(|file| (file.rel.as_str(), file)).collect();
+    let after_names: std::collections::HashSet<_> = after.iter().map(|file| file.rel.as_str()).collect();
+    let mut changes = Vec::new();
+    for file in &after {
+        let change = match before_by_name.get(file.rel.as_str()) {
+            None => Some("added"),
+            Some(old) if old.size != file.size => Some("modified"),
+            Some(old) => {
+                let a = read_file(&old.path)?;
+                let b = read_file(&file.path)?;
+                (a != b).then_some("modified")
+            }
+        };
+        if let Some(change) = change {
+            changes.push(SkillFileChange { rel: file.rel.clone(), change });
+        }
+    }
+    for file in before {
+        if !after_names.contains(file.rel.as_str()) {
+            changes.push(SkillFileChange { rel: file.rel, change: "removed" });
+        }
+    }
+    changes.sort_by(|a, b| super::user_skills_folder::cmp_utf16(&a.rel, &b.rel));
+    Ok(changes)
+}
+
+pub fn check_github_skill_update(
+    skill_dir: &str,
+    app_skills_dir: &str,
+    temp_dir: &str,
+    validate_repo: impl FnOnce(&str) -> Result<(), Thrown>,
+    fetch_commit: impl FnOnce(&str, &str) -> Result<String, Thrown>,
+    fetch_archive: impl FnOnce(&str, &str) -> Result<Vec<u8>, Thrown>,
+    extract: impl FnOnce(&[u8], &str, &str) -> Result<(), Thrown>,
+    describe: impl FnOnce(&str, &str, &str, &str) -> Result<Option<SkillImportCandidate>, Thrown>,
+    aborted: Option<&dyn Fn() -> bool>,
+) -> Result<GitHubSkillUpdateCheck, Thrown> {
+    if !is_inside_dir(skill_dir, app_skills_dir) || is_inside_dir(app_skills_dir, skill_dir) {
+        return Err(SkillImportError::new("invalid-source", "Only skills of the app folder are updated").into());
+    }
+    let record = read_ieum_source_record(skill_dir)
+        .ok_or_else(|| SkillImportError::new("not-github", "The skill has no GitHub source record"))?;
+    validate_repo(&record.repo)?;
+    if !record.path.is_empty() && record.path.split('/').any(|part| part.is_empty() || part == "." || part == ".." || part.contains('\\')) {
+        return Err(SkillImportError::new("not-github", "The source record has an unusable path").into());
+    }
+    let commit = fetch_commit(&record.repo, &record.ref_)?;
+    let installed_hash = skill_content_hash(skill_dir, None)?;
+    let local_edits = if installed_hash != record.content_hash {
+        let parse_error = std::cell::RefCell::new(None);
+        let normalized = skill_content_hash(skill_dir, Some(&|text| {
+            match super::user_skill_md::without_skill_editors(text) {
+                Ok(text) => text,
+                Err(error) => {
+                    *parse_error.borrow_mut() = Some(error);
+                    String::new()
+                }
+            }
+        }))?;
+        if let Some(error) = parse_error.into_inner() { return Err(error.into()); }
+        normalized != record.content_hash
+    } else { false };
+    if commit == record.commit {
+        return Ok(GitHubSkillUpdateCheck::UpToDate { record, commit, locally_edited: local_edits });
+    }
+    let archive = fetch_archive(&record.repo, &commit)?;
+    if aborted.is_some_and(|aborted| aborted()) {
+        return Err(SkillImportError::new("cancelled", "Cancelled").into());
+    }
+    mkdir_recursive(temp_dir)?;
+    let work = host::join(&[temp_dir, &format!("ieum-skill-update-{}", random_hex(6))]);
+    mkdir(&work)?;
+    let result = (|| {
+        let root = host::join(&[&work, "repo"]);
+        mkdir(&root)?;
+        extract(&archive, &root, &record.path)?;
+        if aborted.is_some_and(|aborted| aborted()) {
+            return Err(SkillImportError::new("cancelled", "Cancelled").into());
+        }
+        let new_dir = if record.path.is_empty() { root.clone() } else { host::join(&[&root, &record.path]) };
+        if !find_skill_folders(&root, &record.path, &[], None).iter().any(|rel| rel == &record.path) {
+            return Err(SkillImportError::new("no-skills", "The skill is no longer there").into());
+        }
+        let new_hash = skill_content_hash(&new_dir, None)?;
+        if new_hash == record.content_hash || new_hash == installed_hash {
+            return Ok(GitHubSkillUpdateCheck::UpToDate { record: record.clone(), commit: commit.clone(), locally_edited: local_edits });
+        }
+        let candidate = describe(&new_dir, &record.path, app_skills_dir, skill_dir)?
+            .ok_or_else(|| SkillImportError::new("no-skills", "The skill is no longer there"))?;
+        let changed_files = diff_skill_folders(skill_dir, &new_dir)?;
+        let update = SkillImport {
+            origin: SkillImportOrigin::Github { repo: record.repo.clone(), ref_: record.ref_.clone(), commit: commit.clone(), path: record.path.clone() },
+            root, candidates: vec![candidate], root_license: None, temp_dir: Some(work.clone()),
+        };
+        Ok(GitHubSkillUpdateCheck::Changed(Box::new(ChangedCheck {
+            record: record.clone(), commit: commit.clone(), locally_edited: local_edits, changed_files, update,
+        })))
+    })();
+    if !matches!(&result, Ok(GitHubSkillUpdateCheck::Changed(_))) {
+        remove_quietly(&work);
+    }
+    result
+}
+
+pub fn install_imported_skills(
+    imported: &SkillImport,
+    app_skills_dir: &str,
+    selected: &[String],
+    choices: &CollisionChoices,
+    options: &mut CommitSkillInstallOptions<'_>,
+) -> Result<InstallImportedSkillsResult, Thrown> {
+    use std::collections::HashSet;
+    let existing = app_skill_folders_by_name(app_skills_dir)?;
+    let mut selected_keys = HashSet::new();
+    let mut names = HashSet::new();
+    let mut plans = Vec::new();
+    let mut skipped = Vec::new();
+    for key in selected {
+        if !selected_keys.insert(key) {
+            continue;
+        }
+        let candidate = imported.candidates.iter().find(|candidate| &candidate.key == key)
+            .ok_or_else(|| SkillImportError::new("not-installable", format!("No skill {key} in this import")))?;
+        if candidate.problem == Some("too-large") {
+            return Err(SkillImportError::new("too-large", format!("{} is too large", candidate.name)).into());
+        }
+        if candidate.problem.is_some() || super::user_skill_md::is_reserved_user_skill_name(&candidate.name) {
+            return Err(SkillImportError::new("not-installable", format!("{} cannot be installed", candidate.name)).into());
+        }
+        let lower = candidate.name.to_lowercase();
+        if !names.insert(lower.clone()) {
+            return Err(SkillImportError::new("not-installable", format!("{} is chosen twice", candidate.name)).into());
+        }
+        let taken = existing.get(&lower).cloned().unwrap_or_default();
+        if !taken.is_empty() {
+            let choice = choices.iter().find(|(chosen, _)| chosen == key).map(|(_, choice)| choice.as_str());
+            match choice {
+                None => return Err(SkillImportError::new("needs-choice", format!("{} is already there", candidate.name)).into()),
+                Some("skip") => {
+                    skipped.push(key.clone());
+                    continue;
+                }
+                Some(_) => {}
+            }
+        }
+        let source = match &imported.origin {
+            SkillImportOrigin::Github { repo, ref_, commit, .. } => Some(SkillInstallSource {
+                repo: repo.clone(), ref_: ref_.clone(), commit: commit.clone(), path: candidate.rel.clone(),
+            }),
+            _ => None,
+        };
+        plans.push(SkillInstallPlan { candidate: candidate.clone(), folder_name: candidate.name.clone(), replace_dirs: taken, source });
+    }
+    let dirs = if plans.is_empty() { Vec::new() } else { commit_skill_install(app_skills_dir, &plans, options)? };
+    let installed = plans.into_iter().zip(dirs).map(|(plan, dir)| InstalledSkill {
+        key: plan.candidate.key, name: plan.candidate.name, dir, replaced: !plan.replace_dirs.is_empty(),
+    }).collect();
+    Ok(InstallImportedSkillsResult { installed, skipped })
+}
+
+pub fn export_skill_bundle_zip(skill_dirs: &[String], out_path: &str, now_ms: f64) -> Result<(), Thrown> {
+    use std::collections::HashSet;
+    use ooxml_pkg::write::{Record, RecordData, generate_records};
+    if skill_dirs.is_empty() {
+        return Err(SkillImportError::new("not-installable", "No skill to export").into());
+    }
+    let mut names = HashSet::new();
+    let mut contents = Vec::new();
+    for dir in skill_dirs {
+        let skill = super::user_skills_folder::read_user_skill_folder(dir, "app", None, None)?
+            .ok_or_else(|| SkillImportError::new("not-installable", "This skill cannot be exported"))?;
+        if !names.insert(skill.name.to_lowercase()) {
+            return Err(SkillImportError::new("not-installable", format!("Two skills are named {}", skill.name)).into());
+        }
+        let listed = list_skill_folder_files(dir, Some(&default_limits()))
+            .ok_or_else(|| SkillImportError::new("failed", format!("Cannot read {dir}")))?;
+        if listed.too_large {
+            return Err(SkillImportError::new("too-large", "The skill folder is too large").into());
+        }
+        for file in listed.files {
+            if file.rel != IEUM_SOURCE_FILE {
+                contents.push((format!("{}/{}", skill.name, file.rel), read_file(&file.path)?));
+            }
+        }
+    }
+    let records: Vec<_> = contents.iter().map(|(name, bytes)| Record {
+        name, comment: "", dir: false, date: now_ms, dos_permissions: None,
+        data: RecordData::Content { bytes, deflate: true },
+    }).collect();
+    let bytes = generate_records(&records).map_err(|e| Thrown::Plain(e.to_string()))?;
+    let partial = host::join(&[&host::dirname(out_path), &format!(".{}.{}.part", host::basename(out_path, None), random_hex(4))]);
+    if write_file_exclusive(&partial, &bytes).and_then(|()| rename(&partial, out_path)).is_err() {
+        remove_quietly(&partial);
+        return Err(SkillImportError::new("failed", format!("Could not write {out_path}")).into());
+    }
+    Ok(())
+}
+
+
+pub fn find_skill_folders(root: &str, start: &str, skip_dirs: &[String], home_dir: Option<&str>) -> Vec<String> {
+    fn walk(dir: &str, rel: &str, depth: usize, skip_dirs: &[String], home: Option<&str>, found: &mut Vec<String>) {
+        if skip_dirs.iter().any(|skip| is_inside_dir(dir, skip))
+            || home.is_some_and(|home| super::user_skill_md::is_inside_codex_home(dir, home))
+        {
+            return;
+        }
+        let Ok(entries) = fs::read_dir(dir) else { return };
+        let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
+        entries.sort_by_key(|entry| entry.file_name());
+        if entries.iter().any(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let matches = if cfg!(windows) { name.eq_ignore_ascii_case("SKILL.md") } else { name == "SKILL.md" };
+            matches && entry.file_type().is_ok_and(|kind| kind.is_file() || kind.is_symlink())
+        }) {
+            found.push(rel.to_owned());
+            return;
+        }
+        if depth >= 8 { return; }
+        for entry in entries {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if matches!(name.as_str(), ".git" | "node_modules" | "__MACOSX")
+                || !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            let child = host::join(&[dir, &name]);
+            let child_rel = if rel.is_empty() { name } else { format!("{rel}/{name}") };
+            walk(&child, &child_rel, depth + 1, skip_dirs, home, found);
+        }
+    }
+    let mut found = Vec::new();
+    let dir = if start.is_empty() { root.to_owned() } else { host::join(&[root, start]) };
+    walk(&dir, start, 0, skip_dirs, home_dir, &mut found);
+    found.sort_by(|a, b| super::user_skills_folder::cmp_utf16(a, b));
+    found
+}
+
+pub fn license_file_in(dir: &str) -> Option<String> {
+    let mut names: Vec<_> = fs::read_dir(dir).ok()?.filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| {
+            let lower = name.to_lowercase();
+            ["license", "licence", "copying", "unlicense"].iter().any(|prefix| {
+                lower.strip_prefix(prefix).is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('.') || suffix.starts_with('-'))
+            })
+        }).collect();
+    names.sort_by(|a, b| super::user_skills_folder::cmp_utf16(a, b));
+    names.into_iter().next()
+}
+
+fn skill_text(text: &str) -> Result<String, Thrown> {
+    let source = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let mut lead = 0;
+    let mut offset = 0;
+    let mut fenced = false;
+    let mut opening = None;
+    for line in source.split_inclusive('\n') {
+        if lead > 5 { break; }
+        let trimmed = line.trim();
+        if trimmed == "---" {
+            opening = Some(offset);
+            break;
+        }
+        if !trimmed.is_empty() { lead += 1; }
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") { fenced = true; }
+        offset += line.len();
+    }
+    let Some(start) = opening else {
+        return Err(SkillImportError::new("no-skills", "No skill was found").into());
+    };
+    let mut rest = source[start..].trim_start_matches([' ', '\t']).to_owned();
+    if !rest.lines().skip(1).any(|line| line.trim() == "---") {
+        return Err(SkillImportError::new("unclosed-frontmatter", "The front matter is not closed").into());
+    }
+    if fenced {
+        let mut offset = 0;
+        let mut fences = Vec::new();
+        for line in rest.split_inclusive('\n') {
+            let trimmed = line.trim_start_matches([' ', '\t']);
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") { fences.push(offset); }
+            offset += line.len();
+        }
+        if fences.len() % 2 == 1 {
+            rest.truncate(*fences.last().expect("odd fence count"));
+        }
+    }
+    if parse_skill_md(&rest)?.and_then(|parsed| parsed.name).is_none_or(|name| name.trim().is_empty()) {
+        return Err(SkillImportError::new("no-skills", "No skill was found").into());
+    }
+    Ok(rest)
+}
+
+pub fn prepare_single_file_import(
+    text: &str,
+    origin: SkillImportOrigin,
+    app_skills_dir: &str,
+    temp_dir: &str,
+    describe: impl FnOnce(&str, &[String], &str) -> Result<Vec<SkillImportCandidate>, Thrown>,
+) -> Result<SkillImport, Thrown> {
+    if text.len() > 2 * 1024 * 1024 {
+        return Err(SkillImportError::new("too-large", "The SKILL.md text is too large").into());
+    }
+    let text = skill_text(text)?;
+    let name = parse_skill_md(&text)?.and_then(|parsed| parsed.name)
+        .map(|name| name.trim().to_owned()).filter(|name| !name.is_empty())
+        .ok_or_else(|| SkillImportError::new("no-skills", "No skill was found"))?;
+    mkdir_recursive(temp_dir)?;
+    let work = host::join(&[temp_dir, &format!("ieum-skill-import-{}", random_hex(6))]);
+    mkdir(&work)?;
+    let result = (|| {
+        let root = host::join(&[&work, "text"]);
+        let folder = if super::user_skills_states::is_valid_user_skill_name(&name) { name.as_str() } else { "skill" };
+        let dir = host::join(&[&root, folder]);
+        mkdir_recursive(&dir)?;
+        write_file(&host::join(&[&dir, "SKILL.md"]), text.as_bytes())?;
+        let candidates = describe(&root, &[folder.to_owned()], app_skills_dir)?;
+        if candidates.is_empty() {
+            return Err(SkillImportError::new("no-skills", "No skill was found").into());
+        }
+        Ok(SkillImport { origin, root, candidates, root_license: None, temp_dir: Some(work.clone()) })
+    })();
+    if result.is_err() {
+        remove_quietly(&work);
+    }
+    result
+}
+
+pub fn prepare_skill_file_import(
+    file: &str,
+    app_skills_dir: &str,
+    home_dir: &str,
+    temp_dir: &str,
+    describe: impl FnOnce(&str, &[String], &str) -> Result<Vec<SkillImportCandidate>, Thrown>,
+) -> Result<SkillImport, Thrown> {
+    use std::io::Read;
+    if super::user_skill_md::is_inside_codex_home(file, home_dir) {
+        return Err(SkillImportError::new("invalid-source", "The file is inside the Codex home").into());
+    }
+    let metadata = fs::metadata(file).ok().filter(|metadata| metadata.is_file())
+        .ok_or_else(|| SkillImportError::new("not-found", "The file cannot be read"))?;
+    const LIMIT: u64 = 2 * 1024 * 1024;
+    if metadata.len() > LIMIT {
+        return Err(SkillImportError::new("too-large", "The SKILL.md file is too large").into());
+    }
+    let mut bytes = Vec::new();
+    fs::File::open(file).and_then(|file| file.take(LIMIT + 1).read_to_end(&mut bytes))
+        .map_err(|_| SkillImportError::new("not-found", "The file cannot be read"))?;
+    if bytes.len() as u64 > LIMIT {
+        return Err(SkillImportError::new("too-large", "The SKILL.md file is too large").into());
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    prepare_single_file_import(&text, SkillImportOrigin::SkillFile { file: file.to_owned() }, app_skills_dir, temp_dir, describe)
+}
+
+pub fn prepare_folder_import(
+    folder: &str,
+    app_skills_dir: &str,
+    home_dir: &str,
+    describe: impl FnOnce(&str, &[String], &str) -> Result<Vec<SkillImportCandidate>, Thrown>,
+) -> Result<SkillImport, Thrown> {
+    if is_inside_dir(folder, app_skills_dir) {
+        return Err(SkillImportError::new("invalid-source", "The folder is inside the app skills folder").into());
+    }
+    if super::user_skill_md::is_inside_codex_home(folder, home_dir) {
+        return Err(SkillImportError::new("invalid-source", "The folder is inside the Codex home").into());
+    }
+    if !fs::metadata(folder).is_ok_and(|metadata| metadata.is_dir()) {
+        return Err(SkillImportError::new("no-skills", "No skill was found").into());
+    }
+    let rels = find_skill_folders(folder, "", &[app_skills_dir.to_owned()], Some(home_dir));
+    let candidates = describe(folder, &rels, app_skills_dir)?;
+    if candidates.is_empty() {
+        return Err(SkillImportError::new("no-skills", "No skill was found").into());
+    }
+    Ok(SkillImport {
+        origin: SkillImportOrigin::Folder { folder: folder.to_owned() },
+        root: folder.to_owned(),
+        candidates,
+        root_license: license_file_in(folder),
+        temp_dir: None,
+    })
+}
+
+pub fn prepare_zip_import(
+    file: &str,
+    app_skills_dir: &str,
+    temp_dir: &str,
+    extract: impl FnOnce(&[u8], &str) -> Result<(), Thrown>,
+    describe: impl FnOnce(&str, &[String], &str) -> Result<Vec<SkillImportCandidate>, Thrown>,
+) -> Result<SkillImport, Thrown> {
+    let metadata = fs::metadata(file).ok().filter(|metadata| metadata.is_file())
+        .ok_or_else(|| SkillImportError::new("not-found", "The zip file cannot be read"))?;
+    const LIMIT: u64 = 50 * 1024 * 1024;
+    if metadata.len() > LIMIT {
+        return Err(SkillImportError::new("too-large", format!("The zip file is {} bytes (limit {LIMIT})", metadata.len())).into());
+    }
+    let mut bytes = Vec::new();
+    use std::io::Read;
+    fs::File::open(file)
+        .and_then(|file| file.take(LIMIT + 1).read_to_end(&mut bytes))
+        .map_err(|_| SkillImportError::new("not-found", "The zip file cannot be read"))?;
+    if bytes.len() as u64 > LIMIT {
+        return Err(SkillImportError::new("too-large", format!("The zip file is {} bytes (limit {LIMIT})", bytes.len())).into());
+    }
+    mkdir_recursive(temp_dir)?;
+    let work = host::join(&[temp_dir, &format!("ieum-skill-import-{}", random_hex(6))]);
+    mkdir(&work)?;
+    let result = (|| {
+        let root = host::join(&[&work, "zip"]);
+        mkdir(&root)?;
+        extract(&bytes, &root)?;
+        let rels = find_skill_folders(&root, "", &[], None);
+        let candidates = describe(&root, &rels, app_skills_dir)?;
+        if candidates.is_empty() {
+            return Err(SkillImportError::new("no-skills", "No skill was found").into());
+        }
+        Ok(SkillImport {
+            origin: SkillImportOrigin::Zip { file: file.to_owned() },
+            root_license: license_file_in(&root),
+            root,
+            candidates,
+            temp_dir: Some(work.clone()),
+        })
+    })();
+    if result.is_err() {
+        remove_quietly(&work);
+    }
+    result
+}
+
+pub fn prepare_github_archive(
+    origin: SkillImportOrigin,
+    only_skill: Option<&str>,
+    bytes: &[u8],
+    app_skills_dir: &str,
+    temp_dir: &str,
+    extract: impl FnOnce(&[u8], &str, &str) -> Result<(), Thrown>,
+    describe: impl FnOnce(&str, &[String], &str, Option<&str>) -> Result<Vec<SkillImportCandidate>, Thrown>,
+    aborted: Option<&dyn Fn() -> bool>,
+) -> Result<SkillImport, Thrown> {
+    let SkillImportOrigin::Github { path, .. } = &origin else {
+        return Err(SkillImportError::new("invalid-source", "Not a GitHub import").into());
+    };
+    if !path.is_empty() && path.split('/').any(|part| {
+        part.is_empty() || part == "." || part == ".." || part.contains('\\')
+            || part.chars().any(|c| c <= '\u{1f}' || c == '\u{7f}')
+    }) {
+        return Err(SkillImportError::new("bad-address", "Not a GitHub address the app accepts").into());
+    }
+    if aborted.is_some_and(|aborted| aborted()) {
+        return Err(SkillImportError::new("cancelled", "Cancelled").into());
+    }
+    mkdir_recursive(temp_dir)?;
+    let work = host::join(&[temp_dir, &format!("ieum-skill-import-{}", random_hex(6))]);
+    mkdir(&work)?;
+    let result = (|| {
+        let root = host::join(&[&work, "repo"]);
+        mkdir(&root)?;
+        extract(bytes, &root, path)?;
+        if aborted.is_some_and(|aborted| aborted()) {
+            return Err(SkillImportError::new("cancelled", "Cancelled").into());
+        }
+        let start = if path.is_empty() { root.clone() } else { host::join(&[&root, path]) };
+        if !fs::metadata(start).is_ok_and(|metadata| metadata.is_dir()) {
+            return Err(SkillImportError::new("no-skills", "No skill was found").into());
+        }
+        let rels = find_skill_folders(&root, path, &[], None);
+        let candidates = describe(&root, &rels, app_skills_dir, only_skill)?;
+        if aborted.is_some_and(|aborted| aborted()) {
+            return Err(SkillImportError::new("cancelled", "Cancelled").into());
+        }
+        if candidates.is_empty() {
+            return Err(SkillImportError::new("no-skills", "No skill was found").into());
+        }
+        Ok(SkillImport { origin: origin.clone(), root_license: license_file_in(&root), root, candidates, temp_dir: Some(work.clone()) })
+    })();
+    if result.is_err() {
+        remove_quietly(&work);
+    }
+    result
+}
+
 fn default_limits() -> SkillFolderLimits {
     SkillFolderLimits {
         files: MAX_USER_SKILL_FILES,
@@ -413,7 +941,6 @@ fn default_limits() -> SkillFolderLimits {
 /// `appSkillFoldersByName(appSkillsDir)`: the app's own skills by lowercase
 /// name: each folder under its folder name and under the `name` its `SKILL.md`
 /// gives. Staging folders are left out.
-// Temporary stand-in for user_skills_sources.rs (sources.ts), owned by the projects session; delete at merge.
 pub(crate) fn app_skill_folders_by_name(
     app_skills_dir: &str,
 ) -> Result<JsMap<Vec<String>>, SkillMdError> {
@@ -722,4 +1249,47 @@ pub fn random_hex(n: usize) -> String {
     let mut bytes = vec![0u8; n];
     getrandom::fill(&mut bytes).expect("the platform random source");
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+
+
+    #[test]
+    fn extracts_pasted_frontmatter_and_reports_truncation() {
+        let text = "Here is the skill:\n```yaml\n---\nname: example\ndescription: Example\n---\nBody\n```\n";
+        assert_eq!(
+            super::skill_text(text).unwrap(),
+            "---\nname: example\ndescription: Example\n---\nBody\n"
+        );
+        assert!(matches!(
+            super::skill_text("---\nname: example\n"),
+            Err(super::Thrown::Import(error)) if error.kind == "unclosed-frontmatter"
+        ));
+    }
+
+    #[test]
+    fn failed_single_file_preview_removes_work_directory() {
+        let temp = std::env::temp_dir().join(format!("skill-import-test-{}", super::random_hex(8)));
+        std::fs::create_dir(&temp).unwrap();
+        let root = temp.to_string_lossy().into_owned();
+        let result = super::prepare_single_file_import(
+            "---\nname: sample\ndescription: Sample\n---\nBody\n",
+            super::SkillImportOrigin::Text,
+            &root,
+            &root,
+            |_, _, _| Err(super::SkillImportError::new("failed", "preview failed").into()),
+        );
+        assert!(matches!(result, Err(super::Thrown::Import(error)) if error.kind == "failed"));
+        assert_eq!(std::fs::read_dir(&temp).unwrap().count(), 0);
+        std::fs::remove_dir(temp).unwrap();
+    }
+
+    #[test]
+    fn drop_layout_accepts_single_or_complete_bundle_only() {
+        assert!(super::skill_archive_layout(["SKILL.md", "assets/icon.png"]));
+        assert!(super::skill_archive_layout(["one/SKILL.md", "two/skill.md", "README.md", "__MACOSX/extra"]));
+        assert!(!super::skill_archive_layout(["one/SKILL.md", "two/readme.md"]));
+        assert!(!super::skill_archive_layout(["nested/other/SKILL.md"]));
+    }
 }

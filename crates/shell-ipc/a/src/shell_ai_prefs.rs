@@ -6,6 +6,9 @@
 //! them: nothing in `main-core` reads the preferences.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::{Rc, Weak};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -14,7 +17,7 @@ use main_core::packages::ui::normalize_slides_ai_fonts;
 use main_core::shell::app_settings::{read_app_settings, write_app_setting, write_app_settings};
 use shell_contract::hosts::MainWindowHost;
 use shell_contract::ipc::{CallContext, EventSink, Responder, Target};
-use shell_contract::runtime::{AppPaths, PathName};
+use shell_contract::runtime::{AppPaths, PathName, Thread, Workers};
 use shell_contract::{IpcError, IpcValue};
 
 use crate::ports::ShellAiPrefs;
@@ -115,13 +118,31 @@ fn field(o: &mut JsObject<JsonValue>, key: &str, value: Option<JsonValue>) {
     }
 }
 
+thread_local! {
+    static PREF_CACHES: RefCell<HashMap<u64, Weak<RefCell<Option<AiPanelPrefs>>>>> = RefCell::new(HashMap::new());
+}
+static NEXT_PREF_CACHE: AtomicU64 = AtomicU64::new(1);
+
+fn prefs_from_settings(saved: &main_core::shell::app_settings::Settings) -> AiPanelPrefs {
+    let mut raw = JsObject::new();
+    for (key, stored) in [
+        ("side", "aiPanelSide"), ("fontSize", "aiPanelFontSize"),
+        ("customFontSize", "aiPanelCustomFontSize"), ("spellcheck", "aiPanelSpellcheck"),
+        ("openInNewDocs", "aiPanelOpenInNewDocs"), ("showAiSidebar", "aiPanelShowSidebar"),
+    ] { field(&mut raw, key, saved.get(stored).cloned()); }
+    normalize_ai_panel_prefs(&raw)
+}
+
 pub struct ShellAiPrefsPort {
     pub paths: Arc<dyn AppPaths>,
     pub events: Arc<dyn EventSink>,
     pub ui: ShellUiHost,
     pub main_window: MainWindowHost,
+    core: Arc<dyn Thread>,
+    workers: Arc<dyn Workers>,
     /// `cachedAiPanelPrefs`
-    cache: RefCell<Option<AiPanelPrefs>>,
+    cache: Rc<RefCell<Option<AiPanelPrefs>>>,
+    cache_id: u64,
 }
 
 impl ShellAiPrefsPort {
@@ -130,13 +151,21 @@ impl ShellAiPrefsPort {
         events: Arc<dyn EventSink>,
         ui: ShellUiHost,
         main_window: MainWindowHost,
+        core: Arc<dyn Thread>,
+        workers: Arc<dyn Workers>,
     ) -> Self {
+        let cache = Rc::new(RefCell::new(None));
+        let cache_id = NEXT_PREF_CACHE.fetch_add(1, Ordering::Relaxed);
+        PREF_CACHES.with(|caches| { caches.borrow_mut().insert(cache_id, Rc::downgrade(&cache)); });
         ShellAiPrefsPort {
             paths,
             events,
             ui,
             main_window,
-            cache: RefCell::new(None),
+            core,
+            workers,
+            cache,
+            cache_id,
         }
     }
 
@@ -149,32 +178,10 @@ impl ShellAiPrefsPort {
         path.to_string_lossy().into_owned()
     }
 
-    /// `currentAiPanelPrefs()`
-    fn current(&self) -> AiPanelPrefs {
-        if let Some(prefs) = self.cache.borrow().clone() {
-            return prefs;
-        }
-        let saved = read_app_settings(&self.settings_path());
-        let mut raw = JsObject::new();
-        for (key, stored) in [
-            ("side", "aiPanelSide"),
-            ("fontSize", "aiPanelFontSize"),
-            ("customFontSize", "aiPanelCustomFontSize"),
-            ("spellcheck", "aiPanelSpellcheck"),
-            ("openInNewDocs", "aiPanelOpenInNewDocs"),
-            ("showAiSidebar", "aiPanelShowSidebar"),
-        ] {
-            field(&mut raw, key, saved.get(stored).cloned());
-        }
-        let prefs = normalize_ai_panel_prefs(&raw);
-        *self.cache.borrow_mut() = Some(prefs.clone());
-        prefs
-    }
 
     /// `setAiPanelPrefs(patch)`: `patch` as the renderer sent it, since
     /// `'key' in raw` also sees a key whose value is `undefined`
-    fn set(&self, patch: Option<&IpcValue>) -> Result<AiPanelPrefs, IpcError> {
-        let prev = self.current();
+    fn merge(prev: AiPanelPrefs, patch: Option<&IpcValue>) -> (AiPanelPrefs, bool) {
         let prev_json = prev.to_json();
         let entries: &[(String, IpcValue)] = match patch {
             Some(IpcValue::Object(entries)) => entries,
@@ -202,44 +209,86 @@ impl ShellAiPrefsPort {
         }
         let next = normalize_ai_panel_prefs(&merged);
         if next == prev {
-            return Ok(prev);
+            return (prev, false);
         }
-        *self.cache.borrow_mut() = Some(next.clone());
-        write_app_settings(
-            &self.settings_path(),
-            &[
-                ("aiPanelSide", Some(JsonValue::String(next.side.into()))),
-                (
-                    "aiPanelFontSize",
-                    Some(JsonValue::String(next.font_size.into())),
-                ),
-                (
-                    "aiPanelCustomFontSize",
-                    Some(JsonValue::Number(next.custom_font_size)),
-                ),
-                ("aiPanelSpellcheck", Some(JsonValue::Bool(next.spellcheck))),
-                (
-                    "aiPanelOpenInNewDocs",
-                    Some(JsonValue::Bool(next.open_in_new_docs)),
-                ),
-                (
-                    "aiPanelShowSidebar",
-                    Some(JsonValue::Bool(next.show_ai_sidebar)),
-                ),
-            ],
-        )
-        .map_err(node_error)?;
-        self.events
-            .emit(Target::All, PREFS_CHANGED, vec![from_json(&next.to_json())]);
-        Ok(next)
+        // Cache mutation is performed by the owning core continuation.
+        (next, true)
     }
 
     fn get_prefs(&self, reply: Responder) {
-        reply.reply(Ok(from_json(&self.current().to_json())))
+        let path = self.settings_path();
+        let cache_id = self.cache_id;
+        let core = self.core.clone();
+        main_core::shell::app_settings::queue::for_path(&path).submit(move |completion| {
+            let saved = read_app_settings(&path);
+            core.post(Box::new(move || {
+                let _completion = completion;
+                let cache = PREF_CACHES.with(|caches| caches.borrow().get(&cache_id).and_then(Weak::upgrade));
+                let Some(cache) = cache else {
+                    reply.reply(Err(IpcError { name: Some("Error".into()), message: "AI preferences service is unavailable".into() }));
+                    return;
+                };
+                let prefs = cache.borrow().clone().unwrap_or_else(|| prefs_from_settings(&saved));
+                *cache.borrow_mut() = Some(prefs.clone());
+                reply.reply(Ok(from_json(&prefs.to_json())));
+            }));
+        });
     }
 
     fn set_prefs(&self, args: Vec<IpcValue>, reply: Responder) {
-        reply.reply(self.set(args.first()).map(|p| from_json(&p.to_json())))
+        let path = self.settings_path();
+        let cache_id = self.cache_id;
+        let events = self.events.clone();
+        let core = self.core.clone();
+        let workers = self.workers.clone();
+        main_core::shell::app_settings::queue::for_path(&path).submit(move |completion| {
+            let saved = read_app_settings(&path);
+            let post = core.clone();
+            core.post(Box::new(move || {
+                let cache = PREF_CACHES.with(|caches| caches.borrow().get(&cache_id).and_then(Weak::upgrade));
+                let Some(cache) = cache else {
+                    reply.reply(Err(IpcError { name: Some("Error".into()), message: "AI preferences service is unavailable".into() }));
+                    return;
+                };
+                let previous = cache.borrow().clone().unwrap_or_else(|| prefs_from_settings(&saved));
+                let (next, changed) = Self::merge(previous.clone(), args.first());
+                if !changed {
+                    *cache.borrow_mut() = Some(previous);
+                    reply.reply(Ok(from_json(&next.to_json())));
+                    drop(completion);
+                    return;
+                }
+                workers.spawn(Box::new(move || {
+                    let result = write_app_settings(&path, &[
+                        ("aiPanelSide", Some(JsonValue::String(next.side.into()))),
+                        ("aiPanelFontSize", Some(JsonValue::String(next.font_size.into()))),
+                        ("aiPanelCustomFontSize", Some(JsonValue::Number(next.custom_font_size))),
+                        ("aiPanelSpellcheck", Some(JsonValue::Bool(next.spellcheck))),
+                        ("aiPanelOpenInNewDocs", Some(JsonValue::Bool(next.open_in_new_docs))),
+                        ("aiPanelShowSidebar", Some(JsonValue::Bool(next.show_ai_sidebar))),
+                    ]).map_err(node_error);
+                    post.post(Box::new(move || {
+                        let _completion = completion;
+                        reply.reply(result.map(|()| {
+                            PREF_CACHES.with(|caches| {
+                                if let Some(cache) = caches.borrow().get(&cache_id).and_then(Weak::upgrade) {
+                                    *cache.borrow_mut() = Some(next.clone());
+                                }
+                            });
+                            let value = from_json(&next.to_json());
+                            events.emit(Target::All, PREFS_CHANGED, vec![value.clone()]);
+                            value
+                        }));
+                    }));
+                }));
+            }));
+        });
+    }
+}
+
+impl Drop for ShellAiPrefsPort {
+    fn drop(&mut self) {
+        PREF_CACHES.with(|caches| { caches.borrow_mut().remove(&self.cache_id); });
     }
 }
 
@@ -282,23 +331,31 @@ impl ShellAiPrefs for ShellAiPrefsPort {
     }
 
     fn home_get_slides_ai_fonts(&self, _cx: &CallContext, _args: Vec<IpcValue>, reply: Responder) {
-        let settings = read_app_settings(&self.settings_path());
-        let fonts = normalize_slides_ai_fonts(
-            settings.get(SLIDES_AI_FONTS_KEY),
-            &self.ui.document_locale(),
-        );
-        reply.reply(Ok(from_json(&fonts.to_json())))
+        let path = self.settings_path();
+        let locale = self.ui.document_locale();
+        let core = self.core.clone();
+        main_core::shell::app_settings::queue::for_path(&path).submit(move |completion| {
+            let settings = read_app_settings(&path);
+            let fonts = normalize_slides_ai_fonts(settings.get(SLIDES_AI_FONTS_KEY), &locale).to_json();
+            core.post(Box::new(move || {
+                let _completion = completion;
+                reply.reply(Ok(from_json(&fonts)));
+            }));
+        });
     }
 
     fn home_set_slides_ai_fonts(&self, _cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
         let next =
             normalize_slides_ai_fonts(arg(&args, 0).as_ref(), &self.ui.document_locale()).to_json();
-        let written = write_app_setting(
-            &self.settings_path(),
-            SLIDES_AI_FONTS_KEY,
-            Some(next.clone()),
-        );
-        reply.reply(written.map(|_| from_json(&next)).map_err(node_error))
+        let path = self.settings_path();
+        let core = self.core.clone();
+        main_core::shell::app_settings::queue::for_path(&path).submit(move |completion| {
+            let written = write_app_setting(&path, SLIDES_AI_FONTS_KEY, Some(next.clone()));
+            core.post(Box::new(move || {
+                let _completion = completion;
+                reply.reply(written.map(|_| from_json(&next)).map_err(node_error));
+            }));
+        });
     }
 }
 
@@ -311,6 +368,8 @@ pub fn factory() -> crate::Factory<dyn ShellAiPrefs> {
             services.events.clone(),
             hosts.need::<ShellUiHost>(shell_contract::Batch::A)?,
             hosts.need::<MainWindowHost>(shell_contract::Batch::A)?,
+            services.core.clone(),
+            services.workers.clone(),
         ));
         Ok(port)
     })
@@ -361,6 +420,18 @@ mod tests {
         }
     }
 
+    type TestJob = Box<dyn FnOnce() + Send>;
+    thread_local! { static TEST_JOBS: RefCell<Option<std::sync::mpsc::Receiver<TestJob>>> = const { RefCell::new(None) }; }
+    struct TestThread(std::sync::mpsc::Sender<TestJob>);
+    impl Thread for TestThread {
+        fn post(&self, job: TestJob) { self.0.send(job).expect("test core alive"); }
+        fn is_current(&self) -> bool { false }
+    }
+    struct TestWorkers;
+    impl Workers for TestWorkers {
+        fn spawn(&self, job: TestJob) { std::thread::spawn(job); }
+    }
+
     struct Rig {
         dir: PathBuf,
         log: Arc<Log>,
@@ -374,11 +445,15 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let log = Arc::new(Log::default());
         let ui = Arc::new(Ui(Mutex::new(0)));
+        let (jobs, receiver) = std::sync::mpsc::channel();
+        TEST_JOBS.with(|slot| *slot.borrow_mut() = Some(receiver));
         let port = ShellAiPrefsPort::new(
             Arc::new(Dir(dir.clone())),
             log.clone(),
             ui.clone(),
             Arc::new(Main(main)),
+            Arc::new(TestThread(jobs)),
+            Arc::new(TestWorkers),
         );
         Rig { dir, log, ui, port }
     }
@@ -392,14 +467,15 @@ mod tests {
             },
             request: None,
             cancel: CancelToken::default(),
+            native: None,
         };
-        let out = Arc::new(Mutex::new(None));
-        let slot = out.clone();
-        f(
-            &cx,
-            Responder::new(move |r| *slot.lock().unwrap() = Some(r)),
-        );
-        out.lock().unwrap().take().expect("answered")
+        let (send, receive) = std::sync::mpsc::channel();
+        f(&cx, Responder::new(move |result| { let _ = send.send(result); }));
+        loop {
+            if let Ok(result) = receive.try_recv() { return result; }
+            let job = TEST_JOBS.with(|slot| slot.borrow().as_ref().expect("test core").recv_timeout(std::time::Duration::from_secs(5)).expect("core job"));
+            job();
+        }
     }
 
     fn obj(entries: &[(&str, IpcValue)]) -> IpcValue {
@@ -454,6 +530,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn concurrent_patches_merge_in_submission_order() {
+        let r = rig("ordered", None);
+        let (second_send, second_receive) = std::sync::mpsc::channel();
+        let first = call(|cx, reply| {
+            r.port.app_set_ai_panel_prefs(cx, vec![obj(&[("side", IpcValue::String("right".into()))])], reply);
+            r.port.home_set_ai_panel_prefs(cx, vec![obj(&[("spellcheck", IpcValue::Bool(false))])],
+                Responder::new(move |result| { let _ = second_send.send(result); }));
+        });
+        assert_eq!(first, Ok(prefs("right", "default", 14.0, true)));
+        let second = loop {
+            if let Ok(value) = second_receive.try_recv() { break value; }
+            let job = TEST_JOBS.with(|slot| slot.borrow().as_ref().expect("test core")
+                .recv_timeout(std::time::Duration::from_secs(5)).expect("core job"));
+            job();
+        };
+        assert_eq!(second, Ok(prefs("right", "default", 14.0, false)));
+        let file = settings(&r.dir);
+        assert_eq!(file["aiPanelSide"], "right");
+        assert_eq!(file["aiPanelSpellcheck"], false);
+    }
+
+
+    #[test]
+    fn failed_write_does_not_publish_or_advance_cache() {
+        let r = rig("failed-write", None);
+        std::fs::create_dir(r.dir.join("app-settings.json")).unwrap();
+        let result = call(|cx, reply| r.port.app_set_ai_panel_prefs(
+            cx, vec![obj(&[("side", IpcValue::String("right".into()))])], reply));
+        assert!(result.is_err());
+        assert!(r.log.0.lock().unwrap().is_empty());
+        std::fs::remove_dir(r.dir.join("app-settings.json")).unwrap();
+        assert_eq!(call(|cx, reply| r.port.app_get_ai_panel_prefs(cx, vec![], reply)),
+            Ok(prefs("left", "default", 14.0, true)));
+    }
     #[test]
     fn an_unchanged_patch_writes_and_sends_nothing() {
         let r = rig("same", None);

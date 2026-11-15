@@ -11,6 +11,12 @@
 //! continuation keyed by view, emits the request, and the renderer's answer
 //! (or a timer as the TypeScript's `setTimeout`) runs it on the core thread.
 
+mod owned;
+mod headless;
+mod recovery_open;
+pub(crate) use headless::HeadlessPublication;
+pub(crate) use owned::{OwnedSave, RecoveryRenameScope, NativeRenameScope, SaveAuthority};
+pub(crate) mod owned_write;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -34,7 +40,7 @@ use main_core::packages::electron_utils::save_conflict::{
 use shell_contract::editors::{SaveMode, Then};
 use shell_contract::hosts::{ContentsHost, DialogsHost};
 use shell_contract::ipc::{RegisterError, Target};
-use shell_contract::runtime::Services;
+use shell_contract::runtime::{RendererGeneration, Services};
 use shell_contract::{Batch, IpcError, IpcValue, ViewId, WindowId};
 
 use crate::kit::{self, Entry, IntoIpc, Timer, field, obj};
@@ -66,6 +72,7 @@ pub(crate) struct DocChannels {
     pub recovery_flush_request: &'static str,
     pub recovery_open: &'static str,
     pub recovery_write: &'static str,
+    pub recovery_applied: &'static str,
     pub consume_headless_export: &'static str,
     pub headless_export_done: &'static str,
 }
@@ -86,13 +93,19 @@ pub(crate) struct DocHooks {
     pub discard_pending_assets: fn(&str) -> Vec<String>,
     /// `renameOwnedAssetDocument(oldPath, newPath)`
     pub rename_assets: fn(&str, &str) -> Result<(), String>,
+    /// Keep the native protocol's grant synchronized with this view's paths.
+    pub asset_paths: Box<dyn Fn(ViewId, bool, Option<&str>, Option<&str>) -> Result<(), String>>,
+    pub asset_paths_owned: Box<dyn Fn(&OwnedSave, bool, Option<&str>, Option<&str>) -> Result<(),String>>,
+    pub native_save_asset_paths: Arc<dyn Fn(&shell_contract::ipc::NativeRequestOwner,bool,Option<&str>,Option<&str>)->Result<super::RecoveryAssetStage,String>+Send+Sync>,
+    pub saved_asset_paths: Arc<dyn Fn(&shell_contract::ipc::NativeRequestOwner,Option<&str>,Option<&str>)->Result<super::SavedAssetStage,String>+Send+Sync>,
+    pub recovery_asset_paths: Box<dyn Fn(&shell_contract::ipc::RecoveryOpenTarget, bool, Option<&str>, Option<&str>) -> Result<Box<dyn FnMut() -> Result<(), String> + Send>, String>>,
+    pub rename_recovery_asset_paths: Arc<dyn Fn(&RecoveryRenameScope, bool, Option<&str>, Option<&str>) -> Result<super::RecoveryAssetStage, String> + Send + Sync>,
     /// html: the view presents another view's preview; its export requests
     /// are dropped and a save request is answered `true` at once
     pub presenting: Box<dyn Fn(ViewId) -> bool>,
 }
 
 /// One view's document (the `*ByWc` maps of the TypeScript, one entry)
-#[derive(Default)]
 struct DocView {
     /// the view was made for this editor (`grantAndTrack`)
     tracked: bool,
@@ -101,6 +114,13 @@ struct DocView {
     save: Option<String>,
     dirty: bool,
     disk: HashMap<String, SaveDiskState>,
+    lease: RendererGeneration,
+}
+
+impl Default for DocView {
+    fn default() -> Self {
+        Self { tracked:false,open:None,allowed:HashSet::new(),save:None,dirty:false,disk:HashMap::new(),lease:RendererGeneration::new() }
+    }
 }
 
 type Waiter = Box<dyn FnOnce(bool)>;
@@ -125,9 +145,11 @@ pub(crate) struct TextDocs {
     views: RefCell<HashMap<ViewId, DocView>>,
     close_waiters: RefCell<HashMap<ViewId, Waiter>>,
     save_waiters: RefCell<HashMap<ViewId, Waiter>>,
+    owned_saves: RefCell<HashMap<ViewId, OwnedSave>>,
     reads: RefCell<HashMap<ViewId, Reading>>,
     headless_targets: RefCell<HashMap<ViewId, IpcValue>>,
     headless_waiters: RefCell<HashMap<ViewId, (HeadlessSettle, Timer)>>,
+    headless_authority: RefCell<HashMap<ViewId, (shell_contract::ipc::NativeInvocationTarget, shell_contract::runtime::CancelToken)>>,
     /// the app's own cleanups, run first when a view is destroyed
     cleanups: RefCell<Vec<ViewHook>>,
     /// keeps the `destroyed` listener alive as long as this state
@@ -252,9 +274,11 @@ impl TextDocs {
                 views: RefCell::default(),
                 close_waiters: RefCell::default(),
                 save_waiters: RefCell::default(),
+                owned_saves: RefCell::default(),
                 reads: RefCell::default(),
                 headless_targets: RefCell::default(),
                 headless_waiters: RefCell::default(),
+                headless_authority: RefCell::default(),
                 cleanups: RefCell::default(),
                 destroyed_hook: RefCell::default(),
                 memory,
@@ -403,7 +427,27 @@ impl TextDocs {
     }
 
     fn with_view<R>(&self, view: ViewId, f: impl FnOnce(&mut DocView) -> R) -> R {
-        f(self.views.borrow_mut().entry(view).or_default())
+        let (result, changed, revoked) = {
+            let mut views = self.views.borrow_mut();
+            let state = views.entry(view).or_default();
+            let before = (state.tracked, state.open.clone(), state.save.clone());
+            let result = f(state);
+            let changed = (before != (state.tracked, state.open.clone(), state.save.clone()))
+                .then(|| (state.tracked, state.open.clone(), state.save.clone()));
+            let revoked = changed.as_ref().map(|_| {
+                let previous = std::mem::replace(&mut state.lease, RendererGeneration::new());
+                previous.revoke_deferred()
+            });
+            (result, changed, revoked)
+        };
+        if let Some(revoked) = revoked { revoked.cancel(); }
+        if changed.is_some(){if let Some(request)=self.owned_saves.borrow().get(&view){request.cancel().cancel();}}
+        if let Some((tracked, open, save)) = changed
+            && let Err(error) = (self.hooks.asset_paths)(view, tracked, open.as_deref(), save.as_deref())
+        {
+            eprintln!("[{}] could not update document asset grant: {error}", self.ch.app);
+        }
+        result
     }
 
     fn read_view<R>(&self, view: ViewId, f: impl FnOnce(&DocView) -> R) -> Option<R> {
@@ -438,7 +482,12 @@ impl TextDocs {
         // before the dirty flag goes: a clean close drops the copy, an unsaved or crashed one keeps it
         self.recovery.forget(view);
         let gone = self.views.borrow_mut().remove(&view);
-        drop(gone);
+        if let Some(state) = &gone { state.lease.revoke(); }
+        if gone.is_some()
+            && let Err(error) = (self.hooks.asset_paths)(view, false, None, None)
+        {
+            eprintln!("[{}] could not revoke document asset grant: {error}", self.ch.app);
+        }
         let close = self.close_waiters.borrow_mut().remove(&view);
         if let Some(waiter) = close {
             waiter(false)
@@ -552,29 +601,7 @@ impl TextDocs {
         if !self.is_dirty(view) || self.is_destroyed(view) {
             return then(Ok(true));
         }
-        let lang = self.lang();
-        let options = MessageBoxOptions {
-            kind: "warning",
-            title: None,
-            message: tr(
-                &lang,
-                "This document has unsaved changes.",
-                "이 문서에 저장하지 않은 변경 사항이 있습니다.",
-            ),
-            detail: Some(tr(
-                &lang,
-                "Do you want to save them before closing?",
-                "닫기 전에 저장하시겠습니까?",
-            )),
-            buttons: vec![
-                tr(&lang, "Save", "저장"),
-                tr(&lang, "Don't Save", "저장 안 함"),
-                tr(&lang, "Cancel", "취소"),
-            ],
-            default_id: 0,
-            cancel_id: Some(2),
-            no_link: Some(true),
-        };
+        let options=self.close_options();
         let response = self
             .dialogs
             .message(parent, &message_box(&options))
@@ -895,6 +922,7 @@ impl TextDocs {
             return;
         };
         kit::clear(timer);
+        if let Some((_, pending)) = self.headless_authority.borrow_mut().remove(&view) { pending.cancel(); }
         self.headless_targets.borrow_mut().remove(&view);
         then(if ok {
             Ok(())
@@ -963,6 +991,7 @@ impl TextDocs {
         }));
         let d = Rc::clone(self);
         out.push(kit::send(ch.close_save_result, move |cx, args| {
+            if d.handle_owned_close_result(cx.sender.view,cx.native.as_ref(),args.bool(0)==Some(true)){return Ok(())}
             let waiter = d.close_waiters.borrow_mut().remove(&cx.sender.view);
             if let Some(waiter) = waiter {
                 waiter(args.bool(0) == Some(true))
@@ -991,6 +1020,7 @@ impl TextDocs {
         // save() (busy, still loading); the save handler resolves the normal path
         let d = Rc::clone(self);
         out.push(kit::send(ch.save_request_ack, move |cx, args| {
+            if d.handle_owned_save_ack(cx,args.bool(0)==Some(true)){return Ok(())}
             let waiter = d.save_waiters.borrow_mut().remove(&cx.sender.view);
             if let Some(waiter) = waiter {
                 waiter(args.bool(0) == Some(true))
@@ -999,7 +1029,8 @@ impl TextDocs {
         }));
         let d = Rc::clone(self);
         out.push(kit::invoke(ch.consume_headless_export, move |cx, _| {
-            let target = d.headless_targets.borrow_mut().remove(&cx.sender.view);
+            let mut target = None;
+            d.admit_headless_message(&cx, || { target = d.headless_targets.borrow_mut().remove(&cx.sender.view); Ok(()) })?;
             Ok(target.unwrap_or(IpcValue::Null))
         }));
         let d = Rc::clone(self);
@@ -1010,10 +1041,11 @@ impl TextDocs {
                 _ => None,
             };
             let ok = matches!(field(state, "ok"), IpcValue::Bool(true));
+            d.admit_headless_message(&cx, || Ok(()))?;
             d.settle_headless(cx.sender.view, ok, error);
             Ok(())
         }));
-        out.extend(self.recovery.entries(ch.recovery_open, ch.recovery_write));
+        out.extend(self.recovery.entries(ch.recovery_open, ch.recovery_write, ch.recovery_applied));
         out
     }
 }
@@ -1058,10 +1090,16 @@ pub(crate) fn file_name_base(name: &str) -> String {
 /// Implements [`shell_contract::DocumentEditors`] for an app's editors
 /// struct that holds its [`TextDocs`] in a field named `docs`
 macro_rules! text_document_editors {
-    ($editors:ty) => {
+    ($editors:ty, $surface:expr) => {
         impl shell_contract::DocumentEditors for $editors {
+            fn saved_surface(&self) -> shell_contract::Surface {
+                $surface
+            }
             fn owns(&self, view: shell_contract::ViewId) -> bool {
                 self.docs.owns(view)
+            }
+            fn capture_document_owner(&self,view:shell_contract::ViewId,native:shell_contract::ipc::NativeRequestOwner)->Result<shell_contract::ipc::NativeRequestOwner,shell_contract::IpcError>{
+                self.docs.capture_document_owner(view,native)
             }
             fn request_save(
                 &self,
@@ -1070,6 +1108,15 @@ macro_rules! text_document_editors {
                 then: shell_contract::editors::Then<bool>,
             ) {
                 self.docs.request_save(view, mode, then)
+            }
+            fn request_save_owned(&self, view: shell_contract::ViewId, mode: shell_contract::SaveMode, origin: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, then: shell_contract::editors::Then<bool>) {
+                self.docs.request_save_owned(view, mode, origin, cancel, then)
+            }
+            fn request_save_native(&self,view:shell_contract::ViewId,mode:shell_contract::SaveMode,binding:shell_contract::ipc::NativeExistingDocumentBinding,cancel:shell_contract::runtime::CancelToken,pending:shell_contract::runtime::CancelToken,then:shell_contract::editors::Then<bool>){
+                self.docs.request_save_native(view,mode,binding,cancel,pending,then)
+            }
+            fn request_close_owned(&self,view:shell_contract::ViewId,parent:Option<shell_contract::WindowId>,origin:shell_contract::ipc::NativeRequestOwner,cancel:shell_contract::runtime::CancelToken,then:shell_contract::editors::Then<bool>){
+                self.docs.request_close_owned(view,parent,origin,cancel,then)
             }
             fn request_close(
                 &self,
@@ -1094,6 +1141,12 @@ macro_rules! text_document_editors {
             ) {
                 self.docs.save_to_path(view, path, then)
             }
+            fn save_to_path_owned(&self, view: shell_contract::ViewId, path: std::path::PathBuf, origin: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, then: shell_contract::editors::Then<()>) {
+                self.docs.save_to_path_owned(view, path, origin, cancel, then)
+            }
+            fn save_to_path_native(&self,view:shell_contract::ViewId,path:std::path::PathBuf,binding:shell_contract::ipc::NativeExistingDocumentBinding,cancel:shell_contract::runtime::CancelToken,pending:shell_contract::runtime::CancelToken,then:shell_contract::editors::Then<()>){
+                self.docs.save_to_path_native(view,path,binding,cancel,pending,then)
+            }
             fn file_renamed(
                 &self,
                 view: shell_contract::ViewId,
@@ -1102,11 +1155,55 @@ macro_rules! text_document_editors {
             ) {
                 self.docs.file_renamed(view, old_path, new_path)
             }
+            fn file_renamed_owned(&self, view:shell_contract::ViewId, old_path:&std::path::Path, new_path:&std::path::Path, origin:&shell_contract::ipc::NativeRequestOwner, destination:&shell_contract::ipc::NativeRequestOwner, cancel:&shell_contract::runtime::CancelToken, pending:&shell_contract::runtime::CancelToken, then:shell_contract::editors::Then<()>) {
+                self.docs.file_renamed_owned(view,old_path,new_path,origin,destination,cancel,pending,then)
+            }
+            fn file_renamed_many_owned_extra(&self,view:shell_contract::ViewId,old_path:&std::path::Path,new_path:&std::path::Path,origin:&shell_contract::ipc::NativeRequestOwner,destination:&shell_contract::ipc::NativeRequestOwner,participants:&[shell_contract::ipc::NativeRequestOwner],cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,additional:&[shell_contract::runtime::CancelToken],then:shell_contract::editors::Then<()>){
+                self.docs.file_renamed_many_owned_extra(view,old_path,new_path,origin,destination,participants,cancel,pending,additional,then)
+            }
+            fn file_renamed_existing_document(&self,view:shell_contract::ViewId,old_path:&std::path::Path,new_path:&std::path::Path,authority:&shell_contract::ipc::NativeSaveRevisionAuthority,expected_path:&std::path::Path,destination:&shell_contract::ipc::NativeRequestOwner,participants:&[shell_contract::ipc::NativeRequestOwner],cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,additional:&[shell_contract::runtime::CancelToken],then:shell_contract::editors::Then<Option<shell_contract::ipc::NativeSaveRevisionReceipt>>){
+                self.docs.file_renamed_existing_document(view,old_path,new_path,authority,expected_path,destination,participants,cancel,pending,additional,Box::new(move|result|then(result.map(|()|None))))
+            }
+            fn file_renamed_recovery(&self,view:shell_contract::ViewId,old_path:&std::path::Path,new_path:&std::path::Path,receipt:&shell_contract::ipc::RecoverySeedReceipt,receiver:&shell_contract::ipc::NativeRequestOwner,destination:&shell_contract::ipc::NativeRequestOwner,participants:&[shell_contract::ipc::NativeRequestOwner],cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,then:shell_contract::editors::Then<()>){
+                self.docs.file_renamed_recovery(view,old_path,new_path,receipt,receiver,destination,participants,cancel,pending,then)
+            }
             fn export_request(&self, view: shell_contract::ViewId, format: &str) {
                 self.docs.export_request(view, format)
             }
             fn document_path(&self, view: shell_contract::ViewId) -> Option<std::path::PathBuf> {
                 self.docs.save_path(view).map(Into::into)
+            }
+        }
+
+        impl main_core::packages::electron_utils::recovery_contract::RecoveryEditorContract<shell_contract::ViewId,shell_contract::ipc::RecoveryOpenTarget> for $editors {
+            fn kind(&self) -> &str { self.docs.recovery().kind() }
+
+            fn write_copies_now(&self, done: Box<dyn FnOnce(Result<(), main_core::shell::renderer_disposal::Failure>)>) {
+                self.docs.recovery().write_copies_now(done);
+            }
+
+            fn open_file_with_decision(
+                &self,
+                view: &shell_contract::ViewId,
+                request: &main_core::packages::electron_utils::recovery_contract::RecoveryOpenFileRequest,
+                authority: &shell_contract::ipc::RecoveryOpenTarget,
+                done: main_core::packages::electron_utils::recovery_contract::RecoveryOpenDone,
+            ) {
+                self.docs.open_recovery_file(*view, request, authority, done);
+            }
+
+            fn open_untitled_copy(
+                &self,
+                view: &shell_contract::ViewId,
+                request: &main_core::packages::electron_utils::recovery_contract::RecoveryOpenUntitledRequest,
+                authority: &shell_contract::ipc::RecoveryOpenTarget,
+                done: main_core::packages::electron_utils::recovery_contract::RecoveryOpenDone,
+            ) {
+                self.docs.open_recovery_untitled(*view, request, authority, done);
+            }
+
+            fn is_unprotectable(&self, view: &shell_contract::ViewId) -> bool {
+                self.docs.recovery().is_unprotectable(*view)
             }
         }
 
@@ -1133,6 +1230,12 @@ macro_rules! text_document_editors {
                 self.docs.renderer_gone(view, reason)
             }
 
+            pub fn fail_headless_export(&self, view: shell_contract::ViewId, error: String) -> bool {
+                if !self.docs.headless_waiters.borrow().contains_key(&view) { return false; }
+                self.docs.settle_headless(view, false, Some(error));
+                true
+            }
+
             /// `<app>RecoveryIdentity(webContentsId)`
             pub fn recovery_identity(
                 &self,
@@ -1156,27 +1259,10 @@ macro_rules! text_document_editors {
 
             /// The recovery contract's `writeCopiesNow`: `done` runs when
             /// every dirty view answered or timed out
-            pub fn write_copies_now(&self, done: Box<dyn FnOnce()>) {
+            pub fn write_copies_now(&self, done: Box<dyn FnOnce(Result<(), main_core::shell::renderer_disposal::Failure>)>) {
                 self.docs.recovery().write_copies_now(done)
             }
 
-            /// The recovery contract's `openFileWithDecision`
-            pub fn open_file_with_decision(
-                &self,
-                view: shell_contract::ViewId,
-                request: &main_core::packages::electron_utils::recovery_contract::RecoveryOpenFileRequest,
-            ) {
-                self.docs.recovery().open_file_with_decision(view, request)
-            }
-
-            /// The recovery contract's `openUntitledCopy`
-            pub fn open_untitled_copy(
-                &self,
-                view: shell_contract::ViewId,
-                request: &main_core::packages::electron_utils::recovery_contract::RecoveryOpenUntitledRequest,
-            ) {
-                self.docs.recovery().open_untitled_copy(view, request)
-            }
 
             /// The recovery contract's `isUnprotectable`
             pub fn is_unprotectable(&self, view: shell_contract::ViewId) -> bool {
@@ -1363,7 +1449,7 @@ pub(crate) fn probe_trigger(
         "is-dirty" => then(done(docs.is_dirty(view).into_ipc())),
         "write-copies-now" => docs
             .recovery
-            .write_copies_now(move || then(done(IpcValue::Undefined))),
+            .write_copies_now(move |result| then(result.map(|()| IpcValue::Undefined).map_err(|error| crate::kit::error(error.0)))),
         "renderer-gone" => {
             docs.renderer_gone(view, arg(0).unwrap_or_default());
             then(done(IpcValue::Undefined))

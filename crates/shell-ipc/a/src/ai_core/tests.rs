@@ -121,6 +121,8 @@ struct TestViews {
     gone: Mutex<Vec<ViewId>>,
     cancels: Mutex<HashMap<u32, CancelToken>>,
     listeners: Mutex<Vec<ViewListener>>,
+    generations: Mutex<HashMap<ViewId, shell_contract::runtime::RendererGeneration>>,
+    replacements: Mutex<Vec<Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>>>,
 }
 
 impl TestViews {
@@ -135,6 +137,7 @@ impl TestViews {
 
     fn destroy(&self, view: u32) {
         self.gone.lock().unwrap().push(ViewId(view));
+        if let Some(generation) = self.generations.lock().unwrap().remove(&ViewId(view)) { generation.revoke(); }
         self.cancel_of(view).cancel();
         for listener in self.listeners.lock().unwrap().iter() {
             listener(ViewId(view));
@@ -155,6 +158,13 @@ impl Views for TestViews {
     }
     fn on_destroyed(&self, listener: Box<dyn Fn(ViewId) + Send + Sync>) {
         self.listeners.lock().unwrap().push(listener);
+    }
+    fn renderer_generation(&self, view: ViewId) -> Option<shell_contract::runtime::RendererGeneration> {
+        if self.gone.lock().unwrap().contains(&view) { return None; }
+        Some(self.generations.lock().unwrap().entry(view).or_insert_with(shell_contract::runtime::RendererGeneration::new).clone())
+    }
+    fn on_renderer_replaced(&self, listener: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>) {
+        self.replacements.lock().unwrap().push(listener);
     }
 }
 
@@ -350,7 +360,7 @@ fn rig(name: &str, settings: Option<Value>, net: Value) -> Rig {
     });
     let log: Log = Arc::default();
     let views = Arc::new(TestViews::default());
-    let services = Services {
+    let services = shell_contract::hosts::synthetic::SyntheticOwnedEffects::install(Services {
         ui: core.clone(),
         core,
         workers: Arc::new(Threads),
@@ -358,7 +368,7 @@ fn rig(name: &str, settings: Option<Value>, net: Value) -> Rig {
         views: views.clone(),
         paths: Arc::new(Dir(dir.clone())),
         hosts: Arc::new(Hosts::default()),
-    };
+    });
     let net_log: crate::runtime::testing::Log = Arc::default();
     let test_net = Arc::new(TestNet {
         inner: FakeNet::new(&net, Some(net_log.clone())),
@@ -371,7 +381,7 @@ fn rig(name: &str, settings: Option<Value>, net: Value) -> Rig {
     let codec: Codec = Arc::new(ReversingCodec);
     let handle: AiCoreHostHandle = host.clone();
     let port = AiCorePort::new(&services, &provided, handle.clone(), codec.clone(), driver);
-    let pending = Arc::new(PendingAiDocs::default());
+    let pending = Arc::new(PendingAiDocs::synthetic());
     let app = AppAiPort {
         files: Files::new(
             &Dir(dir.clone()),
@@ -381,6 +391,7 @@ fn rig(name: &str, settings: Option<Value>, net: Value) -> Rig {
         ),
         host: handle,
         pending: pending.clone(),
+        seed_effects: None,
     };
     Rig {
         dir,
@@ -407,6 +418,7 @@ impl Rig {
             },
             request: None,
             cancel: self.views.cancel_of(view),
+            native: None,
         }
     }
 

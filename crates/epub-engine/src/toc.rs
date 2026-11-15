@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use crate::package::{RawEntry, lower_is, nav_toc_entries, ncx_entries, title_of, walk};
 use crate::primitives::{DecodedText, file_name_of};
 use crate::types::{EpubManifestItem, EpubSpine, EpubToc, EpubTocEntry};
-use crate::xml::{XmlElement, parse_html, parse_xml};
+use crate::xml::{HostCall, XmlElement, parse_html_with_host, parse_xml};
 
 const NCX_MEDIA_TYPE: &str = "application/x-dtbncx+xml";
 
@@ -25,19 +25,19 @@ pub struct TocSources<'a> {
 
 /// `parseLenient`: parses as XML; markup only an HTML parser accepts is read
 /// the way a browser would. `None` is what `readTree` makes of a throw.
-fn parse_lenient(text: &str) -> Option<XmlElement> {
-    parse_xml(text).or_else(|_| parse_html(text)).ok()
+fn parse_lenient(text: &str, host: &HostCall<'_>) -> Option<XmlElement> {
+    parse_xml(text).or_else(|_| parse_html_with_host(text, host)).ok()
 }
 
 /// `readTree`
-fn read_tree(sources: &TocSources, path: Option<&str>) -> Result<Option<XmlElement>, String> {
+fn read_tree(sources: &TocSources, path: Option<&str>, host: &HostCall<'_>) -> Result<Option<XmlElement>, String> {
     let Some(name) = path.and_then(|path| (sources.find_entry)(path)) else {
         return Ok(None);
     };
     let Some(decoded) = (sources.read_text)(&name)? else {
         return Ok(None);
     };
-    Ok(parse_lenient(&decoded.text))
+    Ok(parse_lenient(&decoded.text, host))
 }
 
 /// `firstHeading`: the first heading's text in a chapter, or `""` when it has none.
@@ -59,6 +59,11 @@ fn first_heading(root: &XmlElement) -> String {
 
 /// `buildToc`
 pub fn build_toc(sources: &TocSources) -> Result<EpubToc, String> {
+    build_toc_with_host(sources, &seu_host::call)
+}
+
+/// Builds navigation with only the supplied request's parser callback.
+pub fn build_toc_with_host(sources: &TocSources, host: &HostCall<'_>) -> Result<EpubToc, String> {
     let mut spine_index: HashMap<&str, usize> = HashMap::new();
     for item in &sources.spine.items {
         spine_index.entry(item.path.as_str()).or_insert(item.index);
@@ -90,7 +95,7 @@ pub fn build_toc(sources: &TocSources) -> Result<EpubToc, String> {
         .iter()
         .find(|m| m.properties.iter().any(|p| p == "nav") && m.path.is_some())
     {
-        let entries = match read_tree(sources, nav.path.as_deref())? {
+        let entries = match read_tree(sources, nav.path.as_deref(), host)? {
             Some(root) => nav_toc_entries(&root, nav.path.as_deref().unwrap_or_default())
                 .map_err(|error| error.message)?,
             None => Vec::new(),
@@ -113,7 +118,7 @@ pub fn build_toc(sources: &TocSources) -> Result<EpubToc, String> {
             .find(|m| m.media_type == NCX_MEDIA_TYPE && m.path.is_some())
     });
     if let Some(ncx) = ncx {
-        let entries = match read_tree(sources, ncx.path.as_deref())? {
+        let entries = match read_tree(sources, ncx.path.as_deref(), host)? {
             Some(root) => ncx_entries(&root, ncx.path.as_deref().unwrap_or_default())
                 .map_err(|error| error.message)?,
             None => Vec::new(),
@@ -125,7 +130,7 @@ pub fn build_toc(sources: &TocSources) -> Result<EpubToc, String> {
 
     let mut from_spine = Vec::new();
     for item in &sources.spine.items {
-        let heading = match read_tree(sources, Some(&item.path))? {
+        let heading = match read_tree(sources, Some(&item.path), host)? {
             Some(root) => first_heading(&root),
             None => String::new(),
         };

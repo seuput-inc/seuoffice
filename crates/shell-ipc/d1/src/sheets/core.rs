@@ -45,6 +45,51 @@ impl SweepTimers for NoTimers {
     fn clear_interval(&mut self) {}
 }
 
+#[derive(Default)]
+pub(super) struct HeadlessWork {
+    state: Mutex<HeadlessWorkState>,
+}
+
+#[derive(Default)]
+struct HeadlessWorkState {
+    count: usize,
+    closing: bool,
+    drained: Option<Box<dyn FnOnce() + Send>>,
+}
+
+pub(super) struct HeadlessWorkGuard(Arc<HeadlessWork>);
+
+impl HeadlessWork {
+    pub fn begin(self: &Arc<Self>) -> Result<HeadlessWorkGuard, IpcError> {
+        let mut state = self.state.lock().unwrap();
+        if state.closing { return Err(thrown("The headless workbook is closing")); }
+        state.count = state.count.checked_add(1).ok_or_else(|| thrown("Too many headless workbook operations"))?;
+        Ok(HeadlessWorkGuard(self.clone()))
+    }
+
+    pub fn drain(&self, done: Box<dyn FnOnce() + Send>) -> Result<(), String> {
+        let done = {
+            let mut state = self.state.lock().unwrap();
+            if state.drained.is_some() { return Err("The headless workbook is already closing".into()); }
+            state.closing = true;
+            if state.count == 0 { Some(done) } else { state.drained = Some(done); None }
+        };
+        if let Some(done) = done { done(); }
+        Ok(())
+    }
+}
+
+impl Drop for HeadlessWorkGuard {
+    fn drop(&mut self) {
+        let done = {
+            let mut state = self.0.state.lock().unwrap();
+            state.count -= 1;
+            if state.count == 0 { state.drained.take() } else { None }
+        };
+        if let Some(done) = done { done(); }
+    }
+}
+
 /// `SheetsTabSession`
 pub struct TabState {
     /// sessions by id, in the order they opened (a `Map`)
@@ -52,6 +97,18 @@ pub struct TabState {
     pub save_transfers: SaveEditsTransferStore<NoTimers>,
     /// the file this tab shows (merge sources excluded); `null` until the first open lands
     pub current_path: Option<String>,
+    pub native_owner: Option<shell_contract::ipc::NativeRequestOwner>,
+    pub document: shell_contract::runtime::RendererGeneration,
+    pub metadata_revision: Option<u64>,
+    pub(super) queue_revision: Rc<()>,
+    pub(super) registration_retired: Rc<std::cell::Cell<bool>>,
+    pub(super) owned_registration: bool,
+    pub(super) browser_owner: Option<shell_contract::ipc::NativeBrowserOwner>,
+    pub(super) browser_closing: bool,
+    pub(super) saved_load: Rc<std::cell::RefCell<Option<SavedLoad>>>,
+    pub headless_target: Option<shell_contract::ipc::NativeInvocationTarget>,
+    pub(super) headless_work: Option<Arc<HeadlessWork>>,
+    pub(super) headless_drain: Option<Box<dyn FnOnce(Result<(), String>)>>,
 }
 
 impl TabState {
@@ -60,6 +117,18 @@ impl TabState {
             sessions: Vec::new(),
             save_transfers: SaveEditsTransferStore::new(NoTimers),
             current_path: None,
+            native_owner: None,
+            document: shell_contract::runtime::RendererGeneration::new(),
+            metadata_revision: Some(0),
+            queue_revision: Rc::new(()),
+            registration_retired: Rc::new(std::cell::Cell::new(false)),
+            owned_registration: false,
+            browser_owner: None,
+            saved_load: Rc::new(std::cell::RefCell::new(None)),
+            browser_closing: false,
+            headless_target: None,
+            headless_work: None,
+            headless_drain: None,
         }
     }
 
@@ -72,6 +141,7 @@ impl TabState {
 
     /// `sessions.set(id, session)`: a key that is there keeps its place
     pub fn set_session(&mut self, id: &str, session: SessionInfo) {
+        self.bump_metadata_revision();
         match self.sessions.iter_mut().find(|(key, _)| key == id) {
             Some(entry) => entry.1 = session,
             None => self.sessions.push((id.to_owned(), session)),
@@ -80,8 +150,44 @@ impl TabState {
 
     pub fn remove_session(&mut self, id: &str) -> Option<SessionInfo> {
         let at = self.sessions.iter().position(|(key, _)| key == id)?;
+        self.bump_metadata_revision();
         Some(self.sessions.remove(at).1)
     }
+
+    pub fn set_current_path(&mut self, path: Option<String>) {
+        self.bump_metadata_revision();
+        self.current_path = path;
+    }
+
+    fn bump_metadata_revision(&mut self) {
+        self.metadata_revision = self.metadata_revision.and_then(|revision| revision.checked_add(1));
+    }
+}
+
+pub(super) struct SavedLoad {
+    pub target: shell_contract::ipc::NativeSavedTarget,
+    pub document: Option<shell_contract::ipc::NativeSavedDocument>,
+    pub completion: Option<shell_contract::editors::Then<shell_contract::editors::SavedDocumentLoadOutcome>>,
+    pub id: String,
+    pub selection: Option<SavedSelection>,
+    pub started: bool,
+    pub subscriptions: Vec<shell_contract::runtime::CancelSubscription>,
+    pub session_id: Option<String>,
+    pub recovery_applied: bool,
+    pub failure: Option<String>,
+}
+
+impl SavedLoad {
+    pub fn new(target: shell_contract::ipc::NativeSavedTarget, id: String) -> Self {
+        Self { target, document: None, completion: None, id, selection: None,
+            started: false, subscriptions: Vec::new(), session_id: None, recovery_applied: false, failure: None }
+    }
+}
+
+pub(super) struct SavedSelection {
+    pub owner: shell_contract::ipc::NativeRequestOwner,
+    pub cancel: shell_contract::runtime::CancelToken,
+    pub reply: shell_contract::ipc::Responder,
 }
 
 /// `TabRecoveryState`
@@ -132,6 +238,131 @@ pub struct CloseWaiter {
     pub resume: Box<dyn FnOnce(bool)>,
 }
 
+#[derive(Clone)]
+pub(super) struct HeadlessPrint {
+    pub document: shell_contract::ipc::NativeInvocationDocument,
+    pub cancel: shell_contract::runtime::CancelToken,
+    pub pending: shell_contract::runtime::CancelToken,
+}
+
+#[derive(Clone)]
+pub(super) struct GeneratedTransition {
+    inner: Arc<GeneratedTransitionInner>,
+}
+
+struct GeneratedTransitionInner {
+    retired_origin: std::sync::atomic::AtomicBool,
+    receipt: Mutex<Option<shell_contract::hosts::CommittedGeneratedPath>>,
+    cancellation: Mutex<Option<shell_contract::ipc::AcceptedOwnerLosses>>,
+    subscriptions: Mutex<Vec<shell_contract::runtime::CancelSubscription>>,
+    loss: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl GeneratedTransition {
+    pub fn new(loss: impl Fn() + Send + Sync + 'static) -> Self {
+        Self { inner: Arc::new(GeneratedTransitionInner {
+            retired_origin: std::sync::atomic::AtomicBool::new(false),
+            receipt: Mutex::new(None), cancellation: Mutex::new(None), subscriptions: Mutex::new(Vec::new()),
+            loss: Arc::new(loss),
+        }) }
+    }
+
+    pub fn accept(&self, marker: shell_contract::hosts::AcceptedPdfReload, origin: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken) {
+        if !marker.retires(origin) { return; }
+        let losses = match origin.accepted_reload_losses(&marker, cancel, pending) {
+            Ok(losses) => losses,
+            Err(_) => { (self.inner.loss)(); return; }
+        };
+        let mut subscriptions = self.inner.subscriptions.lock().unwrap_or_else(|error| error.into_inner());
+        for token in losses.tokens() {
+            let loss = self.inner.loss.clone();
+            subscriptions.push(token.on_cancel(move || loss()));
+        }
+        *self.inner.cancellation.lock().unwrap_or_else(|error| error.into_inner()) = Some(losses);
+        self.inner.retired_origin.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn retired_origin(&self) -> bool {
+        self.inner.retired_origin.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn expected_dispatcher_cancel(&self, original: &shell_contract::runtime::CancelToken) -> bool {
+        self.inner.cancellation.lock().unwrap_or_else(|error| error.into_inner())
+            .as_ref().is_some_and(|losses|
+                !losses.cancel().same_token(original) && !losses.cancel().is_cancelled())
+    }
+
+    pub fn store(&self, receipt: shell_contract::hosts::CommittedGeneratedPath) {
+        *self.inner.receipt.lock().unwrap_or_else(|error| error.into_inner()) = Some(receipt);
+    }
+
+    pub fn has_receipt(&self) -> bool {
+        self.inner.receipt.lock().unwrap_or_else(|error| error.into_inner()).is_some()
+    }
+
+    pub fn terminal(&self, effect: &mut dyn FnMut() -> Result<(), String>) -> Result<(), String> {
+        self.inner.receipt.lock().unwrap_or_else(|error| error.into_inner())
+            .as_ref().ok_or_else(|| "The generated document did not finish opening".to_owned())?
+            .with_terminal_commit(effect)
+    }
+}
+
+pub struct OwnedSaveWaiter {
+    pub scope: crate::owned_save::OwnedSave,
+    pub target: Option<String>,
+    pub then: shell_contract::editors::Then<bool>,
+    pub session_id: String,
+    pub in_flight: bool,
+    pub writes: u8,
+    pub export_target: Option<(String, String)>,
+    pub require_write: bool,
+    pub failure: Option<IpcError>,
+    pub subscriptions: Vec<shell_contract::runtime::CancelSubscription>,
+    pub(super) transition: GeneratedTransition,
+}
+
+pub struct OwnedCloseWaiter {
+    pub scope: crate::owned_save::OwnedSave,
+    pub then: shell_contract::editors::Then<bool>,
+    pub subscriptions: Vec<shell_contract::runtime::CancelSubscription>,
+}
+
+pub(super) struct RecoveryOpenWaiter {
+    pub view: ViewId,
+    pub done: main_core::packages::electron_utils::recovery_contract::RecoveryOpenDone,
+    pub subscriptions: Vec<shell_contract::runtime::CancelSubscription>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum QueueOutcome { Pending, Consumed, Retired }
+
+pub struct QueuedWorkbook {
+    pub(super) path: String,
+    pub(super) identity: Rc<std::cell::Cell<QueueOutcome>>,
+}
+
+impl QueuedWorkbook {
+    pub(super) fn new(path: String) -> Self {
+        Self { path, identity: Rc::new(std::cell::Cell::new(QueueOutcome::Pending)) }
+    }
+
+    pub(super) fn consume(self) -> String {
+        self.identity.set(QueueOutcome::Consumed);
+        self.path
+    }
+}
+
+pub(super) struct PendingBlank {
+    pub identity: Rc<std::cell::Cell<QueueOutcome>>,
+    pub target: Option<(ViewId, shell_contract::runtime::RendererGeneration)>,
+}
+
+impl PendingBlank {
+    pub fn new(target: Option<(ViewId, shell_contract::runtime::RendererGeneration)>) -> Self {
+        Self { identity: Rc::new(std::cell::Cell::new(QueueOutcome::Pending)), target }
+    }
+}
+
 /// Every module-level `Map`, `Set` and variable of the TypeScript, per app
 pub struct AppState {
     pub tabs: Vec<(ViewId, TabState)>,
@@ -144,8 +375,10 @@ pub struct AppState {
     pub untitled_workbook_paths: HashSet<String>,
     pub unsaved_new_workbooks: HashMap<String, UnsavedNew>,
     pub mcp_writable: HashMap<ViewId, HashSet<String>>,
-    pub queued_workbooks: HashMap<ViewId, String>,
-    pub pending_new_blank: bool,
+    pub queued_workbooks: HashMap<ViewId, QueuedWorkbook>,
+    pub workbook_nudge_generation: u64,
+    pub(super) pending_new_blank: Option<PendingBlank>,
+    pub(super) blank_revision: Rc<()>,
     pub headless_targets: HashMap<ViewId, String>,
     pub headless_waiters: HashMap<ViewId, Box<dyn FnOnce(HeadlessReport)>>,
     pub pending_edit_counts: HashMap<ViewId, f64>,
@@ -154,11 +387,16 @@ pub struct AppState {
     /// the continuation of a `request_save(SaveAs)` by view: resumed by that
     /// view's next `workbook:save` of mode `save-as`
     pub save_as_waiters: HashMap<ViewId, CloseWaiter>,
+    pub path_save_waiters: HashMap<u64, (ViewId, shell_contract::editors::Then<()>)>,
+    pub owned_saves: HashMap<String, OwnedSaveWaiter>,
+    pub owned_closes: HashMap<u64, OwnedCloseWaiter>,
+    pub(super) recovery_open_waiters: HashMap<String, RecoveryOpenWaiter>,
+    pub(super) generated_publications: HashMap<String, super::save::PendingGeneratedPublication>,
     pub next_token: u64,
     pub shutdown: ShutdownLatch,
     pub tab_recovery: HashMap<ViewId, TabRecovery>,
     pub decided_opens: HashMap<ViewId, (String, RecoveryOpenDecision)>,
-    pub write_now_waiters: HashMap<String, Box<dyn FnOnce()>>,
+    pub write_now_waiters: HashMap<String, (ViewId, Box<dyn FnOnce(Result<(), main_core::shell::renderer_disposal::Failure>)>)>,
     pub attachment_text_cache: Vec<(String, (String, String))>,
     pub pasted_image_seq: u64,
     pub pasted_cleanup_started: bool,
@@ -177,13 +415,20 @@ impl AppState {
             unsaved_new_workbooks: HashMap::new(),
             mcp_writable: HashMap::new(),
             queued_workbooks: HashMap::new(),
-            pending_new_blank: false,
+            workbook_nudge_generation: 0,
+            pending_new_blank: None,
+            blank_revision: Rc::new(()),
             headless_targets: HashMap::new(),
             headless_waiters: HashMap::new(),
             pending_edit_counts: HashMap::new(),
             tracked_edit_senders: HashSet::new(),
             close_waiters: HashMap::new(),
             save_as_waiters: HashMap::new(),
+            path_save_waiters: HashMap::new(),
+            owned_saves: HashMap::new(),
+            owned_closes: HashMap::new(),
+            recovery_open_waiters: HashMap::new(),
+            generated_publications: HashMap::new(),
             next_token: 0,
             shutdown: ShutdownLatch::new(),
             tab_recovery: HashMap::new(),
@@ -207,6 +452,27 @@ impl AppState {
             .iter_mut()
             .find(|(id, _)| *id == view)
             .map(|(_, tab)| tab)
+    }
+
+    pub(super) fn replace_queued_workbook(&mut self, view: ViewId, entry: QueuedWorkbook) -> Option<QueuedWorkbook> {
+        if let Some(tab) = self.tab_mut(view) { tab.queue_revision = Rc::new(()); }
+        self.queued_workbooks.insert(view, entry)
+    }
+    pub(super) fn set_queued_workbook_prepared(&mut self, view: ViewId, entry: Option<QueuedWorkbook>, revision: Rc<()>) -> Option<QueuedWorkbook> {
+        if let Some(tab) = self.tab_mut(view) { tab.queue_revision = revision; }
+        match entry {
+            Some(entry) => self.queued_workbooks.insert(view, entry),
+            None => self.queued_workbooks.remove(&view),
+        }
+    }
+
+
+    pub(super) fn remove_queued_workbook(&mut self, view: ViewId) -> Option<QueuedWorkbook> {
+        let removed = self.queued_workbooks.remove(&view);
+        if removed.is_some() {
+            if let Some(tab) = self.tab_mut(view) { tab.queue_revision = Rc::new(()); }
+        }
+        removed
     }
 
     pub fn recovery_of(&mut self, view: ViewId) -> &mut TabRecovery {
@@ -289,6 +555,15 @@ impl Env {
         self.services.workers.spawn(Box::new(job));
     }
 
+    /// Waits for the asynchronous cross-editor guard. Worker threads only.
+    pub fn assert_file_saved(&self, path: &str) -> Result<(), String> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.shell.assert_file_saved(path.to_owned(), Box::new(move |result| {
+            let _ = tx.send(result);
+        }));
+        rx.recv().unwrap_or_else(|_| Err("The file save check did not complete.".into()))
+    }
+
     pub fn window_of(&self, view: ViewId) -> Option<WindowId> {
         self.services.views.sender_of(view).map(|s| s.window)
     }
@@ -348,6 +623,51 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl Core {
+    pub(super) fn validate_headless_sender(&self, cx: &shell_contract::ipc::CallContext) -> Result<(), IpcError> {
+        let state = self.state.borrow();
+        let Some(target) = state.tab(cx.sender.view).and_then(|tab| tab.headless_target.as_ref()) else {
+            return Ok(());
+        };
+        let expected = target.created();
+        let actual = cx.native.as_ref().and_then(|context| context.renderer());
+        if !expected.is_active() || target.operation().shutdown().is_cancelled()
+            || target.operation().cancel().is_cancelled()
+            || !actual.is_some_and(|actual| actual.same_generation(expected)) {
+            return Err(thrown("The headless workbook renderer was replaced"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn begin_headless_work(&self, cx: &shell_contract::ipc::CallContext) -> Result<Option<HeadlessWorkGuard>, IpcError> {
+        self.validate_headless_sender(cx)?;
+        let state = self.state.borrow();
+        match state.tab(cx.sender.view) {
+            Some(tab) if tab.headless_target.is_some() => tab.headless_work.as_ref()
+                .ok_or_else(|| thrown("The headless workbook work tracker is unavailable"))?.begin().map(Some),
+            _ => Ok(None),
+        }
+    }
+
+    pub(super) fn headless_effect<T>(
+        &self, cx: &shell_contract::ipc::CallContext, effect: impl FnOnce() -> T,
+    ) -> Result<T, IpcError> {
+        let target = self.state.borrow().tab(cx.sender.view).and_then(|tab| tab.headless_target.clone());
+        let Some(target) = target else { return Ok(effect()); };
+        let document = target.registered_document().map_err(thrown)?;
+        let context = cx.native.clone().ok_or_else(|| thrown("The headless sender has no native authority"))?;
+        let sender = shell_contract::ipc::NativeRequestOwner { view: cx.sender.view, context };
+        let effects = self.env.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>()
+            .ok_or_else(|| thrown("Native invocation effects are unavailable"))?;
+        let pending = shell_contract::runtime::CancelToken::default();
+        let mut effect = Some(effect);
+        let mut output = None;
+        effects.with_native_invocation_effect(&document, &sender, &[], &cx.cancel, &pending, &mut || {
+            output = Some(effect.take().ok_or("The headless effect was already admitted")?());
+            Ok(())
+        }).map_err(thrown)?;
+        output.ok_or_else(|| thrown("The headless effect was not admitted"))
+    }
+
     /// `sessionFor`: the tab `register_tab` made for `view`, or the thrown
     /// `Untrusted IPC sender.` when the shell never registered the view
     pub fn require_tab(&self, view: ViewId) -> Result<(), IpcError> {
@@ -371,5 +691,62 @@ impl Core {
 
     pub fn send(&self, view: ViewId, channel: &'static str, args: Vec<IpcValue>) {
         self.env.send(view, channel, args);
+    }
+}
+
+#[cfg(test)]
+mod generated_transition_tests {
+    use super::*;
+    use shell_contract::ipc::{NativeContext, NativeRequestOwner, PdfDocumentLease};
+    use shell_contract::runtime::{CancelToken, RendererGeneration};
+
+    #[test]
+    fn accepted_lineage_without_native_provenance_fails_closed() {
+        let renderer = RendererGeneration::new();
+        let origin = NativeRequestOwner {
+            view: ViewId(7),
+            context: NativeContext::with_owner_loss((), renderer.clone(), renderer.loss_token())
+                .with_pdf_document(PdfDocumentLease::new())
+                .with_pdf_revision(PdfDocumentLease::new()),
+        };
+        let other = NativeRequestOwner {
+            view: ViewId(8),
+            context: NativeContext::with_owner_loss((), renderer.clone(), renderer.loss_token())
+                .with_pdf_document(PdfDocumentLease::new())
+                .with_pdf_revision(PdfDocumentLease::new()),
+        };
+        let unrelated = GeneratedTransition::new(|| {});
+        let other_marker = shell_contract::hosts::AcceptedPdfReload::from_native_admission(
+            other, RendererGeneration::new(), CancelToken::default(), CancelToken::default(),
+            Arc::new(|_| true),
+        );
+        unrelated.accept(other_marker, &origin, &CancelToken::default(), &CancelToken::default());
+        assert!(!unrelated.retired_origin());
+        let browser_loss = CancelToken::default();
+        let reservation_loss = CancelToken::default();
+        let cancelled = CancelToken::default();
+        let notify = cancelled.clone();
+        let transition = GeneratedTransition::new(move || notify.cancel());
+        let marker = shell_contract::hosts::AcceptedPdfReload::from_native_admission(
+            origin.clone(), RendererGeneration::new(), browser_loss.clone(), reservation_loss,
+            Arc::new(|_| true),
+        );
+        transition.accept(marker, &origin, &CancelToken::default(), &CancelToken::default());
+        assert!(!transition.retired_origin());
+        assert!(cancelled.is_cancelled());
+    }
+
+    #[test]
+    fn workbook_metadata_revision_never_reuses_an_overflowed_value() {
+        let mut tab = TabState::new();
+        tab.set_session("one", SessionInfo::default());
+        assert_eq!(tab.metadata_revision, Some(1));
+        tab.set_current_path(Some("one.xlsx".into()));
+        assert_eq!(tab.metadata_revision, Some(2));
+        tab.metadata_revision = Some(u64::MAX);
+        tab.remove_session("one");
+        assert_eq!(tab.metadata_revision, None);
+        tab.set_current_path(None);
+        assert_eq!(tab.metadata_revision, None);
     }
 }

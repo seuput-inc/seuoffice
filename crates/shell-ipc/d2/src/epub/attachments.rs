@@ -409,7 +409,7 @@ impl Epub {
     }
 
     /// `readAttachmentPage(filePath, offset, maxChars)`
-    pub(super) fn read_attachment_page(self: &std::rc::Rc<Self>, args: Args, reply: Responder) {
+    pub(super) fn read_attachment_page(self: &std::rc::Rc<Self>, view: ViewId, args: Args, reply: Responder) {
         let lang = self.lang();
         let fail =
             |error: &str| object(vec![("ok", false.into_ipc()), ("error", error.into_ipc())]);
@@ -430,7 +430,7 @@ impl Epub {
         }
         let offset = js_number(args.get(1));
         let max_chars = js_number(args.get(2));
-        self.attachment_text(path, move |text| {
+        self.attachment_text(view, path, move |text| {
             reply.reply(Ok(match text {
                 Err(error) => fail(&error),
                 Ok(text) => {
@@ -456,23 +456,37 @@ impl Epub {
     /// time and size, else parsed on a worker
     fn attachment_text(
         self: &std::rc::Rc<Self>,
+        view: ViewId,
+        path: String,
+        then: impl FnOnce(Result<String, String>) + 'static,
+    ) {
+        let epub = self.clone();
+        self.shell.open_files(Box::new(move |files| {
+            if epub.services.views.sender_of(view).is_none() {
+                return;
+            }
+            let mut holder = OpenFilesHolder::new();
+            if let Some(files) = files {
+                holder.set_open_files_source(Some(Box::new(move || {
+                    files.clone().map_err(|()| {
+                        main_core::packages::electron_utils::unsaved_files::OpenFilesSourceFailed
+                    })
+                })));
+            }
+            if let Err(message) = assert_file_saved(&holder, &path) {
+                return then(Err(message.to_owned()));
+            }
+            epub.attachment_text_saved(view, path, then);
+        }));
+    }
+
+    fn attachment_text_saved(
+        self: &std::rc::Rc<Self>,
+        view: ViewId,
         path: String,
         then: impl FnOnce(Result<String, String>) + 'static,
     ) {
         let lang = self.lang();
-        // a file open with unsaved changes is not read (before the cache): a
-        // withholding mark only reaches the file on save
-        let mut holder = OpenFilesHolder::new();
-        if let Some(files) = self.shell.open_files() {
-            holder.set_open_files_source(Some(Box::new(move || {
-                files.clone().map_err(|()| {
-                    main_core::packages::electron_utils::unsaved_files::OpenFilesSourceFailed
-                })
-            })));
-        }
-        if let Err(message) = assert_file_saved(&holder, &path) {
-            return then(Err(message.to_owned()));
-        }
         let meta = match fs::metadata(namespaced(&path)) {
             Ok(meta) => meta,
             Err(e) => return then(Err(node_error(&e, "stat", &path).message)),
@@ -505,7 +519,11 @@ impl Epub {
         kit::on_worker(
             &self.services,
             move || engine.parse_file_to_text(&parse_path),
-            move |parsed| match parsed {
+            move |parsed| {
+                if epub.services.views.sender_of(view).is_none() {
+                    return;
+                }
+                match parsed {
                 Err(error) => then(Err(
                     error.unwrap_or_else(|| tm(lang, "errParseFailed").to_owned())
                 )),
@@ -523,6 +541,7 @@ impl Epub {
                         }
                     }
                     then(Ok(text))
+                }
                 }
             },
         );

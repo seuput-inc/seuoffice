@@ -118,7 +118,9 @@ fn messages(error: &ValidationError<'_>) -> Vec<String> {
 fn message(kind: &ValidationErrorKind, error: &ValidationError<'_>) -> String {
     match kind {
         ValidationErrorKind::Required { property } => {
-            let name = property.as_str().map_or_else(|| property.to_string(), str::to_owned);
+            let name = property
+                .as_str()
+                .map_or_else(|| property.to_string(), str::to_owned);
             format!("must have required property '{name}'")
         }
         ValidationErrorKind::Type { kind } => {

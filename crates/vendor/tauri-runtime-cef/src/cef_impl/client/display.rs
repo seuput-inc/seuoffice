@@ -24,6 +24,7 @@ wrap_with_args! {
     context: RuntimeContext<T>,
     document_title_changed_handler: Option<Arc<tauri_runtime::webview::DocumentTitleChangedHandler>>,
     frame_event_handler: Option<Arc<crate::FrameEventHandler>>,
+    view_event_handler: Option<Arc<crate::ViewEventHandler>>,
     console_message_handler: Option<Arc<crate::ConsoleMessageHandler>>,
     frame_navigation_state: crate::FrameNavigationState,
     cursor_handler: Option<Arc<crate::CursorHandler>>,
@@ -126,9 +127,17 @@ wrap_with_args! {
       {
         return;
       }
+      crate::view_event::emit_view_event(
+        &self.view_event_handler,
+        &self.frame_navigation_state,
+        browser.identifier(),
+        false,
+        if fullscreen != 0 { crate::ViewEvent::EnterHtmlFullScreen } else { crate::ViewEvent::LeaveHtmlFullScreen },
+      );
 
       let _ = self.context.sender.send(Message::PageFullscreen {
         webview_id: self.webview_id,
+        browser: self.frame_navigation_state.clone(),
         fullscreen: fullscreen != 0,
       });
       self.context.wake_event_loop();

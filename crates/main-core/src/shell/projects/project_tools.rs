@@ -162,13 +162,13 @@ pub trait IndexStore {
 
     /// `pathsIndexedAsOnDisk(paths)`: the paths whose index row matches the
     /// file as it is on disk now
-    fn paths_indexed_as_on_disk(&mut self, paths: &[String]) -> Vec<String>;
+    fn paths_indexed_as_on_disk(&mut self, paths: &[String]) -> Result<Vec<String>, Thrown>;
 }
 
 /// `ProjectToolsDeps.store`: the home search index, or `None` (`null`) while
 /// it is unavailable; asked on every search
 pub trait ProjectToolsStore {
-    fn store(&mut self) -> Option<&mut dyn IndexStore>;
+    fn store(&mut self) -> Result<Option<&mut dyn IndexStore>, Thrown>;
 }
 
 /// `readKnowledgeFilePage(filePath, offset)` of `knowledge-base`: engine-waiting
@@ -278,6 +278,24 @@ fn cloud_verdicts(paths: &[String], resolve: &mut dyn CloudOnlyResolver) -> Opti
 fn refused(reason: ProjectReadRefusal) -> ProjectReadResult {
     ProjectReadResult::Refused { reason }
 }
+/// A guarded read that may perform its parser work away from the core thread.
+pub enum ProjectReadStep {
+    Done(ProjectReadResult),
+    Read { path: String, offset: f64 },
+}
+
+pub fn finish_project_read(page: Result<KbReadPage, Thrown>) -> ProjectReadResult {
+    match page {
+        Ok(page) => ProjectReadResult::Ok {
+            text: page.text,
+            total_chars: page.total_chars,
+            offset: JsNum(page.offset),
+        },
+        Err(Thrown(message)) if message == UNSAVED_CHANGES_MESSAGE => refused(ProjectReadRefusal::Unsaved),
+        Err(_) => refused(ProjectReadRefusal::Unreadable),
+    }
+}
+
 
 /// the function `visibleTest` returns: the project's "visible to the AI" test
 /// on absolute paths
@@ -482,7 +500,7 @@ impl ProjectFolderTools {
             hits: Vec::new(),
             total: 0,
         };
-        let Some(store) = self.store.store() else {
+        let Some(store) = self.store.store()? else {
             return Ok(empty);
         };
         if query.is_empty() {
@@ -523,7 +541,7 @@ impl ProjectFolderTools {
         let paths: Vec<String> = result.hits.iter().map(|hit| hit.path.clone()).collect();
         // an excerpt is quoted only from a file indexed as it is on disk and
         // not open with unsaved changes
-        let indexed = store.paths_indexed_as_on_disk(&paths);
+        let indexed = store.paths_indexed_as_on_disk(&paths)?;
         let quotable: HashSet<String> =
             without_unsaved_files(open_files, &indexed, |path| path.clone())
                 .into_iter()
@@ -601,6 +619,35 @@ impl ProjectFolderTools {
             count_of_number(offset, 0.0),
         )
     }
+    pub fn prepare_read(
+        &mut self,
+        open_files: &OpenFilesHolder,
+        owner: i64,
+        raw: &JsonValue,
+    ) -> Result<ProjectReadStep, Thrown> {
+        let (project_id, visibility) = self.scoped(owner, raw)?;
+        let given = match field(raw, "relPath") {
+            Some(JsonValue::String(given)) => given.as_str(),
+            _ => "",
+        };
+        let offset = count(field(raw, "offset"), 0.0)?;
+        self.prepare_read_in(open_files, owner, &project_id, &visibility, given, offset)
+    }
+
+    pub fn prepare_read_path(
+        &mut self,
+        open_files: &OpenFilesHolder,
+        owner: i64,
+        project_id: &str,
+        path: &str,
+        offset: f64,
+    ) -> Result<ProjectReadStep, Thrown> {
+        let Some(visibility) = self.visibility_of(project_id)? else {
+            return Ok(ProjectReadStep::Done(refused(ProjectReadRefusal::Outside)));
+        };
+        self.prepare_read_in(open_files, owner, project_id, &visibility, path, count_of_number(offset, 0.0))
+    }
+
 
     /// `judge(visibility, segments)`: why the AI may not see these
     /// folder-relative segments, or `None` when it may
@@ -635,12 +682,27 @@ impl ProjectFolderTools {
         given: &str,
         offset: f64,
     ) -> Result<ProjectReadResult, Thrown> {
+        match self.prepare_read_in(open_files, owner, project_id, visibility, given, offset)? {
+            ProjectReadStep::Done(result) => Ok(result),
+            ProjectReadStep::Read { path, offset } => Ok(finish_project_read(self.pages.read_page(&path, offset))),
+        }
+    }
+
+    fn prepare_read_in(
+        &mut self,
+        open_files: &OpenFilesHolder,
+        owner: i64,
+        project_id: &str,
+        visibility: &ProjectAiVisibility,
+        given: &str,
+        offset: f64,
+    ) -> Result<ProjectReadStep, Thrown> {
         let given = trim(given);
         let rel = if is_absolute(given) || has_drive_prefix(given) {
             // an absolute path is accepted only when it lies inside the folder
             match relative_inside(&visibility.root, given, &self.platform) {
                 Some(inside) => inside,
-                None => return Ok(refused(ProjectReadRefusal::Outside)),
+                None => return Ok(ProjectReadStep::Done(refused(ProjectReadRefusal::Outside))),
             }
         } else {
             clean_rel_path(given)
@@ -654,15 +716,15 @@ impl ProjectFolderTools {
                 .iter()
                 .any(|segment| *segment == ".." || *segment == ".")
         {
-            return Ok(refused(ProjectReadRefusal::Outside));
+            return Ok(ProjectReadStep::Done(refused(ProjectReadRefusal::Outside)));
         }
         // a stream name (`:`) or a trailing dot or space is another spelling
         // of some entry on Windows
         if self.platform == "win32" && !asked.iter().all(|segment| is_plain_segment(segment)) {
-            return Ok(refused(ProjectReadRefusal::NotFound));
+            return Ok(ProjectReadStep::Done(refused(ProjectReadRefusal::NotFound)));
         }
         if let Some(judged) = self.judge(visibility, &asked)? {
-            return Ok(refused(judged));
+            return Ok(ProjectReadStep::Done(refused(judged)));
         }
 
         // no link or junction on the way, a plain file at the end
@@ -670,7 +732,7 @@ impl ProjectFolderTools {
             let mut parts: Vec<&str> = Vec::with_capacity(asked.len() + 1);
             parts.push(&visibility.root);
             parts.extend(asked.iter().copied());
-            return Ok(refused(
+            return Ok(ProjectReadStep::Done(refused(
                 match fs::symlink_metadata(namespaced(&join(&parts))) {
                     // a folder is no file to read; anything else present was
                     // reached through a link
@@ -678,7 +740,7 @@ impl ProjectFolderTools {
                     Ok(_) => ProjectReadRefusal::Outside,
                     Err(_) => ProjectReadRefusal::NotFound,
                 },
-            ));
+            )));
         };
         // judged again by the name on disk: a short name or other spelling may
         // stand for a hidden, `.seuoffice/` or ignored entry; every later
@@ -686,20 +748,20 @@ impl ProjectFolderTools {
         let path = found.path;
         let segments = found.segments;
         if let Some(judged) = self.judge(visibility, &segments)? {
-            return Ok(refused(judged));
+            return Ok(ProjectReadStep::Done(refused(judged)));
         }
         if !is_supported_tree_file(&path) {
-            return Ok(refused(ProjectReadRefusal::Unreadable));
+            return Ok(ProjectReadStep::Done(refused(ProjectReadRefusal::Unreadable)));
         }
         if file_has_unsaved_changes(open_files, &path) {
-            return Ok(refused(ProjectReadRefusal::Unsaved));
+            return Ok(ProjectReadStep::Done(refused(ProjectReadRefusal::Unsaved)));
         }
         match fs::metadata(namespaced(&path)) {
             Ok(info) if info.len() as f64 > kb_read_max_bytes(&path) => {
-                return Ok(refused(ProjectReadRefusal::TooLarge));
+                return Ok(ProjectReadStep::Done(refused(ProjectReadRefusal::TooLarge)));
             }
             Ok(_) => {}
-            Err(_) => return Ok(refused(ProjectReadRefusal::NotFound)),
+            Err(_) => return Ok(ProjectReadStep::Done(refused(ProjectReadRefusal::NotFound))),
         }
 
         // the content of a file that is not on this PC is opened only on the
@@ -715,23 +777,11 @@ impl ProjectFolderTools {
             };
             let agreed = (self.ask_download)(&ask).unwrap_or(false);
             if !agreed {
-                return Ok(ProjectReadResult::Declined);
+                return Ok(ProjectReadStep::Done(ProjectReadResult::Declined));
             }
         }
 
-        match self.pages.read_page(&path, offset) {
-            Ok(page) => Ok(ProjectReadResult::Ok {
-                text: page.text,
-                total_chars: page.total_chars,
-                offset: JsNum(page.offset),
-            }),
-            Err(Thrown(message)) => {
-                if message == UNSAVED_CHANGES_MESSAGE {
-                    return Ok(refused(ProjectReadRefusal::Unsaved));
-                }
-                Ok(refused(ProjectReadRefusal::Unreadable))
-            }
-        }
+        Ok(ProjectReadStep::Read { path, offset })
     }
 }
 

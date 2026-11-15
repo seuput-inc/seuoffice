@@ -53,6 +53,8 @@ impl Views for Inline {
         Vec::new()
     }
     fn on_destroyed(&self, _: Box<dyn Fn(ViewId) + Send + Sync>) {}
+    fn renderer_generation(&self, _: ViewId) -> Option<shell_contract::runtime::RendererGeneration> { None }
+    fn on_renderer_replaced(&self, _: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>) {}
 }
 
 struct NoPaths;
@@ -89,6 +91,9 @@ impl OsShell for FakeOs {
     fn show_item_in_folder(&self, _: &Path) {}
     fn trash_item(&self, _: &Path) -> Result<(), String> {
         Ok(())
+    }
+    fn trash_item_authorized(&self, path: &std::path::Path, admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>) -> Result<(), String> {
+        admit(&mut || self.trash_item(path))
     }
 }
 
@@ -261,7 +266,7 @@ fn rig() -> Rig {
     let os_host: OsShellHost = os.clone();
     hosts.insert(os_host);
     let inline = Arc::new(Inline);
-    let services = Services {
+    let services = shell_contract::hosts::synthetic::SyntheticOwnedEffects::install(Services {
         ui: inline.clone(),
         core: inline.clone(),
         workers: inline.clone(),
@@ -269,7 +274,7 @@ fn rig() -> Rig {
         views: inline,
         paths: Arc::new(NoPaths),
         hosts: Arc::new(hosts),
-    };
+    });
     let port = (factory().0)(&services, &Rc::new(Provided::default())).unwrap();
     PORT.with(|p| *p.borrow_mut() = Some(port.clone()));
     Rig { host, os, port }
@@ -284,6 +289,7 @@ fn context() -> CallContext {
         },
         request: None,
         cancel: CancelToken::default(),
+        native: None,
     }
 }
 

@@ -61,7 +61,80 @@
     },
     "reason": "The TypeScript registers read-result and apply-result only when the in-app MCP server first asks a question (mcp-queries listen()), and nothing ever listens to bytes-result. The harness records the TypeScript side's missing listener as a thrown 'No handler registered'; Electron drops such a send, so the renderer sees nothing. The Rust side must register a handler for every send channel of the table (shell start rule) and ignores a reply nobody waits for."
   },
-  {"id":"d2-hwp-attach-split-surrogate","group":"d2/hwp-attach","case":15,"typescript":{"record":{"calls":[{"answer":{"value":{"ok":true,"name":"e.txt","totalChars":4,"offset":0,"text":"a\ud83d"},"buffers":[]},"events":[]},{"answer":{"value":{"ok":true,"name":"e.txt","totalChars":4,"offset":2,"text":"\ude00"},"buffers":[]},"events":[]}],"log":[["parseFileToText","$DIR/e.txt"]]},"files":{"e.txt":"file 644 \"a\ud83d\ude00b\""}},"rust":{"record":{"calls":[{"answer":{"value":{"ok":true,"name":"e.txt","totalChars":4,"offset":0,"text":"a\ufffd"},"buffers":[]},"events":[]},{"answer":{"value":{"ok":true,"name":"e.txt","totalChars":4,"offset":2,"text":"\ufffd"},"buffers":[]},"events":[]}],"log":[["parseFileToText","$DIR/e.txt"]]},"files":{"e.txt":"file 644 \"a\ud83d\ude00b\""}},"reason":"hwp:files-read slices the text in UTF-16 units as JavaScript does; a window that ends or starts inside a surrogate pair is a lone surrogate in JavaScript and U+FFFD in Rust (a Rust String cannot hold one). Only a read window that cuts an emoji in two shows it; the model reading the next window gets the character's other half as U+FFFD too."},
+  {
+    "id": "d2-hwp-attach-split-surrogate",
+    "group": "d2/hwp-attach",
+    "case": 15,
+    "typescript": {
+      "record": {
+        "calls": [
+          {
+            "answer": {
+              "value": {
+                "ok": true,
+                "name": "e.txt",
+                "totalChars": 4,
+                "offset": 0,
+                "text": "a\ud83d"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": true,
+                "name": "e.txt",
+                "totalChars": 4,
+                "offset": 2,
+                "text": "\ude00"
+              },
+              "buffers": []
+            },
+            "events": []
+          }
+        ],
+        "log": [["parseFileToText", "$DIR/e.txt"]]
+      },
+      "files": { "e.txt": "file 644 \"a\ud83d\ude00b\"" }
+    },
+    "rust": {
+      "record": {
+        "calls": [
+          {
+            "answer": {
+              "value": {
+                "ok": true,
+                "name": "e.txt",
+                "totalChars": 4,
+                "offset": 0,
+                "text": "a\ufffd"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": true,
+                "name": "e.txt",
+                "totalChars": 4,
+                "offset": 2,
+                "text": "\ufffd"
+              },
+              "buffers": []
+            },
+            "events": []
+          }
+        ],
+        "log": [["parseFileToText", "$DIR/e.txt"]]
+      },
+      "files": { "e.txt": "file 644 \"a\ud83d\ude00b\"" }
+    },
+    "reason": "hwp:files-read slices the text in UTF-16 units as JavaScript does; a window that ends or starts inside a surrogate pair is a lone surrogate in JavaScript and U+FFFD in Rust (a Rust String cannot hold one). Only a read window that cuts an emoji in two shows it; the model reading the next window gets the character's other half as U+FFFD too."
+  },
   {
     "id": "m-settings-lone-surrogate",
     "group": "m/settings",

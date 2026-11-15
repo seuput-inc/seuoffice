@@ -585,27 +585,48 @@ impl ProjectIpcChats for FakeChats {
             .ok_or_else(|| Thrown("newChat answered no chatId".to_owned()))
     }
 
-    fn list_chats(&mut self, project_id: &str) -> Result<Vec<ProjectChatListItem>, Thrown> {
+    fn list_chats(&mut self, project_id: &str) -> Result<Vec<ProjectChatListItem>, crate::shell::projects::chat_store::ChatStoreError> {
         self.0.log("listChats", vec![text(project_id)]);
-        self.0.answer("listChats", &[text(project_id)])
+        self.0.answer("listChats", &[text(project_id)]).map_err(|error: Thrown| crate::shell::projects::chat_store::ChatStoreError {
+            message: error.0, code: None, kind: crate::shell::projects::chat_store::ChatStoreErrorKind::Failure,
+        })
     }
 
-    fn open_chat(&mut self, args: &JsonValue) -> Result<Value, Thrown> {
+    fn open_chat(&mut self, args: &JsonValue) -> Result<Value, crate::shell::projects::chat_store::ChatStoreError> {
         let args = [json_value_to_serde(args)];
         self.0.log("openChat", args.to_vec());
-        self.0.answer("openChat", &args)
+        self.0.answer("openChat", &args).map_err(|error: Thrown| crate::shell::projects::chat_store::ChatStoreError {
+            message: error.0, code: None, kind: crate::shell::projects::chat_store::ChatStoreErrorKind::Failure,
+        })
     }
 
-    fn append(&mut self, args: &JsonValue, sender: &ChatSender) -> Result<Value, Thrown> {
+    fn begin_append(&mut self, args: &JsonValue, sender: &ChatSender) -> Result<crate::shell::projects::project_ipc::IpcAppendProgress, crate::shell::projects::chat_store::ChatStoreError> {
         let args = [json_value_to_serde(args), to_json(sender)];
         self.0.log("append", args.to_vec());
         self.0.answer("append", &args)
+            .map(crate::shell::projects::project_ipc::IpcAppendProgress::Done)
+            .map_err(|error: Thrown| crate::shell::projects::chat_store::ChatStoreError {
+                message: error.0, code: None, kind: crate::shell::projects::chat_store::ChatStoreErrorKind::Failure,
+            })
     }
 
-    fn rename_chat(&mut self, args: &JsonValue) -> Result<ProjectWriteResult, Thrown> {
+    fn resume_append(&mut self, _continuation: crate::shell::projects::chat_store::AppendContinuation) -> Result<crate::shell::projects::project_ipc::IpcAppendProgress, crate::shell::projects::chat_store::ChatStoreError> {
+        Err(crate::shell::projects::chat_store::ChatStoreError {
+            message: "probe cannot own a native append continuation".into(), code: None,
+            kind: crate::shell::projects::chat_store::ChatStoreErrorKind::Failure,
+        })
+    }
+
+    fn cancel_append(&mut self, continuation: crate::shell::projects::chat_store::AppendContinuation) {
+        drop(continuation);
+    }
+
+    fn rename_chat(&mut self, args: &JsonValue) -> Result<ProjectWriteResult, crate::shell::projects::chat_store::ChatStoreError> {
         let args = [json_value_to_serde(args)];
         self.0.log("renameChat", args.to_vec());
-        self.0.answer("renameChat", &args)
+        self.0.answer("renameChat", &args).map_err(|error: Thrown| crate::shell::projects::chat_store::ChatStoreError {
+            message: error.0, code: None, kind: crate::shell::projects::chat_store::ChatStoreErrorKind::Failure,
+        })
     }
 
     fn delete_chat(&mut self, chat_ref: &ProjectChatRef) -> Result<ProjectWriteResult, Thrown> {
@@ -618,26 +639,32 @@ impl ProjectIpcChats for FakeChats {
         &mut self,
         chat_ref: &ProjectChatRef,
         doc_path: &str,
-    ) -> Result<ProjectWriteResult, Thrown> {
+    ) -> Result<ProjectWriteResult, crate::shell::projects::chat_store::ChatStoreError> {
         let args = [to_json(chat_ref), text(doc_path)];
         self.0.log("attachDocument", args.to_vec());
-        self.0.answer("attachDocument", &args)
+        self.0.answer("attachDocument", &args).map_err(|error: Thrown| crate::shell::projects::chat_store::ChatStoreError {
+            message: error.0, code: None, kind: crate::shell::projects::chat_store::ChatStoreErrorKind::Failure,
+        })
     }
 
     fn chat_for_document(
         &mut self,
         project_id: &str,
         doc_path: &str,
-    ) -> Result<Option<ProjectId>, Thrown> {
+    ) -> Result<Option<ProjectId>, crate::shell::projects::chat_store::ChatStoreError> {
         let args = [text(project_id), text(doc_path)];
         self.0.log("chatForDocument", args.to_vec());
-        self.0.answer("chatForDocument", &args)
+        self.0.answer("chatForDocument", &args).map_err(|error: Thrown| crate::shell::projects::chat_store::ChatStoreError {
+            message: error.0, code: None, kind: crate::shell::projects::chat_store::ChatStoreErrorKind::Failure,
+        })
     }
 
-    fn chat_info(&mut self, chat_ref: &ProjectChatRef) -> Result<Option<ChatDocuments>, Thrown> {
+    fn chat_info(&mut self, chat_ref: &ProjectChatRef) -> Result<Option<ChatDocuments>, crate::shell::projects::chat_store::ChatStoreError> {
         let args = [to_json(chat_ref)];
         self.0.log("chatInfo", args.to_vec());
-        let info: Option<Value> = self.0.answer("chatInfo", &args)?;
+        let info: Option<Value> = self.0.answer("chatInfo", &args).map_err(|error: Thrown| crate::shell::projects::chat_store::ChatStoreError {
+            message: error.0, code: None, kind: crate::shell::projects::chat_store::ChatStoreErrorKind::Failure,
+        })?;
         let Some(info) = info else {
             return Ok(None);
         };
@@ -650,7 +677,10 @@ impl ProjectIpcChats for FakeChats {
             .collect();
         let last_editor: ProjectEditor =
             serde_json::from_value(info.get("lastEditor").cloned().unwrap_or(Value::Null))
-                .map_err(|error| Thrown(format!("bad lastEditor: {error}")))?;
+                .map_err(|error| crate::shell::projects::chat_store::ChatStoreError {
+                    message: format!("bad lastEditor: {error}"), code: None,
+                    kind: crate::shell::projects::chat_store::ChatStoreErrorKind::Failure,
+                })?;
         Ok(Some(ChatDocuments {
             documents,
             last_editor,
@@ -838,14 +868,6 @@ impl ProjectIpcHost for FakeHost {
         self.fake.void("openFolder", &[text(path)])
     }
 
-    /// no case makes the open throw: the trait has no error to carry
-    fn open_document(&mut self, path: &str) -> Option<i64> {
-        self.fake.log("openDocument", vec![text(path)]);
-        self.fake
-            .answer::<Option<i64>>("openDocument", &[text(path)])
-            .ok()
-            .flatten()
-    }
 
     /// no case makes the switch throw: the trait has no error to carry
     fn show_home(&mut self) -> Option<i64> {
@@ -1000,6 +1022,109 @@ fn run_scenario(spec: &Value, ops: &[Value], cx: &mut Context) -> Answer {
                     loop {
                         match step {
                             Ok(IpcStep::Done(reply)) => break Ok(reply),
+                            Ok(IpcStep::Mutation(request)) => {
+                                step = ipc.execute_mutation_sync(&mut deps, request);
+                            }
+                            Ok(IpcStep::SettingsWrite(write)) => {
+                                let result = ProjectIpc::execute_settings_write_sync(&mut *deps.guide, &write);
+                                step = ipc.finish_settings_write(&mut deps, write, result);
+                            }
+                            Ok(IpcStep::ContextRead { project_id }) => {
+                                let result = deps.guide.read_context(&project_id);
+                                step = ProjectIpc::finish_context_read(result);
+                            }
+                            Ok(IpcStep::SelectionWrite(request)) => {
+                                let result = deps.guide.set_selection(&request.target, request.project_id.as_deref());
+                                step = ipc.finish_selection(&mut deps, request, result);
+                            }
+                            Ok(IpcStep::InitialChat { window, selection }) => {
+                                step = ipc.finish_initial_chat(&mut deps, &window, selection)
+                                    .map_err(|error| Thrown(error.message));
+                            }
+                            Ok(IpcStep::NewChat { sender, project_id }) => {
+                                step = deps.chats.new_chat(&project_id)
+                                    .and_then(|chat_id| ipc.finish_new_chat_result(sender, project_id, chat_id));
+                            }
+                            Ok(IpcStep::DeleteChat { sender, chat_ref }) => {
+                                let result = deps.chats.delete_chat(&chat_ref);
+                                step = result.and_then(|result| ipc.finish_delete_chat_result(&mut deps, sender, &chat_ref, result));
+                            }
+                            Ok(IpcStep::ListChats { window, project_id }) => {
+                                step = ipc.finish_list_chats(&mut deps, &window, &project_id)
+                                    .map_err(|error| Thrown(error.message));
+                            }
+                            Ok(IpcStep::OpenChat { sender, chat_ref, args }) => {
+                                step = ipc.finish_open_chat(&mut deps, sender, &chat_ref, &args)
+                                    .map_err(|error| Thrown(error.message));
+                            }
+                            Ok(IpcStep::RenameChat { chat_ref, args }) => {
+                                step = ipc.finish_rename_chat(&mut deps, &chat_ref, &args)
+                                    .map_err(|error| Thrown(error.message));
+                            }
+                            Ok(IpcStep::AttachChat { chat_ref, doc_path }) => {
+                                step = ipc.finish_attach_chat(&mut deps, &chat_ref, &doc_path)
+                                    .map_err(|error| Thrown(error.message));
+                            }
+                            Ok(IpcStep::OpenDocumentChat { chat_ref }) => {
+                                step = ipc.finish_open_document_chat(&mut deps, &chat_ref)
+                                    .map_err(|error| Thrown(error.message));
+                            }
+                            Ok(IpcStep::ChatAppend(request)) => {
+                                step = match ipc.finish_append_chat(&mut deps, request) {
+                                    Ok(crate::shell::projects::project_ipc::IpcAppendStep::Done(next)) => Ok(next),
+                                    Ok(crate::shell::projects::project_ipc::IpcAppendStep::NeedInstallId { continuation, .. }) => {
+                                        deps.chats.cancel_append(continuation);
+                                        Err(Thrown("probe cannot own a native append continuation".into()))
+                                    }
+                                    Err(error) => Err(Thrown(error.message)),
+                                };
+                            }
+                            Ok(IpcStep::TrustAnswer { project_id, pending, answer }) => {
+                                let result = deps.guide.resume_decide_trust(pending, answer);
+                                step = ipc.finish_trust_answer(&mut deps, &project_id, result);
+                            }
+                            Ok(IpcStep::TrustWithout { project_id, sender }) => {
+                                step = ipc.continue_decide_trust(&mut deps, sender, project_id, ProjectTrustDecision::Without);
+                            }
+                            Ok(IpcStep::TrustUse { project_id, sender }) => {
+                                step = ipc.continue_decide_trust(&mut deps, sender, project_id, ProjectTrustDecision::Use);
+                            }
+                            Ok(IpcStep::AdoptStart { owner, folder, relocate_id }) => {
+                                step = ipc.continue_adopt_start(&mut deps, owner, &folder, relocate_id.as_deref());
+                            }
+                            Ok(IpcStep::CreateStart { owner, request, second }) => {
+                                step = ipc.continue_create_start(&mut deps, owner, request, second);
+                            }
+                            Ok(IpcStep::ConfirmExisting { owner, request, folder_path }) => {
+                                step = ProjectIpc::continue_confirm_existing(&mut deps, owner, request, &folder_path);
+                            }
+                            Ok(IpcStep::HintStart { owner, doc_path, .. }) => {
+                                step = ipc.continue_hint_start(&mut deps, owner, &doc_path);
+                            }
+                            Ok(IpcStep::HintAnswer { owner, window, doc_path, pending, answer }) => {
+                                let result = deps.guide.resume_add_folder(pending, answer);
+                                step = ipc.finish_hint_adoption(&mut deps, owner, window, doc_path, result);
+                            }
+                            Ok(IpcStep::HintSelection { doc_path, result, .. }) => {
+                                let selected = match &result {
+                                    crate::packages::project_store::AddFolderResult::Added { project, .. } =>
+                                        deps.guide.set_selection(&crate::shell::projects::project_guide::SelectionTarget::Document { path: doc_path }, Some(&project.id)).map(|_| ()),
+                                    _ => Ok(()),
+                                };
+                                step = selected.and_then(|_| ipc.finish_hint_selection(&mut deps, result));
+                            }
+                            Ok(IpcStep::AdoptAnswer { owner, pending, answer, create }) => {
+                                step = match create {
+                                    None => {
+                                        let result = deps.guide.resume_add_folder(pending, answer);
+                                        ipc.finish_adopt_answer(&mut deps, owner, None, result)
+                                    }
+                                    Some((request, second)) => {
+                                        let result = deps.guide.resume_create_project(pending, answer);
+                                        ipc.finish_create_answer(&mut deps, owner, request, second, result)
+                                    }
+                                };
+                            }
                             Ok(IpcStep::AskTrust {
                                 owner,
                                 prompt,
@@ -1007,6 +1132,25 @@ fn run_scenario(spec: &Value, ops: &[Value], cx: &mut Context) -> Answer {
                             }) => {
                                 let choice = person.ask_trust(owner, &prompt);
                                 step = ipc.resume_trust(&mut deps, pending, choice);
+                            }
+                            Ok(IpcStep::ViewTrustFiles { paths,chats,pending }) => {
+                                let fake_host=fake("host");
+                                let mut opened=false;
+                                for path in paths {
+                                    fake_host.log("openDocument",vec![text(&path)]);
+                                    let view=fake_host.answer::<Option<i64>>("openDocument",&[text(&path)]).ok().flatten();
+                                    opened|=view.is_some();
+                                }
+                                if let Some(path)=chats { let _=deps.host.open_folder(&path); }
+                                step=Ok(pending.finish_view(opened));
+                            }
+                            Ok(IpcStep::OpenDocumentChatTarget { path,chat_ref }) => {
+                                let fake_host=fake("host");
+                                let target=path.and_then(|path| {
+                                    fake_host.log("openDocument",vec![text(&path)]);
+                                    fake_host.answer::<Option<i64>>("openDocument",&[text(&path)]).ok().flatten()
+                                }).or_else(||deps.host.show_home());
+                                step=ipc.finish_open_document_chat_target(&mut deps,&chat_ref,target);
                             }
                             Ok(IpcStep::WaitForReturn { owner, pending }) => {
                                 let back = person.wait_for_return(owner);

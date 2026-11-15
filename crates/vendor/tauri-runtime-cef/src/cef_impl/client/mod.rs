@@ -19,6 +19,7 @@ mod display;
 mod download;
 mod drag;
 mod frame;
+mod focus;
 mod keyboard;
 mod life_span;
 mod load;
@@ -36,6 +37,7 @@ pub(crate) use drag::{
 };
 use keyboard::TauriCefKeyboardHandler;
 use life_span::{TauriCefChildLifeSpanHandler, TauriCefChildLifeSpanHandlerArgs};
+pub(crate) use life_span::check_and_reload_if_blank;
 use load::TauriCefLoadHandler;
 pub(crate) use permission::PermissionRequestHandler;
 use permission::TauriCefPermissionHandler;
@@ -43,11 +45,15 @@ pub(crate) use process::TauriCefBrowserProcessHandler;
 
 pub(crate) struct TauriCefBrowserClientHandlers<T: UserEvent> {
   pub(crate) frame_event_handler: Option<Arc<crate::FrameEventHandler>>,
+  pub(crate) view_event_handler: Option<Arc<crate::ViewEventHandler>>,
   pub(crate) ipc_handler: Option<Arc<ipc::IpcHandler<T>>>,
   pub(crate) on_page_load_handler: Option<Arc<tauri_runtime::webview::OnPageLoadHandler>>,
   pub(crate) document_title_changed_handler:
     Option<Arc<tauri_runtime::webview::DocumentTitleChangedHandler>>,
   pub(crate) navigation_handler: Option<Arc<tauri_runtime::webview::NavigationHandler>>,
+  pub(crate) resource_request_handler: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
+  pub(crate) browser_request_policy: Option<Arc<crate::browser_request::BrowserRequestPolicy>>,
+  pub(crate) session_request_policy: Option<crate::network_session::NetworkSessionPolicy>,
   pub(crate) new_window_handler:
     Option<Arc<tauri_runtime::webview::NewWindowHandler<T, CefRuntime<T>>>>,
   pub(crate) download_handler: Option<Arc<tauri_runtime::webview::DownloadHandler>>,
@@ -61,10 +67,14 @@ impl<T: UserEvent> Clone for TauriCefBrowserClientHandlers<T> {
   fn clone(&self) -> Self {
     Self {
       frame_event_handler: self.frame_event_handler.clone(),
+      view_event_handler: self.view_event_handler.clone(),
       ipc_handler: self.ipc_handler.clone(),
       on_page_load_handler: self.on_page_load_handler.clone(),
       document_title_changed_handler: self.document_title_changed_handler.clone(),
       navigation_handler: self.navigation_handler.clone(),
+      resource_request_handler: self.resource_request_handler.clone(),
+      browser_request_policy: self.browser_request_policy.clone(),
+      session_request_policy: self.session_request_policy.clone(),
       new_window_handler: self.new_window_handler.clone(),
       download_handler: self.download_handler.clone(),
       console_message_handler: self.console_message_handler.clone(),
@@ -89,7 +99,7 @@ wrap_with_args! {
     drag_drop_event_target: DragDropEventTarget,
     drag_drop_handler_enabled: bool,
     drag_drop_state: Arc<Mutex<DragDropState>>,
-    frame_navigation_state: crate::FrameNavigationState,
+    pub(crate) frame_navigation_state: crate::FrameNavigationState,
     popup_family: Weak<crate::popup::PopupFamily>,
     opener: Option<crate::popup::PopupRequest>,
     render_handler: Option<cef::RenderHandler>,
@@ -119,6 +129,9 @@ wrap_with_args! {
       Some(request_handler::WebRequestHandler::build(
         request_handler::WebRequestHandlerArgs {
           navigation_handler: self.handlers.navigation_handler.clone(),
+          resource_request_handler: self.handlers.resource_request_handler.clone(),
+          browser_request_policy: self.handlers.browser_request_policy.clone(),
+          session_request_policy: self.handlers.session_request_policy.clone(),
           frame_event_handler: self.handlers.frame_event_handler.clone(),
           context: self.context.clone(),
           window_id: self.window_id,
@@ -145,7 +158,9 @@ wrap_with_args! {
       let allowed_chrome_commands = self.allowed_chrome_commands.clone();
       let target = self.drag_drop_event_target;
       let navigation_handler = self.handlers.navigation_handler.clone();
+      let resource_request_handler = self.handlers.resource_request_handler.clone();
       let new_window_handler = self.handlers.new_window_handler.clone();
+      let session_request_policy = self.handlers.session_request_policy.clone();
       let download_handler = self.handlers.download_handler.clone();
       let permission_request_handler = self.handlers.permission_request_handler.clone();
       let family = self.popup_family.clone();
@@ -175,7 +190,11 @@ wrap_with_args! {
             // standing case — and every `FrameEvent` carries the full URL. An
             // app observes popups without their URLs through `Webview::popups`.
             frame_event_handler: Some(Arc::new(move |event| events.on_frame_event(&event))),
+            view_event_handler: None,
             navigation_handler: navigation_handler.clone(),
+            resource_request_handler: resource_request_handler.clone(),
+            browser_request_policy: None,
+            session_request_policy: session_request_policy.clone(),
             new_window_handler: new_window_handler.clone(),
             // CEF cancels every download of a client whose download handler is
             // NULL, so the popup keeps the opener's — as it did when it still
@@ -227,6 +246,14 @@ wrap_with_args! {
       Some(TauriCefLoadHandler::new(
         self.handlers.on_page_load_handler.clone(),
         self.handlers.frame_event_handler.clone(),
+        self.frame_navigation_state.clone(),
+      ))
+    }
+
+    fn focus_handler(&self) -> Option<FocusHandler> {
+      Some(focus::TauriCefFocusHandler::new(
+        self.handlers.view_event_handler.clone(),
+        self.frame_navigation_state.clone(),
       ))
     }
 
@@ -236,6 +263,7 @@ wrap_with_args! {
         context: self.context.clone(),
         document_title_changed_handler: self.handlers.document_title_changed_handler.clone(),
         frame_event_handler: self.handlers.frame_event_handler.clone(),
+        view_event_handler: self.handlers.view_event_handler.clone(),
         console_message_handler: self.handlers.console_message_handler.clone(),
         cursor_handler: self.cursor_handler.clone(),
         frame_navigation_state: self.frame_navigation_state.clone(),
@@ -275,6 +303,178 @@ wrap_with_args! {
       ))
     }
 
+    fn on_native_observed_navigation(
+      &self, browser: Option<&mut Browser>, issuance: u64, nonce: Option<&CefString>,
+      committed: i32, error: i32, url: Option<&CefString>, document: Option<&CefString>,
+      devtools_frame: Option<&CefString>, devtools_loader: Option<&CefString>,
+      process: Option<&mut NativeRendererProcess>, lifetime: Option<&mut NativeObservedDocument>,
+    ) {
+      let Some(browser) = browser else { return };
+      let state = &self.frame_navigation_state;
+      if self.opener.is_some() || browser.is_popup() != 0
+        || state.trusted_init_mode() != Some(crate::TrustedInitMode::Unprotected)
+        || !state.has_browser_id(browser.identifier()) { return; }
+      state.observed_navigation.complete(state.clone(), issuance,
+        nonce.map(ToString::to_string).unwrap_or_default(), committed != 0, error,
+        url.map(ToString::to_string).unwrap_or_default(),
+        document.map(ToString::to_string).unwrap_or_default(),
+        devtools_frame.map(ToString::to_string).unwrap_or_default(),
+        devtools_loader.map(ToString::to_string).unwrap_or_default(),
+        process.map(|value| value.clone()), lifetime.map(|value| value.clone()));
+    }
+
+    fn on_native_context_registered(
+      &self, browser: Option<&mut Browser>, frame: Option<&mut Frame>,
+      frame_id: Option<&CefString>, child_id: i32, document: Option<&CefString>,
+      context: Option<&CefString>, issuance: u64, intent: Option<&CefString>,
+      world: i32, document_url: Option<&CefString>,
+      evaluation: Option<&mut NativeContextEvaluation>, channel: Option<&mut NativeContextChannel>,
+      process: Option<&mut NativeRendererProcess>,
+    ) -> i32 {
+      let (Some(browser), Some(frame), Some(frame_id), Some(document), Some(context),
+        Some(intent), Some(document_url), Some(evaluation), Some(channel)) =
+        (browser, frame, frame_id, document, context, intent, document_url, evaluation, channel) else { return 0 };
+      if self.opener.is_some() || browser.is_popup() != 0
+        || !self.frame_navigation_state.has_browser_id(browser.identifier()) { return 0; }
+      let Ok(document_url) = url::Url::parse(&document_url.to_string()) else { return 0 };
+      let Some(process) = process.and_then(|process| crate::NativeRendererProcess::from_native(process)) else { return 0 };
+      i32::from(ipc::on_native_context_registered(self, browser, frame, &frame_id.to_string(),
+        crate::native_context::VerifiedNativeIdentity {
+          renderer_child_id: child_id, document_token: document.to_string(),
+          context_token: context.to_string(), world_id: world,
+          registration: issuance,
+        }, issuance, &intent.to_string(), crate::native_invoke::NativeContextEndpoints {
+          channel: channel.clone(), evaluation: evaluation.clone(), document_url,
+          renderer_process: process,
+        }))
+    }
+
+    fn on_native_context_process_will_exit(
+      &self, browser: Option<&mut Browser>, _frame: Option<&mut Frame>,
+      frame_id: Option<&CefString>, child_id: i32, document: Option<&CefString>,
+      context: Option<&CefString>, world: i32, registration: u64,
+    ) {
+      let (Some(browser), Some(frame_id), Some(document), Some(context)) =
+        (browser, frame_id, document, context) else { return };
+      ipc::on_native_context_process_will_exit(self, browser.identifier(), &frame_id.to_string(),
+        &crate::native_context::VerifiedNativeIdentity {
+          renderer_child_id: child_id, document_token: document.to_string(),
+          context_token: context.to_string(), world_id: world, registration,
+        });
+    }
+
+    fn on_native_context_process_did_exit(&self) {
+      ipc::on_native_context_did_revoke();
+    }
+
+    fn on_native_context_will_revoke(
+      &self, browser: Option<&mut Browser>, _frame: Option<&mut Frame>,
+      frame_id: Option<&CefString>, child_id: i32, document: Option<&CefString>,
+      context: Option<&CefString>, world: i32, registration: u64,
+    ) {
+      let (Some(browser), Some(frame_id), Some(document), Some(context)) =
+        (browser, frame_id, document, context) else { return };
+      ipc::on_native_context_will_revoke(self, browser.identifier(), &frame_id.to_string(),
+        &crate::native_context::VerifiedNativeIdentity {
+          renderer_child_id: child_id, document_token: document.to_string(),
+          context_token: context.to_string(), world_id: world,
+          registration,
+        });
+    }
+
+    fn on_native_context_did_revoke(
+      &self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>,
+      _frame_id: Option<&CefString>, _child_id: i32, _document: Option<&CefString>,
+      _context: Option<&CefString>, _world: i32, _registration: u64,
+    ) {
+      ipc::on_native_context_did_revoke();
+    }
+
+    fn on_native_context_revoked(
+      &self, browser: Option<&mut Browser>, _frame: Option<&mut Frame>,
+      frame_id: Option<&CefString>, child_id: i32, document: Option<&CefString>,
+      context: Option<&CefString>, world: i32, registration: u64,
+    ) {
+      let (Some(browser), Some(frame_id), Some(document), Some(context)) =
+        (browser, frame_id, document, context) else { return };
+      ipc::on_native_context_revoked(self, browser, &frame_id.to_string(),
+        &crate::native_context::VerifiedNativeIdentity {
+          renderer_child_id: child_id, document_token: document.to_string(),
+          context_token: context.to_string(), world_id: world,
+          registration,
+        });
+    }
+
+    fn on_native_context_tauri_request(
+      &self, browser: Option<&mut Browser>, frame_id: Option<&CefString>, child_id: i32,
+      document: Option<&CefString>, context: Option<&CefString>, world: i32, registration: u64,
+      cmd: Option<&CefString>, callback: u32, error: u32, raw: i32,
+      invoke_key: Option<&CefString>, headers_json: Option<&CefString>, body: Option<&mut BinaryValue>,
+    ) {
+      let (Some(browser), Some(frame_id), Some(document), Some(context), Some(cmd), Some(invoke_key), Some(headers_json)) =
+        (browser, frame_id, document, context, cmd, invoke_key, headers_json) else { return };
+      let Some(body) = crate::native_invoke::binary_bytes(body.as_deref()) else { return };
+      ipc::on_native_tauri_request(self, browser.identifier(), &frame_id.to_string(),
+        &crate::native_context::VerifiedNativeIdentity {
+          renderer_child_id: child_id, document_token: document.to_string(),
+          context_token: context.to_string(), world_id: world,
+          registration,
+        }, cmd.to_string(), callback, error, raw != 0, invoke_key.to_string(), headers_json.to_string(), body);
+    }
+
+    fn on_native_context_sync_request(
+      &self, browser: Option<&mut Browser>, frame_id: Option<&CefString>, child_id: i32,
+      document: Option<&CefString>, context: Option<&CefString>, world: i32, registration: u64,
+      channel: Option<&CefString>, body: Option<&mut BinaryValue>, reply: Option<&mut NativeContextSyncReply>,
+    ) {
+      let Some(reply) = reply else { return };
+      let (Some(browser), Some(frame_id), Some(document), Some(context), Some(channel)) =
+        (browser, frame_id, document, context, channel) else { reply.complete(0, None); return };
+      let Some(body) = crate::native_invoke::binary_bytes(body.as_deref()) else { reply.complete(0, None); return };
+      ipc::on_native_sync_request(self, browser.identifier(), &frame_id.to_string(),
+        &crate::native_context::VerifiedNativeIdentity {
+          renderer_child_id: child_id, document_token: document.to_string(),
+          context_token: context.to_string(), world_id: world,
+          registration,
+        }, channel.to_string(), body, reply.clone());
+    }
+
+    fn on_native_context_first_non_empty_layout(
+      &self, browser: Option<&mut Browser>, frame_id: Option<&CefString>, child_id: i32,
+      document: Option<&CefString>, context: Option<&CefString>, world: i32, registration: u64,
+    ) {
+      let (Some(browser), Some(frame_id), Some(document), Some(context)) =
+        (browser, frame_id, document, context) else { return };
+      ipc::on_native_first_nonempty_layout(self, browser.identifier(), &frame_id.to_string(),
+        &crate::native_context::VerifiedNativeIdentity {
+          renderer_child_id: child_id, document_token: document.to_string(),
+          context_token: context.to_string(), world_id: world,
+          registration,
+        });
+    }
+
+    fn on_native_context_document_ready(
+      &self, browser: Option<&mut Browser>, frame_id: Option<&CefString>, child_id: i32,
+      document: Option<&CefString>, context: Option<&CefString>, world: i32, registration: u64,
+    ) {
+      let (Some(browser), Some(frame_id), Some(document), Some(context)) =
+        (browser, frame_id, document, context) else { return };
+      let state = &self.frame_navigation_state;
+      let identity = crate::native_context::VerifiedNativeIdentity {
+        renderer_child_id: child_id, document_token: document.to_string(),
+        context_token: context.to_string(), world_id: world,
+        registration,
+      };
+      if let Some(origin) = state.native_contexts.verified_token(state, browser.identifier(), &frame_id.to_string(), &identity) {
+        if !origin.mark_document_ready() { return; }
+        state.native_reload.document_ready(&origin);
+        if let Some(handler) = &self.handlers.frame_event_handler {
+          handler(crate::FrameEvent { browser_id: browser.identifier(), frame_id: frame_id.to_string(), is_main: true,
+            kind: crate::FrameEventKind::NativeDocumentReady { origin } });
+        }
+      }
+    }
+
     fn on_process_message_received(
       &self,
       browser: Option<&mut Browser>,
@@ -282,9 +482,10 @@ wrap_with_args! {
       source_process: ProcessId,
       message: Option<&mut ProcessMessage>,
     ) -> std::os::raw::c_int {
+      ipc::record_renderer_identity(browser.as_deref(), frame.as_deref(), source_process, message.as_deref());
       // A CEF popup (including DevTools) never inherits the root IPC identity.
       if self.opener.is_some() || browser.as_ref().is_none_or(|browser| browser.is_popup() != 0 || !self.frame_navigation_state.has_browser_id(browser.identifier())) { return 0; }
-      ipc::on_process_message_received(self, frame, source_process, message)
+      ipc::on_process_message_received(self, browser, frame, source_process, message)
     }
   }
 }

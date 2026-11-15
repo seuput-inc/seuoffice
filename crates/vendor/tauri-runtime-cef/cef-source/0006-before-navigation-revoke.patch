@@ -1,0 +1,315 @@
+# Private pinned source patch. Native pre/post producers and source regressions
+# require generated CEF callback integration and hosted native verification.
+diff --git a/content/browser/renderer_host/frame_tree_node.h b/content/browser/renderer_host/frame_tree_node.h
+--- a/content/browser/renderer_host/frame_tree_node.h
++++ b/content/browser/renderer_host/frame_tree_node.h
+@@ -13,6 +13,10 @@
+ #include <string>
+ #include <utility>
+ 
++#include "base/callback_list.h"
++#include "base/functional/callback_helpers.h"
++#include <vector>
++#include "base/functional/bind.h"
+ #include "base/gtest_prod_util.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/memory/safe_ref.h"
+@@ -351,6 +355,48 @@ class CONTENT_EXPORT FrameTreeNode : public RenderFrameHostOwner {
+ 
+   NavigationRequest* navigation_request() { return navigation_request_.get(); }
+ 
++  // Browser UI thread only. Callbacks may only revoke an existing short-lived
++  // admission gate and enqueue deferred cleanup; they must not enter a nested
++  // message loop, call application handlers, or destroy this frame tree.
++  [[nodiscard]] base::CallbackListSubscription AddCefPreNavigationRevoker(
++      base::RepeatingCallback<void(RenderFrameHostImpl*, std::vector<base::OnceClosure>*)> callback) {
++    return cef_pre_navigation_revokers_.Add(std::move(callback));
++  }
++  struct CefAdmissionMutationState {
++    size_t depth = 0;
++    std::vector<base::OnceClosure> completions;
++  };
++  static CefAdmissionMutationState& CefMutationState() {
++    static thread_local CefAdmissionMutationState state;
++    return state;
++  }
++  [[nodiscard]] static base::ScopedClosureRunner BeginCefAdmissionMutation() {
++    ++CefMutationState().depth;
++    return base::ScopedClosureRunner(base::BindOnce([] {
++      auto& state = CefMutationState();
++      CHECK_GT(state.depth, 0u);
++      if (--state.depth != 0) return;
++      auto completions = std::move(state.completions);
++      for (auto& completion : completions) {
++        std::move(completion).Run();
++      }
++    }));
++  }
++  static void DeferCefAdmissionCompletion(base::OnceClosure completion) {
++    CHECK_GT(CefMutationState().depth, 0u);
++    CefMutationState().completions.push_back(std::move(completion));
++  }
++  [[nodiscard]] base::ScopedClosureRunner RevokeCefAdmission(
++      RenderFrameHostImpl* host = nullptr) {
++    auto mutation = BeginCefAdmissionMutation();
++    std::vector<base::OnceClosure> completions;
++    cef_pre_navigation_revokers_.Notify(host, &completions);
++    for (auto& completion : completions) {
++      DeferCefAdmissionCompletion(std::move(completion));
++    }
++    return mutation;
++  }
++
+   // Reject a superseded request even after the newer request is cancelled.
+   bool IsLatestNavigationForCef(int64_t navigation_id) const {
+     return cef_latest_navigation_id_ == navigation_id;
+@@ -808,6 +854,10 @@ class CONTENT_EXPORT FrameTreeNode : public RenderFrameHostOwner {
+   // The browser-global FrameTreeNodeId generator.
+   static FrameTreeNodeId::Generator frame_tree_node_id_generator_;
+ 
++  // Declared first so the paired post runs after render_manager_ and all other
++  // members are destroyed, not merely at the end of the destructor body.
++  base::ScopedClosureRunner cef_teardown_mutation_;
++
+   // The FrameTree owning |this|. It can change with Prerender2 during
+   // activation.
+   raw_ref<FrameTree> frame_tree_;
+@@ -960,5 +983,7 @@ class CONTENT_EXPORT FrameTreeNode : public RenderFrameHostOwner {
+   // be reset and a RenderFrameHost will be responsible for the navigation.
+   std::unique_ptr<NavigationRequest> navigation_request_;
++  base::RepeatingCallbackList<void(RenderFrameHostImpl*, std::vector<base::OnceClosure>*)>
++      cef_pre_navigation_revokers_;
+   std::optional<int64_t> cef_latest_navigation_id_;
+   std::optional<GlobalRenderFrameHostToken> cef_ready_frame_;
+   std::optional<blink::DocumentToken> cef_ready_document_;
+diff --git a/content/browser/renderer_host/frame_tree_node.cc b/content/browser/renderer_host/frame_tree_node.cc
+--- a/content/browser/renderer_host/frame_tree_node.cc
++++ b/content/browser/renderer_host/frame_tree_node.cc
+@@ -237,5 +237,6 @@ void FrameTreeNode::DestroyInnerFrameTreeIfExists() {
+ 
+ FrameTreeNode::~FrameTreeNode() {
++  cef_teardown_mutation_ = RevokeCefAdmission();
+   TRACE_EVENT("navigation", "FrameTreeNode::~FrameTreeNode");
+   // There should always be a current RenderFrameHost except during prerender
+   // activation. Prerender activation moves the current RenderFrameHost from
+@@ -598,5 +599,8 @@ void FrameTreeNode::TakeNavigationRequest(
+     std::unique_ptr<NavigationRequest> navigation_request) {
++  auto cef_revoke = !navigation_request->IsSameDocument()
++                        ? RevokeCefAdmission()
++                        : base::ScopedClosureRunner();
+   if (!navigation_request->IsSameDocument()) {
+     cef_latest_navigation_id_ = navigation_request->GetNavigationId();
+     cef_ready_frame_.reset();
+     cef_ready_document_.reset();
+@@ -671,6 +673,7 @@ void FrameTreeNode::ResetNavigationRequestButKeepState(
+   if (!navigation_request_)
+     return;
+ 
++  auto cef_revoke = RevokeCefAdmission();
+   // When resetting the NavigationRequest, any BFCache navigation restarting
+   // task should be cancelled. This is to ensure that the FrameTreeNode won't
+   // accidentally complete a navigation that should be reset.
+diff --git a/content/browser/renderer_host/render_frame_host_impl.h b/content/browser/renderer_host/render_frame_host_impl.h
+--- a/content/browser/renderer_host/render_frame_host_impl.h
++++ b/content/browser/renderer_host/render_frame_host_impl.h
+@@ -30,6 +30,7 @@
+ #include "base/functional/callback.h"
++#include "base/functional/callback_helpers.h"
+ #include "base/functional/function_ref.h"
+ #include "base/gtest_prod_util.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/memory/raw_ref.h"
+ #include "base/memory/scoped_refptr.h"
+@@ -4560,6 +4561,10 @@ class CONTENT_EXPORT RenderFrameHostImpl
+   void OnReadClipboardData(base::OnceCallback<void(bool)> callback,
+                            std::string result) const;
+ 
++  // Destroyed last, after all document services and navigation requests.
++  // The callback arguments are retained independently of this RFH.
++  base::ScopedClosureRunner cef_teardown_mutation_;
++
+   // The RenderViewHost that this RenderFrameHost is associated with.
+   //
+   // It is kept alive as long as any RenderFrameHosts or RenderFrameProxyHosts
+diff --git a/content/browser/renderer_host/render_frame_host_impl.cc b/content/browser/renderer_host/render_frame_host_impl.cc
+--- a/content/browser/renderer_host/render_frame_host_impl.cc
++++ b/content/browser/renderer_host/render_frame_host_impl.cc
+@@ -2835,7 +2835,10 @@
+ RenderFrameHostImpl::~RenderFrameHostImpl() {
++  cef_teardown_mutation_ =
++      frame_tree_node() ? frame_tree_node()->RevokeCefAdmission(this)
++                        : FrameTreeNode::BeginCefAdmissionMutation();
+   base::trace_event::TraceSessionObserverList::RemoveObserver(this);
+   TRACE_EVENT("navigation", "RenderFrameHostImpl::~RenderFrameHostImpl",
+               perfetto::TerminatingFlow::FromPointer(this));
+   SCOPED_CRASH_KEY_STRING256("Bug1407526", "lifecycle",
+                              LifecycleStateImplToString(lifecycle_state()));
+   TRACE_EVENT("navigation", "~RenderFrameHostImpl()",
+@@ -4530,6 +4530,9 @@ void RenderFrameHostImpl::RenderProcessGone(
+     SiteInstanceGroup* site_instance_group,
+     const ChildProcessTerminationInfo& info) {
+   CHECK_EQ(site_instance_->group(), site_instance_group);
++  auto cef_revoke = frame_tree_node()
++                        ? frame_tree_node()->RevokeCefAdmission(this)
++                        : base::ScopedClosureRunner();
+ 
+   if (IsInBackForwardCache()) {
+     EvictFromBackForwardCacheWithReason(
+@@ -4963,6 +4966,9 @@ void RenderFrameHostImpl::RenderFrameDeleted() {
+   // difficult to understand.
+   CHECK_NE(render_frame_state_, RenderFrameState::kDeleting);
+   CHECK(children_.empty());
++  auto cef_revoke = frame_tree_node()
++                        ? frame_tree_node()->RevokeCefAdmission(this)
++                        : base::ScopedClosureRunner();
+   bool was_created = is_render_frame_created();
+   render_frame_state_ = RenderFrameState::kDeleting;
+   render_frame_scoped_weak_ptr_factory_.InvalidateWeakPtrs();
+@@ -6837,6 +6843,9 @@ void RenderFrameHostImpl::ResetOwnedNavigationRequests(
+     NavigationDiscardReason reason) {
++  auto cef_revoke = !navigation_requests_.empty() && frame_tree_node()
++                        ? frame_tree_node()->RevokeCefAdmission(this)
++                        : base::ScopedClosureRunner();
+   if (lifecycle_state_ == LifecycleStateImpl::kPendingCommit) {
+     // Pending commit RenderFrameHosts should never have same document
+     // navigation requests yet, as they do not have a real document committed
+     // yet.
+     CHECK(same_document_navigation_requests_.empty());
+@@ -19601,6 +19610,15 @@ void RenderFrameHostImpl::SetLifecycleState(LifecycleStateImpl new_state) {
++  const bool retires_active =
++      lifecycle_state_ == LifecycleStateImpl::kActive &&
++      new_state != LifecycleStateImpl::kActive;
++  const bool restores_inactive =
++      lifecycle_state_ == LifecycleStateImpl::kInBackForwardCache ||
++      lifecycle_state_ == LifecycleStateImpl::kPrerendering;
++  auto cef_revoke = frame_tree_node() && (retires_active || restores_inactive)
++                        ? frame_tree_node()->RevokeCefAdmission(this)
++                        : base::ScopedClosureRunner();
+   TRACE_EVENT2("content", "RenderFrameHostImpl::SetLifecycleState",
+                "render_frame_host", this, "new_state",
+                LifecycleStateImplToString(new_state));
+   // Finish the slice corresponding to the old lifecycle state and begin a new
+   // slice for the lifecycle state we are transitioning to.
+   TRACE_STATE("content.frames.lifecycle",
+diff --git a/content/browser/renderer_host/navigation_request.cc b/content/browser/renderer_host/navigation_request.cc
+--- a/content/browser/renderer_host/navigation_request.cc
++++ b/content/browser/renderer_host/navigation_request.cc
+@@ -2250,7 +2250,12 @@
+ NavigationRequest::~NavigationRequest() {
++  auto cef_revoke =
++      !IsSameDocument() && !HasCommitted() && frame_tree_node_ &&
++              frame_tree_node_->IsLatestNavigationForCef(GetNavigationId())
++          ? frame_tree_node_->RevokeCefAdmission()
++          : base::ScopedClosureRunner();
+   TRACE_EVENT("navigation", "NavigationRequest::~NavigationRequest",
+               perfetto::TerminatingFlow::FromPointer(this));
+   is_destructing_ = true;
+ 
+ #if !BUILDFLAG(IS_ANDROID)
+   // If |is_safe_to_delete_| is false, it means |this| is being deleted at an
+diff --git a/content/browser/renderer_host/frame_tree_unittest.cc b/content/browser/renderer_host/frame_tree_unittest.cc
+--- a/content/browser/renderer_host/frame_tree_unittest.cc
++++ b/content/browser/renderer_host/frame_tree_unittest.cc
+@@ -9,6 +9,8 @@
+ #include "base/run_loop.h"
+ #include "base/strings/string_number_conversions.h"
+ #include "base/strings/stringprintf.h"
++#include "base/test/bind.h"
++#include "net/base/net_errors.h"
+ #include "content/browser/renderer_host/navigator.h"
+ #include "content/browser/renderer_host/render_frame_host_factory.h"
+ #include "content/browser/renderer_host/render_frame_host_impl.h"
+@@ -15,6 +15,7 @@
+ #include "content/browser/web_contents/web_contents_impl.h"
+ #include "content/public/browser/web_contents_observer.h"
+ #include "content/public/test/browser_task_environment.h"
++#include "content/public/test/navigation_simulator.h"
+ #include "content/public/test/mock_render_process_host.h"
+ #include "content/public/test/test_browser_context.h"
+ #include "content/test/test_render_frame_host.h"
+@@ -171,5 +172,85 @@ class FrameTreeTest : public RenderViewHostImplTestHarness {
+ };
+ 
++TEST_F(FrameTreeTest, CefAdmissionPairRetainsPostAfterUnsubscribe) {
++  auto* root = contents()->GetPrimaryFrameTree().root();
++  int before = 0;
++  int after = 0;
++  auto subscription = root->AddCefPreNavigationRevoker(base::BindLambdaForTesting(
++      [&](RenderFrameHostImpl* affected,
++          std::vector<base::OnceClosure>* completions) {
++        EXPECT_EQ(nullptr, affected);
++        ++before;
++        completions->push_back(base::BindOnce([](int* value) { ++*value; }, &after));
++      }));
++  {
++    auto outer = FrameTreeNode::BeginCefAdmissionMutation();
++    {
++      auto mutation = root->RevokeCefAdmission();
++      EXPECT_EQ(1, before);
++      EXPECT_EQ(0, after);
++      subscription = {};
++    }
++    EXPECT_EQ(0, after);
++  }
++  EXPECT_EQ(1, after);
++  {
++    auto mutation = root->RevokeCefAdmission();
++  }
++  EXPECT_EQ(1, before);
++  EXPECT_EQ(1, after);
++}
++
++TEST_F(FrameTreeTest, CefAdmissionPrecedesNavigationRequestReplacement) {
++  main_test_rfh()->InitializeRenderFrameIfNeeded();
++  auto* root = contents()->GetPrimaryFrameTree().root();
++  EXPECT_EQ(nullptr, root->navigation_request());
++  int before = 0;
++  int after = 0;
++  auto subscription = root->AddCefPreNavigationRevoker(base::BindLambdaForTesting(
++      [&](RenderFrameHostImpl* affected,
++          std::vector<base::OnceClosure>* completions) {
++        if (affected) return;
++        ++before;
++        if (before == 1) {
++          EXPECT_EQ(nullptr, root->navigation_request());
++        }
++        completions->push_back(base::BindOnce([](int* value) { ++*value; }, &after));
++      }));
++  auto navigation = NavigationSimulator::CreateBrowserInitiated(
++      GURL("https://approved.example/start"), contents());
++  navigation->Start();
++  EXPECT_GE(before, 1);
++  EXPECT_EQ(before, after);
++  ASSERT_NE(nullptr, root->navigation_request());
++  const int before_redirect = before;
++  navigation->Redirect(GURL("https://redirect.example/end"));
++  EXPECT_EQ(before_redirect, before);
++  navigation->Fail(net::ERR_ABORTED);
++  EXPECT_GT(before, before_redirect);
++  EXPECT_EQ(before, after);
++}
++
++TEST_F(FrameTreeTest, CefAdmissionPostOutlivesFrameAndTreeDestruction) {
++  main_test_rfh()->InitializeRenderFrameIfNeeded();
++  auto* root = contents()->GetPrimaryFrameTree().root();
++  const auto original = main_test_rfh()->GetGlobalId();
++  int before = 0;
++  int after = 0;
++  auto subscription = root->AddCefPreNavigationRevoker(base::BindLambdaForTesting(
++      [&](RenderFrameHostImpl* affected,
++          std::vector<base::OnceClosure>* completions) {
++        ++before;
++        completions->push_back(base::BindOnce(
++            [](GlobalRenderFrameHostId original, int* after) {
++              EXPECT_EQ(nullptr, RenderFrameHost::FromID(original));
++              ++*after;
++            }, original, &after));
++      }));
++  DeleteContents();
++  EXPECT_GT(before, 0);
++  EXPECT_EQ(before, after);
++}
++
+ // Confirm expected operation of the node queue that supports node iterators.
+ TEST_F(FrameTreeTest, FrameNodeQueue) {
+   main_test_rfh()->InitializeRenderFrameIfNeeded();

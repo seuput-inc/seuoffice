@@ -896,13 +896,13 @@ fn font_store_call(args: &[Value], cx: &mut Context) -> Answer {
     let has_reader = matches!(env.get("families"), Some(Value::Array(_)));
     let paths = string_list(args, 1)?;
     let log = Logger::default();
-    let reader = |path: &str| -> Vec<String> {
+    let reader = |path: &str| -> Result<Vec<String>, crate::node_fs::NodeError> {
         log.push(vec![Value::from("fontFileFamilies"), Value::from(path)]);
-        table
+        Ok(table
             .iter()
             .find(|(p, _)| p == path)
             .map(|(_, f)| f.clone())
-            .unwrap_or_default()
+            .unwrap_or_default())
     };
     let font_env = FontStoreEnv {
         dir,

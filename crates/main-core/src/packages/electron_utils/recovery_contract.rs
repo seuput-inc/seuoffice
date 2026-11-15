@@ -4,9 +4,10 @@
 //!
 //! The TypeScript keeps the table on `globalThis` behind a `Symbol.for` key
 //! so bundled copies share it; here the table is an explicit
-//! [`RecoveryRegistry`] the caller owns. `C` stands for Electron's
-//! `WebContents`: the contract's methods take a reference to one. The
-//! promises of `writeCopiesNow` and the open methods are plain calls.
+//! [`RecoveryRegistry`] the caller owns. `C` is the editor's webContents type.
+//! `A` is the opening authority captured before target creation. The platform
+//! supplies its concrete type; the registry never constructs it.
+//! `writeCopiesNow` answers through a completion callback.
 
 use std::rc::Rc;
 
@@ -39,26 +40,30 @@ pub struct RecoveryOpenUntitledRequest {
     pub save_as_default_path: Option<String>,
 }
 
+/// Completes the original authorized read/adopt/mark/seed preparation. A target
+/// must not navigate or become a ready loaded view before this succeeds.
+pub type RecoveryOpenDone = Box<dyn FnOnce(Result<(), crate::shell::renderer_disposal::Failure>)>;
+
 /// `RecoveryEditorContract`
-pub trait RecoveryEditorContract<C> {
+pub trait RecoveryEditorContract<C, A> {
     fn kind(&self) -> &str;
-    /// The OS is ending the session: write a copy for every document with
-    /// unsaved changes right now, without any prompt. Never fails.
-    fn write_copies_now(&self);
+    /// The OS is ending the session. Answer once every copy has settled, or
+    /// report the failure that prevented a copy from being written.
+    fn write_copies_now(&self, done: Box<dyn FnOnce(Result<(), crate::shell::renderer_disposal::Failure>)>);
     /// load `request.file_path` into `contents` (a tab the shell created)
-    fn open_file_with_decision(&self, contents: &C, request: &RecoveryOpenFileRequest);
+    fn open_file_with_decision(&self, contents: &C, request: &RecoveryOpenFileRequest, authority: &A, done: RecoveryOpenDone);
     /// Load a copy into `contents` as an untitled tab.
-    fn open_untitled_copy(&self, contents: &C, request: &RecoveryOpenUntitledRequest);
+    fn open_untitled_copy(&self, contents: &C, request: &RecoveryOpenUntitledRequest, authority: &A, done: RecoveryOpenDone);
     /// Whether the document in this tab cannot get a safe copy.
     fn is_unprotectable(&self, contents: &C) -> bool;
 }
 
 /// `registry()`: a `Map` from kind to contract, in the order of first registration.
-pub struct RecoveryRegistry<C> {
-    table: Vec<(RecoveryEditorKind, Rc<dyn RecoveryEditorContract<C>>)>,
+pub struct RecoveryRegistry<C, A> {
+    table: Vec<(RecoveryEditorKind, Rc<dyn RecoveryEditorContract<C, A>>)>,
 }
 
-impl<C> Default for RecoveryRegistry<C> {
+impl<C, A> Default for RecoveryRegistry<C, A> {
     fn default() -> Self {
         RecoveryRegistry { table: Vec::new() }
     }
@@ -66,11 +71,11 @@ impl<C> Default for RecoveryRegistry<C> {
 
 /// The function `registerRecoveryEditor` returns: hand it to
 /// [`RecoveryRegistry::unregister`].
-pub struct RecoveryRegistration<C> {
-    contract: Rc<dyn RecoveryEditorContract<C>>,
+pub struct RecoveryRegistration<C, A> {
+    contract: Rc<dyn RecoveryEditorContract<C, A>>,
 }
 
-impl<C> RecoveryRegistry<C> {
+impl<C, A> RecoveryRegistry<C, A> {
     pub fn new() -> Self {
         Self::default()
     }
@@ -79,8 +84,8 @@ impl<C> RecoveryRegistry<C> {
     /// replaces the earlier one and keeps its place in the order).
     pub fn register_recovery_editor(
         &mut self,
-        contract: Rc<dyn RecoveryEditorContract<C>>,
-    ) -> RecoveryRegistration<C> {
+        contract: Rc<dyn RecoveryEditorContract<C, A>>,
+    ) -> RecoveryRegistration<C, A> {
         let kind = contract.kind().to_owned();
         match self.table.iter_mut().find(|(k, _)| *k == kind) {
             Some(entry) => entry.1 = Rc::clone(&contract),
@@ -91,7 +96,7 @@ impl<C> RecoveryRegistry<C> {
 
     /// The unregister function: removes the contract unless a newer
     /// registration has replaced it meanwhile.
-    pub fn unregister(&mut self, registration: &RecoveryRegistration<C>) {
+    pub fn unregister(&mut self, registration: &RecoveryRegistration<C, A>) {
         let kind = registration.contract.kind();
         let current = self.table.iter().position(|(k, _)| k == kind);
         if let Some(at) = current
@@ -101,14 +106,14 @@ impl<C> RecoveryRegistry<C> {
         }
     }
 
-    pub fn recovery_editor(&self, kind: &str) -> Option<Rc<dyn RecoveryEditorContract<C>>> {
+    pub fn recovery_editor(&self, kind: &str) -> Option<Rc<dyn RecoveryEditorContract<C, A>>> {
         self.table
             .iter()
             .find(|(k, _)| k == kind)
             .map(|(_, contract)| Rc::clone(contract))
     }
 
-    pub fn recovery_editors(&self) -> Vec<Rc<dyn RecoveryEditorContract<C>>> {
+    pub fn recovery_editors(&self) -> Vec<Rc<dyn RecoveryEditorContract<C, A>>> {
         self.table
             .iter()
             .map(|(_, contract)| Rc::clone(contract))

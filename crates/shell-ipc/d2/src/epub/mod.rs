@@ -16,6 +16,8 @@
 
 mod attachments;
 pub mod hosts;
+mod owned;
+mod recovery;
 mod session;
 #[cfg(test)]
 mod tests;
@@ -147,6 +149,10 @@ struct ViewState {
     /// `saveChainByWc`: a save runs; the next ones wait in order
     saving: bool,
     queued_saves: VecDeque<Box<dyn FnOnce()>>,
+    document: Option<shell_contract::runtime::RendererGeneration>,
+    owned_saves: HashMap<String, owned::Pending>,
+    owned_closes: HashMap<String, owned::close::PendingClose>,
+    recovery: Option<recovery::Pending>,
     /// `docDiskStates`
     disk_states: HashMap<String, SaveDiskState>,
 }
@@ -175,6 +181,7 @@ struct State {
     views: BTreeMap<ViewId, ViewState>,
     /// `readingState`, made on first use
     reading: Option<ReadingState<ReadingDeps>>,
+    reading_revision: Option<shell_contract::runtime::RendererGeneration>,
     attach: attachments::AttachState,
 }
 
@@ -228,15 +235,35 @@ pub(crate) fn entries(
 
     let e = &epub;
     Ok(vec![
-        invoke(e, "epub:consume-pending", |epub, view, _| {
-            Ok(epub
-                .view(view, |v| v.open_path.clone())
-                .flatten()
-                .into_ipc())
-        }),
-        later(e, "epub:open-file", Epub::open_file),
+        {
+            let epub = e.clone();
+            kit::invoke("epub:consume-pending", move |cx, _| {
+                epub.track(cx);
+                epub.consume_recovery(cx)
+            })
+        },
+        {
+            let epub = e.clone();
+            kit::invoke("epub:recovery-initialized", move |cx, args| epub.recovery_initialized(cx, args))
+        },
+        {
+            let epub = e.clone();
+            kit::invoke_later("epub:open-file", move |cx, args, reply| {
+                let view = epub.track(cx);
+                match epub.recovery_use(cx) {
+                    Ok(scope) => epub.open_file(view, args, reply, scope),
+                    Err(error) => reply.reply(Err(kit::error(error))),
+                }
+            })
+        },
         later(e, "epub:read-chapter", Epub::read_chapter),
-        later(e, "epub:apply-edits", Epub::apply_edits),
+        {
+            let epub = e.clone();
+            kit::invoke_later("epub:apply-edits", move |cx, args, reply| {
+                epub.track(cx);
+                epub.apply_owned_edits(cx, args, reply);
+            })
+        },
         later(e, "epub:replace-ranges", Epub::replace_ranges),
         invoke(e, "epub:set-translation-lock", |epub, view, args| {
             let Some(session) = epub.session(view) else {
@@ -246,7 +273,13 @@ pub(crate) fn entries(
             session.locked = args.get(0) == &IpcValue::Bool(true);
             Ok(session.locked.into_ipc())
         }),
-        later(e, "epub:save", Epub::save),
+        {
+            let epub = e.clone();
+            kit::invoke_later("epub:save", move |cx, args, reply| {
+                epub.track(cx);
+                epub.save_owned_dispatch(cx, args, reply);
+            })
+        },
         invoke(e, "epub:open-link", Epub::open_link),
         send(e, "epub:dirty-changed", |epub, view, args| {
             let dirty = args.get(0) == &IpcValue::Bool(true) && epub.may_write(view);
@@ -276,12 +309,18 @@ pub(crate) fn entries(
             }
         }),
         // safety net for menu saves the renderer declined without invoking save()
-        send(e, "epub:save-request-ack", |epub, view, args| {
-            let waiter = epub.with_view(view, |v| v.save_waiter.take()).flatten();
-            if let Some(waiter) = waiter {
-                waiter(args.get(0) == &IpcValue::Bool(true))
-            }
-        }),
+        {
+            let epub = e.clone();
+            kit::send("epub:save-request-ack", move |cx, args| {
+                let view = epub.track(cx);
+                if let Some(id) = args.str(1) {
+                    return epub.owned_ack(cx, id, args.get(0) == &IpcValue::Bool(true));
+                }
+                let waiter = epub.with_view(view, |v| v.save_waiter.take()).flatten();
+                if let Some(waiter) = waiter { waiter(args.get(0) == &IpcValue::Bool(true)); }
+                Ok(())
+            })
+        },
         invoke(e, "epub:get-reading-state", |epub, view, _| {
             let path = epub
                 .view(view, |v| v.session.as_ref().and(v.save_path.clone()))
@@ -301,6 +340,7 @@ pub(crate) fn entries(
                 return;
             }
             // the TypeScript only warns when the position was not saved
+            epub.begin_reading_change();
             let _ = epub.reading(|r| r.set_position(&path, &checked));
         }),
         invoke(e, "epub:set-view-prefs", Epub::set_view_prefs),
@@ -381,8 +421,8 @@ pub(crate) fn entries(
         invoke(e, "epub:files-add-pasted-image", |epub, _, args| {
             epub.files_add_pasted_image(args.get(0), args.get(1))
         }),
-        later(e, "epub:files-read", |epub, _, args, reply| {
-            epub.read_attachment_page(args, reply)
+        later(e, "epub:files-read", |epub, view, args, reply| {
+            epub.read_attachment_page(view, args, reply)
         }),
         invoke(e, "epub:files-read-image", |epub, _, args| {
             Ok(epub.read_attachment_image(args.get(0)))
@@ -880,6 +920,13 @@ impl Epub {
             .into_owned()
     }
 
+    fn begin_reading_change(&self) -> shell_contract::runtime::RendererGeneration {
+        let revision = shell_contract::runtime::RendererGeneration::new();
+        let previous = self.state.borrow_mut().reading_revision.replace(revision.clone());
+        if let Some(previous) = previous { previous.revoke(); }
+        revision
+    }
+
     /// `reading()`: the reading state, made on first use
     fn reading<R>(&self, f: impl FnOnce(&mut ReadingState<ReadingDeps>) -> R) -> R {
         let dir = self.user_data_dir();
@@ -907,6 +954,16 @@ impl Epub {
     fn forget_view(&self, view: ViewId) {
         let gone = self.state.borrow_mut().views.remove(&view);
         let Some(gone) = gone else { return };
+        if let Some(pending) = &gone.recovery {
+            if let Some(receipt) = &pending.receipt {
+                if let Ok(notification) = receipt.fail_after_loss("The EPUB view was closed".into()) { notification.notify(); }
+            }
+        }
+        if let Some(document) = gone.document { document.revoke(); }
+        for (_, close) in gone.owned_closes { close.cancel_and_finish(); }
+        for (_, pending) in gone.owned_saves {
+            pending.cancel_and_finish();
+        }
         for (_, waiter) in gone.flush_waiters {
             waiter(Flush::Failed)
         }
@@ -975,12 +1032,12 @@ impl Epub {
         &self,
         session: Rc<RefCell<Session>>,
         path: String,
-        then: impl FnOnce(&mut Session, usize) + 'static,
+        then: impl FnOnce(&mut Session, Result<usize, String>) + 'static,
     ) {
         let known = session.borrow().chapter_index(&path);
         if let Some(i) = known {
             let mut s = session.borrow_mut();
-            return then(&mut s, i);
+            return then(&mut s, Ok(i));
         }
         let bytes = session.borrow().bytes.clone();
         let engine = self.engine.clone();
@@ -989,13 +1046,13 @@ impl Epub {
             move || session::load_chapter(&*engine, bytes, path),
             move |state| {
                 let mut s = session.borrow_mut();
-                let i = s.insert_chapter(state);
-                then(&mut s, i)
+                let result = state.map(|state| s.insert_chapter(state));
+                then(&mut s, result)
             },
         );
     }
 
-    fn open_file(self: &Rc<Self>, view: ViewId, args: Args, reply: Responder) {
+    fn open_file(self: &Rc<Self>, view: ViewId, args: Args, reply: Responder, recovery: Option<recovery::OpenUse>) {
         let path = args.str(0).map(str::to_owned);
         let granted = path
             .as_ref()
@@ -1007,28 +1064,57 @@ impl Epub {
         let (held, save_path) = self
             .view(view, |v| (v.session.clone(), v.save_path.clone()))
             .unwrap_or_default();
-        if let Some(held) = held
-            && held.borrow().is_dirty()
-            && save_path.as_deref() == Some(path.as_str())
-        {
-            return reply.reply(Ok(self.opened(view, &path, &held)));
+        if recovery.is_none() {
+            if let Some(held) = held
+                && held.borrow().is_dirty()
+                && save_path.as_deref() == Some(path.as_str())
+            {
+                return reply.reply(Ok(self.opened(view, &path, &held)));
+            }
         }
+        let document = if let Some(scope) = &recovery {
+            match self.begin_recovery_open(view, &path, scope) {
+                Ok(document) => Some(document),
+                Err(error) => return reply.reply(Err(kit::error(error))),
+            }
+        } else {
+            self.replace_save_document(view);
+            self.view(view, |entry| entry.document.clone()).flatten()
+        };
+        let worker_scope = recovery.clone();
+        let effects = self.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().cloned();
         let engine = self.engine.clone();
         let read_path = path.clone();
         let epub = self.clone();
         kit::on_worker(
             &self.services,
             move || {
+                if let Some(scope) = &worker_scope {
+                    let Some(effects) = effects else { return Err("Native recovery effects are unavailable".to_owned()); };
+                    effects.with_recovery_open_effect(&scope.receipt, &scope.owner, &scope.cancel, &mut || Ok(()))?;
+                }
                 let Ok(bytes) = std::fs::read(main_core::node_fs::namespaced(&read_path)) else {
-                    return OpenRun::Unreadable;
+                    return Ok(OpenRun::Unreadable);
                 };
                 let bytes: Bytes = Arc::new(bytes);
-                match engine.open(bytes.clone()) {
+                Ok(match engine.open(bytes.clone()) {
                     Err(reason) => OpenRun::Refused(reason),
                     Ok(opened) => OpenRun::Opened(bytes, opened, record_disk_state(&read_path)),
-                }
+                })
             },
             move |run| {
+                let run = match run {
+                    Ok(run) => run,
+                    Err(error) => return reply.reply(Err(kit::error(error))),
+                };
+                if let Some(scope) = &recovery {
+                    let Some(document) = &document else { return reply.reply(Err(kit::error("The EPUB document was released"))); };
+                    return reply.reply(epub.finish_recovery_open(view, &path, scope, document, run).map_err(kit::error));
+                }
+                if !document.as_ref().is_some_and(|document| document.is_active()
+                    && epub.view(view, |entry| entry.document.as_ref().is_some_and(|current| current.same_generation(document))).unwrap_or(false)) {
+                    return reply.reply(Err(kit::error("The book document was replaced")));
+                }
                 let refused = |reason: &str| {
                     object(vec![
                         ("status", "refused".into_ipc()),
@@ -1091,11 +1177,11 @@ impl Epub {
             return reply.reply(Ok(failure("invalid-request", Some("no such chapter"))));
         };
         self.with_chapter(session, path, move |s, i| {
-            reply.reply(Ok(s.chapter_result(index, i)))
+            reply.reply(i.map(|i| s.chapter_result(index, i)).map_err(kit::error))
         });
     }
 
-    fn apply_edits(self: &Rc<Self>, view: ViewId, args: Args, reply: Responder) {
+    fn apply_edits(self: &Rc<Self>, view: ViewId, args: Args, reply: Responder, scope: Option<owned::Scope>) {
         let session = self.session(view).filter(|_| self.may_write(view));
         let Some(session) = session else {
             return reply.reply(Ok(failure("not-open", None)));
@@ -1124,7 +1210,11 @@ impl Epub {
         };
         let engine = self.engine.clone();
         self.with_chapter(session, target.path, move |s, i| {
-            reply.reply(Ok(s.apply_edits(&*engine, i, target.index, &edits)))
+            let result = i.and_then(|i| match scope {
+                Some(scope) => scope.effect(|| Ok(s.apply_edits(&*engine, i, target.index, &edits))),
+                None => Ok(s.apply_edits(&*engine, i, target.index, &edits)),
+            });
+            reply.reply(result.map_err(kit::error));
         });
     }
 
@@ -1146,13 +1236,8 @@ impl Epub {
         };
         let engine = self.engine.clone();
         self.with_chapter(session, target.path, move |s, i| {
-            reply.reply(Ok(s.replace_ranges(
-                &*engine,
-                i,
-                target.index,
-                version,
-                replacements,
-            )))
+            let result = i.and_then(|i| s.replace_ranges(&*engine, i, target.index, version, replacements));
+            reply.reply(result.map_err(kit::error))
         });
     }
 
@@ -1395,6 +1480,7 @@ impl Epub {
     }
 
     fn set_view_prefs(self: &Rc<Self>, view: ViewId, args: Args) -> Reply {
+        self.begin_reading_change();
         let prefs = self
             .reading(|r| r.set_view_prefs(to_js_json(args.get(0)).as_ref()))
             .map_err(|e| kit::error(e.message))?;
@@ -1629,7 +1715,7 @@ impl Epub {
 
     /// `session.readText()`: the book's text in spine order, unsaved edits
     /// included; unread chapters are read on a worker
-    fn book_text(&self, session: Rc<RefCell<Session>>, then: Box<dyn FnOnce(String)>) {
+    fn book_text(&self, session: Rc<RefCell<Session>>, then: Box<dyn FnOnce(Result<String, IpcError>)>) {
         let (paths, bytes) = {
             let s = session.borrow();
             let paths: Vec<(String, Option<String>)> = s
@@ -1645,33 +1731,38 @@ impl Epub {
         let engine = self.engine.clone();
         kit::on_worker(
             &self.services,
-            move || {
+            move || -> Result<_, String> {
                 let mut loaded = Vec::new();
                 let mut parts = Vec::new();
                 for (path, source) in paths {
                     let source = match source {
                         Some(source) => source,
                         None => {
-                            let state = session::load_chapter(&*engine, bytes.clone(), path);
+                            let state = session::load_chapter(&*engine, bytes.clone(), path)?;
                             let source = state.map.source.clone();
                             loaded.push(state);
                             source
                         }
                     };
-                    let text = jscompat::trim(&engine.extract_chapter_text(&source)).to_owned();
+                    let extracted = engine.extract_chapter_text(&source)?;
+                    let text = jscompat::trim(&extracted).to_owned();
                     if !text.is_empty() {
                         parts.push(text);
                     }
                 }
-                (loaded, parts.join("\n\n"))
+                Ok((loaded, parts.join("\n\n")))
             },
-            move |(loaded, text)| {
+            move |result| {
+                let (loaded, text) = match result {
+                    Ok(value) => value,
+                    Err(error) => return then(Err(kit::error(error))),
+                };
                 let mut s = session.borrow_mut();
                 for state in loaded {
                     s.insert_chapter(state);
                 }
                 drop(s);
-                then(text)
+                then(Ok(text))
             },
         );
     }
@@ -1690,6 +1781,20 @@ fn save_book(
     target: &str,
     old_hash: &str,
 ) -> SaveRun {
+    save_book_admitted(engine, shell, dir, bytes, edits, same_file, target, old_hash, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn save_book_admitted(
+    engine: &dyn EpubEngine, shell: &dyn EpubShell, dir: &str, bytes: Bytes,
+    edits: &[(String, Vec<Replacement>)], same_file: bool, target: &str, old_hash: &str,
+    scope: Option<&owned::Scope>,
+) -> SaveRun {
+    if let Some(scope) = scope && let Err(error) = scope.check() { return SaveRun::Failed(error); }
+    let write = |bytes: &[u8]| match scope {
+        Some(scope) => scope.write(target, bytes),
+        None => atomic_write_file(target, bytes).map_err(|error| error.message),
+    };
     let saved = match engine.save(bytes.clone(), edits) {
         Err(message) => return SaveRun::Failed(message),
         Ok(saved) => saved,
@@ -1699,13 +1804,13 @@ fn save_book(
             SaveRun::Failed(format!("epub: the save was refused ({reason}): {detail}"))
         }
         SavedBytes::Unchanged if same_file => SaveRun::NotWritten,
-        SavedBytes::Unchanged => match atomic_write_file(target, &bytes) {
-            Err(e) => SaveRun::Failed(e.message),
+        SavedBytes::Unchanged => match write(&bytes) {
+            Err(message) => SaveRun::Failed(message),
             Ok(()) => SaveRun::Copied(record_disk_state(target)),
         },
         SavedBytes::Changed(new) => {
-            if let Err(e) = atomic_write_file(target, &new) {
-                return SaveRun::Failed(e.message);
+            if let Err(message) = write(&new) {
+                return SaveRun::Failed(message);
             }
             let new: Bytes = Arc::new(new);
             let opened = match engine.open(new.clone()) {
@@ -1716,9 +1821,26 @@ fn save_book(
             };
             // A failed migration does not undo the save; the TypeScript only logs it.
             if opened.doc_hash != old_hash && store_dir(dir).is_ok() {
-                let info = engine.migration_info(new.clone(), old_hash, &opened.doc_hash);
-                if engine.store_migrate_document(dir, info).is_ok() {
-                    let _ = shell.migrate_job_records(dir, old_hash, &opened.doc_hash);
+                match engine.migration_info(new.clone(), old_hash, &opened.doc_hash) {
+                    Ok(info) => {
+                        let mut admit = |action: &mut dyn FnMut() -> Result<(), NodeError>| -> Result<(), NodeError> {
+                            match scope {
+                                Some(scope) => scope.effect(|| Ok(action())).map_err(|message| NodeError { code: None, message })?,
+                                None => action(),
+                            }
+                        };
+                        let migrated = match scope {
+                            Some(_) => engine.store_migrate_document_owned(dir, info, &mut admit),
+                            None => engine.store_migrate_document(dir, info),
+                        };
+                        if migrated.is_ok() {
+                            match scope {
+                                Some(_) => { let _ = shell.migrate_job_records_owned(dir, old_hash, &opened.doc_hash, &mut admit); }
+                                None => { let _ = shell.migrate_job_records(dir, old_hash, &opened.doc_hash); }
+                            }
+                        }
+                    }
+                    Err(error) => eprintln!("[epub] stored translations did not move to the saved file: {error}"),
                 }
             }
             SaveRun::Rebased {
@@ -1755,11 +1877,14 @@ impl EpubEditors {
             .map(|p| p.to_string_lossy().into_owned());
         let mut state = self.0.state.borrow_mut();
         let v = state.views.entry(view).or_default();
+        let previous = v.document.replace(shell_contract::runtime::RendererGeneration::new());
         v.unopened = true;
         if let Some(open) = open {
             v.open_path = Some(open.clone());
             v.allowed = HashSet::from([open]);
         }
+        drop(state);
+        if let Some(previous) = previous { previous.revoke(); }
     }
 
     /// `epubIsTranslationLocked(wcId)`
@@ -1798,12 +1923,44 @@ fn timer_slot() -> Rc<Cell<Option<Timer>>> {
 }
 
 impl DocumentEditors for EpubEditors {
+    fn saved_surface(&self) -> Surface { Surface::Epub }
+
     fn owns(&self, view: ViewId) -> bool {
         self.0
             .services
             .views
             .sender_of(view)
             .is_some_and(|s| s.surface == Surface::Epub)
+    }
+
+    fn request_save_owned(&self, view: ViewId, mode: shell_contract::editors::SaveMode,
+        origin: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken,
+        then: shell_contract::editors::Then<bool>) {
+        self.0.begin_owned(view, mode, None, origin, cancel, then);
+    }
+
+    fn save_to_path_owned(&self, view: ViewId, path: PathBuf,
+        origin: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken,
+        then: shell_contract::editors::Then<()>) {
+        self.0.begin_owned(view, shell_contract::editors::SaveMode::Save, Some(path), origin, cancel,
+            Box::new(move |result| then(result.and_then(|saved| {
+                if saved { Ok(()) } else { Err(kit::error("Could not save the book")) }
+            }))));
+    }
+
+    fn request_save_native(&self, view: ViewId, mode: shell_contract::editors::SaveMode,
+        binding: shell_contract::ipc::NativeExistingDocumentBinding, cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken, then: shell_contract::editors::Then<bool>) {
+        self.0.begin_native(view, mode, None, binding, cancel, pending, then);
+    }
+
+    fn save_to_path_native(&self, view: ViewId, path: PathBuf,
+        binding: shell_contract::ipc::NativeExistingDocumentBinding, cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken, then: shell_contract::editors::Then<()>) {
+        self.0.begin_native(view, shell_contract::editors::SaveMode::Save, Some(path), binding, cancel, pending,
+            Box::new(move |result| then(result.and_then(|saved| {
+                if saved { Ok(()) } else { Err(kit::error("Could not save the book")) }
+            }))));
     }
 
     /// `requestEpubSave(contents, mode)`
@@ -1850,6 +2007,11 @@ impl DocumentEditors for EpubEditors {
     }
 
     /// `requestEpubClose(contents, parent)`: true means the view may close
+    fn request_close_owned(&self, view: ViewId, parent: Option<WindowId>, origin: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken, then: shell_contract::editors::Then<bool>) {
+        self.0.request_owned_close(view, parent, origin, cancel, then);
+    }
+
     fn request_close(
         &self,
         view: ViewId,
@@ -1936,7 +2098,7 @@ impl DocumentEditors for EpubEditors {
                 if !epub.alive(view) || !current.is_some_and(|c| Rc::ptr_eq(&c, &session)) {
                     return then(Err(kit::error("the book is no longer open")));
                 }
-                epub.book_text(session.clone(), Box::new(move |text| then(Ok(text))));
+                epub.book_text(session.clone(), then);
             })
         };
         let on_timeout = finish.clone();
@@ -2039,10 +2201,59 @@ impl DocumentEditors for EpubEditors {
             }
         });
         // the TypeScript ignores a position that did not move
+        epub.begin_reading_change();
         let _ = epub.reading(|r| r.move_position(&old, &new));
         if epub.alive(view) {
             epub.emit(view, "epub:file-renamed", vec![new.into_ipc()]);
         }
+    }
+
+    fn file_renamed_owned(&self, view: ViewId, old_path: &Path, new_path: &Path,
+        origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
+        then: shell_contract::editors::Then<()>) {
+        self.0.rename_owned_book(view, old_path, new_path, origin, destination, &[], cancel, pending, &[], then);
+    }
+
+
+    fn file_renamed_many_owned_extra(&self, view: ViewId, old_path: &Path, new_path: &Path,
+        origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner,
+        participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken],
+        then: shell_contract::editors::Then<()>) {
+        self.0.rename_owned_book(view, old_path, new_path, origin, destination, participants, cancel, pending, additional, then);
+    }
+
+    fn file_renamed_existing_document(&self, view: ViewId, old_path: &Path, new_path: &Path,
+        authority: &shell_contract::ipc::NativeSaveRevisionAuthority, expected_path: &Path, destination: &shell_contract::ipc::NativeRequestOwner,
+        participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken],
+        then: shell_contract::editors::Then<Option<shell_contract::ipc::NativeSaveRevisionReceipt>>) {
+        let snapshot = match authority.snapshot() { Ok(snapshot) => snapshot, Err(error) => return then(Err(kit::error(error))) };
+        self.0.rename_native_book(view, old_path, new_path, &snapshot, expected_path, destination, participants, cancel, pending, additional, Box::new(move |result| then(result.map(|()| None))));
+    }
+
+    fn file_renamed_recovery(&self, view: ViewId, old_path: &Path, new_path: &Path,
+        receipt: &shell_contract::ipc::RecoverySeedReceipt, receiver: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
+        then: shell_contract::editors::Then<()>) {
+        self.0.rename_recovery_book(view, old_path, new_path, receipt, receiver, destination, participants, cancel, pending, then);
+    }
+
+    fn capture_document_owner(&self, view: ViewId, mut native: shell_contract::ipc::NativeRequestOwner) -> Result<shell_contract::ipc::NativeRequestOwner, IpcError> {
+        let document = self.0.view(view, |entry| entry.document.clone()).flatten().ok_or_else(|| kit::error("The book document is unavailable"))?;
+        if native.view != view || !document.is_active() { return Err(kit::error("The book document was released")); }
+        if !native.context.renderer().zip(self.0.services.views.renderer_generation(view).as_ref())
+            .is_some_and(|(expected, current)| expected.is_active() && expected.same_generation(current))
+            || !native.loss_token().is_some_and(|loss| !loss.is_cancelled()) {
+            return Err(kit::error("The book renderer was replaced"));
+        }
+        if let Some(expected) = native.context.document_lease() {
+            if !expected.same_generation(&document) { return Err(kit::error("The book document was replaced")); }
+        }
+        native.context = native.context.with_document_lease(document);
+        Ok(native)
     }
 
     /// The EPUB editor has no export menu (`epub-main.ts` exports no

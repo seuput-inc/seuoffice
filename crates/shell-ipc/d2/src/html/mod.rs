@@ -31,7 +31,7 @@ use shell_contract::runtime::Services;
 use shell_contract::{Batch, DocumentEditors, IpcValue, Provided, ViewId, WindowId};
 
 use crate::kit::{self, Entry, IntoIpc, Timer, ViewMap, obj};
-use odt_export::OdtConversion;
+pub use odt_export::{OdtConversion, ReportItem};
 use text_doc::{DocChannels, DocHooks, TextDocs, text_document_editors};
 
 /// `parseFileToText(path)`'s answer, the fields the handlers read
@@ -48,18 +48,23 @@ pub struct ParsedFile {
 /// What the HTML handlers call that is not in Rust. Every method may run on
 /// a worker.
 pub trait HtmlEngine: Send + Sync {
-    /// `renderPrintPdf`'s window: a hidden `BrowserWindow({ show: false,
-    /// webPreferences: { sandbox: true, javascript: false } })` that loads
-    /// `html_file` and answers `printToPDF({ pageSize: 'A4', printBackground:
-    /// true, margins: 0.6in on every side })`
-    fn print_pdf(&self, html_file: &Path) -> Result<Vec<u8>, String>;
+    /// A hidden, script-free print window rendering this document with its
+    /// relative assets. Uses A4, background printing and 0.6 inch margins.
+    fn print_pdf(&self, view: ViewId, html: &str, doc_path: Option<&str>, cancel: &shell_contract::runtime::CancelToken) -> Result<Vec<u8>, String>;
+    fn print_pdf_owned(&self, origin:&shell_contract::ipc::NativeRequestOwner,destination:&shell_contract::ipc::NativeRequestOwner,html:&str,doc_path:Option<&str>,cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken)->Result<Vec<u8>,String>;
+    fn print_pdf_native(&self,binding:&shell_contract::ipc::NativeExistingDocumentBinding,participants:&[shell_contract::ipc::NativeRequestOwner],html:&str,doc_path:Option<&str>,cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,additional:&[shell_contract::runtime::CancelToken])->Result<Vec<u8>,String>;
+    fn print_pdf_invocation(&self,document:&shell_contract::ipc::NativeInvocationDocument,owner:&shell_contract::ipc::NativeRequestOwner,html:&str,doc_path:Option<&str>,cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken)->Result<Vec<u8>,String>;
     /// `convertHtmlToDocx({ url: pathToFileURL(html_file) }, driver)` over an
     /// `ElectronBrowserDriver` at `HTML2DOCX_VIEWPORT` (packages/html2docx);
     /// the host closes its hidden window, and destroys it when the handler's
     /// 180 s watchdog has given up
-    fn html_to_docx(&self, html_file: &Path) -> Result<Vec<u8>, String>;
+    fn html_to_docx(&self, view: ViewId, html_file: &Path, cancel: &shell_contract::runtime::CancelToken) -> Result<Vec<u8>, String>;
+    fn html_to_docx_owned(&self, origin:&shell_contract::ipc::NativeRequestOwner,destination:&shell_contract::ipc::NativeRequestOwner,html_file:&Path,cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken)->Result<Vec<u8>,String>;
+    fn html_to_docx_native(&self,binding:&shell_contract::ipc::NativeExistingDocumentBinding,participants:&[shell_contract::ipc::NativeRequestOwner],html_file:&Path,cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,additional:&[shell_contract::runtime::CancelToken])->Result<Vec<u8>,String>;
+    fn html_to_docx_invocation(&self,document:&shell_contract::ipc::NativeInvocationDocument,owner:&shell_contract::ipc::NativeRequestOwner,html_file:&Path,cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken)->Result<Vec<u8>,String>;
     /// `docxToOdt(docx)` (packages/odt-engine)
     fn docx_to_odt(&self, docx: Vec<u8>) -> Result<OdtConversion, String>;
+    fn docx_to_odt_cancellable(&self,docx:Vec<u8>,cancel:&shell_contract::runtime::CancelToken)->Result<OdtConversion,String>;
     /// `parseFileToText(path)` (packages/file-parse)
     fn parse_file_to_text(&self, path: &Path) -> ParsedFile;
     /// `diagramPictureExtOf(path)` (packages/file-parse, drawio-model)
@@ -81,6 +86,17 @@ pub struct Handoff {
     pub materials: Vec<(String, String)>,
 }
 
+pub type RecoveryAssetWaiter = Box<dyn FnOnce(Vec<shell_contract::runtime::CancelToken>) -> Result<(), String> + Send>;
+pub struct RecoveryAssetStage {
+    pub commit: Box<dyn FnMut() -> Result<bool, String> + Send>,
+    pub subscribe: Box<dyn Fn() -> RecoveryAssetWaiter + Send>,
+}
+
+pub struct SavedAssetStage {
+    pub stage: RecoveryAssetStage,
+    pub revoke: Box<dyn FnOnce() -> Result<(), String> + Send>,
+}
+
 /// The shell's side of the HTML editor: its hooks and process state. Called
 /// on the core thread.
 pub trait HtmlShell: Send + Sync {
@@ -95,25 +111,40 @@ pub trait HtmlShell: Send + Sync {
     /// `isPathOpenElsewhere(path)`: the split-pane probe
     fn is_path_open_elsewhere(&self, path: &str) -> bool;
     /// `assertFileSaved(path)`: `Err` is the message it throws
-    fn assert_file_saved(&self, path: &str) -> Result<(), String>;
+    fn assert_file_saved(&self, path: &str, then: Box<dyn FnOnce(Result<(), String>)>);
     /// `runtime.openGeneratedPath(path)`: true when a tab opened it
     fn open_generated_path(&self, path: &Path) -> bool;
     /// `runtime.newDocumentDir(webContentsId)`
     fn new_document_dir(&self, view: ViewId) -> Option<PathBuf>;
     /// `runtime.writeNewDocument(webContentsId, fileName, bytes)`
-    fn write_new_document(&self, view: ViewId, file_name: &str, bytes: &[u8]) -> Option<PathBuf>;
+    fn write_new_document(&self, view: ViewId, file_name: &str, bytes: &[u8]) -> Result<Option<PathBuf>, String>;
+    fn write_new_document_owned(&self, origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, effects: &shell_contract::hosts::OwnedEffectsHost, admission: main_core::packages::electron_utils::atomic_write::owned::Admission, file_name: &str, bytes: &[u8]) -> Result<Option<PathBuf>, String>;
+    /// Replace this view's document-scoped asset roots; both None revoke them.
+    fn asset_paths_changed(&self, view: ViewId, tracked: bool, open: Option<&str>, save: Option<&str>) -> Result<(), String>;
+    fn asset_paths_changed_owned(&self,origin:&shell_contract::ipc::NativeRequestOwner,captured:&[shell_contract::ipc::NativeRequestOwner],cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,additional:&[shell_contract::runtime::CancelToken],effects:&shell_contract::hosts::OwnedEffectsHost,tracked:bool,open:Option<&str>,save:Option<&str>)->Result<(),String>;
+    fn prepare_native_save_asset_paths(&self,destination:&shell_contract::ipc::NativeRequestOwner,tracked:bool,open:Option<&str>,save:Option<&str>)->Result<RecoveryAssetStage,String>;
+    fn prepare_saved_document_asset_paths(&self,destination:&shell_contract::ipc::NativeRequestOwner,open:Option<&str>,save:Option<&str>)->Result<SavedAssetStage,String>;
+    fn prepare_recovery_asset_paths(&self,target:&shell_contract::ipc::RecoveryOpenTarget,tracked:bool,open:Option<&str>,save:Option<&str>)->Result<Box<dyn FnMut()->Result<(),String>+Send>,String>;
+    fn prepare_rename_asset_paths_recovery(&self,receipt:&shell_contract::ipc::RecoverySeedReceipt,receiver:&shell_contract::ipc::NativeRequestOwner,destination:&shell_contract::ipc::NativeRequestOwner,participants:&[shell_contract::ipc::NativeRequestOwner],cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,tracked:bool,open:Option<&str>,save:Option<&str>)->Result<RecoveryAssetStage,String>;
+    /// Delegate or revoke an HTML presentation view's document asset access.
+    fn asset_present_owner(&self, view: ViewId, owner: Option<ViewId>) -> Result<(), String>;
     /// `fileSavedHook(contents, path)`
     fn file_saved(&self, view: ViewId, path: &Path);
+    fn file_saved_owned(&self, origin:shell_contract::ipc::NativeRequestOwner, destination:shell_contract::ipc::NativeRequestOwner, participants:Vec<shell_contract::ipc::NativeRequestOwner>, cancel:shell_contract::runtime::CancelToken, pending:shell_contract::runtime::CancelToken, additional:Vec<shell_contract::runtime::CancelToken>, effects:shell_contract::hosts::OwnedEffectsHost, path:PathBuf, then:Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<PathBuf>,String>)>);
+    fn file_saved_native(&self,destination:shell_contract::ipc::NativeSaveDestination,participants:Vec<shell_contract::ipc::NativeRequestOwner>,cancel:shell_contract::runtime::CancelToken,pending:shell_contract::runtime::CancelToken,additional:Vec<shell_contract::runtime::CancelToken>,effects:shell_contract::hosts::OwnedEffectsHost,then:Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<PathBuf>,String>)>);
     /// `provisionalTitleHook(contents, title)`
     fn provisional_title(&self, view: ViewId, title: &str);
     /// `docxExportedHook(path)`: false when no hook is set (the file is then revealed)
     fn docx_exported(&self, path: &Path) -> bool;
     /// `docxExportPrepareHook(path)`: `then(true)` when no hook is set
     fn docx_export_prepare(&self, path: &Path, then: Box<dyn FnOnce(bool)>);
+    fn docx_export_prepare_owned(&self,origin:shell_contract::ipc::NativeRequestOwner,destination:shell_contract::ipc::NativeRequestOwner,cancel:shell_contract::runtime::CancelToken,pending:shell_contract::runtime::CancelToken,effects:shell_contract::hosts::OwnedEffectsHost,path:PathBuf,then:Box<dyn FnOnce(Result<bool,String>)>);
+    fn docx_export_prepare_native(&self,selection:shell_contract::ipc::NativeSaveDestination,participants:Vec<shell_contract::ipc::NativeRequestOwner>,cancel:shell_contract::runtime::CancelToken,pending:shell_contract::runtime::CancelToken,additional:Vec<shell_contract::runtime::CancelToken>,effects:shell_contract::hosts::OwnedEffectsHost,then:Box<dyn FnOnce(Result<bool,String>)>);
+    fn export_written_owned(&self,origin:shell_contract::ipc::NativeRequestOwner,destination:shell_contract::ipc::NativeRequestOwner,cancel:shell_contract::runtime::CancelToken,pending:shell_contract::runtime::CancelToken,effects:shell_contract::hosts::OwnedEffectsHost,path:PathBuf,kind:&'static str,then:Box<dyn FnOnce(Result<(),String>)>);
     /// `takeGenerateHandoff('html', webContentsId)`
-    fn take_generate_handoff(&self, view: ViewId) -> Option<Handoff>;
+    fn take_generate_handoff_owned(&self, consumer: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken) -> Result<Option<Handoff>, String>;
     /// `reportGenerateRunStarted('html', webContentsId, paths) !== null`
-    fn report_generate_run_started(&self, view: ViewId, paths: &[String]) -> bool;
+    fn report_generate_run_started_owned(&self, consumer: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, paths: &[String]) -> Result<bool, String>;
     /// `presentHooks.openTab(owner, title)`: false opens a window instead
     fn present_open_tab(&self, owner: ViewId, title: &str) -> bool;
     /// `presentHooks.hostWindow(contents)`
@@ -164,9 +195,17 @@ pub struct HtmlEditors {
     shell: HtmlShellHost,
 }
 
-text_document_editors!(HtmlEditors);
+text_document_editors!(HtmlEditors, shell_contract::Surface::Html);
 
 impl HtmlEditors {
+    /// Registers a present view before its renderer starts loading.
+    pub fn bind_present(&self, view: ViewId, owner: ViewId) {
+        self.state.borrow_mut().present_owner.insert(view, owner);
+        if let Err(error) = self.shell.asset_present_owner(view, Some(owner)) {
+            eprintln!("[html] could not authorize present assets: {error}");
+        }
+    }
+
     /// `queueHtmlSeedFor(contents, text)`: text a new untitled tab starts with
     pub fn queue_seed(&self, view: ViewId, text: &str) {
         if !self.docs.is_destroyed(view) {
@@ -202,6 +241,15 @@ impl HtmlEditors {
             then,
         )
     }
+
+    pub fn export_headless_invocation(
+        &self, view: ViewId, input: &str, out_path: &str, format: &str, timeout: Duration,
+        invocation: shell_contract::ipc::NativeInvocationTarget, then: Box<dyn FnOnce(Result<(), String>)>,
+    ) {
+        self.docs.headless_export_invocation(view, input, obj([
+            ("outPath", out_path.into_ipc()), ("format", format.into_ipc()),
+        ]), timeout, invocation, then)
+    }
 }
 
 /// The channels of the HTML editor that the document state serves
@@ -221,6 +269,7 @@ const CHANNELS: DocChannels = DocChannels {
     recovery_flush_request: "html:recovery-flush-request",
     recovery_open: "html:recovery-open",
     recovery_write: "html:recovery-write",
+    recovery_applied: "html:recovery-applied",
     consume_headless_export: "html:consume-headless-export",
     headless_export_done: "html:headless-export-done",
 };
@@ -247,6 +296,12 @@ pub(crate) fn entries(
         Rc::clone(&state),
         shell.clone(),
     );
+    let assets = shell.clone();
+    let owned_assets=shell.clone();
+    let native_assets=shell.clone();
+    let saved_assets=shell.clone();
+    let recovery_assets=shell.clone();
+    let rename_recovery_assets=shell.clone();
     let docs = TextDocs::new(
         services,
         CHANNELS,
@@ -258,6 +313,12 @@ pub(crate) fn entries(
             open_elsewhere: Box::new(move |p| s4.is_path_open_elsewhere(p)),
             discard_pending_assets: |path| discard_pending_owned_assets(path).errors,
             rename_assets: |old, new| rename_owned_asset_document(old, new).map_err(|e| e.message),
+            asset_paths: Box::new(move |view, tracked, open, save| assets.asset_paths_changed(view, tracked, open, save)),
+            asset_paths_owned: Box::new(move|owner,tracked,open,save|owned_assets.asset_paths_changed_owned(owner.origin().ok_or("the save has no renderer origin")?,&owner.captured_participants(),&owner.cancel(),&owner.pending(),&owner.callback_cancels(),owner.effects(),tracked,open,save)),
+            native_save_asset_paths: Arc::new(move|binding,tracked,open,save|native_assets.prepare_native_save_asset_paths(binding,tracked,open,save)),
+            saved_asset_paths: Arc::new(move|binding,open,save|saved_assets.prepare_saved_document_asset_paths(binding,open,save)),
+            recovery_asset_paths:Box::new(move|target,tracked,open,save|recovery_assets.prepare_recovery_asset_paths(target,tracked,open,save)),
+            rename_recovery_asset_paths:Arc::new(move|scope,tracked,open,save|rename_recovery_assets.prepare_rename_asset_paths_recovery(&scope.receipt,&scope.receiver,&scope.destination,&scope.participants,&scope.cancel,&scope.pending,tracked,open,save)),
             presenting: Box::new(move |v| s5.borrow().present_owner.contains_key(&v)),
         },
         ("Untitled", "제목 없음"),
@@ -289,7 +350,13 @@ pub(crate) fn entries(
                 }
                 shown
             };
+            if let Err(error) = shell.asset_present_owner(view, None) {
+                eprintln!("[html] could not revoke present assets: {error}");
+            }
             for id in shown {
+                if let Err(error) = shell.asset_present_owner(id, None) {
+                    eprintln!("[html] could not revoke present assets: {error}");
+                }
                 if docs_weak.upgrade().is_some_and(|d| !d.is_destroyed(id)) {
                     shell.close_present_view(id)
                 }
@@ -297,6 +364,7 @@ pub(crate) fn entries(
         });
     }
     provided.add::<dyn DocumentEditors>(editors.clone());
+    provided.add::<dyn main_core::packages::electron_utils::recovery_contract::RecoveryEditorContract<ViewId,shell_contract::ipc::RecoveryOpenTarget>>(editors.clone());
     // the app's own calls (seed, headless export, view tracking) for the shell
     provided.add::<HtmlEditors>(editors.clone());
 
@@ -320,7 +388,9 @@ pub(crate) fn entries(
         if e.docs.open_path(view).is_some() {
             return Ok(IpcValue::Null);
         }
-        Ok(match e.shell.take_generate_handoff(view) {
+        let native=cx.native.clone().ok_or_else(||kit::error("the handoff consumer has no authenticated native context"))?;
+        let consumer=shell_contract::ipc::NativeRequestOwner{view,context:native};
+        Ok(match e.shell.take_generate_handoff_owned(&consumer,&cx.cancel).map_err(kit::error)? {
             None => IpcValue::Null,
             Some(h) => obj([
                 ("id", h.id.into_ipc()),
@@ -348,8 +418,10 @@ pub(crate) fn entries(
             .iter()
             .filter_map(|p| kit::as_str(p).map(str::to_owned))
             .collect();
+        let native=cx.native.clone().ok_or_else(||kit::error("the handoff consumer has no authenticated native context"))?;
+        let consumer=shell_contract::ipc::NativeRequestOwner{view:cx.sender.view,context:native};
         Ok(e.shell
-            .report_generate_run_started(cx.sender.view, &paths)
+            .report_generate_run_started_owned(&consumer,&cx.cancel,&paths).map_err(kit::error)?
             .into_ipc())
     }));
     let e = Rc::clone(&editors);
@@ -388,7 +460,7 @@ pub(crate) fn entries(
             .or_else(|| e.shell.present_host_window(owner))
             .filter(|w| !e.shell.is_window_destroyed(*w));
         if let Some(view) = e.shell.open_present_window(owner, &label, parent) {
-            e.state.borrow_mut().present_owner.insert(view, owner);
+            e.bind_present(view, owner);
         }
         Ok(true.into_ipc())
     }));
@@ -483,7 +555,8 @@ fn present_full_screen(
 #[cfg(any(test, feature = "probe"))]
 pub(crate) fn fakes(hosts: &mut shell_contract::Hosts, case: &serde_json::Value) {
     let probe = hosts.get::<fake::ProbeLog>().cloned();
-    let fake = Arc::new(fake::FakeHtml::new(case, probe));
+    let os=hosts.get::<OsShellHost>().expect("fake OS shell is installed").clone();
+    let fake = Arc::new(fake::FakeHtml::new(case, probe,os));
     hosts.insert::<HtmlEngineHost>(fake.clone());
     hosts.insert::<HtmlShellHost>(fake.clone());
     hosts.insert::<Arc<fake::FakeHtml>>(fake);

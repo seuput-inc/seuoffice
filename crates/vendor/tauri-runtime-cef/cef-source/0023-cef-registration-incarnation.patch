@@ -1,0 +1,160 @@
+# Private pinned source patch. Prevent retained native identity ABA across re-registration.
+diff --git a/include/cef_client.h b/include/cef_client.h
+--- a/include/cef_client.h
++++ b/include/cef_client.h
+@@ -303,3 +303,3 @@
+                                           const CefString& context_token,
+-                                          int world_id) {}
++                                          int world_id, uint64_t registration) {}
+ 
+@@ -316,3 +316,3 @@
+                                          const CefString& context_token,
+-                                         int world_id) {}
++                                         int world_id, uint64_t registration) {}
+ 
+@@ -329,3 +329,3 @@
+                                        const CefString& context_token,
+-                                       int world_id) {}
++                                       int world_id, uint64_t registration) {}
+   ///
+@@ -336,3 +336,3 @@
+       const CefString& frame_id, int child_id, const CefString& document_token,
+-      const CefString& context_token, int world_id, const CefString& cmd,
++      const CefString& context_token, int world_id, uint64_t registration, const CefString& cmd,
+       uint32_t callback, uint32_t error, bool raw, const CefString& invoke_key,
+@@ -345,3 +345,3 @@
+       const CefString& frame_id, int child_id, const CefString& document_token,
+-      const CefString& context_token, int world_id, const CefString& channel,
++      const CefString& context_token, int world_id, uint64_t registration, const CefString& channel,
+       CefRefPtr<CefBinaryValue> body, CefRefPtr<CefNativeContextSyncReply> reply) {}
+@@ -353,3 +353,3 @@
+       const CefString& frame_id, int child_id, const CefString& document_token,
+-      const CefString& context_token, int world_id) {}
++      const CefString& context_token, int world_id, uint64_t registration) {}
+   ///
+@@ -361,3 +361,3 @@
+       const CefString& frame_id, int child_id, const CefString& document_token,
+-      const CefString& context_token, int world_id) {}
++      const CefString& context_token, int world_id, uint64_t registration) {}
+ #endif
+diff --git a/libcef/browser/native_context_service.h b/libcef/browser/native_context_service.h
+--- a/libcef/browser/native_context_service.h
++++ b/libcef/browser/native_context_service.h
+@@ -125,3 +125,3 @@
+     client_->OnNativeContextWillRevoke(browser_, frame_, frame_id_, child_id_,
+-                                        document_, context_, world_);
++                                        document_, context_, world_, registration_);
+     completions->push_back(base::BindOnce(
+@@ -129,7 +129,7 @@
+            CefRefPtr<CefFrame> frame, std::string frame_id, int child,
+-           std::string document, std::string context, int world) {
++           std::string document, std::string context, int world, uint64_t registration) {
+           client->OnNativeContextDidRevoke(browser, frame, frame_id, child,
+-                                             document, context, world);
++                                             document, context, world, registration);
+         }, client_, browser_, frame_, frame_id_, child_id_, document_,
+-        context_, world_));
++        context_, world_, registration_));
+   }
+@@ -168,3 +168,3 @@
+     client->OnNativeContextRevoked(browser, frame, frame_id_, child_id_, document,
+-                                   context, world_);
++                                   context, world_, registration_);
+     if (evaluation) evaluation->Close();
+@@ -181,3 +181,3 @@
+     client_->OnNativeContextTauriRequest(browser_, frame_id_, child_id_, document_,
+-        context_, world_, cmd, callback, error, raw, key, headers_json,
++        context_, world_, registration_, cmd, callback, error, raw, key, headers_json,
+         body.empty() ? nullptr : CefBinaryValue::Create(body.data(), body.size()));
+@@ -194,3 +194,3 @@
+     client_->OnNativeContextSyncRequest(browser_, frame_id_, child_id_, document_,
+-        context_, world_, channel,
++        context_, world_, registration_, channel,
+         body.empty() ? nullptr : CefBinaryValue::Create(body.data(), body.size()), reply);
+@@ -205,3 +205,3 @@
+     client_->OnNativeContextFirstNonEmptyLayout(browser_, frame_id_, child_id_,
+-                                               document_, context_, world_);
++                                               document_, context_, world_, registration_);
+   }
+@@ -213,3 +213,3 @@
+     client_->OnNativeContextDocumentReady(browser_, frame_id_, child_id_,
+-                                          document_, context_, world_);
++                                          document_, context_, world_, registration_);
+   }
+diff --git a/include/internal/cef_types.h b/include/internal/cef_types.h
+--- a/include/internal/cef_types.h
++++ b/include/internal/cef_types.h
+@@ -2523,2 +2523,3 @@
+   int nativeWorldId;
++  uint64_t nativeRegistration;
+   uint64_t nativeDocumentHigh;
+diff --git a/libcef/browser/native_context_service.h b/libcef/browser/native_context_service.h
+--- a/libcef/browser/native_context_service.h
++++ b/libcef/browser/native_context_service.h
+@@ -67,2 +67,3 @@
+     features.nativeWorldId = service->world_;
++    features.nativeRegistration = service->registration_;
+     features.nativeDocumentHigh = document.value().GetHighForSerialization();
+diff --git a/tests/ceftests/navigation_unittest.cc b/tests/ceftests/navigation_unittest.cc
+--- a/tests/ceftests/navigation_unittest.cc
++++ b/tests/ceftests/navigation_unittest.cc
+@@ -1,3 +1,6 @@
+     AddResource("https://replacement.example/two", "<html>two</html>", "text/html");
+-    CreateBrowser(CefString());
++    auto info = CefDictionaryValue::Create();
++    info->SetInt("seuoffice.trusted-mode", 1);
++    info->SetString("seuoffice.trusted-init", R"json({"scripts":[{"source":"(() => { const b = globalThis.__seuofficeNativeBridgeBootstrap(); delete globalThis.__seuofficeNativeBridgeBootstrap; b.listenTauri(() => {}, () => true); })();","main_only":true}]})json");
++    CreateBrowser(CefString(), nullptr, info);
+     SetTestTimeout();
+diff --git a/tests/ceftests/navigation_unittest.cc b/tests/ceftests/navigation_unittest.cc
+--- a/tests/ceftests/navigation_unittest.cc
++++ b/tests/ceftests/navigation_unittest.cc
+@@ -1,4 +1,7 @@
+-  void OnNativeContextRegistered(CefRefPtr<CefBrowser> browser,
++  bool OnNativeContextRegistered(CefRefPtr<CefBrowser> browser,
+       CefRefPtr<CefFrame> frame, const CefString& frame_id, int child,
+       const CefString& document, const CefString& context,
+-      uint64_t issuance, const CefString& intent, int world) override {
++      uint64_t issuance, const CefString& intent, int world,
++      const CefString& document_url, CefRefPtr<CefNativeContextEvaluation> evaluation,
++      CefRefPtr<CefNativeContextChannel> channel,
++      CefRefPtr<CefNativeRendererProcess> process) override {
+diff --git a/tests/ceftests/navigation_unittest.cc b/tests/ceftests/navigation_unittest.cc
+--- a/tests/ceftests/navigation_unittest.cc
++++ b/tests/ceftests/navigation_unittest.cc
+@@ -1,3 +1,4 @@
+     ++registered_;
+     Schedule();
++    return true;
+   }
+diff --git a/tests/ceftests/navigation_unittest.cc b/tests/ceftests/navigation_unittest.cc
+--- a/tests/ceftests/navigation_unittest.cc
++++ b/tests/ceftests/navigation_unittest.cc
+@@ -1,3 +1,3 @@
+   void OnNativeContextWillRevoke(CefRefPtr<CefBrowser> browser,
+       CefRefPtr<CefFrame> frame, const CefString& frame_id, int child,
+-      const CefString& document, const CefString& context, int world) override {
++      const CefString& document, const CefString& context, int world, uint64_t registration) override {
+diff --git a/tests/ceftests/navigation_unittest.cc b/tests/ceftests/navigation_unittest.cc
+--- a/tests/ceftests/navigation_unittest.cc
++++ b/tests/ceftests/navigation_unittest.cc
+@@ -1,3 +1,3 @@
+   void OnNativeContextDidRevoke(CefRefPtr<CefBrowser> browser,
+       CefRefPtr<CefFrame> frame, const CefString& frame_id, int child,
+-      const CefString& document, const CefString& context, int world) override {
++      const CefString& document, const CefString& context, int world, uint64_t registration) override {
+diff --git a/tests/ceftests/navigation_unittest.cc b/tests/ceftests/navigation_unittest.cc
+--- a/tests/ceftests/navigation_unittest.cc
++++ b/tests/ceftests/navigation_unittest.cc
+@@ -1,3 +1,4 @@
+       CefRefPtr<CefNativeContextEvaluation> evaluation,
+-      CefRefPtr<CefNativeContextChannel> channel) override {
++      CefRefPtr<CefNativeContextChannel> channel,
++      CefRefPtr<CefNativeRendererProcess> process) override {
+     EXPECT_EQ(kReadyUrl, document_url.ToString());
+diff --git a/tests/ceftests/navigation_unittest.cc b/tests/ceftests/navigation_unittest.cc
+--- a/tests/ceftests/navigation_unittest.cc
++++ b/tests/ceftests/navigation_unittest.cc
+@@ -1 +1 @@
+-    info->SetString("seuoffice.trusted-init", R"json({"scripts":[{"source":"(() => { const b = globalThis.__seuofficeNativeBridgeBootstrap(); delete globalThis.__seuofficeNativeBridgeBootstrap; delete globalThis.__seuofficeNativeSendSync; b.listenTauri(() => {}); })();","main_only":true}]})json");
++    info->SetString("seuoffice.trusted-init", R"json({"scripts":[{"source":"(() => { const b = globalThis.__seuofficeNativeBridgeBootstrap(); delete globalThis.__seuofficeNativeBridgeBootstrap; delete globalThis.__seuofficeNativeSendSync; b.listenTauri(() => {}, () => true); })();","main_only":true}]})json");

@@ -4,6 +4,8 @@
 //! each (they differ only in how the TypeScript waits); a `ReadonlySet` of
 //! starred paths is a `HashSet`.
 
+pub mod metadata;
+
 use std::collections::HashSet;
 use std::fs::Metadata;
 

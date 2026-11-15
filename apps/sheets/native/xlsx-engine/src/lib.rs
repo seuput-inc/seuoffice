@@ -23,6 +23,7 @@ pub mod recalc;
 mod rels_normalize;
 mod richdata;
 mod shared_formulas;
+pub use shared_formulas::translate_shared_formula;
 pub mod spreadsheetml;
 pub mod stream_patch;
 mod visuals;

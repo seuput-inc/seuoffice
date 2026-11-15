@@ -1,0 +1,162 @@
+# Private pinned CEF source patch. Generated ABI/native execution remain unverified.
+diff --git a/libcef/browser/native_renderer_process.h b/libcef/browser/native_renderer_process.h
+--- /dev/null
++++ b/libcef/browser/native_renderer_process.h
+@@ -0,0 +1,94 @@
++// Copyright 2026 The Chromium Embedded Framework Authors.
++// Use of this source code is governed by a BSD-style license.
++#ifndef CEF_LIBCEF_BROWSER_NATIVE_RENDERER_PROCESS_H_
++#define CEF_LIBCEF_BROWSER_NATIVE_RENDERER_PROCESS_H_
++#include <limits>
++#include <map>
++#include <utility>
++#include <vector>
++#include "base/no_destructor.h"
++#include "base/synchronization/lock.h"
++#include "cef/include/cef_client.h"
++#include "cef/libcef/browser/thread_util.h"
++#include "content/public/browser/render_process_host.h"
++#include "content/public/browser/render_process_host_observer.h"
++
++class CefNativeRendererProcessImpl final : public CefNativeRendererProcess,
++    public content::RenderProcessHostObserver {
++ public:
++  static CefRefPtr<CefNativeRendererProcessImpl> ForHost(content::RenderProcessHost* host) {
++    CEF_REQUIRE_UIT_RETURN(nullptr);
++    if (!host || !host->GetProcess().IsValid() || host->GetProcess().Pid() == base::GetCurrentProcId())
++      return nullptr;
++    const int child = host->GetDeprecatedID();
++    const auto found = Processes().find(child);
++    if (found != Processes().end()) {
++      if (found->second->host_ != host || found->second->pid_ != host->GetProcess().Pid()) return nullptr;
++      return found->second;
++    }
++    static uint64_t next = 0;
++    if (next == std::numeric_limits<uint64_t>::max()) return nullptr;
++    CefRefPtr<CefNativeRendererProcessImpl> process = new CefNativeRendererProcessImpl(host, ++next);
++    Processes().emplace(child, process);
++    host->AddObserver(process.get());
++    return process;
++  }
++  int GetRendererChildId() override { return child_; }
++  uint32_t GetProcessId() override { return static_cast<uint32_t>(pid_); }
++  uint64_t GetObserverIdentity() override { return identity_; }
++  bool ObserveExit(CefRefPtr<CefNativeRendererProcessCallback> callback) override {
++    if (!callback) return false;
++    Phase phase;
++    {
++      base::AutoLock lock(lock_);
++      phase = phase_;
++      if (phase == Phase::kRunning) {
++        if (callbacks_.size() >= 1024) return false;
++        callbacks_.push_back(callback);
++        return true;
++      }
++    }
++    return CEF_TASK_RUNNER<CEF_UIT>()->PostTask(FROM_HERE, base::BindOnce(
++        [](CefRefPtr<CefNativeRendererProcessCallback> callback, bool exited) {
++          callback->OnExited(exited);
++        }, std::move(callback), phase == Phase::kExited));
++  }
++  void RenderProcessExited(content::RenderProcessHost* host,
++      const content::ChildProcessTerminationInfo& info) override { Finish(host, true); }
++  void RenderProcessHostDestroyed(content::RenderProcessHost* host) override { Finish(host, false); }
++ private:
++  enum class Phase { kRunning, kExited, kHostDestroyed };
++  CefNativeRendererProcessImpl(content::RenderProcessHost* host, uint64_t identity)
++      : host_(host), child_(host->GetDeprecatedID()), pid_(host->GetProcess().Pid()), identity_(identity) {}
++  ~CefNativeRendererProcessImpl() override { DCHECK(!host_); }
++  static std::map<int, CefRefPtr<CefNativeRendererProcessImpl>>& Processes() {
++    static base::NoDestructor<std::map<int, CefRefPtr<CefNativeRendererProcessImpl>>> processes;
++    return *processes;
++  }
++  void Finish(content::RenderProcessHost* host, bool exited) {
++    CEF_REQUIRE_UIT();
++    if (host_ != host) return;
++    CefRefPtr<CefNativeRendererProcessImpl> keep_alive(this);
++    host_->RemoveObserver(this);
++    host_ = nullptr;
++    std::vector<CefRefPtr<CefNativeRendererProcessCallback>> callbacks;
++    {
++      base::AutoLock lock(lock_);
++      if (phase_ != Phase::kRunning) return;
++      phase_ = exited ? Phase::kExited : Phase::kHostDestroyed;
++      callbacks.swap(callbacks_);
++    }
++    const auto found = Processes().find(child_);
++    if (found != Processes().end() && found->second.get() == this) Processes().erase(found);
++    for (auto& callback : callbacks) callback->OnExited(exited);
++  }
++  content::RenderProcessHost* host_;
++  const int child_;
++  const base::ProcessId pid_;
++  const uint64_t identity_;
++  base::Lock lock_;
++  Phase phase_ = Phase::kRunning;
++  std::vector<CefRefPtr<CefNativeRendererProcessCallback>> callbacks_;
++  IMPLEMENT_REFCOUNTING(CefNativeRendererProcessImpl);
++};
++#endif  // CEF_LIBCEF_BROWSER_NATIVE_RENDERER_PROCESS_H_
+diff --git a/include/cef_client.h b/include/cef_client.h
+--- a/include/cef_client.h
++++ b/include/cef_client.h
+@@ -1,3 +1,38 @@
+ #if CEF_API_ADDED(15401)
+ ///
++/// Exact renderer process exit receipt, never a current-frame/PID observation.
++/// The callback executes on browser UI outside native admission locks.
++///
++/*--cef(source=client,added=15401)--*/
++class CefNativeRendererProcessCallback : public virtual CefBaseRefCounted {
++ public:
++  /// True only for the actual RenderProcessExited notification. Host destruction
++  /// without that notification is false and must not acknowledge process exit.
++  /*--cef()--*/
++  virtual void OnExited(bool actual_exit) = 0;
++};
++
++///
++/// Immutable native RenderProcessHost process incarnation. Identity is shared
++/// across documents using that process and never reused after process exit.
++///
++/*--cef(source=library,added=15401,no_debugct_check)--*/
++class CefNativeRendererProcess : public virtual CefBaseRefCounted {
++ public:
++  /// Native child identifier captured at registration.
++  /*--cef()--*/
++  virtual int GetRendererChildId() = 0;
++  /// Operating system PID captured from the same actual native process.
++  /*--cef()--*/
++  virtual uint32_t GetProcessId() = 0;
++  /// Browser-native nonreusing observer incarnation.
++  /*--cef()--*/
++  virtual uint64_t GetObserverIdentity() = 0;
++  /// Race-free registration, including an already observed terminal result.
++  /// May be called on any thread. False means the callback was not registered.
++  /*--cef()--*/
++  virtual bool ObserveExit(CefRefPtr<CefNativeRendererProcessCallback> callback) = 0;
++};
++
++///
+ /// A native-only reply stream bound to one immutable registered context.
+@@ -330,2 +366,3 @@
+                                           CefRefPtr<CefNativeContextEvaluation> evaluation,
+-                                          CefRefPtr<CefNativeContextChannel> channel) { return false; }
++                                          CefRefPtr<CefNativeContextChannel> channel,
++                                          CefRefPtr<CefNativeRendererProcess> process) { return false; }
+diff --git a/libcef/browser/native_context_service.h b/libcef/browser/native_context_service.h
+--- a/libcef/browser/native_context_service.h
++++ b/libcef/browser/native_context_service.h
+@@ -14,2 +14,3 @@
+ #include "cef/libcef/browser/native_resource_registry.h"
++#include "cef/libcef/browser/native_renderer_process.h"
+ #include "mojo/public/cpp/bindings/callback_helpers.h"
+@@ -238,2 +239,4 @@
+     const auto weak = weak_.GetWeakPtr();
++    auto process = CefNativeRendererProcessImpl::ForHost(rfh->GetProcess());
++    if (!process) { Revoke(); return; }
+     const bool accepted = client->OnNativeContextRegistered(browser, frame, frame_id_, child_id_,
+@@ -241,2 +244,2 @@
+                                       context_token.ToString(), intent->first, intent->second,
+-                                      world_id, document_url->spec(), evaluation_, traffic_);
++                                      world_id, document_url->spec(), evaluation_, traffic_, process);

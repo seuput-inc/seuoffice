@@ -47,7 +47,11 @@ impl Workers for Threads {
     }
 }
 
-struct Live(Mutex<HashSet<u32>>);
+struct Live(
+    Mutex<HashSet<u32>>,
+    Mutex<std::collections::HashMap<ViewId, shell_contract::runtime::RendererGeneration>>,
+    Mutex<Vec<Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>>>,
+);
 
 impl Views for Live {
     fn sender_of(&self, view: ViewId) -> Option<Sender> {
@@ -61,6 +65,13 @@ impl Views for Live {
         Vec::new()
     }
     fn on_destroyed(&self, _: Box<dyn Fn(ViewId) + Send + Sync>) {}
+    fn renderer_generation(&self, view: ViewId) -> Option<shell_contract::runtime::RendererGeneration> {
+        if !self.0.lock().unwrap().contains(&view.0) { return None; }
+        Some(self.1.lock().unwrap().entry(view).or_insert_with(shell_contract::runtime::RendererGeneration::new).clone())
+    }
+    fn on_renderer_replaced(&self, listener: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>) {
+        self.2.lock().unwrap().push(listener);
+    }
 }
 
 struct Dir(PathBuf);
@@ -171,7 +182,7 @@ fn rig(
         jobs: tx,
         owner: thread::current().id(),
     });
-    let views = Arc::new(Live(Mutex::new(HashSet::from([VIEW]))));
+    let views = Arc::new(Live(Mutex::new(HashSet::from([VIEW])), Mutex::default(), Mutex::default()));
     let host = Arc::new(FakeHost {
         statuses: statuses(codex_ready),
         route,
@@ -181,7 +192,7 @@ fn rig(
     let mut hosts = Hosts::default();
     let handle: AppAiImageHostHandle = host.clone();
     hosts.insert(handle);
-    let services = Services {
+    let services = shell_contract::hosts::synthetic::SyntheticOwnedEffects::install(Services {
         ui: core.clone(),
         core,
         workers: Arc::new(Threads),
@@ -189,7 +200,7 @@ fn rig(
         views: views.clone(),
         paths: Arc::new(Dir(dir.clone())),
         hosts: Arc::new(hosts),
-    };
+    });
     let provided = Rc::new(Provided::default());
     provided.add(Rc::new(Driver::new(&services, FakeNet::new(&net, None))));
     let port = (factory().0)(&services, &provided).unwrap();
@@ -220,6 +231,7 @@ fn context(view: u32) -> CallContext {
         },
         request: None,
         cancel: CancelToken::default(),
+        native: None,
     }
 }
 
@@ -433,6 +445,7 @@ fn a_destroyed_window_starts_its_generation_aborted() {
         json!({}),
     );
     r.views.0.lock().unwrap().clear();
+    for (_, generation) in r.views.1.lock().unwrap().drain() { generation.revoke(); }
     let answer = r.call("sheets", json!({ "prompt": "owl" }));
     assert_eq!(answer["error"], "This operation was aborted");
 }

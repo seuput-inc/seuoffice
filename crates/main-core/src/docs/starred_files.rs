@@ -89,13 +89,22 @@ pub fn read_starred_items(file_path: &str) -> Vec<StarredItem> {
 
 /// `writeStarredItems`: `{ version: 1, items }` through `writeJsonAtomic`.
 pub fn write_starred_items(file_path: &str, items: &[StarredItem]) -> Result<(), NodeError> {
+    write_starred_items_with(file_path, items, &mut write_json_atomic)
+}
+
+/// The original store encoding with an explicitly supplied publication writer.
+pub fn write_starred_items_with(
+    file_path: &str,
+    items: &[StarredItem],
+    write: &mut dyn FnMut(&str, &JsonValue) -> Result<(), NodeError>,
+) -> Result<(), NodeError> {
     let mut store = JsObject::new();
     store.set("version", JsonValue::Number(1.0));
     store.set(
         "items",
         JsonValue::Array(items.iter().map(StarredItem::to_json).collect()),
     );
-    write_json_atomic(file_path, &JsonValue::Object(store))
+    write(file_path, &JsonValue::Object(store))
 }
 
 /// Star or unstar one path (unstar drops its group with it; re-starring

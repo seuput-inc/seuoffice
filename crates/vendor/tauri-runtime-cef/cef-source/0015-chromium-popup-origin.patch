@@ -1,0 +1,194 @@
+# Private pinned source patch. Native compile, generated ABI and runtime are unverified.
+diff --git a/content/common/frame.mojom b/content/common/frame.mojom
+--- a/content/common/frame.mojom
++++ b/content/common/frame.mojom
+@@ -543,4 +543,10 @@
+ struct CreateNewWindowParams {
++  // Captured by the native opener before this synchronous request is sent.
++  // These identify objects, not a grant. The embedder must match its live
++  // RFH-bound default-world registration before admitting protected popups.
++  blink.mojom.DocumentToken? cef_opener_document_token;
++  blink.mojom.V8ContextToken? cef_opener_context_token;
++
+   // True if ContentRendererClient allows popups.  This is the case only for
+   // extensions.
+   bool allow_popup;
+diff --git a/content/renderer/render_frame_impl.cc b/content/renderer/render_frame_impl.cc
+--- a/content/renderer/render_frame_impl.cc
++++ b/content/renderer/render_frame_impl.cc
+@@ -7079,4 +7079,25 @@
+   consumed_user_gesture = false;
+   mojom::CreateNewWindowParamsPtr params = mojom::CreateNewWindowParams::New();
+ 
++  // DOM target=_blank may have no entered JavaScript context. Never relabel
++  // an entered foreign or isolated realm as this frame's default world.
++  auto* popup_isolate = GetAgentGroupScheduler().Isolate();
++  if (popup_isolate) {
++    v8::Isolate::Scope isolate_scope(popup_isolate);
++    v8::HandleScope handles(popup_isolate);
++    const auto main_world = frame_->MainWorldScriptContext();
++    const auto current = popup_isolate->GetCurrentContext();
++    const auto entered = popup_isolate->GetEnteredOrMicrotaskContext();
++    if (!main_world.IsEmpty() &&
++        (current.IsEmpty() || current == main_world) &&
++        (entered.IsEmpty() || entered == main_world) &&
++        blink::WebLocalFrame::FrameForContext(main_world) == frame_) {
++      const auto context = blink::WebLocalFrame::ContextToken(main_world);
++      if (context) {
++        params->cef_opener_document_token = frame_->GetDocument().Token();
++        params->cef_opener_context_token = *context;
++      }
++    }
++  }
++
+   // The user activation check is done at the browser process through
+diff --git a/content/browser/renderer_host/render_frame_host_impl.h b/content/browser/renderer_host/render_frame_host_impl.h
+--- a/content/browser/renderer_host/render_frame_host_impl.h
++++ b/content/browser/renderer_host/render_frame_host_impl.h
+@@ -1186,4 +1186,9 @@
+   bool MatchesApprovedBackForwardRestoreForCef(
+       const blink::DocumentToken& document_token) const;
+ 
++  // Only non-null during this RFH's synchronous CanCreateWindow callback.
++  // The immutable request is owned by that call's stack, including nesting.
++  // Callers must copy identity values, never retain this borrowed pointer.
++  const mojom::CreateNewWindowParams* GetScopedCreateNewWindowParamsForCef() const;
++
+   // Helper for recording metrics when another NavigationRequest is blocked by
+@@ -3493,2 +3498,5 @@
+   FRIEND_TEST_ALL_PREFIXES(RenderFrameHostImplTest, NavigationStateKeepAlive);
++  FRIEND_TEST_ALL_PREFIXES(RenderFrameHostImplTest, CefPopupScopeRestoresNestedRequest);
++  FRIEND_TEST_ALL_PREFIXES(RenderFrameHostImplTest, CefPopupScopeRejectsForeignFrame);
++  FRIEND_TEST_ALL_PREFIXES(RenderFrameHostImplTest, CefPopupScopeClearsOnEarlyFailure);
+   FRIEND_TEST_ALL_PREFIXES(RenderFrameHostImplTest,
+@@ -5688,4 +5696,18 @@
+   // True if this rfh was created via a window creation with user activation.
+   bool opener_had_user_gesture_ = false;
+ 
++  class CONTENT_EXPORT ScopedCefPopupParams {
++   public:
++    ScopedCefPopupParams(RenderFrameHostImpl& host,
++                         const mojom::CreateNewWindowParams& params);
++    ~ScopedCefPopupParams();
++    ScopedCefPopupParams(const ScopedCefPopupParams&) = delete;
++    ScopedCefPopupParams& operator=(const ScopedCefPopupParams&) = delete;
++
++   private:
++    base::WeakPtr<RenderFrameHostImpl> host_;
++    raw_ptr<const mojom::CreateNewWindowParams> previous_;
++  };
++  raw_ptr<const mojom::CreateNewWindowParams> cef_popup_params_ = nullptr;
++
+   // WeakPtrFactories are the last members, to ensure they are destroyed before
+diff --git a/content/browser/renderer_host/render_frame_host_impl.cc b/content/browser/renderer_host/render_frame_host_impl.cc
+--- a/content/browser/renderer_host/render_frame_host_impl.cc
++++ b/content/browser/renderer_host/render_frame_host_impl.cc
+@@ -10577,5 +10577,22 @@
+   return weak_ptr_factory_.GetSafeRef();
+ }
+ 
++RenderFrameHostImpl::ScopedCefPopupParams::ScopedCefPopupParams(
++    RenderFrameHostImpl& host, const mojom::CreateNewWindowParams& params)
++    : host_(host.GetWeakPtr()), previous_(host.cef_popup_params_) {
++  host.cef_popup_params_ = &params;
++}
++
++RenderFrameHostImpl::ScopedCefPopupParams::~ScopedCefPopupParams() {
++  // OnBeforePopup may destroy the browser while an embedder callback unwinds.
++  if (host_) host_->cef_popup_params_ = previous_;
++}
++
++const mojom::CreateNewWindowParams*
++RenderFrameHostImpl::GetScopedCreateNewWindowParamsForCef() const {
++  DCHECK_CURRENTLY_ON(BrowserThread::UI);
++  return cef_popup_params_;
++}
++
+ void RenderFrameHostImpl::CreateNewWindow(
+     mojom::CreateNewWindowParamsPtr params,
+@@ -10635,14 +10652,21 @@
+   // Ignore window creation when sent from a frame that's not active or
+   // created.
+-  bool can_create_window =
+-      IsActive() && is_render_frame_created() &&
+-      GetContentClient()->browser()->CanCreateWindow(
++  const auto popup_host = GetWeakPtr();
++  bool can_create_window = false;
++  if (IsActive() && is_render_frame_created()) {
++    ScopedCefPopupParams popup_scope(*this, *params);
++    can_create_window = GetContentClient()->browser()->CanCreateWindow(
+           this, GetLastCommittedURL(),
+           GetOutermostMainFrame()->GetLastCommittedURL(),
+           last_committed_origin_, params->window_container_type,
+           params->target_url, params->referrer.To<Referrer>(),
+           params->frame_name, params->disposition, *params->features,
+           effective_transient_activation_state, params->opener_suppressed,
+           &no_javascript_access);
++  }
++  if (!popup_host) {
++    std::move(callback).Run(mojom::CreateNewWindowStatus::kBlocked, nullptr);
++    return;
++  }
+ 
+   // If this frame isn't allowed to create a window, return early (before we
+diff --git a/content/browser/renderer_host/render_frame_host_impl_unittest.cc b/content/browser/renderer_host/render_frame_host_impl_unittest.cc
+--- a/content/browser/renderer_host/render_frame_host_impl_unittest.cc
++++ b/content/browser/renderer_host/render_frame_host_impl_unittest.cc
+@@ -86,5 +86,57 @@
+   }
+ };
+ 
++TEST_F(RenderFrameHostImplTest, CefPopupScopeRestoresNestedRequest) {
++  auto outer = mojom::CreateNewWindowParams::New();
++  outer->cef_opener_document_token = blink::DocumentToken();
++  outer->cef_opener_context_token = blink::V8ContextToken();
++  auto inner = mojom::CreateNewWindowParams::New();
++  inner->cef_opener_document_token = blink::DocumentToken();
++  inner->cef_opener_context_token = blink::V8ContextToken();
++  auto* host = main_test_rfh();
++  EXPECT_EQ(nullptr, host->GetScopedCreateNewWindowParamsForCef());
++  {
++    RenderFrameHostImpl::ScopedCefPopupParams outer_scope(*host, *outer);
++    EXPECT_EQ(outer.get(), host->GetScopedCreateNewWindowParamsForCef());
++    {
++      RenderFrameHostImpl::ScopedCefPopupParams inner_scope(*host, *inner);
++      EXPECT_EQ(inner.get(), host->GetScopedCreateNewWindowParamsForCef());
++      EXPECT_NE(outer->cef_opener_context_token, inner->cef_opener_context_token);
++    }
++    EXPECT_EQ(outer.get(), host->GetScopedCreateNewWindowParamsForCef());
++    EXPECT_EQ(outer->cef_opener_document_token,
++              host->GetScopedCreateNewWindowParamsForCef()->cef_opener_document_token);
++  }
++  EXPECT_EQ(nullptr, host->GetScopedCreateNewWindowParamsForCef());
++}
++
++TEST_F(RenderFrameHostImplTest, CefPopupScopeRejectsForeignFrame) {
++  auto* host = main_test_rfh();
++  auto* child = static_cast<RenderFrameHostImpl*>(
++      RenderFrameHostTester::For(host)->AppendChild("foreign"));
++  auto request = mojom::CreateNewWindowParams::New();
++  RenderFrameHostImpl::ScopedCefPopupParams scope(*host, *request);
++  EXPECT_EQ(request.get(), host->GetScopedCreateNewWindowParamsForCef());
++  EXPECT_EQ(nullptr, child->GetScopedCreateNewWindowParamsForCef());
++}
++
++TEST_F(RenderFrameHostImplTest, CefPopupScopeClearsOnEarlyFailure) {
++  auto* host = main_test_rfh();
++  auto request = mojom::CreateNewWindowParams::New();
++  const auto rejected = [&] {
++    RenderFrameHostImpl::ScopedCefPopupParams scope(*host, *request);
++    return false;
++  };
++  EXPECT_FALSE(rejected());
++  EXPECT_EQ(nullptr, host->GetScopedCreateNewWindowParamsForCef());
++  // A later request cannot inherit even an empty prior popup payload.
++  auto next = mojom::CreateNewWindowParams::New();
++  {
++    RenderFrameHostImpl::ScopedCefPopupParams scope(*host, *next);
++    EXPECT_EQ(next.get(), host->GetScopedCreateNewWindowParamsForCef());
++  }
++  EXPECT_EQ(nullptr, host->GetScopedCreateNewWindowParamsForCef());
++}
++
+ // TODO(crbug.com/40260854): This set-up is temporary. Eventually, all
+ // tests that reference extensions will be moved to chrome/browser/ and this

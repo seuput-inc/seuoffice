@@ -224,15 +224,23 @@ pub fn begin_ai_run<D: Deck<S>, S: Clone + SameSnapshot, O: Clone, R>(
     session: &mut Session<D, S, O, R>,
     review: &mut AiReview<S>,
     owner: f64,
-) -> bool {
+) -> Result<bool, D::Error> {
     if review.master_edit {
-        return false;
+        return Ok(false);
     }
+    if review.run.as_ref().is_some_and(|run| run.owner != owner) {
+        return Ok(false);
+    }
+    let mut before = session.take_snapshot()?;
     if let Some(run) = &review.run {
-        if run.owner != owner {
-            return false;
+        debug_assert_eq!(run.owner, owner);
+        let changed = !same_stack(&session.undo_stack, &run.undo)
+            || session.op_seq.unwrap_or(0) != run.op_seq
+            || session.meta_rev.unwrap_or(0) != run.meta_rev;
+        if changed {
+            before = run.before.clone();
         }
-        hold_ai_run(session, review, owner);
+        hold_ai_run(session, review, owner)?;
     }
     review.proposal = None;
     let id = review.next_run;
@@ -240,7 +248,7 @@ pub fn begin_ai_run<D: Deck<S>, S: Clone + SameSnapshot, O: Clone, R>(
     review.run = Some(AiRun {
         id,
         owner,
-        before: session.take_snapshot(),
+        before,
         undo: session.undo_stack.clone(),
         redo: session.redo_stack.clone(),
         op_seq: session.op_seq.unwrap_or(0),
@@ -254,7 +262,7 @@ pub fn begin_ai_run<D: Deck<S>, S: Clone + SameSnapshot, O: Clone, R>(
     });
     session.ai_run = true;
     session.schedule_history_notify();
-    true
+    Ok(true)
 }
 
 /// `holdAiRun(session, owner)`: end of an AI request: when it changed the
@@ -266,27 +274,29 @@ pub fn hold_ai_run<D: Deck<S>, S: Clone + SameSnapshot, O: Clone, R>(
     session: &mut Session<D, S, O, R>,
     review: &mut AiReview<S>,
     owner: f64,
-) -> bool {
-    let run = match review.run.take() {
-        Some(run) if run.owner == owner => run,
-        other => {
-            review.run = other;
-            return false;
-        }
+) -> Result<bool, D::Error> {
+    let Some(run) = review.run.as_ref().filter(|run| run.owner == owner).cloned() else {
+        return Ok(false);
     };
-    session.ai_run = false;
-    session.history_batch = None;
-    session.schedule_history_notify();
     let changed = !same_stack(&session.undo_stack, &run.undo)
         || session.op_seq.unwrap_or(0) != run.op_seq
         || session.meta_rev.unwrap_or(0) != run.meta_rev;
-    if !changed {
-        return false;
-    }
-    let after = session.take_snapshot();
+    let after = if changed {
+        let after = session.take_snapshot()?;
+        session.restore_snapshot(&run.before)?;
+        Some(after)
+    } else {
+        None
+    };
+    review.run = None;
+    session.ai_run = false;
+    session.history_batch = None;
+    session.schedule_history_notify();
+    let Some(after) = after else {
+        return Ok(false);
+    };
     session.undo_stack = run.undo.clone();
     session.redo_stack = run.redo;
-    session.restore_snapshot(&run.before);
     if let Some(snapshots) = session.ai_snapshots.as_mut() {
         snapshots.retain(|(id, _)| run.known_snapshots.contains(id));
     }
@@ -297,7 +307,7 @@ pub fn hold_ai_run<D: Deck<S>, S: Clone + SameSnapshot, O: Clone, R>(
         marker: marker_of(session),
     });
     session.schedule_deck_broadcast();
-    true
+    Ok(true)
 }
 
 /// `acceptAiProposal(session)`: apply the held proposal when nothing changed
@@ -309,19 +319,22 @@ pub fn accept_ai_proposal<D: Deck<S>, S: Clone + SameSnapshot, O: Clone, R>(
     session: &mut Session<D, S, O, R>,
     review: &mut AiReview<S>,
     ids: &mut SessionIds,
-) -> Option<u64> {
-    let proposal = review.proposal.as_ref()?;
+) -> Result<Option<u64>, D::Error> {
+    let Some(proposal) = review.proposal.as_ref().cloned() else {
+        return Ok(None);
+    };
     if session.history_batch.is_some() || review.master_edit || review.run.is_some() {
-        return None;
+        return Ok(None);
     }
     if !same_marker(&proposal.marker, &marker_of(session)) {
-        return None;
+        return Ok(None);
     }
-    let proposal = review.proposal.take()?;
-    session.push_history();
-    session.restore_snapshot(&proposal.after);
+    let before = session.take_snapshot()?;
+    session.restore_snapshot(&proposal.after)?;
+    session.push_history_snapshot(before);
+    review.proposal = None;
     session.schedule_deck_broadcast();
-    Some(session.register_ai_snapshot(ids, &proposal.before))
+    Ok(Some(session.register_ai_snapshot(ids, &proposal.before)))
 }
 
 /// `windowLives`: bumped every time a window's runs are dropped (it went away,
@@ -363,11 +376,11 @@ pub fn drop_ai_run_of<D: Deck<S>, S: Clone + SameSnapshot, O: Clone, R>(
     review: &mut AiReview<S>,
     lives: &mut WindowLives,
     owner: f64,
-) {
-    lives.bump(owner);
+) -> Result<(), D::Error> {
     if review.run.as_ref().is_some_and(|run| run.owner == owner) {
-        hold_ai_run(session, review, owner);
+        hold_ai_run(session, review, owner)?;
     }
+    lives.bump(owner);
     if review
         .proposal
         .as_ref()
@@ -375,6 +388,7 @@ pub fn drop_ai_run_of<D: Deck<S>, S: Clone + SameSnapshot, O: Clone, R>(
     {
         review.proposal = None;
     }
+    Ok(())
 }
 
 /// `rejectAiProposal(session)`
@@ -429,15 +443,15 @@ pub fn run_begin_finish<D: Deck<S>, S: Clone + SameSnapshot, O: Clone, R>(
     sender_id: f64,
     ticket: RunBeginTicket,
     wake: RunBeginWake,
-) -> bool {
+) -> Result<bool, D::Error> {
     if !wake.settled {
-        return false;
+        return Ok(false);
     }
     if wake.sender_destroyed || !wake.same_session {
-        return false;
+        return Ok(false);
     }
     if lives.get(sender_id) != ticket.life {
-        return false;
+        return Ok(false);
     }
     begin_ai_run(session, review, sender_id)
 }

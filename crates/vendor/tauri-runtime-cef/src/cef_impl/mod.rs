@@ -3,8 +3,12 @@
 // SPDX-License-Identifier: MIT
 
 pub(crate) mod client;
+pub(crate) mod approved_navigation;
 pub(crate) mod cookie;
 pub(crate) mod ipc;
+pub(crate) mod native_eval;
 pub(crate) mod preferences;
 pub(crate) mod request_context;
 pub(crate) mod request_handler;
+pub(crate) mod trusted_activation;
+pub(crate) mod trusted_init;

@@ -273,13 +273,13 @@ pub(super) fn call(name: &str, args: &[Value], cx: &mut Context) -> Option<Answe
                 ));
             }
             let paths = strings(arg(args, 2));
-            let reader = |path: &str| -> Vec<String> {
+            let reader = |path: &str| -> Result<Vec<String>, crate::node_fs::NodeError> {
                 logl!(log; "fontFileFamilies", path);
-                table
+                Ok(table
                     .iter()
                     .find(|(p, _)| p == path)
                     .map(|(_, families)| families.clone())
-                    .unwrap_or_default()
+                    .unwrap_or_default())
             };
             let result = install_local_font_files(
                 &mut || {
@@ -1089,6 +1089,16 @@ impl ZipRead for NoRead {
     }
 }
 
+struct ScenarioRetainedReader(std::sync::Arc<dyn crate::docs::lazy_media::RetainedZipBytes>);
+impl ZipRead for ScenarioRetainedReader {
+    fn read(&mut self, offset: u64, length: u64) -> Result<Vec<u8>, JsError> {
+        let bytes = self.0.bytes();
+        let start = offset.min(bytes.len() as u64) as usize;
+        let end = offset.saturating_add(length).min(bytes.len() as u64).max(start as u64) as usize;
+        Ok(bytes[start..end].to_vec())
+    }
+}
+
 /// the zip library, answering from `lib` of the scenario: `{ zips: [{ path,
 /// size?, entries }], openThrows: [path], slim: { [hash]: hex | null |
 /// "throws" }, hashes: { [hex of bytes]: [hash] | "throws" }, mem: { [hex of
@@ -1099,7 +1109,8 @@ struct ScenarioLib<'a> {
 }
 
 impl ZipLibrary for ScenarioLib<'_> {
-    fn open_zip_file(&mut self, path: &str) -> Result<ZipFile, JsError> {
+    fn check_cancelled(&self) -> Result<(), JsError> { Ok(()) }
+    fn open_zip_file(&mut self, path: &str, _file: Option<std::sync::Arc<std::fs::File>>) -> Result<ZipFile, JsError> {
         logl!(self.log; "openZipFile", path);
         let zip = self
             .lib
@@ -1124,6 +1135,13 @@ impl ZipLibrary for ScenarioLib<'_> {
             entries: Rc::new(entries),
             reader: Box::new(NoRead),
         })
+    }
+
+    fn open_zip_retained(&mut self, source: std::sync::Arc<dyn crate::docs::lazy_media::RetainedZipBytes>) -> Result<ZipFile, JsError> {
+        let entries = self.read_zip_entries(source.bytes())?;
+        let mut table = JsMap::new();
+        for entry in entries { table.set(entry.name.clone(), entry); }
+        Ok(ZipFile { size: source.bytes().len() as u64, entries: Rc::new(table), reader: Box::new(ScenarioRetainedReader(source)) })
     }
 
     fn close_zip_file(&mut self, _zip: ZipFile) {
@@ -1225,16 +1243,18 @@ fn lazy_media_call(args: &[Value], cx: &mut Context) -> Answer {
             match media.open_lazy_docx(
                 &mut lib,
                 text(open, "path"),
+                None,
                 num(open, "wc").unwrap_or(f64::NAN),
             ) {
-                Some(opened) => json!({ "bytes": hex(&opened.bytes), "hash": opened.hash }),
-                None => Value::Null,
+                Ok(Some(opened)) => json!({ "bytes": hex(&opened.bytes), "hash": opened.hash }),
+                Ok(None) | Err(_) => Value::Null,
             }
         } else if let Some(adopt) = step.get("adopt") {
-            media.adopt_lazy_media_hashes(
+            let _ = media.adopt_lazy_media_hashes(
                 &mut lib,
                 &unhex(text(adopt, "bytes")),
                 text(adopt, "path"),
+                None,
                 num(adopt, "wc").unwrap_or(f64::NAN),
             );
             Value::Null
@@ -1665,20 +1685,21 @@ struct FakeDeck {
 }
 
 impl Deck<Snap> for FakeDeck {
-    fn take_snapshot(&self, meta_dirty: bool) -> Snap {
-        Snap {
+    type Error = std::convert::Infallible;
+    fn take_snapshot(&self, meta_dirty: bool) -> Result<Snap, Self::Error> {
+        Ok(Snap {
             slides: self.slides.clone(),
             entries: self.entries.clone(),
             size: self.size.clone(),
             meta_dirty,
-        }
+        })
     }
 
-    fn restore_snapshot(&mut self, fresh: Snap) -> bool {
+    fn restore_snapshot(&mut self, fresh: Snap) -> Result<bool, Self::Error> {
         self.slides = fresh.slides;
         self.size = fresh.size;
         self.entries = fresh.entries;
-        fresh.meta_dirty
+        Ok(fresh.meta_dirty)
     }
 }
 
@@ -2011,16 +2032,16 @@ fn session_state_call(args: &[Value], cx: &mut Context) -> Answer {
         let op = text(step, "op");
         let result: Value = match op {
             "push" => {
-                session.push_history();
+                session.push_history().unwrap_or_else(|never| match never {});
                 Value::Null
             }
             "pushRedo" => {
-                let snapshot = session.take_snapshot();
+                let snapshot = session.take_snapshot().unwrap_or_else(|never| match never {});
                 session.redo_stack.push(snapshot);
                 Value::Null
             }
             "begin" => {
-                session.begin_history_batch();
+                session.begin_history_batch().unwrap_or_else(|never| match never {});
                 Value::Null
             }
             "end" => session
@@ -2055,14 +2076,14 @@ fn session_state_call(args: &[Value], cx: &mut Context) -> Answer {
                 };
                 match popped {
                     Some(snap) => {
-                        session.restore_snapshot(&snap);
+                        session.restore_snapshot(&snap).unwrap_or_else(|never| match never {});
                         Value::Bool(true)
                     }
                     None => Value::Bool(false),
                 }
             }
             "registerAi" => {
-                let snap = session.take_snapshot();
+                let snap = session.take_snapshot().unwrap_or_else(|never| match never {});
                 Value::from(session.register_ai_snapshot(&mut ids, &snap))
             }
             "registerBefore" => match session.history_batch.as_ref().map(|b| b.before.clone()) {
@@ -2070,7 +2091,7 @@ fn session_state_call(args: &[Value], cx: &mut Context) -> Answer {
                 None => Value::Null,
             },
             "restoreAi" => {
-                Value::Bool(session.restore_ai_snapshot(num(step, "id").unwrap_or(f64::NAN)))
+                Value::Bool(session.restore_ai_snapshot(num(step, "id").unwrap_or(f64::NAN)).unwrap_or_else(|never| match never {}))
             }
             "settle" => {
                 session.settle_stale_history_batch(&mut ids);
@@ -2105,7 +2126,7 @@ fn session_state_call(args: &[Value], cx: &mut Context) -> Answer {
                         created: record
                             .get("created")
                             .and_then(Value::as_array)
-                            .map(|_| strings(record.get("created"))),
+                            .cloned(),
                     })
                     .collect();
                 session.journal_ops(source, records);
@@ -2117,7 +2138,7 @@ fn session_state_call(args: &[Value], cx: &mut Context) -> Answer {
                     &json!({ "slides": session.deck.slides.clone(), "size": session.deck.size.clone() }),
                 );
                 let mut replacement: Sess = Session::new(text(step, "path"), deck);
-                Sess::carry_history_for_replacement(Some(&mut session), &mut replacement);
+                Sess::carry_history_for_replacement(Some(&mut session), &mut replacement).unwrap_or_else(|never| match never {});
                 session = replacement;
                 Value::Null
             }

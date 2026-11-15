@@ -49,6 +49,7 @@ pub(crate) type SchemeRegistry = Arc<
         String,
         Arc<Box<UriSchemeProtocolHandler>>,
         Arc<Vec<CefInitScript>>,
+        crate::FrameNavigationState,
       ),
     >,
   >,
@@ -165,11 +166,51 @@ fn keep_encoding_declaration_first(document: &NodeRef, head: &NodeRef) {
   }
 }
 
+pub(crate) fn prepare_response(
+  response: http::Response<Cow<'static, [u8]>>,
+  initialization_scripts: &[CefInitScript],
+  is_main_frame: bool,
+) -> http::Response<Vec<u8>> {
+  let is_html = response.headers().get(CONTENT_TYPE).and_then(|ct| ct.to_str().ok())
+    .is_some_and(|ct| ct.to_ascii_lowercase().starts_with("text/html"));
+  let (parts, body) = response.into_parts();
+  let body = body.into_owned();
+  let body = if is_html {
+    inject_scripts_into_html_body(&body, initialization_scripts, is_main_frame).unwrap_or(body)
+  } else { body };
+  let mut response = http::Response::from_parts(parts, body);
+  if let Some(csp) = response.headers_mut().get_mut(CONTENT_SECURITY_POLICY) {
+    let value = csp_inject_initialization_scripts_hashes(csp.to_str().unwrap_or_default().to_owned(), initialization_scripts, is_main_frame);
+    if let Ok(value) = HeaderValue::from_str(&value) { *csp = value; }
+  }
+  response
+}
+
+wrap_task! {
+  struct SchemeResponseTask {
+    target: crate::NativeSchemeResponseTarget,
+    store: ThreadSafe<HttpResponse>,
+    callback: ThreadSafe<Callback>,
+    response: Mutex<Option<http::Response<Vec<u8>>>>,
+  }
+  impl Task {
+    fn execute(&self) {
+      let Some(response) = self.response.lock().ok().and_then(|mut response| response.take()) else { return };
+      if !self.target.claim_delivery() { return; }
+      self.store.0.borrow_mut().replace(response.map(Cursor::new));
+      self.callback.0.cont();
+    }
+  }
+}
+
 wrap_with_args! {
   wrap_request_handler => WebRequestHandlerArgs;
 
   pub struct WebRequestHandler<T: UserEvent> {
     navigation_handler: Option<Arc<NavigationHandler>>,
+    resource_request_handler: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
+    browser_request_policy: Option<Arc<crate::browser_request::BrowserRequestPolicy>>,
+    session_request_policy: Option<crate::network_session::NetworkSessionPolicy>,
     frame_event_handler: Option<Arc<crate::FrameEventHandler>>,
     context: RuntimeContext<T>,
     window_id: WindowId,
@@ -222,6 +263,9 @@ wrap_with_args! {
       error_code: ::std::os::raw::c_int,
       error_string: Option<&CefString>,
     ) {
+      if let Some(browser) = browser.as_deref() {
+        crate::renderer_process::invalidate(browser.identifier());
+      }
       let mut frame = browser.as_ref().and_then(|browser| browser.main_frame());
       crate::frame::emit_frame_event(&self.frame_event_handler, browser, frame.as_mut(), crate::FrameEventKind::RendererTerminated);
       if let Some(handler) = &self.web_content_process_terminate_handler {
@@ -267,6 +311,9 @@ wrap_with_args! {
       {
         return 1;
       }
+      if frame.is_main() != 0 && let Some(browser) = browser.as_deref() {
+        crate::renderer_process::invalidate(browser.identifier());
+      }
       crate::frame::emit_frame_event(
         &self.frame_event_handler,
         browser,
@@ -286,11 +333,7 @@ wrap_with_args! {
       _request_initiator: Option<&CefString>,
       _disable_default_handling: Option<&mut ::std::os::raw::c_int>,
     ) -> Option<ResourceRequestHandler> {
-      // The handler only intercepts the drag-drop bridge requests; when the
-      // bridge is disabled it would pass every request straight through, so skip
-      // building (and cloning the context + state into) a handler that CEF calls
-      // for every subresource/fetch/XHR the page makes.
-      if !self.drag_drop_handler_enabled {
+      if !self.drag_drop_handler_enabled && self.resource_request_handler.is_none() && self.browser_request_policy.is_none() && self.session_request_policy.is_none() {
         return None;
       }
 
@@ -301,6 +344,9 @@ wrap_with_args! {
           webview_id: self.webview_id,
           drag_drop_event_target: self.drag_drop_event_target,
           drag_drop_handler_enabled: self.drag_drop_handler_enabled,
+          resource_request_handler: self.resource_request_handler.clone(),
+          browser_request_policy: self.browser_request_policy.clone(),
+          session_request_policy: self.session_request_policy.clone(),
           drag_drop_state: self.drag_drop_state.clone(),
         },
       ))
@@ -313,6 +359,7 @@ wrap_with_args! {
 
   pub struct WebResourceHandler {
     webview_label: String,
+    scheme: String,
     handler: Arc<Box<UriSchemeProtocolHandler>>,
     initialization_scripts: Arc<Vec<CefInitScript>>,
     // Whether the document this response is loaded into is the main frame. Scripts flagged
@@ -328,10 +375,12 @@ wrap_with_args! {
     // header in that case. `None` when the initiator is not the (non-opaque)
     // main frame, so sandboxed/subframe `Origin: null` requests are left as-is.
     initiator_origin: Option<String>,
+    provenance: crate::SchemeRequestProvenance,
     // Runs the protocol handler on the main thread, see `process_request`.
     main_thread: MainThreadDispatcher,
     // Filled in by the responder on the main thread, read back on the IO thread.
     response: HttpResponse,
+    response_target: crate::NativeSchemeResponseTarget,
   }
 
   impl ResourceHandler {
@@ -361,50 +410,33 @@ wrap_with_args! {
       if let Some(url) = url {
         let callback = ThreadSafe(callback.clone());
         let response_store = ThreadSafe(self.response.clone());
-        let initialization_scripts = self.initialization_scripts.clone();
-        let is_main_frame = self.is_main_frame;
+        let target = self.response_target.clone();
         let responder = Box::new(move |response: http::Response<Cow<'static, [u8]>>| {
-          let is_html = response
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|ct| ct.to_str().ok())
-            .map(|ct| ct.to_lowercase().starts_with("text/html"))
-            .unwrap_or(false);
-
-          let (parts, body) = response.into_parts();
-          let body_bytes = body.into_owned();
-          let body_bytes = if is_html {
-            inject_scripts_into_html_body(&body_bytes, &initialization_scripts, is_main_frame)
-              .unwrap_or(body_bytes)
+          let prepared = if response.extensions().get::<crate::native_scheme_response::PreparedResponseMarker>().is_some() {
+            target.take_prepared(response)
           } else {
-            body_bytes
+            target.prepare_unowned(response)
           };
-
-          let mut response = http::Response::from_parts(parts, Cursor::new(body_bytes));
-
-          if let Some(csp) = response.headers_mut().get_mut(CONTENT_SECURITY_POLICY) {
-            let csp_string = csp.to_str().unwrap_or_default().to_string();
-            let new_csp = csp_inject_initialization_scripts_hashes(
-              csp_string,
-              &initialization_scripts,
-              is_main_frame,
-            );
-            if let Ok(new_csp) = HeaderValue::from_str(&new_csp) {
-              *csp = new_csp;
+          let Ok((response, receipt)) = prepared else { return };
+          let result = target.schedule().and_then(|()| {
+            let mut task = SchemeResponseTask::new(target.clone(), response_store, callback, Mutex::new(Some(response)));
+            if post_task(sys::cef_thread_id_t::TID_IO.into(), Some(&mut task)) == 1 { Ok(()) } else {
+              target.fail();
+              Err("Native resource response could not be queued.".into())
             }
-          }
-
-          response_store.into_owned().borrow_mut().replace(response);
-
-          let callback = callback.into_owned();
-          callback.cont();
+          });
+          *receipt.lock().unwrap_or_else(|error| error.into_inner()) = Some(result);
         });
 
         let label = self.webview_label.clone();
         let handler = self.handler.clone();
+        let provenance = self.provenance.clone();
+        let self_response_target = self.response_target.clone();
 
         let data = read_request_body(request);
         let mut headers = get_request_headers(request);
+        headers.remove(crate::NATIVE_ATTESTATION_HEADER);
+        headers.remove("x-seuoffice-native-context");
 
         // The renderer can issue an IPC request before its execution context is
         // fully wired to the loader; in that window Chromium sends the request
@@ -426,6 +458,14 @@ wrap_with_args! {
         let method_str = CefString::from(&request.method()).to_string();
         let method = http::Method::from_bytes(method_str.as_bytes()).unwrap_or(http::Method::GET);
 
+        let protected = method != http::Method::OPTIONS && (
+          self.scheme == "seuoffice-ipc"
+          || self.scheme == "ipc" && matches!(url.path().trim_start_matches('/'), "ipc_invoke" | "ipc_send" | "ipc_listen")
+        );
+        if protected {
+          responder(http::Response::builder().status(403).body(Cow::Borrowed(b"native document identity unavailable")).unwrap());
+          return 1;
+        }
         (self.main_thread)(Box::new(move || {
           let mut http_request = http::Request::builder()
             .method(method)
@@ -433,7 +473,8 @@ wrap_with_args! {
             .body(data)
             .unwrap();
           *http_request.headers_mut() = headers;
-          // handler is Arc<Box<UriSchemeProtocol>>, so we need to dereference to call it
+          http_request.extensions_mut().insert(provenance);
+          http_request.extensions_mut().insert(self_response_target);
           (**handler)(&label, http_request, responder);
         }));
         1
@@ -441,6 +482,8 @@ wrap_with_args! {
         0
       }
     }
+
+    fn cancel(&self) { self.response_target.cancel(); }
 
     fn read(
       &self,
@@ -530,19 +573,35 @@ wrap_scheme_handler_factory! {
       browser: Option<&mut Browser>,
       frame: Option<&mut Frame>,
       _scheme_name: Option<&CefString>,
-      _request: Option<&mut Request>,
+      request: Option<&mut Request>,
     ) -> Option<ResourceHandler> {
-      let (webview_label, handler, initialization_scripts) = match browser {
+      let request = request?;
+      let native_delivery = request.native_resource_delivery();
+      let mut native_origin = NativeResourceOrigin::default();
+      let native_origin = (request.native_resource_origin(Some(&mut native_origin)) != 0).then_some(native_origin);
+      let frame_id = frame.as_ref()
+        .map(|frame| CefString::from(&frame.identifier()).to_string())
+        .filter(|id| !id.is_empty());
+      let frame_is_main = frame.as_ref().map(|frame| frame.is_main() != 0);
+      let (webview_label, handler, initialization_scripts, provenance) = match browser {
         Some(browser) => {
           let id = browser.identifier();
 
           // get handler from our regsitry based on browser ID and scheme
-          self
+          let (label, handler, scripts, state) = self
             .registry
             .lock()
             .unwrap()
             .get(&(id, self.scheme.clone()))
-            .cloned()?
+            .cloned()?;
+          let document = state.document();
+          let navigation = state.navigation();
+          let native_document_owner = native_origin.as_ref().filter(|origin| origin.browser_id == id)
+            .and_then(|origin| state.native_contexts.verified_resource_token(&state, origin));
+          (label, handler, scripts, crate::SchemeRequestProvenance {
+            browser_id: Some(id), frame_id, frame_is_main, browser_state: Some(state), document, navigation,
+            native_document_owner,
+          })
         }
         // `browser`/`frame` are null for requests that do not originate from a
         // browser: service worker (main script and update) fetches and
@@ -558,14 +617,17 @@ wrap_scheme_handler_factory! {
         // it. Initialization scripts are per-document injections, meaningless
         // without a browser, so they are not applied on this path.
         None => {
-          let (webview_label, handler, _) = self
+          let (webview_label, handler, _, _) = self
             .registry
             .lock()
             .unwrap()
             .iter()
             .find(|((_, scheme), _)| *scheme == self.scheme)
             .map(|(_, entry)| entry.clone())?;
-          (webview_label, handler, Arc::new(Vec::new()))
+          (webview_label, handler, Arc::new(Vec::new()), crate::SchemeRequestProvenance {
+            browser_id: None, frame_id: None, frame_is_main: None, browser_state: None, document: None, navigation: None,
+            native_document_owner: None,
+          })
         }
       };
 
@@ -584,14 +646,19 @@ wrap_scheme_handler_factory! {
         .map(|url| url.origin().ascii_serialization())
         .filter(|origin| origin != "null");
 
+      let response_target = crate::NativeSchemeResponseTarget::new(
+        initialization_scripts.clone(), is_main_frame, provenance.clone(), native_delivery);
       Some(WebResourceHandler::build(WebResourceHandlerArgs {
         webview_label,
+        scheme: self.scheme.clone(),
         handler,
         initialization_scripts,
         is_main_frame,
         initiator_origin,
+        provenance,
         main_thread: self.main_thread.clone(),
         response: Arc::new(RefCell::new(None)),
+        response_target,
       }))
     }
   }

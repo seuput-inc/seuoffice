@@ -31,7 +31,7 @@ import { join, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { builtinModules, createRequire } from 'node:module'
-import { licenseText } from './license-text.mjs'
+import { licenseFiles, licenseText } from './license-text.mjs'
 import { officeWasmCrates } from './office-wasm-crates.mjs'
 import { OLD_RELEASE_ENV } from './old-names.mjs'
 import { loadDrawio, loadInventory, VENDOR_DIR as DRAWIO_VENDOR } from '../vendor/drawio/bundle.mjs'
@@ -451,6 +451,76 @@ const crateRow = (p) => ({
   dir: p.manifest_path ? dirname(p.manifest_path) : null,
 })
 
+function shellCrates() {
+  const manifest = join(ROOT, 'crates/shell/Cargo.toml')
+  let tree
+  try {
+    tree = execFileSync(
+      'cargo',
+      [
+        'tree',
+        '--manifest-path',
+        manifest,
+        '-p',
+        'seuoffice-shell',
+        '-e',
+        'normal,no-proc-macro',
+        '--prefix',
+        'none',
+        '--format',
+        '{p}',
+      ],
+      { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] },
+    )
+  } catch {
+    return null
+  }
+  const meta = cargoMetadata(manifest)
+  if (!meta) return null
+  const linked = new Set(
+    tree.split(/\r?\n/).map((line) => {
+      const match = /^(\S+) v(\S+)/.exec(line.trim())
+      return match ? `${match[1]} ${match[2]}` : ''
+    }),
+  )
+  const packages = meta.packages.filter((p) => linked.has(`${p.name} ${p.version}`))
+  const crates = packages
+    .filter((p) => {
+      const dir = dirname(p.manifest_path)
+      const path = relative(ROOT, dir).replaceAll('\\', '/')
+      const own =
+        p.source === null &&
+        !path.startsWith('../') &&
+        !path.startsWith('crates/vendor/') &&
+        !path.startsWith('crates/.rhwp-source/') &&
+        ['Apache-2.0', 'FSL-1.1-ALv2'].includes(p.license) &&
+        licenseFiles(dir).length === 0
+      return !own
+    })
+    .map(crateRow)
+  for (const p of packages.filter((p) => p.source === null)) {
+    for (const entry of p.metadata?.notices?.ported ?? []) {
+      const roots = [
+        ROOT,
+        ...readdirSync(join(ROOT, 'packages')).map((dir) => join(ROOT, 'packages', dir)),
+      ]
+      const dir = entry.npm
+        ? (roots
+            .map((root) => join(root, 'node_modules', entry.npm))
+            .find((path) => existsSync(join(path, 'package.json'))) ?? null)
+        : join(dirname(p.manifest_path), entry.dir ?? '.')
+      crates.push({
+        name: entry.name,
+        version: entry.version,
+        spdx: entry.license,
+        url: entry.url ?? (entry.npm ? `https://www.npmjs.com/package/${entry.npm}` : ''),
+        dir,
+      })
+    }
+  }
+  return crates.sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version))
+}
+
 /** Rust crates statically linked into xlsx-sidecar */
 function rustCrates() {
   const meta = cargoMetadata(join(ROOT, 'apps/sheets/native/xlsx-engine/Cargo.toml'))
@@ -664,6 +734,21 @@ if (crates === null) {
   out += ' apps/sheets/native/xlsx-engine/Cargo.lock for the full crate list.\n'
 } else {
   out += crateSection(crates)
+}
+
+if (envFlag('SEUOFFICE_SHELL_BUNDLE')) {
+  out += hr('Rust crates (native shell, statically linked)')
+  const nativeCrates = shellCrates()
+  if (nativeCrates === null) {
+    gap('could not resolve the native shell Cargo dependency graph')
+  } else {
+    for (const crate of nativeCrates) {
+      if (!crate.dir || !existsSync(crate.dir) || !licenseText(crate.name, crate.dir)) {
+        gap(`missing native shell license text for ${crate.name} ${crate.version}`)
+      }
+    }
+    out += crateSection(nativeCrates)
+  }
 }
 
 const wasmCrates = rhwpCrates()

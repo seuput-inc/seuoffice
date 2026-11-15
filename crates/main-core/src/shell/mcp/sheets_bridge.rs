@@ -79,10 +79,6 @@ pub trait SheetsBridgeHost {
     fn settle(&mut self, op: u64, outcome: Settled);
     /// `existsSync(path)`
     fn exists_sync(&mut self, path: &str) -> bool;
-    /// `await deps.openBlankTab()`: open a fresh blank sheets tab (a real
-    /// backing file, like the app's own "new spreadsheet"); its webContents id,
-    /// or the message it rejects with
-    fn open_blank_tab(&mut self) -> Result<i64, String>;
     /// `deps.authorizeSave(wcId, filePath)`: grant the tab's renderer write
     /// access to the resolved save target (the sheets save handler checks it)
     fn authorize_save(&mut self, wc_id: i64, file_path: &str);
@@ -334,8 +330,9 @@ impl<H: SheetsBridgeHost> SheetsBridge<H> {
     /// commands, so the agent's first content call never races the renderer
     /// boot. Resolves with the tab's id (a number); a failed wait closes the
     /// tab and its backing file (`abandonBlankTab`) before it rejects.
-    pub fn open_blank_tab(&mut self) -> Submitted {
-        let wc_id = match self.host.open_blank_tab() {
+
+    pub fn open_attached_tab(&mut self, opened: Result<i64, String>) -> Submitted {
+        let wc_id = match opened {
             Ok(wc_id) => wc_id,
             Err(message) => return Submitted::Rejected(message),
         };

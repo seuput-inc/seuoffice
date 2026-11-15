@@ -21,8 +21,12 @@ mod files;
 mod formats;
 mod headless;
 mod lifecycle;
+mod owned;
 mod queries;
 mod recovery;
+mod recovery_open;
+mod recovery_prepare;
+mod saved_load;
 mod shell;
 mod state;
 mod strings;
@@ -54,10 +58,14 @@ pub use attachments::{
     ATTACHMENT_IMAGE_MAX_BYTES, ATTACHMENT_MAX_BYTES, ATTACHMENT_READ_MAX_CHARS,
 };
 pub use engine::{DiagramEngine, DiagramEngineHost, DiagramFile, OpenFailure, ParsedText};
-pub use formats::{DiagramFormat, openable_link};
-pub use lifecycle::TabIdentity;
+pub use export::{looks_like as export_looks_like, print_pages_of};
+pub use formats::diagram_base_name;
+pub use formats::{Detected, DiagramFormat, detect_format, openable_link};
+pub use lifecycle::{PreparedNativeDiagram, TabIdentity, prepare_hidden_open_path};
+pub use recovery::DiagramRecoveryLookup;
 pub use shell::{DiagramShell, DiagramShellHost};
 pub use state::PageRead;
+pub use strings::open_refusal;
 
 use state::{State, WaitEnd};
 
@@ -74,6 +82,16 @@ pub(crate) struct Inner {
     recovery_state: RecoveryStateHost,
     state: RefCell<State>,
     text_cache: Arc<Mutex<attachments::TextCache>>,
+    terminal_registration: RefCell<Option<crate::host::NativeTerminalRegistration>>,
+}
+
+struct DetachedDiagram {
+    view: state::ViewState,
+    recovery: Option<state::RecoveryView>,
+    reads: Vec<state::ReadWaiter>,
+    applies: Vec<state::ApplyWaiter>,
+    chain: Option<std::collections::VecDeque<state::ApplyJob>>,
+    headless: Option<state::HeadlessJob>,
 }
 
 /// The diagram editor's per-view state and what the shell asks of it. Cheap
@@ -117,6 +135,7 @@ impl DiagramViews {
             recovery_state: hosts.need::<RecoveryStateHost>(Batch::D1)?,
             state: RefCell::new(State::default()),
             text_cache: Arc::default(),
+            terminal_registration: RefCell::new(None),
         });
         INSTANCES.with(|all| all.borrow_mut().insert(id, Rc::downgrade(&inner)));
         Ok(DiagramViews(inner))
@@ -218,20 +237,84 @@ impl DiagramViews {
                 ("kind", crate::value::string("export")),
                 ("format", crate::value::string("png")),
             ]);
-            self.run_headless_job(*view, job, Box::new(|_| {}));
+            self.run_headless_job(*view, job, Box::new(|_| true), Box::new(|_| {}));
         }
+    }
+
+    fn native_terminal(&self, event: shell_contract::runtime::NativeViewTerminal) -> Result<(), String> {
+        let view = event.view;
+        let owner = self.with_state(|state| state.views.get(&view).and_then(|entry| entry.browser_owner.clone()));
+        let Some(owner) = owner else { return Ok(()) };
+        if !owner.same_owner(&event.owner) || !owner.reservation().same_reservation(&event.reservation) { return Ok(()); }
+        let detached = event.receipt.with_terminal_owner(&owner, |transition| {
+            if !transition.matches(&event.reservation, &owner) { return Err("The diagram terminal receipt does not match".into()); }
+            self.with_state(|state| {
+                if !state.views.get(&view).and_then(|entry| entry.browser_owner.as_ref()).is_some_and(|current| current.same_owner(&owner)) {
+                    return Ok(None);
+                }
+                let Some(actor) = state.views.remove(&view) else { return Ok(None) };
+                let reads = state.reads.extract_if(|_, waiter| waiter.view == view).map(|(_, waiter)| waiter).collect();
+                let applies = state.applies.extract_if(|_, waiter| waiter.view == view).map(|(_, waiter)| waiter).collect();
+                Ok(Some(DetachedDiagram {
+                    view: actor, recovery: state.recovery.remove(&view), reads, applies,
+                    chain: state.apply_chains.remove(&view), headless: state.headless.remove(&view),
+                }))
+            })
+        });
+        let Some(mut detached) = detached? else { return Ok(()) };
+        self.cancel_detached_recovery(&mut detached.view);
+        let dirty = detached.view.dirty;
+        self.finish_detached_recovery(detached.recovery.take(), dirty);
+        for waiter in detached.reads { (waiter.done)(Err("the diagram is no longer open".into())); }
+        for waiter in detached.applies { (waiter.done)(Err("the diagram is no longer open".into())); }
+        if let Some(chain) = detached.chain {
+            for job in chain { (job.done)(Err("the diagram is no longer open".into())); }
+        }
+        if let Some(headless) = detached.headless {
+            (headless.done)(crate::value::obj([
+                ("ok", IpcValue::Bool(false)),
+                ("error", crate::value::string("the diagram is no longer open")),
+            ]));
+        }
+        let mut gone = detached.view;
+        if let Some(document) = gone.document.take() { document.revoke(); }
+        for (_, pending) in gone.owned_saves.drain() { pending.cancel_and_finish(); }
+        for (_, _, reply) in gone.first_save_queue.drain(..) {
+            reply.reply(Err(crate::value::thrown("The diagram view was closed")));
+        }
+        for (_, close) in gone.owned_closes.drain() { close.cancel_and_finish(); }
+        for (_, publication) in gone.owned_publications.drain() { publication.cancel_and_finish(); }
+        for (_, then) in gone.owned_renames.drain() { then(Err(crate::value::thrown("The diagram view was closed"))); }
+        if let Some(copy_now) = gone.copy_now.take() {
+            (copy_now.finish)(Err(main_core::shell::renderer_disposal::Failure("The diagram view was closed".into())));
+        }
+        if let Some(waiter) = gone.close_save.take() { (waiter.resume)(WaitEnd::Answer(false)); }
+        if let Some(waiter) = gone.save.take() { (waiter.resume)(WaitEnd::Answer(false)); }
+        Ok(())
     }
 
     /// `e.sender` gone: what `grantAndTrack`'s `destroyed` listener did
     fn view_gone(&self, view: ViewId) {
+        if self.with_state(|state| state.views.get(&view).is_some_and(|entry|
+            entry.saved_actor_identity.is_some() || entry.browser_owner.is_some())) { return; }
+        saved_load::cancel(self, view);
+        self.cancel_recovery_open(view);
         let removed = self.with_state(|state| state.views.remove(&view));
         let dirty = removed.as_ref().is_some_and(|v| v.dirty);
         self.recovery_view_gone(view, dirty);
         // a question to the renderer that can no longer be answered
         self.fail_queries_of(view);
         let Some(mut gone) = removed else { return };
+        if let Some(document) = gone.document.take() { document.revoke(); }
+        for (_, pending) in gone.owned_saves.drain() { pending.cancel_and_finish(); }
+        for (_, _, reply) in gone.first_save_queue.drain(..) {
+            reply.reply(Err(crate::value::thrown("The diagram view was closed")));
+        }
+        for (_, close) in gone.owned_closes.drain() { close.cancel_and_finish(); }
+        for (_, publication) in gone.owned_publications.drain() { publication.cancel_and_finish(); }
+        for (_, then) in gone.owned_renames.drain() { then(Err(crate::value::thrown("The diagram view was closed"))); }
         if let Some(copy_now) = gone.copy_now.take() {
-            (copy_now.finish)();
+            (copy_now.finish)(Err(main_core::shell::renderer_disposal::Failure("The diagram view was closed".into())));
         }
         if let Some(waiter) = gone.close_save.take() {
             (waiter.resume)(WaitEnd::Answer(false));
@@ -242,10 +325,30 @@ impl DiagramViews {
     }
 }
 
+impl main_core::packages::electron_utils::recovery_contract::RecoveryEditorContract<ViewId, shell_contract::ipc::RecoveryOpenTarget> for DiagramViews {
+    fn kind(&self) -> &str { "diagram" }
+    fn write_copies_now(&self, done: Box<dyn FnOnce(Result<(), main_core::shell::renderer_disposal::Failure>)>) {
+        DiagramViews::write_copies_now(self, std::time::Duration::from_secs(5), done);
+    }
+    fn open_file_with_decision(&self, view: &ViewId, request: &main_core::packages::electron_utils::recovery_contract::RecoveryOpenFileRequest, target: &shell_contract::ipc::RecoveryOpenTarget, done: main_core::packages::electron_utils::recovery_contract::RecoveryOpenDone) {
+        self.prepare_recovery_file(*view, request, target, done);
+    }
+    fn open_untitled_copy(&self, view: &ViewId, request: &main_core::packages::electron_utils::recovery_contract::RecoveryOpenUntitledRequest, target: &shell_contract::ipc::RecoveryOpenTarget, done: main_core::packages::electron_utils::recovery_contract::RecoveryOpenDone) {
+        self.prepare_recovery_copy(*view, request, target, done);
+    }
+    fn is_unprotectable(&self, _view: &ViewId) -> bool { false }
+}
+
 /// `registerDiagramIpc()`: the 27 channels the renderer calls
 pub fn routes(services: &Services, provided: &Rc<Provided>) -> Result<Vec<Route>, RegisterError> {
     let views = DiagramViews::new(services)?;
+    let instance = views.0.id;
+    let terminal = crate::host::on_native_view_terminal(services, move |event| {
+        if let Some(views) = lookup(instance) { views.native_terminal(event) } else { Ok(()) }
+    })?;
+    *views.0.terminal_registration.borrow_mut() = Some(terminal);
     provided.add::<dyn DocumentEditors>(Rc::new(editors::DiagramEditors(views.clone())));
+    provided.add::<dyn main_core::packages::electron_utils::recovery_contract::RecoveryEditorContract<ViewId, shell_contract::ipc::RecoveryOpenTarget>>(Rc::new(views.clone()));
     #[cfg(any(test, feature = "probe"))]
     if let Some(probe) = services.hosts.get::<fakes::ProbeOpen>() {
         views.apply_probe(probe);
@@ -275,11 +378,17 @@ pub fn routes(services: &Services, provided: &Rc<Provided>) -> Result<Vec<Route>
     }
 
     Ok(vec![
-        invoke!("diagram:consume-pending", consume_pending),
-        invoke!("diagram:open-file", open_file),
+        {
+            let views=views.clone();
+            route::invoke_later("diagram:consume-pending",move |cx,args,reply|saved_load::consume_pending(&views,cx,args,reply))
+        },
+        {
+            let views=views.clone();
+            route::invoke_later("diagram:open-file",move |cx,args,reply|saved_load::open_file(&views,cx,args,reply))
+        },
         invoke!("diagram:save-target", save_target),
-        invoke!("diagram:save", save),
-        invoke!("diagram:save-into-project", save_into_project),
+        later!("diagram:save", save_dispatch),
+        later!("diagram:save-into-project", save_into_project_owned),
         invoke!("diagram:open-link", open_link),
         send!("diagram:open-help", open_help),
         invoke!("diagram:open-failed", open_failed),
@@ -289,6 +398,7 @@ pub fn routes(services: &Services, provided: &Rc<Provided>) -> Result<Vec<Route>
         invoke!("diagram:recovery-copy", recovery_copy),
         send!("diagram:recovery-copy-now-done", recovery_copy_now_done),
         invoke!("diagram:seed-take", seed_take),
+        invoke!("diagram:recovery-initialized", recovery_initialized),
         invoke!("diagram:export-images", export_images),
         later!("diagram:export-pdf", export_pdf),
         invoke!("diagram:files-pick", files_pick),
@@ -377,6 +487,14 @@ pub fn probe_trigger(
     let gone = |message: String| crate::value::thrown(message);
     let editor = editor_for(provided, view);
     match what {
+        "render-process-gone" => {
+            handle.view_crashed(view);
+            then(Ok(IpcValue::Undefined));
+        }
+        "destroyed" => {
+            handle.view_gone(view);
+            then(Ok(IpcValue::Undefined));
+        }
         "requestDiagramSave" => {
             let mode = if text(0) == "saveAs" {
                 SaveMode::SaveAs
@@ -452,7 +570,7 @@ pub fn probe_trigger(
                 .unwrap_or(5000);
             handle.write_copies_now(
                 Duration::from_millis(timeout),
-                Box::new(move || then(Ok(IpcValue::Undefined))),
+                Box::new(move |result| then(result.map(|_| IpcValue::Undefined).map_err(|error| crate::value::thrown(error.0)))),
             );
         }
         // the "Don't Save" hold ends, and the tab that stayed open is asked

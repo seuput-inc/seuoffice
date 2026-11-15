@@ -13,16 +13,23 @@
 //! [`TabsState::host_event`] through the [`HostEvents`] it gets in
 //! `WindowsHost::attach`.
 
+mod activation;
 mod bridge;
+mod detached_snapshot;
 pub mod host;
 mod menus;
+mod documents;
+pub use documents::DocsExportCloseOutcome;
 mod open;
+pub(crate) mod owned_saved;
 mod ops;
 #[cfg(feature = "probe")]
 mod probe;
 mod project_seam;
 mod state;
+mod startup;
 mod wire;
+pub mod window_snapshot;
 
 use std::rc::Rc;
 
@@ -38,9 +45,17 @@ pub use host::{
     TimerKey, ViewHappened, ViewListen, WindowEvent, WindowState, WindowsHost, WindowsHostRef,
 };
 #[cfg(feature = "probe")]
-pub use probe::probe_hosts;
+pub use probe::{probe_hosts, probe_state, ProbeShellRegistration, ProbeViewRegistrar};
 pub use project_seam::ViewDocument;
 pub use state::TabsState;
+pub use open::{CommittedGeneratedTab, GeneratedEditorOpen, PreparedGeneratedOperation, native_open_surface, rollback_editor_receipts, retire_adopted_editor_receipts};
+pub use open::{AdoptedLifetimeFailure, AdoptedLifetimeHandle, CallerOwnedAdoptedLifetime, RetainedAdoptedLifetime};
+pub use owned_saved::{SavedTabAck,SavedSessionUpdate,SavedPublication,SavedContinuation,PendingDirSave,MovedTabs};
+pub use activation::{DocsDisposal, DocsDisposalOperation, PreparedTabUiBatch, PreparedTabUiStep, TabUiDone, TabUiRun, TabActivationPublicationSnapshot, PreparedTabActivationPublication, SplitMemoryRevision, OwnedLoadedTabView};
+pub use activation::TabActivationAuthority;
+pub use activation::{RecoveryAttempt, RecoveryCleanup, StartupRecoveryConstraint};
+pub use activation::{TabUiStepDone, TabUiStepOutcome, TabUiStepRetry};
+pub use startup::{StartupBind, StartupHydrationBind, StartupMutationDone};
 
 use self::menus::popup_at;
 use self::open::NewKind;
@@ -87,6 +102,12 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
             })?;
     let state = TabsState::new(services, windows, hooks, provided.clone());
     provided.add::<TabsState>(state.clone());
+    #[cfg(feature = "probe")]
+    probe::install_first_shell(&state, services).map_err(|message| RegisterError::Initialization {
+        batch: Batch::W,
+        host: "shell_ipc_w::tabs::probe::first_shell",
+        message,
+    })?;
     let main = services
         .hosts
         .need::<shell_contract::MainWindowHost>(Batch::W)?;
@@ -144,9 +165,9 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
 
     // ---- native menus: the invoke is answered when the menu closes ----
     let s = state.clone();
-    later(registry, "tabs:show-app-menu", move |_, args, reply| {
+    later(registry, "tabs:show-app-menu", move |cx, args, reply| {
         let at = popup_at(number(args.first()), number(args.get(1)));
-        s.show_app_menu(at, reply)
+        s.show_app_menu(cx, at, reply)
     })?;
     let s = state.clone();
     later(registry, "tabs:show-menu", move |_, args, reply| {

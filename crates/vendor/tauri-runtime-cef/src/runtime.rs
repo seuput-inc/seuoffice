@@ -72,7 +72,7 @@ use winit::platform::windows::EventLoopBuilderExtWindows;
 
 /// Native events for application rendering and input forwarding, on the event-loop thread.
 /// `Destroyed` is delivered before the runtime releases the window, including on exit.
-pub type NativeWindowEventHandler = dyn Fn(&str, &dyn ActiveEventLoop, Arc<dyn winit::window::Window>, &WinitWindowEvent)
+pub type NativeWindowEventHandler = dyn Fn(&str, &dyn ActiveEventLoop, crate::NativeWindowHandle, &WinitWindowEvent)
   + Send
   + Sync;
 
@@ -474,6 +474,7 @@ pub struct Cef {
   disabled_features: Vec<String>,
   enabled_features: Vec<String>,
   deep_link_schemes: Vec<String>,
+  native_custom_schemes: Vec<String>,
   cache_path: Option<PathBuf>,
   api_version: Option<i32>,
   secret_storage: SecretStorage,
@@ -508,6 +509,7 @@ impl fmt::Debug for Cef {
       .field("disabled_features", &self.disabled_features)
       .field("enabled_features", &self.enabled_features)
       .field("deep_link_schemes", &self.deep_link_schemes)
+      .field("native_custom_schemes", &self.native_custom_schemes)
       .field("cache_path", &self.cache_path)
       .field("api_version", &self.api_version)
       .field("secret_storage", &self.secret_storage)
@@ -543,16 +545,36 @@ impl fmt::Debug for Cef {
 }
 
 impl Cef {
+  /// Registers native standard, secure, CORS and Fetch-enabled schemes in every
+  /// CEF process before initialization. Register their Tauri protocol handlers
+  /// separately. Names must be lowercase URI scheme names.
+  #[must_use]
+  pub fn native_custom_schemes<I, S>(mut self, schemes: I) -> Self
+  where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+  {
+    for name in schemes {
+      let name = name.into();
+      assert!(crate::native_scheme::valid_scheme(&name), "invalid native custom scheme");
+      if !self.native_custom_schemes.contains(&name) {
+        self.native_custom_schemes.push(name);
+      }
+    }
+    self
+  }
+
   /// Observes native input, resize and redraw events without replacing Tauri's handling.
   ///
   /// Runs before Tauri handles the event. Offscreen embedders forward input, focus and IME
   /// to CEF and present their own GPU surface here.
-  /// Release GPU resources and retained native window references on `Destroyed`.
+  /// Release GPU resources on `Destroyed`. The handle does not retain the window;
+  /// native operations must use its creation-bound `with_window` method.
   /// Registering this callback does not enable OSR or forward input automatically.
   #[must_use]
   pub fn on_window_event<F>(mut self, handler: F) -> Self
   where
-    F: Fn(&str, &dyn ActiveEventLoop, Arc<dyn winit::window::Window>, &WinitWindowEvent)
+    F: Fn(&str, &dyn ActiveEventLoop, crate::NativeWindowHandle, &WinitWindowEvent)
       + Send
       + Sync
       + 'static,
@@ -1180,11 +1202,12 @@ impl<T: UserEvent> From<Cef> for tauri_runtime::dynamic::DynRuntimeInitAttrs<T> 
 /// Information about the CEF webview that requested a new window.
 pub struct NewWindowOpener {
   source_url: Option<url::Url>,
+  native_origin: Option<crate::NativeContextToken>,
 }
 
 impl NewWindowOpener {
   pub(crate) fn new(source_url: Option<url::Url>) -> Self {
-    Self { source_url }
+    Self { source_url, native_origin: None }
   }
 
   /// The opener's main-frame URL at the native popup request, when available.
@@ -1194,6 +1217,13 @@ impl NewWindowOpener {
   /// external message pump may run outside a winit dispatch callback.
   pub fn source_url(&self) -> Option<&url::Url> {
     self.source_url.as_ref()
+  }
+
+  pub fn native_origin(&self) -> Option<&crate::NativeContextToken> { self.native_origin.as_ref() }
+
+  pub(crate) fn with_native_origin(mut self, origin: crate::NativeContextToken) -> Self {
+    self.native_origin = Some(origin);
+    self
   }
 }
 
@@ -1220,6 +1250,12 @@ impl<T: UserEvent> EventLoopProxy<T> for EventProxy<T> {
 
 #[derive(Clone)]
 pub(crate) struct RuntimeContext<T: UserEvent> {
+  pub(crate) browser_lifetimes: crate::browser_lifetime::BrowserLifetimes,
+  pub(crate) native_contexts: crate::native_context::ContextRegistry,
+  pub(crate) native_windows: crate::window::NativeWindows,
+  pub(crate) window_scope: Option<(WindowId, crate::NativeWindowClose)>,
+  pub(crate) webview_scope: Option<(u32, crate::NativeBrowserClose, Arc<Mutex<WindowId>>, Option<(WindowId, crate::NativeWindowClose)>)>,
+  pub(crate) separate_renderer: Arc<AtomicBool>,
   pub(crate) sender: Sender<Message<T>>,
   /// Only ever woken through [`Self::wake_event_loop`].
   #[cfg(not(target_os = "macos"))]
@@ -1243,6 +1279,7 @@ pub(crate) struct RuntimeContext<T: UserEvent> {
   /// webview's request context after the runtime's own defaults. See
   /// [`Cef::profile_preference`].
   pub(crate) profile_preferences: Arc<Vec<(String, serde_json::Value)>>,
+  pub(crate) native_custom_schemes: Arc<Vec<String>>,
   /// Default content settings the application asked for, applied to every webview's
   /// request context. See [`Cef::default_content_setting`].
   pub(crate) content_settings: Arc<Vec<(cef::ContentSettingTypes, cef::ContentSettingValues)>>,
@@ -1402,7 +1439,40 @@ impl<T: UserEvent> fmt::Debug for RuntimeContext<T> {
 }
 
 impl<T: UserEvent> RuntimeContext<T> {
+  /// Enqueues without re-entering an active winit/CEF callback.
+  pub(crate) fn enqueue_message(&self, message: Message<T>) -> Result<()> {
+    self.sender.send(message).map_err(|_| Error::FailedToSendMessage)?;
+    self.wake_event_loop();
+    Ok(())
+  }
+
   pub(crate) fn send_message(&self, message: Message<T>) -> Result<()> {
+    let message = match (&self.window_scope, message) {
+      (Some((expected, close)), Message::Window { window_id, message }) if *expected == window_id => {
+        let effect = close.admit().ok_or(Error::FailedToSendMessage)?;
+        Message::AdmittedWindow { window_id, close: close.clone(), effect, message }
+      }
+      (Some(_), Message::Window { .. }) => return Err(Error::FailedToSendMessage),
+      (_, message) => message,
+    };
+    let message = match (&self.webview_scope, message) {
+      (Some((expected, browser, _, initial)), Message::Webview { window_id, webview_id, message }) if *expected == webview_id => {
+        if !self.browser_lifetimes.close_handle(webview_id).is_some_and(|close| close.same_reservation(browser)) {
+          return Err(Error::FailedToSendMessage);
+        }
+        let fallback = initial.as_ref().filter(|(id, _)| *id == window_id).map(|(_, close)| close);
+        let source = self.native_windows.capture(window_id, fallback, true).ok_or(Error::FailedToSendMessage)?;
+        let target = match &message {
+          WebviewMessage::Reparent(id, _) if *id != window_id => Some((*id,
+            self.native_windows.capture(*id, None, false).ok_or(Error::FailedToSendMessage)?)),
+          _ => None,
+        };
+        Message::OriginWebview { window_id, webview_id, origin: WebviewOrigin { browser: browser.clone(), source, target }, message }
+      }
+      (Some(_), Message::Webview { .. }) => return Err(Error::FailedToSendMessage),
+      (None, Message::Webview { .. }) => return Err(Error::FailedToSendMessage),
+      (_, message) => message,
+    };
     let message = if self.is_main_thread() {
       match handle_main_thread_message(self, message) {
         Ok(()) => return Ok(()),
@@ -1485,7 +1555,39 @@ impl<T: UserEvent> RuntimeContext<T> {
   /// it inline would deadlock because the loop cannot drain the task while the
   /// main thread blocks on `rx.recv()`.
   pub(crate) fn run_on_main_thread<F: FnOnce() + Send + 'static>(&self, f: F) -> Result<()> {
-    if self.is_main_thread() {
+    if let Some((webview_id, browser, position, initial)) = &self.webview_scope {
+      let window_id = *position.lock().map_err(|_| Error::FailedToSendMessage)?;
+      if !self.browser_lifetimes.close_handle(*webview_id).is_some_and(|close| close.same_reservation(browser)) {
+        return Err(Error::FailedToSendMessage);
+      }
+      let fallback = initial.as_ref().filter(|(id, _)| *id == window_id).map(|(_, close)| close);
+      let origin = self.native_windows.capture(window_id, fallback, true).ok_or(Error::FailedToSendMessage)?;
+      let effect = origin.admit().ok_or(Error::FailedToSendMessage)?;
+      let windows = self.native_windows.clone();
+      let browsers = self.browser_lifetimes.clone();
+      let browser = browser.clone();
+      let webview_id = *webview_id;
+      let position = position.clone();
+      let task = move || {
+        let _effect = effect;
+        if position.lock().is_ok_and(|current| *current == window_id)
+          && origin.is_open() && windows.matches_origin(window_id, &origin)
+          && browsers.close_handle(webview_id).is_some_and(|close| close.same_reservation(&browser)) { f(); }
+      };
+      if self.is_main_thread() { task(); Ok(()) }
+      else { self.send_message(Message::Task(Box::new(task))) }
+    } else if let Some((window_id, close)) = &self.window_scope {
+      let effect = close.admit().ok_or(Error::FailedToSendMessage)?;
+      let close = close.clone();
+      let window_id = *window_id;
+      let windows = self.native_windows.clone();
+      let task = move || {
+        let _effect = effect;
+        if close.is_open() && windows.matches(window_id, &close) { f(); }
+      };
+      if self.is_main_thread() { task(); Ok(()) }
+      else { self.send_message(Message::Task(Box::new(task))) }
+    } else if self.is_main_thread() {
       f();
       Ok(())
     } else {
@@ -1506,7 +1608,13 @@ pub(crate) type AfterWindowCreationCallback = Box<dyn for<'a> Fn(RawWindow<'a>) 
 
 pub(crate) enum Message<T: UserEvent> {
   EventLoop(EventLoopMessage),
-  BrowserClosed(WindowId, u32),
+  AdmittedWindow { window_id: WindowId, close: crate::NativeWindowClose, effect: crate::native_window_close::NativeWindowEffect, message: WindowMessage },
+  NativeWindowObserved(WinitWindowId, crate::NativeWindowClose),
+  NativeWindowTerminal(WinitWindowId, crate::NativeWindowClose),
+  #[cfg(target_os = "macos")]
+  NativeWindowPrecloseCompleted(WinitWindowId, crate::NativeWindowHandle, Option<crate::NativeWindowEffect>, bool),
+  BrowserClosed(WindowId, u32, i32, crate::FrameNavigationState),
+  RequestBrowserClose { webview_id: u32, close: crate::NativeBrowserClose },
   PopupPending(crate::popup::PopupRequest, Arc<crate::popup::PopupFamily>),
   PopupCreated(
     crate::popup::PopupRequest,
@@ -1518,7 +1626,7 @@ pub(crate) enum Message<T: UserEvent> {
   /// CEF handed us the teardown of a webview's browser, keyed by the webview's
   /// process-unique id. See `TauriCefChildLifeSpanHandler::do_close`.
   #[cfg(any(target_os = "macos", windows))]
-  DestroyWebviewHostWindow(u32),
+  DestroyWebviewHostWindow(u32, i32, crate::FrameNavigationState),
   Opened(Vec<url::Url>),
   #[cfg(target_os = "macos")]
   Reopen {
@@ -1538,6 +1646,7 @@ pub(crate) enum Message<T: UserEvent> {
   CreateWebview {
     window_id: WindowId,
     webview_id: u32,
+    parent: Option<(crate::NativeWindowClose, crate::native_window_close::NativeWindowEffect)>,
     pending: Box<PendingWebview<T, CefRuntime<T>>>,
     result_tx: Sender<Result<()>>,
   },
@@ -1550,18 +1659,21 @@ pub(crate) enum Message<T: UserEvent> {
   /// it is reparented.
   PageFullscreen {
     webview_id: u32,
+    browser: crate::FrameNavigationState,
     fullscreen: bool,
   },
   /// F11 (`IDC_FULLSCREEN`) in a webview whose page is not in HTML fullscreen, sent to
   /// whichever window holds the webview now.
   ToggleFullscreen {
     webview_id: u32,
+    browser: crate::FrameNavigationState,
   },
   Webview {
     window_id: WindowId,
     webview_id: u32,
     message: WebviewMessage,
   },
+  OriginWebview { window_id: WindowId, webview_id: u32, origin: WebviewOrigin, message: WebviewMessage },
   NavigateFirstWebview {
     window_id: WindowId,
     url: String,
@@ -1730,15 +1842,30 @@ fn is_cef_helper_process() -> bool {
     .unwrap_or_default()
 }
 
+pub(crate) struct NativeWindowWatch {
+  pub(crate) close: crate::NativeWindowClose,
+  pub(crate) _subscription: crate::NativeWindowCloseSubscription,
+  pub(crate) ambiguous: bool,
+}
+
+pub(crate) struct WebviewOrigin {
+  pub(crate) browser: crate::NativeBrowserClose,
+  pub(crate) source: crate::window::NativeWindowOrigin,
+  pub(crate) target: Option<(WindowId, crate::window::NativeWindowOrigin)>,
+}
+
 pub(crate) struct AppState<T: UserEvent> {
   pub(crate) windows: HashMap<WindowId, AppWindow>,
   /// Windows that are already closed as far as the application is concerned,
   /// kept alive only so their native handle outlives the CEF browsers they
   /// host. See [`WinitCefApp::close_window`].
   pub(crate) closing_windows: Vec<AppWindow>,
+  pub(crate) creating_windows: HashMap<u32, AppWindow>,
   pub(crate) winid_id_to_window_id_map: HashMap<WinitWindowId, WindowId>,
+  pub(crate) native_window_watches: HashMap<WinitWindowId, NativeWindowWatch>,
+  #[cfg(target_os = "macos")]
+  pub(crate) mac_preclose_observers: HashMap<WinitWindowId, (crate::NativeWindowHandle, objc2::rc::Retained<crate::platform::macos::PrecloseObserver>)>,
   pub(crate) callback: Box<dyn FnMut(RunEvent<T>)>,
-  pub(crate) live_browsers: usize,
   live_popups: HashMap<i32, Arc<crate::popup::PopupFamily>>,
   pending_popups: Vec<(crate::popup::PopupRequest, Arc<crate::popup::PopupFamily>)>,
   pub(crate) exiting: bool,
@@ -1764,9 +1891,12 @@ impl<T: UserEvent> WinitCefApp<T> {
       state: AppState {
         windows: HashMap::new(),
         closing_windows: Vec::new(),
+        creating_windows: HashMap::new(),
         winid_id_to_window_id_map: HashMap::new(),
+        native_window_watches: HashMap::new(),
+        #[cfg(target_os = "macos")]
+        mac_preclose_observers: HashMap::new(),
         callback,
-        live_browsers: 0,
         live_popups: HashMap::new(),
         pending_popups: Vec::new(),
         exiting: false,
@@ -1805,6 +1935,45 @@ impl<T: UserEvent> WinitCefApp<T> {
 
   fn handle_message(&mut self, event_loop: &dyn ActiveEventLoop, message: Message<T>) {
     match message {
+      Message::AdmittedWindow { window_id, close, effect, message } => {
+        let _effect = effect;
+        if close.is_open() && self.context.native_windows.matches(window_id, &close) {
+          self.handle_window_message(event_loop, window_id, message);
+        }
+      }
+      Message::OriginWebview { window_id, webview_id, origin, message } => {
+        if !self.context.browser_lifetimes.close_handle(webview_id)
+          .is_some_and(|close| close.same_reservation(&origin.browser))
+          || !self.context.native_windows.matches_origin(window_id, &origin.source)
+          || origin.target.as_ref().is_some_and(|(id, target)| !self.context.native_windows.matches_origin(*id, target)) {
+          return;
+        }
+        let Some(_source_effect) = origin.source.admit() else { return };
+        let _target_effect = match &origin.target {
+          Some((_, target)) => match target.admit() { Some(effect) => effect, None => return },
+          None => None,
+        };
+        self.handle_webview_message(window_id, webview_id, message, origin);
+      }
+      Message::NativeWindowObserved(id, close) => {
+        if self.state.native_window_watches.get(&id).is_some_and(|watch| !watch.ambiguous && watch.close.same(&close)) {
+          close.native_close_observed();
+        }
+      }
+      Message::NativeWindowTerminal(id, close) => {
+        if self.state.native_window_watches.get(&id).is_some_and(|watch| !watch.ambiguous && watch.close.same(&close)) {
+          self.state.native_window_watches.remove(&id);
+          self.exit_if_done(event_loop);
+        }
+      }
+      #[cfg(target_os = "macos")]
+      Message::NativeWindowPrecloseCompleted(id, original, effect, success) => {
+        if self.state.mac_preclose_observers.get(&id).is_some_and(|(window, _)| window.is_same(&original)) {
+          original.complete_native_preclose(success);
+          self.state.mac_preclose_observers.remove(&id);
+        }
+        drop(effect);
+      }
       Message::EventLoop(message) => self.handle_event_loop_message(event_loop, message),
       Message::PopupPending(request, family) => {
         self.state.pending_popups.push((request, family));
@@ -1827,11 +1996,23 @@ impl<T: UserEvent> WinitCefApp<T> {
         self.state.live_popups.remove(&id);
         self.exit_if_done(event_loop);
       }
-      Message::BrowserClosed(_window_id, webview_id) => {
+      Message::BrowserClosed(_window_id, webview_id, browser_id, browser_state) => {
+        let Some(attached) = self.context.browser_lifetimes.acknowledge(webview_id, browser_id, &browser_state) else {
+          return;
+        };
+        if !attached {
+          self.state.creating_windows.remove(&webview_id);
+          let lifetimes = self.context.browser_lifetimes.clone();
+          self.state.closing_windows.retain(|window| {
+            !window.children.is_empty() || lifetimes.has_unattached_for_window(window.id)
+          });
+          self.exit_if_done(event_loop);
+          return;
+        }
         // Standalone webview.close() and app shutdown keep the child in state
         // until this callback, so cleanup happens here. Individual window
         // teardown removes child bookkeeping first; then this message is only
-        // the lifecycle acknowledgement that lets live_browsers drain.
+        // the lifecycle acknowledgement that releases the browser lifetime.
         //
         // The window_id baked into the browser's handlers can be stale after a
         // reparent, so locate the webview by its process-unique id across every
@@ -1842,7 +2023,7 @@ impl<T: UserEvent> WinitCefApp<T> {
           appwindow
             .children
             .iter()
-            .position(|child| child.webview_id == webview_id)
+            .position(|child| child.webview_id == webview_id && child.browser_id == browser_id)
             .map(|index| {
               // A page that took the window fullscreen gives it back as it goes.
               appwindow.set_page_fullscreen(webview_id, false);
@@ -1869,15 +2050,13 @@ impl<T: UserEvent> WinitCefApp<T> {
           for appwindow in &mut self.state.closing_windows {
             appwindow
               .children
-              .retain(|child| child.webview_id != webview_id);
+              .retain(|child| child.webview_id != webview_id || child.browser_id != browser_id);
           }
-          self
-            .state
-            .closing_windows
-            .retain(|appwindow| !appwindow.children.is_empty());
+          let lifetimes = self.context.browser_lifetimes.clone();
+          self.state.closing_windows.retain(|window| {
+            !window.children.is_empty() || lifetimes.has_unattached_for_window(window.id)
+          });
         }
-
-        self.state.live_browsers = self.state.live_browsers.saturating_sub(1);
 
         // A window that just lost its last webview has nothing left to show, so
         // it follows the webview out through the regular close path — listeners
@@ -1890,23 +2069,9 @@ impl<T: UserEvent> WinitCefApp<T> {
         }
       }
       #[cfg(any(target_os = "macos", windows))]
-      Message::DestroyWebviewHostWindow(webview_id) => {
-        // Destroying the browser's own child view/window is what completes the
-        // close CEF handed over in `do_close`; CEF acknowledges it with
-        // `BrowserClosed`, which is where the bookkeeping is dropped. Same
-        // reasoning as there for searching every window by webview id.
-        //
-        // Closing windows are searched too: they hold their children until CEF
-        // acknowledges them, and this destruction is what makes CEF do that.
-        if let Some(child) = self
-          .state
-          .windows
-          .values()
-          .chain(self.state.closing_windows.iter())
-          .flat_map(|appwindow| appwindow.children.iter())
-          .find(|child| child.webview_id == webview_id)
-        {
-          child.destroy_host_window();
+      Message::DestroyWebviewHostWindow(webview_id, browser_id, browser_state) => {
+        if let Some(host) = self.context.browser_lifetimes.closing_host(webview_id, browser_id, &browser_state) {
+          crate::platform::destroy_browser_host_window(&host);
         }
       }
       Message::CreateWindow {
@@ -1923,18 +2088,36 @@ impl<T: UserEvent> WinitCefApp<T> {
           pending,
           after_window_creation,
         );
+        if result.is_err() && let Some(id) = webview_id {
+          if let Some(host) = self.context.browser_lifetimes.abort(id) { host.close_browser(1); }
+        }
         // The caller stopped waiting: see `RuntimeContext::wait_for_creation`.
         if let Err(mpsc::SendError(Err(error))) = result_tx.send(result) {
           log::error!("failed to create window: {error}");
         }
       }
+      Message::RequestBrowserClose { webview_id, close } => {
+        if let Some(host) = self.context.browser_lifetimes.request_close(webview_id, &close) {
+          host.close_browser(1);
+        }
+      }
       Message::CreateWebview {
         window_id,
         webview_id,
+        parent,
         pending,
         result_tx,
       } => {
-        let result = self.create_webview(window_id, webview_id, *pending);
+        let result = if let Some((close, _effect)) = parent {
+          if close.is_open() && self.context.native_windows.matches(window_id, &close) {
+            self.create_webview(window_id, webview_id, *pending)
+          } else { Err(Error::FailedToSendMessage) }
+        } else {
+          self.create_webview(window_id, webview_id, *pending)
+        };
+        if result.is_err() {
+          if let Some(host) = self.context.browser_lifetimes.abort(webview_id) { host.close_browser(1); }
+        }
         if let Err(mpsc::SendError(Err(error))) = result_tx.send(result) {
           log::error!("failed to create webview: {error}");
         }
@@ -1942,36 +2125,36 @@ impl<T: UserEvent> WinitCefApp<T> {
       Message::Window { window_id, message } => {
         self.handle_window_message(event_loop, window_id, message)
       }
-      Message::PageFullscreen {
-        webview_id,
-        fullscreen,
-      } => {
+      Message::PageFullscreen { webview_id, browser, fullscreen } => {
+        let watches = &self.state.native_window_watches;
         if let Some(appwindow) = self.state.windows.values_mut().find(|appwindow| {
-          appwindow
-            .children
-            .iter()
-            .any(|child| child.webview_id == webview_id)
+          appwindow.children.iter().any(|child| child.webview_id == webview_id
+            && child.frame_navigation_state.is_same_browser(&browser))
         }) {
+          let _effect = match watches.get(&appwindow.window.id()) {
+            Some(watch) => match watch.close.admit() { Some(effect) => Some(effect), None => return },
+            None => None,
+          };
           appwindow.set_page_fullscreen(webview_id, fullscreen);
         }
       }
-      Message::ToggleFullscreen { webview_id } => {
-        let window_id = self.state.windows.iter().find_map(|(id, appwindow)| {
-          appwindow
-            .children
-            .iter()
-            .any(|child| child.webview_id == webview_id)
-            .then_some(*id)
+      Message::ToggleFullscreen { webview_id, browser } => {
+        let target = self.state.windows.iter().find_map(|(id, appwindow)| {
+          appwindow.children.iter().any(|child| child.webview_id == webview_id
+            && child.frame_navigation_state.is_same_browser(&browser))
+            .then_some((*id, appwindow.window.id()))
         });
-        if let Some(window_id) = window_id {
+        if let Some((window_id, native_id)) = target {
+          let _effect = match self.state.native_window_watches.get(&native_id) {
+            Some(watch) => match watch.close.admit() { Some(effect) => Some(effect), None => return },
+            None => None,
+          };
           self.handle_window_message(event_loop, window_id, WindowMessage::ToggleFullscreen);
         }
       }
-      Message::Webview {
-        window_id,
-        webview_id,
-        message,
-      } => self.handle_webview_message(window_id, webview_id, message),
+      Message::Webview { .. } => {
+        log::error!("discarding webview message without original browser and window provenance");
+      }
       Message::NavigateFirstWebview { window_id, url } => {
         self.navigate_first_webview(window_id, &url)
       }
@@ -2129,8 +2312,25 @@ impl<T: UserEvent> WinitCefApp<T> {
   }
 
   pub(crate) fn close_window(&mut self, window_id: WindowId, event_loop: &dyn ActiveEventLoop) {
+    self.close_window_inner(window_id, event_loop, false);
+  }
+
+  fn close_window_inner(&mut self, window_id: WindowId, event_loop: &dyn ActiveEventLoop, native_already_closed: bool) {
     if !self.state.windows.contains_key(&window_id) {
       return;
+    }
+    if let Some(window) = self.state.windows.get(&window_id) {
+      if !native_already_closed {
+        let close = self.state.native_window_watches.get(&window.window.id()).map(|watch| watch.close.clone());
+        let handle = crate::NativeWindowHandle::new(window_id, &window.window, close);
+        if !crate::modal_window::before_close(&window.label, &handle) {
+          log::error!("native modal cleanup failed; window remains open for retry");
+          return;
+        }
+      }
+      if let Some(watch) = self.state.native_window_watches.get(&window.window.id()) {
+        watch.close.begin_close();
+      }
     }
     // Every close path funnels through here, and this is the last point at which
     // the window can still be named: the maps below are what `emit_window_event`
@@ -2147,6 +2347,7 @@ impl<T: UserEvent> WinitCefApp<T> {
       return;
     };
     for child in &appwindow.children {
+      child.navigation_gate.fail();
       if let Some(view) = &child.offscreen {
         view.visible.store(false, Ordering::Relaxed);
       }
@@ -2155,7 +2356,8 @@ impl<T: UserEvent> WinitCefApp<T> {
       handler(
         &appwindow.label,
         event_loop,
-        appwindow.window.clone(),
+        crate::NativeWindowHandle::new(window_id, &appwindow.window,
+          self.state.native_window_watches.get(&appwindow.window.id()).map(|watch| watch.close.clone())),
         &WinitWindowEvent::Destroyed,
       );
     }
@@ -2165,7 +2367,7 @@ impl<T: UserEvent> WinitCefApp<T> {
       .remove(&appwindow.window.id());
     // The window is gone from state, so BrowserClosed will not find these
     // children later. Clean registry entries while we still hold them; the CEF
-    // shutdown drain is still enforced by live_browsers.
+    // shutdown drain is still enforced by the browser lifetime registry.
     for child in &appwindow.children {
       self.remove_scheme_handler_entries(child);
       child.popup_family.close_all();
@@ -2177,7 +2379,7 @@ impl<T: UserEvent> WinitCefApp<T> {
       child.host.close_browser(1);
     }
 
-    if appwindow.children.is_empty() {
+    if appwindow.children.is_empty() && !self.context.browser_lifetimes.has_unattached_for_window(window_id) {
       // Nothing is left to close, so the native window goes now.
       drop(appwindow);
     } else {
@@ -2194,7 +2396,7 @@ impl<T: UserEvent> WinitCefApp<T> {
       self.state.closing_windows.push(appwindow);
     }
 
-    // A window still waiting on its browsers holds `live_browsers` above zero,
+    // A window still waiting on its browsers keeps a lifetime entry,
     // so this cannot exit the loop out from under a close in flight.
     self.exit_if_done(event_loop);
   }
@@ -2227,24 +2429,23 @@ impl<T: UserEvent> WinitCefApp<T> {
   }
 
   fn navigate_first_webview(&self, window_id: WindowId, url: &str) {
-    let Some(frame) = self
-      .state
-      .windows
-      .get(&window_id)
-      .and_then(|window| window.children.first())
-      .and_then(|webview| webview.browser.main_frame())
-    else {
+    let Some(child) = self.state.windows.get(&window_id).and_then(|window| window.children.first()) else {
       return;
     };
-
-    frame.load_url(Some(&CefString::from(url)));
+    let browser = child.browser.clone();
+    let url = url.to_owned();
+    child.navigation_gate.submit(Box::new(move || {
+      if let Some(frame) = browser.main_frame() {
+        frame.load_url(Some(&CefString::from(url.as_str())));
+      }
+    }));
   }
 
   fn close_all_browsers(&mut self) {
     // Keep each child reachable until CEF acknowledges its close. On macOS and
     // Windows, do_close queues DestroyWebviewHostWindow, which needs this state
     // to destroy the native child view and trigger on_before_close. Dropping
-    // the windows here can strand live_browsers and prevent process exit.
+    // the windows here can strand browser lifetimes and prevent process exit.
     for appwindow in self.state.windows.values() {
       for child in &appwindow.children {
         child.popup_family.close_all();
@@ -2282,9 +2483,10 @@ impl<T: UserEvent> WinitCefApp<T> {
       .pending_popups
       .retain(|(_, family)| !family.is_revoked());
 
-    if self.state.live_browsers != 0
+    if !self.context.browser_lifetimes.is_empty()
       || !self.state.live_popups.is_empty()
       || !self.state.pending_popups.is_empty()
+      || !self.state.native_window_watches.is_empty()
     {
       return;
     }
@@ -2344,20 +2546,48 @@ impl<T: UserEvent> ApplicationHandler for WinitCefApp<T> {
     event: WinitWindowEvent,
   ) {
     let _guard = self.install_current_dispatch(event_loop);
+    if matches!(event, WinitWindowEvent::Destroyed) {
+      if let Some(watch) = self.state.native_window_watches.get(&winit_id) {
+        watch.close.begin_close();
+      }
+      #[cfg(not(target_os = "macos"))]
+      let cleanup_ok = if let Some(window) = self.state.winid_id_to_window_id_map.get(&winit_id)
+        .and_then(|id| self.state.windows.get(id)) {
+        let close = self.state.native_window_watches.get(&winit_id).filter(|watch| !watch.ambiguous).map(|watch| watch.close.clone());
+        let handle = crate::NativeWindowHandle::new(window.id, &window.window, close);
+        crate::modal_window::native_destroyed(&window.label, &handle)
+      } else { true };
+      #[cfg(target_os = "macos")]
+      let cleanup_ok = true;
+      if !cleanup_ok { log::error!("native window counterpart cleanup failed; close receipt remains pending"); }
+      if let Some(watch) = self.state.native_window_watches.get(&winit_id).filter(|watch| !watch.ambiguous) {
+        if cleanup_ok {
+          let _ = self.context.enqueue_message(Message::NativeWindowObserved(winit_id, watch.close.clone()));
+        }
+      }
+    }
     let Some(window_id) = self.state.winid_id_to_window_id_map.get(&winit_id).copied() else {
       return;
     };
+    let _event_effect = if !matches!(event, WinitWindowEvent::Destroyed) {
+      match self.state.native_window_watches.get(&winit_id) {
+        Some(watch) => match watch.close.admit() { Some(effect) => Some(effect), None => return },
+        None => None,
+      }
+    } else { None };
     if !matches!(event, WinitWindowEvent::Destroyed)
-      && let (Some(handler), Some((label, window))) = (
-        self.context.window_event_handler.clone(),
-        self
-          .state
-          .windows
-          .get(&window_id)
-          .map(|window| (window.label.clone(), window.window.clone())),
+      && let (Some(handler), Some(window)) = (
+        self.context.window_event_handler.clone(), self.state.windows.get(&window_id),
       )
     {
-      handler(&label, event_loop, window, &event);
+      let close = self.state.native_window_watches.get(&winit_id).map(|watch| watch.close.clone());
+      let effect = match &close {
+        Some(close) => match close.admit() { Some(effect) => Some(effect), None => return },
+        None => None,
+      };
+      let handle = crate::NativeWindowHandle::new(window_id, &window.window, close);
+      handler(&window.label, event_loop, handle, &event);
+      drop(effect);
     }
     let Some(appwindow) = self.state.windows.get_mut(&window_id) else {
       return;
@@ -2369,7 +2599,7 @@ impl<T: UserEvent> ApplicationHandler for WinitCefApp<T> {
       // Reached only when the native window went away without a close request of
       // its own; `close_window` emits `Destroyed` for every path, this one
       // included.
-      WinitWindowEvent::Destroyed => self.close_window(window_id, event_loop),
+      WinitWindowEvent::Destroyed => self.close_window_inner(window_id, event_loop, true),
       WinitWindowEvent::SurfaceResized(size) => {
         webview::layout_app_window(appwindow);
         self.emit_window_event(window_id, WindowEvent::Resized(size));
@@ -2629,8 +2859,12 @@ wrap_with_args! {
   }
 
   impl App {
+    fn on_register_custom_schemes(&self, registrar: Option<&mut SchemeRegistrar>) {
+      crate::native_scheme::register(registrar, &self.context.native_custom_schemes);
+    }
+
     fn render_process_handler(&self) -> Option<RenderProcessHandler> {
-      Some(ipc::TauriRenderProcessHandler::new())
+      Some(ipc::TauriRenderProcessHandler::new(Arc::default()))
     }
 
     fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {
@@ -2683,6 +2917,10 @@ wrap_with_args! {
           command_line,
           "enable-features",
           &self.enabled_features,
+        );
+        self.context.separate_renderer.store(
+          command_line.has_switch(Some(&CefString::from("single-process"))) == 0,
+          Ordering::Release,
         );
       }
     }
@@ -2765,7 +3003,7 @@ pub fn run_cef_helper_process() {
   if cef::api_hash(version, 0).is_null() {
     panic!("the loaded CEF library does not support CEF API version {version}");
   }
-  let mut app = TauriCefHelperApp::new();
+  let mut app = TauriCefHelperApp::new(crate::native_scheme::child_schemes(std::env::args_os()));
   let _ = cef::execute_process(
     Some(args.as_main_args()),
     Some(&mut app),
@@ -2774,11 +3012,17 @@ pub fn run_cef_helper_process() {
 }
 
 wrap_app! {
-  struct TauriCefHelperApp;
+  struct TauriCefHelperApp {
+    native_custom_schemes: Vec<String>,
+  }
 
   impl App {
+    fn on_register_custom_schemes(&self, registrar: Option<&mut SchemeRegistrar>) {
+      crate::native_scheme::register(registrar, &self.native_custom_schemes);
+    }
+
     fn render_process_handler(&self) -> Option<RenderProcessHandler> {
-      Some(ipc::TauriRenderProcessHandler::new())
+      Some(ipc::TauriRenderProcessHandler::new(Arc::default()))
     }
   }
 }
@@ -2786,6 +3030,14 @@ wrap_app! {
 #[derive(Debug, Clone)]
 pub struct CefRuntimeHandle<T: UserEvent> {
   context: RuntimeContext<T>,
+}
+
+#[cfg(target_os = "macos")]
+impl<T: UserEvent> CefRuntimeHandle<T> {
+  pub(crate) fn native_key_window_on_ui(&self) -> Result<Option<crate::NativeWindowHandle>> {
+    if !self.context.is_main_thread() { return Err(Error::FailedToSendMessage); }
+    self.context.native_windows.key_window_on_ui()
+  }
 }
 
 impl<T: UserEvent> RuntimeHandle<T> for CefRuntimeHandle<T> {
@@ -3077,7 +3329,7 @@ impl<T: UserEvent> CefRuntime<T> {
       .unwrap_or(true);
 
     if !is_browser_process {
-      let mut helper_app = TauriCefHelperApp::new();
+      let mut helper_app = TauriCefHelperApp::new(crate::native_scheme::child_schemes(std::env::args_os()));
       let ret = cef::execute_process(
         Some(args.as_main_args()),
         Some(&mut helper_app),
@@ -3093,6 +3345,7 @@ impl<T: UserEvent> CefRuntime<T> {
       disabled_features,
       enabled_features,
       deep_link_schemes,
+      native_custom_schemes,
       cache_path: cache_path_override,
       secret_storage,
       mut profile_preferences,
@@ -3365,6 +3618,12 @@ impl<T: UserEvent> CefRuntime<T> {
       crate::platform::macos::MainThreadWake::new(move || slot.deliver_wake(&proxy))
     };
     let context = RuntimeContext {
+      browser_lifetimes: Default::default(),
+      native_contexts: Default::default(),
+      native_windows: Default::default(),
+      window_scope: None,
+      webview_scope: None,
+      separate_renderer: Arc::new(AtomicBool::new(false)),
       window_event_handler,
       sender: sender.clone(),
       #[cfg(not(target_os = "macos"))]
@@ -3379,6 +3638,7 @@ impl<T: UserEvent> CefRuntime<T> {
       cef_pump,
       cache_path: Arc::new(cache_path.clone()),
       profile_preferences: Arc::new(profile_preferences),
+      native_custom_schemes: Arc::new(native_custom_schemes),
       content_settings: Arc::new(content_settings),
       certificate_errors,
       devtools_allowed,
@@ -3725,7 +3985,14 @@ impl<T: UserEvent> Runtime<T> for CefRuntime<T> {
       self.scheme_registry,
     );
     let _ = self.event_loop.run_app(app);
+    // A failed CEF task post must not discard native owner-loss notifications.
+    // The event loop has unwound, so no native mutation callback is active.
+    crate::native_context::drain_deferred_revocations();
+    crate::native_evaluation::drain_completions();
+    crate::network_session::release_request_contexts();
     cef::shutdown();
+    crate::native_context::drain_deferred_revocations();
+    crate::native_evaluation::drain_completions();
   }
 }
 

@@ -40,14 +40,14 @@ fn context_of(value: &JsonValue) -> AiToolCallContext {
     }
 }
 
-/// `aiToolCapabilities(settings, context)`: main-core's, over the Codex image
-/// state of the subscription service. The Codex generator is not built, so
-/// none is registered.
+/// `aiToolCapabilities(settings, context)` over the registered native generator
+/// and the subscription service's current availability.
 fn tool_capabilities(settings: &JsonValue, context: &JsonValue) -> JsonValue {
     let mut state = ToolRoutingState::default();
     state
         .image_backend
         .set_codex_image_generation_available(codex_image_available());
+    state.codex_generator_registered = true;
     match ai_tool_capabilities(&state, Some(settings), &context_of(context), &|name| {
         std::env::var(name).ok()
     }) {
@@ -140,24 +140,22 @@ impl SlidesAiHost for Slides {
 
     fn generate_image(
         &self,
-        _: &str,
-        _: &JsonValue,
-        _: &MediaToolOptions,
-        _: &CancelToken,
+        settings: &str,
+        operation: &JsonValue,
+        options: &MediaToolOptions,
+        signal: &CancelToken,
     ) -> Result<JsonValue, JsonValue> {
-        unbuilt("SlidesAiHost::generate_image");
-        Err(not_built())
+        super::media_tools::generate_image::generate_image(settings, operation, options, signal)
     }
 
     fn analyze_media(
         &self,
-        _: &str,
-        _: &JsonValue,
-        _: &MediaToolOptions,
-        _: &CancelToken,
+        settings: &str,
+        operation: &JsonValue,
+        options: &MediaToolOptions,
+        signal: &CancelToken,
     ) -> Result<JsonValue, JsonValue> {
-        unbuilt("SlidesAiHost::analyze_media");
-        Err(not_built())
+        super::media_tools::analyze_media(settings, operation, options, signal)
     }
 
     fn fetch_remote_image(&self, url: &str) -> Option<Vec<u8>> {

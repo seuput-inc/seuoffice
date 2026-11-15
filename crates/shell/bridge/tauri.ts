@@ -7,11 +7,10 @@
  * - `listen` hands the view's output stream, a Tauri `Channel`, to the command
  *   `ipc_listen`; replies and events arrive on it in the order the shell sent
  *   them, as `ArrayBuffer` frames;
- * - `sendSync` and the drop paths are synchronous XHRs to the scheme
- *   `seuoffice-ipc` (the shell answers them on its core thread).
+ * - `sendSync` and the drop paths use the document-start native transport,
+ *   whose native entry validates the exact browser, frame and V8 context.
  *
- * Tauri's own scripts run first, so `window.__TAURI_INTERNALS__` is there.
- * Every call here goes through the reference captured at load.
+ * Tauri and the native transport are captured before page scripts run.
  */
 import type { Transport } from './electron'
 import { Encoder, decode, frame as buildFrame, unframe } from './wire'
@@ -26,8 +25,11 @@ interface TauriInternals {
   invoke(cmd: string, args?: unknown, options?: unknown): Promise<unknown>
   transformCallback(callback: (data: RawChannelMessage) => void, once?: boolean): number
   unregisterCallback(id: number): void
-  convertFileSrc(path: string, protocol?: string): string
 }
+
+type ChannelRegister = (callback: (data: RawChannelMessage) => void) => number
+type ChannelResume = (register: ChannelRegister, unregister: (id: number) => void) => string
+type BindChannelResume = (resume: ChannelResume) => void
 
 /**
  * A line of the shell's trace (crates/shell/src/trace.rs): the shell sets
@@ -42,8 +44,6 @@ function trace(stage: string): void {
   if (TRACING) console.log(`[bridge +${(performance.now() - t0).toFixed(0)}ms] ${stage}`)
 }
 
-/** The scheme of the synchronous requests (crates/shell/src/ipc/sync.rs) */
-const SYNC_SCHEME = 'seuoffice-ipc'
 
 /**
  * Takes the Tauri internals for the bridge and takes them off the page's
@@ -75,11 +75,14 @@ function takeInternals(): TauriInternals {
 function orderedChannel(
   internals: TauriInternals,
   onMessage: (data: ArrayBuffer) => void,
-): { toJSON(): string } {
+): { toJSON(): string; reset: ChannelResume } {
   let next = 0
   let endIndex: number | undefined
   const pending = new Map<number, ArrayBuffer>()
-  const id = internals.transformCallback((raw) => {
+  const clearPending = Map.prototype.clear
+  const apply = Reflect.apply
+  let id: number
+  const receive = (raw: RawChannelMessage): void => {
     if (raw.end) {
       if (raw.index === next) internals.unregisterCallback(id)
       else endIndex = raw.index
@@ -98,25 +101,36 @@ function orderedChannel(
       next += 1
     }
     if (next === endIndex) internals.unregisterCallback(id)
-  })
-  return { toJSON: () => `__CHANNEL__:${id}` }
+  }
+  id = internals.transformCallback(receive)
+  const token = (): string => `__CHANNEL__:${id}`
+  return {
+    toJSON: token,
+    reset(register, unregister) {
+      unregister(id)
+      next = 0
+      endIndex = undefined
+      apply(clearPending, pending, [])
+      id = register(receive)
+      return token()
+    },
+  }
 }
 
-/** A synchronous POST of `frame` to the shell's sync scheme; the answer's bytes */
-function syncRequest(internals: TauriInternals, channel: string, frame: Uint8Array): Uint8Array {
-  const xhr = new XMLHttpRequest()
-  xhr.open('POST', internals.convertFileSrc(channel, SYNC_SCHEME), false)
-  // a synchronous request in a window cannot set responseType: read the
-  // bytes as text one char per byte instead
-  xhr.overrideMimeType('text/plain; charset=x-user-defined')
-  xhr.send(frame as unknown as XMLHttpRequestBodyInit)
-  if (xhr.status !== 200) {
-    throw new Error(`the shell refused '${channel}' (HTTP ${xhr.status})`)
+type NativeSendSync = (channel: string, frame: Uint8Array) => Uint8Array
+
+/** Take the native closure before authored page scripts run. */
+function takeNativeSendSync(): [NativeSendSync, BindChannelResume] {
+  const holder = window as unknown as { __seuofficeNativeSendSync?: NativeSendSync & { __seuofficeResumeChannel?: BindChannelResume } }
+  const send = holder.__seuofficeNativeSendSync
+  if (typeof send !== 'function' || !Reflect.deleteProperty(holder, '__seuofficeNativeSendSync')) {
+    throw new Error('the shell bridge found no private synchronous transport')
   }
-  const text = xhr.responseText
-  const bytes = new Uint8Array(text.length)
-  for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i) & 0xff
-  return bytes
+  const bindResume = send.__seuofficeResumeChannel
+  if (typeof bindResume !== 'function' || !Reflect.deleteProperty(send, '__seuofficeResumeChannel')) {
+    throw new Error('the shell bridge found no private Channel resume binding')
+  }
+  return [send, bindResume]
 }
 
 export function tauriTransport(): Transport & {
@@ -125,6 +139,7 @@ export function tauriTransport(): Transport & {
   zoomFactor(): number
 } {
   const internals = takeInternals()
+  const [syncRequest, bindResume] = takeNativeSendSync()
   if (TRACING) {
     trace(
       `loaded at ${location.href}; internals: ${Object.getOwnPropertyNames(internals).join(',')}; ` +
@@ -138,6 +153,7 @@ export function tauriTransport(): Transport & {
     if (frames <= 5) trace(`stream frame #${frames}: ${data.byteLength} bytes`)
     onFrame?.(new Uint8Array(data))
   })
+  bindResume(channel.reset)
   // commands go out one after another: the shell handles the messages of a
   // view in the order they were sent, and concurrent requests would not keep
   // it. The queue never rejects, so one failed command does not stop the rest.
@@ -173,7 +189,7 @@ export function tauriTransport(): Transport & {
       )
   }
   const request = (channelName: string, args: readonly unknown[]): unknown => {
-    const answer = unframe(syncRequest(internals, channelName, frameOf(args)))
+    const answer = unframe(syncRequest(channelName, frameOf(args)))
     const body = answer.header as { value?: unknown; error?: string }
     if (body.error !== undefined) throw new Error(body.error)
     return decode(body.value, answer.buffers)
@@ -182,7 +198,7 @@ export function tauriTransport(): Transport & {
   return {
     invoke: (frame) => post('ipc_invoke', frame),
     send: (frame) => post('ipc_send', frame),
-    sendSync: (channelName, frame) => syncRequest(internals, channelName, frame),
+    sendSync: syncRequest,
     listen(handler) {
       onFrame = handler
       trace('listen: opening the output stream')

@@ -1,0 +1,28 @@
+{
+  "format": 1,
+  "sources": {
+    "nss": {"filename": "nss-3.108-with-nspr-4.36.tar.gz", "url": "https://ftp.mozilla.org/pub/security/nss/releases/NSS_3_108_RTM/src/nss-3.108-with-nspr-4.36.tar.gz", "sha256": "12db2163548e3be4b572821280b579e8b68d6f7c6a91c32b231cab43fcaea564"},
+    "nspr": {"version": "4.36", "contained_in": "nss-3.108-with-nspr-4.36.tar.gz", "sha256": "12db2163548e3be4b572821280b579e8b68d6f7c6a91c32b231cab43fcaea564"},
+    "sqlite": {"filename": "sqlite-autoconf-3480000.tar.gz", "url": "https://www.sqlite.org/2025/sqlite-autoconf-3480000.tar.gz", "sha256": "ac992f7fca3989de7ed1fe99c16363f848794c8c32a158dafd4eb927a2e02fd5"},
+    "glibc": {"filename": "glibc-2.39-5-ge0910f1d3278f05439fb434ee528fc9be1b6bd5e.tar.gz", "url": "https://sources.buildroot.net/glibc/glibc-2.39-5-ge0910f1d3278f05439fb434ee528fc9be1b6bd5e.tar.gz", "sha256": "2ba018b344e0e8330dcadd6130f4174f0fc2502b2e032210345e0e5a2f7ed12e"}
+  },
+  "artifacts": [
+    {"id":"loader","fd":200,"kind":"loader","check_for":null},
+    {"id":"nss-export-helper","fd":201,"kind":"helper","check_for":null},
+    {"id":"libc.so.6","fd":202,"kind":"library","check_for":null},
+    {"id":"libnssutil3.so","fd":203,"kind":"library","check_for":null},
+    {"id":"libnspr4.so","fd":204,"kind":"library","check_for":null},
+    {"id":"libplc4.so","fd":205,"kind":"library","check_for":null},
+    {"id":"libplds4.so","fd":206,"kind":"library","check_for":null},
+    {"id":"libsqlite3.so.0","fd":207,"kind":"library","check_for":null},
+    {"id":"libsoftokn3.so","fd":208,"kind":"library","check_for":null},
+    {"id":"libfreebl3.so","fd":209,"kind":"library","check_for":null},
+    {"id":"libsoftokn3.chk","fd":210,"kind":"integrity","check_for":"libsoftokn3.so"},
+    {"id":"libfreebl3.chk","fd":211,"kind":"integrity","check_for":"libfreebl3.so"},
+    {"id":"libfreeblpriv3.so","fd":212,"kind":"library","check_for":null},
+    {"id":"libfreeblpriv3.chk","fd":213,"kind":"integrity","check_for":"libfreeblpriv3.so"},
+    {"id":"libnssdbm3.so","fd":214,"kind":"library","check_for":null},
+    {"id":"libnssdbm3.chk","fd":215,"kind":"integrity","check_for":"libnssdbm3.so"},
+    {"id":"libm.so.6","fd":216,"kind":"library","check_for":null}
+  ]
+}

@@ -156,7 +156,7 @@ async function joinDocsCollab(doc: WebDocument): Promise<void> {
 
 // The renderer's close-guard "Save" runs its full save until the document is
 // persisted and reports the outcome; a host-asked save runs the same flow.
-let closeSaveHandler: (() => void) | undefined
+let closeSaveHandler: Parameters<DesktopApi['onCloseSaveRequest']>[0] | undefined
 let settleCloseSave: ((ok: boolean) => void) | undefined
 let hostSaves: Promise<void> = Promise.resolve()
 

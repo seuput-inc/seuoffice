@@ -112,9 +112,10 @@ async function measuredTabs(
   api: Pick<HwpApi, 'newTabs'>,
   bytes: Uint8Array,
   format: HwpFormat,
+  requestToken?: string,
 ): Promise<MeasuredTab[]> {
   try {
-    const spots = await api.newTabs(bytes, format)
+    const spots = await api.newTabs(bytes, format, requestToken)
     if (spots.length === 0) return []
     const measures = await editor.measureTabs(spots)
     return spots.flatMap((spot, index) => {
@@ -175,24 +176,25 @@ export async function runSave(
    * nothing may be exported while it does.
    */
   isHeld: () => boolean = () => false,
+  requestToken?: string,
 ): Promise<SaveOutcome> {
   const refuseHeld = (): SaveOutcome => {
-    api.abortSave()
+    api.abortSave(requestToken)
     return { kind: 'failed', reason: 'ai' }
   }
   if (isHeld()) return refuseHeld()
   // before any dialog: a protected document is not saved under any name
   try {
     if (await editor.isPasswordProtected()) {
-      api.abortSave()
+      api.abortSave(requestToken)
       return { kind: 'failed', reason: 'protected' }
     }
   } catch (error) {
-    api.abortSave()
+    api.abortSave(requestToken)
     return { kind: 'failed', reason: 'export', detail: detailOf(error) }
   }
 
-  const begin = await api.beginSave(mode)
+  const begin = await api.beginSave(mode, requestToken)
   if (!begin.ok) {
     if (begin.reason === 'memo') return { kind: 'canceled' }
     return begin.reason === 'tracked' || begin.reason === 'unverified'
@@ -212,7 +214,7 @@ export async function runSave(
     if (begin.format === 'hwp') {
       const verify = await editor.exportHwpVerify()
       if (!verify.recovered || verify.pageCountBefore !== verify.pageCountAfter) {
-        api.abortSave()
+        api.abortSave(requestToken)
         return { kind: 'failed', reason: 'verify' }
       }
       if (isHeld()) return refuseHeld()
@@ -224,14 +226,15 @@ export async function runSave(
       memos = exported.memos
     }
   } catch (error) {
-    api.abortSave()
+    api.abortSave(requestToken)
     return { kind: 'failed', reason: 'export', detail: detailOf(error) }
   }
 
   const commit = await api.commitSave(
     bytes,
-    await measuredTabs(editor, api, bytes, begin.format),
+    await measuredTabs(editor, api, bytes, begin.format, requestToken),
     memos === undefined ? { auto: automatic } : { auto: automatic, memos },
+    requestToken,
   )
   if (!commit.ok) {
     // a same-document copy holds the disk version: the main process refused

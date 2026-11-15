@@ -116,7 +116,7 @@ export interface SaveContext {
   ) => void
   /** Save As › PDF: export the active sheet to the path the Save As dialog
       returned (the Export PDF command's layout and writer). Optional in tests. */
-  exportPdfCopy?: (saveAsPath: string) => Promise<boolean>
+  exportPdfCopy?: (saveAsPath: string, ownedSaveRequestId?: string) => Promise<boolean | { saveAsAgain: true }>
   /** Save As › ODS: export the whole workbook to the path the Save As dialog
       returned. Optional in tests. */
 }
@@ -434,6 +434,7 @@ export interface SaveOutcome {
    * the export to this path once the save gate is free again.
    */
   odsSaveAsPath?: string
+  saveAsAgain?: true
   /**
    * `'no-edits'`: nothing was pending, so no save request was made. Callers
    * that only need the disk to match the grid (the external-links panel's
@@ -462,6 +463,7 @@ export async function handleSave(
   quiet = false,
   explicitTarget?: { path: string; overwrite: boolean },
   defaultName?: string,
+  ownedSaveRequestId?: string,
 ): Promise<SaveOutcome> {
   const state = ctx.lazyWorkbookRef.current
   // Captured at save start (the Ctrl+S moment): the post-save session swap
@@ -716,13 +718,13 @@ export async function handleSave(
     // hatch unreachable. Streamed sessions that insist on CSV still get the
     // message (and are asked again next time instead of being remembered).
     if (!confirmedCsvSaves.has(csvPath)) {
-      const choice = await window.desktopApi.confirmCsvSave()
+      const choice = await window.desktopApi.confirmCsvSave(ownedSaveRequestId)
       if (choice === 'cancel') {
         ctx.setMessage(t('appSaveCanceled'))
         return { ok: false }
       }
       if (choice === 'xlsx') {
-        return await handleSave(ctx, 'save-as', quiet, explicitTarget)
+        return await handleSave(ctx, 'save-as', quiet, explicitTarget, undefined, ownedSaveRequestId)
       }
       if (state.flags.preloadComplete) confirmedCsvSaves.add(csvPath)
     }
@@ -742,8 +744,8 @@ export async function handleSave(
         active.sheet.getSheetName(),
       )
     ) {
-      const withheld = await window.desktopApi.askWithheldExport('CSV')
-      if (withheld === 'xlsx') return await handleSave(ctx, 'save-as', quiet, explicitTarget)
+      const withheld = await window.desktopApi.askWithheldExport('CSV', ownedSaveRequestId)
+      if (withheld === 'xlsx') return await handleSave(ctx, 'save-as', quiet, explicitTarget, undefined, ownedSaveRequestId)
       if (withheld === 'cancel') {
         ctx.setMessage(t('appSaveCanceled'))
         return { ok: false }
@@ -789,7 +791,8 @@ export async function handleSave(
   try {
     staged = await stageEditsForSave(window.desktopApi, state.file.sessionId, edits)
   } catch (error: unknown) {
-    if (mode === 'recovery' || mode === 'template' || mode === 'ods') return { ok: false }
+    if (mode === 'recovery') return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    if (mode === 'template' || mode === 'ods') return { ok: false }
     const message = stripIpcErrorWrapper(error instanceof Error ? error.message : '')
     const failed = message || t('appSaveFailed')
     ctx.setMessage(failed)
@@ -799,6 +802,7 @@ export async function handleSave(
   const payload = {
     sessionId: state.file.sessionId,
     mode: mode === 'recovery' || mode === 'template' || mode === 'ods' ? ('save' as const) : mode,
+    ...(ownedSaveRequestId === undefined ? {} : { ownedSaveRequestId }),
     // MCP explicit-path save: main skips the Save-As dialog and enforces the
     // overwrite policy from these two fields
     ...(explicitTarget
@@ -855,17 +859,17 @@ export async function handleSave(
       : { ok: false }
   }
   if (mode === 'recovery') {
-    // Best-effort; a failure only means this tick's copy is skipped — but an
-    // unconsumed transfer must not sit in main-process memory until expiry.
-    const written = await window.desktopApi.writeWorkbookRecovery(payload).catch(async () => {
+    // Abort an unconsumed transfer, but retain the write error for an urgent flush.
+    const written = await window.desktopApi.writeWorkbookRecovery(payload).catch(async (error: unknown) => {
       await abortStagedEditsTransfer(
         window.desktopApi,
         state.file.sessionId,
         staged.editsTransferId,
       )
-      return { ok: false }
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
     })
-    return { ok: written.ok === true }
+    if (written.ok) return { ok: true }
+    return { ok: false, error: 'error' in written ? String(written.error) : 'The workbook recovery copy was not written' }
   }
   try {
     // a quiet (automatic) save leaves the status line alone: a deferral by the
@@ -874,6 +878,7 @@ export async function handleSave(
     const result = await window.desktopApi.saveWorkbookEdits({
       sessionId: state.file.sessionId,
       mode,
+      ...(ownedSaveRequestId === undefined ? {} : { ownedSaveRequestId }),
       ...(restoreWriteBack ? { restoreWriteBack: true } : {}),
       ...(quiet ? { quiet: true } : {}),
       ...(csvContent === undefined ? {} : { csvContent }),
@@ -922,24 +927,26 @@ export async function handleSave(
         // The user picked CSV in the Save As dialog: no xlsx was written —
         // serialize the active sheet to the chosen path instead. The journal
         // stays pending; the session keeps its identity (a copy semantics).
+        let saveAsAgain = false
         await handleExportCsv(
           {
             univerRef: ctx.univerRef,
             lazyWorkbookRef: ctx.lazyWorkbookRef,
             setMessage: ctx.setMessage,
-            requestSaveAs: () => void handleSave(ctx, 'save-as', quiet),
+            requestSaveAs: () => { saveAsAgain = true },
             redactions: ctx.redactions ?? (() => NO_REDACTIONS),
           },
           result.csvSaveAsPath,
+          ownedSaveRequestId,
         )
-        return { ok: false }
+        return { ok: false, ...(saveAsAgain ? { saveAsAgain: true as const } : {}) }
       }
       if (result.pdfSaveAsPath !== undefined) {
         // The user picked PDF in the Save As dialog: no xlsx was written —
         // the active sheet is exported to the chosen path instead. Like the
         // CSV pick, the journal stays pending and the session keeps its path.
-        await ctx.exportPdfCopy?.(result.pdfSaveAsPath)
-        return { ok: false }
+        const exported = await ctx.exportPdfCopy?.(result.pdfSaveAsPath, ownedSaveRequestId)
+        return { ok: false, ...(typeof exported === 'object' ? { saveAsAgain: true as const } : {}) }
       }
       if (result.odsSaveAsPath !== undefined) {
         // The ODS pick is the same kind of copy: the whole workbook is
@@ -982,6 +989,7 @@ export async function handleSave(
       const second = await window.desktopApi.saveWorkbookEdits({
         sessionId: result.file.sessionId,
         mode: 'save',
+        ...(ownedSaveRequestId === undefined ? {} : { ownedSaveRequestId }),
         // an unsaved new workbook's quiet save writes its backing file in
         // place; without the flag the second phase would open Save As
         ...(quiet ? { quiet: true } : {}),

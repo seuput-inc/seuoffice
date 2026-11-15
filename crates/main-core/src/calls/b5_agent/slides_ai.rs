@@ -31,7 +31,7 @@ use crate::packages::electron_utils::remote_image::MAX_REMOTE_IMAGE_BYTES;
 use crate::packages::pipelines::slides_cover_crop::{CoverCrop, cover_crop_fractions};
 use crate::slides::ai_ipc::{
     ActiveStreams, AiIpcHost, AiSender, ImageDecoder, IpcError, MediaRequest, MediaToolOptions,
-    NativeImage, PictureDeck, PictureOffset, PictureSource, SearchRequest, SearchStart, StreamRun,
+    NativeImage, PictureDeck, PictureError, PictureOffset, PictureSource, SearchRequest, SearchStart, StreamRun,
     StreamStart, ai_analyze_media_begin, ai_analyze_media_finish, ai_generate_image_begin,
     ai_generate_image_finish, ai_get_settings, ai_image_search_begin, ai_image_search_finish,
     ai_ipc_setup, ai_list_style_templates, ai_load_style_template, ai_log_run_failure,
@@ -49,7 +49,7 @@ use crate::slides::ai_proposal::{
     hold_ai_run, marker_of, reject_ai_proposal, run_begin_finish, run_begin_start, settle_deadline,
     settle_writes_step,
 };
-use crate::slides::session_state::{Deck, EngineThrew, OpRecord, OpSource, Session, SessionIds};
+use crate::slides::session_state::{Deck, OpRecord, OpSource, Session, SessionIds};
 
 type Log = Rc<RefCell<Vec<Vec<Value>>>>;
 
@@ -222,31 +222,32 @@ impl FakeDeck {
 }
 
 impl Deck<Sn> for FakeDeck {
-    fn take_snapshot(&self, meta_dirty: bool) -> Sn {
-        Rc::new(Snap {
+    type Error = std::convert::Infallible;
+    fn take_snapshot(&self, meta_dirty: bool) -> Result<Sn, Self::Error> {
+        Ok(Rc::new(Snap {
             slides: self.slides.clone(),
             size: self.size.clone(),
             meta_dirty,
-        })
+        }))
     }
 
-    fn restore_snapshot(&mut self, fresh: Sn) -> bool {
+    fn restore_snapshot(&mut self, fresh: Sn) -> Result<bool, Self::Error> {
         self.slides = fresh.slides.clone();
         self.size = fresh.size.clone();
-        fresh.meta_dirty
+        Ok(fresh.meta_dirty)
     }
 }
 
 impl PictureDeck for FakeDeck {
-    fn has_slide(&self, index: f64) -> bool {
-        self.slide(index).is_some()
+    fn has_slide(&self, index: f64) -> Result<bool, IpcError> {
+        Ok(self.slide(index).is_some())
     }
 
-    fn size_cx(&self) -> f64 {
-        self.size
+    fn size_cx(&self) -> Result<f64, IpcError> {
+        Ok(self.size
             .get("cx")
             .and_then(Value::as_f64)
-            .unwrap_or(f64::NAN)
+            .unwrap_or(f64::NAN))
     }
 
     fn add_picture(
@@ -255,12 +256,12 @@ impl PictureDeck for FakeDeck {
         bytes: &[u8],
         ext: &str,
         offset: PictureOffset,
-    ) -> Result<Option<String>, EngineThrew> {
+    ) -> Result<Option<String>, PictureError> {
         let path = self.slide_path(slide_index);
         let offset = json!({ "x": offset.x, "y": offset.y, "cx": offset.cx, "cy": offset.cy });
         logl!(self.log; "addPicture", path, hex(bytes), ext, offset);
         if self.engine_throws("addPicture") {
-            return Err(EngineThrew);
+            return Err(PictureError::Engine);
         }
         Ok(match self.engine("addPicture") {
             Some(Value::Null) => None,
@@ -280,12 +281,12 @@ impl PictureDeck for FakeDeck {
         slide_index: f64,
         id: &str,
         crop: &CoverCrop,
-    ) -> Result<(), EngineThrew> {
+    ) -> Result<(), PictureError> {
         let path = self.slide_path(slide_index);
         let crop = json!({ "l": crop.l, "t": crop.t, "r": crop.r, "b": crop.b });
         logl!(self.log; "editPictureSrcRect", path, id, crop);
         if self.engine_throws("crop") {
-            return Err(EngineThrew);
+            return Err(PictureError::Engine);
         }
         Ok(())
     }
@@ -297,7 +298,7 @@ impl PictureDeck for FakeDeck {
         bytes: &[u8],
         ext: &str,
         keep_src_rect: bool,
-    ) -> Result<bool, EngineThrew> {
+    ) -> Result<bool, PictureError> {
         let path = self.slide_path(slide_index);
         let options = if keep_src_rect {
             json!({ "keepSrcRect": true })
@@ -306,23 +307,24 @@ impl PictureDeck for FakeDeck {
         };
         logl!(self.log; "replacePictureBytes", path, id, hex(bytes), ext, options);
         if self.engine_throws("replace") {
-            return Err(EngineThrew);
+            return Err(PictureError::Engine);
         }
         Ok(!matches!(self.engine("replace"), Some(Value::Bool(false))))
     }
 
-    fn find_element_id(&self, slide_index: f64, reference: &str) -> Option<String> {
-        self.slide(slide_index)?
+    fn find_element_id(&self, slide_index: f64, reference: &str) -> Result<Option<String>, IpcError> {
+        Ok((|| self.slide(slide_index)?
             .get("elements")?
             .as_array()?
             .iter()
             .find(|el| el.get("ref").and_then(Value::as_str) == Some(reference))?
             .get("id")?
             .as_str()
-            .map(str::to_owned)
+            .map(str::to_owned))())
     }
 
-    fn picture_frame(&self, slide_index: f64, id: &str) -> Option<(f64, f64)> {
+    fn picture_frame(&self, slide_index: f64, id: &str) -> Result<Option<(f64, f64)>, IpcError> {
+        Ok((|| {
         let picture = self
             .slide(slide_index)?
             .get("elements")?
@@ -338,18 +340,19 @@ impl PictureDeck for FakeDeck {
         }
         let side = |key: &str| offset.get(key).and_then(Value::as_f64).unwrap_or(f64::NAN);
         Some((side("cx"), side("cy")))
+        })())
     }
 
     fn set_fit_width_px(&mut self, px: f64) {
         self.fit = px;
     }
 
-    fn rebuild_slide(&mut self, slide_index: f64) -> Option<JsonValue> {
+    fn rebuild_slide(&mut self, slide_index: f64) -> Result<Option<JsonValue>, IpcError> {
         logl!(self.log; "rebuildSlide", slide_index, self.fit);
         if matches!(self.engine("rebuild"), Some(Value::Null)) {
-            return None;
+            return Ok(None);
         }
-        Some(jv(&json!({ "rebuilt": slide_index, "fit": self.fit })))
+        Ok(Some(jv(&json!({ "rebuilt": slide_index, "fit": self.fit }))))
     }
 }
 
@@ -984,12 +987,12 @@ impl World {
             }
             "push" => {
                 let slot = self.slots[0].as_mut().ok_or_else(no_session)?;
-                slot.session.push_history();
+                slot.session.push_history().unwrap_or_else(|never| match never {});
                 Ok(Value::Null)
             }
             "pushRedo" => {
                 let slot = self.slots[0].as_mut().ok_or_else(no_session)?;
-                let snapshot = slot.session.take_snapshot();
+                let snapshot = slot.session.take_snapshot().unwrap_or_else(|never| match never {});
                 slot.session.redo_stack.push(snapshot);
                 Ok(Value::Null)
             }
@@ -1023,11 +1026,7 @@ impl World {
                             .get("slideId")
                             .and_then(Value::as_str)
                             .map(str::to_owned),
-                        created: record.get("created").and_then(Value::as_array).map(|list| {
-                            list.iter()
-                                .filter_map(|id| id.as_str().map(str::to_owned))
-                                .collect()
-                        }),
+                        created: record.get("created").and_then(Value::as_array).cloned(),
                     })
                     .collect();
                 slot.session.journal_ops(OpSource::Edit, records);
@@ -1040,12 +1039,12 @@ impl World {
             }
             "batch" => {
                 let slot = self.slots[0].as_mut().ok_or_else(no_session)?;
-                slot.session.begin_history_batch();
+                slot.session.begin_history_batch().unwrap_or_else(|never| match never {});
                 Ok(Value::Null)
             }
             "registerAi" => {
                 let slot = self.slots[0].as_mut().ok_or_else(no_session)?;
-                let snapshot = slot.session.take_snapshot();
+                let snapshot = slot.session.take_snapshot().unwrap_or_else(|never| match never {});
                 Ok(json!(
                     slot.session.register_ai_snapshot(&mut self.ids, &snapshot)
                 ))
@@ -1056,7 +1055,7 @@ impl World {
                     &mut slot.session,
                     &mut slot.review,
                     owner
-                )))
+                ).unwrap_or_else(|never| match never {})))
             }
             "hold" => {
                 let slot = self.slots[0].as_mut().ok_or_else(no_session)?;
@@ -1064,12 +1063,12 @@ impl World {
                     &mut slot.session,
                     &mut slot.review,
                     owner
-                )))
+                ).unwrap_or_else(|never| match never {})))
             }
             "accept" => {
                 let slot = self.slots[0].as_mut().ok_or_else(no_session)?;
                 Ok(
-                    match accept_ai_proposal(&mut slot.session, &mut slot.review, &mut self.ids) {
+                    match accept_ai_proposal(&mut slot.session, &mut slot.review, &mut self.ids).unwrap_or_else(|never| match never {}) {
                         Some(id) => json!(id),
                         None => Value::Null,
                     },
@@ -1081,7 +1080,7 @@ impl World {
             }
             "drop" => {
                 let slot = self.slots[0].as_mut().ok_or_else(no_session)?;
-                drop_ai_run_of(&mut slot.session, &mut slot.review, &mut self.lives, owner);
+                drop_ai_run_of(&mut slot.session, &mut slot.review, &mut self.lives, owner).unwrap_or_else(|never| match never {});
                 Ok(Value::Null)
             }
             "marker" => {
@@ -1246,7 +1245,7 @@ impl World {
                     return Ok(Value::Null);
                 };
                 Ok(
-                    if hold_ai_run(&mut slot.session, &mut slot.review, sender_id) {
+                    if hold_ai_run(&mut slot.session, &mut slot.review, sender_id).unwrap_or_else(|never| match never {}) {
                         deck_json(&slot.session)
                     } else {
                         Value::Null
@@ -1261,7 +1260,7 @@ impl World {
                     return Ok(Value::Null);
                 };
                 Ok(
-                    match accept_ai_proposal(&mut slot.session, &mut slot.review, &mut self.ids) {
+                    match accept_ai_proposal(&mut slot.session, &mut slot.review, &mut self.ids).unwrap_or_else(|never| match never {}) {
                         Some(snapshot_id) => {
                             json!({ "slides": deck_json(&slot.session), "snapshotId": snapshot_id })
                         }
@@ -1424,7 +1423,7 @@ impl World {
             sender_id,
             ticket,
             wake,
-        )
+        ).unwrap_or_else(|never| match never {})
     }
 
     /// `ai:insert-image-url` (`insert`) and `ai:replace-picture-url`
@@ -1479,7 +1478,7 @@ impl World {
                 ticket,
                 downloaded,
             )
-        };
+        }?;
         Ok(answer.map_or(Value::Null, |answer| sv(&answer)))
     }
 

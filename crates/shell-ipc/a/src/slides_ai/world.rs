@@ -15,7 +15,7 @@ use jscompat::JsonValue;
 use main_core::packages::ai_provider::jsval::{object, text};
 use main_core::packages::pipelines::slides_cover_crop::CoverCrop;
 use main_core::slides::ai_ipc::{
-    ImageDecoder, IpcError as CoreError, PictureDeck, PictureOffset, PictureTicket,
+    ImageDecoder, IpcError as CoreError, PictureDeck, PictureError, PictureOffset, PictureTicket,
     insert_image_begin, insert_image_finish, replace_picture_begin, replace_picture_finish,
 };
 use main_core::slides::ai_proposal::{
@@ -23,7 +23,7 @@ use main_core::slides::ai_proposal::{
     begin_write, end_write, hold_ai_run, reject_ai_proposal, run_begin_finish, run_begin_start,
     settle_writes_step,
 };
-use main_core::slides::session_state::{Deck, EngineThrew, PartPath, Session, SessionIds};
+use main_core::slides::session_state::{Deck, PartPath, Session, SessionIds};
 use shell_contract::slides::{SlidesDocument, SlidesDocuments};
 use shell_contract::{IpcValue, ViewId};
 
@@ -49,23 +49,24 @@ pub struct FakeDeck {
 }
 
 impl Deck<Snap> for FakeDeck {
-    fn take_snapshot(&self, _meta_dirty: bool) -> Snap {
-        Rc::new(self.slides.clone())
+    type Error = std::convert::Infallible;
+    fn take_snapshot(&self, _meta_dirty: bool) -> Result<Snap, Self::Error> {
+        Ok(Rc::new(self.slides.clone()))
     }
 
-    fn restore_snapshot(&mut self, fresh: Snap) -> bool {
+    fn restore_snapshot(&mut self, fresh: Snap) -> Result<bool, Self::Error> {
         self.slides = (*fresh).clone();
-        false
+        Ok(false)
     }
 }
 
 impl PictureDeck for FakeDeck {
-    fn has_slide(&self, index: f64) -> bool {
-        index >= 0.0 && index.fract() == 0.0 && (index as usize) < self.slides.len()
+    fn has_slide(&self, index: f64) -> Result<bool, CoreError> {
+        Ok(index >= 0.0 && index.fract() == 0.0 && (index as usize) < self.slides.len())
     }
 
-    fn size_cx(&self) -> f64 {
-        self.size_cx
+    fn size_cx(&self) -> Result<f64, CoreError> {
+        Ok(self.size_cx)
     }
 
     fn add_picture(
@@ -74,7 +75,7 @@ impl PictureDeck for FakeDeck {
         bytes: &[u8],
         ext: &str,
         offset: PictureOffset,
-    ) -> Result<Option<String>, EngineThrew> {
+    ) -> Result<Option<String>, PictureError> {
         let page = &mut self.slides[slide_index as usize];
         page.push_str(&format!(
             "+picture({} bytes,{ext},{},{},{},{})",
@@ -92,7 +93,7 @@ impl PictureDeck for FakeDeck {
         slide_index: f64,
         _id: &str,
         crop: &CoverCrop,
-    ) -> Result<(), EngineThrew> {
+    ) -> Result<(), PictureError> {
         self.slides[slide_index as usize].push_str(&format!(
             "+crop({},{},{},{})",
             crop.l, crop.t, crop.r, crop.b
@@ -107,7 +108,7 @@ impl PictureDeck for FakeDeck {
         bytes: &[u8],
         ext: &str,
         keep_src_rect: bool,
-    ) -> Result<bool, EngineThrew> {
+    ) -> Result<bool, PictureError> {
         if id == "missing" {
             return Ok(false);
         }
@@ -118,23 +119,21 @@ impl PictureDeck for FakeDeck {
         Ok(true)
     }
 
-    fn find_element_id(&self, _slide_index: f64, reference: &str) -> Option<String> {
-        // a durable id `d:<id>` stands for the parse-time id `<id>`
-        reference.strip_prefix("d:").map(str::to_owned)
+    fn find_element_id(&self, _slide_index: f64, reference: &str) -> Result<Option<String>, CoreError> {
+        Ok(reference.strip_prefix("d:").map(str::to_owned))
     }
 
-    fn picture_frame(&self, _slide_index: f64, id: &str) -> Option<(f64, f64)> {
-        // the pictures the page has: `7` and `8`
-        matches!(id, "7" | "8").then_some((100.0, 100.0))
+    fn picture_frame(&self, _slide_index: f64, id: &str) -> Result<Option<(f64, f64)>, CoreError> {
+        Ok(matches!(id, "7" | "8").then_some((100.0, 100.0)))
     }
 
     fn set_fit_width_px(&mut self, _px: f64) {}
 
-    fn rebuild_slide(&mut self, slide_index: f64) -> Option<JsonValue> {
-        Some(object(vec![(
+    fn rebuild_slide(&mut self, slide_index: f64) -> Result<Option<JsonValue>, CoreError> {
+        Ok(Some(object(vec![(
             "page",
             text(self.slides[slide_index as usize].as_str()),
-        )]))
+        )])))
     }
 }
 
@@ -202,7 +201,7 @@ impl World {
     /// An edit of the open run (or an ordinary one): one undo step, then the page changes
     pub fn edit(&self, view: ViewId, page: usize, suffix: &str) {
         if let Some(entry) = self.entries.borrow_mut().get_mut(&view.0) {
-            entry.session.push_history();
+            entry.session.push_history().unwrap_or_else(|never| match never {});
             entry.session.deck.slides[page].push_str(suffix);
             entry.session.op_seq = Some(entry.session.op_seq.unwrap_or(0) + 1);
         }
@@ -286,33 +285,33 @@ impl SlidesAiSessions for World {
         }
     }
 
-    fn run_begin_finish(&self, view: ViewId, ticket: RunBeginTicket, wake: RunBeginWake) -> bool {
+    fn run_begin_finish(&self, view: ViewId, ticket: RunBeginTicket, wake: RunBeginWake) -> Result<bool, shell_contract::IpcError> {
         let mut entries = self.entries.borrow_mut();
         let Some(entry) = entries.get_mut(&view.0) else {
-            return false;
+            return Ok(false);
         };
-        run_begin_finish(
+        Ok(run_begin_finish(
             &mut entry.session,
             &mut entry.review,
             &self.lives.borrow(),
             view.0 as f64,
             ticket,
             wake,
-        )
+        ).unwrap_or_else(|never| match never {}))
     }
 
-    fn run_hold(&self, view: ViewId) -> Option<IpcValue> {
+    fn run_hold(&self, owner: &shell_contract::ipc::NativeRequestOwner) -> Result<Option<IpcValue>, shell_contract::IpcError> {
         let mut entries = self.entries.borrow_mut();
-        let entry = entries.get_mut(&view.0)?;
-        hold_ai_run(&mut entry.session, &mut entry.review, view.0 as f64)
-            .then(|| Self::deck_of(entry))
+        let Some(entry) = entries.get_mut(&owner.view.0) else { return Ok(None) };
+        Ok(hold_ai_run(&mut entry.session, &mut entry.review, owner.view.0 as f64).unwrap_or_else(|never| match never {})
+            .then(|| Self::deck_of(entry)))
     }
 
-    fn proposal_accept(&self, view: ViewId) -> Option<(IpcValue, u64)> {
+    fn proposal_accept(&self, owner: &shell_contract::ipc::NativeRequestOwner) -> Result<Option<(IpcValue, u64)>, shell_contract::IpcError> {
         let mut entries = self.entries.borrow_mut();
-        let entry = entries.get_mut(&view.0)?;
-        let id = accept_ai_proposal(&mut entry.session, &mut entry.review, &mut entry.ids)?;
-        Some((Self::deck_of(entry), id))
+        let Some(entry) = entries.get_mut(&owner.view.0) else { return Ok(None) };
+        let Some(id) = accept_ai_proposal(&mut entry.session, &mut entry.review, &mut entry.ids).unwrap_or_else(|never| match never {}) else { return Ok(None) };
+        Ok(Some((Self::deck_of(entry), id)))
     }
 
     fn proposal_reject(&self, view: ViewId) -> bool {
@@ -322,28 +321,28 @@ impl SlidesAiSessions for World {
             .is_some_and(|entry| reject_ai_proposal(&mut entry.review))
     }
 
-    fn snapshot_restore(&self, view: ViewId, id: f64) -> Option<IpcValue> {
+    fn snapshot_restore(&self, owner: &shell_contract::ipc::NativeRequestOwner, id: f64) -> Result<Option<IpcValue>, shell_contract::IpcError> {
         let mut entries = self.entries.borrow_mut();
-        let entry = entries.get_mut(&view.0)?;
+        let Some(entry) = entries.get_mut(&owner.view.0) else { return Ok(None) };
         if entry.review.master_edit || entry.session.history_batch.is_some() {
-            return None;
+            return Ok(None);
         }
-        if !entry.session.restore_ai_snapshot(id) {
-            return None;
+        if !entry.session.restore_ai_snapshot(id).unwrap_or_else(|never| match never {}) {
+            return Ok(None);
         }
         entry.session.schedule_deck_broadcast();
-        Some(Self::deck_of(entry))
+        Ok(Some(Self::deck_of(entry)))
     }
 
     fn picture_begin(
         &self,
-        view: ViewId,
+        owner: &shell_contract::ipc::NativeRequestOwner,
         replace: bool,
         images: &dyn ImageDecoder,
         op: Option<&JsonValue>,
     ) -> Result<Option<PictureTicket>, CoreError> {
         let entries = self.entries.borrow();
-        let Some(entry) = entries.get(&view.0) else {
+        let Some(entry) = entries.get(&owner.view.0) else {
             return Ok(None);
         };
         if replace {
@@ -355,16 +354,16 @@ impl SlidesAiSessions for World {
 
     fn picture_finish(
         &self,
-        view: ViewId,
+        owner: &shell_contract::ipc::NativeRequestOwner,
         replace: bool,
         images: &dyn ImageDecoder,
         op: &JsonValue,
         ticket: PictureTicket,
         downloaded: Option<Vec<u8>>,
-    ) -> Option<JsonValue> {
+    ) -> Result<Option<JsonValue>, shell_contract::IpcError> {
         let mut entries = self.entries.borrow_mut();
-        let entry = entries.get_mut(&view.0)?;
-        if replace {
+        let Some(entry) = entries.get_mut(&owner.view.0) else { return Ok(None) };
+        Ok(if replace {
             replace_picture_finish(
                 &mut entry.session,
                 &entry.review,
@@ -382,6 +381,6 @@ impl SlidesAiSessions for World {
                 ticket,
                 downloaded,
             )
-        }
+        }.map_err(|error| shell_contract::IpcError { name: Some("Error".into()), message: error.message })?)
     }
 }

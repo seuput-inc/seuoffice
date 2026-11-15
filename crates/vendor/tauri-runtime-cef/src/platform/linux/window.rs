@@ -96,8 +96,13 @@ impl CefX11Host {
           // would keep the bounds computed against the previous host size.
           layout_geometry.needs_relayout.set(true);
         }
+        #[cfg(target_os = "linux")]
+        crate::generate_caption::layout(xid as u64);
       });
     }
+
+    #[cfg(target_os = "linux")]
+    crate::generate_caption::register(&gtk_window, &default_vbox, xid as u64);
 
     Some(Self {
       default_vbox,
@@ -152,6 +157,8 @@ impl CefX11Host {
 
 impl Drop for CefX11Host {
   fn drop(&mut self) {
+    #[cfg(target_os = "linux")]
+    crate::generate_caption::unregister(self.xid as u64);
     if let Some(provider) = self.background_color_provider.borrow_mut().take() {
       gtk::style_context_remove_provider_for_display(
         &gtk::prelude::WidgetExt::display(&self.default_vbox),
@@ -261,6 +268,32 @@ impl AppWindow {
   pub(crate) fn set_progress_bar(&self, state: ProgressBarState) {
     taskbar::set_progress_bar(state);
   }
+}
+
+pub(crate) fn show_inactive<R: tauri::Runtime>(window: &tauri::Window<R>) -> tauri::Result<()>
+where R::WindowDispatcher: crate::AsCefWindowDispatcher {
+  use gtk::prelude::*;
+  use winit::platform::gtk4::WindowExtGtk4;
+  let native = crate::inactive_window::native_window_on_ui(window)?;
+  let handle = native.window_handle().map_err(|_| tauri::Error::InvalidWindowHandle)?;
+  let xid = match handle.as_raw() {
+    RawWindowHandle::Xlib(handle) => handle.window as c_ulong,
+    RawWindowHandle::Xcb(handle) => handle.window.get() as c_ulong,
+    _ => return Err(tauri::Error::InvalidWindowHandle),
+  };
+  let marked = super::utils::with_x11(false, |xlib, display| unsafe {
+    let property = super::utils::atom(xlib, display, "_NET_WM_USER_TIME");
+    let timestamp: c_ulong = 0;
+    (xlib.XChangeProperty)(display, xid, property, x11_dl::xlib::XA_CARDINAL, 32,
+      x11_dl::xlib::PropModeReplace, (&timestamp as *const c_ulong).cast(), 1);
+    (xlib.XSync)(display, 0);
+    true
+  });
+  if !marked {
+    return Err(tauri_runtime::Error::CreateWindow(Box::new(std::io::Error::other("X11 display unavailable"))).into());
+  }
+  native.gtk_window().ok_or(tauri::Error::InvalidWindowHandle)?.set_visible(true);
+  Ok(())
 }
 
 fn window_xid(window: &dyn winit::window::Window) -> c_ulong {

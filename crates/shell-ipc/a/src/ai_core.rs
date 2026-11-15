@@ -81,7 +81,7 @@ use crate::secrets::SecretCodecHost;
 use crate::slides_ai::MediaCallAbort;
 use crate::value::{arg, from_json};
 
-pub use self::host::{AiCoreHost, AiCoreHostHandle, PendingAiDocs, PendingAiDocsHost, RemoteImage};
+pub use self::host::{AcceptedAiDoc, AiCoreHost, AiCoreHostHandle, AiSeedRollback, PendingAiDocs, PendingAiDocsHost, PreparedAiSeed, RemoteImage};
 
 /// `KEY_MODEL_FIRST_LIST_DELAY_MS`: how long after start the key providers
 /// are first asked for their models
@@ -917,6 +917,7 @@ pub struct AppAiPort {
     host: AiCoreHostHandle,
     files: Files,
     pending: PendingAiDocsHost,
+    seed_effects: Option<shell_contract::hosts::OwnedEffectsHost>,
 }
 
 impl AppAi for AppAiPort {
@@ -927,11 +928,11 @@ impl AppAi for AppAiPort {
         _args: Vec<IpcValue>,
         reply: Responder,
     ) {
-        let content = self.pending.consume(i64::from(cx.sender.view.0));
-        reply.reply(Ok(match content {
+        let content = self.pending.consume_owned(cx.sender.view, cx.native.as_ref(), &cx.cancel, self.seed_effects.as_ref());
+        reply.reply(content.map(|content| match content {
             Some(content) => from_json(&jscompat::json_value_from_serde(&content)),
             None => IpcValue::Null,
-        }))
+        }).map_err(|error| thrown(JsError::error(error))))
     }
 
     /// What the image and search tools can do right now. Registered in sheets-main
@@ -965,6 +966,7 @@ pub fn app_ai_factory() -> crate::Factory<dyn AppAi> {
             ),
             host,
             pending: hosts.need::<PendingAiDocsHost>(Batch::A)?,
+            seed_effects: hosts.get::<shell_contract::hosts::OwnedEffectsHost>().cloned(),
         });
         Ok(port)
     })

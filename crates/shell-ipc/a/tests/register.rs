@@ -80,6 +80,8 @@ impl Views for Inline {
         Vec::new()
     }
     fn on_destroyed(&self, _: Box<dyn Fn(ViewId) + Send + Sync>) {}
+    fn renderer_generation(&self, _: ViewId) -> Option<shell_contract::runtime::RendererGeneration> { None }
+    fn on_renderer_replaced(&self, _: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>) {}
 }
 impl AppPaths for Inline {
     fn path(&self, _: PathName) -> PathBuf {
@@ -89,7 +91,7 @@ impl AppPaths for Inline {
 
 fn services(hosts: Hosts) -> Services {
     let inline = Arc::new(Inline);
-    Services {
+    shell_contract::hosts::synthetic::SyntheticOwnedEffects::install(Services {
         ui: inline.clone(),
         core: inline.clone(),
         workers: inline.clone(),
@@ -97,7 +99,7 @@ fn services(hosts: Hosts) -> Services {
         views: inline.clone(),
         paths: inline,
         hosts: Arc::new(hosts),
-    }
+    })
 }
 
 fn batch_a() -> BTreeMap<&'static str, &'static [ChannelKind]> {
@@ -174,6 +176,7 @@ fn each_channel_reaches_its_own_method() {
         },
         request: None,
         cancel: CancelToken::default(),
+        native: None,
     };
     for (name, (_, handler)) in &registry.handlers {
         let got = Arc::new(Mutex::new(None));
@@ -207,6 +210,7 @@ fn a_thrown_answer_rejects_with_electron_text() {
         },
         request: None,
         cancel: CancelToken::default(),
+        native: None,
     };
     handler.call(
         &cx,
@@ -251,6 +255,7 @@ fn a_shell_with_some_ports_built_starts_and_the_others_say_not_built() {
         },
         request: None,
         cancel: CancelToken::default(),
+        native: None,
     };
     let ask = |channel: &str| {
         let got = Arc::new(Mutex::new(None));

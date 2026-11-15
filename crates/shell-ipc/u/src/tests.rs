@@ -94,6 +94,8 @@ impl Views for NoViews {
         Vec::new()
     }
     fn on_destroyed(&self, _: Box<dyn Fn(ViewId) + Send + Sync>) {}
+    fn renderer_generation(&self, _: ViewId) -> Option<shell_contract::runtime::RendererGeneration> { None }
+    fn on_renderer_replaced(&self, _: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>) {}
 }
 impl AppPaths for NoViews {
     fn path(&self, _: PathName) -> PathBuf {
@@ -202,6 +204,7 @@ impl Fixture {
             },
             request: None,
             cancel: CancelToken::default(),
+            native: None,
         };
         self.table.0[channel].call(
             &cx,

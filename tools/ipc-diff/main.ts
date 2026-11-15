@@ -11,14 +11,15 @@
  *
  * Without `--group`, each group runs in a process of its own. `--list` prints
  * `group<TAB>channel` for every channel a case calls. `--require <batch>`
- * (repeatable) fails unless every invoke, send and sendSync channel of that
- * batch is called, every one called with arguments gave two distinct
- * answers, and every event channel of the batch was emitted by some case.
+ * checks the original Electron-derived channels of that batch. Native-only
+ * contracts remain in the runtime registry but require separate synthetic and
+ * actual native-host receipts. A full run stays non-green while either is pending.
  *
  * Fails on a difference that divergences.json does not list, on a listed one
  * that no longer reproduces, on a case either side could not run, and on the
  * coverage of a required batch.
  */
+import '@seuoffice/engine-wasm/node'
 import { spawnSync } from 'node:child_process'
 import {
   existsSync,
@@ -34,9 +35,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { useElectron } from '../main-diff/electron-fake.ts'
 import './vite-imports.ts'
 import { Encoder, WireError, decode } from '../../crates/shell/bridge/wire.ts'
-import { CHANNELS, SPECS } from './channels.ts'
+import { CHANNELS, ELECTRON_CHANNELS, SPECS } from './channels.ts'
+import { NATIVE_CHANNEL_CONTRACTS } from '../shell-inventory/native-channels.ts'
+import { nativeContractCoverage, nativeEvidence } from './native-contracts.ts'
 import { caseElectron } from './fakes.ts'
-import { type ChannelReport, type GroupReport, channelAnswers, coverage } from './coverage.ts'
+import { EventReferences, outcomeFailure } from './event-refs.ts'
+import { type GroupReport, channelAnswers, coverage } from './coverage.ts'
 import { cleanUp, setUp, snapshot, substitute, unsubstitute } from './folder.ts'
 import { Probe } from './probe.ts'
 import type { Call, Case, Group, LoadContext } from './types.ts'
@@ -88,6 +92,13 @@ async function loadGroup(name: string): Promise<Group> {
   const mod = (await import(pathToFileURL(join(tool, 'groups', `${name}.ts`)).href)) as {
     group: Group
   }
+  for (const entry of mod.group.cases) {
+    for (const call of entry.calls) {
+      if (call.kind !== 'trigger' && call.await === undefined && SPECS.get(call.channel)?.namespace === 'native') {
+        throw new Error(`${call.channel}: native-only contracts have no Electron oracle; use actual-handler/native-host evidence`)
+      }
+    }
+  }
   return mod.group
 }
 
@@ -130,6 +141,7 @@ async function typescriptSide(group: Group, c: Case, dir: string): Promise<unkno
   const views = c.views ?? [{ view: 1, window: 1, surface: 'Shell' }]
   const calls = []
   /** deferred invokes by the index of their call, until an `await` step takes them */
+  const references = new EventReferences(c.calls)
   const deferred = new Map<number, Promise<Record<string, unknown>>>()
   for (const [index, call] of c.calls.entries()) {
     if (call.await !== undefined) {
@@ -144,14 +156,14 @@ async function typescriptSide(group: Group, c: Case, dir: string): Promise<unkno
           ])
         : { thrown: `no deferred call ${call.await}` }
       await settle()
-      calls.push({ answer, events: electron.takeEvents() })
+      calls.push({ answer, events: references.capture(index, electron.takeEvents()) })
       continue
     }
     const kind = call.kind ?? 'invoke'
     const view = views.find((v) => v.view === (call.view ?? views[0].view))
     if (!view) throw new Error(`no view ${call.view}`)
     const values = decode(
-      call.args,
+      references.resolve(call.args),
       (call.buffers ?? []).map((b) => Buffer.from(b, 'hex')),
     ) as unknown[]
     const sender = electron.contents(view.view)
@@ -172,7 +184,7 @@ async function typescriptSide(group: Group, c: Case, dir: string): Promise<unkno
           try {
             const e = new Encoder()
             const value = e.value(
-              await run({ ...cx, contents: electron.contents }, view.view, call.args),
+              await run({ ...cx, contents: electron.contents }, view.view, references.resolve(call.args) as unknown[]),
             )
             return { value, buffers: e.buffers.map(hex) }
           } catch (err) {
@@ -216,7 +228,7 @@ async function typescriptSide(group: Group, c: Case, dir: string): Promise<unkno
             return { value: e.value(value), buffers: e.buffers.map(hex) }
           } catch (err) {
             if (!(err instanceof WireError)) throw err
-            throw new Error('An object could not be cloned.')
+            throw new Error('An object could not be cloned.', { cause: err })
           }
         } catch (err) {
           const text = (err as { shell?: string } | null)?.shell ?? String(err)
@@ -229,7 +241,7 @@ async function typescriptSide(group: Group, c: Case, dir: string): Promise<unkno
       } else answer = await reply()
     }
     await settle()
-    calls.push({ answer, events: electron.takeEvents() })
+    calls.push({ answer, events: references.capture(index, electron.takeEvents()) })
   }
   return { calls, log: electron.log }
 }
@@ -300,6 +312,12 @@ async function runGroup(name: string): Promise<void> {
       if (a.answer !== undefined && !r.answers.includes(a.answer)) r.answers.push(a.answer)
     }
     for (const step of tsRecord.calls) for (const e of step.events ?? []) events.add(e.channel)
+    const rustRecord = JSON.parse(rust).record as { calls: { answer: unknown }[] }
+    const expectation = outcomeFailure(c.calls, tsRecord.calls) ?? outcomeFailure(c.calls, rustRecord.calls)
+    if (expectation) {
+      differences.push({ case: i, note: `EXPECT ${c.note ?? ''}: ${expectation}`, typescript: ts, rust })
+      continue
+    }
     if (ts === rust) {
       equal++
       continue
@@ -363,10 +381,26 @@ function runEveryGroup(): void {
   if (process.argv.includes('--list')) return
   writeFileSync(join(out, 'report.json'), JSON.stringify(reports, null, 2))
   for (const batch of args('--require')) {
-    const problems = coverage(batch, Object.values(reports), CHANNELS)
+    const problems = coverage(batch, Object.values(reports), ELECTRON_CHANNELS)
     for (const p of problems) console.log(`COVERAGE ${batch} ${p}`)
-    console.log(`coverage of ${batch}: ${problems.length} problems`)
+    console.log(`Electron coverage of ${batch}: ${problems.length} problems`)
     if (problems.length > 0) failed = true
+  }
+  const evidencePath = arg('--native-evidence')
+  const receipts = nativeEvidence(evidencePath === undefined ? [] : JSON.parse(readFileSync(resolve(evidencePath), 'utf8')))
+  for (const receipt of receipts) {
+    if (!existsSync(resolve(root, receipt.artifact))) throw new Error(`native evidence artifact is missing: ${receipt.artifact}`)
+  }
+  const nativeBatches = new Set([
+    ...CHANNELS.filter((spec) => spec.namespace === 'native').map((spec) => spec.batch),
+    ...NATIVE_CHANNEL_CONTRACTS.map((contract) => contract.batch),
+  ])
+  const nativeReports = [...nativeBatches].flatMap((batch) => nativeContractCoverage(batch, CHANNELS, receipts))
+  writeFileSync(join(out, 'native-contracts.json'), JSON.stringify(nativeReports, null, 2))
+  for (const report of nativeReports) {
+    console.log(`NATIVE ${report.batch} ${report.channel}: synthetic ${report.synthetic.status}; native-host ${report.nativeHost.status}`)
+    for (const problem of report.problems) console.log(`NATIVE COVERAGE ${report.channel}: ${problem}`)
+    if (report.problems.length > 0) failed = true
   }
   process.exitCode = failed ? 1 : 0
 }

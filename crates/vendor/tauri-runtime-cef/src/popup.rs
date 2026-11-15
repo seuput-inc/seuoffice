@@ -315,6 +315,7 @@ impl PopupFamily {
           parent_matches: None,
           bounds,
           visible,
+          explicit_visible: None,
         };
         let mut native = Webview::new(browser, snapshot, popup.state.clone());
         native.set_opener(popup.opener.clone());

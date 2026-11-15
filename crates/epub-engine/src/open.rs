@@ -29,12 +29,12 @@ use crate::primitives::{
     normalize_zip_path, obfuscate_font_with_key,
 };
 use crate::ranges::writing_mode::{css_declares_vertical_writing, is_vertical_writing_mode};
-use crate::toc::{TocSources, build_toc};
+use crate::toc::{TocSources, build_toc_with_host};
 use crate::types::{
     EpubBook, EpubBookInfo, EpubIdentifier, EpubManifestItem, EpubMetadata, EpubObfuscatedFont,
     EpubRefusalReason, EpubSpine, EpubSpineItem, FontKey,
 };
-use crate::xml::{XmlElement, parse_xml};
+use crate::xml::{HostCall, XmlElement, parse_xml};
 use crate::xml_positions_types::Thrown;
 
 /// The limits a book is opened with: the ones the other document engines share.
@@ -200,7 +200,12 @@ fn key_for(
 /// `openEpub`: opens a book held in memory. Never fails for anything in the
 /// file and never changes the bytes it is given.
 pub fn open_epub(input: &[u8], limits: &ZipLimits) -> EpubOpenResult {
-    match open_or_refuse(input, limits) {
+    open_epub_with_host(input, limits, &seu_host::call)
+}
+
+/// Opens with an explicit parser callback for navigation and chapter-title fallbacks.
+pub fn open_epub_with_host(input: &[u8], limits: &ZipLimits, host: &HostCall<'_>) -> EpubOpenResult {
+    match open_or_refuse(input, limits, host) {
         Ok(book) => EpubOpenResult::Opened(Box::new(book)),
         Err(Failure::Refusal(reason, detail)) => EpubOpenResult::Refused { reason, detail },
         Err(Failure::NotEpub(detail)) => EpubOpenResult::Refused {
@@ -248,7 +253,7 @@ fn metadata_of(parsed: &ParsedPackage<'_>) -> EpubMetadata {
     }
 }
 
-fn open_or_refuse(bytes: &[u8], limits: &ZipLimits) -> Result<EpubBook, Failure> {
+fn open_or_refuse(bytes: &[u8], limits: &ZipLimits, host: &HostCall<'_>) -> Result<EpubBook, Failure> {
     // 1. zip gate
     let package =
         load_zip_package_staged(bytes, limits, true).map_err(|failure| match failure {
@@ -379,12 +384,12 @@ fn open_or_refuse(bytes: &[u8], limits: &ZipLimits) -> Result<EpubBook, Failure>
         }
     }
 
-    let toc = build_toc(&TocSources {
+    let toc = build_toc_with_host(&TocSources {
         manifest: &manifest,
         spine: &spine,
         find_entry: &|path| archive.find(path),
         read_text: &|path| archive.read_text(path),
-    })?;
+    }, host)?;
 
     let vertical_writing = detect_vertical_writing(&archive, &metadata, &manifest)?;
     let info = EpubBookInfo {

@@ -10,16 +10,14 @@ use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use jscompat::JsonValue;
-use main_core::packages::electron_utils::generate_handoff::GenerateHandoff;
 use main_core::packages::i18n::Lang;
 use main_core::shell::app_routing::DocumentTabKind;
 use main_core::shell::generate::convert::{
-    ConvertEngines, ConvertResult, ConvertedDocument, NoticeHost, OpOutcome, XmindTopic,
-    convert_source, markdown_redaction_notice,
+    ConvertEngines, ConvertResult, NoticeHost, OpOutcome, XmindTopic,
 };
-use main_core::shell::generate::generate_api::{ConvertKind, GenerateWindowState, channels};
+use main_core::shell::generate::generate_api::GenerateWindowState;
 use main_core::shell::generate::generate_window::{
-    GenerateText, GenerateWindowHost, GenerateWindowOptions, NewDocumentOpener, OpenDialogResult,
+    GenerateText, GenerateWindowHost, GenerateWindowOptions, OpenDialogResult,
     WindowId,
 };
 use main_core::shell::generate::materials::{FileParser, FileStat, InspectHost, ParsedFile};
@@ -31,33 +29,45 @@ use main_core::shell::renderer_disposal::Failure;
 use main_core::shell::title_bar_overlay::TitleBarOverlay;
 use serde_json::Value;
 use shell_contract::hosts::{FileDialog, FileFilter};
-use shell_contract::ipc::Target;
 use shell_contract::{ViewId, WindowId as ShellWindowId};
 
-use super::host::GenerateShell;
-use super::{GenerateWindowEvents, Inner, ipc_of};
+use super::host::{GenerateAuthority, GenerateShell};
+use super::{GenerateWindowEvents, Inner};
 
-/// How `dialog.showOpenDialog` is answered while a handler runs
-pub(super) enum DialogMode {
-    /// the dialog is shown at once and the core thread waits for it
-    Live,
-    /// nothing is shown: the options and window the module asked with are kept
-    Capture(Option<(WindowId, Value)>),
-    /// the answer of a dialog shown meanwhile on a worker
-    Answer(OpenDialogResult),
+pub(super) fn inspect_job(inner: &Arc<Inner>, authority: &GenerateAuthority, job: main_core::shell::generate::materials::MaterialInspectJob)
+    -> Result<main_core::shell::generate::materials::MaterialStatus, Failure> {
+    inner.check_authority(authority).map_err(Failure)?;
+    let result = job.execute(&mut Bridge::new(inner, authority));
+    inner.check_authority(authority).map_err(Failure)?;
+    result
 }
+
+pub(super) fn notice_job(inner: &Arc<Inner>, authority: &GenerateAuthority, job: main_core::shell::generate::convert::MarkdownNoticeJob) -> Result<bool, Failure> {
+    inner.check_authority(authority).map_err(Failure)?;
+    let result = job.execute(&mut NoticeReads(&*inner.shell, authority));
+    inner.check_authority(authority).map_err(Failure)?;
+    Ok(result)
+}
+
+pub(super) fn convert_job(inner: &Arc<Inner>, authority: &GenerateAuthority, job: main_core::shell::generate::convert::ConversionJob) -> Result<ConvertResult, Failure> {
+    inner.check_authority(authority).map_err(Failure)?;
+    let result = job.execute(&mut Engines(&*inner.shell, authority));
+    inner.check_authority(authority).map_err(Failure)?;
+    Ok(result)
+}
+
 
 /// The host of one handler's call into the module
 pub(super) struct Bridge<'a> {
     pub(super) inner: &'a Arc<Inner>,
-    pub(super) dialog: DialogMode,
+    pub(super) authority: &'a GenerateAuthority,
 }
 
 impl<'a> Bridge<'a> {
-    pub(super) fn new(inner: &'a Arc<Inner>) -> Self {
+    pub(super) fn new(inner: &'a Arc<Inner>, authority: &'a GenerateAuthority) -> Self {
         Bridge {
             inner,
-            dialog: DialogMode::Live,
+            authority,
         }
     }
 
@@ -65,14 +75,20 @@ impl<'a> Bridge<'a> {
         &*self.inner.shell
     }
 
+    fn check(&self) -> Result<(), Failure> {
+        self.authority.check_cancelled().map_err(Failure)?;
+        self.shell().check_authority(self.authority).map_err(Failure)
+    }
+
     /// `win.webContents`: the shell window's page is the main window's view
     /// (the shared host knows it), any other window's is the host's
-    fn view_of(&self, window: WindowId) -> Option<ViewId> {
+    fn view_of(&self, window: WindowId) -> Result<Option<ViewId>, Failure> {
+        self.check()?;
         let main = &self.inner.main_window;
         if main.window() == Some(shell_window(window)) {
-            return main.view();
+            return Ok(main.view());
         }
-        self.shell().window_view(shell_window(window))
+        self.shell().window_view(self.authority, shell_window(window)).map_err(Failure)
     }
 }
 
@@ -151,16 +167,13 @@ impl MaterialContents for TabHandle {
 impl OpenMaterialsDeps for Bridge<'_> {
     type Contents = TabHandle;
 
-    fn web_contents_for(&mut self, tab_id: &str) -> Option<TabHandle> {
-        self.shell().tab_contents(tab_id).map(|c| TabHandle {
+    fn web_contents_for(&mut self, tab_id: &str) -> Result<Option<TabHandle>, Failure> {
+        self.shell().tab_contents(self.authority, tab_id).map(|value| value.map(|c| TabHandle {
             id: c.view.0 as f64,
             destroyed: c.destroyed,
-        })
+        })).map_err(Failure)
     }
 
-    fn reveal(&mut self, tab_id: &str) {
-        self.shell().reveal_tab(tab_id);
-    }
 
     fn has_save(&self, kind: DocumentTabKind) -> bool {
         self.shell().has_save(kind)
@@ -173,11 +186,14 @@ impl OpenMaterialsDeps for Bridge<'_> {
 
 impl InspectHost for Bridge<'_> {
     fn stat(&mut self, path: &str) -> Result<FileStat, Failure> {
-        real_stat(path)
+        self.check()?;
+        let value = real_stat(path)?;
+        self.check()?;
+        Ok(value)
     }
 
     fn parse(&mut self, path: &str) -> Result<ParsedFile, Failure> {
-        self.shell().parse_file_to_text(path).map_err(Failure)
+        self.shell().parse_file_to_text(self.authority, path).map_err(Failure)
     }
 
     fn injected_parse(&self) -> bool {
@@ -187,11 +203,17 @@ impl InspectHost for Bridge<'_> {
 
 /// The conversions' engines: the outline reader and the op builder are
 /// `main-core`'s; the rest is the host's
-struct Engines<'a>(&'a dyn GenerateShell);
+struct Engines<'a>(&'a dyn GenerateShell, &'a GenerateAuthority);
+
+impl Drop for Engines<'_> {
+    fn drop(&mut self) {
+        self.0.release_conversion_resources(self.1);
+    }
+}
 
 impl FileParser for Engines<'_> {
     fn parse_file_to_text(&mut self, path: &str) -> Result<ParsedFile, Failure> {
-        self.0.parse_file_to_text(path).map_err(Failure)
+        self.0.parse_file_to_text(self.1, path).map_err(Failure)
     }
 }
 
@@ -205,7 +227,7 @@ impl ConvertEngines for Engines<'_> {
     }
 
     fn first_sheet_root(&mut self, outline: &str, untitled: &str) -> Result<XmindTopic, Failure> {
-        self.0.first_sheet_root(outline, untitled).map_err(Failure)
+        self.0.first_sheet_root(self.1, outline, untitled).map_err(Failure)
     }
 
     fn create_xmind_document_from_outline(
@@ -214,7 +236,7 @@ impl ConvertEngines for Engines<'_> {
         untitled: &str,
     ) -> Result<(), Failure> {
         self.0
-            .create_xmind_document_from_outline(text, untitled)
+            .create_xmind_document_from_outline(self.1, text, untitled)
             .map_err(Failure)
     }
 
@@ -235,11 +257,11 @@ impl ConvertEngines for Engines<'_> {
     }
 
     fn open_blank_deck(&mut self) -> Result<u64, Failure> {
-        self.0.open_blank_deck().map_err(Failure)
+        self.0.open_blank_deck(self.1).map_err(Failure)
     }
 
     fn apply_op(&mut self, deck: &mut u64, op: &JsonValue) -> Result<OpOutcome, Failure> {
-        self.0.apply_deck_op(*deck, op).map_err(Failure)
+        self.0.apply_deck_op(self.1, *deck, op).map_err(Failure)
     }
 
     fn op_name(&self, op: &JsonValue) -> String {
@@ -250,26 +272,36 @@ impl ConvertEngines for Engines<'_> {
     }
 
     fn save_deck(&mut self, deck: u64) -> Result<Vec<u8>, Failure> {
-        self.0.save_deck(deck).map_err(Failure)
+        self.0.save_deck(self.1, deck).map_err(Failure)
     }
 }
 
 /// the reads of the default `markdownRedactionNotice(path)`
-struct NoticeReads<'a>(&'a dyn GenerateShell);
+struct NoticeReads<'a>(&'a dyn GenerateShell, &'a GenerateAuthority);
 
 impl FileParser for NoticeReads<'_> {
     fn parse_file_to_text(&mut self, path: &str) -> Result<ParsedFile, Failure> {
-        self.0.parse_file_to_text(path).map_err(Failure)
+        self.0.parse_file_to_text(self.1, path).map_err(Failure)
     }
 }
 
 impl NoticeHost for NoticeReads<'_> {
     fn stat(&mut self, path: &str) -> Result<FileStat, Failure> {
-        real_stat(path)
+        self.1.check_cancelled().map_err(Failure)?;
+        self.0.check_authority(self.1).map_err(Failure)?;
+        let stat = real_stat(path)?;
+        self.1.check_cancelled().map_err(Failure)?;
+        self.0.check_authority(self.1).map_err(Failure)?;
+        Ok(stat)
     }
 
     fn read_bytes(&mut self, path: &str) -> Result<Vec<u8>, Failure> {
-        fs::read(path).map_err(|e| Failure(e.to_string()))
+        self.1.check_cancelled().map_err(Failure)?;
+        self.0.check_authority(self.1).map_err(Failure)?;
+        let bytes = fs::read(path).map_err(|e| Failure(e.to_string()))?;
+        self.1.check_cancelled().map_err(Failure)?;
+        self.0.check_authority(self.1).map_err(Failure)?;
+        Ok(bytes)
     }
 
     fn injected_reader(&self) -> bool {
@@ -278,8 +310,9 @@ impl NoticeHost for NoticeReads<'_> {
 }
 
 impl GenerateWindowHost for Bridge<'_> {
-    fn parent_window(&mut self) -> Option<WindowId> {
-        self.inner.main_window.window().map(|w| i64::from(w.0))
+    fn parent_window(&mut self) -> Result<Option<WindowId>, Failure> {
+        self.check()?;
+        Ok(self.inner.main_window.window().map(|w| i64::from(w.0)))
     }
 
     fn lang(&self) -> Lang {
@@ -290,42 +323,15 @@ impl GenerateWindowHost for Bridge<'_> {
         self.shell().theme()
     }
 
-    fn open_target_tab(
-        &mut self,
-        handoff: &GenerateHandoff,
-        opener: Option<&NewDocumentOpener>,
-    ) -> Result<(), Failure> {
-        self.shell()
-            .open_target_tab(handoff, opener)
-            .map_err(Failure)
-    }
-
     fn can_open_converted(&self) -> bool {
         self.shell().can_open_converted()
     }
 
-    fn open_converted_tab(
-        &mut self,
-        doc: &ConvertedDocument,
-        opener: Option<&NewDocumentOpener>,
-    ) -> Result<(), Failure> {
-        self.shell()
-            .open_converted_tab(doc, opener)
-            .map_err(Failure)
-    }
 
     fn starred_group_paths(&mut self, group: &str) -> Vec<String> {
         self.shell().starred_group_paths(group)
     }
 
-    fn convert_source(&mut self, kind: ConvertKind, path: &str, untitled: &str) -> ConvertResult {
-        convert_source(&mut Engines(self.shell()), kind, path, untitled)
-    }
-
-    fn markdown_redaction_notice(&mut self, path: &str) -> bool {
-        let mut cache = self.inner.notices.lock().expect("the notice cache");
-        markdown_redaction_notice(&mut NoticeReads(self.shell()), &mut cache, path)
-    }
 
     fn new_id(&mut self) -> String {
         self.shell().new_id()
@@ -343,8 +349,8 @@ impl GenerateWindowHost for Bridge<'_> {
         self.shell().generate_text(lang, key)
     }
 
-    fn should_use_dark_colors(&self) -> bool {
-        self.shell().should_use_dark_colors()
+    fn should_use_dark_colors(&self) -> Result<bool, Failure> {
+        self.shell().should_use_dark_colors(self.authority).map_err(Failure)
     }
 
     fn is_darwin(&self) -> bool {
@@ -355,55 +361,49 @@ impl GenerateWindowHost for Bridge<'_> {
         self.shell().renderer_url()
     }
 
-    fn create_window(&mut self, options: &GenerateWindowOptions) -> WindowId {
+    fn create_window(&mut self, options: &GenerateWindowOptions) -> Result<WindowId, Failure> {
         let events = GenerateWindowEvents::new(self.inner.clone());
-        i64::from(self.shell().create_window(options, events).0)
+        self.shell().create_window(self.authority, options, events)
+            .map(|window| i64::from(window.0)).map_err(Failure)
     }
 
-    fn window_is_destroyed(&self, window: WindowId) -> bool {
-        self.shell().window_is_destroyed(shell_window(window))
+    fn window_is_destroyed(&self, window: WindowId) -> Result<bool, Failure> {
+        self.shell().window_is_destroyed(self.authority, shell_window(window)).map_err(Failure)
     }
 
-    fn window_is_minimized(&self, window: WindowId) -> bool {
-        self.shell().window_is_minimized(shell_window(window))
+    fn window_is_minimized(&self, window: WindowId) -> Result<bool, Failure> {
+        self.shell().window_is_minimized(self.authority, shell_window(window)).map_err(Failure)
     }
 
-    fn window_restore(&mut self, window: WindowId) {
-        self.shell().window_restore(shell_window(window));
+    fn window_restore(&mut self, window: WindowId) -> Result<(), Failure> {
+        self.shell().window_restore(self.authority, shell_window(window)).map_err(Failure)
     }
 
-    fn window_show(&mut self, window: WindowId) {
-        self.shell().window_show(shell_window(window));
+    fn window_show(&mut self, window: WindowId) -> Result<(), Failure> {
+        self.shell().window_show(self.authority, shell_window(window)).map_err(Failure)
     }
 
-    fn window_focus(&mut self, window: WindowId) {
-        self.shell().window_focus(shell_window(window));
+    fn window_focus(&mut self, window: WindowId) -> Result<(), Failure> {
+        self.shell().window_focus(self.authority, shell_window(window)).map_err(Failure)
     }
 
-    fn window_close(&mut self, window: WindowId) {
-        self.shell().window_close(shell_window(window));
+    fn window_close(&mut self, window: WindowId) -> Result<(), Failure> {
+        self.shell().window_close(self.authority, shell_window(window)).map_err(Failure)
     }
 
-    fn window_remove_menu(&mut self, window: WindowId) {
-        self.shell().window_remove_menu(shell_window(window));
+    fn window_remove_menu(&mut self, window: WindowId) -> Result<(), Failure> {
+        self.shell().window_remove_menu(self.authority, shell_window(window)).map_err(Failure)
     }
 
-    fn window_web_contents_id(&self, window: WindowId) -> f64 {
-        self.view_of(window)
-            .map_or(f64::NAN, |ViewId(id)| f64::from(id))
+    fn window_web_contents_id(&self, window: WindowId) -> Result<f64, Failure> {
+        self.view_of(window)?.map(|ViewId(id)| f64::from(id))
+            .ok_or_else(|| Failure("the generate window has no live contents".into()))
     }
 
-    fn window_send_state(&mut self, window: WindowId, state: &GenerateWindowState) {
-        let Some(view) = self.view_of(window) else {
-            return;
-        };
-        let Ok(value) = serde_json::to_value(state) else {
-            return;
-        };
-        self.inner
-            .services
-            .events
-            .emit(Target::View(view), channels::STATE, vec![ipc_of(&value)]);
+    fn window_send_state(&mut self, window: WindowId, state: &GenerateWindowState) -> Result<(), Failure> {
+        let view = self.view_of(window)?
+            .ok_or_else(|| Failure("the generate window has no live contents".into()))?;
+        self.shell().send_state(self.authority, self.inner.services.events.clone(), view, state).map_err(Failure)
     }
 
     fn window_set_title_bar_overlay(
@@ -412,49 +412,28 @@ impl GenerateWindowHost for Bridge<'_> {
         overlay: &TitleBarOverlay,
     ) -> Result<(), Failure> {
         self.shell()
-            .window_set_title_bar_overlay(shell_window(window), overlay)
+            .window_set_title_bar_overlay(self.authority, shell_window(window), overlay)
             .map_err(Failure)
     }
 
-    fn watch_theme(&mut self, window: WindowId) {
-        self.shell().watch_theme(shell_window(window));
+    fn watch_theme(&mut self, window: WindowId) -> Result<(), Failure> {
+        self.shell().watch_theme(self.authority, shell_window(window)).map_err(Failure)
     }
 
-    fn unwatch_theme(&mut self, window: WindowId) {
-        self.shell().unwatch_theme(shell_window(window));
+    fn unwatch_theme(&mut self, window: WindowId) -> Result<(), Failure> {
+        self.shell().unwatch_theme(self.authority, shell_window(window)).map_err(Failure)
     }
 
-    fn window_load_url(&mut self, window: WindowId, url: &str) {
-        self.shell().window_load_url(shell_window(window), url);
+    fn window_load_url(&mut self, window: WindowId, url: &str) -> Result<(), Failure> {
+        self.shell().window_load_url(self.authority, shell_window(window), url).map_err(Failure)
     }
 
-    fn window_load_generate_page(&mut self, window: WindowId) {
-        self.shell().window_load_generate_page(shell_window(window));
+    fn window_load_generate_page(&mut self, window: WindowId) -> Result<(), Failure> {
+        self.shell().window_load_generate_page(self.authority, shell_window(window)).map_err(Failure)
     }
 
-    fn open_external(&mut self, url: &str) {
-        // `void shell.openExternal(target)`: nothing waits for it
-        let _ = self.inner.os_shell.open_external(url);
-    }
-
-    fn show_open_dialog(&mut self, window: WindowId, options: &Value) -> OpenDialogResult {
-        match &mut self.dialog {
-            DialogMode::Answer(answer) => answer.clone(),
-            DialogMode::Capture(asked) => {
-                *asked = Some((window, options.clone()));
-                OpenDialogResult {
-                    canceled: true,
-                    file_paths: Vec::new(),
-                }
-            }
-            DialogMode::Live => {
-                let picked = self
-                    .inner
-                    .dialogs
-                    .open(Some(shell_window(window)), &file_dialog(options));
-                dialog_result(picked)
-            }
-        }
+    fn open_external(&mut self, url: &str) -> Result<(), Failure> {
+        self.shell().open_external(self.authority, self.inner.os_shell.clone(), url).map_err(Failure)
     }
 }
 

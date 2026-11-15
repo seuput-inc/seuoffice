@@ -160,17 +160,15 @@ fn mtime_ms(meta: &fs::Metadata) -> f64 {
 }
 
 impl App {
-    fn ext_for(&self, path: &str, name: &str) -> String {
-        match self.engine.diagram_picture_ext_of(path) {
-            Some(ext) => ext,
-            None => ext_of(name),
-        }
+    fn ext_for(&self, path: &str, name: &str) -> Result<String, String> {
+        Ok(self.engine.diagram_picture_ext_of(path).map_err(|error| error.0)?
+            .unwrap_or_else(|| ext_of(name)))
     }
 
     /// `statAttachment(filePath)`
     fn stat_attachment(&self, path: &str) -> Result<IpcValue, String> {
         let name = basename(path, None);
-        let ext = self.ext_for(path, &name);
+        let ext = self.ext_for(path, &name)?;
         if !is_attachable(&ext) {
             return Err(format!(
                 "{name}: {}",
@@ -302,7 +300,10 @@ pub fn files_read(app: &App, _cx: &CallContext, args: Args, reply: Responder) {
         }));
     };
     let name = basename(path, None);
-    let ext = app.ext_for(path, &name);
+    let ext = match app.ext_for(path, &name) {
+        Ok(ext) => ext,
+        Err(error) => return reply.reply(Err(thrown(error))),
+    };
     if !is_attachable(&ext) {
         return reply.reply(Ok(read_error(
             app.tm("errUnsupportedExt", &[("ext", JsonValue::String(ext))]),
@@ -311,11 +312,6 @@ pub fn files_read(app: &App, _cx: &CallContext, args: Args, reply: Responder) {
     if is_image_ext(&ext) {
         return reply.reply(Ok(read_error(app.tm("errImageNoText", &[]))));
     }
-    // a file open with unsaved changes is not read (before the cache): a
-    // withholding mark only reaches the file on save
-    if let Err(message) = app.shell.assert_file_saved(path) {
-        return reply.reply(Ok(read_error(message)));
-    }
     let start = floor_or(args.get(1), 0.0).max(0.0);
     let size = floor_or(args.get(2), 1.0).clamp(1.0, READ_MAX_CHARS);
     let engine = app.engine.clone();
@@ -323,7 +319,12 @@ pub fn files_read(app: &App, _cx: &CallContext, args: Args, reply: Responder) {
     let too_large = app.tm("errFileTooLarge", &[]);
     let parse_failed = app.tm("errParseFailed", &[]);
     let path = path.clone();
-    app.services.workers.spawn(Box::new(move || {
+    let workers = app.services.workers.clone();
+    app.shell.assert_file_saved(path.clone(), Box::new(move |result| {
+        if let Err(message) = result {
+            return reply.reply(Ok(read_error(message)));
+        }
+        workers.spawn(Box::new(move || {
         let text = (|| -> Result<String, String> {
             let meta = fs::metadata(&path).map_err(|e| node_error(&e, "stat", &path).message)?;
             let stamp = format!(
@@ -371,6 +372,7 @@ pub fn files_read(app: &App, _cx: &CallContext, args: Args, reply: Responder) {
                 ])
             }
             Err(message) => read_error(message),
+        }));
         }));
     }));
 }

@@ -73,6 +73,7 @@ struct Inner {
     /// of markdown)
     hwp_printing: HashSet<ViewId>,
     markdown_printing: HashSet<ViewId>,
+    hwp_pending: Vec<(ViewId, crate::print::PendingHwpPublication)>,
 }
 
 #[derive(Default)]
@@ -85,6 +86,139 @@ pub type MStateRef = Arc<MState>;
 impl MState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Call on the original core thread during process shutdown.
+    pub fn cancel_prepared_hwp_publications(&self) {
+        crate::print::cancel_prepared_hwp_publications();
+    }
+
+    pub(crate) fn retain_hwp_publication(&self, view: ViewId, publication: crate::print::PendingHwpPublication) {
+        self.inner.lock().unwrap_or_else(|error| error.into_inner()).hwp_pending.push((view, publication));
+    }
+
+    pub(crate) fn attach_hwp_receipt(&self, view: ViewId,
+        terminal: &Arc<Mutex<Option<Result<shell_contract::hosts::GeneratedTerminalDelivery, String>>>>,
+        receipt: Arc<dyn shell_contract::hosts::GeneratedPathPending>) -> Result<(), String> {
+        let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        let (_, entry) = state.hwp_pending.iter_mut().find(|(candidate, entry)|
+            *candidate == view && Arc::ptr_eq(&entry.terminal, terminal))
+            .ok_or("The HWP publication is no longer pending")?;
+        if entry.receipt.is_some() { return Err("The HWP publication already has a pending receipt".into()); }
+        entry.receipt = Some(receipt);
+        Ok(())
+    }
+
+
+    pub(crate) fn recover_hwp_delivery(&self, view: ViewId,
+        terminal: &Arc<Mutex<Option<Result<shell_contract::hosts::GeneratedTerminalDelivery, String>>>>) {
+        let receipt = {
+            let state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+            state.hwp_pending.iter().find(|(candidate, entry)|
+                *candidate == view && Arc::ptr_eq(&entry.terminal, terminal) && entry.payload.is_some())
+                .and_then(|(_, entry)| entry.receipt.clone())
+        };
+        let Some(receipt) = receipt else { return; };
+        if terminal.lock().unwrap_or_else(|error| error.into_inner()).is_some() { return; }
+        match receipt.take_redelivery() {
+            Ok(Some(delivery)) => {
+                let mut delivery = Some(delivery);
+                {
+                    let mut slot = terminal.lock().unwrap_or_else(|error| error.into_inner());
+                    if slot.is_none() { *slot = delivery.take().map(Ok); }
+                }
+                drop(delivery);
+            }
+            Ok(None) => {}
+            Err(error) => eprintln!("hwp: generated PDF redelivery failed: {error}"),
+        }
+    }
+
+    pub(crate) fn take_ready_hwp_publication(&self, view: ViewId,
+        terminal: &Arc<Mutex<Option<Result<shell_contract::hosts::GeneratedTerminalDelivery, String>>>>,
+    ) -> Option<(Option<crate::print::PendingHwpPayload>, Result<shell_contract::hosts::GeneratedTerminalDelivery, String>)> {
+        let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        let (_, pending) = state.hwp_pending.iter_mut().find(|(candidate, pending)|
+            *candidate == view && Arc::ptr_eq(&pending.terminal, terminal))?;
+        if pending.settling { return None; }
+        if let Some(delivery) = pending.delivery.take() {
+            pending.settling = true;
+            return Some((None, Ok(delivery)));
+        }
+        if pending.payload.is_none() { return None; }
+        let delivery = {
+            let mut slot = terminal.lock().unwrap_or_else(|error| error.into_inner());
+            slot.take()?
+        };
+        let payload = pending.payload.take()?;
+        pending.settling = true;
+        Some((Some(payload), delivery))
+    }
+
+    pub(crate) fn finish_hwp_publication_ack(&self, view: ViewId,
+        terminal: &Arc<Mutex<Option<Result<shell_contract::hosts::GeneratedTerminalDelivery, String>>>>,
+        retry: Option<shell_contract::hosts::GeneratedTerminalDelivery>) {
+        let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(index) = state.hwp_pending.iter().position(|(candidate, pending)|
+            *candidate == view && Arc::ptr_eq(&pending.terminal, terminal)) {
+            if let Some(delivery) = retry {
+                state.hwp_pending[index].1.delivery = Some(delivery);
+                state.hwp_pending[index].1.settling = false;
+            } else {
+                state.hwp_pending.remove(index);
+            }
+        }
+    }
+
+    pub fn wake_hwp_publications(self: &Arc<Self>, core: Arc<dyn shell_contract::runtime::Thread>) {
+        let entries = self.inner.lock().unwrap_or_else(|error| error.into_inner()).hwp_pending.iter()
+            .map(|(view, pending)| (*view, pending.terminal.clone())).collect::<Vec<_>>();
+        for (view, terminal) in entries {
+            crate::print::wake_hwp_publication(Arc::downgrade(self), view, terminal, core.clone());
+        }
+    }
+
+    pub fn wake_hwp_publication(self: &Arc<Self>, view: ViewId,
+        receipt: &Arc<dyn shell_contract::hosts::GeneratedPathPending>, core: Arc<dyn shell_contract::runtime::Thread>) {
+        let terminal = self.inner.lock().unwrap_or_else(|error| error.into_inner()).hwp_pending.iter()
+            .find(|(candidate, pending)| *candidate == view && pending.receipt.as_ref().is_some_and(|stored| Arc::ptr_eq(stored, receipt)))
+            .map(|(_, pending)| pending.terminal.clone());
+        if let Some(terminal) = terminal {
+            crate::print::wake_hwp_publication(Arc::downgrade(self), view, terminal, core);
+        }
+    }
+
+    pub(crate) fn retain_hwp_observer(&self, view: ViewId, receipt: &Arc<dyn shell_contract::hosts::GeneratedPathPending>,
+        observer: (shell_contract::hosts::GeneratedPathObserver, shell_contract::hosts::GeneratedPathWake)) -> Result<(), (shell_contract::hosts::GeneratedPathObserver, shell_contract::hosts::GeneratedPathWake)> {
+        let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some((_, pending)) = state.hwp_pending.iter_mut().find(|(candidate, pending)|
+            *candidate == view && pending.receipt.as_ref().is_some_and(|stored| Arc::ptr_eq(stored, receipt))) {
+            pending.observer = Some(observer);
+            Ok(())
+        } else { Err(observer) }
+    }
+
+    /// Retry only an observer registration that explicitly returned its original
+    /// callback. The saved-output continuation itself remains owned by W.
+    pub fn retry_hwp_publication_observer(&self, view: ViewId,
+        receipt: &Arc<dyn shell_contract::hosts::GeneratedPathPending>) -> Result<(), String> {
+        let (observer, wake) = {
+            let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+            let (_, pending) = state.hwp_pending.iter_mut().find(|(candidate, pending)|
+                *candidate == view && pending.receipt.as_ref().is_some_and(|stored| Arc::ptr_eq(stored, receipt)))
+                .ok_or("The HWP publication is no longer pending")?;
+            pending.observer.take().ok_or("The HWP observer is already installed or being registered")?
+        };
+        match receipt.observe(observer, wake) {
+            Ok(()) => Ok(()),
+            Err(failure) => {
+                let error = failure.error;
+                if self.retain_hwp_observer(view, receipt, (failure.observer, failure.wake)).is_err() {
+                    return Err("The HWP publication ended during observer registration".into());
+                }
+                Err(error)
+            }
+        }
     }
 
     /// `currentLang()` with what it set in `@seuoffice/i18n`: settled once

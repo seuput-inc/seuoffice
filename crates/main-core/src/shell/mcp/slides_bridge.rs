@@ -70,7 +70,7 @@ pub trait SlidesBridgeHost {
     /// `sessions.get(wcId) !== undefined`
     fn has_session(&mut self, wc_id: i64) -> bool;
     /// `session.opened.deck`
-    fn deck(&mut self, wc_id: i64) -> JsonValue;
+    fn deck(&mut self, wc_id: i64) -> Result<JsonValue, String>;
     /// `attachedIds(session)`
     fn attached_ids(&mut self, wc_id: i64) -> Vec<i64>;
     /// `applySessionTxn(session, req)`: the result (`applied`, `failures`,
@@ -84,7 +84,7 @@ pub trait SlidesBridgeHost {
     /// `slideDurableId(slide)`
     fn slide_durable_id(&mut self, slide: &JsonValue) -> String;
     /// `getSlideComments(session.opened.archive, slidePath)`
-    fn slide_comments(&mut self, wc_id: i64, slide_path: &str) -> Vec<JsonValue>;
+    fn slide_comments(&mut self, wc_id: i64, slide_path: &str) -> Result<Vec<JsonValue>, String>;
     /// `getSlideHidden(slide)`
     fn slide_hidden(&mut self, slide: &JsonValue) -> bool;
 }
@@ -349,12 +349,12 @@ impl<H: SlidesBridgeHost> SlidesBridge<H> {
 
     /// `readDeckModel(session, options)`
     fn read_deck_model(&mut self, wc_id: i64, options: ReadOptions) -> Result<JsonValue, String> {
-        let deck = self.host.deck(wc_id);
+        let deck = self.host.deck(wc_id)?;
         let size = deck_size(&deck)?;
         let mut slides = Vec::new();
         for (index, slide) in list_field(&deck, "slides").iter().enumerate() {
             let path = string_field(slide, "path").unwrap_or_default();
-            let comments = self.host.slide_comments(wc_id, &path);
+            let comments = self.host.slide_comments(wc_id, &path)?;
             let mut out = JsObject::new();
             out.set("index", JsonValue::Number(index as f64));
             let id = self.host.slide_durable_id(slide);
@@ -522,7 +522,7 @@ impl<H: SlidesBridgeHost> SlidesBridge<H> {
         if truthy_field(&result, "applied") && truthy_field(&result, "slides") {
             let ids = self.host.attached_ids(wc_id);
             if ids.len() < 2 {
-                let deck = self.host.deck(wc_id);
+                let deck = self.host.deck(wc_id)?;
                 let size = deck_size(&deck)?;
                 let mut size_out = JsObject::new();
                 for key in ["cx", "cy"] {
@@ -575,7 +575,7 @@ impl<H: SlidesBridgeHost> SlidesBridge<H> {
     /// `deckWithholds(wcId)` of the control: the deck carries any withholding mark
     pub fn deck_withholds(&mut self, wc_id: i64) -> Result<bool, String> {
         self.require_session(wc_id)?;
-        let deck = self.host.deck(wc_id);
+        let deck = self.host.deck(wc_id)?;
         Ok(list_field(&deck, "slides")
             .iter()
             .any(|slide| list_field(slide, "elements").iter().any(element_withholds)))
@@ -634,5 +634,58 @@ fn js_round(value: f64) -> f64 {
         floor + 1.0
     } else {
         floor
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Host {
+        deck: Result<JsonValue, String>,
+        comments: Result<Vec<JsonValue>, String>,
+    }
+
+    impl SlidesBridgeHost for Host {
+        fn web_contents_alive(&mut self, _: i64) -> bool { true }
+        fn send_deck_changed(&mut self, _: i64, _: &JsonValue) {}
+        fn now_ms(&mut self) -> f64 { 0.0 }
+        fn set_timeout(&mut self, _: f64) -> u64 { 1 }
+        fn settle(&mut self, _: u64, _: Settled) {}
+        fn open_blank_tab(&mut self) -> Result<i64, String> { Ok(1) }
+        fn abandon_blank_tab(&mut self, _: i64) {}
+        fn exists_sync(&mut self, _: &str) -> bool { false }
+        fn has_session(&mut self, _: i64) -> bool { true }
+        fn deck(&mut self, _: i64) -> Result<JsonValue, String> { self.deck.clone() }
+        fn attached_ids(&mut self, _: i64) -> Vec<i64> { vec![1] }
+        fn apply_session_txn(&mut self, _: i64, _: &JsonValue) -> Option<JsonValue> { None }
+        fn save_session_deck_to(&mut self, _: i64, _: &str) -> Result<(), String> { Ok(()) }
+        fn element_durable_id(&mut self, _: &JsonValue) -> Option<String> { None }
+        fn slide_durable_id(&mut self, _: &JsonValue) -> String { "s_1".into() }
+        fn slide_comments(&mut self, _: i64, _: &str) -> Result<Vec<JsonValue>, String> { self.comments.clone() }
+        fn slide_hidden(&mut self, _: &JsonValue) -> bool { false }
+    }
+
+    #[test]
+    fn read_and_withhold_propagate_model_and_comment_failures() {
+        let mut bridge = SlidesBridge::new(Host {
+            deck: Err("model unavailable".into()),
+            comments: Ok(Vec::new()),
+        });
+        assert_eq!(bridge.read_deck(1, None), Err("model unavailable".into()));
+        assert_eq!(bridge.deck_withholds(1), Err("model unavailable".into()));
+
+        let mut size = JsObject::new();
+        size.set("cx", JsonValue::Number(1.0));
+        size.set("cy", JsonValue::Number(1.0));
+        let mut slide = JsObject::new();
+        slide.set("path", JsonValue::String("ppt/slides/slide1.xml".into()));
+        slide.set("elements", JsonValue::Array(Vec::new()));
+        let mut deck = JsObject::new();
+        deck.set("size", JsonValue::Object(size));
+        deck.set("slides", JsonValue::Array(vec![JsonValue::Object(slide)]));
+        bridge.host_mut().deck = Ok(JsonValue::Object(deck));
+        bridge.host_mut().comments = Err("comments unavailable".into());
+        assert_eq!(bridge.read_deck(1, None), Err("comments unavailable".into()));
     }
 }

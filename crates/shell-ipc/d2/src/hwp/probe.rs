@@ -131,10 +131,10 @@ pub(crate) fn probe_trigger(
             editors.discard_recovery_copy(view);
             done(then)
         }
-        // the contract's writeCopiesNow: the flushes go out; nothing waits here
         "write-copies-now" => {
-            editors.write_copies_now();
-            done(then)
+            editors.write_copies_now(Box::new(move |result| {
+                then(result.map(|()| IpcValue::Undefined).map_err(|error| crate::kit::error(error.0)))
+            }));
         }
         "open-file-with-decision" => {
             let decision = match text(args, 1) {
@@ -145,7 +145,9 @@ pub(crate) fn probe_trigger(
                 file_path: text(args, 0).unwrap_or("").to_owned(),
                 decision,
             };
-            editors.open_file_with_decision(&view, &request);
+            editors.0.with_recovery(|recovery, electron, _| {
+                recovery.open_file_with_decision(electron, super::editor::wc(view), &request)
+            });
             done(then)
         }
         "render-process-gone" => {

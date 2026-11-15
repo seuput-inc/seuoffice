@@ -219,16 +219,26 @@ wrap_with_args! {
     drag_drop_event_target: DragDropEventTarget,
     drag_drop_handler_enabled: bool,
     drag_drop_state: Arc<Mutex<DragDropState>>,
+    resource_request_handler: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
+    browser_request_policy: Option<Arc<crate::browser_request::BrowserRequestPolicy>>,
+    session_request_policy: Option<crate::network_session::NetworkSessionPolicy>,
   }
 
   impl ResourceRequestHandler {
     fn on_before_resource_load(
       &self,
-      _browser: Option<&mut Browser>,
-      _frame: Option<&mut Frame>,
-      request: Option<&mut Request>,
+      browser: Option<&mut Browser>,
+      frame: Option<&mut Frame>,
+      mut request: Option<&mut Request>,
       _callback: Option<&mut Callback>,
     ) -> ReturnValue {
+      if self.resource_request_handler.is_some() || self.browser_request_policy.is_some() || self.session_request_policy.is_some() {
+        let url = request.as_deref().map(|request| CefString::from(&request.url()).to_string()).unwrap_or_default();
+        let legacy = self.resource_request_handler.as_ref().is_none_or(|handler| request.is_some() && handler(&url));
+        let session = self.session_request_policy.as_ref().is_none_or(|policy| policy.decide(browser.as_deref(), frame.as_deref(), &url));
+        let owned = self.browser_request_policy.as_ref().is_none_or(|policy| policy.decide(browser.as_deref(), frame.as_deref(), url));
+        if !legacy || !owned || !session { return sys::cef_return_value_t::RV_CANCEL.into(); }
+      }
       if self.drag_drop_handler_enabled
         && let Some(request) = request
       {

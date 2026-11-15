@@ -187,7 +187,7 @@ pub trait PdfToolsEngine: Send + Sync {
     fn inspect_pdf(&self, bytes: &[u8]) -> Inspect;
 
     /// tools.ts `encryptedPageCount(bytes)`: 0 when unknown
-    fn encrypted_page_count(&self, bytes: &[u8]) -> f64;
+    fn encrypted_page_count(&self, bytes: &[u8]) -> Result<f64, String>;
 
     /// images-to-pdf.ts `readImageInfo(bytes)`: a JPEG or PNG it can place
     fn is_image(&self, bytes: &[u8]) -> bool;
@@ -204,7 +204,7 @@ pub trait PdfToolsEngine: Send + Sync {
     ) -> Result<Vec<Vec<u8>>, ToolError>;
 
     /// `nativeImage.createFromBitmap(bgra, { width, height }).toDataURL()`
-    fn png_data_url(&self, width: f64, height: f64, bgra: &[u8]) -> String;
+    fn png_data_url(&self, width: f64, height: f64, bgra: &[u8]) -> Result<String, String>;
 
     /// `convertPdfFileTo{Docx,Pptx,Xlsx}Local(pdfPath, onProgress, password)`
     fn convert_to_office(
@@ -238,6 +238,18 @@ pub enum TabKind {
     Markdown,
 }
 
+/// Retained controls for one actual native prompt, not a view-ID lookup.
+pub struct OwnedPasswordWindowActions {
+    /// Cleanup-only. Valid before creation and after authority revocation.
+    pub close: Arc<dyn Fn() + Send + Sync>,
+    /// Completes only after the original captured native window was focused.
+    pub focus: Arc<dyn Fn(Box<dyn FnOnce(Result<(), String>) + Send>) + Send + Sync>,
+}
+pub type SavedPasswordWindowFactory = Arc<dyn Fn(
+    String, shell_contract::ipc::NativeSavedDocument,
+    Box<dyn FnOnce(Result<(ViewId, shell_contract::ipc::NativeRequestOwner), String>) + Send>,
+) -> Result<OwnedPasswordWindowActions, String> + Send + Sync>;
+
 /// What the shell does for the PDF tools beyond the shared hosts. Runs on
 /// the core thread unless a method says otherwise.
 pub trait PdfToolsShell: Send + Sync {
@@ -258,6 +270,22 @@ pub trait PdfToolsShell: Send + Sync {
     fn show_window(&self, view: ViewId);
     /// the password prompt window of `promptPdfPassword`, modal to `parent`; its view
     fn open_password_window(&self, parent: Option<WindowId>, title: &str) -> Option<ViewId>;
+    /// Starts real native construction without waiting on the core thread.
+    /// Controls are returned immediately; `done` carries the actual created owner.
+    fn open_password_window_owned(
+        &self, parent: Option<WindowId>, title: String,
+        source: shell_contract::ipc::NativeRequestOwner,
+        destination: shell_contract::ipc::NativeRequestOwner,
+        cancel: CancelToken, pending: CancelToken,
+        done: Box<dyn FnOnce(Result<(ViewId, shell_contract::ipc::NativeRequestOwner), String>) + Send>,
+    ) -> OwnedPasswordWindowActions;
+
+    fn open_password_window_prepared(
+        &self, parent: Option<WindowId>, title: String,
+        target: shell_contract::ipc::RecoveryOpenTarget, snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
+        cancel: CancelToken, pending: CancelToken,
+        done: Box<dyn FnOnce(Result<(ViewId, shell_contract::ipc::NativeRequestOwner), String>) + Send>,
+    ) -> OwnedPasswordWindowActions;
 
     /// `deps.openResult(path)` (index.ts: reload an open text tab, else
     /// `openGeneratedDocument`)
@@ -331,6 +359,8 @@ pub(crate) mod fake {
 
     /// ipc-probe's case log (its `ProbeLog`)
     pub type ProbeLog = Arc<Mutex<Vec<Value>>>;
+    type PasswordOpen = Box<dyn FnOnce(Result<(ViewId, shell_contract::ipc::NativeRequestOwner), String>) + Send>;
+    type PasswordSlot = Arc<Mutex<Option<PasswordOpen>>>;
 
     /// Answers queued per method, and the calls made
     pub struct Fake {
@@ -341,6 +371,8 @@ pub(crate) mod fake {
         pub flush_ok: Mutex<bool>,
         log: Option<ProbeLog>,
         uuids: AtomicU64,
+        password_opens: Arc<Mutex<Vec<PasswordSlot>>>,
+        password_closes: Mutex<Vec<Arc<std::sync::atomic::AtomicBool>>>,
     }
 
     impl Fake {
@@ -356,6 +388,8 @@ pub(crate) mod fake {
                 flush_ok: Mutex::new(true),
                 log,
                 uuids: AtomicU64::new(0),
+                password_opens: Arc::default(),
+                password_closes: Mutex::default(),
             }
         }
 
@@ -386,6 +420,22 @@ pub(crate) mod fake {
                 .lock()
                 .unwrap()
                 .insert(method.to_owned(), value);
+        }
+
+        #[cfg(test)]
+        pub fn resume_owned_password(&self, result: Result<(ViewId, shell_contract::ipc::NativeRequestOwner), String>) -> bool {
+            let slot = {
+                let mut opens = self.password_opens.lock().unwrap();
+                if opens.is_empty() { return false; }
+                opens.remove(0)
+            };
+            let done = slot.lock().unwrap().take();
+            if let Some(done) = done { done(result); true } else { false }
+        }
+
+        #[cfg(test)]
+        pub fn owned_password_closed(&self, index: usize) -> bool {
+            self.password_closes.lock().unwrap()[index].load(Ordering::Acquire)
         }
 
         /// the calls of one method, their arguments
@@ -511,10 +561,13 @@ pub(crate) mod fake {
             }
         }
 
-        fn encrypted_page_count(&self, bytes: &[u8]) -> f64 {
-            self.answer("encrypted_page_count", json!(bytes.len()))
-                .and_then(|a| a.as_f64())
-                .unwrap_or(0.0)
+        fn encrypted_page_count(&self, bytes: &[u8]) -> Result<f64, String> {
+            match self.answer("encrypted_page_count", json!(bytes.len())) {
+                Some(answer) if answer.get("error").and_then(Value::as_str).is_some() =>
+                    Err(text(&answer["error"])),
+                Some(answer) => Ok(answer.as_f64().unwrap_or(0.0)),
+                None => Ok(0.0),
+            }
         }
 
         fn is_image(&self, bytes: &[u8]) -> bool {
@@ -563,9 +616,13 @@ pub(crate) mod fake {
                 .collect())
         }
 
-        fn png_data_url(&self, width: f64, height: f64, bgra: &[u8]) -> String {
-            self.answer("png_data_url", json!([width, height, bgra.len()]));
-            format!("data:image/png;base64,{width}x{height}")
+        fn png_data_url(&self, width: f64, height: f64, bgra: &[u8]) -> Result<String, String> {
+            if let Some(answer) = self.answer("png_data_url", json!([width, height, bgra.len()])) {
+                if answer.get("error").and_then(Value::as_str).is_some() {
+                    return Err(text(&answer["error"]));
+                }
+            }
+            Ok(format!("data:image/png;base64,{width}x{height}"))
         }
 
         fn convert_to_office(
@@ -648,6 +705,64 @@ pub(crate) mod fake {
             self.log(json!(["promptPdfPassword.window", args[0], title]));
             let a = self.answer("open_password_window", args);
             Some(ViewId(a.and_then(|a| a.as_u64()).unwrap_or(901) as u32))
+        }
+        fn open_password_window_owned(
+            &self, parent: Option<WindowId>, title: String,
+            source: shell_contract::ipc::NativeRequestOwner,
+            destination: shell_contract::ipc::NativeRequestOwner,
+            cancel: CancelToken, pending: CancelToken,
+            done: Box<dyn FnOnce(Result<(ViewId, shell_contract::ipc::NativeRequestOwner), String>) + Send>,
+        ) -> OwnedPasswordWindowActions {
+            self.answer("open_password_window_owned", json!([parent.map(|parent| parent.0), title, source.view.0, destination.view.0]));
+            let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            self.password_closes.lock().unwrap().push(closed.clone());
+            let slot = Arc::new(Mutex::new(Some(done)));
+            if cancel.is_cancelled() || pending.is_cancelled() {
+                let done = slot.lock().unwrap().take();
+                if let Some(done) = done { done(Err("Password request was cancelled".into())); }
+            } else {
+                self.password_opens.lock().unwrap().push(slot.clone());
+            }
+            let focus_closed = closed.clone();
+            let opens = self.password_opens.clone();
+            OwnedPasswordWindowActions {
+                close: Arc::new(move || {
+                    if closed.swap(true, Ordering::AcqRel) { return; }
+                    opens.lock().unwrap().retain(|pending| !Arc::ptr_eq(pending, &slot));
+                    let done = slot.lock().unwrap().take();
+                    if let Some(done) = done { done(Err("Password window is closed".into())); }
+                }),
+                focus: Arc::new(move |done| {
+                    done(if focus_closed.load(Ordering::Acquire) { Err("Password window is closed".into()) } else { Ok(()) });
+                }),
+            }
+        }
+        fn open_password_window_prepared(
+            &self, parent: Option<WindowId>, title: String, target: shell_contract::ipc::RecoveryOpenTarget, _snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
+            cancel: CancelToken, pending: CancelToken,
+            done: Box<dyn FnOnce(Result<(ViewId, shell_contract::ipc::NativeRequestOwner), String>) + Send>,
+        ) -> OwnedPasswordWindowActions {
+            self.answer("open_password_window_prepared", json!([parent.map(|parent| parent.0), title, target.view().0]));
+            let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            self.password_closes.lock().unwrap().push(closed.clone());
+            let slot = Arc::new(Mutex::new(Some(done)));
+            if cancel.is_cancelled() || pending.is_cancelled() || !target.created().is_active() {
+                if let Some(done) = slot.lock().unwrap().take() { done(Err("Password request was cancelled".into())); }
+            } else {
+                self.password_opens.lock().unwrap().push(slot.clone());
+            }
+            let focus_closed = closed.clone();
+            let opens = self.password_opens.clone();
+            OwnedPasswordWindowActions {
+                close: Arc::new(move || {
+                    if closed.swap(true, Ordering::AcqRel) { return; }
+                    opens.lock().unwrap().retain(|pending| !Arc::ptr_eq(pending, &slot));
+                    if let Some(done) = slot.lock().unwrap().take() { done(Err("Password window is closed".into())); }
+                }),
+                focus: Arc::new(move |done| {
+                    done(if focus_closed.load(Ordering::Acquire) { Err("Password window is closed".into()) } else { Ok(()) });
+                }),
+            }
         }
         fn open_result(&self, path: &str) -> bool {
             self.log(json!(["openResult", path]));

@@ -26,6 +26,11 @@ pub mod hosts;
 #[cfg(any(test, feature = "probe"))]
 mod net;
 mod preview;
+mod owned_save;
+mod owned_seed;
+pub use owned_seed::{MindmapSeedReceipt, PreparedMindmapSeed};
+mod recovery_open;
+mod saved_open;
 #[cfg(any(test, feature = "probe"))]
 mod probe;
 mod recovery;
@@ -73,11 +78,26 @@ pub(crate) fn with_app(f: impl FnOnce(&MindmapApp)) {
     }
 }
 
+impl main_core::packages::electron_utils::recovery_contract::RecoveryEditorContract<ViewId, shell_contract::ipc::RecoveryOpenTarget> for MindmapApp {
+    fn kind(&self) -> &str { "mindmap" }
+    fn write_copies_now(&self, done: Box<dyn FnOnce(Result<(), main_core::shell::renderer_disposal::Failure>)>) {
+        MindmapApp::write_copies_now(self, app::COPY_NOW_WAIT, done);
+    }
+    fn open_file_with_decision(&self, view: &ViewId, request: &main_core::packages::electron_utils::recovery_contract::RecoveryOpenFileRequest, target: &shell_contract::ipc::RecoveryOpenTarget, done: main_core::packages::electron_utils::recovery_contract::RecoveryOpenDone) {
+        MindmapApp::open_file_with_decision(self, *view, request, target, done);
+    }
+    fn open_untitled_copy(&self, view: &ViewId, request: &main_core::packages::electron_utils::recovery_contract::RecoveryOpenUntitledRequest, target: &shell_contract::ipc::RecoveryOpenTarget, done: main_core::packages::electron_utils::recovery_contract::RecoveryOpenDone) {
+        MindmapApp::open_untitled_copy(self, *view, request, target, done);
+    }
+    fn is_unprotectable(&self, _view: &ViewId) -> bool { false }
+}
+
 pub fn routes(services: &Services, provided: &Rc<Provided>) -> Result<Vec<Route>, RegisterError> {
     let app = MindmapApp::new(services)?;
     let gone = app.clone();
     crate::host::on_view_gone(services, move |view| gone.view_gone(view));
     provided.add::<dyn DocumentEditors>(Rc::new(editors::MindmapEditors(app.clone())));
+    provided.add::<dyn main_core::packages::electron_utils::recovery_contract::RecoveryEditorContract<ViewId, shell_contract::ipc::RecoveryOpenTarget>>(Rc::new(app.clone()));
     APP.with(|slot| *slot.borrow_mut() = Some(app.clone()));
     let mut routes = handlers::routes(&app);
     routes.extend(export::routes(&app));
@@ -141,6 +161,16 @@ pub fn probe_trigger(
     let Some(app) = handle() else {
         return false;
     };
+    if what == "render-process-gone" {
+        app.view_crashed(view);
+        then(Ok(IpcValue::Undefined));
+        return true;
+    }
+    if what == "destroyed" {
+        app.view_gone(view);
+        then(Ok(IpcValue::Undefined));
+        return true;
+    }
     let text = |i: usize| args.get(i).and_then(Value::as_str).unwrap_or("").to_owned();
     // the editor of the view as another batch finds it
     let editor = editor_for(provided, view);
@@ -202,7 +232,7 @@ pub fn probe_trigger(
             let ms = args.get(0).and_then(Value::as_u64).unwrap_or(5000);
             app.write_copies_now(
                 Duration::from_millis(ms),
-                Box::new(move || then(Ok(IpcValue::Undefined))),
+                Box::new(move |result| then(result.map(|_| IpcValue::Undefined).map_err(|error| crate::value::thrown(error.0)))),
             );
         }
         "discardMindmapRecovery" => {

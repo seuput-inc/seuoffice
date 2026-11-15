@@ -5,6 +5,11 @@
 //! or nothing. A page without a bridge has no surface and gets nothing.
 
 use shell_contract::Surface;
+use shell_contract::{ViewId, runtime::{RendererGeneration, Views}};
+use tauri_runtime_cef::NativeContextToken;
+
+use crate::ipc::native_owner::{self, NativeOwnerAuthority};
+use crate::views::ViewTable;
 
 /// What a page may open outside the app
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,24 +67,40 @@ pub fn external_target(policy: OpenPolicy, url: &str) -> Option<String> {
     }
 }
 
-/// A page of `surface` asked for a new window at `url`: opens it outside the
-/// app when the policy allows. Off the calling thread, which is CEF's UI
-/// thread: starting the browser can take a while.
-pub fn requested(surface: Option<Surface>, url: &str) {
+/// An exact originating native document asked to open a URL. The constructor
+/// supplies its retained creation generation and the popup producer's token;
+/// a current-view lookup alone never authorizes the effect.
+pub fn requested(
+    surface: Option<Surface>, views: &ViewTable, view: ViewId,
+    generation: &RendererGeneration, origin: &NativeContextToken, url: &str,
+) -> Result<(), String> {
     let Some(target) = external_target(policy_of(surface), url) else {
         crate::trace::trace!("window", "window.open of {surface:?} refused: {url}");
-        return;
+        return Ok(());
     };
-    let spawned = std::thread::Builder::new()
+    if !views.sender_of(view).is_some_and(|sender| Some(sender.surface) == surface) {
+        return Err("The external-link source surface is no longer available.".into());
+    }
+    let owner = native_owner::capture_owner(views, view, generation)?;
+    if !owner.context.authority_ref::<NativeOwnerAuthority>().is_some_and(|proof| proof.origin == *origin) {
+        return Err("The external-link source does not match the native popup origin.".into());
+    }
+    let cancel = owner.loss_token().ok_or("The external-link source owner lease is unavailable.")?;
+    std::thread::Builder::new()
         .name("shell-open-external".into())
         .spawn(move || {
-            if let Err(error) = super::os_shell::open_external(&target) {
-                eprintln!("shell: opening {target}: {error}");
+            // Admission selects the immutable operation; the OS call must not
+            // execute under a native-context, renderer or cancellation lock.
+            let open = native_owner::with_owner_effect(&owner, &cancel, || move || super::os_shell::open_external(&target));
+            match open {
+                Some(open) => {
+                    if let Err(error) = open() { eprintln!("shell: opening an external link: {error}"); }
+                }
+                None => eprintln!("shell: external-link source was revoked before dispatch"),
             }
-        });
-    if let Err(error) = spawned {
-        eprintln!("shell: cannot start the thread that opens {url}: {error}");
-    }
+        })
+        .map(|_| ())
+        .map_err(|error| format!("cannot start the thread that opens {url}: {error}"))
 }
 
 #[cfg(test)]
@@ -129,5 +150,18 @@ mod tests {
             external_target(policy_of(None), "https://example.com/"),
             None
         );
+    }
+
+    #[test]
+    fn generate_is_web_only_without_changing_other_apps_mail_policy() {
+        assert_eq!(target(Surface::ShellGenerate, "https://example.com/").as_deref(), Some("https://example.com/"));
+        assert_eq!(target(Surface::ShellGenerate, "http://example.com/").as_deref(), Some("http://example.com/"));
+        for url in ["mailto:a@example.com", "file:///tmp/document", "javascript:alert(1)", "data:text/html,x"] {
+            assert_eq!(target(Surface::ShellGenerate, url), None);
+        }
+        for surface in [Surface::Html, Surface::Hwp, Surface::Markdown, Surface::Pdf] {
+            assert_eq!(target(surface, "mailto:a@example.com").as_deref(), Some("mailto:a@example.com"));
+        }
+        assert_eq!(external_target(policy_of(None), "https://example.com/"), None);
     }
 }

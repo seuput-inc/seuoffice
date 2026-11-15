@@ -147,6 +147,9 @@ impl DiskWatchDeps for Deps<'_> {
     }
 
     fn on_change(&mut self, kind: DiskChangeKind) {
+        if self.ed.open_path(self.view).as_deref() == Some(self.path.as_str()) {
+            self.ed.advance_document_revision(self.view);
+        }
         self.ed.emit(
             self.view,
             "pdf:disk-file-changed",

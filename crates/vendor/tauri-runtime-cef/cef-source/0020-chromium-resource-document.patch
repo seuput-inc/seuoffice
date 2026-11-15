@@ -1,0 +1,287 @@
+# Private pinned source patch: Chromium b859317bf11f6be47f9b7799ec690a0a42a1fb33.
+# Source application, compilation and runtime behavior remain unverified.
+diff --git a/content/browser/renderer_host/render_frame_host_impl.h b/content/browser/renderer_host/render_frame_host_impl.h
+--- a/content/browser/renderer_host/render_frame_host_impl.h
++++ b/content/browser/renderer_host/render_frame_host_impl.h
+@@ -2507,2 +2507,16 @@
+ 
++  // Identity exists only during this exact RFH's synchronous embedder factory callback.
++  std::optional<blink::DocumentToken> GetScopedURLLoaderFactoryDocumentForCef() const;
++  class CONTENT_EXPORT ScopedCefFactoryDocument {
++   public:
++    ScopedCefFactoryDocument(RenderFrameHostImpl& host,
++                             std::optional<blink::DocumentToken> document);
++    ~ScopedCefFactoryDocument();
++    ScopedCefFactoryDocument(const ScopedCefFactoryDocument&) = delete;
++    ScopedCefFactoryDocument& operator=(const ScopedCefFactoryDocument&) = delete;
++   private:
++    base::WeakPtr<RenderFrameHostImpl> host_;
++    std::optional<blink::DocumentToken> previous_;
++  };
++
+   base::WeakPtr<RenderFrameHostImpl> GetWeakPtr();
+@@ -3858,3 +3872,4 @@
+       mojo::PendingReceiver<network::mojom::URLLoaderFactory>
+-          default_factory_receiver);
++          default_factory_receiver,
++      std::optional<blink::DocumentToken> cef_document_token = std::nullopt);
+ 
+@@ -3875,3 +3890,4 @@
+       mojo::PendingReceiver<network::mojom::URLLoaderFactory>
+-          default_factory_receiver);
++          default_factory_receiver,
++      std::optional<blink::DocumentToken> cef_document_token = std::nullopt);
+ 
+@@ -5689,2 +5705,3 @@
+   bool opener_had_user_gesture_ = false;
++  std::optional<blink::DocumentToken> cef_factory_document_;
+ 
+diff --git a/content/browser/renderer_host/render_frame_host_impl.cc b/content/browser/renderer_host/render_frame_host_impl.cc
+--- a/content/browser/renderer_host/render_frame_host_impl.cc
++++ b/content/browser/renderer_host/render_frame_host_impl.cc
+@@ -2069,2 +2069,5 @@
+     SubresourceLoaderFactoriesConfig result;
++    if (frame.lifecycle_state() != LifecycleStateImpl::kPendingCommit &&
++        frame.lifecycle_state() != LifecycleStateImpl::kSpeculative)
++      result.document_token_ = frame.GetDocumentToken();
+     result.origin_ = frame.GetLastCommittedOrigin();
+@@ -2120,2 +2121,5 @@
+     SubresourceLoaderFactoriesConfig result;
++    if (!navigation_request.IsSameDocument() &&
++        navigation_request.state() >= NavigationRequest::READY_TO_COMMIT)
++      result.document_token_ = navigation_request.GetDocumentToken();
+     result.origin_ = navigation_request.GetOriginToCommit().value();
+@@ -2222,2 +2224,3 @@
+ 
++  const std::optional<blink::DocumentToken>& document_token() const { return document_token_; }
+   const url::Origin& origin() const { return origin_; }
+@@ -2271,2 +2274,3 @@
+ 
++  std::optional<blink::DocumentToken> document_token_;
+   url::Origin origin_;
+@@ -3772,3 +3776,4 @@
+       subresource_loader_factories_config.ukm_source_id(),
+-      std::move(default_factory_receiver));
++      std::move(default_factory_receiver),
++      subresource_loader_factories_config.document_token());
+ }
+@@ -8509,3 +8514,4 @@
+         subresource_loader_factories_config.ukm_source_id(),
+-        default_factory_remote.InitWithNewPipeAndPassReceiver());
++        default_factory_remote.InitWithNewPipeAndPassReceiver(),
++        subresource_loader_factories_config.document_token());
+   }
+@@ -13210,3 +13216,4 @@
+                   net::IsolationInfo(),
+-                  subresource_loader_factories_config.ukm_source_id()));
++                  subresource_loader_factories_config.ukm_source_id())
++                  .WithCefDocumentToken(subresource_loader_factories_config.document_token()));
+ 
+@@ -13257,3 +13264,4 @@
+               subresource_loader_factories_config.ukm_source_id(),
+-              pending_default_factory.InitWithNewPipeAndPassReceiver());
++              pending_default_factory.InitWithNewPipeAndPassReceiver(),
++              subresource_loader_factories_config.document_token());
+       subresource_loader_factories->set_bypass_redirect_checks(
+@@ -13302,2 +13310,4 @@
+ 
++    {
++      ScopedCefFactoryDocument scope(*this, subresource_loader_factories_config.document_token());
+     GetContentClient()
+@@ -13308,2 +13318,3 @@
+             &non_network_factories);
++    }
+ 
+@@ -13331,3 +13342,4 @@
+               net::IsolationInfo(),
+-              subresource_loader_factories_config.ukm_source_id()),
++              subresource_loader_factories_config.ukm_source_id())
++              .WithCefDocumentToken(subresource_loader_factories_config.document_token()),
+           devtools_instrumentation::WillCreateURLLoaderFactoryParams::ForFrame(
+@@ -13590,3 +13602,4 @@
+       ukm::kInvalidSourceIdObj,
+-      default_factory_remote.InitWithNewPipeAndPassReceiver());
++      default_factory_remote.InitWithNewPipeAndPassReceiver(),
++      std::nullopt);
+   subresource_loader_factories =
+@@ -14512,2 +14525,16 @@
+ 
++RenderFrameHostImpl::ScopedCefFactoryDocument::ScopedCefFactoryDocument(
++    RenderFrameHostImpl& host, std::optional<blink::DocumentToken> document)
++    : host_(host.GetWeakPtr()), previous_(host.cef_factory_document_) {
++  host.cef_factory_document_ = std::move(document);
++}
++RenderFrameHostImpl::ScopedCefFactoryDocument::~ScopedCefFactoryDocument() {
++  if (host_) host_->cef_factory_document_ = previous_;
++}
++std::optional<blink::DocumentToken>
++RenderFrameHostImpl::GetScopedURLLoaderFactoryDocumentForCef() const {
++  DCHECK_CURRENTLY_ON(BrowserThread::UI);
++  return cef_factory_document_;
++}
++
+ bool RenderFrameHostImpl::CreateNetworkServiceDefaultFactoryAndObserve(
+@@ -14516,5 +14543,7 @@
+     mojo::PendingReceiver<network::mojom::URLLoaderFactory>
+-        default_factory_receiver) {
++        default_factory_receiver,
++    std::optional<blink::DocumentToken> cef_document_token) {
+   bool bypass_redirect_checks = CreateNetworkServiceDefaultFactoryInternal(
+-      std::move(params), ukm_source_id, std::move(default_factory_receiver));
++      std::move(params), ukm_source_id, std::move(default_factory_receiver),
++      cef_document_token);
+ 
+@@ -14556,3 +14585,4 @@
+     mojo::PendingReceiver<network::mojom::URLLoaderFactory>
+-        default_factory_receiver) {
++        default_factory_receiver,
++    std::optional<blink::DocumentToken> cef_document_token) {
+   CHECK(params->request_initiator_origin_lock.has_value());
+@@ -14574,3 +14604,3 @@
+           request_initiator, isolation_info, ukm_source_id,
+-          &bypass_redirect_checks),
++          &bypass_redirect_checks).WithCefDocumentToken(cef_document_token),
+       devtools_instrumentation::WillCreateURLLoaderFactoryParams::ForFrame(
+diff --git a/content/browser/renderer_host/render_frame_host_impl_unittest.cc b/content/browser/renderer_host/render_frame_host_impl_unittest.cc
+--- a/content/browser/renderer_host/render_frame_host_impl_unittest.cc
++++ b/content/browser/renderer_host/render_frame_host_impl_unittest.cc
+@@ -15,2 +15,3 @@
+ #include "content/browser/bad_message.h"
++#include "content/browser/loader/url_loader_factory_utils.h"
+ #include "content/browser/renderer_host/navigation_controller_impl.h"
+@@ -2030,2 +2031,82 @@
+ 
++
++TEST_F(RenderFrameHostImplTest, CefFactoryDocumentNestedScopesRestore) {
++  auto* host = main_test_rfh();
++  const blink::DocumentToken outer;
++  const blink::DocumentToken inner;
++  EXPECT_FALSE(host->GetScopedURLLoaderFactoryDocumentForCef());
++  {
++    RenderFrameHostImpl::ScopedCefFactoryDocument first(*host, outer);
++    EXPECT_EQ(outer, host->GetScopedURLLoaderFactoryDocumentForCef());
++    {
++      RenderFrameHostImpl::ScopedCefFactoryDocument second(*host, inner);
++      EXPECT_EQ(inner, host->GetScopedURLLoaderFactoryDocumentForCef());
++    }
++    EXPECT_EQ(outer, host->GetScopedURLLoaderFactoryDocumentForCef());
++    {
++      RenderFrameHostImpl::ScopedCefFactoryDocument untrusted(*host, std::nullopt);
++      EXPECT_FALSE(host->GetScopedURLLoaderFactoryDocumentForCef());
++    }
++    EXPECT_EQ(outer, host->GetScopedURLLoaderFactoryDocumentForCef());
++  }
++  EXPECT_FALSE(host->GetScopedURLLoaderFactoryDocumentForCef());
++}
++
++TEST_F(RenderFrameHostImplTest, CefFactoryDocumentIsBoundToExactFrame) {
++  auto* host = main_test_rfh();
++  auto* other = static_cast<RenderFrameHostImpl*>(
++      RenderFrameHostTester::For(host)->AppendChild("other"));
++  const blink::DocumentToken document;
++  {
++    RenderFrameHostImpl::ScopedCefFactoryDocument scope(*host, document);
++    EXPECT_EQ(document, host->GetScopedURLLoaderFactoryDocumentForCef());
++    EXPECT_FALSE(other->GetScopedURLLoaderFactoryDocumentForCef());
++  }
++  EXPECT_FALSE(host->GetScopedURLLoaderFactoryDocumentForCef());
++  EXPECT_FALSE(other->GetScopedURLLoaderFactoryDocumentForCef());
++}
++
++class CefFactoryCaptureClient : public ContentBrowserClient {
++ public:
++  void WillCreateURLLoaderFactory(
++      BrowserContext*, RenderFrameHost* frame, int, URLLoaderFactoryType,
++      const url::Origin&, const net::IsolationInfo&, std::optional<int64_t>,
++      ukm::SourceIdObj, network::URLLoaderFactoryBuilder&,
++      mojo::PendingRemote<network::mojom::TrustedURLLoaderHeaderClient>*,
++      bool*, bool*, network::mojom::URLLoaderFactoryOverridePtr*,
++      scoped_refptr<base::SequencedTaskRunner>, bool) override {
++    observed = frame ? RenderFrameHostImpl::From(frame)
++                           ->GetScopedURLLoaderFactoryDocumentForCef()
++                     : std::nullopt;
++  }
++  std::optional<blink::DocumentToken> observed;
++};
++
++TEST_F(RenderFrameHostImplTest, CefFactoryCallbackUsesCapturedNotCurrentDocument) {
++  auto* host = main_test_rfh();
++  const blink::DocumentToken pending;
++  ASSERT_NE(pending, host->GetDocumentToken());
++  CefFactoryCaptureClient client;
++  auto* previous_client = SetBrowserClientForTesting(&client);
++  const auto origin = url::Origin::Create(GURL("https://factory.example"));
++  const net::IsolationInfo isolation;
++  auto params = url_loader_factory::ContentClientParams(
++      contents()->GetBrowserContext(), host, host->GetProcess()->GetDeprecatedID(),
++      origin, isolation, ukm::kInvalidSourceIdObj).WithCefDocumentToken(pending);
++  network::URLLoaderFactoryBuilder builder;
++  params.Run(builder, ContentBrowserClient::URLLoaderFactoryType::kDocumentSubResource,
++             nullptr, nullptr, nullptr, false);
++  EXPECT_EQ(pending, client.observed);
++  EXPECT_FALSE(host->GetScopedURLLoaderFactoryDocumentForCef());
++
++  auto worker = url_loader_factory::ContentClientParams(
++      contents()->GetBrowserContext(), host, host->GetProcess()->GetDeprecatedID(),
++      origin, isolation, ukm::kInvalidSourceIdObj).WithCefDocumentToken(pending);
++  worker.Run(builder, ContentBrowserClient::URLLoaderFactoryType::kWorkerSubResource,
++             nullptr, nullptr, nullptr, false);
++  EXPECT_FALSE(client.observed);
++  EXPECT_FALSE(host->GetScopedURLLoaderFactoryDocumentForCef());
++  SetBrowserClientForTesting(previous_client);
++}
++
+ }  // namespace content
+diff --git a/content/browser/loader/url_loader_factory_utils.h b/content/browser/loader/url_loader_factory_utils.h
+--- a/content/browser/loader/url_loader_factory_utils.h
++++ b/content/browser/loader/url_loader_factory_utils.h
+@@ -10,2 +10,4 @@
+ #include "base/memory/stack_allocated.h"
++#include "base/memory/weak_ptr.h"
++#include "third_party/blink/public/common/tokens/tokens.h"
+ #include "content/browser/devtools/devtools_instrumentation.h"
+@@ -22,2 +24,3 @@
+ class StoragePartitionImpl;
++class RenderFrameHostImpl;
+ 
+@@ -62,2 +65,5 @@
+ 
++  ContentClientParams&& WithCefDocumentToken(
++      std::optional<blink::DocumentToken> token) &&;
++
+   ContentClientParams(const ContentClientParams&) = delete;
+@@ -80,3 +86,4 @@
+   raw_ptr<BrowserContext> browser_context_;
+-  raw_ptr<RenderFrameHost> frame_;
++  base::WeakPtr<RenderFrameHostImpl> frame_;
++  std::optional<blink::DocumentToken> cef_document_token_;
+   int render_process_id_;
+diff --git a/content/browser/loader/url_loader_factory_utils.cc b/content/browser/loader/url_loader_factory_utils.cc
+--- a/content/browser/loader/url_loader_factory_utils.cc
++++ b/content/browser/loader/url_loader_factory_utils.cc
+@@ -9,2 +9,3 @@
+ #include "content/browser/storage_partition_impl.h"
++#include "content/browser/renderer_host/render_frame_host_impl.h"
+ #include "content/public/browser/browser_thread.h"
+@@ -162,3 +163,3 @@
+     : browser_context_(browser_context),
+-      frame_(frame),
++      frame_(frame ? RenderFrameHostImpl::From(frame)->GetWeakPtr() : nullptr),
+       render_process_id_(render_process_id),
+@@ -172,2 +173,8 @@
+ 
++ContentClientParams&& ContentClientParams::WithCefDocumentToken(
++    std::optional<blink::DocumentToken> token) && {
++  cef_document_token_ = std::move(token);
++  return std::move(*this);
++}
++
+ ContentClientParams::ContentClientParams(ContentClientParams&&) = default;
+@@ -185,2 +192,7 @@
+     bool is_for_network_service) {
++  std::optional<RenderFrameHostImpl::ScopedCefFactoryDocument> scope;
++  if (frame_) {
++    scope.emplace(*frame_, type == ContentBrowserClient::URLLoaderFactoryType::kDocumentSubResource
++                               ? cef_document_token_ : std::nullopt);
++  }
+   GetContentClient()->browser()->WillCreateURLLoaderFactory(

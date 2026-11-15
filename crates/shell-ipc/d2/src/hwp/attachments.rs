@@ -366,8 +366,11 @@ fn stamp_of(stat: &fs::Metadata) -> String {
 // ---- reading ----
 
 /// `assertFileSaved(filePath)` over the host's open documents
-fn assert_saved(engine: &dyn HwpEngine, path: &str) -> Result<(), String> {
-    let Some(files) = engine.open_files() else {
+fn assert_saved(
+    files: Option<Result<Vec<main_core::packages::electron_utils::unsaved_files::OpenFileState>, main_core::packages::electron_utils::unsaved_files::OpenFilesSourceFailed>>,
+    path: &str,
+) -> Result<(), String> {
+    let Some(files) = files else {
         return Ok(());
     };
     let mut holder = OpenFilesHolder::new();
@@ -383,14 +386,14 @@ enum TextSource {
 
 /// `extractAttachmentText` up to the parse: unsaved check, stat, cache, size cap
 fn text_source(
-    engine: &dyn HwpEngine,
+    files: Option<Result<Vec<main_core::packages::electron_utils::unsaved_files::OpenFileState>, main_core::packages::electron_utils::unsaved_files::OpenFilesSourceFailed>>,
     lang: Lang,
     cache: &RefCell<TextCache>,
     path: &str,
 ) -> Result<TextSource, String> {
     // a file open with unsaved changes is not read (before the cache): a
     // withholding mark only reaches the file on save
-    assert_saved(engine, path)?;
+    assert_saved(files, path)?;
     let stat = fs::metadata(path).map_err(|e| node_error(&e, "stat", path).message)?;
     let stamp = stamp_of(&stat);
     if let Some(text) = cache.borrow().get(path, &stamp) {
@@ -655,7 +658,7 @@ pub(super) fn entries(services: &Services) -> Result<Vec<Entry>, RegisterError> 
         let engine = Arc::clone(&engine);
         let shell = Arc::clone(&shell);
         let services = services.clone();
-        move |_cx, args, responder| {
+        move |cx, args, responder| {
             let Some(path) = args.str(0) else {
                 return responder.reply(Err(not_a_string_path(args.get(0))));
             };
@@ -670,31 +673,38 @@ pub(super) fn entries(services: &Services) -> Result<Vec<Entry>, RegisterError> 
                 return responder.reply(Ok(fail(tm_plain(lang, "errImageNoText"))));
             }
             let (offset, max_chars) = (to_number(args.get(1)), to_number(args.get(2)));
-            match text_source(&*engine, lang, &cache, &path) {
-                Err(error) => responder.reply(Ok(fail(error))),
-                Ok(TextSource::Cached(text)) => {
-                    responder.reply(Ok(read_reply(&name, &text, offset, max_chars)))
+            let view = cx.sender.view;
+            let services = services.clone();
+            let cache = Rc::clone(&cache);
+            let parser = Arc::clone(&engine);
+            engine.open_files(Box::new(move |files| {
+                if services.views.sender_of(view).is_none() { return; }
+                match text_source(files, lang, &cache, &path) {
+                    Err(error) => responder.reply(Ok(fail(error))),
+                    Ok(TextSource::Cached(text)) => {
+                        responder.reply(Ok(read_reply(&name, &text, offset, max_chars)))
+                    }
+                    Ok(TextSource::Parse { stamp }) => {
+                        let parse_path = path.clone();
+                        let views = services.views.clone();
+                        kit::on_worker(
+                            &services,
+                            move || parser.parse_file_to_text(parse_path),
+                            move |parsed| {
+                                if views.sender_of(view).is_none() { return; }
+                                responder.reply(Ok(match parsed_text(parsed, lang) {
+                                    Err(error) => fail(error),
+                                    Ok(text) => {
+                                        let text: Rc<str> = text.into();
+                                        cache.borrow_mut().set(&path, stamp, Rc::clone(&text));
+                                        read_reply(&name, &text, offset, max_chars)
+                                    }
+                                }))
+                            },
+                        )
+                    }
                 }
-                Ok(TextSource::Parse { stamp }) => {
-                    let cache = Rc::clone(&cache);
-                    let parser = Arc::clone(&engine);
-                    let parse_path = path.clone();
-                    kit::on_worker(
-                        &services,
-                        move || parser.parse_file_to_text(parse_path),
-                        move |parsed| {
-                            responder.reply(Ok(match parsed_text(parsed, lang) {
-                                Err(error) => fail(error),
-                                Ok(text) => {
-                                    let text: Rc<str> = text.into();
-                                    cache.borrow_mut().set(&path, stamp, Rc::clone(&text));
-                                    read_reply(&name, &text, offset, max_chars)
-                                }
-                            }))
-                        },
-                    )
-                }
-            }
+            }));
         }
     }));
 
@@ -742,7 +752,7 @@ pub(super) fn entries(services: &Services) -> Result<Vec<Entry>, RegisterError> 
         let engine = Arc::clone(&engine);
         let shell = Arc::clone(&shell);
         let services = services.clone();
-        move |_cx, args, responder| {
+        move |cx, args, responder| {
             let Some(path) = args.str(0) else {
                 return responder.reply(Err(not_a_string_path(args.get(0))));
             };
@@ -756,32 +766,39 @@ pub(super) fn entries(services: &Services) -> Result<Vec<Entry>, RegisterError> 
                     "{name} is not an .hwp or .hwpx file: only those can be read for their formatting (read_attachment reads its text)"
                 ))));
             }
-            let checked = (|| {
-                assert_saved(&*engine, &path)?;
-                let stat = fs::metadata(&path).map_err(|e| node_error(&e, "stat", &path).message)?;
-                if exceeds_max_bytes(stat.len(), &ext) {
-                    return Err(tm_plain(lang, "errFileTooLarge"));
-                }
-                Ok(())
-            })();
-            if let Err(error) = checked {
-                return responder.reply(Ok(fail(error)));
-            }
+            let view = cx.sender.view;
+            let services = services.clone();
             let checker = Arc::clone(&engine);
-            kit::on_worker(
-                &services,
-                move || {
-                    let bytes = read_file_sync(&path)?;
-                    let bytes = checker.checked_hwp_bytes(bytes, ext)?;
-                    Ok::<_, String>(jscompat::base64(&bytes))
-                },
-                move |result| {
-                    responder.reply(Ok(match result {
-                        Ok(base64) => obj([("ok", true.into_ipc()), ("base64", base64.into_ipc())]),
-                        Err(error) => fail(error),
-                    }))
-                },
-            )
+            engine.open_files(Box::new(move |files| {
+                if services.views.sender_of(view).is_none() { return; }
+                let checked = (|| {
+                    assert_saved(files, &path)?;
+                    let stat = fs::metadata(&path).map_err(|e| node_error(&e, "stat", &path).message)?;
+                    if exceeds_max_bytes(stat.len(), &ext) {
+                        return Err(tm_plain(lang, "errFileTooLarge"));
+                    }
+                    Ok(())
+                })();
+                if let Err(error) = checked {
+                    return responder.reply(Ok(fail(error)));
+                }
+                let views = services.views.clone();
+                kit::on_worker(
+                    &services,
+                    move || {
+                        let bytes = read_file_sync(&path)?;
+                        let bytes = checker.checked_hwp_bytes(bytes, ext)?;
+                        Ok::<_, String>(jscompat::base64(&bytes))
+                    },
+                    move |result| {
+                        if views.sender_of(view).is_none() { return; }
+                        responder.reply(Ok(match result {
+                            Ok(base64) => obj([("ok", true.into_ipc()), ("base64", base64.into_ipc())]),
+                            Err(error) => fail(error),
+                        }))
+                    },
+                )
+            }));
         }
     }));
 
@@ -1375,6 +1392,23 @@ mod tests {
             read(&mut rt, &path, num(0.0), num(9.0)),
             read_err("This file is open with unsaved changes. Save it, then try again.")
         );
+    }
+
+    #[test]
+    fn delayed_source_failure_blocks_read_and_destroy_cancels_continuation() {
+        let mut rt = rt(json!({ "open_files": { "failed": true }, "defer_open_files": true }));
+        let path = write(&rt.dir.clone(), "deferred.txt", b"secret");
+        let from = rt.view(1, Surface::Hwp);
+        let pending = rt.invoke("hwp:files-read", from, vec![s(&path), num(0.0), num(9.0)]);
+        assert!(pending.take().is_none());
+        super::super::fake::answer_open_files();
+        assert_eq!(pending.take().unwrap().unwrap(), read_err("This file is open with unsaved changes. Save it, then try again."));
+
+        let other = rt.view(2, Surface::Hwp);
+        let pending = rt.invoke("hwp:files-read", other, vec![s(&path), num(0.0), num(9.0)]);
+        rt.destroy(other.view);
+        super::super::fake::answer_open_files();
+        assert!(pending.take().is_none());
     }
 
     #[test]

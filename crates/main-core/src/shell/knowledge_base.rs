@@ -639,7 +639,7 @@ pub fn search_saved_knowledge_with_project(
     starred_paths: &[String],
     limit: f64,
     within: KbWithin<'_>,
-    indexed_as_on_disk: &mut dyn FnMut(&[String]) -> Vec<String>,
+    indexed_as_on_disk: &mut dyn FnMut(&[String]) -> Result<Vec<String>, Thrown>,
 ) -> Result<Vec<KbSearchHit>, Thrown> {
     let Some(within) = within else {
         return search_saved_knowledge_base(
@@ -670,10 +670,9 @@ pub fn search_saved_knowledge_with_project(
         .filter(|hit| !starred.contains(hit.path.as_str()))
         .map(|hit| hit.path.clone())
         .collect();
+    let indexed = indexed_as_on_disk(&from_project)?;
     let project_ok_paths =
-        without_unsaved_files(open_files, &indexed_as_on_disk(&from_project), |path| {
-            path.clone()
-        });
+        without_unsaved_files(open_files, &indexed, |path| path.clone());
     let project_ok: HashSet<&str> = project_ok_paths.iter().map(String::as_str).collect();
     let allowed: HashSet<&str> = pool
         .iter()

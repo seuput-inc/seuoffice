@@ -13,6 +13,8 @@
 
 #[cfg(any(windows, test))]
 mod windows;
+mod security;
+mod owned;
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -23,7 +25,8 @@ use main_core::packages::electron_utils::print_cups::{CupsPrintJob, DriverOption
 use main_core::packages::electron_utils::print_window::{ExecOutcome, PrintReport};
 use main_core::packages::electron_utils::printer_options::CommandOutcome;
 use serde_json::{Value, json};
-use shell_contract::runtime::Thread;
+use shell_contract::runtime::{CancelSubscription, CancelToken, Thread, Views};
+use shell_contract::{Surface, ViewId};
 use shell_contract::value::IpcValue;
 use shell_ipc_m::hosts::{PrintProfile, PrintSurface, PrintWindowSpec, Printer};
 use tauri::webview::PageLoadEvent;
@@ -160,15 +163,333 @@ pub(crate) fn window(
     views: Arc<ViewTable>,
     spec: PrintWindowSpec,
 ) -> Box<dyn PrintSurface> {
-    Box::new(PrintWindow {
+    Box::new(new_window(app, ui, views, spec))
+}
+
+fn new_window(app: AppHandle, ui: Arc<dyn Thread>, views: Arc<ViewTable>, spec: PrintWindowSpec) -> PrintWindow {
+    PrintWindow {
         app,
         ui,
         views,
         spec,
         window: None,
         loaded: Arc::default(),
+        allowed_page: Arc::default(),
+        asset_origin: None,
+        asset_guard: None,
+        drawio_guard: None,
+        drawio_session: None,
+        drawio_document: None,
+        drawio_document_loss: None,
+        document_navigation: None,
+        cancel_subscription: None,
+        asset_load_failed: None,
         destroyed: false,
-    })
+        owner: None,
+    }
+}
+
+pub(crate) fn window_owned(
+    cx: &HostContext, spec: PrintWindowSpec,
+    origin: &shell_contract::ipc::NativeRequestOwner,
+    destination: &shell_contract::ipc::NativeRequestOwner,
+    cancel: &CancelToken, pending: &CancelToken,
+) -> Result<Box<dyn PrintSurface>, String> {
+    let mut window = new_window(cx.app.clone(), cx.ui.clone(), cx.views.clone(), spec);
+    window.owner = Some(owned::Owner::new(cx, origin.clone(), destination.clone(), cancel.clone(), pending.clone(), window.loaded.clone())?);
+    Ok(Box::new(window))
+}
+
+pub(crate) fn window_native_invocation(
+    cx: &HostContext, spec: PrintWindowSpec,
+    target: &shell_contract::ipc::NativeInvocationTarget,
+    owner: &shell_contract::ipc::NativeRequestOwner,
+    cancel: &CancelToken, pending: &CancelToken,
+) -> Result<Box<dyn PrintSurface>, String> {
+    let mut window = new_window(cx.app.clone(), cx.ui.clone(), cx.views.clone(), spec);
+    window.owner = Some(owned::Owner::new_invocation(cx, target.clone(), owner.clone(), cancel.clone(), pending.clone(), window.loaded.clone())?);
+    Ok(Box::new(window))
+}
+
+pub(crate) fn window_native_invocation_many(
+    cx: &HostContext, spec: PrintWindowSpec, document: &shell_contract::ipc::NativeInvocationDocument,
+    origin: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner],
+    cancel: &CancelToken, pending: &CancelToken, actor: &CancelToken,
+) -> Result<Box<dyn PrintSurface>, String> {
+    let mut window = new_window(cx.app.clone(), cx.ui.clone(), cx.views.clone(), spec);
+    window.owner = Some(owned::Owner::new_invocation_many(cx, document, origin, participants,
+        cancel.clone(), pending.clone(), actor.clone(), window.loaded.clone())?);
+    Ok(Box::new(window))
+}
+
+pub(crate) fn window_owned_many_extra(
+    cx: &HostContext, spec: PrintWindowSpec,
+    origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner,
+    participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &CancelToken, pending: &CancelToken,
+    additional: &[CancelToken],
+) -> Result<Box<dyn PrintSurface>, String> {
+    let mut window = new_window(cx.app.clone(), cx.ui.clone(), cx.views.clone(), spec);
+    window.owner = Some(owned::Owner::new_many_extra(cx, origin.clone(), destination.clone(), participants,
+        cancel.clone(), pending.clone(), additional, None, window.loaded.clone())?);
+    Ok(Box::new(window))
+}
+
+pub(crate) fn window_native_invocation_many_extra(
+    cx: &HostContext, spec: PrintWindowSpec, document: &shell_contract::ipc::NativeInvocationDocument,
+    origin: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner],
+    cancel: &CancelToken, pending: &CancelToken, additional: &[CancelToken],
+) -> Result<Box<dyn PrintSurface>, String> {
+    let mut window = new_window(cx.app.clone(), cx.ui.clone(), cx.views.clone(), spec);
+    window.owner = Some(owned::Owner::new_many_extra(cx, document.owner().clone(), origin.clone(), participants,
+        cancel.clone(), pending.clone(), additional, Some(document.target().clone()), window.loaded.clone())?);
+    Ok(Box::new(window))
+}
+
+pub(crate) fn window_existing_document(
+    cx: &HostContext, spec: PrintWindowSpec,
+    binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+    participants: &[shell_contract::ipc::NativeRequestOwner],
+    cancel: &CancelToken, pending: &CancelToken, additional: &[CancelToken],
+) -> Result<Box<dyn PrintSurface>, String> {
+    let mut window = new_window(cx.app.clone(), cx.ui.clone(), cx.views.clone(), spec);
+    window.owner = Some(owned::Owner::new_existing_document(cx, binding, participants, cancel.clone(), pending.clone(), additional, window.loaded.clone())?);
+    Ok(Box::new(window))
+}
+
+pub(crate) fn markdown_window_existing_document(
+    cx: &HostContext, binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+    participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &CancelToken, pending: &CancelToken, additional: &[CancelToken],
+) -> Result<Box<dyn PrintSurface>, String> {
+    let mut window = new_window(cx.app.clone(), cx.ui.clone(), cx.views.clone(), PrintWindowSpec {
+        profile: PrintProfile::Static, width: None, height: None, parent: None, dialog_chrome: false,
+    });
+    window.owner = Some(owned::Owner::new_existing_document(cx, binding, participants, cancel.clone(), pending.clone(), additional, window.loaded.clone())?);
+    window.asset_origin = Some((binding.owner().view, super::document_assets::AssetKind::Markdown));
+    window.document_navigation = Some(Arc::default());
+    window.asset_load_failed = Some(Arc::default());
+    Ok(Box::new(window))
+}
+
+pub(crate) fn markdown_window_owned(
+    cx: &HostContext,
+    origin: &shell_contract::ipc::NativeRequestOwner,
+    destination: &shell_contract::ipc::NativeRequestOwner,
+    cancel: &CancelToken, pending: &CancelToken,
+) -> Result<Box<dyn PrintSurface>, String> {
+    let mut window = new_window(cx.app.clone(), cx.ui.clone(), cx.views.clone(), PrintWindowSpec {
+        profile: PrintProfile::Static, width: None, height: None, parent: None, dialog_chrome: false,
+    });
+    window.owner = Some(owned::Owner::new(cx, origin.clone(), destination.clone(), cancel.clone(), pending.clone(), window.loaded.clone())?);
+    window.asset_origin = Some((destination.view, super::document_assets::AssetKind::Markdown));
+    window.document_navigation = Some(Arc::default());
+    window.asset_load_failed = Some(Arc::default());
+    Ok(Box::new(window))
+}
+
+pub(crate) fn markdown_window_native_invocation(
+    cx: &HostContext, document: &shell_contract::ipc::NativeInvocationDocument,
+    owner: &shell_contract::ipc::NativeRequestOwner, cancel: &CancelToken, pending: &CancelToken,
+) -> Result<Box<dyn PrintSurface>, String> {
+    let mut window = new_window(cx.app.clone(), cx.ui.clone(), cx.views.clone(), PrintWindowSpec {
+        profile: PrintProfile::Static, width: None, height: None, parent: None, dialog_chrome: false,
+    });
+    window.owner = Some(owned::Owner::new_invocation(cx, document.target().clone(), owner.clone(), cancel.clone(), pending.clone(), window.loaded.clone())?);
+    window.asset_origin = Some((owner.view, super::document_assets::AssetKind::Markdown));
+    window.document_navigation = Some(Arc::default());
+    window.asset_load_failed = Some(Arc::default());
+    Ok(Box::new(window))
+}
+
+/// Renders one editor's HTML on a scoped, unbridged static print browser.
+/// Runs on a worker, never on the UI or core thread.
+pub(crate) fn render_html_pdf(
+    cx: &HostContext,
+    origin: ViewId,
+    html: &str,
+    doc_path: Option<&str>,
+    cancel: &CancelToken,
+) -> Result<Vec<u8>, String> {
+    if !cx.views.sender_of(origin).is_some_and(|sender| sender.surface == Surface::Html) {
+        return Err("the HTML document view is no longer available".into());
+    }
+    if cancel.is_cancelled() {
+        return Err("HTML printing was cancelled".into());
+    }
+    let mut surface = PrintWindow {
+        app: cx.app.clone(),
+        ui: cx.ui.clone(),
+        views: cx.views.clone(),
+        spec: PrintWindowSpec {
+            profile: PrintProfile::Static, width: None, height: None,
+            parent: None, dialog_chrome: false,
+        },
+        window: None,
+        loaded: Arc::default(),
+        allowed_page: Arc::default(),
+        asset_origin: Some((origin, super::document_assets::AssetKind::Html)),
+        asset_guard: None,
+        drawio_guard: None,
+        drawio_session: None,
+        drawio_document: None,
+        drawio_document_loss: None,
+        document_navigation: Some(Arc::default()),
+        cancel_subscription: None,
+        asset_load_failed: Some(Arc::default()),
+        destroyed: false,
+        owner: None,
+    };
+    let result = surface.load_document(html, doc_path, cancel).and_then(|()| {
+        if cancel.is_cancelled() {
+            return Err("HTML printing was cancelled".into());
+        }
+        surface.print_to_pdf(&json!({
+            "pageSize": "A4",
+            "printBackground": true,
+            "margins": { "top": 0.6, "bottom": 0.6, "left": 0.6, "right": 0.6 }
+        }))
+        .and_then(|bytes| if cancel.is_cancelled() { Err("HTML printing was cancelled".into()) } else { Ok(bytes) })
+    });
+    surface.destroy();
+    result
+}
+
+pub(crate) fn render_html_pdf_owned(
+    cx: &HostContext,
+    origin: &shell_contract::ipc::NativeRequestOwner,
+    destination: &shell_contract::ipc::NativeRequestOwner,
+    html: &str, doc_path: Option<&str>, cancel: &CancelToken, pending: &CancelToken,
+) -> Result<Vec<u8>, String> {
+    if !cx.views.sender_of(destination.view).is_some_and(|sender| sender.surface == Surface::Html) {
+        return Err("the HTML document view is no longer available".into());
+    }
+    let mut surface = new_window(cx.app.clone(), cx.ui.clone(), cx.views.clone(), PrintWindowSpec {
+        profile: PrintProfile::Static, width: None, height: None, parent: None, dialog_chrome: false,
+    });
+    let owner = owned::Owner::new(cx, origin.clone(), destination.clone(), cancel.clone(), pending.clone(), surface.loaded.clone())?;
+    owner.worker()?;
+    surface.asset_origin = Some((destination.view, super::document_assets::AssetKind::Html));
+    surface.document_navigation = Some(Arc::default());
+    surface.asset_load_failed = Some(Arc::default());
+    surface.owner = Some(owner.clone());
+    let result = surface.load_document(html, doc_path, &owner.loss_token()).and_then(|()| {
+        owner.check()?;
+        surface.print_to_pdf(&json!({
+            "pageSize": "A4", "printBackground": true,
+            "margins": { "top": 0.6, "bottom": 0.6, "left": 0.6, "right": 0.6 }
+        })).and_then(|bytes| owner.effect(|| bytes))
+    });
+    surface.destroy();
+    result
+}
+
+pub(crate) fn render_html_pdf_existing_document(
+    cx: &HostContext, binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+    participants: &[shell_contract::ipc::NativeRequestOwner], html: &str, doc_path: Option<&str>,
+    cancel: &CancelToken, pending: &CancelToken, additional: &[CancelToken],
+) -> Result<Vec<u8>, String> {
+    if !cx.views.sender_of(binding.owner().view).is_some_and(|sender| sender.surface == Surface::Html) {
+        return Err("the HTML document view is no longer available".into());
+    }
+    let mut surface = new_window(cx.app.clone(), cx.ui.clone(), cx.views.clone(), PrintWindowSpec {
+        profile: PrintProfile::Static, width: None, height: None, parent: None, dialog_chrome: false,
+    });
+    let owner = owned::Owner::new_existing_document(cx, binding, participants, cancel.clone(), pending.clone(), additional, surface.loaded.clone())?;
+    owner.worker()?;
+    surface.asset_origin = Some((binding.owner().view, super::document_assets::AssetKind::Html));
+    surface.document_navigation = Some(Arc::default());
+    surface.asset_load_failed = Some(Arc::default());
+    surface.owner = Some(owner.clone());
+    let result = surface.load_document(html, doc_path, &owner.loss_token()).and_then(|()| {
+        owner.check()?;
+        surface.print_to_pdf(&json!({
+            "pageSize": "A4", "printBackground": true,
+            "margins": { "top": 0.6, "bottom": 0.6, "left": 0.6, "right": 0.6 }
+        })).and_then(|bytes| owner.effect(|| bytes))
+    });
+    surface.destroy();
+    result
+}
+
+pub(crate) fn render_html_pdf_native_invocation(
+    cx: &HostContext, document: &shell_contract::ipc::NativeInvocationDocument,
+    owner: &shell_contract::ipc::NativeRequestOwner,
+    html: &str, doc_path: Option<&str>, cancel: &CancelToken, pending: &CancelToken,
+) -> Result<Vec<u8>, String> {
+    if !cx.views.sender_of(owner.view).is_some_and(|sender| sender.surface == Surface::Html) {
+        return Err("the HTML document view is no longer available".into());
+    }
+    let mut surface = new_window(cx.app.clone(), cx.ui.clone(), cx.views.clone(), PrintWindowSpec {
+        profile: PrintProfile::Static, width: None, height: None, parent: None, dialog_chrome: false,
+    });
+    let owner = owned::Owner::new_invocation(cx, document.target().clone(), owner.clone(), cancel.clone(), pending.clone(), surface.loaded.clone())?;
+    owner.worker()?;
+    surface.asset_origin = Some((owner.destination.view, super::document_assets::AssetKind::Html));
+    surface.document_navigation = Some(Arc::default());
+    surface.asset_load_failed = Some(Arc::default());
+    surface.owner = Some(owner.clone());
+    let result = surface.load_document(html, doc_path, &owner.loss_token()).and_then(|()| {
+        owner.check()?;
+        surface.print_to_pdf(&json!({
+            "pageSize": "A4", "printBackground": true,
+            "margins": { "top": 0.6, "bottom": 0.6, "left": 0.6, "right": 0.6 }
+        })).and_then(|bytes| owner.effect(|| bytes))
+    });
+    surface.destroy();
+    result
+}
+
+pub(crate) fn render_diagram_pdf_native_invocation(
+    cx: &HostContext, target: &shell_contract::ipc::NativeInvocationTarget,
+    owner: &shell_contract::ipc::NativeRequestOwner,
+    pages: &[main_core::diagram::print_document::PrintPage], title: &str,
+    cancel: &CancelToken, pending: &CancelToken,
+) -> Result<Vec<u8>, String> {
+    let html = main_core::diagram::print_document::build_print_html(pages, title);
+    let mut surface = new_window(cx.app.clone(), cx.ui.clone(), cx.views.clone(), PrintWindowSpec {
+        profile: PrintProfile::Static, width: Some(900.0), height: Some(1200.0), parent: None, dialog_chrome: false,
+    });
+    let owner = owned::Owner::new_invocation(cx, target.clone(), owner.clone(), cancel.clone(), pending.clone(), surface.loaded.clone())?;
+    owner.worker()?;
+    surface.drawio_session = Some(super::d1::diagram_headless::network::session()?);
+    surface.document_navigation = Some(Arc::default());
+    surface.asset_load_failed = Some(Arc::default());
+    surface.owner = Some(owner.clone());
+    let result = surface.load_drawio_document(html.into_bytes(), &owner.loss_token()).and_then(|()| {
+        let ready = main_core::packages::electron_utils::print_window::PRINT_READY_SCRIPT;
+        let expression = format!("Promise.race([{ready}, new Promise(resolve => setTimeout(resolve, 5000))])");
+        let _ = surface.protocol(&surface.webview()?, "Runtime.evaluate", json!({ "expression": expression, "awaitPromise": true }));
+        owner.check()?;
+        surface.print_to_pdf(&json!({
+            "printBackground": true, "preferCSSPageSize": true,
+            "margins": { "top": 0, "bottom": 0, "left": 0, "right": 0 }
+        })).and_then(|bytes| owner.effect(|| bytes))
+    });
+    surface.destroy();
+    result
+}
+
+#[derive(Default)]
+struct DocumentNavigation {
+    expected: Option<Url>,
+    initial_seen: bool,
+    target: Option<Url>,
+    consumed: bool,
+}
+
+impl DocumentNavigation {
+    fn allow(&mut self, url: &Url) -> bool {
+        if !self.initial_seen && url.as_str() == "about:blank" {
+            self.initial_seen = true;
+            return true;
+        }
+        if !self.consumed && self.target.as_ref() == Some(url) {
+            self.initial_seen = true;
+            self.consumed = true;
+            self.target = None;
+            return true;
+        }
+        false
+    }
 }
 
 type LoadSignal = Arc<Mutex<Option<mpsc::SyncSender<()>>>>;
@@ -181,32 +502,277 @@ struct PrintWindow {
     window: Option<WebviewWindow>,
     /// where the next finished page load is reported
     loaded: LoadSignal,
+    allowed_page: Arc<Mutex<Option<Url>>>,
+    asset_origin: Option<(ViewId, super::document_assets::AssetKind)>,
+    asset_guard: Option<super::document_assets::TargetGuard>,
+    drawio_guard: Option<crate::drawio_scheme::print::PrintGrant>,
+    drawio_session: Option<tauri_runtime_cef::NativeNetworkSession>,
+    drawio_document: Option<tauri_runtime_cef::NativeObservedDocument>,
+    drawio_document_loss: Option<tauri_runtime_cef::NativeObservedDocumentSubscription>,
+    document_navigation: Option<Arc<Mutex<DocumentNavigation>>>,
+    cancel_subscription: Option<CancelSubscription>,
+    asset_load_failed: Option<Arc<std::sync::atomic::AtomicBool>>,
     destroyed: bool,
+    owner: Option<owned::Owner>,
 }
 
 static NEXT_LABEL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl PrintWindow {
     fn scripts_on(&self) -> bool {
-        self.spec.profile != PrintProfile::Static
+        security::scripts_enabled(self.spec.profile)
+    }
+
+    fn load_drawio_document(&mut self, bytes: Vec<u8>, cancel: &CancelToken) -> Result<(), String> {
+        let owner = self.owner.clone().ok_or("The diagram print authority is unavailable")?;
+        owner.worker()?;
+        if self.destroyed || self.window.is_some() || self.drawio_session.is_none() {
+            return Err("The diagram print browser is not fresh".into());
+        }
+        let blank = Url::parse("about:blank").map_err(|error| error.to_string())?;
+        self.document_navigation.as_ref().ok_or("The diagram navigation state is unavailable")?
+            .lock().map_err(|_| "The diagram navigation state is poisoned")?.expected = Some(blank.clone());
+        self.window = Some(self.build(blank)?);
+        let webview = self.webview()?;
+        let (activation_tx, activation_rx) = mpsc::sync_channel(1);
+        let cancelled = activation_tx.clone();
+        let activation_loss = cancel.on_cancel(move || { let _ = cancelled.try_send(Err("The diagram print was cancelled".to_owned())); });
+        let activation_owner = owner.clone();
+        let activation_view = webview.clone();
+        owner.on_ui(move || activation_owner.accepted(|| {
+            activation_view.activate_unprotected_initial_navigation(move |result| {
+                let _ = activation_tx.try_send(result.map_err(|error| error.to_string()));
+            }).map_err(|error| error.to_string())
+        })?)?;
+        activation_rx.recv_timeout(LOAD_TIMEOUT).map_err(|_| "The diagram print browser activation timed out".to_owned())??;
+        drop(activation_loss);
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let cancelled = ready_tx.clone();
+        let ready_loss = cancel.on_cancel(move || { let _ = cancelled.try_send(Err("The diagram print was cancelled".to_owned())); });
+        webview.when_navigation_ready(move |result| {
+            let _ = ready_tx.try_send(result.map_err(|error| error.to_string()));
+        }).map_err(|error| error.to_string())?;
+        ready_rx.recv_timeout(LOAD_TIMEOUT).map_err(|_| "The diagram print browser did not initialize".to_owned())??;
+        drop(ready_loss);
+        owner.check()?;
+        let (identity_tx, identity_rx) = mpsc::sync_channel(1);
+        let cancelled = identity_tx.clone();
+        let identity_loss = cancel.on_cancel(move || { let _ = cancelled.try_send(Err("The diagram print was cancelled".to_owned())); });
+        webview.with_cef_webview(move |native| {
+            let _ = identity_tx.try_send(Ok(native.frame_navigation_state().clone()));
+        }).map_err(|error| error.to_string())?;
+        let browser = identity_rx.recv_timeout(LOAD_TIMEOUT).map_err(|_| "The diagram print browser identity is unavailable".to_owned())??;
+        drop(identity_loss);
+        let authority_owner = owner.clone();
+        let authority: crate::drawio_scheme::print::Admission = Arc::new(move |effect| {
+            authority_owner.effect(|| effect())?
+        });
+        let guard = crate::drawio_scheme::print::reserve(browser.clone(), bytes, authority)?;
+        let target = Url::parse(&guard.url()).map_err(|error| error.to_string())?;
+        let observed_target = target.clone();
+        {
+            let mut navigation = self.document_navigation.as_ref().ok_or("The diagram navigation state is unavailable")?
+                .lock().map_err(|_| "The diagram navigation state is poisoned")?;
+            navigation.target = Some(target.clone());
+            navigation.expected = Some(target.clone());
+        }
+        self.drawio_guard = Some(guard);
+        let (loaded_tx, loaded_rx) = mpsc::sync_channel(1);
+        let cancelled = loaded_tx.clone();
+        let loaded_loss = cancel.on_cancel(move || { let _ = cancelled.try_send(()); });
+        *self.loaded.lock().map_err(|_| "The diagram load state is poisoned")? = Some(loaded_tx);
+        let (observed_tx, observed_rx) = mpsc::sync_channel(1);
+        let cancelled = observed_tx.clone();
+        let observed_loss = owner.loss_token().on_cancel(move || {
+            let _ = cancelled.try_send(Err("The diagram print was cancelled".to_owned()));
+        });
+        let navigation_owner = owner.clone();
+        let navigation_view = webview.clone();
+        let loss_owner = owner.clone();
+        let navigation = owner.on_ui(move || navigation_owner.accepted(|| {
+            navigation_view.navigate_observed(target, move |result| {
+                let result = result.and_then(|document| {
+                    let subscription = document.when_lost(move |_| loss_owner.stop())?;
+                    Ok((document, subscription))
+                });
+                let _ = observed_tx.try_send(result);
+            }).map_err(|error| error.to_string())
+        })?)?;
+        let observed = match observed_rx.recv_timeout(LOAD_TIMEOUT) {
+            Ok(Ok(value)) => value,
+            Ok(Err(error)) => { navigation.cancel(); owner.stop(); return Err(error); }
+            Err(_) => { navigation.cancel(); owner.stop(); return Err("The diagram print navigation timed out".into()); }
+        };
+        drop(observed_loss);
+        if !observed.0.browser_state().is_same_browser(&browser) || observed.0.url() != &observed_target {
+            owner.stop();
+            return Err("The diagram print navigation did not commit the reserved document".into());
+        }
+        self.drawio_document = Some(observed.0);
+        self.drawio_document_loss = Some(observed.1);
+        loaded_rx.recv_timeout(LOAD_TIMEOUT).map_err(|_| "The diagram print page did not load".to_owned())?;
+        drop(loaded_loss);
+        owner.check()?;
+        if self.asset_load_failed.as_ref().is_some_and(|failed| failed.load(std::sync::atomic::Ordering::Acquire)) {
+            return Err("The diagram print page failed to load".into());
+        }
+        let start = Instant::now();
+        while !self.drawio_guard.as_ref().ok_or("The diagram print grant was released")?.served()? {
+            owner.check()?;
+            if start.elapsed() >= LOAD_TIMEOUT { return Err("The diagram print document did not become ready".into()); }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Err("The native print document cannot yet be bound to the CDP target".into())
+    }
+
+    fn load_document(&mut self, html: &str, doc_path: Option<&str>, cancel: &CancelToken) -> Result<(), String> {
+        let result = self.load_document_inner(html, doc_path, cancel);
+        if result.is_err() {
+            self.destroy();
+        }
+        result
+    }
+
+    fn load_document_inner(&mut self, html: &str, doc_path: Option<&str>, cancel: &CancelToken) -> Result<(), String> {
+        let base = doc_path.map(|path| {
+            let directory = jscompat::node_path::host::dirname(path);
+            main_core::html::preview_document::asset_base_href(&directory)
+        });
+        let page = main_core::html::preview_document::build_preview_document(html, base.as_deref());
+        self.load_scoped_document(page.into_bytes(), cancel)
+    }
+
+    fn load_scoped_document(&mut self, bytes: Vec<u8>, cancel: &CancelToken) -> Result<(), String> {
+        if let Some(owner) = &self.owner { owner.worker()?; }
+        let (origin, kind) = self.asset_origin.ok_or("missing document asset owner")?;
+        if self.destroyed || self.window.is_some() {
+            return Err("a document print surface permits only one page".into());
+        }
+        let (blank_tx, blank_rx) = mpsc::sync_channel(1);
+        let cancel_blank = blank_tx.clone();
+        let blank_subscription = cancel.on_cancel(move || { let _ = cancel_blank.try_send(()); });
+        *self.loaded.lock().map_err(|_| "print load state is poisoned")? = Some(blank_tx);
+        let blank = Url::parse("about:blank").map_err(|error| error.to_string())?;
+        self.document_navigation.as_ref().ok_or("missing print navigation state")?
+            .lock().map_err(|_| "print navigation state is poisoned")?.expected = Some(blank.clone());
+        self.window = Some(self.build(blank)?);
+        let window = self.window.as_ref().ok_or("the print browser is gone")?.clone();
+        self.cancel_subscription = Some(cancel.on_cancel(move || { let _ = window.destroy(); }));
+        if cancel.is_cancelled() {
+            return Err("HTML printing was cancelled".into());
+        }
+        let webview = self.webview()?;
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let cancel_ready = ready_tx.clone();
+        let ready_subscription = cancel.on_cancel(move || {
+            let _ = cancel_ready.try_send(Err("HTML printing was cancelled".to_owned()));
+        });
+        webview.when_navigation_ready(move |result| {
+            let _ = ready_tx.try_send(result.map_err(|error| error.to_string()));
+        }).map_err(|error| error.to_string())?;
+        ready_rx.recv_timeout(LOAD_TIMEOUT)
+            .map_err(|_| "ERR_TIMED_OUT: the print browser navigation was not initialized".to_owned())??;
+        drop(ready_subscription);
+        blank_rx.recv_timeout(LOAD_TIMEOUT)
+            .map_err(|_| "ERR_TIMED_OUT: the print browser did not initialize".to_owned())?;
+        drop(blank_subscription);
+        if cancel.is_cancelled() {
+            return Err("HTML printing was cancelled".into());
+        }
+        if self.asset_load_failed.as_ref().is_some_and(|failed| failed.load(std::sync::atomic::Ordering::Acquire)) {
+            return Err("the print browser failed to initialize".into());
+        }
+        if cancel.is_cancelled() {
+            return Err("HTML printing was cancelled".into());
+        }
+        let (native_tx, native_rx) = mpsc::sync_channel(1);
+        let cancel_native = native_tx.clone();
+        let native_subscription = cancel.on_cancel(move || {
+            let _ = cancel_native.try_send(Err("HTML printing was cancelled".to_owned()));
+        });
+        webview.with_cef_webview(move |native| {
+            let _ = native_tx.try_send(Ok(native.frame_navigation_state().clone()));
+        }).map_err(|error| error.to_string())?;
+        let native = native_rx.recv_timeout(LOAD_TIMEOUT)
+            .map_err(|_| "ERR_TIMED_OUT: the print browser identity is unavailable".to_owned())??;
+        drop(native_subscription);
+        if cancel.is_cancelled() {
+            return Err("HTML printing was cancelled".into());
+        }
+        let label = self.window.as_ref().ok_or("the print browser is gone")?.label().to_owned();
+        let grant = || super::document_assets::grant_target(
+            &label, origin, kind, native,
+            super::document_assets::TargetDocument::Generated(Vec::new()),
+        );
+        let guard = match &self.owner { Some(owner) => owner.effect(grant)??, None => grant()? };
+        guard.set_cancel_token(self.owner.as_ref().map(owned::Owner::loss_token).unwrap_or_else(|| cancel.clone()))?;
+        if let Some(owner) = &self.owner {
+            owner.bind_asset_authority(&guard)?;
+        }
+        if cancel.is_cancelled() {
+            return Err("HTML printing was cancelled".into());
+        }
+        let target = Url::parse(&guard.set_root_document(bytes)?)
+            .map_err(|error| error.to_string())?;
+        {
+            let mut navigation = self.document_navigation.as_ref().ok_or("missing print navigation state")?
+                .lock().map_err(|_| "print navigation state is poisoned")?;
+            navigation.target = Some(target.clone());
+            navigation.expected = Some(target.clone());
+        }
+        self.asset_guard = Some(guard);
+        if let Some(failed) = &self.asset_load_failed {
+            failed.store(false, std::sync::atomic::Ordering::Release);
+        }
+        let (tx, rx) = mpsc::sync_channel(1);
+        let cancel_load = tx.clone();
+        let load_subscription = cancel.on_cancel(move || { let _ = cancel_load.try_send(()); });
+        *self.loaded.lock().map_err(|_| "print load state is poisoned")? = Some(tx);
+        let window = self.window.as_ref().ok_or("the print browser is gone")?.clone();
+        if let Some(owner) = &self.owner {
+            owner.navigate(window.as_ref(), target)?;
+        } else {
+            on_ui(&self.ui, move || window.navigate(target)).map_err(|error| error.to_string())?;
+        }
+        rx.recv_timeout(LOAD_TIMEOUT)
+            .map_err(|_| "ERR_TIMED_OUT: the print page did not load".to_owned())?;
+        drop(load_subscription);
+        if cancel.is_cancelled() {
+            return Err("HTML printing was cancelled".into());
+        }
+        if self.asset_load_failed.as_ref().is_some_and(|failed| failed.load(std::sync::atomic::Ordering::Acquire)) {
+            return Err("the scoped print page failed to load".into());
+        }
+        if !self.asset_guard.as_ref().ok_or("the print asset grant is gone")?.root_served()? {
+            return Err("the scoped print page was not admitted".into());
+        }
+        if let Some(owner) = &self.owner { owner.bind_target(&self.webview()?)?; owner.check()?; }
+        Ok(())
     }
 
     /// Loads `url` and waits for the page: into a new window the first time
     fn load(&mut self, url: Url) -> Result<(), String> {
+        if let Some(owner) = &self.owner { owner.worker()?; }
         let (tx, rx) = mpsc::sync_channel(1);
         *self.loaded.lock().unwrap() = Some(tx);
         match &self.window {
             Some(window) => {
                 let window = window.clone();
-                on_ui(&self.ui, move || window.navigate(url)).map_err(|e| e.to_string())?;
+                if let Some(owner) = &self.owner {
+                    owner.navigate(window.as_ref(), url)?;
+                } else {
+                    on_ui(&self.ui, move || window.navigate(url)).map_err(|error| error.to_string())?;
+                }
             }
             None => self.window = Some(self.build(url)?),
         }
         rx.recv_timeout(LOAD_TIMEOUT)
             .map_err(|_| "ERR_TIMED_OUT: the print page did not load".to_owned())?;
+        if let Some(owner) = &self.owner { owner.bind_target(&self.webview()?)?; }
         if self.scripts_on() {
             self.watch_afterprint();
         }
+        if let Some(owner) = &self.owner { owner.check()?; }
         Ok(())
     }
 
@@ -219,11 +785,23 @@ impl PrintWindow {
         let spec = self.spec.clone();
         let loaded = self.loaded.clone();
         let scripts = self.scripts_on();
+        let mindmap = matches!(spec.profile, PrintProfile::MindmapExport | PrintProfile::MindmapPrint);
+        let allowed_page = self.allowed_page.clone();
+        let document = self.document_navigation.clone();
+        let drawio_session = self.drawio_session.clone();
+        let drawio_mode = drawio_session.is_some();
+        let finished_document = document.clone();
+        let failed_document = document.clone();
+        let failed = self.asset_load_failed.clone();
+        let failed_signal = self.loaded.clone();
         let parent = spec
             .parent
             .and_then(|w| self.views.label_of_window(w))
             .and_then(|label| app.get_webview_window(&label));
-        on_ui(&self.ui, move || {
+        let owner = self.owner.clone();
+        let construct = move || {
+            let frame_owner = owner.clone();
+            let build = move || {
             let (width, height) = if spec.dialog_chrome {
                 (900.0, 700.0)
             } else {
@@ -238,12 +816,76 @@ impl PrintWindow {
                     }
                 })
                 .on_page_load(move |_, payload| {
+                    if let Some(expected) = &finished_document {
+                        if !expected.lock().ok().is_some_and(|state| state.expected.as_ref() == Some(payload.url())) {
+                            return;
+                        }
+                    }
                     if payload.event() == PageLoadEvent::Finished
                         && let Some(tx) = loaded.lock().unwrap().take()
                     {
-                        let _ = tx.send(());
+                        let _ = tx.try_send(());
                     }
                 });
+            if let Some(session) = drawio_session {
+                builder = builder.network_session(session)
+                    .protected_navigation_start(tauri_runtime_cef::ProtectedNavigationStart::Explicit);
+            }
+            if failed.is_some() || frame_owner.is_some() {
+                builder = builder.on_frame_event(move |event| {
+                    if event.is_main {
+                        if let Some(owner) = &frame_owner {
+                            use tauri_runtime_cef::FrameEventKind;
+                            if drawio_mode {
+                                let url = match &event.kind {
+                                    FrameEventKind::NavigationStarted { url } | FrameEventKind::DocumentCommitted { url }
+                                    | FrameEventKind::AddressChanged { url } => Some(url),
+                                    _ => None,
+                                };
+                                if url.is_some_and(|url| !failed_document.as_ref().is_some_and(|expected|
+                                    expected.lock().ok().is_some_and(|state| state.expected.as_ref() == Some(url)))) {
+                                    owner.stop();
+                                    return;
+                                }
+                            }
+                            match &event.kind {
+                                FrameEventKind::NavigationStarted { .. } | FrameEventKind::DocumentCommitted { .. } => owner.invalidate_target(),
+                                FrameEventKind::Destroyed => owner.stop(),
+                                FrameEventKind::RendererTerminated if !drawio_mode => owner.stop(),
+                                _ => {}
+                            }
+                        }
+                    }
+                    let tauri_runtime_cef::FrameEventKind::NavigationFailed { url } = &event.kind else { return };
+                    if event.is_main && failed_document.as_ref().is_some_and(|expected| {
+                        expected.lock().ok().is_some_and(|state| state.expected.as_ref() == Some(url))
+                    }) {
+                        if let Some(failed) = &failed { failed.store(true, std::sync::atomic::Ordering::Release); }
+                        if let Ok(mut waiting) = failed_signal.lock() {
+                            if let Some(tx) = waiting.take() {
+                                let _ = tx.try_send(());
+                            }
+                        }
+                    }
+                });
+            }
+            if mindmap {
+                let requests = allowed_page.clone();
+                builder = builder.on_resource_request(move |url| {
+                    requests.lock().ok().and_then(|page| page.as_ref().map(|page| security::allows(url, page))).unwrap_or(false)
+                });
+                builder = builder.on_navigation(move |url| {
+                    allowed_page.lock().ok().and_then(|page| page.as_ref().map(|page| security::allows(url.as_str(), page))).unwrap_or(false)
+                });
+            }
+            if let Some(navigation) = document {
+                builder = builder.on_navigation(move |url| {
+                    navigation.lock().is_ok_and(|mut state| state.allow(url))
+                }).on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
+                  .on_resource_request(|url| {
+                      Url::parse(url).ok().is_some_and(|url| url.scheme() != "file")
+                  });
+            }
             if spec.dialog_chrome {
                 builder = builder.closable(false).skip_taskbar(true);
             }
@@ -251,7 +893,21 @@ impl PrintWindow {
                 builder = builder.parent(parent).map_err(|e| e.to_string())?;
             }
             builder.build().map_err(|e| e.to_string())
-        })
+            };
+            match owner {
+                Some(owner) => {
+                    let window = owner.accepted(build)??;
+                    owner.retain_window(&window)?;
+                    Ok(window)
+                }
+                None => build(),
+            }
+        };
+        let window = match &self.owner {
+            Some(owner) => owner.on_ui(construct),
+            None => on_ui(&self.ui, construct),
+        }?;
+        Ok(window)
     }
 
     fn webview(&self) -> Result<tauri::Webview, String> {
@@ -261,13 +917,36 @@ impl PrintWindow {
             .ok_or_else(|| "the print window has no page".to_owned())
     }
 
+    fn protocol(&self, webview: &tauri::Webview, method: &str, params: Value) -> Result<Value, String> {
+        match &self.owner {
+            Some(owner) => owner.cdp(webview, method, params),
+            None => cdp(webview, method, params),
+        }
+    }
+
+    fn protocol_bytes(&self, webview: &tauri::Webview, method: &str, params: Value) -> Result<Vec<u8>, String> {
+        match &self.owner {
+            Some(owner) => owner.bytes(webview, method, params),
+            None => cdp_bytes(webview, method, params),
+        }
+    }
+
+    fn ui_action(&self, action: impl FnOnce() + Send + 'static) -> Result<(), String> {
+        let owner = self.owner.clone();
+        let accepted = move || match owner { Some(owner) => owner.accepted(action), None => Ok(action()) };
+        match &self.owner {
+            Some(owner) => owner.on_ui(accepted),
+            None => on_ui(&self.ui, accepted),
+        }
+    }
+
     /// Remembers in the page when its print preview closed (`afterprint`)
     fn watch_afterprint(&self) {
         let Ok(webview) = self.webview() else { return };
         let script = format!(
             "window.{AFTERPRINT_FLAG} = false; addEventListener('afterprint', () => {{ window.{AFTERPRINT_FLAG} = true }})"
         );
-        let _ = cdp(
+        let _ = self.protocol(
             &webview,
             "Runtime.evaluate",
             json!({ "expression": script }),
@@ -279,31 +958,34 @@ impl PrintWindow {
     /// without scripts cannot report `afterprint`; its window stays until
     /// the user closes it.
     fn preview(&mut self) -> Result<(), String> {
+        if let Some(owner) = &self.owner { owner.worker()?; }
         let window = self.window.clone().ok_or("the print window has no page")?;
         let webview = self.webview()?;
         let shown = window.clone();
-        on_ui(&self.ui, move || {
-            let _ = shown.show();
-            let _ = shown.set_focus();
-        });
+        self.ui_action(move || { let _ = shown.show(); let _ = shown.set_focus(); })?;
         let (tx, rx) = mpsc::sync_channel(1);
+        let owner = self.owner.clone();
         webview
             .with_cef_webview(move |cef_view| {
-                if let Some(host) = super::menu::host_of(cef_view) {
-                    super::menu::print_preview(&host);
-                }
-                let _ = tx.send(());
+                let show = || {
+                    if let Some(host) = super::menu::host_of(cef_view) { super::menu::print_preview(&host); }
+                };
+                if let Some(owner) = owner {
+                    if let Err(error) = owner.effect(show) { let _ = tx.send(Err(error)); return; }
+                } else { show(); }
+                let _ = tx.send(Ok(()));
             })
             .map_err(|e| e.to_string())?;
-        let _ = rx.recv_timeout(LOAD_TIMEOUT);
+        rx.recv_timeout(LOAD_TIMEOUT).map_err(|_| "Print preview admission timed out.".to_owned())??;
         let started = Instant::now();
         while started.elapsed() < PREVIEW_TIMEOUT {
             std::thread::sleep(PREVIEW_POLL);
+            if let Some(owner) = &self.owner { owner.check()?; }
             if !window.is_visible().unwrap_or(false) {
                 break;
             }
             if self.scripts_on()
-                && let Ok(answer) = cdp(
+                && let Ok(answer) = self.protocol(
                     &webview,
                     "Runtime.evaluate",
                     json!({ "expression": format!("window.{AFTERPRINT_FLAG} === true"), "returnByValue": true }),
@@ -313,13 +995,22 @@ impl PrintWindow {
                 break;
             }
         }
+        if let Some(owner) = &self.owner { owner.check()?; }
         Ok(())
     }
 
     fn silent(&self, options: &Value) -> PrintReport {
-        let printed = self
-            .webview()
-            .and_then(|webview| print_silently(&webview, options));
+        let printed = if let Some(owner) = &self.owner {
+            let mut params = pdf_params(&ipc_value(&print_as_pdf_options(options)));
+            params["printBackground"] = json!(options["printBackground"] != false);
+            self.webview().and_then(|webview| owner.bytes(&webview, "Page.printToPDF", params))
+                .and_then(|bytes| {
+                    let accepted = owner.effect(|| || spool(&bytes, options))?;
+                    accepted()
+                })
+        } else {
+            self.webview().and_then(|webview| print_silently(&webview, options))
+        };
         match printed {
             Ok(()) => PrintReport {
                 success: true,
@@ -332,12 +1023,36 @@ impl PrintWindow {
 
 impl PrintSurface for PrintWindow {
     fn load_file(&mut self, path: &str) -> Result<(), String> {
+        if matches!(self.asset_origin, Some((_, super::document_assets::AssetKind::Markdown))) {
+            let owner = self.owner.clone().ok_or("missing Markdown print authority")?;
+            owner.worker()?;
+            let bytes = std::fs::read(path).map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound { format!("ERR_FILE_NOT_FOUND: {path}") }
+                else { main_core::node_fs::node_error(&error, "open", path).message }
+            })?;
+            owner.check()?;
+            let result = self.load_scoped_document(bytes, &owner.loss_token());
+            if result.is_err() { self.destroy(); }
+            return result;
+        }
+        if self.asset_origin.is_some() {
+            return Err("document print pages must be supplied as scoped HTML".into());
+        }
         let url = Url::from_file_path(Path::new(path))
             .map_err(|()| format!("ERR_FILE_NOT_FOUND: {path}"))?;
+        if matches!(self.spec.profile, PrintProfile::MindmapExport | PrintProfile::MindmapPrint) {
+            *self.allowed_page.lock().map_err(|_| "mindmap print policy unavailable")? = Some(url.clone());
+        }
         self.load(url)
     }
 
     fn load_url(&mut self, url: &str) -> Result<(), String> {
+        if self.asset_origin.is_some() {
+            return Err("document print surfaces require a generated local preview".into());
+        }
+        if matches!(self.spec.profile, PrintProfile::MindmapExport | PrintProfile::MindmapPrint) {
+            return Err("mindmap print requires a local page file".to_owned());
+        }
         let url = crate::app_scheme::webview_url(url)
             .or_else(|| Url::parse(url).ok())
             .ok_or_else(|| format!("ERR_INVALID_URL: {url}"))?;
@@ -350,6 +1065,7 @@ impl PrintSurface for PrintWindow {
         user_gesture: bool,
         race_ms: Option<f64>,
     ) -> ExecOutcome {
+        if let Some(owner) = &self.owner { if let Err(error) = owner.worker() { return ExecOutcome::Throws(error); } }
         let webview = match self.webview() {
             Ok(webview) => webview,
             Err(error) => return ExecOutcome::Throws(error),
@@ -361,14 +1077,20 @@ impl PrintSurface for PrintWindow {
             "returnByValue": true,
         });
         let (tx, rx) = mpsc::sync_channel(1);
+        let owner = self.owner.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(cdp(&webview, "Runtime.evaluate", params));
+            let result = match owner {
+                Some(owner) => owner.cdp(&webview, "Runtime.evaluate", params),
+                None => cdp(&webview, "Runtime.evaluate", params),
+            };
+            let _ = tx.send(result);
         });
         // without a race the call waits as long as CDP does
         let settled = match race_ms {
             Some(ms) => rx.recv_timeout(Duration::from_millis(ms.max(0.0) as u64)),
             None => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
         };
+        if let Some(owner) = &self.owner { if let Err(error) = owner.check() { return ExecOutcome::Throws(error); } }
         match settled {
             Err(mpsc::RecvTimeoutError::Timeout) => ExecOutcome::Pending,
             Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -402,7 +1124,7 @@ impl PrintSurface for PrintWindow {
     }
 
     fn print_to_pdf(&mut self, options: &Value) -> Result<Vec<u8>, String> {
-        cdp_bytes(
+        self.protocol_bytes(
             &self.webview()?,
             "Page.printToPDF",
             pdf_params(&ipc_value(options)),
@@ -411,31 +1133,35 @@ impl PrintSurface for PrintWindow {
 
     fn show(&mut self) {
         if let Some(window) = self.window.clone() {
-            on_ui(&self.ui, move || {
-                let _ = window.show();
-            });
+            let _ = self.ui_action(move || { let _ = window.show(); });
         }
     }
 
     fn focus(&mut self) {
         if let Some(window) = self.window.clone() {
-            on_ui(&self.ui, move || {
-                let _ = window.set_focus();
-            });
+            let _ = self.ui_action(move || { let _ = window.set_focus(); });
         }
     }
 
     fn is_destroyed(&self) -> bool {
-        self.destroyed
+        self.destroyed || self.owner.as_ref().is_some_and(owned::Owner::is_stopped)
     }
 
     fn destroy(&mut self) {
         self.destroyed = true;
+        if let Some(owner) = &self.owner { owner.stop(); }
+        self.cancel_subscription.take();
+        self.asset_guard.take();
+        self.drawio_document_loss.take();
+        self.drawio_document.take();
+        self.drawio_guard.take();
         if let Some(window) = self.window.take() {
             forget_webview(window.label());
-            on_ui(&self.ui, move || {
-                let _ = window.destroy();
-            });
+            if self.owner.is_some() {
+                self.ui.post(Box::new(move || { let _ = window.destroy(); }));
+            } else {
+                on_ui(&self.ui, move || { let _ = window.destroy(); });
+            }
         }
     }
 }
@@ -637,6 +1363,32 @@ fn ipc_value(value: &Value) -> IpcValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scoped_print_page_cannot_navigate_to_another_document_or_reload() {
+        let blank = Url::parse("about:blank").unwrap();
+        let root = Url::parse("html-asset://capability/_document").unwrap();
+        let other = Url::parse("file:///private/secret.html").unwrap();
+        let mut policy = DocumentNavigation::default();
+        assert!(policy.allow(&blank));
+        assert!(!policy.allow(&other));
+        policy.target = Some(root.clone());
+        assert!(policy.allow(&root));
+        assert!(!policy.allow(&root));
+        assert!(!policy.allow(&blank));
+        assert!(!policy.allow(&other));
+    }
+
+    #[test]
+    fn diagram_print_reservation_permits_only_its_single_root_navigation() {
+        let root = Url::parse("drawio-app://editor/__ieum/print/0123456789abcdef0123456789abcdef").unwrap();
+        let other = Url::parse("drawio-app://editor/__ieum/print/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+        let mut policy = DocumentNavigation { target: Some(root.clone()), ..DocumentNavigation::default() };
+        assert!(!policy.allow(&other));
+        assert!(policy.allow(&root));
+        assert!(!policy.allow(&root));
+        assert!(!policy.allow(&Url::parse("about:blank").unwrap()));
+    }
 
     #[test]
     fn printer_info_reads_a_quoted_or_bare_value() {

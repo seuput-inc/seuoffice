@@ -1,0 +1,204 @@
+diff --git a/libcef/common/mojom/cef.mojom b/libcef/common/mojom/cef.mojom
+--- a/libcef/common/mojom/cef.mojom
++++ b/libcef/common/mojom/cef.mojom
+@@ -129,5 +129,12 @@
+ };
+ 
++// Dedicated renderer-context channel. The receiver is bound to the actual RFH.
++// Tokens identify native objects; this message is not an activation grant.
++interface NativeContextHost {
++  Register(blink.mojom.DocumentToken document_token,
++           blink.mojom.V8ContextToken context_token, int32 world_id);
++};
++
+ // Interface for communicating with browser management in the browser process.
+ interface BrowserManager {
+   // Retrieve info for a new RenderThread.
+diff --git a/include/cef_client.h b/include/cef_client.h
+--- a/include/cef_client.h
++++ b/include/cef_client.h
+@@ -39,4 +39,5 @@
+ #pragma once
+ 
++#include "include/cef_api_hash.h"
+ #include "include/cef_audio_handler.h"
+ #include "include/cef_base.h"
+diff --git a/include/cef_client.h b/include/cef_client.h
+--- a/include/cef_client.h
++++ b/include/cef_client.h
+@@ -198,6 +198,36 @@
+                                         CefRefPtr<CefProcessMessage> message) {
+     return false;
+   }
++
++#if CEF_API_ADDED(15401)
++  ///
++  /// A native renderer context was observed on the RFH-bound channel while
++  /// the exact browser-owned pending or committed document matched. This event
++  /// is not an activation grant. |renderer_child_id| identifies Chromium's
++  /// child process, not an OS PID. The client must apply its navigation and mode policy.
++  ///
++  /*--cef(added=15401)--*/
++  virtual void OnNativeContextRegistered(CefRefPtr<CefBrowser> browser,
++                                          CefRefPtr<CefFrame> frame,
++                                          const CefString& frame_id,
++                                          int renderer_child_id,
++                                          const CefString& document_token,
++                                          const CefString& context_token,
++                                          int world_id) {}
++
++  ///
++  /// The exact context channel was revoked. No later registration on that
++  /// channel can restore it. This callback is on the browser UI thread.
++  ///
++  /*--cef(added=15401)--*/
++  virtual void OnNativeContextRevoked(CefRefPtr<CefBrowser> browser,
++                                       CefRefPtr<CefFrame> frame,
++                                       const CefString& frame_id,
++                                       int renderer_child_id,
++                                       const CefString& document_token,
++                                       const CefString& context_token,
++                                       int world_id) {}
++#endif
+ };
+ 
+ #endif  // CEF_INCLUDE_CEF_CLIENT_H_
+diff --git a/libcef/browser/browser_frame.cc b/libcef/browser/browser_frame.cc
+--- a/libcef/browser/browser_frame.cc
++++ b/libcef/browser/browser_frame.cc
+@@ -1,2 +1,3 @@
+ #include "cef/libcef/browser/browser_info_manager.h"
++#include "cef/libcef/browser/native_context_service.h"
+ #include "cef/libcef/browser/thread_util.h"
+diff --git a/libcef/browser/browser_frame.cc b/libcef/browser/browser_frame.cc
+--- a/libcef/browser/browser_frame.cc
++++ b/libcef/browser/browser_frame.cc
+@@ -1,2 +1,7 @@
+     mojo::BinderMapWithContext<content::RenderFrameHost*>* map) {
++  map->Add<cef::mojom::NativeContextHost>(base::BindRepeating(
++      [](content::RenderFrameHost* frame_host,
++         mojo::PendingReceiver<cef::mojom::NativeContextHost> receiver) {
++        new CefNativeContextService(frame_host, std::move(receiver));
++      }));
+   map->Add<cef::mojom::BrowserFrame>(base::BindRepeating(
+diff --git a/libcef/browser/native_context_service.h b/libcef/browser/native_context_service.h
+--- /dev/null
++++ b/libcef/browser/native_context_service.h
+@@ -0,0 +1,106 @@
++// Copyright 2026 The Chromium Embedded Framework Authors.
++// Use of this source code is governed by a BSD-style license.
++#ifndef CEF_LIBCEF_BROWSER_NATIVE_CONTEXT_SERVICE_H_
++#define CEF_LIBCEF_BROWSER_NATIVE_CONTEXT_SERVICE_H_
++
++#include <string>
++#include <utility>
++
++#include "cef/include/cef_client.h"
++#include "cef/libcef/browser/browser_info_manager.h"
++#include "cef/libcef/browser/frame_host_impl.h"
++#include "cef/libcef/browser/frame_service_base.h"
++#include "cef/libcef/common/mojom/cef.mojom.h"
++#include "content/browser/renderer_host/render_frame_host_impl.h"
++#include "content/public/browser/navigation_handle.h"
++#include "content/public/browser/render_process_host.h"
++
++// One endpoint is bound directly by the BrowserInterfaceBroker for the RFH
++// that issued the receiver request. It is never the ordinary CEF frame queue.
++class CefNativeContextService final
++    : public CefFrameServiceBase<cef::mojom::NativeContextHost> {
++ public:
++  CefNativeContextService(
++      content::RenderFrameHost* host,
++      mojo::PendingReceiver<cef::mojom::NativeContextHost> receiver)
++      : CefFrameServiceBase(host, std::move(receiver)) {}
++
++  ~CefNativeContextService() override { Revoke(); }
++
++ private:
++  void Register(const blink::DocumentToken& document_token,
++                const blink::V8ContextToken& context_token,
++                int32_t world_id) override {
++    DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
++    if (attempted_) return;
++    attempted_ = true;
++    auto* rfh = static_cast<content::RenderFrameHostImpl*>(render_frame_host());
++    if (world_id != 0 || rfh->GetParent() || !rfh->MatchesLatestDocumentForCef(document_token))
++      return;
++    auto frame = CefBrowserInfoManager::GetFrameHost(
++        rfh, /*prefer_speculative=*/true, /*browser_info=*/nullptr,
++        /*is_excluded=*/nullptr);
++    if (!frame || !frame->IsSameFrame(rfh)) return;
++    const auto frame_id = frame->GetIdentifier().ToString();
++    auto browser = frame->GetBrowser();
++    if (!browser || !browser->GetHost()) return;
++    auto client = browser->GetHost()->GetClient();
++    if (!client || !CEF_API_IS_ADDED(15401)) return;
++    browser_ = browser;
++    frame_ = frame;
++    frame_id_ = frame_id;
++    client_ = client;
++    child_id_ = rfh->GetProcess()->GetDeprecatedID();
++    document_ = document_token.ToString();
++    context_ = context_token.ToString();
++    world_ = world_id;
++    registered_ = true;
++    client->OnNativeContextRegistered(browser, frame, frame_id_, child_id_,
++                                      document_token.ToString(),
++                                      context_token.ToString(), world_id);
++  }
++
++  void DidStartNavigation(content::NavigationHandle* navigation) override {
++    if (navigation->GetFrameTreeNodeId() ==
++            render_frame_host()->GetFrameTreeNodeId() &&
++        !navigation->IsSameDocument()) Revoke();
++  }
++
++  void DidFinishNavigation(content::NavigationHandle* navigation) override {
++    if (navigation->GetFrameTreeNodeId() ==
++            render_frame_host()->GetFrameTreeNodeId() &&
++        !navigation->HasCommitted()) Revoke();
++  }
++
++  void RenderFrameHostChanged(content::RenderFrameHost* old_host,
++                              content::RenderFrameHost* new_host) override {
++    if (old_host == render_frame_host()) Revoke();
++  }
++
++  void Revoke() {
++    DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
++    attempted_ = true;
++    if (!registered_) return;
++    registered_ = false;
++    auto client = std::move(client_);
++    auto browser = std::move(browser_);
++    auto frame = std::move(frame_);
++    auto document = std::move(document_);
++    auto context = std::move(context_);
++    client->OnNativeContextRevoked(browser, frame, frame_id_, child_id_, document,
++                                   context, world_);
++  }
++
++  bool attempted_ = false;
++  bool registered_ = false;
++  int child_id_ = 0;
++  int world_ = 0;
++  std::string frame_id_;
++  std::string document_;
++  std::string context_;
++  CefRefPtr<CefBrowser> browser_;
++  CefRefPtr<CefFrame> frame_;
++  CefRefPtr<CefClient> client_;
++};
++
++#endif  // CEF_LIBCEF_BROWSER_NATIVE_CONTEXT_SERVICE_H_
+diff --git a/BUILD.gn b/BUILD.gn
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -663,6 +663,7 @@ source_set("libcef_static") {
+     "libcef/browser/native/cursor_util.cc",
+     "libcef/browser/native/native_widget_delegate.cc",
+     "libcef/browser/native/native_widget_delegate.h",
++    "libcef/browser/native_context_service.h",
+     "libcef/browser/navigation_entry_impl.cc",
+     "libcef/browser/navigation_entry_impl.h",
+     "libcef/browser/net/crlset_file_util_impl.cc",

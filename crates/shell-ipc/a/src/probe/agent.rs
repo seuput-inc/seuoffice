@@ -240,6 +240,10 @@ impl AgentServices for Svc {
             .map(|items| items.iter().map(json_value_from_serde).collect())
             .unwrap_or_default())
     }
+    fn enabled_for_agent_task(&self, folder: &str) -> Result<Box<dyn FnOnce() -> Result<Vec<JsonValue>, String> + Send>, String> {
+        let enabled = self.enabled_for_agent(folder)?;
+        Ok(Box::new(move || Ok(enabled)))
+    }
 
     fn build_skill_bundle(
         &self,

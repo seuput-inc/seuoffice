@@ -35,13 +35,19 @@ wrap_browser_process_handler! {
     fn on_before_child_process_launch(&self, command_line: Option<&mut CommandLine>) {
       // Pass an overridden CEF API version to the child on its command line.
       // See `API_VERSION_SWITCH`.
-      if let Some(command_line) = command_line
-        && let Some(version) = self.api_version
-      {
-        command_line.append_switch_with_value(
-          Some(&CefString::from(crate::runtime::API_VERSION_SWITCH)),
-          Some(&CefString::from(version.to_string().as_str())),
-        );
+      if let Some(command_line) = command_line {
+        if let Some(version) = self.api_version {
+          command_line.append_switch_with_value(
+            Some(&CefString::from(crate::runtime::API_VERSION_SWITCH)),
+            Some(&CefString::from(version.to_string().as_str())),
+          );
+        }
+        if !self.context.native_custom_schemes.is_empty() {
+          command_line.append_switch_with_value(
+            Some(&CefString::from(crate::native_scheme::SWITCH)),
+            Some(&CefString::from(self.context.native_custom_schemes.join(",").as_str())),
+          );
+        }
       }
     }
 

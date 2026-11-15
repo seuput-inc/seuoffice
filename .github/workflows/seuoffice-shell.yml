@@ -52,6 +52,7 @@ jobs:
     defaults:
       run:
         working-directory: crates/shell
+        shell: bash
     env:
       APPLE_SIGNING_IDENTITY: '-'
     steps:
@@ -61,7 +62,11 @@ jobs:
           node-version-file: .nvmrc
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable branch, 2026-07
         with:
-          components: rustfmt
+          components: rustfmt, clippy
+          targets: wasm32-wasip1
+      - name: Prepare pinned Tauri window lifetime source
+        working-directory: .
+        run: bash crates/shell/ci/prepare-tauri-source.sh
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: crates/shell
@@ -85,17 +90,31 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: format
-        run: cargo fmt --check
-
       - name: npm ci (esbuild and the workspace packages of the preloads)
         working-directory: .
         run: npm ci --ignore-scripts
+      - name: rhwp source
+        working-directory: .
+        run: node tools/build-rhwp-core.mjs --source-only
+      - name: format
+        run: cargo fmt --check
+
+      - name: document engine
+        working-directory: .
+        run: npm run build:wasm
       - name: preloads
         working-directory: .
         run: |
           node crates/shell/bridge/preloads.mjs
           cat crates/shell/out/preloads/manifest.json | head -40
+      - name: engine host
+        working-directory: .
+        run: node crates/shell/engine-host/build.mjs
+      - name: native helpers
+        working-directory: .
+        run: |
+          npm run native:build -w @seuoffice/sheets
+          swiftc -O packages/pdf2docx/ocr-helper/vision-ocr.swift -o packages/pdf2docx/ocr-helper/vision-ocr
 
       - name: Tauri CLI
         run: npm install --no-audit --no-fund
@@ -107,11 +126,11 @@ jobs:
           python3 ci/cef-index-mirror.py 8099 "$CEF_VERSION" > "$RUNNER_TEMP/cef-mirror.log" 2>&1 &
           mirror=$!
           trap 'kill $mirror 2>/dev/null || true' EXIT
-          for i in $(seq 1 90); do curl -sf http://127.0.0.1:8099/index.json -o /dev/null && break; sleep 1; done
+          for _ in $(seq 1 90); do curl -sf http://127.0.0.1:8099/index.json -o /dev/null && break; sleep 1; done
           cat "$RUNNER_TEMP/cef-mirror.log"
           export CEF_DOWNLOAD_URL=http://127.0.0.1:8099
           start=$(date +%s)
-          npx tauri build --bundles app --verbose
+          npx tauri build --bundles app --verbose --config '{"bundle":{"resources":{"out/engine-host":"engine-host","../../apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar":"native/xlsx-sidecar","../../packages/pdf2docx/ocr-helper/vision-ocr":"ocr/vision-ocr"}}}'
           echo "seconds=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
 
       - name: save the CEF cache
@@ -121,9 +140,14 @@ jobs:
           path: ~/.cache/tauri-cef
           key: shell-cef-${{ runner.os }}-${{ runner.arch }}-${{ env.CEF_CRATE_VERSION }}
 
-      - name: unit tests (not blocking, the test binary must find the CEF framework)
-        continue-on-error: true
-        run: cargo test --release 2>&1 | tail -60
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: unit tests
+        run: |
+          app=$(find target/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)
+          test -n "$app"
+          DYLD_FRAMEWORK_PATH="$PWD/$app/Contents/Frameworks${DYLD_FRAMEWORK_PATH:+:$DYLD_FRAMEWORK_PATH}" cargo test --release
 
       - name: measure the dialog (--measure-dialog)
         timeout-minutes: 10
@@ -131,12 +155,12 @@ jobs:
           out="$RUNNER_TEMP/measure"
           mkdir -p "$out"
           app=$(find target/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)
-          ls -la "$app/Contents/MacOS" "$app/Contents/Frameworks" | tee "$out/app-contents.txt"
+          find "$app/Contents/MacOS" "$app/Contents/Frameworks" -maxdepth 1 -ls | tee "$out/app-contents.txt"
           set +e
           SEUOFFICE_USER_DATA="$out/userdata" "$app/Contents/MacOS/SeuOffice" --measure-dialog "$out/dialog.json" 2>&1 | tee "$out/shell.log"
           status=${PIPESTATUS[0]}
           cat "$out/dialog.json" || true
-          exit $status
+          exit "$status"
 
       - name: upload shell-mac
         if: always()
@@ -163,6 +187,12 @@ jobs:
         with:
           node-version-file: .nvmrc
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable branch, 2026-07
+        with:
+          components: clippy
+          targets: wasm32-wasip1
+      - name: Prepare pinned Tauri window lifetime source
+        working-directory: .
+        run: bash crates/shell/ci/prepare-tauri-source.sh
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: crates/shell
@@ -187,11 +217,26 @@ jobs:
       - name: npm ci (esbuild and the workspace packages of the preloads)
         working-directory: .
         run: npm ci --ignore-scripts
+      - name: rhwp source
+        working-directory: .
+        run: node tools/build-rhwp-core.mjs --source-only
+      - name: document engine
+        working-directory: .
+        run: npm run build:wasm
       - name: preloads
         working-directory: .
         run: |
           node crates/shell/bridge/preloads.mjs
           head -40 crates/shell/out/preloads/manifest.json
+      - name: engine host
+        working-directory: .
+        run: node crates/shell/engine-host/build.mjs
+      - name: native helpers
+        working-directory: .
+        run: |
+          npm run native:build -w @seuoffice/sheets
+          node packages/pdf2docx/ocr-helper/build-win.mjs
+          node apps/shell/src/main/quick-look/build-win.mjs
 
       # No installer yet (batch U): the build copies the CEF runtime files next
       # to the executable (cef-dll-sys), so target/release runs as it is.
@@ -202,12 +247,17 @@ jobs:
           python3 ci/cef-index-mirror.py 8099 "$CEF_VERSION" > "$RUNNER_TEMP/cef-mirror.log" 2>&1 &
           mirror=$!
           trap 'kill $mirror 2>/dev/null || true' EXIT
-          for i in $(seq 1 90); do curl -sf http://127.0.0.1:8099/index.json -o /dev/null && break; sleep 1; done
+          for _ in $(seq 1 90); do curl -sf http://127.0.0.1:8099/index.json -o /dev/null && break; sleep 1; done
           cat "$RUNNER_TEMP/cef-mirror.log"
           export CEF_DOWNLOAD_URL=http://127.0.0.1:8099
           start=$(date +%s)
           cargo build --release --verbose
           echo "seconds=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
+          mkdir -p target/release/resources/{engine-host,native,ocr,quicklook}
+          cp -R out/engine-host/. target/release/resources/engine-host/
+          cp ../../apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar.exe target/release/resources/native/
+          cp ../../packages/pdf2docx/ocr-helper/win-ocr.exe target/release/resources/ocr/
+          cp ../../apps/shell/src/main/quick-look/win-quicklook.exe target/release/resources/quicklook/
           ls -la target/release
 
       - name: save the CEF cache
@@ -216,10 +266,6 @@ jobs:
         with:
           path: ~/.cache/tauri-cef
           key: shell-cef-${{ runner.os }}-${{ runner.arch }}-${{ env.CEF_CRATE_VERSION }}
-
-      - name: unit tests (not blocking, the test binary must find libcef.dll)
-        continue-on-error: true
-        run: cargo test --release 2>&1 | tail -60
 
       # cef-dll-sys copies the CEF runtime files next to the executable by
       # walking up from its build script's OUT_DIR, which cargo's newer build
@@ -233,7 +279,12 @@ jobs:
           test -n "$cef_dll"
           cp -rn "$(dirname "$cef_dll")"/. target/release/
           echo "--- target/release"
-          ls target/release | head -60
+          find target/release -maxdepth 1 -type f -print | head -60
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: unit tests
+        run: PATH="$PWD/target/release:$PATH" cargo test --release
 
       - name: measure the dialog (--measure-dialog)
         timeout-minutes: 10
@@ -248,7 +299,7 @@ jobs:
           status=${PIPESTATUS[0]}
           echo "exit status $status"
           cat "$out/dialog.json" || true
-          exit $status
+          exit "$status"
 
       - name: upload shell-win
         if: always()
@@ -291,6 +342,10 @@ jobs:
         with:
           node-version-file: .nvmrc
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable branch, 2026-07
+        with:
+          targets: wasm32-wasip1
+      - name: Prepare pinned Tauri window lifetime source
+        run: bash crates/shell/ci/prepare-tauri-source.sh
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: |
@@ -322,6 +377,8 @@ jobs:
 
       - name: npm ci
         run: npm ci
+      - name: rhwp source
+        run: node tools/build-rhwp-core.mjs --source-only
       # the modules, the shell's renderer, the CLI and (sheets) the xlsx sidecar
       - name: build the apps
         run: npm run build:all
@@ -333,6 +390,16 @@ jobs:
           cp "$engine/release/xlsx-sidecar.exe" "$engine/x86_64-pc-windows-gnu/release/"
       - name: preloads
         run: node crates/shell/bridge/preloads.mjs
+      - name: engine host
+        run: node crates/shell/engine-host/build.mjs
+      - name: OCR helper (macOS)
+        if: matrix.platform == 'mac'
+        run: swiftc -O packages/pdf2docx/ocr-helper/vision-ocr.swift -o packages/pdf2docx/ocr-helper/vision-ocr
+      - name: native helpers (Windows)
+        if: matrix.platform == 'win'
+        run: |
+          node packages/pdf2docx/ocr-helper/build-win.mjs
+          node apps/shell/src/main/quick-look/build-win.mjs
       - name: the command line's Node, the notices, app-update.yml
         run: |
           node crates/shell/bundle/node-runtime.mjs

@@ -151,6 +151,7 @@ pub struct SubscriptionShared {
     pub image: Rc<RefCell<ImageBackendState>>,
     pub launch: LaunchState,
     pub status: StatusState,
+    driver: Driver,
 }
 
 /// What a [`SubscriptionShared`] is built from
@@ -270,6 +271,18 @@ fn write_settings(
 }
 
 impl SubscriptionShared {
+    /// The process's provider runtime, shared with subscription status and sign-in.
+    pub fn driver(&self) -> Driver {
+        self.driver.clone()
+    }
+
+    /// The same process connection used by subscription status and sign-in.
+    pub fn chatgpt_connection(&self) -> Option<ChatGptConnection> {
+        let module = self.status.borrow().chat_gpt.clone();
+        let connection = module.borrow().chatgpt_connection();
+        connection
+    }
+
     /// `ensureSubscriptionIpc(ipcMain, setup)` of `registerAiIpc`, and the
     /// import-time registrations of the bridges
     pub fn build(wiring: Wiring) -> Rc<SubscriptionShared> {
@@ -520,6 +533,7 @@ impl SubscriptionShared {
             image,
             launch,
             status,
+            driver,
         })
     }
 }

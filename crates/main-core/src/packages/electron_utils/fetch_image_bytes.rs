@@ -33,7 +33,7 @@ pub fn fetch_image_bytes(
     url: Option<&str>,
 ) -> Option<FetchedImageBytes> {
     let url = url.filter(|url| !url.is_empty())?;
-    let mut resp = fetch_remote_image(resolver, fetcher, tmpdir, url, None)?;
+    let mut resp = fetch_remote_image(resolver, fetcher, tmpdir, url, None, None)?;
     if !resp.ok() {
         return None;
     }

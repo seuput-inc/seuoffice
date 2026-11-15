@@ -131,6 +131,7 @@ const ai = createAiStreamBridge()
 
 const pdfApi: Partial<PdfApi> = {
   consumePending: () => (pending ??= consumeDocument()),
+  consumeRecoveryPending: async () => null,
   readFile: async (path) => {
     const bytes = bytesOf(path)
     queueMicrotask(reportOpened)

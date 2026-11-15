@@ -17,7 +17,7 @@ use main_core::shell::tab_menu::{
     MenuClick, TabMenuInput, TabSummary as MenuTab, is_program_file, tab_menu_template,
 };
 use shell_contract::ids::ViewId;
-use shell_contract::ipc::{Responder, Target};
+use shell_contract::ipc::{CallContext, Responder, Target};
 use shell_contract::value::IpcValue;
 
 use super::host::{DocAction, MenuEntry, MenuEntryKind};
@@ -36,7 +36,7 @@ pub(super) enum MenuAction {
     },
     Unsplit,
     /// an entry of the application menu, by the id its host gave it
-    AppMenu(u32),
+    AppMenu(u32, CallContext),
     New(NewKind),
     OpenFile,
 }
@@ -156,7 +156,7 @@ fn menu_tab(tab: &main_core::shell::tab_manager::TabSummary) -> MenuTab {
 
 impl TabsState {
     /// `tabs:show-app-menu`
-    pub(super) fn show_app_menu(&self, at: Option<(f64, f64)>, reply: Responder) {
+    pub(super) fn show_app_menu(&self, cx: &CallContext, at: Option<(f64, f64)>, reply: Responder) {
         if self.inner.borrow().bridge.shell.is_none() {
             return reply.reply(Ok(IpcValue::Undefined));
         }
@@ -164,15 +164,15 @@ impl TabsState {
             return reply.reply(Ok(IpcValue::Undefined));
         };
         let mut actions = HashMap::new();
-        fn collect(entries: &[MenuEntry], actions: &mut HashMap<u32, MenuAction>) {
+        fn collect(entries: &[MenuEntry], actions: &mut HashMap<u32, MenuAction>, cx: &CallContext) {
             for entry in entries {
                 if entry.kind != MenuEntryKind::Separator {
-                    actions.insert(entry.id, MenuAction::AppMenu(entry.id));
+                    actions.insert(entry.id, MenuAction::AppMenu(entry.id, cx.clone()));
                 }
-                collect(&entry.submenu, actions);
+                collect(&entry.submenu, actions, cx);
             }
         }
-        collect(&entries, &mut actions);
+        collect(&entries, &mut actions, cx);
         self.popup(entries, actions, at, reply);
     }
 
@@ -333,7 +333,7 @@ impl TabsState {
                     .borrow_mut()
                     .manager_call(|m, b| m.activate_tab(b, &id));
             }
-            MenuAction::AppMenu(id) => self.hooks.app_menu_activate(id),
+            MenuAction::AppMenu(id, cx) => self.hooks.app_menu_activate(id, cx),
             MenuAction::New(kind) => self.rc().new_tab(kind),
             MenuAction::OpenFile => self.hooks.open_file_via_dialog(),
             MenuAction::Unsplit => {

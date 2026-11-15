@@ -432,7 +432,7 @@ pub(super) fn entries(
         services.clone(),
         Rc::clone(&cache),
     );
-    out.push(kit::invoke_later("html:files-read", move |_, args, responder| {
+    out.push(kit::invoke_later("html:files-read", move |cx, args, responder| {
         let Some(file_path) = args.str(0).map(str::to_owned) else {
             return responder.reply(Err(path_type_error(args.get(0))));
         };
@@ -451,9 +451,17 @@ pub(super) fn entries(
                 "이미지 첨부 파일은 텍스트를 제공하지 않으며, 이미지 형태로 사용자 메시지와 함께 전송되므로 이미지를 직접 확인하면 됩니다",
             ))));
         }
-        // a file open with unsaved changes is not read (before the cache): a
-        // withholding mark only reaches the file on save
-        if let Err(error) = e.shell.assert_file_saved(&file_path) {
+        let view = cx.sender.view;
+        let (offset, max_chars) = (to_number(args.get(1)), to_number(args.get(2)));
+        let (editors, en, sv, ca) = (Rc::clone(&e), en.clone(), sv.clone(), Rc::clone(&ca));
+        let shell = e.shell.clone();
+        let guard_path = file_path.clone();
+        // The asynchronous dirty check precedes stat and cache lookup.
+        shell.assert_file_saved(&guard_path, Box::new(move |result| {
+        if editors.docs.is_destroyed(view) {
+            return;
+        }
+        if let Err(error) = result {
             return responder.reply(Ok(fail(error)));
         }
         let stat = match std::fs::metadata(&file_path) {
@@ -469,7 +477,6 @@ pub(super) fn entries(
             jscompat::number_to_string(mtime_ms(&stat)),
             jscompat::number_to_string(size)
         );
-        let (offset, max_chars) = (to_number(args.get(1)), to_number(args.get(2)));
         let slice = move |text: &str| {
             let start = floor_or(offset, 0.0).max(0.0);
             let size = floor_or(max_chars, 1.0).clamp(1.0, READ_MAX_CHARS);
@@ -499,6 +506,9 @@ pub(super) fn entries(
             &sv,
             move || en.parse_file_to_text(Path::new(&path)),
             move |parsed| {
+                if editors.docs.is_destroyed(view) {
+                    return;
+                }
                 let text = match parsed {
                     p if p.ok && p.kind.as_deref() == Some("text") && p.text.is_some() => {
                         p.text.unwrap_or_default()
@@ -514,6 +524,7 @@ pub(super) fn entries(
                 responder.reply(Ok(slice(&text)))
             },
         );
+        }));
     }));
 
     let (e, sv) = (Rc::clone(editors), services.clone());

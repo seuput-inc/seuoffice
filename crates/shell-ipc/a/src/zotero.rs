@@ -983,6 +983,7 @@ mod tests {
             },
             request: None,
             cancel: cancel.clone(),
+            native: None,
         }
     }
 

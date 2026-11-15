@@ -22,7 +22,7 @@ use saxes::{Error as SaxError, Handler, HandlerResult, Options, Parser, Str, Tag
 use serde_json::{Value, json};
 
 use crate::utf16::{index_of, is_space, lossy, to_wire, units};
-use crate::xml::host_thrown;
+use crate::xml::{HostCall, host_thrown};
 use crate::xml_positions_types::{
     ElementId, OtherKind, Thrown, XmlAttribute, XmlDocument, XmlElement, XmlHost, XmlNode,
     XmlOther, XmlParseResult, XmlText, resolve_reference,
@@ -54,11 +54,17 @@ pub fn resolve_html_entity(name: &[u16]) -> Result<Option<String>, Thrown> {
     if let Some(known) = HTML_ENTITY_CACHE.with(|cache| cache.borrow().get(name).cloned()) {
         return Ok(known);
     }
+    let value = resolve_html_entity_using(name, &seu_host::call)?;
+    HTML_ENTITY_CACHE.with(|cache| cache.borrow_mut().insert(name.to_vec(), value.clone()));
+    Ok(value)
+}
+
+fn resolve_html_entity_using(name: &[u16], host: &HostCall<'_>) -> Result<Option<String>, Thrown> {
     let mut value = None;
     if is_entity_name(name) {
         let name_text = lossy(name);
         let reference = format!("&{name_text};");
-        let decoded = seu_host::call("epub.parseFragmentText", &json!({ "html": reference }))
+        let decoded = host("epub.parseFragmentText", &json!({ "html": reference }))
             .map_err(host_thrown)?;
         // a legacy prefix match (`&notin` read as `&not` + `in;`) leaves the `;` behind
         if let Some(decoded) = decoded.as_str()
@@ -68,7 +74,6 @@ pub fn resolve_html_entity(name: &[u16]) -> Result<Option<String>, Thrown> {
             value = Some(decoded.to_owned());
         }
     }
-    HTML_ENTITY_CACHE.with(|cache| cache.borrow_mut().insert(name.to_vec(), value.clone()));
     Ok(value)
 }
 
@@ -83,6 +88,24 @@ impl XmlHost for PositionsHost {
 
     fn resolve_html_entity(&self, name: &str) -> Result<Option<String>, Thrown> {
         resolve_html_entity(&units(name))
+    }
+}
+
+struct RequestPositionsHost<'a> {
+    call: &'a HostCall<'a>,
+    entities: RefCell<HashMap<String, Option<String>>>,
+}
+
+impl XmlHost for RequestPositionsHost<'_> {
+    fn parse_xml(&self, source: &[u16]) -> Result<XmlParseResult, Thrown> {
+        Ok(parse_xml_using(source, self))
+    }
+
+    fn resolve_html_entity(&self, name: &str) -> Result<Option<String>, Thrown> {
+        if let Some(value) = self.entities.borrow().get(name).cloned() { return Ok(value); }
+        let value = resolve_html_entity_using(&units(name), self.call)?;
+        self.entities.borrow_mut().insert(name.to_owned(), value.clone());
+        Ok(value)
     }
 }
 
@@ -112,6 +135,10 @@ fn ends_reference(unit: u16) -> bool {
 /// three alternatives of `REFERENCE` all read one run of `[^\s&;<]` after the
 /// `&` and a `;`, so a reference is that run.
 pub fn decode_character_data(raw: &[u16], with_html: bool) -> Result<Vec<u16>, Thrown> {
+    decode_character_data_using(raw, with_html, &PositionsHost)
+}
+
+fn decode_character_data_using(raw: &[u16], with_html: bool, host: &dyn XmlHost) -> Result<Vec<u16>, Thrown> {
     let text = normalize_newlines(raw);
     let mut out = Vec::with_capacity(text.len());
     let mut i = 0;
@@ -123,7 +150,7 @@ pub fn decode_character_data(raw: &[u16], with_html: bool) -> Result<Vec<u16>, T
             }
             if end > i + 1 && text.get(end) == Some(&0x3B) {
                 out.extend(resolve_reference(
-                    &PositionsHost,
+                    host,
                     &text[i + 1..end],
                     with_html,
                 )?);
@@ -164,6 +191,7 @@ enum End {
 
 struct Reader<'a> {
     source: &'a [u16],
+    host: &'a dyn XmlHost,
     elements: Vec<XmlElement>,
     stack: Vec<ElementId>,
     root: Option<ElementId>,
@@ -188,7 +216,7 @@ impl Reader<'_> {
         }
         let length = self.source.len();
         let raw = &self.source[start.min(length)..end.min(length)];
-        let value = decode_character_data(raw, self.has_doctype).map_err(sax_error)?;
+        let value = decode_character_data_using(raw, self.has_doctype, self.host).map_err(sax_error)?;
         self.elements[parent].children.push(XmlNode::Text(XmlText {
             start,
             end,
@@ -229,7 +257,7 @@ impl Handler for Reader<'_> {
         if !self.has_doctype {
             return Ok(None);
         }
-        Ok(resolve_html_entity(name)
+        Ok(self.host.resolve_html_entity(&lossy(name))
             .map_err(sax_error)?
             .map(|value| units(&value)))
     }
@@ -341,8 +369,19 @@ impl Handler for Reader<'_> {
 /// every node. It never throws: what the parser or a step of the host throws
 /// is the error of the result.
 pub fn parse_xml(source: &[u16]) -> XmlParseResult {
+    parse_xml_using(source, &PositionsHost)
+}
+
+/// Position-preserving XML parsing with only this request's entity resolver.
+pub fn parse_xml_with_host(source: &[u16], host: &HostCall<'_>) -> XmlParseResult {
+    let request = RequestPositionsHost { call: host, entities: RefCell::new(HashMap::new()) };
+    parse_xml_using(source, &request)
+}
+
+fn parse_xml_using(source: &[u16], host: &dyn XmlHost) -> XmlParseResult {
     let mut reader = Reader {
         source,
+        host,
         elements: Vec::new(),
         stack: Vec::new(),
         root: None,

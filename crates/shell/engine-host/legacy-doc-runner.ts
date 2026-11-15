@@ -1,0 +1,43 @@
+import type { LegacyDocResult } from './legacy-doc'
+
+/** Each request has its own realm so abort terminates the actual conversion. */
+export function runLegacyDoc(input: unknown, signal: AbortSignal): Promise<LegacyDocResult> {
+  signal.throwIfAborted()
+  const worker = new Worker(new URL('./legacy-doc-worker.js', document.baseURI), { type: 'module' })
+  const { promise, resolve, reject } = Promise.withResolvers<LegacyDocResult>()
+  let settled = false
+  const finish = (error?: Error, value?: LegacyDocResult) => {
+    if (settled) return
+    settled = true
+    signal.removeEventListener('abort', abort)
+    worker.terminate()
+    if (error) reject(error)
+    else resolve(value!)
+  }
+  const abort = () => finish(new DOMException('The job was cancelled', 'AbortError'))
+  signal.addEventListener('abort', abort, { once: true })
+  worker.onerror = event => finish(new Error(event.message || 'Legacy DOC conversion worker failed'))
+  worker.onmessageerror = () => finish(new Error('Legacy DOC conversion worker returned an invalid message'))
+  worker.onmessage = event => {
+    const reply: unknown = event.data
+    if (reply && typeof reply === 'object' && 'ok' in reply && reply.ok === true && 'value' in reply &&
+        reply.value && typeof reply.value === 'object' && 'docx' in reply.value && typeof reply.value.docx === 'string' &&
+        'warnings' in reply.value && Array.isArray(reply.value.warnings) && reply.value.warnings.every(item => typeof item === 'string')) {
+      finish(undefined, { docx: reply.value.docx, warnings: reply.value.warnings })
+    } else if (reply && typeof reply === 'object' && 'ok' in reply && reply.ok === false &&
+               'name' in reply && typeof reply.name === 'string' && 'message' in reply && typeof reply.message === 'string') {
+      const failure = new Error(reply.message)
+      failure.name = reply.name
+      finish(failure)
+    } else {
+      finish(new Error('Legacy DOC conversion worker returned an invalid reply'))
+    }
+  }
+  try {
+    worker.postMessage(input)
+    if (signal.aborted) abort()
+  } catch (error) {
+    finish(error instanceof Error ? error : new Error(String(error)))
+  }
+  return promise
+}

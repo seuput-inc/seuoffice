@@ -1,18 +1,4 @@
-//! The hosts of batch W's own handlers (`crates/shell-ipc/w`): each handler
-//! module defines the trait it needs, and this file puts an implementation in
-//! [`Hosts`]. What the shell can do now is real (the clock); the rest is
-//! [`unbuilt`], logged stubs that a later unit replaces trait by trait.
-//!
-//! | trait | now |
-//! | --- | --- |
-//! | `editor_files::Clock` | real |
-//! | `quick_look::QuickLookRuntime`, `QuickLookWindow`, `main_core`'s `QuickLookEngines` | stub (the preview window, the Explorer hook and the tray, the zip and text engines) |
-//! | `doc_picker::DocPickerWindow`, `DocPickerSources` | stub |
-//! | `editor_files::DocsTabs`, `SheetsTabs`, `OpenFiles`, `FileParse`, `UiLanguage` | stub |
-//! | `home_files::HomeFiles`, `FileSearch`, `FolderWatch` | stub |
-//! | `home_settings::HomeApp` | stub |
-//! | `tabs::WindowsHost` | stub: the window system of the tab strip ([`super::window::Windows`] has the Tauri half) |
-//! | `tabs::TabHooks` (provided, on the core thread) | stub, [`register_hooks`] |
+//! Batch W's process clock and core-thread access to registered services.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -23,18 +9,10 @@ use shell_contract::Hosts;
 use shell_contract::ipc::{RegisterError, Registry};
 use shell_contract::provided::Provided;
 use shell_contract::runtime::{Services, run_on};
-use shell_ipc_w::doc_picker::{DocPickerSourcesHost, DocPickerWindowHost};
-use shell_ipc_w::editor_files::{
-    Clock, ClockHost, DocsTabsHost, FileParseHost, OpenFilesHost, SheetsTabsHost, UiLanguageHost,
-};
-use shell_ipc_w::home_files::{FileSearchHost, FolderWatchHost, HomeFilesHost};
-use shell_ipc_w::home_settings::HomeAppHost;
-use shell_ipc_w::projects::host::{LegacyProjectStoreHost, ProjectFilesHost, ProjectsHostRef};
-use shell_ipc_w::quick_look::{QuickLookEnginesHost, QuickLookHost, QuickLookWindowHost};
-use shell_ipc_w::tabs::{TabHooks, WindowsHostRef};
+use shell_ipc_w::editor_files::{Clock, ClockHost};
+use shell_ipc_w::tabs::TabHooks;
 
 use super::HostContext;
-use super::unbuilt::Unbuilt;
 
 /// `Date.now()`
 struct SystemClock;
@@ -48,43 +26,10 @@ impl Clock for SystemClock {
 }
 
 pub fn install(hosts: &mut Hosts, _cx: &HostContext) {
-    install_hosts(hosts);
-}
-
-fn install_hosts(hosts: &mut Hosts) {
     let clock: ClockHost = Arc::new(SystemClock);
     hosts.insert(clock);
-
-    let stub = Arc::new(Unbuilt);
-    macro_rules! stubs {
-        ($($host:ty),* $(,)?) => {
-            $({
-                let host: $host = stub.clone();
-                hosts.insert(host);
-            })*
-        };
-    }
-    stubs!(
-        QuickLookHost,
-        QuickLookWindowHost,
-        QuickLookEnginesHost,
-        DocPickerWindowHost,
-        DocPickerSourcesHost,
-        DocsTabsHost,
-        SheetsTabsHost,
-        OpenFilesHost,
-        FileParseHost,
-        UiLanguageHost,
-        HomeFilesHost,
-        FileSearchHost,
-        FolderWatchHost,
-        HomeAppHost,
-        WindowsHostRef,
-        ProjectsHostRef,
-        ProjectFilesHost,
-        LegacyProjectStoreHost,
-    );
 }
+
 
 thread_local! {
     /// What the batches provide each other, kept on the core thread for the
@@ -110,6 +55,30 @@ pub(crate) fn on_core<R: Send + 'static>(
     }
 }
 
+/// Runs a non-Send continuation only on the owning core thread.
+/// Returns false before registration or when called from another thread.
+pub(crate) fn on_core_local(job: impl FnOnce(&Provided)) -> bool {
+    on_core_services_local(|provided, _| job(provided))
+}
+
+/// Read-only access to the already installed core services; never posts or waits.
+pub(crate) fn on_core_services_local(job: impl FnOnce(&Provided, &Services)) -> bool {
+    let Some(services) = SERVICES.get() else {
+        return false;
+    };
+    if !services.core.is_current() {
+        return false;
+    }
+    CORE_PROVIDED.with(|provided| {
+        let provided = provided.borrow();
+        let Some(provided) = provided.as_deref() else {
+            return false;
+        };
+        job(provided, services);
+        true
+    })
+}
+
 /// The batch that comes before the six: it adds what the shell provides on
 /// the core thread. `tabs::register` takes the first `TabHooks` it finds.
 /// Posts `job` to the core thread with its Provided and the shell's
@@ -128,159 +97,114 @@ pub(crate) fn post_core(job: impl FnOnce(&Provided, &Services) + Send + 'static)
     }));
 }
 
+struct CorePostFailure(Option<Box<dyn FnOnce() + Send>>);
+impl Drop for CorePostFailure {
+    fn drop(&mut self) {
+        if let Some(failure) = self.0.take() { failure(); }
+    }
+}
+
+/// Posts without waiting, reporting missing registration before or on the core task.
+pub(crate) fn post_core_checked(
+    job: impl FnOnce(&Provided, &Services) + Send + 'static,
+    on_unavailable: impl FnOnce() + Send + 'static,
+) {
+    let Some(services) = SERVICES.get().cloned() else {
+        on_unavailable();
+        return;
+    };
+    let core = services.core.clone();
+    let mut failure = CorePostFailure(Some(Box::new(on_unavailable)));
+    core.post(Box::new(move || {
+        let provided = CORE_PROVIDED.with(|provided| provided.borrow().clone());
+        if let Some(provided) = provided {
+            failure.0.take();
+            job(&provided, &services);
+        }
+    }));
+}
+
 pub fn register_hooks(
     registry: &mut dyn Registry,
     services: &Services,
 ) -> Result<(), RegisterError> {
     let _ = SERVICES.set(services.clone());
     let provided = registry.provided();
-    let hooks: Rc<dyn TabHooks> = Rc::new(Unbuilt);
+    let hooks = super::w_tabs::hooks(services, provided.clone())?;
     provided.add::<dyn TabHooks>(hooks);
     CORE_PROVIDED.with(|p| *p.borrow_mut() = Some(provided));
     Ok(())
 }
 
+
 #[cfg(test)]
-mod tests {
-    use std::path::Path;
-    use std::sync::Arc;
-
-    use shell_contract::hosts::{
-        Clipboard, Contents, Dialogs, FileDialog, MessageBox, MessageBoxAnswer, OsShell,
-    };
-    use shell_contract::ids::{ViewId, WindowId};
-    use shell_contract::ipc::{EventSink, Target};
-    use shell_contract::runtime::{Services, Thread, Views, Workers, run_on};
-    use shell_contract::value::IpcValue;
-    use shell_contract::{ClipboardHost, ContentsHost, DialogsHost, OsShellHost};
-    use shell_core::BATCHES;
-    use shell_core::core_thread::{CoreThread, ThreadWorkers};
-    use shell_core::table::{Completeness, build};
-
+mod checked_post_tests {
     use super::*;
-    use crate::ipc::outlet::TauriOutlet;
-    use crate::paths::ShellPaths;
-    use crate::views::ViewTable;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// The shared hosts that need a window system, answering nothing
-    struct Fake;
+    #[test]
+    fn discarded_guard_reports_failure_once_and_disarmed_guard_reports_nothing() {
+        let failures = Arc::new(AtomicUsize::new(0));
+        let observed = failures.clone();
+        let guard = CorePostFailure(Some(Box::new(move || { observed.fetch_add(1, Ordering::SeqCst); })));
+        drop(guard);
+        assert_eq!(failures.load(Ordering::SeqCst), 1);
+        let observed = failures.clone();
+        let mut guard = CorePostFailure(Some(Box::new(move || { observed.fetch_add(1, Ordering::SeqCst); })));
+        drop(guard.0.take());
+        drop(guard);
+        assert_eq!(failures.load(Ordering::SeqCst), 1);
+    }
 
-    impl Dialogs for Fake {
-        fn open(&self, _: Option<WindowId>, _: &FileDialog) -> Option<Vec<std::path::PathBuf>> {
-            None
-        }
-        fn save(&self, _: Option<WindowId>, _: &FileDialog) -> Option<std::path::PathBuf> {
-            None
-        }
-        fn message(&self, _: Option<WindowId>, _: &MessageBox) -> MessageBoxAnswer {
-            MessageBoxAnswer {
-                response: 0,
-                checkbox_checked: false,
+    #[test]
+    fn bounded_queue_outcomes_settle_one_terminal_path() {
+        // Model the actual guard transitions: queue rejection, queued missing
+        // registration, discard while entering, or accepted registered job.
+        for queued in [false, true] {
+            for registered in [false, true] {
+                for panic_before_disarm in [false, true] {
+                    let failures = Arc::new(AtomicUsize::new(0));
+                    let jobs = Arc::new(AtomicUsize::new(0));
+                    let observed = failures.clone();
+                    let mut guard = CorePostFailure(Some(Box::new(move || { observed.fetch_add(1, Ordering::SeqCst); })));
+                    if queued && registered && !panic_before_disarm {
+                        drop(guard.0.take());
+                        jobs.fetch_add(1, Ordering::SeqCst);
+                    }
+                    drop(guard);
+                    assert_eq!(failures.load(Ordering::SeqCst) + jobs.load(Ordering::SeqCst), 1);
+                    assert_eq!(jobs.load(Ordering::SeqCst), usize::from(queued && registered && !panic_before_disarm));
+                }
             }
         }
-        fn error(&self, _: &str, _: &str) {}
     }
 
-    impl OsShell for Fake {
-        fn open_external(&self, _: &str) -> Result<(), String> {
-            Ok(())
-        }
-        fn open_path(&self, _: &Path) -> String {
-            String::new()
-        }
-        fn show_item_in_folder(&self, _: &Path) {}
-        fn trash_item(&self, _: &Path) -> Result<(), String> {
-            Ok(())
-        }
-    }
-
-    impl Clipboard for Fake {
-        fn read_text(&self) -> String {
-            String::new()
-        }
-        fn write_text(&self, _: &str) {}
-        fn read_html(&self) -> String {
-            String::new()
-        }
-        fn write_html(&self, _: &str, _: Option<&str>) {}
-        fn read_image_png(&self) -> Vec<u8> {
-            Vec::new()
-        }
-        fn write_image_png(&self, _: &[u8]) {}
-        fn available_formats(&self) -> Vec<String> {
-            Vec::new()
-        }
-    }
-
-    impl Contents for Fake {
-        fn window_of(&self, _: ViewId) -> Option<WindowId> {
-            None
-        }
-        fn capture_png(&self, _: ViewId) -> Result<Vec<u8>, String> {
-            Err("fake".into())
-        }
-        fn print_to_pdf(&self, _: ViewId, _: IpcValue) -> Result<Vec<u8>, String> {
-            Err("fake".into())
-        }
-        fn print(&self, _: ViewId, _: IpcValue) -> Result<bool, String> {
-            Ok(false)
-        }
-        fn zoom_factor(&self, _: ViewId) -> f64 {
-            1.0
-        }
-        fn set_zoom_factor(&self, _: ViewId, _: f64) {}
-        fn focus(&self, _: ViewId) {}
-        fn close_window(&self, _: WindowId) {}
-    }
-
-    struct NoEvents;
-
-    impl EventSink for NoEvents {
-        fn emit(&self, _: Target, _: &'static str, _: Vec<IpcValue>) {}
-    }
-
-    /// The shell starts with the stubs: every batch registers, `tabs` finds its hooks
     #[test]
-    fn the_batches_register_over_the_stubs() {
-        let core = CoreThread::spawn("w-test-core");
-        let core_thread: Arc<dyn Thread> = core.clone();
-        let outlet = Arc::new(TauriOutlet::default());
-        let views = Arc::new(ViewTable::new(outlet, core_thread.clone()));
-        let mut hosts = Hosts::default();
-        let dialogs: DialogsHost = Arc::new(Fake);
-        let os: OsShellHost = Arc::new(Fake);
-        let clipboard: ClipboardHost = Arc::new(Fake);
-        let contents: ContentsHost = Arc::new(Fake);
-        hosts.insert(dialogs);
-        hosts.insert(os);
-        hosts.insert(clipboard);
-        hosts.insert(contents);
-        crate::host::window::install_main_window(&mut hosts, &views);
-        install_hosts(&mut hosts);
-        crate::host::install_process_state(&mut hosts);
-        // A's, M's and U's own hosts come from their host files with an AppHandle; their fakes stand in here
-        shell_ipc_a::probe_hosts(&mut hosts, &serde_json::Value::Null);
-        shell_ipc_m::probe_hosts(&mut hosts, &serde_json::Value::Null);
-        shell_ipc_u::probe_hosts(&mut hosts, &serde_json::Value::Null);
-        let ui: Arc<dyn Thread> = CoreThread::spawn("w-test-ui");
-        let services = Services {
-            ui,
-            core: core_thread.clone(),
-            workers: Arc::new(ThreadWorkers) as Arc<dyn Workers>,
-            events: Arc::new(NoEvents),
-            views: views as Arc<dyn Views>,
-            paths: Arc::new(ShellPaths::new()),
-            hosts: Arc::new(hosts),
-        };
-        let batches: Vec<_> = std::iter::once(register_hooks as shell_contract::ipc::RegisterBatch)
-            .chain(BATCHES.iter().copied())
-            .collect();
-        let registered = run_on(core.as_ref(), move || {
-            build(&services, &batches, Completeness::AsRegistered)
-                .map(|table| table.len())
-                .map_err(|e| format!("{e:?}"))
+    fn failure_callback_can_reenter_its_own_completion_slot() {
+        let slot = Arc::new(std::sync::Mutex::new(Some(7)));
+        let other = slot.clone();
+        let guard = CorePostFailure(Some(Box::new(move || {
+            assert_eq!(other.lock().unwrap().take(), Some(7));
+        })));
+        drop(guard);
+        assert!(slot.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn unwind_before_entry_reports_failure_but_job_panic_after_entry_does_not() {
+        let failures = Arc::new(AtomicUsize::new(0));
+        let observed = failures.clone();
+        let _ = std::panic::catch_unwind(move || {
+            let _guard = CorePostFailure(Some(Box::new(move || { observed.fetch_add(1, Ordering::SeqCst); })));
+            panic!("discarded before registration");
         });
-        let count = registered.expect("every batch registers");
-        assert!(count > 100, "{count} handlers");
+        assert_eq!(failures.load(Ordering::SeqCst), 1);
+        let observed = failures.clone();
+        let _ = std::panic::catch_unwind(move || {
+            let mut guard = CorePostFailure(Some(Box::new(move || { observed.fetch_add(1, Ordering::SeqCst); })));
+            drop(guard.0.take());
+            panic!("accepted job failed");
+        });
+        assert_eq!(failures.load(Ordering::SeqCst), 1);
     }
 }

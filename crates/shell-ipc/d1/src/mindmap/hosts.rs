@@ -53,7 +53,7 @@ pub struct OpenOutcome {
 /// The xmind engine (not in Rust)
 pub trait XmindEngine: Send + Sync {
     /// `openXmind(bytes)` of `@seuoffice/xmind-engine`
-    fn open_xmind(&self, bytes: &[u8]) -> OpenOutcome;
+    fn open_xmind(&self, bytes: &[u8]) -> Result<OpenOutcome, String>;
 }
 
 pub type XmindEngineHost = Arc<dyn XmindEngine>;
@@ -112,6 +112,10 @@ pub trait PageRenderer: Send + Sync {
     /// `pageToPdf(html)` of `export-main.ts`: the page as a one-page
     /// landscape A4 PDF; blocks, run on a worker
     fn page_to_pdf(&self, html: &str) -> Result<Vec<u8>, String>;
+    fn page_to_pdf_owned(&self, html: &str, origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, participants: &[shell_contract::ipc::NativeRequestOwner], additional: &[shell_contract::runtime::CancelToken]) -> Result<Vec<u8>, String>;
+    fn page_to_pdf_native(&self, html: &str, binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+        participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken]) -> Result<Vec<u8>, String>;
 }
 
 pub type PageRendererHost = Arc<dyn PageRenderer>;
@@ -124,14 +128,21 @@ pub type PageRendererHost = Arc<dyn PageRenderer>;
 pub trait MindmapShell: Send + Sync {
     /// `fileSavedHook(wc, path)`: a save landed on a new path
     fn file_saved(&self, _view: ViewId, _path: &str) {}
+    fn file_saved_owned(&self, origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost, path: std::path::PathBuf, done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>);
+    fn file_saved_existing_document(&self, revision: shell_contract::ipc::NativeSaveRevisionAuthority, expected_path: std::path::PathBuf,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken, additional: Vec<shell_contract::runtime::CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost,
+        on_revision: std::rc::Rc<dyn Fn(&shell_contract::ipc::NativeSaveRevisionReceipt) -> Result<(), String>>,
+        done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>);
     /// `makeFromDocumentHook(wc)`
-    fn make_from_document(&self, _view: ViewId) {}
+    fn make_from_document(&self, cx: shell_contract::ipc::CallContext);
     /// `recoveryTitleHook(wc)`: the tab title of an untitled map
     fn recovery_title(&self, _view: ViewId) -> Option<String> {
         None
     }
     /// `provisionalTitleHook(wc, title)`
     fn provisional_title(&self, _view: ViewId, _title: &str) {}
+    fn reload_view(&self, view: ViewId);
     /// `runtime.newDocumentDir(wcId)`: the project folder of an untitled map
     fn new_document_dir(&self, _view: ViewId) -> Option<String> {
         None
@@ -141,24 +152,15 @@ pub trait MindmapShell: Send + Sync {
     fn has_new_document_writer(&self) -> bool {
         false
     }
-    /// `runtime.writeNewDocument(wcId, fileName, bytes)`: the path written,
-    /// `Ok(None)` when it wrote nothing for lack of a project
-    fn write_new_document(
-        &self,
-        _view: ViewId,
-        _file_name: &str,
-        _bytes: &[u8],
-    ) -> Result<Option<String>, String> {
-        Ok(None)
-    }
+    fn write_new_document_owned(&self, origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, effects: &shell_contract::hosts::OwnedEffectsHost, admission: main_core::packages::electron_utils::atomic_write::owned::Admission, file_name: &str, bytes: &[u8]) -> Result<Option<String>, String>;
     /// `isPathOpenElsewhere(path)`: the probe of `save-conflict`
     fn is_path_open_elsewhere(&self, path: &str) -> bool;
     /// `assertFileSaved(path)`: `Err(message)` for a file open with unsaved changes
-    fn assert_file_saved(&self, path: &str) -> Result<(), String>;
+    fn assert_file_saved(&self, path: String, then: Box<dyn FnOnce(Result<(), String>) + Send>);
     /// `takeGenerateHandoff('mindmap', webContentsId)`
-    fn take_generate_handoff(&self, view: ViewId) -> Option<GenerateHandoff>;
+    fn take_generate_handoff_owned(&self, consumer: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken) -> Result<Option<GenerateHandoff>, String>;
     /// `reportGenerateRunStarted('mindmap', webContentsId, paths)`
-    fn report_generate_run_started(&self, view: ViewId, paths: &[String]) -> bool;
+    fn report_generate_run_started_owned(&self, consumer: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, paths: &[String]) -> Result<bool, String>;
 }
 
 pub type MindmapShellHost = Arc<dyn MindmapShell>;
@@ -184,8 +186,8 @@ mod fakes {
 
     /// One fake for every mind map host. The case value (`hosts.d1.mindmap`):
     ///
-    /// - `openXmind`: statuses `[{status, detail?}]`, one per call; without
-    ///   them a map is bytes starting `XMIND`, `OLD` is legacy, `ENC`
+    /// - `openXmind`: `[{status, detail?}]` or `[{error}]`, one per call;
+    ///   otherwise a map is bytes starting `XMIND`, `OLD` is legacy, `ENC`
     ///   encrypted, empty unreadable, anything else rejected
     /// - `attachable`: `{exts, imageExts, maxBytes, imageMaxBytes}`
     /// - `parseFileToText`: `{"<path>": {ok, kind, text, damaged, error}}`;
@@ -199,7 +201,7 @@ mod fakes {
         script: Value,
         net: Arc<net::Net>,
         log: Option<ProbeLog>,
-        open_queue: Mutex<VecDeque<OpenOutcome>>,
+        open_queue: Mutex<VecDeque<Result<OpenOutcome, String>>>,
         handoff: Mutex<Option<GenerateHandoff>>,
     }
 
@@ -212,16 +214,21 @@ mod fakes {
                 .map(|items| {
                     items
                         .iter()
-                        .map(|item| OpenOutcome {
-                            status: item
-                                .get("status")
-                                .and_then(Value::as_str)
-                                .and_then(OpenStatus::parse)
-                                .unwrap_or(OpenStatus::Ok),
-                            detail: item
-                                .get("detail")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned),
+                        .map(|item| {
+                            if let Some(error) = item.get("error").and_then(Value::as_str) {
+                                return Err(error.to_owned());
+                            }
+                            Ok(OpenOutcome {
+                                status: item
+                                    .get("status")
+                                    .and_then(Value::as_str)
+                                    .and_then(OpenStatus::parse)
+                                    .unwrap_or(OpenStatus::Ok),
+                                detail: item
+                                    .get("detail")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_owned),
+                            })
                         })
                         .collect()
                 })
@@ -309,7 +316,7 @@ mod fakes {
     }
 
     impl XmindEngine for Fake {
-        fn open_xmind(&self, bytes: &[u8]) -> OpenOutcome {
+        fn open_xmind(&self, bytes: &[u8]) -> Result<OpenOutcome, String> {
             self.note(json!(["xmind-engine.openXmind", bytes.len()]));
             if let Some(scripted) = self.open_queue.lock().unwrap().pop_front() {
                 return scripted;
@@ -325,10 +332,10 @@ mod fakes {
             } else {
                 OpenStatus::Rejected
             };
-            OpenOutcome {
+            Ok(OpenOutcome {
                 status,
                 detail: Some("fake".into()),
-            }
+            })
         }
     }
 
@@ -412,14 +419,22 @@ mod fakes {
                 _ => Ok(b"%PDF-1.7".to_vec()),
             }
         }
+        fn page_to_pdf_owned(&self, html: &str, _origin: &shell_contract::ipc::NativeRequestOwner, _destination: &shell_contract::ipc::NativeRequestOwner, _cancel: &shell_contract::runtime::CancelToken, _pending: &shell_contract::runtime::CancelToken, _participants: &[shell_contract::ipc::NativeRequestOwner], _additional: &[shell_contract::runtime::CancelToken]) -> Result<Vec<u8>, String> {
+            self.page_to_pdf(html)
+        }
+        fn page_to_pdf_native(&self, html: &str, _binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+            _participants: &[shell_contract::ipc::NativeRequestOwner], _cancel: &shell_contract::runtime::CancelToken,
+            _pending: &shell_contract::runtime::CancelToken, _additional: &[shell_contract::runtime::CancelToken]) -> Result<Vec<u8>, String> {
+            self.page_to_pdf(html)
+        }
     }
 
     impl MindmapShell for Fake {
         fn file_saved(&self, view: ViewId, path: &str) {
             self.note(json!(["mindmap-main.fileSavedHook", view.0, path]));
         }
-        fn make_from_document(&self, view: ViewId) {
-            self.note(json!(["mindmap-main.makeFromDocumentHook", view.0]));
+        fn make_from_document(&self, cx: shell_contract::ipc::CallContext) {
+            self.note(json!(["mindmap-main.makeFromDocumentHook", cx.sender.view.0]));
         }
         fn recovery_title(&self, view: ViewId) -> Option<String> {
             self.note(json!(["mindmap-main.recoveryTitleHook", view.0]));
@@ -435,6 +450,9 @@ mod fakes {
                 title
             ]));
         }
+        fn reload_view(&self, view: ViewId) {
+            self.note(json!(["mindmap.reload", view.0]));
+        }
         fn new_document_dir(&self, view: ViewId) -> Option<String> {
             self.note(json!(["mindmap-main.newDocumentDir", view.0]));
             self.script
@@ -445,56 +463,74 @@ mod fakes {
         fn has_new_document_writer(&self) -> bool {
             self.script.get("writeNewDocument").is_some()
         }
-        fn write_new_document(
-            &self,
-            view: ViewId,
-            file_name: &str,
-            bytes: &[u8],
-        ) -> Result<Option<String>, String> {
-            self.note(json!([
-                "mindmap-main.writeNewDocument",
-                view.0,
-                file_name,
-                bytes.len()
-            ]));
-            let scripted = self.script.get("writeNewDocument");
-            match scripted {
-                Some(w) if w.get("error").is_some() => Err(text_of(w, "error")),
-                Some(w) => Ok(w.get("path").and_then(Value::as_str).map(str::to_owned)),
-                None => Ok(None),
-            }
+        fn write_new_document_owned(&self, _origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, _cancel: &shell_contract::runtime::CancelToken, _pending: &shell_contract::runtime::CancelToken, _effects: &shell_contract::hosts::OwnedEffectsHost, admission: main_core::packages::electron_utils::atomic_write::owned::Admission, file_name: &str, bytes: &[u8]) -> Result<Option<String>, String> {
+            let log = self.log.clone(); let call = json!(["mindmap-main.writeNewDocument", destination.view.0, file_name, bytes.len()]);
+            let scripted = self.script.get("writeNewDocument").cloned();
+            main_core::packages::electron_utils::atomic_write::owned::admitted(&admission, move || {
+                if let Some(log) = log { log.lock().unwrap().push(call); }
+                match scripted {
+                    Some(w) if w.get("error").is_some() => Err(text_of(&w, "error")),
+                    Some(w) => Ok(w.get("path").and_then(Value::as_str).map(str::to_owned)),
+                    None => Ok(None),
+                }
+            }).map_err(|error| error.message)?
+        }
+        fn file_saved_owned(&self, origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost, path: std::path::PathBuf, done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>) {
+            let result = effects.with_owned_effect_many_extra(origin, participants, cancel, pending, &additional.iter().collect::<Vec<_>>(), &mut || {
+                self.file_saved(destination.view, &path.to_string_lossy()); Ok(())
+            }).map(|()| shell_contract::hosts::SavedFile { path, session: shell_contract::hosts::SavedSessionReceipt::NoPublication });
+            done(result);
+        }
+        fn file_saved_existing_document(&self, revision: shell_contract::ipc::NativeSaveRevisionAuthority, expected_path: std::path::PathBuf,
+            participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken,
+            pending: shell_contract::runtime::CancelToken, additional: Vec<shell_contract::runtime::CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost,
+            _on_revision: std::rc::Rc<dyn Fn(&shell_contract::ipc::NativeSaveRevisionReceipt) -> Result<(), String>>,
+            done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>) {
+            let result = (|| {
+                let snapshot = revision.snapshot()?;
+                let path = expected_path.to_str().ok_or("The saved map path is not Unicode")?;
+                effects.with_native_save_revision_snapshot_effect(&snapshot, &participants, &cancel, &pending, &additional.iter().collect::<Vec<_>>(), &mut || {
+                    if snapshot.selection().path() != expected_path { return Err("The native save destination changed".into()); }
+                    self.file_saved(snapshot.selection().binding().owner().view, path); Ok(())
+                })?;
+                Ok(shell_contract::hosts::SavedFile { path: expected_path, session: shell_contract::hosts::SavedSessionReceipt::NoPublication })
+            })();
+            done(result);
         }
         fn is_path_open_elsewhere(&self, path: &str) -> bool {
             self.note(json!(["electron-utils.isPathOpenElsewhere", path]));
             self.list_has("openElsewhere", path)
         }
-        fn assert_file_saved(&self, path: &str) -> Result<(), String> {
+        fn assert_file_saved(&self, path: String, then: Box<dyn FnOnce(Result<(), String>) + Send>) {
             self.note(json!(["electron-utils.assertFileSaved", path]));
-            if self.list_has("unsaved", path) {
+            let result = if self.list_has("unsaved", &path) {
                 Err(
                     main_core::packages::electron_utils::unsaved_files::UNSAVED_CHANGES_MESSAGE
                         .to_owned(),
                 )
             } else {
                 Ok(())
-            }
+            };
+            then(result);
         }
-        fn take_generate_handoff(&self, view: ViewId) -> Option<GenerateHandoff> {
+        fn take_generate_handoff_owned(&self, consumer: &shell_contract::ipc::NativeRequestOwner, _cancel: &shell_contract::runtime::CancelToken) -> Result<Option<GenerateHandoff>, String> {
+            let view = consumer.view;
             self.note(json!([
                 "generate-handoff.takeGenerateHandoff",
                 "mindmap",
                 view.0
             ]));
-            self.handoff.lock().unwrap().take()
+            Ok(self.handoff.lock().unwrap().take())
         }
-        fn report_generate_run_started(&self, view: ViewId, paths: &[String]) -> bool {
+        fn report_generate_run_started_owned(&self, consumer: &shell_contract::ipc::NativeRequestOwner, _cancel: &shell_contract::runtime::CancelToken, paths: &[String]) -> Result<bool, String> {
+            let view = consumer.view;
             self.note(json!([
                 "generate-handoff.reportGenerateRunStarted",
                 "mindmap",
                 view.0,
                 paths
             ]));
-            true
+            Ok(true)
         }
     }
 }

@@ -3,7 +3,9 @@
 // SPDX-License-Identifier: MIT
 
 mod event_loop;
+pub(crate) mod focus;
 mod icon;
 mod monitor;
 mod webview;
 mod window;
+pub(crate) use webview::destroy_browser_host_window;

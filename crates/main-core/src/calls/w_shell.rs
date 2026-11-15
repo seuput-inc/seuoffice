@@ -72,7 +72,7 @@ pub(super) fn call(name: &str, args: &[Value], _cx: &mut Context) -> Option<Answ
             let bytes = unhex(str_arg(args, 1)?)?;
             let engines = SpecEngines { parse: None };
             Ok(Some(
-                extract_embedded_thumbnail(&engines, ext, &bytes).map_or(Value::Null, Value::from),
+                extract_embedded_thumbnail(&engines, ext, bytes).map_or(Value::Null, Value::from),
             ))
         })(),
         "extract.extractQuickLook" => (|| {
@@ -95,7 +95,7 @@ pub(super) fn call(name: &str, args: &[Value], _cx: &mut Context) -> Option<Answ
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
             };
-            let items = doc_list(&deps, &asker, options);
+            let items = doc_list(&deps, &asker, options).map_err(CallError::plain)?;
             let mut o = Map::new();
             o.insert("ok".into(), true.into());
             o.insert(
@@ -162,7 +162,7 @@ impl QuickLookEngines for SpecEngines {
         })
     }
 
-    fn open_zip(&self, _bytes: &[u8]) -> Option<Box<dyn ZipArchive>> {
+    fn open_zip(&self, _bytes: Vec<u8>) -> Option<Box<dyn ZipArchive>> {
         None
     }
 }
@@ -273,8 +273,8 @@ impl SpecDeps {
 }
 
 impl DocListDeps for SpecDeps {
-    fn open_documents(&self) -> Vec<OpenDocumentEntry> {
-        self.open.clone()
+    fn open_documents(&self) -> Result<Vec<OpenDocumentEntry>, String> {
+        Ok(self.open.clone())
     }
 
     fn recent(&self) -> Vec<RecentDocumentEntry> {
