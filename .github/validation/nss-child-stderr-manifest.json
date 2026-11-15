@@ -1,0 +1,73 @@
+{
+  "schema": "seuoffice-nss-child-stderr-input/v1",
+  "sourceParent": "54d63f2eb1d9b09c64e8afe70a324cad21863101",
+  "definitionParent": "0c4de3f8d29b273a50663b772ed97f2a1867812f",
+  "files": [
+    {
+      "path": "tools/nss-helper/hosted-proof.py",
+      "packet": "hosted-proof.py",
+      "baseObservedSha256": "375c023b06ed692114eb453d1f73f2fced83cedacf7057510239325798d456de",
+      "sha256": "af60d59c776a4b70c9639792f832af35ff0f1fb4f79e4cd9c602b9e785e01de7",
+      "size": 19621
+    },
+    {
+      "path": "tools/nss-helper/hosted-validation.py",
+      "packet": "hosted-validation.py",
+      "baseObservedSha256": "dea540c84dd6753db67bc42da5bc5a2847d078c5f854136157dd4b562ae81d44",
+      "sha256": "8e934995b8a0760dfd571a5814c6de4b047dcfd7af435bd39d3c9298bd5e294c",
+      "size": 12724
+    },
+    {
+      "path": "tools/nss-helper/test_fixture_utils.py",
+      "packet": "test_fixture_utils.py",
+      "baseObservedSha256": "e75a244548b6dd8ff14a1eaa5ccd56a190699700245a9de0cb690c15d107bfc2",
+      "sha256": "2e35455710078f3c3c1f4aac326dbfaaf7225d07b7c321987c2875d3fdcff592",
+      "size": 6094
+    },
+    {
+      "path": "crates/shell/src/host/d2/pdf/crypto/worker/nss_bundle.rs",
+      "packet": "nss_bundle.rs",
+      "baseObservedSha256": "8c4b9e9882a72e9f079ee71cdb3b8f00d6234e6ef3a6a7265f27c4049cd555a3",
+      "sha256": "99823ee7b85e5ef82b2569d2b9993e3e6aaab2c4913721c86895a5638d38d21f",
+      "size": 16404
+    }
+  ],
+  "observedFailure": {
+    "run": "43708092084",
+    "artifact": "14159941224",
+    "sha256": "e8415138d393b9627606913446ab04aff27b99c65b640b968c59cf510bf15f14",
+    "failure": "protected external token not exercised",
+    "status": null,
+    "prompts": null,
+    "sourcePrepush": 0,
+    "definitionPrepush": 0,
+    "fixtureTestsPassed": 6,
+    "exportAndDerExitCodes": 0
+  },
+  "observationOnly": true,
+  "testBuild": {
+    "package": "nss-launcher-fixture",
+    "command": "cargo rustc --manifest-path <fixture>/Cargo.toml --bin nss-launcher-fixture -- --cfg test",
+    "defaultProduct": "cfg(not(test)) stderr_path=/dev/null",
+    "otherCrateTests": "compile-time CARGO_PKG_NAME mismatch keeps /dev/null",
+    "hostedTestOnly": "cfg(test) plus compile-time exact fixture package selects /proc/self/fd/2; no runtime env/user option or caller-selected path/FD",
+    "actualSpawn": "same VerifiedNssBundle::spawn_helper -> high_duplicate -> mappings -> fork_exec",
+    "productionSpawnCaller": "crates/shell/src/host/d2/pdf/crypto/worker.rs:357",
+    "hostedSpawnCaller": "tools/nss-helper/launcher.rs:31",
+    "stderrDrain": "concurrent reader continues through EOF; first16384bytes retained; known synthetic PIN/store/export passwords removed before output; normalized UTF8 stderr output capped16384bytes",
+    "stdoutOrProtocolFramesLogged": false
+  },
+  "validation": {
+    "allProtocolPhases": "phase/returncode/terminalstatus/promptcount",
+    "fixtureTests": "full unfiltered test_fixture_utils.py including real child >pipe capacity drain and credential-redaction regressions",
+    "policy": "independent genuine frozen prepush job on same exactS/D; no continue-on-error/skip or success relabel; wholeworkflowFAIL if policyFAIL; exact current bases",
+    "rhwpPreparation": "existing canonical source-only prerequisite/pins, no modified tool/policy"
+  },
+  "rootAuthorizations": [
+    "hub-mini-nss-real-spawn-test-seam-approved-20261115-2",
+    "hub-mini-nss-independent-diagnostic-and-policy-jobs-20261115-1"
+  ],
+  "unchanged": "status acceptance/timeout/helper C/launcher source/pins/crypto/protected-provider behavior/IPC403",
+  "newRuntimeObserved": false,
+  "observerOnlyEarlierInputDispatched": false
+}
