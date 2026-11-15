@@ -5,8 +5,8 @@ set -eu
 : "${TAURI_CRATE_ARCHIVE:?Set to the tauri-3.0.0-alpha.6.crate archive}"
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 sha256() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d ' ' -f 1
-  else shasum -a 256 "$1" | cut -d ' ' -f 1
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum < "$1" | cut -d ' ' -f 1
+  else shasum -a 256 < "$1" | cut -d ' ' -f 1
   fi
 }
 [ "$(sha256 "$TAURI_CRATE_ARCHIVE")" = "4b0cad7bd420aa41bdf7beab9a95e02d83c4cab1cb6f7b94fe4fd1e0c605feaa" ] || { echo 'Tauri archive checksum mismatch' >&2; exit 1; }

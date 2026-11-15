@@ -70,7 +70,7 @@ export function nativeContractCoverage(batch: string, specs: readonly CanonicalS
     if (!spec || spec.namespace !== 'native') problems.push('missing native namespace registration')
     const expectedSurfaces = contract.surfaces.map(pascal)
     if (spec && (spec.batch !== contract.batch
-      || spec.kinds.length !== contract.kinds.length || spec.kinds.some((kind) => !contract.kinds.includes(kind))
+      || spec.kinds.length !== contract.kinds.length || spec.kinds.some((kind) => !contract.kinds.some((expected) => expected === kind))
       || spec.surfaces.length !== expectedSurfaces.length || spec.surfaces.some((surface) => !expectedSurfaces.includes(surface)))) {
       problems.push('native registration batch, kinds or surfaces differ')
     }

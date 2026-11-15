@@ -161,7 +161,7 @@ version = "7"
 optional = true
 
 [dependencies.secure-gate]
-version = "=0.9.0-rc.19"
+version = "=0.9.0"
 features = ["alloc"]
 optional = true
 default-features = false

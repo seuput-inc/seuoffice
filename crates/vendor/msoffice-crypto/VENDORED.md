@@ -18,4 +18,12 @@ its persist directory instead of reproducing the original's directory count
 change, which can produce a file PowerPoint rejects. Persist objects on either
 side of the directory are decrypted up to the next object or metadata boundary.
 
+The exact `secure-gate` dependency is pinned to the non-yanked `0.9.0` release
+instead of `0.9.0-rc.19`. The crates.io archive SHA-256 values are
+`5db1026e7e1438a8b66f8c1e9dd21ce4d09800f328e4e421c5edd99d12967b5c` and
+`02dde514c5490c222438491af9bd77446148b6d26630c69072a047b713d58fed`,
+respectively. Comparing those verified archives found only documentation edits
+in the Rust source; dependency requirements, default features, MSRV and license
+contents are unchanged. This source comparison is not an integration-test result.
+
 No hosted build or verification has been performed on this fork.
