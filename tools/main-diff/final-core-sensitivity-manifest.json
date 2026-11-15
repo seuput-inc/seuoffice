@@ -1,0 +1,538 @@
+{
+  "contract": "final-core-sensitivity-manifest/v1",
+  "scope": "ten-final-original-misses-retained-sensitivity-only",
+  "canonicalObjectHashContract": "sha256-json-stringify-utf8/v1",
+  "productSha": "3e5a4b02fd395c09a63bf64791b9d33e67570b26",
+  "parentProductSha": "ed559ed6a54c8b4c5ef0afecfe6f980d4d2b85a1",
+  "modules": {
+    "tools/main-diff/faults.mjs": "c3d271eb6a29334e1f4a0a372128aac66ad912dbf3723217ffe3182524c2249f",
+    "tools/main-diff/mutation-evidence.mjs": "119135f6a2e4ac7cafc0ac17e05af39db073dcb8601ecf25a17f7ffb975841c0"
+  },
+  "sourceLineage": [
+    {
+      "path": "crates/main-core/src/calls/b5_kb.rs",
+      "parentSha256": "649cb4d1a77ed39e1689f0e65ba7d9b55918e70de2cf76a9757a8740b3bed6d8",
+      "productSha256": "5b1ffa143b9b593c9ab343a0a451c0db1ce553732b2bc3044614200fce1ed3b3"
+    },
+    {
+      "path": "crates/main-core/src/calls/b5_provider/subscription.rs",
+      "parentSha256": "eb62ea2fe8ee11819986e85281e3c5809c9b86df88a7b864be2e27e98b875503",
+      "productSha256": "fcddcc4d5491fd12374109f18eec0805b672f0fafd20afe5fa9382d50462bc9b"
+    },
+    {
+      "path": "docs/seuoffice/core-fault-followups.md",
+      "parentSha256": "e6031c1135aacaa7610d7709c2c3f77d297c0855465daa0ff5c81415ccedc715",
+      "productSha256": "dac25bb66bbd1024e43a660ca0051cdc4aac20f91e9ded6d4aa9a087565b474a"
+    },
+    {
+      "path": "tools/main-diff/groups/b4-fonts.ts",
+      "parentSha256": "291f371d650f802cc6dff1f05e8b1e713f8d381dbfb033f3ab6f05a7aa08b579",
+      "productSha256": "52020ef975443669eb757d94f93740f3a0a1bb735e896c6c678dc3cee47cc5ee"
+    },
+    {
+      "path": "tools/main-diff/groups/b5-kb.ts",
+      "parentSha256": "58e0339ff263d7d04a8388e9e5de2ab033519e73bfb2c3c3145119d8a1d789dd",
+      "productSha256": "37f0c3d4a2d4f47cd2f3b3075d8be4664fcf2e0f445fe7afb31d27c2a412ded4"
+    },
+    {
+      "path": "tools/main-diff/groups/b5-provider/claude.ts",
+      "parentSha256": "15be1b6dc68e7bf0a1f6b5021978cf45a2b9cf07bd9b24f2b0a8060003302242",
+      "productSha256": "ee2a1eed998e54909554a21d8f40bb1c2237191b2d83223d1a409cc873bf5f61"
+    },
+    {
+      "path": "tools/main-diff/groups/b5-provider/subscription.ts",
+      "parentSha256": "7df2a57cd14ec203c488a10b926d7ad8a29beb48d8624d190341cc7ddcff138f",
+      "productSha256": "27b8e360be5cd5f0cc11f2b9c69d0eb5d89be1d3a56e0da80f68007488151549"
+    }
+  ],
+  "metadataLineage": [],
+  "normalOracleEvidence": {
+    "scope": "ten-normal-typescript-observations-only",
+    "path": "final-ten-normal-oracles.json",
+    "rawSha256": "bb063e723d63e43e56b31daf604ebf2f6044612592295d65e7c8c97f08a9a65c",
+    "wasmSha256": "4759268735a30c7ae599f64be83c06c8d405f599bd66eb395c1d9c09834abe56",
+    "nativeExecuted": false
+  },
+  "prerequisite": {
+    "runId": "43661410435",
+    "attempt": 1,
+    "definitionSha": "0bb185157ba56c8dbdc2a685b2280ef0abb293ef",
+    "definitionRef": "ci/stage2-final-ten-validation",
+    "productSha": "3e5a4b02fd395c09a63bf64791b9d33e67570b26",
+    "requiredJobs": [
+      "main-hosted-prepush",
+      "main-baseline-only (ubuntu-latest, linux)",
+      "main-baseline-only (windows-latest, windows)"
+    ],
+    "requiredArtifacts": [
+      "main-validation-hosted-prepush",
+      "main-validation-baseline-linux",
+      "main-validation-baseline-windows"
+    ],
+    "requiredSteps": {
+      "main-hosted-prepush": [
+        "Verify fixed source and proposal bindings",
+        "Install exact source dependencies",
+        "Run the unchanged source prepush against the exact base",
+        "Keep hosted prepush evidence"
+      ],
+      "main-baseline-only (ubuntu-latest, linux)": [
+        "Verify both immutable checkouts",
+        "Verify fixed validation source and proposal bindings",
+        "Build exact product WASM",
+        "Inventory every selected product case",
+        "Full central process comparison",
+        "Audit function and case completeness",
+        "Bind fixed inventory and source to the baseline result",
+        "Keep baseline evidence"
+      ],
+      "main-baseline-only (windows-latest, windows)": [
+        "Verify both immutable checkouts",
+        "Verify fixed validation source and proposal bindings",
+        "Build exact product WASM",
+        "Inventory every selected product case",
+        "Windows error table against libuv",
+        "Windows central process comparison",
+        "Audit function and case completeness",
+        "Bind fixed inventory and source to the baseline result",
+        "Keep baseline evidence"
+      ]
+    }
+  },
+  "jobs": [
+    {
+      "key": "fonts-3",
+      "catalog": "tools/main-diff/faults/b4-fonts.json",
+      "catalogSha256": "a3c2fa512061b5cd587077c91b7581697436f197796d5643b18dafce8cd938bf",
+      "catalogLength": 108,
+      "targetIndex": 3,
+      "shard": 3,
+      "shards": 108,
+      "originalShard": 3,
+      "indices": [0, 3],
+      "entries": [
+        {
+          "index": 0,
+          "mutationSha256": "c75d2ec02e24396e2dec47de4de4ccc2f80a0e7c5510a6b19baa06fbd04f5fd6"
+        },
+        {
+          "index": 3,
+          "mutationSha256": "ffd5365301b205340273d666da5b96ea3d9a4f8e8c582a35f53a2918b68910dc"
+        }
+      ],
+      "baselineExpected": [
+        { "group": "b4-fonts", "name": "family-info.familyInfoFor", "checks": 24, "single": false },
+        {
+          "group": "b4-fonts",
+          "name": "family-info.parseFamilyNames",
+          "checks": 12,
+          "single": false
+        },
+        {
+          "group": "b4-fonts",
+          "name": "metrics.familyVerticalMetrics",
+          "checks": 31,
+          "single": false
+        }
+      ],
+      "ledgerRequirements": [],
+      "witness": {
+        "fn": "family-info.familyInfoFor",
+        "case": 21,
+        "typescript": "{\"answer\":\"{\\\"value\\\":[[]]}\",\"files\":{\"home\":\"dir 755\",\"home/AppData\":\"dir 755\",\"home/AppData/Local\":\"dir 755\",\"home/AppData/Local/Microsoft\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows/Fonts\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows/Fonts/platform.ttc\":\"file 644 hex:747463660001000000000002000000140000013000010000000400000000000068656164000000000000006000000036686865610000000000000098000000244f532f3200000000000000bc000000606e616d65000000000000011c0000001400000000000000000000000000000000000003e8000000000000000000000000000000000000000000000000000000000000000000000000000000000384ff3800320000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010012000300010409000100020000414200010000000400000000000068656164000000000000017c000000366868656100000000000001b4000000244f532f3200000000000001d8000000606e616d6500000000000002380000001400000000000000000000000000000000000003e8000000000000000000000000000000000000000000000000000000000000000000000000000000000384ff38003200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000100120001000000000001000200004142\"}}",
+        "rust": "{\"answer\":\"{\\\"value\\\":[[[\\\"䅂\\\",{\\\"hangul\\\":true}]]]}\",\"files\":{\"home\":\"dir 755\",\"home/AppData\":\"dir 755\",\"home/AppData/Local\":\"dir 755\",\"home/AppData/Local/Microsoft\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows/Fonts\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows/Fonts/platform.ttc\":\"file 644 hex:747463660001000000000002000000140000013000010000000400000000000068656164000000000000006000000036686865610000000000000098000000244f532f3200000000000000bc000000606e616d65000000000000011c0000001400000000000000000000000000000000000003e8000000000000000000000000000000000000000000000000000000000000000000000000000000000384ff3800320000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010012000300010409000100020000414200010000000400000000000068656164000000000000017c000000366868656100000000000001b4000000244f532f3200000000000001d8000000606e616d6500000000000002380000001400000000000000000000000000000000000003e8000000000000000000000000000000000000000000000000000000000000000000000000000000000384ff38003200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000100120001000000000001000200004142\"}}"
+      }
+    },
+    {
+      "key": "fonts-17",
+      "catalog": "tools/main-diff/faults/b4-fonts.json",
+      "catalogSha256": "a3c2fa512061b5cd587077c91b7581697436f197796d5643b18dafce8cd938bf",
+      "catalogLength": 108,
+      "targetIndex": 17,
+      "shard": 17,
+      "shards": 108,
+      "originalShard": 1,
+      "indices": [0, 17],
+      "entries": [
+        {
+          "index": 0,
+          "mutationSha256": "c75d2ec02e24396e2dec47de4de4ccc2f80a0e7c5510a6b19baa06fbd04f5fd6"
+        },
+        {
+          "index": 17,
+          "mutationSha256": "7bdbd51767e1667d3f3859419702ae6c1539775a871688b6bc33668bd9bc3ecb"
+        }
+      ],
+      "baselineExpected": [
+        { "group": "b4-fonts", "name": "family-info.familyInfoFor", "checks": 24, "single": false },
+        {
+          "group": "b4-fonts",
+          "name": "family-info.resolveFamilyInfo",
+          "checks": 24,
+          "single": false
+        },
+        {
+          "group": "b4-fonts",
+          "name": "metrics.familyVerticalMetrics",
+          "checks": 31,
+          "single": false
+        }
+      ],
+      "ledgerRequirements": [],
+      "witness": {
+        "fn": "family-info.familyInfoFor",
+        "case": 22,
+        "typescript": "{\"answer\":\"{\\\"value\\\":[[[\\\"Mixed Coverage\\\",{\\\"hangul\\\":true}]]]}\",\"files\":{\"home\":\"dir 755\",\"home/AppData\":\"dir 755\",\"home/AppData/Local\":\"dir 755\",\"home/AppData/Local/Microsoft\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows/Fonts\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows/Fonts/mixed.ttc\":\"file 644 hex:747463660001000000000002000000140000014c00010000000400000000000068656164000000000000006000000036686865610000000000000098000000244f532f3200000000000000bc000000606e616d65000000000000011c0000002e00000000000000000000000000000000000003e8000000000000000000000000000000000000000000000000000000000000000000000000000000000384ff38003200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000100120003000104090001001c0000004d006900780065006400200043006f0076006500720061006700650000000100000004000000000000686561640000000000000198000000366868656100000000000001d0000000244f532f3200000000000001f4000000606e616d6500000000000002540000002e00000000000000000000000000000000000003e8000000000000000000000000000000000000000000000000000000000000000000000000000000000384ff38003200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100120003000104090001001c0000004d006900780065006400200043006f0076006500720061006700650000\"}}",
+        "rust": "{\"answer\":\"{\\\"value\\\":[[]]}\",\"files\":{\"home\":\"dir 755\",\"home/AppData\":\"dir 755\",\"home/AppData/Local\":\"dir 755\",\"home/AppData/Local/Microsoft\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows/Fonts\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows/Fonts/mixed.ttc\":\"file 644 hex:747463660001000000000002000000140000014c00010000000400000000000068656164000000000000006000000036686865610000000000000098000000244f532f3200000000000000bc000000606e616d65000000000000011c0000002e00000000000000000000000000000000000003e8000000000000000000000000000000000000000000000000000000000000000000000000000000000384ff38003200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000100120003000104090001001c0000004d006900780065006400200043006f0076006500720061006700650000000100000004000000000000686561640000000000000198000000366868656100000000000001d0000000244f532f3200000000000001f4000000606e616d6500000000000002540000002e00000000000000000000000000000000000003e8000000000000000000000000000000000000000000000000000000000000000000000000000000000384ff38003200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100120003000104090001001c0000004d006900780065006400200043006f0076006500720061006700650000\"}}"
+      }
+    },
+    {
+      "key": "fonts-34",
+      "catalog": "tools/main-diff/faults/b4-fonts.json",
+      "catalogSha256": "a3c2fa512061b5cd587077c91b7581697436f197796d5643b18dafce8cd938bf",
+      "catalogLength": 108,
+      "targetIndex": 34,
+      "shard": 34,
+      "shards": 108,
+      "originalShard": 2,
+      "indices": [0, 34],
+      "entries": [
+        {
+          "index": 0,
+          "mutationSha256": "c75d2ec02e24396e2dec47de4de4ccc2f80a0e7c5510a6b19baa06fbd04f5fd6"
+        },
+        {
+          "index": 34,
+          "mutationSha256": "ed9c7712ece7311bb156778e0c122bfa7a2e83d169dd681aa53009b0380d2020"
+        }
+      ],
+      "baselineExpected": [
+        { "group": "b4-fonts", "name": "family-info.familyInfoFor", "checks": 24, "single": false },
+        {
+          "group": "b4-fonts",
+          "name": "metrics.familyVerticalMetrics",
+          "checks": 31,
+          "single": false
+        }
+      ],
+      "ledgerRequirements": [],
+      "witness": {
+        "fn": "family-info.familyInfoFor",
+        "case": 23,
+        "typescript": "{\"answer\":\"{\\\"value\\\":[[[\\\"한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한한\\\",{\\\"hangul\\\":true}]]]}\",\"files\":{\"home\":\"dir 755\",\"home/AppData\":\"dir 755\",\"home/AppData/Local\":\"dir 755\",\"home/AppData/Local/Microsoft\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows/Fonts\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows/Fonts/long.ttf\":\"file 644 hex:00010000000400000000000068656164000000000000004c00000036686865610000000000000084000000244f532f3200000000000000a8000000606e616d650000000000000108000000be00000000000000000000000000000000000003e8000000000000000000000000000000000000000000000000000000000000000000000000000000000384ff3800320000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000800000000000000000000000000000000000000010012000300010409000100ac0000d55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55c0000\"}}",
+        "rust": "{\"answer\":\"{\\\"value\\\":[[]]}\",\"files\":{\"home\":\"dir 755\",\"home/AppData\":\"dir 755\",\"home/AppData/Local\":\"dir 755\",\"home/AppData/Local/Microsoft\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows/Fonts\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows/Fonts/long.ttf\":\"file 644 hex:00010000000400000000000068656164000000000000004c00000036686865610000000000000084000000244f532f3200000000000000a8000000606e616d650000000000000108000000be00000000000000000000000000000000000003e8000000000000000000000000000000000000000000000000000000000000000000000000000000000384ff3800320000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000800000000000000000000000000000000000000010012000300010409000100ac0000d55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55cd55c0000\"}}"
+      }
+    },
+    {
+      "key": "fonts-59",
+      "catalog": "tools/main-diff/faults/b4-fonts.json",
+      "catalogSha256": "a3c2fa512061b5cd587077c91b7581697436f197796d5643b18dafce8cd938bf",
+      "catalogLength": 108,
+      "targetIndex": 59,
+      "shard": 59,
+      "shards": 108,
+      "originalShard": 3,
+      "indices": [0, 59],
+      "entries": [
+        {
+          "index": 0,
+          "mutationSha256": "c75d2ec02e24396e2dec47de4de4ccc2f80a0e7c5510a6b19baa06fbd04f5fd6"
+        },
+        {
+          "index": 59,
+          "mutationSha256": "aa6a88cf5778a6310147f0a9b2265ca9878873fd0d012cd909402416344f0e7a"
+        }
+      ],
+      "baselineExpected": [
+        {
+          "group": "b4-fonts",
+          "name": "metrics.familyVerticalMetrics",
+          "checks": 31,
+          "single": false
+        }
+      ],
+      "ledgerRequirements": [],
+      "witness": {
+        "fn": "metrics.familyVerticalMetrics",
+        "case": 29,
+        "typescript": "{\"answer\":\"{\\\"value\\\":[{\\\"unitsPerEm\\\":1000,\\\"hheaAscender\\\":900,\\\"hheaDescender\\\":-200,\\\"hheaLineGap\\\":-1,\\\"typoAscender\\\":null,\\\"typoDescender\\\":null,\\\"typoLineGap\\\":null,\\\"winAscent\\\":null,\\\"winDescent\\\":null,\\\"useTypoMetrics\\\":false,\\\"xAvgCharWidth\\\":null,\\\"codePageRange1\\\":null}]}\",\"files\":{\"home\":\"dir 755\",\"home/AppData\":\"dir 755\",\"home/AppData/Local\":\"dir 755\",\"home/AppData/Local/Microsoft\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows/Fonts\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows/Fonts/negative.ttf\":\"file 644 hex:00010000000300000000000068656164000000000000003c00000036686865610000000000000074000000246e616d6500000000000000980000002a00000000000000000000000000000000000003e8000000000000000000000000000000000000000000000000000000000000000000000000000000000384ff38ffff0000000000000000000000000000000000000000000000000000000000010012000300010409000100180000004e006500670061007400690076006500200047006100700000\"}}",
+        "rust": "{\"answer\":\"{\\\"value\\\":[{\\\"unitsPerEm\\\":1000,\\\"hheaAscender\\\":900,\\\"hheaDescender\\\":-200,\\\"hheaLineGap\\\":65535,\\\"typoAscender\\\":null,\\\"typoDescender\\\":null,\\\"typoLineGap\\\":null,\\\"winAscent\\\":null,\\\"winDescent\\\":null,\\\"useTypoMetrics\\\":false,\\\"xAvgCharWidth\\\":null,\\\"codePageRange1\\\":null}]}\",\"files\":{\"home\":\"dir 755\",\"home/AppData\":\"dir 755\",\"home/AppData/Local\":\"dir 755\",\"home/AppData/Local/Microsoft\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows/Fonts\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows/Fonts/negative.ttf\":\"file 644 hex:00010000000300000000000068656164000000000000003c00000036686865610000000000000074000000246e616d6500000000000000980000002a00000000000000000000000000000000000003e8000000000000000000000000000000000000000000000000000000000000000000000000000000000384ff38ffff0000000000000000000000000000000000000000000000000000000000010012000300010409000100180000004e006500670061007400690076006500200047006100700000\"}}"
+      }
+    },
+    {
+      "key": "fonts-67",
+      "catalog": "tools/main-diff/faults/b4-fonts.json",
+      "catalogSha256": "a3c2fa512061b5cd587077c91b7581697436f197796d5643b18dafce8cd938bf",
+      "catalogLength": 108,
+      "targetIndex": 67,
+      "shard": 67,
+      "shards": 108,
+      "originalShard": 3,
+      "indices": [0, 67],
+      "entries": [
+        {
+          "index": 0,
+          "mutationSha256": "c75d2ec02e24396e2dec47de4de4ccc2f80a0e7c5510a6b19baa06fbd04f5fd6"
+        },
+        {
+          "index": 67,
+          "mutationSha256": "9b211caf6aa8959231e211985a4110fe08e241dbf7c6e44946a4884e8c5b5bcc"
+        }
+      ],
+      "baselineExpected": [
+        {
+          "group": "b4-fonts",
+          "name": "metrics.familyVerticalMetrics",
+          "checks": 31,
+          "single": false
+        }
+      ],
+      "ledgerRequirements": [],
+      "witness": {
+        "fn": "metrics.familyVerticalMetrics",
+        "case": 30,
+        "typescript": "{\"answer\":\"{\\\"value\\\":[null,null,null,null,null]}\",\"files\":{\"home\":\"dir 755\",\"home/AppData\":\"dir 755\",\"home/AppData/Local\":\"dir 755\",\"home/AppData/Local/Microsoft\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows/Fonts\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows/Fonts/unrelated.ttf\":\"file 644 hex:00010000000400000000000068656164000000000000004c00000036686865610000000000000084000000244f532f3200000000000000a8000000606e616d6500000000000001080000001c00000000000000000000000000000000000003e8000000000000000000000000000000000000000000000000000000000000000000000000000000000384ff38003200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100120003000104090001000a0000004f0074006800650072\",\"home/ud\":\"dir 755\",\"home/ud/font-metrics\":\"dir 755\"}}",
+        "rust": "{\"answer\":\"{\\\"value\\\":[null,null,null,null,\\\"{}\\\"]}\",\"files\":{\"home\":\"dir 755\",\"home/AppData\":\"dir 755\",\"home/AppData/Local\":\"dir 755\",\"home/AppData/Local/Microsoft\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows/Fonts\":\"dir 755\",\"home/AppData/Local/Microsoft/Windows/Fonts/unrelated.ttf\":\"file 644 hex:00010000000400000000000068656164000000000000004c00000036686865610000000000000084000000244f532f3200000000000000a8000000606e616d6500000000000001080000001c00000000000000000000000000000000000003e8000000000000000000000000000000000000000000000000000000000000000000000000000000000384ff38003200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100120003000104090001000a0000004f0074006800650072\",\"home/ud\":\"dir 755\",\"home/ud/font-metrics\":\"dir 755\",\"home/ud/font-metrics/font-vertical-metrics.json\":\"file 644 \\\"{}\\\"\"}}"
+      }
+    },
+    {
+      "key": "kb-43",
+      "catalog": "tools/main-diff/faults/b5-kb.json",
+      "catalogSha256": "5c5712879591fa49c7026f39d6f8362ba4a641a4e1ef11ef9d06fc4dff9eb525",
+      "catalogLength": 120,
+      "targetIndex": 43,
+      "shard": 43,
+      "shards": 120,
+      "originalShard": 3,
+      "indices": [0, 43],
+      "entries": [
+        {
+          "index": 0,
+          "mutationSha256": "cecaf46017eae575e1b56558e681fa777d5af59de0bb565a3db4ffccb99a3a8d"
+        },
+        {
+          "index": 43,
+          "mutationSha256": "a94ddfc1fd527b418d64b949d492a1036be296c1e81fbb8c26c3c7d96f5065fe"
+        }
+      ],
+      "baselineExpected": [
+        {
+          "group": "b5-kb",
+          "name": "knowledge-base.KB_READ_CHUNK_CHARS",
+          "checks": 2,
+          "single": true
+        },
+        {
+          "group": "b5-kb",
+          "name": "knowledge-base.readKnowledgeFilePage",
+          "checks": 12,
+          "single": false
+        }
+      ],
+      "ledgerRequirements": [],
+      "witness": {
+        "fn": "knowledge-base.readKnowledgeFilePage",
+        "case": 11,
+        "typescript": "{\"answer\":\"{\\\"value\\\":[{\\\"ok\\\":{\\\"text\\\":\\\"alpha\\\",\\\"totalChars\\\":5,\\\"offset\\\":0}},{\\\"ok\\\":{\\\"text\\\":\\\"alpha\\\",\\\"totalChars\\\":5,\\\"offset\\\":0}},{\\\"ok\\\":{\\\"text\\\":\\\"alpha\\\",\\\"totalChars\\\":5,\\\"offset\\\":0}}],\\\"logs\\\":[[\\\"parse\\\",\\\"$DIR/a.txt\\\"]]}\",\"files\":{\"a.txt\":\"file 644 \\\"alpha\\\"\"}}",
+        "rust": "{\"answer\":\"{\\\"value\\\":[{\\\"ok\\\":{\\\"text\\\":\\\"\\\",\\\"totalChars\\\":5,\\\"offset\\\":null}},{\\\"ok\\\":{\\\"text\\\":\\\"alpha\\\",\\\"totalChars\\\":5,\\\"offset\\\":0}},{\\\"ok\\\":{\\\"text\\\":\\\"alpha\\\",\\\"totalChars\\\":5,\\\"offset\\\":0}}],\\\"logs\\\":[[\\\"parse\\\",\\\"$DIR/a.txt\\\"]]}\",\"files\":{\"a.txt\":\"file 644 \\\"alpha\\\"\"}}"
+      }
+    },
+    {
+      "key": "kb-91",
+      "catalog": "tools/main-diff/faults/b5-kb.json",
+      "catalogSha256": "5c5712879591fa49c7026f39d6f8362ba4a641a4e1ef11ef9d06fc4dff9eb525",
+      "catalogLength": 120,
+      "targetIndex": 91,
+      "shard": 91,
+      "shards": 120,
+      "originalShard": 3,
+      "indices": [0, 91],
+      "entries": [
+        {
+          "index": 0,
+          "mutationSha256": "cecaf46017eae575e1b56558e681fa777d5af59de0bb565a3db4ffccb99a3a8d"
+        },
+        {
+          "index": 91,
+          "mutationSha256": "fa5ae0c3af801701135f8f9e4e5ceadbe1a7c9b7182627660e74b15c9e9ceb27"
+        }
+      ],
+      "baselineExpected": [
+        {
+          "group": "b5-kb",
+          "name": "knowledge-base.KB_READ_CHUNK_CHARS",
+          "checks": 2,
+          "single": true
+        },
+        {
+          "group": "b5-kb",
+          "name": "knowledge-base.parseKbCreateRequest",
+          "checks": 27,
+          "single": false
+        },
+        {
+          "group": "b5-kb",
+          "name": "knowledge-base.readKnowledgeFilePage",
+          "checks": 12,
+          "single": false
+        }
+      ],
+      "ledgerRequirements": [],
+      "witness": {
+        "fn": "knowledge-base.parseKbCreateRequest",
+        "case": 26,
+        "typescript": "{\"answer\":\"{\\\"error\\\":{\\\"code\\\":null,\\\"message\\\":\\\"format must be \\\\\\\"md\\\\\\\" or \\\\\\\"docx\\\\\\\"\\\"}}\",\"files\":{}}",
+        "rust": "{\"answer\":\"{\\\"value\\\":{\\\"title\\\":\\\"Upper\\\",\\\"format\\\":\\\"docx\\\",\\\"content\\\":\\\"hello\\\"}}\",\"files\":{}}"
+      }
+    },
+    {
+      "key": "claude-45",
+      "catalog": "tools/main-diff/faults/b5-provider-claude.json",
+      "catalogSha256": "9dd9eb37bf0004b94a69d3fe32aa9e46db59689a09512dd69b63317cb41338a9",
+      "catalogLength": 61,
+      "targetIndex": 45,
+      "shard": 45,
+      "shards": 64,
+      "originalShard": 1,
+      "indices": [0, 45],
+      "entries": [
+        {
+          "index": 0,
+          "mutationSha256": "01a86227a41dc99f0bff324ab4d0ccd5a21e95b1061c03dff068cbcbbef2c3fb"
+        },
+        {
+          "index": 45,
+          "mutationSha256": "e43b5f754fcd011bb4c38f49efd18ae7081424949635fbad8a896c8839843ce9"
+        }
+      ],
+      "baselineExpected": [
+        {
+          "group": "b5-provider",
+          "name": "claude-code-cli.listClaudeCodeModels",
+          "checks": 25,
+          "single": false
+        },
+        {
+          "group": "b5-provider",
+          "name": "claude-code-cli.readLines",
+          "checks": 18,
+          "single": false
+        },
+        {
+          "group": "b5-provider",
+          "name": "claude-code-cli.streamClaudeCodeCli",
+          "checks": 96,
+          "single": false
+        }
+      ],
+      "ledgerRequirements": [],
+      "witness": {
+        "fn": "claude-code-cli.readLines",
+        "case": 17,
+        "typescript": "{\"answer\":\"{\\\"value\\\":{\\\"lines\\\":[\\\"ok\\\"],\\\"overflow\\\":0},\\\"logs\\\":[[\\\"spawn\\\",0,\\\"reader\\\",[],{\\\"cwd\\\":null,\\\"env\\\":null,\\\"stdio\\\":[\\\"pipe\\\",\\\"pipe\\\",\\\"pipe\\\"],\\\"detached\\\":false,\\\"windowsHide\\\":false,\\\"shell\\\":null}],[\\\"end\\\",0],[\\\"line\\\",\\\"ok\\\"]]}\",\"files\":{}}",
+        "rust": "{\"answer\":\"{\\\"value\\\":{\\\"lines\\\":[],\\\"overflow\\\":1},\\\"logs\\\":[[\\\"spawn\\\",0,\\\"reader\\\",[],{\\\"cwd\\\":null,\\\"env\\\":null,\\\"stdio\\\":[\\\"pipe\\\",\\\"pipe\\\",\\\"pipe\\\"],\\\"detached\\\":false,\\\"windowsHide\\\":false,\\\"shell\\\":null}],[\\\"end\\\",0],[\\\"overflow\\\"]]}\",\"files\":{}}"
+      }
+    },
+    {
+      "key": "subscription-97",
+      "catalog": "tools/main-diff/faults/b5-provider-subscription.json",
+      "catalogSha256": "367a798f4afb677b49f16f76a91684ee86e8a5ba5e137eb6e675069c4069f264",
+      "catalogLength": 114,
+      "targetIndex": 97,
+      "shard": 97,
+      "shards": 116,
+      "originalShard": 1,
+      "indices": [0, 97],
+      "entries": [
+        {
+          "index": 0,
+          "mutationSha256": "ef68833e584d861a94f78be5b2e301c4191cdf926de4cede36fc0f24edb0e335"
+        },
+        {
+          "index": 97,
+          "mutationSha256": "06289754200e92261660919e6802b3609cdb085d909547037b93786130c6e543"
+        }
+      ],
+      "baselineExpected": [
+        {
+          "group": "b5-provider",
+          "name": "subscription/contract.subscriptionNeedsUpdate",
+          "checks": 12,
+          "single": false
+        },
+        {
+          "group": "b5-provider",
+          "name": "subscription/contract.subscriptionVersionAtLeast",
+          "checks": 14,
+          "single": false
+        },
+        {
+          "group": "b5-provider",
+          "name": "subscription/locate.locateSubscriptionProgram",
+          "checks": 70,
+          "single": false
+        }
+      ],
+      "ledgerRequirements": [],
+      "witness": {
+        "fn": "subscription/locate.locateSubscriptionProgram",
+        "case": 69,
+        "typescript": "{\"answer\":\"{\\\"value\\\":{\\\"provider\\\":\\\"codex\\\",\\\"command\\\":\\\"$DIR/managed/aaa/codex\\\",\\\"prefixArgs\\\":[],\\\"env\\\":{},\\\"entry\\\":\\\"$DIR/managed/aaa/codex\\\",\\\"source\\\":\\\"managed\\\"}}\",\"files\":{\"managed\":\"dir 755\",\"managed/aaa\":\"dir 755\",\"managed/aaa/codex\":\"file 755 \\\"#!/bin/sh\\\\n\\\"\",\"managed/bbb\":\"dir 755\",\"managed/bbb/codex\":\"file 755 \\\"#!/bin/sh\\\\n\\\"\"}}",
+        "rust": "{\"answer\":\"{\\\"value\\\":{\\\"provider\\\":\\\"codex\\\",\\\"command\\\":\\\"$DIR/managed/bbb/codex\\\",\\\"prefixArgs\\\":[],\\\"env\\\":{},\\\"entry\\\":\\\"$DIR/managed/bbb/codex\\\",\\\"source\\\":\\\"managed\\\"}}\",\"files\":{\"managed\":\"dir 755\",\"managed/aaa\":\"dir 755\",\"managed/aaa/codex\":\"file 755 \\\"#!/bin/sh\\\\n\\\"\",\"managed/bbb\":\"dir 755\",\"managed/bbb/codex\":\"file 755 \\\"#!/bin/sh\\\\n\\\"\"}}"
+      }
+    },
+    {
+      "key": "subscription-113",
+      "catalog": "tools/main-diff/faults/b5-provider-subscription.json",
+      "catalogSha256": "367a798f4afb677b49f16f76a91684ee86e8a5ba5e137eb6e675069c4069f264",
+      "catalogLength": 114,
+      "targetIndex": 113,
+      "shard": 113,
+      "shards": 116,
+      "originalShard": 1,
+      "indices": [0, 113],
+      "entries": [
+        {
+          "index": 0,
+          "mutationSha256": "ef68833e584d861a94f78be5b2e301c4191cdf926de4cede36fc0f24edb0e335"
+        },
+        {
+          "index": 113,
+          "mutationSha256": "3ded42debd97c73b15ba1491974ce33d3ce5f7621ebcb05b20ecc981fc40f889"
+        }
+      ],
+      "baselineExpected": [
+        {
+          "group": "b5-provider",
+          "name": "subscription/contract.subscriptionNeedsUpdate",
+          "checks": 12,
+          "single": false
+        },
+        {
+          "group": "b5-provider",
+          "name": "subscription/contract.subscriptionVersionAtLeast",
+          "checks": 14,
+          "single": false
+        },
+        {
+          "group": "b5-provider",
+          "name": "subscription/temp-dirs.cleanupTrackedTempDirs",
+          "checks": 16,
+          "single": false
+        }
+      ],
+      "ledgerRequirements": [],
+      "witness": {
+        "fn": "subscription/temp-dirs.cleanupTrackedTempDirs",
+        "case": 15,
+        "typescript": "{\"answer\":\"{\\\"value\\\":{\\\"removed\\\":0,\\\"aliveCalls\\\":[]},\\\"logs\\\":[[\\\"killpid\\\",77,0]]}\",\"files\":{\"rec\":\"dir 755\",\"rec/ai-temp-dir-probe.json\":\"file 644 \\\"{\\\\\\\"version\\\\\\\":1,\\\\\\\"path\\\\\\\":\\\\\\\"$DIR/tmp/seuoffice-claude-code-eperm\\\\\\\",\\\\\\\"ownerPid\\\\\\\":77,\\\\\\\"ownerStartedAt\\\\\\\":1}\\\"\",\"tmp\":\"dir 755\",\"tmp/seuoffice-claude-code-eperm\":\"dir 755\",\"tmp/seuoffice-claude-code-eperm/file.txt\":\"file 644 \\\"x\\\"\"}}",
+        "rust": "{\"answer\":\"{\\\"value\\\":{\\\"removed\\\":1,\\\"aliveCalls\\\":[]},\\\"logs\\\":[[\\\"killpid\\\",77,0]]}\",\"files\":{\"rec\":\"dir 755\",\"tmp\":\"dir 755\"}}"
+      }
+    }
+  ],
+  "maxParallel": 8,
+  "timeoutMinutes": 120,
+  "fullRecoveryAccepted": false,
+  "currentProductReuseAccepted": false,
+  "originalVerdictsUnchanged": true
+}

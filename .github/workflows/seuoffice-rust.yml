@@ -1,16 +1,16 @@
-name: seuoffice rust - next core sensitivity
+name: seuoffice rust - final ten core sensitivity
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Explicit bounded original-21 and corrected-3 retained sensitivity mode
+        description: Explicit bounded ten original final-miss retained sensitivity mode
         required: true
         type: choice
         options:
-          - next-core-retained-sensitivity
+          - final-core-retained-sensitivity
       product_sha:
-        description: Exact ed559 validation product, not a branch or a legacy gate
+        description: Exact 3e5a4b02 validation product, not a branch or a legacy gate
         required: true
         type: string
 
@@ -19,7 +19,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: seuoffice-next-core-retained-sensitivity-${{ inputs.product_sha || github.ref }}
+  group: seuoffice-final-core-retained-sensitivity-${{ inputs.product_sha || github.ref }}
   cancel-in-progress: false
 
 env:
@@ -28,7 +28,7 @@ env:
   DRIVER_DIR: ${{ github.workspace }}/driver
   PRODUCT_SHA: ${{ inputs.product_sha }}
   DEFINITION_SHA: ${{ github.sha }}
-  PLAN_PATH: ${{ github.workspace }}/next-core-plan.json
+  PLAN_PATH: ${{ github.workspace }}/final-core-plan.json
   PREREQUISITE_PATH: ${{ github.workspace }}/prerequisite.json
 
 jobs:
@@ -51,7 +51,7 @@ jobs:
         id: identity
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node driver/tools/main-diff/next-core-sensitivity.mjs validate
+        run: node driver/tools/main-diff/final-core-sensitivity.mjs validate
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.identity.outputs.product_sha }}
@@ -59,12 +59,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Bind source lineage and original mutation objects
-        run: node driver/tools/main-diff/next-core-sensitivity.mjs prepare
+        run: node driver/tools/main-diff/final-core-sensitivity.mjs prepare
       - uses: actions/upload-artifact@v4
         with:
-          name: next-core-plan
+          name: final-core-plan
           path: |
-            next-core-plan.json
+            final-core-plan.json
             prerequisite.json
           if-no-files-found: error
 
@@ -97,12 +97,12 @@ jobs:
           fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
-          name: next-core-plan
+          name: final-core-plan
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - name: Verify the exact source and frozen job plan
-        run: node driver/tools/main-diff/next-core-sensitivity.mjs check
+        run: node driver/tools/main-diff/final-core-sensitivity.mjs check
       - name: Rust toolchain
         run: |
           rustup toolchain install stable --profile minimal --target wasm32-wasip1
@@ -110,7 +110,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: product/crates
-          key: next-core-${{ inputs.product_sha }}
+          key: final-core-${{ inputs.product_sha }}
       - uses: actions/cache@v4
         id: rhwp-source
         with:
@@ -129,7 +129,7 @@ jobs:
       - name: Normal selected consumer baseline
         env:
           CARGO_INCREMENTAL: '1'
-        run: node driver/tools/main-diff/next-core-sensitivity.mjs baseline
+        run: node driver/tools/main-diff/final-core-sensitivity.mjs baseline
       - name: Original control and target with append-only evidence
         id: mutations
         working-directory: product
@@ -152,12 +152,12 @@ jobs:
         env:
           CARGO_INCREMENTAL: '1'
           MUTATION_STATUS: ${{ steps.mutations.outcome }}
-        run: node driver/tools/main-diff/next-core-sensitivity.mjs audit
+        run: node driver/tools/main-diff/final-core-sensitivity.mjs audit
       - name: Publish complete proof or incomplete original evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: next-core-records-${{ matrix.key }}
+          name: final-core-records-${{ matrix.key }}
           path: |
             job-out/${{ matrix.key }}
             !job-out/${{ matrix.key }}/*.node
@@ -170,7 +170,7 @@ jobs:
     timeout-minutes: 15
     env:
       COMPLETIONS_DIR: ${{ github.workspace }}/completions
-      AGGREGATE_PATH: ${{ github.workspace }}/next-core-acceptance.json
+      AGGREGATE_PATH: ${{ github.workspace }}/final-core-acceptance.json
     steps:
       - uses: actions/checkout@v4
         with:
@@ -185,19 +185,19 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
-          name: next-core-plan
+          name: final-core-plan
       - uses: actions/download-artifact@v4
         with:
-          pattern: next-core-records-*
+          pattern: final-core-records-*
           path: completions
           merge-multiple: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Re-audit the exact complete 24-job evidence set
-        run: node driver/tools/main-diff/next-core-sensitivity.mjs aggregate
+      - name: Re-audit the exact complete 10-job evidence set
+        run: node driver/tools/main-diff/final-core-sensitivity.mjs aggregate
       - uses: actions/upload-artifact@v4
         with:
-          name: next-core-acceptance
-          path: next-core-acceptance.json
+          name: final-core-acceptance
+          path: final-core-acceptance.json
           if-no-files-found: error
