@@ -62,7 +62,7 @@ fn signature(cms: &[u8]) -> Result<&[u8], String> {
 }
 
 fn der_from_hex(hex: &[u8]) -> Result<Vec<u8>, String> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err("invalid signature placeholder".into());
     }
     fn nibble(byte: u8) -> Result<u8, String> {

@@ -20,9 +20,9 @@ fn truthy(v: &IpcValue) -> bool {
 fn hex(s: &str) -> bool {
     s.len() == 7 && s.starts_with('#') && s.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
 }
-fn style(
-    op: &IpcValue,
-) -> Result<(TableStyleEdit, IpcValue, Option<(&'static str, String)>), String> {
+type StyleParts = (TableStyleEdit, IpcValue, Option<(&'static str, String)>);
+
+fn style(op: &IpcValue) -> Result<StyleParts, String> {
     let mut edit = TableStyleEdit::default();
     let mut after = Vec::new();
     let mut part = None;

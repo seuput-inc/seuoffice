@@ -13,6 +13,8 @@ use shell_ipc_d2::pdf::editor::hosts::{
 };
 use std::sync::{Arc, Mutex};
 
+type Opened = (Box<dyn SigningSession>, Vec<IpcValue>, Vec<Vec<u8>>);
+
 // The verifier emits nonce + empty Verified/Guard, or nonce + "sign-failed".
 const VERIFY_RESPONSE_BOUND: usize = 32 + b"sign-failed".len();
 
@@ -58,7 +60,7 @@ pub(crate) fn open(
     entry_cancel: &CancelToken,
     authority: Arc<dyn Authority>,
     interaction: Arc<dyn ProtectedTokenInteraction>,
-) -> Result<(Box<dyn SigningSession>, Vec<IpcValue>, Vec<Vec<u8>>), CertificateOpenError> {
+) -> Result<Opened, CertificateOpenError> {
     let result = open_inner(
         source,
         owner,
@@ -107,7 +109,7 @@ fn open_inner(
     entry_cancel: &CancelToken,
     authority: Arc<dyn Authority>,
     interaction: Arc<dyn ProtectedTokenInteraction>,
-) -> Result<(Box<dyn SigningSession>, Vec<IpcValue>, Vec<Vec<u8>>), String> {
+) -> Result<Opened, String> {
     let (nonce, frames) = super::open_frames(source)?;
     let guarded_authority = authority.clone();
     let guarded_owner = owner.clone();

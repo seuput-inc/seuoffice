@@ -98,12 +98,10 @@ fn count(s: &str, name: &str, fallback: usize) -> EngineResult<usize> {
     )
 }
 fn valid_range(s: &str) -> EngineResult<bool> {
-    Ok(
-        TryJsRegex::new(r"^[A-Z]{1,3}\d{1,7}(?::[A-Z]{1,3}\d{1,7})?$", "i")
-            .map_err(|e| engine_error(e.to_string()))?
-            .try_test(s)
-            .map_err(|e| engine_error(e.to_string()))?,
-    )
+    TryJsRegex::new(r"^[A-Z]{1,3}\d{1,7}(?::[A-Z]{1,3}\d{1,7})?$", "i")
+        .map_err(|e| engine_error(e.to_string()))?
+        .try_test(s)
+        .map_err(|e| engine_error(e.to_string()))
 }
 fn rows(s: &str, header: usize, totals: usize) -> EngineResult<usize> {
     let re = TryJsRegex::new(r"\d+", "g").map_err(|e| engine_error(e.to_string()))?;
@@ -126,11 +124,11 @@ fn defined_range(workbook: &str, name: &str, sheet_index: usize) -> EngineResult
         if attr(&item, "name")?.as_deref() != Some(name) {
             continue;
         }
-        if let Some(scope) = attr(&item, "localSheetId")? {
-            if scope.parse::<usize>().ok() != Some(sheet_index) {
+        if let Some(scope) = attr(&item, "localSheetId")?
+            && scope.parse::<usize>().ok() != Some(sheet_index)
+        {
                 continue;
             }
-        }
         let Some((_, rest)) = item.split_once('>') else {
             continue;
         };
@@ -149,6 +147,7 @@ struct Table {
     header: usize,
     totals: usize,
 }
+#[allow(clippy::too_many_arguments)]
 fn add_query(
     pkg: &Package<'_>,
     workbook: &str,

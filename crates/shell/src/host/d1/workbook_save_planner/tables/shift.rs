@@ -154,7 +154,7 @@ fn reshape(
             .filter_map(|c| c.attribute("name"))
             .map(str::to_lowercase)
             .collect::<std::collections::HashSet<_>>();
-        let mut id = columns
+        let first_id = columns
             .iter()
             .filter_map(|c| c.attribute("id").and_then(|n| n.parse::<u64>().ok()))
             .max()
@@ -166,7 +166,7 @@ fn reshape(
             header_row: (header > 0).then_some(area.r1),
             columns: Vec::new(),
         };
-        for offset in 0..count {
+        for (id, offset) in (first_id..).zip(0..count) {
             let name = loop {
                 let n = format!("Column{seed}");
                 if !taken.contains(&n.to_lowercase()) {
@@ -181,7 +181,6 @@ fn reshape(
                 id,
                 name,
             });
-            id += 1;
         }
         parts.splice(first_index as usize..first_index as usize, added);
         records.push(record);
@@ -238,11 +237,12 @@ fn reshape(
                 xml_text = replace_range(&xml_text, c.start, c.end, "");
             }
         }
-        if let Some(s) = first(&xml_text, "sortState")? {
-            if s.open_end < s.close_start && xml_text[s.open_end..s.close_start].trim().is_empty() {
+        if let Some(s) = first(&xml_text, "sortState")?
+            && s.open_end < s.close_start
+            && xml_text[s.open_end..s.close_start].trim().is_empty()
+        {
                 xml_text = replace_range(&xml_text, s.start, s.end, "");
             }
-        }
     }
     Ok(xml_text)
 }

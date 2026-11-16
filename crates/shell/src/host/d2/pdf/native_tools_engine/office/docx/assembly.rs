@@ -267,7 +267,9 @@ pub(super) fn assemble(
             last.2 = start;
         }
         ranges.push((page.index, start, start));
-        if (page.scanned || page.degraded) && page.render.is_some() {
+        if (page.scanned || page.degraded)
+            && let Some(render) = page.render.as_ref()
+        {
             let before = state.need_break;
             let closed = state.open(section::single(page), before, &geo);
             if closed && before && ranges.len() > 1 {
@@ -280,7 +282,9 @@ pub(super) fn assemble(
                 state.blocks.push(spacer(0.0, state.need_break));
             }
             state.last_table = false;
-            state.blocks.push(json!({"kind":"image","image":image::background(page.render.as_ref().unwrap(),page)}));
+            state
+                .blocks
+                .push(json!({"kind":"image","image":image::background(render,page)}));
             continue;
         }
         if page.canvas {
@@ -367,19 +371,19 @@ pub(super) fn assemble(
         let mut consumed = 0.0;
         let mut emitted = HashSet::new();
         let mut card_pad = 0.0;
-        if sections.is_empty() {
-            if let Some(bg) = &page.background_render {
-                let before = state.need_break;
-                state.open(section::single(page), before, &geo);
-                if state.need_break {
-                    state.blocks.push(spacer(0.0, true));
-                }
-                state
-                    .blocks
-                    .push(json!({"kind":"image","image":image::background(bg,page)}));
-                state.last_table = false;
-                state.need_break = false;
+        if sections.is_empty()
+            && let Some(bg) = &page.background_render
+        {
+            let before = state.need_break;
+            state.open(section::single(page), before, &geo);
+            if state.need_break {
+                state.blocks.push(spacer(0.0, true));
             }
+            state
+                .blocks
+                .push(json!({"kind":"image","image":image::background(bg,page)}));
+            state.last_table = false;
+            state.need_break = false;
         }
         let floats: Vec<_> = sections
             .iter()
@@ -443,7 +447,7 @@ pub(super) fn assemble(
                             .blocks
                             .iter()
                             .filter_map(|b| match b {
-                                PageBlock::Text(t) if t.card_id == Some(id) => Some(t),
+                                PageBlock::Text(t) if t.card_id == Some(id) => Some(&**t),
                                 _ => None,
                             })
                             .collect();
@@ -734,7 +738,7 @@ mod tests {
             IrPage {
                 width_pt: 612.0,
                 height_pt: 792.0,
-                blocks: vec![PageBlock::Text(text("first", Some("#_pdfpage2")))],
+                blocks: vec![PageBlock::Text(Box::new(text("first", Some("#_pdfpage2"))))],
                 footnotes: vec![Footnote {
                     id: "1".into(),
                     marker: None,
@@ -746,7 +750,7 @@ mod tests {
                 index: 1,
                 width_pt: 612.0,
                 height_pt: 792.0,
-                blocks: vec![PageBlock::Text(text("second", None))],
+                blocks: vec![PageBlock::Text(Box::new(text("second", None)))],
                 ..Default::default()
             },
         ];

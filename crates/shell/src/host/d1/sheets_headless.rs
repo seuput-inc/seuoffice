@@ -317,14 +317,14 @@ impl Export {
             .unwrap_or_else(|error| error.into_inner())
             .take();
         drop(subscription);
-        if self.closed.load(Ordering::Acquire) {
-            if let Some(created) = self.created.get() {
+        if self.closed.load(Ordering::Acquire)
+            && let Some(created) = self.created.get()
+        {
                 self.cx
                     .views
                     .remove_view_if_generation(created.view, &created.generation);
                 self.cx.views.remove_window(created.window);
             }
-        }
         let result = self
             .result
             .lock()
@@ -527,8 +527,10 @@ pub(crate) fn export_headless(
                 let timer = core_job.deadline.clone();
                 let timed = Arc::downgrade(&core_job);
                 if let Err(error) = std::thread::Builder::new().name("sheets-headless-deadline".into()).spawn(move || {
-                    if timer.expired(TIMEOUT) {
-                        if let Some(job) = timed.upgrade() { job.finish(Err("sheets export timed out after 600000ms".into())); }
+                    if timer.expired(TIMEOUT)
+                        && let Some(job) = timed.upgrade()
+                    {
+                        job.finish(Err("sheets export timed out after 600000ms".into()));
                     }
                 }) {
                     drop(reserved);

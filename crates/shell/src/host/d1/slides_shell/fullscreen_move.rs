@@ -188,6 +188,7 @@ impl Move {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn begin(
     cx: HostContext,
     origin: RenderOwner,
@@ -243,11 +244,11 @@ pub(super) fn begin(
     }
     let weak = Arc::downgrade(&this);
     this.native.on_window_event(move |event| {
-        if matches!(event, tauri::WindowEvent::Destroyed) {
-            if let Some(this) = weak.upgrade() {
+        if matches!(event, tauri::WindowEvent::Destroyed)
+            && let Some(this) = weak.upgrade()
+        {
                 this.complete(Err("The original presenter window was destroyed".into()));
             }
-        }
     });
     let prepared = native_owner::run_accepted_ui_pair(
         this.cx.ui.as_ref(),

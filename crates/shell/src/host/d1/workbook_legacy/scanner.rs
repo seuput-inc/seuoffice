@@ -367,11 +367,11 @@ fn finish_cell(
     Ok(())
 }
 fn finish_row(row: &mut Option<Vec<RawCell>>, table: &mut Option<RawTable>) {
-    if let Some(row) = row.take() {
-        if let Some(table) = table {
+    if let Some(row) = row.take()
+        && let Some(table) = table
+    {
             table.rows.push(row);
         }
-    }
 }
 fn layout(raw: RawTable) -> Result<Option<Sheet>, String> {
     let mut rows: Vec<Vec<String>> = Vec::new();

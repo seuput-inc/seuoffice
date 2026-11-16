@@ -77,6 +77,7 @@ impl PasswordPrompt for Prompt {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn prepare_publication(
     output: shell_contract::ipc::SavedPublication,
     written: Option<shell_contract::ipc::NativeSavedInput>,

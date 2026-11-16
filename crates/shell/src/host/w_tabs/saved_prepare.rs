@@ -83,7 +83,7 @@ pub(super) fn capture(
     let loss = owner
         .loss_token()
         .ok_or("The saved shell lifetime is unavailable")?;
-    let captured = crate::ipc::native_owner::with_owner_effect(&owner, &loss, &mut || {
+    let captured = crate::ipc::native_owner::with_owner_effect(&owner, &loss, || {
         hooks
             .cx
             .views

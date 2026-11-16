@@ -103,13 +103,14 @@ fn pdf_name(name: &str) -> Option<Vec<u8>> {
     let mut index = 0;
     let mut output = 0;
     while index < bytes.len() {
-        if bytes[index] == b'#' && index + 2 < bytes.len() {
-            if let (Some(high), Some(low)) = (digit(bytes[index + 1]), digit(bytes[index + 2])) {
-                bytes[output] = high * 16 + low;
-                output += 1;
-                index += 3;
-                continue;
-            }
+        if bytes[index] == b'#'
+            && index + 2 < bytes.len()
+            && let (Some(high), Some(low)) = (digit(bytes[index + 1]), digit(bytes[index + 2]))
+        {
+            bytes[output] = high * 16 + low;
+            output += 1;
+            index += 3;
+            continue;
         }
         bytes[output] = bytes[index];
         output += 1;

@@ -115,13 +115,13 @@ pub(crate) fn export_headless(
                     match &event.kind {
                         NativeEventKind::NavigationStarted { .. } => {
                             state.committed = false;
-                            if state.bound {
-                                if let Some(generation) = state.generation.clone() {
+                            if state.bound
+                                && let Some(generation) = state.generation.clone()
+                            {
                                     event_core.post(Box::new(move || {
                                         if let Some(views) = shell_ipc_d1::diagram::views() { views.fail_headless_job_generation(view, &generation, "the diagram page stopped"); }
                                     }));
                                 }
-                            }
                         }
                         NativeEventKind::DocumentCommitted { url, .. } => {
                             state.committed = crate::app_scheme::electron_url(url).as_deref() == Some(PAGE);
@@ -290,6 +290,7 @@ pub(crate) fn export_headless(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finish_product(
     cx: &HostContext,
     input: &str,

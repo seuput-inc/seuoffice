@@ -63,7 +63,7 @@ enum Binding {
     Waiting,
     Bound {
         owner: NativeRequestOwner,
-        events: BoundGenerateWindowEvents,
+        events: Box<BoundGenerateWindowEvents>,
     },
     Revoked,
 }
@@ -102,7 +102,7 @@ impl Entry {
             .unwrap_or_else(|error| error.into_inner())
         {
             Binding::Bound { events, .. } if !self.identity.pending.is_cancelled() => {
-                Some(events.clone())
+                Some((**events).clone())
             }
             _ => None,
         }
@@ -202,12 +202,11 @@ impl GenerateWindows {
                 }
                 if let GenerateWindowEvent::Ready { origin }
                 | GenerateWindowEvent::OpenLink { origin } = event
+                    && (!proof_matches(origin, *window, &entry) || !same_origin(origin, identity))
                 {
-                    if !proof_matches(origin, *window, &entry) || !same_origin(origin, identity) {
-                        return Err(
-                            "The generate event origin does not match its first document.".into(),
-                        );
-                    }
+                    return Err(
+                        "The generate event origin does not match its first document.".into(),
+                    );
                 }
             }
             GenerateOrigin::NativeMenu { .. } => {}
@@ -448,7 +447,10 @@ impl GenerateWindows {
                                                     let _ = frame_entry
                                                         .first_events
                                                         .set(events.clone());
-                                                    *binding = Binding::Bound { owner, events };
+                                                    *binding = Binding::Bound {
+                                                        owner,
+                                                        events: Box::new(events),
+                                                    };
                                                 }
                                                 Err(error) => {
                                                     drop(binding);
@@ -493,19 +495,18 @@ impl GenerateWindows {
                                         .lock()
                                         .unwrap_or_else(|error| error.into_inner())
                                         .clone();
-                                    if let Binding::Bound { owner, events } = binding {
-                                        if owner
+                                    if let Binding::Bound { owner, events } = binding
+                                        && owner
                                             .context
                                             .authority_ref::<NativeOwnerAuthority>()
                                             .is_some_and(|proof| proof.origin == *context)
-                                            && !frame_entry.identity.pending.is_cancelled()
-                                            && !frame_entry
-                                                .identity
-                                                .ready
-                                                .swap(true, Ordering::AcqRel)
-                                        {
-                                            events.ready_to_show(owner.context);
-                                        }
+                                        && !frame_entry.identity.pending.is_cancelled()
+                                        && !frame_entry
+                                            .identity
+                                            .ready
+                                            .swap(true, Ordering::AcqRel)
+                                    {
+                                        events.ready_to_show(owner.context);
                                     }
                                 }
                                 NativeEventKind::View(ViewEvent::Focus) => {
@@ -631,10 +632,9 @@ impl GenerateWindows {
                         native.on_window_event(move |event| {
                             if matches!(event, tauri::WindowEvent::ThemeChanged(_))
                                 && theme_entry.identity.watch_theme.load(Ordering::Acquire)
+                                && let Some(events) = theme_entry.bound_events()
                             {
-                                if let Some(events) = theme_entry.bound_events() {
-                                    events.theme_updated();
-                                }
+                                events.theme_updated();
                             }
                         });
                         if entry.identity.closed.load(Ordering::Acquire) {
@@ -646,14 +646,13 @@ impl GenerateWindows {
                             .insert(window, entry);
                         Ok(window)
                     })();
-                    if configured.is_err() {
-                        if let Ok(native) = created_lifecycle.window_handle() {
-                            if let Err(error) = native.close() {
-                                eprintln!(
-                                    "[generate] cannot close an incompletely configured window: {error}"
-                                );
-                            }
-                        }
+                    if configured.is_err()
+                        && let Ok(native) = created_lifecycle.window_handle()
+                        && let Err(error) = native.close()
+                    {
+                        eprintln!(
+                            "[generate] cannot close an incompletely configured window: {error}"
+                        );
                     }
                     configured
                 },

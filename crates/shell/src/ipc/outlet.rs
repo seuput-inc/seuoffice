@@ -274,10 +274,11 @@ impl TauriOutlet {
             return Err(failure.error.clone());
         }
         let replaced = state.channel.is_some();
-        if let Some(current) = &state.channel {
-            if current.generation.is_active() && !current.generation.same_generation(generation) {
-                return Err("another renderer owns the event stream".into());
-            }
+        if let Some(current) = &state.channel
+            && current.generation.is_active()
+            && !current.generation.same_generation(generation)
+        {
+            return Err("another renderer owns the event stream".into());
         }
         let attached = Arc::new(Attached {
             channel,

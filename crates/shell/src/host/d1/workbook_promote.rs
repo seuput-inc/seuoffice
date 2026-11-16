@@ -51,13 +51,13 @@ pub(super) fn promote(temporary: &str, target: &str) -> EngineResult<()> {
         .open(temporary)
     {
         Ok(file) => {
-            if let Err(error) = file.sync_all() {
-                if !sync_tolerated(&error) {
+            if let Err(error) = file.sync_all()
+                && !sync_tolerated(&error)
+            {
                     return Err(engine_error(
                         main_core::node_fs::node_error(&error, "fsync", temporary).message,
                     ));
                 }
-            }
         }
         Err(error) if sync_tolerated(&error) => {}
         Err(error) => {
@@ -90,8 +90,9 @@ pub(super) fn promote(temporary: &str, target: &str) -> EngineResult<()> {
     let backup = before.as_ref().map(|_| {
         std::env::temp_dir().join(recovery_name(Path::new(target), &jscompat::random_uuid()))
     });
-    if let Some(backup) = &backup {
-        if let Err(error) = std::fs::copy(target, backup) {
+    if let Some(backup) = &backup
+        && let Err(error) = std::fs::copy(target, backup)
+    {
             return Err(engine_error(if retryable(&error) {
                 format!("The save target is locked by another program: {target}")
             } else {
@@ -104,7 +105,6 @@ pub(super) fn promote(temporary: &str, target: &str) -> EngineResult<()> {
                 .message
             }));
         }
-    }
     if let Err(error) = std::fs::copy(temporary, target) {
         if let (Some(backup), Some(before)) = (&backup, &before) {
             let untouched = std::fs::metadata(target).ok().is_some_and(|after| {

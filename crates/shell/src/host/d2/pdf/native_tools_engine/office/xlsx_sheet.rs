@@ -152,12 +152,10 @@ impl Sheet {
             ok
         });
         let mut hf = false;
-        for v in [&mut self.header, &mut self.footer] {
-            if let Some(s) = v {
-                let t = truncate(s, 255);
-                hf |= t.len() != s.len();
-                *s = t;
-            }
+        for s in [&mut self.header, &mut self.footer].into_iter().flatten() {
+            let t = truncate(s, 255);
+            hf |= t.len() != s.len();
+            *s = t;
         }
         let mut w = Vec::new();
         if dropped {

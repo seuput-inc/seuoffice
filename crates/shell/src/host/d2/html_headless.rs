@@ -140,10 +140,10 @@ impl Export {
         let unavailable_error = error.clone();
         crate::host::w::post_core_checked(
             move |provided, _| {
-                if let Some(created) = job.created.get() {
-                    if job.kind.fail(provided, created.view, error.clone()) {
-                        return;
-                    }
+                if let Some(created) = job.created.get()
+                    && job.kind.fail(provided, created.view, error.clone())
+                {
+                    return;
                 }
                 job.finish(Err(error));
             },
@@ -255,10 +255,10 @@ impl Export {
             .unwrap_or_else(|error| error.into_inner())
             .take();
         drop(subscription);
-        if self.closed.load(Ordering::Acquire) {
-            if let Some(created) = self.created.get() {
-                self.cx.views.remove_window(created.window);
-            }
+        if self.closed.load(Ordering::Acquire)
+            && let Some(created) = self.created.get()
+        {
+            self.cx.views.remove_window(created.window);
         }
         let done = self
             .done
@@ -288,6 +288,7 @@ pub(crate) fn export_headless(
     export_text(cx, input, out, format, request, operation, kind, done)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn export_text(
     cx: &HostContext,
     input: &str,

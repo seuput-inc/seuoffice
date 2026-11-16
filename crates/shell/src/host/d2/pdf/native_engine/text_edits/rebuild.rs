@@ -426,6 +426,7 @@ impl Builder<'_> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn rebuild(
     session: &mut PdfiumSession,
     doc: u64,
@@ -673,7 +674,7 @@ pub(super) fn rebuild(
                 groups.push((at, vec![obj]))
             }
         }
-        groups.sort_by(|a, b| b.0.cmp(&a.0));
+        groups.sort_by_key(|b| std::cmp::Reverse(b.0));
         for (at, objects) in groups {
             for (i, obj) in objects.iter().enumerate() {
                 call(

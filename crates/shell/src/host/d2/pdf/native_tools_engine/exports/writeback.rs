@@ -75,7 +75,7 @@ fn align(rec: &model::UnitRec, parts: &[read::Part], model: &model::Model) -> la
         return layout::Align::Center;
     }
     let p = &parts[0];
-    if !rec.title_like && !(parts.len() == 1 && p.lines.len() <= 1) {
+    if !(rec.title_like || (parts.len() == 1 && p.lines.len() <= 1)) {
         return layout::Align::Left;
     }
     let width = model

@@ -121,15 +121,14 @@ fn show_with_parent(
                 let app = app.clone();
                 let owned = session.map(|session| (session.id, alert.window()));
                 RcBlock::new(move |code: NSModalResponse| {
-                    if let Some((id, exact)) = &owned {
-                        if !crate::host::dialog::owned::macos::alert_is_registered(*id, exact)
+                    if let Some((id, exact)) = &owned
+                        && (!crate::host::dialog::owned::macos::alert_is_registered(*id, exact)
                             || !app
                                 .modalWindow()
                                 .as_deref()
-                                .is_some_and(|modal| std::ptr::eq(modal, &**exact))
-                        {
-                            return;
-                        }
+                                .is_some_and(|modal| std::ptr::eq(modal, &**exact)))
+                    {
+                        return;
                     }
                     app.stopModalWithCode(code);
                 })

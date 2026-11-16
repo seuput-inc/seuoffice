@@ -308,6 +308,7 @@ fn object_text(
         }))
     })
 }
+#[allow(clippy::too_many_arguments)]
 fn walk(
     session: &mut PdfiumSession,
     parent: u64,

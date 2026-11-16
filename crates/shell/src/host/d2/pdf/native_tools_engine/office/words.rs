@@ -42,10 +42,10 @@ pub(super) fn letter_spaced(chars: &[PdfChar]) -> bool {
             continue;
         }
         sizes.push(c.font_size);
-        if let Some(p) = prev {
-            if !saw_space {
-                gaps.push(gap(p, c));
-            }
+        if let Some(p) = prev
+            && !saw_space
+        {
+            gaps.push(gap(p, c));
         }
         prev = Some(c);
         saw_space = false;
@@ -88,15 +88,16 @@ fn tracked_pitch(chars: &[PdfChar]) -> Option<f64> {
         if space(c.code) || c.code <= 0x1f {
             continue;
         }
-        if let Some(p) = prev {
-            if !no_space(p.script) && !no_space(c.script) {
-                let font = p.font_size.min(c.font_size);
-                let font = if font == 0.0 { 1.0 } else { font };
-                if gap(p, c) < -0.05 * font {
-                    negative += 1;
-                }
-                pitches.push(c.origin_x - p.origin_x);
+        if let Some(p) = prev
+            && !no_space(p.script)
+            && !no_space(c.script)
+        {
+            let font = p.font_size.min(c.font_size);
+            let font = if font == 0.0 { 1.0 } else { font };
+            if gap(p, c) < -0.05 * font {
+                negative += 1;
             }
+            pitches.push(c.origin_x - p.origin_x);
         }
         prev = Some(c);
     }
@@ -127,10 +128,12 @@ fn real_gap_floor(chars: &[PdfChar]) -> Option<f64> {
         if c.code <= 0x1f {
             continue;
         }
-        if let Some(p) = previous {
-            if seen && !no_space(c.script) && !no_space(p.script) {
-                gaps.push(gap(p, c));
-            }
+        if let Some(p) = previous
+            && seen
+            && !no_space(c.script)
+            && !no_space(p.script)
+        {
+            gaps.push(gap(p, c));
         }
         seen = false;
         previous = Some(c);

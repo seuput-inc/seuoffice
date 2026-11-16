@@ -132,30 +132,28 @@ pub(super) fn keys(path: &Path) -> (Vec<String>, Vec<String>) {
                 }
             }
         }
-        if let Some(fvar) = fvar {
-            if let (Some(offset), Some(axes), Some(axis_size), Some(count), Some(size)) = (
+        if let Some(fvar) = fvar
+            && let (Some(offset), Some(axes), Some(axis_size), Some(count), Some(size)) = (
                 u16_at(&fvar, 4),
                 u16_at(&fvar, 8),
                 u16_at(&fvar, 10),
                 u16_at(&fvar, 12),
                 u16_at(&fvar, 14),
-            ) {
-                if axes > 0
-                    && axes <= 64
-                    && axis_size >= 20
-                    && count > 0
-                    && count <= 256
-                    && size >= 4 + 4 * axes
-                {
-                    if let Some(base) = axes
-                        .checked_mul(axis_size)
-                        .and_then(|n| offset.checked_add(n))
-                    {
-                        if count
-                            .checked_mul(size)
-                            .and_then(|n| base.checked_add(n))
-                            .is_some_and(|end| end <= fvar.len())
-                        {
+            )
+            && axes > 0
+            && axes <= 64
+            && axis_size >= 20
+            && count > 0
+            && count <= 256
+            && size >= 4 + 4 * axes
+            && let Some(base) = axes
+                .checked_mul(axis_size)
+                .and_then(|n| offset.checked_add(n))
+            && count
+                .checked_mul(size)
+                .and_then(|n| base.checked_add(n))
+                .is_some_and(|end| end <= fvar.len())
+        {
                             let bases = names
                                 .get(&16)
                                 .map(|v| v.iter().collect::<Vec<_>>())
@@ -174,10 +172,6 @@ pub(super) fn keys(path: &Path) -> (Vec<String>, Vec<String>) {
                                     }
                                 }
                             }
-                        }
-                    }
-                }
-            }
         }
     }
     (exact, os)

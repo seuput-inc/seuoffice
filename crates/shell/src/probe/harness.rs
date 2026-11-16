@@ -70,6 +70,8 @@ pub fn scheme_url(scheme: &str, path: &str) -> String {
     }
 }
 
+pub type EventHook = Arc<dyn Fn(&NativeEvent) + Send + Sync>;
+
 /// How a probe window is built.
 #[derive(Clone)]
 pub struct Direct {
@@ -84,7 +86,7 @@ pub struct Direct {
     /// Install an `on_new_window` hook that records the request and denies it.
     pub new_window: bool,
     /// Called with every event of the browser, on the UI thread, after it was recorded.
-    pub hook: Option<Arc<dyn Fn(&NativeEvent) + Send + Sync>>,
+    pub hook: Option<EventHook>,
 }
 
 impl Direct {

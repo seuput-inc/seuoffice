@@ -295,7 +295,7 @@ pub(crate) fn dispatch(
             return Ok(Value::Null);
         };
         let encoded = string(input, "pngBase64")?;
-        if encoded.len() > (MAX_BUFFER + 2) / 3 * 4 {
+        if encoded.len() > MAX_BUFFER.div_ceil(3) * 4 {
             return Err("OCR input is too large".into());
         }
         let png = STANDARD.decode(encoded).map_err(|_| "invalid OCR input")?;

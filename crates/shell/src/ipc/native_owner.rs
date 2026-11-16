@@ -141,6 +141,7 @@ pub(crate) fn run_accepted_native_operation_ui_many<R>(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_accepted_startup_recovery_ui_many<R>(
     ui: &dyn Thread,
     startup: &shell_contract::ipc::NativeInvocationOperation,
@@ -179,14 +180,13 @@ pub(crate) fn run_recovery_snapshot_ui<R>(
     if !ui.is_current() {
         return Err("Native UI admission requires the UI thread.".into());
     }
-    if let (Some(dialog), Some(created)) = (dialog, created) {
-        if !dialog
+    if let (Some(dialog), Some(created)) = (dialog, created)
+        && !dialog
             .context
             .renderer()
             .is_some_and(|generation| generation.same_generation(created))
-        {
-            return Err("The recovery dialog generation changed.".into());
-        }
+    {
+        return Err("The recovery dialog generation changed.".into());
     }
     execute_accepted(with_recovery_pre_navigation_snapshot(
         target,

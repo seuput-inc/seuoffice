@@ -3,7 +3,9 @@
 use main_core::packages::electron_utils::unsaved_files::OpenFileState;
 use shell_ipc_w::tabs::TabsState;
 
-pub(super) fn open_files(then: Box<dyn FnOnce(Option<Result<Vec<OpenFileState>, ()>>)>) {
+type OpenFilesCallback = Box<dyn FnOnce(Option<Result<Vec<OpenFileState>, ()>>)>;
+
+pub(super) fn open_files(then: OpenFilesCallback) {
     let mut then = Some(then);
     let ran = crate::host::w::on_core_local(|provided| {
         let done = then.take().expect("callback is taken once");
@@ -26,9 +28,9 @@ pub(super) fn open_files(then: Box<dyn FnOnce(Option<Result<Vec<OpenFileState>, 
             ));
         }));
     });
-    if !ran {
-        if let Some(done) = then {
-            done(Some(Err(())));
-        }
+    if !ran
+        && let Some(done) = then
+    {
+        done(Some(Err(())));
     }
 }

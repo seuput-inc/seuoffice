@@ -39,6 +39,7 @@ pub(super) struct Persistent {
     _entry_subscription: CancelSubscription,
 }
 impl Persistent {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn open(
         frames: Frames,
         nonce: [u8; 32],

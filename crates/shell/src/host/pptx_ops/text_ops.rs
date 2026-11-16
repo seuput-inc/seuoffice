@@ -66,12 +66,8 @@ fn validate_links(op: &IpcValue) -> Result<(), String> {
                         if field(link, "url")
                             .and_then(string)
                             .is_some_and(|s| !s.is_empty()) =>
-                    {
-                        ()
-                    }
-                    Some("slide") if matches!(field(link,"slideIndex"),Some(IpcValue::Number(n)) if n.is_finite() && *n >= 0.0 && n.fract() == 0.0) => {
-                        ()
-                    }
+                    {}
+                    Some("slide") if matches!(field(link,"slideIndex"),Some(IpcValue::Number(n)) if n.is_finite() && *n >= 0.0 && n.fract() == 0.0) => {}
                     Some("action") => {
                         let action = field(link, "action").and_then(string);
                         if !action.is_some_and(|s| ACTIONS.contains(&s)) {
@@ -465,12 +461,12 @@ fn apply_text(op: &IpcValue, ctx: &mut OpContext<'_>) -> Result<TxnRecord, Strin
             el.dirty.set(true);
         }
         let child = (**el).clone();
-        if let Some(group_id) = &group {
-            if !deck::patch_group_child_text(slide, group_id, &child)? {
-                return Err(format!(
-                    "op \"setText\": the child slice for \"{id}\" could not be located inside group \"{group_id}\"."
-                ));
-            }
+        if let Some(group_id) = &group
+            && !deck::patch_group_child_text(slide, group_id, &child)?
+        {
+            return Err(format!(
+                "op \"setText\": the child slice for \"{id}\" could not be located inside group \"{group_id}\"."
+            ));
         }
     }
     let mut landed = HashMap::new();
@@ -504,25 +500,23 @@ fn apply_text(op: &IpcValue, ctx: &mut OpContext<'_>) -> Result<TxnRecord, Strin
     let current = deck::patch_slide_xml(ctx.slide_mut(&target));
     let path = ctx.slide(&target).path.as_deref().unwrap_or("").to_owned();
     cleanup_superseded_part_resources(ctx.opened, &path, &previous, &current)?;
-    if level_dirty {
-        if let SlideTarget::Slide(index) = target {
-            let slide = ctx.slide_mut(&SlideTarget::Slide(index));
-            if let Some(SlideElement::Text(el)) = slide
-                .elements
-                .as_mut()
-                .and_then(|e| e.iter_mut().find(|e| e.id() == id))
-            {
-                let mut dirty = el
-                    .dirty_p_pr
-                    .as_ref()
-                    .cloned()
-                    .unwrap_or_else(PPrDirty::default);
-                dirty.level.set(true);
-                dirty.indents.set(true);
-                el.dirty_p_pr.set(dirty);
-            }
-            deck::materialize_slide(ctx.opened, index)?;
+    if level_dirty && let SlideTarget::Slide(index) = target {
+        let slide = ctx.slide_mut(&SlideTarget::Slide(index));
+        if let Some(SlideElement::Text(el)) = slide
+            .elements
+            .as_mut()
+            .and_then(|e| e.iter_mut().find(|e| e.id() == id))
+        {
+            let mut dirty = el
+                .dirty_p_pr
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(PPrDirty::default);
+            dirty.level.set(true);
+            dirty.indents.set(true);
+            el.dirty_p_pr.set(dirty);
         }
+        deck::materialize_slide(ctx.opened, index)?;
     }
     let mut after = vec![("levelDirty".into(), IpcValue::Bool(level_dirty))];
     after.push((

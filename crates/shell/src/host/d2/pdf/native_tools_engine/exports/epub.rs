@@ -167,11 +167,11 @@ fn nav_ol(nodes: &[Nav]) -> String {
     out
 }
 fn insert_nav(nodes: &mut Vec<Nav>, entry: Nav) {
-    if let Some(last) = nodes.last_mut() {
-        if last.level < entry.level {
-            insert_nav(&mut last.children, entry);
-            return;
-        }
+    if let Some(last) = nodes.last_mut()
+        && last.level < entry.level
+    {
+        insert_nav(&mut last.children, entry);
+        return;
     }
     nodes.push(entry)
 }
@@ -189,7 +189,7 @@ fn book_id(tree: &IpcValue, title: &str) -> String {
             string(p, "fingerprint")
         ));
     }
-    let mut v = format!("{:x}", h.finalize())[..32].as_bytes().to_vec();
+    let mut v = format!("{:x}", h.finalize()).as_bytes()[..32].to_vec();
     v[12] = b'5';
     let n = (v[16] as char).to_digit(16).unwrap_or(0);
     v[16] = char::from_digit((n & 3) | 8, 16).unwrap() as u8;
@@ -251,9 +251,9 @@ pub(super) fn write(
                 n += 1
             }
             env.markers.insert(*b as *const _ as usize, id.clone());
-            if !env.page_targets.contains_key(&page) {
+            if let std::collections::hash_map::Entry::Vacant(slot) = env.page_targets.entry(page) {
                 let href = format!("{}#{id}", files[i]);
-                env.page_targets.insert(page, href.clone());
+                slot.insert(href.clone());
                 page_list.push((page, href));
             }
         }

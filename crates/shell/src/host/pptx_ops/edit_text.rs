@@ -156,19 +156,19 @@ fn edit_run(old: Option<&TextRun>, edit: &IpcValue) -> TextRun {
     if changed_text {
         out.raw_xml.delete();
     }
-    if let Some(c) = field(edit, "color").and_then(string) {
-        if hex6(Some(c)) != hex6(old.and_then(|r| r.color.as_deref())) {
-            out.color_follows_theme.delete();
-            out.color_inherited.delete();
-            out.color_node_xml.delete();
-        }
+    if let Some(c) = field(edit, "color").and_then(string)
+        && hex6(Some(c)) != hex6(old.and_then(|r| r.color.as_deref()))
+    {
+        out.color_follows_theme.delete();
+        out.color_inherited.delete();
+        out.color_node_xml.delete();
     }
-    if let Some(f) = field(edit, "fontFamily").and_then(string) {
-        if font_key(Some(f)) != font_key(old.and_then(|r| r.font_family.as_deref())) {
-            out.latin_font.delete();
-            out.ea_font.delete();
-            out.font_implicit.delete();
-        }
+    if let Some(f) = field(edit, "fontFamily").and_then(string)
+        && font_key(Some(f)) != font_key(old.and_then(|r| r.font_family.as_deref()))
+    {
+        out.latin_font.delete();
+        out.ea_font.delete();
+        out.font_implicit.delete();
     }
     if out.underline.as_ref() == Some(&false) {
         out.underline_style.delete();
@@ -183,24 +183,23 @@ fn edit_run(old: Option<&TextRun>, edit: &IpcValue) -> TextRun {
     } else {
         old.is_some_and(|r| r.hyperlink.is_some() || r.hyperlink_r_id.is_some())
     };
-    if let Some(v) = underline {
-        if (!old.is_some_and(|r| r.underline_implicit.as_ref() == Some(&true)) || keeps_link)
-            && v != old.and_then(|r| *r.underline).unwrap_or(false)
-        {
-            if v {
-                out.underline_explicit_none.delete();
-            } else {
-                out.underline_explicit_none.set(true);
-            }
+    if let Some(v) = underline
+        && (old.is_none_or(|r| r.underline_implicit.as_ref() != Some(&true)) || keeps_link)
+        && v != old.and_then(|r| *r.underline).unwrap_or(false)
+    {
+        if v {
+            out.underline_explicit_none.delete();
+        } else {
+            out.underline_explicit_none.set(true);
         }
     }
-    if let Some(v) = boolean(field(edit, "strike")) {
-        if v != old.and_then(|r| *r.strike).unwrap_or(false) {
-            if v {
-                out.strike_explicit_none.delete();
-            } else {
-                out.strike_explicit_none.set(true);
-            }
+    if let Some(v) = boolean(field(edit, "strike"))
+        && v != old.and_then(|r| *r.strike).unwrap_or(false)
+    {
+        if v {
+            out.strike_explicit_none.delete();
+        } else {
+            out.strike_explicit_none.set(true);
         }
     }
     if present(link) {
@@ -222,20 +221,20 @@ fn edit_run(old: Option<&TextRun>, edit: &IpcValue) -> TextRun {
             out.hyperlink_tooltip.delete();
         }
     }
-    if let Some(v) = number(field(edit, "fontSize")) {
-        if Some(v) != old.and_then(|r| r.font_size.as_ref()).map(|n| n.0) {
-            out.font_size_implicit.delete();
-        }
+    if let Some(v) = number(field(edit, "fontSize"))
+        && Some(v) != old.and_then(|r| r.font_size.as_ref()).map(|n| n.0)
+    {
+        out.font_size_implicit.delete();
     }
-    if let Some(v) = boolean(field(edit, "bold")) {
-        if v != old.and_then(|r| *r.bold).unwrap_or(false) {
-            out.bold_implicit.delete();
-        }
+    if let Some(v) = boolean(field(edit, "bold"))
+        && v != old.and_then(|r| *r.bold).unwrap_or(false)
+    {
+        out.bold_implicit.delete();
     }
-    if let Some(v) = boolean(field(edit, "italic")) {
-        if v != old.and_then(|r| *r.italic).unwrap_or(false) {
-            out.italic_implicit.delete();
-        }
+    if let Some(v) = boolean(field(edit, "italic"))
+        && v != old.and_then(|r| *r.italic).unwrap_or(false)
+    {
+        out.italic_implicit.delete();
     }
     let highlight = field(edit, "highlight");
     if present(highlight)
@@ -313,12 +312,10 @@ pub(super) fn apply_edit_paragraphs(old: &[Paragraph], edited: &[IpcValue]) -> V
                     if source
                         .and_then(|p| p.p_pr_explicit.as_ref())
                         .is_some_and(|e| e.mar_l.as_ref() == Some(&true))
-                    {
-                        if let Some(indent) =
+                        && let Some(indent) =
                             source.and_then(|p| p.indent.as_ref()).filter(|n| n.0 < 0.0)
-                        {
-                            out.mar_l.set(JsNum(-indent.0 * (level + 1.0)));
-                        }
+                    {
+                        out.mar_l.set(JsNum(-indent.0 * (level + 1.0)));
                     }
                 }
             }
@@ -402,8 +399,10 @@ pub(super) fn collect_paragraph_format_patches(
         let bullet = field(p, "bullet")
             .and_then(string)
             .filter(|s| !s.is_empty());
-        let mut patch = ParagraphFormatPatch::default();
-        patch.bullet = bullet.map(str::to_owned);
+        let mut patch = ParagraphFormatPatch {
+            bullet: bullet.map(str::to_owned),
+            ..ParagraphFormatPatch::default()
+        };
         if bullet == Some("char") {
             patch.bullet_char = field(p, "bulletChar")
                 .and_then(string)
@@ -588,7 +587,7 @@ mod tests {
             ),
             ("level", IpcValue::Number(2.0)),
         ]);
-        assert!(levels_changed(&[old.clone()], &[input.clone()]));
+        assert!(levels_changed(&[old.clone()], std::slice::from_ref(&input)));
         let result = apply_edit_paragraphs(&[old], &[input]);
         assert_eq!(result[0].level.as_ref().unwrap().0, 2.0);
         assert_eq!(result[0].mar_l.as_ref().unwrap().0, 300.0);

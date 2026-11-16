@@ -28,13 +28,12 @@ pub(super) fn allocate_part_path(
         if let Some(number) = path
             .strip_prefix(prefix)
             .and_then(|p| p.strip_suffix(suffix))
+            && !number.is_empty()
+            && number.bytes().all(|b| b.is_ascii_digit())
+            && let Ok(value) = number.parse::<u64>()
         {
-            if !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) {
-                if let Ok(value) = number.parse::<u64>() {
                     max = max.max(value);
                 }
-            }
-        }
     }
     let next = max
         .checked_add(1)
@@ -200,6 +199,7 @@ fn add_workbook_cache(xml: &str, cache_id: u64, rel_id: &str) -> Result<String, 
 
 /// Installs already-built pivot parts and returns the updated workbook XML.
 /// Cache XML must be built after its records relationship id is allocated.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn install_pivot_parts<F>(
     pkg: &mut PackageEditor<'_>,
     worksheet_path: &str,
@@ -934,11 +934,10 @@ pub(super) fn apply_additions_phase(
             .next()
             .transpose()
             .map_err(|e| e.to_string())?
+            && let Some(name) = found.get(1)
         {
-            if let Some(name) = found.get(1) {
                 names.insert(name.to_lowercase());
             }
-        }
     }
     let cache_re = regex(r#"<pivotCache\b[^>]*\bcacheId="(\d+)""#)?;
     let mut cache_id = 0_u64;
@@ -1124,7 +1123,7 @@ mod tests {
         )
         .unwrap();
         assert!(workbook.contains(r#"<pivotCache cacheId="7" r:id="rId2"/>"#));
-        let plan = pkg.to_plan(touched);
+        let plan = pkg.into_plan(touched);
         let lookup = |path: &str| {
             plan.added
                 .iter()

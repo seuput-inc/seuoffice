@@ -105,7 +105,7 @@ fn page_chars(page: &IrPage) -> usize {
 }
 fn text_blocks(page: &IrPage) -> impl Iterator<Item = &TextBlock> {
     page.blocks.iter().filter_map(|b| match b {
-        PageBlock::Text(t) => Some(t),
+        PageBlock::Text(t) => Some(&**t),
         _ => None,
     })
 }
@@ -353,12 +353,11 @@ pub(super) fn is_newsletter_strong_page(page: &IrPage) -> bool {
 fn clear_refs(block: &mut TextBlock, markers: &HashMap<String, Option<String>>) {
     for line in &mut block.lines {
         for span in &mut line.spans {
-            if let Some(id) = span.note_ref.take() {
-                if span.text.is_empty() {
-                    if let Some(Some(marker)) = markers.get(&id) {
-                        span.text = marker.clone()
-                    }
-                }
+            if let Some(id) = span.note_ref.take()
+                && span.text.is_empty()
+                && let Some(Some(marker)) = markers.get(&id)
+            {
+                span.text = marker.clone()
             }
         }
     }
@@ -405,7 +404,7 @@ pub(super) fn classify_pages(
                 span.text = format!("{marker} {}", span.text)
             }
             page.blocks
-                .extend(note.blocks.into_iter().map(PageBlock::Text));
+                .extend(note.blocks.into_iter().map(|b| PageBlock::Text(Box::new(b))));
         }
         for block in &mut page.blocks {
             match block {

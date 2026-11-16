@@ -337,27 +337,27 @@ fn run_in_context(ctx: &mut OpContext<'_>, req: &TxnRequest) -> TxnResult {
             }
         }
     }
-    if !records.is_empty() {
-        if let Err(error) = flush(ctx) {
-            if let Some((deck, entries, saved)) = snapshot {
-                ctx.opened.deck = deck;
-                *ctx.opened.archive.entries_mut() = entries;
-                ctx.opened.save_snapshot = saved;
-                return TxnResult {
-                    failures: Some(vec![TxnFailure {
-                        index: ops.len() - 1,
-                        op: ops[ops.len() - 1].clone(),
-                        error,
-                    }]),
-                    ..TxnResult::default()
-                };
-            }
-            failures.push(TxnFailure {
-                index: ops.len() - 1,
-                op: ops[ops.len() - 1].clone(),
-                error,
-            });
+    if !records.is_empty()
+        && let Err(error) = flush(ctx)
+    {
+        if let Some((deck, entries, saved)) = snapshot {
+            ctx.opened.deck = deck;
+            *ctx.opened.archive.entries_mut() = entries;
+            ctx.opened.save_snapshot = saved;
+            return TxnResult {
+                failures: Some(vec![TxnFailure {
+                    index: ops.len() - 1,
+                    op: ops[ops.len() - 1].clone(),
+                    error,
+                }]),
+                ..TxnResult::default()
+            };
         }
+        failures.push(TxnFailure {
+            index: ops.len() - 1,
+            op: ops[ops.len() - 1].clone(),
+            error,
+        });
     }
     failures.sort_by_key(|f| f.index);
     TxnResult {

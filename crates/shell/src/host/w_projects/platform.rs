@@ -98,15 +98,17 @@ pub(crate) fn page_event(event: PageEvent) {
     }
 }
 
+type ProjectTimers = (
+    Mutex<HashMap<ProjectTimer, (u64, Option<Instant>)>>,
+    Condvar,
+);
+
 struct Platform {
     cx: HostContext,
     events: Arc<Mutex<Option<Arc<dyn PageEvents>>>>,
     tracked: Mutex<HashSet<ViewId>>,
     watching: Mutex<HashSet<ViewId>>,
-    timers: Arc<(
-        Mutex<HashMap<ProjectTimer, (u64, Option<Instant>)>>,
-        Condvar,
-    )>,
+    timers: Arc<ProjectTimers>,
     next_timer: std::sync::atomic::AtomicU64,
 }
 
@@ -135,15 +137,14 @@ impl Platform {
                 .contains(&view),
             PageEvent::Timer(_) => true,
         };
-        if deliver {
-            if let Some(events) = self
+        if deliver
+            && let Some(events) = self
                 .events
                 .lock()
                 .expect("project events lock poisoned")
                 .clone()
-            {
-                events.send(event);
-            }
+        {
+            events.send(event);
         }
     }
 }

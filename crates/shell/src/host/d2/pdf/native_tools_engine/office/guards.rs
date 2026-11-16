@@ -229,13 +229,12 @@ pub(super) fn stitch(pages: &mut [IrPage]) {
             tail.stitched_from_line = Some(tail.lines.len());
             tail.lines.extend(add.clone());
         }
-        if let Some(section) = prev.sections.last_mut() {
-            if let Some(column) = section.columns.last_mut() {
-                if let Some(PageBlock::Text(tail)) = column.blocks.last_mut() {
-                    tail.stitched_from_line = Some(tail.lines.len());
-                    tail.lines.extend(add);
-                }
-            }
+        if let Some(section) = prev.sections.last_mut()
+            && let Some(column) = section.columns.last_mut()
+            && let Some(PageBlock::Text(tail)) = column.blocks.last_mut()
+        {
+            tail.stitched_from_line = Some(tail.lines.len());
+            tail.lines.extend(add);
         }
         cur.blocks.remove(0);
         for s in &mut cur.sections {

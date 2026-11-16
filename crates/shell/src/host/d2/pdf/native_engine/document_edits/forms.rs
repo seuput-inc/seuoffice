@@ -58,7 +58,7 @@ pub(super) fn apply_values(
             _ => None,
         }
     }
-    fn text<'a>(v: Option<&'a IpcValue>) -> Option<&'a str> {
+    fn text(v: Option<&IpcValue>) -> Option<&str> {
         match v {
             Some(IpcValue::String(s)) => Some(s),
             _ => None,

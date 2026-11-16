@@ -106,6 +106,7 @@ impl Owner {
             },
         )
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn new_many_extra(
         cx: &HostContext,
         origin: NativeRequestOwner,
@@ -270,10 +271,10 @@ impl Owner {
         let closing = window.clone();
         let ui = cx.ui.clone();
         let closed = stop.on_cancel(move || {
-            if let Ok(mut loaded) = loaded.lock() {
-                if let Some(signal) = loaded.take() {
-                    let _ = signal.try_send(());
-                }
+            if let Ok(mut loaded) = loaded.lock()
+                && let Some(signal) = loaded.take()
+            {
+                let _ = signal.try_send(());
             }
             let window = closing.lock().ok().and_then(|mut window| window.take());
             if let Some(window) = window {

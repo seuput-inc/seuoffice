@@ -24,6 +24,7 @@ type Done = Box<dyn FnOnce(Result<DocsDisposal, String>)>;
 type SendDone = Box<dyn FnOnce(Result<DocsDisposal, String>) + Send>;
 pub(super) type Prepared = Rc<dyn DocsDisposalOperation>;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn prepare(
     hooks: &Hooks,
     view: ViewId,

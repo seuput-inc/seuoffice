@@ -145,14 +145,14 @@ fn apply_sheet(xml: &str, write: &Value) -> Result<String, String> {
 }
 fn apply_ranges(xml: &str, ranges: &[Value]) -> Result<String, String> {
     let existing = find(xml, RANGES)?;
-    if let Some((a, b)) = existing {
-        if has(
+    if let Some((a, b)) = existing
+        && has(
             &xml[a..b],
             r#"\b(?:password|hashValue)="|securityDescriptor"#,
-        )? {
+        )?
+    {
             return Err("This sheet has password- or permission-protected edit ranges — editing them is not supported.".into());
         }
-    }
     let stripped = existing.map_or_else(|| xml.to_owned(), |(a, b)| splice(xml, a, b, ""));
     if ranges.is_empty() {
         return Ok(stripped);

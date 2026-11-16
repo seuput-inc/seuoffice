@@ -128,14 +128,14 @@ pub(super) fn run(
         });
         if let Some(m) = indirect.exec(dict) {
             indirect_lengths.insert(bits(jscompat::to_number(m.get(1).unwrap_or(""))), length);
-        } else if let Some(m) = direct.exec(dict) {
-            if let Some(range) = m.range(1) {
-                edits.push(Edit {
-                    start: offsets[object.dict_start + range.start],
-                    end: offsets[object.dict_start + range.end],
-                    replacement: length.to_string().into_bytes(),
-                });
-            }
+        } else if let Some(m) = direct.exec(dict)
+            && let Some(range) = m.range(1)
+        {
+            edits.push(Edit {
+                start: offsets[object.dict_start + range.start],
+                end: offsets[object.dict_start + range.end],
+                replacement: length.to_string().into_bytes(),
+            });
         }
     }
     let integer = js_regex!(r"^-?\d+$");

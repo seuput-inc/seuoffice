@@ -233,11 +233,12 @@ pub(super) fn render(
                     italic: flag(r, "italic"),
                     href: link(string(r, "href")),
                 };
-                if let Some(last) = segs.last_mut() {
-                    if last.kind == Kind::Text && last.marks == marks {
-                        last.text.push_str(&text);
-                        continue;
-                    }
+                if let Some(last) = segs.last_mut()
+                    && last.kind == Kind::Text
+                    && last.marks == marks
+                {
+                    last.text.push_str(&text);
+                    continue;
                 }
                 segs.push(Seg {
                     kind: Kind::Text,
@@ -260,12 +261,12 @@ pub(super) fn render(
             }),
             "math" => {
                 let text = string(r, "latex");
-                if let Some(last) = segs.last_mut() {
-                    if last.kind == Kind::Math {
-                        last.text.push(' ');
-                        last.text.push_str(text);
-                        continue;
-                    }
+                if let Some(last) = segs.last_mut()
+                    && last.kind == Kind::Math
+                {
+                    last.text.push(' ');
+                    last.text.push_str(text);
+                    continue;
                 }
                 segs.push(Seg {
                     kind: Kind::Math,
@@ -354,77 +355,76 @@ pub(super) fn render(
     // CommonMark emphasis boundaries cannot leave punctuation adjacent to a word.
     let mut peeled: Vec<Seg> = Vec::new();
     for mut s in trimmed {
-        if let Some(prev) = peeled.last_mut() {
-            if s.kind == Kind::Text
-                && prev.kind == Kind::Text
-                && !prev.text.ends_with(char::is_whitespace)
-                && !s.text.starts_with(char::is_whitespace)
+        if let Some(prev) = peeled.last_mut()
+            && s.kind == Kind::Text
+            && prev.kind == Kind::Text
+            && !prev.text.ends_with(char::is_whitespace)
+            && !s.text.starts_with(char::is_whitespace)
+        {
+            let shared = intersection(Some(&prev.marks), Some(&s.marks));
+            let opens = shared != s.marks;
+            let closes = shared != prev.marks;
+            let tail = regex(r"[\p{P}\p{S}]+$")
+                .try_exec(&prev.text)
+                .expect("Markdown regex")
+                .map(|m| (m.start(), m.as_str().to_owned()));
+            let head = regex(r"^[\p{P}\p{S}]+")
+                .try_exec(&s.text)
+                .expect("Markdown regex")
+                .map(|m| m.as_str().to_owned());
+            let close_emphasis =
+                (prev.marks.bold && !s.marks.bold) || (prev.marks.italic && !s.marks.italic);
+            let open_emphasis =
+                (s.marks.bold && !prev.marks.bold) || (s.marks.italic && !prev.marks.italic);
+            if close_emphasis
+                && !opens
+                && s.text.chars().next().is_some_and(|c| c.is_alphanumeric())
+                && let Some((at, tail)) = tail
             {
-                let shared = intersection(Some(&prev.marks), Some(&s.marks));
-                let opens = shared != s.marks;
-                let closes = shared != prev.marks;
-                let tail = regex(r"[\p{P}\p{S}]+$")
-                    .try_exec(&prev.text)
-                    .expect("Markdown regex")
-                    .map(|m| (m.start(), m.as_str().to_owned()));
-                let head = regex(r"^[\p{P}\p{S}]+")
-                    .try_exec(&s.text)
-                    .expect("Markdown regex")
-                    .map(|m| m.as_str().to_owned());
-                let close_emphasis =
-                    (prev.marks.bold && !s.marks.bold) || (prev.marks.italic && !s.marks.italic);
-                let open_emphasis =
-                    (s.marks.bold && !prev.marks.bold) || (s.marks.italic && !prev.marks.italic);
-                if close_emphasis
-                    && !opens
-                    && s.text.chars().next().is_some_and(|c| c.is_alphanumeric())
-                {
-                    if let Some((at, tail)) = tail {
-                        prev.text.truncate(at);
-                        if prev.text.is_empty() {
-                            peeled.pop();
-                        }
-                        peeled.push(Seg {
-                            kind: Kind::Text,
-                            text: tail,
-                            marks: shared,
-                        });
-                        peeled.push(s);
-                        continue;
-                    }
+                prev.text.truncate(at);
+                if prev.text.is_empty() {
+                    peeled.pop();
                 }
-                if open_emphasis
-                    && !closes
-                    && prev
-                        .text
-                        .chars()
-                        .next_back()
-                        .is_some_and(|c| c.is_alphanumeric())
-                {
-                    if let Some(head) = head {
-                        s.text = s.text[head.len()..].into();
-                        peeled.push(Seg {
-                            kind: Kind::Text,
-                            text: head,
-                            marks: shared,
-                        });
-                        if !s.text.is_empty() {
-                            peeled.push(s)
-                        }
-                        continue;
-                    }
+                peeled.push(Seg {
+                    kind: Kind::Text,
+                    text: tail,
+                    marks: shared,
+                });
+                peeled.push(s);
+                continue;
+            }
+            if open_emphasis
+                && !closes
+                && prev
+                    .text
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_alphanumeric())
+                && let Some(head) = head
+            {
+                s.text = s.text[head.len()..].into();
+                peeled.push(Seg {
+                    kind: Kind::Text,
+                    text: head,
+                    marks: shared,
+                });
+                if !s.text.is_empty() {
+                    peeled.push(s)
                 }
+                continue;
             }
         }
         peeled.push(s);
     }
     let mut segs: Vec<Seg> = Vec::new();
     for s in peeled {
-        if let Some(last) = segs.last_mut() {
-            if s.kind == Kind::Text && last.kind == Kind::Text && s.marks == last.marks {
-                last.text.push_str(&s.text);
-                continue;
-            }
+        if let Some(last) = segs.last_mut()
+            && s.kind == Kind::Text
+            && last.kind == Kind::Text
+            && s.marks == last.marks
+        {
+            last.text.push_str(&s.text);
+            continue;
         }
         segs.push(s)
     }
@@ -460,7 +460,7 @@ pub(super) fn render(
                 (m, n)
             })
             .collect::<Vec<_>>();
-        opening.sort_by(|a, b| b.1.cmp(&a.1));
+        opening.sort_by_key(|b| std::cmp::Reverse(b.1));
         let (lead, mut core, trail) = if s.kind == Kind::Text {
             let t = s.text.trim_start();
             let lead = &s.text[..s.text.len() - t.len()];

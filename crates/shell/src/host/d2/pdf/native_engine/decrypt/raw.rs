@@ -211,10 +211,10 @@ pub(super) fn first_id(data: &[u8]) -> Vec<u8> {
             at += 1
         }
         let start = at;
-        if let Some(value) = hex(data, &mut at) {
-            if at > start + 2 {
-                return value;
-            }
+        if let Some(value) = hex(data, &mut at)
+            && at > start + 2
+        {
+            return value;
         }
     }
     Vec::new()
@@ -325,13 +325,14 @@ pub(super) fn normalize(raw: &[u8]) -> Result<(lopdf::Dictionary, Vec<u8>), Stri
     let text = latin1(raw);
     let mut dict = Dictionary::new();
     let mut out = String::from("<<");
-    let mut name = |key: &str, value: &str| {
-        dict.set(key, Object::Name(value.as_bytes().to_vec()));
-        out.push_str(&format!(" /{key} /{value}"));
-    };
-    let filter = capture(&text, r"/Filter\s*/(\w+)")?.unwrap_or("Standard");
-    name("Filter", filter);
-    drop(name);
+    {
+        let mut name = |key: &str, value: &str| {
+            dict.set(key, Object::Name(value.as_bytes().to_vec()));
+            out.push_str(&format!(" /{key} /{value}"));
+        };
+        let filter = capture(&text, r"/Filter\s*/(\w+)")?.unwrap_or("Standard");
+        name("Filter", filter);
+    }
     for key in ["V", "R", "Length", "P"] {
         let n = number(&text, key, key == "Length")?;
         if key != "Length" || n >= 40 {

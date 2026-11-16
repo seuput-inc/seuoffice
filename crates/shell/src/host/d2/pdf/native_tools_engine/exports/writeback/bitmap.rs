@@ -53,8 +53,8 @@ pub(super) fn sample_background(bitmap: &PageBitmap, rect: Rect) -> [u8; 3] {
                 continue;
             }
             let at = (y * bitmap.width + x) * 4;
-            for channel in 0..3 {
-                channels[channel].push(bitmap.rgba[at + channel]);
+            for (channel, samples) in channels.iter_mut().enumerate() {
+                samples.push(bitmap.rgba[at + channel]);
             }
             x += if in_row { 1 } else { step };
         }

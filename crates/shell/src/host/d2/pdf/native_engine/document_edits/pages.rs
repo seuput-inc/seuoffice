@@ -119,20 +119,18 @@ pub(super) fn finish_pages(
             remaining -= 1;
         }
     }
-    if let Some(IpcValue::Array(order)) = field(request, "pageOrder") {
-        if !order.is_empty() {
-            let target: Vec<_> = order
-                .iter()
-                .filter_map(|v| number(Some(v)))
-                .filter(|v| !deleted.contains(v))
-                .filter(|v| {
-                    v.is_finite() && *v >= 0.0 && v.fract() == 0.0 && *v < page_count as f64
-                })
-                .map(|v| v as usize)
-                .collect();
-            if target.len() == remaining {
-                session.exchange(json!({"op":"reorderPages","indices":target}))?;
-            }
+    if let Some(IpcValue::Array(order)) = field(request, "pageOrder")
+        && !order.is_empty()
+    {
+        let target: Vec<_> = order
+            .iter()
+            .filter_map(|v| number(Some(v)))
+            .filter(|v| !deleted.contains(v))
+            .filter(|v| v.is_finite() && *v >= 0.0 && v.fract() == 0.0 && *v < page_count as f64)
+            .map(|v| v as usize)
+            .collect();
+        if target.len() == remaining {
+            session.exchange(json!({"op":"reorderPages","indices":target}))?;
         }
     }
     if let Some(fills) = super::super::static_fills::resulting_fills(request, page_count) {

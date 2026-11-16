@@ -370,7 +370,7 @@ mod tests {
         let sealed = encrypt_fresh(input, "user", Some("owner"), &limits).unwrap();
         let user = decrypt_document(&sealed, "user").unwrap();
         assert_eq!(user.unlocked_as, "user");
-        assert_eq!(user.permissions, permissions(-1 & !0x408 & !0x120 & !0x10));
+        assert_eq!(user.permissions, permissions(!0x408 & !0x120 & !0x10));
         assert_eq!(
             decrypt_document(&sealed, "owner").unwrap().unlocked_as,
             "owner"

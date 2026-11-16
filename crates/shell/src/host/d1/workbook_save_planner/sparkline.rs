@@ -127,11 +127,11 @@ fn add(xml: &str, groups: &[&Value]) -> Result<String, String> {
         "<ext uri=\"{{05C60535-1F16-4fd2-B633-F4F36F0B64E0}}\" xmlns:x14=\"http://schemas.microsoft.com/office/spreadsheetml/2009/9/main\">{}</ext>",
         wrap(&body)
     );
-    if let Some(at) = xml.rfind("</extLst>") {
-        if xml.rfind("</sheetData>").map_or(true, |end| at > end) {
+    if let Some(at) = xml.rfind("</extLst>")
+        && xml.rfind("</sheetData>").is_none_or(|end| at > end)
+    {
             return Ok(splice(xml, at, &extension));
         }
-    }
     let at = xml
         .rfind("</worksheet>")
         .ok_or("Worksheet has no closing element.")?;

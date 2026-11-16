@@ -202,8 +202,10 @@ impl NativeClose {
         proof: crate::host::window::NativeClosureProof,
         drain: Option<(RecoveryOpenTarget, Arc<dyn shell_contract::runtime::Thread>)>,
     ) -> Arc<Self> {
-        let mut state = NativeCloseState::default();
-        state.drained = drain.is_none();
+        let state = NativeCloseState {
+            drained: drain.is_none(),
+            ..NativeCloseState::default()
+        };
         Arc::new(Self {
             cx,
             drain,
@@ -752,10 +754,10 @@ impl Opening {
         let mut subscriptions = Vec::with_capacity(losses.len() + 1);
         let weak = Arc::downgrade(self);
         subscriptions.push(snapshot.revision_loss_token().on_cancel(move || {
-            if let Some(opening) = weak.upgrade() {
-                if let Err(error) = opening.arm_authority() {
-                    opening.fail(error);
-                }
+            if let Some(opening) = weak.upgrade()
+                && let Err(error) = opening.arm_authority()
+            {
+                opening.fail(error);
             }
         }));
         for (loss, precommit_only) in losses {
@@ -792,10 +794,10 @@ impl Opening {
     }
 
     fn fail_claimed(self: &Arc<Self>, error: String) {
-        if let Some(receipt) = self.target.committed_seed() {
-            if let Ok(notification) = receipt.fail_after_loss(error.clone()) {
-                notification.notify();
-            }
+        if let Some(receipt) = self.target.committed_seed()
+            && let Ok(notification) = receipt.fail_after_loss(error.clone())
+        {
+            notification.notify();
         }
         *self
             .result
@@ -1111,6 +1113,7 @@ impl Drop for Construction {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn create_recovery_view_owned(
     services: &Services,
     provided: Rc<Provided>,
@@ -1213,11 +1216,11 @@ pub(crate) fn create_recovery_view_owned(
     let mut prepared = constructor()?;
     let view = prepared.view;
     let created = prepared.generation.clone();
-    if let RecoveryOpenContext::NativeStartup(operation) = &context {
-        if operation.selection().surface() != prepared.surface {
-            prepared.cx.views.remove_view_if_generation(view, &created);
-            return Err("The native recovery selection belongs to another editor".into());
-        }
+    if let RecoveryOpenContext::NativeStartup(operation) = &context
+        && operation.selection().surface() != prepared.surface
+    {
+        prepared.cx.views.remove_view_if_generation(view, &created);
+        return Err("The native recovery selection belongs to another editor".into());
     }
     let closure = prepared.proof.reservation().clone();
     let owner = prepared.proof.owner().clone();

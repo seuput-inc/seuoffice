@@ -43,7 +43,9 @@ struct Prepared {
 }
 type Done = Box<dyn FnOnce(Result<(), String>)>;
 
-pub(super) struct WorkerDone<T: Send + 'static>(Option<Box<dyn FnOnce(Result<T, String>) + Send>>);
+type WorkerCallback<T> = Box<dyn FnOnce(Result<T, String>) + Send>;
+
+pub(super) struct WorkerDone<T: Send + 'static>(Option<WorkerCallback<T>>);
 impl<T: Send + 'static> WorkerDone<T> {
     pub(super) fn new(done: Box<dyn FnOnce(Result<T, String>) + Send>) -> Self {
         Self(Some(done))

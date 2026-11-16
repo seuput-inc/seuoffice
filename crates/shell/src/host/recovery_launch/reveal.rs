@@ -162,14 +162,13 @@ impl CapturedReveal {
                 }
             }));
         });
-        if let Err(error) = result {
-            if let Some(done) = reply
+        if let Err(error) = result
+            && let Some(done) = reply
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .take()
-            {
-                done(Err(error.to_string()));
-            }
+        {
+            done(Err(error.to_string()));
         }
     }
 }

@@ -173,11 +173,11 @@ fn existing_array_ref(cell: &str) -> Option<&str> {
     if !is_grid_address(start) {
         return None;
     }
-    if let Some(end) = parts.next() {
-        if !is_grid_address(end) {
+    if let Some(end) = parts.next()
+        && !is_grid_address(end)
+    {
             return None;
         }
-    }
     Some(reference)
 }
 
@@ -198,7 +198,7 @@ pub(super) fn apply_edit_to_cell(
                 0
             },
         )
-    } else if let (Some(delta), Some(editor)) = (style, stylesheet.as_deref_mut()) {
+    } else if let (Some(delta), Some(editor)) = (style, stylesheet) {
         let base = existing_style
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(0);
@@ -665,13 +665,12 @@ fn expand_dimension(xml: &str, mutations: &Mutations<'_>) -> String {
             .into_iter()
             .filter(|e| e.name == "row")
         {
-            if old_ref.is_some() {
-                if let Some(r) =
+            if old_ref.is_some()
+                && let Some(r) =
                     super::styles::attr(row.xml, "r").and_then(|s| s.parse::<usize>().ok())
-                {
+            {
                     max_row = max_row.max(r);
                 }
-            }
             for cell in super::style_entries::children(row.inner)
                 .into_iter()
                 .filter(|e| e.name == "c")

@@ -508,11 +508,10 @@ pub(super) fn sync(
             .map(|e| e.text.as_str())
             .collect::<Vec<_>>()
             .join("\n\n");
-        if (string(note, "text") == displayed
-            || prior.is_some_and(|v| v.text == string(note, "text")))
-            && prior.is_some()
+        if let Some(prior) = prior
+            && (string(note, "text") == displayed || prior.text == string(note, "text"))
         {
-            legacy.insert(reference.clone(), prior.expect("checked").clone());
+            legacy.insert(reference.clone(), prior.clone());
             continue;
         }
         if !people.ids.contains(&root.person) {

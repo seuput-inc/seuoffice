@@ -137,6 +137,7 @@ pub(super) struct FoundImage {
     pub(super) chain: Vec<u32>,
     pub(super) ordinals: Vec<usize>,
 }
+#[allow(clippy::too_many_arguments)]
 fn walk_form(
     session: &mut PdfiumSession,
     form: u32,
@@ -330,25 +331,24 @@ fn insert_object(
     object: u32,
     index: Option<i64>,
 ) -> Result<(), String> {
-    if let Some(index) = index {
-        if session
+    if let Some(index) = index
+        && session
             .supports("FPDFPage_InsertObjectAtIndex")
             .map_err(|e| e.to_string())?
+    {
+        if int(
+            session,
+            "FPDFPage_InsertObjectAtIndex",
+            &[
+                reference(page.into()),
+                reference(object.into()),
+                json!(index),
+            ],
+        )? == 0
         {
-            if int(
-                session,
-                "FPDFPage_InsertObjectAtIndex",
-                &[
-                    reference(page.into()),
-                    reference(object.into()),
-                    json!(index),
-                ],
-            )? == 0
-            {
-                return Err("FPDFPage_InsertObjectAtIndex failed".into());
-            }
-            return Ok(());
+            return Err("FPDFPage_InsertObjectAtIndex failed".into());
         }
+        return Ok(());
     }
     call(
         session,
@@ -474,7 +474,7 @@ fn decode(input: &[u8]) -> Result<(u32, u32, Vec<u8>), u8> {
                         input[offset + 2],
                         input[offset + 3],
                     ]);
-                    let value = if !(value < 1.0) { 1.0 } else { value.max(0.0) };
+                    let value = if value.is_nan() || value >= 1.0 { 1.0 } else { value.max(0.0) };
                     (value * 255.0).round() as u8
                 }
             };
@@ -496,11 +496,9 @@ fn decode(input: &[u8]) -> Result<(u32, u32, Vec<u8>), u8> {
         let alpha = u32::from(pixel[3]);
         for color in &mut pixel[..3] {
             let premultiplied = (u32::from(*color) * alpha + 127) / 255;
-            *color = if alpha == 0 {
-                0
-            } else {
-                ((premultiplied * 255 + alpha / 2) / alpha).min(255) as u8
-            };
+            *color = (premultiplied * 255 + alpha / 2)
+                .checked_div(alpha)
+                .map_or(0, |value| value.min(255) as u8);
         }
         pixel.swap(0, 2);
     }
@@ -784,6 +782,7 @@ fn insert_image(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 fn edit_image(
     session: &mut PdfiumSession,
     doc: u64,

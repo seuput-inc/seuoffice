@@ -89,10 +89,10 @@ pub(super) fn fallback(text: &str) -> Option<Vec<u8>> {
         "C:\\Windows\\Fonts\\arialuni.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     ] {
-        if let Ok(bytes) = std::fs::read(path) {
-            if font_covers_text(&bytes, text) {
-                return Some(bytes);
-            }
+        if let Ok(bytes) = std::fs::read(path)
+            && font_covers_text(&bytes, text)
+        {
+            return Some(bytes);
         }
     }
     let env = FontEnv {
@@ -125,10 +125,10 @@ pub(super) fn fallback(text: &str) -> Option<Vec<u8>> {
         ("DejaVuSans", "DejaVu Sans"),
         ("LiberationSans-Regular", "Liberation Sans"),
     ] {
-        if let Some(bytes) = locator.find_system_font(ps, family) {
-            if font_covers_text(&bytes, text) {
-                return Some(bytes);
-            }
+        if let Some(bytes) = locator.find_system_font(ps, family)
+            && font_covers_text(&bytes, text)
+        {
+            return Some(bytes);
         }
     }
     locator.find_font_covering(text)

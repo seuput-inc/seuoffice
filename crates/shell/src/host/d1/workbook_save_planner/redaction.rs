@@ -111,7 +111,7 @@ fn moved_mark(mark: &Value, ops: &[Value]) -> Result<Option<Value>, String> {
     }
     Ok(Some(value))
 }
-fn marks_for<'a>(state: &'a Value) -> Result<&'a [Value], String> {
+fn marks_for(state: &Value) -> Result<&[Value], String> {
     list(state, "marks")
 }
 fn moved_marks(marks: &[Value], sheet: &str, structural: &[Value]) -> Result<Vec<Value>, String> {
@@ -581,7 +581,7 @@ mod tests {
         let mut pkg = PackageEditor::new(&mut source);
         let mut touched = HashSet::new();
         apply_part(&mut pkg, &mut touched, &[]).unwrap();
-        let plan = pkg.to_plan(touched);
+        let plan = pkg.into_plan(touched);
         assert_eq!(plan.removed_entries, vec![PART]);
         assert!(
             plan.replaced.iter().any(|(path, text)| path == RELS

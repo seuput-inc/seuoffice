@@ -5,7 +5,7 @@ use super::{field, list};
 use serde_json::{Value, json};
 use shell_contract::IpcValue;
 
-fn text<'a>(value: Option<&'a IpcValue>) -> Option<&'a str> {
+fn text(value: Option<&IpcValue>) -> Option<&str> {
     match value {
         Some(IpcValue::String(value)) => Some(value),
         _ => None,
@@ -266,8 +266,8 @@ fn apply_fields(
             session.exchange(json!({"op":"fieldFind", "name":name}))?
         };
         if name.is_empty()
-            || (!existing.is_null()
-                && !(kind == "radio"
+            || !(existing.is_null()
+                || (kind == "radio"
                     && existing.get("kind").and_then(Value::as_str) == Some("radio")))
         {
             return Err(format!("A form field named \"{name}\" already exists"));

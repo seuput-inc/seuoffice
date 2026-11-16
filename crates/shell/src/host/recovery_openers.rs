@@ -14,21 +14,33 @@ pub(crate) struct Open {
     prepare: Rc<PrepareOpen>,
 }
 
+pub(crate) type BeforeLoad = Box<
+    dyn FnOnce(
+        ViewId,
+        &shell_contract::ipc::RecoveryOpenTarget,
+        main_core::packages::electron_utils::recovery_contract::RecoveryOpenDone,
+    ),
+>;
+type DirectDelivery = std::sync::Arc<
+    std::sync::Mutex<Option<Result<shell_contract::ipc::NativeBrowserRetirement, String>>>,
+>;
+type Quarantined = (WindowId, NativeAttempt, Box<dyn FnOnce()>);
+type PendingDrain = (WindowId, Box<dyn FnOnce(Result<(), String>)>);
+type OpenerLookup = (
+    RestoredTabOpener,
+    UnloadedTabOpenContext,
+    shell_contract::ipc::NativeInvocationOperation,
+    Rc<Open>,
+    Rc<NeedsUser>,
+);
+
 pub(crate) struct PreparedRecoveryOpen {
     pub(crate) kind: TabKind,
     pub(crate) path: Option<String>,
     pub(crate) untitled: bool,
     pub(crate) operation: Option<shell_contract::ipc::NativeInvocationOperation>,
     attempt: Option<NativeAttempt>,
-    pub(crate) before_load: Option<
-        Box<
-            dyn FnOnce(
-                ViewId,
-                &shell_contract::ipc::RecoveryOpenTarget,
-                main_core::packages::electron_utils::recovery_contract::RecoveryOpenDone,
-            ),
-        >,
-    >,
+    pub(crate) before_load: Option<BeforeLoad>,
     after: Box<dyn FnOnce(ViewId) -> Result<(), String>>,
 }
 
@@ -65,11 +77,7 @@ struct HeldFailure {
     done: FailedAttemptDone,
     cleanup: Option<RecoveryCleanup>,
     retirement: Option<shell_contract::ipc::NativeBrowserRetirement>,
-    delivery: Option<
-        std::sync::Arc<
-            std::sync::Mutex<Option<Result<shell_contract::ipc::NativeBrowserRetirement, String>>>,
-        >,
-    >,
+    delivery: Option<DirectDelivery>,
     rollback_progress: Option<RollbackProgress>,
     indeterminate: Option<&'static str>,
     core: Option<std::sync::Arc<dyn shell_contract::runtime::Thread>>,
@@ -875,11 +883,11 @@ struct Registry {
     next: u64,
     entries: HashMap<u64, Rc<RefCell<Entry>>>,
     direct: HashMap<u64, DirectEntry>,
-    quarantined: Vec<(WindowId, NativeAttempt, Box<dyn FnOnce()>)>,
+    quarantined: Vec<Quarantined>,
     closing: std::collections::HashSet<WindowId>,
     shutting_down: bool,
     queries: HashMap<u64, RecoveryQuery>,
-    drains: Vec<(WindowId, Box<dyn FnOnce(Result<(), String>)>)>,
+    drains: Vec<PendingDrain>,
 }
 
 thread_local! {
@@ -953,16 +961,7 @@ pub(crate) fn bind(opener: Opener, tab_id: &str) -> Result<(), String> {
 fn lookup(
     opener: &Opener,
     context: &UnloadedTabOpenContext,
-) -> Result<
-    (
-        RestoredTabOpener,
-        UnloadedTabOpenContext,
-        shell_contract::ipc::NativeInvocationOperation,
-        Rc<Open>,
-        Rc<NeedsUser>,
-    ),
-    String,
-> {
+) -> Result<OpenerLookup, String> {
     REGISTRY.with(|registry| {
         let registry = registry.borrow();
         let entry = registry
@@ -1660,13 +1659,12 @@ pub(crate) fn retry_direct(id: u64) {
         }
         if let (Some(DirectLifetime::CallerOwned(lifetime)), Some(proof)) =
             (&failure.lifetime, &failure.proof)
+            && !lifetime.matches_retirement(proof)
         {
-            if !lifetime.matches_retirement(proof) {
-                return Some(Work::Error(
-                    entry.owner,
-                    "The direct recovery cleanup belongs to another lifetime".into(),
-                ));
-            }
+            return Some(Work::Error(
+                entry.owner,
+                "The direct recovery cleanup belongs to another lifetime".into(),
+            ));
         }
         if let Some(proof) = failure.proof.clone() {
             failure.in_flight = true;
@@ -1694,13 +1692,13 @@ pub(crate) fn retry_direct(id: u64) {
                     guard.pending = false;
                     let mut failed = None;
                     REGISTRY.with(|registry| {
-                        if let Some(entry) = registry.borrow_mut().direct.get_mut(&id) {
-                            if let Some(failure) = entry.failure.as_mut() {
-                                failure.in_flight = false;
-                                match result {
-                                    Ok(proof) => failure.proof = Some(proof),
-                                    Err(error) => failed = Some((entry.owner, error)),
-                                }
+                        if let Some(entry) = registry.borrow_mut().direct.get_mut(&id)
+                            && let Some(failure) = entry.failure.as_mut()
+                        {
+                            failure.in_flight = false;
+                            match result {
+                                Ok(proof) => failure.proof = Some(proof),
+                                Err(error) => failed = Some((entry.owner, error)),
                             }
                         }
                     });
@@ -2761,11 +2759,12 @@ mod tests {
                 true
             }
         }
+        type DelayedCall = Box<dyn FnOnce(Result<(), String>)>;
         struct Delayed {
             reservation: shell_contract::ipc::NativeClosureReservation,
             generation: shell_contract::runtime::RendererGeneration,
-            retire: RefCell<Option<Box<dyn FnOnce(Result<(), String>)>>>,
-            rollback: RefCell<Option<Box<dyn FnOnce(Result<(), String>)>>>,
+            retire: RefCell<Option<DelayedCall>>,
+            rollback: RefCell<Option<DelayedCall>>,
         }
         impl shell_ipc_w::tabs::host::EditorSeedRollback for Delayed {
             fn retire_closed(

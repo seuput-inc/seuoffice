@@ -14,6 +14,7 @@ use main_core::packages::ai_provider::task::{JsError, Rt, Signal};
 const MAX_BYTES: usize = 20 * 1024 * 1024;
 const SYSTEM: &str = "You are shown one or more images from an office document or from the user. Answer the request about them directly and completely, in plain text. You have no tools: do not try to call any.";
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn analyze(
     rt: &Rt,
     providers: &Providers,

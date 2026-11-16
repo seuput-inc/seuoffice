@@ -54,7 +54,7 @@ fn escape(s: &str) -> String {
 fn xlsx(s: &str) -> String {
     let mut out = String::new();
     for (i, c) in s.char_indices() {
-        let b = s[i..].as_bytes();
+        let b = &s.as_bytes()[i..];
         if c == '_'
             && b.get(1) == Some(&b'x')
             && b.get(2..6)
@@ -407,13 +407,13 @@ fn apply_sheet(
     )?;
     let mut changed = threaded.rels_xml != rels;
     rels = threaded.rels_xml;
-    if threaded.part_removed {
-        if let Some(part) = threaded.part_path {
+    if threaded.part_removed
+        && let Some(part) = threaded.part_path
+    {
             rels = remove_rel(&rels, threaded::REL_TYPE)?;
             changed = true;
             remove_override(pkg, &part, touched)?;
         }
-    }
     if notes.is_empty() {
         let Some(comments_path) = comments_path else {
             if changed {

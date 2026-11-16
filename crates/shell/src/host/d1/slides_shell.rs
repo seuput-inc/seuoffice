@@ -502,8 +502,9 @@ fn export_headless_pdf(
         if let Err(error) = std::thread::Builder::new()
             .name("slides-headless-watchdog".into())
             .spawn(move || {
-                if wait.recv_timeout(timeout).is_err() {
-                    if let Some(jobs) = jobs.upgrade() {
+                if wait.recv_timeout(timeout).is_err()
+                    && let Some(jobs) = jobs.upgrade()
+                {
                         finish_headless(
                             &cx,
                             &jobs,
@@ -515,7 +516,6 @@ fn export_headless_pdf(
                             )),
                         );
                     }
-                }
             })
         {
             return finish_headless(
@@ -655,7 +655,7 @@ fn fullscreen_window_on(window: &tauri::Window, bounds: Display) -> Result<(), S
         window
             .set_simple_fullscreen(false)
             .map_err(|error| error.to_string())?;
-        set_bounds(&window, bounds)?;
+        set_bounds(window, bounds)?;
         window
             .set_simple_fullscreen(true)
             .map_err(|error| error.to_string())
@@ -667,7 +667,7 @@ fn fullscreen_window_on(window: &tauri::Window, bounds: Display) -> Result<(), S
                 .set_fullscreen(false)
                 .map_err(|error| error.to_string())?;
         }
-        set_bounds(&window, bounds)?;
+        set_bounds(window, bounds)?;
         window
             .set_fullscreen(true)
             .map_err(|error| error.to_string())
@@ -1210,7 +1210,7 @@ fn render_pdf(
             };
             let mut step = pdf_export::begin_export_slides_pdf(&options, || Ok(PdfWindow(surface)));
             let started = Instant::now();
-            let result = loop {
+            loop {
                 match step {
                     WindowStep::Done(result) => break result.map_err(|error| error.message),
                     WindowStep::Await { call, mut job } => {
@@ -1253,8 +1253,7 @@ fn render_pdf(
                         step = job.resume(answer, &mut |_| Ok(()));
                     }
                 }
-            };
-            result
+            }
         })();
         let _ = timer_tx.send(());
         let _ = timer.join();
@@ -1819,7 +1818,7 @@ impl Shell {
                     Ok::<_, String>(())
                 })
                 .ok_or("The presentation import request expired")??;
-            if same_import_path(source, &path) {
+            if same_import_path(source, path) {
                 owner.message(
                     &self.dialogs,
                     parent,
@@ -1953,12 +1952,13 @@ impl Shell {
                     ..Default::default()
                 })?;
                 if answer.response != 0 { return Ok(PreparedOpen::Rejected); }
-                if !legacy && answer.checkbox_checked {
-                    if let Err(error) = persist_import_skip(settings, owner.clone()) {
+                if !legacy
+                    && answer.checkbox_checked
+                    && let Err(error) = persist_import_skip(settings, owner.clone())
+                {
                         owner.check()?;
                         eprintln!("[slides] cannot remember optional import confirmation: {error}");
                     }
-                }
             }
             let stem = source
                 .file_stem()
@@ -2183,8 +2183,9 @@ impl AudienceStart {
         if let Some(done) = done {
             done(Err(EngineError(message)));
         }
-        if !self.closing.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            if let Some(created) = self.created.get() {
+        if !self.closing.swap(true, std::sync::atomic::Ordering::AcqRel)
+            && let Some(created) = self.created.get()
+        {
                 let window = created.window;
                 let windows = self.cx.windows.clone();
                 self.cx.ui.post(Box::new(move || {
@@ -2194,7 +2195,6 @@ impl AudienceStart {
                     )
                 }));
             }
-        }
     }
 
     fn closed(self: &Arc<Self>) {
@@ -2409,14 +2409,13 @@ fn open_audience(
                                 frames.fail("The audience renderer context was revoked".into());
                             }
                         }
-                        NativeEventKind::WebviewProcessFailed { .. } => {
+                        NativeEventKind::WebviewProcessFailed { .. }
                             if frames
                                 .created
                                 .get()
-                                .is_some_and(|created| created.view == view)
-                            {
-                                frames.fail("The audience renderer stopped".into());
-                            }
+                                .is_some_and(|created| created.view == view) =>
+                        {
+                            frames.fail("The audience renderer stopped".into());
                         }
                         NativeEventKind::NavigationFailed { .. } => {
                             frames.fail("The audience document could not load".into())
@@ -2601,13 +2600,13 @@ impl SlidesShell for Shell {
                 done,
             );
         });
-        if !on_core {
-            if let Some(done) = done {
+        if !on_core
+            && let Some(done) = done
+        {
                 done(Err(
                     "The presentation title must be changed on the core thread".into(),
                 ));
             }
-        }
     }
 
     fn set_window_title_owned(
@@ -2640,13 +2639,13 @@ impl SlidesShell for Shell {
                 done,
             );
         });
-        if !on_core {
-            if let Some(done) = done {
+        if !on_core
+            && let Some(done) = done
+        {
                 done(Err(
                     "The presentation title must be changed on the core thread".into(),
                 ));
             }
-        }
     }
 
     fn prepare_reveal_export(
@@ -2728,13 +2727,13 @@ impl SlidesShell for Shell {
                 }),
             );
         });
-        if !on_core {
-            if let Some(done) = done {
+        if !on_core
+            && let Some(done) = done
+        {
                 done(Err(
                     "Presentation fullscreen must be changed on the core thread".into(),
                 ));
             }
-        }
     }
 
     fn reload_view(&self, view: ViewId) {

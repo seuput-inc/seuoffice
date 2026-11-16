@@ -160,6 +160,7 @@ pub(crate) fn install_request(
 
 /// The renderer must be bound to the captured document's authenticated
 /// execution context. The caller owns the unique request id and cancellation.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn adopt_document_fonts(
     id: u64,
     deck: shell_ipc_d1::slides::engine::DeckId,
@@ -438,14 +439,14 @@ impl FontSession {
                 .as_bytes()
                 .get(requested.len().saturating_sub(2)..)
                 .filter(|s| s.len() == 2 && s[0] == b'w' && s[1].is_ascii_digit());
-            if !face.private {
-                if let Some(w) = w {
+            if !face.private
+                && let Some(w) = w
+            {
                     let suffix = std::str::from_utf8(w).unwrap_or("");
                     if !main_core::pdf::font_locate::norm(&face.family).ends_with(suffix) {
                         face.family.push_str(&format!(" W{}", char::from(w[1])));
                     }
                 }
-            }
             let target = if w.is_some() {
                 None
             } else {
@@ -457,8 +458,9 @@ impl FontSession {
                             .then_some(700)
                     })
             };
-            if !face.substituted {
-                if let Some(target) = target {
+            if !face.substituted
+                && let Some(target) = target
+            {
                     let weight = face
                         .parse()
                         .ok()
@@ -474,7 +476,6 @@ impl FontSession {
                         face.family = style.family.trim().to_owned();
                     }
                 }
-            }
         }
         self.cache.insert(key, result.clone());
         result
@@ -606,11 +607,11 @@ impl FontSession {
     }
     fn shaped(&self, text: &str, face: Option<&FontFace>) -> Option<FontFace> {
         let script = complex(text)?;
-        if let Some(font) = face.filter(|font| !font.substituted) {
-            if font.shaped_units(sample(script), true).is_some() {
+        if let Some(font) = face.filter(|font| !font.substituted)
+            && font.shaped_units(sample(script), true).is_some()
+        {
                 return Some(font.clone());
             }
-        }
         self.defaults.get(&script).cloned()
     }
     fn measure(

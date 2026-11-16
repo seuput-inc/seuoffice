@@ -337,6 +337,10 @@ fn menu_step(hooks: &Hooks, kind: TabKind, target: Option<ViewId>) -> PreparedTa
     ))
 }
 
+type RemoveAction = Arc<
+    dyn Fn(&mut shell_contract::ipc::NativeBrowserClosePermit) -> Result<(), String> + Send + Sync,
+>;
+
 struct RemoveAttempt {
     services: Services,
     effects: shell_contract::hosts::OwnedEffectsHost,
@@ -345,11 +349,7 @@ struct RemoveAttempt {
     cancel: shell_contract::runtime::CancelToken,
     pending: shell_contract::runtime::CancelToken,
     permit: RefCell<Option<shell_contract::ipc::NativeBrowserClosePermit>>,
-    action: Arc<
-        dyn Fn(&mut shell_contract::ipc::NativeBrowserClosePermit) -> Result<(), String>
-            + Send
-            + Sync,
-    >,
+    action: RemoveAction,
     running: Cell<bool>,
 }
 
@@ -412,6 +412,7 @@ impl RemoveAttempt {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn parking_removal(
     host: Arc<super::NativeWindows>,
     webview: Webview,
@@ -422,9 +423,7 @@ fn parking_removal(
     previous_lifecycle: Arc<crate::views::NativeWindowLifecycle>,
     previous: tauri::Window,
     initial_parking: Option<super::ParkingWindow>,
-) -> Arc<
-    dyn Fn(&mut shell_contract::ipc::NativeBrowserClosePermit) -> Result<(), String> + Send + Sync,
-> {
+) -> RemoveAction {
     let selected = std::sync::Mutex::new(initial_parking);
     Arc::new(move |permit| {
         let parking = {

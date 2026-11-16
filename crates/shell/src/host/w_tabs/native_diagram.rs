@@ -59,6 +59,7 @@ fn is_visio_drawing(bytes: &[u8]) -> bool {
         .contains("application/vnd.ms-visio.drawing.main+xml")
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn check(
     services: &Services,
     effects: OwnedEffectsHost,
@@ -132,6 +133,7 @@ pub(super) fn check(
     }));
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn check_owned(
     services: &Services,
     effects: OwnedEffectsHost,

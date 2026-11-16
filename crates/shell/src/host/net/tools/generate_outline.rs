@@ -202,33 +202,33 @@ fn starts_word(text: &str, at: usize) -> bool {
 
 fn read_topic_line(text: &str, item: bool) -> Draft {
     let mut rest = jscompat::trim(text);
-    if item {
-        if let Some(mark) = KIND_MARKS.iter().find(|mark| rest.starts_with(**mark)) {
-            let tail = &rest[mark.len()..];
-            let gap = leading_blanks(tail);
-            if gap > 0 || tail.is_empty() {
-                rest = &tail[gap..];
-            }
+    if item
+        && let Some(mark) = KIND_MARKS.iter().find(|mark| rest.starts_with(**mark))
+    {
+        let tail = &rest[mark.len()..];
+        let gap = leading_blanks(tail);
+        if gap > 0 || tail.is_empty() {
+            rest = &tail[gap..];
         }
     }
     let mut link = None;
-    if rest.ends_with('>') {
-        if let Some(open) = rest.rfind('<') {
-            let inner = &rest[open + 1..rest.len() - 1];
-            let is_web = ["http://", "https://", "mailto:"].iter().any(|prefix| {
-                inner
-                    .get(..prefix.len())
-                    .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
-            });
-            if starts_word(rest, open)
-                && !inner
-                    .chars()
-                    .any(|ch| ch == '>' || jscompat::is_js_space(ch))
-                && is_web
-            {
-                link = Some(inner.to_owned());
-                rest = trim_end(&rest[..open]);
-            }
+    if rest.ends_with('>')
+        && let Some(open) = rest.rfind('<')
+    {
+        let inner = &rest[open + 1..rest.len() - 1];
+        let is_web = ["http://", "https://", "mailto:"].iter().any(|prefix| {
+            inner
+                .get(..prefix.len())
+                .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+        });
+        if starts_word(rest, open)
+            && !inner
+                .chars()
+                .any(|ch| ch == '>' || jscompat::is_js_space(ch))
+            && is_web
+        {
+            link = Some(inner.to_owned());
+            rest = trim_end(&rest[..open]);
         }
     }
     let mut labels = Vec::new();

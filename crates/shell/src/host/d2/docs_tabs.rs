@@ -110,8 +110,8 @@ enum DocsAiSeedState {
     Prepared,
     Aborted,
     Committed {
-        ai: Option<shell_ipc_a::ai_core::AiSeedRollback>,
-        blank: Option<shell_ipc_d2::docs::editors::DocsBlankReceipt>,
+        ai: Option<Box<shell_ipc_a::ai_core::AiSeedRollback>>,
+        blank: Option<Box<shell_ipc_d2::docs::editors::DocsBlankReceipt>>,
     },
 }
 
@@ -133,7 +133,7 @@ impl DocsAiSeedRollback {
             .try_borrow()
             .map_err(|_| "The Docs seed receipt is busy".to_owned())?;
         match &*state {
-            DocsAiSeedState::Committed { ai, blank } => action(ai.as_ref(), blank.as_ref()),
+            DocsAiSeedState::Committed { ai, blank } => action(ai.as_deref(), blank.as_deref()),
             _ => Err("The Docs seed was not committed".into()),
         }
     }
@@ -194,6 +194,7 @@ pub(crate) struct PreparedDocsAiSeed {
     receipt: DocsAiSeedRollback,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_docs_ai_seed_owned(
     provided: &shell_contract::Provided,
     view: ViewId,
@@ -311,11 +312,10 @@ impl PreparedDocsAiSeed {
                 None
             }
         };
-        drop(initialize_and_commit);
         drop(blank);
         *state = DocsAiSeedState::Committed {
-            ai,
-            blank: blank_receipt,
+            ai: ai.map(Box::new),
+            blank: blank_receipt.map(Box::new),
         };
         drop(state);
         Ok(self.receipt.clone())
@@ -358,6 +358,7 @@ pub(crate) fn open_ai_owned(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_generated_output(
     output: shell_contract::ipc::SavedPublication,
     input: Option<shell_contract::ipc::NativeSavedInput>,

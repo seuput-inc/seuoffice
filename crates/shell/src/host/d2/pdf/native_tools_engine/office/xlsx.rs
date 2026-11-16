@@ -142,11 +142,10 @@ fn groups(pages: &[IrPage]) -> Vec<Vec<usize>> {
             && last(&pages[i - 1])
                 .zip(first(&pages[i]))
                 .is_some_and(|(a, b)| continues(a, b))
+            && let Some(group) = out.last_mut()
         {
-            if let Some(group) = out.last_mut() {
-                group.push(i);
-                continue;
-            }
+            group.push(i);
+            continue;
         }
         out.push(vec![i]);
     }

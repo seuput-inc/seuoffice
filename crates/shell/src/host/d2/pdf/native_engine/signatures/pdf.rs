@@ -131,17 +131,16 @@ pub(super) fn fields(ctx: &Context) -> Vec<Field<'_>> {
             None => parent.to_owned(),
         };
         let kind = name_value(ctx, d, b"FT").or(inherited);
-        if kind == Some("Sig") {
-            if let Some(value) = dict(ctx, get(d, b"V")) {
-                if get(value, b"ByteRange").is_some() {
-                    out.push(Field {
-                        name: name.clone(),
-                        value,
-                        widget: d,
-                        reference: reference(node),
-                    });
-                }
-            }
+        if kind == Some("Sig")
+            && let Some(value) = dict(ctx, get(d, b"V"))
+            && get(value, b"ByteRange").is_some()
+        {
+            out.push(Field {
+                name: name.clone(),
+                value,
+                widget: d,
+                reference: reference(node),
+            });
         }
         if let Some(kids) = array(ctx, get(d, b"Kids")) {
             for child in kids {
@@ -154,13 +153,12 @@ pub(super) fn fields(ctx: &Context) -> Vec<Field<'_>> {
     }
     let mut out = Vec::new();
     let mut seen = HashSet::new();
-    if let Some(catalog) = dict(ctx, ctx.root.as_ref()) {
-        if let Some(acro) = dict(ctx, get(catalog, b"AcroForm")) {
-            if let Some(fields) = array(ctx, get(acro, b"Fields")) {
-                for node in fields {
-                    visit(ctx, node, "", None, &mut seen, &mut out);
-                }
-            }
+    if let Some(catalog) = dict(ctx, ctx.root.as_ref())
+        && let Some(acro) = dict(ctx, get(catalog, b"AcroForm"))
+        && let Some(fields) = array(ctx, get(acro, b"Fields"))
+    {
+        for node in fields {
+            visit(ctx, node, "", None, &mut seen, &mut out);
         }
     }
     out
@@ -189,15 +187,15 @@ pub(super) fn page_index(ctx: &Context, field: &Field<'_>) -> i32 {
         }
     }
     let mut pages = Vec::new();
-    if let Some(root) = dict(ctx, ctx.root.as_ref()) {
-        if let Some(node) = get(root, b"Pages") {
-            walk(ctx, node, &mut HashSet::new(), &mut pages);
-        }
+    if let Some(root) = dict(ctx, ctx.root.as_ref())
+        && let Some(node) = get(root, b"Pages")
+    {
+        walk(ctx, node, &mut HashSet::new(), &mut pages);
     }
-    if let Some(pref) = get(field.widget, b"P").and_then(reference) {
-        if let Some(index) = pages.iter().position(|(_, r)| *r == Some(pref)) {
-            return index as i32;
-        }
+    if let Some(pref) = get(field.widget, b"P").and_then(reference)
+        && let Some(index) = pages.iter().position(|(_, r)| *r == Some(pref))
+    {
+        return index as i32;
     }
     if let Some(target) = field.reference {
         for (index, (page, _)) in pages.iter().enumerate() {

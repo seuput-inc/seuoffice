@@ -575,8 +575,10 @@ pub(in crate::host::d2::pdf::crypto) mod tests {
     #[test]
     fn creates_bounded_incremental_revision_without_rewriting_invalid_objects() {
         let original = classic();
-        let mut options = SignOptions::default();
-        options.reason = Some("approval (한글)".into());
+        let options = SignOptions {
+            reason: Some("approval (한글)".into()),
+            ..Default::default()
+        };
         let result = assemble(&original, &options, "D:20250101000000Z", 16 * 1024).unwrap();
         assert!(result.file.starts_with(&original));
         assert_eq!(result.range[2] - result.range[1], 32_770);
@@ -594,8 +596,10 @@ pub(in crate::host::d2::pdf::crypto) mod tests {
     #[test]
     fn metadata_cannot_redirect_reserved_byte_range_or_contents() {
         let original = classic();
-        let mut options = SignOptions::default();
-        options.reason = Some("example /ByteRange [0 1 2 3] /Contents <fake>".into());
+        let options = SignOptions {
+            reason: Some("example /ByteRange [0 1 2 3] /Contents <fake>".into()),
+            ..Default::default()
+        };
         let assembled = assemble(&original, &options, "D:20250101000000Z", 16 * 1024).unwrap();
         let [_, start, end, tail] = assembled.range;
         assert_eq!(assembled.file[start], b'<');
@@ -689,14 +693,16 @@ pub(in crate::host::d2::pdf::crypto) mod tests {
         );
         chunk(&mut png, b"IEND", &[]);
         let original = classic();
-        let mut options = SignOptions::default();
-        options.visible = Some(shell_contract::pdf_sign_options::VisibleSignature {
-            page_index: 0.0,
-            position: "bottom-right".into(),
-            width: 80.0,
-            height: 40.0,
-            png,
-        });
+        let options = SignOptions {
+            visible: Some(shell_contract::pdf_sign_options::VisibleSignature {
+                page_index: 0.0,
+                position: "bottom-right".into(),
+                width: 80.0,
+                height: 40.0,
+                png,
+            }),
+            ..Default::default()
+        };
         let result = assemble(&original, &options, "D:20250101000000Z", 16 * 1024).unwrap();
         let revised = Parser::new(&result.file).document().unwrap();
         assert!(revised.objects.values().any(|object| matches!(

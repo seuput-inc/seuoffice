@@ -86,6 +86,7 @@ impl Rpc {
         Self::parse_open(value)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn open_native(
         &self,
         path: &str,
@@ -116,6 +117,7 @@ impl Rpc {
         Self::parse_open(value)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn open_saved(
         &self,
         path: &str,

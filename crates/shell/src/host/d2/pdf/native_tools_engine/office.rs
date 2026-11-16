@@ -48,7 +48,7 @@ fn other(e: impl std::fmt::Display) -> ConvertError {
 fn load_error(e: PdfiumError) -> ConvertError {
     match e.code {
         Some(4) => ConvertError::Load("password-required".into()),
-        Some(1 | 2 | 3) => ConvertError::Load("corrupt".into()),
+        Some(1..=3) => ConvertError::Load("corrupt".into()),
         Some(_) => ConvertError::Load("unsupported".into()),
         None => other(e),
     }
@@ -82,15 +82,15 @@ pub(super) fn convert(
     let mut results = Vec::with_capacity(total);
     for (index, raw) in extracted.iter_mut().enumerate() {
         let mut page = analyzer.analyze_page(raw).map_err(other)?;
-        if page.scanned && ocr_available {
-            if let Some(hi) = render::by_index(&mut session, doc, index, 3.0).map_err(other)? {
-                if let Some((mut synthetic, _confidence)) = ocr::recover(raw, &hi.data) {
-                    let mut recognized = analyzer.analyze_page(&mut synthetic).map_err(other)?;
-                    if !recognized.scanned && !recognized.degraded {
-                        recognized.ocr_recovered = true;
-                        page = recognized;
-                    }
-                }
+        if page.scanned
+            && ocr_available
+            && let Some(hi) = render::by_index(&mut session, doc, index, 3.0).map_err(other)?
+            && let Some((mut synthetic, _confidence)) = ocr::recover(raw, &hi.data)
+        {
+            let mut recognized = analyzer.analyze_page(&mut synthetic).map_err(other)?;
+            if !recognized.scanned && !recognized.degraded {
+                recognized.ocr_recovered = true;
+                page = recognized;
             }
         }
         guards::apply(&mut page, raw, cell_data, absolute, |underlay| {

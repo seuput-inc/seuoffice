@@ -215,7 +215,7 @@ pub(super) fn validate(addition: &Value) -> Result<(), String> {
                 optional_number(grouping, "rangeStep").is_some_and(|n| n.is_finite() && n > 0.0)
                     && grouping
                         .get("rangeStart")
-                        .map_or(true, |v| v.as_f64().is_some_and(f64::is_finite))
+                        .is_none_or(|v| v.as_f64().is_some_and(f64::is_finite))
             }
             _ => false,
         };

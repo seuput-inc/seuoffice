@@ -77,13 +77,12 @@ impl PrintGrant {
 impl Drop for PrintGrant {
     fn drop(&mut self) {
         self.lifetime.revoke();
-        if let Ok(mut entries) = prints().lock() {
-            if entries
+        if let Ok(mut entries) = prints().lock()
+            && entries
                 .get(&self.token)
                 .is_some_and(|entry| entry.lifetime.same_generation(&self.lifetime))
-            {
-                entries.remove(&self.token);
-            }
+        {
+            entries.remove(&self.token);
         }
     }
 }

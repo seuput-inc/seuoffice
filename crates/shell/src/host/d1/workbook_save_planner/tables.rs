@@ -191,8 +191,7 @@ fn name_allowed(pkg: &mut PackageEditor<'_>, name: &str, own: Option<&str>) -> R
         && chars.all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '\\'));
     let upper = name.to_ascii_uppercase();
     let looks_a1 = upper.find(|c: char| c.is_ascii_digit()).is_some_and(|i| {
-        i >= 1
-            && i <= 3
+        (1..=3).contains(&i)
             && upper[..i].bytes().all(|c| c.is_ascii_uppercase())
             && upper[i..].bytes().all(|c| c.is_ascii_digit())
     });
@@ -266,33 +265,31 @@ fn check_overlap(
         if Some(table.path.as_str()) == own {
             continue;
         }
-        if let Some(t) = first(&table.xml, "table")? {
-            if let Some(r) = t.attribute("ref") {
-                if area.overlaps(parse_ref(r)?) {
+        if let Some(t) = first(&table.xml, "table")?
+            && let Some(r) = t.attribute("ref")
+            && area.overlaps(parse_ref(r)?)
+        {
                     return Err(if addition {
                         format!("Table \"{name}\" overlaps an existing table ({r}).")
                     } else {
                         format!("Table \"{name}\" would overlap table {r}.")
                     });
                 }
-            }
-        }
     }
     let sheet = pkg.read_text(worksheet)?;
-    if addition {
-        if let Some(f) = first(&sheet, "autoFilter")? {
-            if let Some(r) = f.attribute("ref") {
-                if area.overlaps(parse_ref(r)?) {
+    if addition
+        && let Some(f) = first(&sheet, "autoFilter")?
+        && let Some(r) = f.attribute("ref")
+        && area.overlaps(parse_ref(r)?)
+    {
                     return Err(format!(
                         "Table \"{name}\" overlaps the sheet auto-filter ({r}) — clear it first."
                     ));
                 }
-            }
-        }
-    }
     for m in xml::root_elements(&sheet, "mergeCell")? {
-        if let Some(r) = m.attribute("ref") {
-            if area.overlaps(parse_ref(r)?) {
+        if let Some(r) = m.attribute("ref")
+            && area.overlaps(parse_ref(r)?)
+        {
                 return Err(format!(
                     "Table \"{name}\" {} merged cells ({r}) — unmerge them first.",
                     if addition {
@@ -302,7 +299,6 @@ fn check_overlap(
                     }
                 ));
             }
-        }
     }
     Ok(())
 }
@@ -339,7 +335,7 @@ fn add(
     let opts = v.get("options").unwrap_or(&Value::Null);
     let header = opts.get("headerRow").and_then(Value::as_bool) != Some(false);
     let totals = opts.get("totalsRow").and_then(Value::as_bool) == Some(true);
-    if area.r2 - area.r1 + 1 <= i64::from(header) + i64::from(totals) {
+    if area.r2 - area.r1 < i64::from(header) + i64::from(totals) {
         return Err(format!(
             "Table \"{name}\" needs a header row plus at least one data row."
         ));
@@ -452,15 +448,15 @@ fn add(
     touched.insert(relpath);
     let sheet = pkg.read_text(&worksheet)?;
     let mut sheet = sheet.as_ref().clone();
-    if let Some(root) = first(&sheet, "worksheet")? {
-        if !root.attributes.iter().any(|(k, _)| k == "xmlns:r") {
+    if let Some(root) = first(&sheet, "worksheet")?
+        && !root.attributes.iter().any(|(k, _)| k == "xmlns:r")
+    {
             let pos = root.open_end - 1;
             sheet.insert_str(
                 pos,
                 " xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"",
             );
         }
-    }
     let child = format!("<tablePart r:id=\"{rel_id}\"/>");
     sheet = if let Some(container) = first(&sheet, "tableParts")? {
         let count = xml::root_elements(&sheet, "tablePart")?.len() + 1;
@@ -606,7 +602,7 @@ fn edit(
                 .and_then(|n| n.parse().ok())
                 .unwrap_or(0)
         });
-    if area.r2 - area.r1 + 1 <= header + totals {
+    if area.r2 - area.r1 < header + totals {
         return Err(format!(
             "Table \"{name}\" needs at least one data row beside its header and totals rows."
         ));

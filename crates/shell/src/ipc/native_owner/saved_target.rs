@@ -142,6 +142,12 @@ pub(super) fn with_prepared_saved_target_media(
     )
 }
 
+type MediaEffect<'a> = &'a mut dyn FnMut(
+    &mut shell_contract::runtime::AdmittedDocumentRetirement<'_>,
+    Option<&mut main_core::docs::byte_handoff::AdmittedMediaRetirement<'_>>,
+) -> Result<(), String>;
+
+#[allow(clippy::too_many_arguments)]
 fn with_saved_target_generations_media(
     target: &NativeSavedTarget,
     participants: &[NativeRequestOwner],
@@ -260,10 +266,7 @@ fn with_prepared_saved_target_generations_media(
         &main_core::docs::byte_handoff::MediaPermit,
         &mut main_core::docs::byte_handoff::DeferredMediaLoss,
     )>,
-                     effect: &mut dyn FnMut(
-        &mut shell_contract::runtime::AdmittedDocumentRetirement<'_>,
-        Option<&mut main_core::docs::byte_handoff::AdmittedMediaRetirement<'_>>,
-    ) -> Result<(), String>| {
+                     effect: MediaEffect<'_>| {
         let mut enter = || {
             plan.with_media(media.take(), |retirement, media_retirement| {
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -293,7 +296,6 @@ fn with_prepared_saved_target_generations_media(
     // Both the caller's lease and the Drive locks must be gone before plan
     // retirement can notify observers, including when a callback panics.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| use_plan(&mut admit)));
-    drop(admit);
     drop(plan);
     if let Some(payload) = panic_payload {
         std::panic::resume_unwind(payload);
@@ -355,6 +357,7 @@ pub(crate) fn prepare_saved_spare_replacement(
 
 /// Replace a retained registered spare's browser owner atomically with the
 /// actor/manager handoff and the successor's saved-target adoption.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn with_saved_spare_replacement_effect(
     target: &NativeSavedTarget,
     prepared: PreparedSavedSpareReplacement,
@@ -503,7 +506,7 @@ pub(crate) fn with_saved_document_effect(
     with_saved_target(target, &captured, cancel, pending, additional, |_| {
         target.reservation().with_owner(target.browser(), |_| {
             target
-                .with_registered_state(owner, || effect())
+                .with_registered_state(owner, &mut *effect)
                 .ok_or_else(|| "The registered saved document was replaced.".to_owned())?
         })
     })
@@ -532,6 +535,7 @@ pub(crate) fn with_saved_document_input_effect(
 /// Renderer-origin calls must match the first registered native document; the
 /// caller's current IPC cancellation and both captured owners participate in
 /// the same canonical admission as the original saved-output authority.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn with_native_saved_document_transition(
     document: &NativeSavedDocument,
     actual: &NativeRequestOwner,
@@ -583,6 +587,7 @@ pub(crate) fn with_native_saved_document_transition(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn with_native_saved_document_same_origin(
     document: &NativeSavedDocument,
     actual: &NativeRequestOwner,
@@ -638,7 +643,7 @@ pub(crate) fn with_saved_document_dialog_effect(
     with_saved_target_generations(target, &owners, cancel, pending, &[], &generations, |_| {
         target.reservation().with_owner(target.browser(), |_| {
             target
-                .with_registered_state(registered, || effect())
+                .with_registered_state(registered, &mut *effect)
                 .ok_or_else(|| "The registered saved document was replaced.".to_owned())?
         })
     })

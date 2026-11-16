@@ -334,6 +334,7 @@ impl Session {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_saved_publication<T: Send + 'static>(
     ui: Arc<dyn Thread>,
     effects: shell_contract::hosts::OwnedEffectsHost,
@@ -463,6 +464,7 @@ pub(crate) fn run_many<T: Send + 'static>(
     }));
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_many_extra<T: Send + 'static>(
     ui: Arc<dyn Thread>,
     origin: NativeRequestOwner,
@@ -573,6 +575,7 @@ pub(crate) fn run_native_command<T: Send + 'static>(
         done(result);
     }));
 }
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_existing_document<T: Send + 'static, U: Send + 'static>(
     ui: Arc<dyn Thread>,
     effects: shell_contract::hosts::OwnedEffectsHost,
@@ -648,6 +651,7 @@ pub(crate) fn run_existing_document<T: Send + 'static, U: Send + 'static>(
     }));
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run_save_revision<T: Send + 'static, U: Send + 'static>(
     ui: Arc<dyn Thread>,
     snapshot: shell_contract::ipc::NativeSaveRevisionSnapshot,
@@ -753,6 +757,7 @@ pub(super) fn run_prepared<T: Send + 'static, U: Send + 'static>(
     }));
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run_committed<T: Send + 'static, U: Send + 'static>(
     ui: Arc<dyn Thread>,
     effects: shell_contract::hosts::OwnedEffectsHost,

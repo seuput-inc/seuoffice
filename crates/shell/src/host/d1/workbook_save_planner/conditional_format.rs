@@ -400,9 +400,9 @@ fn serialize_rule(
                 ""
             };
             format!(
-                "<cfRule {}><dataBar{show}{}{}<color rgb=\"{}\"/></dataBar></cfRule>",
+                "<cfRule {}><dataBar{show}>{}{}<color rgb=\"{}\"/></dataBar></cfRule>",
                 attrs("dataBar", priority, stop, None),
-                format!(">{}", cfvo(config.get("min"), "")?),
+                cfvo(config.get("min"), "")?,
                 cfvo(config.get("max"), "")?,
                 required_color(config.get("positiveColor"), "#638EC6", "data bar")?
             )
@@ -695,12 +695,12 @@ fn apply_rules(
             out.insert_str(end, &body);
             return Ok(out);
         }
-    } else if let Some(last) = preserved.iter().rev().find(|p| p.matched) {
-        if let Some(at) = out.rfind(&last.text) {
+    } else if let Some(last) = preserved.iter().rev().find(|p| p.matched)
+        && let Some(at) = out.rfind(&last.text)
+    {
             out.insert_str(at + last.text.len(), &body);
             return Ok(out);
         }
-    }
     insert_tail(&out, &body)
 }
 pub(super) fn apply(

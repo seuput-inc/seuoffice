@@ -129,21 +129,19 @@ pub(super) fn normalize_media(op: &mut IpcValue) -> Result<(), String> {
             "bytes",
             matches!(name.as_str(), "addPicture" | "replacePicture" | "addMedia"),
         )?;
-        if name == "addMedia" {
-            if let IpcValue::Object(fields) = op {
-                if let Some((_, poster)) = fields.iter_mut().find(|(key, _)| key == "poster") {
-                    normalize_source(poster, "bytes", true)?;
-                }
-            }
+        if name == "addMedia"
+            && let IpcValue::Object(fields) = op
+            && let Some((_, poster)) = fields.iter_mut().find(|(key, _)| key == "poster")
+        {
+            normalize_source(poster, "bytes", true)?;
         }
     } else if name == "setModel3dView" {
         normalize_source(op, "poster", false)?;
-    } else if matches!(name.as_str(), "setBackground" | "setImageFill") {
-        if let IpcValue::Object(fields) = op {
-            if let Some((_, source)) = fields.iter_mut().find(|(key, _)| key == "source") {
-                normalize_source(source, "bytes", true)?;
-            }
-        }
+    } else if matches!(name.as_str(), "setBackground" | "setImageFill")
+        && let IpcValue::Object(fields) = op
+        && let Some((_, source)) = fields.iter_mut().find(|(key, _)| key == "source")
+    {
+        normalize_source(source, "bytes", true)?;
     }
     Ok(())
 }

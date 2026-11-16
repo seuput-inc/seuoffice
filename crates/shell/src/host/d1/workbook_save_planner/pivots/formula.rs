@@ -81,15 +81,14 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                 .next()
                 .transpose()
                 .map_err(|e| e.to_string())?;
-            if let Some(found) = found {
-                if let Ok(value) = found.as_str().parse::<f64>() {
-                    if value.is_finite() {
+            if let Some(found) = found
+                && let Ok(value) = found.as_str().parse::<f64>()
+                && value.is_finite()
+            {
                         result.push(Token::Number(jscompat::number_to_string(value)));
                         at += found.end();
                         continue;
                     }
-                }
-            }
             let fragment: String = input[at..].chars().take(8).collect();
             return Err(format!(
                 "Cannot parse a number in the formula: \"{fragment}\""

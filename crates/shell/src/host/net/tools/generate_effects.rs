@@ -17,10 +17,10 @@ pub(super) fn owner(authority: &GenerateAuthority) -> Result<NativeRequestOwner,
         .ok_or("Generation requires a captured native origin.")?;
     let owner = native_owner::authenticated_owner(native)
         .ok_or("Generation native origin is not authenticated.")?;
-    if let GenerateOrigin::Renderer { sender, .. } = &authority.origin {
-        if sender.view != owner.view {
-            return Err("Generation renderer and native origin do not match.".into());
-        }
+    if let GenerateOrigin::Renderer { sender, .. } = &authority.origin
+        && sender.view != owner.view
+    {
+        return Err("Generation renderer and native origin do not match.".into());
     }
     native_owner::with_owner_effect(&owner, &authority.cancel, || ())
         .ok_or_else(|| LOST.to_owned())?;

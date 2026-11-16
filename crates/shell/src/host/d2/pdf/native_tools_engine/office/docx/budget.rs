@@ -159,10 +159,11 @@ pub(super) fn compute(page: &IrPage, sections: &[PageSection], geo: &Geometry) -
                 }
                 let h = flow::height(b, geo, height_scale);
                 total += h + flow::spacing(b) * spacing_scale;
-                if let PageBlock::Text(t) = b {
-                    if !t.lines.is_empty() && flow::display_risk(t, c.bounds.width()) {
-                        total += h / t.lines.len() as f64;
-                    }
+                if let PageBlock::Text(t) = b
+                    && !t.lines.is_empty()
+                    && flow::display_risk(t, c.bounds.width())
+                {
+                    total += h / t.lines.len() as f64;
                 }
             }
             total <= usable + 24.0 - 36.0

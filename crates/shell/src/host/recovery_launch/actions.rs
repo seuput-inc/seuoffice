@@ -211,10 +211,10 @@ impl StartupActions {
                 .flatten()
                 .chain(detached.iter())
             {
-                if let Some(id) = tab.get("id").and_then(serde_json::Value::as_str) {
-                    if let Some(view) = self.manager.tabs.tab_contents(id) {
-                        views.push((id.to_owned(), view));
-                    }
+                if let Some(id) = tab.get("id").and_then(serde_json::Value::as_str)
+                    && let Some(view) = self.manager.tabs.tab_contents(id)
+                {
+                    views.push((id.to_owned(), view));
                 }
             }
             let mut participants = Vec::new();

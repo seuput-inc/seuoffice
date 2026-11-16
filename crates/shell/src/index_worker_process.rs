@@ -277,10 +277,10 @@ pub(crate) fn spawn_with_budget(
             terminated: false,
         })
     })();
-    if result.is_err() {
-        if let Err(error) = std::fs::remove_dir_all(&profile) {
-            eprintln!("[file-index] profile cleanup: {error}");
-        }
+    if result.is_err()
+        && let Err(error) = std::fs::remove_dir_all(&profile)
+    {
+        eprintln!("[file-index] profile cleanup: {error}");
     }
     result
 }
@@ -523,10 +523,10 @@ mod platform {
     }
     impl Guard {
         pub fn terminate(&mut self, child: &mut Child) -> Result<(), String> {
-            if let Err(error) = unsafe { TerminateJobObject(handle(&self.job), 1) } {
-                if child.try_wait().map_err(|e| e.to_string())?.is_none() {
-                    return Err(format!("terminating index worker job: {error}"));
-                }
+            if let Err(error) = unsafe { TerminateJobObject(handle(&self.job), 1) }
+                && child.try_wait().map_err(|e| e.to_string())?.is_none()
+            {
+                return Err(format!("terminating index worker job: {error}"));
             }
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             loop {

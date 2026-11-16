@@ -36,10 +36,10 @@ fn sample(tree: &IpcValue, original_only: bool) -> String {
                 }
             }
             "image" => {
-                if let Some(c) = field(b, "caption") {
-                    if !original_only || field(c, "translationOf").is_none() {
-                        add(&mut out, array(c, "runs"));
-                    }
+                if let Some(c) = field(b, "caption")
+                    && (!original_only || field(c, "translationOf").is_none())
+                {
+                    add(&mut out, array(c, "runs"));
                 }
             }
             _ => {}

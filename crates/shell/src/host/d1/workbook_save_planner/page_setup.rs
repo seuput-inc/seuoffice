@@ -705,13 +705,12 @@ pub(super) fn print_names(state: &mut PlannerState, resolved: &Value) -> Result<
         changed = true;
     }
     if changed {
-        if let Some(section) = xml::root_elements(&out, "definedNames")?.into_iter().next() {
-            if section.close_start == section.end
-                || out[section.open_end..section.close_start].trim().is_empty()
-            {
+        if let Some(section) = xml::root_elements(&out, "definedNames")?.into_iter().next()
+            && (section.close_start == section.end
+                || out[section.open_end..section.close_start].trim().is_empty())
+        {
                 out = splice(&out, section.start, section.end, "");
             }
-        }
         state.workbook_xml = Arc::new(out);
     }
     Ok(())

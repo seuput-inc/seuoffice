@@ -133,11 +133,12 @@ impl FontFace {
                 return Ok(None);
             };
             units += f64::from(face.glyph_hor_advance(glyph).unwrap_or(0));
-            if !variable && kerning {
-                if let Some(prev) = previous {
+            if !variable
+                && kerning
+                && let Some(prev) = previous
+            {
                     units += f64::from(pair(&face, prev, glyph));
                 }
-            }
             previous = Some(glyph);
         }
         Ok(Some(units / f64::from(face.units_per_em()) * size))

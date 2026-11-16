@@ -172,6 +172,7 @@ pub(super) fn open_tools(path: &str, tool: &str) -> Option<bool> {
     .flatten()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn create_document_owned(
     request: shell_contract::IpcValue,
     owner: ViewId,

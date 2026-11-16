@@ -232,7 +232,7 @@ pub(super) fn apply_decor_borders(
             .iter()
             .position(|v| bounds(v).y1 < b.y1)
             .unwrap_or(col.blocks.len());
-        col.blocks.insert(at, PageBlock::Text(t));
+        col.blocks.insert(at, PageBlock::Text(Box::new(t)));
         col.bounds = col.bounds.union(b);
         sections[si].bounds = sections[si].bounds.union(b);
     }

@@ -190,40 +190,41 @@ pub(super) fn paragraph_runs(block: &TextBlock) -> Vec<Value> {
                     runs.push(Map::from_iter([("text".into(), json!("\n"))]));
                 }
             } else if previous.ends_with_hyphen {
-                if let Some(last) = runs.last_mut() {
-                    if let Some(text) = last.get("text").and_then(Value::as_str) {
-                        let text = match text.chars().next_back() {
-                            Some(c @ ('-' | '\u{ad}' | '\u{2010}')) => {
-                                &text[..text.len() - c.len_utf8()]
-                            }
-                            _ => text,
+                if let Some(last) = runs.last_mut()
+                    && let Some(text) = last.get("text").and_then(Value::as_str)
+                {
+                    let text = match text.chars().next_back() {
+                        Some(c @ ('-' | '\u{ad}' | '\u{2010}')) => {
+                            &text[..text.len() - c.len_utf8()]
                         }
-                        .to_owned();
-                        last.insert("text".into(), json!(text));
+                        _ => text,
                     }
+                    .to_owned();
+                    last.insert("text".into(), json!(text));
                 }
             } else if let (Some(last), Some(prev), Some(next)) =
                 (runs.last_mut(), previous.spans.last(), line.spans.first())
+                && !no_space(prev.script)
+                && !no_space(next.script)
             {
-                if !no_space(prev.script) && !no_space(next.script) {
-                    append_text(last, " ");
-                }
+                append_text(last, " ");
             }
         }
         for span in &line.spans {
             let mut run = span_run(span);
-            if let Some(last) = runs.last_mut() {
-                if !last.contains_key("noteRef") && !run.contains_key("noteRef") {
-                    let text = run.remove("text").unwrap_or_default();
-                    let previous_text = last.remove("text").unwrap_or_default();
-                    if *last == run {
-                        last.insert("text".into(), previous_text);
-                        append_text(last, text.as_str().unwrap_or_default());
-                        continue;
-                    }
+            if let Some(last) = runs.last_mut()
+                && !last.contains_key("noteRef")
+                && !run.contains_key("noteRef")
+            {
+                let text = run.remove("text").unwrap_or_default();
+                let previous_text = last.remove("text").unwrap_or_default();
+                if *last == run {
                     last.insert("text".into(), previous_text);
-                    run.insert("text".into(), text);
+                    append_text(last, text.as_str().unwrap_or_default());
+                    continue;
                 }
+                last.insert("text".into(), previous_text);
+                run.insert("text".into(), text);
             }
             runs.push(run);
         }

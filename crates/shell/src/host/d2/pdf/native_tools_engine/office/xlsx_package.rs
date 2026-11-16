@@ -54,7 +54,6 @@ pub(super) fn build(sheets: &[Sheet], styles: &StylePool) -> Result<Vec<u8>, Str
     for (i, sheet) in sheets.iter().enumerate() {
         file(&format!("xl/worksheets/sheet{}.xml", i + 1), sheet.xml())?;
     }
-    drop(file);
     Ok(zip.finish().map_err(|e| e.to_string())?.into_inner())
 }
 #[cfg(test)]

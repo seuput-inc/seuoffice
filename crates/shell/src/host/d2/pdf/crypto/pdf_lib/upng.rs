@@ -275,21 +275,21 @@ pub(super) fn pixels(
             let out = &mut output[pixel * 4..pixel * 4 + 4];
             match (color, depth) {
                 (6, 8) => {
-                    for channel in 0..4 {
-                        out[channel] = byte(pixel * 4 + channel);
+                    for (channel, slot) in out.iter_mut().enumerate().take(4) {
+                        *slot = byte(pixel * 4 + channel);
                     }
                 }
                 (6, 16) => {
-                    for channel in 0..4 {
-                        out[channel] = byte(pixel * 8 + channel * 2);
+                    for (channel, slot) in out.iter_mut().enumerate().take(4) {
+                        *slot = byte(pixel * 8 + channel * 2);
                     }
                 }
                 (2, 8 | 16) => {
                     let stride = if depth == 16 { 6 } else { 3 };
                     let step = if depth == 16 { 2 } else { 1 };
                     let offset = pixel * stride;
-                    for channel in 0..3 {
-                        out[channel] = byte(offset + channel * step);
+                    for (channel, slot) in out.iter_mut().enumerate().take(3) {
+                        *slot = byte(offset + channel * step);
                     }
                     out[3] = 255;
                     if let Some(Transparency::Rgb(values)) = transparency {
@@ -313,8 +313,8 @@ pub(super) fn pixels(
                         let shift = 8 - usize::from(depth) * (x % per_byte + 1);
                         usize::from((byte(row + x / per_byte) >> shift) & ((1 << depth) - 1))
                     };
-                    for channel in 0..3 {
-                        out[channel] = palette.get(index * 3 + channel).copied().unwrap_or(0);
+                    for (channel, slot) in out.iter_mut().enumerate().take(3) {
+                        *slot = palette.get(index * 3 + channel).copied().unwrap_or(0);
                     }
                     out[3] = match transparency {
                         Some(Transparency::Palette(alpha)) => {

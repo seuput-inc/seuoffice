@@ -14,9 +14,11 @@ struct ParsedFace {
     format: u16,
 }
 
+type CacheEntry = ((String, i64), Option<Arc<ParsedFace>>);
+
 struct State {
     scan: FontScan,
-    cache: VecDeque<((String, i64), Option<Arc<ParsedFace>>)>,
+    cache: VecDeque<CacheEntry>,
 }
 
 pub(crate) struct FontMetrics(Mutex<State>);

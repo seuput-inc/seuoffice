@@ -20,6 +20,8 @@ use std::sync::{Arc, Mutex};
 use wire::Kind;
 use zeroize::Zeroizing;
 
+type NonceFrames = ([u8; 32], Vec<Zeroizing<Vec<u8>>>);
+
 const FIELDS: usize = 6;
 const HEADER_LEN: usize = 32 + FIELDS * 8;
 
@@ -104,7 +106,7 @@ pub(super) fn decode_retry(mut input: &[u8]) -> Result<RetryEvidence, String> {
 /// Encode the immutable native request without placing secrets in arguments or environment.
 pub(super) fn open_frames(
     source: &CertificateSource,
-) -> Result<([u8; 32], Vec<Zeroizing<Vec<u8>>>), String> {
+) -> Result<NonceFrames, String> {
     use main_core::pdf::system_certificates::SystemCertificateRef;
     let (kind, thumbprint, directory, nickname, p12, password) = match source {
         CertificateSource::P12 { p12, password } => (
@@ -163,7 +165,7 @@ pub(super) fn verification_frames(
     time: chrono::DateTime<chrono::Utc>,
     chain: &[Vec<u8>],
     retry: bool,
-) -> Result<([u8; 32], Vec<Zeroizing<Vec<u8>>>), String> {
+) -> Result<NonceFrames, String> {
     let visible = options.visible.as_ref().map(|v| {
         serde_json::json!({
             "page": v.page_index, "position": v.position, "width": v.width, "height": v.height,
@@ -238,7 +240,7 @@ pub(super) fn sign_frames(
 fn build_frames(
     fields: [Zeroizing<Vec<u8>>; FIELDS],
     nonce: Option<[u8; 32]>,
-) -> Result<([u8; 32], Vec<Zeroizing<Vec<u8>>>), String> {
+) -> Result<NonceFrames, String> {
     let nonce = match nonce {
         Some(nonce) => nonce,
         None => {
@@ -470,7 +472,7 @@ pub(super) fn unpack_opened(
 fn read_bundle(
     input: &mut impl Read,
     expected: Option<[u8; 32]>,
-) -> Result<([u8; 32], Vec<Zeroizing<Vec<u8>>>), String> {
+) -> Result<NonceFrames, String> {
     let header = request_frame(input, HEADER_LEN)?;
     let nonce: [u8; 32] = header[..32]
         .try_into()

@@ -386,7 +386,7 @@ impl shell_ipc_w::tabs::host::EditorSeedRollback for PlacementRollback {
 enum GeneratedSeedStage {
     Empty,
     Generated(crate::host::net::tools::generate::PreparedGeneratedSeed),
-    Docs(crate::host::d2::docs_tabs::PreparedDocsAiSeed),
+    Docs(Box<crate::host::d2::docs_tabs::PreparedDocsAiSeed>),
 }
 
 struct PreparedGeneratedSeedStage {
@@ -454,9 +454,11 @@ pub(super) struct SupersededDrain {
     running: std::rc::Rc<std::cell::Cell<bool>>,
 }
 
+type SupersededDone = Box<dyn FnOnce(Result<(), String>)>;
+
 struct SupersededAttempt {
     running: std::rc::Rc<std::cell::Cell<bool>>,
-    done: Option<Box<dyn FnOnce(Result<(), String>)>>,
+    done: Option<SupersededDone>,
 }
 
 impl Drop for SupersededAttempt {
@@ -541,8 +543,10 @@ thread_local! {
 }
 static NEXT_DROP: AtomicU64 = AtomicU64::new(1);
 
+type PreparationFailure = Box<dyn FnOnce(shell_ipc_w::tabs::host::ViewCreationFailure)>;
+
 thread_local! {
-    static PREPARATION_FAILURES: RefCell<HashMap<u64, Box<dyn FnOnce(shell_ipc_w::tabs::host::ViewCreationFailure)>>> = RefCell::new(HashMap::new());
+    static PREPARATION_FAILURES: RefCell<HashMap<u64, PreparationFailure>> = RefCell::new(HashMap::new());
 }
 static NEXT_PREPARATION_FAILURE: AtomicU64 = AtomicU64::new(1);
 
@@ -599,6 +603,7 @@ pub(crate) fn default_save_dir(services: &shell_contract::runtime::Services) -> 
 }
 
 impl Hooks {
+    #[allow(clippy::too_many_arguments)]
     fn prepare_generated_seed_stage(
         &self,
         view: ViewId,
@@ -678,7 +683,7 @@ impl Hooks {
                     }
                 };
                 let receipt: SeedReceipt = std::rc::Rc::new(DocsAiRollback(plan.receipt()));
-                (GeneratedSeedStage::Docs(plan), Some(receipt))
+                (GeneratedSeedStage::Docs(Box::new(plan)), Some(receipt))
             }
             None => (GeneratedSeedStage::Empty, None),
         };
@@ -901,17 +906,17 @@ impl Hooks {
                 }
             }),
         );
-        if let Err(error) = started {
-            if let Some(done) = callback.borrow_mut().take() {
-                attempt.fail_before_creation(
-                    error,
-                    Box::new(move |result| {
-                        done(Err(result.err().unwrap_or_else(|| {
-                            "Recovery failure unexpectedly succeeded".into()
-                        })));
-                    }),
-                );
-            }
+        if let Err(error) = started
+            && let Some(done) = callback.borrow_mut().take()
+        {
+            attempt.fail_before_creation(
+                error,
+                Box::new(move |result| {
+                    done(Err(result.err().unwrap_or_else(|| {
+                        "Recovery failure unexpectedly succeeded".into()
+                    })));
+                }),
+            );
         }
     }
 
@@ -1627,7 +1632,6 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
         )
         .ok_or_else(|| TabError("The native command expired before preparation".into()))?;
         let mut prepared = prepare()?;
-        drop(prepare);
         let view = prepared.view;
         let created = prepared.generation.clone();
         let target = match operation.reserve_target(view, created.clone()) {
@@ -3250,18 +3254,16 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
             .views
             .renderer_generation(view)
             .is_none_or(|current| current.same_generation(expected))
-        {
-            if let Some(projects) = self
+            && let Some(projects) = self
                 .provided
                 .all::<shell_ipc_w::projects::Projects>()
                 .into_iter()
                 .next()
-            {
-                projects
-                    .new_documents()
-                    .borrow_mut()
-                    .forget(i64::from(view.0));
-            }
+        {
+            projects
+                .new_documents()
+                .borrow_mut()
+                .forget(i64::from(view.0));
         }
     }
     fn open_opener_owned(
@@ -3601,17 +3603,17 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
                 }
             }),
         );
-        if let Err(error) = started {
-            if let Some(done) = callback.borrow_mut().take() {
-                attempt.fail_before_creation(
-                    error,
-                    Box::new(move |result| {
-                        done(Err(result.err().unwrap_or_else(|| {
-                            "Recovery failure unexpectedly succeeded".into()
-                        })));
-                    }),
-                );
-            }
+        if let Err(error) = started
+            && let Some(done) = callback.borrow_mut().take()
+        {
+            attempt.fail_before_creation(
+                error,
+                Box::new(move |result| {
+                    done(Err(result.err().unwrap_or_else(|| {
+                        "Recovery failure unexpectedly succeeded".into()
+                    })));
+                }),
+            );
         }
     }
     fn open_opener_native_command(

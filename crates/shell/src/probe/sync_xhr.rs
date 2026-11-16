@@ -17,12 +17,14 @@ use super::log::{Timeline, record, wait_page};
 use crate::host::window::{Bridge, ViewSpec, WindowOptions, WindowSpec};
 use crate::native::NativeEvent;
 
+type FrameHook = Arc<dyn Fn(ViewId, &NativeEvent) + Send + Sync>;
+
 pub fn run(ctx: &Ctx) -> Result<(), String> {
     let timeline = Arc::new(Timeline::default());
     // the real window names its view `view-<id>`; the label is not known before it opens, and
     // events can arrive first, so they are recorded under the id the callback gets
     let sink_timeline = timeline.clone();
-    let on_frame: Arc<dyn Fn(ViewId, &NativeEvent) + Send + Sync> =
+    let on_frame: FrameHook =
         Arc::new(move |view: ViewId, event: &NativeEvent| {
             note_event(&format!("view-{}", view.0), &sink_timeline, event);
         });

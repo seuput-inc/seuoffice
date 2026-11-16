@@ -78,13 +78,15 @@ fn decode_args(bytes: &[u8]) -> Result<Vec<IpcValue>, shell_core::wire::WireErro
     decode_list(header.get("args").unwrap_or(&Value::Null), &buffers)
 }
 
+type SyncReply = Box<dyn FnOnce(Vec<u8>) + Send>;
+
 struct SyncCompletion {
-    reply: Mutex<Option<Box<dyn FnOnce(Vec<u8>) + Send>>>,
+    reply: Mutex<Option<SyncReply>>,
     _loss: Mutex<Option<CancelSubscription>>,
 }
 
 impl SyncCompletion {
-    fn new(loss: &CancelToken, reply: Box<dyn FnOnce(Vec<u8>) + Send>) -> Arc<Self> {
+    fn new(loss: &CancelToken, reply: SyncReply) -> Arc<Self> {
         let completion = Arc::new(Self {
             reply: Mutex::new(Some(reply)),
             _loss: Mutex::new(None),

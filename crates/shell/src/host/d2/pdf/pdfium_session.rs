@@ -252,11 +252,11 @@ pub(crate) fn render_page_png(
         .ok_or_else(|| PdfiumError::from("invalid PDFium page".to_owned()))?;
     let page = json!({"ref":page_id});
     let width = session
-        .call("FPDF_GetPageWidthF", &[page.clone()])?
+        .call("FPDF_GetPageWidthF", std::slice::from_ref(&page))?
         .as_f64()
         .ok_or_else(|| PdfiumError::from("invalid PDF page width".to_owned()))?;
     let height = session
-        .call("FPDF_GetPageHeightF", &[page.clone()])?
+        .call("FPDF_GetPageHeightF", std::slice::from_ref(&page))?
         .as_f64()
         .ok_or_else(|| PdfiumError::from("invalid PDF page height".to_owned()))?;
     let (w, h) = ((width * scale).ceil(), (height * scale).ceil());
@@ -307,12 +307,12 @@ pub(crate) fn render_page_png(
         ],
     )?;
     let stride = session
-        .call("FPDFBitmap_GetStride", &[bitmap.clone()])?
+        .call("FPDFBitmap_GetStride", std::slice::from_ref(&bitmap))?
         .as_u64()
         .and_then(|v| usize::try_from(v).ok())
         .ok_or_else(|| PdfiumError::from("invalid PDFium bitmap stride".to_owned()))?;
     let format = session
-        .call("FPDFBitmap_GetFormat", &[bitmap.clone()])?
+        .call("FPDFBitmap_GetFormat", std::slice::from_ref(&bitmap))?
         .as_u64()
         .ok_or_else(|| PdfiumError::from("invalid PDFium bitmap format".to_owned()))?;
     let memory = session

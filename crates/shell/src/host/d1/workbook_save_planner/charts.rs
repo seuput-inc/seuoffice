@@ -994,6 +994,7 @@ fn attribute_value(xml: &str, tag: &str) -> Result<Option<String>, String> {
     Ok(found.and_then(|m| m.get(1).map(str::to_owned)))
 }
 
+#[allow(clippy::type_complexity)]
 fn axes_selection(
     axes: &[Axis],
 ) -> (
@@ -1788,11 +1789,12 @@ fn build_added_series(
         source["color"] = serde_json::Value::String(format!("#{}", PALETTE[index % PALETTE.len()]));
     }
     let mut result = build_series(&source, index, kind == "scatter")?;
-    if stroke {
-        if let Some((a, b)) = match_span(
+    if stroke
+        && let Some((a, b)) = match_span(
             &result,
             r"<c:spPr><a:solidFill>[\s\S]*?</a:solidFill></c:spPr>",
-        )? {
+        )?
+    {
             let inner = &result[a + "<c:spPr>".len()..b - "</c:spPr>".len()];
             result = splice(
                 &result,
@@ -1801,7 +1803,6 @@ fn build_added_series(
                 &format!("<c:spPr><a:ln>{inner}</a:ln></c:spPr>"),
             );
         }
-    }
     if kind == "scatter" {
         result = result.replace("<c:smooth val=\"0\"/>", "");
     }

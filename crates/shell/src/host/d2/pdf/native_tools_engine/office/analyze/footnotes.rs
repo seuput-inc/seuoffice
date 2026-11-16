@@ -143,21 +143,19 @@ fn parse_notes(lines: &[&IndexedRawLine], chars: &[PdfChar], body_font: f64) -> 
             });
             continue;
         }
-        if let Some((n, rest)) = inline_marker(line, chars) {
-            if current.as_ref().is_none_or(|old| next(old.num, n)) {
-                if let Some(note) = current.take() {
-                    notes.push(note)
-                }
-                current = Some(Note {
-                    num: n,
-                    chars: rest,
-                });
-                continue;
+        if let Some((n, rest)) = inline_marker(line, chars)
+            && current.as_ref().is_none_or(|old| next(old.num, n))
+        {
+            if let Some(note) = current.take() {
+                notes.push(note)
             }
+            current = Some(Note {
+                num: n,
+                chars: rest,
+            });
+            continue;
         }
-        let Some(note) = current.as_mut() else {
-            return None;
-        };
+        let note = current.as_mut()?;
         note.chars.extend_from_slice(&line.indices)
     }
     if let Some(note) = current {

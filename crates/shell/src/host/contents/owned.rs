@@ -185,7 +185,7 @@ impl Owner {
     /// would be admitted.
     pub fn fence(&self) -> Fence {
         let owner = self.clone();
-        Arc::new(move |start: &mut dyn FnMut()| owner.effect(|| start()))
+        Arc::new(move |start: &mut dyn FnMut()| owner.effect(start))
     }
 
     /// Start one page operation under this authority and wait for its answer on the calling

@@ -214,10 +214,10 @@ fn created_result(id: u64, result: ViewCreationResult<ViewId>) {
 }
 fn fail(id: u64, error: String) {
     PENDING.with(|entries| {
-        if let Some(state) = entries.borrow_mut().get_mut(&id) {
-            if state.failure.is_none() {
-                state.failure = Some(error);
-            }
+        if let Some(state) = entries.borrow_mut().get_mut(&id)
+            && state.failure.is_none()
+        {
+            state.failure = Some(error);
         }
     });
     advance(id);
@@ -233,29 +233,29 @@ fn advance(id: u64) {
         });
         return;
     }
-    if state.failure.is_none() {
-        if let (Some(owner), Some(_)) = (&state.owner, &state.ready) {
-            if native_owner::with_created_many_effect(
-                &state.source,
-                std::slice::from_ref(owner),
-                &state.created,
-                &state.cancel,
-                &state.pending,
-                || (),
-            )
-            .is_some()
-            {
-                let owner = state.owner.take().unwrap();
-                let ready = state.ready.take().unwrap();
-                return (state.done)(Ok(ViewCreationReady {
-                    view: owner,
-                    cleanup: ready.cleanup,
-                    closure: ready.closure,
-                    reservation: ready.reservation,
-                }));
-            }
-            state.failure = Some("The editor creation authority expired before delivery".into());
+    if state.failure.is_none()
+        && let (Some(owner), Some(_)) = (&state.owner, &state.ready)
+    {
+        if native_owner::with_created_many_effect(
+            &state.source,
+            std::slice::from_ref(owner),
+            &state.created,
+            &state.cancel,
+            &state.pending,
+            || (),
+        )
+        .is_some()
+        {
+            let owner = state.owner.take().unwrap();
+            let ready = state.ready.take().unwrap();
+            return (state.done)(Ok(ViewCreationReady {
+                view: owner,
+                cleanup: ready.cleanup,
+                closure: ready.closure,
+                reservation: ready.reservation,
+            }));
         }
+        state.failure = Some("The editor creation authority expired before delivery".into());
     }
     if state.failure.is_none() || state.ready.is_none() {
         PENDING.with(|entries| {

@@ -127,7 +127,7 @@ pub(super) fn assemble_column(
         let text = lists::detect_list_blocks(text, seq, body_left);
         Ok(toc::detect_toc_blocks(text)
             .into_iter()
-            .map(PageBlock::Text)
+            .map(|b| PageBlock::Text(Box::new(b)))
             .collect())
     };
     let text = if absolute {

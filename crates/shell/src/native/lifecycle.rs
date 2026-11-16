@@ -37,9 +37,11 @@ pub enum BrowserCreationOutcome {
     Failed,
 }
 
+type CreationCallback = Box<dyn FnOnce(BrowserCreationOutcome) + Send>;
+
 struct CreationListener {
     active: AtomicBool,
-    callback: Mutex<Option<Box<dyn FnOnce(BrowserCreationOutcome) + Send>>>,
+    callback: Mutex<Option<CreationCallback>>,
 }
 
 pub struct BrowserCreationSubscription {

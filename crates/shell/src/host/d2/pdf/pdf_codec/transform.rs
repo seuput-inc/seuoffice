@@ -46,7 +46,7 @@ pub(in crate::host::d2::pdf) fn literal_bytes(raw: &[u8]) -> Vec<u8> {
     out
 }
 pub(in crate::host::d2::pdf) fn hex_bytes(raw: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity((raw.len() + 1) / 2);
+    let mut out = Vec::with_capacity(raw.len().div_ceil(2));
     for pair in raw.chunks(2) {
         let text: String = pair
             .iter()

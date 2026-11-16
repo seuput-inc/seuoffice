@@ -268,7 +268,7 @@ fn renderer_dialog_extra_request_cancellation_closes_the_original_session() {
         &[participant],
         &CancelToken::default(),
         &CancelToken::default(),
-        &[extra.clone()],
+        std::slice::from_ref(&extra),
     )
     .unwrap();
     assert!(session.check().is_ok());
@@ -303,7 +303,7 @@ fn existing_document_dialog_tracks_original_operation_and_all_document_lifetimes
             &[participant],
             &cancel,
             &pending,
-            &[extra.clone()],
+            std::slice::from_ref(&extra),
         )
         .unwrap();
         assert!(session.check().is_ok());

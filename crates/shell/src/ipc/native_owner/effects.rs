@@ -275,6 +275,7 @@ pub(crate) fn with_many_owner_effect_extra<R>(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn with_many_owner_generations_transition<R>(
     origin: &NativeRequestOwner,
     destinations: &[NativeRequestOwner],
@@ -500,6 +501,7 @@ impl PreparedOwnerTransition<'_> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn with_many_owner_generations_media_transition<R>(
     origin: &NativeRequestOwner,
     destinations: &[NativeRequestOwner],
@@ -552,6 +554,7 @@ fn same_registered_origin(
     Some(registered)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn with_native_invocation_fences<R>(
     target: &shell_contract::ipc::NativeInvocationTarget,
     owner: &NativeRequestOwner,
@@ -649,6 +652,7 @@ pub(crate) fn with_service_native_invocation_effect<R>(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn with_native_invocation_print_many_effect<R>(
     target: &shell_contract::ipc::NativeInvocationTarget,
     owner: &NativeRequestOwner,
@@ -675,6 +679,7 @@ pub(crate) fn with_native_invocation_print_many_effect<R>(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn with_owned_print_many_extra_effect<R>(
     origin: &NativeRequestOwner,
     participants: &[NativeRequestOwner],
@@ -700,6 +705,7 @@ pub(crate) fn with_owned_print_many_extra_effect<R>(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn with_native_invocation_print_many_extra_effect<R>(
     target: &shell_contract::ipc::NativeInvocationTarget,
     owner: &NativeRequestOwner,
@@ -752,6 +758,7 @@ pub(super) fn register_native_recovery_target(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn register_startup_command_target(
     startup: &shell_contract::ipc::NativeInvocationOperation,
     shell: &NativeRequestOwner,
@@ -1150,6 +1157,7 @@ pub(crate) fn with_native_save_revision_snapshot<R>(
     .flatten()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn with_existing_document_service_effect<R>(
     binding: &shell_contract::ipc::NativeExistingDocumentBinding,
     participants: &[NativeRequestOwner],
@@ -1175,6 +1183,7 @@ pub(crate) fn with_existing_document_service_effect<R>(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn with_existing_document_print_effect<R>(
     binding: &shell_contract::ipc::NativeExistingDocumentBinding,
     participants: &[NativeRequestOwner],
@@ -1347,6 +1356,7 @@ pub(crate) fn with_native_command_preparation_effect<R>(
 }
 /// Admit a short immutable engine request against the exact command, service and
 /// captured participants. The returned action must run after this gate releases.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn with_command_preparation_service_effect<R>(
     operation: &shell_contract::ipc::NativeInvocationOperation,
     expected: &shell_contract::ipc::NativeEditorCommand,
@@ -1476,6 +1486,7 @@ pub(crate) fn with_native_command_creation_effect<R>(
 }
 
 /// Admit an effect for the same command after its actual first Registered target.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn with_native_command_target_effect<R>(
     operation: &shell_contract::ipc::NativeInvocationOperation,
     expected: &shell_contract::ipc::NativeEditorCommand,
@@ -1605,6 +1616,7 @@ fn matches_startup_snapshot_origin(
     Some(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn with_startup_command_preparation_effect<R>(
     startup: &shell_contract::ipc::NativeInvocationOperation,
     shell: &NativeRequestOwner,
@@ -1639,6 +1651,7 @@ pub(crate) fn with_startup_command_preparation_effect<R>(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn with_startup_command_creation_effect<R>(
     startup: &shell_contract::ipc::NativeInvocationOperation,
     shell: &NativeRequestOwner,
@@ -1678,6 +1691,7 @@ pub(crate) fn with_startup_command_creation_effect<R>(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn with_startup_command_target_effect<R>(
     startup: &shell_contract::ipc::NativeInvocationOperation,
     shell: &NativeRequestOwner,
@@ -1822,6 +1836,7 @@ pub(crate) fn with_startup_command_recovery_preparation_effect<R>(
 }
 
 /// The immutable child constructor is accepted only under its sealed startup root.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn with_startup_recovery_creation_effect<R>(
     startup: &shell_contract::ipc::NativeInvocationOperation,
     shell: &NativeRequestOwner,
@@ -1884,6 +1899,7 @@ pub(crate) fn with_startup_recovery_seed_effect<R>(
     .flatten()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn with_startup_recovery_seeded_snapshot<R>(
     startup: &shell_contract::ipc::NativeInvocationOperation,
     shell: &NativeRequestOwner,
@@ -1955,6 +1971,7 @@ fn with_startup_recovery_seeded_snapshot<R>(
     .flatten()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn with_startup_recovery_effect<R>(
     startup: &shell_contract::ipc::NativeInvocationOperation,
     shell: &NativeRequestOwner,
@@ -2339,6 +2356,7 @@ pub(crate) fn with_service_recovery_open_effect<R>(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn with_recovery_open_service_effect<R>(
     receipt: &shell_contract::ipc::RecoverySeedReceipt,
     receiver: &NativeRequestOwner,
@@ -2362,6 +2380,7 @@ fn with_recovery_open_service_effect<R>(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn with_recovery_open_service_effect_extra<R>(
     receipt: &shell_contract::ipc::RecoverySeedReceipt,
     receiver: &NativeRequestOwner,
@@ -2388,6 +2407,7 @@ fn with_recovery_open_service_effect_extra<R>(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn with_recovery_open_service_snapshot<R>(
     receipt: &shell_contract::ipc::RecoverySeedReceipt,
     snapshot: &shell_contract::ipc::RecoveryAuthoritySnapshot,
@@ -2753,22 +2773,21 @@ pub(crate) fn host(cx: &HostContext) -> OwnedEffectsHost {
     Arc::new(NativeOwnedEffects { cx: cx.clone() })
 }
 
+type MediaRecoveryFences<'a> = (
+    Option<(
+        &'a shell_contract::ipc::RecoveryOpenTarget,
+        NativeRequestOwner,
+    )>,
+    Vec<&'a RendererGeneration>,
+    Vec<&'a CancelToken>,
+    Vec<NativeRequestOwner>,
+);
+
 fn media_recovery_fences<'a>(
     recovery: Option<&'a shell_contract::ipc::RecoverySeedReceipt>,
     snapshot: Option<&'a shell_contract::ipc::RecoveryAuthoritySnapshot>,
     original: &NativeRequestOwner,
-) -> Result<
-    (
-        Option<(
-            &'a shell_contract::ipc::RecoveryOpenTarget,
-            NativeRequestOwner,
-        )>,
-        Vec<&'a RendererGeneration>,
-        Vec<&'a CancelToken>,
-        Vec<NativeRequestOwner>,
-    ),
-    String,
-> {
+) -> Result<MediaRecoveryFences<'a>, String> {
     let authority = proof(original).ok_or("The original Docs owner is unavailable")?;
     let recovery = recovery
         .map(|receipt| {
@@ -2850,6 +2869,7 @@ fn media_recovery_fences<'a>(
     Ok((recovery, generations, cancellation, owners))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn with_recovery_pdf_revision_transition(
     receipt: &shell_contract::ipc::RecoverySeedReceipt,
     receiver: &NativeRequestOwner,
@@ -3802,7 +3822,6 @@ impl OwnedEffects for NativeOwnedEffects {
                             })
                         };
                         let result = retain(&next_owner, &mut commit);
-                        drop(commit);
                         result?;
                         if committed.is_none() { return Err("The Docs media transition was not committed".into()); }
                         Ok(())
@@ -4041,7 +4060,6 @@ impl OwnedEffects for NativeOwnedEffects {
                         Ok(())
                     };
                     let result = retain(&next_owner, &mut commit);
-                    drop(commit);
                     result?;
                     if !committed {
                         return Err("The Docs media transition was not committed".into());
@@ -4634,7 +4652,7 @@ impl OwnedEffects for NativeOwnedEffects {
             attempted = true;
             let result = plan
                 .with_live(|_| {
-                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| effect())) {
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(&mut *effect)) {
                         Ok(result) => result,
                         Err(payload) => {
                             panic_payload = Some(payload);
@@ -4648,7 +4666,6 @@ impl OwnedEffects for NativeOwnedEffects {
         };
         let result =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| use_plan(&mut admit)));
-        drop(admit);
         drop(plan);
         if let Some(payload) = panic_payload {
             std::panic::resume_unwind(payload);
@@ -5072,7 +5089,6 @@ impl OwnedEffects for NativeOwnedEffects {
             ),
             None => enter(),
         }));
-        drop(enter);
         drop(plan);
         if let Some(payload) = panic_payload {
             std::panic::resume_unwind(payload);
@@ -5105,7 +5121,7 @@ impl OwnedEffects for NativeOwnedEffects {
         }
         with_many_owner_generations_transition(
             registered,
-            &[actual.clone()],
+            std::slice::from_ref(actual),
             None,
             &[],
             &[],
@@ -6027,7 +6043,7 @@ mod tests {
             });
         }));
         assert!(result.is_err());
-        assert_eq!(receive.recv().unwrap(), true);
+        assert!(receive.recv().unwrap());
     }
 
     #[test]

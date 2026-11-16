@@ -2092,12 +2092,10 @@ fn prepare_menu_for(
         seams_of(provided),
     );
     if let Some((items, view)) = super::doc_links::file_menu(kind) {
-        if let MenuTarget::Captured(expected) = target {
-            if expected != Some(view) {
-                return Err(
-                    "activation document-link target changed before menu preparation".into(),
-                );
-            }
+        if let MenuTarget::Captured(expected) = target
+            && expected != Some(view)
+        {
+            return Err("activation document-link target changed before menu preparation".into());
         }
         ctx.doc_links = doc_link_nodes(&items, view);
     }
@@ -2723,7 +2721,7 @@ impl RecoverySavedMenu {
         effects.with_recovery_open_effect_many(
             receipt,
             receiver,
-            &[recipient.clone()],
+            std::slice::from_ref(&recipient),
             cancel,
             pending,
             &mut || Ok(()),
@@ -2750,7 +2748,7 @@ impl RecoverySavedMenu {
         self.effects.emit_recovery_open_many(
             &self.receipt,
             &self.receiver,
-            &[self.recipient.clone()],
+            std::slice::from_ref(&self.recipient),
             0,
             &self.cancel,
             &self.pending,
@@ -2763,7 +2761,7 @@ impl RecoverySavedMenu {
         if let Err(error) = self.effects.with_recovery_open_effect_many(
             &self.receipt,
             &self.receiver,
-            &[self.recipient.clone()],
+            std::slice::from_ref(&self.recipient),
             &self.cancel,
             &self.pending,
             &mut || Ok(()),
@@ -2799,7 +2797,7 @@ impl RecoverySavedMenu {
                 .with_recovery_open_effect_many(
                     &self.receipt,
                     &self.receiver,
-                    &[self.recipient.clone()],
+                    std::slice::from_ref(&self.recipient),
                     &self.cancel,
                     &self.pending,
                     &mut || {

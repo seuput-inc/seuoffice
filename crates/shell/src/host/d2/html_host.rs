@@ -601,8 +601,7 @@ impl HtmlShell for Shell {
                     .map_err(|error| eprintln!("HTML present window: {error}"))
                     .ok();
         });
-        let view = result.borrow_mut().take();
-        view
+        result.borrow_mut().take()
     }
     fn close_present_view(&self, view: ViewId) {
         let cx = self.0.clone();
@@ -687,10 +686,9 @@ fn prepare_docx(path: &Path, then: Box<dyn FnOnce(bool)>) {
                 }
             }),
         );
-    }) {
-        if let Some(then) = pending.borrow_mut().take() {
-            then(false);
-        }
+    }) && let Some(then) = pending.borrow_mut().take()
+    {
+        then(false);
     }
 }
 
@@ -774,41 +772,6 @@ pub(super) fn diagram_picture_ext(path: &Path) -> Option<String> {
     crate::host::w_files::diagram_picture_ext(path).map(str::to_owned)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parser_preserves_text_damage_and_failures() {
-        let result = parsed_result(
-            &serde_json::json!({ "ok": true, "kind": "text", "text": "synthetic", "damaged": true }),
-        );
-        assert!(result.ok);
-        assert_eq!(result.text.as_deref(), Some("synthetic"));
-        assert!(result.damaged);
-        let result = parsed_result(&serde_json::json!({ "ok": false, "error": "bad file" }));
-        assert!(!result.ok);
-        assert_eq!(result.error.as_deref(), Some("bad file"));
-        assert!(parsed_result(&serde_json::json!({})).error.is_some());
-    }
-
-    #[test]
-    fn conversion_reply_requires_real_wire_bytes() {
-        let response = serde_json::json!({
-            "header": { "$": "b", "k": "u8", "i": 0 },
-            "buffers": ["UEsDBA=="]
-        });
-        assert_eq!(decode_docx(response).unwrap(), b"PK\x03\x04");
-        assert!(decode_docx(serde_json::json!({ "header": null, "buffers": [] })).is_err());
-        assert!(
-            decode_docx(serde_json::json!({
-                "header": { "$": "b", "k": "u8", "i": 0 }, "buffers": ["!"]
-            }))
-            .is_err()
-        );
-    }
-}
-
 fn prepare_docx_owned(
     path: PathBuf,
     origin: shell_contract::ipc::NativeRequestOwner,
@@ -837,10 +800,9 @@ fn prepare_docx_owned(
             effects,
             done,
         );
-    }) {
-        if let Some(done) = callback.borrow_mut().take() {
-            done(Err("Core services are not available".into()));
-        }
+    }) && let Some(done) = callback.borrow_mut().take()
+    {
+        done(Err("Core services are not available".into()));
     }
 }
 
@@ -886,10 +848,9 @@ fn prepare_docx_native(
             &path,
             Box::new(move |ready| done(ready.and_then(|ready| admit().map(|()| ready)))),
         );
-    }) {
-        if let Some(done) = callback.borrow_mut().take() {
-            done(Err("Core services are not available".into()));
-        }
+    }) && let Some(done) = callback.borrow_mut().take()
+    {
+        done(Err("Core services are not available".into()));
     }
 }
 
@@ -934,4 +895,39 @@ pub(super) fn prepare_generated_output(
         return Err("The exported document must be prepared on the core thread".into());
     }
     result.ok_or_else(|| "The tab manager did not prepare the exported document".to_owned())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parser_preserves_text_damage_and_failures() {
+        let result = parsed_result(
+            &serde_json::json!({ "ok": true, "kind": "text", "text": "synthetic", "damaged": true }),
+        );
+        assert!(result.ok);
+        assert_eq!(result.text.as_deref(), Some("synthetic"));
+        assert!(result.damaged);
+        let result = parsed_result(&serde_json::json!({ "ok": false, "error": "bad file" }));
+        assert!(!result.ok);
+        assert_eq!(result.error.as_deref(), Some("bad file"));
+        assert!(parsed_result(&serde_json::json!({})).error.is_some());
+    }
+
+    #[test]
+    fn conversion_reply_requires_real_wire_bytes() {
+        let response = serde_json::json!({
+            "header": { "$": "b", "k": "u8", "i": 0 },
+            "buffers": ["UEsDBA=="]
+        });
+        assert_eq!(decode_docx(response).unwrap(), b"PK\x03\x04");
+        assert!(decode_docx(serde_json::json!({ "header": null, "buffers": [] })).is_err());
+        assert!(
+            decode_docx(serde_json::json!({
+                "header": { "$": "b", "k": "u8", "i": 0 }, "buffers": ["!"]
+            }))
+            .is_err()
+        );
+    }
 }

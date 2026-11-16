@@ -331,16 +331,16 @@ fn fill(slide: &mut Slide, f: &Fill, mapper: &Mapper, curved: bool) -> Result<()
     let mut opts = options(kind, mapper.rect(f.bounds));
     let alpha = f.alpha.map(|v| format!("{v:02x}")).unwrap_or_default();
     opts.fill_color = Some(format!("#{}{alpha}", f.color));
-    if kind == "roundRect" {
-        if let Some(radius) = f.corner_radius_pt {
-            let shortest = f.bounds.width().min(f.bounds.height()).max(1.0);
-            let mut adjust = JsObject::default();
-            adjust.set(
-                "adj",
-                JsNum(math_round((radius / shortest * 100000.0).min(50000.0))),
-            );
-            opts.adjustments = Some(adjust);
-        }
+    if kind == "roundRect"
+        && let Some(radius) = f.corner_radius_pt
+    {
+        let shortest = f.bounds.width().min(f.bounds.height()).max(1.0);
+        let mut adjust = JsObject::default();
+        adjust.set(
+            "adj",
+            JsNum(math_round((radius / shortest * 100000.0).min(50000.0))),
+        );
+        opts.adjustments = Some(adjust);
     }
     add_shape(slide, &opts)
 }
@@ -385,11 +385,11 @@ fn emit_page(
         order += 1;
     }
     for block in &page.blocks {
-        if let PageBlock::Image(img) = block {
-            if img.float.as_ref().is_some_and(|f| f.wrap == "behind") {
-                underlays.push((img.z.unwrap_or(0), 0, order, Underlay::Image(img)));
-                order += 1;
-            }
+        if let PageBlock::Image(img) = block
+            && img.float.as_ref().is_some_and(|f| f.wrap == "behind")
+        {
+            underlays.push((img.z.unwrap_or(0), 0, order, Underlay::Image(img)));
+            order += 1;
         }
     }
     if let Some(shapes) = &page.shapes {
@@ -422,7 +422,7 @@ fn emit_page(
     for block in &page.blocks {
         match block {
             PageBlock::Image(img) => {
-                if !img.float.as_ref().is_some_and(|f| f.wrap == "behind") {
+                if img.float.as_ref().is_none_or(|f| f.wrap != "behind") {
                     image(opened, index, img, &mapper)?;
                 }
             }

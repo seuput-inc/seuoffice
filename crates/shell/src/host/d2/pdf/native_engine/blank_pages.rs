@@ -54,7 +54,7 @@ pub(super) fn append(
         }
         let width = number(field(page, "width")).ok_or("Blank page needs a positive size")?;
         let height = number(field(page, "height")).ok_or("Blank page needs a positive size")?;
-        if !(width > 0.0) || !(height > 0.0) {
+        if width.is_nan() || width <= 0.0 || height.is_nan() || height <= 0.0 {
             return Err("Blank page needs a positive size".into());
         }
         pages.push(json!({"width": width, "height": height}));

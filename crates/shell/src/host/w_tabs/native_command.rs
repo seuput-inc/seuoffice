@@ -117,6 +117,7 @@ pub(super) fn matches_spec(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn start(
     cx: HostContext,
     core: Arc<dyn Thread>,
@@ -351,10 +352,10 @@ fn created_result(id: u64, result: ViewCreationResult<ViewId>) {
 
 fn fail(id: u64, error: String) {
     PENDING.with(|entries| {
-        if let Some(state) = entries.borrow_mut().get_mut(&id) {
-            if state.failure.is_none() {
-                state.failure = Some(error);
-            }
+        if let Some(state) = entries.borrow_mut().get_mut(&id)
+            && state.failure.is_none()
+        {
+            state.failure = Some(error);
         }
     });
     advance(id);
@@ -371,46 +372,46 @@ fn advance(id: u64) {
         });
         return;
     }
-    if state.failure.is_none() {
-        if let (Some(document), Some(_)) = (&state.document, &state.ready) {
-            let admitted = match &state.startup {
-                Some((root, shell)) => native_owner::with_startup_command_target_effect(
-                    root,
-                    shell,
-                    &state.operation,
-                    &state.command,
-                    document,
-                    document.owner(),
-                    &state.participants,
-                    &state.cancel,
-                    &state.pending,
-                    || (),
-                )
-                .is_some(),
-                None => native_owner::with_native_command_target_effect(
-                    &state.operation,
-                    &state.command,
-                    document,
-                    document.owner(),
-                    &state.participants,
-                    &state.cancel,
-                    &state.pending,
-                    || (),
-                )
-                .is_some(),
-            };
-            if admitted {
-                let document = state.document.take().unwrap();
-                let ready = state.ready.take().unwrap();
-                return (state.done)(Ok(ViewCreationReady {
-                    view: document,
-                    cleanup: ready.cleanup,
-                    closure: ready.closure,
-                    reservation: ready.reservation,
-                }));
-            }
-            state.failure = Some("The native command expired before delivery".into());
+    if state.failure.is_none()
+        && let (Some(document), Some(_)) = (&state.document, &state.ready)
+    {
+        let admitted = match &state.startup {
+            Some((root, shell)) => native_owner::with_startup_command_target_effect(
+                root,
+                shell,
+                &state.operation,
+                &state.command,
+                document,
+                document.owner(),
+                &state.participants,
+                &state.cancel,
+                &state.pending,
+                || (),
+            )
+            .is_some(),
+            None => native_owner::with_native_command_target_effect(
+                &state.operation,
+                &state.command,
+                document,
+                document.owner(),
+                &state.participants,
+                &state.cancel,
+                &state.pending,
+                || (),
+            )
+            .is_some(),
+        };
+        if admitted {
+            let document = state.document.take().unwrap();
+            let ready = state.ready.take().unwrap();
+            return (state.done)(Ok(ViewCreationReady {
+                view: document,
+                cleanup: ready.cleanup,
+                closure: ready.closure,
+                reservation: ready.reservation,
+            }));
         }
+        state.failure = Some("The native command expired before delivery".into());
     }
     if state.failure.is_none() || state.ready.is_none() {
         PENDING.with(|entries| {

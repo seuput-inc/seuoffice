@@ -18,7 +18,7 @@ fn field<'a>(value: &'a serde_json::Value, name: &str) -> Result<&'a str, String
 fn decode_open(value: &serde_json::Value) -> Result<Result<DiagramFile, OpenFailure>, String> {
     match value.get("ok").and_then(|value| value.as_bool()) {
         Some(false) => {
-            let reason = field(&value, "reason")?;
+            let reason = field(value, "reason")?;
             if !matches!(
                 reason,
                 "unsupported"
@@ -32,11 +32,11 @@ fn decode_open(value: &serde_json::Value) -> Result<Result<DiagramFile, OpenFail
             }
             Ok(Err(OpenFailure {
                 reason: reason.to_owned(),
-                message: field(&value, "message")?.to_owned(),
+                message: field(value, "message")?.to_owned(),
             }))
         }
         Some(true) => {
-            let format = match field(&value, "format")? {
+            let format = match field(value, "format")? {
                 "drawio" => DiagramFormat::Drawio,
                 "dio" => DiagramFormat::Dio,
                 "drawio.svg" => DiagramFormat::DrawioSvg,
@@ -47,12 +47,12 @@ fn decode_open(value: &serde_json::Value) -> Result<Result<DiagramFile, OpenFail
                 .get("anyPageCompressed")
                 .and_then(|v| v.as_bool())
                 .ok_or("diagram engine returned invalid compression flag")?;
-            let root = field(&value, "root")?;
+            let root = field(value, "root")?;
             if !matches!(root, "mxfile" | "mxGraphModel") {
                 return Err("diagram engine returned invalid root".into());
             }
             Ok(Ok(DiagramFile {
-                xml: field(&value, "xml")?.to_owned(),
+                xml: field(value, "xml")?.to_owned(),
                 format,
                 root: root.to_owned(),
                 any_page_compressed: compressed,
@@ -83,6 +83,7 @@ pub(super) fn open_native_invocation(
     decode_open(&value)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn open_native_command_preparation(
     name: &str,
     bytes: &[u8],

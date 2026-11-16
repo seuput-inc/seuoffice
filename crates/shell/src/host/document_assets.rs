@@ -351,10 +351,10 @@ pub(crate) fn prepare_recovery_paths(
         AssetKind::Markdown => shell_contract::Surface::Markdown,
         AssetKind::Docs => return Err("Docs assets require an exact session".into()),
     };
-    if let shell_contract::ipc::RecoveryOpenContext::NativeStartup(operation) = target.context() {
-        if operation.selection().surface() != surface {
-            return Err("The recovery target has a different asset surface".into());
-        }
+    if let shell_contract::ipc::RecoveryOpenContext::NativeStartup(operation) = target.context()
+        && operation.selection().surface() != surface
+    {
+        return Err("The recovery target has a different asset surface".into());
     }
     let mut paths = Vec::new();
     for path in [open, save]
@@ -540,6 +540,7 @@ fn prepare_existing_asset_paths(
     Ok(shell_ipc_d2::html::RecoveryAssetStage { commit, subscribe })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn set_paths_many_owned(
     origin: &shell_contract::ipc::NativeRequestOwner,
     captured: &[shell_contract::ipc::NativeRequestOwner],
@@ -1331,6 +1332,7 @@ impl TargetGuard {
         .ok_or_else(|| "document save authority is revoked".to_owned())?
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn set_many_extra_authority(
         &self,
         origin: &shell_contract::ipc::NativeRequestOwner,
@@ -1345,7 +1347,7 @@ impl TargetGuard {
             .context
             .renderer()
             .ok_or("document origin renderer unavailable")?;
-        let mut bind = || {
+        let bind = || {
             let mut targets = targets()
                 .lock()
                 .map_err(|_| "document target registry is poisoned")?;
@@ -1383,7 +1385,7 @@ impl TargetGuard {
                     stop,
                     generation,
                     &controls,
-                    &mut bind,
+                    bind,
                 )
             }
             None => crate::ipc::native_owner::with_owned_print_many_extra_effect(
@@ -1394,7 +1396,7 @@ impl TargetGuard {
                 stop,
                 generation,
                 &controls,
-                &mut bind,
+                bind,
             ),
         };
         admitted.ok_or_else(|| "document print authority is revoked".to_owned())?

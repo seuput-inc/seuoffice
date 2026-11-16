@@ -40,8 +40,8 @@ pub(super) struct PreparedEditorView {
     pub(super) slides_lease: Option<SlidesViewLease>,
     pub(super) asset_lease: Option<AssetViewLease>,
     pub(super) request_policy: Option<RequestPolicy>,
-    pub(super) invocation_on_frame: Option<Arc<dyn Fn(ViewId, &NativeEvent) + Send + Sync>>,
-    pub(super) invocation_navigate: Option<Arc<dyn Fn(Result<(), String>) + Send + Sync>>,
+    pub(super) invocation_on_frame: Option<InvocationOnFrame>,
+    pub(super) invocation_navigate: Option<InvocationNavigate>,
 }
 
 pub(super) struct InstallError {
@@ -277,7 +277,7 @@ fn post_navigation_result(
     url: String,
     generated: Option<u64>,
     result: Result<(), String>,
-    invocation_navigate: Option<Arc<dyn Fn(Result<(), String>) + Send + Sync>>,
+    invocation_navigate: Option<InvocationNavigate>,
 ) {
     if let Some(navigate) = invocation_navigate {
         navigate(result);
@@ -295,15 +295,19 @@ fn post_navigation_result(
     }));
 }
 
+type InvocationOnFrame = Arc<dyn Fn(ViewId, &NativeEvent) + Send + Sync>;
+type InvocationNavigate = Arc<dyn Fn(Result<(), String>) + Send + Sync>;
+type ReopenDone =
+    Box<dyn FnOnce(Result<(String, Option<String>, NativeRequestOwner, CancelToken), String>)>;
+type RevealDone = Box<dyn FnOnce(TabResult<()>)>;
 type Completion = Box<dyn FnOnce(shell_ipc_w::tabs::host::ViewCreationResult<ViewId>)>;
 struct Reopen {
-    done:
-        Box<dyn FnOnce(Result<(String, Option<String>, NativeRequestOwner, CancelToken), String>)>,
+    done: ReopenDone,
     _subscriptions: Vec<shell_contract::runtime::CancelSubscription>,
 }
 thread_local! {
     static COMPLETIONS: RefCell<HashMap<u64, Completion>> = RefCell::new(HashMap::new());
-    static REVEALS: RefCell<HashMap<u64, Box<dyn FnOnce(TabResult<()>)>>> = RefCell::new(HashMap::new());
+    static REVEALS: RefCell<HashMap<u64, RevealDone>> = RefCell::new(HashMap::new());
     static REOPENS: RefCell<HashMap<u64, Reopen>> = RefCell::new(HashMap::new());
 }
 static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -587,9 +591,7 @@ pub(super) fn reveal(
 }
 
 pub(super) fn store_reopen(
-    done: Box<
-        dyn FnOnce(Result<(String, Option<String>, NativeRequestOwner, CancelToken), String>),
-    >,
+    done: ReopenDone,
     destination: &NativeRequestOwner,
     pending: &CancelToken,
 ) -> u64 {

@@ -583,7 +583,7 @@ fn shape(
             if path.len() < 4 {
                 continue;
             }
-            if path.len() % 2 != 0 {
+            if !path.len().is_multiple_of(2) {
                 return Err("invalid ink path".into());
             }
             let vals = path

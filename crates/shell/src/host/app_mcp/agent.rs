@@ -551,11 +551,13 @@ impl AgentRelayAsk for AskLink {
     }
 }
 
+type RelayReady = mpsc::Sender<Result<(Vec<AgentMcpRelay>, Vec<String>), String>>;
+
 struct RelayLoop {
     relays: AgentMcpRelays<'static>,
     transports: Vec<Transport>,
     tx: mpsc::Sender<RelayMsg>,
-    ready: Option<mpsc::Sender<Result<(Vec<AgentMcpRelay>, Vec<String>), String>>>,
+    ready: Option<RelayReady>,
     done: bool,
 }
 
@@ -666,7 +668,7 @@ fn run_relays(
     asker: Arc<dyn RelayAsker>,
     tx: mpsc::Sender<RelayMsg>,
     rx: &mpsc::Receiver<RelayMsg>,
-    ready: mpsc::Sender<Result<(Vec<AgentMcpRelay>, Vec<String>), String>>,
+    ready: RelayReady,
 ) {
     let (relays, first) = AgentMcpRelays::start(AgentMcpRelaysDeps {
         hub: Rc::new(HubLink { tx: tx.clone() }),

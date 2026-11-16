@@ -440,14 +440,12 @@ fn remove_ext_ref(xml: &str, wiring: &ExtWiring, rel_id: &str) -> Result<String,
             &xml[..ext.start()],
             &xml[end + "</ext>".len()..]
         );
-        if replacement.is_empty() {
-            if let Some(close) = patched.rfind("</extLst>") {
-                if let Some(open) = patched[..close].rfind("<extLst>") {
-                    if patched[open + "<extLst>".len()..close].trim().is_empty() {
-                        patched.replace_range(open..close + "</extLst>".len(), "");
-                    }
-                }
-            }
+        if replacement.is_empty()
+            && let Some(close) = patched.rfind("</extLst>")
+            && let Some(open) = patched[..close].rfind("<extLst>")
+            && patched[open + "<extLst>".len()..close].trim().is_empty()
+        {
+            patched.replace_range(open..close + "</extLst>".len(), "");
         }
         return Ok(patched);
     }
@@ -482,11 +480,12 @@ fn insert_root_ext(xml: &str, root: &str, element: &str) -> Result<String, Strin
             if stack.pop().as_deref() != Some(tag_name) {
                 return Err("The host element is malformed.".into());
             }
-            if stack.len() == 1 && tag_name == "extLst" {
-                if let Some(open) = ext_open {
+            if stack.len() == 1
+                && tag_name == "extLst"
+                && let Some(open) = ext_open
+            {
                     ext = Some((open, token.start(), false));
                 }
-            }
             if stack.is_empty() {
                 return match ext {
                     None => Ok(format!(
@@ -611,13 +610,12 @@ pub(super) fn ensure_sheet_drawing(
         let tags = TryJsRegex::new(r#"<Relationship\b[^>]*>"#, "").map_err(|e| e.to_string())?;
         for tag in tags.try_find_iter(&xml) {
             let tag = tag.map_err(|e| e.to_string())?;
-            if tag.as_str().contains(&format!("Type=\"{kind}\"")) {
-                if let Some(target) = attribute(tag.as_str(), "Target")? {
-                    if attribute(tag.as_str(), "Id")?.is_some() {
+            if tag.as_str().contains(&format!("Type=\"{kind}\""))
+                && let Some(target) = attribute(tag.as_str(), "Target")?
+                && attribute(tag.as_str(), "Id")?.is_some()
+            {
                         return super::state::resolve_rel_target(sheet, &target);
                     }
-                }
-            }
         }
     }
     let path = super::pivots::allocate_part_path(pkg, "xl/drawings/drawing", ".xml")?;
@@ -1133,11 +1131,11 @@ pub(super) fn collect_slicer_names(
             }
         } else if path.starts_with("xl/slicerCaches/") {
             let xml = pkg.read_text(&path)?;
-            if let Some(tag) = first(&xml, r#"<slicerCacheDefinition\b[^>]*>"#)? {
-                if let Some(name) = attribute(tag, "name")? {
+            if let Some(tag) = first(&xml, r#"<slicerCacheDefinition\b[^>]*>"#)?
+                && let Some(name) = attribute(tag, "name")?
+            {
                     caches.insert(name);
                 }
-            }
         }
     }
     Ok((controls, caches))

@@ -8,12 +8,11 @@ pub(crate) fn read_odt(bytes: &[u8]) -> Value {
         Err(OdtError::Open { code, message }) => {
             let mut error =
                 json!({ "name": "OdtOpenError", "code": code.as_str(), "message": message });
-            if code == OdtOpenErrorCode::NotOdtText {
-                if let Ok(package) = read_odt_package(bytes, &ReadOdtPackageOptions::default()) {
-                    if let Some(media_type) = package.mimetype {
-                        error["mediaType"] = Value::String(media_type);
-                    }
-                }
+            if code == OdtOpenErrorCode::NotOdtText
+                && let Ok(package) = read_odt_package(bytes, &ReadOdtPackageOptions::default())
+                && let Some(media_type) = package.mimetype
+            {
+                error["mediaType"] = Value::String(media_type);
             }
             json!({ "error": error })
         }

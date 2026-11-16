@@ -426,10 +426,13 @@ pub struct WindowOptions {
     pub background_throttling: Option<tauri::utils::config::BackgroundThrottlingPolicy>,
     pub request_policy: Option<RequestPolicy>,
     pub on_frame: Option<FrameCallback>,
-    pub on_open: Option<Arc<dyn Fn(ViewId, &DocumentContext, &str) + Send + Sync>>,
-    pub on_navigation: Option<Arc<dyn Fn(&tauri::Url) -> bool + Send + Sync>>,
+    pub on_open: Option<OpenCallback>,
+    pub on_navigation: Option<NavigationCallback>,
     pub on_closed: Option<Box<dyn FnOnce(WindowId) + Send>>,
 }
+
+pub type OpenCallback = Arc<dyn Fn(ViewId, &DocumentContext, &str) + Send + Sync>;
+pub type NavigationCallback = Arc<dyn Fn(&tauri::Url) -> bool + Send + Sync>;
 
 impl Default for WindowOptions {
     fn default() -> Self {
@@ -900,6 +903,7 @@ impl Windows {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn add_reserved_view(
         &self,
         view: ViewId,
@@ -959,15 +963,14 @@ impl Windows {
             NewWindowResponse::Deny
         });
         let _ = generation.set(created.clone());
-        if let Some(proof) = &prepared_proof {
-            if !generation
+        if let Some(proof) = &prepared_proof
+            && !generation
                 .get()
                 .is_some_and(|created| proof.reservation().matches(view, created))
-            {
-                return Err("The native closure reservation does not match the view"
-                    .to_owned()
-                    .into());
-            }
+        {
+            return Err("The native closure reservation does not match the view"
+                .to_owned()
+                .into());
         }
         let creation = match (submission, &prepared_proof) {
             (Some(creation), Some(proof)) => {
@@ -1024,16 +1027,14 @@ impl Windows {
             LogicalSize::new(bounds.width, bounds.height),
         ) {
             Ok(built) => {
-                if let Some(created) = generation.get() {
-                    if let Err(error) =
-                        crate::ipc::bind_native_webview(&built, view, created.clone())
-                    {
-                        return Err(ChildCreationError {
-                            message: error,
-                            close: Some(close),
-                            proof,
-                        });
-                    }
+                if let Some(created) = generation.get()
+                    && let Err(error) = crate::ipc::bind_native_webview(&built, view, created.clone())
+                {
+                    return Err(ChildCreationError {
+                        message: error,
+                        close: Some(close),
+                        proof,
+                    });
                 }
                 if let Err(error) = attach_native(&self.app, &native, &built, &browser) {
                     return Err(ChildCreationError {

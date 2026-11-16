@@ -234,10 +234,12 @@ fn layout(op: &IpcValue, ctx: &OpContext<'_>) -> Result<String, String> {
         value => value,
     };
     if let Some(n) = number(reference) {
-        if n.is_finite() && n >= 0.0 && n.fract() == 0.0 {
-            if let Some(found) = layouts.get(n as usize) {
-                return Ok(found.path.clone());
-            }
+        if n.is_finite()
+            && n >= 0.0
+            && n.fract() == 0.0
+            && let Some(found) = layouts.get(n as usize)
+        {
+            return Ok(found.path.clone());
         }
         return Err(format!(
             "op \"{name}\": layout index {n} is out of range (0-{}). Layouts: [{available}].",
@@ -546,27 +548,26 @@ pub(super) fn apply(op: &IpcValue, ctx: &mut OpContext<'_>) -> Option<Result<Txn
             };
             let remapped = remap_deck_colors(&mut ctx.opened.archive, &deck, &spec);
             let mut backgrounds = 0usize;
-            if patched > 0 || remapped > 0 {
-                if let Some(lt1) = spec
+            if (patched > 0 || remapped > 0)
+                && let Some(lt1) = spec
                     .colors
                     .get("lt1")
                     .and_then(Option::as_deref)
                     .filter(|s| !s.is_empty())
-                {
-                    reparse_deck(ctx.opened)?;
-                    let color = format!("#{}", lt1.strip_prefix('#').unwrap_or(lt1));
-                    for i in 0..ctx.opened.deck.slides.len() {
-                        if ctx.opened.deck.slides[i].background.is_some() {
-                            continue;
-                        }
-                        background::set_slide_background(
-                            ctx.opened,
-                            i,
-                            &SlideBackgroundFill::Color(color.clone()),
-                        )?;
-                        materialize_slide(ctx.opened, i)?;
-                        backgrounds += 1;
+            {
+                reparse_deck(ctx.opened)?;
+                let color = format!("#{}", lt1.strip_prefix('#').unwrap_or(lt1));
+                for i in 0..ctx.opened.deck.slides.len() {
+                    if ctx.opened.deck.slides[i].background.is_some() {
+                        continue;
                     }
+                    background::set_slide_background(
+                        ctx.opened,
+                        i,
+                        &SlideBackgroundFill::Color(color.clone()),
+                    )?;
+                    materialize_slide(ctx.opened, i)?;
+                    backgrounds += 1;
                 }
             }
             r.after = obj(vec![
@@ -741,21 +742,21 @@ pub(super) fn apply(op: &IpcValue, ctx: &mut OpContext<'_>) -> Option<Result<Txn
             let created =
                 merge_slide_from_source(ctx.opened, &source, &MergeSlideOptions::default())?
                     .ok_or("op \"insertSlidePptx\": the source page could not be merged.")?;
-            let size = ctx.opened.deck.size.clone();
+            let size = ctx.opened.deck.size;
             let slide = &mut ctx.opened.deck.slides[created];
             promote_slide_background(slide, &size);
             autofit_generated_text_boxes(slide);
             let id = slide_durable_id(slide);
             let at = number(field(op, "at")).map(|n| n as usize);
-            if let Some(at) = at.filter(|at| *at < total) {
-                if !move_slide(
+            if let Some(at) = at.filter(|at| *at < total)
+                && !move_slide(
                     ctx.opened,
                     total as f64,
                     at as f64,
                     &mut jscompat::random_uuid,
-                )? {
-                    return Err("op \"insertSlidePptx\": positioning the new page failed.".into());
-                }
+                )?
+            {
+                return Err("op \"insertSlidePptx\": positioning the new page failed.".into());
             }
             if matches!(field(op, "replace"), Some(IpcValue::Bool(true)))
                 && !delete_slide(ctx.opened, (at.unwrap() + 1) as f64)?

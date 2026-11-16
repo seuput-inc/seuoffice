@@ -1052,10 +1052,10 @@ mod tests {
 
     #[test]
     fn a_rotated_page_gets_its_strips_against_the_edge_the_viewer_shows() {
-        let strip = [0.0, 0.0, 1066.666_666_7, 50.0];
+        let strip = [0.0, 0.0, 1_066.666_666_7, 50.0];
         let header = page(90).placement(Band::Header, strip);
         near(at(&header, 0.0, 50.0), (0.0, 0.0));
-        near(at(&header, 1066.666_666_7, 0.0), (37.5, 800.0));
+        near(at(&header, 1_066.666_666_7, 0.0), (37.5, 800.0));
         let footer = page(180).placement(Band::Footer, [0.0, 0.0, 600.0, 40.0]);
         near(at(&footer, 0.0, 0.0), (600.0, 800.0));
         near(at(&footer, 600.0, 40.0), (0.0, 760.0));

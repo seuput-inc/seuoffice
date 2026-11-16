@@ -296,10 +296,10 @@ impl QuickLookWindow for QuickWindow {
                 NativeEventKind::LoadFinished { ok: true, .. } => ready.window_ready(view),
                 NativeEventKind::LoadFinished { ok: false, .. } => {
                     eprintln!("quick look page failed to load; closing the preview window");
-                    if let Some(window) = app.get_window(&format!("view-{}", view.0)) {
-                        if let Err(error) = window.close() {
-                            eprintln!("closing the failed preview window: {error}");
-                        }
+                    if let Some(window) = app.get_window(&format!("view-{}", view.0))
+                        && let Err(error) = window.close()
+                    {
+                        eprintln!("closing the failed preview window: {error}");
                     }
                 }
                 _ => {}
@@ -420,17 +420,17 @@ fn close_picker_for_owner(cx: &HostContext, life: &Arc<PickerLifecycle>) {
     life.created_changed.notify_all();
     let window = *created;
     drop(created);
-    if let Some((window, _)) = window {
-        if !life.closed.load(Ordering::SeqCst) && !life.close_requested.swap(true, Ordering::SeqCst)
-        {
-            let cx = cx.clone();
-            std::thread::spawn(move || {
-                let windows = cx.windows.clone();
-                if let Err(error) = on_ui(&cx.ui, move || windows.close_window(window)) {
-                    eprintln!("closing picker after its owner ended: {error}");
-                }
-            });
-        }
+    if let Some((window, _)) = window
+        && !life.closed.load(Ordering::SeqCst)
+        && !life.close_requested.swap(true, Ordering::SeqCst)
+    {
+        let cx = cx.clone();
+        std::thread::spawn(move || {
+            let windows = cx.windows.clone();
+            if let Err(error) = on_ui(&cx.ui, move || windows.close_window(window)) {
+                eprintln!("closing picker after its owner ended: {error}");
+            }
+        });
     }
 }
 
@@ -545,10 +545,10 @@ impl DocPickerWindow for PickerWindow {
                 let weak = Arc::downgrade(&life);
                 let cx = self.state.cx.clone();
                 owner.on_window_event(move |event| {
-                    if matches!(event, tauri::WindowEvent::Destroyed) {
-                        if let Some(life) = weak.upgrade() {
-                            close_picker_for_owner(&cx, &life);
-                        }
+                    if matches!(event, tauri::WindowEvent::Destroyed)
+                        && let Some(life) = weak.upgrade()
+                    {
+                        close_picker_for_owner(&cx, &life);
                     }
                 });
                 if self
@@ -670,10 +670,9 @@ impl DocPickerWindow for PickerWindow {
             if life.ready.load(Ordering::SeqCst)
                 && !life.closed.load(Ordering::SeqCst)
                 && !life.owner_dead.load(Ordering::SeqCst)
+                && let Err(error) = windows.show(window, true)
             {
-                if let Err(error) = windows.show(window, true) {
-                    eprintln!("showing document picker: {error}");
-                }
+                eprintln!("showing document picker: {error}");
             }
         });
     }
@@ -692,10 +691,9 @@ impl DocPickerWindow for PickerWindow {
             if life.ready.load(Ordering::SeqCst)
                 && !life.closed.load(Ordering::SeqCst)
                 && !life.owner_dead.load(Ordering::SeqCst)
+                && let Err(error) = window.set_focus()
             {
-                if let Err(error) = window.set_focus() {
-                    eprintln!("focusing picker window: {error}");
-                }
+                eprintln!("focusing picker window: {error}");
             }
         });
     }

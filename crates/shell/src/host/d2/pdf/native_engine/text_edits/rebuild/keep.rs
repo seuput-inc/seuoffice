@@ -40,10 +40,10 @@ pub(super) fn plan<'a>(
             "FPDFText_GetTextObject",
             &[reference(text_page), json!(i)],
         )?;
-        if let Some(id) = value.get("ref").and_then(|v| v.as_u64()) {
-            if let Some(list) = chars.get_mut(&id) {
-                list.push(i);
-            }
+        if let Some(id) = value.get("ref").and_then(|v| v.as_u64())
+            && let Some(list) = chars.get_mut(&id)
+        {
+            list.push(i);
         }
     }
     let mut units = Vec::new();
@@ -179,20 +179,20 @@ pub(super) fn plan<'a>(
                 {
                     let mut chosen = color;
                     let mut eligible = true;
-                    if color.is_none() {
-                        if let Some(styles) = styles {
-                            chosen = styles
-                                .get(start)
-                                .and_then(|v| v.as_ref())
-                                .and_then(|s| s.color);
-                            for k in start..end {
-                                let s = styles.get(k).and_then(|v| v.as_ref());
-                                if s.is_some_and(RunStyle::beyond_color)
-                                    || s.and_then(|s| s.color) != chosen
-                                {
-                                    eligible = false;
-                                    break;
-                                }
+                    if color.is_none()
+                        && let Some(styles) = styles
+                    {
+                        chosen = styles
+                            .get(start)
+                            .and_then(|v| v.as_ref())
+                            .and_then(|s| s.color);
+                        for k in start..end {
+                            let s = styles.get(k).and_then(|v| v.as_ref());
+                            if s.is_some_and(RunStyle::beyond_color)
+                                || s.and_then(|s| s.color) != chosen
+                            {
+                                eligible = false;
+                                break;
                             }
                         }
                     }

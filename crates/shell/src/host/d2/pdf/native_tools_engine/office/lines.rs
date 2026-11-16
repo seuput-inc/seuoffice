@@ -19,14 +19,15 @@ fn visible(c: &PdfChar) -> bool {
 pub(super) fn cluster_combining_marks(chars: &[PdfChar]) -> Vec<PdfChar> {
     let mut out: Vec<PdfChar> = Vec::new();
     for c in chars {
-        if let Some(prev) = out.last_mut() {
-            if combining(c.code) && visible(prev) {
-                prev.text.push_str(&c.text);
-                if c.bounds.area() > 0.0 {
-                    prev.bounds = prev.bounds.union(c.bounds);
-                }
-                continue;
+        if let Some(prev) = out.last_mut()
+            && combining(c.code)
+            && visible(prev)
+        {
+            prev.text.push_str(&c.text);
+            if c.bounds.area() > 0.0 {
+                prev.bounds = prev.bounds.union(c.bounds);
             }
+            continue;
         }
         out.push(c.clone());
     }

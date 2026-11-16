@@ -29,6 +29,7 @@ impl Drop for PrepareJob {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn prepare(
     services: &Services,
     store: SharedStore,

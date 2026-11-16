@@ -18,6 +18,7 @@ fn captured_title_target<T>(
     Ok(target)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn prepare(
     hooks: &Hooks,
     origin: NativeRequestOwner,
@@ -143,11 +144,10 @@ pub(super) fn prepare(
             }
             if let Some(args) = ack.event_args()
                 && let Some(menu) = &menu
+                && let Err(error) = menu.emit("tabs:changed", args)
             {
-                if let Err(error) = menu.emit("tabs:changed", args) {
-                    done(Err(error));
-                    return;
-                }
+                done(Err(error));
+                return;
             }
             if let Some(changed) = &ack.changed {
                 if let Some(shell) = ack.shell {
@@ -393,10 +393,9 @@ pub(super) fn prepare_recovery(
             }
             if let Some(args) = ack.event_args()
                 && let Some(menu) = &menu
+                && let Err(error) = menu.emit("tabs:changed", args)
             {
-                if let Err(error) = menu.emit("tabs:changed", args) {
-                    return done(Err(error));
-                }
+                return done(Err(error));
             }
             if let Some(changed) = &ack.changed {
                 if let Some(shell) = ack.shell {
@@ -428,7 +427,7 @@ pub(super) fn prepare_recovery(
                     if let Err(error) = effects.with_recovery_open_effect_many(
                         &receipt,
                         &receiver,
-                        &[target.clone()],
+                        std::slice::from_ref(target),
                         &cancel,
                         &pending,
                         &mut || {
@@ -655,10 +654,9 @@ pub(super) fn prepare_existing_document(
             }
             if let Some(args) = ack.event_args()
                 && let Some(menu) = &menu
+                && let Err(error) = menu.emit("tabs:changed", args)
             {
-                if let Err(error) = menu.emit("tabs:changed", args) {
-                    return done(Err(error));
-                }
+                return done(Err(error));
             }
             if let Some(changed) = &ack.changed {
                 if let Some(shell) = ack.shell {
@@ -894,10 +892,9 @@ pub(super) fn prepare_saved_document(
             }
             if let Some(args) = ack.event_args()
                 && let Some(menu) = &menu
+                && let Err(error) = menu.emit("tabs:changed", args)
             {
-                if let Err(error) = menu.emit("tabs:changed", args) {
-                    return done(Err(error));
-                }
+                return done(Err(error));
             }
             if let Some(changed) = &ack.changed {
                 if let Some(shell) = ack.shell {

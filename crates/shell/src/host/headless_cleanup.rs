@@ -204,10 +204,10 @@ impl Supervisor {
                     Ok(())
                 }
             });
-            if let Err(error) = result {
-                if state.error.is_none() {
-                    state.error = Some(error);
-                }
+            if let Err(error) = result
+                && state.error.is_none()
+            {
+                state.error = Some(error);
             }
             state.remaining -= 1;
             if state.remaining != 0 {

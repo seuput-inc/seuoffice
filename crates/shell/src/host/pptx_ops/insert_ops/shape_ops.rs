@@ -33,10 +33,9 @@ fn validate_inner(op: &IpcValue, ctx: &mut OpContext<'_>) -> Result<(), String> 
     if let Some(v) = field(op, "bodyPr")
         .and_then(|v| field(v, "autoFit"))
         .filter(|v| !matches!(v, IpcValue::Undefined))
+        && !matches!(string(v), Some("shrink" | "resize"))
     {
-        if !matches!(string(v), Some("shrink" | "resize")) {
-            return Err("op \"addElement\": \"bodyPr.autoFit\" must be \"shrink\" (fit text on overflow) or \"resize\" (grow the shape).".into());
-        }
+        return Err("op \"addElement\": \"bodyPr.autoFit\" must be \"shrink\" (fit text on overflow) or \"resize\" (grow the shape).".into());
     }
     Ok(())
 }

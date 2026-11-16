@@ -213,7 +213,7 @@ pub(super) fn plan(
     slicers::apply_slicer_phase(&mut pkg, &mut state, request, &mut touched)?;
     finish_workbook(&mut pkg, &mut state, redactions.as_deref(), &mut touched)?;
     external_links::apply(&mut pkg, &mut state, request, &mut touched)?;
-    Ok(pkg.to_plan(touched))
+    Ok(pkg.into_plan(touched))
 }
 
 #[cfg(test)]

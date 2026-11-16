@@ -197,6 +197,7 @@ fn fragment_edit(edit: &V) -> V {
     }
     result
 }
+#[allow(clippy::too_many_arguments)]
 fn apply_page(
     session: &mut PdfiumSession,
     doc: u64,
@@ -459,10 +460,9 @@ pub(super) fn erase(
         for failure in failures {
             if let Some(i) =
                 text(field(&failure, "__previewProbe")).and_then(|s| s.parse::<usize>().ok())
+                && let Some(v) = ok.get_mut(i)
             {
-                if let Some(v) = ok.get_mut(i) {
-                    *v = false
-                }
+                *v = false
             }
         }
         Ok(ok)

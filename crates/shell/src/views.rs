@@ -735,16 +735,14 @@ impl shell_ipc_w::tabs::window_snapshot::NativeWindowProof for NativeWindowLifec
             {
                 done(result);
             }
-        }) {
-            if let Some(done) = completion
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .take()
-            {
-                done(Err(format!(
-                    "The native window observation could not be scheduled: {error}"
-                )));
-            }
+        }) && let Some(done) = completion
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            done(Err(format!(
+                "The native window observation could not be scheduled: {error}"
+            )));
         }
     }
 }
@@ -1859,10 +1857,10 @@ impl ViewTable {
                     .as_ref()
                     .is_some_and(SlidesViewLease::is_active))
             || (captured.surface == Surface::Docs
-                && !captured
+                && captured
                     .docs
                     .as_ref()
-                    .is_some_and(|lease| lease.current().is_some()))
+                    .is_none_or(|lease| lease.current().is_none()))
         {
             return None;
         }
@@ -2117,6 +2115,7 @@ impl ViewTable {
 
     /// Move only the browser captured by a close permit, even if its renderer
     /// has already retired. The caller holds `with_closing` for this owner.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn move_view_between_closing(
         &self,
         view: ViewId,
@@ -2358,10 +2357,10 @@ impl ViewTable {
         if let Some(lease) = &removed.asset_view {
             lease.revoke();
         }
-        if let Some(session) = removed.docs_asset {
-            if let Err(error) = crate::host::document_assets::revoke_session(session) {
-                eprintln!("[docs] could not revoke document asset session: {error}");
-            }
+        if let Some(session) = removed.docs_asset
+            && let Err(error) = crate::host::document_assets::revoke_session(session)
+        {
+            eprintln!("[docs] could not revoke document asset session: {error}");
         }
         if let Err(error) = crate::host::document_assets::revoke(view) {
             eprintln!("[assets] could not revoke document asset grants: {error}");

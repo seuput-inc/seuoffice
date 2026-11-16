@@ -26,6 +26,9 @@ enum State {
     Terminal,
 }
 
+type Admit = Box<dyn for<'a> Fn(Admission<'a>) -> Result<(), String> + Send>;
+type Signer = Box<dyn FnMut(&[u8; 32]) -> Result<Vec<u8>, String> + Send>;
+
 struct Request {
     original: Vec<u8>,
     options: SignOptions,
@@ -34,8 +37,8 @@ struct Request {
     chain: Vec<Vec<u8>>,
     deadline: Option<Instant>,
     guard: Box<dyn Fn() -> Result<(), String> + Send>,
-    admit: Box<dyn for<'a> Fn(Admission<'a>) -> Result<(), String> + Send>,
-    signer: Box<dyn FnMut(&[u8; 32]) -> Result<Vec<u8>, String> + Send>,
+    admit: Admit,
+    signer: Signer,
 }
 
 fn authorize(request: &Request) -> Result<(), String> {
@@ -102,6 +105,7 @@ pub(super) struct Session {
 }
 
 impl Session {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         original: Vec<u8>,
         options: SignOptions,
@@ -109,8 +113,8 @@ impl Session {
         chain: Vec<Vec<u8>>,
         timeout: Option<Duration>,
         guard: Box<dyn Fn() -> Result<(), String> + Send>,
-        admit: Box<dyn for<'a> Fn(Admission<'a>) -> Result<(), String> + Send>,
-        signer: Box<dyn FnMut(&[u8; 32]) -> Result<Vec<u8>, String> + Send>,
+        admit: Admit,
+        signer: Signer,
     ) -> Result<Self, String> {
         let cert = super::certificate(chain.first().ok_or("missing signer certificate")?)?;
         if cert.public_key().map_err(|error| error.to_string())?.id() != openssl::pkey::Id::RSA {
@@ -314,14 +318,16 @@ mod tests {
             observed.fetch_add(1, Ordering::SeqCst);
             Ok(Vec::new())
         });
-        let mut options = SignOptions::default();
-        options.visible = Some(shell_contract::pdf_sign_options::VisibleSignature {
-            page_index: 0.0,
-            position: "bottom-right".into(),
-            width: 80.0,
-            height: 40.0,
-            png: b"invalid".to_vec(),
-        });
+        let options = SignOptions {
+            visible: Some(shell_contract::pdf_sign_options::VisibleSignature {
+                page_index: 0.0,
+                position: "bottom-right".into(),
+                width: 80.0,
+                height: 40.0,
+                png: b"invalid".to_vec(),
+            }),
+            ..Default::default()
+        };
         let session = Session::new(
             pdf_lib::synthetic_classic_pdf(),
             options,
@@ -374,7 +380,7 @@ mod tests {
             called.fetch_add(1, Ordering::SeqCst);
             Ok(Vec::new())
         });
-        let admit: Box<dyn for<'a> Fn(Admission<'a>) -> Result<(), String> + Send> =
+        let admit: Admit =
             Box::new(|_| Err("admission revoked".into()));
         let session = Session::new(
             pdf_lib::synthetic_classic_pdf(),
@@ -506,8 +512,10 @@ mod tests {
         .sign()
         .unwrap();
         assert!(second.starts_with(&signed));
-        let mut certify = SignOptions::default();
-        certify.certify_level = Some(1);
+        let certify = SignOptions {
+            certify_level: Some(1),
+            ..Default::default()
+        };
         let signer = Box::new(|_: &[u8; 32]| -> Result<Vec<u8>, String> {
             panic!("already signed document must not be certified")
         });
@@ -550,7 +558,7 @@ mod tests {
         let trusted_original = original.clone();
         let trusted_chain = vec![cert.clone(); 32];
         let verify_chain = trusted_chain.clone();
-        let admit: Box<dyn for<'a> Fn(Admission<'a>) -> Result<(), String> + Send> =
+        let admit: Admit =
             Box::new(move |event| {
                 let number = observed.fetch_add(1, Ordering::SeqCst);
                 match event {

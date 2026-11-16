@@ -7,6 +7,7 @@ use shell_contract::{
 
 /// Called on core. Preparation, contention waits and unpublished-temp cleanup
 /// all run on the worker, never while native admission or the store is held.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn project_file_renamed_owned_extra(
     services: Services,
     origin: NativeRequestOwner,
@@ -35,6 +36,7 @@ pub(crate) fn project_file_renamed_owned_extra(
     project_file_renamed(services, old, new, admission, done);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn project_file_renamed_recovery(
     services: Services,
     receipt: shell_contract::ipc::RecoverySeedReceipt,
@@ -59,6 +61,7 @@ pub(crate) fn project_file_renamed_recovery(
     });
     project_file_renamed(services, old, new, admission, done);
 }
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn project_file_renamed_existing_document(
     services: Services,
     destination: shell_contract::ipc::NativeSaveDestination,

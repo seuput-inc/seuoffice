@@ -182,8 +182,9 @@ pub(super) fn apply(
         let (xml, next, changed) =
             apply_edits(&sheet.xml, rels.as_deref().map(String::as_str), edits)?;
         sheet.xml = Arc::new(xml);
-        if changed {
-            if let Some(next) = next {
+        if changed
+            && let Some(next) = next
+        {
                 if exists {
                     pkg.write(&rel_path, next)?;
                 } else {
@@ -191,7 +192,6 @@ pub(super) fn apply(
                 }
                 touched.insert(rel_path);
             }
-        }
     }
     Ok(())
 }

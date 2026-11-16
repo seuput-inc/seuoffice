@@ -89,10 +89,10 @@ pub(super) fn read(
             if keep.iter().any(|(z, _)| *z == i) {
                 continue;
             }
-            if let Some(obj) = object(s, "FPDFPage_GetObject", &[ptr(page, 0), json!(i)])? {
-                if number(s, "FPDFPage_RemoveObject", &[ptr(page, 0), ptr(obj, 0)])? != 0.0 {
-                    s.call("FPDFPageObj_Destroy", &[ptr(obj, 0)])?;
-                }
+            if let Some(obj) = object(s, "FPDFPage_GetObject", &[ptr(page, 0), json!(i)])?
+                && number(s, "FPDFPage_RemoveObject", &[ptr(page, 0), ptr(obj, 0)])? != 0.0
+            {
+                s.call("FPDFPageObj_Destroy", &[ptr(obj, 0)])?;
             }
         }
         let w = jscompat::math_round(width * 2.0).max(1.0);

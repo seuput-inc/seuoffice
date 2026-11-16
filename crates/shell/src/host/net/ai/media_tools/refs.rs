@@ -187,10 +187,9 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
 
-    fn no_network(
-        _: &str,
-        _: &CancelToken,
-    ) -> Result<(Vec<u8>, Option<String>, Option<String>), String> {
+    type Download = Result<(Vec<u8>, Option<String>, Option<String>), String>;
+
+    fn no_network(_: &str, _: &CancelToken) -> Download {
         Err("network not expected".into())
     }
 

@@ -119,11 +119,11 @@ fn sheet(xml: &str, broken: &HashSet<usize>) -> Result<String, String> {
     }
     for m in re(r#"<f t="shared"[^>]*\bsi="(\d+)"[^>]*/>"#)?.try_find_iter(xml) {
         let m = m.map_err(|e| e.to_string())?;
-        if let Some(body) = shared.get(m.get(1).unwrap_or("")) {
-            if broken_ref(body, broken)? {
+        if let Some(body) = shared.get(m.get(1).unwrap_or(""))
+            && broken_ref(body, broken)?
+        {
                 return Err("a shared formula references the link to break; re-enter that cell as a literal first (edit the formula, then break the link)".into());
             }
-        }
     }
     let transformed = replace(
         xml,
@@ -136,11 +136,11 @@ fn sheet(xml: &str, broken: &HashSet<usize>) -> Result<String, String> {
                 .try_exec(cell)
                 .map_err(|e| e.to_string())?
                 .and_then(|m| m.get(1).map(str::to_owned));
-            if let Some(body) = body {
-                if broken_ref(&body, broken)? {
+            if let Some(body) = body
+                && broken_ref(&body, broken)?
+            {
                     return literal(cell);
                 }
-            }
             Ok(cell.into())
         },
     )?;

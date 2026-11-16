@@ -44,18 +44,16 @@ fn decode_html(bytes: &[u8], preferred: Option<&str>) -> String {
         let head = WINDOWS_1252.decode(&bytes[..bytes.len().min(4096)]).0;
         let pattern = TryJsRegex::new(r#"<meta\b[^>]*charset\s*=\s*["']?\s*([a-z0-9._:-]+)"#, "i")
             .expect("static regex");
-        if let Ok(Some(found)) = pattern.try_exec(&head) {
-            if let Some(label) = found.get(1) {
-                if let Some(encoding) =
-                    Encoding::for_label(label.as_bytes()).filter(|e| *e != REPLACEMENT)
-                {
+        if let Ok(Some(found)) = pattern.try_exec(&head)
+            && let Some(label) = found.get(1)
+            && let Some(encoding) =
+                Encoding::for_label(label.as_bytes()).filter(|e| *e != REPLACEMENT)
+        {
                     let (text, _, errors) = encoding.decode(bytes);
                     if !errors && !text.contains('\u{fffd}') {
                         return text.into_owned();
                     }
                 }
-            }
-        }
     }
     file_parse::csv::decode_csv_buffer(bytes, preferred)
 }

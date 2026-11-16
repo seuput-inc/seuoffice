@@ -172,7 +172,7 @@ impl<'a> PackageEditor<'a> {
     pub fn short_date_pattern(&mut self) -> Result<String, String> {
         self.source.short_date_pattern()
     }
-    pub fn to_plan(self, touched: HashSet<String>) -> MutationPlan {
+    pub fn into_plan(self, touched: HashSet<String>) -> MutationPlan {
         let mut plan = MutationPlan::default();
         for (path, text) in self.overlay.into_entries() {
             let text = Arc::try_unwrap(text).unwrap_or_else(|shared| (*shared).clone());
@@ -233,7 +233,7 @@ mod tests {
         assert_eq!(editor.read_text("b").unwrap().as_str(), "changed");
         assert!(editor.read_text("a").is_err());
         assert_eq!(editor.paths().unwrap(), vec!["b", "new", "other"]);
-        let plan = editor.to_plan(HashSet::from(["b".into(), "a".into()]));
+        let plan = editor.into_plan(HashSet::from(["b".into(), "a".into()]));
         assert_eq!(plan.replaced, vec![("b".into(), "changed".into())]);
         assert_eq!(
             plan.added,

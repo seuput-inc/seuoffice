@@ -406,7 +406,7 @@ pub(super) fn detect_sections<'a>(
         if font == 0. {
             font = 12.
         }
-        let minimum = (if landscape { 24. } else { 9. } as f64).max(0.6 * font);
+        let minimum = f64::max(if landscape { 24. } else { 9. }, 0.6 * font);
         let mut line = median(
             &body
                 .iter()

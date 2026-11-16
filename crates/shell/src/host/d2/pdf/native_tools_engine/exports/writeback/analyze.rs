@@ -120,11 +120,11 @@ pub(super) fn similarity(a: &str, b: &str) -> f64 {
     }
     let mut hits = 0usize;
     for pair in b.windows(2) {
-        if let Some(count) = grams.get_mut(&(pair[0], pair[1])) {
-            if *count > 0 {
-                hits += 1;
-                *count -= 1;
-            }
+        if let Some(count) = grams.get_mut(&(pair[0], pair[1]))
+            && *count > 0
+        {
+            hits += 1;
+            *count -= 1;
         }
     }
     2.0 * hits as f64 / (a.len() + b.len() - 2) as f64

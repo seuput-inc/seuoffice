@@ -76,11 +76,10 @@ pub(super) fn font_file_families(bytes: &[u8]) -> Vec<String> {
             .iter()
             .find(|name| name.bytes().all(|byte| (32..=126).contains(&byte)))
             .or_else(|| names.first())
+            && !output.contains(display)
         {
-            if !output.contains(display) {
                 output.push(display.clone());
             }
-        }
     }
     output
 }
@@ -123,6 +122,7 @@ pub(super) struct Registry {
     templates: HashMap<String, Vec<usize>>,
     embedded: HashMap<String, Vec<(bool, bool, usize)>>,
     loaded: HashMap<usize, Vec<Candidate>>,
+    #[allow(clippy::type_complexity)]
     family_paths: Option<(HashMap<String, Vec<usize>>, HashMap<String, Vec<usize>>)>,
 }
 
@@ -445,8 +445,9 @@ impl Registry {
         }
         suffixes.extend(["", "regular"]);
         for suffix in suffixes {
-            if let Some(id) = self.files.get(&(key.clone() + &norm(suffix))).copied() {
-                if let Some(mut font) = self.best(&[id], &key, original, bold, italic, target) {
+            if let Some(id) = self.files.get(&(key.clone() + &norm(suffix))).copied()
+                && let Some(mut font) = self.best(&[id], &key, original, bold, italic, target)
+            {
                     let matches = font.parse().ok().is_some_and(|face| {
                         face.tables()
                             .os2
@@ -459,27 +460,26 @@ impl Registry {
                         return Some(font);
                     }
                 }
-            }
         }
         if strict {
             return None;
         }
-        if let Some(ids) = self.groups.get(&key).cloned() {
-            if let Some(mut font) = self.best(&ids, &key, original, bold, italic, target) {
+        if let Some(ids) = self.groups.get(&key).cloned()
+            && let Some(mut font) = self.best(&ids, &key, original, bold, italic, target)
+        {
                 if font.family.is_empty() {
                     font.family = name.to_owned();
                 }
                 return Some(font);
             }
-        }
-        if let Some(ids) = self.templates.get(&key).cloned() {
-            if let Some(mut font) = self.best(&ids, &key, original, bold, italic, target) {
+        if let Some(ids) = self.templates.get(&key).cloned()
+            && let Some(mut font) = self.best(&ids, &key, original, bold, italic, target)
+        {
                 if font.family.is_empty() {
                     font.family = name.to_owned();
                 }
                 return Some(font);
             }
-        }
         if self.family_paths.is_none() {
             let mut exact = HashMap::<String, Vec<usize>>::new();
             let mut os = HashMap::<String, Vec<usize>>::new();
@@ -558,16 +558,15 @@ impl Registry {
                 if !seen.insert(style) {
                     continue;
                 }
-                if let Some((_, _, id)) = styles.iter().find(|(b, i, _)| (*b, *i) == style) {
-                    if let Some(mut font) =
+                if let Some((_, _, id)) = styles.iter().find(|(b, i, _)| (*b, *i) == style)
+                    && let Some(mut font) =
                         self.best(&[*id], &original, &original, bold, italic, target)
-                    {
+                {
                         if font.family.is_empty() {
                             font.family = family.to_owned();
                         }
                         return Some(font);
                     }
-                }
             }
         }
         let twins = super::policy::variable_twins(family);
@@ -606,15 +605,14 @@ impl Registry {
                     .iter()
                     .any(|candidate| candidate.keys.contains(&original))
             });
-            if matches {
-                if let Some(mut font) = self.best(&ids, &original, &original, bold, italic, target)
-                {
+            if matches
+                && let Some(mut font) = self.best(&ids, &original, &original, bold, italic, target)
+            {
                     if font.family.is_empty() {
                         font.family = family.to_owned();
                     }
                     return Some(font);
                 }
-            }
         }
         if let Some((base, _)) = super::policy::weight_suffix(family) {
             for name in std::iter::once(base).chain(super::policy::aliases(base)) {

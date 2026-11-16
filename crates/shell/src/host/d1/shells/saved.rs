@@ -23,6 +23,8 @@ use std::path::{Path, PathBuf};
 
 type Done = Box<dyn FnOnce(Result<SavedFile<PathBuf>, String>)>;
 type Session = Box<dyn FnOnce(SavedTabAck) -> Result<SavedSessionReceipt, String>>;
+type RevisionObserver =
+    std::rc::Rc<dyn Fn(&shell_contract::ipc::NativeSaveRevisionReceipt) -> Result<(), String>>;
 
 #[derive(Clone)]
 struct Request {
@@ -103,11 +105,11 @@ struct Prepared {
     metadata: PreparedMovedMetadata,
     recent: Option<OwnedRecentMove>,
     templates: Vec<OwnedTemplateMove>,
-    on_revision:
-        std::rc::Rc<dyn Fn(&shell_contract::ipc::NativeSaveRevisionReceipt) -> Result<(), String>>,
+    on_revision: RevisionObserver,
 }
 
 /// Core-only entry and completion. No receipt or editor actor crosses a worker.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn file_saved_owned(
     origin: NativeRequestOwner,
     destination: NativeRequestOwner,
@@ -131,6 +133,7 @@ pub(crate) fn file_saved_owned(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn file_saved_many_owned(
     origin: NativeRequestOwner,
     destination: NativeRequestOwner,
@@ -156,6 +159,7 @@ pub(crate) fn file_saved_many_owned(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn file_saved_many_owned_extra(
     origin: NativeRequestOwner,
     destination: NativeRequestOwner,
@@ -330,6 +334,7 @@ pub(crate) fn file_saved_many_owned_extra(
         ));
     }
 }
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn file_saved_existing_document(
     revision: shell_contract::ipc::NativeSaveRevisionAuthority,
     expected_path: PathBuf,
@@ -339,9 +344,7 @@ pub(crate) fn file_saved_existing_document(
     additional: Vec<CancelToken>,
     effects: OwnedEffectsHost,
     document_links: bool,
-    on_revision: std::rc::Rc<
-        dyn Fn(&shell_contract::ipc::NativeSaveRevisionReceipt) -> Result<(), String>,
-    >,
+    on_revision: RevisionObserver,
     done: Done,
 ) {
     let snapshot = match revision.snapshot() {

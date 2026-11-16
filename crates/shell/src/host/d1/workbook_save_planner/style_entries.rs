@@ -77,15 +77,15 @@ pub(super) fn children(text: &str) -> Vec<Element<'_>> {
                 break;
             }
             depth -= 1;
-            if depth == 0 {
-                if let Some((open_name, open_start, inner_start)) = open.take() {
+            if depth == 0
+                && let Some((open_name, open_start, inner_start)) = open.take()
+            {
                     result.push(Element {
                         name: open_name,
                         xml: &text[open_start..end],
                         inner: &text[inner_start..start],
                     });
                 }
-            }
         } else if self_closing {
             if depth == 0 {
                 result.push(Element {
@@ -129,11 +129,11 @@ fn resolved<'a>(inner: &'a str, tag: &str, result: &mut Vec<&'a str>) {
     for element in children(inner) {
         if element.name == tag {
             result.push(element.xml);
-        } else if local_name(element.name) == "AlternateContent" {
-            if let Some(selected) = branch(element.inner) {
+        } else if local_name(element.name) == "AlternateContent"
+            && let Some(selected) = branch(element.inner)
+        {
                 resolved(selected.inner, tag, result);
             }
-        }
     }
 }
 

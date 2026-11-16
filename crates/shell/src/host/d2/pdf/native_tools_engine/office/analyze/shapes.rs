@@ -252,21 +252,23 @@ pub(super) fn normalize_shapes(paths: &[RawPath], rounded_rect_edges: bool) -> P
         }
         for s in &p.subpaths {
             if s.has_curves {
-                if filled && !s.points.is_empty() {
-                    if let Some(b) = clip(bbox_of_points(&s.points), p.clip_box) {
-                        let area = b.width() * b.height();
-                        if area > 0.0 && polygon_area(s).min(area) >= 0.55 * area {
-                            let mut f = fill(b, p, seq);
-                            curved(s, b, &mut f);
-                            out.curved_fills.push(f);
-                        }
+                if filled
+                    && !s.points.is_empty()
+                    && let Some(b) = clip(bbox_of_points(&s.points), p.clip_box)
+                {
+                    let area = b.width() * b.height();
+                    if area > 0.0 && polygon_area(s).min(area) >= 0.55 * area {
+                        let mut f = fill(b, p, seq);
+                        curved(s, b, &mut f);
+                        out.curved_fills.push(f);
                     }
                 }
-                if rounded_rect_edges && p.stroked {
-                    if let Some(e) = rounded_edges(s, p) {
-                        out.strokes.extend(e);
-                        continue;
-                    }
+                if rounded_rect_edges
+                    && p.stroked
+                    && let Some(e) = rounded_edges(s, p)
+                {
+                    out.strokes.extend(e);
+                    continue;
                 }
                 out.ignored_paths += 1;
                 continue;

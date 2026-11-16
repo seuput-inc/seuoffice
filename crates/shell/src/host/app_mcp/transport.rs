@@ -155,10 +155,10 @@ impl Transport {
                 status,
                 headers,
             } => {
-                if let Some(pending) = self.0.lock().responses.get_mut(&res) {
-                    if let Some(head) = pending.head.take() {
-                        let _ = head.send((status, headers));
-                    }
+                if let Some(pending) = self.0.lock().responses.get_mut(&res)
+                    && let Some(head) = pending.head.take()
+                {
+                    let _ = head.send((status, headers));
                 }
             }
             Command::Write { res, chunk } => {
@@ -178,10 +178,10 @@ impl Transport {
             }
             Command::Destroy { res } => {
                 let socket = self.0.lock().responses.remove(&res).map(|p| p.socket);
-                if let Some(socket) = socket {
-                    if let Some(task) = self.0.lock().sockets.remove(&socket) {
-                        task.abort();
-                    }
+                if let Some(socket) = socket
+                    && let Some(task) = self.0.lock().sockets.remove(&socket)
+                {
+                    task.abort();
                 }
             }
             Command::SetInterval { timer, ms } => self.timer(timer, ms, true),

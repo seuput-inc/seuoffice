@@ -105,7 +105,7 @@ fn field32(value: usize) -> Result<u32, String> {
         let digits = value.to_string();
         let mut grouped = String::new();
         for (i, c) in digits.chars().enumerate() {
-            if value > 1usize << 32 && i > 0 && (digits.len() - i) % 3 == 0 { grouped.push('_'); }
+            if value > 1usize << 32 && i > 0 && (digits.len() - i).is_multiple_of(3) { grouped.push('_'); }
             grouped.push(c);
         }
         format!("The value of \"value\" is out of range. It must be >= 0 and <= 4294967295. Received {grouped}")

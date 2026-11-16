@@ -1951,9 +1951,8 @@ impl NativeSlidesEngine {
             } else { None };
             let generation = deck.generation;
             let opened = &deck.opened;
-            if let Some(index) = index {
-                if index >= opened.deck.slides.len() && master_model.is_none() { return Ok(None); }
-            }
+            if let Some(index) = index
+                && index >= opened.deck.slides.len() && master_model.is_none() { return Ok(None); }
             let model = jscompat::writing_for_host(|| serde_json::to_value(&opened.deck)).map_err(|error| EngineError(error.to_string()))?;
             let entries: Vec<_> = opened.archive.entries().iter().map(|(path, bytes)| (path.to_owned(), bytes.clone())).collect();
             let first_slide = opened.deck.slides.first().and_then(|slide| slide.path.as_ref()).cloned();
@@ -2461,6 +2460,7 @@ impl NativeSlidesEngine {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn commit_saved_owned(
         &self,
         deck: DeckId,
@@ -2498,6 +2498,7 @@ impl NativeSlidesEngine {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn commit_saved_existing_document(
         &self,
         deck: DeckId,
@@ -2625,7 +2626,7 @@ impl NativeSlidesEngine {
             let deck = state.write_deck(deck)?;
             deck.opened.deck = restored.0;
             deck.opened.archive =
-                pptx_engine::zip::PackageArchive::from_parts(restored.1.into_iter(), restored.5);
+                pptx_engine::zip::PackageArchive::from_parts(restored.1, restored.5);
             deck.opened.save_snapshot = restored.2;
             deck.opened.uids =
                 pptx_engine::parse::Uids::starting_at(deck.opened.uids.next().max(restored.6));
@@ -2772,7 +2773,7 @@ mod tests {
         engine.bind_view(old, &first).unwrap();
         engine.bind_view(old, &second).unwrap();
         let snapshot = engine.snapshot(old, true).unwrap();
-        assert!(engine.transfer_history(old, new, &[first.clone()]).is_err());
+        assert!(engine.transfer_history(old, new, std::slice::from_ref(&first)).is_err());
         assert!(
             engine
                 .run_txn(old, &second, &TxnRequest::atomic(Vec::new()).dry())

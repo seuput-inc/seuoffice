@@ -158,12 +158,14 @@ impl Model {
         self.owners
             .iter()
             .flat_map(|(id, regions)| {
-                regions.iter().enumerate().filter_map(move |(i, r)| {
-                    (r.page == page).then(|| Owner {
+                regions
+                    .iter()
+                    .enumerate()
+                    .filter(move |&(_, r)| r.page == page)
+                    .map(move |(i, r)| Owner {
                         id: format!("{id}\u{1}{i}"),
                         bounds: r.bounds,
                     })
-                })
             })
             .collect()
     }
@@ -194,10 +196,10 @@ pub(super) fn build(tree: &V, translated: &V, lang: &str) -> Result<Model, Strin
     let mut markers = HashMap::new();
     let mut cells: HashMap<String, Vec<CellText>> = HashMap::new();
     for block in children(tree, "blocks") {
-        if string(block, "kind") == "image" {
-            if let Some(r) = regions(block).first() {
-                pictures.insert(string(block, "id").to_owned(), *r);
-            }
+        if string(block, "kind") == "image"
+            && let Some(r) = regions(block).first()
+        {
+            pictures.insert(string(block, "id").to_owned(), *r);
         }
     }
     fn add(
@@ -221,16 +223,16 @@ pub(super) fn build(tree: &V, translated: &V, lang: &str) -> Result<Model, Strin
                 title.insert(id.clone());
                 roles.insert(id.clone(), "heading".to_owned());
             }
-            if kind == "paragraph" {
-                if let Some(figure) = pictures.get(string(block, "figure")) {
-                    roles.insert(id.clone(), "label".into());
-                    figures.insert(id.clone(), *figure);
-                }
+            if kind == "paragraph"
+                && let Some(figure) = pictures.get(string(block, "figure"))
+            {
+                roles.insert(id.clone(), "label".into());
+                figures.insert(id.clone(), *figure);
             }
-            if kind == "listItem" {
-                if let V::String(marker) = field(block, "marker") {
-                    markers.insert(id.clone(), marker.clone());
-                }
+            if kind == "listItem"
+                && let V::String(marker) = field(block, "marker")
+            {
+                markers.insert(id.clone(), marker.clone());
             }
         }
         if kind == "table" {

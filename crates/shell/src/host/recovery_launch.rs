@@ -90,6 +90,7 @@ fn capture_launch_inputs(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn install_native_launch(
     services: shell_contract::runtime::Services,
     provided: Rc<shell_contract::Provided>,
@@ -375,7 +376,6 @@ pub(crate) fn note_live_session() -> Result<(), String> {
             &detached,
             Some(&mut copy_for),
         );
-        drop(copy_for);
         *latest.borrow_mut() = Some((revision, payload));
         applied.set(revision);
         if let Err(error) =
@@ -402,10 +402,10 @@ pub(crate) fn note_shell_window_closed() {
                 }
             }),
         );
-    } else if cfg!(target_os = "macos") {
-        if let Err(error) = note_live_session() {
-            eprintln!("shell: recording live session: {error}");
-        }
+    } else if cfg!(target_os = "macos")
+        && let Err(error) = note_live_session()
+    {
+        eprintln!("shell: recording live session: {error}");
     }
 }
 
@@ -492,6 +492,13 @@ pub(crate) fn capture_saved_session(
 }
 
 pub(crate) type ActivationSessionSnapshot = SavedSessionSnapshot;
+
+type SessionDone = Box<dyn FnOnce(Result<(), String>)>;
+type ActivationSessionRun = Rc<dyn Fn(SessionDone)>;
+type PriorSessionWrite = Rc<RefCell<Option<Result<(), String>>>>;
+type EventRun<E> = Box<dyn FnOnce(&mut RecoveryShell, &E, &mut SessionRecordProcess, &mut Deps)>;
+type SessionWriteDone = Box<dyn FnOnce(Result<(), String>) + Send>;
+pub(crate) type LaunchRun = Rc<dyn Fn(LaunchNeed, Box<dyn FnOnce(LaunchReply)>)>;
 
 pub(crate) fn capture_activation_session(
     strip: &serde_json::Value,
@@ -777,7 +784,7 @@ pub(crate) fn prepare_activation_session(
     cancel: shell_contract::runtime::CancelToken,
     pending: shell_contract::runtime::CancelToken,
     effects: shell_contract::hosts::OwnedEffectsHost,
-) -> Rc<dyn Fn(Box<dyn FnOnce(Result<(), String>)>)> {
+) -> ActivationSessionRun {
     let phase = Rc::new(RefCell::new(ActivationSessionPhase::Prepare));
     Rc::new(move |done| {
         run_activation_session(
@@ -831,6 +838,7 @@ fn write_activation_session(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_activation_session(
     captured: ActivationSessionSnapshot,
     authority: shell_ipc_w::tabs::TabActivationAuthority,
@@ -989,6 +997,7 @@ fn run_activation_session(
     schedule_timers(&runtime);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn note_live_session_snapshot_owned(
     captured: SavedSessionSnapshot,
     updates: Vec<shell_ipc_w::tabs::SavedSessionUpdate>,
@@ -1161,6 +1170,7 @@ fn recovery_session_admission(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn note_live_session_snapshot_recovery(
     captured: SavedSessionSnapshot,
     updates: Vec<shell_ipc_w::tabs::SavedSessionUpdate>,
@@ -1269,6 +1279,7 @@ pub(crate) fn note_live_session_snapshot_recovery(
     schedule_timers(&runtime);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn note_live_session_snapshot_existing_document(
     captured: SavedSessionSnapshot,
     updates: Vec<shell_ipc_w::tabs::SavedSessionUpdate>,
@@ -1295,6 +1306,7 @@ pub(crate) fn note_live_session_snapshot_existing_document(
     note_live_session_snapshot_guarded(captured, updates, gate, done);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn note_live_session_snapshot_saved_document(
     captured: SavedSessionSnapshot,
     updates: Vec<shell_ipc_w::tabs::SavedSessionUpdate>,
@@ -1667,10 +1679,8 @@ pub(crate) fn finalize_session_lifecycle(
         event,
         SessionLifecycle::CleanExit | SessionLifecycle::UpdateRestart | SessionLifecycle::OsEnd
     );
-    if terminal {
-        if let Some(writer) = &runtime.borrow().session_writer {
-            writer.quiesce();
-        }
+    if terminal && let Some(writer) = &runtime.borrow().session_writer {
+        writer.quiesce();
     }
     let flushed = Rc::new(RefCell::new(None));
     let flush_result = flushed.clone();
@@ -2000,7 +2010,7 @@ fn run_session_timer(
     runtime: Rc<RefCell<Runtime<Editors>>>,
     kind: Timer,
     generation: u64,
-    prior: Option<Rc<RefCell<Option<Result<(), String>>>>>,
+    prior: Option<PriorSessionWrite>,
 ) {
     if runtime.borrow().cancelling {
         return;
@@ -2025,15 +2035,14 @@ fn run_session_timer(
                 *output.borrow_mut() = Some(Err("the session timer was replaced".into()));
                 return;
             }
-            if let Some(prior) = prior {
-                if let Err(error) = prior
+            if let Some(prior) = prior
+                && let Err(error) = prior
                     .borrow_mut()
                     .take()
                     .unwrap_or_else(|| Err("prior session write was not acknowledged".into()))
-                {
-                    *output.borrow_mut() = Some(Err(error));
-                    return;
-                }
+            {
+                *output.borrow_mut() = Some(Err(error));
+                return;
             }
             let Some(recorder) = session.session_recorder() else {
                 *output.borrow_mut() = Some(Ok(None));
@@ -2099,7 +2108,7 @@ fn schedule_live_timers() {
 }
 
 pub(crate) struct LaunchActions {
-    pub run: Rc<dyn Fn(LaunchNeed, Box<dyn FnOnce(LaunchReply)>)>,
+    pub run: LaunchRun,
 }
 
 pub(crate) struct Deps {
@@ -2114,6 +2123,7 @@ pub(crate) struct Deps {
 }
 
 impl Deps {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         manager: Manager,
         gate: Rc<LaunchList>,
@@ -2167,7 +2177,7 @@ struct Owned<E: RecoveryEditors<Contents = Contents> + 'static> {
 }
 
 struct Event<E> {
-    run: Box<dyn FnOnce(&mut RecoveryShell, &E, &mut SessionRecordProcess, &mut Deps)>,
+    run: EventRun<E>,
     after: Option<Box<dyn FnOnce()>>,
 }
 
@@ -2200,7 +2210,7 @@ struct NativePaths {
 type SessionAdmission = main_core::packages::electron_utils::atomic_write::owned::Admission;
 type SessionPlan = main_core::shell::session_record::SessionWritePlan;
 
-struct SessionWriteJob(Option<Box<dyn FnOnce(Result<(), String>) + Send>>);
+struct SessionWriteJob(Option<SessionWriteDone>);
 impl Drop for SessionWriteJob {
     fn drop(&mut self) {
         if let Some(done) = self.0.take() {
@@ -2216,7 +2226,7 @@ pub(crate) struct Runtime<E: RecoveryEditors<Contents = Contents> + 'static> {
     events: VecDeque<Event<E>>,
     session_in_worker: bool,
     in_flight: bool,
-    launch_done: Option<Box<dyn FnOnce(Result<(), Failure>)>>,
+    launch_done: Option<ShutdownDone>,
     shutdown: shell_contract::runtime::CancelToken,
     cancelling: bool,
     drain_waiters: Vec<Box<dyn FnOnce()>>,
@@ -2300,7 +2310,7 @@ impl<E: RecoveryEditors<Contents = Contents> + 'static> Runtime<E> {
                 shell_contract::ipc::NativeRequestOwner,
                 NativePathRequest,
             ),
-            Settle(u64, LaunchMachine, Result<(), Failure>),
+            Settle(u64, Box<LaunchMachine>, Result<(), Failure>),
         }
         let next = {
             let mut current = runtime.borrow_mut();
@@ -2324,7 +2334,7 @@ impl<E: RecoveryEditors<Contents = Contents> + 'static> Runtime<E> {
             } else if let Some((generation, machine)) = paths.settle.take() {
                 Some(Next::Settle(
                     generation,
-                    machine,
+                    Box::new(machine),
                     paths.settle_error.take().map_or(Ok(()), Err),
                 ))
             } else {
@@ -2342,7 +2352,7 @@ impl<E: RecoveryEditors<Contents = Contents> + 'static> Runtime<E> {
                         Self::resume(
                             next,
                             generation,
-                            machine,
+                            *machine,
                             LaunchReply::Completed(result),
                             None,
                         );
@@ -3202,8 +3212,8 @@ mod flush_tests {
         let cancel_store = store.clone();
         let cancel_gate = gate.clone();
         let cancel_services = services.clone();
-        let handle: Rc<RefCell<Option<std::rc::Weak<RefCell<Runtime<Editors>>>>>> =
-            Rc::new(RefCell::new(None));
+        type RuntimeHandle = Rc<RefCell<Option<std::rc::Weak<RefCell<Runtime<Editors>>>>>>;
+        let handle: RuntimeHandle = Rc::new(RefCell::new(None));
         let weak_slot = handle.clone();
         let count = Rc::new(Cell::new(0));
         let seen = count.clone();

@@ -29,6 +29,7 @@ enum LinksMenu {
     Existing(super::super::ExistingDocumentSavedMenu),
 }
 
+#[allow(clippy::too_many_arguments)]
 fn admit(
     effects: &OwnedEffectsHost,
     origin: &NativeRequestOwner,
@@ -102,6 +103,7 @@ struct Plan {
 }
 
 impl SavedLinks {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn capture_many_extra(
         origin: NativeRequestOwner,
         destination: NativeRequestOwner,

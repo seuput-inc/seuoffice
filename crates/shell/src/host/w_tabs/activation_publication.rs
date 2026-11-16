@@ -91,8 +91,10 @@ fn retained_reply(
     }
 }
 
+type PendingCallback = Box<dyn FnOnce(Result<(), String>) + Send>;
+
 struct PendingReply {
-    reply: Option<Box<dyn FnOnce(Result<(), String>) + Send>>,
+    reply: Option<PendingCallback>,
     started: bool,
     indeterminate: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
@@ -408,6 +410,7 @@ pub(super) fn admit(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit(
     outlet: &crate::ipc::outlet::TauriOutlet,
     revision: &shell_ipc_w::tabs::SplitMemoryRevision,
@@ -453,6 +456,7 @@ fn emit(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn prepare(
     hooks: &Hooks,
     origin: TabActivationAuthority,

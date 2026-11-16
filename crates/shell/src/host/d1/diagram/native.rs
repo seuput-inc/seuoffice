@@ -112,9 +112,10 @@ fn png_text(bytes: &[u8]) -> Result<Option<String>, OpenFailure> {
             .ok_or_else(|| failure("corrupt_image", "the file is not a readable PNG"))?;
         let kind = &bytes[pos + 4..pos + 8];
         let data = &bytes[pos + 8..pos + 8 + len];
-        if kind == b"tEXt" || kind == b"zTXt" || kind == b"iTXt" {
-            if let Some(nul) = data.iter().position(|byte| *byte == 0) {
-                if &data[..nul] == b"mxfile" || &data[..nul] == b"mxGraphModel" {
+        if (kind == b"tEXt" || kind == b"zTXt" || kind == b"iTXt")
+            && let Some(nul) = data.iter().position(|byte| *byte == 0)
+            && (&data[..nul] == b"mxfile" || &data[..nul] == b"mxGraphModel")
+        {
                     let decode_error = || {
                         failure(
                             "decompress_failed",
@@ -166,8 +167,6 @@ fn png_text(bytes: &[u8]) -> Result<Option<String>, OpenFailure> {
                                 .to_owned(),
                         ))
                     };
-                }
-            }
         }
         if kind == b"IEND" {
             break;
@@ -229,13 +228,13 @@ impl Handler for XmlBuilder {
         } else if self.depth == 1 && self.root.as_deref() == Some("mxfile") && name == "diagram" {
             self.pages.push(Page::default());
             self.current = Some(self.pages.len() - 1);
-        } else if self.depth == 2 {
-            if let Some(page) = self.current.and_then(|index| self.pages.get_mut(index)) {
+        } else if self.depth == 2
+            && let Some(page) = self.current.and_then(|index| self.pages.get_mut(index))
+        {
                 page.children += 1;
                 if page.first.is_none() {
                     page.first = Some(name);
                 }
-            }
         }
         self.depth += 1;
         Ok(())
@@ -248,10 +247,10 @@ impl Handler for XmlBuilder {
         Ok(())
     }
     fn text(&mut self, _: &mut Parser, text: &[u16]) -> HandlerResult {
-        if self.depth == 2 {
-            if let Some(page) = self.current.and_then(|index| self.pages.get_mut(index)) {
+        if self.depth == 2
+            && let Some(page) = self.current.and_then(|index| self.pages.get_mut(index))
+        {
                 page.text.push_str(&String::from_utf16_lossy(text));
-            }
         }
         Ok(())
     }
@@ -264,10 +263,9 @@ fn xml_info(xml: &str) -> Result<XmlInfo, OpenFailure> {
     if let Err(error) = parser
         .write_str(&mut builder, xml)
         .and_then(|()| parser.close(&mut builder))
+        && builder.error.is_none()
     {
-        if builder.error.is_none() {
-            builder.error = Some(error.message_lossy());
-        }
+        builder.error = Some(error.message_lossy());
     }
     if let Some(error) = builder.error {
         return Err(failure("not_xml", &error));

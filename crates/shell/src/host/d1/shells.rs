@@ -89,11 +89,10 @@ pub(crate) fn write_new_document(
             .next()
             .ok_or_else(|| "Project services are not available".to_owned())?;
         let placer = projects.new_documents();
-        let result = placer
+        placer
             .borrow_mut()
             .write_for(i64::from(view.0), &name, &bytes)
-            .map_err(|error| error.message());
-        result
+            .map_err(|error| error.message())
     })
     .ok_or_else(|| "Core services are not available".to_owned())?
 }
@@ -458,11 +457,11 @@ impl DiagramShell for Diagram {
                 }),
             );
         });
-        if !ran {
-            if let Some(done) = done.borrow_mut().take() {
+        if !ran
+            && let Some(done) = done.borrow_mut().take()
+        {
                 done(Err("The core thread is unavailable".into()));
             }
-        }
     }
     fn open_failed(&self, view: ViewId, message: &str) -> bool {
         let exists = on_core(move |provided| {

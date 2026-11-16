@@ -639,10 +639,10 @@ impl PasswordPrompt {
             };
             prompt.service.effects(effects);
         });
-        if accepted.is_none() {
-            if let Some(callback) = callback.lock().expect("password callback").take() {
-                callback(Err("Password service is unavailable".into()));
-            }
+        if accepted.is_none()
+            && let Some(callback) = callback.lock().expect("password callback").take()
+        {
+            callback(Err("Password service is unavailable".into()));
         }
     }
     fn abort(&self) {

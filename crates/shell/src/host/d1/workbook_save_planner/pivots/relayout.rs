@@ -82,13 +82,12 @@ pub(super) fn assert_modelled(xml: &str, part: &str) -> Result<(), String> {
                 )));
             }
         }
-        if name == "pivotTableStyleInfo" {
-            if let Some(style) = attr_value(raw, "name")? {
-                if style != "PivotStyleLight16" {
+        if name == "pivotTableStyleInfo"
+            && let Some(style) = attr_value(raw, "name")?
+            && style != "PivotStyleLight16"
+        {
                     return Err(unmodelled(format!("the pivot table style \"{style}\"")));
                 }
-            }
-        }
         if name == "dataField" {
             let mode = attr_value(raw, "showDataAs")?;
             let base_modes = [
@@ -106,12 +105,12 @@ pub(super) fn assert_modelled(xml: &str, part: &str) -> Result<(), String> {
                 ("baseField", &base_modes[..]),
                 ("baseItem", &item_modes[..]),
             ] {
-                if let Some(value) = attr_value(raw, key)? {
-                    if value != "0" && !mode.as_deref().is_some_and(|mode| allowed.contains(&mode))
-                    {
+                if let Some(value) = attr_value(raw, key)?
+                    && value != "0"
+                    && !mode.as_deref().is_some_and(|mode| allowed.contains(&mode))
+                {
                         return Err(unmodelled(format!("a dataField {key}")));
                     }
-                }
             }
         }
     }

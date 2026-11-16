@@ -638,6 +638,7 @@ impl EngineHost {
         self.call_with_progress_inner(name, input, timeout, cancel, None, None, None)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn call_with_progress_inner(
         self: &Arc<Self>,
         name: &str,
@@ -991,19 +992,17 @@ impl EngineHost {
         request_cancel.cancel();
         close_dependencies(id);
         drop(subscriptions);
-        if result.is_err() {
-            return result;
-        }
+        let result = result?;
         match origin {
             Some(origin) => origin
-                .with_service(&service_owner, || result)
+                .with_service(&service_owner, || Ok(result))
                 .ok_or_else(|| {
                     error(
                         "AbortError",
                         "the engine request or service owner is no longer current",
                     )
                 })?,
-            None => service_owner.with_active(|| result).ok_or_else(|| {
+            None => service_owner.with_active(|| Ok(result)).ok_or_else(|| {
                 error(
                     "AbortError",
                     "the native engine service owner is no longer current",
@@ -1271,7 +1270,7 @@ pub fn engine_host_ready(
                 .0
                 .lock()
                 .map_err(|_| "engine service state was poisoned")?;
-            if matches!(&ready.ready, Err(_)) {
+            if ready.ready.is_err() {
                 return Err("engine service is closed".to_owned());
             }
             ready.ready = Ok(true);
@@ -1282,6 +1281,7 @@ pub fn engine_host_ready(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn engine_host_reply(
     webview: tauri::Webview,
     request: tauri::ipc::Request<'_>,
@@ -1361,6 +1361,7 @@ fn deliver_engine_reply(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn engine_host_callback(
     webview: tauri::Webview,
     request: tauri::ipc::Request<'_>,
@@ -1374,7 +1375,6 @@ pub async fn engine_host_callback(
     input: Value,
 ) -> Result<Value, String> {
     let proof = state.authorized(&webview, &request, &token)?;
-    drop(request);
     if name == "pdf.structureOperation" && operation == "progress" {
         let done = input
             .get("done")
@@ -1472,6 +1472,8 @@ pub async fn engine_host_callback(
     .ok_or("engine request or service owner is no longer current")?
 }
 
+type CallbackClaim = (Arc<Value>, CancelToken, Option<mpsc::Sender<(f64, f64)>>);
+
 fn claim_callback(
     state: &mut ServiceState,
     id: u64,
@@ -1479,7 +1481,7 @@ fn claim_callback(
     nonce: &str,
     callback_id: u64,
     operation: &str,
-) -> Result<(Arc<Value>, CancelToken, Option<mpsc::Sender<(f64, f64)>>), String> {
+) -> Result<CallbackClaim, String> {
     if callback_id == 0 || callback_id > 9_007_199_254_740_991 {
         return Err("invalid callback identity".into());
     }
@@ -1747,6 +1749,7 @@ pub fn call_native_invocation_with_timeout(
 }
 
 /// Parse the exact native command before any editor target exists.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn call_native_command_preparation(
     name: &str,
     input: &Value,
@@ -1804,6 +1807,7 @@ pub(crate) fn call_native_command_preparation(
 }
 
 /// Save an already-existing native document through its captured service.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn call_existing_document_save_with_timeout(
     name: &str,
     input: &Value,

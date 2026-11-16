@@ -424,7 +424,9 @@ impl PageOps {
 mod tests {
     use super::*;
 
-    fn collect<T: Send + 'static>() -> (Arc<Mutex<Vec<Result<T, PageError>>>>, Done<T>) {
+    type Collected<T> = Arc<Mutex<Vec<Result<T, PageError>>>>;
+
+    fn collect<T: Send + 'static>() -> (Collected<T>, Done<T>) {
         let results = Arc::new(Mutex::new(Vec::new()));
         let sink = results.clone();
         (

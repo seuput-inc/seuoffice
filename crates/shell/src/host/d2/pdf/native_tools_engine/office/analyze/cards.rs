@@ -87,19 +87,18 @@ pub(super) fn detect(page: &mut IrPage, candidates: &[Candidate]) {
                 t.card_id = Some(id);
             }
         }
-        let mut index = 0;
-        for b in page
+        for (index, b) in page
             .sections
             .iter_mut()
             .flat_map(|s| &mut s.columns)
             .flat_map(|c| &mut c.blocks)
+            .enumerate()
         {
-            if indexes.contains(&index) {
-                if let PageBlock::Text(t) = b {
-                    t.card_id = Some(id);
-                }
+            if indexes.contains(&index)
+                && let PageBlock::Text(t) = b
+            {
+                t.card_id = Some(id);
             }
-            index += 1;
         }
     }
 }

@@ -107,10 +107,10 @@ impl Hooks {
             std::thread::spawn(move || {
                 let ui = cx.ui.clone();
                 on_ui(&ui, move || {
-                    if super::renderer_disposal::can_close(view) {
-                        if let Err(error) = cx.windows.close_view(view) {
-                            eprintln!("shell: closing retired view {}: {error}", view.0);
-                        }
+                    if super::renderer_disposal::can_close(view)
+                        && let Err(error) = cx.windows.close_view(view)
+                    {
+                        eprintln!("shell: closing retired view {}: {error}", view.0);
                     }
                 });
             });
@@ -182,6 +182,7 @@ impl Hooks {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn prepare_editor_view_impl(
         &self,
         spec: &EditorViewSpec<'_>,
@@ -206,6 +207,7 @@ impl Hooks {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn prepare_editor_view_source(
         &self,
         spec: &EditorViewSpec<'_>,
@@ -658,14 +660,13 @@ pub(crate) fn close_html_present_view(
         .all::<shell_ipc_w::tabs::TabsState>()
         .into_iter()
         .next()
+        && tabs.tab_id_for(view).is_some()
     {
-        if tabs.tab_id_for(view).is_some() {
-            return if tabs.close_document_without_prompt(view) {
-                Ok(())
-            } else {
-                Err("the present tab could not be closed".into())
-            };
-        }
+        return if tabs.close_document_without_prompt(view) {
+            Ok(())
+        } else {
+            Err("the present tab could not be closed".into())
+        };
     }
     let sender = cx
         .views
@@ -767,6 +768,7 @@ pub(crate) fn set_html_simple_fullscreen_window(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn prepare_recovery_view(
     services: &Services,
     provided: Rc<Provided>,
@@ -864,18 +866,18 @@ impl ParkingWindow {
     }
 }
 
+type ViewListener = (
+    ViewId,
+    ViewListen,
+    shell_contract::runtime::RendererGeneration,
+    Option<BrowserState>,
+);
+
 struct NativeWindows {
     cx: HostContext,
     core: OnceLock<Arc<dyn shell_contract::runtime::Thread>>,
     events: Mutex<Option<Arc<dyn HostEvents>>>,
-    listeners: Mutex<
-        Vec<(
-            ViewId,
-            ViewListen,
-            shell_contract::runtime::RendererGeneration,
-            Option<BrowserState>,
-        )>,
-    >,
+    listeners: Mutex<Vec<ViewListener>>,
     page_waiters: Mutex<HashMap<ViewId, Vec<u64>>>,
     finished_loads: Mutex<HashMap<ViewId, bool>>,
     deferred_views: Mutex<HashSet<ViewId>>,
@@ -1986,7 +1988,7 @@ fn blank_pdf() -> Vec<u8> {
     let xref = pdf.len();
     pdf.push_str("xref\n0 4\n0000000000 65535 f \n");
     for offset in offsets {
-        write!(pdf, "{offset:010} 00000 n \n").expect("writing to a String");
+        writeln!(pdf, "{offset:010} 00000 n ").expect("writing to a String");
     }
     write!(
         pdf,

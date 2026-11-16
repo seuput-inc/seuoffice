@@ -128,16 +128,16 @@ fn formula(kind: Option<&str>, raw: Option<&Value>) -> Result<Option<String>, St
             format!("\"{}\"", text.replace('"', "\"\""))
         }));
     }
-    if kind == Some("date") {
-        if let Some(v) = date_serial(&text)? {
+    if kind == Some("date")
+        && let Some(v) = date_serial(&text)?
+    {
             return Ok(Some(jscompat::number_to_string(v)));
         }
-    }
-    if kind == Some("time") {
-        if let Some(v) = time_fraction(&text) {
+    if kind == Some("time")
+        && let Some(v) = time_fraction(&text)
+    {
             return Ok(Some(jscompat::number_to_string(v)));
         }
-    }
     Ok(Some(text.strip_prefix('=').unwrap_or(&text).into()))
 }
 fn time_fraction(text: &str) -> Option<f64> {
@@ -249,8 +249,8 @@ fn prepare(wire: &Value) -> Result<Prepared, String> {
     } else {
         Some(kind)
     };
-    if let Some(t) = &kind {
-        if ![
+    if let Some(t) = &kind
+        && ![
             "whole",
             "decimal",
             "list",
@@ -263,13 +263,11 @@ fn prepare(wire: &Value) -> Result<Prepared, String> {
         {
             return Err(format!("Unsupported data-validation type \"{t}\"."));
         }
-    }
     if let Some(op) = rule
         .get("operator")
         .map(js_string)
         .filter(|s| !s.is_empty())
-    {
-        if ![
+        && ![
             "between",
             "notBetween",
             "equal",
@@ -283,7 +281,6 @@ fn prepare(wire: &Value) -> Result<Prepared, String> {
         {
             return Err(format!("Unsupported data-validation operator \"{op}\"."));
         }
-    }
     error_style(rule.get("errorStyle"))?;
     let f1 = formula(kind.as_deref(), rule.get("formula1"))?;
     let f2 = formula(kind.as_deref(), rule.get("formula2"))?;
@@ -337,14 +334,12 @@ fn attributes(p: &Prepared) -> Result<Vec<String>, String> {
         .get("operator")
         .map(js_string)
         .filter(|s| !s.is_empty() && s != "between")
-    {
-        if p.kind
+        && p.kind
             .as_deref()
             .is_some_and(|t| t != "list" && t != "custom")
-        {
+    {
             out.push(format!("operator=\"{op}\""));
         }
-    }
     for (key, attr) in [
         ("allowBlank", "allowBlank"),
         ("showInputMessage", "showInputMessage"),
@@ -468,7 +463,7 @@ fn reconcile_x14(xml: &str, entries: &[String]) -> Result<String, String> {
         let containing = extensions
             .into_iter()
             .filter(|e| e.start < start && e.end >= end)
-            .last();
+            .next_back();
         out.replace_range(start..end, "");
         if let Some(ext) = containing {
             let end2 = ext.end - (end - start);

@@ -55,11 +55,15 @@ pub(crate) fn queue_generate_handoff(
         .queue_generate_handoff(f64::from(view.0), handoff);
     Ok(())
 }
+type ClosureReceiptHook =
+    Box<dyn Fn(&shell_contract::ipc::NativeClosureReceipt) -> Result<(), String>>;
+type SupersededHook =
+    Box<dyn Fn(&shell_contract::ipc::NativeBrowserSuperseded) -> Result<(), String>>;
 struct SeedRollback {
     rollback: Box<dyn Fn() -> Result<(), String>>,
-    retire: Box<dyn Fn(&shell_contract::ipc::NativeClosureReceipt) -> Result<(), String>>,
-    adopted: Box<dyn Fn(&shell_contract::ipc::NativeClosureReceipt) -> Result<(), String>>,
-    superseded: Box<dyn Fn(&shell_contract::ipc::NativeBrowserSuperseded) -> Result<(), String>>,
+    retire: ClosureReceiptHook,
+    adopted: ClosureReceiptHook,
+    superseded: SupersededHook,
 }
 impl shell_ipc_w::tabs::host::EditorSeedRollback for SeedRollback {
     fn rollback(&self, done: Box<dyn FnOnce(Result<(), String>)>) {
@@ -102,12 +106,7 @@ fn seed_rollback(
 }
 
 pub(crate) struct PreparedGeneratedSeed {
-    commit: Box<
-        dyn for<'a> FnOnce(
-            &shell_contract::ipc::NativeBrowserTransition<'a>,
-            &mut dyn FnMut() -> Result<(), String>,
-        ) -> Result<(), String>,
-    >,
+    commit: PreparedConversionActor,
     receipt: std::rc::Rc<dyn shell_ipc_w::tabs::host::EditorSeedRollback>,
 }
 
@@ -125,6 +124,7 @@ impl PreparedGeneratedSeed {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_generate_handoff_owned(
     provided: &shell_contract::Provided,
     view: ViewId,
@@ -346,6 +346,7 @@ type PreparedConversionActor = Box<
     ) -> Result<(), String>,
 >;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_converted_content_owned(
     provided: &shell_contract::Provided,
     view: ViewId,
@@ -703,10 +704,10 @@ fn open_generated_tab(
         );
         Ok(())
     });
-    if let Err(error) = result {
-        if let Some(then) = then {
-            then(Err(error));
-        }
+    if let Err(error) = result
+        && let Some(then) = then
+    {
+        then(Err(error));
     }
 }
 
@@ -1070,10 +1071,10 @@ impl GenerateShell for ShellGenerate {
             );
             Ok(())
         });
-        if let Err(error) = result {
-            if let Some(then) = then {
-                then(Err(error));
-            }
+        if let Err(error) = result
+            && let Some(then) = then
+        {
+            then(Err(error));
         }
     }
 
@@ -1124,10 +1125,10 @@ impl GenerateShell for ShellGenerate {
             tabs.reveal_tab_owned(&tab_id, owner, cancel, done);
             Ok(())
         });
-        if let Err(error) = result {
-            if let Some(then) = then {
-                then(Err(error));
-            }
+        if let Err(error) = result
+            && let Some(then) = then
+        {
+            then(Err(error));
         }
     }
 
@@ -1179,10 +1180,10 @@ impl GenerateShell for ShellGenerate {
             );
             Ok(())
         });
-        if let Err(error) = result {
-            if let Some(then) = then {
-                then(failed_save(to_path, error));
-            }
+        if let Err(error) = result
+            && let Some(then) = then
+        {
+            then(failed_save(to_path, error));
         }
     }
 
@@ -1356,10 +1357,10 @@ fn apply_outline_deck_op(
             {
                 return Err("addElement requires a finite nonnegative-sized rectangle".to_owned());
             }
-            if let Some(paragraphs) = options.paragraphs.as_mut() {
-                if let Some(tagged) = pptx_engine::generate::tag_hangul_paragraphs(paragraphs) {
-                    *paragraphs = tagged;
-                }
+            if let Some(paragraphs) = options.paragraphs.as_mut()
+                && let Some(tagged) = pptx_engine::generate::tag_hangul_paragraphs(paragraphs)
+            {
+                *paragraphs = tagged;
             }
             pptx_engine::insert::add_element(
                 &mut deck.deck.slides[index],

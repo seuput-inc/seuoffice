@@ -50,6 +50,7 @@ pub(super) fn job(format: &str, request: &HeadlessExportRequest) -> Result<IpcVa
     Ok(IpcValue::Object(fields))
 }
 
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(super) fn product(
     input: &str,
     out: &str,

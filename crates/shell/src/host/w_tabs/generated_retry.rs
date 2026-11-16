@@ -25,6 +25,7 @@ struct Prompt {
     korean: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn capture(
     hooks: &Hooks,
     shell: ShellWindow,

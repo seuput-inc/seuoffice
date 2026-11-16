@@ -125,15 +125,14 @@ pub(super) fn build_spans(words: &[Word]) -> Vec<Span> {
                 previous = None;
                 continue;
             }
-            if let Some(o) = &open {
-                if !same(o.last, c)
+            if let Some(o) = &open
+                && (!same(o.last, c)
                     || (c.script != Script::Common
                         && o.script != Script::Common
-                        && c.script != o.script)
-                {
-                    flush(&mut open, &mut result);
-                    previous = None;
-                }
+                        && c.script != o.script))
+            {
+                flush(&mut open, &mut result);
+                previous = None;
             }
             let o = open.get_or_insert_with(|| Open {
                 anchor: c,

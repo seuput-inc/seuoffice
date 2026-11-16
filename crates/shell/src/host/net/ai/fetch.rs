@@ -468,11 +468,10 @@ impl AbortSignal for GuardCancel<'_> {
     }
 }
 
+type MediaDownload = Result<(Vec<u8>, Option<String>, Option<String>), String>;
+
 /// A bounded download, with SSRF validation and address pinning at every hop.
-pub(super) fn media_download(
-    url: &str,
-    cancel: &CancelToken,
-) -> Result<(Vec<u8>, Option<String>, Option<String>), String> {
+pub(super) fn media_download(url: &str, cancel: &CancelToken) -> MediaDownload {
     const LIMIT: usize = 200 * 1024 * 1024;
     let image = reqwest::Url::parse(url)
         .ok()

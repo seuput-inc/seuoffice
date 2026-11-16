@@ -176,7 +176,7 @@ impl<'a> Writer<'a> {
         let ordered = flag(b, "ordered");
         let level = number(b, "level").floor().max(0.) as usize;
         let mut list = self.list.take().unwrap_or_default();
-        let continuing = !list.cols.is_empty() && !(level == 0 && list.ordered[0] != ordered);
+        let continuing = !(list.cols.is_empty() || (level == 0 && list.ordered[0] != ordered));
         if !continuing {
             list = Lists::default();
         }

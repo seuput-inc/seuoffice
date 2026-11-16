@@ -59,13 +59,13 @@ pub(super) fn save(
         .enumerate()
         .map(|(i, block)| {
             let mut format = block_format(block, scale);
-            if i > 0 {
-                if let Some(spacing) = block.spacing_before_pt.filter(|s| *s > 0.0) {
-                    format.insert(
-                        "spaceBefore".into(),
-                        json!((spacing * scale * 20.0).round()),
-                    );
-                }
+            if i > 0
+                && let Some(spacing) = block.spacing_before_pt.filter(|s| *s > 0.0)
+            {
+                format.insert(
+                    "spaceBefore".into(),
+                    json!((spacing * scale * 20.0).round()),
+                );
             }
             let indent = block.bounds.x0 - content_left;
             if format.get("align").is_none_or(|a| a == "left")

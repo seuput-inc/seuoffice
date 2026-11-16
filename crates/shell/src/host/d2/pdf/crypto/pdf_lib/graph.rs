@@ -79,11 +79,11 @@ fn inherited<'a>(
         let Object::Dictionary(dict) = current else {
             return Err("invalid PDF page ancestor".into());
         };
-        if !selected {
-            if let Some(value) = field(dict, wanted) {
-                selected = true;
-                found = context.lookup(value);
-            }
+        if !selected
+            && let Some(value) = field(dict, wanted)
+        {
+            selected = true;
+            found = context.lookup(value);
         }
         current = match field(dict, b"Parent").and_then(|parent| context.lookup(parent)) {
             None | Some(Object::Null) => return Ok(found),

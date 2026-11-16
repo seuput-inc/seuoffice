@@ -17,8 +17,6 @@
 //! pumping messages while it waits, because the editors' answers reach the core
 //! thread through it.
 
-#[cfg(windows)]
-use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -75,7 +73,7 @@ pub(super) fn install(app: &AppHandle) {
 fn watch(window: &tauri::Window) -> Result<(), String> {
     let raw = window.hwnd().map_err(|error| error.to_string())?;
     // Tauri's `HWND` may come from another `windows` version; only the value crosses over.
-    let hwnd = HWND(raw.0 as *mut c_void);
+    let hwnd = HWND(raw.0);
     // SAFETY: a live window of this thread; `session_proc` has the subclass
     // procedure signature and keeps no per-window data
     if unsafe { SetWindowSubclass(hwnd, Some(session_proc), SUBCLASS_ID, 0) }.as_bool() {

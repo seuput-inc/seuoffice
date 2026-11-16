@@ -63,10 +63,10 @@ fn wrap(row: &[char], size: f64, width: f64) -> Vec<Vec<char>> {
             used += w;
             end += 1;
         }
-        if end < row.len() {
-            if let Some(space) = last.filter(|n| *n > start) {
-                end = space + 1;
-            }
+        if end < row.len()
+            && let Some(space) = last.filter(|n| *n > start)
+        {
+            end = space + 1;
         }
         rows.push(row[start..end].to_vec());
         start = end;

@@ -107,11 +107,11 @@ fn cache(path: &str, xml: &str) -> EngineResult<Option<Cache>> {
     if let Some(items) = capture(r"<items\b[^>]*>([\s\S]*?)</items>", element, 1)? {
         let mut values = Vec::new();
         for item in matches(r"<i\b[^>]*/>", items)? {
-            if let Some(x) = attr(&item, "x")?.and_then(number).filter(|x| *x >= 0.0) {
-                if attr(&item, "s")? == Some("1") {
+            if let Some(x) = attr(&item, "x")?.and_then(number).filter(|x| *x >= 0.0)
+                && attr(&item, "s")? == Some("1")
+            {
                     values.push(x);
                 }
-            }
         }
         selected = Some(values);
     }
@@ -192,8 +192,8 @@ fn read_from<R: Reader>(pkg: &R) -> EngineResult<Value> {
     for tag in matches(r"<pivotCache\b[^>]*>", &workbook)? {
         if let (Some(id), Some(rel)) =
             (attr(&tag, "cacheId")?.and_then(number), attr(&tag, "r:id")?)
+            && let Some(path) = rel_target(rel)?
         {
-            if let Some(path) = rel_target(rel)? {
                 let k = key(id);
                 if let Some((_, old)) = by_cache.iter_mut().find(|(existing, _)| *existing == k) {
                     *old = path
@@ -201,7 +201,6 @@ fn read_from<R: Reader>(pkg: &R) -> EngineResult<Value> {
                     by_cache.push((k, path));
                 }
             }
-        }
     }
     let mut x14 = HashMap::new();
     let mut legacy = HashMap::new();
@@ -219,11 +218,11 @@ fn read_from<R: Reader>(pkg: &R) -> EngineResult<Value> {
     }
     let mut sheets = HashMap::new();
     for tag in matches(r"<sheet\b[^>]*>", &workbook)? {
-        if let (Some(id), Some(rel)) = (attr(&tag, "sheetId")?, attr(&tag, "r:id")?) {
-            if let Some(path) = rel_target(rel)? {
+        if let (Some(id), Some(rel)) = (attr(&tag, "sheetId")?, attr(&tag, "r:id")?)
+            && let Some(path) = rel_target(rel)?
+        {
                 sheets.insert(path, format!("sheet-{}", decode(id)));
             }
-        }
     }
     let mut caches = HashMap::new();
     for path in pkg.paths() {

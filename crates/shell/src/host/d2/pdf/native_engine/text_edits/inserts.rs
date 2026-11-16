@@ -26,7 +26,7 @@ fn color(value: Option<&V>) -> Option<[u8; 3]> {
     let V::Array(v) = value? else { return None };
     let channel = |i: usize| {
         let n = number(v.get(i))?;
-        (n.is_finite() && n >= 0.0 && n <= 255.0 && n.fract() == 0.0).then_some(n as u8)
+        (n.is_finite() && (0.0..=255.0).contains(&n) && n.fract() == 0.0).then_some(n as u8)
     };
     Some([channel(0)?, channel(1)?, channel(2)?])
 }

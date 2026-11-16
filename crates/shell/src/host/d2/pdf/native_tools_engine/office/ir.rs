@@ -202,7 +202,7 @@ pub(super) struct TableBlock {
 }
 #[derive(Debug, Clone)]
 pub(super) enum PageBlock {
-    Text(TextBlock),
+    Text(Box<TextBlock>),
     Image(ImageBlock),
     Table(TableBlock),
 }

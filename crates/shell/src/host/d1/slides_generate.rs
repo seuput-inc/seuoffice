@@ -427,11 +427,11 @@ fn crop(image_w: f64, image_h: f64, frame_w: f64, frame_h: f64) -> Option<Insets
 fn add_shape(slide: &mut pptx_engine::types::Slide, value: Value, now: f64) -> Result<(), String> {
     let mut options: NewElementOptions =
         serde_json::from_value(value).map_err(|error| error.to_string())?;
-    if let Some(paragraphs) = options.paragraphs.as_mut() {
-        if let Some(tagged) = pptx_engine::generate::tag_hangul_paragraphs(paragraphs) {
+    if let Some(paragraphs) = options.paragraphs.as_mut()
+        && let Some(tagged) = pptx_engine::generate::tag_hangul_paragraphs(paragraphs)
+    {
             *paragraphs = tagged;
         }
-    }
     add_element(slide, &options, &jscompat::random_uuid(), now)?;
     Ok(())
 }
@@ -456,11 +456,11 @@ pub(super) fn generate_page(
     let scale = size.cx.0 / WIDTH;
     let mut fetched = HashMap::new();
     for element in &page.elements {
-        if let Kind::Image { url } = &element.kind {
-            if !fetched.contains_key(url) {
+        if let Kind::Image { url } = &element.kind
+            && !fetched.contains_key(url)
+        {
                 fetched.insert(url.clone(), fetch_image(url));
             }
-        }
     }
     if let Some(background) = page.background {
         let slide = opened
@@ -496,13 +496,14 @@ pub(super) fn generate_page(
                     failures.push(url.clone());
                     continue;
                 };
-                if let Ok(image) = image::load_from_memory(bytes) {
-                    if let Some(rect) = crop(
+                if let Ok(image) = image::load_from_memory(bytes)
+                    && let Some(rect) = crop(
                         f64::from(image.width()),
                         f64::from(image.height()),
                         element.w,
                         element.h,
-                    ) {
+                    )
+                {
                         let slide = opened
                             .deck
                             .slides
@@ -513,7 +514,6 @@ pub(super) fn generate_page(
                             return Err("could not crop the inserted picture".into());
                         }
                     }
-                }
             }
             Kind::Text { paragraphs, anchor } => {
                 let value = json!({"kind":"textbox", "offset":offset, "paragraphs":paragraphs,

@@ -303,6 +303,7 @@ fn placeholders(
 }
 
 type ExportDone = Box<dyn FnOnce(Result<Option<HeadlessExportProduct>, String>) + Send>;
+#[allow(clippy::too_many_arguments)]
 fn export(
     cx: &HostContext,
     module: &str,

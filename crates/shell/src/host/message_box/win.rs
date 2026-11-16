@@ -101,24 +101,26 @@ fn show_with_parent(
 
     let parent_hwnd = parent.unwrap_or(HWND(std::ptr::null_mut::<c_void>()));
 
-    let mut config = TASKDIALOGCONFIG::default();
-    config.cbSize = size_of::<TASKDIALOGCONFIG>() as u32;
-    config.hwndParent = parent_hwnd;
-    config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_SIZE_TO_CONTENT;
-    config.pszWindowTitle = PCWSTR(title.as_ptr());
-    config.Anonymous1 = TASKDIALOGCONFIG_0 {
-        pszMainIcon: icon_of(spec.kind),
+    let mut config = TASKDIALOGCONFIG {
+        cbSize: size_of::<TASKDIALOGCONFIG>() as u32,
+        hwndParent: parent_hwnd,
+        dwFlags: TDF_ALLOW_DIALOG_CANCELLATION | TDF_SIZE_TO_CONTENT,
+        pszWindowTitle: PCWSTR(title.as_ptr()),
+        Anonymous1: TASKDIALOGCONFIG_0 {
+            pszMainIcon: icon_of(spec.kind),
+        },
+        pszMainInstruction: PCWSTR(instruction.as_ptr()),
+        pszContent: content
+            .as_ref()
+            .map_or(PCWSTR::null(), |c| PCWSTR(c.as_ptr())),
+        cButtons: buttons.len() as u32,
+        pButtons: buttons.as_ptr(),
+        nDefaultButton: FIRST_BUTTON + spec.effective_default() as i32,
+        pszVerificationText: verification
+            .as_ref()
+            .map_or(PCWSTR::null(), |v| PCWSTR(v.as_ptr())),
+        ..Default::default()
     };
-    config.pszMainInstruction = PCWSTR(instruction.as_ptr());
-    config.pszContent = content
-        .as_ref()
-        .map_or(PCWSTR::null(), |c| PCWSTR(c.as_ptr()));
-    config.cButtons = buttons.len() as u32;
-    config.pButtons = buttons.as_ptr();
-    config.nDefaultButton = FIRST_BUTTON + spec.effective_default() as i32;
-    config.pszVerificationText = verification
-        .as_ref()
-        .map_or(PCWSTR::null(), |v| PCWSTR(v.as_ptr()));
     let registration = session.map(task_registration).transpose()?;
     if let Some(session) = session {
         config.pfCallback = Some(task_callback);

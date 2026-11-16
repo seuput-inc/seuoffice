@@ -147,35 +147,35 @@ pub(super) fn apply(session: &mut super::session::Session, ops: &IpcValue) -> Re
     }
     let mut originals = Vec::new();
     let mut labels = Vec::new();
-    if let Some(tree) = tree {
-        if let Some(array) = read_typed(session, tree, "Names", "array")? {
-            let info = session.exchange(json!({"op":"inspect","target":array}))?;
-            if info.get("type").and_then(Value::as_str) == Some("array") {
-                let len = info.get("size").and_then(Value::as_u64).unwrap_or(0) as usize;
-                for i in (0..len.saturating_sub(1)).step_by(2) {
-                    let key = handle(session, json!({"op":"arrayRead","target":array,"index":i}))?;
-                    let spec = handle(
-                        session,
-                        json!({"op":"arrayRead","target":array,"index":i+1}),
-                    )?;
-                    let resolved = session.exchange(json!({"op":"resolve","target":spec}))?;
-                    let Some(resolved) = resolved.as_u64() else {
-                        continue;
-                    };
-                    let kind = session.exchange(json!({"op":"inspect","target":resolved}))?;
-                    if kind.get("type").and_then(Value::as_str) != Some("dict") {
-                        continue;
-                    }
-                    let name = session.exchange(json!({"op":"inspect","target":key}))?;
-                    let text = name
-                        .get("value")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_owned();
-                    if !text.is_empty() {
-                        labels.push(text);
-                        originals.push((key, spec));
-                    }
+    if let Some(tree) = tree
+        && let Some(array) = read_typed(session, tree, "Names", "array")?
+    {
+        let info = session.exchange(json!({"op":"inspect","target":array}))?;
+        if info.get("type").and_then(Value::as_str) == Some("array") {
+            let len = info.get("size").and_then(Value::as_u64).unwrap_or(0) as usize;
+            for i in (0..len.saturating_sub(1)).step_by(2) {
+                let key = handle(session, json!({"op":"arrayRead","target":array,"index":i}))?;
+                let spec = handle(
+                    session,
+                    json!({"op":"arrayRead","target":array,"index":i+1}),
+                )?;
+                let resolved = session.exchange(json!({"op":"resolve","target":spec}))?;
+                let Some(resolved) = resolved.as_u64() else {
+                    continue;
+                };
+                let kind = session.exchange(json!({"op":"inspect","target":resolved}))?;
+                if kind.get("type").and_then(Value::as_str) != Some("dict") {
+                    continue;
+                }
+                let name = session.exchange(json!({"op":"inspect","target":key}))?;
+                let text = name
+                    .get("value")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned();
+                if !text.is_empty() {
+                    labels.push(text);
+                    originals.push((key, spec));
                 }
             }
         }

@@ -255,10 +255,10 @@ fn visit(
                 current.has_curves = true;
             }
         }
-        if number(s, "FPDFPathSegment_GetClose", &[ptr(seg, 0)])? != 0.0 {
-            if let Some(current) = paths.last_mut() {
-                current.closed = true;
-            }
+        if number(s, "FPDFPathSegment_GetClose", &[ptr(seg, 0)])? != 0.0
+            && let Some(current) = paths.last_mut()
+        {
+            current.closed = true;
         }
     }
     if !paths.is_empty() {

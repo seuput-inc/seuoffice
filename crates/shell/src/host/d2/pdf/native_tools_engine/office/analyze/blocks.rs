@@ -232,7 +232,7 @@ fn split_items(group: Vec<Line>, left: f64, right: f64) -> Vec<Vec<Line>> {
         }
     }
     if !misses.iter().any(|m| *m >= 3. * fs)
-        && !(!misses.is_empty() && (misses.len() as f64) >= (group.len() - 1) as f64 / 3.)
+        && (misses.is_empty() || (misses.len() as f64) < (group.len() - 1) as f64 / 3.)
     {
         return vec![group];
     }
@@ -383,10 +383,10 @@ pub(super) fn group_into_blocks(
     let mut groups = Vec::new();
     let mut current: Vec<Line> = Vec::new();
     for line in lines {
-        if let Some(prev) = current.last() {
-            if paragraph_break(prev, &line, gap, height, ctx)? {
-                groups.push(std::mem::take(&mut current))
-            }
+        if let Some(prev) = current.last()
+            && paragraph_break(prev, &line, gap, height, ctx)?
+        {
+            groups.push(std::mem::take(&mut current))
         }
         current.push(line)
     }

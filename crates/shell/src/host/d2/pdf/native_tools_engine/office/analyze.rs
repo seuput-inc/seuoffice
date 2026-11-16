@@ -118,10 +118,9 @@ fn one_page(
         extracted.width_pt,
         extracted.height_pt,
         extracted.content_box,
-    ) {
-        if !shapes::is_near_white(&color) {
-            page.background_color = Some(color);
-        }
+    ) && !shapes::is_near_white(&color)
+    {
+        page.background_color = Some(color);
     }
     let tiles = shapes::extract_full_bleed_tiles(
         &mut shapes,
@@ -313,7 +312,12 @@ fn one_page(
     }
     let inline = keep;
     let mut other: Vec<PageBlock> = tables.iter().cloned().map(PageBlock::Table).collect();
-    other.extend(toc_blocks.iter().cloned().map(PageBlock::Text));
+    other.extend(
+        toc_blocks
+            .iter()
+            .cloned()
+            .map(|b| PageBlock::Text(Box::new(b))),
+    );
     other.extend(inline.iter().cloned().map(PageBlock::Image));
     let mut elements: Vec<columns::SectionElement<'_>> = remaining
         .iter()
@@ -397,7 +401,9 @@ fn one_page(
             .chain(inline.iter().cloned().map(PageBlock::Image))
             .collect();
         layout::single_section(layout::merge_blocks(
-            text.into_iter().map(PageBlock::Text).collect(),
+            text.into_iter()
+                .map(|b| PageBlock::Text(Box::new(b)))
+                .collect(),
             nontext,
         ))
     } else {
@@ -493,9 +499,9 @@ fn one_page(
     for run in turned {
         if let Some(b) = turned::block(&run) {
             if let Some(column) = sections.last_mut().and_then(|s| s.columns.last_mut()) {
-                column.blocks.push(PageBlock::Text(b));
+                column.blocks.push(PageBlock::Text(Box::new(b)));
             } else {
-                sections = layout::single_section(vec![PageBlock::Text(b)]);
+                sections = layout::single_section(vec![PageBlock::Text(Box::new(b))]);
             }
         }
     }

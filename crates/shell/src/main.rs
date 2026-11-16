@@ -269,18 +269,18 @@ fn install_first_shell_startup(
                 recovery_issuer,
                 startup_issuer,
                 Box::new(move |result| {
-                    if let Err(error) = result {
-                        if !failure_shutdown.is_cancelled() {
-                            fail(&failure_app, &failure_paths, false, error);
-                        }
+                    if let Err(error) = result
+                        && !failure_shutdown.is_cancelled()
+                    {
+                        fail(&failure_app, &failure_paths, false, error);
                     }
                 }),
             )
         })();
-        if let Err(error) = result {
-            if !shutdown.is_cancelled() {
-                fail(&app, &paths, false, error);
-            }
+        if let Err(error) = result
+            && !shutdown.is_cancelled()
+        {
+            fail(&app, &paths, false, error);
         }
     });
 }

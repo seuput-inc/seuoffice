@@ -183,19 +183,23 @@ pub(super) fn extract(
         .as_ref()
         .is_some_and(|p| p.pixels.iter().skip(3).step_by(4).any(|a| *a < 250));
     let needs_surgery = crop.is_some() || alpha < 250 || rotation != 0 || mirror.0 || mirror.1;
-    if !transparent && !needs_surgery && w > 0 && h > 0 && filters(s, obj)? == ["DCTDecode"] {
-        if let Some(data) = raw_jpeg(s, obj)? {
-            return Ok(Some(ImageBlock {
-                bounds,
-                data,
-                mime: "image/jpeg".into(),
-                float: None,
-                spacing_before_pt: None,
-                z: None,
-                synthetic: false,
-                card_id: None,
-            }));
-        }
+    if !transparent
+        && !needs_surgery
+        && w > 0
+        && h > 0
+        && filters(s, obj)? == ["DCTDecode"]
+        && let Some(data) = raw_jpeg(s, obj)?
+    {
+        return Ok(Some(ImageBlock {
+            bounds,
+            data,
+            mime: "image/jpeg".into(),
+            float: None,
+            spacing_before_pt: None,
+            z: None,
+            synthetic: false,
+            card_id: None,
+        }));
     }
     let Some(mut image) = px.take() else {
         return Ok(None);
@@ -206,10 +210,10 @@ pub(super) fn extract(
         let scale = gain
             .min(4096.0 / image.width.max(1) as f64)
             .min(4096.0 / image.height.max(1) as f64);
-        if scale > 1.0 {
-            if let Some(high) = rendered(s, doc, page, obj, scale)? {
-                image = high;
-            }
+        if scale > 1.0
+            && let Some(high) = rendered(s, doc, page, obj, scale)?
+        {
+            image = high;
         }
     }
     if mirror.0 || mirror.1 {

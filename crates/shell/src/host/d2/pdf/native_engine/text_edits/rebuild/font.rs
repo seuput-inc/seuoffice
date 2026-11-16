@@ -261,13 +261,13 @@ pub(super) fn load(
                 system = alt.filter(|v| Some(v) != original.as_ref());
             }
             if let Some(bytes) = system.filter(|v| font_covers_text(v, &drawn)) {
-                if let Ok(sub) = subset(&bytes, &drawn, cancel) {
-                    if let Ok(sub) = identity_cff_charset(&sub) {
-                        return Ok(Face {
-                            handle: load_bytes(s, doc, &sub, any_cff)?,
-                            synthetic: want_bold,
-                        });
-                    }
+                if let Ok(sub) = subset(&bytes, &drawn, cancel)
+                    && let Ok(sub) = identity_cff_charset(&sub)
+                {
+                    return Ok(Face {
+                        handle: load_bytes(s, doc, &sub, any_cff)?,
+                        synthetic: want_bold,
+                    });
                 }
                 if cancel.is_cancelled() {
                     return Err("cancelled".into());
@@ -275,25 +275,25 @@ pub(super) fn load(
             }
         }
         let source = embedded(s, font)?;
-        if let Some(bytes) = source.as_ref().filter(|v| font_covers_text(v, &drawn)) {
-            if let Ok(bytes) = identity_cff_charset(bytes) {
-                return Ok(Face {
-                    handle: load_bytes(s, doc, &bytes, any_cff)?,
-                    synthetic: want_bold,
-                });
-            }
+        if let Some(bytes) = source.as_ref().filter(|v| font_covers_text(v, &drawn))
+            && let Ok(bytes) = identity_cff_charset(bytes)
+        {
+            return Ok(Face {
+                handle: load_bytes(s, doc, &bytes, any_cff)?,
+                synthetic: want_bold,
+            });
         }
         if let Some(bytes) = locator
             .find_system_font(ps, &family)
             .filter(|v| font_covers_text(v, &drawn))
         {
-            if let Ok(sub) = subset(&bytes, &drawn, cancel) {
-                if let Ok(sub) = identity_cff_charset(&sub) {
-                    return Ok(Face {
-                        handle: load_bytes(s, doc, &sub, any_cff)?,
-                        synthetic: want_bold,
-                    });
-                }
+            if let Ok(sub) = subset(&bytes, &drawn, cancel)
+                && let Ok(sub) = identity_cff_charset(&sub)
+            {
+                return Ok(Face {
+                    handle: load_bytes(s, doc, &sub, any_cff)?,
+                    synthetic: want_bold,
+                });
             }
             if cancel.is_cancelled() {
                 return Err("cancelled".into());
@@ -310,13 +310,13 @@ pub(super) fn load(
             &drawn,
             italic,
         ) {
-            if let Ok(sub) = subset(&similar.bytes, &drawn, cancel) {
-                if let Ok(sub) = identity_cff_charset(&sub) {
-                    return Ok(Face {
-                        handle: load_bytes(s, doc, &sub, any_cff)?,
-                        synthetic: (want_bold || similar.source_bold) && !similar.bold,
-                    });
-                }
+            if let Ok(sub) = subset(&similar.bytes, &drawn, cancel)
+                && let Ok(sub) = identity_cff_charset(&sub)
+            {
+                return Ok(Face {
+                    handle: load_bytes(s, doc, &sub, any_cff)?,
+                    synthetic: (want_bold || similar.source_bold) && !similar.bold,
+                });
             }
             if cancel.is_cancelled() {
                 return Err("cancelled".into());

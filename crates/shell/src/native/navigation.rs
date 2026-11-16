@@ -315,9 +315,11 @@ enum ReloadPhase {
     Finished,
 }
 
+type FailureCallback = Box<dyn FnOnce(String) + Send>;
+
 struct FailureListener {
     active: AtomicBool,
-    callback: Mutex<Option<Box<dyn FnOnce(String) + Send>>>,
+    callback: Mutex<Option<FailureCallback>>,
 }
 
 pub struct ReloadFailureSubscription {

@@ -250,10 +250,10 @@ impl Runtime {
                         eprintln!("updating quick look tray: {error}");
                     }
                 }
-            } else if let Some(tray) = app.tray_by_id("quick-look") {
-                if let Err(error) = tray.set_visible(false) {
-                    eprintln!("hiding quick look tray: {error}");
-                }
+            } else if let Some(tray) = app.tray_by_id("quick-look")
+                && let Err(error) = tray.set_visible(false)
+            {
+                eprintln!("hiding quick look tray: {error}");
             }
         });
     }
@@ -262,10 +262,10 @@ impl Runtime {
         let app = self.cx.app.clone();
         let lang = super::ShellLanguage(self.cx.ui.clone()).lang();
         super::on_ui(&self.cx.ui, move || {
-            if let Some(tray) = app.tray_by_id("quick-look") {
-                if let Err(error) = update_menu(&app, &tray, lang) {
-                    eprintln!("updating quick look tray: {error}");
-                }
+            if let Some(tray) = app.tray_by_id("quick-look")
+                && let Err(error) = update_menu(&app, &tray, lang)
+            {
+                eprintln!("updating quick look tray: {error}");
             }
         });
     }

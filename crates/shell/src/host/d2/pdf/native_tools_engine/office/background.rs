@@ -124,7 +124,7 @@ pub(super) fn detect(
             } else {
                 None
             };
-            if !matches!(kind, 2 | 3 | 4) && form_text.is_none() {
+            if !matches!(kind, 2..=4) && form_text.is_none() {
                 prefix = false;
                 continue;
             }
@@ -153,19 +153,20 @@ pub(super) fn detect(
                 prefix = false;
                 continue;
             }
-            if !prefix && kind == 3 {
-                if let Some(px) = image_payload::rendered(s, doc, page, obj, 1.0)? {
-                    let mut sampled = 0;
-                    let mut transparent = 0;
-                    for a in px.pixels.iter().skip(3).step_by(16) {
-                        sampled += 1;
-                        if *a < 250 {
-                            transparent += 1;
-                        }
+            if !prefix
+                && kind == 3
+                && let Some(px) = image_payload::rendered(s, doc, page, obj, 1.0)?
+            {
+                let mut sampled = 0;
+                let mut transparent = 0;
+                for a in px.pixels.iter().skip(3).step_by(16) {
+                    sampled += 1;
+                    if *a < 250 {
+                        transparent += 1;
                     }
-                    if sampled > 0 && transparent as f64 / sampled as f64 > 0.5 {
-                        continue;
-                    }
+                }
+                if sampled > 0 && transparent as f64 / sampled as f64 > 0.5 {
+                    continue;
                 }
             }
             let certain = kind != 2 || colored;
@@ -212,10 +213,10 @@ pub(super) fn bake(
     let result = (|| {
         let total = number(s, "FPDFPage_CountObjects", &[ptr(page, 0)])? as usize;
         for i in (count..total).rev() {
-            if let Some(obj) = object(s, "FPDFPage_GetObject", &[ptr(page, 0), json!(i)])? {
-                if number(s, "FPDFPage_RemoveObject", &[ptr(page, 0), ptr(obj, 0)])? != 0.0 {
-                    s.call("FPDFPageObj_Destroy", &[ptr(obj, 0)])?;
-                }
+            if let Some(obj) = object(s, "FPDFPage_GetObject", &[ptr(page, 0), json!(i)])?
+                && number(s, "FPDFPage_RemoveObject", &[ptr(page, 0), ptr(obj, 0)])? != 0.0
+            {
+                s.call("FPDFPageObj_Destroy", &[ptr(obj, 0)])?;
             }
         }
         let Some(rendered) = render::page(s, page, None, 1.5)? else {
@@ -244,10 +245,10 @@ pub(super) fn remove_buried(
 ) -> Result<(), PdfiumError> {
     let mut buried = stack.texts.clone();
     for i in 0..stack.count {
-        if let Some(obj) = object(s, "FPDFPage_GetObject", &[ptr(page, 0), json!(i)])? {
-            if number(s, "FPDFPageObj_GetType", &[ptr(obj, 0)])? == 1.0 {
-                buried.insert(obj);
-            }
+        if let Some(obj) = object(s, "FPDFPage_GetObject", &[ptr(page, 0), json!(i)])?
+            && number(s, "FPDFPageObj_GetType", &[ptr(obj, 0)])? == 1.0
+        {
+            buried.insert(obj);
         }
     }
     if buried.is_empty() {

@@ -1145,7 +1145,7 @@ pub(super) fn apply(op: &IpcValue, ctx: &mut OpContext<'_>) -> Option<Result<Txn
                     }
                     e.dirty_transform.set(true);
                 });
-                update_connectors_for_moved(slide, &[id.clone()]);
+                update_connectors_for_moved(slide, std::slice::from_ref(&id));
                 with_rotation(bounds, "rotDeg", rotation)
             }
             "setPictureSrcRect" => {
@@ -1168,7 +1168,7 @@ pub(super) fn apply(op: &IpcValue, ctx: &mut OpContext<'_>) -> Option<Result<Txn
                         if let Some(t) = e.transform.as_mut() { t.offset = bounds; }
                         e.dirty_transform.set(true);
                     });
-                    update_connectors_for_moved(slide, &[id.clone()]);
+                    update_connectors_for_moved(slide, std::slice::from_ref(&id));
                 }
                 field(op, "srcRect").cloned().unwrap_or(IpcValue::Undefined)
             }

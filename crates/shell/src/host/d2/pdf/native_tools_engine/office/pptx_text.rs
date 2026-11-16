@@ -61,11 +61,11 @@ fn append_text(run: &mut TextRun, text: &str) {
     }
 }
 fn push_run(runs: &mut Vec<TextRun>, run: TextRun) {
-    if let Some(last) = runs.last_mut() {
-        if same_style(last, &run) {
-            append_text(last, run.text.as_deref().unwrap_or(""));
-            return;
-        }
+    if let Some(last) = runs.last_mut()
+        && same_style(last, &run)
+    {
+        append_text(last, run.text.as_deref().unwrap_or(""));
+        return;
     }
     runs.push(run);
 }
@@ -83,17 +83,17 @@ pub(super) fn block_runs(block: &TextBlock, scale: f64, hard_breaks: bool) -> Ve
                     runs.push(r);
                 }
             } else if prev.ends_with_hyphen && !runs.is_empty() {
-                if let Some(text) = runs.last_mut().and_then(|r| r.text.as_mut()) {
-                    if matches!(text.chars().next_back(), Some('-' | '\u{ad}' | '\u{2010}')) {
-                        text.pop();
-                    }
+                if let Some(text) = runs.last_mut().and_then(|r| r.text.as_mut())
+                    && matches!(text.chars().next_back(), Some('-' | '\u{ad}' | '\u{2010}'))
+                {
+                    text.pop();
                 }
             } else if let (Some(last), Some(previous), Some(next)) =
                 (runs.last_mut(), prev.spans.last(), line.spans.first())
+                && !no_space(previous.script)
+                && !no_space(next.script)
             {
-                if !no_space(previous.script) && !no_space(next.script) {
-                    append_text(last, " ");
-                }
+                append_text(last, " ");
             }
         }
         for span in &line.spans {

@@ -87,7 +87,7 @@ enum Authorization {
     Docs(DocsMediaAuthorization),
     Asset(NativeAssetAuthorization, AssetPermit),
     Slides(SlidesMediaAuthorization),
-    Target(TargetPermit),
+    Target(Box<TargetPermit>),
 }
 
 impl Authorization {
@@ -158,7 +158,7 @@ fn execute(request: Request, auth: Authorization, owner: Option<NativeRequestOwn
                 request.range.as_deref(),
             ),
             Authorization::Target(permit) => document_assets::handle_target(
-                permit.clone(),
+                (**permit).clone(),
                 &request.uri,
                 request.accept.as_deref(),
                 request.range.as_deref(),
@@ -279,6 +279,7 @@ fn deliver(
 }
 
 /// Register each scheme with a closure that supplies its trusted table and core thread.
+#[allow(clippy::too_many_arguments)]
 pub fn handle(
     scheme: Scheme,
     _app: AppHandle,
@@ -339,7 +340,7 @@ pub fn handle(
                     return;
                 }
             };
-            execute(request, Authorization::Target(permit), None);
+            execute(request, Authorization::Target(Box::new(permit)), None);
             return;
         }
     }

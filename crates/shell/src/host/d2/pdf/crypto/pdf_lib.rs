@@ -421,7 +421,7 @@ impl Context {
         let found = refs
             .into_iter()
             .filter(|key| self.objects.get(key).is_some_and(is_catalog))
-            .last();
+            .next_back();
         if let Some(key) = found {
             self.root = Some(Object::Reference(
                 f64::from_bits(key.0),

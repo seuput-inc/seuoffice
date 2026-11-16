@@ -129,10 +129,10 @@ fn font_info(
         };
         let flag = u32_at(&s.read(flags, 0, 4)?, 0);
         let mut family = String::new();
-        if let Some(obj) = object {
-            if let Some(font) = deref(s, "FPDFTextObj_GetFont", &[reference(obj, 0)])? {
-                family = text_name(s, "FPDFFont_GetFamilyName", font)?;
-            }
+        if let Some(obj) = object
+            && let Some(font) = deref(s, "FPDFTextObj_GetFont", &[reference(obj, 0)])?
+        {
+            family = text_name(s, "FPDFFont_GetFamilyName", font)?;
         }
         if family.is_empty() {
             family = ps.clone();
@@ -262,9 +262,9 @@ pub(super) fn read_chars(
             let key = object.unwrap_or(0);
             let next = serials.len();
             let serial = *serials.entry(key).or_insert(next);
-            if !fonts.contains_key(&key) {
+            if let std::collections::hash_map::Entry::Vacant(slot) = fonts.entry(key) {
                 let font = font_info(s, text_page, i, object)?;
-                fonts.insert(key, font);
+                slot.insert(font);
             }
             if let Some(Some(info)) = fonts.get(&key) {
                 last_font = info.clone();
@@ -357,10 +357,10 @@ pub(super) fn read_chars(
     })();
     let mut cleanup_error = None;
     for id in allocated {
-        if let Err(e) = s.free(id) {
-            if cleanup_error.is_none() {
-                cleanup_error = Some(e);
-            }
+        if let Err(e) = s.free(id)
+            && cleanup_error.is_none()
+        {
+            cleanup_error = Some(e);
         }
     }
     match (result, cleanup_error) {

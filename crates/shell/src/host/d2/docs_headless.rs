@@ -214,12 +214,11 @@ impl Export {
         let unavailable_error = error.clone();
         crate::host::w::post_core_checked(
             move |provided, _| {
-                if let Some(created) = job.created.get() {
-                    if let Some(editor) = provided.all::<DocsEditors>().into_iter().next() {
-                        if editor.fail_headless_export(created.view, error.clone()) {
-                            return;
-                        }
-                    }
+                if let Some(created) = job.created.get()
+                    && let Some(editor) = provided.all::<DocsEditors>().into_iter().next()
+                    && editor.fail_headless_export(created.view, error.clone())
+                {
+                    return;
                 }
                 job.finish(Err(error));
             },
@@ -760,10 +759,10 @@ impl Export {
                 .unwrap_or_else(|error| error.into_inner()),
         );
         drop(cancellation);
-        if self.closed.load(Ordering::Acquire) {
-            if let Some(created) = self.created.get() {
-                self.cx.views.remove_window(created.window);
-            }
+        if self.closed.load(Ordering::Acquire)
+            && let Some(created) = self.created.get()
+        {
+            self.cx.views.remove_window(created.window);
         }
         let mut registration = self.registration.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(registration) = registration.take() {

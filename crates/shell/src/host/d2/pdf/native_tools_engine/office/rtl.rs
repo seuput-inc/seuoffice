@@ -49,7 +49,9 @@ fn repair_junk_ligatures(chars: &mut [PdfChar], line_gap: f64) {
         let ra = matches(right, right_gap);
         let lb = left.is_none_or(|n| space(n.code) || left_gap >= threshold);
         let rb = right.is_none_or(|n| space(n.code) || right_gap >= threshold);
-        if (la || ra) && (la || lb) && (ra || rb) {
+        let left_ok = la || lb;
+        let right_ok = ra || rb;
+        if (la || ra) && left_ok && right_ok {
             chars[i].text = "لا".into();
             chars[i].code = 0x644;
             chars[i].script = Script::Arabic;
@@ -79,11 +81,14 @@ fn synthetic_space(x: f64, template: &PdfChar) -> PdfChar {
 pub(super) fn reorder_visual_to_logical(chars: &[PdfChar]) -> Vec<PdfChar> {
     let mut visual: Vec<PdfChar> = Vec::new();
     for c in chars {
-        if let Some(prev) = visual.last_mut() {
-            if !space(prev.code) && !space(c.code) && prev.script == c.script && same_box(prev, c) {
-                prev.text.push_str(&c.text);
-                continue;
-            }
+        if let Some(prev) = visual.last_mut()
+            && !space(prev.code)
+            && !space(c.code)
+            && prev.script == c.script
+            && same_box(prev, c)
+        {
+            prev.text.push_str(&c.text);
+            continue;
         }
         visual.push(c.clone());
     }
@@ -139,15 +144,15 @@ pub(super) fn reorder_visual_to_logical(chars: &[PdfChar]) -> Vec<PdfChar> {
         }
         seen[owner] = true;
         let mut c = spaced[owner].clone();
-        if c.text.encode_utf16().count() == 1 && levels[i].is_rtl() {
-            if let Some(m) = c
+        if c.text.encode_utf16().count() == 1
+            && levels[i].is_rtl()
+            && let Some(m) = c
                 .text
                 .chars()
                 .next()
                 .and_then(unicode_bidi_mirroring::get_mirrored)
-            {
-                c.text = m.to_string();
-            }
+        {
+            c.text = m.to_string();
         }
         out.push(c);
     }

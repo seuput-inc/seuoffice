@@ -10,6 +10,7 @@ pub(crate) type ImageTool =
     fn(&str, &JsonValue, &MediaToolOptions, &CancelToken) -> Result<JsonValue, JsonValue>;
 
 /// The caller supplies the live generator and the core-time status snapshot.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn generate_image(
     settings_path: &str,
     prompt: &str,
@@ -32,6 +33,7 @@ pub(crate) fn generate_image(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generate_with(
     settings_path: &str,
     prompt: &str,

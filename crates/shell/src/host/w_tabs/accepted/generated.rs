@@ -11,12 +11,16 @@ type Done = Box<dyn FnOnce(ViewCreationResult<GeneratedViewCommit>)>;
 #[derive(Default)]
 pub(crate) struct GeneratedBarrierSlot(std::sync::Mutex<GeneratedBarrierState>);
 
+type BarrierWaiter = Box<dyn FnOnce(Result<(), String>) + Send>;
+type CleanupDone =
+    Box<dyn FnOnce(Result<shell_contract::ipc::NativeBrowserRetirement, String>) + Send>;
+
 #[derive(Default)]
 struct GeneratedBarrierState {
     barrier: Option<shell_ipc_w::tabs::host::GeneratedPrecloseBarrier>,
     failure: Option<shell_ipc_w::tabs::host::GeneratedPrecloseFailure>,
     phase: GeneratedBarrierPhase,
-    waiters: Vec<Box<dyn FnOnce(Result<(), String>) + Send>>,
+    waiters: Vec<BarrierWaiter>,
 }
 
 #[derive(Default, PartialEq, Eq)]
@@ -44,9 +48,7 @@ impl Drop for GeneratedBarrierAttempt {
 }
 
 struct GeneratedCleanupAttempt {
-    done: Option<
-        Box<dyn FnOnce(Result<shell_contract::ipc::NativeBrowserRetirement, String>) + Send>,
-    >,
+    done: Option<CleanupDone>,
 }
 
 impl Drop for GeneratedCleanupAttempt {
@@ -238,6 +240,7 @@ fn cleanup_for(pending: &Pending) -> ViewCreationCleanup {
     pending.cleanup.clone()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn schedule_generated(
     prepared: PreparedEditorView,
     owner: NativeRequestOwner,

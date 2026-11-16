@@ -90,7 +90,7 @@ pub(super) fn run(
             }
             let body = &body[nonce.len()..];
             match (kind, body) {
-                (Kind::Guard, body) if body.is_empty() => {
+                (Kind::Guard, []) => {
                     guard()?;
                     reply_tx
                         .send(Kind::Permit)
@@ -110,7 +110,7 @@ pub(super) fn run(
                         && !evidence.is_empty()
                         && admitted == 1 =>
                 {
-                    authorize_retry(Some(&evidence))?;
+                    authorize_retry(Some(evidence))?;
                     admitted = 2;
                     reply_tx
                         .send(Kind::Permit)
@@ -155,9 +155,7 @@ pub(super) fn run(
     let cleanup = worker.terminate();
     let writer_result = writer.join();
     let reader_result = reader.join();
-    if let Err(error) = cleanup {
-        return Err(error);
-    }
+    cleanup?;
     if writer_result.is_err() || reader_result.is_err() {
         return Err("signing worker transport panicked".into());
     }

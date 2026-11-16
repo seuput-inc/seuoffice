@@ -182,6 +182,7 @@ fn fail_owned_ready(
 
 /// `prepared` has a blank/staged actor already adopted under the exact saved
 /// target. The seed only queues retained input; parsing runs after the gate.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn start(
     mut prepared: PreparedEditorView,
     target: NativeSavedTarget,
@@ -358,6 +359,7 @@ pub(super) fn start(
 /// Continue a spare only after its real browser-owner replacement committed.
 /// `ready` must carry the successor's captured cleanup and the original
 /// registered owner; a registration alone is never treated as readiness.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn start_spare(
     ready: ViewCreationReady<shell_contract::ViewId>,
     target: NativeSavedTarget,
@@ -645,10 +647,10 @@ fn created_result(id: u64, result: ViewCreationResult<shell_contract::ViewId>) {
 }
 fn fail(id: u64, error: String) {
     PENDING.with(|entries| {
-        if let Some(state) = entries.borrow_mut().get_mut(&id) {
-            if state.failure.is_none() {
-                state.failure = Some(error);
-            }
+        if let Some(state) = entries.borrow_mut().get_mut(&id)
+            && state.failure.is_none()
+        {
+            state.failure = Some(error);
         }
     });
     advance(id);
@@ -664,41 +666,43 @@ fn advance(id: u64) {
         });
         return;
     }
-    if state.failure.is_none() && state.loaded.is_some() && state.outcome.is_some() {
-        if let (Some(document), Some(_)) = (&state.document, &state.ready) {
-            let exact_ready = state.loaded.as_ref().is_some_and(|ready| {
-                document
-                    .owner()
-                    .context
-                    .authority_ref::<NativeOwnerAuthority>()
-                    .is_some_and(|proof| &proof.origin == ready.origin())
-            });
-            let extra: Vec<_> = state.additional.iter().collect();
-            if exact_ready
-                && native_owner::with_saved_document_input_effect(
-                    document,
-                    &state.participants,
-                    &state.cancel,
-                    &state.pending,
-                    &extra,
-                    &mut |_| Ok(()),
-                )
-                .is_ok()
-            {
-                let document = state.document.take().unwrap();
-                let mut ready = state.ready.take().unwrap();
-                ready.reservation.registration =
-                    NativeBrowserRegistration::Registered(document.owner().clone());
-                let outcome = state.outcome.take().unwrap();
-                return (state.done)(Ok(ViewCreationReady {
-                    view: Loaded { document, outcome },
-                    cleanup: ready.cleanup,
-                    closure: ready.closure,
-                    reservation: ready.reservation,
-                }));
-            }
-            state.failure = Some("The saved-output authority expired before delivery".into());
+    if state.failure.is_none()
+        && state.loaded.is_some()
+        && state.outcome.is_some()
+        && let (Some(document), Some(_)) = (&state.document, &state.ready)
+    {
+        let exact_ready = state.loaded.as_ref().is_some_and(|ready| {
+            document
+                .owner()
+                .context
+                .authority_ref::<NativeOwnerAuthority>()
+                .is_some_and(|proof| &proof.origin == ready.origin())
+        });
+        let extra: Vec<_> = state.additional.iter().collect();
+        if exact_ready
+            && native_owner::with_saved_document_input_effect(
+                document,
+                &state.participants,
+                &state.cancel,
+                &state.pending,
+                &extra,
+                &mut |_| Ok(()),
+            )
+            .is_ok()
+        {
+            let document = state.document.take().unwrap();
+            let mut ready = state.ready.take().unwrap();
+            ready.reservation.registration =
+                NativeBrowserRegistration::Registered(document.owner().clone());
+            let outcome = state.outcome.take().unwrap();
+            return (state.done)(Ok(ViewCreationReady {
+                view: Loaded { document, outcome },
+                cleanup: ready.cleanup,
+                closure: ready.closure,
+                reservation: ready.reservation,
+            }));
         }
+        state.failure = Some("The saved-output authority expired before delivery".into());
     }
     if state.failure.is_none() || state.ready.is_none() {
         PENDING.with(|entries| {

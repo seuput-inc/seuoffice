@@ -111,14 +111,13 @@ pub(super) fn tag(
             } else {
                 object(s, "FPDFLink_GetDest", &[ptr(doc, 0), ptr(link, 0)])?
             };
-            if href.is_empty() {
-                if let Some(dest) = dest {
-                    let index =
-                        number(s, "FPDFDest_GetDestPageIndex", &[ptr(doc, 0), ptr(dest, 0)])?
-                            as i32;
-                    if index >= 0 {
-                        href = format!("#_pdfpage{}", index + 1);
-                    }
+            if href.is_empty()
+                && let Some(dest) = dest
+            {
+                let index = number(s, "FPDFDest_GetDestPageIndex", &[ptr(doc, 0), ptr(dest, 0)])?
+                    as i32;
+                if index >= 0 {
+                    href = format!("#_pdfpage{}", index + 1);
                 }
             }
             if !href.is_empty() && (href.starts_with('#') || safe_uri(&href)) {

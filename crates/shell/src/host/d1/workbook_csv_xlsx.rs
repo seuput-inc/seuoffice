@@ -122,8 +122,7 @@ pub(super) fn quoted_text(value: &str) -> Option<String> {
 
 pub(super) fn xlsx_text(value: &str) -> String {
     let mut escaped = String::new();
-    let mut chars = value.char_indices().peekable();
-    while let Some((index, ch)) = chars.next() {
+    for (index, ch) in value.char_indices() {
         if ch == '_' {
             let tail = &value[index..];
             let bytes = tail.as_bytes();

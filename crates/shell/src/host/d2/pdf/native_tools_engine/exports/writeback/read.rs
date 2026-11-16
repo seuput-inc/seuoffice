@@ -104,24 +104,23 @@ fn text_part(
             .unwrap_or([0, 0, 0]),
         scan: false,
     };
-    if indices.iter().all(|&i| objects[i].invisible) {
-        if let Some(bitmap) = bitmap {
-            part.scan = true;
-            for &i in indices {
-                let r = objects[i].bounds;
-                let paint = analyze::expand(r, 1.0_f64.max((r.y1 - r.y0) * 0.15));
-                part.paints
-                    .push((paint, bitmap::sample_background(bitmap, paint)));
-            }
-            if let Some(bounds) = analyze::union(
-                &indices
-                    .iter()
-                    .map(|&i| objects[i].bounds)
-                    .collect::<Vec<_>>(),
-            ) {
-                part.color =
-                    bitmap::readable_ink(bitmap::sample_ink(bitmap, bounds), part.paints[0].1);
-            }
+    if indices.iter().all(|&i| objects[i].invisible)
+        && let Some(bitmap) = bitmap
+    {
+        part.scan = true;
+        for &i in indices {
+            let r = objects[i].bounds;
+            let paint = analyze::expand(r, 1.0_f64.max((r.y1 - r.y0) * 0.15));
+            part.paints
+                .push((paint, bitmap::sample_background(bitmap, paint)));
+        }
+        if let Some(bounds) = analyze::union(
+            &indices
+                .iter()
+                .map(|&i| objects[i].bounds)
+                .collect::<Vec<_>>(),
+        ) {
+            part.color = bitmap::readable_ink(bitmap::sample_ink(bitmap, bounds), part.paints[0].1);
         }
     }
     part
@@ -227,38 +226,38 @@ fn scan(
             Err(_) => None,
         };
     let mut found = Vec::new();
-    if let Some(value) = recognition {
-        if let Some(items) = value.get("lines").and_then(|v| v.as_array()) {
-            for line in items {
-                let Some(text) = line.get("text").and_then(|v| v.as_str()) else {
-                    continue;
-                };
-                if text.trim().is_empty()
-                    || line
-                        .get("confidence")
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(0.0)
-                        < 0.3
-                {
-                    continue;
-                }
-                let Some(b) = line.get("box") else { continue };
-                if let (Some(x0), Some(y0), Some(x1), Some(y1)) = (
-                    b.get("x0").and_then(|v| v.as_f64()),
-                    b.get("y0").and_then(|v| v.as_f64()),
-                    b.get("x1").and_then(|v| v.as_f64()),
-                    b.get("y1").and_then(|v| v.as_f64()),
-                ) {
-                    found.push(OcrLine {
-                        text: text.into(),
-                        bounds: Rect {
-                            x0: x0 * frame.width,
-                            y0: y0 * frame.height,
-                            x1: x1 * frame.width,
-                            y1: y1 * frame.height,
-                        },
-                    })
-                }
+    if let Some(value) = recognition
+        && let Some(items) = value.get("lines").and_then(|v| v.as_array())
+    {
+        for line in items {
+            let Some(text) = line.get("text").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if text.trim().is_empty()
+                || line
+                    .get("confidence")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0)
+                    < 0.3
+            {
+                continue;
+            }
+            let Some(b) = line.get("box") else { continue };
+            if let (Some(x0), Some(y0), Some(x1), Some(y1)) = (
+                b.get("x0").and_then(|v| v.as_f64()),
+                b.get("y0").and_then(|v| v.as_f64()),
+                b.get("x1").and_then(|v| v.as_f64()),
+                b.get("y1").and_then(|v| v.as_f64()),
+            ) {
+                found.push(OcrLine {
+                    text: text.into(),
+                    bounds: Rect {
+                        x0: x0 * frame.width,
+                        y0: y0 * frame.height,
+                        x1: x1 * frame.width,
+                        y1: y1 * frame.height,
+                    },
+                })
             }
         }
     }

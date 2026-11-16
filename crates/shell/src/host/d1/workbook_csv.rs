@@ -188,14 +188,13 @@ pub(super) fn sniff(input: &str) -> char {
             } else {
                 quoted = !quoted;
             }
-        } else if !quoted {
-            if let Some(index) = [',', ';', '\t']
+        } else if !quoted
+            && let Some(index) = [',', ';', '\t']
                 .iter()
                 .position(|&candidate| candidate == ch)
-            {
+        {
                 counts[index] += 1;
             }
-        }
     }
     let mut best = 0;
     for index in 1..3 {

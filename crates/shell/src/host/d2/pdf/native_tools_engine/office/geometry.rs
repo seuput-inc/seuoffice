@@ -103,11 +103,11 @@ pub(super) fn merge_intervals(intervals: &[Interval], min_gap: f64) -> Vec<Inter
     sorted.sort_by(|a, b| a.lo.partial_cmp(&b.lo).unwrap_or(std::cmp::Ordering::Equal));
     let mut out: Vec<Interval> = Vec::new();
     for iv in sorted {
-        if let Some(last) = out.last_mut() {
-            if iv.lo - last.hi <= min_gap {
-                last.hi = math_max(last.hi, iv.hi);
-                continue;
-            }
+        if let Some(last) = out.last_mut()
+            && iv.lo - last.hi <= min_gap
+        {
+            last.hi = math_max(last.hi, iv.hi);
+            continue;
         }
         out.push(iv);
     }

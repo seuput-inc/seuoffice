@@ -195,10 +195,11 @@ fn plan(
     // The original map holds the pre-assignment base object, even after a stream is replaced.
     let mut bases: HashMap<String, Option<Candidate>> = HashMap::new();
     for s in &streams {
-        if s.subtype == "/Image" && s.mask_is_stream {
-            if let Some(mask) = &s.mask_ref {
-                bases.insert(mask.clone(), s.candidate());
-            }
+        if s.subtype == "/Image"
+            && s.mask_is_stream
+            && let Some(mask) = &s.mask_ref
+        {
+            bases.insert(mask.clone(), s.candidate());
         }
     }
     let mut result = Plan::default();
@@ -227,11 +228,10 @@ fn plan(
                     continue;
                 }
             }
-            if let Some(base) = bases.get(&streams[i].reference) {
-                if !base.is_some_and(|c| c.width == candidate.width && c.height == candidate.height)
-                {
-                    continue;
-                }
+            if let Some(base) = bases.get(&streams[i].reference)
+                && !base.is_some_and(|c| c.width == candidate.width && c.height == candidate.height)
+            {
+                continue;
             }
             if streams[i].decode_parms {
                 continue;
@@ -371,7 +371,7 @@ mod tests {
         let compressible = stream("1:0", encoded(&vec![42; 4096], Compression::none()));
         let incompressible = stream("2:0", encoded(b"short", Compression::best()));
         let invalid = stream("3:0", vec![1, 2, 3, 4]);
-        let mut predicted = stream("4:0", encoded(&vec![9; 100], Compression::none()));
+        let mut predicted = stream("4:0", encoded(&[9; 100], Compression::none()));
         predicted.decode_parms = true;
         let result = run(
             vec![compressible, incompressible, invalid, predicted],

@@ -74,19 +74,18 @@ pub(super) fn guard(op: &IpcValue, ctx: &mut OpContext<'_>) -> Result<(), String
             {
                 let mut found = None;
                 for element in slide.elements.as_ref().into_iter().flatten() {
-                    if let SlideElement::Group(g) = element {
-                        if matches_element_ref(element, group)? {
-                            for child in g.children.as_ref().into_iter().flatten() {
-                                if matches_element_ref(child, id)?
-                                    || group_child_durable_id(element, child)?.as_deref()
-                                        == Some(id)
-                                {
-                                    found = element_label(child);
-                                    break;
-                                }
+                    if let SlideElement::Group(g) = element
+                        && matches_element_ref(element, group)?
+                    {
+                        for child in g.children.as_ref().into_iter().flatten() {
+                            if matches_element_ref(child, id)?
+                                || group_child_durable_id(element, child)?.as_deref() == Some(id)
+                            {
+                                found = element_label(child);
+                                break;
                             }
-                            break;
                         }
+                        break;
                     }
                 }
                 label = found;
@@ -118,24 +117,22 @@ pub(super) fn guard(op: &IpcValue, ctx: &mut OpContext<'_>) -> Result<(), String
             "this {what} would overwrite text withheld from AI ({{{{{label}}}}}). Its words stay in the deck; work around the placeholder instead of replacing it."
         ));
     }
-    if matches!(name, "deleteSlide" | "setNotes") {
-        if let Some(path) = notes_path_for_slide(
+    if matches!(name, "deleteSlide" | "setNotes")
+        && let Some(path) = notes_path_for_slide(
             &ctx.opened.archive,
             slide.path.as_deref().unwrap_or_default(),
-        )? {
-            if let Some(xml) = ctx.opened.archive.read_text(&path) {
-                if has_redact_ext_in(&xml)? {
-                    let what = if name == "setNotes" {
-                        "notes edit"
-                    } else {
-                        "page delete"
-                    };
-                    return Err(format!(
-                        "this {what} would overwrite text withheld from AI ({{{{private}}}}). Its words stay in the deck; work around the placeholder instead of replacing it."
-                    ));
-                }
-            }
-        }
+        )?
+        && let Some(xml) = ctx.opened.archive.read_text(&path)
+        && has_redact_ext_in(&xml)?
+    {
+        let what = if name == "setNotes" {
+            "notes edit"
+        } else {
+            "page delete"
+        };
+        return Err(format!(
+            "this {what} would overwrite text withheld from AI ({{{{private}}}}). Its words stay in the deck; work around the placeholder instead of replacing it."
+        ));
     }
     Ok(())
 }

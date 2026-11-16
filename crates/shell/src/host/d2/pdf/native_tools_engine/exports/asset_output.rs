@@ -266,10 +266,10 @@ pub(super) fn write(
             Err(e) => return Err(io(e, &path, "open")),
         }
     }
-    if let Some(next) = next {
-        if old_text.as_deref() != Some(next.as_str()) {
-            atomic(&manifest_path, next.as_bytes(), cancel)?;
-        }
+    if let Some(next) = next
+        && old_text.as_deref() != Some(next.as_str())
+    {
+        atomic(&manifest_path, next.as_bytes(), cancel)?;
     }
     atomic(output, conversion.markdown.as_bytes(), cancel)?;
     Ok((to_write.len(), reused))

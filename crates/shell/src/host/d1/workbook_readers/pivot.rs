@@ -214,9 +214,9 @@ pub(super) fn parse(pivot_xml: &str, cache_xml: &str) -> EngineResult<Value> {
         .filter(|(i, _)| !formulas.contains_key(i))
         .map(|(_, f)| f["name"].as_str().unwrap_or("").to_owned())
         .collect();
-    for index in 0..fields.len() {
+    for (index, field) in fields.iter().enumerate() {
         if let Some(formula) = formulas.get(&index) {
-            let name = fields[index]["name"].as_str().unwrap_or("");
+            let name = field["name"].as_str().unwrap_or("");
             if index < source_names.len() {
                 unsupported.push(format!("calculated field \"{name}\" does not come after the source fields, recompute not supported"));
             } else if let Err(error) =
@@ -345,11 +345,13 @@ pub(super) fn parse(pivot_xml: &str, cache_xml: &str) -> EngineResult<Value> {
                 }
             }
         }
-        if field.is_finite() && field >= 0.0 && field.fract() == 0.0 {
-            if let Some(formula) = formulas.get(&(field as usize)) {
+        if field.is_finite()
+            && field >= 0.0
+            && field.fract() == 0.0
+            && let Some(formula) = formulas.get(&(field as usize))
+        {
                 result["formula"] = json!(formula);
             }
-        }
         data_fields.push(result);
     }
     let aggregations = [
@@ -392,7 +394,7 @@ pub(super) fn parse(pivot_xml: &str, cache_xml: &str) -> EngineResult<Value> {
     };
     let page_rows = positive_count("rowPageCount")?;
     let page_cols = positive_count("colPageCount")?;
-    for index in 0..fields.len() {
+    for (index, field) in fields.iter().enumerate() {
         if formulas.contains_key(&index)
             && (row_fields.contains(&(index as f64))
                 || col_fields.contains(&(index as f64))
@@ -402,7 +404,7 @@ pub(super) fn parse(pivot_xml: &str, cache_xml: &str) -> EngineResult<Value> {
         {
             unsupported.push(format!(
                 "calculated field \"{}\" is used as a dimension, recompute not supported",
-                fields[index]["name"].as_str().unwrap_or("")
+                field["name"].as_str().unwrap_or("")
             ));
         }
     }

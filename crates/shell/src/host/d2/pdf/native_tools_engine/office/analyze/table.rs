@@ -259,10 +259,10 @@ pub(super) fn solve_lattice_grids(strokes: &[Stroke]) -> Vec<TableGrid> {
             .collect();
         for group in group_strokes(&subset) {
             let refs: Vec<_> = group.iter().map(|&index| &subset[index]).collect();
-            if let Some(grid) = solve_grid(&refs, !form) {
-                if !form || (grid.ys.len() >= 4 && grid.xs.len() >= 4) {
-                    grids.push(grid);
-                }
+            if let Some(grid) = solve_grid(&refs, !form)
+                && (!form || (grid.ys.len() >= 4 && grid.xs.len() >= 4))
+            {
+                grids.push(grid);
             }
         }
     }
@@ -622,12 +622,11 @@ pub(super) fn detect_cell_v_align(bounds: Rect, chars: &[PdfChar]) -> Option<&'s
 fn cell_fill(bounds: Rect, fills: &[Fill], table_area: f64) -> Option<String> {
     fills
         .iter()
-        .filter(|fill| {
+        .rfind(|fill| {
             fill.bounds.area() <= 1.5 * table_area
                 && !white(&fill.color)
                 && bounds.overlap_ratio(fill.bounds) > 0.5
         })
-        .next_back()
         .map(|fill| fill.color.clone())
 }
 
@@ -861,37 +860,38 @@ pub(super) fn detect_tables(
                         cell.v_merge = Some("restart".into());
                     }
                     let content = cell_chars.get(&(r, c)).map(Vec::as_slice).unwrap_or(&[]);
-                    if height == 1 && cols > 1 && !content.is_empty() {
-                        if let Some(parts) = split_run(&grid.xs, c, cols, content) {
-                            for (k, part) in parts.iter().enumerate() {
-                                let part_bounds = Rect {
-                                    x0: grid.xs[c + k],
-                                    x1: grid.xs[c + k + 1],
-                                    y0: bounds.y0,
-                                    y1: bounds.y1,
-                                };
-                                row.push(TableCell {
-                                    bounds: part_bounds,
-                                    grid_span: 1,
-                                    v_merge: None,
-                                    fill: cell_fill(part_bounds, &shapes.fills, grid.bounds.area()),
-                                    v_align: detect_cell_v_align(part_bounds, part)
-                                        .map(str::to_owned),
-                                    soft_edges: Some(SoftEdges {
-                                        left: k > 0,
-                                        right: k + 1 < cols,
-                                        top: false,
-                                        bottom: false,
-                                    }),
-                                    blocks: if part.is_empty() {
-                                        Vec::new()
-                                    } else {
-                                        build_blocks(part)?
-                                    },
-                                });
-                            }
-                            continue;
+                    if height == 1
+                        && cols > 1
+                        && !content.is_empty()
+                        && let Some(parts) = split_run(&grid.xs, c, cols, content)
+                    {
+                        for (k, part) in parts.iter().enumerate() {
+                            let part_bounds = Rect {
+                                x0: grid.xs[c + k],
+                                x1: grid.xs[c + k + 1],
+                                y0: bounds.y0,
+                                y1: bounds.y1,
+                            };
+                            row.push(TableCell {
+                                bounds: part_bounds,
+                                grid_span: 1,
+                                v_merge: None,
+                                fill: cell_fill(part_bounds, &shapes.fills, grid.bounds.area()),
+                                v_align: detect_cell_v_align(part_bounds, part).map(str::to_owned),
+                                soft_edges: Some(SoftEdges {
+                                    left: k > 0,
+                                    right: k + 1 < cols,
+                                    top: false,
+                                    bottom: false,
+                                }),
+                                blocks: if part.is_empty() {
+                                    Vec::new()
+                                } else {
+                                    build_blocks(part)?
+                                },
+                            });
                         }
+                        continue;
                     }
                     if !content.is_empty() {
                         cell.blocks = build_blocks(content)?;

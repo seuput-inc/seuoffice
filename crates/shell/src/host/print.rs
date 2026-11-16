@@ -239,6 +239,7 @@ pub(crate) fn window_native_invocation(
     Ok(Box::new(window))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn window_owned_many_extra(
     cx: &HostContext,
     spec: PrintWindowSpec,
@@ -264,6 +265,7 @@ pub(crate) fn window_owned_many_extra(
     Ok(Box::new(window))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn window_native_invocation_many_extra(
     cx: &HostContext,
     spec: PrintWindowSpec,
@@ -543,6 +545,7 @@ pub(crate) fn render_html_pdf_owned(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_html_pdf_existing_document(
     cx: &HostContext,
     binding: &shell_contract::ipc::NativeExistingDocumentBinding,
@@ -915,7 +918,7 @@ impl PrintWindow {
         let browser = webview.native_browser()?;
         let authority_owner = owner.clone();
         let authority: crate::drawio_scheme::print::Admission =
-            Arc::new(move |effect| authority_owner.effect(|| effect())?);
+            Arc::new(move |effect| authority_owner.effect(effect)?);
         let guard = crate::drawio_scheme::print::reserve(browser.clone(), bytes, authority)?;
         let target = Url::parse(&guard.url()).map_err(|error| error.to_string())?;
         let observed_target = target.clone();
@@ -1414,7 +1417,10 @@ impl PrintWindow {
         let owner = self.owner.clone();
         let accepted = move || match owner {
             Some(owner) => owner.accepted(action),
-            None => Ok(action()),
+            None => {
+                action();
+                Ok(())
+            }
         };
         match &self.owner {
             Some(owner) => owner.on_ui(accepted),
@@ -1618,10 +1624,10 @@ impl PrintSurface for PrintWindow {
         _user_gesture: bool,
         race_ms: Option<f64>,
     ) -> ExecOutcome {
-        if let Some(owner) = &self.owner {
-            if let Err(error) = owner.worker() {
-                return ExecOutcome::Throws(error);
-            }
+        if let Some(owner) = &self.owner
+            && let Err(error) = owner.worker()
+        {
+            return ExecOutcome::Throws(error);
         }
         let webview = match self.webview() {
             Ok(webview) => webview,
@@ -1638,10 +1644,10 @@ impl PrintSurface for PrintWindow {
             Some(ms) => rx.recv_timeout(Duration::from_millis(ms.max(0.0) as u64)),
             None => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
         };
-        if let Some(owner) = &self.owner {
-            if let Err(error) = owner.check() {
-                return ExecOutcome::Throws(error);
-            }
+        if let Some(owner) = &self.owner
+            && let Err(error) = owner.check()
+        {
+            return ExecOutcome::Throws(error);
         }
         match settled {
             Err(mpsc::RecvTimeoutError::Timeout) => ExecOutcome::Pending,

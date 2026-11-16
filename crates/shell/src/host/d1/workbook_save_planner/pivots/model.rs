@@ -350,6 +350,7 @@ impl<'a> Model<'a> {
     pub fn source_sheet(&self) -> Result<&str, String> {
         text(self.addition, "sourceSheetName")
     }
+    #[allow(clippy::type_complexity)]
     pub fn dimensions(
         &self,
     ) -> (

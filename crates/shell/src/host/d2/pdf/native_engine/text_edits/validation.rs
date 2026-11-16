@@ -82,37 +82,35 @@ fn details(session: &mut PdfiumSession, edit: &V, objects: &[TextObject]) -> Res
         bounds[2] = r[2]
     }
     let mut fields = vec![("reason", V::Null), ("bounds", array(bounds))];
-    if whole {
-        if let Some(colors) = rebuild::match_char_colors(session, objects, old)? {
-            let mut ranges: Vec<(usize, usize, [u8; 3])> = Vec::new();
-            for (i, color) in colors.into_iter().enumerate() {
-                let Some(color) = color else { continue };
-                if let Some(last) = ranges
-                    .last_mut()
-                    .filter(|last| last.1 == i && last.2 == color)
-                {
-                    last.1 = i + 1
-                } else {
-                    ranges.push((i, i + 1, color))
-                }
+    if whole && let Some(colors) = rebuild::match_char_colors(session, objects, old)? {
+        let mut ranges: Vec<(usize, usize, [u8; 3])> = Vec::new();
+        for (i, color) in colors.into_iter().enumerate() {
+            let Some(color) = color else { continue };
+            if let Some(last) = ranges
+                .last_mut()
+                .filter(|last| last.1 == i && last.2 == color)
+            {
+                last.1 = i + 1
+            } else {
+                ranges.push((i, i + 1, color))
             }
-            if !ranges.is_empty() {
-                fields.push((
-                    "colorRuns",
-                    V::Array(
-                        ranges
-                            .into_iter()
-                            .map(|(start, end, color)| {
-                                object(vec![
-                                    ("start", V::Number(start as f64)),
-                                    ("end", V::Number(end as f64)),
-                                    ("color", array(color.into_iter().map(f64::from))),
-                                ])
-                            })
-                            .collect(),
-                    ),
-                ))
-            }
+        }
+        if !ranges.is_empty() {
+            fields.push((
+                "colorRuns",
+                V::Array(
+                    ranges
+                        .into_iter()
+                        .map(|(start, end, color)| {
+                            object(vec![
+                                ("start", V::Number(start as f64)),
+                                ("end", V::Number(end as f64)),
+                                ("color", array(color.into_iter().map(f64::from))),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ))
         }
     }
     if let Some(color) = base_color(session, objects)? {

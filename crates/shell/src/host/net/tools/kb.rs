@@ -259,11 +259,10 @@ impl KbServices for ShellKb {
                 .next()
                 .ok_or_else(|| "project services unavailable".to_string())?;
             let placer = projects.new_documents();
-            let result = placer
+            placer
                 .borrow_mut()
                 .write(&placement, &file_name, &bytes)
-                .map_err(|error| error.message());
-            result
+                .map_err(|error| error.message())
         })
         .unwrap_or_else(|| Err("project services unavailable".into()))
     }

@@ -190,6 +190,7 @@ impl SpareSeedPlan for SeedPlan {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn prepare(
     hooks: &Hooks,
     view: ViewId,

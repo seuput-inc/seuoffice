@@ -316,7 +316,6 @@ pub(super) fn translated_runs(tree: &V, _lang: &str) -> HashMap<String, V> {
             add(p)
         }
     }
-    drop(add);
     for b in a(tree, "blocks") {
         if s(b, "kind") != "table" {
             continue;

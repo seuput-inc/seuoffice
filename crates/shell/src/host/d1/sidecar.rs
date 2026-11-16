@@ -223,11 +223,11 @@ impl SidecarHost for Transport {
 }
 
 pub(super) fn binary_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    if let Some(path) = std::env::var_os("XLSX_SIDECAR_PATH") {
-        if !path.is_empty() {
+    if let Some(path) = std::env::var_os("XLSX_SIDECAR_PATH")
+        && !path.is_empty()
+    {
             return Ok(path.into());
         }
-    }
     let executable = if cfg!(windows) {
         "xlsx-sidecar.exe"
     } else {
@@ -385,12 +385,12 @@ fn run(mut client: XlsxSidecarClient<Transport>, events: mpsc::Receiver<Event>) 
                 Err(error) => Some((p.id, Err(error.to_string()))),
             });
         if let Some((id, status)) = exited {
-            if let Some(mut process) = client.host_mut().process.take() {
-                if status.is_err() {
+            if let Some(mut process) = client.host_mut().process.take()
+                && status.is_err()
+            {
                     let _ = process.child.kill();
                     let _ = process.child.wait();
                 }
-            }
             match status {
                 Ok(status) => {
                     client.on_exit(id, status.code().map(f64::from), exit_signal(&status))

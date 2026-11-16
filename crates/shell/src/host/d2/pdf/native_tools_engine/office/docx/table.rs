@@ -197,27 +197,27 @@ fn cell_paragraphs(cell: &TableCell, trailing: bool, scale: f64, infer_align: bo
                     format.insert("spaceBefore".into(), json!(before));
                 }
             }
-            if infer_align && !format.contains_key("align") {
-                if let Some(align) = cell_alignment(cell.bounds, &block.lines) {
-                    format.insert("align".into(), json!(align));
-                }
+            if infer_align
+                && !format.contains_key("align")
+                && let Some(align) = cell_alignment(cell.bounds, &block.lines)
+            {
+                format.insert("align".into(), json!(align));
             }
             format.insert("runs".into(), Value::Array(paragraph_runs(block)));
             Value::Object(format)
         })
         .collect();
-    if trailing {
-        if let Some(Value::String(text)) = paragraphs
+    if trailing
+        && let Some(Value::String(text)) = paragraphs
             .last_mut()
             .and_then(|p| p.get_mut("runs"))
             .and_then(Value::as_array_mut)
             .and_then(|runs| runs.last_mut())
             .and_then(|run| run.get_mut("text"))
-        {
-            if !text.is_empty() && !text.chars().next_back().is_some_and(jscompat::is_js_space) {
-                text.push(' ');
-            }
-        }
+        && !text.is_empty()
+        && !text.chars().next_back().is_some_and(jscompat::is_js_space)
+    {
+        text.push(' ');
     }
     paragraphs
 }
@@ -312,21 +312,19 @@ pub(super) fn table(
             if let Some(align) = &cell.v_align {
                 output.insert("vAlign".into(), json!(align));
             }
-            if lattice {
-                if let Some(edges) = &cell.soft_edges {
-                    let mut borders = Map::new();
-                    for (key, enabled) in [
-                        ("left", edges.left),
-                        ("right", edges.right),
-                        ("top", edges.top),
-                        ("bottom", edges.bottom),
-                    ] {
-                        if enabled {
-                            borders.insert(key.into(), json!({"style":"none"}));
-                        }
+            if lattice && let Some(edges) = &cell.soft_edges {
+                let mut borders = Map::new();
+                for (key, enabled) in [
+                    ("left", edges.left),
+                    ("right", edges.right),
+                    ("top", edges.top),
+                    ("bottom", edges.bottom),
+                ] {
+                    if enabled {
+                        borders.insert(key.into(), json!({"style":"none"}));
                     }
-                    output.insert("borders".into(), Value::Object(borders));
                 }
+                output.insert("borders".into(), Value::Object(borders));
             }
             cells.push(Value::Object(output));
         }
