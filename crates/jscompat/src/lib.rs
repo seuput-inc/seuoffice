@@ -46,8 +46,8 @@ pub use json_print::{
 };
 pub use json_value::{
     JSON_MAX_DEPTH, JsTypeError, JsonSyntaxError, JsonValue, Primitive, json_parse,
-    json_parse_flagging_lone_surrogates, string_from_char_code, text_decoder_decode,
-    to_primitive, to_property_key,
+    json_parse_flagging_lone_surrogates, string_from_char_code, text_decoder_decode, to_primitive,
+    to_property_key,
 };
 pub use map::JsMap;
 pub use math::{

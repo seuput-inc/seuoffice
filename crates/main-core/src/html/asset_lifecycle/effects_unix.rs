@@ -613,7 +613,11 @@ impl Directory {
         // SAFETY: the parent descriptor and the validated component remain
         // live; AT_REMOVEDIR unlinks only an empty directory and never follows a link.
         let removed = unsafe {
-            libc::unlinkat(self.file.as_raw_fd(), component.as_ptr(), libc::AT_REMOVEDIR)
+            libc::unlinkat(
+                self.file.as_raw_fd(),
+                component.as_ptr(),
+                libc::AT_REMOVEDIR,
+            )
         };
         if removed != 0 {
             return Err(node_error(&io::Error::last_os_error(), "rmdir", &path));
