@@ -296,10 +296,14 @@ pub enum WindowNeed {
 #[derive(Debug)]
 pub enum WindowStep {
     Done(Result<WindowOutcome, Failure>),
-    Need(WindowNeed, WindowRun),
+    Need(WindowNeed, Box<WindowRun>),
 }
 
 impl WindowStep {
+    fn need(need: WindowNeed, run: WindowRun) -> Self {
+        Self::Need(need, Box::new(run))
+    }
+
     fn unit(result: Result<(), Failure>) -> Self {
         Self::Done(result.map(|()| WindowOutcome::Unit))
     }
@@ -634,7 +638,7 @@ impl GenerateWindow {
             }],
             "properties": ["openFile", "multiSelections"],
         });
-        WindowStep::Need(
+        WindowStep::need(
             WindowNeed::OpenDialog { window, options },
             WindowRun {
                 stage: WindowRunStage::AddMaterials,
@@ -807,6 +811,7 @@ impl GenerateWindow {
             ))),
             Some(SessionStep::Done(result)) => WindowStep::Done(result),
             Some(SessionStep::Need(need, run)) => {
+                let run = *run;
                 let (need, cleanup_window) = match need {
                     SessionNeed::Save(need) => (WindowNeed::Save(need), None),
                     SessionNeed::Reveal(tab) => (WindowNeed::Reveal(tab), None),
@@ -891,7 +896,7 @@ impl GenerateWindow {
                         run,
                     },
                 };
-                WindowStep::Need(need, WindowRun { stage })
+                WindowStep::need(need, WindowRun { stage })
             }
         };
         self.prune_sessions();

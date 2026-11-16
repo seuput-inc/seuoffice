@@ -330,7 +330,6 @@ impl<H: SheetsBridgeHost> SheetsBridge<H> {
     /// commands, so the agent's first content call never races the renderer
     /// boot. Resolves with the tab's id (a number); a failed wait closes the
     /// tab and its backing file (`abandonBlankTab`) before it rejects.
-
     pub fn open_attached_tab(&mut self, opened: Result<i64, String>) -> Submitted {
         let wc_id = match opened {
             Ok(wc_id) => wc_id,

@@ -2,17 +2,20 @@
 //! separate captured-authority operation, never a side effect of the reducer.
 use super::*;
 
+type StampRow<V> = (
+    String,
+    TabKind,
+    Option<V>,
+    String,
+    Option<String>,
+    bool,
+    Option<Opener>,
+);
+type BindOpeners<'a> = dyn FnMut(&[(Opener, String)]) -> Result<(), String> + 'a;
+
 #[derive(PartialEq)]
 struct Stamp<V> {
-    rows: Vec<(
-        String,
-        TabKind,
-        Option<V>,
-        String,
-        Option<String>,
-        bool,
-        Option<Opener>,
-    )>,
+    rows: Vec<StampRow<V>>,
     active: String,
     split: Option<SplitViewState>,
     next_id: u64,
@@ -87,7 +90,7 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
     pub fn commit_startup_hydrate(
         &mut self,
         prepared: PreparedStartupHydration<V>,
-        bind: &mut dyn FnMut(&[(Opener, String)]) -> Result<(), String>,
+        bind: &mut BindOpeners<'_>,
     ) -> Result<Vec<String>, String> {
         if self.startup_stamp() != prepared.expected {
             return Err("The startup tab state changed before hydration".into());

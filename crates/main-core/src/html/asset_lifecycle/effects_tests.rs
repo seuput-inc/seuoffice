@@ -221,7 +221,7 @@ fn quarantine_conflict_keeps_both_objects_and_retains_inverse() {
     assert!(receipt.same_object(&original).unwrap());
     root.file("public/image.png", b"replacement");
     let receipt = match receipt.restore() {
-        Err((receipt, error)) if error.code == Some("EEXIST") => receipt,
+        Err(failure) if failure.1.code == Some("EEXIST") => failure.0,
         _ => panic!("restore must retain its receipt on conflict"),
     };
     assert_eq!(

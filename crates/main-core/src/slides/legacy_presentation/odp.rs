@@ -183,37 +183,41 @@ fn paragraph(
         ctx.drops.add("images");
         ctx.images = before;
     }
-    let mut para = Paragraph::default();
-    para.runs = Slot::of(
-        runs.into_iter()
-            .map(|run| {
-                let mut native = TextRun::default();
-                native.text = Slot::of(run.text);
-                if run.format.bold == Some(true) {
-                    native.bold = Slot::of(true);
-                }
-                if run.format.italic == Some(true) {
-                    native.italic = Slot::of(true);
-                }
-                if run.format.underline == Some(true) {
-                    native.underline = Slot::of(true);
-                }
-                if run.format.strike == Some(true) {
-                    native.strike = Slot::of(true);
-                }
-                if let Some(value) = run.format.size {
-                    native.font_size = Slot::of(JsNum(value));
-                }
-                if let Some(value) = run.format.font {
-                    native.font_family = Slot::of(value);
-                }
-                if let Some(value) = run.format.color {
-                    native.color = Slot::of(format!("#{value}"));
-                }
-                native
-            })
-            .collect(),
-    );
+    let mut para = Paragraph {
+        runs: Slot::of(
+            runs.into_iter()
+                .map(|run| {
+                    let mut native = TextRun {
+                        text: Slot::of(run.text),
+                        ..Default::default()
+                    };
+                    if run.format.bold == Some(true) {
+                        native.bold = Slot::of(true);
+                    }
+                    if run.format.italic == Some(true) {
+                        native.italic = Slot::of(true);
+                    }
+                    if run.format.underline == Some(true) {
+                        native.underline = Slot::of(true);
+                    }
+                    if run.format.strike == Some(true) {
+                        native.strike = Slot::of(true);
+                    }
+                    if let Some(value) = run.format.size {
+                        native.font_size = Slot::of(JsNum(value));
+                    }
+                    if let Some(value) = run.format.font {
+                        native.font_family = Slot::of(value);
+                    }
+                    if let Some(value) = run.format.color {
+                        native.color = Slot::of(format!("#{value}"));
+                    }
+                    native
+                })
+                .collect(),
+        ),
+        ..Default::default()
+    };
     let props = ctx
         .styles
         .resolve(xml::attr(node, "text:style-name"), FAMILIES)
@@ -228,9 +232,11 @@ fn paragraph(
         para.space_after = Slot::of(JsNum(value / 20.0));
     }
     if depth > 0 {
-        let mut bullet = ParagraphBullet::default();
-        bullet.r#type = Slot::of(BulletType::Char);
-        bullet.char = Slot::of("•".to_owned());
+        let bullet = ParagraphBullet {
+            r#type: Slot::of(BulletType::Char),
+            char: Slot::of("•".to_owned()),
+            ..Default::default()
+        };
         para.bullet = Slot::of(bullet);
         para.mar_l = Slot::of(JsNum(457_200.0 * depth as f64));
         para.indent = Slot::of(JsNum(-457_200.0));
@@ -386,10 +392,14 @@ pub(super) fn convert(bytes: &[u8], stop: &Stop<'_>) -> Result<Converted, String
                         let mut text = Vec::new();
                         paragraphs(textbox, 0, &mut ctx, &mut text)?;
                         if text.is_empty() {
-                            let mut run = TextRun::default();
-                            run.text = Slot::of(String::new());
-                            let mut para = Paragraph::default();
-                            para.runs = Slot::of(vec![run]);
+                            let run = TextRun {
+                                text: Slot::of(String::new()),
+                                ..Default::default()
+                            };
+                            let para = Paragraph {
+                                runs: Slot::of(vec![run]),
+                                ..Default::default()
+                            };
                             text.push(para);
                         }
                         insert::add_element(

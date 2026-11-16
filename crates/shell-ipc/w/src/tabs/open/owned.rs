@@ -506,7 +506,10 @@ impl TabsState {
             match manager.as_ref() {
                 Some(manager) => manager
                     .prepare_editor_adoption(bridge, plan, target.view())
-                    .map_err(|(plan, error)| (plan, error.0)),
+                    .map_err(|failure| {
+                        let (plan, error) = *failure;
+                        (plan, error.0)
+                    }),
                 None => Err((plan, "The shell window is unavailable".into())),
             }
         }?;
@@ -1080,17 +1083,18 @@ impl TabsState {
             } = &mut *inner;
             match manager.as_ref() {
                 Some(manager) => manager.prepare_editor_adoption(bridge, plan, target.view),
-                None => Err((
+                None => Err(Box::new((
                     plan,
                     main_core::shell::tab_manager::TabError(
                         "The shell window is unavailable".into(),
                     ),
-                )),
+                ))),
             }
         };
         let prepared = match prepared {
             Ok(prepared) => prepared,
-            Err((plan, error)) => {
+            Err(failure) => {
+                let (plan, error) = *failure;
                 return self
                     .fail_new_editor(id, plan, cleanup, rollback, created, error.0, done, diagram);
             }

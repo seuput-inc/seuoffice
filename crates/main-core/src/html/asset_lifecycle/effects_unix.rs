@@ -274,10 +274,12 @@ impl Quarantine {
         name: &str,
         private: &Directory,
         private_name: &str,
-    ) -> Result<Self, QuarantineMoveError> {
-        let fail = |error| QuarantineMoveError {
-            error,
-            retained: None,
+    ) -> Result<Self, Box<QuarantineMoveError>> {
+        let fail = |error| {
+            Box::new(QuarantineMoveError {
+                error,
+                retained: None,
+            })
         };
         let original = duplicate(original).map_err(fail)?;
         let private = duplicate(private).map_err(fail)?;
@@ -296,16 +298,19 @@ impl Quarantine {
             }
             Err(error) => match receipt.restore() {
                 Ok(()) => Err(fail(error)),
-                Err((retained, restore)) => Err(QuarantineMoveError {
-                    error: NodeError {
-                        code: restore.code,
-                        message: format!(
-                            "{}; quarantine retained at {}: {}",
-                            error.message, retained.private.path, restore.message
-                        ),
-                    },
-                    retained: Some(retained),
-                }),
+                Err(failure) => {
+                    let (retained, restore) = *failure;
+                    Err(Box::new(QuarantineMoveError {
+                        error: NodeError {
+                            code: restore.code,
+                            message: format!(
+                                "{}; quarantine retained at {}: {}",
+                                error.message, retained.private.path, restore.message
+                            ),
+                        },
+                        retained: Some(retained),
+                    }))
+                }
             },
         }
     }
@@ -319,7 +324,7 @@ impl Quarantine {
     }
 
     /// The receipt authorizes only this one no-replace inverse move.
-    pub(super) fn restore(self) -> Result<(), (Self, NodeError)> {
+    pub(super) fn restore(self) -> Result<(), Box<(Self, NodeError)>> {
         match move_exclusive(
             &self.private,
             &self.private_name,
@@ -327,7 +332,7 @@ impl Quarantine {
             &self.original_name,
         ) {
             Ok(()) => Ok(()),
-            Err(error) => Err((self, error)),
+            Err(error) => Err(Box::new((self, error))),
         }
     }
 }

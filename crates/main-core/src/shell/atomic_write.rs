@@ -36,6 +36,10 @@ fn sync_code(e: &io::Error) -> &'static str {
     ""
 }
 
+/// Authority for the final rename: runs the effect and reports its own result.
+pub type RenameAdmission<'a> =
+    dyn FnMut(&mut dyn FnMut() -> io::Result<()>) -> Result<io::Result<()>, NodeError> + 'a;
+
 /// `atomicWriteFile(filePath, data)`
 pub fn atomic_write_file(file_path: &str, data: &[u8]) -> Result<(), NodeError> {
     atomic_write_file_authorized(file_path, data, &mut |rename| Ok(rename()))
@@ -45,7 +49,7 @@ pub fn atomic_write_file(file_path: &str, data: &[u8]) -> Result<(), NodeError> 
 pub fn atomic_write_file_authorized(
     file_path: &str,
     data: &[u8],
-    admit: &mut dyn FnMut(&mut dyn FnMut() -> io::Result<()>) -> Result<io::Result<()>, NodeError>,
+    admit: &mut RenameAdmission<'_>,
 ) -> Result<(), NodeError> {
     via_temp(
         file_path,
@@ -63,7 +67,7 @@ pub fn atomic_write_file_authorized(
 fn via_temp(
     file_path: &str,
     fill: &mut dyn FnMut(&str) -> Result<(), NodeError>,
-    admit: &mut dyn FnMut(&mut dyn FnMut() -> io::Result<()>) -> Result<io::Result<()>, NodeError>,
+    admit: &mut RenameAdmission<'_>,
 ) -> Result<(), NodeError> {
     let tmp = temp_path_beside(file_path);
     let staged = (|| -> Result<(), NodeError> {

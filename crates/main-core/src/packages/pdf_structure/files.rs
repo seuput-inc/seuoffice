@@ -769,13 +769,13 @@ mod guarded_tests {
                 calls += 1;
                 if retry && calls == 4 {
                     return Err(NodeError {
-                        code: Some("EBUSY".into()),
+                        code: Some("EBUSY"),
                         message: "synthetic busy publication".into(),
                     });
                 }
                 if calls == if retry { 6 } else { 4 } {
                     return Err(NodeError {
-                        code: Some("ECANCELED".into()),
+                        code: Some("ECANCELED"),
                         message: "synthetic owner loss".into(),
                     });
                 }

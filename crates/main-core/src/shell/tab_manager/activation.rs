@@ -66,6 +66,8 @@ impl<V, B> TabActivationEffect<V, B> {
     }
 }
 
+type TabStamp<V, B> = (String, TabKind, Option<V>, Option<B>, bool, Option<Opener>);
+
 #[derive(PartialEq)]
 struct ActivationStamp<V, B> {
     active: String,
@@ -75,7 +77,7 @@ struct ActivationStamp<V, B> {
     spare_timer: bool,
     full_screen: Option<String>,
     bleed: Vec<i64>,
-    tabs: Vec<(String, TabKind, Option<V>, Option<B>, bool, Option<Opener>)>,
+    tabs: Vec<TabStamp<V, B>>,
 }
 
 struct ActivationState<V, B> {

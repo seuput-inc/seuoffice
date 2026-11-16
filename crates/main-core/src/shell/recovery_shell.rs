@@ -490,6 +490,7 @@ impl LaunchRecoveryStore for RecoveryStore<'_> {
 
 /// Filesystem preparation for one launch. Run on a worker with the retained
 /// session process and store; migration must perform the original legacy move.
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_launch(
     store: &dyn LaunchRecoveryStore,
     session: &mut SessionRecordProcess,
@@ -519,6 +520,7 @@ pub fn prepare_launch(
     Ok(plan)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_launch_staged(
     store: &dyn LaunchRecoveryStore,
     session: &mut SessionRecordProcess,

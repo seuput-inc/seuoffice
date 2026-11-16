@@ -26,6 +26,9 @@ use shell_contract::runtime::{CancelSubscription, CancelToken, RendererGeneratio
 use shell_contract::{IpcError, IpcValue, ViewId};
 use std::sync::{Arc, mpsc};
 
+type SavedDone =
+    Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>;
+
 #[path = "owned_rename.rs"]
 mod rename;
 #[path = "save_revision.rs"]
@@ -1042,7 +1045,7 @@ impl MindmapApp {
                         Ok(())
                     },
                 );
-                let done = Box::new(move |answer| match answer {
+                let done: SavedDone = Box::new(move |answer| match answer {
                     Ok(saved) => acknowledge_saved_hook(
                         &callback_app,
                         id,

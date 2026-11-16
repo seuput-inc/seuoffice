@@ -341,7 +341,6 @@ impl<H: DocsBridgeHost> DocsBridge<H> {
     /// `openBlankTab()` of the control: resolve only once the tab accepts
     /// commands, so the agent's first content call never races the renderer
     /// boot. Resolves with the tab's id (a number).
-
     pub fn open_attached_tab(&mut self, opened: Result<i64, String>) -> Submitted {
         let wc_id = match opened {
             Ok(id) => id,

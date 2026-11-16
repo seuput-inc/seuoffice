@@ -1494,7 +1494,9 @@ pub fn move_section(app: &App, cx: &CallContext, args: Args) -> Reply {
             .set("id", prop(op_value, "id")?.clone())
             .set("dir", p(op_value, "dir"))
             .build();
-        let Some(sections) = section_shim(app, s, o).filter(truthy) else {
+        let Some(sections) =
+            section_shim(app, s, &super::session::render_owner(cx)?, o)?.filter(truthy)
+        else {
             return null();
         };
         let update = app.build_slide_update(s, &super::session::render_owner(cx)?, &before, &[])?;

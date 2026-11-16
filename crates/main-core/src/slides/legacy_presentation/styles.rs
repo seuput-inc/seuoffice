@@ -123,25 +123,25 @@ impl Styles {
                 if let (Some(name), Some(family)) = (
                     xml::attr(node, "style:name").filter(|value| !value.is_empty()),
                     xml::attr(node, "style:family").filter(|value| !value.is_empty()),
-                ) {
-                    if !matches!(family, "table-column" | "table-cell") {
-                        let (text, para) = self.props(node);
-                        if !self.defs.contains_key(family) {
-                            self.defs.insert(family.to_owned(), HashMap::new());
-                        }
-                        self.defs
-                            .get_mut(family)
-                            .expect("style family inserted")
-                            .insert(
-                                name.to_owned(),
-                                Style {
-                                    parent: xml::attr(node, "style:parent-style-name")
-                                        .map(str::to_owned),
-                                    text,
-                                    para,
-                                },
-                            );
+                )
+                    && !matches!(family, "table-column" | "table-cell")
+                {
+                    let (text, para) = self.props(node);
+                    if !self.defs.contains_key(family) {
+                        self.defs.insert(family.to_owned(), HashMap::new());
                     }
+                    self.defs
+                        .get_mut(family)
+                        .expect("style family inserted")
+                        .insert(
+                            name.to_owned(),
+                            Style {
+                                parent: xml::attr(node, "style:parent-style-name")
+                                    .map(str::to_owned),
+                                text,
+                                para,
+                            },
+                        );
                 }
             }
             "style:default-style" => {

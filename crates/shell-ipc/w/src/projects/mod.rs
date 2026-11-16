@@ -872,7 +872,7 @@ impl Projects {
             Ok(ContextPreparation::Done(result)) => {
                 return self.advance(ProjectIpc::finish_context_read(Ok(result)), reply);
             }
-            Ok(ContextPreparation::Write(write)) => write,
+            Ok(ContextPreparation::Write(write)) => *write,
             Err(error) => return reply.reply(Err(error_of(Thrown(error.message())))),
         };
         let token = NEXT_SETTINGS.with(|next| {
@@ -948,7 +948,7 @@ impl Projects {
                 });
                 return self.advance(step, reply);
             }
-            TrustPreparation::Write(write) => write,
+            TrustPreparation::Write(write) => *write,
         };
         self.queue_trust_write(project_id, write, reply);
     }
@@ -1120,7 +1120,7 @@ impl Projects {
             Ok(CreatePreparation::Adopt(start)) => self.start_adoption(
                 owner,
                 AdoptDestination::Create(request, second),
-                Ok(start),
+                Ok(*start),
                 reply,
             ),
             Ok(CreatePreparation::New {
@@ -1504,13 +1504,13 @@ impl Projects {
                     AdoptWork::Plan(plan) => projects
                         .guide()
                         .prepare_adopt_write(plan)
-                        .map(AdoptPreparation::Write),
+                        .map(|write| AdoptPreparation::Write(Box::new(write))),
                     AdoptWork::Answer(pending, answer) => {
                         projects.guide().prepare_adopt_answer(pending, answer)
                     }
                 };
                 let write = match preparation {
-                    Ok(AdoptPreparation::Write(write)) => write,
+                    Ok(AdoptPreparation::Write(write)) => *write,
                     Ok(AdoptPreparation::Done(result)) => {
                         let pending =
                             PENDING_SETTINGS.with(|pending| pending.borrow_mut().remove(&token));

@@ -1,15 +1,16 @@
-use std::cell::RefCell;
+use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use shell_contract::editors::{PreparedSavedDocument, Then};
+use shell_contract::editors::{PreparedSavedDocument, SavedActorRegistration, Then};
 use shell_contract::ipc::{
-    CallContext, NativeBrowserTransition, NativeSavedDocument, NativeSavedTarget, Responder,
+    CallContext, NativeBrowserSuperseded, NativeBrowserTransition, NativeClosureReceipt,
+    NativeSavedDocument, NativeSavedTarget, Responder,
 };
 use shell_contract::runtime::CancelSubscription;
 use shell_contract::{IpcError, Surface, ViewId};
 
-use super::state::{App, AppState};
+use super::state::App;
 use crate::value::thrown;
 
 pub(super) struct SavedLoad {
@@ -32,8 +33,24 @@ pub(super) struct Applying {
     _loss: CancelSubscription,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Prepared,
+    Committed,
+    Closed,
+    Superseded,
+    RolledBack,
+}
+
+struct Registration {
+    app: App,
+    target: NativeSavedTarget,
+    identity: Arc<()>,
+    phase: Cell<Phase>,
+}
+
 struct Prepared {
-    state: Rc<RefCell<AppState>>,
+    registration: Rc<Registration>,
     slot: Option<SavedLoad>,
 }
 
@@ -46,12 +63,18 @@ impl Drop for Prepared {
 }
 
 impl PreparedSavedDocument for Prepared {
-    fn commit(&mut self, transition: &NativeBrowserTransition<'_>) -> Result<(), IpcError> {
-        let pending = self
-            .slot
-            .as_ref()
-            .ok_or_else(|| thrown("The saved presentation barrier was already committed"))?;
-        let target = &pending.target;
+    fn with_validated(
+        &mut self,
+        transition: &NativeBrowserTransition<'_>,
+        next: &mut dyn FnMut() -> Result<(), IpcError>,
+    ) -> Result<(), IpcError> {
+        let registration = self.registration.clone();
+        let target = &registration.target;
+        if registration.phase.get() != Phase::Prepared {
+            return Err(thrown(
+                "The saved presentation actor was already committed or released",
+            ));
+        }
         if !transition.matches(target.reservation())
             || !(transition.matches_owner(target.browser())
                 || transition.proposes_owner(target.browser()))
@@ -60,19 +83,82 @@ impl PreparedSavedDocument for Prepared {
                 "The saved presentation belongs to another browser transition",
             ));
         }
-        let mut state = self.state.borrow_mut();
+        let mut state = registration.app.state.borrow_mut();
         if state.saved_loads.contains_key(&target.view()) {
             return Err(thrown(
                 "A saved presentation is already pending for this view",
             ));
         }
-        let view = target.view();
         let pending = self
             .slot
             .take()
-            .ok_or_else(|| thrown("The saved presentation barrier was released"))?;
-        state.saved_loads.insert(view, pending);
+            .ok_or_else(|| thrown("The saved presentation barrier was already committed"))?;
+        if let Err(error) = next() {
+            self.slot = Some(pending);
+            return Err(error);
+        }
+        state.saved_loads.insert(target.view(), pending);
+        registration.phase.set(Phase::Committed);
         Ok(())
+    }
+
+    fn finish(self: Box<Self>) -> Rc<dyn SavedActorRegistration> {
+        self.registration.clone()
+    }
+}
+
+impl SavedActorRegistration for Registration {
+    fn retire_closed(&self, proof: NativeClosureReceipt, then: Then<()>) {
+        if !matches!(self.phase.get(), Phase::Committed | Phase::Closed)
+            || !proof.matches(
+                self.target.reservation(),
+                self.target.view(),
+                self.target.created(),
+            )
+        {
+            return then(Err(thrown(
+                "The saved presentation close proof does not match",
+            )));
+        }
+        fail(
+            &self.app,
+            self.target.view(),
+            &self.identity,
+            "The presentation view was closed",
+        );
+        self.phase.set(Phase::Closed);
+        then(Ok(()));
+    }
+
+    fn retire_superseded(&self, proof: NativeBrowserSuperseded, then: Then<()>) {
+        if !matches!(self.phase.get(), Phase::Committed | Phase::Superseded)
+            || !proof.matches(self.target.reservation(), self.target.browser())
+        {
+            return then(Err(thrown(
+                "The saved presentation supersession proof does not match",
+            )));
+        }
+        fail(
+            &self.app,
+            self.target.view(),
+            &self.identity,
+            "The saved presentation browser was replaced",
+        );
+        self.phase.set(Phase::Superseded);
+        then(Ok(()));
+    }
+
+    fn rollback(&self, then: Then<()>) {
+        match self.phase.get() {
+            Phase::Prepared | Phase::RolledBack => {
+                self.phase.set(Phase::RolledBack);
+                then(Ok(()));
+            }
+            Phase::Closed | Phase::Superseded => then(Ok(())),
+            Phase::Committed => then(Err(thrown(
+                "The saved presentation actor lacks its exact close proof",
+            ))),
+        }
     }
 }
 
@@ -128,7 +214,12 @@ pub(super) fn prepare(
         .try_reserve(1)
         .map_err(|_| thrown("The presentation lifetime could not be allocated"))?;
     Ok(Box::new(Prepared {
-        state: app.state.clone(),
+        registration: Rc::new(Registration {
+            app: app.clone(),
+            target: target.clone(),
+            identity: identity.clone(),
+            phase: Cell::new(Phase::Prepared),
+        }),
         slot: Some(SavedLoad {
             target,
             identity,

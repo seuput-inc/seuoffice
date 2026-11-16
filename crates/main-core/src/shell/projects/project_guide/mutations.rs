@@ -1,7 +1,7 @@
 //! Owned, request-authorized mutations of project instructions and memory.
 use super::*;
 use crate::packages::project_store::ProjectChangedPart;
-use crate::shell::projects::write_guard::ProjectWriteGuard;
+use crate::shell::projects::write_guard::{Authorize, ProjectWriteGuard};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MutationRequest {
@@ -66,7 +66,7 @@ pub struct MutationResult {
 }
 pub enum MutationPreparation {
     Done(MutationResult),
-    Write(MutationWrite),
+    Write(Box<MutationWrite>),
 }
 
 /// A plan holds only owned, Send data; it never retains a guide or host callback.
@@ -89,13 +89,13 @@ pub struct MutationWrite {
 pub enum MutationAcknowledgement {
     Done {
         result: MutationResult,
-        authority: ContextAuthority,
+        authority: Box<ContextAuthority>,
         unwritable: bool,
         warning: Option<String>,
         retained: Vec<String>,
         identified: bool,
     },
-    NeedBackupName(MutationWrite),
+    NeedBackupName(Box<MutationWrite>),
 }
 
 fn reply<T: serde::Serialize>(value: &T, changed: Option<ProjectChangedPart>) -> MutationResult {
@@ -128,20 +128,19 @@ impl ProjectGuide {
         {
             assert_folder_relative(rel_path)?;
         }
-        if let MutationRequest::RenameProject { name, .. } = &request {
-            if clean_project_name(name).is_empty() {
-                return Err(GuideError::plain("a project name cannot be empty"));
-            }
+        if let MutationRequest::RenameProject { name, .. } = &request
+            && clean_project_name(name).is_empty()
+        {
+            return Err(GuideError::plain("a project name cannot be empty"));
         }
         let authority =
             ContextAuthority::capture(&settings, id).ok_or_else(|| unknown_project(id))?;
-        if let MutationRequest::ApplyMemoryConsolidation { entries, .. } = &request {
-            if entries
+        if let MutationRequest::ApplyMemoryConsolidation { entries, .. } = &request
+            && entries
                 .iter()
                 .any(|entry| !matches!(entry, JsonValue::String(_)))
-            {
-                return Err(GuideError::plain("entries must be a list of strings"));
-            }
+        {
+            return Err(GuideError::plain("entries must be a list of strings"));
         }
         if let MutationRequest::EditMemory {
             by: MemoryEditor::Ai,
@@ -200,7 +199,7 @@ impl ProjectGuide {
         let backup_at = matches!(&request, MutationRequest::ApplyMemoryConsolidation { .. })
             .then(|| self.clock());
         let backup_name = backup_at.map(|at| self.mutation_backup_name(&root, &data_dir, at));
-        Ok(MutationPreparation::Write(MutationWrite {
+        Ok(MutationPreparation::Write(Box::new(MutationWrite {
             request,
             authority,
             root,
@@ -215,7 +214,7 @@ impl ProjectGuide {
             identity_done: false,
             retained: Vec::new(),
             diagnostics: Vec::new(),
-        }))
+        })))
     }
 
     fn mutation_backup_name(&self, root: &str, data_dir: &str, mut at: f64) -> String {
@@ -248,7 +247,7 @@ impl ProjectGuide {
         ack: MutationAcknowledgement,
     ) -> Result<MutationAcknowledgement, GuideError> {
         let authority = match &ack {
-            MutationAcknowledgement::Done { authority, .. } => authority,
+            MutationAcknowledgement::Done { authority, .. } => authority.as_ref(),
             MutationAcknowledgement::NeedBackupName(write) => &write.authority,
         };
         if !authority.is_current(&self.read()) {
@@ -341,9 +340,7 @@ impl MutationWrite {
         &mut self,
         guard: &ProjectWriteGuard,
         settings_path: &str,
-        authorize: &mut dyn FnMut(
-            &mut dyn FnMut() -> Result<(), NodeError>,
-        ) -> Result<(), NodeError>,
+        authorize: &mut Authorize<'_>,
     ) -> Result<(), GuideError> {
         if self.identity_done {
             return Ok(());
@@ -423,7 +420,7 @@ impl MutationWrite {
         let (mut result, hash) = match performed {
             Ok(Performed::Done(result, hash)) => (result, hash),
             Ok(Performed::BackupCollision) => {
-                return Ok(MutationAcknowledgement::NeedBackupName(self));
+                return Ok(MutationAcknowledgement::NeedBackupName(Box::new(self)));
             }
             Err(error) => {
                 let mut result = unwritable_result(&self.request);
@@ -434,7 +431,7 @@ impl MutationWrite {
                 );
                 return Ok(MutationAcknowledgement::Done {
                     result,
-                    authority: self.authority,
+                    authority: Box::new(self.authority),
                     unwritable: true,
                     warning: Some(error.message()),
                     retained: self.retained,
@@ -472,7 +469,7 @@ impl MutationWrite {
         );
         Ok(MutationAcknowledgement::Done {
             result,
-            authority: self.authority,
+            authority: Box::new(self.authority),
             unwritable: false,
             warning: None,
             retained: self.retained,
@@ -493,9 +490,7 @@ impl MutationWrite {
         settings: &str,
         name: &str,
         text: &str,
-        authorize: &mut dyn FnMut(
-            &mut dyn FnMut() -> Result<(), NodeError>,
-        ) -> Result<(), NodeError>,
+        authorize: &mut Authorize<'_>,
     ) -> Result<(), GuideError> {
         self.identify(guard, settings, authorize)?;
         self.check_authority(settings)?;
@@ -517,10 +512,8 @@ impl MutationWrite {
         guard: &ProjectWriteGuard,
         settings: &str,
         name: &str,
-        change: &mut dyn FnMut(Option<&str>) -> Result<Option<String>, GuideError>,
-        authorize: &mut dyn FnMut(
-            &mut dyn FnMut() -> Result<(), NodeError>,
-        ) -> Result<(), NodeError>,
+        change: DataChange<'_, GuideError>,
+        authorize: &mut Authorize<'_>,
     ) -> Result<DataUpdateResult, GuideError> {
         self.check_authority(settings)?;
         let root = self.root.clone();
@@ -552,9 +545,7 @@ impl MutationWrite {
         &mut self,
         guard: &ProjectWriteGuard,
         settings: &str,
-        authorize: &mut dyn FnMut(
-            &mut dyn FnMut() -> Result<(), NodeError>,
-        ) -> Result<(), NodeError>,
+        authorize: &mut Authorize<'_>,
     ) -> Result<Performed, GuideError> {
         match self.request.clone() {
             MutationRequest::RenameProject { project_id, name } => {
@@ -846,6 +837,30 @@ fn backup_names(root: &str, data_dir: &str) -> Vec<String> {
     sort_utf16(&mut names);
     names.reverse();
     names
+}
+
+fn identity_needs_fix(
+    id: &str,
+    root: &str,
+    text: &str,
+    pending: bool,
+    settings: &StoredProjectsSettings,
+    platform: &str,
+) -> bool {
+    let file_id = match json_parse(text) {
+        Ok(JsonValue::Object(raw)) => match raw.get("id") {
+            Some(JsonValue::String(id)) => Some(id.clone()),
+            _ => None,
+        },
+        _ => None,
+    };
+    file_id
+        .filter(|other| other != id && is_valid_project_id(other))
+        .is_some_and(|other| {
+            pending
+                || entry_in(settings, &other)
+                    .is_some_and(|entry| !same_path(&entry.path, root, platform))
+        })
 }
 
 #[cfg(test)]
@@ -1199,28 +1214,4 @@ mod tests {
         assert_eq!(result.changed, None);
         std::fs::remove_dir_all(base).unwrap();
     }
-}
-
-fn identity_needs_fix(
-    id: &str,
-    root: &str,
-    text: &str,
-    pending: bool,
-    settings: &StoredProjectsSettings,
-    platform: &str,
-) -> bool {
-    let file_id = match json_parse(text) {
-        Ok(JsonValue::Object(raw)) => match raw.get("id") {
-            Some(JsonValue::String(id)) => Some(id.clone()),
-            _ => None,
-        },
-        _ => None,
-    };
-    file_id
-        .filter(|other| other != id && is_valid_project_id(other))
-        .is_some_and(|other| {
-            pending
-                || entry_in(settings, &other)
-                    .is_some_and(|entry| !same_path(&entry.path, root, platform))
-        })
 }

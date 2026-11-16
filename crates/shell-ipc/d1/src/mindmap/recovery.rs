@@ -5,7 +5,6 @@
 //! saved, dropped with "Don't Save" or closed without unsaved changes.
 
 use std::cell::RefMut;
-use std::fs;
 
 use main_core::node_fs::NodeError;
 use main_core::packages::electron_utils::recovery_contract::RecoveryOpenDecision;

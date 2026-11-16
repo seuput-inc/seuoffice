@@ -3,7 +3,7 @@
 //! autosave pref, undo/redo and history batches.
 
 use jscompat::JsonValue;
-use jscompat::node_path::host::{basename, join};
+use jscompat::node_path::host::basename;
 use main_core::packages::electron_utils::recovery_store::RecoveryDeleteReason;
 use main_core::packages::electron_utils::save_conflict::record_disk_state;
 use shell_contract::editors::Then;
@@ -11,7 +11,7 @@ use shell_contract::hosts::MessageBox;
 use shell_contract::ipc::{CallContext, Responder};
 use shell_contract::{IpcError, IpcValue, ViewId, WindowId};
 
-use super::dialog::{filter, jstr, jstrs, options};
+use super::dialog::{filter, jstrs, options};
 use super::engine::PreparedOpen;
 use super::session::{null, number};
 use super::state::{App, DeckHandle, SlideSession, StagedBinding};
@@ -181,7 +181,7 @@ impl App {
         // Same file already open in another window: attach to that session
         let wanted = std::path::absolute(path).unwrap_or_else(|_| path.into());
         {
-            let mut state = self.state.borrow_mut();
+            let state = self.state.borrow_mut();
             let mut found = None;
             // A preselected recovery decision must open its own bytes.
             for slot in state
@@ -916,7 +916,9 @@ fn thrown_text(text: String) -> IpcError {
 // ---- undo / redo / history batches ----
 
 pub fn get_render_slides(app: &App, cx: &CallContext, _args: Args) -> Reply {
-    app.with_session(cx.sender.view, |app, s| Ok(app.rebuild_every_slide(s)))
+    app.with_session(cx.sender.view, |app, s| {
+        app.rebuild_every_slide(s, &super::session::render_owner(cx)?)
+    })
 }
 
 pub fn undo(app: &App, cx: &CallContext, _args: Args) -> Reply {

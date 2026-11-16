@@ -98,7 +98,7 @@ impl Entities {
         let mut at = 0;
         let mut visited = 0usize;
         while let Some(found) = value[at..].find('&') {
-            if visited % 1024 == 0 && (stop.0)() {
+            if visited.is_multiple_of(1024) && (stop.0)() {
                 return Err(());
             }
             visited += 1;
@@ -253,10 +253,10 @@ fn name(source: &str, at: &mut usize, quotes_stop: bool, xml11: bool) -> Result<
     if !valid(parts.next().unwrap_or("")) {
         return Err(());
     }
-    if let Some(local) = parts.next() {
-        if !valid(local) || parts.next().is_some() {
-            return Err(());
-        }
+    if let Some(local) = parts.next()
+        && (!valid(local) || parts.next().is_some())
+    {
+        return Err(());
     }
     Ok(value.to_owned())
 }
@@ -467,14 +467,14 @@ pub(super) fn parse(source: &str, stop: &Stop<'_>) -> Result<Option<Vec<XNode>>,
                 let tag = quoted_tag(&normalized[begin..at], &mut entities, stop)?;
                 if pi {
                     let parsed = ooxml_xml::parse_ordered(&tag, 100).map_err(|_| ())?;
-                    if let Some(XNode::Element(element)) = parsed.first() {
-                        if !element.attrs.is_empty() {
-                            entities.xml11 = element
-                                .attrs
-                                .iter()
-                                .find(|(key, _)| key == "version")
-                                .is_some_and(|(_, value)| to_number(value) == 1.1);
-                        }
+                    if let Some(XNode::Element(element)) = parsed.first()
+                        && !element.attrs.is_empty()
+                    {
+                        entities.xml11 = element
+                            .attrs
+                            .iter()
+                            .find(|(key, _)| key == "version")
+                            .is_some_and(|(_, value)| to_number(value) == 1.1);
                     }
                 }
                 if !pi {

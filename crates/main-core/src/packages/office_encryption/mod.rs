@@ -84,10 +84,10 @@ fn legacy_is_encrypted(container: &Container) -> Option<bool> {
             return Some(true);
         }
     }
-    if let Some(word) = content(container, "WordDocument") {
-        if u16_at(word, 10)? & 0x0100 != 0 {
-            return Some(true);
-        }
+    if let Some(word) = content(container, "WordDocument")
+        && u16_at(word, 10)? & 0x0100 != 0
+    {
+        return Some(true);
     }
     if let Some(presentation) = content(container, "PowerPoint Document") {
         let current = content(container, "Current User")?;

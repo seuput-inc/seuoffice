@@ -285,7 +285,7 @@ pub(super) struct GeneratedTransition {
 
 struct GeneratedTransitionInner {
     retired_origin: std::sync::atomic::AtomicBool,
-    receipt: Mutex<Option<shell_contract::hosts::CommittedGeneratedPath>>,
+    receipt: Mutex<Option<Arc<shell_contract::hosts::CommittedGeneratedPath>>>,
     cancellation: Mutex<Option<shell_contract::ipc::AcceptedOwnerLosses>>,
     subscriptions: Mutex<Vec<shell_contract::runtime::CancelSubscription>>,
     loss: Arc<dyn Fn() + Send + Sync>,
@@ -360,7 +360,7 @@ impl GeneratedTransition {
             })
     }
 
-    pub fn store(&self, receipt: shell_contract::hosts::CommittedGeneratedPath) {
+    pub fn store(&self, receipt: Arc<shell_contract::hosts::CommittedGeneratedPath>) {
         *self
             .inner
             .receipt

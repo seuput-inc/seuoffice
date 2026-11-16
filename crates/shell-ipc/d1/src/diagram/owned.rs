@@ -22,6 +22,8 @@ use super::formats::{DiagramFormat, format_for_save_path, format_of_path, with_f
 use crate::owned_save::{OwnedSave, SaveAuthority};
 use crate::value::{Args, as_bytes, field, obj, string, thrown};
 
+type SavedDone = Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>;
+
 fn with_recovery<R>(
     shared: &crate::host::RecoveryStateHost,
     dir: &str,
@@ -560,7 +562,9 @@ impl DiagramViews {
         let options = crate::host::file_dialog(&options);
         let core = self.0.services.core.clone();
         let dialog_scope = scope.clone();
+        let instance = self.0.id;
         let deliver = Box::new(move |result| {
+            let result: Result<Option<crate::owned_save::SaveDestination>, String> = result;
             core.post(Box::new(move || {
                 let Some(views) = super::lookup(instance) else {
                     return;
@@ -1024,7 +1028,7 @@ impl DiagramViews {
                             Ok(())
                         },
                     );
-                    let done = Box::new(move |result| match result {
+                    let done: SavedDone = Box::new(move |result| match result {
                         Ok(saved) => views.complete_owned_diagram(
                             view,
                             Some(id),

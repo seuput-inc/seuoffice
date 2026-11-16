@@ -9,11 +9,13 @@ use std::sync::{Arc, Mutex};
 
 use jscompat::node_path::host::basename;
 use serde_json::Value;
+use shell_contract::ipc::{DirectWriteCompletion, NativeSavedInput};
 use shell_contract::{Hosts, IpcError, IpcValue, ViewId, WindowId};
 
 use super::conv::serde_to_ipc;
 use super::engine::*;
 use super::schema;
+use crate::slides::fake::synthetic_generated;
 use crate::value::{num, obj, string};
 
 type Log = Arc<Mutex<Vec<Value>>>;
@@ -1048,6 +1050,74 @@ impl FakeShell {
     }
 }
 
+fn log_open_generated(log: &Option<Log>, path: &str) {
+    if let Some(log) = log {
+        log.lock()
+            .unwrap()
+            .push(Value::Array(vec!["shell.openGeneratedPath".into(), path.into()]));
+    }
+}
+
+fn check_written_input(
+    output: &shell_contract::ipc::SavedPublication,
+    written: Option<&NativeSavedInput>,
+) -> Result<(), String> {
+    if written.is_some_and(|input| !input.output().same_publication(output)) {
+        return Err("The synthetic saved input does not match the publication".into());
+    }
+    Ok(())
+}
+
+fn generated_path(output: &shell_contract::ipc::SavedPublication) -> Result<String, String> {
+    output
+        .path()
+        .to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| "The synthetic generated path is not Unicode".into())
+}
+
+/// What the shell's committed receipt binds for the publication's own authority.
+fn committed_receipt(
+    output: &shell_contract::ipc::SavedPublication,
+    participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+    cancel: shell_contract::runtime::CancelToken,
+    pending: shell_contract::runtime::CancelToken,
+    additional: Vec<shell_contract::runtime::CancelToken>,
+    effects: shell_contract::hosts::OwnedEffectsHost,
+) -> Result<shell_contract::hosts::CommittedGeneratedPath, String> {
+    match output {
+        shell_contract::ipc::SavedPublication::Native(native) => {
+            shell_contract::hosts::CommittedGeneratedPath::from_existing_document_save(
+                native.selection().clone(),
+                native.selection().binding().owner().clone(),
+                participants,
+                cancel,
+                pending,
+                additional,
+                effects,
+            )
+        }
+        shell_contract::ipc::SavedPublication::Renderer(renderer) => {
+            let mut captured = participants;
+            captured.extend_from_slice(renderer.participants());
+            let mut controls = additional;
+            controls.push(renderer.cancel().clone());
+            controls.push(renderer.pending().clone());
+            controls.extend_from_slice(renderer.additional());
+            shell_contract::hosts::CommittedGeneratedPath::from_loaded_target(
+                renderer.origin().clone(),
+                renderer.destination().clone(),
+                renderer.destination().clone(),
+                cancel,
+                pending,
+                effects,
+            )
+            .and_then(|receipt| receipt.with_captured_participants(&captured))
+            .and_then(|receipt| receipt.with_captured_cancellations(&controls))
+        }
+    }
+}
+
 fn owned_fake_check(
     origin: &shell_contract::ipc::NativeRequestOwner,
     destination: &shell_contract::ipc::NativeRequestOwner,
@@ -1272,13 +1342,15 @@ impl SheetsShell for FakeShell {
         &self,
         origin: &shell_contract::ipc::NativeRequestOwner,
         destination: &shell_contract::ipc::NativeRequestOwner,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
         cancel: &shell_contract::runtime::CancelToken,
         pending: &shell_contract::runtime::CancelToken,
-        _effects: &shell_contract::hosts::OwnedEffectsHost,
+        additional: &[shell_contract::runtime::CancelToken],
+        effects: &shell_contract::hosts::OwnedEffectsHost,
         admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
         file_name: &str,
         bytes: &[u8],
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Option<(shell_contract::ipc::SavedPublication, NativeSavedInput)>, String> {
         owned_fake_check(origin, destination, cancel, pending)?;
         let view = destination.view;
         self.line(vec![
@@ -1294,17 +1366,47 @@ impl SheetsShell for FakeShell {
         {
             return Err(message.to_owned());
         }
-        let path = scripted
+        let Some(path) = scripted
             .and_then(|v| v.get("path"))
             .and_then(Value::as_str)
-            .map(str::to_owned);
-        match path {
-            Some(path) => main_core::packages::electron_utils::atomic_write::owned::admitted(
-                &admission,
-                move || Some(path),
+            .map(std::path::PathBuf::from)
+        else {
+            return Ok(None);
+        };
+        main_core::packages::electron_utils::atomic_write::owned::admitted(&admission, || ())
+            .map_err(|error| error.message)?;
+        let parent = path
+            .parent()
+            .ok_or("The scripted document path has no parent directory")?;
+        let parent = fs::File::open(parent).map_err(|error| error.to_string())?;
+        let prepared = file_commit::prepare_direct(&parent, &path)
+            .map_err(|error| error.to_string())?;
+        let admitted = effects
+            .begin_owned_direct_write(
+                origin,
+                destination,
+                participants,
+                cancel,
+                pending,
+                additional,
+                &path,
+                prepared,
             )
-            .map_err(|error| error.message),
-            None => Ok(None),
+            .map_err(|error| format!("{error:?}"))?;
+        let completed = admitted
+            .write_owned(bytes.to_vec())
+            .map_err(|(error, _)| error.to_string())?;
+        match completed.finish(effects.as_ref()) {
+            DirectWriteCompletion::Committed {
+                publication,
+                snapshot,
+            } => {
+                let input =
+                    NativeSavedInput::from_written_snapshot(publication.clone(), snapshot)?;
+                Ok(Some((publication, input)))
+            }
+            DirectWriteCompletion::WrittenWithoutReceipt { error, .. } => Err(error.to_string()),
+            DirectWriteCompletion::WrittenButNotAdmitted { error, .. } => Err(error),
         }
     }
 
@@ -1342,54 +1444,75 @@ impl SheetsShell for FakeShell {
     }
     fn open_generated_path_owned(
         &self,
-        path: String,
-        origin: shell_contract::ipc::NativeRequestOwner,
-        destination: shell_contract::ipc::NativeRequestOwner,
+        output: shell_contract::ipc::SavedPublication,
+        written: Option<NativeSavedInput>,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
         cancel: shell_contract::runtime::CancelToken,
         pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
         _accepted: shell_contract::hosts::PdfReloadAccepted,
-        then: Box<dyn FnOnce(Result<shell_contract::hosts::GeneratedPathOutcome, String>) + Send>,
-    ) {
-        then(
-            owned_fake_check(&origin, &destination, &cancel, &pending).map(|()| {
-                self.open_generated_path(&path);
-                shell_contract::hosts::GeneratedPathOutcome::NotOpened
-            }),
-        );
+        _wake: shell_contract::hosts::GeneratedPathWake,
+    ) -> Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String> {
+        check_written_input(&output, written.as_ref())?;
+        let path = generated_path(&output)?;
+        let log = self.log.clone();
+        Ok(synthetic_generated(Box::new(move || {
+            let extra: Vec<_> = additional.iter().collect();
+            output.with_effect(
+                effects.as_ref(),
+                &participants,
+                &cancel,
+                &pending,
+                &extra,
+                &mut || {
+                    log_open_generated(&log, &path);
+                    Ok(())
+                },
+            )?;
+            Ok(shell_contract::hosts::GeneratedPathOutcome::NotOpened)
+        })))
     }
 
     fn export_pdf_written_owned(
         &self,
-        path: String,
-        origin: shell_contract::ipc::NativeRequestOwner,
-        destination: shell_contract::ipc::NativeRequestOwner,
+        output: shell_contract::ipc::SavedPublication,
+        written: Option<NativeSavedInput>,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
         cancel: shell_contract::runtime::CancelToken,
         pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
         effects: shell_contract::hosts::OwnedEffectsHost,
         _accepted: shell_contract::hosts::PdfReloadAccepted,
-        then: Box<dyn FnOnce(Result<shell_contract::hosts::GeneratedPathOutcome, String>) + Send>,
-    ) {
-        let result = (|| {
-            self.open_generated_path(&path);
-            let shell = self
-                .os_shell
-                .as_ref()
-                .ok_or("Synthetic reveal host is unavailable")?;
-            effects.with_owned_effect(&origin, &destination, &cancel, &pending, &mut || {
-                shell.show_item_in_folder(std::path::Path::new(&path));
-                Ok(())
-            })?;
-            let receipt = shell_contract::hosts::CommittedGeneratedPath::from_loaded_target(
-                origin,
-                destination.clone(),
-                destination,
-                cancel,
-                pending,
-                effects,
+        _wake: shell_contract::hosts::GeneratedPathWake,
+    ) -> Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String> {
+        check_written_input(&output, written.as_ref())?;
+        let path = generated_path(&output)?;
+        let log = self.log.clone();
+        let shell = self
+            .os_shell
+            .clone()
+            .ok_or("Synthetic reveal host is unavailable")?;
+        Ok(synthetic_generated(Box::new(move || {
+            let extra: Vec<_> = additional.iter().collect();
+            output.with_effect(
+                effects.as_ref(),
+                &participants,
+                &cancel,
+                &pending,
+                &extra,
+                &mut || {
+                    log_open_generated(&log, &path);
+                    shell.show_item_in_folder(std::path::Path::new(&path));
+                    Ok(())
+                },
             )?;
-            Ok(shell_contract::hosts::GeneratedPathOutcome::Opened(receipt))
-        })();
-        then(result);
+            let receipt =
+                committed_receipt(&output, participants, cancel, pending, additional, effects)?;
+            Ok(shell_contract::hosts::GeneratedPathOutcome::Opened(
+                Arc::new(receipt),
+            ))
+        })))
     }
 
     fn assert_file_saved(&self, path: String, then: Box<dyn FnOnce(Result<(), String>) + Send>) {

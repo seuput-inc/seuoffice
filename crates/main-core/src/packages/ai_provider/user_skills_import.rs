@@ -523,6 +523,7 @@ pub fn diff_skill_folders(installed: &str, updated: &str) -> Result<Vec<SkillFil
     Ok(changes)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn check_github_skill_update(
     skill_dir: &str,
     app_skills_dir: &str,
@@ -1149,6 +1150,7 @@ pub fn prepare_zip_import(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_github_archive(
     origin: SkillImportOrigin,
     only_skill: Option<&str>,

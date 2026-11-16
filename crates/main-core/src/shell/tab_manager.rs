@@ -158,6 +158,8 @@ pub struct ViewCreationReady<V, R, B> {
 
 pub type ViewCreationResult<V, R, B> = Result<ViewCreationReady<V, R, B>, ViewCreationFailure<R>>;
 
+type ExistingHelp<V> = (String, Option<V>, Option<String>);
+
 pub struct PreparedHelpOpen {
     topic: Option<String>,
     url: String,
@@ -1438,7 +1440,7 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
         &self,
         dev_url: Option<&str>,
         topic: Option<&str>,
-    ) -> TabResult<Result<PreparedHelpOpen, (String, Option<V>, Option<String>)>> {
+    ) -> TabResult<Result<PreparedHelpOpen, ExistingHelp<V>>> {
         let wanted = help_topic_param(topic);
         let url = help_view_url(dev_url, wanted)?;
         if let Some(existing) = self.tabs.iter().find(|tab| tab.kind == TabKind::Help) {
@@ -1542,21 +1544,21 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
         host: &mut dyn TabHost<V, B>,
         plan: PreparedTabOpen<V, B>,
         view: V,
-    ) -> Result<PreparedEditorAdoption<V, B>, (PreparedTabOpen<V, B>, TabError)> {
+    ) -> Result<PreparedEditorAdoption<V, B>, Box<(PreparedTabOpen<V, B>, TabError)>> {
         if plan.spare.as_ref().is_some_and(|(spare, _)| spare != &view) {
-            return Err((
+            return Err(Box::new((
                 plan,
                 TabError("editor open supplied an unexpected second view".into()),
-            ));
+            )));
         }
         if plan.seed.is_some()
             || matches!(&plan.request, EditorOpen::Docs { options: Some(options), .. }
             if options.new_blank || options.ai_content.is_some())
         {
-            return Err((
+            return Err(Box::new((
                 plan,
                 TabError("editor initialization has not been committed".into()),
-            ));
+            )));
         }
         let reused = plan.spare.is_some();
         let mut workbook = None;
@@ -1632,7 +1634,7 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
                 )
             }
             EditorOpen::Generate { .. } | EditorOpen::Conversion { .. } => {
-                return Err((plan, TabError("editor request was not normalized".into())));
+                return Err(Box::new((plan, TabError("editor request was not normalized".into()))));
             }
         };
         Ok(PreparedEditorAdoption {
@@ -1915,12 +1917,12 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
             }
             (None, None) => return Err(TabError("editor open returned no view".into())),
         };
-        if let EditorOpen::Sheets { path, .. } = &plan.request {
-            if let Some(path) = truthy(path.as_deref()) {
-                host.queue_workbook_for_view(&view, path);
-                if reused {
-                    host.nudge_queued_workbook(&view);
-                }
+        if let EditorOpen::Sheets { path, .. } = &plan.request
+            && let Some(path) = truthy(path.as_deref())
+        {
+            host.queue_workbook_for_view(&view, path);
+            if reused {
+                host.nudge_queued_workbook(&view);
             }
         }
         let id = self.alloc_id();
@@ -2048,11 +2050,11 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
                 if new_blank {
                     host.mark_docs_new_blank(wc);
                 }
-                if let Some(content) = content {
-                    if let Err(error) = host.queue_docs_ai_content(wc, &content) {
-                        self.close_tab_without_prompt(host, &id);
-                        return Err(error);
-                    }
+                if let Some(content) = content
+                    && let Err(error) = host.queue_docs_ai_content(wc, &content)
+                {
+                    self.close_tab_without_prompt(host, &id);
+                    return Err(error);
                 }
             }
             None => {}
@@ -3974,10 +3976,10 @@ pub fn resume_plain_editor_view<V, B>(
     file_path: Option<&str>,
     view: &V,
 ) {
-    if kind == TabKind::Sheets {
-        if let Some(path) = truthy(file_path) {
-            host.queue_workbook_for_view(view, path);
-        }
+    if kind == TabKind::Sheets
+        && let Some(path) = truthy(file_path)
+    {
+        host.queue_workbook_for_view(view, path);
     }
 }
 

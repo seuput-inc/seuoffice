@@ -80,14 +80,14 @@ impl ConditionalPairCleanup {
     pub fn step_owned(
         mut self,
         admit: &super::super::atomic_write::owned::Admission,
-    ) -> Result<(Self, Option<PairCleanupOutcome>), (NodeError, Self)> {
+    ) -> Result<(Self, Option<PairCleanupOutcome>), Box<(NodeError, Self)>> {
         use super::super::atomic_write::owned::admitted;
         if matches!(self.phase, Phase::Copy) && quarantined(&self.copy) {
             self.phase = Phase::Metadata;
         }
         if matches!(self.phase, Phase::Metadata) && self.metadata.is_none() {
             if let Err(problem) = admitted(admit, || ()) {
-                return Err((problem, self));
+                return Err(Box::new((problem, self)));
             }
             let observed = (|| {
                 let parent = self
@@ -104,19 +104,19 @@ impl ConditionalPairCleanup {
                 ))
             })();
             if let Err(problem) = admitted(admit, || ()) {
-                return Err((problem, self));
+                return Err(Box::new((problem, self)));
             }
             match observed {
-                Err(problem) => return Err((problem, self)),
+                Err(problem) => return Err(Box::new((problem, self))),
                 Ok(Ok(_)) => {
                     self.phase = Phase::RollbackCopy;
-                    return Err((error("the recovery metadata was replaced"), self));
+                    return Err(Box::new((error("the recovery metadata was replaced"), self)));
                 }
                 Ok(Err(problem)) if problem.kind() == std::io::ErrorKind::NotFound => {
                     self.phase = Phase::DeleteCopy;
                     return Ok((self, None));
                 }
-                Ok(Err(problem)) => return Err((error(problem.to_string()), self)),
+                Ok(Err(problem)) => return Err(Box::new((error(problem.to_string()), self))),
             }
         }
         let state = Arc::new(std::sync::Mutex::new((Some(self), None)));
@@ -138,11 +138,11 @@ impl ConditionalPairCleanup {
         let mut state = state.lock().unwrap_or_else(|poison| poison.into_inner());
         let cleanup = state.0.take().expect("cleanup is retained");
         match result {
-            Err(problem) => Err((problem, cleanup)),
+            Err(problem) => Err(Box::new((problem, cleanup))),
             Ok(()) => match state.1.take() {
                 Some(Ok(outcome)) => Ok((cleanup, outcome)),
-                Some(Err(problem)) => Err((problem, cleanup)),
-                None => Err((error("recovery cleanup was not admitted"), cleanup)),
+                Some(Err(problem)) => Err(Box::new((problem, cleanup))),
+                None => Err(Box::new((error("recovery cleanup was not admitted"), cleanup))),
             },
         }
     }
@@ -423,7 +423,7 @@ mod tests {
             })
         });
         let (_, mut cleanup) = match cleanup.step_owned(&after_effect) {
-            Err(value) => value,
+            Err(value) => *value,
             Ok(_) => panic!("the admission error was lost"),
         };
         let admitted: Admission = Arc::new(|effect| Ok(effect()));
@@ -437,7 +437,7 @@ mod tests {
                         break;
                     }
                 }
-                Err((problem, _)) => panic!("{problem:?}"),
+                Err(failure) => panic!("{:?}", failure.0),
             }
         }
         assert_eq!(outcome, Some(PairCleanupOutcome::Deleted));

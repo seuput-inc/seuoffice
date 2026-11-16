@@ -987,7 +987,7 @@ pub fn add_model3d(app: &App, cx: &CallContext, args: Args) -> Reply {
         }
         let size = app.engine.size(s.deck()).map_err(|error| thrown(error.0))?;
         let cy = js_round(size.cy * 0.5);
-        let cx = js_round(cy * number(field(op_value, "aspect")));
+        let width = js_round(cy * number(field(op_value, "aspect")));
         let o = op("addModel3d")
             .set("target", target(slide, None))
             .set("bytes", bytes.clone())
@@ -998,9 +998,9 @@ pub fn add_model3d(app: &App, cx: &CallContext, args: Args) -> Reply {
             .set(
                 "offset",
                 obj([
-                    ("x", num(js_round((size.cx - cx) / 2.0))),
+                    ("x", num(js_round((size.cx - width) / 2.0))),
                     ("y", num(js_round((size.cy - cy) / 2.0))),
-                    ("cx", num(cx)),
+                    ("cx", num(width)),
                     ("cy", num(cy)),
                 ]),
             )

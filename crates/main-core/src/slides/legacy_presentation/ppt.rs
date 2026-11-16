@@ -267,8 +267,10 @@ fn text(bytes: &[u8], record: Record, budget: &mut Budget<'_>) -> Result<String,
     let decoded: String = if record.kind == TEXT_CHARS {
         char::decode_utf16(
             payload
-                .chunks_exact(2)
-                .map(|part| u16::from_le_bytes([part[0], part[1]])),
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|part| u16::from_le_bytes(*part)),
         )
         .map(|value| value.unwrap_or(char::REPLACEMENT_CHARACTER))
         .collect()
@@ -279,7 +281,7 @@ fn text(bytes: &[u8], record: Record, budget: &mut Budget<'_>) -> Result<String,
     let mut chars = decoded.chars().peekable();
     let mut visited = 0usize;
     while let Some(character) = chars.next() {
-        if visited % 1024 == 0 && (budget.cancelled)() {
+        if visited.is_multiple_of(1024) && (budget.cancelled)() {
             return Err(Error::bare("cancelled"));
         }
         visited += 1;
@@ -464,12 +466,12 @@ pub(super) fn parse(
                 SLIDE_PERSIST if inner.length >= 4 => {
                     let id = u32_at(inner.payload(bytes), 0);
                     kind = None;
-                    if let Some(offset) = directory.get(&id) {
-                        if !named.insert(*offset) {
-                            repeats += 1;
-                            target = OutlineTarget::Inactive;
-                            continue;
-                        }
+                    if let Some(offset) = directory.get(&id)
+                        && !named.insert(*offset)
+                    {
+                        repeats += 1;
+                        target = OutlineTarget::Inactive;
+                        continue;
                     }
                     entry_count += 1;
                     target = if entries.len() <= MAX_SLIDES {
@@ -480,16 +482,14 @@ pub(super) fn parse(
                     };
                 }
                 TEXT_HEADER => kind = text_kind(bytes, inner),
-                TEXT_CHARS | TEXT_BYTES => {
-                    if !matches!(target, OutlineTarget::Inactive) {
-                        if let Some(kind_value) = kind.take() {
-                            let text = text(bytes, inner, &mut budget)?;
-                            if let OutlineTarget::Retained(index) = target {
-                                entries[index].1.push(Sequence {
-                                    kind: kind_value,
-                                    text,
-                                });
-                            }
+                TEXT_CHARS | TEXT_BYTES if !matches!(target, OutlineTarget::Inactive) => {
+                    if let Some(kind_value) = kind.take() {
+                        let text = text(bytes, inner, &mut budget)?;
+                        if let OutlineTarget::Retained(index) = target {
+                            entries[index].1.push(Sequence {
+                                kind: kind_value,
+                                text,
+                            });
                         }
                     }
                 }

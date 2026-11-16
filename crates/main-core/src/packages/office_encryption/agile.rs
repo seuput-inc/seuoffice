@@ -388,98 +388,6 @@ pub(super) fn decrypt(info: &[u8], package: &[u8], password: &str) -> Result<Vec
     Ok(std::mem::take(&mut *output))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
-
-    fn encrypt(cipher: &Cipher, key: &[u8], iv: &[u8], input: &[u8]) -> Vec<u8> {
-        let mut context = CipherCtx::new().unwrap();
-        context
-            .encrypt_init(Some(cipher), Some(key), Some(iv))
-            .unwrap();
-        context.set_padding(false);
-        let mut output = vec![0; input.len() + cipher.block_size()];
-        let mut len = context.cipher_update(input, Some(&mut output)).unwrap();
-        len += context.cipher_final(&mut output[len..]).unwrap();
-        output.truncate(len);
-        output
-    }
-
-    fn encrypted_fixture(cipher_name: &str, hash_name: &str) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-        let salt = [7u8; 16];
-        let verifier = [42u8; 16];
-        let package_key = [99u8; 32];
-        let plaintext = b"PK\x03\x04synthetic Agile payload".to_vec();
-        let mut hash = hasher(hash_name).unwrap();
-        let password: Vec<_> = "pw".encode_utf16().flat_map(u16::to_le_bytes).collect();
-        let first = digest(&mut hash, &[&salt, &password]).unwrap();
-        let final_hash = digest(&mut hash, &[&0u32.to_le_bytes(), &first]).unwrap();
-        let input_key = key(&final_hash, &mut hash, &VERIFIER_INPUT, 32).unwrap();
-        let value_key = key(&final_hash, &mut hash, &VERIFIER_VALUE, 32).unwrap();
-        let key_key = key(&final_hash, &mut hash, &KEY_VALUE, 32).unwrap();
-        let cipher = Cipher::fetch(
-            None,
-            &format!("{}-256-cbc", cipher_name.to_lowercase()),
-            None,
-        )
-        .unwrap();
-        let encrypted_input = encrypt(&cipher, &input_key, &salt, &verifier);
-        let verifier_hash = digest(&mut hash, &[&verifier]).unwrap();
-        let mut padded_hash = verifier_hash.to_vec();
-        while padded_hash.len() % 16 != 0 {
-            padded_hash.push(0);
-        }
-        let encrypted_value = encrypt(&cipher, &value_key, &salt, &padded_hash);
-        let encrypted_key = encrypt(&cipher, &key_key, &salt, &package_key);
-        let iv = digest(&mut hash, &[&salt, &0u32.to_le_bytes()]).unwrap();
-        let mut padded = plaintext.clone();
-        while padded.len() % 16 != 0 {
-            padded.push(0);
-        }
-        let mut package = (plaintext.len() as u64).to_le_bytes().to_vec();
-        package.extend(encrypt(&cipher, &package_key, &iv[..16], &padded));
-        let xml = format!(
-            r#"<encryption><keyData cipherAlgorithm="{cipher_name}" cipherChaining="ChainingModeCBC" hashAlgorithm="{hash_name}" blockSize="16" saltValue="{}"/><dataIntegrity encryptedHmacKey="!"/><keyEncryptors><keyEncryptor><p:encryptedKey cipherAlgorithm="{cipher_name}" cipherChaining="ChainingModeCBC" hashAlgorithm="{hash_name}" spinCount="1" keyBits="256" saltValue="{}" encryptedVerifierHashInput="{}" encryptedVerifierHashValue="{}" encryptedKeyValue="{}"/></keyEncryptor></keyEncryptors></encryption>"#,
-            STANDARD.encode(salt),
-            STANDARD.encode(salt),
-            STANDARD.encode(encrypted_input),
-            STANDARD.encode(encrypted_value),
-            STANDARD.encode(encrypted_key),
-        );
-        let mut info = vec![4, 0, 4, 0, 0x40, 0, 0, 0];
-        info.extend_from_slice(xml.as_bytes());
-        (info, package, plaintext)
-    }
-
-    #[test]
-    fn decrypts_dynamic_ciphers_and_digests() {
-        for (cipher, hash) in [("CAMELLIA", "SHA3-256"), ("ARIA", "MD5")] {
-            let (info, package, plain) = encrypted_fixture(cipher, hash);
-            assert_eq!(decrypt(&info, &package, "pw").unwrap(), plain);
-            assert_eq!(
-                decrypt(&info, &package, "wrong").unwrap_err().reason,
-                super::super::OfficeDecryptReason::WrongPassword
-            );
-        }
-    }
-
-    #[test]
-    fn invalid_cipher_and_xml_do_not_panic() {
-        let (info, package, _) = encrypted_fixture("ARIA", "SHA256");
-        let mut bad = info.clone();
-        bad.truncate(20);
-        assert!(decrypt(&bad, &package, "pw").is_err());
-        let params = Encryptor {
-            cipher: "a\0es".into(),
-            chaining: "ChainingModeCBC".into(),
-            hash: "SHA256".into(),
-            salt: vec![0; 16],
-        };
-        assert!(resolve_cipher(&params, 32).is_err());
-    }
-}
-
 /// officecrypto-tool's standard encryption path always uses AES-128-ECB and SHA-1.
 pub(super) fn decrypt_standard(info: &[u8], package: &[u8], password: &str) -> Result<Vec<u8>> {
     let word =
@@ -500,7 +408,7 @@ pub(super) fn decrypt_standard(info: &[u8], package: &[u8], password: &str) -> R
     let flags = header_word(0)? & 0x3f;
     let algorithm = header_word(8)?;
     let valid = match algorithm {
-        0x660e | 0x660f | 0x6610 => flags == 0x24,
+        0x660e..=0x6610 => flags == 0x24,
         0x6801 => flags == 0x04,
         0 => matches!(flags, 0x10 | 0x04 | 0x24),
         _ => false,
@@ -583,4 +491,96 @@ pub(super) fn decrypt_standard(info: &[u8], package: &[u8], password: &str) -> R
         output.truncate(size);
     }
     Ok(std::mem::take(&mut *output))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    fn encrypt(cipher: &Cipher, key: &[u8], iv: &[u8], input: &[u8]) -> Vec<u8> {
+        let mut context = CipherCtx::new().unwrap();
+        context
+            .encrypt_init(Some(cipher), Some(key), Some(iv))
+            .unwrap();
+        context.set_padding(false);
+        let mut output = vec![0; input.len() + cipher.block_size()];
+        let mut len = context.cipher_update(input, Some(&mut output)).unwrap();
+        len += context.cipher_final(&mut output[len..]).unwrap();
+        output.truncate(len);
+        output
+    }
+
+    fn encrypted_fixture(cipher_name: &str, hash_name: &str) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let salt = [7u8; 16];
+        let verifier = [42u8; 16];
+        let package_key = [99u8; 32];
+        let plaintext = b"PK\x03\x04synthetic Agile payload".to_vec();
+        let mut hash = hasher(hash_name).unwrap();
+        let password: Vec<_> = "pw".encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let first = digest(&mut hash, &[&salt, &password]).unwrap();
+        let final_hash = digest(&mut hash, &[&0u32.to_le_bytes(), &first]).unwrap();
+        let input_key = key(&final_hash, &mut hash, &VERIFIER_INPUT, 32).unwrap();
+        let value_key = key(&final_hash, &mut hash, &VERIFIER_VALUE, 32).unwrap();
+        let key_key = key(&final_hash, &mut hash, &KEY_VALUE, 32).unwrap();
+        let cipher = Cipher::fetch(
+            None,
+            &format!("{}-256-cbc", cipher_name.to_lowercase()),
+            None,
+        )
+        .unwrap();
+        let encrypted_input = encrypt(&cipher, &input_key, &salt, &verifier);
+        let verifier_hash = digest(&mut hash, &[&verifier]).unwrap();
+        let mut padded_hash = verifier_hash.to_vec();
+        while !padded_hash.len().is_multiple_of(16) {
+            padded_hash.push(0);
+        }
+        let encrypted_value = encrypt(&cipher, &value_key, &salt, &padded_hash);
+        let encrypted_key = encrypt(&cipher, &key_key, &salt, &package_key);
+        let iv = digest(&mut hash, &[&salt, &0u32.to_le_bytes()]).unwrap();
+        let mut padded = plaintext.clone();
+        while !padded.len().is_multiple_of(16) {
+            padded.push(0);
+        }
+        let mut package = (plaintext.len() as u64).to_le_bytes().to_vec();
+        package.extend(encrypt(&cipher, &package_key, &iv[..16], &padded));
+        let xml = format!(
+            r#"<encryption><keyData cipherAlgorithm="{cipher_name}" cipherChaining="ChainingModeCBC" hashAlgorithm="{hash_name}" blockSize="16" saltValue="{}"/><dataIntegrity encryptedHmacKey="!"/><keyEncryptors><keyEncryptor><p:encryptedKey cipherAlgorithm="{cipher_name}" cipherChaining="ChainingModeCBC" hashAlgorithm="{hash_name}" spinCount="1" keyBits="256" saltValue="{}" encryptedVerifierHashInput="{}" encryptedVerifierHashValue="{}" encryptedKeyValue="{}"/></keyEncryptor></keyEncryptors></encryption>"#,
+            STANDARD.encode(salt),
+            STANDARD.encode(salt),
+            STANDARD.encode(encrypted_input),
+            STANDARD.encode(encrypted_value),
+            STANDARD.encode(encrypted_key),
+        );
+        let mut info = vec![4, 0, 4, 0, 0x40, 0, 0, 0];
+        info.extend_from_slice(xml.as_bytes());
+        (info, package, plaintext)
+    }
+
+    #[test]
+    fn decrypts_dynamic_ciphers_and_digests() {
+        for (cipher, hash) in [("CAMELLIA", "SHA3-256"), ("ARIA", "MD5")] {
+            let (info, package, plain) = encrypted_fixture(cipher, hash);
+            assert_eq!(decrypt(&info, &package, "pw").unwrap(), plain);
+            assert_eq!(
+                decrypt(&info, &package, "wrong").unwrap_err().reason,
+                super::super::OfficeDecryptReason::WrongPassword
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_cipher_and_xml_do_not_panic() {
+        let (info, package, _) = encrypted_fixture("ARIA", "SHA256");
+        let mut bad = info.clone();
+        bad.truncate(20);
+        assert!(decrypt(&bad, &package, "pw").is_err());
+        let params = Encryptor {
+            cipher: "a\0es".into(),
+            chaining: "ChainingModeCBC".into(),
+            hash: "SHA256".into(),
+            salt: vec![0; 16],
+        };
+        assert!(resolve_cipher(&params, 32).is_err());
+    }
 }

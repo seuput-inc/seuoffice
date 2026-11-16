@@ -39,13 +39,23 @@ impl CapturedPair {
     }
 }
 
+type CaptureDone = Box<dyn FnOnce(Result<Option<CapturedPair>, String>) + Send>;
+
+type CaptureInput = (
+    String,
+    RecoveryIdentity,
+    Admission,
+    CaptureDone,
+    Arc<pair_queue::RecoveryPairQueue>,
+);
+
 /// The callback runs on the identity worker. `admit` is the original saved
 /// document authority, not the captured pair; no later view lookup is made.
 pub fn capture_saved_pair(
     root: String,
     identity: RecoveryIdentity,
     admit: Admission,
-    done: Box<dyn FnOnce(Result<Option<CapturedPair>, String>) + Send>,
+    done: CaptureDone,
 ) {
     let queue = match pair_queue::for_identity(&root, &identity) {
         Ok(queue) => queue,
@@ -53,13 +63,7 @@ pub fn capture_saved_pair(
     };
     let captured_queue = queue.clone();
     let input = (root, identity, admit, done, captured_queue);
-    let job = |(root, identity, admit, done, queue): (
-        String,
-        RecoveryIdentity,
-        Admission,
-        Box<dyn FnOnce(Result<Option<CapturedPair>, String>) + Send>,
-        Arc<pair_queue::RecoveryPairQueue>,
-    ),
+    let job = |(root, identity, admit, done, queue): CaptureInput,
                turn: pair_queue::RecoveryPairTurn| {
         let result = (|| {
             turn.require_clean().map_err(|error| error.message)?;
@@ -67,7 +71,7 @@ pub fn capture_saved_pair(
             let read = RecoveryPinnedRead::open_saved(&root, &identity);
             let read = match read {
                 Ok(read) => read,
-                Err(error) if error.code.as_deref() == Some("ENOENT") => {
+                Err(error) if error.code == Some("ENOENT") => {
                     admitted(&admit, || ()).map_err(|error| error.message)?;
                     return Ok(None);
                 }

@@ -238,6 +238,48 @@ pub fn open_workbook_session_with_owner(
     open_workbook_session_captured(env, view, path, options, owned, None, None)
 }
 
+/// Worker side of a saved workbook opening: the engine snapshots the committed
+/// saved input under the renderer's select call, and the session registers only
+/// while that exact saved barrier is still the tab's current one.
+pub(super) fn open_saved_workbook(
+    env: &Env,
+    view: ViewId,
+    document: shell_contract::ipc::NativeSavedDocument,
+    actual: shell_contract::ipc::NativeRequestOwner,
+    actual_cancel: shell_contract::runtime::CancelToken,
+    load_id: String,
+) -> Result<IpcValue, IpcError> {
+    let logical_path = document
+        .target()
+        .path()
+        .path()
+        .to_str()
+        .ok_or_else(|| thrown("The saved workbook path is not valid Unicode"))?
+        .to_owned();
+    let snapshot = env
+        .engine
+        .snapshot_saved_document(&document, &actual, &actual_cancel)?;
+    let original_sha = sha256_file(snapshot.path()).map_err(super::recovery::node_err)?;
+    let opened = open_workbook_session_captured(
+        env,
+        view,
+        &logical_path,
+        OpenOptions::default(),
+        None,
+        None,
+        Some(SavedOpen {
+            document,
+            actual,
+            actual_cancel,
+            snapshot,
+            logical_path: logical_path.clone(),
+            original_sha,
+            load_id,
+        }),
+    )?;
+    Ok(opened.value)
+}
+
 fn open_workbook_session_captured(
     env: &Env,
     view: ViewId,
@@ -429,6 +471,7 @@ fn open_workbook_session_captured(
                 .clone()
                 .or_else(|| options.restore_target.clone())
                 .unwrap_or_else(|| path.clone());
+            let unsaved_key = path.clone();
             let registration = env.core(move |core| {
                 let register = || {
                     let mut state = core.state.borrow_mut();
@@ -564,7 +607,7 @@ fn open_workbook_session_captured(
                     cleanup_import_temp_directory(&env.temp_dir(), dir);
                 }
                 if !is_saved {
-                    let key = path.to_owned();
+                    let key = unsaved_key;
                     env.core(move |core| {
                         core.state.borrow_mut().unsaved_new_workbooks.remove(&key);
                     });

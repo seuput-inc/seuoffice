@@ -1,14 +1,17 @@
 use super::app::{MindmapApp, Unopened};
 use super::hosts::OpenStatus;
 use crate::value::{buffer, obj, string, thrown};
-use shell_contract::editors::{PreparedSavedDocument, Then};
+use shell_contract::editors::{PreparedSavedDocument, SavedActorRegistration, Then};
 use shell_contract::hosts::OwnedEffectsHost;
 use shell_contract::ipc::{
-    CallContext, NativeBrowserTransition, NativeSavedDocument, NativeSavedTarget, Responder,
+    CallContext, NativeBrowserSuperseded, NativeBrowserTransition, NativeClosureReceipt,
+    NativeSavedDocument, NativeSavedTarget, Responder,
 };
 use shell_contract::runtime::CancelSubscription;
 use shell_contract::{IpcError, IpcValue, Surface, ViewId};
+use std::cell::Cell;
 use std::collections::HashSet;
+use std::rc::Rc;
 
 pub(super) enum WaitKind {
     Pending,
@@ -36,47 +39,137 @@ pub(super) struct SavedLoad {
     _losses: Vec<CancelSubscription>,
 }
 
-struct Prepared {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Prepared,
+    Committed,
+    Closed,
+    Superseded,
+    RolledBack,
+}
+
+struct Registration {
     app: MindmapApp,
     target: NativeSavedTarget,
+    phase: Cell<Phase>,
+}
+
+struct Prepared {
+    registration: Rc<Registration>,
     slot: Option<SavedLoad>,
 }
 impl Drop for Prepared {
     fn drop(&mut self) {
         if self.slot.is_some() {
-            let mut state = self.app.0.state.borrow_mut();
+            let mut state = self.registration.app.0.state.borrow_mut();
             state.saved_reservations -= 1;
         }
     }
 }
 impl PreparedSavedDocument for Prepared {
-    fn commit(&mut self, transition: &NativeBrowserTransition<'_>) -> Result<(), IpcError> {
-        if !transition.matches(self.target.reservation())
-            || !(transition.matches_owner(self.target.browser())
-                || transition.proposes_owner(self.target.browser()))
+    fn with_validated(
+        &mut self,
+        transition: &NativeBrowserTransition<'_>,
+        next: &mut dyn FnMut() -> Result<(), IpcError>,
+    ) -> Result<(), IpcError> {
+        let registration = self.registration.clone();
+        let target = &registration.target;
+        if registration.phase.get() != Phase::Prepared {
+            return Err(thrown(
+                "The saved map actor was already committed or released",
+            ));
+        }
+        if !transition.matches(target.reservation())
+            || !(transition.matches_owner(target.browser())
+                || transition.proposes_owner(target.browser()))
         {
             return Err(thrown("The saved map target belongs to another browser"));
         }
-        let mut state = self.app.0.state.borrow_mut();
-        if !state.live.contains(&self.target.view())
-            || state.saved_loads.contains_key(&self.target.view())
-            || state.saved_reservations == 0
-            || self.slot.as_ref().is_none_or(|slot| {
-                !state
-                    .documents
-                    .get(&self.target.view())
-                    .is_some_and(|lease| lease.same_generation(&slot.lease))
-            })
-        {
-            return Err(thrown("The saved map target is unavailable"));
-        }
+        let mut state = registration.app.0.state.borrow_mut();
         let slot = self
             .slot
             .take()
             .ok_or_else(|| thrown("The saved map barrier was consumed"))?;
+        if !state.live.contains(&target.view())
+            || state.saved_loads.contains_key(&target.view())
+            || state.saved_reservations == 0
+            || !state
+                .documents
+                .get(&target.view())
+                .is_some_and(|lease| lease.same_generation(&slot.lease))
+        {
+            self.slot = Some(slot);
+            return Err(thrown("The saved map target is unavailable"));
+        }
+        if let Err(error) = next() {
+            self.slot = Some(slot);
+            return Err(error);
+        }
         state.saved_reservations -= 1;
-        state.saved_loads.insert(self.target.view(), slot);
+        state.saved_loads.insert(target.view(), slot);
+        registration.phase.set(Phase::Committed);
         Ok(())
+    }
+
+    fn finish(self: Box<Self>) -> Rc<dyn SavedActorRegistration> {
+        self.registration.clone()
+    }
+}
+
+impl SavedActorRegistration for Registration {
+    fn retire_closed(&self, proof: NativeClosureReceipt, then: Then<()>) {
+        if !matches!(self.phase.get(), Phase::Committed | Phase::Closed)
+            || !proof.matches(
+                self.target.reservation(),
+                self.target.view(),
+                self.target.created(),
+            )
+        {
+            return then(Err(thrown("The saved map close proof does not match")));
+        }
+        release(&self.app, &self.target, "The mindmap view was closed");
+        self.phase.set(Phase::Closed);
+        then(Ok(()));
+    }
+
+    fn retire_superseded(&self, proof: NativeBrowserSuperseded, then: Then<()>) {
+        if !matches!(self.phase.get(), Phase::Committed | Phase::Superseded)
+            || !proof.matches(self.target.reservation(), self.target.browser())
+        {
+            return then(Err(thrown(
+                "The saved map supersession proof does not match",
+            )));
+        }
+        release(&self.app, &self.target, "The saved map browser was replaced");
+        self.phase.set(Phase::Superseded);
+        then(Ok(()));
+    }
+
+    fn rollback(&self, then: Then<()>) {
+        match self.phase.get() {
+            Phase::Prepared | Phase::RolledBack => {
+                self.phase.set(Phase::RolledBack);
+                then(Ok(()));
+            }
+            Phase::Closed | Phase::Superseded => then(Ok(())),
+            Phase::Committed => then(Err(thrown(
+                "The saved map actor lacks its exact close proof",
+            ))),
+        }
+    }
+}
+
+fn release(app: &MindmapApp, target: &NativeSavedTarget, message: &str) {
+    fail(app, target, message);
+    let mut state = app.0.state.borrow_mut();
+    if state
+        .saved_loads
+        .get(&target.view())
+        .is_some_and(|slot| slot.target.same_target(target))
+    {
+        let removed = state.saved_loads.remove(&target.view());
+        drop(state);
+        drop(removed);
     }
 }
 
@@ -149,8 +242,11 @@ pub(super) fn prepare(
         state.saved_reservations = reservations;
     }
     Ok(Box::new(Prepared {
-        app: app.clone(),
-        target,
+        registration: Rc::new(Registration {
+            app: app.clone(),
+            target,
+            phase: Cell::new(Phase::Prepared),
+        }),
         slot: Some(slot),
     }))
 }

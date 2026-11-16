@@ -42,6 +42,7 @@ mod util;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use shell_contract::ViewId;
 use shell_contract::editors::DocumentEditors;
 use shell_contract::ipc::RegisterError;
 use shell_contract::provided::Provided;

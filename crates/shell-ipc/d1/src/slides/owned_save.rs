@@ -251,7 +251,7 @@ impl SaveScope {
     pub(super) fn check_document(&self, app: &App) -> Result<(), IpcError> {
         let state = app.state.borrow();
         let view = self.request.destination.view;
-        let session = state
+        state
             .slot(self.slot)
             .filter(|session| session.id == self.session && session.deck() == self.deck)
             .ok_or_else(|| thrown("The destination presentation was replaced"))?;

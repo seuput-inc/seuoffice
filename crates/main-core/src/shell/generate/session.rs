@@ -187,7 +187,13 @@ pub struct SessionRun {
 #[derive(Debug)]
 pub enum SessionStep {
     Done(Result<SessionOutcome, Failure>),
-    Need(SessionNeed, SessionRun),
+    Need(SessionNeed, Box<SessionRun>),
+}
+
+impl SessionStep {
+    fn need(need: SessionNeed, run: SessionRun) -> Self {
+        Self::Need(need, Box::new(run))
+    }
 }
 
 #[derive(Debug)]
@@ -638,7 +644,7 @@ impl GenerateSession {
             run.next += 1;
             match self.inspection_path(host, snap, id) {
                 Ok(Some(path)) => {
-                    return SessionStep::Need(
+                    return SessionStep::need(
                         SessionNeed::Inspect(path.clone()),
                         SessionRun {
                             stage: RunStage::Inspect {
@@ -681,7 +687,7 @@ impl GenerateSession {
                     .and_then(|row| row.status.as_ref())
                     .is_some_and(|status| status.unsaved);
                 if saved == SaveOutcome::Saved && still_unsaved {
-                    SessionStep::Need(
+                    SessionStep::need(
                         SessionNeed::Sleep(host.recheck_delay_ms().unwrap_or(600.0)),
                         SessionRun {
                             stage: RunStage::Waiting { id },
@@ -806,7 +812,7 @@ impl GenerateSession {
                 web_contents_id, ..
             } => {
                 return match host.show_untitled(snap, web_contents_id) {
-                    Ok(Some(tab)) => SessionStep::Need(
+                    Ok(Some(tab)) => SessionStep::need(
                         SessionNeed::Reveal(tab),
                         SessionRun {
                             stage: RunStage::Revealing { saved: None },
@@ -829,7 +835,7 @@ impl GenerateSession {
                 SessionStep::Done(Err(error))
             }
             Ok(SaveMaterialStep::Done(result)) => self.after_save(host, snap, id, row_key, result),
-            Ok(SaveMaterialStep::Reveal(tab)) => SessionStep::Need(
+            Ok(SaveMaterialStep::Reveal(tab)) => SessionStep::need(
                 SessionNeed::Reveal(tab),
                 SessionRun {
                     stage: RunStage::Revealing {
@@ -837,7 +843,7 @@ impl GenerateSession {
                     },
                 },
             ),
-            Ok(SaveMaterialStep::Need(need, run)) => SessionStep::Need(
+            Ok(SaveMaterialStep::Need(need, run)) => SessionStep::need(
                 SessionNeed::Save(need),
                 SessionRun {
                     stage: RunStage::Saving { id, row_key, run },
@@ -917,7 +923,7 @@ impl GenerateSession {
                             && available_conversions(std::slice::from_ref(&path))
                                 .contains(&ConvertKind::MarkdownToMindmap)
                         {
-                            return SessionStep::Need(
+                            return SessionStep::need(
                                 SessionNeed::Notice(path),
                                 SessionRun {
                                     stage: RunStage::Inspect {
@@ -972,7 +978,7 @@ impl GenerateSession {
                         operation: Arc::new(()),
                     };
                     let operation = token.operation.clone();
-                    SessionStep::Need(
+                    SessionStep::need(
                         SessionNeed::OpenConverted { document, token },
                         SessionRun {
                             stage: RunStage::Opening { operation },
@@ -1102,7 +1108,7 @@ impl GenerateSession {
         after: AfterPrepared,
     ) -> SessionStep {
         match step {
-            PrepareStep::Inspect { path, run } => SessionStep::Need(
+            PrepareStep::Inspect { path, run } => SessionStep::need(
                 SessionNeed::Inspect(path),
                 SessionRun {
                     stage: RunStage::Preparing { run, after },
@@ -1117,7 +1123,7 @@ impl GenerateSession {
                         .into_iter()
                         .next()
                         .expect("a ready conversion has one material");
-                    SessionStep::Need(
+                    SessionStep::need(
                         SessionNeed::Convert {
                             kind,
                             path: source.clone(),
@@ -1155,7 +1161,7 @@ impl GenerateSession {
                         operation: Arc::new(()),
                     };
                     let operation = token.operation.clone();
-                    SessionStep::Need(
+                    SessionStep::need(
                         SessionNeed::OpenTarget { handoff, token },
                         SessionRun {
                             stage: RunStage::Opening { operation },

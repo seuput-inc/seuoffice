@@ -104,7 +104,8 @@ impl PendingPairDiscard {
                     };
                 }
                 Ok((cleanup, None)) => self.cleanup = Some(cleanup),
-                Err((error, cleanup)) => {
+                Err(failure) => {
+                    let (error, cleanup) = *failure;
                     self.cleanup = Some(cleanup);
                     return done(Err(PairDiscardFailure::Pending {
                         error,

@@ -1,8 +1,14 @@
 use shell_contract::IpcError;
-use shell_contract::ipc::{CallContext, NativeExistingDocumentBinding, NativeRequestOwner};
+use shell_contract::ipc::{
+    CallContext, DirectWriteCompletion, NativeExistingDocumentBinding, NativeRequestOwner,
+    NativeSaveDestination, NativeSavedInput, SavedPublication,
+};
 use shell_contract::runtime::{CancelToken, RendererGeneration};
 
 use crate::value::thrown;
+
+/// A committed publication and the exact bytes its descriptor wrote.
+pub(crate) type PublishedOutput = (SavedPublication, NativeSavedInput);
 
 #[derive(Clone)]
 pub(crate) enum SaveAuthority {
@@ -236,6 +242,78 @@ impl OwnedSave {
             targets.push(owner.clone());
         }
         targets
+    }
+
+    /// Writes a generated output through one direct descriptor opened under this
+    /// save's captured admission, and returns the committed publication with the
+    /// exact bytes the descriptor wrote. A native authority needs the selection
+    /// the user's destination was normalized to; a renderer authority writes
+    /// under its origin and destination owners.
+    pub fn write_published(
+        &self,
+        selection: Option<&NativeSaveDestination>,
+        path: &std::path::Path,
+        bytes: Vec<u8>,
+    ) -> Result<PublishedOutput, IpcError> {
+        self.check()?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| thrown("The output path has no parent directory"))?;
+        let parent = std::fs::File::open(parent)
+            .map_err(|error| thrown(error.to_string()))?;
+        let prepared = file_commit::prepare_direct(&parent, path)
+            .map_err(|error| thrown(error.to_string()))?;
+        let admitted = match (&self.authority, selection) {
+            (SaveAuthority::Renderer(origin), None) => {
+                let mut callbacks = self.prior_callback_owners.clone();
+                callbacks.extend(self.callback_owner.clone());
+                self.effects.begin_owned_direct_write(
+                    origin,
+                    &self.destination,
+                    &callbacks,
+                    &self.cancel,
+                    &self.pending,
+                    &self.additional,
+                    path,
+                    prepared,
+                )
+            }
+            (SaveAuthority::Native(binding), Some(selection))
+                if selection.matches_binding(binding) && selection.path() == path =>
+            {
+                self.effects.begin_native_direct_write(
+                    selection,
+                    &self.participants(&[]),
+                    &self.cancel,
+                    &self.pending,
+                    &self.additional,
+                    prepared,
+                )
+            }
+            _ => {
+                return Err(thrown(
+                    "The output destination does not match its save authority",
+                ));
+            }
+        }
+        .map_err(|error| thrown(format!("{error:?}")))?;
+        let completed = admitted
+            .write_owned(bytes)
+            .map_err(|(error, _)| thrown(error.to_string()))?;
+        match completed.finish(self.effects.as_ref()) {
+            DirectWriteCompletion::Committed {
+                publication,
+                snapshot,
+            } => {
+                let input = NativeSavedInput::from_written_snapshot(publication.clone(), snapshot)
+                    .map_err(thrown)?;
+                Ok((publication, input))
+            }
+            DirectWriteCompletion::WrittenWithoutReceipt { error, .. } => {
+                Err(thrown(error.to_string()))
+            }
+            DirectWriteCompletion::WrittenButNotAdmitted { error, .. } => Err(thrown(error)),
+        }
     }
 
     /// Worker-side await. Native UI admission releases every gate before action.
