@@ -320,8 +320,9 @@ mod tests {
         let parent = File::open(&dir).unwrap();
         let source = File::open(dir.join("stage")).unwrap();
         let path = dir.join("output.pdf");
-        let commit = file_commit::rename_exclusive(&parent, &source, &CString::new("stage").unwrap(),
-            &CString::new("output.pdf").unwrap(), &path).unwrap();
+        let commit = file_commit::prepare_commit(&parent, &source, &CString::new("stage").unwrap(),
+            &CString::new("output.pdf").unwrap(), &path, file_commit::PublicationMode::Exclusive)
+            .unwrap().publish().unwrap();
         let source_view = ViewId(1);
         let source_generation = RendererGeneration::new();
         let source_owner = NativeRequestOwner { view: source_view,

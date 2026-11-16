@@ -5,8 +5,9 @@ use super::*;
 use crate::ipc::{Sender, Target};
 use crate::{Surface, WindowId};
 
-fn closure_reservation(view: ViewId, created: &RendererGeneration) -> crate::ipc::NativeClosureReservation {
-    crate::ipc::NativeClosureIssuer::new(view, created.clone()).1
+fn closure_reservation(view: ViewId, created: &RendererGeneration) -> (crate::ipc::NativeClosureReservation, crate::ipc::NativeBrowserOwner) {
+    let (_, reservation, owner) = crate::ipc::NativeClosureIssuer::new_with_owner(view, created.clone());
+    (reservation, owner)
 }
 
 type Job = Box<dyn FnOnce() + Send>;
@@ -474,9 +475,10 @@ fn recovery_pdf_revision_transition_retains_successor_and_notifies_after_cleanup
     let (effects, _, _, _, receiver) = model();
     let created = receiver.context.renderer().unwrap().clone();
     let cancel = CancelToken::default();
+    let (reservation, browser) = closure_reservation(receiver.view, &created);
     let target = RecoveryOpenTarget::bind(RecoveryOpenContext::Renderer {
         source: receiver.clone(), participants: vec![], cancel: cancel.clone(), pending: cancel.clone(),
-    }, receiver.view, created.clone(), closure_reservation(receiver.view, &created)).unwrap();
+    }, receiver.view, created.clone(), reservation, browser).unwrap();
     let receipt = effects.commit_recovery_seed(&target, &mut || Ok(())).unwrap();
     target.retain_native_registration(receiver.clone()).unwrap();
     let old = PdfDocumentLease::new();
@@ -508,9 +510,10 @@ fn recovery_pdf_revision_transition_rejects_wrong_or_lost_participants_and_unwin
     let (effects, _, views, _, receiver) = model();
     let created = receiver.context.renderer().unwrap().clone();
     let cancel = CancelToken::default();
+    let (reservation, browser) = closure_reservation(receiver.view, &created);
     let target = RecoveryOpenTarget::bind(RecoveryOpenContext::Renderer {
         source: receiver.clone(), participants: vec![], cancel: cancel.clone(), pending: cancel.clone(),
-    }, receiver.view, created.clone(), closure_reservation(receiver.view, &created)).unwrap();
+    }, receiver.view, created.clone(), reservation, browser).unwrap();
     let receipt = effects.commit_recovery_seed(&target, &mut || Ok(())).unwrap();
     target.retain_native_registration(receiver.clone()).unwrap();
     let old = PdfDocumentLease::new();
@@ -518,9 +521,10 @@ fn recovery_pdf_revision_transition_rejects_wrong_or_lost_participants_and_unwin
     let destination = NativeRequestOwner { view: receiver.view, context: receiver.context.clone().with_pdf_revision(old.clone()) };
     let snapshot = target.authority_snapshot().unwrap();
     let mut renewal = snapshot.prepare_pdf_revision_renewal(&[destination.clone()], &old, &next).unwrap();
+    let (reservation, browser) = closure_reservation(receiver.view, &created);
     let other_target = RecoveryOpenTarget::bind(RecoveryOpenContext::Renderer {
         source: receiver.clone(), participants: vec![], cancel: cancel.clone(), pending: cancel.clone(),
-    }, receiver.view, created.clone(), closure_reservation(receiver.view, &created)).unwrap();
+    }, receiver.view, created.clone(), reservation, browser).unwrap();
     let other_receipt = effects.commit_recovery_seed(&other_target, &mut || Ok(())).unwrap();
     other_target.retain_native_registration(receiver.clone()).unwrap();
     assert!(effects.with_recovery_pdf_revision_transition(&other_receipt, &receiver, &[destination.clone()], &cancel, &cancel,
@@ -561,10 +565,11 @@ fn recovery_seed_and_final_effect_require_original_lineage() {
     views.add(ViewId(2), created.clone());
     let receiver = effects.capture_owner(ViewId(2), &created).unwrap();
     let cancel = CancelToken::default();
+    let (reservation, browser) = closure_reservation(receiver.view, &created);
     let target = RecoveryOpenTarget::bind(RecoveryOpenContext::Renderer {
         source: source.clone(), participants: vec![source.clone()],
         cancel: cancel.clone(), pending: cancel.clone(),
-    }, receiver.view, created.clone(), closure_reservation(receiver.view, &created)).unwrap();
+    }, receiver.view, created.clone(), reservation, browser).unwrap();
     let mut count = 0;
     effects.with_recovery_seed_effect(&target, &mut || { count += 1; Ok(()) }).unwrap();
     assert!(effects.with_recovery_dialog_effect(&target, &receiver, &RendererGeneration::new(),
@@ -619,8 +624,9 @@ fn native_recovery_uses_the_reserved_target_and_operation_shutdown() {
         NativeInvocationSelection::RecoveryFile {
             surface: Surface::Shell, path: "recovery".into(), decision: NativeRecoveryDecision::Restore,
         }, CancelToken::default());
+    let (reservation, browser) = closure_reservation(owner.view, owner.context.renderer().unwrap());
     let target = RecoveryOpenTarget::bind(RecoveryOpenContext::NativeStartup(operation),
-        owner.view, owner.context.renderer().unwrap().clone(), closure_reservation(owner.view, owner.context.renderer().unwrap())).unwrap();
+        owner.view, owner.context.renderer().unwrap().clone(), reservation, browser).unwrap();
     let mut count = 0;
     effects.with_recovery_seed_effect(&target, &mut || { count += 1; Ok(()) }).unwrap();
     let receipt = effects.commit_recovery_seed(&target, &mut || Ok(())).unwrap();
@@ -642,7 +648,8 @@ fn startup_constraint_survives_seed_and_final_recovery_admission() {
     let selection = NativeInvocationSelection::RecoveryBlank { surface: Surface::Docs, title: "Recovery".into() };
     let cancelled = CancelToken::default();
     let first = issuer.issue_recovery_child(&startup, selection.clone(), CancelToken::default()).unwrap();
-    let target = RecoveryOpenTarget::bind_startup(RecoveryOpenContext::NativeStartup(first), owner.view, created.clone(), closure_reservation(owner.view, &created),
+    let (reservation, browser) = closure_reservation(owner.view, &created);
+    let target = RecoveryOpenTarget::bind_startup(RecoveryOpenContext::NativeStartup(first), owner.view, created.clone(), reservation, browser,
         StartupRecoveryConstraint { startup: startup.clone(), shell: owner.clone(), participants: vec![owner.clone()],
             cancel: cancelled.clone(), pending: CancelToken::default() }, None).unwrap();
     cancelled.cancel();
@@ -650,7 +657,8 @@ fn startup_constraint_survives_seed_and_final_recovery_admission() {
 
     let child = issuer.issue_recovery_child(&startup, selection, CancelToken::default()).unwrap();
     let pending = CancelToken::default();
-    let target = RecoveryOpenTarget::bind_startup(RecoveryOpenContext::NativeStartup(child), owner.view, created.clone(), closure_reservation(owner.view, &created),
+    let (reservation, browser) = closure_reservation(owner.view, &created);
+    let target = RecoveryOpenTarget::bind_startup(RecoveryOpenContext::NativeStartup(child), owner.view, created.clone(), reservation, browser,
         StartupRecoveryConstraint { startup, shell: owner.clone(), participants: vec![owner.clone()],
             cancel: CancelToken::default(), pending: pending.clone() }, None).unwrap();
     let receipt = effects.commit_recovery_seed(&target, &mut || Ok(())).unwrap();
@@ -670,7 +678,8 @@ fn command_recovery_keeps_command_authority_through_seed_and_acknowledgement() {
     let root = issuer.issue_command(NativeEditorCommand::OpenFile { surface: Surface::Docs, path: "recovery.docx".into() }, CancelToken::default());
     let child = issuer.issue_command_recovery_child(&root, NativeInvocationSelection::RecoveryBlank { surface: Surface::Docs, title: "Recovery".into() }, CancelToken::default()).unwrap();
     let cancel = CancelToken::default();
-    let target = RecoveryOpenTarget::bind_command(RecoveryOpenContext::NativeStartup(child), owner.view, generation.clone(), closure_reservation(owner.view, &generation),
+    let (reservation, browser) = closure_reservation(owner.view, &generation);
+    let target = RecoveryOpenTarget::bind_command(RecoveryOpenContext::NativeStartup(child), owner.view, generation.clone(), reservation, browser,
         CommandRecoveryConstraint { command: root.clone(), participants: vec![], cancel: cancel.clone(), pending: cancel.clone() }).unwrap();
     let receipt = effects.commit_recovery_seed(&target, &mut || Ok(())).unwrap();
     register_recovery_fixture(&target, owner.clone()).unwrap();
@@ -695,8 +704,9 @@ fn command_recovery_registration_rejects_root_revoked_after_seed() {
     let child = issuer.issue_command_recovery_child(&root,
         NativeInvocationSelection::RecoveryBlank { surface: Surface::Docs, title: "Recovery".into() }, CancelToken::default()).unwrap();
     let control = CancelToken::default();
+    let (reservation, browser) = closure_reservation(owner.view, &generation);
     let target = RecoveryOpenTarget::bind_command(RecoveryOpenContext::NativeStartup(child), owner.view,
-        generation.clone(), closure_reservation(owner.view, &generation),
+        generation.clone(), reservation, browser,
         CommandRecoveryConstraint { command: root.clone(), participants: vec![], cancel: control.clone(), pending: control }).unwrap();
     effects.commit_recovery_seed(&target, &mut || Ok(())).unwrap();
     root.finish();
@@ -715,7 +725,8 @@ fn command_recovery_retains_participant_until_final_admission() {
     let root = issuer.issue_command(NativeEditorCommand::OpenFile { surface: Surface::Docs, path: "copy.docx".into() }, CancelToken::default());
     let child = issuer.issue_command_recovery_child(&root, NativeInvocationSelection::RecoveryBlank { surface: Surface::Docs, title: "Recovery".into() }, CancelToken::default()).unwrap();
     let cancel = CancelToken::default();
-    let target = RecoveryOpenTarget::bind_command(RecoveryOpenContext::NativeStartup(child), owner.view, owner.context.renderer().unwrap().clone(), closure_reservation(owner.view, owner.context.renderer().unwrap()),
+    let (reservation, browser) = closure_reservation(owner.view, owner.context.renderer().unwrap());
+    let target = RecoveryOpenTarget::bind_command(RecoveryOpenContext::NativeStartup(child), owner.view, owner.context.renderer().unwrap().clone(), reservation, browser,
         CommandRecoveryConstraint { command: root, participants: vec![participant], cancel: cancel.clone(), pending: cancel.clone() }).unwrap();
     let receipt = effects.commit_recovery_seed(&target, &mut || Ok(())).unwrap();
     register_recovery_fixture(&target, owner.clone()).unwrap();
@@ -838,8 +849,9 @@ fn prepared_dialog_fixture_binds_selection_and_refuses_expired_target() {
             surface: Surface::Slides, path: "old.ppt".into(), decision: NativeRecoveryDecision::Restore,
         }, cancel.clone());
     let created = RendererGeneration::new();
+    let (reservation, browser) = closure_reservation(ViewId(830), &created);
     let target = RecoveryOpenTarget::bind(RecoveryOpenContext::NativeStartup(operation),
-        ViewId(830), created.clone(), closure_reservation(ViewId(830), &created)).unwrap();
+        ViewId(830), created.clone(), reservation, browser).unwrap();
     let snapshot = target.authority_snapshot().unwrap();
     let selected = recovery_save(&target, &snapshot, || Some("selected.pptx".into())).unwrap().unwrap();
     assert_eq!(selected.path(), std::path::Path::new("selected.pptx"));
@@ -859,10 +871,11 @@ fn recovery_seed_commit_requires_original_request_constraint() {
     views.add(ViewId(2), created.clone());
     let control = CancelToken::default();
     let request = CancelToken::default();
+    let (reservation, browser) = closure_reservation(ViewId(2), &created);
     let target = RecoveryOpenTarget::bind_request(
         RecoveryOpenContext::Renderer { source: source.clone(), participants: vec![],
             cancel: control.clone(), pending: control },
-        ViewId(2), created.clone(), closure_reservation(ViewId(2), &created),
+        ViewId(2), created.clone(), reservation, browser,
         RecoveryRequestConstraint { source, participants: vec![], cancel: request.clone(), pending: request.clone() },
     ).unwrap();
     request.cancel();
@@ -882,9 +895,10 @@ fn recovery_commit_and_settlement_notify_after_admission_gates_drop() {
     views.add(ViewId(2), created.clone());
     let receiver = effects.capture_owner(ViewId(2), &created).unwrap();
     let cancel = CancelToken::default();
+    let (reservation, browser) = closure_reservation(receiver.view, &created);
     let target = RecoveryOpenTarget::bind(RecoveryOpenContext::Renderer {
         source, participants: vec![], cancel: cancel.clone(), pending: cancel.clone(),
-    }, receiver.view, created.clone(), closure_reservation(receiver.view, &created)).unwrap();
+    }, receiver.view, created.clone(), reservation, browser).unwrap();
     let notified = Arc::new(AtomicBool::new(false));
     let observed = notified.clone();
     let _preparation = target.preparation_loss_token().on_cancel(move || {
@@ -915,9 +929,10 @@ fn deferred_recovery_notifications_survive_unwind_after_admission() {
     let generation = source.context.renderer().unwrap().clone();
     let cancel = CancelToken::default();
     let created = RendererGeneration::new();
+    let (reservation, browser) = closure_reservation(ViewId(2), &created);
     let target = RecoveryOpenTarget::bind(RecoveryOpenContext::Renderer {
         source, participants: vec![], cancel: cancel.clone(), pending: cancel,
-    }, ViewId(2), created.clone(), closure_reservation(ViewId(2), &created)).unwrap();
+    }, ViewId(2), created.clone(), reservation, browser).unwrap();
     let notified = Arc::new(AtomicBool::new(false));
     let observed = notified.clone();
     let reenter = generation.clone();
@@ -1609,6 +1624,7 @@ fn saved_document_admits_retained_bytes_only_for_exact_live_origin() {
     let target = NativeSavedTarget::prepare(input, NativeSavedPath::Selected(output), Surface::Pdf, view,
         generation, reservation.clone(), browser.clone(), vec![], cancel.clone(), CancelToken::default(), vec![]).unwrap();
     reservation.with_initial_owner(&browser, |transition| {
+        effects.bind_browser_fixture(&owner, &browser, transition)?;
         target.validate_in_transition(transition)?.commit();
         Ok(())
     }).unwrap();
@@ -1750,7 +1766,7 @@ fn generated_cleanup_fixture_retains_dropped_registrations_until_real_completion
             *self.result.lock().unwrap() = Some(result);
         }
     }
-    struct Pending { calls: std::sync::atomic::AtomicUsize, mailbox: Arc<Mailbox> }
+    struct Pending { calls: std::sync::atomic::AtomicUsize, cancelling: std::sync::atomic::AtomicBool, mailbox: Arc<Mailbox> }
     impl crate::hosts::GeneratedPathPending for Pending {
         fn observe(&self, observer: crate::hosts::GeneratedPathObserver, wake: crate::hosts::GeneratedPathWake) -> Result<(), crate::hosts::GeneratedObserveFailure> {
             let mut installed = self.mailbox.wake.lock().unwrap();
@@ -1776,13 +1792,17 @@ fn generated_cleanup_fixture_retains_dropped_registrations_until_real_completion
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             done(Ok(()));
         }
+        fn is_cancelling(&self) -> bool {
+            self.cancelling.load(std::sync::atomic::Ordering::SeqCst)
+        }
         fn cancel_and_drain(&self, done: Box<dyn FnOnce(Result<(), String>) + Send>) {
+            self.cancelling.store(true, std::sync::atomic::Ordering::SeqCst);
             self.calls.fetch_add(10, std::sync::atomic::Ordering::SeqCst);
             done(Ok(()));
         }
     }
     let registry = SyntheticGeneratedCleanupRegistry::default();
-    let pending = Arc::new(Pending { calls: std::sync::atomic::AtomicUsize::new(0), mailbox: Arc::new(Mailbox {
+    let pending = Arc::new(Pending { calls: std::sync::atomic::AtomicUsize::new(0), cancelling: std::sync::atomic::AtomicBool::new(false), mailbox: Arc::new(Mailbox {
         result: Mutex::new(Some(Ok(crate::hosts::GeneratedPathOutcome::NotOpened))),
         wake: Mutex::new(None), acknowledged: std::sync::atomic::AtomicBool::new(false),
     }) });

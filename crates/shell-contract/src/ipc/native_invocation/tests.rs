@@ -159,6 +159,13 @@ fn native_save_revision_successor_retires_every_view_and_preserves_selection() {
 #[test]
 fn native_reload_receipt_requires_the_exact_accepted_lineage() {
     use crate::hosts::{AcceptedPdfReload, CommittedPdfReload, NativeSaveReloadHandoff};
+    use crate::ipc::{native_saved_target::NativeOutputScope, NativeCommittedOutput, NativeSavedInput, NativeSavedPath, SavedPublication};
+    use std::{fs, time::{SystemTime, UNIX_EPOCH}};
+    let dir = std::env::temp_dir().join(format!("native-reload-{}-{}", std::process::id(),
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+    fs::create_dir(&dir).unwrap();
+    {
+    let path = dir.join("out.pdf");
     let view = ViewId(42);
     let predecessor_generation = RendererGeneration::new();
     let mut predecessor = synthetic_owner(view, &predecessor_generation);
@@ -166,14 +173,26 @@ fn native_reload_receipt_requires_the_exact_accepted_lineage() {
         .with_pdf_document(PdfDocumentLease::new()).with_pdf_revision(PdfDocumentLease::new());
     let issuer = NativeInvocationIssuer::new(CancelToken::default());
     let binding = issuer.issue_existing_document_save(Surface::Pdf, view,
-        NativeSaveSelection::ExactPath("out.pdf".into()), predecessor.clone(), CancelToken::default()).unwrap();
+        NativeSaveSelection::ExactPath(path.clone()), predecessor.clone(), CancelToken::default()).unwrap();
     let selected = NativeSaveDestination::from_exact_selection(binding).unwrap();
+    let parent = file_commit::open_output_parent(&dir).unwrap();
+    let write = file_commit::prepare_direct(&parent, &path).unwrap().open().unwrap();
+    let snapshot = match write.write_owned(b"synthetic pdf".to_vec()) {
+        file_commit::DirectOwnedWriteAttempt::Completed(file_commit::DirectOwnedWriteOutcome::Committed(snapshot)) => snapshot,
+        _ => panic!("synthetic direct write lacked a receipt"),
+    };
+    let scope = Arc::new(NativeOutputScope { participants: vec![], cancel: CancelToken::default(),
+        pending: CancelToken::default(), additional: vec![] });
+    let publication = SavedPublication::Native(NativeCommittedOutput::from_publication_admitted(
+        selected, snapshot.receipt().clone(), scope).unwrap());
+    let input = NativeSavedInput::from_written_snapshot(publication.clone(), snapshot).unwrap();
+    let saved_path = NativeSavedPath::Selected(publication);
     let reserved = RendererGeneration::new();
     let marker = AcceptedPdfReload::from_native_admission(predecessor.clone(), reserved.clone(),
         CancelToken::default(), CancelToken::default(), Arc::new(|_| true));
     let foreign = AcceptedPdfReload::from_native_admission(predecessor.clone(), reserved.clone(),
         CancelToken::default(), CancelToken::default(), Arc::new(|_| true));
-    let handoff = || NativeSaveReloadHandoff::from_native_admission(selected.clone(), marker.clone(),
+    let handoff = || NativeSaveReloadHandoff::from_native_admission(input.clone(), saved_path.clone(), marker.clone(),
         vec![predecessor.clone()], CancelToken::default(), CancelToken::default(), vec![]).unwrap();
     let mut successor = synthetic_owner(view, &reserved);
     successor.context = successor.context.with_pdf_document(PdfDocumentLease::new()).with_pdf_revision(PdfDocumentLease::new());
@@ -199,6 +218,8 @@ fn native_reload_receipt_requires_the_exact_accepted_lineage() {
     assert!(receipt.successor().context.renderer().unwrap().same_generation(&reserved));
     assert!(receipt.participants().iter().all(|owner|
         owner.context.renderer().unwrap().same_generation(&reserved)));
+    }
+    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
