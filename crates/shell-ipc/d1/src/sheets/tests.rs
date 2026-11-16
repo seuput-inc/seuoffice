@@ -150,20 +150,51 @@ fn recovery_open_decision_queues_the_requested_workbook_for_that_view() {
     };
     let w = world("sheets-recovery-contract", Value::Null);
     let tab = w.tab(1);
+    let generation = w
+        .kit
+        .services
+        .views
+        .renderer_generation(tab.view)
+        .unwrap();
+    let source = w.native_owner(w.kit.view(44, Surface::Shell));
+    let cancel = shell_contract::runtime::CancelToken::default();
+    let (_issuer, reservation, browser_owner) =
+        shell_contract::ipc::NativeClosureIssuer::new_with_owner(tab.view, generation.clone());
+    let authority = shell_contract::ipc::RecoveryOpenTarget::bind(
+        shell_contract::ipc::RecoveryOpenContext::Renderer {
+            source: source.clone(),
+            participants: vec![source],
+            cancel: cancel.clone(),
+            pending: cancel,
+        },
+        tab.view,
+        generation,
+        reservation,
+        browser_owner,
+    )
+    .unwrap();
     let contract = w
         .registry
         .provided
-        .all::<dyn RecoveryEditorContract<shell_contract::ViewId>>()
+        .all::<dyn RecoveryEditorContract<
+            shell_contract::ViewId,
+            shell_contract::ipc::RecoveryOpenTarget,
+        >>()
         .into_iter()
         .find(|editor| editor.kind() == "sheets")
         .unwrap();
+    let settled = Rc::new(RefCell::new(None));
+    let done = settled.clone();
     contract.open_file_with_decision(
         &tab.view,
         &RecoveryOpenFileRequest {
             file_path: "restored.xlsx".into(),
             decision: RecoveryOpenDecision::Restore,
         },
+        &authority,
+        Box::new(move |result| *done.borrow_mut() = Some(result)),
     );
+    assert!(matches!(&*settled.borrow(), Some(Ok(()))));
     assert_eq!(
         w.call(tab, "sheets:has-queued-workbook", vec![]).unwrap(),
         IpcValue::Bool(true)
@@ -1458,6 +1489,28 @@ fn outcome() -> (Outcome, shell_contract::editors::Then<bool>) {
     )
 }
 
+type UnitOutcome = Rc<RefCell<Option<Result<(), IpcError>>>>;
+
+fn unit_outcome() -> (UnitOutcome, shell_contract::editors::Then<()>) {
+    let cell: UnitOutcome = Rc::default();
+    let then = cell.clone();
+    (
+        cell,
+        Box::new(move |result| *then.borrow_mut() = Some(result)),
+    )
+}
+
+type HeadlessOutcome = Rc<RefCell<Option<Result<(), String>>>>;
+
+fn headless_outcome() -> (HeadlessOutcome, Box<dyn FnOnce(Result<(), String>)>) {
+    let cell: HeadlessOutcome = Rc::default();
+    let then = cell.clone();
+    (
+        cell,
+        Box::new(move |result| *then.borrow_mut() = Some(result)),
+    )
+}
+
 #[test]
 fn a_close_with_unsaved_work_asks_then_waits_for_the_renderer() {
     let w = world("sheets-close", Value::Null);
@@ -1948,7 +2001,7 @@ fn headless_export_uses_created_renderer_and_cleans_the_original_tab() {
         settled.borrow().as_ref().map(|report| report.ok),
         Some(true)
     );
-    let (finished, then) = outcome();
+    let (finished, then) = headless_outcome();
     sheets.finish_headless_export(registration, issuer.closed(), then);
     assert!(matches!(&*finished.borrow(), Some(Ok(()))));
     assert!(!sheets.is_tab(sender.view));
@@ -1983,7 +2036,7 @@ fn headless_close_waits_for_started_work_and_rejects_new_work() {
     w.kit.hold_workers();
     let pending = w.start(sender, "workbook:select", vec![]);
     assert!(pending.try_recv().is_err());
-    let (finished, then) = outcome();
+    let (finished, then) = headless_outcome();
     sheets.finish_headless_export(registration, issuer.closed(), then);
     assert!(finished.borrow().is_none());
     assert!(
@@ -2024,7 +2077,7 @@ fn unsubmitted_headless_reservation_cleans_its_registered_seed() {
             )
             .unwrap(),
     );
-    let (finished, then) = outcome();
+    let (finished, then) = headless_outcome();
     sheets.finish_headless_export(registration, issuer.not_created(), then);
     assert!(matches!(&*finished.borrow(), Some(Ok(()))));
     assert!(!sheets.is_tab(sender.view));
@@ -2070,7 +2123,7 @@ fn headless_export_rejects_successor_renderer_and_stale_cleanup() {
             .is_err()
     );
     let (other, _) = shell_contract::ipc::NativeClosureIssuer::new(original.view, created);
-    let (finished, then) = outcome();
+    let (finished, then) = headless_outcome();
     sheets.finish_headless_export(registration, other.closed(), then);
     assert!(matches!(&*finished.borrow(), Some(Err(_))));
     assert!(sheets.is_tab(original.view));
@@ -2225,7 +2278,7 @@ fn owned_save_request(
     shell_contract::runtime::CancelToken,
     Rc<RefCell<Option<Result<(), IpcError>>>>,
 ) {
-    let origin = w.kit.view(44, Surface::Home);
+    let origin = w.kit.view(44, Surface::Shell);
     let origin = w.native_owner(origin);
     let cancel = shell_contract::runtime::CancelToken::default();
     let outcome = Rc::new(RefCell::new(None));
@@ -2432,7 +2485,7 @@ fn owned_close_preserves_cancel_and_waits_for_real_save() {
     w.kit.take_events();
     w.call(sender, "workbook:pending-edits", vec![num(1.0)])
         .unwrap();
-    let origin = w.kit.view(44, Surface::Home);
+    let origin = w.kit.view(44, Surface::Shell);
     let owner = w.native_owner(origin);
     let editor = editor_for(&w.registry.provided, sender.view).unwrap();
     w.kit.dialogs.messages.lock().unwrap().push_back(2);
@@ -2492,7 +2545,7 @@ fn owned_close_cancel_revokes_the_child_without_settling_legacy_close() {
     w.kit.take_events();
     w.call(sender, "workbook:pending-edits", vec![num(1.0)])
         .unwrap();
-    let origin = w.kit.view(44, Surface::Home);
+    let origin = w.kit.view(44, Surface::Shell);
     w.kit.dialogs.messages.lock().unwrap().push_back(0);
     let cancel = shell_contract::runtime::CancelToken::default();
     let (result, then) = outcome();
@@ -2532,8 +2585,8 @@ fn owned_rename_rejects_released_additional_participant_without_repointing() {
     let sender = w.tab(1);
     let original = w.file("original.xlsx", b"original workbook");
     w.open(sender, &original);
-    let source = w.kit.view(44, Surface::Home);
-    let extra = w.kit.view(45, Surface::Home);
+    let source = w.kit.view(44, Surface::Shell);
+    let extra = w.kit.view(45, Surface::Shell);
     let origin = w.native_owner(source);
     let participant = w.native_owner(extra);
     let editor = editor_for(&w.registry.provided, sender.view).unwrap();
@@ -2541,7 +2594,7 @@ fn owned_rename_rejects_released_additional_participant_without_repointing() {
         .capture_document_owner(sender.view, w.native_owner(sender))
         .unwrap();
     participant.context.renderer().unwrap().revoke();
-    let (result, then) = outcome();
+    let (result, then) = unit_outcome();
     editor.file_renamed_many_owned_extra(
         sender.view,
         PathBuf::from(&original).as_path(),
@@ -2572,7 +2625,7 @@ fn recovery_rename_respects_cancellation_and_notifies_after_success() {
     let original = w.file("original.xlsx", b"original workbook");
     w.open(sender, &original);
     w.kit.take_events();
-    let source = w.kit.view(44, Surface::Home);
+    let source = w.kit.view(44, Surface::Shell);
     let source_owner = w.native_owner(source);
     let receiver = w.native_owner(sender);
     let generation = w
@@ -2581,8 +2634,8 @@ fn recovery_rename_respects_cancellation_and_notifies_after_success() {
         .views
         .renderer_generation(sender.view)
         .unwrap();
-    let (_issuer, reservation) =
-        shell_contract::ipc::NativeClosureIssuer::new(sender.view, generation.clone());
+    let (_issuer, reservation, browser_owner) =
+        shell_contract::ipc::NativeClosureIssuer::new_with_owner(sender.view, generation.clone());
     let seed_cancel = CancelToken::default();
     let target = RecoveryOpenTarget::bind(
         RecoveryOpenContext::Renderer {
@@ -2594,6 +2647,7 @@ fn recovery_rename_respects_cancellation_and_notifies_after_success() {
         sender.view,
         generation,
         reservation,
+        browser_owner,
     )
     .unwrap();
     let effects = w
@@ -2615,7 +2669,7 @@ fn recovery_rename_respects_cancellation_and_notifies_after_success() {
     let cancel = CancelToken::default();
     cancel.cancel();
     let pending = CancelToken::default();
-    let (failed, then) = outcome();
+    let (failed, then) = unit_outcome();
     editor.file_renamed_recovery(
         sender.view,
         PathBuf::from(&original).as_path(),
@@ -2635,7 +2689,7 @@ fn recovery_rename_respects_cancellation_and_notifies_after_success() {
     );
     assert!(w.kit.take_events().is_empty());
 
-    let (completed, then) = outcome();
+    let (completed, then) = unit_outcome();
     editor.file_renamed_recovery(
         sender.view,
         PathBuf::from(&original).as_path(),

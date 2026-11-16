@@ -637,7 +637,7 @@ impl GenerateShell for FakeShell {
         );
         let target_epoch = target.0.clone();
         let target_loss = target.1.clone();
-        let finish = Box::new(move |loaded: Result<(), String>| {
+        let finish: Box<dyn FnOnce(Result<(), String>) + Send> = Box::new(move |loaded: Result<(), String>| {
             then(loaded.and_then(|()| {
                 GenerateCommittedOpen::new(request.token, Box::new(target), cleanup)
             }));
@@ -702,7 +702,7 @@ impl GenerateShell for FakeShell {
         }
         let authority = authority.clone();
         let world = self.0.clone();
-        let finish = Box::new(move |result: Result<(), String>| {
+        let finish: Box<dyn FnOnce(Result<(), String>) + Send> = Box::new(move |result: Result<(), String>| {
             let result = result.and_then(|()| authority.check_cancelled());
             if result.is_ok() {
                 world.lock().unwrap().log.push(format!("reveal {tab_id}"));

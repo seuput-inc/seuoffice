@@ -390,4 +390,3 @@ mod tests {
         assert!(newer.with_current_commit(|| ()).is_some());
     }
 }
-

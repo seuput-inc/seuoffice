@@ -778,6 +778,15 @@ mod tests {
         events: std::sync::Mutex<Vec<(String, Vec<shell_contract::IpcValue>)>>,
     }
     impl OwnedEffects for Effects {
+        fn with_exact_browser_owner_effect(
+            &self,
+            _: &shell_contract::ipc::NativeBrowserOwner,
+            _: &NativeRequestOwner,
+            _: &CancelToken,
+            _: &mut dyn FnMut() -> Result<(), String>,
+        ) -> Result<(), String> {
+            Err("Exact browser owner is not scripted in the handoff fixture".into())
+        }
         fn capture_owner(
             &self,
             _: ViewId,
@@ -1506,6 +1515,10 @@ mod tests {
             _: &CancelToken,
             _: &dyn shell_contract::hosts::DocsMediaTransition,
             _: Option<&shell_contract::ipc::RecoverySeedReceipt>,
+            _: &mut dyn FnMut(
+                &NativeRequestOwner,
+                &mut dyn FnMut() -> Result<(), String>,
+            ) -> Result<(), String>,
         ) -> Result<NativeRequestOwner, String> {
             Err("Docs media transition is not scripted in the handoff fixture".into())
         }

@@ -1557,10 +1557,10 @@ fn signing_stops_before_certificate_open_when_renderer_is_replaced() {
         }
     }
     let fake_shell = shell(&Value::Null);
-    let s = fake_shell.clone();
+    let shell_host = fake_shell.clone();
     let mut rt = Rt::new(move |hosts| {
         hosts.insert::<PdfEngineHost>(engine(&Value::Null));
-        hosts.insert::<PdfShellHost>(s);
+        hosts.insert::<PdfShellHost>(shell_host);
         hosts.insert(Arc::new(Mutex::new(SharedRecoveryState::new("test"))));
         crate::pdf::tools::fakes(hosts, &Value::Null);
     });

@@ -345,10 +345,8 @@ impl SlidesViews {
                         .map(|session| session.deck())
                         .ok_or_else(|| thrown("the deck session is gone"))?;
                     let size = self.0.engine.size(deck).map_err(|error| thrown(error.0))?;
-                    let payload = crate::value::obj([
-                        ("slides", slides),
-                        ("size", self.0.size_value(size)),
-                    ]);
+                    let payload =
+                        crate::value::obj([("slides", slides), ("size", self.0.size_value(size))]);
                     for owner in owners {
                         self.0
                             .services

@@ -2017,8 +2017,8 @@ fn selected_recovery_decision_opens_the_selected_deck() {
         )
         .unwrap();
     let cancel = shell_contract::runtime::CancelToken::default();
-    let (_issuer, reservation) =
-        shell_contract::ipc::NativeClosureIssuer::new(sender.view, generation.clone());
+    let (_issuer, reservation, browser_owner) =
+        shell_contract::ipc::NativeClosureIssuer::new_with_owner(sender.view, generation.clone());
     let target = shell_contract::ipc::RecoveryOpenTarget::bind(
         shell_contract::ipc::RecoveryOpenContext::Renderer {
             source: owner.clone(),
@@ -2029,6 +2029,7 @@ fn selected_recovery_decision_opens_the_selected_deck() {
         sender.view,
         generation,
         reservation,
+        browser_owner,
     )
     .unwrap();
     let finished = Rc::new(RefCell::new(None));
@@ -2109,8 +2110,8 @@ fn recovery_waits_for_worker_and_rejects_a_replaced_target() {
     let generation = kit.services.views.renderer_generation(sender.view).unwrap();
     let owner = effects.capture_owner(sender.view, &generation).unwrap();
     let cancel = shell_contract::runtime::CancelToken::default();
-    let (_issuer, reservation) =
-        shell_contract::ipc::NativeClosureIssuer::new(sender.view, generation.clone());
+    let (_issuer, reservation, browser_owner) =
+        shell_contract::ipc::NativeClosureIssuer::new_with_owner(sender.view, generation.clone());
     let target = shell_contract::ipc::RecoveryOpenTarget::bind(
         shell_contract::ipc::RecoveryOpenContext::Renderer {
             source: owner,
@@ -2121,6 +2122,7 @@ fn recovery_waits_for_worker_and_rejects_a_replaced_target() {
         sender.view,
         generation,
         reservation,
+        browser_owner,
     )
     .unwrap();
     let finished = Rc::new(RefCell::new(None));
@@ -2159,8 +2161,8 @@ fn recovery_preparation_rejects_registration_changed_during_worker() {
     let generation = kit.services.views.renderer_generation(sender.view).unwrap();
     let owner = effects.capture_owner(sender.view, &generation).unwrap();
     let cancel = shell_contract::runtime::CancelToken::default();
-    let (_issuer, reservation) =
-        shell_contract::ipc::NativeClosureIssuer::new(sender.view, generation.clone());
+    let (_issuer, reservation, browser_owner) =
+        shell_contract::ipc::NativeClosureIssuer::new_with_owner(sender.view, generation.clone());
     let target = shell_contract::ipc::RecoveryOpenTarget::bind(
         shell_contract::ipc::RecoveryOpenContext::Renderer {
             source: owner.clone(),
@@ -2171,6 +2173,7 @@ fn recovery_preparation_rejects_registration_changed_during_worker() {
         sender.view,
         generation,
         reservation,
+        browser_owner,
     )
     .unwrap();
     let finished = Rc::new(RefCell::new(None));
@@ -2226,8 +2229,8 @@ fn invalid_recovered_deck_is_marked_later_before_open_error() {
         )
         .unwrap();
     let cancel = shell_contract::runtime::CancelToken::default();
-    let (_issuer, reservation) =
-        shell_contract::ipc::NativeClosureIssuer::new(sender.view, generation.clone());
+    let (_issuer, reservation, browser_owner) =
+        shell_contract::ipc::NativeClosureIssuer::new_with_owner(sender.view, generation.clone());
     let target = shell_contract::ipc::RecoveryOpenTarget::bind(
         shell_contract::ipc::RecoveryOpenContext::Renderer {
             source: owner.clone(),
@@ -2238,6 +2241,7 @@ fn invalid_recovered_deck_is_marked_later_before_open_error() {
         sender.view,
         generation,
         reservation,
+        browser_owner,
     )
     .unwrap();
     let completed = Rc::new(RefCell::new(None));
@@ -2319,8 +2323,8 @@ fn replaced_recovery_target_cannot_mark_a_copy_later() {
         )
         .unwrap();
     let cancel = shell_contract::runtime::CancelToken::default();
-    let (_issuer, reservation) =
-        shell_contract::ipc::NativeClosureIssuer::new(sender.view, generation.clone());
+    let (_issuer, reservation, browser_owner) =
+        shell_contract::ipc::NativeClosureIssuer::new_with_owner(sender.view, generation.clone());
     let target = shell_contract::ipc::RecoveryOpenTarget::bind(
         shell_contract::ipc::RecoveryOpenContext::Renderer {
             source: owner.clone(),
@@ -2331,6 +2335,7 @@ fn replaced_recovery_target_cannot_mark_a_copy_later() {
         sender.view,
         generation,
         reservation,
+        browser_owner,
     )
     .unwrap();
     let completed = Rc::new(RefCell::new(None));
@@ -2388,8 +2393,14 @@ fn mcp_transaction_applies_under_the_attached_owner_and_pushes_the_render_to_the
     )]))
     .unwrap();
     let answer = slides.apply_mcp_transaction(sender.view, &request).unwrap();
-    assert_eq!(answer.get("applied").as_deref(), Some(&jscompat::JsonValue::Bool(true)));
-    assert!(answer.get("slides").is_none(), "the render tree stays out of the answer");
+    assert_eq!(
+        answer.get("applied").as_deref(),
+        Some(&jscompat::JsonValue::Bool(true))
+    );
+    assert!(
+        answer.get("slides").is_none(),
+        "the render tree stays out of the answer"
+    );
     assert_ne!(slides.deck_model(sender.view).unwrap(), before);
     let pushed: Vec<_> = kit
         .take_events()

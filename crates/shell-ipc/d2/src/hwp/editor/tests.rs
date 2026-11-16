@@ -124,13 +124,14 @@ fn native_hwp_recovery_refuses_a_different_selected_file() {
         },
         Default::default(),
     );
-    let (_issuer, closure) =
-        shell_contract::ipc::NativeClosureIssuer::new(from.view, generation.clone());
+    let (_issuer, closure, browser) =
+        shell_contract::ipc::NativeClosureIssuer::new_with_owner(from.view, generation.clone());
     let target = RecoveryOpenTarget::bind(
         RecoveryOpenContext::NativeStartup(operation),
         from.view,
         generation,
         closure,
+        browser,
     )
     .unwrap();
     let result = Rc::new(RefCell::new(None));
@@ -180,13 +181,14 @@ fn recovery_receipt_waits_for_the_matching_initialized_document() {
         },
         CancelToken::default(),
     );
-    let (_issuer, closure) =
-        shell_contract::ipc::NativeClosureIssuer::new(from.view, generation.clone());
+    let (_issuer, closure, browser) =
+        shell_contract::ipc::NativeClosureIssuer::new_with_owner(from.view, generation.clone());
     let target = RecoveryOpenTarget::bind(
         RecoveryOpenContext::NativeStartup(operation),
         from.view,
         generation,
         closure,
+        browser,
     )
     .unwrap();
     let result = Rc::new(RefCell::new(None));
@@ -299,13 +301,14 @@ fn recovery_rename_rejects_revoked_participant_before_state_change() {
         },
         CancelToken::default(),
     );
-    let (_issuer, closure) =
-        shell_contract::ipc::NativeClosureIssuer::new(from.view, generation.clone());
+    let (_issuer, closure, browser) =
+        shell_contract::ipc::NativeClosureIssuer::new_with_owner(from.view, generation.clone());
     let target = RecoveryOpenTarget::bind(
         RecoveryOpenContext::NativeStartup(operation),
         from.view,
         generation,
         closure,
+        browser,
     )
     .unwrap();
     let receipt = effects

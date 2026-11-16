@@ -890,7 +890,7 @@ fn owned_dirty_query(
 #[test]
 fn owned_dirty_query_requires_exact_token_sender_and_renderer() {
     let mut t = T::new(json!({}));
-    let source = t.rt.view(2, Surface::Home);
+    let source = t.rt.view(2, Surface::Shell);
     let other = t.rt.view(3, Surface::Docs);
     let answers = Rc::new(RefCell::new(Vec::new()));
     let cancel = shell_contract::runtime::CancelToken::default();
@@ -920,7 +920,7 @@ fn owned_dirty_query_requires_exact_token_sender_and_renderer() {
 #[test]
 fn owned_dirty_queries_reject_source_loss_target_replacement_cancellation_and_timeout() {
     let mut t = T::new(json!({}));
-    let source = t.rt.view(2, Surface::Home);
+    let source = t.rt.view(2, Surface::Shell);
     let answers = Rc::new(RefCell::new(Vec::new()));
     let token = owned_dirty_query(
         &t,
@@ -1006,7 +1006,7 @@ fn owned_dirty_queries_are_independent_and_allow_same_source_target() {
 #[test]
 fn owned_dirty_query_rejects_owner_loss_before_ack_without_waiting_for_core_notification() {
     let mut t = T::new(json!({}));
-    let source = t.rt.view(2, Surface::Home);
+    let source = t.rt.view(2, Surface::Shell);
     let generation =
         t.rt.services
             .views
@@ -1102,7 +1102,7 @@ fn owned_close_does_not_join_or_settle_a_legacy_close() {
     let mut t = T::new(json!({}));
     let path = t.file("owned-close.docx", b"plain docx");
     t.open(&path);
-    let source = t.rt.view(22, Surface::Home);
+    let source = t.rt.view(22, Surface::Shell);
     let generation =
         t.rt.services
             .views
@@ -1165,7 +1165,7 @@ fn owned_close_source_cancellation_rejects_late_dirty_result() {
     let mut t = T::new(json!({}));
     let path = t.file("cancel-close.docx", b"plain docx");
     t.open(&path);
-    let source = t.rt.view(22, Surface::Home);
+    let source = t.rt.view(22, Surface::Shell);
     let generation =
         t.rt.services
             .views
@@ -1216,8 +1216,8 @@ fn captured_many_close_rejects_extra_participant_loss_before_dirty_reply() {
     let mut t = T::new(json!({}));
     let path = t.file("many-close.docx", b"plain docx");
     t.open(&path);
-    let source = t.rt.view(22, Surface::Home);
-    let extra = t.rt.view(23, Surface::Home);
+    let source = t.rt.view(22, Surface::Shell);
+    let extra = t.rt.view(23, Surface::Shell);
     let effects =
         t.rt.services
             .hosts
@@ -1511,7 +1511,7 @@ fn recovery_contract_is_discoverable_and_opens_the_requested_document() {
     };
     let mut t = T::with_workers(json!({}), Some(Arc::new(BackgroundWorkers)));
     let path = t.file("recovery.docx", b"saved document");
-    let source = t.rt.view(22, Surface::Home);
+    let source = t.rt.view(22, Surface::Shell);
     let source_generation =
         t.rt.services
             .views
@@ -2607,7 +2607,7 @@ fn owned_save_request(
     shell_contract::runtime::CancelToken,
     Rc<RefCell<Option<Result<(), shell_contract::IpcError>>>>,
 ) {
-    let source = t.rt.view(22, Surface::Home);
+    let source = t.rt.view(22, Surface::Shell);
     let effects =
         t.rt.services
             .hosts
@@ -3151,7 +3151,7 @@ fn owned_rename_retains_all_participants_at_the_actual_state_and_notification_ef
     let old = t.file("rename-owned.docx", b"document");
     t.open(&old);
     let destination = captured_docs_owner(&t);
-    let extra = t.rt.view(22, Surface::Home);
+    let extra = t.rt.view(22, Surface::Shell);
     let effects =
         t.rt.services
             .hosts
@@ -3196,7 +3196,7 @@ fn revoked_extra_participant_blocks_owned_rename_state_and_notification() {
     let old = t.file("rename-blocked.docx", b"document");
     t.open(&old);
     let destination = captured_docs_owner(&t);
-    let extra = t.rt.view(22, Surface::Home);
+    let extra = t.rt.view(22, Surface::Shell);
     let effects =
         t.rt.services
             .hosts
@@ -3340,7 +3340,7 @@ fn recovery_rename_rejects_revoked_captured_participant_without_changing_documen
     let mut t = T::new(json!({}));
     let old = t.file("recovery-rename.docx", b"document");
     t.open(&old);
-    let extra = t.rt.view(22, Surface::Home);
+    let extra = t.rt.view(22, Surface::Shell);
     let effects =
         t.rt.services
             .hosts
@@ -3649,7 +3649,7 @@ fn captured_recovery_waits_for_real_copy_preparation_before_navigation() {
     t.editor().teardown(t.a.view, true);
     let restored_view = t.rt.view(2, Surface::Docs);
     t.editor().register_view(restored_view.view).unwrap();
-    let source = t.rt.view(22, Surface::Home);
+    let source = t.rt.view(22, Surface::Shell);
     let source_generation =
         t.rt.services
             .views
@@ -3768,7 +3768,7 @@ fn canceled_captured_recovery_does_not_seed_the_target() {
     };
     let mut t = T::with_workers(json!({}), Some(Arc::new(BackgroundWorkers)));
     let path = t.file("canceled-recovery.docx", b"unchanged");
-    let source = t.rt.view(22, Surface::Home);
+    let source = t.rt.view(22, Surface::Shell);
     let generation =
         t.rt.services
             .views
@@ -3838,7 +3838,7 @@ fn discarded_recovery_worker_settles_the_core_callback_once() {
     };
     let mut t = T::with_workers(json!({}), Some(Arc::new(DiscardWorkers)));
     let path = t.file("discarded-recovery.docx", b"unchanged");
-    let source = t.rt.view(22, Surface::Home);
+    let source = t.rt.view(22, Surface::Shell);
     let generation =
         t.rt.services
             .views
@@ -3893,7 +3893,7 @@ fn discarded_recovery_worker_settles_the_core_callback_once() {
 #[test]
 fn blank_recovery_waits_for_authenticated_renderer_initialization() {
     let mut t = T::new(json!({}));
-    let source = t.rt.view(22, Surface::Home);
+    let source = t.rt.view(22, Surface::Shell);
     let generation =
         t.rt.services
             .views
@@ -4080,7 +4080,7 @@ fn recovery_file_uses_the_copy_pinned_before_navigation() {
     .unwrap();
     let restored = t.rt.view(2, Surface::Docs);
     t.editor().register_view(restored.view).unwrap();
-    let source = t.rt.view(22, Surface::Home);
+    let source = t.rt.view(22, Surface::Shell);
     let source_generation =
         t.rt.services
             .views
@@ -4403,7 +4403,7 @@ fn canceled_recovery_drain_waits_for_copy_worker_and_core_continuation() {
     t.editor().teardown(t.a.view, true);
     let restored = t.rt.view(2, Surface::Docs);
     t.editor().register_view(restored.view).unwrap();
-    let source = t.rt.view(22, Surface::Home);
+    let source = t.rt.view(22, Surface::Shell);
     let generation =
         t.rt.services
             .views
@@ -4693,7 +4693,7 @@ fn generated_cleanup_ack_waits_for_original_completion() {
         GeneratedPathWake, GeneratedStartFailure, GeneratedTerminalAck, GeneratedTerminalDelivery,
         PreparedGeneratedPath,
     };
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     struct Ack(Arc<AtomicUsize>);
     impl GeneratedTerminalAck for Ack {
         fn complete(&self) -> Result<(), String> {
@@ -4705,7 +4705,10 @@ fn generated_cleanup_ack_waits_for_original_completion() {
         }
     }
     #[derive(Default)]
-    struct Pending(Mutex<Option<(GeneratedPathObserver, GeneratedPathWake)>>);
+    struct Pending(
+        Mutex<Option<(GeneratedPathObserver, GeneratedPathWake)>>,
+        AtomicBool,
+    );
     impl GeneratedPathPending for Pending {
         fn observe(
             &self,
@@ -4735,7 +4738,11 @@ fn generated_cleanup_ack_waits_for_original_completion() {
         fn retry(&self, done: Box<dyn FnOnce(Result<(), String>) + Send>) {
             done(Ok(()));
         }
+        fn is_cancelling(&self) -> bool {
+            self.1.load(Ordering::SeqCst)
+        }
         fn cancel_and_drain(&self, done: Box<dyn FnOnce(Result<(), String>) + Send>) {
+            self.1.store(true, Ordering::SeqCst);
             done(Ok(()));
         }
     }

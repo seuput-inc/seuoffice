@@ -172,8 +172,8 @@ fn recovery_contract_opens_the_selected_file() {
         .unwrap()
         .clone();
     let created = rt.services.views.renderer_generation(view.view).unwrap();
-    let (_closure_issuer, closure) =
-        shell_contract::ipc::NativeClosureIssuer::new(view.view, created.clone());
+    let (_closure_issuer, closure, browser) =
+        shell_contract::ipc::NativeClosureIssuer::new_with_owner(view.view, created.clone());
     let source = effects.capture_owner(view.view, &created).unwrap();
     let cancel = shell_contract::runtime::CancelToken::default();
     let authority = shell_contract::ipc::RecoveryOpenTarget::bind(
@@ -186,6 +186,7 @@ fn recovery_contract_opens_the_selected_file() {
         view.view,
         created,
         closure,
+        browser,
     )
     .unwrap();
     let contract = rt
@@ -228,8 +229,8 @@ fn revoked_recovery_source_cannot_adopt_a_selected_document() {
         .unwrap()
         .clone();
     let created = rt.services.views.renderer_generation(view.view).unwrap();
-    let (_closure_issuer, closure) =
-        shell_contract::ipc::NativeClosureIssuer::new(view.view, created.clone());
+    let (_closure_issuer, closure, browser) =
+        shell_contract::ipc::NativeClosureIssuer::new_with_owner(view.view, created.clone());
     let source = effects
         .capture_owner(
             source_view.view,
@@ -250,6 +251,7 @@ fn revoked_recovery_source_cannot_adopt_a_selected_document() {
         view.view,
         created,
         closure,
+        browser,
     )
     .unwrap();
     let contract = rt
@@ -299,8 +301,8 @@ fn recovery_restore_reads_before_load_and_delivers_only_to_reserved_renderer() {
         .unwrap()
         .clone();
     let created = rt.services.views.renderer_generation(target.view).unwrap();
-    let (_closure_issuer, closure) =
-        shell_contract::ipc::NativeClosureIssuer::new(target.view, created.clone());
+    let (_closure_issuer, closure, browser) =
+        shell_contract::ipc::NativeClosureIssuer::new_with_owner(target.view, created.clone());
     let source = effects
         .capture_owner(
             issuer.view,
@@ -318,6 +320,7 @@ fn recovery_restore_reads_before_load_and_delivers_only_to_reserved_renderer() {
         target.view,
         created.clone(),
         closure,
+        browser,
     )
     .unwrap();
     let contract = rt
@@ -387,8 +390,8 @@ fn recovery_rename_rejects_revoked_participant_before_state_or_grant_change() {
         .unwrap()
         .clone();
     let created = rt.services.views.renderer_generation(target.view).unwrap();
-    let (_, reservation) =
-        shell_contract::ipc::NativeClosureIssuer::new(target.view, created.clone());
+    let (_, reservation, browser) =
+        shell_contract::ipc::NativeClosureIssuer::new_with_owner(target.view, created.clone());
     let source = effects
         .capture_owner(
             source_view.view,
@@ -409,6 +412,7 @@ fn recovery_rename_rejects_revoked_participant_before_state_or_grant_change() {
         target.view,
         created.clone(),
         reservation,
+        browser,
     )
     .unwrap();
     let contract = rt

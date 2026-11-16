@@ -167,9 +167,7 @@ impl SlidesBridgeHost for Host {
 
     fn deck(&mut self, wc_id: i64) -> Result<JsonValue, String> {
         let view = view_of(wc_id).ok_or("the deck session is gone")?;
-        self.views
-            .deck_model(view)
-            .map_err(|error| error.message)
+        self.views.deck_model(view).map_err(|error| error.message)
     }
 
     fn attached_ids(&mut self, wc_id: i64) -> Vec<i64> {
@@ -316,7 +314,7 @@ fn advance(id: u64, wait: BlankWait) {
         Some(Ok(()))
     } else if wait.services.views.sender_of(wait.view).is_none() {
         Some(Err(
-            "the presentation tab was closed before it became ready".to_owned()
+            "the presentation tab was closed before it became ready".to_owned(),
         ))
     } else if Instant::now() > wait.deadline {
         Some(Err(format!(

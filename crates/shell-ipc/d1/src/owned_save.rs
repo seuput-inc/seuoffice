@@ -1698,6 +1698,63 @@ mod tests {
         ) -> Result<(), String> {
             Err("Native saved document is not scripted in the slides fixture".into())
         }
+        fn emit_native_saved_document_input(
+            &self,
+            _: &shell_contract::ipc::NativeSavedDocument,
+            _: &[NativeRequestOwner],
+            _: usize,
+            _: &CancelToken,
+            _: &CancelToken,
+            _: &[&CancelToken],
+            _: &str,
+            _: Vec<shell_contract::IpcValue>,
+        ) -> Result<(), String> {
+            Err("Native saved document events are not scripted in the slides fixture".into())
+        }
+        fn with_native_saved_document_same_origin(
+            &self,
+            _: &shell_contract::ipc::NativeSavedDocument,
+            _: &NativeRequestOwner,
+            _: &CancelToken,
+            _: &[NativeRequestOwner],
+            _: &CancelToken,
+            _: &CancelToken,
+            _: &[&CancelToken],
+            _: &mut dyn FnMut(&shell_contract::ipc::NativeSavedInput) -> Result<(), String>,
+        ) -> Result<(), String> {
+            Err("Native saved document is not scripted in the slides fixture".into())
+        }
+        fn emit_native_saved_document_same_origin(
+            &self,
+            _: &shell_contract::ipc::NativeSavedDocument,
+            _: &NativeRequestOwner,
+            _: &CancelToken,
+            _: &[NativeRequestOwner],
+            _: usize,
+            _: &CancelToken,
+            _: &CancelToken,
+            _: &[&CancelToken],
+            _: &str,
+            _: Vec<shell_contract::IpcValue>,
+        ) -> Result<(), String> {
+            Err("Native saved document events are not scripted in the slides fixture".into())
+        }
+        fn with_native_saved_document_transition(
+            &self,
+            _: &shell_contract::ipc::NativeSavedDocument,
+            _: &NativeRequestOwner,
+            _: &CancelToken,
+            _: &[NativeRequestOwner],
+            _: &CancelToken,
+            _: &CancelToken,
+            _: &[&CancelToken],
+            _: &mut dyn FnMut(
+                &shell_contract::ipc::NativeSavedInput,
+                &mut shell_contract::runtime::AdmittedDocumentRetirement<'_>,
+            ) -> Result<(), String>,
+        ) -> Result<(), String> {
+            Err("Native saved document transition is not scripted in the slides fixture".into())
+        }
         fn emit_native_save_revision_snapshot(
             &self,
             snapshot: &shell_contract::ipc::NativeSaveRevisionSnapshot,

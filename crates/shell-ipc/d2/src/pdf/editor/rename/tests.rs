@@ -137,8 +137,8 @@ fn recovery_rename_uses_the_captured_receiver_and_every_participant() {
         rt.register(crate::pdf::entries).unwrap();
         let pdf = rt.view(1, Surface::Pdf);
         let source = rt.view(2, Surface::Docs);
-        let home = rt.view(3, Surface::Home);
-        let extra = rt.view(4, Surface::Home);
+        let home = rt.view(3, Surface::Shell);
+        let extra = rt.view(4, Surface::Shell);
         let editor = rt.provided().all::<PdfEditors>().pop().unwrap();
         let old = rt.dir.join("recovery-before.pdf");
         let new = rt.dir.join("recovery-after.pdf");

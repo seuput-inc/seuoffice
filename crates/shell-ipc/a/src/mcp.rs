@@ -387,6 +387,9 @@ pub(crate) fn with_hub<R>(id: u64, job: impl FnOnce(&Hub) -> R) -> Option<R> {
     found.map(|hub| job(&hub))
 }
 
+/// A call of an agent session's relay, answered once by the hub
+type AgentCall = Box<dyn FnOnce(HubValue)>;
+
 /// The hub, its channels' state and what the connections report; core thread only
 pub struct Hub {
     env: Rc<Env>,
@@ -395,7 +398,7 @@ pub struct Hub {
     pending: RefCell<HashMap<Ticket, Responder>>,
     downloads: RefCell<Vec<Download>>,
     /// the calls of an agent session's relays waiting on the hub, by ticket
-    agent_calls: RefCell<HashMap<Ticket, Box<dyn FnOnce(HubValue)>>>,
+    agent_calls: RefCell<HashMap<Ticket, AgentCall>>,
 }
 
 impl Hub {

@@ -8578,7 +8578,7 @@ mod command_tests {
                 std::slice::from_ref(&observed),
                 || ()
             )
-                .is_ok()
+            .is_ok()
         );
         reservation.set_title("after").unwrap();
         assert!(
