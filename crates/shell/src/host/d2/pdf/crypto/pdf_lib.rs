@@ -420,8 +420,7 @@ impl Context {
         refs.sort_by(|a, b| f64::from_bits(a.0).total_cmp(&f64::from_bits(b.0)));
         let found = refs
             .into_iter()
-            .filter(|key| self.objects.get(key).is_some_and(is_catalog))
-            .next_back();
+            .rfind(|key| self.objects.get(key).is_some_and(is_catalog));
         if let Some(key) = found {
             self.root = Some(Object::Reference(
                 f64::from_bits(key.0),

@@ -462,8 +462,7 @@ fn reconcile_x14(xml: &str, entries: &[String]) -> Result<String, String> {
         let extensions = xml::root_elements(&out, "ext")?;
         let containing = extensions
             .into_iter()
-            .filter(|e| e.start < start && e.end >= end)
-            .next_back();
+            .rfind(|e| e.start < start && e.end >= end);
         out.replace_range(start..end, "");
         if let Some(ext) = containing {
             let end2 = ext.end - (end - start);

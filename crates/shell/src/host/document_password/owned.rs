@@ -24,7 +24,7 @@ enum Authority {
         snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
     },
     Saved {
-        document: shell_contract::ipc::NativeSavedDocument,
+        document: Box<shell_contract::ipc::NativeSavedDocument>,
         parent: tauri::Window,
     },
 }
@@ -436,6 +436,7 @@ impl Opening {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn open_password_window_owned(
     cx: &HostContext,
     parent: Option<WindowId>,
@@ -460,6 +461,7 @@ pub(crate) fn open_password_window_owned(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn open_password_window_prepared(
     cx: &HostContext,
     parent: Option<WindowId>,
@@ -501,7 +503,7 @@ pub(crate) fn open_password_window_saved(
         Some(parent),
         title,
         Authority::Saved {
-            document,
+            document: Box::new(document),
             parent: parent_window,
         },
         cancel,
