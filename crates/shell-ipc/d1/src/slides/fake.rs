@@ -1810,6 +1810,7 @@ struct SyntheticGeneratedState {
     observed: bool,
     in_flight: bool,
     acknowledged: bool,
+    cancelling: bool,
 }
 
 #[derive(Clone, Default)]
@@ -1916,6 +1917,12 @@ impl shell_contract::hosts::GeneratedPathPending for SyntheticGeneratedTask {
             )
         }))
     }
+    fn is_cancelling(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .cancelling
+    }
     fn retry(&self, done: Box<dyn FnOnce(Result<(), String>) + Send>) {
         done(self.wake_observer());
     }
@@ -1925,6 +1932,7 @@ impl shell_contract::hosts::GeneratedPathPending for SyntheticGeneratedTask {
             if state.in_flight {
                 Err("The synthetic terminal result is awaiting acknowledgement".into())
             } else {
+                state.cancelling = true;
                 if !state.acknowledged && state.result.is_none() {
                     state.result =
                         Some(Err("The synthetic generated operation was cancelled".into()));
@@ -1998,6 +2006,17 @@ impl Drop for PreparedSyntheticGenerated {
         }
         self.task.deliver();
     }
+}
+
+/// A prepared operation that runs nothing until the shell starts it and then
+/// delivers its terminal result to the observer exactly once.
+pub(crate) fn synthetic_generated(
+    action: Box<dyn FnOnce() -> Result<shell_contract::hosts::GeneratedPathOutcome, String>>,
+) -> Box<dyn shell_contract::hosts::PreparedGeneratedPath> {
+    Box::new(PreparedSyntheticGenerated {
+        task: std::sync::Arc::new(SyntheticGeneratedTask::default()),
+        action: Some(action),
+    })
 }
 
 /// A shell that records what the handlers asked of it
@@ -2541,10 +2560,7 @@ impl SlidesShell for FakeShell {
             )?;
             Ok(shell_contract::hosts::GeneratedPathOutcome::NotOpened)
         });
-        Ok(Box::new(PreparedSyntheticGenerated {
-            task: std::sync::Arc::new(SyntheticGeneratedTask::default()),
-            action: Some(action),
-        }))
+        Ok(synthetic_generated(action))
     }
     fn set_window_title_owned(
         &self,

@@ -535,43 +535,6 @@ impl PendingNote {
         }
     }
 }
-#[cfg(test)]
-mod pending_tests {
-    use super::*;
-
-    #[test]
-    fn pending_note_holds_busy_until_completion_or_drop() {
-        let service = NoteLinkService::new(Platform::Other);
-        service.busy.borrow_mut().push(7.0);
-        let pending = PendingNote {
-            busy: service.busy.clone(),
-            owner: 7.0,
-        };
-        assert!(service.is_busy(7.0));
-        assert_eq!(pending.finish(Ok(true)), NoteResult::Ok);
-        assert!(!service.is_busy(7.0));
-        service.busy.borrow_mut().push(7.0);
-        drop(PendingNote {
-            busy: service.busy.clone(),
-            owner: 7.0,
-        });
-        assert!(!service.is_busy(7.0));
-        service.busy.borrow_mut().push(7.0);
-        let failed = PendingNote {
-            busy: service.busy.clone(),
-            owner: 7.0,
-        }
-        .finish(Err(Thrown("tab creation failed".into())));
-        assert_eq!(
-            failed,
-            NoteResult::Refused {
-                reason: "failed",
-                message: Some("tab creation failed".into())
-            }
-        );
-        assert!(!service.is_busy(7.0));
-    }
-}
 
 pub struct NoteLinkService {
     platform: Platform,
@@ -883,4 +846,42 @@ pub fn note_dialog_text(lang: &str, key: &str) -> Option<&'static str> {
         .iter()
         .position(|k| *k == key)
         .map(|at| row.1[at])
+}
+
+#[cfg(test)]
+mod pending_tests {
+    use super::*;
+
+    #[test]
+    fn pending_note_holds_busy_until_completion_or_drop() {
+        let service = NoteLinkService::new(Platform::Other);
+        service.busy.borrow_mut().push(7.0);
+        let pending = PendingNote {
+            busy: service.busy.clone(),
+            owner: 7.0,
+        };
+        assert!(service.is_busy(7.0));
+        assert_eq!(pending.finish(Ok(true)), NoteResult::Ok);
+        assert!(!service.is_busy(7.0));
+        service.busy.borrow_mut().push(7.0);
+        drop(PendingNote {
+            busy: service.busy.clone(),
+            owner: 7.0,
+        });
+        assert!(!service.is_busy(7.0));
+        service.busy.borrow_mut().push(7.0);
+        let failed = PendingNote {
+            busy: service.busy.clone(),
+            owner: 7.0,
+        }
+        .finish(Err(Thrown("tab creation failed".into())));
+        assert_eq!(
+            failed,
+            NoteResult::Refused {
+                reason: "failed",
+                message: Some("tab creation failed".into())
+            }
+        );
+        assert!(!service.is_busy(7.0));
+    }
 }

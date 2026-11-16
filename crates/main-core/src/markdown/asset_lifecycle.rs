@@ -840,13 +840,13 @@ pub fn prepare_assets_for_save_as_authorized(
             let Some((safe_source, pinned_source)) = pinned_sources.get(source) else {
                 continue;
             };
-            if let Some(already_copied) = copied_by_real_path.get(&safe_source) {
+            if let Some(already_copied) = copied_by_real_path.get(safe_source) {
                 let already_copied = already_copied.clone();
                 rewrites.set(source, already_copied);
                 continue;
             }
 
-            let base = sanitize_asset_name(&basename(&safe_source, None));
+            let base = sanitize_asset_name(&basename(safe_source, None));
             let mut copied: Option<OwnedAssetRecord> = None;
             for suffix in 0..100_000u32 {
                 let name = name_with_suffix(&base, suffix);

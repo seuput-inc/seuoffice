@@ -11,9 +11,6 @@ pub struct ChatsDirectory {
     pub(super) directory_path: String,
 }
 
-type Authorize<'a> =
-    dyn FnMut(&mut dyn FnMut() -> Result<(), NodeError>) -> Result<(), NodeError> + 'a;
-
 fn authorized<T>(
     authorize: &mut Authorize<'_>,
     work: impl FnOnce() -> Result<T, WriteGuardError>,
@@ -99,7 +96,7 @@ fn open_child(
     let held = directory
         .metadata()
         .map_err(|error| node_error(&error, "fstat", path))?;
-    if held.dev() != info.st_dev as u64 || held.ino() != info.st_ino as u64 {
+    if held.dev() != stat_dev(&info) || held.ino() != info.st_ino {
         return Err(NodeError {
             code: None,
             message: "project data directory changed".into(),
@@ -268,7 +265,7 @@ impl ChatsDirectory {
     pub fn update_authorized<E: From<WriteGuardError>>(
         &self,
         name: &str,
-        change: &mut dyn FnMut(Option<&str>) -> Result<Option<String>, E>,
+        change: DataChange<'_, E>,
         authorize: &mut Authorize<'_>,
     ) -> Result<(DataUpdateResult, Vec<String>), E> {
         self.path(name).map_err(|error| E::from(error.into()))?;
@@ -409,8 +406,8 @@ impl ChatsDirectory {
                 // SAFETY: fstatat succeeded.
                 let info = unsafe { info.assume_init() };
                 if info.st_mode & libc::S_IFMT != libc::S_IFREG
-                    || held.dev() != info.st_dev as u64
-                    || held.ino() != info.st_ino as u64
+                    || held.dev() != stat_dev(&info)
+                    || held.ino() != info.st_ino
                 {
                     return Err(NodeError {
                         code: None,

@@ -67,7 +67,7 @@ impl Projects {
                         })
                     }
                     Ok(MutationPreparation::Write(write)) => {
-                        projects.mutation_worker(token, project_id, write, completion)
+                        projects.mutation_worker(token, project_id, *write, completion)
                     }
                 }
             }));
@@ -112,7 +112,7 @@ impl Projects {
                 };
                 match result {
                     Ok(MutationAcknowledgement::NeedBackupName(write)) => {
-                        match projects.guide().resume_mutation_backup(write) {
+                        match projects.guide().resume_mutation_backup(*write) {
                             Ok(write) => {
                                 projects.mutation_worker(token, project_id, write, completion)
                             }

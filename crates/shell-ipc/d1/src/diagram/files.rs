@@ -21,7 +21,8 @@ use shell_contract::{IpcError, IpcValue, ViewId, WindowId};
 use super::DiagramViews;
 use super::formats::{
     Detected, DiagramFormat, SAVE_AS_FORMATS, detect_format, diagram_base_name, filter_extension,
-    format_for_save_path, format_of_path, is_compressed_file, openable_link, with_format_extension,
+    format_for_save_path, format_of_path, is_compressed_file, openable_link, safe_file_name_base,
+    with_format_extension,
 };
 use super::recovery::{BoxDialog, Parent};
 use super::state::{Import, Target, Unopened, WaitEnd};

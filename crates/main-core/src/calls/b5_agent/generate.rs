@@ -1239,6 +1239,7 @@ fn carry_session(
         step = match step {
             SessionStep::Done(result) => return result,
             SessionStep::Need(need, run) => {
+                let run = *run;
                 let answer = match need {
                     SessionNeed::Reveal(_) => SessionAnswer::Revealed(Ok(())),
                     SessionNeed::Inspect(path) => {
@@ -1756,6 +1757,7 @@ fn carry_window(
         step = match step {
             WindowStep::Done(result) => return result,
             WindowStep::Need(need, run) => {
+                let run = *run;
                 let answer = match need {
                     WindowNeed::Save(need) => SessionAnswer::Save(host.open.carry_out(&need)),
                     WindowNeed::Reveal(tab) => SessionAnswer::Revealed(host.open.reveal(&tab)),
@@ -2259,7 +2261,7 @@ mod continuation_regressions {
 
     fn inspection(step: SessionStep) -> (String, SessionRun) {
         match step {
-            SessionStep::Need(SessionNeed::Inspect(path), run) => (path, run),
+            SessionStep::Need(SessionNeed::Inspect(path), run) => (path, *run),
             _ => panic!("expected an owned inspection"),
         }
     }
@@ -2341,9 +2343,8 @@ mod continuation_regressions {
         assert_eq!(state["materials"][0]["path"], "/new.md");
         assert_eq!(state["materials"][0]["state"], "checking");
         session.discard_run(new);
-        assert_eq!(
+        assert!(
             session.state(&host).checking,
-            true,
             "unread rows remain visibly unchecked"
         );
     }
@@ -2390,7 +2391,7 @@ mod continuation_regressions {
             prepare,
             SessionAnswer::Inspected(Ok(ready(&path))),
         ) {
-            SessionStep::Need(SessionNeed::OpenTarget { token, .. }, run) => (token, run),
+            SessionStep::Need(SessionNeed::OpenTarget { token, .. }, run) => (token, *run),
             _ => panic!("expected target open after refresh and canonical preparation"),
         }
     }
@@ -2488,7 +2489,7 @@ mod continuation_regressions {
         let run = match session.save_begin(&mut host, &snap, Some(&key)) {
             SessionStep::Need(SessionNeed::Reveal(tab), run) => {
                 assert_eq!(tab, "7");
-                run
+                *run
             }
             _ => panic!("reveal must yield instead of acknowledging queued work"),
         };
@@ -2546,7 +2547,7 @@ mod continuation_regressions {
                 WindowStep::Need(WindowNeed::Inspect(job), run) => window.resume(
                     host,
                     snap,
-                    run,
+                    *run,
                     SessionAnswer::Inspected(Ok(ready(&job.path))),
                 ),
                 other => return other,

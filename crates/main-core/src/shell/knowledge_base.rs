@@ -624,6 +624,8 @@ pub fn parse_kb_open_scope(raw: Option<&JsonValue>) -> KbOpenScope {
 pub const KB_DOWNLOAD_DECLINED: &str =
     "the person declined to download this file, which is not on this PC";
 
+type IndexedAsOnDisk<'a> = dyn FnMut(&[String]) -> Result<Vec<String>, Thrown> + 'a;
+
 /// `searchSavedKnowledgeWithProject(search, query, starredPaths, limit,
 /// within, indexedAsOnDisk)`: `searchSavedKnowledgeBase` widened by a project
 /// folder the run also reads. `within` is the project's "visible to the AI"
@@ -639,7 +641,7 @@ pub fn search_saved_knowledge_with_project(
     starred_paths: &[String],
     limit: f64,
     within: KbWithin<'_>,
-    indexed_as_on_disk: &mut dyn FnMut(&[String]) -> Result<Vec<String>, Thrown>,
+    indexed_as_on_disk: &mut IndexedAsOnDisk<'_>,
 ) -> Result<Vec<KbSearchHit>, Thrown> {
     let Some(within) = within else {
         return search_saved_knowledge_base(

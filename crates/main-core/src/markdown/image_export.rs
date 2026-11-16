@@ -79,6 +79,7 @@ impl ImageExportSessions {
         self.start_inner(env, owner, parent, name, None, None, &mut |effect| effect())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn start_inner(
         &mut self,
         env: &ImageExportEnv<'_>,
@@ -128,13 +129,13 @@ impl ImageExportSessions {
             );
             Ok(())
         }) {
-            if !native {
-                if let Err(cleanup) = rm_recursive_force(&dir) {
-                    eprintln!(
-                        "[markdown] image export staging cleanup incomplete at {dir}: {}",
-                        cleanup.message
-                    );
-                }
+            if !native
+                && let Err(cleanup) = rm_recursive_force(&dir)
+            {
+                eprintln!(
+                    "[markdown] image export staging cleanup incomplete at {dir}: {}",
+                    cleanup.message
+                );
             }
             return Err(error);
         }

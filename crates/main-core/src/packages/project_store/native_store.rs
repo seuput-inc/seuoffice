@@ -284,21 +284,21 @@ impl NativeProjectStore {
             map.insert(canonical.clone(), Value::String(project.clone()));
             self.write_index(&index)?;
         }
-        if old.is_none() {
-            if let Some(mut data) = self.project("default")? {
-                let files = data
-                    .get_mut("files")
-                    .and_then(Value::as_array_mut)
-                    .ok_or("invalid project files")?;
-                if !files
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .any(|file| canonical_path_key(file) == canonical)
-                {
-                    files.push(Value::String(path.to_owned()));
-                    data["updatedAt"] = Value::String(now_iso());
-                    self.write_project(&data)?;
-                }
+        if old.is_none()
+            && let Some(mut data) = self.project("default")?
+        {
+            let files = data
+                .get_mut("files")
+                .and_then(Value::as_array_mut)
+                .ok_or("invalid project files")?;
+            if !files
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|file| canonical_path_key(file) == canonical)
+            {
+                files.push(Value::String(path.to_owned()));
+                data["updatedAt"] = Value::String(now_iso());
+                self.write_project(&data)?;
             }
         }
         let old_chat = mapped_key(index.get("chatIdByPath"), path);
@@ -404,10 +404,10 @@ impl NativeProjectStore {
     fn flush_pending(&mut self, project: &str, chat: &str) -> Result<(), String> {
         let path = self.chat_path(project, chat)?;
         let key = (project.to_owned(), chat.to_owned());
-        if let Some(records) = self.pending.remove(&key) {
-            if let Err(error) = chat_files::append(&path, &records) {
-                eprintln!("[project-store] flushPending failed: {error}");
-            }
+        if let Some(records) = self.pending.remove(&key)
+            && let Err(error) = chat_files::append(&path, &records)
+        {
+            eprintln!("[project-store] flushPending failed: {error}");
         }
         Ok(())
     }
@@ -558,14 +558,13 @@ impl NativeProjectStore {
         project["updatedAt"] = Value::String(now.clone());
         self.write_project(&project)?;
         let mut index = self.index();
-        if let Some(projects) = index.get_mut("projects").and_then(Value::as_array_mut) {
-            if let Some(entry) = projects
+        if let Some(projects) = index.get_mut("projects").and_then(Value::as_array_mut)
+            && let Some(entry) = projects
                 .iter_mut()
                 .find(|entry| entry["id"].as_str() == Some(id))
-            {
-                entry["name"] = Value::String(name.to_owned());
-                entry["updatedAt"] = Value::String(now);
-            }
+        {
+            entry["name"] = Value::String(name.to_owned());
+            entry["updatedAt"] = Value::String(now);
         }
         self.write_index(&index)
     }
@@ -662,11 +661,10 @@ impl NativeProjectStore {
         let source = self.project_dir(id)?;
         let trash = self.base.join(".trash");
         fs::create_dir_all(&trash).map_err(|error| error.to_string())?;
-        if source.exists() {
-            if let Err(error) = fs::rename(source, trash.join(format!("{id}-{}", now_ms() as u64)))
-            {
-                eprintln!("[project-store] deleteProject rename to trash failed: {error}");
-            }
+        if source.exists()
+            && let Err(error) = fs::rename(source, trash.join(format!("{id}-{}", now_ms() as u64)))
+        {
+            eprintln!("[project-store] deleteProject rename to trash failed: {error}");
         }
         let map = index
             .get_mut("fileMap")
@@ -675,34 +673,34 @@ impl NativeProjectStore {
         for path in &files {
             map.insert(path.clone(), Value::String("default".to_owned()));
         }
-        if !files.is_empty() {
-            if let Some(mut default) = self.project("default")? {
-                let entries = default
-                    .get_mut("files")
-                    .and_then(Value::as_array_mut)
-                    .ok_or("invalid project files")?;
-                for path in &files {
-                    let display = project
-                        .get("files")
-                        .and_then(Value::as_array)
-                        .and_then(|files| {
-                            files
-                                .iter()
-                                .filter_map(Value::as_str)
-                                .find(|listed| canonical_path_key(listed) == *path)
-                        })
-                        .unwrap_or(path);
-                    if !entries
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .any(|file| canonical_path_key(file) == *path)
-                    {
-                        entries.push(Value::String(display.to_owned()));
-                    }
+        if !files.is_empty()
+            && let Some(mut default) = self.project("default")?
+        {
+            let entries = default
+                .get_mut("files")
+                .and_then(Value::as_array_mut)
+                .ok_or("invalid project files")?;
+            for path in &files {
+                let display = project
+                    .get("files")
+                    .and_then(Value::as_array)
+                    .and_then(|files| {
+                        files
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .find(|listed| canonical_path_key(listed) == *path)
+                    })
+                    .unwrap_or(path);
+                if !entries
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .any(|file| canonical_path_key(file) == *path)
+                {
+                    entries.push(Value::String(display.to_owned()));
                 }
-                default["updatedAt"] = Value::String(now_iso());
-                self.write_project(&default)?;
             }
+            default["updatedAt"] = Value::String(now_iso());
+            self.write_project(&default)?;
         }
         let projects = index
             .get_mut("projects")
@@ -742,10 +740,10 @@ impl NativeProjectStore {
                 .unwrap_or("")
                 .to_owned();
             for chat in self.list_chats(&id)? {
-                if let Some(updated) = chat.get("updatedAt").and_then(Value::as_str) {
-                    if updated > active.as_str() {
-                        active = updated.to_owned();
-                    }
+                if let Some(updated) = chat.get("updatedAt").and_then(Value::as_str)
+                    && updated > active.as_str()
+                {
+                    active = updated.to_owned();
                 }
             }
             info["fileCount"] = json!(count);
@@ -855,10 +853,10 @@ impl NativeProjectStore {
         let mut projects = vec!["default".to_owned()];
         if let Some(entries) = index.get("projects").and_then(Value::as_array) {
             for project in entries {
-                if let Some(id) = project.get("id").and_then(Value::as_str) {
-                    if !projects.iter().any(|existing| existing == id) {
-                        projects.push(id.to_owned());
-                    }
+                if let Some(id) = project.get("id").and_then(Value::as_str)
+                    && !projects.iter().any(|existing| existing == id)
+                {
+                    projects.push(id.to_owned());
                 }
             }
         }
@@ -933,25 +931,25 @@ impl NativeProjectStore {
             if let Some(key) = source_key {
                 files.remove(&key);
             }
-            if dest_project.is_some() {
-                if let Some(key) = dest_key {
-                    files.remove(&key);
-                }
+            if dest_project.is_some()
+                && let Some(key) = dest_key
+            {
+                files.remove(&key);
             }
             files.insert(new.clone(), Value::String(project.to_owned()));
-            if let Some(displaced) = dest_project.as_deref().filter(|id| *id != project) {
-                if let Some(mut data) = self.project(displaced)? {
-                    let files = data
-                        .get_mut("files")
-                        .and_then(Value::as_array_mut)
-                        .ok_or("invalid project files")?;
-                    files.retain(|file| {
-                        file.as_str()
-                            .is_none_or(|path| canonical_path_key(path) != new)
-                    });
-                    data["updatedAt"] = Value::String(now_iso());
-                    self.write_project_with_io(&data, io)?;
-                }
+            if let Some(displaced) = dest_project.as_deref().filter(|id| *id != project)
+                && let Some(mut data) = self.project(displaced)?
+            {
+                let files = data
+                    .get_mut("files")
+                    .and_then(Value::as_array_mut)
+                    .ok_or("invalid project files")?;
+                files.retain(|file| {
+                    file.as_str()
+                        .is_none_or(|path| canonical_path_key(path) != new)
+                });
+                data["updatedAt"] = Value::String(now_iso());
+                self.write_project_with_io(&data, io)?;
             }
             if let Some(mut data) = self.project(project)? {
                 let files = data
@@ -993,10 +991,10 @@ impl NativeProjectStore {
         if let Some(key) = source_chat_key {
             chats.remove(&key);
         }
-        if displaced_chat.is_some() {
-            if let Some(key) = dest_chat_key {
-                chats.remove(&key);
-            }
+        if displaced_chat.is_some()
+            && let Some(key) = dest_chat_key
+        {
+            chats.remove(&key);
         }
         chats.insert(new, Value::String(chat.clone()));
         if let Some(displaced) = displaced_chat.filter(|id| id != &chat) {

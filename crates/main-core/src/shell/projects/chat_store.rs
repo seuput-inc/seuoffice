@@ -2660,9 +2660,11 @@ pub trait ChatIoGuide: ChatStoreGuide {
     fn set_io_warning_sink(&mut self, sink: ChatWarningSink);
 }
 
+type ChatWarning = (String, Option<String>);
+
 /// One ordered diagnostic stream shared by the real worker guide and host.
 #[derive(Clone, Default)]
-pub struct ChatWarningSink(std::sync::Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>);
+pub struct ChatWarningSink(std::sync::Arc<std::sync::Mutex<Vec<ChatWarning>>>);
 impl ChatWarningSink {
     pub fn push(&self, label: &str, detail: Option<&str>) {
         self.0
@@ -2727,7 +2729,7 @@ impl ChatIoAcknowledgement {
 
 pub enum ChatIoProgress {
     Done(Result<ChatIoResult, ChatStoreError>),
-    NeedInstallId(ChatIo),
+    NeedInstallId(Box<ChatIo>),
 }
 pub struct ChatIoCompletion {
     pub progress: ChatIoProgress,
@@ -2822,12 +2824,12 @@ impl<G: ChatStoreGuide, H: ChatStoreHost> ProjectChatStore<G, H> {
             ));
         }
         let progress = match ack.continuation {
-            Some(operation) => ChatIoProgress::NeedInstallId(ChatIo {
+            Some(operation) => ChatIoProgress::NeedInstallId(Box::new(ChatIo {
                 ticket: ack.ticket,
                 outside_checkpoint: ack.outside_checkpoint,
                 operation,
                 state: ack.state,
-            }),
+            })),
             None => {
                 ack.state.restore(self);
                 self.io_lease = None;

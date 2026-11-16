@@ -82,6 +82,8 @@ pub fn open_dialog(env: &Env, parent: Option<WindowId>, options: &JsObject<JsonV
 pub struct Saved {
     pub canceled: bool,
     pub path: Option<String>,
+    /// the native destination the path was normalized to, for a native authority
+    pub destination: Option<shell_contract::ipc::NativeSaveDestination>,
 }
 
 /// `saveFileDialog(event, options)`: bare names anchor in the default save folder
@@ -114,6 +116,7 @@ pub fn save_dialog(env: &Env, parent: Option<WindowId>, options: &JsObject<JsonV
             Some(JsonValue::String(path)) => Some(path),
             _ => None,
         },
+        destination: None,
     }
 }
 
@@ -193,14 +196,26 @@ fn save_dialog_owned_with_fallback(
                 .unwrap_or_else(|p| p.into_inner());
             main_core::packages::electron_utils::dialog_memory::remember_save_path(
                 &mut memory,
-                &crate::host::path_string(path.clone()),
+                &crate::host::path_string(path.path().to_path_buf()),
             );
             Ok(())
         })?;
     }
+    let canceled = picked.is_none();
+    let (path, destination) = match picked {
+        Some(crate::owned_save::SaveDestination::Renderer(path)) => {
+            (Some(crate::host::path_string(path)), None)
+        }
+        Some(crate::owned_save::SaveDestination::Native(destination)) => (
+            Some(crate::host::path_string(destination.path().to_path_buf())),
+            Some(destination),
+        ),
+        None => (None, None),
+    };
     Ok(Saved {
-        canceled: picked.is_none(),
-        path: picked.map(crate::host::path_string),
+        canceled,
+        path,
+        destination,
     })
 }
 
@@ -260,7 +275,7 @@ impl OwnedMessages<'_> {
             Ok(answer) => answer as f64,
             Err(error) => {
                 *self.error.borrow_mut() = Some(error);
-                options.cancel_id.unwrap_or(-1.0)
+                options.cancel_id.map_or(-1.0, f64::from)
             }
         }
     }
@@ -291,6 +306,7 @@ pub fn save_dialog_plain(
             Some(JsonValue::String(path)) => Some(path),
             _ => None,
         },
+        destination: None,
     }
 }
 

@@ -99,7 +99,7 @@ fn revoked_png_disposal_cannot_delete_final_or_foreign_private_entries() {
 fn a_later_png_promotion_failure_does_not_remove_the_published_first_page() {
     let root = fixture();
     let target = join(&[&root, "partial.png"]);
-    let numbered = vec![
+    let numbered = [
         join(&[&root, "partial-01.png"]),
         join(&[&root, "partial-02.png"]),
     ];

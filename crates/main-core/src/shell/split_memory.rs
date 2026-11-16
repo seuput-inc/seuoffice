@@ -256,6 +256,11 @@ pub fn plan_remembered_split(
     }
 }
 
+/// `clearSplitMemory(options)`
+pub fn clear_split_memory(options: &SplitMemoryOptions) -> Result<(), NodeError> {
+    write_setting(options, None)
+}
+
 #[cfg(test)]
 mod restore_tests {
     use super::*;
@@ -302,9 +307,4 @@ mod restore_tests {
             RememberedSplitPlan::Home
         );
     }
-}
-
-/// `clearSplitMemory(options)`
-pub fn clear_split_memory(options: &SplitMemoryOptions) -> Result<(), NodeError> {
-    write_setting(options, None)
 }

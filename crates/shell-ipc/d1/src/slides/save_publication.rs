@@ -291,7 +291,7 @@ impl App {
         let services = self.services.clone();
         let index = self.registry_index;
         let id = id.to_owned();
-        let done = Box::new(move |answer| {
+        let done: Box<dyn FnOnce(Result<(), String>) + Send> = Box::new(move |answer| {
             crate::slides::post_to(&services, index, move |app| {
                 app.publication_done(&id, answer.map_err(thrown), false)
             })

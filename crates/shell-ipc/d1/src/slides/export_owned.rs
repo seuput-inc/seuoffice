@@ -1,7 +1,12 @@
 use super::super::owned_save::{SaveRevision, SaveScope};
 use super::*;
-use main_core::packages::electron_utils::atomic_write::owned::{Admission, write_file};
-use std::path::PathBuf;
+use main_core::packages::electron_utils::atomic_write::owned::{Admission, admitted};
+use std::path::{Path, PathBuf};
+
+type Written = (
+    shell_contract::ipc::SavedPublication,
+    Option<shell_contract::ipc::NativeSavedInput>,
+);
 
 struct Staging(PathBuf);
 impl Staging {
@@ -63,6 +68,7 @@ pub(in crate::slides) fn export_pdf(app: &App, cx: &CallContext, args: Args, res
     }));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stage_and_write(
     shell: &dyn super::super::engine::SlidesShell,
     op: &mut IpcValue,
@@ -72,7 +78,7 @@ fn stage_and_write(
     invocation: Option<shell_contract::ipc::NativeInvocationDocument>,
     destination: Option<shell_contract::ipc::NativeSaveDestination>,
     admission: Admission,
-) -> Result<(), String> {
+) -> Result<Written, String> {
     let staging = Staging::create(id)?;
     let staged = staging.0.join("presentation.pdf");
     let staged = staged
@@ -131,7 +137,11 @@ fn stage_and_write(
         return Err("The PDF renderer returned another staging path".into());
     }
     let bytes = std::fs::read(staged).map_err(|error| error.to_string())?;
-    write_file(path, &bytes, admission).map_err(|error| error.message)
+    admitted(&admission, || ()).map_err(|error| error.message)?;
+    let (output, input) = request
+        .write_published(destination.as_ref(), Path::new(path), bytes)
+        .map_err(|error| error.message)?;
+    Ok((output, Some(input)))
 }
 
 type GeneratedResult = Result<shell_contract::hosts::GeneratedPathOutcome, String>;
@@ -437,13 +447,7 @@ impl App {
         revision: SaveRevision,
         save_id: Option<String>,
         path: String,
-        result: Result<
-            (
-                shell_contract::ipc::SavedPublication,
-                Option<shell_contract::ipc::NativeSavedInput>,
-            ),
-            String,
-        >,
+        result: Result<Written, String>,
         responder: Responder,
     ) {
         let (output, input) = match result

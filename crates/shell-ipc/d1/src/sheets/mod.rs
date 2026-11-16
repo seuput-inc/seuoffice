@@ -80,6 +80,14 @@ fn open_worker(
         if matches!(channel, "workbook:select" | "workbook:reopen") {
             core_at(env.slot).bind_save_renderer(cx);
         }
+        let reply = if channel == "workbook:select" {
+            match core_at(env.slot).claim_saved_selection(cx, reply) {
+                Some(reply) => reply,
+                None => return,
+            }
+        } else {
+            reply
+        };
         let authority = open::OpenAuthority {
             owner: cx
                 .native

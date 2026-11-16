@@ -408,7 +408,7 @@ impl Projects {
                 error = self.abandon_chat_snapshot(ack, error);
             } else if let Some(result) = accepted {
                 if let ChatIoProgress::NeedInstallId(io) = result.progress {
-                    error = self.cancel_chat_snapshot(io, error);
+                    error = self.cancel_chat_snapshot(*io, error);
                 }
                 self.report_chat_warnings(&result.warnings);
             }
@@ -427,14 +427,14 @@ impl Projects {
                 deps.chats.take_appended();
             });
             let error = match result.progress {
-                ChatIoProgress::NeedInstallId(io) => self.cancel_chat_snapshot(io, error.0),
+                ChatIoProgress::NeedInstallId(io) => self.cancel_chat_snapshot(*io, error.0),
                 ChatIoProgress::Done(_) => error.0,
             };
             return self.fail_chat_io(token, completion, error);
         }
         match result.progress {
             ChatIoProgress::NeedInstallId(io) => {
-                self.chat_install_id(token, finish, io, authority, completion)
+                self.chat_install_id(token, finish, *io, authority, completion)
             }
             ChatIoProgress::Done(result) => {
                 self.complete_chat_io(token, finish, result, legacy, completion)

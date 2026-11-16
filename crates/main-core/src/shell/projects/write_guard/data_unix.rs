@@ -162,7 +162,7 @@ impl<'a> Snapshot<'a> {
         let held_dir = directory
             .metadata()
             .map_err(|error| node_error(&error, "fstat", &self.data_path))?;
-        if held_dir.dev() != dir_info.st_dev as u64 || held_dir.ino() != dir_info.st_ino as u64 {
+        if held_dir.dev() != stat_dev(&dir_info) || held_dir.ino() != dir_info.st_ino {
             return Err(NodeError {
                 code: Some("EBUSY"),
                 message: "project data folder changed".into(),
@@ -217,7 +217,7 @@ impl<'a> Snapshot<'a> {
         let held = target
             .metadata()
             .map_err(|error| node_error(&error, "fstat", &self.target_path))?;
-        if !held.is_file() || held.dev() != info.st_dev as u64 || held.ino() != info.st_ino as u64 {
+        if !held.is_file() || held.dev() != stat_dev(&info) || held.ino() != info.st_ino {
             return Err(NodeError {
                 code: Some("EBUSY"),
                 message: "project data target changed".into(),

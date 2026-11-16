@@ -41,8 +41,26 @@ mod cleanup;
 mod new_document;
 #[cfg(unix)]
 pub use cleanup::ProjectCleanup;
+
+pub(crate) type Authorize<'a> =
+    dyn FnMut(&mut dyn FnMut() -> Result<(), NodeError>) -> Result<(), NodeError> + 'a;
+
+#[cfg(unix)]
+fn stat_dev(stat: &libc::stat) -> u64 {
+    // macOS declares st_dev as a signed 32-bit dev_t, as std's MetadataExt::dev
+    // sign-extends it; Linux declares it as u64 already.
+    #[cfg(target_os = "linux")]
+    {
+        stat.st_dev
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        stat.st_dev as u64
+    }
+}
+
 fn run_authorized<T>(
-    authorize: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), NodeError>) -> Result<(), NodeError>,
+    authorize: &mut Authorize<'_>,
     action: impl FnOnce() -> Result<T, NodeError>,
 ) -> Result<T, NodeError> {
     let mut action = Some(action);
@@ -84,7 +102,7 @@ fn stage_authorized_data(
     data_path: &str,
     name: &str,
     bytes: &[u8],
-    authorize: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), NodeError>) -> Result<(), NodeError>,
+    authorize: &mut Authorize<'_>,
 ) -> Result<staging_windows::OwnedMetadataStage, NodeError> {
     let mut staged = None;
     let result = run_authorized(authorize, || {
@@ -204,7 +222,7 @@ fn write_staged_project(
     staged: &fs::File,
     path: &str,
     bytes: &[u8],
-    authorize: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), NodeError>) -> Result<(), NodeError>,
+    authorize: &mut Authorize<'_>,
 ) -> Result<(), NodeError> {
     use std::os::fd::{AsRawFd, FromRawFd};
     let (data, mut file) = run_authorized(authorize, || {
@@ -300,8 +318,8 @@ fn publish_staged_directory(
     }
     // SAFETY: fstatat succeeded and initialized current.
     let current = unsafe { current.assume_init() };
-    if current.st_dev as u64 != held.dev()
-        || current.st_ino as u64 != held.ino()
+    if stat_dev(&current) != held.dev()
+        || current.st_ino != held.ino()
         || (current.st_mode & libc::S_IFMT) != libc::S_IFDIR
     {
         return Err(NodeError {
@@ -789,9 +807,7 @@ impl ProjectWriteGuard {
         rel_name: &str,
         bytes: &[u8],
         data_dir: Option<&str>,
-        authorize: &mut dyn FnMut(
-            &mut dyn FnMut() -> Result<(), NodeError>,
-        ) -> Result<(), NodeError>,
+        authorize: &mut Authorize<'_>,
     ) -> Result<String, WriteGuardError> {
         self.write_data_authorized_inner(root, rel_name, bytes, data_dir, false, None, authorize)
     }
@@ -803,9 +819,7 @@ impl ProjectWriteGuard {
         rel_name: &str,
         bytes: &[u8],
         data_dir: Option<&str>,
-        authorize: &mut dyn FnMut(
-            &mut dyn FnMut() -> Result<(), NodeError>,
-        ) -> Result<(), NodeError>,
+        authorize: &mut Authorize<'_>,
     ) -> Result<Option<String>, WriteGuardError> {
         let retained = self
             .write_data_authorized_inner(root, rel_name, bytes, data_dir, true, None, authorize)?;
@@ -817,11 +831,9 @@ impl ProjectWriteGuard {
         &self,
         root: &str,
         rel_name: &str,
-        change: &mut dyn FnMut(Option<&str>) -> Result<Option<String>, E>,
+        change: DataChange<'_, E>,
         data_dir: Option<&str>,
-        authorize: &mut dyn FnMut(
-            &mut dyn FnMut() -> Result<(), NodeError>,
-        ) -> Result<(), NodeError>,
+        authorize: &mut Authorize<'_>,
     ) -> Result<(DataUpdateResult, Vec<String>), E> {
         self.update_data_authorized_inner(root, rel_name, change, data_dir, None, authorize)
     }
@@ -831,12 +843,10 @@ impl ProjectWriteGuard {
         &self,
         root: &str,
         rel_name: &str,
-        change: &mut dyn FnMut(Option<&str>) -> Result<Option<String>, E>,
+        change: DataChange<'_, E>,
         data_dir: Option<&str>,
         scope: Option<&ChatsDirectory>,
-        authorize: &mut dyn FnMut(
-            &mut dyn FnMut() -> Result<(), NodeError>,
-        ) -> Result<(), NodeError>,
+        authorize: &mut Authorize<'_>,
     ) -> Result<(DataUpdateResult, Vec<String>), E> {
         if data_segments(rel_name)
             .map_err(|error| E::from(error.into()))?
@@ -864,10 +874,10 @@ impl ProjectWriteGuard {
         .map_err(E::from)?;
         #[cfg(unix)]
         let check = || {
-            if let Some(scope) = scope {
-                if !scope.matches()? {
-                    return Ok(false);
-                }
+            if let Some(scope) = scope
+                && !scope.matches()?
+            {
+                return Ok(false);
             }
             snapshot.matches()
         };
@@ -1023,9 +1033,7 @@ impl ProjectWriteGuard {
         root: &str,
         rel_name: &str,
         data_dir: Option<&str>,
-        authorize: &mut dyn FnMut(
-            &mut dyn FnMut() -> Result<(), NodeError>,
-        ) -> Result<(), NodeError>,
+        authorize: &mut Authorize<'_>,
     ) -> Result<(), WriteGuardError> {
         if data_segments(rel_name)?.len() != 1 {
             return Err(ProjectWriteRefused::new(ProjectWriteRefusal::BadPath, rel_name).into());
@@ -1081,9 +1089,7 @@ impl ProjectWriteGuard {
         root: &str,
         rel_name: &str,
         data_dir: Option<&str>,
-        authorize: &mut dyn FnMut(
-            &mut dyn FnMut() -> Result<(), NodeError>,
-        ) -> Result<(), NodeError>,
+        authorize: &mut Authorize<'_>,
     ) -> Result<(), WriteGuardError> {
         use std::os::fd::{AsRawFd, FromRawFd};
         if data_segments(rel_name)?.len() != 1 {
@@ -1209,6 +1215,7 @@ impl ProjectWriteGuard {
     }
 
     #[cfg(unix)]
+    #[allow(clippy::too_many_arguments)]
     fn write_data_authorized_inner(
         &self,
         root: &str,
@@ -1217,19 +1224,17 @@ impl ProjectWriteGuard {
         data_dir: Option<&str>,
         exclusive: bool,
         scope: Option<&ChatsDirectory>,
-        authorize: &mut dyn FnMut(
-            &mut dyn FnMut() -> Result<(), NodeError>,
-        ) -> Result<(), NodeError>,
+        authorize: &mut Authorize<'_>,
     ) -> Result<String, WriteGuardError> {
         let mut scoped_authorize = |effect: &mut dyn FnMut() -> Result<(), NodeError>| {
             authorize(&mut || {
-                if let Some(scope) = scope {
-                    if !scope.matches()? {
-                        return Err(NodeError {
-                            code: None,
-                            message: "chat directory binding changed".into(),
-                        });
-                    }
+                if let Some(scope) = scope
+                    && !scope.matches()?
+                {
+                    return Err(NodeError {
+                        code: None,
+                        message: "chat directory binding changed".into(),
+                    });
                 }
                 effect()
             })
@@ -1265,13 +1270,13 @@ impl ProjectWriteGuard {
         let private_name = format!(".seuoffice-stage-{suffix}");
         let private_path = join(&[root, &private_name]);
         let private = run_authorized(authorize, || {
-            if !stage_handle_matches(&root_handle, root)? {
+            if !stage_handle_matches(root_handle, root)? {
                 return Err(NodeError {
                     code: None,
                     message: "project root changed".into(),
                 });
             }
-            create_private_stage_dir(&private_path, &root_handle, &private_name)
+            create_private_stage_dir(&private_path, root_handle, &private_name)
         })
         .map_err(|error| NodeError {
             code: error.code,
@@ -1322,13 +1327,13 @@ impl ProjectWriteGuard {
         payload
             .write_all(bytes)
             .map_err(|error| retained(node_error(&error, "write", &private_path)))?;
-        if let Err(error) = payload.sync_all() {
-            if !matches!(
+        if let Err(error) = payload.sync_all()
+            && !matches!(
                 error.raw_os_error(),
                 Some(libc::EPERM | libc::EACCES | libc::EBUSY | libc::EINVAL | libc::ENOSYS)
-            ) {
-                return Err(retained(node_error(&error, "fsync", &private_path)).into());
-            }
+            )
+        {
+            return Err(retained(node_error(&error, "fsync", &private_path)).into());
         }
         let data_c = std::ffi::CString::new(data_name.as_str()).map_err(|_| NodeError {
             code: None,
@@ -1350,7 +1355,7 @@ impl ProjectWriteGuard {
         let owned_data = if scope.is_none() {
             Some({
                 let data = run_authorized(authorize, || {
-                    if !stage_handle_matches(&root_handle, root)? {
+                    if !stage_handle_matches(root_handle, root)? {
                         return Err(NodeError {
                             code: None,
                             message: "project root changed".into(),
@@ -1362,7 +1367,7 @@ impl ProjectWriteGuard {
                     {
                         let error = std::io::Error::last_os_error();
                         if error.raw_os_error() != Some(libc::EEXIST) {
-                            return Err(node_error(&error, "mkdir", &data_path));
+                            return Err(node_error(&error, "mkdir", data_path));
                         }
                     }
                     let mut info = std::mem::MaybeUninit::<libc::stat>::uninit();
@@ -1379,7 +1384,7 @@ impl ProjectWriteGuard {
                         return Err(node_error(
                             &std::io::Error::last_os_error(),
                             "lstat",
-                            &data_path,
+                            data_path,
                         ));
                     }
                     // SAFETY: fstatat succeeded.
@@ -1407,13 +1412,13 @@ impl ProjectWriteGuard {
                         return Err(node_error(
                             &std::io::Error::last_os_error(),
                             "open",
-                            &data_path,
+                            data_path,
                         ));
                     }
                     // SAFETY: fd was returned by openat and has not been transferred.
                     Ok(unsafe { fs::File::from_raw_fd(fd) })
                 });
-                let data = match data {
+                match data {
                     Ok(data) => data,
                     Err(error) => {
                         if let Some(reason) = directory_refusal {
@@ -1428,8 +1433,7 @@ impl ProjectWriteGuard {
                         }
                         return Err(retained(error).into());
                     }
-                };
-                data
+                }
             })
         } else {
             None
@@ -1443,7 +1447,7 @@ impl ProjectWriteGuard {
             let mut published = false;
             let mut refusal = None;
             let result = run_authorized(authorize, || {
-                if !stage_handle_matches(&root_handle, root)? {
+                if !stage_handle_matches(root_handle, root)? {
                     return Err(NodeError {
                         code: None,
                         message: "project root changed".into(),
@@ -1464,16 +1468,16 @@ impl ProjectWriteGuard {
                         return Err(node_error(
                             &std::io::Error::last_os_error(),
                             "lstat",
-                            &data_path,
+                            data_path,
                         ));
                     }
                     // SAFETY: fstatat succeeded.
                     let current = unsafe { current.assume_init() };
                     let held = data
                         .metadata()
-                        .map_err(|error| node_error(&error, "fstat", &data_path))?;
-                    if current.st_dev as u64 != held.dev()
-                        || current.st_ino as u64 != held.ino()
+                        .map_err(|error| node_error(&error, "fstat", data_path))?;
+                    if stat_dev(&current) != held.dev()
+                        || current.st_ino != held.ino()
                         || current.st_mode & libc::S_IFMT != libc::S_IFDIR
                     {
                         return Err(NodeError {
@@ -1482,7 +1486,7 @@ impl ProjectWriteGuard {
                         });
                     }
                 }
-                let target = join(&[&data_path, rel_name]);
+                let target = join(&[data_path, rel_name]);
                 let mut existing = std::mem::MaybeUninit::<libc::stat>::uninit();
                 // SAFETY: data and file_c are live; fstatat initializes existing on success.
                 if unsafe {
@@ -1590,7 +1594,7 @@ impl ProjectWriteGuard {
                         refusal.expect("refusal was checked"),
                         format!(
                             "{}; private staging retained at {}",
-                            join(&[&data_path, rel_name]),
+                            join(&[data_path, rel_name]),
                             private_path
                         ),
                     )
@@ -1617,6 +1621,7 @@ impl ProjectWriteGuard {
     }
 
     #[cfg(windows)]
+    #[allow(clippy::too_many_arguments)]
     fn write_data_authorized_inner(
         &self,
         root: &str,
@@ -1625,19 +1630,17 @@ impl ProjectWriteGuard {
         data_dir: Option<&str>,
         exclusive: bool,
         scope: Option<&ChatsDirectory>,
-        authorize: &mut dyn FnMut(
-            &mut dyn FnMut() -> Result<(), NodeError>,
-        ) -> Result<(), NodeError>,
+        authorize: &mut Authorize<'_>,
     ) -> Result<String, WriteGuardError> {
         let mut scoped_authorize = |effect: &mut dyn FnMut() -> Result<(), NodeError>| {
             authorize(&mut || {
-                if let Some(scope) = scope {
-                    if !scope.matches()? {
-                        return Err(NodeError {
-                            code: None,
-                            message: "chat directory binding changed".into(),
-                        });
-                    }
+                if let Some(scope) = scope
+                    && !scope.matches()?
+                {
+                    return Err(NodeError {
+                        code: None,
+                        message: "chat directory binding changed".into(),
+                    });
                 }
                 effect()
             })
@@ -1795,9 +1798,7 @@ impl ProjectWriteGuard {
         parent: &str,
         name: &str,
         project_file: &[u8],
-        authorize: &mut dyn FnMut(
-            &mut dyn FnMut() -> Result<(), NodeError>,
-        ) -> Result<(), NodeError>,
+        authorize: &mut Authorize<'_>,
     ) -> Result<PublishedProjectFolder, WriteGuardError> {
         self.stage_project_folder_authorized(parent, name, project_file, authorize)?
             .publish(|effect| authorize(effect))
@@ -1809,9 +1810,7 @@ impl ProjectWriteGuard {
         parent: &str,
         name: &str,
         project_file: &[u8],
-        authorize: &mut dyn FnMut(
-            &mut dyn FnMut() -> Result<(), NodeError>,
-        ) -> Result<(), NodeError>,
+        authorize: &mut Authorize<'_>,
     ) -> Result<PublishedProjectFolder, WriteGuardError> {
         if !is_valid_rename_name(name) || !is_plain_segment(name) || !looks_absolute(parent) {
             return Err(ProjectWriteRefused::new(ProjectWriteRefusal::BadPath, name).into());
@@ -1951,9 +1950,7 @@ impl ProjectWriteGuard {
         parent: &str,
         name: &str,
         project_file: &[u8],
-        authorize: &mut dyn FnMut(
-            &mut dyn FnMut() -> Result<(), NodeError>,
-        ) -> Result<(), NodeError>,
+        authorize: &mut Authorize<'_>,
     ) -> Result<PreparedProjectFolder, WriteGuardError> {
         if !is_valid_rename_name(name) || !is_plain_segment(name) || !looks_absolute(parent) {
             return Err(ProjectWriteRefused::new(ProjectWriteRefusal::BadPath, name).into());

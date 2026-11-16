@@ -28,6 +28,7 @@ use main_core::sheets::temp_files::cleanup_import_temp_directory;
 use main_core::sheets::template_fonts::with_template_font_faces;
 use main_core::sheets::workbook_save_resolve::resolve_workbook_save;
 use serde_json::Value;
+use shell_contract::hosts::GeneratedPathOutcome;
 use shell_contract::{IpcError, IpcValue, ViewId, WindowId};
 
 use super::conv::ipc_to_serde;
@@ -37,9 +38,7 @@ use super::dialogs::{
     message_box, save_dialog,
 };
 use super::engine::OdsConversion;
-use super::open::{
-    cleanup_session, import_dir, open_workbook_session, read_file, reserve_snapshot_path,
-};
+use super::open::{cleanup_session, import_dir, read_file, reserve_snapshot_path};
 use super::recovery::{io_err, node_err, ok_answer, write_session_copy};
 use super::recovery_policy::session_recovery_identity;
 use super::schema;
@@ -476,7 +475,7 @@ fn open_generated_file(env: &Env, path: &str) {
 
 fn open_generated_file_owned(
     env: &Env,
-    path: &str,
+    output: crate::owned_save::PublishedOutput,
     scope: &crate::owned_save::OwnedSave,
     transition: Option<super::core::GeneratedTransition>,
     pdf: bool,
@@ -489,58 +488,120 @@ fn open_generated_file_owned(
         let pending = scope.pending.clone();
         super::core::GeneratedTransition::new(move || pending.cancel())
     });
-    let accepted = transition.clone();
-    let origin = scope.origin.clone();
-    let (tx, rx) = std::sync::mpsc::sync_channel(1);
-    let done = Box::new(move |result| {
-        let _ = tx.send(result);
+    let (publication, written) = output;
+    let path = publication.path().to_owned();
+    let origin = match &scope.authority {
+        crate::owned_save::SaveAuthority::Renderer(origin) => origin.clone(),
+        crate::owned_save::SaveAuthority::Native(binding) => binding.owner().clone(),
+    };
+    let accepted_transition = transition.clone();
+    let accepted_cancel = scope.cancel.clone();
+    let accepted_pending = scope.pending.clone();
+    let accepted: shell_contract::hosts::PdfReloadAccepted = Box::new(move |marker| {
+        accepted_transition.accept(marker, &origin, &accepted_cancel, &accepted_pending)
     });
+    let participants = scope.participants(&[]);
     let cancel = scope.cancel.clone();
     let pending = scope.pending.clone();
-    let accepted = Box::new(move |marker| accepted.accept(marker, &origin, &cancel, &pending));
-    if pdf {
-        env.shell.export_pdf_written_owned(
-            path.to_owned(),
-            scope.origin.clone(),
-            scope.destination.clone(),
-            scope.cancel.clone(),
-            scope.pending.clone(),
-            scope.effects.clone(),
-            accepted,
-            done,
-        );
-    } else {
-        env.shell.open_generated_path_owned(
-            path.to_owned(),
-            scope.origin.clone(),
-            scope.destination.clone(),
-            scope.cancel.clone(),
-            scope.pending.clone(),
-            accepted,
-            done,
-        );
-    }
-    let outcome = rx
-        .recv()
-        .map_err(|_| thrown("The generated document did not finish opening"))?
+    let additional = scope.additional.clone();
+    let effects = scope.effects.clone();
+    let shell = env.shell.clone();
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let id = env
+        .core(move |core| {
+            let complete: GeneratedCompletion = Box::new(move |result, acknowledge| {
+                let summary = match result {
+                    Ok(GeneratedPathOutcome::NotOpened) => Ok(None),
+                    Ok(GeneratedPathOutcome::Opened(receipt)) => Ok(Some(receipt.clone())),
+                    Ok(GeneratedPathOutcome::CleanupPending(_)) => {
+                        Err("The generated cleanup did not reach a terminal result".to_owned())
+                    }
+                    Err(error) => Err(error.clone()),
+                };
+                if let Err(std::sync::mpsc::SendError((_, acknowledge))) =
+                    tx.send((summary, acknowledge))
+                {
+                    acknowledge();
+                }
+            });
+            let (id, wake) = reserve_generated_publication(core, complete);
+            let prepared = if pdf {
+                shell.export_pdf_written_owned(
+                    publication,
+                    written,
+                    participants,
+                    cancel,
+                    pending,
+                    additional,
+                    effects,
+                    accepted,
+                    wake.clone(),
+                )
+            } else {
+                shell.open_generated_path_owned(
+                    publication,
+                    written,
+                    participants,
+                    cancel,
+                    pending,
+                    additional,
+                    effects,
+                    accepted,
+                    wake.clone(),
+                )
+            };
+            let installed = prepared
+                .and_then(|prepared| install_generated_publication(core, &id, prepared, wake));
+            match installed {
+                Ok(()) => Ok(id),
+                Err(error) => {
+                    core.state.borrow_mut().generated_publications.remove(&id);
+                    Err(error)
+                }
+            }
+        })
         .map_err(thrown)?;
-    match outcome {
-        shell_contract::hosts::GeneratedPathOutcome::NotOpened => {
-            if pdf {
-                return Err(thrown("The generated PDF was not opened or revealed"));
+    let timeout = std::time::Duration::from_secs_f64(SAVE_REOPEN_TIMEOUT_MS / 1000.0);
+    let mut retried = false;
+    let (summary, acknowledge) = loop {
+        match rx.recv_timeout(timeout) {
+            Ok(delivered) => break delivered,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if !retried => {
+                retried = true;
+                let retry_id = id.clone();
+                env.core(move |core| retry_generated_publication(core, &retry_id))
+                    .map_err(thrown)?;
             }
-            if transition.retired_origin() {
-                return Err(thrown("The generated document did not finish reloading"));
+            Err(_) => {
+                let reason = env.core(move |core| {
+                    core.state
+                        .borrow()
+                        .generated_publications
+                        .get(&id)
+                        .and_then(|pending| pending.last_error.clone())
+                });
+                return Err(thrown(reason.unwrap_or_else(|| {
+                    "The generated document did not finish opening".to_owned()
+                })));
             }
-            let os_shell = env.os_shell.clone();
-            let path = std::path::PathBuf::from(path);
-            scope.ui_effect(Box::new(move || {
-                os_shell.show_item_in_folder(&path);
-                Ok(())
-            }))?;
-            scope.check()
         }
-        shell_contract::hosts::GeneratedPathOutcome::Opened(receipt) => {
+    };
+    let outcome = match summary {
+        Err(error) => Err(thrown(error)),
+        Ok(None) if pdf => Err(thrown("The generated PDF was not opened or revealed")),
+        Ok(None) if transition.retired_origin() => {
+            Err(thrown("The generated document did not finish reloading"))
+        }
+        Ok(None) => {
+            let os_shell = env.os_shell.clone();
+            scope
+                .ui_effect(Box::new(move || {
+                    os_shell.show_item_in_folder(&path);
+                    Ok(())
+                }))
+                .and_then(|()| scope.check())
+        }
+        Ok(Some(receipt)) => {
             transition.store(receipt);
             let mut completed = false;
             transition
@@ -548,14 +609,18 @@ fn open_generated_file_owned(
                     completed = true;
                     Ok(())
                 })
-                .map_err(thrown)?;
-            if completed {
-                Ok(())
-            } else {
-                Err(thrown("The generated document completion was not admitted"))
-            }
+                .map_err(thrown)
+                .and_then(|()| {
+                    if completed {
+                        Ok(())
+                    } else {
+                        Err(thrown("The generated document completion was not admitted"))
+                    }
+                })
         }
-    }
+    };
+    acknowledge();
+    outcome
 }
 
 /// the first `JSON.stringify`-able request of the save pipeline: the engine's
@@ -1310,6 +1375,7 @@ pub fn save_workbook_with_owner(
     };
     let expected_path = published_path.clone();
     let published_path = if let Some(scope) = &owned {
+        let origin = scope.authority.renderer()?.clone();
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let scope = scope.clone();
         let requested = published_path.clone();
@@ -1320,7 +1386,7 @@ pub fn save_workbook_with_owner(
             shell.workbook_opened_owned(
                 view,
                 requested.clone(),
-                scope.origin.clone(),
+                origin,
                 scope.destination.clone(),
                 scope.cancel.clone(),
                 scope.pending.clone(),
@@ -2121,6 +2187,7 @@ pub(super) fn export_pdf(
         IpcValue::String(path) if !path.is_empty() => Some(path.clone()),
         _ => None,
     };
+    let mut destination = None;
     let selected = if headless.is_some() {
         Some(out_path.ok_or_else(|| thrown("The headless PDF output path is missing"))?)
     } else if let Some(path) = save_as {
@@ -2145,6 +2212,7 @@ pub(super) fn export_pdf(
             owned.as_ref(),
             false,
         )?;
+        destination = selection.destination;
         selection
             .path
             .filter(|p| !p.is_empty() && !selection.canceled)
@@ -2206,6 +2274,7 @@ pub(super) fn export_pdf(
         }
         (None, None) => env.engine.render_pdf(&html, &request)?,
     };
+    let mut published = None;
     if let Some(headless) = &headless {
         let effects = env
             .services
@@ -2246,12 +2315,17 @@ pub(super) fn export_pdf(
             &path, &pdf, admission,
         )
         .map_err(node_err)?;
+    } else if let Some(scope) = owned.as_ref().filter(|_| !env.shell.is_headless()) {
+        published = Some(scope.write_published(destination.as_ref(), Path::new(&path), pdf)?);
     } else {
         write_bytes(&path, &pdf, owned.as_ref())?;
     }
-    match &owned {
-        Some(scope) => open_generated_file_owned(env, &path, scope, transition, true)?,
-        None => open_generated_file(env, &path),
+    match (&owned, published) {
+        (Some(scope), Some(published)) => {
+            open_generated_file_owned(env, published, scope, transition, true)?
+        }
+        (None, _) => open_generated_file(env, &path),
+        (Some(_), None) => {}
     }
     Ok(obj([
         ("canceled", IpcValue::Bool(false)),
@@ -2339,33 +2413,42 @@ pub fn create_document(
                 env.engine.sheet_csv_to_xlsx(&content, &sheet)?
             };
             // with a project chosen in this view's panel, into that folder
+            let origin = scope.authority.renderer()?;
+            let participants = scope.participants(&[]);
             let placed = env
                 .shell
                 .write_new_document_owned(
-                    &scope.origin,
+                    origin,
                     &scope.destination,
+                    &participants,
                     &scope.cancel,
                     &scope.pending,
+                    &scope.additional,
                     &scope.effects,
                     admission.clone(),
                     &file_name,
                     &bytes,
                 )
                 .map_err(thrown)?;
-            let path = match placed {
-                Some(path) if !path.is_empty() => path,
-                _ => {
+            let published = match placed {
+                Some(published) => published,
+                None => {
                     let path = unique_path_in(&default_save_dir(env)?, &file_name);
-                    main_core::packages::electron_utils::atomic_write::owned::write_file(
-                        &path,
-                        &bytes,
-                        admission.clone(),
+                    main_core::packages::electron_utils::atomic_write::owned::admitted(
+                        &admission,
+                        || (),
                     )
                     .map_err(node_err)?;
-                    path
+                    scope.write_published(None, Path::new(&path), bytes)?
                 }
             };
-            open_generated_file_owned(env, &path, &scope, None, false)?;
+            let path = published
+                .0
+                .path()
+                .to_str()
+                .ok_or_else(|| thrown("The generated document path is not valid Unicode"))?
+                .to_owned();
+            open_generated_file_owned(env, published, &scope, None, false)?;
             return Ok(obj([("ok", IpcValue::Bool(true)), ("path", string(path))]));
         }
         let request = obj([
@@ -2377,7 +2460,7 @@ pub fn create_document(
         env.shell.create_document_owned(
             request,
             view,
-            scope.origin.clone(),
+            scope.authority.renderer()?.clone(),
             scope.destination.clone(),
             scope.cancel.clone(),
             scope.pending.clone(),

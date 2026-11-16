@@ -47,10 +47,10 @@ pub(super) fn read_tail(path: &Path) -> io::Result<Vec<Value>> {
         if boundary[0] == b'\n' {
             return Ok(records(&bytes));
         }
-        if let Some(index) = bytes.iter().position(|byte| *byte == b'\n') {
-            if index + 1 < bytes.len() {
-                return Ok(records(&bytes[index + 1..]));
-            }
+        if let Some(index) = bytes.iter().position(|byte| *byte == b'\n')
+            && index + 1 < bytes.len()
+        {
+            return Ok(records(&bytes[index + 1..]));
         }
         if length >= HARD_CAP {
             return Ok(Vec::new());

@@ -455,6 +455,7 @@ impl Inner {
         match step {
             WindowStep::Done(result) => Self::finish_step(reply, result),
             WindowStep::Need(need, run) => {
+                let run = *run;
                 if let Err(error) = self.check_authority(&authority) {
                     self.window().discard_run(run);
                     return Self::finish_step(reply, Err(Failure(error)));

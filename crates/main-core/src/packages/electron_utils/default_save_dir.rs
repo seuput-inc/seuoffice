@@ -474,7 +474,7 @@ mod authorized_tests {
         let error = resolve_default_save_dir_owned(
             &mut state,
             Some(&configured),
-            &[fallback.clone()],
+            std::slice::from_ref(&fallback),
             0.0,
             admit,
         )
@@ -500,7 +500,7 @@ mod authorized_tests {
             resolve_default_save_dir_owned(
                 &mut state,
                 Some(&configured),
-                &[fallback.clone()],
+                std::slice::from_ref(&fallback),
                 0.0,
                 admit
             )
@@ -540,7 +540,7 @@ mod authorized_tests {
         let result = resolve_default_save_dir_authorized(
             &mut state,
             Some(&configured),
-            &[fallback.clone()],
+            std::slice::from_ref(&fallback),
             0.0,
             &mut |_| {
                 calls += 1;
@@ -569,7 +569,7 @@ mod authorized_tests {
         let path = resolve_default_save_dir_authorized(
             &mut state,
             Some(&configured),
-            &[fallback.clone()],
+            std::slice::from_ref(&fallback),
             0.0,
             &mut |effect| {
                 effect();

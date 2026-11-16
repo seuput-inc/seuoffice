@@ -267,6 +267,8 @@ pub struct RecoveryWritePlan {
     ticket: RecoveryWriteTicket,
 }
 
+type RecoveryCopyWriter<'a> = dyn FnMut(&str, &[u8]) -> Result<(), NodeError> + 'a;
+
 /// Immutable payload prepared after serialization and before entering the
 /// identity FIFO. It is not a publication or a recovery-generation witness.
 pub struct OwnedPreparedRecoveryWrite {
@@ -284,24 +286,24 @@ impl OwnedPreparedRecoveryWrite {
         pair_ticket: pair_queue::RecoveryPairTicket,
     ) -> Result<
         Self,
-        (
+        Box<(
             NodeError,
             RecoveryWritePlan,
             Vec<u8>,
             pair_queue::RecoveryPairTicket,
-        ),
+        )>,
     > {
         let queue = match pair_queue::for_copy_path(&plan.copy) {
             Ok(queue) => queue,
-            Err(error) => return Err((error, plan, bytes, pair_ticket)),
+            Err(error) => return Err(Box::new((error, plan, bytes, pair_ticket))),
         };
         if !pair_ticket.belongs_to(&queue) {
-            return Err((
+            return Err(Box::new((
                 plain("recovery write ticket belongs to another identity"),
                 plan,
                 bytes,
                 pair_ticket,
-            ));
+            )));
         }
         let metadata_bytes = jscompat::json_stringify_pretty(&plan.metadata, 2).into_bytes();
         Ok(Self {
@@ -335,12 +337,12 @@ impl OwnedPreparedRecoveryWrite {
     /// Submit the immutable payload without losing it or its callback if the
     /// queue rejects the request. The callback runs on the queue's worker and
     /// must retain the turn through its final core continuation.
-    pub fn submit<F>(self, job: F) -> Result<(), (NodeError, Self, F)>
+    pub fn submit<F>(self, job: F) -> Result<(), Box<(NodeError, Self, F)>>
     where
         F: FnOnce(Self, pair_queue::RecoveryPairTurn) + Send + 'static,
     {
         let queue = self.queue.clone();
-        queue.submit_owned(self, job)
+        queue.submit_owned(self, job).map_err(Box::new)
     }
 
     pub fn intent(
@@ -410,7 +412,7 @@ impl RecoveryWritePlan {
         &self,
         bytes: &[u8],
         write_metadata: &mut dyn FnMut(&str, &JsonValue) -> Result<(), NodeError>,
-        write_copy: &mut dyn FnMut(&str, &[u8]) -> Result<(), NodeError>,
+        write_copy: &mut RecoveryCopyWriter<'_>,
     ) -> Result<(), NodeError> {
         let directory = dirname(&self.copy);
         fs::create_dir_all(&directory).map_err(|error| node_error(&error, "mkdir", &directory))?;
@@ -421,7 +423,7 @@ impl RecoveryWritePlan {
         &self,
         bytes: &[u8],
         write_metadata: &mut dyn FnMut(&str, &JsonValue) -> Result<(), NodeError>,
-        write_copy: &mut dyn FnMut(&str, &[u8]) -> Result<(), NodeError>,
+        write_copy: &mut RecoveryCopyWriter<'_>,
     ) -> Result<(), NodeError> {
         write_metadata(&RecoveryStore::meta_path_of(&self.copy), &self.metadata)?;
         write_copy(&self.copy, bytes)
@@ -450,9 +452,8 @@ impl RecoveryMetadataPlan {
             &self.path,
             &self.metadata,
             &mut |effect| {
-                admit(effect).map_err(|error| {
+                admit(effect).inspect_err(|_| {
                     rejected = true;
-                    error
                 })
             },
         );
@@ -612,9 +613,8 @@ impl RecoveryAdoptPlan {
                     path,
                     metadata,
                     &mut |effect| {
-                        admit(effect).map_err(|error| {
+                        admit(effect).inspect_err(|_| {
                             rejected = true;
-                            error
                         })
                     },
                 );

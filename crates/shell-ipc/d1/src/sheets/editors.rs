@@ -916,6 +916,105 @@ impl Core {
         }
     }
 
+    /// The renderer's `workbook:select` while a saved workbook is loading: the
+    /// saved opening answers it. A call that does not belong to a saved barrier
+    /// is handed back for the ordinary picker or queue.
+    pub(super) fn claim_saved_selection(
+        &self,
+        cx: &shell_contract::ipc::CallContext,
+        reply: shell_contract::ipc::Responder,
+    ) -> Option<shell_contract::ipc::Responder> {
+        let view = cx.sender.view;
+        let Some(context) = cx.native.clone() else {
+            return Some(reply);
+        };
+        {
+            let state = self.state.borrow();
+            let Some(tab) = state.tab(view) else {
+                return Some(reply);
+            };
+            let mut saved = tab.saved_load.borrow_mut();
+            let Some(saved) = saved.as_mut().filter(|saved| {
+                saved.failure.is_none() && saved.selection.is_none() && !saved.started
+            }) else {
+                return Some(reply);
+            };
+            saved.selection = Some(super::core::SavedSelection {
+                owner: shell_contract::ipc::NativeRequestOwner { view, context },
+                cancel: cx.cancel.clone(),
+                reply,
+            });
+        }
+        self.start_saved_open(view);
+        None
+    }
+
+    /// Begins the saved opening once both the registered saved document and the
+    /// renderer's select call are present, whichever arrived last.
+    pub(super) fn start_saved_open(&self, view: ViewId) {
+        let begun = {
+            let state = self.state.borrow();
+            let Some(tab) = state.tab(view) else {
+                return;
+            };
+            let mut saved = tab.saved_load.borrow_mut();
+            let Some(saved) = saved.as_mut() else {
+                return;
+            };
+            if saved.started || saved.failure.is_some() {
+                return;
+            }
+            let Some(document) = saved.document.clone() else {
+                return;
+            };
+            let Some(selection) = saved.selection.as_ref() else {
+                return;
+            };
+            let begun = (
+                document,
+                selection.owner.clone(),
+                selection.cancel.clone(),
+                saved.id.clone(),
+            );
+            saved.started = true;
+            begun
+        };
+        let (document, actual, actual_cancel, id) = begun;
+        let env = self.env.clone();
+        self.env.spawn(move || {
+            let result = super::open::open_saved_workbook(
+                &env,
+                view,
+                document,
+                actual,
+                actual_cancel,
+                id.clone(),
+            );
+            env.post(move |core| core.finish_saved_selection(view, &id, result));
+        });
+    }
+
+    fn finish_saved_selection(&self, view: ViewId, id: &str, result: Result<IpcValue, IpcError>) {
+        let value = match result {
+            Ok(value) => value,
+            Err(error) => return self.cancel_saved_open(view, id, &error.message),
+        };
+        let selection = {
+            let state = self.state.borrow();
+            let Some(tab) = state.tab(view) else {
+                return;
+            };
+            let mut saved = tab.saved_load.borrow_mut();
+            saved
+                .as_mut()
+                .filter(|saved| saved.id == id && saved.failure.is_none())
+                .and_then(|saved| saved.selection.take())
+        };
+        if let Some(selection) = selection {
+            selection.reply.reply(Ok(value));
+        }
+    }
+
     pub(super) fn saved_open_result(
         &self,
         cx: &shell_contract::ipc::CallContext,
@@ -1468,7 +1567,7 @@ impl Core {
             "workbook:close-save-request",
             vec![IpcValue::Object(request)],
         ) {
-            self.finish_owned_save(&token, Err(thrown(error)));
+            self.finish_owned_save(&token, Err(error));
         }
     }
 
@@ -3259,7 +3358,7 @@ impl SheetsViews {
         target
             .with_active(|| {
                 reservation.with_initial_owner(owner, |transition| {
-                    let mut state = self.0.state.borrow_mut();
+                    let state = self.0.state.borrow_mut();
                     if state.tab(view).is_some()
                         || state.headless_waiters.contains_key(&view)
                         || state.headless_targets.contains_key(&view)
@@ -3884,7 +3983,7 @@ impl
                     );
                     Ok(())
                 })?;
-                let snapshot = pinned
+                let recovered = pinned
                     .ok_or("The recovery read was not admitted")?
                     .read()
                     .map_err(|error| error.message)?;
@@ -3898,7 +3997,7 @@ impl
                     RecoveryIdentity::Untitled(_) => request
                         .save_as_default_path
                         .clone()
-                        .or(snapshot.original_path),
+                        .or(recovered.original_path),
                     RecoveryIdentity::File(_) => None,
                 };
                 let offered = original
@@ -3955,7 +4054,7 @@ impl
                 }
                 if let Err(error) = file
                     .ok_or("The recovery staging file was not admitted")?
-                    .write_all(&snapshot.bytes)
+                    .write_all(&recovered.bytes)
                 {
                     main_core::sheets::temp_files::cleanup_import_temp_directory(
                         &worker.temp_dir(),
@@ -3974,7 +4073,7 @@ impl
                     original_path: original.clone(),
                     ods_converted: ods,
                     formulas_dropped: if ods {
-                        Some(snapshot.formulas_dropped.unwrap_or(0.0))
+                        Some(recovered.formulas_dropped.unwrap_or(0.0))
                     } else {
                         None
                     },

@@ -216,7 +216,7 @@ pub struct AdoptPlan {
 
 pub enum AdoptPreparation {
     Done(AddFolderResult),
-    Write(AdoptWrite),
+    Write(Box<AdoptWrite>),
 }
 
 /// Owned post-prompt adoption work for the shared settings queue.
@@ -267,37 +267,37 @@ impl AdoptWrite {
         });
         let mut copy_failure = None;
         let mut retained_private_dir = None;
-        if !occupied {
-            if let Some(file) = &self.copy_file {
-                let mut denied = None;
-                let result = ProjectWriteGuard::new(&self.platform).write_data_authorized(
-                    &self.adoption.root,
-                    project_folder_name("projectFile"),
-                    file.as_bytes(),
-                    None,
-                    &mut |effect| {
-                        let mut effect_failed = false;
-                        let mut called = false;
-                        let result = authorize(&mut || {
-                            called = true;
-                            let result = effect();
-                            effect_failed = result.is_err();
-                            result
-                        });
-                        if !called || !effect_failed {
-                            denied = result.as_ref().err().cloned();
-                        }
+        if !occupied
+            && let Some(file) = &self.copy_file
+        {
+            let mut denied = None;
+            let result = ProjectWriteGuard::new(&self.platform).write_data_authorized(
+                &self.adoption.root,
+                project_folder_name("projectFile"),
+                file.as_bytes(),
+                None,
+                &mut |effect| {
+                    let mut effect_failed = false;
+                    let mut called = false;
+                    let result = authorize(&mut || {
+                        called = true;
+                        let result = effect();
+                        effect_failed = result.is_err();
                         result
-                    },
-                );
-                if let Some(error) = denied {
-                    return Err(error.into());
-                }
-                match result {
-                    Ok(path) if !path.is_empty() => retained_private_dir = Some(path),
-                    Ok(_) => {}
-                    Err(error) => copy_failure = Some(GuideError::from(error).message()),
-                }
+                    });
+                    if !called || !effect_failed {
+                        denied = result.as_ref().err().cloned();
+                    }
+                    result
+                },
+            );
+            if let Some(error) = denied {
+                return Err(error.into());
+            }
+            match result {
+                Ok(path) if !path.is_empty() => retained_private_dir = Some(path),
+                Ok(_) => {}
+                Err(error) => copy_failure = Some(GuideError::from(error).message()),
             }
         }
         let Adoption {
@@ -433,7 +433,7 @@ pub struct NewProjectRequest {
 
 pub enum CreatePreparation {
     Done(CreateProjectResult),
-    Adopt(AdoptStart),
+    Adopt(Box<AdoptStart>),
     New {
         parent: String,
         name: String,
@@ -1231,7 +1231,7 @@ impl OutsideChatWrite {
 
 pub enum ContextPreparation {
     Done(ProjectContextResult),
-    Write(ContextWrite),
+    Write(Box<ContextWrite>),
 }
 
 /// Context assembled on core and an owned conditional settings transaction.
@@ -1304,7 +1304,7 @@ impl ContextWrite {
 
 pub enum TrustPreparation {
     Done(DecideTrustResult),
-    Write(TrustWrite),
+    Write(Box<TrustWrite>),
 }
 
 pub enum TrustUsePreparation {
@@ -2163,13 +2163,13 @@ impl ProjectGuide {
                 stage: AddFolderStage::Trust,
             }));
         };
-        Ok(AdoptPreparation::Write(self.prepare_finish_adopt(
+        Ok(AdoptPreparation::Write(Box::new(self.prepare_finish_adopt(
             *adoption,
             Some(StoredTrustRecord {
                 decision: decision.as_str().to_owned(),
                 hashes,
             }),
-        )?))
+        )?)))
     }
 
     pub fn finish_adoption(
@@ -2258,7 +2258,7 @@ impl ProjectGuide {
         match self.prepare_create(args)? {
             CreatePreparation::Done(result) => Ok(GuideStep::Done(result)),
             CreatePreparation::Adopt(start) => {
-                let start = match start {
+                let start = match *start {
                     AdoptStart::NeedInstallId(scan) => {
                         self.scan_adoption(scan, &self.install_id()?)?
                     }
@@ -2328,7 +2328,7 @@ impl ProjectGuide {
                 .iter()
                 .any(|item| same_path(&item.path, &target, &self.platform));
             return if args.use_existing == Some(true) || listed {
-                Ok(CreatePreparation::Adopt(self.prepare_adopt(&target, None)?))
+                Ok(CreatePreparation::Adopt(Box::new(self.prepare_adopt(&target, None)?)))
             } else {
                 Ok(CreatePreparation::Done(CreateProjectResult::Exists {
                     folder_path: target,
@@ -2848,7 +2848,7 @@ impl ProjectGuide {
             None
         };
         let file = read_project_file(&root, None);
-        Ok(ContextPreparation::Write(ContextWrite {
+        Ok(ContextPreparation::Write(Box::new(ContextWrite {
             authority,
             hash_updates,
             sync_notice,
@@ -2869,7 +2869,7 @@ impl ProjectGuide {
                     && !unwritable,
                 notices,
             },
-        }))
+        })))
     }
 
     /// Revalidate while the shared queue completion is still held on core.
@@ -3073,10 +3073,10 @@ impl ProjectGuide {
             Some(ProjectTrustDecision::Without) => TrustPreparation::Done(DecideTrustResult::Ok {
                 trust: ProjectTrustDecision::Without,
             }),
-            Some(ProjectTrustDecision::Use) => TrustPreparation::Write(TrustWrite {
+            Some(ProjectTrustDecision::Use) => TrustPreparation::Write(Box::new(TrustWrite {
                 authority,
                 change: TrustChange::Approve(hashes),
-            }),
+            })),
         }
     }
 
