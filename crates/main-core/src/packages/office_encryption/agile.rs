@@ -559,7 +559,9 @@ mod tests {
 
     #[test]
     fn decrypts_dynamic_ciphers_and_digests() {
-        for (cipher, hash) in [("CAMELLIA", "SHA3-256"), ("ARIA", "MD5")] {
+        // No Camellia case: the vendored OpenSSL is configured `no-camellia` (openssl-src's
+        // default), so such a package is refused as unsupported.
+        for (cipher, hash) in [("AES", "SHA3-256"), ("ARIA", "MD5")] {
             let (info, package, plain) = encrypted_fixture(cipher, hash);
             assert_eq!(decrypt(&info, &package, "pw").unwrap(), plain);
             assert_eq!(

@@ -66,6 +66,13 @@ fn manifest(root: &Scratch, document: &str) -> PathBuf {
         .join("assets")
         .join(html::ASSET_MANIFEST_FILENAME)
 }
+fn written_manifest(root: &Scratch, document: &str) -> PathBuf {
+    root.path(document)
+        .parent()
+        .unwrap()
+        .join("assets")
+        .join(crate::html::old_names::ASSET_MANIFEST_FILENAME_WRITTEN)
+}
 
 #[test]
 fn refused_prepare_does_not_create_or_publish_assets() {
@@ -370,7 +377,7 @@ fn rollback_preserves_an_asset_referenced_by_another_document() {
         &mut allow,
     )
     .unwrap();
-    let path = manifest(&root, "target/doc.html");
+    let path = written_manifest(&root, "target/doc.html");
     let mut saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     saved["documents"]["other.html"] = serde_json::json!([plan.created[0].name]);
     fs::write(path, serde_json::to_vec(&saved).unwrap()).unwrap();
