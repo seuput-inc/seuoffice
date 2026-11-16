@@ -19,7 +19,9 @@ fn platform(message: &str) -> PageError {
 
 /// Make the web view the window's first responder, so editing goes to the page's focus.
 pub(super) fn focus<'a>(surface: &Surface<'a>) -> Result<&'a NSWindow, PageError> {
-    let window = surface.window.ok_or_else(|| platform("The web view is not in a window."))?;
+    let window = surface
+        .window
+        .ok_or_else(|| platform("The web view is not in a window."))?;
     let responder: &NSResponder = surface.view;
     if window.makeFirstResponder(Some(responder)) {
         Ok(window)
@@ -54,7 +56,9 @@ fn perform(
     if unsafe { app.sendAction_to_from(selector, Some(target), None) } {
         Ok(())
     } else {
-        Err(PageError::Platform(format!("The page did not perform {name}.")))
+        Err(PageError::Platform(format!(
+            "The page did not perform {name}."
+        )))
     }
 }
 
@@ -265,7 +269,11 @@ mod tests {
     use super::*;
 
     fn chord(key: &str, code: &str, modifiers: Modifiers) -> KeyChord {
-        KeyChord { key: key.to_owned(), code: code.to_owned(), modifiers }
+        KeyChord {
+            key: key.to_owned(),
+            code: code.to_owned(),
+            modifiers,
+        }
     }
 
     #[test]
@@ -278,11 +286,17 @@ mod tests {
 
     #[test]
     fn control_letters_carry_the_control_character() {
-        let ctrl = Modifiers { ctrl: true, ..Modifiers::default() };
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        };
         let pair = |text: &str| Some((text.to_owned(), text.to_owned()));
         let expected = Some(("\u{5}".to_owned(), "e".to_owned()));
         assert_eq!(characters(&chord("e", "KeyE", ctrl)), expected);
-        let shift = Modifiers { shift: true, ..Modifiers::default() };
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
         assert_eq!(characters(&chord("e", "KeyE", shift)), pair("E"));
     }
 
@@ -290,7 +304,10 @@ mod tests {
     fn named_keys_use_the_function_key_private_use_characters() {
         let plain = Modifiers::default();
         let pair = |text: &str| Some((text.to_owned(), text.to_owned()));
-        assert_eq!(characters(&chord("ArrowUp", "ArrowUp", plain)), pair("\u{f700}"));
+        assert_eq!(
+            characters(&chord("ArrowUp", "ArrowUp", plain)),
+            pair("\u{f700}")
+        );
         assert_eq!(characters(&chord("F1", "F1", plain)), pair("\u{f704}"));
         assert_eq!(characters(&chord("Unidentified", "KeyA", plain)), None);
     }

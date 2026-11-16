@@ -33,7 +33,9 @@ pub trait WebviewControl: Send + Sync {
     fn close(&self) -> Result<(), String>;
     /// Evaluate with promises awaited; the answer is the JSON value of the result.
     fn evaluate(
-        &self, script: String, done: Box<dyn FnOnce(Result<Value, String>) + Send>,
+        &self,
+        script: String,
+        done: Box<dyn FnOnce(Result<Value, String>) + Send>,
     ) -> Result<(), String>;
     /// Run a script and ignore its value (the outbox wake).
     fn run(&self, script: String) -> Result<(), String>;
@@ -160,7 +162,10 @@ impl Eq for BrowserIdentity {}
 
 impl fmt::Debug for BrowserIdentity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("BrowserIdentity").field("id", &self.id).field("label", &self.core.label).finish()
+        f.debug_struct("BrowserIdentity")
+            .field("id", &self.id)
+            .field("label", &self.core.label)
+            .finish()
     }
 }
 
@@ -201,7 +206,11 @@ impl BrowserIdentity {
     /// The latest admitted main-frame navigation.
     pub fn navigation(&self) -> Option<NavigationIdentity> {
         let state = self.core.lock();
-        if state.closed { None } else { state.nav.clone() }
+        if state.closed {
+            None
+        } else {
+            state.nav.clone()
+        }
     }
 
     /// The committed document, registered or not.
@@ -236,7 +245,8 @@ impl BrowserIdentity {
     }
 
     pub fn when_closed(
-        &self, callback: impl FnOnce(BrowserCloseOutcome) + Send + 'static,
+        &self,
+        callback: impl FnOnce(BrowserCloseOutcome) + Send + 'static,
     ) -> Result<BrowserCloseSubscription, String> {
         self.core.close.when_closed(callback)
     }
@@ -248,7 +258,8 @@ impl BrowserIdentity {
     /// One-shot hook run (before the event sink) when a document registers. The shell binds
     /// its view's creation epoch here.
     pub fn bind_registration(
-        &self, hook: impl Fn(&DocumentContext) + Send + Sync + 'static,
+        &self,
+        hook: impl Fn(&DocumentContext) + Send + Sync + 'static,
     ) -> Result<(), String> {
         self.core
             .on_registered
@@ -341,7 +352,10 @@ impl BrowserIdentity {
     }
 
     /// The bridge registered its nonce for the committed document.
-    pub fn register_document(&self, nonce: [u8; NONCE_LEN]) -> Result<DocumentContext, RegisterError> {
+    pub fn register_document(
+        &self,
+        nonce: [u8; NONCE_LEN],
+    ) -> Result<DocumentContext, RegisterError> {
         self.core.register_document(nonce)
     }
 
@@ -368,7 +382,10 @@ pub(crate) fn is_same_document_navigation(current: &Url, next: &Url) -> bool {
 
 impl BrowserCore {
     pub(crate) fn new(
-        label: &str, creation: CreationId, close: BrowserClose, config: Config,
+        label: &str,
+        creation: CreationId,
+        close: BrowserClose,
+        config: Config,
     ) -> Option<Arc<Self>> {
         let config_without_policy = config.policy.is_none();
         Some(Arc::new(Self {
@@ -405,7 +422,10 @@ impl BrowserCore {
     }
 
     pub(crate) fn identity(self: &Arc<Self>) -> BrowserIdentity {
-        BrowserIdentity { id: self.id, core: self.clone() }
+        BrowserIdentity {
+            id: self.id,
+            core: self.clone(),
+        }
     }
 
     pub(crate) fn window_label(&self) -> Option<&str> {
@@ -421,16 +441,27 @@ impl BrowserCore {
     }
 
     fn emit(self: &Arc<Self>, kind: NativeEventKind) {
-        let Some(sink) = self.config.sink.clone() else { return };
-        let event = NativeEvent { browser: self.identity(), kind };
+        let Some(sink) = self.config.sink.clone() else {
+            return;
+        };
+        let event = NativeEvent {
+            browser: self.identity(),
+            kind,
+        };
         defer(move || sink(&event));
     }
 
     fn mint_navigation(&self) -> Option<NavigationIdentity> {
-        Some(NavigationIdentity { id: NavigationId::mint()?, browser: self.id })
+        Some(NavigationIdentity {
+            id: NavigationId::mint()?,
+            browser: self.id,
+        })
     }
 
-    fn wake_for(self: &Arc<Self>, document: DocumentId) -> Box<dyn Fn() -> Result<(), String> + Send + Sync> {
+    fn wake_for(
+        self: &Arc<Self>,
+        document: DocumentId,
+    ) -> Box<dyn Fn() -> Result<(), String> + Send + Sync> {
         let core = Arc::downgrade(self);
         Box::new(move || {
             let core = core.upgrade().ok_or("The browser is gone.")?;
@@ -444,7 +475,10 @@ impl BrowserCore {
     // -------------------------------------------------------------------------------
 
     fn control(&self) -> Option<Arc<dyn WebviewControl>> {
-        self.control.lock().unwrap_or_else(|error| error.into_inner()).clone()
+        self.control
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
     }
 
     /// The creation reservation now has a webview behind it: abandonment no longer means
@@ -455,12 +489,17 @@ impl BrowserCore {
 
     /// The OS observers are attached and the webview is usable. Called once on the UI thread.
     pub(crate) fn mark_attached(
-        self: &Arc<Self>, control: Arc<dyn WebviewControl>, window_label: &str,
+        self: &Arc<Self>,
+        control: Arc<dyn WebviewControl>,
+        window_label: &str,
     ) {
         if self.lock().closed {
             return;
         }
-        *self.control.lock().unwrap_or_else(|error| error.into_inner()) = Some(control);
+        *self
+            .control
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(control);
         let _ = self.window_label.set(window_label.into());
         self.lock().attached = true;
         self.ready_check();
@@ -514,7 +553,10 @@ impl BrowserCore {
                     state.nav_url = Some(url);
                     state.finished = None;
                 }
-                self.finish_load(Err(LoadError { code: None, description: error }));
+                self.finish_load(Err(LoadError {
+                    code: None,
+                    description: error,
+                }));
             }
         }
     }
@@ -584,8 +626,12 @@ impl BrowserCore {
     }
 
     fn navigation_started(
-        self: &Arc<Self>, navigation: &NavigationIdentity, url: &Url, same_document: bool,
-        reload: Option<&Arc<Reload>>, observed: Option<&Arc<Observed>>,
+        self: &Arc<Self>,
+        navigation: &NavigationIdentity,
+        url: &Url,
+        same_document: bool,
+        reload: Option<&Arc<Reload>>,
+        observed: Option<&Arc<Observed>>,
     ) {
         self.emit(NativeEventKind::NavigationStarted {
             navigation: navigation.clone(),
@@ -607,7 +653,9 @@ impl BrowserCore {
     /// A cross-document navigation revokes the current document before it returns, so no
     /// call of the old document can be admitted after the new navigation began.
     pub(crate) fn admit_navigation(self: &Arc<Self>, url: &Url) -> bool {
-        let Some(navigation) = self.mint_navigation() else { return false };
+        let Some(navigation) = self.mint_navigation() else {
+            return false;
+        };
         let mut revoked = None;
         let (same_document, reload, observed) = {
             let mut state = self.lock();
@@ -615,7 +663,10 @@ impl BrowserCore {
                 return false;
             }
             let same_document = matches!(state.doc, DocSlot::Committed(_))
-                && state.url.as_ref().is_some_and(|current| is_same_document_navigation(current, url));
+                && state
+                    .url
+                    .as_ref()
+                    .is_some_and(|current| is_same_document_navigation(current, url));
             state.observation = state.observation.saturating_add(1);
             if same_document {
                 state.url = Some(url.clone());
@@ -632,7 +683,13 @@ impl BrowserCore {
         if let Some(revoked) = revoked {
             self.announce_revoked(revoked, reload.as_ref());
         }
-        self.navigation_started(&navigation, url, same_document, reload.as_ref(), observed.as_ref());
+        self.navigation_started(
+            &navigation,
+            url,
+            same_document,
+            reload.as_ref(),
+            observed.as_ref(),
+        );
         if same_document {
             self.emit(NativeEventKind::AddressChanged { url: url.clone() });
         }
@@ -656,7 +713,9 @@ impl BrowserCore {
 
     /// The webview committed a main-frame document.
     pub(crate) fn commit(self: &Arc<Self>, url: &Url) {
-        let Some(document_id) = DocumentId::mint() else { return };
+        let Some(document_id) = DocumentId::mint() else {
+            return;
+        };
         let mut revoked = None;
         let mut implicit = None;
         let (navigation, document, reload, observed) = {
@@ -666,7 +725,9 @@ impl BrowserCore {
             }
             // A commit nobody admitted: the first document, a restored page, a redirect.
             if state.nav.is_none() || matches!(state.doc, DocSlot::Committed(_)) {
-                let Some(fresh) = self.mint_navigation() else { return };
+                let Some(fresh) = self.mint_navigation() else {
+                    return;
+                };
                 if let DocSlot::Committed(old) = std::mem::replace(&mut state.doc, DocSlot::None) {
                     revoked = old.revoke(RevokeReason::Navigation);
                 }
@@ -675,14 +736,30 @@ impl BrowserCore {
                 state.finished = None;
                 implicit = Some(fresh);
             }
-            let Some(navigation) = state.nav.clone() else { return };
-            let identity = DocumentIdentity { id: document_id, browser: self.id, navigation: navigation.id };
-            let document = DocumentCore::new(identity, self.identity(), url.clone(), self.wake_for(document_id));
+            let Some(navigation) = state.nav.clone() else {
+                return;
+            };
+            let identity = DocumentIdentity {
+                id: document_id,
+                browser: self.id,
+                navigation: navigation.id,
+            };
+            let document = DocumentCore::new(
+                identity,
+                self.identity(),
+                url.clone(),
+                self.wake_for(document_id),
+            );
             state.doc = DocSlot::Committed(document.clone());
             state.url = Some(url.clone());
             state.initial_loaded = true;
             state.observation = state.observation.saturating_add(1);
-            (navigation, document, state.reload.clone(), state.observed.clone())
+            (
+                navigation,
+                document,
+                state.reload.clone(),
+                state.observed.clone(),
+            )
         };
         if let Some(revoked) = revoked {
             self.announce_revoked(revoked, reload.as_ref());
@@ -734,10 +811,18 @@ impl BrowserCore {
             }
             state.finished = Some(navigation.id);
             state.observation = state.observation.saturating_add(1);
-            (navigation, url, state.reload.clone(), state.observed.clone())
+            (
+                navigation,
+                url,
+                state.reload.clone(),
+                state.observed.clone(),
+            )
         };
         match outcome {
-            Ok(()) => self.emit(NativeEventKind::LoadFinished { navigation, ok: true }),
+            Ok(()) => self.emit(NativeEventKind::LoadFinished {
+                navigation,
+                ok: true,
+            }),
             Err(error) => {
                 self.emit(NativeEventKind::NavigationFailed {
                     navigation: navigation.clone(),
@@ -750,7 +835,10 @@ impl BrowserCore {
                 if let Some(observed) = &observed {
                     observed.on_failed(&navigation, &error);
                 }
-                self.emit(NativeEventKind::LoadFinished { navigation, ok: false });
+                self.emit(NativeEventKind::LoadFinished {
+                    navigation,
+                    ok: false,
+                });
             }
         }
         self.ready_check();
@@ -773,7 +861,8 @@ impl BrowserCore {
 
     /// The bridge registered `nonce` for the committed document.
     pub(crate) fn register_document(
-        self: &Arc<Self>, nonce: [u8; NONCE_LEN],
+        self: &Arc<Self>,
+        nonce: [u8; NONCE_LEN],
     ) -> Result<DocumentContext, RegisterError> {
         if self.config.bridge == BridgeMode::None {
             return Err(RegisterError::BridgeDisabled);
@@ -792,7 +881,9 @@ impl BrowserCore {
                     let hooked = context.clone();
                     defer(move || hook(&hooked));
                 }
-                self.emit(NativeEventKind::DocumentRegistered { context: context.clone() });
+                self.emit(NativeEventKind::DocumentRegistered {
+                    context: context.clone(),
+                });
                 if let Some(reload) = reload {
                     reload.on_registered(&context);
                 }
@@ -802,7 +893,8 @@ impl BrowserCore {
             RegisterOutcome::Conflict(revoked) => {
                 {
                     let mut state = self.lock();
-                    if matches!(&state.doc, DocSlot::Committed(doc) if Arc::ptr_eq(doc, &document)) {
+                    if matches!(&state.doc, DocSlot::Committed(doc) if Arc::ptr_eq(doc, &document))
+                    {
                         state.doc = DocSlot::Lost;
                     }
                 }
@@ -817,11 +909,14 @@ impl BrowserCore {
 
     /// The bridge reported render-ready for the document it registered.
     pub(crate) fn render_ready(
-        self: &Arc<Self>, nonce: &[u8; NONCE_LEN],
+        self: &Arc<Self>,
+        nonce: &[u8; NONCE_LEN],
     ) -> Result<DocumentContext, RegisterError> {
         let context = self.redeem(nonce).ok_or(RegisterError::NoDocument)?;
         if context.0.mark_ready() {
-            self.emit(NativeEventKind::DocumentReady { context: context.clone() });
+            self.emit(NativeEventKind::DocumentReady {
+                context: context.clone(),
+            });
         }
         Ok(context)
     }
@@ -893,9 +988,18 @@ impl BrowserCore {
             if state.ready.is_none() {
                 state.ready = Some(Err("The browser closed before it was ready.".into()));
             }
-            (state.reload.take(), state.observed.take(), std::mem::take(&mut state.ready_waiters))
+            (
+                state.reload.take(),
+                state.observed.take(),
+                std::mem::take(&mut state.ready_waiters),
+            )
         };
-        drop(self.control.lock().unwrap_or_else(|error| error.into_inner()).take());
+        drop(
+            self.control
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take(),
+        );
         if let Some(revoked) = revoked {
             self.announce_revoked(revoked, reload.as_ref());
         }
@@ -925,7 +1029,11 @@ impl BrowserCore {
 
     pub(crate) fn clear_reload(&self, reload: &Arc<Reload>) {
         let mut state = self.lock();
-        if state.reload.as_ref().is_some_and(|current| Arc::ptr_eq(current, reload)) {
+        if state
+            .reload
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, reload))
+        {
             state.reload = None;
         }
     }
@@ -935,7 +1043,11 @@ impl BrowserCore {
         if state.closed {
             return Err("The browser is closed.".into());
         }
-        if state.observed.as_ref().is_some_and(|current| !current.is_finished()) {
+        if state
+            .observed
+            .as_ref()
+            .is_some_and(|current| !current.is_finished())
+        {
             return Err("An observed navigation is already pending for this browser.".into());
         }
         state.observed = Some(observed);
@@ -944,7 +1056,11 @@ impl BrowserCore {
 
     pub(crate) fn clear_observed(&self, observed: &Arc<Observed>) {
         let mut state = self.lock();
-        if state.observed.as_ref().is_some_and(|current| Arc::ptr_eq(current, observed)) {
+        if state
+            .observed
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, observed))
+        {
             state.observed = None;
         }
     }
@@ -1013,7 +1129,9 @@ pub(crate) mod testing {
         }
 
         fn evaluate(
-            &self, script: String, done: Box<dyn FnOnce(Result<Value, String>) + Send>,
+            &self,
+            script: String,
+            done: Box<dyn FnOnce(Result<Value, String>) + Send>,
         ) -> Result<(), String> {
             self.scripts.lock().unwrap().push(script);
             self.evaluations.lock().unwrap().push_back(done);
@@ -1034,16 +1152,24 @@ pub(crate) mod testing {
 
     /// An attached browser whose events are recorded. The creation is claimed.
     pub(crate) fn browser_with_events(
-        label: &str, control: Arc<FakeControl>, start: NavigationStart,
+        label: &str,
+        control: Arc<FakeControl>,
+        start: NavigationStart,
     ) -> (BrowserIdentity, Events) {
         let events: Events = Arc::default();
         let recorded = events.clone();
-        let sink: EventSink = Arc::new(move |event| recorded.lock().unwrap().push(event.kind.clone()));
+        let sink: EventSink =
+            Arc::new(move |event| recorded.lock().unwrap().push(event.kind.clone()));
         let creation = BrowserCreation::new().unwrap();
         let receipt = creation.receipt();
         let submission = creation.into_submission();
         receipt.claim().unwrap();
-        let config = Config { sink: Some(sink), start, bridge: BridgeMode::Invoke, policy: None };
+        let config = Config {
+            sink: Some(sink),
+            start,
+            bridge: BridgeMode::Invoke,
+            policy: None,
+        };
         let core = BrowserCore::new(label, submission.creation(), receipt, config).unwrap();
         core.mark_attached(control, label);
         (core.identity(), events)
@@ -1051,7 +1177,8 @@ pub(crate) mod testing {
 
     /// A browser with one admitted, committed and registered document.
     pub(crate) fn registered_context_with_control(
-        label: &str, control: Arc<FakeControl>,
+        label: &str,
+        control: Arc<FakeControl>,
     ) -> (BrowserIdentity, DocumentContext) {
         let (browser, _events) = browser_with_events(label, control, NavigationStart::Automatic);
         let address = url("https://example.test/a");
@@ -1095,45 +1222,77 @@ mod tests {
 
     #[test]
     fn a_cross_document_navigation_revokes_the_document_before_the_new_navigation_starts() {
-        let (browser, events) = browser_with_events("nav-revoke", FakeControl::new(), NavigationStart::Automatic);
+        let (browser, events) =
+            browser_with_events("nav-revoke", FakeControl::new(), NavigationStart::Automatic);
         let first = url("https://example.test/a");
         assert!(browser.core.admit_navigation(&first));
         browser.core.commit(&first);
         let context = browser.core.register_document(TEST_NONCE).unwrap();
         events.lock().unwrap().clear();
 
-        assert!(browser.core.admit_navigation(&url("https://example.test/b")));
-        assert!(context.is_revoked(), "revoked at admission, before the successor commits");
+        assert!(
+            browser
+                .core
+                .admit_navigation(&url("https://example.test/b"))
+        );
+        assert!(
+            context.is_revoked(),
+            "revoked at admission, before the successor commits"
+        );
         assert_eq!(context.with_live(|| ()), None);
         assert!(browser.document().is_none());
         assert_eq!(kinds(&events), ["revoked", "started"]);
         assert!(matches!(
             events.lock().unwrap()[0],
-            NativeEventKind::DocumentRevoked { reason: RevokeReason::Navigation, .. }
+            NativeEventKind::DocumentRevoked {
+                reason: RevokeReason::Navigation,
+                ..
+            }
         ));
     }
 
     #[test]
     fn a_fragment_navigation_keeps_the_document_and_a_plain_reload_does_not() {
         let (browser, context) = registered_context("nav-fragment");
-        assert!(browser.core.admit_navigation(&url("https://example.test/a#section")));
+        assert!(
+            browser
+                .core
+                .admit_navigation(&url("https://example.test/a#section"))
+        );
         assert!(context.is_live(), "same document: the JS realm survived");
         assert_eq!(browser.url().unwrap().fragment(), Some("section"));
-        assert!(browser.core.admit_navigation(&url("https://example.test/a")));
-        assert!(context.is_revoked(), "the same URL without a fragment is a reload");
+        assert!(
+            browser
+                .core
+                .admit_navigation(&url("https://example.test/a"))
+        );
+        assert!(
+            context.is_revoked(),
+            "the same URL without a fragment is a reload"
+        );
     }
 
     #[test]
     fn an_unadmitted_commit_replaces_and_revokes_the_previous_document() {
-        let (browser, events) = browser_with_events("nav-implicit", FakeControl::new(), NavigationStart::Automatic);
+        let (browser, events) = browser_with_events(
+            "nav-implicit",
+            FakeControl::new(),
+            NavigationStart::Automatic,
+        );
         let first = url("https://example.test/a");
         browser.core.commit(&first);
         let context = browser.core.register_document(TEST_NONCE).unwrap();
         events.lock().unwrap().clear();
         browser.core.commit(&url("https://example.test/restored"));
         assert!(context.is_revoked());
-        assert_eq!(kinds(&events), ["revoked", "started", "committed", "address"]);
-        assert!(browser.registered_context().is_none(), "the successor has not registered");
+        assert_eq!(
+            kinds(&events),
+            ["revoked", "started", "committed", "address"]
+        );
+        assert!(
+            browser.registered_context().is_none(),
+            "the successor has not registered"
+        );
     }
 
     #[test]
@@ -1143,14 +1302,18 @@ mod tests {
         assert_eq!(again, context);
         assert_eq!(browser.core.redeem(&TEST_NONCE), Some(context.clone()));
         assert!(browser.core.redeem(&[9; NONCE_LEN]).is_none());
-        assert_eq!(browser.core.register_document([9; NONCE_LEN]).err(), Some(RegisterError::Conflict));
+        assert_eq!(
+            browser.core.register_document([9; NONCE_LEN]).err(),
+            Some(RegisterError::Conflict)
+        );
         assert!(context.is_revoked());
         assert!(browser.core.redeem(&TEST_NONCE).is_none());
     }
 
     #[test]
     fn render_ready_emits_once_and_the_document_reports_ready() {
-        let (browser, events) = browser_with_events("ready", FakeControl::new(), NavigationStart::Automatic);
+        let (browser, events) =
+            browser_with_events("ready", FakeControl::new(), NavigationStart::Automatic);
         let address = url("https://example.test/a");
         browser.core.admit_navigation(&address);
         browser.core.commit(&address);
@@ -1159,16 +1322,26 @@ mod tests {
         browser.core.render_ready(&TEST_NONCE).unwrap();
         browser.core.render_ready(&TEST_NONCE).unwrap();
         assert!(context.document_ready().is_some());
-        assert_eq!(kinds(&events), ["started", "committed", "address", "registered", "ready"]);
+        assert_eq!(
+            kinds(&events),
+            ["started", "committed", "address", "registered", "ready"]
+        );
     }
 
     #[test]
     fn a_failed_load_reports_failure_then_finish_once() {
-        let (browser, events) = browser_with_events("failed-load", FakeControl::new(), NavigationStart::Automatic);
+        let (browser, events) = browser_with_events(
+            "failed-load",
+            FakeControl::new(),
+            NavigationStart::Automatic,
+        );
         let address = url("https://example.test/a");
         browser.core.admit_navigation(&address);
         events.lock().unwrap().clear();
-        let error = LoadError { code: Some(-1), description: "refused".into() };
+        let error = LoadError {
+            code: Some(-1),
+            description: "refused".into(),
+        };
         browser.core.finish_load(Err(error.clone()));
         browser.core.finish_load(Ok(()));
         assert_eq!(kinds(&events), ["failed", "load-failed"]);
@@ -1177,7 +1350,9 @@ mod tests {
     #[test]
     fn a_process_failure_revokes_the_document_but_keeps_the_browser_open() {
         let (browser, context) = registered_context("process");
-        browser.core.process_failed(ProcessFailure::ContentProcessTerminated);
+        browser
+            .core
+            .process_failed(ProcessFailure::ContentProcessTerminated);
         assert!(context.is_revoked());
         assert!(browser.is_open());
         assert!(browser.document().is_none());
@@ -1191,13 +1366,19 @@ mod tests {
         let (browser, context) = registered_context("retire");
         let outcomes = Arc::new(Mutex::new(Vec::new()));
         let sink = outcomes.clone();
-        let _subscription = browser.when_closed(move |outcome| sink.lock().unwrap().push(outcome)).unwrap();
+        let _subscription = browser
+            .when_closed(move |outcome| sink.lock().unwrap().push(outcome))
+            .unwrap();
         browser.core.retire();
         browser.core.retire();
         assert!(context.is_revoked());
         assert!(!browser.is_open());
         assert!(browser.with_live_browser(|| ()).is_none());
-        assert!(!browser.core.admit_navigation(&url("https://example.test/late")));
+        assert!(
+            !browser
+                .core
+                .admit_navigation(&url("https://example.test/late"))
+        );
         assert_eq!(*outcomes.lock().unwrap(), [BrowserCloseOutcome::Retired]);
     }
 
@@ -1207,13 +1388,20 @@ mod tests {
         let receipt = creation.receipt();
         let submission = creation.into_submission();
         receipt.claim().unwrap();
-        let config = Config { start: NavigationStart::Explicit, bridge: BridgeMode::Invoke, ..Config::default() };
+        let config = Config {
+            start: NavigationStart::Explicit,
+            bridge: BridgeMode::Invoke,
+            ..Config::default()
+        };
         let core = BrowserCore::new("explicit", submission.creation(), receipt, config).unwrap();
         let ready = Arc::new(Mutex::new(Vec::new()));
         let sink = ready.clone();
         core.when_ready(Box::new(move |result| sink.lock().unwrap().push(result)));
         core.mark_attached(FakeControl::new(), "explicit");
-        assert!(ready.lock().unwrap().is_empty(), "attached but the blank page did not commit");
+        assert!(
+            ready.lock().unwrap().is_empty(),
+            "attached but the blank page did not commit"
+        );
         core.commit(&url("about:blank"));
         assert_eq!(*ready.lock().unwrap(), [Ok(())]);
         let late = Arc::new(Mutex::new(Vec::new()));

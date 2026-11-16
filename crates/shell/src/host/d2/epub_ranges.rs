@@ -4,11 +4,14 @@ use epub_engine::ranges::{self, RangeReplacement};
 use shell_ipc_d2::epub::hosts::Replacement;
 
 fn to_engine(replacements: &[Replacement]) -> Vec<RangeReplacement> {
-    replacements.iter().map(|r| RangeReplacement {
-        start: r.start as f64,
-        end: r.end as f64,
-        text: r.text.encode_utf16().collect(),
-    }).collect()
+    replacements
+        .iter()
+        .map(|r| RangeReplacement {
+            start: r.start as f64,
+            end: r.end as f64,
+            text: r.text.encode_utf16().collect(),
+        })
+        .collect()
 }
 
 pub(super) fn validate(replacements: &[Replacement], length: usize) -> Option<String> {
@@ -22,14 +25,20 @@ pub(super) fn apply(source: &str, replacements: &[Replacement]) -> Result<String
         .map_err(|error| error.0)
 }
 
-pub(super) fn compose(source: &str, earlier: &[Replacement], later: &[Replacement]) -> Vec<Replacement> {
+pub(super) fn compose(
+    source: &str,
+    earlier: &[Replacement],
+    later: &[Replacement],
+) -> Vec<Replacement> {
     let source: Vec<u16> = source.encode_utf16().collect();
     ranges::compose_replacements(&source, &to_engine(earlier), &to_engine(later))
-        .into_iter().map(|r| Replacement {
+        .into_iter()
+        .map(|r| Replacement {
             start: r.start as usize,
             end: r.end as usize,
             text: String::from_utf16_lossy(&r.text),
-        }).collect()
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -38,7 +47,11 @@ mod tests {
 
     #[test]
     fn offsets_count_utf16_units() {
-        let edits = [Replacement { start: 1, end: 3, text: "B".into() }];
+        let edits = [Replacement {
+            start: 1,
+            end: 3,
+            text: "B".into(),
+        }];
         assert_eq!(validate(&edits, 4), None);
         assert_eq!(apply("a😀c", &edits).unwrap(), "aBc");
         assert!(validate(&edits, 2).is_some());

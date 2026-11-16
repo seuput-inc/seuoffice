@@ -5,24 +5,40 @@
 
 use std::io::{Cursor, Read, Write};
 
-use shell_ipc_d1::sheets::engine::{CsvConverted, EngineResult, ImportControl, engine_error};
 use super::workbook_csv::{cancelled, delimiter, progress, rows};
+use shell_ipc_d1::sheets::engine::{CsvConverted, EngineResult, ImportControl, engine_error};
 
-const TEMPLATE: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/shell/build/shell-new/blank.xlsx"));
+const TEMPLATE: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../apps/shell/build/shell-new/blank.xlsx"
+));
 
 fn xml(value: &str) -> String {
-    value.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn sheet_name(name: &str) -> EngineResult<()> {
     if name.is_empty() || name.encode_utf16().count() > 31 {
-        return Err(engine_error(format!("Sheet name \"{name}\" must be 1-31 characters long.")));
+        return Err(engine_error(format!(
+            "Sheet name \"{name}\" must be 1-31 characters long."
+        )));
     }
-    if name.chars().any(|ch| matches!(ch, '\\' | '/' | '?' | '*' | '[' | ']' | ':')) {
-        return Err(engine_error(format!("Sheet name \"{name}\" contains a forbidden character (\\ / ? * [ ] :).")));
+    if name
+        .chars()
+        .any(|ch| matches!(ch, '\\' | '/' | '?' | '*' | '[' | ']' | ':'))
+    {
+        return Err(engine_error(format!(
+            "Sheet name \"{name}\" contains a forbidden character (\\ / ? * [ ] :)."
+        )));
     }
     if name.starts_with('\'') || name.ends_with('\'') {
-        return Err(engine_error(format!("Sheet name \"{name}\" cannot start or end with an apostrophe.")));
+        return Err(engine_error(format!(
+            "Sheet name \"{name}\" cannot start or end with an apostrophe."
+        )));
     }
     Ok(())
 }
@@ -33,7 +49,9 @@ pub(super) fn label(mut index: usize) -> String {
     loop {
         at -= 1;
         bytes[at] = b'A' + (index % 26) as u8;
-        if index < 26 { break; }
+        if index < 26 {
+            break;
+        }
         index = index / 26 - 1;
     }
     String::from_utf8(bytes[at..].to_vec()).expect("ASCII column label")
@@ -43,10 +61,13 @@ pub(super) fn numeric(value: &str) -> Option<f64> {
     let bytes = value.as_bytes();
     let mut i = usize::from(bytes.first() == Some(&b'-'));
     let start = i;
-    if bytes.get(i) == Some(&b'0') { i += 1; }
-    else if bytes.get(i).is_some_and(|ch| (b'1'..=b'9').contains(ch)) {
+    if bytes.get(i) == Some(&b'0') {
         i += 1;
-        while bytes.get(i).is_some_and(u8::is_ascii_digit) { i += 1; }
+    } else if bytes.get(i).is_some_and(|ch| (b'1'..=b'9').contains(ch)) {
+        i += 1;
+        while bytes.get(i).is_some_and(u8::is_ascii_digit) {
+            i += 1;
+        }
     }
     let integer_digits = i - start;
     let mut decimal = false;
@@ -54,19 +75,36 @@ pub(super) fn numeric(value: &str) -> Option<f64> {
         decimal = true;
         i += 1;
         let start_fraction = i;
-        while bytes.get(i).is_some_and(u8::is_ascii_digit) { i += 1; }
-        if integer_digits == 0 && i == start_fraction { return None; }
-    } else if integer_digits == 0 { return None; }
+        while bytes.get(i).is_some_and(u8::is_ascii_digit) {
+            i += 1;
+        }
+        if integer_digits == 0 && i == start_fraction {
+            return None;
+        }
+    } else if integer_digits == 0 {
+        return None;
+    }
     if bytes.get(i).is_some_and(|ch| *ch == b'e' || *ch == b'E') {
         decimal = true;
         i += 1;
-        if bytes.get(i).is_some_and(|ch| *ch == b'+' || *ch == b'-') { i += 1; }
+        if bytes.get(i).is_some_and(|ch| *ch == b'+' || *ch == b'-') {
+            i += 1;
+        }
         let start_exponent = i;
-        while bytes.get(i).is_some_and(u8::is_ascii_digit) { i += 1; }
-        if i == start_exponent { return None; }
+        while bytes.get(i).is_some_and(u8::is_ascii_digit) {
+            i += 1;
+        }
+        if i == start_exponent {
+            return None;
+        }
     }
-    if i != bytes.len() || (!decimal && integer_digits > 15) { return None; }
-    value.parse::<f64>().ok().filter(|number| number.is_finite())
+    if i != bytes.len() || (!decimal && integer_digits > 15) {
+        return None;
+    }
+    value
+        .parse::<f64>()
+        .ok()
+        .filter(|number| number.is_finite())
 }
 
 pub(super) fn quoted_text(value: &str) -> Option<String> {
@@ -74,7 +112,9 @@ pub(super) fn quoted_text(value: &str) -> Option<String> {
     let mut out = String::new();
     let mut chars = inner.chars();
     while let Some(ch) = chars.next() {
-        if ch == '"' && chars.next() != Some('"') { return None; }
+        if ch == '"' && chars.next() != Some('"') {
+            return None;
+        }
         out.push(ch);
     }
     Some(out)
@@ -87,46 +127,82 @@ pub(super) fn xlsx_text(value: &str) -> String {
         if ch == '_' {
             let tail = &value[index..];
             let bytes = tail.as_bytes();
-            if bytes.len() >= 7 && bytes[1] == b'x' && bytes[2..6].iter().all(u8::is_ascii_hexdigit) && bytes[6] == b'_' {
+            if bytes.len() >= 7
+                && bytes[1] == b'x'
+                && bytes[2..6].iter().all(u8::is_ascii_hexdigit)
+                && bytes[6] == b'_'
+            {
                 escaped.push_str("_x005F_");
                 continue;
             }
         }
         let code = ch as u32;
-        if code <= 8 || matches!(code, 0x0b | 0x0c | 0x0d | 0xfffe | 0xffff) || (0x0e..=0x1f).contains(&code) {
+        if code <= 8
+            || matches!(code, 0x0b | 0x0c | 0x0d | 0xfffe | 0xffff)
+            || (0x0e..=0x1f).contains(&code)
+        {
             escaped.push_str(&format!("_x{code:04X}_"));
-        } else { escaped.push(ch); }
+        } else {
+            escaped.push(ch);
+        }
     }
     xml(&escaped)
 }
 
-fn io_error(error: impl std::fmt::Display) -> shell_contract::IpcError { engine_error(error.to_string()) }
+fn io_error(error: impl std::fmt::Display) -> shell_contract::IpcError {
+    engine_error(error.to_string())
+}
 
-pub(super) fn convert(csv: &[u8], charset: Option<&str>, name: &str, pinned: Option<char>, fixed_comma: bool, control: Option<&ImportControl<'_>>) -> EngineResult<CsvConverted> {
+pub(super) fn convert(
+    csv: &[u8],
+    charset: Option<&str>,
+    name: &str,
+    pinned: Option<char>,
+    fixed_comma: bool,
+    control: Option<&ImportControl<'_>>,
+) -> EngineResult<CsvConverted> {
     let text = file_parse::csv::decode_csv_buffer(csv, charset);
-    let delimiter = if fixed_comma { ',' } else if let Some(delimiter) = pinned { delimiter } else { delimiter(&text)? };
+    let delimiter = if fixed_comma {
+        ','
+    } else if let Some(delimiter) = pinned {
+        delimiter
+    } else {
+        delimiter(&text)?
+    };
     let mut row_count = 0usize;
     let mut columns = 1usize;
     rows(&text, delimiter, control, |row| {
         row_count += 1;
-        if let Some(index) = row.iter().rposition(|cell| !cell.is_empty()) { columns = columns.max(index + 1); }
+        if let Some(index) = row.iter().rposition(|cell| !cell.is_empty()) {
+            columns = columns.max(index + 1);
+        }
         Ok(())
     })?;
     progress(control, "read", 1.0);
     sheet_name(name)?;
     let mut template = zip::ZipArchive::new(Cursor::new(TEMPLATE)).map_err(io_error)?;
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
     for index in 0..template.len() {
         cancelled(control)?;
         let mut entry = template.by_index(index).map_err(io_error)?;
         let path = entry.name().to_owned();
-        if entry.is_dir() { writer.add_directory(&path, options).map_err(io_error)?; continue; }
+        if entry.is_dir() {
+            writer.add_directory(&path, options).map_err(io_error)?;
+            continue;
+        }
         writer.start_file(&path, options).map_err(io_error)?;
         if path == "xl/workbook.xml" {
             let mut source = String::new();
             entry.read_to_string(&mut source).map_err(io_error)?;
-            writer.write_all(source.replace("name=\"Sheet1\"", &format!("name=\"{}\"", xml(name))).as_bytes()).map_err(io_error)?;
+            writer
+                .write_all(
+                    source
+                        .replace("name=\"Sheet1\"", &format!("name=\"{}\"", xml(name)))
+                        .as_bytes(),
+                )
+                .map_err(io_error)?;
         } else if path == "xl/worksheets/sheet1.xml" {
             write!(writer, "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><dimension ref=\"A1:{}{}\"/><sheetData>", label(columns - 1), row_count.max(1)).map_err(io_error)?;
             let mut index = 0usize;
@@ -134,27 +210,48 @@ pub(super) fn convert(csv: &[u8], charset: Option<&str>, name: &str, pinned: Opt
                 cancelled(control)?;
                 let mut opened = false;
                 for (column, value) in row.iter().enumerate() {
-                    if value.is_empty() { continue; }
-                    if !opened { write!(writer, "<row r=\"{}\">", index + 1).map_err(io_error)?; opened = true; }
+                    if value.is_empty() {
+                        continue;
+                    }
+                    if !opened {
+                        write!(writer, "<row r=\"{}\">", index + 1).map_err(io_error)?;
+                        opened = true;
+                    }
                     let reference = format!("{}{}", label(column), index + 1);
                     let quoted = quoted_text(value);
-                    if quoted.is_none() && let Some(number) = numeric(value) {
-                        write!(writer, "<c r=\"{reference}\"><v>{}</v></c>", jscompat::number_to_string(number)).map_err(io_error)?;
+                    if quoted.is_none()
+                        && let Some(number) = numeric(value)
+                    {
+                        write!(
+                            writer,
+                            "<c r=\"{reference}\"><v>{}</v></c>",
+                            jscompat::number_to_string(number)
+                        )
+                        .map_err(io_error)?;
                     } else {
                         write!(writer, "<c r=\"{reference}\" t=\"inlineStr\"><is><t xml:space=\"preserve\">{}</t></is></c>", xlsx_text(quoted.as_deref().unwrap_or(value))).map_err(io_error)?;
                     }
                 }
-                if opened { writer.write_all(b"</row>").map_err(io_error)?; }
+                if opened {
+                    writer.write_all(b"</row>").map_err(io_error)?;
+                }
                 index += 1;
                 progress(control, "write", index as f64 / row_count.max(1) as f64);
                 Ok(())
             })?;
             cancelled(control)?;
-            writer.write_all(b"</sheetData></worksheet>").map_err(io_error)?;
-        } else { std::io::copy(&mut entry, &mut writer).map_err(io_error)?; }
+            writer
+                .write_all(b"</sheetData></worksheet>")
+                .map_err(io_error)?;
+        } else {
+            std::io::copy(&mut entry, &mut writer).map_err(io_error)?;
+        }
     }
     let buffer = writer.finish().map_err(io_error)?.into_inner();
-    Ok(CsvConverted { buffer, empty: row_count == 0 })
+    Ok(CsvConverted {
+        buffer,
+        empty: row_count == 0,
+    })
 }
 
 #[cfg(test)]
@@ -172,16 +269,25 @@ mod tests {
 
     #[test]
     fn csv_conversion_produces_a_workbook_with_the_expected_cells() {
-        let converted = convert(b"name,count\n007,42\n", None, "Report", None, false, None).unwrap();
+        let converted =
+            convert(b"name,count\n007,42\n", None, "Report", None, false, None).unwrap();
         assert!(!converted.empty);
         let mut zip = zip::ZipArchive::new(Cursor::new(converted.buffer)).unwrap();
         let mut sheet = String::new();
-        zip.by_name("xl/worksheets/sheet1.xml").unwrap().read_to_string(&mut sheet).unwrap();
+        zip.by_name("xl/worksheets/sheet1.xml")
+            .unwrap()
+            .read_to_string(&mut sheet)
+            .unwrap();
         assert!(sheet.contains("<dimension ref=\"A1:B2\"/>"));
-        assert!(sheet.contains("<c r=\"A2\" t=\"inlineStr\"><is><t xml:space=\"preserve\">007</t></is></c>"));
+        assert!(sheet.contains(
+            "<c r=\"A2\" t=\"inlineStr\"><is><t xml:space=\"preserve\">007</t></is></c>"
+        ));
         assert!(sheet.contains("<c r=\"B2\"><v>42</v></c>"));
         let mut workbook = String::new();
-        zip.by_name("xl/workbook.xml").unwrap().read_to_string(&mut workbook).unwrap();
+        zip.by_name("xl/workbook.xml")
+            .unwrap()
+            .read_to_string(&mut workbook)
+            .unwrap();
         assert!(workbook.contains("name=\"Report\""));
     }
 }

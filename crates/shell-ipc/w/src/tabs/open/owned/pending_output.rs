@@ -1,7 +1,7 @@
 use shell_contract::hosts::{
-    GeneratedCleanupRegistration, GeneratedObserveFailure, GeneratedPathDispatchOutcome,
-    GeneratedPathObserver, GeneratedPathOutcome, GeneratedPathPending, GeneratedPathWake,
-    GeneratedTerminalAck, GeneratedTerminalDelivery,
+    GeneratedCleanupRegistration, GeneratedObserveFailure, GeneratedPathObserver,
+    GeneratedPathOutcome, GeneratedPathPending, GeneratedPathWake, GeneratedTerminalAck,
+    GeneratedTerminalDelivery,
 };
 use shell_contract::ipc::{NativeDrivePendingOutcome, NativeDrivePendingReceipt};
 use shell_contract::runtime::CancelToken;
@@ -258,7 +258,9 @@ impl PendingOutput {
     pub(super) fn finish_initial(
         self: &Arc<Self>,
         result: Result<GeneratedPathOutcome, String>,
-        done: Box<dyn FnOnce(Result<GeneratedPathDispatchOutcome, String>) + Send>,
+        done: Box<
+            dyn FnOnce(Result<shell_contract::hosts::GeneratedPathDispatchOutcome, String>) + Send,
+        >,
     ) {
         let result = {
             let Ok(mut state) = self.state.lock() else {
@@ -277,7 +279,7 @@ impl PendingOutput {
                 result
             }
         };
-        done(Ok(GeneratedPathDispatchOutcome::Terminal(
+        done(Ok(shell_contract::hosts::GeneratedPathDispatchOutcome::Terminal(
             GeneratedTerminalDelivery::new(result, Arc::new(PendingHandle(self.clone()))),
         )));
     }

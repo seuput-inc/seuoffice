@@ -67,22 +67,50 @@ pub enum ViewEvent {
 #[derive(Clone, Debug)]
 pub enum NativeEventKind {
     /// After the shell policy admitted a main-frame navigation.
-    NavigationStarted { navigation: NavigationIdentity, url: Url, same_document: bool },
-    DocumentCommitted { navigation: NavigationIdentity, document: DocumentIdentity, url: Url },
+    NavigationStarted {
+        navigation: NavigationIdentity,
+        url: Url,
+        same_document: bool,
+    },
+    DocumentCommitted {
+        navigation: NavigationIdentity,
+        document: DocumentIdentity,
+        url: Url,
+    },
     /// The bridge registered its nonce for the committed document.
-    DocumentRegistered { context: DocumentContext },
+    DocumentRegistered {
+        context: DocumentContext,
+    },
     /// Registered, load finished and one macrotask passed (`render-ready`).
-    DocumentReady { context: DocumentContext },
-    DocumentRevoked { document: DocumentIdentity, reason: RevokeReason },
+    DocumentReady {
+        context: DocumentContext,
+    },
+    DocumentRevoked {
+        document: DocumentIdentity,
+        reason: RevokeReason,
+    },
     /// Never inferred from "not loading".
-    NavigationFailed { navigation: NavigationIdentity, url: Url, error: LoadError },
+    NavigationFailed {
+        navigation: NavigationIdentity,
+        url: Url,
+        error: LoadError,
+    },
     /// Always carries the outcome; `ok: false` follows a `NavigationFailed`.
-    LoadFinished { navigation: NavigationIdentity, ok: bool },
-    AddressChanged { url: Url },
-    WebviewProcessFailed { kind: ProcessFailure },
+    LoadFinished {
+        navigation: NavigationIdentity,
+        ok: bool,
+    },
+    AddressChanged {
+        url: Url,
+    },
+    WebviewProcessFailed {
+        kind: ProcessFailure,
+    },
     View(ViewEvent),
     /// Browser receipt: the view is gone from Tauri's registry.
-    Retired { outcome: BrowserCloseOutcome },
+    Retired {
+        outcome: BrowserCloseOutcome,
+    },
 }
 
 #[derive(Clone)]
@@ -93,7 +121,10 @@ pub struct NativeEvent {
 
 impl fmt::Debug for NativeEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("NativeEvent").field("browser", &self.browser).field("kind", &self.kind).finish()
+        f.debug_struct("NativeEvent")
+            .field("browser", &self.browser)
+            .field("kind", &self.kind)
+            .finish()
     }
 }
 

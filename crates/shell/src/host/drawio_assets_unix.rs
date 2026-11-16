@@ -7,9 +7,16 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path};
 
 fn child(parent: &File, name: &OsStr, directory: bool) -> io::Result<File> {
-    let name = CString::new(name.as_bytes()).map_err(|_| super::invalid("NUL in asset component"))?;
-    let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC
-        | if directory { libc::O_DIRECTORY } else { libc::O_NONBLOCK };
+    let name =
+        CString::new(name.as_bytes()).map_err(|_| super::invalid("NUL in asset component"))?;
+    let flags = libc::O_RDONLY
+        | libc::O_NOFOLLOW
+        | libc::O_CLOEXEC
+        | if directory {
+            libc::O_DIRECTORY
+        } else {
+            libc::O_NONBLOCK
+        };
     // SAFETY: parent and the NUL-terminated single component remain live.
     let fd = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags) };
     if fd < 0 {
@@ -20,7 +27,8 @@ fn child(parent: &File, name: &OsStr, directory: bool) -> io::Result<File> {
 }
 
 pub(super) fn open(root: &Path, relative: &[&OsStr]) -> io::Result<File> {
-    let mut dir = OpenOptions::new().read(true)
+    let mut dir = OpenOptions::new()
+        .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open("/")?;
     let mut root_components = root.components();
@@ -33,7 +41,9 @@ pub(super) fn open(root: &Path, relative: &[&OsStr]) -> io::Result<File> {
             _ => return Err(super::invalid("invalid asset root component")),
         }
     }
-    let (name, parents) = relative.split_last().ok_or_else(|| super::invalid("empty asset path"))?;
+    let (name, parents) = relative
+        .split_last()
+        .ok_or_else(|| super::invalid("empty asset path"))?;
     for component in parents {
         dir = child(&dir, component, true)?;
     }

@@ -1,13 +1,19 @@
 pub(crate) mod network;
 mod product;
 
-use std::sync::{Arc, Mutex};
-use shell_contract::ipc::{NativeInvocationOperation, NativeInvocationSelection, NativeInvocationTarget, NativeRequestOwner};
+use crate::native::NativeEventKind;
+use shell_contract::ipc::{
+    NativeInvocationOperation, NativeInvocationSelection, NativeInvocationTarget,
+    NativeRequestOwner,
+};
 use shell_contract::runtime::{CancelSubscription, RendererGeneration};
 use shell_contract::{Surface, ViewId};
-use crate::native::NativeEventKind;
+use std::sync::{Arc, Mutex};
 
-use crate::host::{HostContext, window::{Bridge, ViewSpec, WindowOptions, WindowSpec}};
+use crate::host::{
+    HostContext,
+    window::{Bridge, ViewSpec, WindowOptions, WindowSpec},
+};
 use crate::ipc::native_owner::NativeOwnerAuthority;
 use main_core::packages::electron_utils::headless_export::HeadlessExportRequest;
 use main_core::shell::headless_export::HeadlessExportProduct;
@@ -28,13 +34,31 @@ struct Binding {
     cancellations: Vec<CancelSubscription>,
 }
 
-pub(crate) fn export_headless(cx: &HostContext, input: &str, out: &str, format: &str,
-    request: &HeadlessExportRequest, operation: &NativeInvocationOperation, done: Done) -> Result<(), String> {
+pub(crate) fn export_headless(
+    cx: &HostContext,
+    input: &str,
+    out: &str,
+    format: &str,
+    request: &HeadlessExportRequest,
+    operation: &NativeInvocationOperation,
+    done: Done,
+) -> Result<(), String> {
     match operation.selection() {
-        NativeInvocationSelection::HeadlessExport { surface, input: selected_input, output, format: selected_format, page, ops, batch }
-            if *surface == Surface::Diagram && selected_input == std::path::Path::new(input)
-                && output == std::path::Path::new(out) && selected_format == format
-                && *page == request.page && ops == &request.ops && batch.as_deref() == request.batch => {}
+        NativeInvocationSelection::HeadlessExport {
+            surface,
+            input: selected_input,
+            output,
+            format: selected_format,
+            page,
+            ops,
+            batch,
+        } if *surface == Surface::Diagram
+            && selected_input == std::path::Path::new(input)
+            && output == std::path::Path::new(out)
+            && selected_format == format
+            && *page == request.page
+            && ops == &request.ops
+            && batch.as_deref() == request.batch => {}
         _ => return Err("The native export selection does not match the diagram job".into()),
     }
     let operation = operation.clone();
@@ -43,7 +67,9 @@ pub(crate) fn export_headless(cx: &HostContext, input: &str, out: &str, format: 
         return Err("Core services are not available".into());
     }
     let services = captured.ok_or("Core services are not available")?;
-    if shell_ipc_d1::diagram::views().is_none() { return Err("The diagram editor is not registered".into()); }
+    if shell_ipc_d1::diagram::views().is_none() {
+        return Err("The diagram editor is not registered".into());
+    }
     let policy = network::request_policy();
     let input = input.to_owned();
     let out = out.to_owned();
@@ -264,20 +290,43 @@ pub(crate) fn export_headless(cx: &HostContext, input: &str, out: &str, format: 
     Ok(())
 }
 
-fn finish_product(cx: &HostContext, input: &str, out: &str, format: &str, page: Option<f64>, report: &shell_contract::IpcValue,
+fn finish_product(
+    cx: &HostContext,
+    input: &str,
+    out: &str,
+    format: &str,
+    page: Option<f64>,
+    report: &shell_contract::IpcValue,
     owner: &NativeRequestOwner,
-    target: &NativeInvocationTarget) -> Result<HeadlessExportProduct, String> {
+    target: &NativeInvocationTarget,
+) -> Result<HeadlessExportProduct, String> {
     let cancel = target.operation().cancel().clone();
     let pending = target.operation().shutdown().clone();
     let mut open = |name: &str, bytes: &[u8]| {
         super::diagram::open_native_invocation(name, bytes, target, owner, &cancel, &pending)
     };
     let mut admit = |effect: &mut dyn FnMut()| {
-        crate::ipc::native_owner::with_native_invocation_effect(target, owner, &cancel, &pending, effect)
-            .ok_or_else(|| main_core::node_fs::NodeError { code: None, message: "The diagram job expired".into() })
+        crate::ipc::native_owner::with_native_invocation_effect(
+            target, owner, &cancel, &pending, effect,
+        )
+        .ok_or_else(|| main_core::node_fs::NodeError {
+            code: None,
+            message: "The diagram job expired".into(),
+        })
     };
     let mut render = |pages: &[main_core::diagram::print_document::PrintPage], title: &str| {
-        crate::host::print::render_diagram_pdf_native_invocation(cx, target, owner, pages, title, &cancel, &pending)
+        crate::host::print::render_diagram_pdf_native_invocation(
+            cx, target, owner, pages, title, &cancel, &pending,
+        )
     };
-    product::product(input, out, format, page, report, &mut open, &mut render, &mut admit)
+    product::product(
+        input,
+        out,
+        format,
+        page,
+        report,
+        &mut open,
+        &mut render,
+        &mut admit,
+    )
 }

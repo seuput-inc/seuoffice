@@ -201,8 +201,12 @@ impl main_core::shell::doc_picker::doc_list::DocListDeps for Unbuilt {
 
 impl DocsTabs for Unbuilt {
     fn open_tab_owned(
-        &self, _: Option<String>, _: bool, _: shell_contract::ipc::NativeRequestOwner,
-        _: shell_contract::runtime::CancelToken, _: shell_contract::runtime::CancelToken,
+        &self,
+        _: Option<String>,
+        _: bool,
+        _: shell_contract::ipc::NativeRequestOwner,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
         done: Box<dyn FnOnce(Result<(), String>) + Send>,
     ) {
         done(Err("Docs tab creation is unavailable in Unbuilt".into()));
@@ -265,9 +269,14 @@ impl HomeFiles for Unbuilt {
         String::new()
     }
     fn open_document_path_owned(
-        &self,_:String,_:shell_contract::ipc::NativeRequestOwner,_:shell_contract::runtime::CancelToken,
-        done:Box<dyn FnOnce(Result<Option<shell_contract::ViewId>,String>)+Send>,
-    ) { done(Err("HomeFiles document opener is not built".into())); }
+        &self,
+        _: String,
+        _: shell_contract::ipc::NativeRequestOwner,
+        _: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<Option<shell_contract::ViewId>, String>) + Send>,
+    ) {
+        done(Err("HomeFiles document opener is not built".into()));
+    }
     fn open_dropped_files(&self, _: Vec<String>) {
         unbuilt("HomeFiles::open_dropped_files");
     }
@@ -300,53 +309,75 @@ impl HomeFiles for Unbuilt {
         unbuilt("HomeFiles::recents_changed");
     }
     fn prepare_recents_changed_owned(
-        &self, _: &shell_contract::ipc::NativeRequestOwner, _: &shell_contract::ipc::NativeRequestOwner,
-        _: &shell_contract::runtime::CancelToken, _: &shell_contract::runtime::CancelToken,
+        &self,
+        _: &shell_contract::ipc::NativeRequestOwner,
+        _: &shell_contract::ipc::NativeRequestOwner,
+        _: &shell_contract::runtime::CancelToken,
+        _: &shell_contract::runtime::CancelToken,
         _: &shell_contract::hosts::OwnedEffectsHost,
-    )->Result<Option<shell_ipc_w::home_files::OwnedHomeRefresh>,String> {
+    ) -> Result<Option<shell_ipc_w::home_files::OwnedHomeRefresh>, String> {
         Err("HomeFiles owned menu refresh is not built".into())
     }
     fn prepare_recents_changed_many_owned(
-        &self,_:&shell_contract::ipc::NativeRequestOwner,_:&shell_contract::ipc::NativeRequestOwner,
-        _:&[shell_contract::ipc::NativeRequestOwner],
-        _:&shell_contract::runtime::CancelToken,_:&shell_contract::runtime::CancelToken,
-        _:&shell_contract::hosts::OwnedEffectsHost,
-    )->Result<Option<shell_ipc_w::home_files::OwnedHomeRefresh>,String> {
+        &self,
+        _: &shell_contract::ipc::NativeRequestOwner,
+        _: &shell_contract::ipc::NativeRequestOwner,
+        _: &[shell_contract::ipc::NativeRequestOwner],
+        _: &shell_contract::runtime::CancelToken,
+        _: &shell_contract::runtime::CancelToken,
+        _: &shell_contract::hosts::OwnedEffectsHost,
+    ) -> Result<Option<shell_ipc_w::home_files::OwnedHomeRefresh>, String> {
         Err("HomeFiles owned many-participant menu refresh is not built".into())
     }
     fn prepare_recents_changed_many_owned_extra(
-        &self,_:&shell_contract::ipc::NativeRequestOwner,_:&shell_contract::ipc::NativeRequestOwner,
-        _:&[shell_contract::ipc::NativeRequestOwner],_:&shell_contract::runtime::CancelToken,
-        _:&shell_contract::runtime::CancelToken,_:&[shell_contract::runtime::CancelToken],
-        _:&shell_contract::hosts::OwnedEffectsHost,
-    )->Result<Option<shell_ipc_w::home_files::OwnedHomeRefresh>,String> {
+        &self,
+        _: &shell_contract::ipc::NativeRequestOwner,
+        _: &shell_contract::ipc::NativeRequestOwner,
+        _: &[shell_contract::ipc::NativeRequestOwner],
+        _: &shell_contract::runtime::CancelToken,
+        _: &shell_contract::runtime::CancelToken,
+        _: &[shell_contract::runtime::CancelToken],
+        _: &shell_contract::hosts::OwnedEffectsHost,
+    ) -> Result<Option<shell_ipc_w::home_files::OwnedHomeRefresh>, String> {
         Err("HomeFiles owned extra menu refresh is not built".into())
     }
     fn prepare_recents_changed_recovery(
-        &self, _: &shell_contract::ipc::RecoverySeedReceipt, _: &shell_contract::ipc::NativeRequestOwner,
-        _: &shell_contract::runtime::CancelToken, _: &shell_contract::runtime::CancelToken,
+        &self,
+        _: &shell_contract::ipc::RecoverySeedReceipt,
+        _: &shell_contract::ipc::NativeRequestOwner,
+        _: &shell_contract::runtime::CancelToken,
+        _: &shell_contract::runtime::CancelToken,
         _: &shell_contract::hosts::OwnedEffectsHost,
     ) -> Result<Option<shell_ipc_w::home_files::OwnedHomeRefresh>, String> {
         Err("HomeFiles recovery menu refresh is not built".into())
     }
     fn prepare_recents_changed_native(
-        &self, _: &shell_contract::ipc::NativeInvocationOperation, _: &shell_contract::ipc::NativeEditorCommand,
+        &self,
+        _: &shell_contract::ipc::NativeInvocationOperation,
+        _: &shell_contract::ipc::NativeEditorCommand,
         _: &shell_contract::hosts::OwnedEffectsHost,
     ) -> Result<Option<shell_ipc_w::home_files::OwnedHomeRefresh>, String> {
         Err("HomeFiles native menu refresh is not built".into())
     }
     fn prepare_recents_changed_existing_document(
-        &self, _: &shell_contract::ipc::NativeExistingDocumentBinding, _: &[shell_contract::ipc::NativeRequestOwner],
-        _: &shell_contract::runtime::CancelToken, _: &shell_contract::runtime::CancelToken, _: &[shell_contract::runtime::CancelToken],
+        &self,
+        _: &shell_contract::ipc::NativeExistingDocumentBinding,
+        _: &[shell_contract::ipc::NativeRequestOwner],
+        _: &shell_contract::runtime::CancelToken,
+        _: &shell_contract::runtime::CancelToken,
+        _: &[shell_contract::runtime::CancelToken],
         _: &shell_contract::hosts::OwnedEffectsHost,
     ) -> Result<Option<shell_ipc_w::home_files::OwnedHomeRefresh>, String> {
         Err("HomeFiles existing-document menu refresh is not built".into())
     }
     fn prepare_recents_changed_saved_document(
-        &self, _: &shell_contract::ipc::NativeSavedDocument,
+        &self,
+        _: &shell_contract::ipc::NativeSavedDocument,
         _: &[shell_contract::ipc::NativeRequestOwner],
-        _: &shell_contract::runtime::CancelToken, _: &shell_contract::runtime::CancelToken,
-        _: &[shell_contract::runtime::CancelToken], _: &shell_contract::hosts::OwnedEffectsHost,
+        _: &shell_contract::runtime::CancelToken,
+        _: &shell_contract::runtime::CancelToken,
+        _: &[shell_contract::runtime::CancelToken],
+        _: &shell_contract::hosts::OwnedEffectsHost,
     ) -> Result<Option<shell_ipc_w::home_files::OwnedHomeRefresh>, String> {
         Err("HomeFiles saved-document menu refresh is unavailable in Unbuilt".into())
     }
@@ -366,7 +397,13 @@ impl FileSearch for Unbuilt {
     fn refresh(&self) {
         unbuilt("FileSearch::refresh");
     }
-    fn search(&self, _: &str, _: Option<&[String]>, _: f64, _: f64) -> Result<SearchResult, String> {
+    fn search(
+        &self,
+        _: &str,
+        _: Option<&[String]>,
+        _: f64,
+        _: f64,
+    ) -> Result<SearchResult, String> {
         unbuilt("FileSearch::search");
         Err(NOT_BUILT.into())
     }
@@ -411,9 +448,14 @@ impl HomeApp for Unbuilt {
         unbuilt("HomeApp::third_party_notices_path");
         PathBuf::new()
     }
-    fn open_help_owned(&self, _:Option<String>, _:shell_contract::ipc::NativeRequestOwner,
-        _:shell_contract::runtime::CancelToken, _:shell_contract::runtime::CancelToken,
-        done:Box<dyn FnOnce(Result<(),String>)+Send>) {
+    fn open_help_owned(
+        &self,
+        _: Option<String>,
+        _: shell_contract::ipc::NativeRequestOwner,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<(), String>) + Send>,
+    ) {
         unbuilt("HomeApp::open_help_owned");
         done(Err(NOT_BUILT.into()));
     }
@@ -433,7 +475,10 @@ impl HomeApp for Unbuilt {
         Err("HomeApp::end_save_dir_change is unavailable".into())
     }
     fn folder_watchers_changed(&self, done: Box<dyn FnOnce(Result<(), IpcError>) + Send>) {
-        done(Err(IpcError { name: Some("Error".into()), message: "HomeApp::folder_watchers_changed is unavailable".into() }));
+        done(Err(IpcError {
+            name: Some("Error".into()),
+            message: "HomeApp::folder_watchers_changed is unavailable".into(),
+        }));
     }
     /// batch A's codec over safeStorage (`host/secrets.rs` sets it)
     fn secrets(&self) -> Option<&dyn AiSecretCodec> {
@@ -485,7 +530,10 @@ impl WindowsHost for Unbuilt {
         unbuilt("WindowsHost::window_state");
         panic!("WindowsHost::window_state is not built yet")
     }
-    fn create_window(&self, _: &WindowOptions) -> shell_ipc_w::tabs::window_snapshot::WindowReservation {
+    fn create_window(
+        &self,
+        _: &WindowOptions,
+    ) -> shell_ipc_w::tabs::window_snapshot::WindowReservation {
         unbuilt("WindowsHost::create_window");
         panic!("WindowsHost::create_window is not built yet")
     }
@@ -552,7 +600,10 @@ impl WindowsHost for Unbuilt {
     fn watch_page_load(&self, _: ViewId, _: u64) {
         unbuilt("WindowsHost::watch_page_load");
     }
-    fn create_help_view(&self, done: Box<dyn FnOnce(shell_ipc_w::tabs::host::ViewCreationResult<ViewId>)>) {
+    fn create_help_view(
+        &self,
+        done: Box<dyn FnOnce(shell_ipc_w::tabs::host::ViewCreationResult<ViewId>)>,
+    ) {
         unbuilt("WindowsHost::create_help_view");
         done(Err(shell_ipc_w::tabs::host::ViewCreationFailure {
             error: TabError("Help view construction is unavailable in Unbuilt".into()),
@@ -560,10 +611,18 @@ impl WindowsHost for Unbuilt {
         }));
     }
     fn create_help_native_command(
-        &self, _: shell_contract::ipc::NativeInvocationOperation,
-        _: Vec<shell_contract::ipc::NativeRequestOwner>, _: shell_contract::runtime::CancelToken,
+        &self,
+        _: shell_contract::ipc::NativeInvocationOperation,
+        _: Vec<shell_contract::ipc::NativeRequestOwner>,
         _: shell_contract::runtime::CancelToken,
-        done: Box<dyn FnOnce(shell_ipc_w::tabs::host::ViewCreationResult<shell_contract::ipc::NativeInvocationDocument>)>,
+        _: shell_contract::runtime::CancelToken,
+        done: Box<
+            dyn FnOnce(
+                shell_ipc_w::tabs::host::ViewCreationResult<
+                    shell_contract::ipc::NativeInvocationDocument,
+                >,
+            ),
+        >,
     ) {
         unbuilt("WindowsHost::create_help_native_command");
         done(Err(shell_ipc_w::tabs::host::ViewCreationFailure {
@@ -601,104 +660,167 @@ impl TabHooks for Unbuilt {
         unbuilt("TabHooks::cleanup_lifetime")
     }
     fn register_generated_path_task(
-        &self, _: std::sync::Arc<dyn shell_contract::hosts::GeneratedPathPending>,
+        &self,
+        _: std::sync::Arc<dyn shell_contract::hosts::GeneratedPathPending>,
     ) -> Result<Box<dyn shell_contract::hosts::GeneratedCleanupRegistration>, String> {
         Err("Generated cleanup is unavailable in Unbuilt".into())
     }
     fn capture_generated_retry_prompt(
-        &self, _: shell_ipc_w::tabs::ShellWindow, _: shell_contract::ipc::NativeRequestOwner,
+        &self,
+        _: shell_ipc_w::tabs::ShellWindow,
+        _: shell_contract::ipc::NativeRequestOwner,
         _: shell_contract::ipc::SavedPublication,
         _: Vec<shell_contract::ipc::NativeRequestOwner>,
-        _: shell_contract::runtime::CancelToken, _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
         _: Vec<shell_contract::runtime::CancelToken>,
-    ) -> Result<std::rc::Rc<dyn shell_ipc_w::tabs::host::CapturedGeneratedRetryPrompt>, String> {
+    ) -> Result<std::rc::Rc<dyn shell_ipc_w::tabs::host::CapturedGeneratedRetryPrompt>, String>
+    {
         Err("Generated retry prompts are unavailable in Unbuilt".into())
     }
     fn capture_saved_shell(
-        &self, _: shell_ipc_w::tabs::ShellWindow, _: shell_contract::ipc::NativeRequestOwner,
+        &self,
+        _: shell_ipc_w::tabs::ShellWindow,
+        _: shell_contract::ipc::NativeRequestOwner,
     ) -> Result<std::rc::Rc<dyn shell_ipc_w::tabs::host::CapturedSavedShell>, String> {
         Err("Saved shell creation is unavailable in Unbuilt".into())
     }
     fn read_saved_input(
-        &self, _: shell_contract::ipc::SavedPublication, _: shell_contract::ipc::NativeSavedPath,
-        _: Vec<shell_contract::ipc::NativeRequestOwner>, _: shell_contract::runtime::CancelToken,
-        _: shell_contract::runtime::CancelToken, _: Vec<shell_contract::runtime::CancelToken>,
+        &self,
+        _: shell_contract::ipc::SavedPublication,
+        _: shell_contract::ipc::NativeSavedPath,
+        _: Vec<shell_contract::ipc::NativeRequestOwner>,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
+        _: Vec<shell_contract::runtime::CancelToken>,
         then: Box<dyn FnOnce(Result<shell_contract::ipc::NativeSavedInput, String>)>,
     ) {
         then(Err("Saved input reading is unavailable in Unbuilt".into()));
     }
     fn prepare_reopen_existing_document(
-        &self, _: shell_contract::ipc::SavedPublication,
+        &self,
+        _: shell_contract::ipc::SavedPublication,
         _: Vec<shell_contract::ipc::NativeRequestOwner>,
-        _: shell_contract::runtime::CancelToken, _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
         _: Vec<shell_contract::runtime::CancelToken>,
         then: Box<dyn FnOnce(Result<shell_contract::ipc::NativeDriveReopen, String>)>,
     ) {
         then(Err("Drive reopening is unavailable in Unbuilt".into()));
     }
     fn prepare_activation_ui(
-        &self, _: shell_ipc_w::tabs::ShellWindow, _: Option<ViewId>,
-        _: &[main_core::shell::tab_manager::TabActivationEffect<ViewId, shell_ipc_w::tabs::host::RetainedSpareBinding>],
+        &self,
+        _: shell_ipc_w::tabs::ShellWindow,
+        _: Option<ViewId>,
+        _: &[main_core::shell::tab_manager::TabActivationEffect<
+            ViewId,
+            shell_ipc_w::tabs::host::RetainedSpareBinding,
+        >],
     ) -> Result<shell_ipc_w::tabs::PreparedTabUiBatch, String> {
         Err("Activation is unavailable in Unbuilt".into())
     }
     fn prepare_docs_disposal_owned(
-        &self, _: ViewId, _: shell_contract::ipc::NativeRequestOwner,
-        _: shell_contract::ipc::NativeRequestOwner, _: Vec<shell_contract::ipc::NativeRequestOwner>,
+        &self,
+        _: ViewId,
         _: shell_contract::ipc::NativeRequestOwner,
-        _: shell_contract::runtime::CancelToken, _: shell_contract::runtime::CancelToken,
+        _: shell_contract::ipc::NativeRequestOwner,
+        _: Vec<shell_contract::ipc::NativeRequestOwner>,
+        _: shell_contract::ipc::NativeRequestOwner,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
     ) -> Result<std::rc::Rc<dyn shell_ipc_w::tabs::DocsDisposalOperation>, String> {
         Err("Document disposal is unavailable in Unbuilt".into())
     }
-    fn docs_query_dirty_captured_many(&self, _: ViewId, _: shell_contract::ipc::NativeRequestOwner,
-        _: Vec<shell_contract::ipc::NativeRequestOwner>, _: shell_contract::ipc::NativeRequestOwner,
-        _: shell_contract::runtime::CancelToken, _: shell_contract::runtime::CancelToken, then: shell_contract::editors::Then<bool>) {
-        then(Err(shell_contract::IpcError { name: Some("Error".into()), message: "Document dirty query is unavailable in Unbuilt".into() }));
+    fn docs_query_dirty_captured_many(
+        &self,
+        _: ViewId,
+        _: shell_contract::ipc::NativeRequestOwner,
+        _: Vec<shell_contract::ipc::NativeRequestOwner>,
+        _: shell_contract::ipc::NativeRequestOwner,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
+        then: shell_contract::editors::Then<bool>,
+    ) {
+        then(Err(shell_contract::IpcError {
+            name: Some("Error".into()),
+            message: "Document dirty query is unavailable in Unbuilt".into(),
+        }));
     }
-    fn docs_request_close_captured_many(&self, _: ViewId, _: Option<WindowId>, _: shell_contract::ipc::NativeRequestOwner,
-        _: Vec<shell_contract::ipc::NativeRequestOwner>, _: shell_contract::ipc::NativeRequestOwner,
-        _: shell_contract::runtime::CancelToken, _: shell_contract::runtime::CancelToken, then: shell_contract::editors::Then<bool>) {
-        then(Err(shell_contract::IpcError { name: Some("Error".into()), message: "Document close is unavailable in Unbuilt".into() }));
+    fn docs_request_close_captured_many(
+        &self,
+        _: ViewId,
+        _: Option<WindowId>,
+        _: shell_contract::ipc::NativeRequestOwner,
+        _: Vec<shell_contract::ipc::NativeRequestOwner>,
+        _: shell_contract::ipc::NativeRequestOwner,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
+        then: shell_contract::editors::Then<bool>,
+    ) {
+        then(Err(shell_contract::IpcError {
+            name: Some("Error".into()),
+            message: "Document close is unavailable in Unbuilt".into(),
+        }));
     }
     fn prepare_activation_publication_owned(
-        &self, _: shell_ipc_w::tabs::TabActivationAuthority, _: shell_contract::ipc::NativeRequestOwner,
-        _: Vec<shell_contract::ipc::NativeRequestOwner>, _: shell_contract::runtime::CancelToken,
-        _: shell_contract::runtime::CancelToken, _: shell_contract::hosts::OwnedEffectsHost,
+        &self,
+        _: shell_ipc_w::tabs::TabActivationAuthority,
+        _: shell_contract::ipc::NativeRequestOwner,
+        _: Vec<shell_contract::ipc::NativeRequestOwner>,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_contract::hosts::OwnedEffectsHost,
         _: shell_ipc_w::tabs::TabActivationPublicationSnapshot,
     ) -> Result<shell_ipc_w::tabs::PreparedTabActivationPublication, String> {
         Err("Activation publication is unavailable in Unbuilt".into())
     }
     fn prepare_saved_publication_owned(
-        &self, _: shell_contract::ipc::NativeRequestOwner, _: shell_contract::ipc::NativeRequestOwner,
-        _: Vec<shell_contract::ipc::NativeRequestOwner>, _: shell_contract::runtime::CancelToken,
-        _: shell_contract::runtime::CancelToken, _: Vec<shell_contract::runtime::CancelToken>, _: shell_contract::hosts::OwnedEffectsHost,
+        &self,
+        _: shell_contract::ipc::NativeRequestOwner,
+        _: shell_contract::ipc::NativeRequestOwner,
+        _: Vec<shell_contract::ipc::NativeRequestOwner>,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
+        _: Vec<shell_contract::runtime::CancelToken>,
+        _: shell_contract::hosts::OwnedEffectsHost,
     ) -> Result<shell_ipc_w::tabs::SavedPublication, String> {
         Err("Saved publication is unavailable in Unbuilt".into())
     }
     fn prepare_saved_publication_recovery(
-        &self, _: shell_contract::ipc::RecoverySeedReceipt, _: shell_contract::ipc::NativeRequestOwner,
-        _: shell_contract::runtime::CancelToken, _: shell_contract::runtime::CancelToken,
+        &self,
+        _: shell_contract::ipc::RecoverySeedReceipt,
+        _: shell_contract::ipc::NativeRequestOwner,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
         _: shell_contract::hosts::OwnedEffectsHost,
     ) -> Result<shell_ipc_w::tabs::SavedPublication, String> {
         Err("Recovery saved publication is unavailable in Unbuilt".into())
     }
     fn prepare_saved_publication_existing_document(
-        &self, _: shell_contract::ipc::NativeSaveDestination,
-        _: Vec<shell_contract::ipc::NativeRequestOwner>, _: shell_contract::runtime::CancelToken,
-        _: shell_contract::runtime::CancelToken, _: Vec<shell_contract::runtime::CancelToken>, _: shell_contract::hosts::OwnedEffectsHost,
+        &self,
+        _: shell_contract::ipc::NativeSaveDestination,
+        _: Vec<shell_contract::ipc::NativeRequestOwner>,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
+        _: Vec<shell_contract::runtime::CancelToken>,
+        _: shell_contract::hosts::OwnedEffectsHost,
     ) -> Result<shell_ipc_w::tabs::SavedPublication, String> {
         Err("Existing-document saved publication is unavailable in Unbuilt".into())
     }
     fn prepare_saved_publication_saved_document(
-        &self, _: shell_contract::ipc::NativeSavedDocument,
+        &self,
+        _: shell_contract::ipc::NativeSavedDocument,
         _: Vec<shell_contract::ipc::NativeRequestOwner>,
-        _: shell_contract::runtime::CancelToken, _: shell_contract::runtime::CancelToken,
-        _: Vec<shell_contract::runtime::CancelToken>, _: shell_contract::hosts::OwnedEffectsHost,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
+        _: Vec<shell_contract::runtime::CancelToken>,
+        _: shell_contract::hosts::OwnedEffectsHost,
     ) -> Result<shell_ipc_w::tabs::SavedPublication, String> {
         Err("Saved-document publication is unavailable in Unbuilt".into())
     }
     fn create_view(
-        &self, _: &main_core::shell::tab_manager::ViewSpec<'_>,
+        &self,
+        _: &main_core::shell::tab_manager::ViewSpec<'_>,
         done: Box<dyn FnOnce(shell_ipc_w::tabs::host::ViewCreationResult<ViewId>)>,
     ) {
         done(Err(shell_ipc_w::tabs::host::ViewCreationFailure {
@@ -707,10 +829,19 @@ impl TabHooks for Unbuilt {
         }));
     }
     fn create_spare_view_owned(
-        &self, _: shell_contract::ipc::NativeInvocationOperation, _: shell_contract::ipc::NativeRequestOwner,
-        _: shell_contract::runtime::CancelToken, _: shell_ipc_w::tabs::host::EditorSeedRollbackStore,
+        &self,
+        _: shell_contract::ipc::NativeInvocationOperation,
+        _: shell_contract::ipc::NativeRequestOwner,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_ipc_w::tabs::host::EditorSeedRollbackStore,
         _: shell_ipc_w::tabs::host::SpareActorSlot,
-        done: Box<dyn FnOnce(shell_ipc_w::tabs::host::ViewCreationResult<shell_contract::ipc::NativeInvocationDocument>)>,
+        done: Box<
+            dyn FnOnce(
+                shell_ipc_w::tabs::host::ViewCreationResult<
+                    shell_contract::ipc::NativeInvocationDocument,
+                >,
+            ),
+        >,
     ) {
         done(Err(shell_ipc_w::tabs::host::ViewCreationFailure {
             error: TabError("Native spare construction is unavailable in Unbuilt".into()),
@@ -718,148 +849,294 @@ impl TabHooks for Unbuilt {
         }));
     }
     fn prepare_view_native_command(
-        &self, _: &main_core::shell::tab_manager::ViewSpec<'_>, _: shell_contract::ipc::NativeInvocationOperation,
-        _: shell_ipc_w::tabs::host::EditorSeedRollbackStore, _: shell_ipc_w::tabs::host::EditorInitializer,
-        _: Vec<shell_contract::ipc::NativeRequestOwner>, _: shell_contract::runtime::CancelToken,
-        _: shell_contract::runtime::CancelToken,
-    ) -> main_core::shell::tab_manager::TabResult<(shell_contract::runtime::RendererGeneration, Box<dyn FnOnce(
-        Box<dyn FnOnce(shell_ipc_w::tabs::host::ViewCreationResult<shell_contract::ipc::NativeInvocationDocument>)>,
-    )>)> {
-        Err(TabError("Native view construction is unavailable in Unbuilt".into()))
-    }
-    fn prepare_view_owned(
-        &self, _: &main_core::shell::tab_manager::ViewSpec<'_>,
+        &self,
+        _: &main_core::shell::tab_manager::ViewSpec<'_>,
+        _: shell_contract::ipc::NativeInvocationOperation,
         _: shell_ipc_w::tabs::host::EditorSeedRollbackStore,
         _: shell_ipc_w::tabs::host::EditorInitializer,
-    ) -> main_core::shell::tab_manager::TabResult<(shell_contract::runtime::RendererGeneration, Box<dyn FnOnce(
-        shell_contract::ipc::NativeRequestOwner, shell_contract::runtime::CancelToken, shell_contract::runtime::CancelToken,
-        Box<dyn FnOnce(shell_ipc_w::tabs::host::ViewCreationResult<shell_contract::ipc::NativeRequestOwner>)>,
-    )>)> {
-        Err(TabError("View construction is unavailable in Unbuilt".into()))
+        _: Vec<shell_contract::ipc::NativeRequestOwner>,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
+    ) -> main_core::shell::tab_manager::TabResult<(
+        shell_contract::runtime::RendererGeneration,
+        Box<
+            dyn FnOnce(
+                Box<
+                    dyn FnOnce(
+                        shell_ipc_w::tabs::host::ViewCreationResult<
+                            shell_contract::ipc::NativeInvocationDocument,
+                        >,
+                    ),
+                >,
+            ),
+        >,
+    )> {
+        Err(TabError(
+            "Native view construction is unavailable in Unbuilt".into(),
+        ))
+    }
+    fn prepare_view_owned(
+        &self,
+        _: &main_core::shell::tab_manager::ViewSpec<'_>,
+        _: shell_ipc_w::tabs::host::EditorSeedRollbackStore,
+        _: shell_ipc_w::tabs::host::EditorInitializer,
+    ) -> main_core::shell::tab_manager::TabResult<(
+        shell_contract::runtime::RendererGeneration,
+        Box<
+            dyn FnOnce(
+                shell_contract::ipc::NativeRequestOwner,
+                shell_contract::runtime::CancelToken,
+                shell_contract::runtime::CancelToken,
+                Box<
+                    dyn FnOnce(
+                        shell_ipc_w::tabs::host::ViewCreationResult<
+                            shell_contract::ipc::NativeRequestOwner,
+                        >,
+                    ),
+                >,
+            ),
+        >,
+    )> {
+        Err(TabError(
+            "View construction is unavailable in Unbuilt".into(),
+        ))
     }
     fn prepare_generated_view_owned(
-        &self, _: &main_core::shell::tab_manager::ViewSpec<'_>,
+        &self,
+        _: &main_core::shell::tab_manager::ViewSpec<'_>,
         _: shell_contract::ipc::NativeRequestOwner,
         _: Vec<shell_contract::ipc::NativeRequestOwner>,
-        _: shell_contract::runtime::CancelToken, _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
         _: Option<main_core::shell::tab_manager::EditorSeed>,
         _: Option<Option<main_core::shell::projects::new_documents::NewDocumentPlacement>>,
         _: shell_ipc_w::tabs::host::EditorSeedRollbackStore,
-    ) -> main_core::shell::tab_manager::TabResult<shell_ipc_w::tabs::host::PreparedGeneratedView> {
-        Err(TabError("Generated view construction is unavailable in Unbuilt".into()))
+    ) -> main_core::shell::tab_manager::TabResult<shell_ipc_w::tabs::host::PreparedGeneratedView>
+    {
+        Err(TabError(
+            "Generated view construction is unavailable in Unbuilt".into(),
+        ))
     }
     fn prepare_initialized_spare_owned(
-        &self, _: ViewId, _: &shell_contract::runtime::RendererGeneration,
+        &self,
+        _: ViewId,
+        _: &shell_contract::runtime::RendererGeneration,
         _: shell_ipc_w::tabs::host::RetainedSpareBinding,
         _: shell_contract::ipc::NativeRequestOwner,
         _: Vec<shell_contract::ipc::NativeRequestOwner>,
-        _: shell_contract::runtime::CancelToken, _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
         _: Option<main_core::shell::tab_manager::EditorSeed>,
         _: Option<Option<main_core::shell::projects::new_documents::NewDocumentPlacement>>,
         _: shell_ipc_w::tabs::host::EditorSeedRollbackStore,
-    ) -> main_core::shell::tab_manager::TabResult<shell_ipc_w::tabs::host::PreparedGeneratedView> {
-        Err(TabError("Initialized spare construction is unavailable in Unbuilt".into()))
+    ) -> main_core::shell::tab_manager::TabResult<shell_ipc_w::tabs::host::PreparedGeneratedView>
+    {
+        Err(TabError(
+            "Initialized spare construction is unavailable in Unbuilt".into(),
+        ))
     }
     fn commit_generated_seed_owned(
-        &self, _: ViewId, _: Option<main_core::shell::tab_manager::EditorSeed>,
+        &self,
+        _: ViewId,
+        _: Option<main_core::shell::tab_manager::EditorSeed>,
         _: Option<Option<main_core::shell::projects::new_documents::NewDocumentPlacement>>,
-        _: &shell_contract::ipc::NativeRequestOwner, _: &[shell_contract::ipc::NativeRequestOwner],
-        _: &shell_contract::runtime::CancelToken, _: &shell_contract::runtime::CancelToken,
+        _: &shell_contract::ipc::NativeRequestOwner,
+        _: &[shell_contract::ipc::NativeRequestOwner],
+        _: &shell_contract::runtime::CancelToken,
+        _: &shell_contract::runtime::CancelToken,
         _: &shell_contract::runtime::RendererGeneration,
         _: &shell_contract::ipc::NativeClosureReservation,
         _: &shell_contract::ipc::NativeBrowserOwner,
         _: &shell_ipc_w::tabs::host::EditorSeedRollbackStore,
     ) -> main_core::shell::tab_manager::TabResult<()> {
-        Err(TabError("Generated seed publication is unavailable in Unbuilt".into()))
+        Err(TabError(
+            "Generated seed publication is unavailable in Unbuilt".into(),
+        ))
     }
     fn prepare_spare_editor_seed(
-        &self, _: ViewId, _: Option<main_core::shell::tab_manager::EditorSeed>,
-        _: Option<String>, _: Option<String>, _: bool, _: &shell_contract::ipc::NativeRequestOwner,
+        &self,
+        _: ViewId,
+        _: Option<main_core::shell::tab_manager::EditorSeed>,
+        _: Option<String>,
+        _: Option<String>,
+        _: bool,
+        _: &shell_contract::ipc::NativeRequestOwner,
         _: &shell_ipc_w::tabs::host::RetainedSpareBinding,
         _: &shell_ipc_w::tabs::host::EditorSeedRollbackStore,
-    ) -> main_core::shell::tab_manager::TabResult<Box<dyn shell_ipc_w::tabs::host::SpareSeedPlan>> {
-        Err(TabError("Spare seed preparation is unavailable in Unbuilt".into()))
+    ) -> main_core::shell::tab_manager::TabResult<Box<dyn shell_ipc_w::tabs::host::SpareSeedPlan>>
+    {
+        Err(TabError(
+            "Spare seed preparation is unavailable in Unbuilt".into(),
+        ))
     }
     fn commit_editor_seed_owned(
-        &self, _: ViewId, _: Option<main_core::shell::tab_manager::EditorSeed>, _: Option<String>, _: Option<String>, _: Option<&shell_contract::ipc::NativeRequestOwner>,
+        &self,
+        _: ViewId,
+        _: Option<main_core::shell::tab_manager::EditorSeed>,
+        _: Option<String>,
+        _: Option<String>,
+        _: Option<&shell_contract::ipc::NativeRequestOwner>,
         _: &shell_contract::ipc::NativeRequestOwner,
         _: &shell_ipc_w::tabs::host::EditorSeedRollbackStore,
-        _: &shell_contract::runtime::RendererGeneration, _: &shell_contract::ipc::NativeClosureReservation, _: &shell_contract::ipc::NativeBrowserOwner, _: &shell_contract::runtime::CancelToken,
+        _: &shell_contract::runtime::RendererGeneration,
+        _: &shell_contract::ipc::NativeClosureReservation,
+        _: &shell_contract::ipc::NativeBrowserOwner,
+        _: &shell_contract::runtime::CancelToken,
         _: &shell_contract::runtime::CancelToken,
     ) -> main_core::shell::tab_manager::TabResult<()> {
-        Err(TabError("Editor seed publication is unavailable in Unbuilt".into()))
+        Err(TabError(
+            "Editor seed publication is unavailable in Unbuilt".into(),
+        ))
     }
     fn commit_native_editor_seed(
-        &self, _: &shell_contract::ipc::NativeInvocationOperation, _: &shell_contract::ipc::NativeEditorCommand,
-        _: ViewId, _: Option<main_core::shell::tab_manager::EditorSeed>, _: Option<String>, _: Option<String>,
-        _: Option<&shell_contract::ipc::NativeRequestOwner>, _: &shell_ipc_w::tabs::host::EditorSeedRollbackStore,
-        _: &shell_contract::runtime::RendererGeneration, _: &shell_contract::ipc::NativeClosureReservation, _: &shell_contract::ipc::NativeBrowserOwner, _: &shell_contract::runtime::CancelToken,
+        &self,
+        _: &shell_contract::ipc::NativeInvocationOperation,
+        _: &shell_contract::ipc::NativeEditorCommand,
+        _: ViewId,
+        _: Option<main_core::shell::tab_manager::EditorSeed>,
+        _: Option<String>,
+        _: Option<String>,
+        _: Option<&shell_contract::ipc::NativeRequestOwner>,
+        _: &shell_ipc_w::tabs::host::EditorSeedRollbackStore,
+        _: &shell_contract::runtime::RendererGeneration,
+        _: &shell_contract::ipc::NativeClosureReservation,
+        _: &shell_contract::ipc::NativeBrowserOwner,
+        _: &shell_contract::runtime::CancelToken,
         _: &shell_contract::runtime::CancelToken,
     ) -> main_core::shell::tab_manager::TabResult<()> {
-        Err(TabError("Native editor initialization is unavailable in Unbuilt".into()))
+        Err(TabError(
+            "Native editor initialization is unavailable in Unbuilt".into(),
+        ))
     }
     fn reveal_written_export_owned(
-        &self,_:std::path::PathBuf,
-        _:shell_contract::ipc::NativeRequestOwner,_:shell_contract::ipc::NativeRequestOwner,
-        _:shell_contract::runtime::CancelToken,_:shell_contract::runtime::CancelToken,
-        done:Box<dyn FnOnce(Result<(),String>)>,
+        &self,
+        _: std::path::PathBuf,
+        _: shell_contract::ipc::NativeRequestOwner,
+        _: shell_contract::ipc::NativeRequestOwner,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<(), String>)>,
     ) {
         done(Err("Export reveal is unavailable in Unbuilt".into()));
     }
     fn reveal_written_export_existing_document(
-        &self, _: shell_contract::ipc::NativeSaveDestination, _: Vec<shell_contract::ipc::NativeRequestOwner>,
-        _: shell_contract::runtime::CancelToken, _: shell_contract::runtime::CancelToken,
-        _: Vec<shell_contract::runtime::CancelToken>, done: Box<dyn FnOnce(Result<(), String>)>,
-    ) { done(Err("Native export reveal is unavailable in Unbuilt".into())); }
-    fn prepare_reopen_owned(
-        &self,path:String,owner:shell_contract::ipc::NativeRequestOwner,
-        _:shell_contract::ipc::NativeRequestOwner,cancel:shell_contract::runtime::CancelToken,
-        _:shell_contract::runtime::CancelToken,
-        done:Box<dyn FnOnce(Result<(String,Option<String>,shell_contract::ipc::NativeRequestOwner,shell_contract::runtime::CancelToken),String>)>,
+        &self,
+        _: shell_contract::ipc::NativeSaveDestination,
+        _: Vec<shell_contract::ipc::NativeRequestOwner>,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
+        _: Vec<shell_contract::runtime::CancelToken>,
+        done: Box<dyn FnOnce(Result<(), String>)>,
     ) {
-        drop((path,owner,cancel));
+        done(Err("Native export reveal is unavailable in Unbuilt".into()));
+    }
+    fn prepare_reopen_owned(
+        &self,
+        path: String,
+        owner: shell_contract::ipc::NativeRequestOwner,
+        _: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
+        done: Box<
+            dyn FnOnce(
+                Result<
+                    (
+                        String,
+                        Option<String>,
+                        shell_contract::ipc::NativeRequestOwner,
+                        shell_contract::runtime::CancelToken,
+                    ),
+                    String,
+                >,
+            ),
+        >,
+    ) {
+        drop((path, owner, cancel));
         done(Err("Drive reopen is unavailable in Unbuilt".into()));
     }
     fn open_opener_owned(
-        &self,_:&Opener,_:&UnloadedTabOpenContext,
-        _:shell_contract::ipc::NativeRequestOwner,_:shell_contract::runtime::CancelToken,
-        _:shell_contract::runtime::CancelToken,
-        done:Box<dyn FnOnce(Result<shell_ipc_w::tabs::OwnedLoadedTabView,String>)>,
-    ) { done(Err("Recovery opener is unavailable in Unbuilt".into())); }
+        &self,
+        _: &Opener,
+        _: &UnloadedTabOpenContext,
+        _: shell_contract::ipc::NativeRequestOwner,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<shell_ipc_w::tabs::OwnedLoadedTabView, String>)>,
+    ) {
+        done(Err("Recovery opener is unavailable in Unbuilt".into()));
+    }
     fn open_opener_startup(
-        &self, _: &Opener, _: &UnloadedTabOpenContext, _: shell_ipc_w::tabs::StartupRecoveryConstraint,
+        &self,
+        _: &Opener,
+        _: &UnloadedTabOpenContext,
+        _: shell_ipc_w::tabs::StartupRecoveryConstraint,
         done: Box<dyn FnOnce(Result<shell_ipc_w::tabs::OwnedLoadedTabView, String>)>,
-    ) { done(Err("Recovery opener is unavailable in Unbuilt".into())); }
+    ) {
+        done(Err("Recovery opener is unavailable in Unbuilt".into()));
+    }
     fn open_opener_native_command(
-        &self, _: &Opener, _: &UnloadedTabOpenContext, _: shell_contract::ipc::NativeInvocationOperation,
-        _: shell_contract::runtime::CancelToken, _: shell_contract::runtime::CancelToken,
+        &self,
+        _: &Opener,
+        _: &UnloadedTabOpenContext,
+        _: shell_contract::ipc::NativeInvocationOperation,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
         done: Box<dyn FnOnce(Result<shell_ipc_w::tabs::OwnedLoadedTabView, String>)>,
-    ) { done(Err("Native command recovery opener is unavailable in Unbuilt".into())); }
+    ) {
+        done(Err(
+            "Native command recovery opener is unavailable in Unbuilt".into(),
+        ));
+    }
     fn opener_needs_user_owned(
-        &self,_:&Opener,_:&UnloadedTabOpenContext,_:shell_contract::ipc::NativeRequestOwner,
-        _:shell_contract::runtime::CancelToken,_:shell_contract::runtime::CancelToken,
-        done:Box<dyn FnOnce(Result<bool,String>)>,
-    ) { done(Err("Recovery query is unavailable in Unbuilt".into())); }
+        &self,
+        _: &Opener,
+        _: &UnloadedTabOpenContext,
+        _: shell_contract::ipc::NativeRequestOwner,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<bool, String>)>,
+    ) {
+        done(Err("Recovery query is unavailable in Unbuilt".into()));
+    }
     fn reveal_captured_many(
-        &self, _: shell_ipc_w::tabs::TabActivationAuthority,
-        _: shell_contract::ipc::NativeRequestOwner, _: Vec<shell_contract::ipc::NativeRequestOwner>,
-        _: shell_contract::runtime::CancelToken, _: shell_contract::runtime::CancelToken,
+        &self,
+        _: shell_ipc_w::tabs::TabActivationAuthority,
+        _: shell_contract::ipc::NativeRequestOwner,
+        _: Vec<shell_contract::ipc::NativeRequestOwner>,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
         done: shell_ipc_w::tabs::TabUiDone,
-    ) { done(Err("Captured reveal is unavailable in Unbuilt".into())); }
+    ) {
+        done(Err("Captured reveal is unavailable in Unbuilt".into()));
+    }
     fn adopt_recovery_view_owned(
-        &self, _: shell_ipc_w::tabs::ShellWindow, _: shell_ipc_w::tabs::TabActivationAuthority,
-        _: shell_contract::ipc::NativeRequestOwner, _: Vec<shell_contract::ipc::NativeRequestOwner>,
-        _: shell_contract::runtime::CancelToken, _: shell_contract::runtime::CancelToken,
+        &self,
+        _: shell_ipc_w::tabs::ShellWindow,
+        _: shell_ipc_w::tabs::TabActivationAuthority,
+        _: shell_contract::ipc::NativeRequestOwner,
+        _: Vec<shell_contract::ipc::NativeRequestOwner>,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
         done: shell_ipc_w::tabs::TabUiDone,
-    ) { done(Err("Recovery adoption is unavailable in Unbuilt".into())); }
-    fn rollback_generated_seed_owned(&self, _: ViewId, _: &shell_contract::runtime::RendererGeneration) {
+    ) {
+        done(Err("Recovery adoption is unavailable in Unbuilt".into()));
+    }
+    fn rollback_generated_seed_owned(
+        &self,
+        _: ViewId,
+        _: &shell_contract::runtime::RendererGeneration,
+    ) {
         panic!("Generated seed cleanup is unavailable in Unbuilt")
     }
     fn sheets_pending_edit_count(&self, _: i64) -> f64 {
         unbuilt("TabHooks::sheets_pending_edit_count");
         0.0
     }
-    fn family_is_dirty(&self, _: TabKind, _: i64) -> main_core::shell::tab_manager::TabResult<bool> {
+    fn family_is_dirty(
+        &self,
+        _: TabKind,
+        _: i64,
+    ) -> main_core::shell::tab_manager::TabResult<bool> {
         unbuilt("TabHooks::family_is_dirty");
         Err(TabError(NOT_BUILT.to_owned()))
     }
@@ -891,8 +1168,14 @@ impl TabHooks for Unbuilt {
     fn mark_docs_new_blank(&self, _: i64) {
         unbuilt("TabHooks::mark_docs_new_blank");
     }
-    fn queue_docs_ai_content(&self, _: i64, _: &serde_json::Value) -> main_core::shell::tab_manager::TabResult<()> {
-        Err(TabError("AI document content is unavailable in Unbuilt".into()))
+    fn queue_docs_ai_content(
+        &self,
+        _: i64,
+        _: &serde_json::Value,
+    ) -> main_core::shell::tab_manager::TabResult<()> {
+        Err(TabError(
+            "AI document content is unavailable in Unbuilt".into(),
+        ))
     }
     fn queue_docs_copy(&self, _: i64, _: &str, _: &str) {
         unbuilt("TabHooks::queue_docs_copy");
@@ -945,11 +1228,7 @@ impl TabHooks for Unbuilt {
         unbuilt("TabHooks::opener_open");
         Err(NOT_BUILT.into())
     }
-    fn opener_needs_user(
-        &self,
-        _: &Opener,
-        _: &UnloadedTabOpenContext,
-    ) -> Result<bool, String> {
+    fn opener_needs_user(&self, _: &Opener, _: &UnloadedTabOpenContext) -> Result<bool, String> {
         unbuilt("TabHooks::opener_needs_user");
         Err(NOT_BUILT.into())
     }
@@ -1022,7 +1301,9 @@ impl TabHooks for Unbuilt {
         done(Err("Document routing is unavailable in Unbuilt".into()));
     }
     fn issue_native_command(
-        &self, _: shell_contract::ipc::NativeEditorCommand, _: shell_contract::runtime::CancelToken,
+        &self,
+        _: shell_contract::ipc::NativeEditorCommand,
+        _: shell_contract::runtime::CancelToken,
     ) -> Result<shell_contract::ipc::NativeInvocationOperation, String> {
         unbuilt("TabHooks::issue_native_command");
         Err("Native commands are unavailable in Unbuilt".into())
@@ -1031,37 +1312,79 @@ impl TabHooks for Unbuilt {
         unbuilt("TabHooks::record_recent_file");
     }
     fn record_recent_file_native(
-        &self, _: String, _: shell_contract::ipc::NativeInvocationOperation,
-        _: shell_contract::ipc::NativeEditorCommand, done: Box<dyn FnOnce(Result<(), String>)>,
-    ) { done(Err("Native recent-file publication is unavailable in Unbuilt".into())); }
+        &self,
+        _: String,
+        _: shell_contract::ipc::NativeInvocationOperation,
+        _: shell_contract::ipc::NativeEditorCommand,
+        done: Box<dyn FnOnce(Result<(), String>)>,
+    ) {
+        done(Err(
+            "Native recent-file publication is unavailable in Unbuilt".into(),
+        ));
+    }
     fn notify_unsupported_file(&self, _: &str) {
         unbuilt("TabHooks::notify_unsupported_file");
     }
     fn notify_unsupported_file_native(
-        &self, _: String, _: shell_contract::ipc::NativeInvocationOperation, _: shell_contract::ipc::NativeEditorCommand,
+        &self,
+        _: String,
+        _: shell_contract::ipc::NativeInvocationOperation,
+        _: shell_contract::ipc::NativeEditorCommand,
         done: Box<dyn FnOnce(Result<(), String>)>,
-    ) { done(Err("Native unsupported-file warning is unavailable in Unbuilt".into())); }
+    ) {
+        done(Err(
+            "Native unsupported-file warning is unavailable in Unbuilt".into(),
+        ));
+    }
     fn show_app_warning(&self, _: &str, _: Option<&str>) {
         unbuilt("TabHooks::show_app_warning");
     }
     fn show_app_warning_owned(
-        &self, _: String, _: Option<String>, _: shell_contract::ipc::NativeRequestOwner,
-        _: Vec<shell_contract::ipc::NativeRequestOwner>, _: shell_contract::runtime::CancelToken,
-        _: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<(), String>)>,
-    ) { done(Err("Owned warning is unavailable in Unbuilt".into())); }
+        &self,
+        _: String,
+        _: Option<String>,
+        _: shell_contract::ipc::NativeRequestOwner,
+        _: Vec<shell_contract::ipc::NativeRequestOwner>,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<(), String>)>,
+    ) {
+        done(Err("Owned warning is unavailable in Unbuilt".into()));
+    }
     fn show_app_warning_native(
-        &self, _: String, _: Option<String>, _: shell_contract::ipc::NativeInvocationOperation,
-        _: shell_contract::ipc::NativeEditorCommand, done: Box<dyn FnOnce(Result<(), String>)>,
-    ) { done(Err("Native warning is unavailable in Unbuilt".into())); }
+        &self,
+        _: String,
+        _: Option<String>,
+        _: shell_contract::ipc::NativeInvocationOperation,
+        _: shell_contract::ipc::NativeEditorCommand,
+        done: Box<dyn FnOnce(Result<(), String>)>,
+    ) {
+        done(Err("Native warning is unavailable in Unbuilt".into()));
+    }
     fn diagram_open_refusal_owned(
-        &self, _: String, _: shell_contract::ipc::NativeRequestOwner,
-        _: Vec<shell_contract::ipc::NativeRequestOwner>, _: shell_contract::runtime::CancelToken,
-        _: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<String>, String>)>,
-    ) { done(Err("Owned diagram refusal check is unavailable in Unbuilt".into())); }
-    fn diagram_open_refusal_native(
-        &self, _: String, _: shell_contract::ipc::NativeInvocationOperation, _: shell_contract::ipc::NativeEditorCommand,
+        &self,
+        _: String,
+        _: shell_contract::ipc::NativeRequestOwner,
+        _: Vec<shell_contract::ipc::NativeRequestOwner>,
+        _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
         done: Box<dyn FnOnce(Result<Option<String>, String>)>,
-    ) { done(Err("Native diagram refusal check is unavailable in Unbuilt".into())); }
+    ) {
+        done(Err(
+            "Owned diagram refusal check is unavailable in Unbuilt".into()
+        ));
+    }
+    fn diagram_open_refusal_native(
+        &self,
+        _: String,
+        _: shell_contract::ipc::NativeInvocationOperation,
+        _: shell_contract::ipc::NativeEditorCommand,
+        done: Box<dyn FnOnce(Result<Option<String>, String>)>,
+    ) {
+        done(Err(
+            "Native diagram refusal check is unavailable in Unbuilt".into(),
+        ));
+    }
     fn start_queued_workbook_nudge(&self) {
         unbuilt("TabHooks::start_queued_workbook_nudge");
     }
@@ -1293,7 +1616,10 @@ impl ProjectFiles for Unbuilt {
         unbuilt("ProjectFiles::read_page");
         Err(Thrown(NOT_BUILT.into()))
     }
-    fn open_files_async(&self, done: Box<dyn FnOnce(Result<Vec<OpenFileState>, OpenFilesSourceFailed>)>) {
+    fn open_files_async(
+        &self,
+        done: Box<dyn FnOnce(Result<Vec<OpenFileState>, OpenFilesSourceFailed>)>,
+    ) {
         unbuilt("ProjectFiles::open_files_async");
         done(Err(OpenFilesSourceFailed));
     }

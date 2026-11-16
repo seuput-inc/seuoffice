@@ -7,13 +7,19 @@ use shell_ipc_d2::pdf::tools::{JobFailure, JobOutcome};
 
 fn field<'a>(value: &'a IpcValue, key: &str) -> Option<&'a IpcValue> {
     match value {
-        IpcValue::Object(fields) => fields.iter().find(|(name, _)| name == key).map(|(_, value)| value),
+        IpcValue::Object(fields) => fields
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value),
         _ => None,
     }
 }
 
 fn optional_string(value: &IpcValue, key: &str) -> Option<String> {
-    match field(value, key) { Some(IpcValue::String(value)) => Some(value.clone()), _ => None }
+    match field(value, key) {
+        Some(IpcValue::String(value)) => Some(value.clone()),
+        _ => None,
+    }
 }
 
 fn service_failure(value: &Value) -> JobFailure {
@@ -29,31 +35,57 @@ fn service_failure(value: &Value) -> JobFailure {
 
 pub(super) fn run(job: &IpcValue, cancel: &CancelToken) -> JobOutcome {
     let source = super::job_source::load(job, cancel)?;
-    let operation = optional_string(job, "op").ok_or_else(|| JobFailure::new("failed", Some("invalid PDF job operation")))?;
+    let operation = optional_string(job, "op")
+        .ok_or_else(|| JobFailure::new("failed", Some("invalid PDF job operation")))?;
     let mut input = Map::new();
-    input.insert("bytesBase64".into(), Value::String(STANDARD.encode(source.bytes)));
+    input.insert(
+        "bytesBase64".into(),
+        Value::String(STANDARD.encode(source.bytes)),
+    );
     let step = match operation.as_str() {
         "encrypt" => {
-            let password = optional_string(job, "userPassword").ok_or_else(|| JobFailure::new("failed", Some("invalid PDF password")))?;
+            let password = optional_string(job, "userPassword")
+                .ok_or_else(|| JobFailure::new("failed", Some("invalid PDF password")))?;
             input.insert("userPassword".into(), Value::String(password));
-            if let Some(owner) = optional_string(job, "ownerPassword") { input.insert("ownerPassword".into(), Value::String(owner)); }
+            if let Some(owner) = optional_string(job, "ownerPassword") {
+                input.insert("ownerPassword".into(), Value::String(owner));
+            }
             "pdf.qpdfEncrypt"
         }
         "decrypt" => {
-            let password = optional_string(job, "password").ok_or_else(|| JobFailure::new("failed", Some("invalid PDF password")))?;
+            let password = optional_string(job, "password")
+                .ok_or_else(|| JobFailure::new("failed", Some("invalid PDF password")))?;
             input.insert("password".into(), Value::String(password));
             "pdf.qpdfDecrypt"
         }
         "repair" => "pdf.repair",
         _ => return Err(JobFailure::new("failed", Some("invalid binary PDF job"))),
     };
-    let result = crate::engine_host::call_cancellable(step, &Value::Object(input), cancel).map_err(|error| {
-        JobFailure::new(if error.name == "AbortError" { "cancelled" } else { "failed" }, Some(&error.message))
-    })?;
-    if result.get("ok").and_then(Value::as_bool) != Some(true) { return Err(service_failure(&result)); }
-    let encoded = result.get("bytesBase64").and_then(Value::as_str).ok_or_else(|| JobFailure::new("failed", Some("invalid PDF engine response")))?;
-    let bytes = STANDARD.decode(encoded).map_err(|_| JobFailure::new("failed", Some("invalid PDF engine response")))?;
-    Ok(IpcValue::Object(vec![("bytes".into(), IpcValue::Bytes(BytesKind::Uint8Array, bytes))]))
+    let result = crate::engine_host::call_cancellable(step, &Value::Object(input), cancel)
+        .map_err(|error| {
+            JobFailure::new(
+                if error.name == "AbortError" {
+                    "cancelled"
+                } else {
+                    "failed"
+                },
+                Some(&error.message),
+            )
+        })?;
+    if result.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err(service_failure(&result));
+    }
+    let encoded = result
+        .get("bytesBase64")
+        .and_then(Value::as_str)
+        .ok_or_else(|| JobFailure::new("failed", Some("invalid PDF engine response")))?;
+    let bytes = STANDARD
+        .decode(encoded)
+        .map_err(|_| JobFailure::new("failed", Some("invalid PDF engine response")))?;
+    Ok(IpcValue::Object(vec![(
+        "bytes".into(),
+        IpcValue::Bytes(BytesKind::Uint8Array, bytes),
+    )]))
 }
 
 #[cfg(test)]
@@ -64,7 +96,9 @@ mod tests {
     #[test]
     fn preserves_distinct_pdf_load_failure_codes() {
         for code in ["password-required", "corrupt", "unsupported"] {
-            let error = service_failure(&json!({"name": "PdfLoadError", "code": code, "message": "cannot load"}));
+            let error = service_failure(
+                &json!({"name": "PdfLoadError", "code": code, "message": "cannot load"}),
+            );
             assert_eq!(error.error, code);
         }
     }

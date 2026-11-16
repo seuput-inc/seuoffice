@@ -176,7 +176,9 @@ pub(crate) trait PolicyOps {
     /// its first navigation to a real URL and replays it afterwards, so no initial request
     /// escapes the policy, and `Navigator::when_ready` waits.
     fn apply_policy(
-        platform: &PlatformWebview, browser: &BrowserIdentity, policy: &RequestPolicy,
+        platform: &PlatformWebview,
+        browser: &BrowserIdentity,
+        policy: &RequestPolicy,
     ) -> Result<(), String>;
 }
 
@@ -191,7 +193,10 @@ pub(crate) trait SpellOps {
 }
 
 /// The whole seam, checked once so a missing impl names itself at compile time.
-pub(crate) trait Adapter: Observe + PageDriver + PrintOps + WindowOps + PolicyOps + SpellOps {}
+pub(crate) trait Adapter:
+    Observe + PageDriver + PrintOps + WindowOps + PolicyOps + SpellOps
+{
+}
 
 impl<T: Observe + PageDriver + PrintOps + WindowOps + PolicyOps + SpellOps> Adapter for T {}
 
@@ -227,5 +232,7 @@ pub(crate) fn with_navigation_frame<T>(main_frame: bool, call: impl FnOnce() -> 
 /// it is what the platform's hook reports: main-frame only on Windows, unknown on macOS (a
 /// subframe is then not mistaken for the main frame).
 pub(crate) fn navigation_is_main_frame() -> bool {
-    NAVIGATION_FRAME.with(Cell::get).unwrap_or(Current::NAVIGATION_HOOK_IS_MAIN_FRAME)
+    NAVIGATION_FRAME
+        .with(Cell::get)
+        .unwrap_or(Current::NAVIGATION_HOOK_IS_MAIN_FRAME)
 }

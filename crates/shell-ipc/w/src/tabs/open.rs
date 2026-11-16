@@ -20,7 +20,7 @@ use main_core::shell::app_routing::{
 };
 use main_core::shell::app_settings::read_app_settings;
 use main_core::shell::folder_roots::read_extra_roots;
-use main_core::shell::tab_manager::{TabHost, TabKind};
+use main_core::shell::tab_manager::TabKind;
 use shell_contract::ids::ViewId;
 use shell_contract::value::IpcValue;
 
@@ -577,7 +577,10 @@ impl TabsState {
         done: Box<dyn FnOnce(Result<Option<(String, ViewId)>, String>)>,
     ) {
         use main_core::shell::tab_manager::{EditorOpen, TabManager, TemplateCopy as TabCopy};
-        fn editor_open<V, B>(_: &TabManager<V, B>, copy: &TabCopy) -> Option<EditorOpen> {
+        fn editor_open<V: Clone + PartialEq, B: Clone + PartialEq>(
+            _: &TabManager<V, B>,
+            copy: &TabCopy,
+        ) -> Option<EditorOpen> {
             TabManager::<V, B>::template_editor_open(copy)
         }
         let Some(shell) = self.shell_window() else {
@@ -691,10 +694,21 @@ impl TabsState {
         self.hooks.create_view(
             &spec,
             Box::new(move |result| match result {
-                Ok(view) => {
+                Ok(ready) => {
+                    let view = ready.view;
+                    let binding = super::host::RetainedSpareBinding::new(
+                        ready.reservation,
+                        std::rc::Rc::default(),
+                        None,
+                    );
                     let tab = if epoch == state.manager_epoch.get() {
                         state.with_manager(|manager, host| {
-                            manager.resume_html_present_tab(host, view, &spec_title)
+                            manager.resume_html_present_tab_bound(
+                                host,
+                                view,
+                                &spec_title,
+                                binding,
+                            )
                         })
                     } else {
                         None
@@ -702,8 +716,22 @@ impl TabsState {
                     match tab {
                         Some(_) => done(Ok(view)),
                         None => {
-                            state.hooks.view_close(view);
-                            done(Err("The shell window is no longer available".into()));
+                            let failed = state.clone();
+                            state.retain_editor_cleanup(
+                                Some(ready.cleanup),
+                                None,
+                                std::rc::Rc::default(),
+                                true,
+                                Box::new(move |failure| {
+                                    failed.hooks.warn(
+                                        "[shell] html present view cleanup failed:",
+                                        failure,
+                                    );
+                                }),
+                                Box::new(move || {
+                                    done(Err("The shell window is no longer available".into()));
+                                }),
+                            );
                         }
                     }
                 }

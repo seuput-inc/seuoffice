@@ -29,7 +29,9 @@ use super::page::{Surface, object};
 use crate::native::page::PageError;
 
 fn rendering(what: impl Display) -> PageError {
-    PageError::Platform(format!("The header and footer could not be rendered: {what}"))
+    PageError::Platform(format!(
+        "The header and footer could not be rendered: {what}"
+    ))
 }
 
 /// What the templates' `date`, `title` and `url` classes show: the page's own title and
@@ -100,12 +102,7 @@ define_class!(
         }
 
         #[unsafe(method(webView:didFailNavigation:withError:))]
-        fn did_fail(
-            &self,
-            _view: &WKWebView,
-            _navigation: Option<&WKNavigation>,
-            error: &NSError,
-        ) {
+        fn did_fail(&self, _view: &WKWebView, _navigation: Option<&WKNavigation>, error: &NSError) {
             self.settle(Err(error.localizedDescription().to_string()));
         }
 
@@ -128,7 +125,9 @@ define_class!(
 
 impl LoadWatch {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let this = mtm.alloc::<Self>().set_ivars(Watch { waiting: RefCell::new(None) });
+        let this = mtm.alloc::<Self>().set_ivars(Watch {
+            waiting: RefCell::new(None),
+        });
         // SAFETY: NSObject's plain `init`.
         unsafe { msg_send![super(this), init] }
     }
@@ -162,7 +161,10 @@ type Shared = Rc<RefCell<Run>>;
 fn open(mtm: MainThreadMarker) -> Result<(Retained<WKWebView>, Retained<LoadWatch>), PageError> {
     let nothing = NSRect {
         origin: NSPoint { x: 0.0, y: 0.0 },
-        size: NSSize { width: 0.0, height: 0.0 },
+        size: NSSize {
+            width: 0.0,
+            height: 0.0,
+        },
     };
     // SAFETY: a configuration and a web view of their own on the UI thread, sharing nothing
     // with the page that is being printed. Every optional selector is checked before it is
@@ -170,13 +172,17 @@ fn open(mtm: MainThreadMarker) -> Result<(Retained<WKWebView>, Retained<LoadWatc
     unsafe {
         let configuration = WKWebViewConfiguration::new(mtm);
         configuration.setWebsiteDataStore(&WKWebsiteDataStore::nonPersistentDataStore(mtm));
-        configuration.defaultWebpagePreferences().setAllowsContentJavaScript(false);
+        configuration
+            .defaultWebpagePreferences()
+            .setAllowsContentJavaScript(false);
         let view = WKWebView::initWithFrame_configuration(mtm.alloc(), nothing, &configuration);
         let target = object(&*view);
         let create = sel!(createPDFWithConfiguration:completionHandler:);
         let can_make_pdf: Bool = msg_send![target, respondsToSelector: create];
         if !can_make_pdf.as_bool() {
-            return Err(rendering("this macOS cannot make a PDF of a web page (macOS 12 or later)"));
+            return Err(rendering(
+                "this macOS cannot make a PDF of a web page (macOS 12 or later)",
+            ));
         }
         let draws: Bool = msg_send![target, respondsToSelector: sel!(_setDrawsBackground:)];
         if draws.as_bool() {
@@ -220,20 +226,31 @@ fn finish(run: &Shared, outcome: Result<(), PageError>) {
 /// Load the next job's wrapper page, or finish when none is left.
 fn next(run: Shared) {
     let job = run.borrow_mut().jobs.pop_front();
-    let Some(job) = job else { return finish(&run, Ok(())) };
+    let Some(job) = job else {
+        return finish(&run, Ok(()));
+    };
     let (view, watch) = {
         let state = run.borrow();
         (state.view.clone(), state.watch.clone())
     };
     let html = NSString::from_str(&job.html);
-    let size = NSSize { width: job.canvas.width, height: job.canvas.height };
+    let size = NSSize {
+        width: job.canvas.width,
+        height: job.canvas.height,
+    };
     let resume = run.clone();
     watch.expect(Box::new(move |loaded| match loaded {
         Ok(()) => strips(resume, job),
-        Err(message) => finish(&resume, Err(rendering(format!("a page did not load: {message}")))),
+        Err(message) => finish(
+            &resume,
+            Err(rendering(format!("a page did not load: {message}"))),
+        ),
     }));
     // The layout width is the page's, so the web view has the page's size while it loads.
-    view.setFrame(NSRect { origin: NSPoint { x: 0.0, y: 0.0 }, size });
+    view.setFrame(NSRect {
+        origin: NSPoint { x: 0.0, y: 0.0 },
+        size,
+    });
     // SAFETY: a plain string load on the UI thread.
     if unsafe { view.loadHTMLString_baseURL(&html, None) }.is_none() {
         watch.settle(Err("WebKit did not start the load".to_owned()));
@@ -246,7 +263,9 @@ type Made = Box<dyn FnOnce(Shared, Result<Option<Vec<u8>>, PageError>)>;
 
 /// The PDF of one part of the loaded page: `None` for no part.
 fn pdf(run: Shared, rect: Option<Rect>, then: Made) {
-    let Some((x, y, width, height)) = rect else { return then(run, Ok(None)) };
+    let Some((x, y, width, height)) = rect else {
+        return then(run, Ok(None));
+    };
     let (view, mtm) = {
         let state = run.borrow();
         (state.view.clone(), state.mtm)
@@ -255,8 +274,10 @@ fn pdf(run: Shared, rect: Option<Rect>, then: Made) {
     // before it is sent.
     let configuration = unsafe {
         let configuration = WKPDFConfiguration::new(mtm);
-        configuration
-            .setRect(NSRect { origin: NSPoint { x, y }, size: NSSize { width, height } });
+        configuration.setRect(NSRect {
+            origin: NSPoint { x, y },
+            size: NSSize { width, height },
+        });
         let transparent: Bool = msg_send![
             object(&*configuration),
             respondsToSelector: sel!(setAllowTransparentBackground:)
@@ -269,7 +290,9 @@ fn pdf(run: Shared, rect: Option<Rect>, then: Made) {
     let state = RefCell::new(Some((run, then)));
     let block: RcBlock<dyn Fn(*mut NSData, *mut NSError)> =
         RcBlock::new(move |data: *mut NSData, error: *mut NSError| {
-            let Some((run, then)) = state.borrow_mut().take() else { return };
+            let Some((run, then)) = state.borrow_mut().take() else {
+                return;
+            };
             // SAFETY: WebKit passes null or live objects that outlive this handler.
             let outcome = match (unsafe { data.as_ref() }, unsafe { error.as_ref() }) {
                 (Some(data), _) => Ok(Some(data.to_vec())),

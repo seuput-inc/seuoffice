@@ -29,9 +29,7 @@ fn colorref([red, green, blue]: [u8; 3]) -> COLORREF {
     COLORREF(u32::from(red) | (u32::from(green) << 8) | (u32::from(blue) << 16))
 }
 
-fn set_color(
-    hwnd: HWND, attribute: DWMWINDOWATTRIBUTE, color: [u8; 3],
-) -> WindowsResult<()> {
+fn set_color(hwnd: HWND, attribute: DWMWINDOWATTRIBUTE, color: [u8; 3]) -> WindowsResult<()> {
     let color = colorref(color);
     // SAFETY: `color` outlives the call and the size is its own.
     unsafe {
@@ -65,7 +63,11 @@ pub fn configure(native: usize, style: CaptionStyle) -> Result<(), String> {
                 eprintln!("shell: this Windows build keeps the default Generate caption");
             });
         }
-        Err(error) => return Err(format!("The Generate caption could not be painted: {error}")),
+        Err(error) => {
+            return Err(format!(
+                "The Generate caption could not be painted: {error}"
+            ));
+        }
     }
     CONFIGURED
         .lock()
@@ -100,9 +102,16 @@ mod tests {
 
     #[test]
     fn a_window_that_was_never_configured_is_refused() {
-        let style = CaptionStyle { background: [30, 30, 30], symbols: [228, 228, 228], height: 44 };
+        let style = CaptionStyle {
+            background: [30, 30, 30],
+            symbols: [228, 228, 228],
+            height: 44,
+        };
         assert!(update(0x7fff_0001, style).is_err());
-        let tall = CaptionStyle { height: 48, ..style };
+        let tall = CaptionStyle {
+            height: 48,
+            ..style
+        };
         assert!(configure(0x7fff_0001, tall).is_err());
     }
 }

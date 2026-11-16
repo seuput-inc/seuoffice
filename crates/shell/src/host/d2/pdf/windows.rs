@@ -1,45 +1,92 @@
 //! Native windows for the PDF tools surface.
 
-use std::sync::Arc;
-use shell_contract::{Surface, ViewId, WindowId, runtime::Views};
-use tauri::Manager;
+use crate::host::{
+    HostContext,
+    window::{Bridge, ViewSpec, WindowOptions, WindowSpec},
+};
 use crate::native::{NativeEvent, NativeEventKind};
-use crate::host::{HostContext, window::{Bridge, ViewSpec, WindowOptions, WindowSpec}};
+use shell_contract::{Surface, ViewId, WindowId, runtime::Views};
+use std::sync::Arc;
+use tauri::Manager;
 
-pub(super) fn open_tools_window(cx: &HostContext, parent: Option<WindowId>, title: &str) -> Option<ViewId> {
+pub(super) fn open_tools_window(
+    cx: &HostContext,
+    parent: Option<WindowId>,
+    title: &str,
+) -> Option<ViewId> {
     let app = cx.app.clone();
     let views = cx.views.clone();
     let shown = std::sync::atomic::AtomicBool::new(false);
     let on_frame = Arc::new(move |view: ViewId, event: &NativeEvent| {
-        let NativeEventKind::LoadFinished { ok, .. } = &event.kind else { return };
-        if shown.swap(true, std::sync::atomic::Ordering::AcqRel) { return; }
-        let Some(window) = views.sender_of(view).and_then(|sender| views.label_of_window(sender.window)).and_then(|label| app.get_window(&label)) else { return };
+        let NativeEventKind::LoadFinished { ok, .. } = &event.kind else {
+            return;
+        };
+        if shown.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
+        let Some(window) = views
+            .sender_of(view)
+            .and_then(|sender| views.label_of_window(sender.window))
+            .and_then(|label| app.get_window(&label))
+        else {
+            return;
+        };
         if *ok {
             let _ = window.show();
         } else {
             eprintln!("[pdf] the tools window did not load; closing it");
-            if let Err(error) = window.destroy() { eprintln!("[pdf] could not close the tools window: {error}"); }
+            if let Err(error) = window.destroy() {
+                eprintln!("[pdf] could not close the tools window: {error}");
+            }
         }
     });
     let spec = WindowSpec {
-        title: title.to_owned(), size: (760.0, 720.0), min_size: Some((520.0, 520.0)),
-        visible: false, decorations: true, transparent: false, resizable: true,
-        parent, focus: true, main: false,
-        view: ViewSpec { url: "genoffice-app://shell/pdf-tools.html".into(), bridge: Bridge::Surface(Surface::ShellPdfTools) },
+        title: title.to_owned(),
+        size: (760.0, 720.0),
+        min_size: Some((520.0, 520.0)),
+        visible: false,
+        decorations: true,
+        transparent: false,
+        resizable: true,
+        parent,
+        focus: true,
+        main: false,
+        view: ViewSpec {
+            url: "genoffice-app://shell/pdf-tools.html".into(),
+            bridge: Bridge::Surface(Surface::ShellPdfTools),
+        },
     };
-    let options = WindowOptions { center: true, minimizable: false, maximizable: false, fullscreenable: false, on_frame: Some(on_frame), ..Default::default() };
+    let options = WindowOptions {
+        center: true,
+        minimizable: false,
+        maximizable: false,
+        fullscreenable: false,
+        on_frame: Some(on_frame),
+        ..Default::default()
+    };
     match cx.windows.open_window_with_options(spec, options) {
         Ok((_, view)) => Some(view),
-        Err(error) => { eprintln!("[pdf] could not open the tools window: {error}"); None }
+        Err(error) => {
+            eprintln!("[pdf] could not open the tools window: {error}");
+            None
+        }
     }
 }
 
 pub(super) fn show_window(cx: &HostContext, view: ViewId) {
-    let Some(label) = cx.views.sender_of(view).and_then(|sender| cx.views.label_of_window(sender.window)) else { return };
+    let Some(label) = cx
+        .views
+        .sender_of(view)
+        .and_then(|sender| cx.views.label_of_window(sender.window))
+    else {
+        return;
+    };
     let app = cx.app.clone();
     crate::host::on_ui(&cx.ui, move || {
         if let Some(window) = app.get_window(&label) {
-            if window.is_minimized().unwrap_or(false) { let _ = window.unminimize(); }
+            if window.is_minimized().unwrap_or(false) {
+                let _ = window.unminimize();
+            }
             let _ = window.show();
             let _ = window.set_focus();
         }

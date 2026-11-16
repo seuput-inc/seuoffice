@@ -48,13 +48,23 @@ pub struct WindowHandle {
 
 impl fmt::Debug for WindowHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("WindowHandle").field("label", &self.window.label()).finish_non_exhaustive()
+        f.debug_struct("WindowHandle")
+            .field("label", &self.window.label())
+            .finish_non_exhaustive()
     }
 }
 
 impl WindowHandle {
-    pub(crate) fn new(window: Window, close: Option<WindowClose>, creation: Option<CreationId>) -> Self {
-        Self { window, close, creation }
+    pub(crate) fn new(
+        window: Window,
+        close: Option<WindowClose>,
+        creation: Option<CreationId>,
+    ) -> Self {
+        Self {
+            window,
+            close,
+            creation,
+        }
     }
 
     pub fn label(&self) -> &str {
@@ -81,7 +91,8 @@ impl WindowHandle {
 
     /// Run `effect` on the UI thread with the raw window handle, as one admitted effect.
     pub fn with_window<R>(
-        &self, effect: impl FnOnce(&dyn HasWindowHandle) -> R,
+        &self,
+        effect: impl FnOnce(&dyn HasWindowHandle) -> R,
     ) -> Result<R, WindowError> {
         if !is_ui_thread() {
             return Err(WindowError::NotUiThread);
@@ -104,7 +115,8 @@ impl WindowHandle {
 
 /// Run `job` on the UI thread and wait for its result (inline when already there).
 fn on_ui<T: Send + 'static>(
-    window: &Window, job: impl FnOnce() -> Result<T, String> + Send + 'static,
+    window: &Window,
+    job: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     if is_ui_thread() {
         return job();
@@ -115,7 +127,9 @@ fn on_ui<T: Send + 'static>(
             let _ = send.send(job());
         })
         .map_err(|error| error.to_string())?;
-    receive.recv().map_err(|_| "The UI thread dropped the window operation.".to_owned())?
+    receive
+        .recv()
+        .map_err(|_| "The UI thread dropped the window operation.".to_owned())?
 }
 
 /// Window operations the shell keeps by their old names.
@@ -130,7 +144,8 @@ pub trait WindowExt {
     fn native_window_handle(&self) -> Result<WindowHandle, String>;
     /// Capture on the UI thread without blocking the caller.
     fn native_window_handle_async<F: FnOnce(Result<WindowHandle, String>) + Send + 'static>(
-        &self, done: F,
+        &self,
+        done: F,
     ) -> Result<(), String>;
 }
 
@@ -151,12 +166,15 @@ impl WindowExt for Window {
     }
 
     fn native_window_handle(&self) -> Result<WindowHandle, String> {
-        let native = self.try_state::<Native>().ok_or("The native module is not installed.")?;
+        let native = self
+            .try_state::<Native>()
+            .ok_or("The native module is not installed.")?;
         Ok(native.window_handle(self))
     }
 
     fn native_window_handle_async<F: FnOnce(Result<WindowHandle, String>) + Send + 'static>(
-        &self, done: F,
+        &self,
+        done: F,
     ) -> Result<(), String> {
         let window = self.clone();
         self.run_on_main_thread(move || done(window.native_window_handle()))
@@ -167,7 +185,13 @@ impl WindowExt for Window {
 /// The window AppKit considers key, as an exact reservation. Call on the UI thread before
 /// starting a modal loop. `None` when no application window is key.
 pub fn native_app_key_window_handle(app: &AppHandle) -> Result<Option<WindowHandle>, String> {
-    let Some(label) = Current::key_window_label(app)? else { return Ok(None) };
-    let native = app.try_state::<Native>().ok_or("The native module is not installed.")?;
-    Ok(app.get_window(&label).map(|window| native.window_handle(&window)))
+    let Some(label) = Current::key_window_label(app)? else {
+        return Ok(None);
+    };
+    let native = app
+        .try_state::<Native>()
+        .ok_or("The native module is not installed.")?;
+    Ok(app
+        .get_window(&label)
+        .map(|window| native.window_handle(&window)))
 }

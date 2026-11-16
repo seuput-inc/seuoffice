@@ -9,7 +9,7 @@ use std::sync::Arc;
 use shell_contract::hosts::OsShell;
 use shell_contract::{Hosts, OsShellHost};
 
-use super::{prepared_trash, HostContext};
+use super::{HostContext, prepared_trash};
 
 struct ShellOs;
 
@@ -67,13 +67,18 @@ impl OsShell for ShellOs {
     /// Run on the owned IO worker. Only the admission/final namespace effect
     /// runs inside the supplied native-owner guard, never OS trash transport.
     fn trash_item_authorized(
-        &self, path: &Path,
+        &self,
+        path: &Path,
         authorize: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>,
     ) -> Result<(), String> {
         let prepared = prepared_trash::PreparedTrash::prepare(path)?;
         prepared.execute_authorized(&mut |effect| {
-            authorize(&mut || effect().map_err(|error| error.message))
-                .map_err(|message| main_core::node_fs::NodeError { code: None, message })
+            authorize(&mut || effect().map_err(|error| error.message)).map_err(|message| {
+                main_core::node_fs::NodeError {
+                    code: None,
+                    message,
+                }
+            })
         })
     }
 }

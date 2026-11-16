@@ -79,14 +79,20 @@ pub(crate) struct RevokeSlot {
 
 impl RevokeSlot {
     fn new(callback: RevokeCallback) -> Arc<Self> {
-        Arc::new(Self { active: AtomicBool::new(true), callback: Mutex::new(Some(callback)) })
+        Arc::new(Self {
+            active: AtomicBool::new(true),
+            callback: Mutex::new(Some(callback)),
+        })
     }
 
     fn take(&self) -> Option<RevokeCallback> {
         if !self.active.swap(false, Ordering::AcqRel) {
             return None;
         }
-        self.callback.lock().unwrap_or_else(|error| error.into_inner()).take()
+        self.callback
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
     }
 }
 
@@ -153,7 +159,9 @@ pub(crate) struct DocumentCore {
 
 impl DocumentCore {
     pub(crate) fn new(
-        identity: DocumentIdentity, browser: BrowserIdentity, url: Url,
+        identity: DocumentIdentity,
+        browser: BrowserIdentity,
+        url: Url,
         wake: Box<dyn Fn() -> Result<(), String> + Send + Sync>,
     ) -> Arc<Self> {
         let revoked = Arc::new(AtomicBool::new(false));
@@ -163,7 +171,10 @@ impl DocumentCore {
             browser,
             url,
             revoked,
-            state: Mutex::new(DocState { life: Life::Provisional, listeners: Vec::new() }),
+            state: Mutex::new(DocState {
+                life: Life::Provisional,
+                listeners: Vec::new(),
+            }),
             reply,
         })
     }
@@ -244,7 +255,9 @@ impl DocumentCore {
         if matches!(state.life, Life::Revoked(_)) {
             return None;
         }
-        state.listeners.retain(|slot| slot.active.load(Ordering::Acquire));
+        state
+            .listeners
+            .retain(|slot| slot.active.load(Ordering::Acquire));
         let slot = RevokeSlot::new(callback);
         state.listeners.push(slot.clone());
         Some(DocumentRevocation { slot })
@@ -252,15 +265,21 @@ impl DocumentCore {
 
     /// Like `subscribe`, but an already revoked document delivers its reason (deferred).
     pub(crate) fn subscribe_or_deliver(
-        &self, callback: RevokeCallback,
+        &self,
+        callback: RevokeCallback,
     ) -> Result<Option<DocumentRevocation>, String> {
-        let mut state = self.state.lock().map_err(|_| "Native document state was poisoned.")?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "Native document state was poisoned.")?;
         if let Life::Revoked(reason) = state.life {
             drop(state);
             defer(move || callback(reason));
             return Ok(None);
         }
-        state.listeners.retain(|slot| slot.active.load(Ordering::Acquire));
+        state
+            .listeners
+            .retain(|slot| slot.active.load(Ordering::Acquire));
         let slot = RevokeSlot::new(callback);
         state.listeners.push(slot.clone());
         Ok(Some(DocumentRevocation { slot }))
@@ -285,7 +304,9 @@ impl Eq for DocumentContext {}
 
 impl fmt::Debug for DocumentContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DocumentContext").field("document", &self.0.identity.id).finish_non_exhaustive()
+        f.debug_struct("DocumentContext")
+            .field("document", &self.0.identity.id)
+            .finish_non_exhaustive()
     }
 }
 
@@ -320,7 +341,10 @@ impl DocumentContext {
     /// Subscribe atomically against revocation. `None` means already revoked or contended
     /// and must be treated as owner loss. The callback runs at most once, outside every
     /// lock.
-    pub fn on_revoke(&self, callback: impl FnOnce() + Send + 'static) -> Option<DocumentRevocation> {
+    pub fn on_revoke(
+        &self,
+        callback: impl FnOnce() + Send + 'static,
+    ) -> Option<DocumentRevocation> {
         self.0.subscribe(Box::new(move |_| callback()))
     }
 
@@ -336,7 +360,8 @@ impl DocumentContext {
 
     /// Fence every given owner in canonical order. Aliases share one lock.
     pub fn with_live_all<T, const N: usize>(
-        contexts: [Option<&Self>; N], operation: impl FnOnce() -> T,
+        contexts: [Option<&Self>; N],
+        operation: impl FnOnce() -> T,
     ) -> Option<T> {
         let present: Vec<&Self> = contexts.into_iter().flatten().collect();
         DocumentGatePlan::new(&present)?.with_live(operation)
@@ -344,19 +369,25 @@ impl DocumentContext {
 
     /// Still the browser's committed document.
     pub fn current_document(&self) -> Option<DocumentIdentity> {
-        self.0.browser.document().filter(|document| *document == self.0.identity)
+        self.0
+            .browser
+            .document()
+            .filter(|document| *document == self.0.identity)
     }
 
     /// Present once the bridge reported render-ready for this exact document.
     pub fn document_ready(&self) -> Option<DocumentReady> {
-        matches!(self.0.life(), Life::Ready(_)).then(|| DocumentReady { origin: self.clone() })
+        matches!(self.0.life(), Life::Ready(_)).then(|| DocumentReady {
+            origin: self.clone(),
+        })
     }
 
     /// Await promises and serialize by value in this document. A document that was revoked
     /// before the script ran answers `EvalError::StaleDocument`. Retain the result until
     /// completion; dropping it cancels Rust delivery (not running JS).
     pub fn evaluate(
-        &self, source: String,
+        &self,
+        source: String,
         completion: impl FnOnce(Result<Value, EvalError>) + Send + 'static,
     ) -> Result<DocumentEvaluation, EvalError> {
         eval::start(self, source, Box::new(completion))
@@ -382,7 +413,10 @@ impl DocumentReady {
         self.origin.is_live()
     }
 
-    pub fn on_revoke(&self, callback: impl FnOnce() + Send + 'static) -> Option<DocumentRevocation> {
+    pub fn on_revoke(
+        &self,
+        callback: impl FnOnce() + Send + 'static,
+    ) -> Option<DocumentRevocation> {
         self.origin.on_revoke(callback)
     }
 
@@ -461,7 +495,10 @@ pub(crate) mod tests {
         let backward = DocumentGatePlan::new(&[&b, &a]).unwrap();
         assert_eq!(forward.cores.len(), 2);
         let order = |plan: &DocumentGatePlan<'_>| -> Vec<usize> {
-            plan.cores.iter().map(|core| std::ptr::from_ref::<DocumentCore>(core) as usize).collect()
+            plan.cores
+                .iter()
+                .map(|core| std::ptr::from_ref::<DocumentCore>(core) as usize)
+                .collect()
         };
         assert_eq!(order(&forward), order(&backward));
         assert_eq!(forward.with_live(|| "both"), Some("both"));
@@ -477,7 +514,10 @@ pub(crate) mod tests {
         assert_eq!(a.with_live_pair(&b, || ran = true), None);
         assert!(!ran);
         assert!(DocumentGatePlan::new(&[]).is_none());
-        assert_eq!(DocumentContext::with_live_all::<(), 2>([None, None], || ()), None);
+        assert_eq!(
+            DocumentContext::with_live_all::<(), 2>([None, None], || ()),
+            None
+        );
     }
 
     #[test]
@@ -494,10 +534,20 @@ pub(crate) mod tests {
         let (_browser, context) = registered_context("doc-callbacks");
         let fired = Arc::new(Mutex::new(Vec::new()));
         let kept = fired.clone();
-        let _subscription = context.on_revoke(move || kept.lock().unwrap().push("kept")).unwrap();
+        let _subscription = context
+            .on_revoke(move || kept.lock().unwrap().push("kept"))
+            .unwrap();
         let dropped = fired.clone();
-        drop(context.on_revoke(move || dropped.lock().unwrap().push("dropped")).unwrap());
-        context.0.revoke(RevokeReason::Navigation).unwrap().deliver();
+        drop(
+            context
+                .on_revoke(move || dropped.lock().unwrap().push("dropped"))
+                .unwrap(),
+        );
+        context
+            .0
+            .revoke(RevokeReason::Navigation)
+            .unwrap()
+            .deliver();
         assert!(context.0.revoke(RevokeReason::Close).is_none());
         assert_eq!(*fired.lock().unwrap(), ["kept"]);
         assert!(context.on_revoke(|| ()).is_none());
@@ -506,8 +556,14 @@ pub(crate) mod tests {
     #[test]
     fn a_different_nonce_for_the_same_document_fails_closed() {
         let (_browser, context) = registered_context("doc-conflict");
-        assert!(matches!(context.0.register([1; NONCE_LEN]), RegisterOutcome::Conflict(Some(_))));
+        assert!(matches!(
+            context.0.register([1; NONCE_LEN]),
+            RegisterOutcome::Conflict(Some(_))
+        ));
         assert!(context.is_revoked());
-        assert!(matches!(context.0.register([1; NONCE_LEN]), RegisterOutcome::Revoked));
+        assert!(matches!(
+            context.0.register([1; NONCE_LEN]),
+            RegisterOutcome::Revoked
+        ));
     }
 }

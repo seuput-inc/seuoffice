@@ -61,38 +61,75 @@ pub(crate) struct DrainTicket {
 
 impl DrainTicket {
     pub(crate) fn drain(mut self) -> Result<(), String> {
-        if !self.armed { return Ok(()); }
+        if !self.armed {
+            return Ok(());
+        }
         loop {
             let next = {
-                let mut state = self.stream.0.lock().map_err(|_| "event stream lock poisoned".to_owned())?;
-                if state.forgotten || state.queue.front().is_none_or(|frame| frame.destination.is_none()) {
+                let mut state = self
+                    .stream
+                    .0
+                    .lock()
+                    .map_err(|_| "event stream lock poisoned".to_owned())?;
+                if state.forgotten
+                    || state
+                        .queue
+                        .front()
+                        .is_none_or(|frame| frame.destination.is_none())
+                {
                     state.draining = false;
                     self.armed = false;
                     break;
                 }
                 state.queue.pop_front()
             };
-            let Some(frame) = next else { continue; };
-            let Some(destination) = frame.destination else { continue; };
-            let initial = self.initial_flush.as_mut().is_some_and(|(channel, remaining)| {
-                if *remaining == 0 || !Arc::ptr_eq(channel, &destination) { return false; }
-                *remaining -= 1;
-                true
-            });
-            if let Err(error) = destination.channel.send(InvokeResponseBody::Raw(frame.bytes)) {
-                let error = format!("indeterminate event delivery for view {}: {error}", self.view.0);
+            let Some(frame) = next else {
+                continue;
+            };
+            let Some(destination) = frame.destination else {
+                continue;
+            };
+            let initial = self
+                .initial_flush
+                .as_mut()
+                .is_some_and(|(channel, remaining)| {
+                    if *remaining == 0 || !Arc::ptr_eq(channel, &destination) {
+                        return false;
+                    }
+                    *remaining -= 1;
+                    true
+                });
+            if let Err(error) = destination
+                .channel
+                .send(InvokeResponseBody::Raw(frame.bytes))
+            {
+                let error = format!(
+                    "indeterminate event delivery for view {}: {error}",
+                    self.view.0
+                );
                 if initial {
                     self.fail_initial_attachment(&destination);
                     self.initial_flush = None;
                 } else {
-                    let mut state = self.stream.0.lock().map_err(|_| "event stream lock poisoned".to_owned())?;
-                    state.indeterminate = Some(IndeterminateDelivery { generation: destination.generation.clone(), error: error.clone() });
+                    let mut state = self
+                        .stream
+                        .0
+                        .lock()
+                        .map_err(|_| "event stream lock poisoned".to_owned())?;
+                    state.indeterminate = Some(IndeterminateDelivery {
+                        generation: destination.generation.clone(),
+                        error: error.clone(),
+                    });
                     state.draining = false;
                     self.armed = false;
                 }
                 return Err(error);
             }
-            if self.initial_flush.as_ref().is_some_and(|(_, remaining)| *remaining == 0) {
+            if self
+                .initial_flush
+                .as_ref()
+                .is_some_and(|(_, remaining)| *remaining == 0)
+            {
                 self.initial_flush = None;
             }
         }
@@ -101,21 +138,40 @@ impl DrainTicket {
 
     fn fail_initial_attachment(&mut self, failed: &Arc<Attached>) {
         let (discarded, channel) = {
-            let mut state = self.stream.0.lock().unwrap_or_else(|error| error.into_inner());
+            let mut state = self
+                .stream
+                .0
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             let mut discarded = Vec::new();
             for frame in std::mem::take(&mut state.queue) {
-                if frame.destination.as_ref().is_some_and(|destination| Arc::ptr_eq(destination, failed)) {
+                if frame
+                    .destination
+                    .as_ref()
+                    .is_some_and(|destination| Arc::ptr_eq(destination, failed))
+                {
                     discarded.push(frame);
                 } else {
                     state.queue.push_back(frame);
                 }
             }
-            let channel = if state.channel.as_ref().is_some_and(|channel| Arc::ptr_eq(channel, failed)) {
+            let channel = if state
+                .channel
+                .as_ref()
+                .is_some_and(|channel| Arc::ptr_eq(channel, failed))
+            {
                 state.channel.take()
-            } else { None };
+            } else {
+                None
+            };
             (discarded, channel)
         };
-        for _ in &discarded { eprintln!("shell: view {}: a queued frame was not sent because stream attachment failed", self.view.0); }
+        for _ in &discarded {
+            eprintln!(
+                "shell: view {}: a queued frame was not sent because stream attachment failed",
+                self.view.0
+            );
+        }
         drop((discarded, channel));
     }
 }
@@ -123,7 +179,11 @@ impl DrainTicket {
 impl Drop for DrainTicket {
     fn drop(&mut self) {
         if self.armed {
-            self.stream.0.lock().unwrap_or_else(|error| error.into_inner()).draining = false;
+            self.stream
+                .0
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .draining = false;
         }
     }
 }
@@ -135,51 +195,103 @@ pub struct TauriOutlet {
 
 impl TauriOutlet {
     pub fn expect(&self, view: ViewId) {
-        self.streams.lock().unwrap().entry(view).or_insert_with(|| Arc::new(StreamCell::default()));
+        self.streams
+            .lock()
+            .unwrap()
+            .entry(view)
+            .or_insert_with(|| Arc::new(StreamCell::default()));
     }
 
     fn stream(&self, view: ViewId) -> Result<Arc<StreamCell>, String> {
-        self.streams.lock().map_err(|_| "event stream lock poisoned".to_owned())?
-            .get(&view).cloned().ok_or_else(|| format!("view {} is gone", view.0))
+        self.streams
+            .lock()
+            .map_err(|_| "event stream lock poisoned".to_owned())?
+            .get(&view)
+            .cloned()
+            .ok_or_else(|| format!("view {} is gone", view.0))
     }
 
-    fn claim(stream: &Arc<StreamCell>, state: &mut StreamState, view: ViewId) -> Option<DrainTicket> {
-        if state.indeterminate.is_some() || state.draining || state.queue.front().is_none_or(|frame| frame.destination.is_none()) {
+    fn claim(
+        stream: &Arc<StreamCell>,
+        state: &mut StreamState,
+        view: ViewId,
+    ) -> Option<DrainTicket> {
+        if state.indeterminate.is_some()
+            || state.draining
+            || state
+                .queue
+                .front()
+                .is_none_or(|frame| frame.destination.is_none())
+        {
             return None;
         }
         state.draining = true;
-        Some(DrainTicket { stream: stream.clone(), view, armed: true, deferred_frames: Vec::new(), deferred_channel: None, initial_flush: None })
+        Some(DrainTicket {
+            stream: stream.clone(),
+            view,
+            armed: true,
+            deferred_frames: Vec::new(),
+            deferred_channel: None,
+            initial_flush: None,
+        })
     }
 
-    pub fn attach(&self, view: ViewId, channel: Channel<InvokeResponseBody>, generation: RendererGeneration) -> Result<bool, String> {
+    pub fn attach(
+        &self,
+        view: ViewId,
+        channel: Channel<InvokeResponseBody>,
+        generation: RendererGeneration,
+    ) -> Result<bool, String> {
         let channel = Arc::new(channel);
         let retained = channel.clone();
-        let (replaced, drain) = generation.with_active(|| self.attach_generation_fenced(view, channel, &generation))
+        let (replaced, drain) = generation
+            .with_active(|| self.attach_generation_fenced(view, channel, &generation))
             .unwrap_or_else(|| Err("renderer generation was revoked".into()))?;
         drop(retained);
-        if let Some(drain) = drain { drain.drain()?; }
+        if let Some(drain) = drain {
+            drain.drain()?;
+        }
         Ok(replaced)
     }
 
     /// Caller holds the generation gate; draining happens after the gate is released.
-    pub(crate) fn attach_generation_fenced(&self, view: ViewId, channel: Arc<Channel<InvokeResponseBody>>,
-        generation: &RendererGeneration) -> Result<(bool, Option<DrainTicket>), String> {
+    pub(crate) fn attach_generation_fenced(
+        &self,
+        view: ViewId,
+        channel: Arc<Channel<InvokeResponseBody>>,
+        generation: &RendererGeneration,
+    ) -> Result<(bool, Option<DrainTicket>), String> {
         let stream = self.stream(view)?;
-        let mut state = stream.0.lock().map_err(|_| "event stream lock poisoned".to_owned())?;
-        if state.forgotten { return Err(format!("view {} is gone", view.0)); }
-        if let Some(failure) = &state.indeterminate { return Err(failure.error.clone()); }
+        let mut state = stream
+            .0
+            .lock()
+            .map_err(|_| "event stream lock poisoned".to_owned())?;
+        if state.forgotten {
+            return Err(format!("view {} is gone", view.0));
+        }
+        if let Some(failure) = &state.indeterminate {
+            return Err(failure.error.clone());
+        }
         let replaced = state.channel.is_some();
         if let Some(current) = &state.channel {
             if current.generation.is_active() && !current.generation.same_generation(generation) {
                 return Err("another renderer owns the event stream".into());
             }
         }
-        let attached = Arc::new(Attached { channel, generation: generation.clone() });
+        let attached = Arc::new(Attached {
+            channel,
+            generation: generation.clone(),
+        });
         let mut discarded = Vec::new();
         let mut initial_count = 0;
         let queued = std::mem::take(&mut state.queue);
         for mut frame in queued {
-            if frame.destination.is_none() && frame.generation.as_ref().is_some_and(|queued| !queued.same_generation(generation)) {
+            if frame.destination.is_none()
+                && frame
+                    .generation
+                    .as_ref()
+                    .is_some_and(|queued| !queued.same_generation(generation))
+            {
                 discarded.push(frame);
                 continue;
             }
@@ -192,34 +304,61 @@ impl TauriOutlet {
         }
         let previous = state.channel.replace(attached.clone());
         let mut drain = Self::claim(&stream, &mut state, view).unwrap_or_else(|| DrainTicket {
-            stream: stream.clone(), view, armed: false, deferred_frames: Vec::new(), deferred_channel: None, initial_flush: None,
+            stream: stream.clone(),
+            view,
+            armed: false,
+            deferred_frames: Vec::new(),
+            deferred_channel: None,
+            initial_flush: None,
         });
         drain.deferred_frames = discarded;
         drain.deferred_channel = previous;
-        if !replaced && drain.armed && initial_count > 0 { drain.initial_flush = Some((attached, initial_count)); }
+        if !replaced && drain.armed && initial_count > 0 {
+            drain.initial_flush = Some((attached, initial_count));
+        }
         Ok((replaced, Some(drain)))
     }
 
     /// Caller holds the generation gate; this only enqueues and never sends.
-    pub(crate) fn enqueue_generation_fenced(&self, view: ViewId, generation: &RendererGeneration,
-        frame: Vec<u8>) -> Result<Option<DrainTicket>, String> {
+    pub(crate) fn enqueue_generation_fenced(
+        &self,
+        view: ViewId,
+        generation: &RendererGeneration,
+        frame: Vec<u8>,
+    ) -> Result<Option<DrainTicket>, String> {
         let stream = self.stream(view)?;
-        let mut state = stream.0.lock().map_err(|_| "event stream lock poisoned".to_owned())?;
-        if state.forgotten { return Err(format!("view {} is gone", view.0)); }
+        let mut state = stream
+            .0
+            .lock()
+            .map_err(|_| "event stream lock poisoned".to_owned())?;
+        if state.forgotten {
+            return Err(format!("view {} is gone", view.0));
+        }
         if let Some(failure) = &state.indeterminate {
             return Err(if failure.generation.same_generation(generation) {
                 failure.error.clone()
             } else {
-                format!("{}; generation-bound recovery has not been acknowledged", failure.error)
+                format!(
+                    "{}; generation-bound recovery has not been acknowledged",
+                    failure.error
+                )
             });
         }
-        if state.channel.is_none() && state.queue.len() >= MAX_WAITING_FRAMES { return Err(format!("view {} event queue is full", view.0)); }
+        if state.channel.is_none() && state.queue.len() >= MAX_WAITING_FRAMES {
+            return Err(format!("view {} event queue is full", view.0));
+        }
         let destination = match &state.channel {
-            Some(channel) if channel.generation.same_generation(generation) => Some(channel.clone()),
+            Some(channel) if channel.generation.same_generation(generation) => {
+                Some(channel.clone())
+            }
             Some(_) => return Err("renderer generation does not own the event stream".into()),
             None => None,
         };
-        state.queue.push_back(QueuedFrame { generation: Some(generation.clone()), destination, bytes: frame });
+        state.queue.push_back(QueuedFrame {
+            generation: Some(generation.clone()),
+            destination,
+            bytes: frame,
+        });
         Ok(Self::claim(&stream, &mut state, view))
     }
 
@@ -239,39 +378,71 @@ impl TauriOutlet {
 impl Outlet for TauriOutlet {
     fn deliver(&self, view: ViewId, frame: Vec<u8>) {
         let Ok(stream) = self.stream(view) else {
-            trace!("outlet", "view {}: gone, {} bytes dropped", view.0, frame.len());
+            trace!(
+                "outlet",
+                "view {}: gone, {} bytes dropped",
+                view.0,
+                frame.len()
+            );
             return;
         };
         let drain = {
             let mut state = stream.0.lock().unwrap_or_else(|error| error.into_inner());
-            if state.forgotten { return; }
+            if state.forgotten {
+                return;
+            }
             if let Some(failure) = &state.indeterminate {
                 eprintln!("shell: {}", failure.error);
                 if state.queue.len() < MAX_WAITING_FRAMES {
                     let destination = state.channel.clone();
-                    let generation = destination.as_ref().map(|channel| channel.generation.clone());
-                    state.queue.push_back(QueuedFrame { generation, destination, bytes: frame });
+                    let generation = destination
+                        .as_ref()
+                        .map(|channel| channel.generation.clone());
+                    state.queue.push_back(QueuedFrame {
+                        generation,
+                        destination,
+                        bytes: frame,
+                    });
                 } else {
                     eprintln!("shell: view {}: blocked event queue is full", view.0);
                 }
                 return;
             }
             if state.channel.is_none() && state.queue.len() >= MAX_WAITING_FRAMES {
-                eprintln!("shell: view {}: event queue is full, a frame was dropped", view.0);
+                eprintln!(
+                    "shell: view {}: event queue is full, a frame was dropped",
+                    view.0
+                );
                 return;
             }
             let destination = state.channel.clone();
-            let generation = destination.as_ref().map(|channel| channel.generation.clone());
-            state.queue.push_back(QueuedFrame { generation, destination, bytes: frame });
+            let generation = destination
+                .as_ref()
+                .map(|channel| channel.generation.clone());
+            state.queue.push_back(QueuedFrame {
+                generation,
+                destination,
+                bytes: frame,
+            });
             Self::claim(&stream, &mut state, view)
         };
-        if let Some(drain) = drain { let _ = drain.drain(); }
+        if let Some(drain) = drain {
+            let _ = drain.drain();
+        }
     }
 
-    fn deliver_to_generation_checked(&self, view: ViewId, generation: &RendererGeneration, frame: Vec<u8>) -> Result<(), String> {
-        let drain = generation.with_active(|| self.enqueue_generation_fenced(view, generation, frame))
+    fn deliver_to_generation_checked(
+        &self,
+        view: ViewId,
+        generation: &RendererGeneration,
+        frame: Vec<u8>,
+    ) -> Result<(), String> {
+        let drain = generation
+            .with_active(|| self.enqueue_generation_fenced(view, generation, frame))
             .unwrap_or_else(|| Err("renderer generation was revoked".into()))?;
-        if let Some(drain) = drain { drain.drain()?; }
+        if let Some(drain) = drain {
+            drain.drain()?;
+        }
         Ok(())
     }
 }
@@ -285,16 +456,36 @@ mod tests {
         let outlet = TauriOutlet::default();
         let view = ViewId(42);
         let generation = RendererGeneration::new();
-        assert!(outlet.deliver_to_generation_checked(view, &generation, vec![1]).is_err());
+        assert!(
+            outlet
+                .deliver_to_generation_checked(view, &generation, vec![1])
+                .is_err()
+        );
         outlet.expect(view);
         for _ in 0..MAX_WAITING_FRAMES {
-            assert!(outlet.deliver_to_generation_checked(view, &generation, vec![1]).is_ok());
+            assert!(
+                outlet
+                    .deliver_to_generation_checked(view, &generation, vec![1])
+                    .is_ok()
+            );
         }
-        assert!(outlet.deliver_to_generation_checked(view, &generation, vec![1]).is_err());
+        assert!(
+            outlet
+                .deliver_to_generation_checked(view, &generation, vec![1])
+                .is_err()
+        );
         generation.revoke();
-        assert!(outlet.deliver_to_generation_checked(view, &generation, vec![1]).is_err());
+        assert!(
+            outlet
+                .deliver_to_generation_checked(view, &generation, vec![1])
+                .is_err()
+        );
         outlet.forget(view);
-        assert!(outlet.deliver_to_generation_checked(view, &RendererGeneration::new(), vec![1]).is_err());
+        assert!(
+            outlet
+                .deliver_to_generation_checked(view, &RendererGeneration::new(), vec![1])
+                .is_err()
+        );
     }
 
     #[test]
@@ -305,20 +496,36 @@ mod tests {
         let next = RendererGeneration::new();
         let received = std::sync::Arc::new(Mutex::new(Vec::new()));
         outlet.expect(view);
-        outlet.deliver_to_generation_checked(view, &old, vec![1]).unwrap();
+        outlet
+            .deliver_to_generation_checked(view, &old, vec![1])
+            .unwrap();
         old.revoke();
-        outlet.deliver_to_generation_checked(view, &next, vec![2]).unwrap();
+        outlet
+            .deliver_to_generation_checked(view, &next, vec![2])
+            .unwrap();
         let capture = received.clone();
         let channel = Channel::new(move |body| {
-            if let InvokeResponseBody::Raw(bytes) = body { capture.lock().unwrap().push(bytes); }
+            if let InvokeResponseBody::Raw(bytes) = body {
+                capture.lock().unwrap().push(bytes);
+            }
             Ok(())
         });
         assert!(!outlet.attach(view, channel, next.clone()).unwrap());
         assert_eq!(*received.lock().unwrap(), vec![vec![2]]);
-        assert!(outlet.deliver_to_generation_checked(view, &old, vec![3]).is_err());
+        assert!(
+            outlet
+                .deliver_to_generation_checked(view, &old, vec![3])
+                .is_err()
+        );
         let unrelated = RendererGeneration::new();
-        assert!(outlet.attach(view, Channel::new(|_| Ok(())), unrelated).is_err());
-        outlet.deliver_to_generation_checked(view, &next, vec![4]).unwrap();
+        assert!(
+            outlet
+                .attach(view, Channel::new(|_| Ok(())), unrelated)
+                .is_err()
+        );
+        outlet
+            .deliver_to_generation_checked(view, &next, vec![4])
+            .unwrap();
         assert_eq!(*received.lock().unwrap(), vec![vec![2], vec![4]]);
     }
 
@@ -342,7 +549,9 @@ mod tests {
         outlet.attach(view, channel, generation.clone()).unwrap();
         let sending_outlet = outlet.clone();
         let sending_generation = generation.clone();
-        let sender = std::thread::spawn(move || sending_outlet.deliver_to_generation_checked(view, &sending_generation, vec![1]));
+        let sender = std::thread::spawn(move || {
+            sending_outlet.deliver_to_generation_checked(view, &sending_generation, vec![1])
+        });
         entered_rx.recv().unwrap();
         let (started_tx, started_rx) = mpsc::channel();
         let (revoked_tx, revoked_rx) = mpsc::channel();
@@ -357,7 +566,11 @@ mod tests {
         release_tx.send(()).unwrap();
         sender.join().unwrap().unwrap();
         revoker.join().unwrap();
-        assert!(outlet.deliver_to_generation_checked(view, &generation, vec![2]).is_err());
+        assert!(
+            outlet
+                .deliver_to_generation_checked(view, &generation, vec![2])
+                .is_err()
+        );
     }
 
     #[test]
@@ -374,13 +587,18 @@ mod tests {
             if let InvokeResponseBody::Raw(bytes) = body {
                 seen.lock().unwrap().push(bytes.clone());
                 if bytes == [1] {
-                    weak.upgrade().unwrap().deliver_to_generation_checked(view, &callback_generation, vec![2]).unwrap();
+                    weak.upgrade()
+                        .unwrap()
+                        .deliver_to_generation_checked(view, &callback_generation, vec![2])
+                        .unwrap();
                 }
             }
             Ok(())
         });
         outlet.attach(view, channel, generation.clone()).unwrap();
-        outlet.deliver_to_generation_checked(view, &generation, vec![1]).unwrap();
+        outlet
+            .deliver_to_generation_checked(view, &generation, vec![1])
+            .unwrap();
         assert_eq!(*received.lock().unwrap(), vec![vec![1], vec![2]]);
     }
 
@@ -396,8 +614,14 @@ mod tests {
             Ok(())
         });
         outlet.attach(view, channel, generation.clone()).unwrap();
-        outlet.deliver_to_generation_checked(view, &generation, vec![1]).unwrap();
-        assert!(outlet.deliver_to_generation_checked(view, &generation, vec![2]).is_err());
+        outlet
+            .deliver_to_generation_checked(view, &generation, vec![1])
+            .unwrap();
+        assert!(
+            outlet
+                .deliver_to_generation_checked(view, &generation, vec![2])
+                .is_err()
+        );
     }
 
     #[test]
@@ -414,25 +638,48 @@ mod tests {
         let release_rx = Mutex::new(release_rx);
         let sink = old_frames.clone();
         outlet.expect(view);
-        outlet.attach(view, Channel::new(move |body| {
-            if let InvokeResponseBody::Raw(bytes) = body {
-                sink.lock().unwrap().push(bytes.clone());
-                if bytes == [1] { entered_tx.send(()).unwrap(); release_rx.lock().unwrap().recv().unwrap(); }
-            }
-            Ok(())
-        }), old.clone()).unwrap();
+        outlet
+            .attach(
+                view,
+                Channel::new(move |body| {
+                    if let InvokeResponseBody::Raw(bytes) = body {
+                        sink.lock().unwrap().push(bytes.clone());
+                        if bytes == [1] {
+                            entered_tx.send(()).unwrap();
+                            release_rx.lock().unwrap().recv().unwrap();
+                        }
+                    }
+                    Ok(())
+                }),
+                old.clone(),
+            )
+            .unwrap();
         let sender = outlet.clone();
         let generation = old.clone();
-        let thread = std::thread::spawn(move || sender.deliver_to_generation_checked(view, &generation, vec![1]));
+        let thread = std::thread::spawn(move || {
+            sender.deliver_to_generation_checked(view, &generation, vec![1])
+        });
         entered_rx.recv().unwrap();
-        outlet.deliver_to_generation_checked(view, &old, vec![2]).unwrap();
+        outlet
+            .deliver_to_generation_checked(view, &old, vec![2])
+            .unwrap();
         old.revoke();
         let sink = new_frames.clone();
-        outlet.attach(view, Channel::new(move |body| {
-            if let InvokeResponseBody::Raw(bytes) = body { sink.lock().unwrap().push(bytes); }
-            Ok(())
-        }), new.clone()).unwrap();
-        outlet.deliver_to_generation_checked(view, &new, vec![3]).unwrap();
+        outlet
+            .attach(
+                view,
+                Channel::new(move |body| {
+                    if let InvokeResponseBody::Raw(bytes) = body {
+                        sink.lock().unwrap().push(bytes);
+                    }
+                    Ok(())
+                }),
+                new.clone(),
+            )
+            .unwrap();
+        outlet
+            .deliver_to_generation_checked(view, &new, vec![3])
+            .unwrap();
         release_tx.send(()).unwrap();
         thread.join().unwrap().unwrap();
         assert_eq!(*old_frames.lock().unwrap(), vec![vec![1], vec![2]]);
@@ -445,18 +692,34 @@ mod tests {
         let view = ViewId(48);
         let generation = RendererGeneration::new();
         outlet.expect(view);
-        outlet.deliver_to_generation_checked(view, &generation, vec![1]).unwrap();
-        outlet.deliver_to_generation_checked(view, &generation, vec![2]).unwrap();
+        outlet
+            .deliver_to_generation_checked(view, &generation, vec![1])
+            .unwrap();
+        outlet
+            .deliver_to_generation_checked(view, &generation, vec![2])
+            .unwrap();
         let failed = Channel::new(|_| Err(std::io::Error::other("send failed").into()));
         assert!(outlet.attach(view, failed, generation.clone()).is_err());
         let received = Arc::new(Mutex::new(Vec::new()));
         let sink = received.clone();
-        assert!(!outlet.attach(view, Channel::new(move |body| {
-            if let InvokeResponseBody::Raw(bytes) = body { sink.lock().unwrap().push(bytes); }
-            Ok(())
-        }), generation.clone()).unwrap());
+        assert!(
+            !outlet
+                .attach(
+                    view,
+                    Channel::new(move |body| {
+                        if let InvokeResponseBody::Raw(bytes) = body {
+                            sink.lock().unwrap().push(bytes);
+                        }
+                        Ok(())
+                    }),
+                    generation.clone()
+                )
+                .unwrap()
+        );
         assert!(received.lock().unwrap().is_empty());
-        outlet.deliver_to_generation_checked(view, &generation, vec![3]).unwrap();
+        outlet
+            .deliver_to_generation_checked(view, &generation, vec![3])
+            .unwrap();
         assert_eq!(*received.lock().unwrap(), vec![vec![3]]);
     }
 
@@ -470,21 +733,44 @@ mod tests {
         let observed = Arc::new(Mutex::new(Vec::new()));
         let seen = observed.clone();
         outlet.expect(view);
-        outlet.attach(view, Channel::new(move |body| {
-            let InvokeResponseBody::Raw(bytes) = body else { panic!("expected raw frame") };
-            seen.lock().unwrap().push(bytes.clone());
-            if bytes == [2] {
-                weak.upgrade().unwrap().deliver_to_generation_checked(view, &callback_generation, vec![3]).unwrap();
-                return Err(std::io::Error::other("delivery uncertain").into());
-            }
-            Ok(())
-        }), generation.clone()).unwrap();
-        outlet.deliver_to_generation_checked(view, &generation, vec![1]).unwrap();
-        let error = outlet.deliver_to_generation_checked(view, &generation, vec![2]).unwrap_err();
+        outlet
+            .attach(
+                view,
+                Channel::new(move |body| {
+                    let InvokeResponseBody::Raw(bytes) = body else {
+                        panic!("expected raw frame")
+                    };
+                    seen.lock().unwrap().push(bytes.clone());
+                    if bytes == [2] {
+                        weak.upgrade()
+                            .unwrap()
+                            .deliver_to_generation_checked(view, &callback_generation, vec![3])
+                            .unwrap();
+                        return Err(std::io::Error::other("delivery uncertain").into());
+                    }
+                    Ok(())
+                }),
+                generation.clone(),
+            )
+            .unwrap();
+        outlet
+            .deliver_to_generation_checked(view, &generation, vec![1])
+            .unwrap();
+        let error = outlet
+            .deliver_to_generation_checked(view, &generation, vec![2])
+            .unwrap_err();
         assert!(error.contains("indeterminate event delivery"));
         assert_eq!(*observed.lock().unwrap(), vec![vec![1], vec![2]]);
-        assert!(outlet.deliver_to_generation_checked(view, &generation, vec![4]).is_err());
-        assert!(outlet.attach(view, Channel::new(|_| Ok(())), generation.clone()).is_err());
+        assert!(
+            outlet
+                .deliver_to_generation_checked(view, &generation, vec![4])
+                .is_err()
+        );
+        assert!(
+            outlet
+                .attach(view, Channel::new(|_| Ok(())), generation.clone())
+                .is_err()
+        );
         let stream = outlet.stream(view).unwrap();
         let state = stream.0.lock().unwrap();
         assert_eq!(state.queue.len(), 1);

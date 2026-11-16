@@ -12,8 +12,7 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 
 use main_core::packages::electron_utils::remote_image::{
-    MAX_REMOTE_IMAGE_BYTES, fetch_remote_image, read_body_capped,
-    MemoryResponse,
+    MAX_REMOTE_IMAGE_BYTES, MemoryResponse, fetch_remote_image, read_body_capped,
 };
 use main_core::packages::electron_utils::safe_remote_url::{
     AbortSignal, FetchError, FetchInit, FetchWithSsrfGuardOptions, Fetcher, GlobalDispatcher,
@@ -46,22 +45,37 @@ impl Resolver for SystemResolver {
             .collect())
     }
 
-    fn lookup_all_abort(&mut self, host: &str, signal: &dyn AbortSignal) -> Result<Vec<LookupAddress>, FetchError> {
-        if signal.aborted() { return Err(FetchError("This operation was aborted".into())); }
+    fn lookup_all_abort(
+        &mut self,
+        host: &str,
+        signal: &dyn AbortSignal,
+    ) -> Result<Vec<LookupAddress>, FetchError> {
+        if signal.aborted() {
+            return Err(FetchError("This operation was aborted".into()));
+        }
         let host = host.to_owned();
         let (send, receive) = std::sync::mpsc::sync_channel(1);
-        std::thread::Builder::new().name("safe-dns".into()).spawn(move || {
-            let _ = send.send(SystemResolver.lookup_all(&host));
-        }).map_err(|error| FetchError(error.to_string()))?;
+        std::thread::Builder::new()
+            .name("safe-dns".into())
+            .spawn(move || {
+                let _ = send.send(SystemResolver.lookup_all(&host));
+            })
+            .map_err(|error| FetchError(error.to_string()))?;
         loop {
-            if signal.aborted() { return Err(FetchError("This operation was aborted".into())); }
+            if signal.aborted() {
+                return Err(FetchError("This operation was aborted".into()));
+            }
             match receive.recv_timeout(Duration::from_millis(20)) {
                 Ok(result) => {
-                    if signal.aborted() { return Err(FetchError("This operation was aborted".into())); }
+                    if signal.aborted() {
+                        return Err(FetchError("This operation was aborted".into()));
+                    }
                     return result;
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Err(FetchError("DNS lookup failed".into())),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(FetchError("DNS lookup failed".into()));
+                }
             }
         }
     }
@@ -140,13 +154,17 @@ impl Response for Download<'_> {
                 result = response.chunk() => result.map_err(|e| FetchError(e.to_string())),
             }
         });
-        if result.is_err() { self.response = None; }
+        if result.is_err() {
+            self.response = None;
+        }
         result.map(|chunk| chunk.map(|bytes| bytes.to_vec()))
     }
 
     fn array_buffer(&mut self) -> Result<Vec<u8>, FetchError> {
         let mut bytes = Vec::new();
-        while let Some(chunk) = self.read_chunk()? { bytes.extend_from_slice(&chunk); }
+        while let Some(chunk) = self.read_chunk()? {
+            bytes.extend_from_slice(&chunk);
+        }
         Ok(bytes)
     }
 }
@@ -160,7 +178,11 @@ impl Fetcher for Hops {
         GlobalDispatcher::NotAnObject
     }
 
-    fn fetch<'signal>(&mut self, url: &str, init: &FetchInit<'_, 'signal>) -> Result<Box<dyn Response + 'signal>, FetchError> {
+    fn fetch<'signal>(
+        &mut self,
+        url: &str,
+        init: &FetchInit<'_, 'signal>,
+    ) -> Result<Box<dyn Response + 'signal>, FetchError> {
         let client = match init.pinned {
             Some(target) if !target.literal => pinned_client(url, target)?,
             _ => http::client(url, false),
@@ -193,7 +215,10 @@ impl Fetcher for Hops {
             && !self.0.as_ref().is_some_and(CancelToken::is_cancelled)
             && !signal.is_some_and(AbortSignal::aborted)
         {
-            std::thread::sleep(Duration::from_millis(20).min(deadline.saturating_duration_since(std::time::Instant::now())));
+            std::thread::sleep(
+                Duration::from_millis(20)
+                    .min(deadline.saturating_duration_since(std::time::Instant::now())),
+            );
         }
     }
 }
@@ -208,7 +233,11 @@ impl Resolver for EditorResolver {
     fn lookup_all(&mut self, host: &str) -> Result<Vec<LookupAddress>, FetchError> {
         SystemResolver.lookup_all(host)
     }
-    fn lookup_all_abort(&mut self, host: &str, signal: &dyn AbortSignal) -> Result<Vec<LookupAddress>, FetchError> {
+    fn lookup_all_abort(
+        &mut self,
+        host: &str,
+        signal: &dyn AbortSignal,
+    ) -> Result<Vec<LookupAddress>, FetchError> {
         SystemResolver.lookup_all_abort(host, signal)
     }
 }
@@ -225,18 +254,35 @@ pub(crate) fn guarded_fetcher_with_cap(cap: usize) -> Box<dyn Fetcher + Send> {
     Box::new(EditorFetcher { cap })
 }
 
-struct EditorFetcher { cap: usize }
+struct EditorFetcher {
+    cap: usize,
+}
 impl Fetcher for EditorFetcher {
-    fn global_dispatcher(&mut self) -> GlobalDispatcher { GlobalDispatcher::NotAnObject }
-    fn fetch<'signal>(&mut self, url: &str, init: &FetchInit<'_, 'signal>) -> Result<Box<dyn Response + 'signal>, FetchError> {
+    fn global_dispatcher(&mut self) -> GlobalDispatcher {
+        GlobalDispatcher::NotAnObject
+    }
+    fn fetch<'signal>(
+        &mut self,
+        url: &str,
+        init: &FetchInit<'_, 'signal>,
+    ) -> Result<Box<dyn Response + 'signal>, FetchError> {
         let target = resolve_safe_remote_target(&mut SystemResolver, Some(url), init.signal)
             .ok_or_else(|| FetchError("unsafe or invalid remote URL".into()))?;
-        let checked = FetchInit { headers: init.headers, signal: init.signal, pinned: Some(&target) };
+        let checked = FetchInit {
+            headers: init.headers,
+            signal: init.signal,
+            pinned: Some(&target),
+        };
         let response = Hops(None).fetch(&target.url, &checked)?;
-        Ok(Box::new(CappedEditorResponse { inner: response, remaining: self.cap }))
+        Ok(Box::new(CappedEditorResponse {
+            inner: response,
+            remaining: self.cap,
+        }))
     }
     fn close_dispatcher(&mut self) {}
-    fn sleep(&mut self, ms: f64, signal: Option<&dyn AbortSignal>) { Hops(None).sleep(ms, signal); }
+    fn sleep(&mut self, ms: f64, signal: Option<&dyn AbortSignal>) {
+        Hops(None).sleep(ms, signal);
+    }
 }
 
 struct CappedEditorResponse<'signal> {
@@ -244,12 +290,22 @@ struct CappedEditorResponse<'signal> {
     remaining: usize,
 }
 impl Response for CappedEditorResponse<'_> {
-    fn status(&self) -> u16 { self.inner.status() }
-    fn header(&self, name: &str) -> Option<String> { self.inner.header(name) }
-    fn has_body(&self) -> bool { self.inner.has_body() }
-    fn cancel_body(&mut self) { self.inner.cancel_body(); }
+    fn status(&self) -> u16 {
+        self.inner.status()
+    }
+    fn header(&self, name: &str) -> Option<String> {
+        self.inner.header(name)
+    }
+    fn has_body(&self) -> bool {
+        self.inner.has_body()
+    }
+    fn cancel_body(&mut self) {
+        self.inner.cancel_body();
+    }
     fn read_chunk(&mut self) -> Result<Option<Vec<u8>>, FetchError> {
-        let Some(chunk) = self.inner.read_chunk()? else { return Ok(None) };
+        let Some(chunk) = self.inner.read_chunk()? else {
+            return Ok(None);
+        };
         if chunk.len() > self.remaining {
             self.inner.cancel_body();
             return Err(FetchError("response body too large".into()));
@@ -259,7 +315,9 @@ impl Response for CappedEditorResponse<'_> {
     }
     fn array_buffer(&mut self) -> Result<Vec<u8>, FetchError> {
         let mut bytes = Vec::new();
-        while let Some(chunk) = self.read_chunk()? { bytes.extend_from_slice(&chunk); }
+        while let Some(chunk) = self.read_chunk()? {
+            bytes.extend_from_slice(&chunk);
+        }
         Ok(bytes)
     }
 }
@@ -269,48 +327,83 @@ impl Response for CappedEditorResponse<'_> {
 pub(crate) fn upload_fetch(
     url: &str,
     init: &main_core::markdown::image_host::FetchInit<'_>,
-) -> Result<main_core::markdown::image_host::FetchResponse, main_core::markdown::image_host::FetchFailure> {
-    use main_core::markdown::image_host::{FetchBody, FetchFailure, FetchResponse, ResponseHeaders};
+) -> Result<
+    main_core::markdown::image_host::FetchResponse,
+    main_core::markdown::image_host::FetchFailure,
+> {
+    use main_core::markdown::image_host::{
+        FetchBody, FetchFailure, FetchResponse, ResponseHeaders,
+    };
     const LIMIT: usize = 1024 * 1024;
     let fail = |error: String| FetchFailure::Error(error);
     let target = resolve_safe_remote_target(&mut SystemResolver, Some(url), None)
         .ok_or_else(|| fail("unsafe or invalid remote URL".into()))?;
-    let client = if target.literal { http::client(&target.url, false) }
-        else { pinned_client(&target.url, &target).map_err(|error| fail(error.0))? };
-    let method = reqwest::Method::from_bytes(init.method.as_bytes()).map_err(|e| fail(e.to_string()))?;
+    let client = if target.literal {
+        http::client(&target.url, false)
+    } else {
+        pinned_client(&target.url, &target).map_err(|error| fail(error.0))?
+    };
+    let method =
+        reqwest::Method::from_bytes(init.method.as_bytes()).map_err(|e| fail(e.to_string()))?;
     let mut headers = HeaderMap::new();
     for (name, value) in &init.headers {
-        let name = HeaderName::from_bytes(name.as_bytes()).map_err(|error| fail(error.to_string()))?;
+        let name =
+            HeaderName::from_bytes(name.as_bytes()).map_err(|error| fail(error.to_string()))?;
         let value = HeaderValue::from_str(value).map_err(|error| fail(error.to_string()))?;
         headers.insert(name, value);
     }
-    let mut request = client.request(method, &target.url)
+    let mut request = client
+        .request(method, &target.url)
         .headers(headers)
         .timeout(Duration::from_millis(u64::from(init.timeout_ms)));
     request = match &init.body {
         FetchBody::Bytes(bytes) => request.body(bytes.to_vec()),
         FetchBody::Text(text) => request.body(text.clone()),
-        FetchBody::Form { field, file_name, mime, bytes } => {
-            let part = reqwest::multipart::Part::bytes(bytes.to_vec()).file_name(file_name.clone())
-                .mime_str(mime).map_err(|e| fail(e.to_string()))?;
+        FetchBody::Form {
+            field,
+            file_name,
+            mime,
+            bytes,
+        } => {
+            let part = reqwest::multipart::Part::bytes(bytes.to_vec())
+                .file_name(file_name.clone())
+                .mime_str(mime)
+                .map_err(|e| fail(e.to_string()))?;
             request.multipart(reqwest::multipart::Form::new().part((*field).to_owned(), part))
         }
     };
     tauri::async_runtime::block_on(async move {
-        let mut response = request.send().await.map_err(|error| fail(error.to_string()))?;
+        let mut response = request
+            .send()
+            .await
+            .map_err(|error| fail(error.to_string()))?;
         let status = response.status().as_u16();
-        let location = response.headers().get("location").and_then(|v| v.to_str().ok()).map(str::to_owned);
-        let content_length = response.headers().get("content-length").and_then(|v| v.to_str().ok()).map(str::to_owned);
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let content_length = response
+            .headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
         let redirected = matches!(status, 301 | 302 | 303 | 307 | 308) && location.is_some();
         let text = if redirected {
             None
-        } else if content_length.as_deref().and_then(|v| v.parse::<u64>().ok()).is_some_and(|n| n > LIMIT as u64) {
+        } else if content_length
+            .as_deref()
+            .and_then(|v| v.parse::<u64>().ok())
+            .is_some_and(|n| n > LIMIT as u64)
+        {
             Some(Err("response body too large".into()))
         } else {
             let mut bytes = Vec::new();
             let result = loop {
                 match response.chunk().await {
-                    Ok(Some(chunk)) if bytes.len().saturating_add(chunk.len()) <= LIMIT => bytes.extend_from_slice(&chunk),
+                    Ok(Some(chunk)) if bytes.len().saturating_add(chunk.len()) <= LIMIT => {
+                        bytes.extend_from_slice(&chunk)
+                    }
                     Ok(Some(_)) => break Err("response body too large".into()),
                     Ok(None) => break Ok(String::from_utf8_lossy(&bytes).into_owned()),
                     Err(error) => break Err(error.to_string()),
@@ -318,8 +411,16 @@ pub(crate) fn upload_fetch(
             };
             Some(result)
         };
-        Ok(FetchResponse { ok: (200..=299).contains(&status), status: f64::from(status), opaque_redirect: false,
-            headers: ResponseHeaders::Get { location, content_length }, text })
+        Ok(FetchResponse {
+            ok: (200..=299).contains(&status),
+            status: f64::from(status),
+            opaque_redirect: false,
+            headers: ResponseHeaders::Get {
+                location,
+                content_length,
+            },
+            text,
+        })
     })
 }
 
@@ -327,7 +428,14 @@ pub(crate) fn upload_fetch(
 /// `None` for a refused address, a response that is not ok, a body over the
 /// cap or a failure of any kind. `tmpdir` is `os.tmpdir()`.
 pub fn remote_image(url: &str, tmpdir: &str) -> Option<RemoteImage> {
-    let mut response = fetch_remote_image(&mut SystemResolver, &mut Hops(None), tmpdir, url, None, None)?;
+    let mut response = fetch_remote_image(
+        &mut SystemResolver,
+        &mut Hops(None),
+        tmpdir,
+        url,
+        None,
+        None,
+    )?;
     if !response.ok() {
         return None;
     }
@@ -345,7 +453,8 @@ async fn wait_for_abort(signal: Option<&dyn AbortSignal>, cancel: Option<&Cancel
         return;
     }
     loop {
-        if signal.is_some_and(AbortSignal::aborted) || cancel.is_some_and(CancelToken::is_cancelled) {
+        if signal.is_some_and(AbortSignal::aborted) || cancel.is_some_and(CancelToken::is_cancelled)
+        {
             return;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -354,18 +463,40 @@ async fn wait_for_abort(signal: Option<&dyn AbortSignal>, cancel: Option<&Cancel
 
 struct GuardCancel<'a>(&'a CancelToken);
 impl AbortSignal for GuardCancel<'_> {
-    fn aborted(&self) -> bool { self.0.is_cancelled() }
+    fn aborted(&self) -> bool {
+        self.0.is_cancelled()
+    }
 }
 
 /// A bounded download, with SSRF validation and address pinning at every hop.
-pub(super) fn media_download(url: &str, cancel: &CancelToken) -> Result<(Vec<u8>, Option<String>, Option<String>), String> {
+pub(super) fn media_download(
+    url: &str,
+    cancel: &CancelToken,
+) -> Result<(Vec<u8>, Option<String>, Option<String>), String> {
     const LIMIT: usize = 200 * 1024 * 1024;
-    let image = reqwest::Url::parse(url).ok().and_then(|u| u.path_segments().and_then(|mut s| s.next_back()).map(str::to_owned))
-        .is_some_and(|name| ["png", "jpg", "jpeg", "gif", "webp"].iter().any(|ext| name.to_ascii_lowercase().ends_with(&format!(".{ext}"))));
+    let image = reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| {
+            u.path_segments()
+                .and_then(|mut s| s.next_back())
+                .map(str::to_owned)
+        })
+        .is_some_and(|name| {
+            ["png", "jpg", "jpeg", "gif", "webp"]
+                .iter()
+                .any(|ext| name.to_ascii_lowercase().ends_with(&format!(".{ext}")))
+        });
     let mut hops = Hops(Some(cancel.clone()));
     let signal = GuardCancel(cancel);
     let mut response = if image {
-        fetch_remote_image(&mut SystemResolver, &mut hops, &std::env::temp_dir().to_string_lossy(), url, None, Some(&signal))
+        fetch_remote_image(
+            &mut SystemResolver,
+            &mut hops,
+            &std::env::temp_dir().to_string_lossy(),
+            url,
+            None,
+            Some(&signal),
+        )
     } else {
         let mut options = FetchWithSsrfGuardOptions {
             headers: Some(vec![("User-Agent".into(), "Mozilla/5.0".into())]),
@@ -373,18 +504,35 @@ pub(super) fn media_download(url: &str, cancel: &CancelToken) -> Result<(Vec<u8>
             ..Default::default()
         };
         fetch_with_ssrf_guard(&mut SystemResolver, &mut hops, url, &mut options).map_err(|e| e.0)?
-    }.ok_or_else(|| format!("Could not download {url}"))?;
-    if !response.ok() { return Err(format!("Could not download {url}")); }
-    if response.header("content-length").and_then(|v| v.parse::<u64>().ok()).is_some_and(|n| n > LIMIT as u64) {
+    }
+    .ok_or_else(|| format!("Could not download {url}"))?;
+    if !response.ok() {
+        return Err(format!("Could not download {url}"));
+    }
+    if response
+        .header("content-length")
+        .and_then(|v| v.parse::<u64>().ok())
+        .is_some_and(|n| n > LIMIT as u64)
+    {
         response.cancel_body();
         return Err(format!("{url} is too large to analyze"));
     }
     let content_type = response.header("content-type");
-    let name = reqwest::Url::parse(url).ok().and_then(|u| u.path_segments().and_then(|mut s| s.next_back()).filter(|s| !s.is_empty()).map(str::to_owned));
+    let name = reqwest::Url::parse(url).ok().and_then(|u| {
+        u.path_segments()
+            .and_then(|mut s| s.next_back())
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    });
     let mut bytes = Vec::new();
     loop {
-        if cancel.is_cancelled() { response.cancel_body(); return Err("This operation was aborted".into()); }
-        let Some(chunk) = response.read_chunk().map_err(|e| e.0)? else { break; };
+        if cancel.is_cancelled() {
+            response.cancel_body();
+            return Err("This operation was aborted".into());
+        }
+        let Some(chunk) = response.read_chunk().map_err(|e| e.0)? else {
+            break;
+        };
         if bytes.len().saturating_add(chunk.len()) > LIMIT {
             response.cancel_body();
             return Err(format!("{url} is too large to analyze"));
@@ -409,9 +557,13 @@ pub(crate) fn net_fetch_for_docs(
     permit: &main_core::docs::byte_handoff::MediaPermit,
     cancel: &CancelToken,
 ) -> Result<Box<dyn Response + Send>, String> {
-    if !permit.is_active() { return Err("The document media session is closed.".into()); }
+    if !permit.is_active() {
+        return Err("The document media session is closed.".into());
+    }
     let result = net_fetch_inner(url, resources, Some(cancel), Some(permit))?;
-    if !permit.is_active() { return Err("The document media session is closed.".into()); }
+    if !permit.is_active() {
+        return Err("The document media session is closed.".into());
+    }
     Ok(result)
 }
 
@@ -432,15 +584,27 @@ fn net_fetch_inner(
     let parsed = reqwest::Url::parse(url).map_err(|error| error.to_string())?;
     if let Some(original) = crate::host::document_assets::docx_original_uri(url) {
         let permit = permit.ok_or("Document media requires an authenticated document session.")?;
-        if !permit.is_active() { return Err("The document media session is closed.".into()); }
+        if !permit.is_active() {
+            return Err("The document media session is closed.".into());
+        }
         let cancel = cancel.ok_or("Document media requires request cancellation authority.")?;
-        let answer = crate::host::d2::docx_media_response_for_permit(permit.clone(), &original, cancel.clone())?;
+        let answer = crate::host::d2::docx_media_response_for_permit(
+            permit.clone(),
+            &original,
+            cancel.clone(),
+        )?;
         check()?;
-        if !permit.is_active() { return Err("The document media session is closed.".into()); }
+        if !permit.is_active() {
+            return Err("The document media session is closed.".into());
+        }
         if answer.body.len() > MAX_REMOTE_IMAGE_BYTES as usize {
             return Err("response body too large".into());
         }
-        return Ok(Box::new(MemoryResponse::new(answer.status, answer.headers, answer.body)));
+        return Ok(Box::new(MemoryResponse::new(
+            answer.status,
+            answer.headers,
+            answer.body,
+        )));
     }
     let renderer_url = if parsed.scheme() == "genoffice-app" {
         Some(parsed.clone())
@@ -448,28 +612,59 @@ fn net_fetch_inner(
         crate::app_scheme::electron_url(&parsed).and_then(|url| reqwest::Url::parse(&url).ok())
     };
     if let Some(renderer_url) = renderer_url {
-        let host = renderer_url.host_str().ok_or_else(|| "invalid asset host".to_string())?;
-        let request = tauri::http::Request::builder().uri(renderer_url.path()).body(Vec::new())
+        let host = renderer_url
+            .host_str()
+            .ok_or_else(|| "invalid asset host".to_string())?;
+        let request = tauri::http::Request::builder()
+            .uri(renderer_url.path())
+            .body(Vec::new())
             .map_err(|error| error.to_string())?;
-        let response = crate::app_scheme::serve(&crate::app_scheme::roots(resources.cloned(), false), host, &request);
+        let response = crate::app_scheme::serve(
+            &crate::app_scheme::roots(resources.cloned(), false),
+            host,
+            &request,
+        );
         let status = response.status().as_u16();
-        let headers = response.headers().iter().filter_map(|(name, value)| value.to_str().ok().map(|value| (name.to_string(), value.to_owned()))).collect();
+        let headers = response
+            .headers()
+            .iter()
+            .filter_map(|(name, value)| {
+                value
+                    .to_str()
+                    .ok()
+                    .map(|value| (name.to_string(), value.to_owned()))
+            })
+            .collect();
         let bytes = response.into_body();
         check()?;
-        if bytes.len() > MAX_REMOTE_IMAGE_BYTES as usize { return Err("response body too large".into()); }
+        if bytes.len() > MAX_REMOTE_IMAGE_BYTES as usize {
+            return Err("response body too large".into());
+        }
         return Ok(Box::new(MemoryResponse::new(status, headers, bytes)));
     }
-    if !matches!(parsed.scheme(), "http" | "https") { return Err("unsupported URL scheme".into()); }
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("unsupported URL scheme".into());
+    }
     let signal = cancel.map(GuardCancel);
     let mut options = FetchWithSsrfGuardOptions {
         signal: signal.as_ref().map(|signal| signal as &dyn AbortSignal),
         ..Default::default()
     };
-    let mut response = fetch_with_ssrf_guard(&mut SystemResolver, &mut Hops(cancel.cloned()), url, &mut options)
-        .map_err(|error| error.0)?.ok_or_else(|| "unsafe or invalid remote URL".to_string())?;
+    let mut response = fetch_with_ssrf_guard(
+        &mut SystemResolver,
+        &mut Hops(cancel.cloned()),
+        url,
+        &mut options,
+    )
+    .map_err(|error| error.0)?
+    .ok_or_else(|| "unsafe or invalid remote URL".to_string())?;
     let status = response.status();
-    let headers = ["content-type", "content-length"].into_iter().filter_map(|name| response.header(name).map(|value| (name.to_owned(), value))).collect();
-    let bytes = read_body_capped(&mut *response, MAX_REMOTE_IMAGE_BYTES as f64).map_err(|error| error.message().to_owned())?;
+    let headers = ["content-type", "content-length"]
+        .into_iter()
+        .filter_map(|name| response.header(name).map(|value| (name.to_owned(), value)))
+        .collect();
+    let bytes = read_body_capped(&mut *response, MAX_REMOTE_IMAGE_BYTES as f64)
+        .map_err(|error| error.message().to_owned())?;
     check()?;
     Ok(Box::new(MemoryResponse::new(status, headers, bytes)))
 }
@@ -488,7 +683,10 @@ mod editor_tests {
             Err(error) => error,
         };
         assert_eq!(error, "This operation was aborted");
-        assert!(net_fetch_cancellable("http://127.0.0.1/private", None, &CancelToken::default()).is_err());
+        assert!(
+            net_fetch_cancellable("http://127.0.0.1/private", None, &CancelToken::default())
+                .is_err()
+        );
     }
 
     #[test]
@@ -499,13 +697,19 @@ mod editor_tests {
             Err(error) => error,
             Ok(_) => panic!("unscoped document media was accepted"),
         };
-        assert_eq!(error, "Document media requires an authenticated document session.");
+        assert_eq!(
+            error,
+            "Document media requires an authenticated document session."
+        );
         let wire = "http://seuoffice-docx-media.localhost/handoff/forged";
         let error = match net_fetch_cancellable(wire, None, &cancel) {
             Err(error) => error,
             Ok(_) => panic!("unscoped wire media was accepted"),
         };
-        assert_eq!(error, "Document media requires an authenticated document session.");
+        assert_eq!(
+            error,
+            "Document media requires an authenticated document session."
+        );
         let permit = main_core::docs::byte_handoff::MediaPermit::mint(9).unwrap();
         permit.revoke();
         let error = match net_fetch_for_docs(uri, None, &permit, &cancel) {
@@ -518,7 +722,11 @@ mod editor_tests {
     #[test]
     fn editor_fetcher_rejects_private_ip_without_trusting_the_caller() {
         let mut fetcher = guarded_fetcher();
-        let init = FetchInit { headers: None, signal: None, pinned: None };
+        let init = FetchInit {
+            headers: None,
+            signal: None,
+            pinned: None,
+        };
         assert!(fetcher.fetch("http://127.0.0.1/private", &init).is_err());
     }
 
@@ -537,7 +745,10 @@ mod editor_tests {
     #[test]
     fn capped_editor_response_fails_instead_of_truncating() {
         let inner = MemoryResponse::new(200, Vec::new(), b"abc".to_vec());
-        let mut response = CappedEditorResponse { inner: Box::new(inner), remaining: 2 };
+        let mut response = CappedEditorResponse {
+            inner: Box::new(inner),
+            remaining: 2,
+        };
         assert!(response.array_buffer().is_err());
     }
 
@@ -557,7 +768,11 @@ mod editor_tests {
         };
         assert_eq!(table.array_buffer().unwrap().len(), image_limit + 1);
         let mut oversized = CappedEditorResponse {
-            inner: Box::new(MemoryResponse::new(200, Vec::new(), vec![0; table_limit + 1])),
+            inner: Box::new(MemoryResponse::new(
+                200,
+                Vec::new(),
+                vec![0; table_limit + 1],
+            )),
             remaining: table_limit,
         };
         assert!(oversized.array_buffer().is_err());
@@ -565,7 +780,9 @@ mod editor_tests {
 
     struct TestSignal(std::sync::Arc<std::sync::atomic::AtomicBool>);
     impl AbortSignal for TestSignal {
-        fn aborted(&self) -> bool { self.0.load(std::sync::atomic::Ordering::SeqCst) }
+        fn aborted(&self) -> bool {
+            self.0.load(std::sync::atomic::Ordering::SeqCst)
+        }
     }
 
     #[test]
@@ -577,7 +794,9 @@ mod editor_tests {
         let (ready, started) = std::sync::mpsc::channel();
         let server = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
-            socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
             let mut request = [0; 4096];
             assert!(socket.read(&mut request).unwrap() > 0);
             ready.send(()).unwrap();
@@ -589,7 +808,11 @@ mod editor_tests {
             started.recv().unwrap();
             flag.store(true, Ordering::SeqCst);
         });
-        let init = FetchInit { headers: None, signal: Some(&signal), pinned: None };
+        let init = FetchInit {
+            headers: None,
+            signal: Some(&signal),
+            pinned: None,
+        };
         let result = Hops(None).fetch(&format!("http://{addr}/"), &init);
         assert!(result.is_err());
         abort.join().unwrap();
@@ -604,15 +827,23 @@ mod editor_tests {
         let addr = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
-            socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
             let mut request = [0; 4096];
             assert!(socket.read(&mut request).unwrap() > 0);
-            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n").unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n")
+                .unwrap();
             assert_eq!(socket.read(&mut request).unwrap(), 0);
         });
         let flag = std::sync::Arc::new(AtomicBool::new(false));
         let signal = TestSignal(flag.clone());
-        let init = FetchInit { headers: None, signal: Some(&signal), pinned: None };
+        let init = FetchInit {
+            headers: None,
+            signal: Some(&signal),
+            pinned: None,
+        };
         let mut response = Hops(None).fetch(&format!("http://{addr}/"), &init).unwrap();
         let abort = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(30));

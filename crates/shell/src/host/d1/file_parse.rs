@@ -9,11 +9,17 @@ pub(super) struct Parser;
 
 impl FileParse for Parser {
     fn attachable_exts(&self) -> Vec<String> {
-        attachable::attachable_exts().into_iter().map(str::to_owned).collect()
+        attachable::attachable_exts()
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
     }
 
     fn attachable_image_exts(&self) -> Vec<String> {
-        attachable::ATTACHABLE_IMAGE_EXTS.iter().map(|ext| (*ext).to_owned()).collect()
+        attachable::ATTACHABLE_IMAGE_EXTS
+            .iter()
+            .map(|ext| (*ext).to_owned())
+            .collect()
     }
 
     fn attachable_max_bytes_default(&self) -> u64 {
@@ -41,14 +47,32 @@ impl FileParse for Parser {
             Ok(value) => match value.get("ok").and_then(|v| v.as_bool()) {
                 Some(ok) => ParsedText {
                     ok,
-                    kind: value.get("kind").and_then(|v| v.as_str()).map(str::to_owned),
-                    text: value.get("text").and_then(|v| v.as_str()).map(str::to_owned),
-                    damaged: value.get("damaged").and_then(|v| v.as_bool()).unwrap_or(false),
-                    error: value.get("error").and_then(|v| v.as_str()).map(str::to_owned),
+                    kind: value
+                        .get("kind")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned),
+                    text: value
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned),
+                    damaged: value
+                        .get("damaged")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    error: value
+                        .get("error")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned),
                 },
-                None => ParsedText { error: Some("file parser returned no ok flag".into()), ..ParsedText::default() },
+                None => ParsedText {
+                    error: Some("file parser returned no ok flag".into()),
+                    ..ParsedText::default()
+                },
             },
-            Err(error) => ParsedText { error: Some(error), ..ParsedText::default() },
+            Err(error) => ParsedText {
+                error: Some(error),
+                ..ParsedText::default()
+            },
         }
     }
 }
@@ -63,6 +87,11 @@ mod tests {
         assert_eq!(parser.attachable_max_bytes(".PNG"), 5 * 1024 * 1024);
         assert_eq!(parser.attachable_max_bytes("txt"), 50 * 1024 * 1024);
         assert_eq!(parser.attachable_max_bytes("docx"), u64::MAX);
-        assert_eq!(parser.diagram_picture_ext_of_name("sample.DRAWIO.SVG").as_deref(), Some("drawio.svg"));
+        assert_eq!(
+            parser
+                .diagram_picture_ext_of_name("sample.DRAWIO.SVG")
+                .as_deref(),
+            Some("drawio.svg")
+        );
     }
 }

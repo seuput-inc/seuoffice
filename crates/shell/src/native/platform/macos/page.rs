@@ -66,7 +66,9 @@ fn unavailable() -> PageError {
 }
 
 fn take<T>(slot: &Mutex<Option<Done<T>>>) -> Option<Done<T>> {
-    slot.lock().unwrap_or_else(|error| error.into_inner()).take()
+    slot.lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .take()
 }
 
 /// Run `job` on the UI thread with the web view's objects. When the hop fails, `done`
@@ -98,7 +100,11 @@ fn script_error(error: &NSError) -> String {
     error
         .userInfo()
         .objectForKey(&key)
-        .and_then(|message| message.downcast_ref::<NSString>().map(|text| text.to_string()))
+        .and_then(|message| {
+            message
+                .downcast_ref::<NSString>()
+                .map(|text| text.to_string())
+        })
         .unwrap_or_else(|| error.localizedDescription().to_string())
 }
 
@@ -107,8 +113,12 @@ fn answer(result: *mut AnyObject, error: *mut NSError) -> Result<Option<String>,
     if let Some(error) = unsafe { error.as_ref() } {
         return Err(PageError::Platform(script_error(error)));
     }
-    let Some(result) = (unsafe { result.as_ref() }) else { return Ok(None) };
-    Ok(result.downcast_ref::<NSString>().map(|text| text.to_string()))
+    let Some(result) = (unsafe { result.as_ref() }) else {
+        return Ok(None);
+    };
+    Ok(result
+        .downcast_ref::<NSString>()
+        .map(|text| text.to_string()))
 }
 
 /// Run `body` as the body of an async function in the page world of the main frame. The
@@ -129,13 +139,15 @@ pub(super) fn call_async(
     // SAFETY: the body is a plain string and the block matches the completion handler type.
     unsafe {
         let world = WKContentWorld::pageWorld(surface.mtm);
-        surface.view.callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(
-            &NSString::from_str(body),
-            Some(&*arguments),
-            None,
-            &world,
-            Some(&*block),
-        );
+        surface
+            .view
+            .callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(
+                &NSString::from_str(body),
+                Some(&*arguments),
+                None,
+                &world,
+                Some(&*block),
+            );
     }
 }
 
@@ -159,7 +171,9 @@ fn evaluate_in(surface: &Surface<'_>, script: &str, await_promise: bool, done: D
         "const r = {wait}(\n{script}\n);\n\
          return r === undefined ? undefined : JSON.stringify(r);"
     );
-    call_async(surface, &body, move |outcome| done(outcome.and_then(json_of)));
+    call_async(surface, &body, move |outcome| {
+        done(outcome.and_then(json_of))
+    });
 }
 
 /// `WKErrorJavaScriptResultTypeIsUnsupported`: the script ran, but its completion value (a
@@ -174,11 +188,17 @@ fn script_async(surface: &Surface<'_>, source: &str, done: Done<()>) {
     let slot = RefCell::new(Some(done));
     let block: RcBlock<dyn Fn(*mut AnyObject, *mut NSError)> =
         RcBlock::new(move |result: *mut AnyObject, error: *mut NSError| {
-            let Some(done) = slot.borrow_mut().take() else { return };
+            let Some(done) = slot.borrow_mut().take() else {
+                return;
+            };
             // SAFETY: WebKit passes null or live objects that outlive its completion handler.
             let unsupported = unsafe { error.as_ref() }
                 .is_some_and(|error| error.code() == RESULT_TYPE_UNSUPPORTED);
-            done(if unsupported { Ok(()) } else { answer(result, error).map(|_| ()) });
+            done(if unsupported {
+                Ok(())
+            } else {
+                answer(result, error).map(|_| ())
+            });
         });
     // SAFETY: the source is a plain string and the block matches the completion handler type.
     unsafe {
@@ -236,7 +256,10 @@ impl Stage {
         if let Some(window) = &self.window {
             window.setContentSize(size);
         }
-        self.view.setFrame(NSRect { origin: NSPoint { x: 0.0, y: 0.0 }, size });
+        self.view.setFrame(NSRect {
+            origin: NSPoint { x: 0.0, y: 0.0 },
+            size,
+        });
     }
 
     /// Stop the view painting its own background, so the snapshot keeps its alpha.
@@ -287,24 +310,37 @@ const MAX_EDGE: f64 = 16384.0;
 fn png_of(image: &NSImage) -> Result<Vec<u8>, PageError> {
     let failed =
         |what: &str| PageError::Platform(format!("The snapshot could not be encoded: {what}."));
-    let tiff = image.TIFFRepresentation().ok_or_else(|| failed("no bitmap"))?;
-    let bitmap = NSBitmapImageRep::imageRepWithData(&tiff).ok_or_else(|| failed("no image data"))?;
+    let tiff = image
+        .TIFFRepresentation()
+        .ok_or_else(|| failed("no bitmap"))?;
+    let bitmap =
+        NSBitmapImageRep::imageRepWithData(&tiff).ok_or_else(|| failed("no image data"))?;
     let properties: Retained<NSDictionary<NSString, AnyObject>> = NSDictionary::new();
     // SAFETY: an empty property dictionary is valid for every file type.
     let png = unsafe {
         bitmap.representationUsingType_properties(NSBitmapImageFileType::PNG, &properties)
     };
-    png.map(|data| data.to_vec()).ok_or_else(|| failed("no PNG data"))
+    png.map(|data| data.to_vec())
+        .ok_or_else(|| failed("no PNG data"))
 }
 
 /// Take the snapshot of `spec`'s region, then put the view back before answering.
 fn snapshot(stage: Stage, spec: CaptureSpec, mtm: MainThreadMarker, done: Done<Vec<u8>>) {
     let view = stage.view.clone();
-    let backing = stage.window.as_ref().map_or(1.0, |window| window.backingScaleFactor());
+    let backing = stage
+        .window
+        .as_ref()
+        .map_or(1.0, |window| window.backingScaleFactor());
     let region = match spec.clip {
         Some(clip) => NSRect {
-            origin: NSPoint { x: clip.x, y: clip.y },
-            size: NSSize { width: clip.width, height: clip.height },
+            origin: NSPoint {
+                x: clip.x,
+                y: clip.y,
+            },
+            size: NSSize {
+                width: clip.width,
+                height: clip.height,
+            },
         },
         None => view.bounds(),
     };
@@ -321,14 +357,18 @@ fn snapshot(stage: Stage, spec: CaptureSpec, mtm: MainThreadMarker, done: Done<V
     let state = RefCell::new(Some((stage, done)));
     let block: RcBlock<dyn Fn(*mut NSImage, *mut NSError)> =
         RcBlock::new(move |image: *mut NSImage, error: *mut NSError| {
-            let Some((stage, done)) = state.borrow_mut().take() else { return };
+            let Some((stage, done)) = state.borrow_mut().take() else {
+                return;
+            };
             // SAFETY: WebKit passes null or live objects that outlive this handler.
             let outcome = match (unsafe { image.as_ref() }, unsafe { error.as_ref() }) {
                 (Some(image), _) => png_of(image),
-                (None, Some(error)) => {
-                    Err(PageError::Platform(error.localizedDescription().to_string()))
-                }
-                (None, None) => Err(PageError::Platform("WebKit returned no snapshot.".to_owned())),
+                (None, Some(error)) => Err(PageError::Platform(
+                    error.localizedDescription().to_string(),
+                )),
+                (None, None) => Err(PageError::Platform(
+                    "WebKit returned no snapshot.".to_owned(),
+                )),
             };
             drop(stage);
             done(outcome);
@@ -344,7 +384,9 @@ fn page_size(answer: Option<String>) -> Result<(f64, f64), PageError> {
         [width, height] if width > 0.0 && height > 0.0 => {
             Ok((width.min(MAX_EDGE), height.min(MAX_EDGE)))
         }
-        _ => Err(PageError::Platform("The page has no size to capture.".to_owned())),
+        _ => Err(PageError::Platform(
+            "The page has no size to capture.".to_owned(),
+        )),
     }
 }
 
@@ -362,12 +404,14 @@ fn capture(surface: &Surface<'_>, spec: CaptureSpec, done: Done<Vec<u8>>) {
     }
     let body = "return JSON.stringify([document.documentElement.scrollWidth, \
                 document.documentElement.scrollHeight]);";
-    call_async(surface, body, move |outcome| match outcome.and_then(page_size) {
-        Ok((width, height)) => {
-            stage.resize(width, height);
-            snapshot(stage, spec, mtm, done);
+    call_async(surface, body, move |outcome| {
+        match outcome.and_then(page_size) {
+            Ok((width, height)) => {
+                stage.resize(width, height);
+                snapshot(stage, spec, mtm, done);
+            }
+            Err(error) => done(Err(error)),
         }
-        Err(error) => done(Err(error)),
     });
 }
 
@@ -376,14 +420,22 @@ fn resize(surface: &Surface<'_>, viewport: Viewport) -> Result<(), PageError> {
         || viewport.height == 0
         || !(viewport.device_scale_factor.is_finite() && viewport.device_scale_factor > 0.0)
     {
-        return Err(PageError::Invalid("the viewport must have a positive size".to_owned()));
+        return Err(PageError::Invalid(
+            "the viewport must have a positive size".to_owned(),
+        ));
     }
     let window = surface
         .window
         .ok_or_else(|| PageError::Platform("The web view is not in a window.".to_owned()))?;
-    let size = NSSize { width: f64::from(viewport.width), height: f64::from(viewport.height) };
+    let size = NSSize {
+        width: f64::from(viewport.width),
+        height: f64::from(viewport.height),
+    };
     window.setContentSize(size);
-    surface.view.setFrame(NSRect { origin: NSPoint { x: 0.0, y: 0.0 }, size });
+    surface.view.setFrame(NSRect {
+        origin: NSPoint { x: 0.0, y: 0.0 },
+        size,
+    });
     Ok(())
 }
 
@@ -426,27 +478,39 @@ return outcome;",
 
 impl PageDriver for Platform {
     fn evaluate(webview: &Webview, script: String, await_promise: bool, done: Done<Value>) {
-        run(webview, done, move |surface, done| evaluate_in(surface, &script, await_promise, done));
+        run(webview, done, move |surface, done| {
+            evaluate_in(surface, &script, await_promise, done)
+        });
     }
 
     fn capture_png(webview: &Webview, spec: CaptureSpec, done: Done<Vec<u8>>) {
-        run(webview, done, move |surface, done| capture(surface, spec, done));
+        run(webview, done, move |surface, done| {
+            capture(surface, spec, done)
+        });
     }
 
     fn print_pdf(webview: &Webview, spec: PdfSpec, done: Done<Vec<u8>>) {
-        run(webview, done, move |surface, done| print::save_pdf(surface, spec, done));
+        run(webview, done, move |surface, done| {
+            print::save_pdf(surface, spec, done)
+        });
     }
 
     fn edit(webview: &Webview, command: EditCommand, done: Done<()>) {
-        run(webview, done, move |surface, done| edit::edit(surface, command, done));
+        run(webview, done, move |surface, done| {
+            edit::edit(surface, command, done)
+        });
     }
 
     fn key(webview: &Webview, chord: KeyChord, done: Done<()>) {
-        run(webview, done, move |surface, done| done(edit::key(surface, &chord)));
+        run(webview, done, move |surface, done| {
+            done(edit::key(surface, &chord))
+        });
     }
 
     fn set_viewport(webview: &Webview, viewport: Viewport, done: Done<()>) {
-        run(webview, done, move |surface, done| done(resize(surface, viewport)));
+        run(webview, done, move |surface, done| {
+            done(resize(surface, viewport))
+        });
     }
 
     fn add_init_script(webview: &Webview, source: String, done: Done<()>) {
@@ -467,7 +531,9 @@ impl PageDriver for Platform {
     }
 
     fn run_script(webview: &Webview, source: String, done: Done<()>) {
-        run(webview, done, move |surface, done| script_async(surface, &source, done));
+        run(webview, done, move |surface, done| {
+            script_async(surface, &source, done)
+        });
     }
 
     fn wait_quiet(webview: &Webview, spec: QuietSpec, done: Done<()>) {

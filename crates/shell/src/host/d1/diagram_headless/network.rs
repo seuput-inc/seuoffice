@@ -15,7 +15,9 @@ static POLICY: LazyLock<Arc<NetworkPolicy>> = LazyLock::new(|| {
     let diagram_url = std::env::var("DIAGRAM_RENDERER_URL").ok();
     let electron_url = std::env::var("ELECTRON_RENDERER_URL").ok();
     let origins = main_core::diagram::network_guard::dev_server_origins(
-        &[None, diagram_url.as_deref(), electron_url.as_deref()], !cfg!(debug_assertions));
+        &[None, diagram_url.as_deref(), electron_url.as_deref()],
+        !cfg!(debug_assertions),
+    );
     Arc::new(NetworkPolicy::new(origins))
 });
 
@@ -39,13 +41,20 @@ pub(super) struct NetworkPolicy {
 
 impl NetworkPolicy {
     pub(super) fn new(dev_origins: Vec<String>) -> Self {
-        Self { log: Mutex::new(new_request_log()), dev_origins }
+        Self {
+            log: Mutex::new(new_request_log()),
+            dev_origins,
+        }
     }
 
     /// What the policy refuses as a class, for platforms that block by class: every web
     /// request (loopback stays open only when a dev server origin is allowed) and files.
     pub(super) fn blocks(&self) -> Blocks {
-        Blocks { web: true, loopback_open: !self.dev_origins.is_empty(), files: true }
+        Blocks {
+            web: true,
+            loopback_open: !self.dev_origins.is_empty(),
+            files: true,
+        }
     }
 
     /// `url` is the logical request URL, as the page's scheme names it.
@@ -99,7 +108,12 @@ mod tests {
     use crate::native::PolicyRequest;
 
     fn request<'a>(url: &'a str, bound_scheme: Option<&'a str>) -> PolicyRequest<'a> {
-        PolicyRequest { url, bound_scheme, top_level: false, main_frame: false }
+        PolicyRequest {
+            url,
+            bound_scheme,
+            top_level: false,
+            main_frame: false,
+        }
     }
 
     #[test]
@@ -107,31 +121,45 @@ mod tests {
         let policy = NetworkPolicy::new(Vec::new());
         assert!(policy.allow("data:image/png;base64,AA=="));
         assert!(!policy.allow("https://example.org/secret?document=private"));
-        assert_eq!(policy.requests(), serde_json::json!({
-            "allowed": 1, "refused": 1, "blocked": ["https://example.org/secret"]
-        }));
+        assert_eq!(
+            policy.requests(),
+            serde_json::json!({
+                "allowed": 1, "refused": 1, "blocked": ["https://example.org/secret"]
+            })
+        );
     }
 
     #[test]
     fn the_shell_schemes_are_allowed_in_both_platform_shapes() {
         let policy = NetworkPolicy::new(Vec::new());
-        assert!(policy.resource(&request("drawio-app://editor/index.html", Some("drawio-app"))));
         assert!(policy.resource(&request(
-            "http://drawio-app.localhost/editor/js/app.min.js?x=1", Some("drawio-app"))));
+            "drawio-app://editor/index.html",
+            Some("drawio-app")
+        )));
+        assert!(policy.resource(&request(
+            "http://drawio-app.localhost/editor/js/app.min.js?x=1",
+            Some("drawio-app")
+        )));
         assert!(!policy.resource(&request("http://example.org/", None)));
         assert!(!policy.resource(&request("not a url", Some("drawio-app"))));
         assert!(!policy.resource(&request("not a url", Some("genoffice-app-diagram"))));
-        assert_eq!(policy.requests(), serde_json::json!({
-            "allowed": 2, "refused": 1, "blocked": ["http://example.org/"]
-        }));
+        assert_eq!(
+            policy.requests(),
+            serde_json::json!({
+                "allowed": 2, "refused": 1, "blocked": ["http://example.org/"]
+            })
+        );
     }
 
     #[test]
     fn about_blank_is_neither_allowed_nor_logged() {
         let policy = NetworkPolicy::new(Vec::new());
         assert!(policy.resource(&request("about:blank", None)));
-        assert_eq!(policy.requests(), serde_json::json!({
-            "allowed": 0, "refused": 0, "blocked": []
-        }));
+        assert_eq!(
+            policy.requests(),
+            serde_json::json!({
+                "allowed": 0, "refused": 0, "blocked": []
+            })
+        );
     }
 }

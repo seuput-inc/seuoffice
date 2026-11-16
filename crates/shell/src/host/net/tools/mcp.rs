@@ -15,8 +15,8 @@ use shell_ipc_a::mcp::{
 };
 
 use super::super::http;
-use super::schema::OutputSchemas;
 use super::current_lang;
+use super::schema::OutputSchemas;
 use crate::host::HostContext;
 use crate::host::w::on_core;
 use shell_ipc_d2::docs::editors::DocsEditors;
@@ -179,25 +179,35 @@ impl McpTabs for ShellMcpTabs {
         let done = std::rc::Rc::new(std::cell::RefCell::new(Some(done)));
         let pending = done.clone();
         let ran = crate::host::w::on_core_local(move |provided| {
-            let Some(done) = pending.borrow_mut().take() else { return; };
+            let Some(done) = pending.borrow_mut().take() else {
+                return;
+            };
             let Some(tabs) = provided.all::<TabsState>().into_iter().next() else {
                 return done(Err("SeuOffice is not ready".into()));
             };
             let cancel = shell_contract::runtime::CancelToken::default();
             let operation = match crate::host::native_commands::issue(
-                shell_contract::ipc::NativeEditorCommand::NewDocument { surface: shell_contract::Surface::Docs, directory: None },
+                shell_contract::ipc::NativeEditorCommand::NewDocument {
+                    surface: shell_contract::Surface::Docs,
+                    directory: None,
+                },
                 cancel.clone(),
             ) {
                 Ok(operation) => operation,
                 Err(error) => return done(Err(error)),
             };
-            tabs.open_mcp_blank_docs_native(operation, Box::new(move |result| {
-                drop(cancel);
-                done(result);
-            }));
+            tabs.open_mcp_blank_docs_native(
+                operation,
+                Box::new(move |result| {
+                    drop(cancel);
+                    done(result);
+                }),
+            );
         });
         if !ran {
-            if let Some(done) = done.borrow_mut().take() { done(Err("SeuOffice is not ready".into())); }
+            if let Some(done) = done.borrow_mut().take() {
+                done(Err("SeuOffice is not ready".into()));
+            }
         }
     }
 
@@ -222,25 +232,35 @@ impl McpTabs for ShellMcpTabs {
         let done = std::rc::Rc::new(std::cell::RefCell::new(Some(done)));
         let pending = done.clone();
         let ran = crate::host::w::on_core_local(move |provided| {
-            let Some(done) = pending.borrow_mut().take() else { return; };
+            let Some(done) = pending.borrow_mut().take() else {
+                return;
+            };
             let Some(tabs) = provided.all::<TabsState>().into_iter().next() else {
                 return done(Err("SeuOffice is not ready".into()));
             };
             let cancel = shell_contract::runtime::CancelToken::default();
             let operation = match crate::host::native_commands::issue(
-                shell_contract::ipc::NativeEditorCommand::NewDocument { surface: shell_contract::Surface::Sheets, directory: None },
+                shell_contract::ipc::NativeEditorCommand::NewDocument {
+                    surface: shell_contract::Surface::Sheets,
+                    directory: None,
+                },
                 cancel.clone(),
             ) {
                 Ok(operation) => operation,
                 Err(error) => return done(Err(error)),
             };
-            tabs.open_mcp_blank_sheets_native(operation, Box::new(move |result| {
-                drop(cancel);
-                done(result);
-            }));
+            tabs.open_mcp_blank_sheets_native(
+                operation,
+                Box::new(move |result| {
+                    drop(cancel);
+                    done(result);
+                }),
+            );
         });
         if !ran {
-            if let Some(done) = done.borrow_mut().take() { done(Err("SeuOffice is not ready".into())); }
+            if let Some(done) = done.borrow_mut().take() {
+                done(Err("SeuOffice is not ready".into()));
+            }
         }
     }
 

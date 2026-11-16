@@ -28,9 +28,9 @@
 mod agent;
 pub(crate) mod codex_image;
 pub(crate) mod fetch;
-pub(crate) mod media_tools;
 mod free;
 mod jwt;
+pub(crate) mod media_tools;
 mod native_image;
 mod settings;
 mod shared;
@@ -127,12 +127,15 @@ fn codex_image_available() -> bool {
 /// writes into this, or the new docs tab never finds its content.
 static PENDING_DOCS: OnceLock<PendingAiDocsHost> = OnceLock::new();
 
-
-pub(crate) fn prepare_ai_docs_seed(view:ViewId,seed:shell_ipc_a::ai_core::AcceptedAiDoc) -> Result<shell_ipc_a::ai_core::PreparedAiSeed,String> {
-    PENDING_DOCS.get().ok_or("The pending document service is unavailable")?.prepare_accepted(view,seed)
+pub(crate) fn prepare_ai_docs_seed(
+    view: ViewId,
+    seed: shell_ipc_a::ai_core::AcceptedAiDoc,
+) -> Result<shell_ipc_a::ai_core::PreparedAiSeed, String> {
+    PENDING_DOCS
+        .get()
+        .ok_or("The pending document service is unavailable")?
+        .prepare_accepted(view, seed)
 }
-
-
 
 /// The Tauri window of a view's window
 fn window_of(app: &AppHandle, views: &ViewTable, view: ViewId) -> Option<tauri::Window> {
@@ -186,12 +189,15 @@ impl AppAiImageHost for AppImage {
         request: &CodexImageRequest,
         signal: &CancelToken,
     ) -> Result<CodexImage, JsError> {
-        codex_image::generate(&codex_image::CodexImageRequest {
-            prompt: request.prompt.clone(),
-            aspect_ratio: request.aspect_ratio.clone(),
-            image_size: None,
-            transparent: false,
-        }, signal)
+        codex_image::generate(
+            &codex_image::CodexImageRequest {
+                prompt: request.prompt.clone(),
+                aspect_ratio: request.aspect_ratio.clone(),
+                image_size: None,
+                transparent: false,
+            },
+            signal,
+        )
     }
 }
 

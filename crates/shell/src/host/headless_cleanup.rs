@@ -32,7 +32,12 @@ pub(crate) struct Registration {
 impl Registration {
     pub(crate) fn complete(self) {
         if let Some(supervisor) = self.supervisor.upgrade() {
-            let task = supervisor.0.lock().unwrap_or_else(|error| error.into_inner()).tasks.remove(&self.id);
+            let task = supervisor
+                .0
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .tasks
+                .remove(&self.id);
             drop(task);
         }
     }
@@ -40,11 +45,15 @@ impl Registration {
 
 struct GeneratedTask(Arc<dyn shell_contract::hosts::GeneratedPathPending>);
 impl CleanupTask for GeneratedTask {
-    fn retry(&self, done: Done) { self.0.cancel_and_drain(done); }
+    fn retry(&self, done: Done) {
+        self.0.cancel_and_drain(done);
+    }
 }
 
 impl shell_contract::hosts::GeneratedCleanupRegistration for Registration {
-    fn complete(self: Box<Self>) { (*self).complete(); }
+    fn complete(self: Box<Self>) {
+        (*self).complete();
+    }
 }
 
 struct Attempt {
@@ -63,7 +72,10 @@ impl Attempt {
 impl Drop for Attempt {
     fn drop(&mut self) {
         if self.pending {
-            self.supervisor.retried(self.id, Err("Headless cleanup discarded its completion.".into()));
+            self.supervisor.retried(
+                self.id,
+                Err("Headless cleanup discarded its completion.".into()),
+            );
         }
     }
 }
@@ -71,26 +83,48 @@ impl Drop for Attempt {
 impl Supervisor {
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self(Mutex::new(State {
-            accepting: true, next: 1, tasks: BTreeMap::new(), draining: false,
-            remaining: 0, error: None, waiters: Vec::new(),
+            accepting: true,
+            next: 1,
+            tasks: BTreeMap::new(),
+            draining: false,
+            remaining: 0,
+            error: None,
+            waiters: Vec::new(),
         })))
     }
 
     /// Register before dispatching a native constructor or other owned effect.
-    pub(crate) fn register(self: &Arc<Self>, task: Arc<dyn CleanupTask>) -> Result<Registration, String> {
-        let mut state = self.0.lock().map_err(|_| "Headless cleanup state is unavailable.")?;
-        if !state.accepting { return Err("Headless cleanup is quiescing.".into()); }
+    pub(crate) fn register(
+        self: &Arc<Self>,
+        task: Arc<dyn CleanupTask>,
+    ) -> Result<Registration, String> {
+        let mut state = self
+            .0
+            .lock()
+            .map_err(|_| "Headless cleanup state is unavailable.")?;
+        if !state.accepting {
+            return Err("Headless cleanup is quiescing.".into());
+        }
         let id = state.next;
-        state.next = id.checked_add(1).ok_or("Headless cleanup identity exhausted.")?;
+        state.next = id
+            .checked_add(1)
+            .ok_or("Headless cleanup identity exhausted.")?;
         state.tasks.insert(id, task);
-        Ok(Registration { supervisor: Arc::downgrade(self), id })
+        Ok(Registration {
+            supervisor: Arc::downgrade(self),
+            id,
+        })
     }
 
     pub(crate) fn register_generated(
-        self: &Arc<Self>, operation: Arc<dyn shell_contract::hosts::GeneratedPathPending>,
+        self: &Arc<Self>,
+        operation: Arc<dyn shell_contract::hosts::GeneratedPathPending>,
     ) -> Result<Box<dyn shell_contract::hosts::GeneratedCleanupRegistration>, String> {
         self.register(Arc::new(GeneratedTask(operation)))
-            .map(|registration| Box::new(registration) as Box<dyn shell_contract::hosts::GeneratedCleanupRegistration>)
+            .map(|registration| {
+                Box::new(registration)
+                    as Box<dyn shell_contract::hosts::GeneratedCleanupRegistration>
+            })
     }
 
     /// Concurrent drains join the same attempt. A later attempt retries only
@@ -99,20 +133,39 @@ impl Supervisor {
         let tasks = {
             let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
             state.accepting = false;
-            if state.draining { state.waiters.push(done); return; }
-            if state.tasks.is_empty() { drop(state); done(Ok(())); return; }
+            if state.draining {
+                state.waiters.push(done);
+                return;
+            }
+            if state.tasks.is_empty() {
+                drop(state);
+                done(Ok(()));
+                return;
+            }
             state.waiters.push(done);
             state.draining = true;
             state.error = None;
             state.remaining = state.tasks.len();
-            state.tasks.iter().map(|(id, task)| (*id, task.clone())).collect::<Vec<_>>()
+            state
+                .tasks
+                .iter()
+                .map(|(id, task)| (*id, task.clone()))
+                .collect::<Vec<_>>()
         };
         for (id, task) in tasks {
-            let attempt = Attempt { supervisor: self.clone(), id, pending: true };
+            let attempt = Attempt {
+                supervisor: self.clone(),
+                id,
+                pending: true,
+            };
             if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 task.retry(Box::new(move |result| attempt.finish(result)));
-            })).is_err() {
-                eprintln!("[quit] headless cleanup retry panicked; its retained task must be retried");
+            }))
+            .is_err()
+            {
+                eprintln!(
+                    "[quit] headless cleanup retry panicked; its retained task must be retried"
+                );
             }
         }
     }
@@ -120,13 +173,18 @@ impl Supervisor {
     /// A rejected quit leaves the application running; do not disable new work.
     pub(crate) fn resume_after_failed_quit(&self) {
         let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
-        if !state.draining { state.accepting = true; }
+        if !state.draining {
+            state.accepting = true;
+        }
     }
 
     /// Listener delivery can enqueue actor cleanup. Do not confuse an empty
     /// native event queue with the actual terminal and actor-ACK join.
     pub(crate) fn ensure_drained(&self) -> Result<(), String> {
-        let state = self.0.lock().map_err(|_| "Headless cleanup state is unavailable.")?;
+        let state = self
+            .0
+            .lock()
+            .map_err(|_| "Headless cleanup state is unavailable.")?;
         if state.draining || !state.tasks.is_empty() {
             Err("Native actor cleanup remains outstanding.".into())
         } else if state.accepting {
@@ -142,18 +200,26 @@ impl Supervisor {
             let result = result.and_then(|()| {
                 if state.tasks.contains_key(&id) {
                     Err("Headless cleanup returned before its terminal join.".into())
-                } else { Ok(()) }
+                } else {
+                    Ok(())
+                }
             });
             if let Err(error) = result {
-                if state.error.is_none() { state.error = Some(error); }
+                if state.error.is_none() {
+                    state.error = Some(error);
+                }
             }
             state.remaining -= 1;
-            if state.remaining != 0 { return; }
+            if state.remaining != 0 {
+                return;
+            }
             state.draining = false;
             let result = state.error.take().map_or(Ok(()), Err);
             (std::mem::take(&mut state.waiters), result)
         };
-        for done in waiters { done(result.clone()); }
+        for done in waiters {
+            done(result.clone());
+        }
     }
 }
 
@@ -163,7 +229,10 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Default)]
-    struct Task { calls: AtomicUsize, done: Mutex<Option<Done>> }
+    struct Task {
+        calls: AtomicUsize,
+        done: Mutex<Option<Done>>,
+    }
     impl CleanupTask for Task {
         fn retry(&self, done: Done) {
             self.calls.fetch_add(1, Ordering::SeqCst);
@@ -228,7 +297,10 @@ mod tests {
         task.reply(Ok(()));
         supervisor.quiesce_and_retry(record(results.clone()));
         assert_eq!(task.calls.load(Ordering::SeqCst), 2);
-        assert_eq!(*results.lock().unwrap(), vec![Err("dispatch failed".into()), Ok(()), Ok(())]);
+        assert_eq!(
+            *results.lock().unwrap(),
+            vec![Err("dispatch failed".into()), Ok(()), Ok(())]
+        );
     }
 
     #[test]
@@ -248,7 +320,9 @@ mod tests {
     #[test]
     fn discarded_completion_fails_without_releasing_the_retained_task() {
         struct Discard;
-        impl CleanupTask for Discard { fn retry(&self, _done: Done) {} }
+        impl CleanupTask for Discard {
+            fn retry(&self, _done: Done) {}
+        }
         let supervisor = Supervisor::new();
         let registration = supervisor.register(Arc::new(Discard)).unwrap();
         let results = Arc::new(Mutex::new(Vec::new()));
@@ -264,7 +338,9 @@ mod tests {
     fn panicking_dispatch_does_not_skip_other_cleanup_or_report_success() {
         struct Panic;
         impl CleanupTask for Panic {
-            fn retry(&self, _done: Done) { panic!("dispatch failed"); }
+            fn retry(&self, _done: Done) {
+                panic!("dispatch failed");
+            }
         }
         let supervisor = Supervisor::new();
         let _registration = supervisor.register(Arc::new(Panic)).unwrap();

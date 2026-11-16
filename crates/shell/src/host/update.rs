@@ -225,8 +225,6 @@ pub(crate) fn with_update_restart_requested(then: impl FnOnce(bool) + 'static) {
     }
 }
 
-
-
 /// The env of the updater's log: the console and the clocks
 struct Env;
 

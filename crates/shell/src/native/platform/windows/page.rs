@@ -18,11 +18,15 @@ use crate::native::platform::{PageDriver, PrintOps, PrintOutcome};
 /// Run `run` on the UI thread with the webview's COM object. `done` completes exactly once:
 /// with the operation's answer, or with the error that kept the operation from starting.
 fn on_core<T: Send + 'static>(
-    webview: &Webview, done: Done<T>, run: impl FnOnce(ICoreWebView2, Done<T>) + Send + 'static,
+    webview: &Webview,
+    done: Done<T>,
+    run: impl FnOnce(ICoreWebView2, Done<T>) + Send + 'static,
 ) {
     let slot = Arc::new(Mutex::new(Some(done)));
     let take = |slot: &Mutex<Option<Done<T>>>| {
-        slot.lock().unwrap_or_else(|error| error.into_inner()).take()
+        slot.lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
     };
     let ui_slot = slot.clone();
     let sent = webview.with_webview(move |platform| {
@@ -68,15 +72,21 @@ impl PageDriver for Platform {
     }
 
     fn run_script(webview: &Webview, source: String, done: Done<()>) {
-        on_core(webview, done, move |core, done| Cdp::new(core).run_script(source, done));
+        on_core(webview, done, move |core, done| {
+            Cdp::new(core).run_script(source, done)
+        });
     }
 
     fn capture_png(webview: &Webview, spec: CaptureSpec, done: Done<Vec<u8>>) {
-        on_core(webview, done, move |core, done| Cdp::new(core).capture(spec, done));
+        on_core(webview, done, move |core, done| {
+            Cdp::new(core).capture(spec, done)
+        });
     }
 
     fn print_pdf(webview: &Webview, spec: PdfSpec, done: Done<Vec<u8>>) {
-        on_core(webview, done, move |core, done| Cdp::new(core).print_pdf(&spec, done));
+        on_core(webview, done, move |core, done| {
+            Cdp::new(core).print_pdf(&spec, done)
+        });
     }
 
     /// The page gets focus first (as macOS makes the view first responder): Chromium runs an
@@ -86,7 +96,9 @@ impl PageDriver for Platform {
             // SAFETY: UI thread, inside `with_webview`. Best effort: a view that cannot take
             // focus still runs the command on its own page.
             let _ = unsafe {
-                platform.controller().MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)
+                platform
+                    .controller()
+                    .MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)
             };
         });
         if let Err(error) = focused {
@@ -98,15 +110,21 @@ impl PageDriver for Platform {
     }
 
     fn key(webview: &Webview, chord: KeyChord, done: Done<()>) {
-        on_core(webview, done, move |core, done| Cdp::new(core).key(&chord, done));
+        on_core(webview, done, move |core, done| {
+            Cdp::new(core).key(&chord, done)
+        });
     }
 
     fn set_viewport(webview: &Webview, viewport: Viewport, done: Done<()>) {
-        on_core(webview, done, move |core, done| Cdp::new(core).set_viewport(viewport, done));
+        on_core(webview, done, move |core, done| {
+            Cdp::new(core).set_viewport(viewport, done)
+        });
     }
 
     fn add_init_script(webview: &Webview, source: String, done: Done<()>) {
-        on_core(webview, done, move |core, done| Cdp::new(core).add_init_script(source, done));
+        on_core(webview, done, move |core, done| {
+            Cdp::new(core).add_init_script(source, done)
+        });
     }
 
     fn wait_quiet(webview: &Webview, spec: QuietSpec, done: Done<()>) {

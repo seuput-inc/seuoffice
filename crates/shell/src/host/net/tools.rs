@@ -21,7 +21,6 @@ mod mcp;
 mod schema;
 mod skills;
 
-
 /// `currentLang()` of the shell entry: `SEUOFFICE_LANG`, else the language
 /// recorded in app-settings.json, else the system's. Read at each call, so a
 /// language the person switched is seen at once.

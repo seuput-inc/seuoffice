@@ -28,11 +28,12 @@ pub(crate) use doc_links::{
 // what D2's docs host (`DocsShell`) drives: the Docs View and Insert state
 #[allow(unused_imports)]
 pub(crate) use app::{
-    DocsViewState, rebuild_docs_menu, set_docs_view_state_source, set_menu_item_checked,
-    set_menu_item_enabled, SavedMenu, prepare_docs_menu_refresh_owned, prepare_docs_menu_refresh_many_owned,
-    prepare_docs_menu_refresh_recovery, prepare_docs_menu_refresh_native, prepare_docs_menu_refresh_many_owned_extra,
-    RecoverySavedMenu, ExistingDocumentSavedMenu, prepare_docs_menu_refresh_existing_document,
-    SavedDocumentMenu, prepare_docs_menu_refresh_saved_document,
+    DocsViewState, ExistingDocumentSavedMenu, RecoverySavedMenu, SavedDocumentMenu, SavedMenu,
+    prepare_docs_menu_refresh_existing_document, prepare_docs_menu_refresh_many_owned,
+    prepare_docs_menu_refresh_many_owned_extra, prepare_docs_menu_refresh_native,
+    prepare_docs_menu_refresh_owned, prepare_docs_menu_refresh_recovery,
+    prepare_docs_menu_refresh_saved_document, rebuild_docs_menu, set_docs_view_state_source,
+    set_menu_item_checked, set_menu_item_enabled,
 };
 
 use std::path::Path;
@@ -326,50 +327,115 @@ impl MHost for ShellM {
     }
 
     fn export_written_owned(
-        &self, path: std::path::PathBuf, origin: shell_contract::ipc::NativeRequestOwner,
+        &self,
+        path: std::path::PathBuf,
+        origin: shell_contract::ipc::NativeRequestOwner,
         destination: shell_contract::ipc::NativeRequestOwner,
-        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
-        effects: shell_contract::hosts::OwnedEffectsHost, accepted: shell_contract::hosts::PdfReloadAccepted,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        accepted: shell_contract::hosts::PdfReloadAccepted,
         wake: shell_contract::hosts::GeneratedPathWake,
-        done: Box<dyn FnOnce(Result<shell_contract::hosts::GeneratedPathDispatchOutcome, String>) + Send>,
+        done: Box<
+            dyn FnOnce(Result<shell_contract::hosts::GeneratedPathDispatchOutcome, String>) + Send,
+        >,
     ) {
         let callback = Arc::new(std::sync::Mutex::new(Some(done)));
         let on_core = callback.clone();
-        crate::host::w::post_core_checked(move |provided, _| {
-            let done = on_core.lock().unwrap_or_else(|error| error.into_inner()).take();
-            let Some(done) = done else { return; };
-            let Some(tabs) = provided.all::<shell_ipc_w::tabs::TabsState>().into_iter().next() else {
-                return done(Err("The tab manager is unavailable".into()));
-            };
-            tabs.export_written_owned(path, "pdf", origin, destination, cancel, pending, effects, accepted, done);
-        }, move || {
-            let done = callback.lock().unwrap_or_else(|error| error.into_inner()).take();
-            if let Some(done) = done { done(Err("The shell core is unavailable".into())); }
-        });
+        crate::host::w::post_core_checked(
+            move |provided, _| {
+                let done = on_core
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .take();
+                let Some(done) = done else {
+                    return;
+                };
+                let Some(tabs) = provided
+                    .all::<shell_ipc_w::tabs::TabsState>()
+                    .into_iter()
+                    .next()
+                else {
+                    return done(Err("The tab manager is unavailable".into()));
+                };
+                tabs.export_written_owned(
+                    path,
+                    "pdf",
+                    origin,
+                    destination,
+                    cancel,
+                    pending,
+                    effects,
+                    accepted,
+                    done,
+                );
+            },
+            move || {
+                let done = callback
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .take();
+                if let Some(done) = done {
+                    done(Err("The shell core is unavailable".into()));
+                }
+            },
+        );
     }
 
     fn export_written_existing_document(
-        &self, selection: shell_contract::ipc::NativeSaveDestination,
+        &self,
+        selection: shell_contract::ipc::NativeSaveDestination,
         participants: Vec<shell_contract::ipc::NativeRequestOwner>,
-        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
-        effects: shell_contract::hosts::OwnedEffectsHost, additional: Vec<shell_contract::runtime::CancelToken>,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        additional: Vec<shell_contract::runtime::CancelToken>,
         accepted: shell_contract::hosts::PdfReloadAccepted,
         wake: shell_contract::hosts::GeneratedPathWake,
-        done: Box<dyn FnOnce(Result<shell_contract::hosts::GeneratedPathDispatchOutcome, String>) + Send>,
+        done: Box<
+            dyn FnOnce(Result<shell_contract::hosts::GeneratedPathDispatchOutcome, String>) + Send,
+        >,
     ) {
         let callback = Arc::new(std::sync::Mutex::new(Some(done)));
         let on_core = callback.clone();
-        crate::host::w::post_core_checked(move |provided, _| {
-            let Some(done) = on_core.lock().unwrap_or_else(|error| error.into_inner()).take() else { return; };
-            let Some(tabs) = provided.all::<shell_ipc_w::tabs::TabsState>().into_iter().next() else {
-                return done(Err("The tab manager is unavailable".into()));
-            };
-            tabs.export_written_existing_document(selection, "pdf", participants, cancel, pending, additional, effects, accepted, done);
-        }, move || {
-            if let Some(done) = callback.lock().unwrap_or_else(|error| error.into_inner()).take() {
-                done(Err("The shell core is unavailable".into()));
-            }
-        });
+        crate::host::w::post_core_checked(
+            move |provided, _| {
+                let Some(done) = on_core
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .take()
+                else {
+                    return;
+                };
+                let Some(tabs) = provided
+                    .all::<shell_ipc_w::tabs::TabsState>()
+                    .into_iter()
+                    .next()
+                else {
+                    return done(Err("The tab manager is unavailable".into()));
+                };
+                tabs.export_written_existing_document(
+                    selection,
+                    "pdf",
+                    participants,
+                    cancel,
+                    pending,
+                    additional,
+                    effects,
+                    accepted,
+                    done,
+                );
+            },
+            move || {
+                if let Some(done) = callback
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .take()
+                {
+                    done(Err("The shell core is unavailable".into()));
+                }
+            },
+        );
     }
 
     fn default_save_dir(&self) -> String {
@@ -467,22 +533,57 @@ impl MHost for ShellM {
     }
 
     fn print_window_native_invocation(
-        &self, spec: &PrintWindowSpec, document: &shell_contract::ipc::NativeInvocationDocument,
+        &self,
+        spec: &PrintWindowSpec,
+        document: &shell_contract::ipc::NativeInvocationDocument,
         sender: &shell_contract::ipc::NativeRequestOwner,
-        cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
     ) -> Result<Box<dyn PrintSurface>, String> {
-        let cx = HostContext { app: self.app.clone(), ui: self.ui.clone(), views: self.views.clone(), windows: self.windows.clone(), cleanup_shutdown: self.cleanup_shutdown.clone(), headless_cleanup: self.headless_cleanup.clone() };
-        print::window_native_invocation(&cx, spec.clone(), document.target(), sender, cancel, pending)
+        let cx = HostContext {
+            app: self.app.clone(),
+            ui: self.ui.clone(),
+            views: self.views.clone(),
+            windows: self.windows.clone(),
+            cleanup_shutdown: self.cleanup_shutdown.clone(),
+            headless_cleanup: self.headless_cleanup.clone(),
+        };
+        print::window_native_invocation(
+            &cx,
+            spec.clone(),
+            document.target(),
+            sender,
+            cancel,
+            pending,
+        )
     }
 
     fn print_window_existing_document(
-        &self, spec: &PrintWindowSpec, binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+        &self,
+        spec: &PrintWindowSpec,
+        binding: &shell_contract::ipc::NativeExistingDocumentBinding,
         participants: &[shell_contract::ipc::NativeRequestOwner],
-        cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
         additional: &[shell_contract::runtime::CancelToken],
     ) -> Result<Box<dyn PrintSurface>, String> {
-        let cx = HostContext { app: self.app.clone(), ui: self.ui.clone(), views: self.views.clone(), windows: self.windows.clone(), cleanup_shutdown: self.cleanup_shutdown.clone(), headless_cleanup: self.headless_cleanup.clone() };
-        print::window_existing_document(&cx, spec.clone(), binding, participants, cancel, pending, additional)
+        let cx = HostContext {
+            app: self.app.clone(),
+            ui: self.ui.clone(),
+            views: self.views.clone(),
+            windows: self.windows.clone(),
+            cleanup_shutdown: self.cleanup_shutdown.clone(),
+            headless_cleanup: self.headless_cleanup.clone(),
+        };
+        print::window_existing_document(
+            &cx,
+            spec.clone(),
+            binding,
+            participants,
+            cancel,
+            pending,
+            additional,
+        )
     }
 
     fn print_window(&self, spec: &PrintWindowSpec) -> Box<dyn PrintSurface> {
@@ -495,13 +596,21 @@ impl MHost for ShellM {
     }
 
     fn print_window_owned(
-        &self, spec: &PrintWindowSpec,
+        &self,
+        spec: &PrintWindowSpec,
         origin: &shell_contract::ipc::NativeRequestOwner,
         destination: &shell_contract::ipc::NativeRequestOwner,
         cancel: &shell_contract::runtime::CancelToken,
         pending: &shell_contract::runtime::CancelToken,
     ) -> Result<Box<dyn PrintSurface>, String> {
-        let cx = HostContext { app: self.app.clone(), ui: self.ui.clone(), views: self.views.clone(), windows: self.windows.clone(), cleanup_shutdown: self.cleanup_shutdown.clone(), headless_cleanup: self.headless_cleanup.clone() };
+        let cx = HostContext {
+            app: self.app.clone(),
+            ui: self.ui.clone(),
+            views: self.views.clone(),
+            windows: self.windows.clone(),
+            cleanup_shutdown: self.cleanup_shutdown.clone(),
+            headless_cleanup: self.headless_cleanup.clone(),
+        };
         print::window_owned(&cx, spec.clone(), origin, destination, cancel, pending)
     }
 

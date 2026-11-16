@@ -1,12 +1,13 @@
-use odt_engine::core::{read_odt_package, OdtError, OdtOpenErrorCode, ReadOdtPackageOptions};
-use serde_json::{json, Value};
+use odt_engine::core::{OdtError, OdtOpenErrorCode, ReadOdtPackageOptions, read_odt_package};
+use serde_json::{Value, json};
 
 /// Hosted result consumed by `file_parse::parse::parse_file_to_text`.
 pub(crate) fn read_odt(bytes: &[u8]) -> Value {
     match odt_engine::assemble::odt_to_text(bytes) {
         Ok(text) => json!({ "text": text }),
         Err(OdtError::Open { code, message }) => {
-            let mut error = json!({ "name": "OdtOpenError", "code": code.as_str(), "message": message });
+            let mut error =
+                json!({ "name": "OdtOpenError", "code": code.as_str(), "message": message });
             if code == OdtOpenErrorCode::NotOdtText {
                 if let Ok(package) = read_odt_package(bytes, &ReadOdtPackageOptions::default()) {
                     if let Some(media_type) = package.mimetype {
@@ -16,14 +17,16 @@ pub(crate) fn read_odt(bytes: &[u8]) -> Value {
             }
             json!({ "error": error })
         }
-        Err(OdtError::Thrown(message)) => json!({ "error": { "name": "Error", "message": message } }),
+        Err(OdtError::Thrown(message)) => {
+            json!({ "error": { "name": "Error", "message": message } })
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use odt_engine::assemble::zip::{write_zip, ZipEntryInput};
+    use odt_engine::assemble::zip::{ZipEntryInput, write_zip};
     use odt_engine::core::HostNow;
     use std::borrow::Cow;
 
@@ -42,7 +45,14 @@ mod tests {
                 dos_date_time: None,
             },
         ];
-        write_zip(&entries, HostNow { ms: 0.0, offset_minutes: 0.0 }).unwrap()
+        write_zip(
+            &entries,
+            HostNow {
+                ms: 0.0,
+                offset_minutes: 0.0,
+            },
+        )
+        .unwrap()
     }
 
     #[test]
@@ -59,7 +69,10 @@ mod tests {
         let bytes = package("application/vnd.oasis.opendocument.spreadsheet", "");
         let result = read_odt(&bytes);
         assert_eq!(result["error"]["code"], "not-odt-text");
-        assert_eq!(result["error"]["mediaType"], "application/vnd.oasis.opendocument.spreadsheet");
+        assert_eq!(
+            result["error"]["mediaType"],
+            "application/vnd.oasis.opendocument.spreadsheet"
+        );
     }
 
     #[test]

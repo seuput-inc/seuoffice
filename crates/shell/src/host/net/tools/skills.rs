@@ -305,58 +305,126 @@ impl SkillsShell for ShellSkills {
 struct ShellSkillImporter;
 struct ShellTemplateCopyTabs;
 
-fn github_get(url: &str, accept: &str, limit: usize, aborted: Option<Aborted<'_>>) -> Result<Vec<u8>, main_core::packages::ai_provider::user_skills_import::SkillImportError> {
-    use std::io::Read;
+fn github_get(
+    url: &str,
+    accept: &str,
+    limit: usize,
+    aborted: Option<Aborted<'_>>,
+) -> Result<Vec<u8>, main_core::packages::ai_provider::user_skills_import::SkillImportError> {
     use main_core::packages::ai_provider::user_skills_import::SkillImportError;
+    use std::io::Read;
     let error = |kind, message: String| SkillImportError::new(kind, message);
     let validate = |url: reqwest::Url| -> Result<reqwest::Url, SkillImportError> {
         if url.scheme() != "https"
-            || !matches!(url.host_str(), Some("github.com" | "api.github.com" | "codeload.github.com"))
-            || !url.username().is_empty() || url.password().is_some() || url.port().is_some()
+            || !matches!(
+                url.host_str(),
+                Some("github.com" | "api.github.com" | "codeload.github.com")
+            )
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.port().is_some()
         {
-            return Err(error("unsafe", format!("Refused to connect to {}://{}", url.scheme(), url.host_str().unwrap_or(""))));
+            return Err(error(
+                "unsafe",
+                format!(
+                    "Refused to connect to {}://{}",
+                    url.scheme(),
+                    url.host_str().unwrap_or("")
+                ),
+            ));
         }
         Ok(url)
     };
-    let mut current = validate(reqwest::Url::parse(url).map_err(|_| error("unsafe", format!("Not a web address: {url}")))?)?;
+    let mut current = validate(
+        reqwest::Url::parse(url)
+            .map_err(|_| error("unsafe", format!("Not a web address: {url}")))?,
+    )?;
     let client = reqwest::blocking::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
-        .build().map_err(|_| error("network", "Could not initialize network client".into()))?;
+        .build()
+        .map_err(|_| error("network", "Could not initialize network client".into()))?;
     for hop in 0..=5 {
         if aborted.is_some_and(|aborted| aborted()) {
             return Err(error("cancelled", "Cancelled".into()));
         }
-        let mut response = client.get(current.clone()).header(reqwest::header::ACCEPT, accept)
-            .header(reqwest::header::USER_AGENT, "seuoffice").send()
-            .map_err(|_| error("network", format!("Could not reach {}", current.host_str().unwrap_or(""))))?;
+        let mut response = client
+            .get(current.clone())
+            .header(reqwest::header::ACCEPT, accept)
+            .header(reqwest::header::USER_AGENT, "seuoffice")
+            .send()
+            .map_err(|_| {
+                error(
+                    "network",
+                    format!("Could not reach {}", current.host_str().unwrap_or("")),
+                )
+            })?;
         let status = response.status();
         if status.is_redirection() {
-            let target = response.headers().get(reqwest::header::LOCATION)
+            let target = response
+                .headers()
+                .get(reqwest::header::LOCATION)
                 .and_then(|value| value.to_str().ok())
                 .ok_or_else(|| error("network", "A redirect without a target".into()))?;
-            if hop == 5 { return Err(error("network", "Too many redirects".into())); }
-            current = validate(current.join(target).map_err(|_| error("unsafe", "A redirect to a malformed address".into()))?)?;
+            if hop == 5 {
+                return Err(error("network", "Too many redirects".into()));
+            }
+            current = validate(
+                current
+                    .join(target)
+                    .map_err(|_| error("unsafe", "A redirect to a malformed address".into()))?,
+            )?;
             continue;
         }
         if !status.is_success() {
             let code = status.as_u16();
-            let rate_limited = code == 429 || (code == 403 &&
-                (response.headers().get("x-ratelimit-remaining").is_some_and(|value| value == "0")
-                    || response.headers().contains_key("retry-after")));
-            let kind = if rate_limited { "rate-limited" } else if [401, 403, 404, 410, 422, 451].contains(&code) { "not-found" } else { "network" };
-            let message = if rate_limited { format!("GitHub is limiting requests (HTTP {code})") } else { format!("GitHub answered HTTP {code}") };
+            let rate_limited = code == 429
+                || (code == 403
+                    && (response
+                        .headers()
+                        .get("x-ratelimit-remaining")
+                        .is_some_and(|value| value == "0")
+                        || response.headers().contains_key("retry-after")));
+            let kind = if rate_limited {
+                "rate-limited"
+            } else if [401, 403, 404, 410, 422, 451].contains(&code) {
+                "not-found"
+            } else {
+                "network"
+            };
+            let message = if rate_limited {
+                format!("GitHub is limiting requests (HTTP {code})")
+            } else {
+                format!("GitHub answered HTTP {code}")
+            };
             return Err(error(kind, message));
         }
-        if let Some(length) = response.content_length().filter(|length| *length > limit as u64) {
-            return Err(error("too-large", format!("The download is {length} bytes (limit {limit})")));
+        if let Some(length) = response
+            .content_length()
+            .filter(|length| *length > limit as u64)
+        {
+            return Err(error(
+                "too-large",
+                format!("The download is {length} bytes (limit {limit})"),
+            ));
         }
         let mut body = Vec::new();
         let mut chunk = [0u8; 16384];
         loop {
-            if aborted.is_some_and(|aborted| aborted()) { return Err(error("cancelled", "Cancelled".into())); }
-            let count = response.read(&mut chunk).map_err(|_| error("network", "The download broke off".into()))?;
-            if count == 0 { return Ok(body); }
-            if body.len() + count > limit { return Err(error("too-large", format!("The download is over {limit} bytes"))); }
+            if aborted.is_some_and(|aborted| aborted()) {
+                return Err(error("cancelled", "Cancelled".into()));
+            }
+            let count = response
+                .read(&mut chunk)
+                .map_err(|_| error("network", "The download broke off".into()))?;
+            if count == 0 {
+                return Ok(body);
+            }
+            if body.len() + count > limit {
+                return Err(error(
+                    "too-large",
+                    format!("The download is over {limit} bytes"),
+                ));
+            }
             body.extend_from_slice(&chunk[..count]);
         }
     }
@@ -370,26 +438,71 @@ impl SkillImporter for ShellSkillImporter {
         env: &PrepareEnv,
         aborted: Option<Aborted<'_>>,
     ) -> Result<SkillImport, Thrown> {
-        use main_core::packages::ai_provider::{user_skills_archive as archive, user_skills_github as github, user_skills_import as import, user_skills_preview as preview};
-        let describe = |root: &str, rels: &[String], app: &str| preview::describe_candidates(root, rels, app, None);
+        use main_core::packages::ai_provider::{
+            user_skills_archive as archive, user_skills_github as github,
+            user_skills_import as import, user_skills_preview as preview,
+        };
+        let describe = |root: &str, rels: &[String], app: &str| {
+            preview::describe_candidates(root, rels, app, None)
+        };
         match source {
-            SkillImportSource::Folder { folder } => import::prepare_folder_import(folder, &env.app_skills_dir, &env.home_dir, describe),
-            SkillImportSource::Text { text } => import::prepare_single_file_import(text, import::SkillImportOrigin::Text, &env.app_skills_dir, &env.temp_dir, describe),
-            SkillImportSource::SkillFile { file } => import::prepare_skill_file_import(file, &env.app_skills_dir, &env.home_dir, &env.temp_dir, describe),
-            SkillImportSource::Zip { file } => import::prepare_zip_import(file, &env.app_skills_dir, &env.temp_dir, |bytes, root| archive::extract(bytes, root, false, "", false), describe),
+            SkillImportSource::Folder { folder } => {
+                import::prepare_folder_import(folder, &env.app_skills_dir, &env.home_dir, describe)
+            }
+            SkillImportSource::Text { text } => import::prepare_single_file_import(
+                text,
+                import::SkillImportOrigin::Text,
+                &env.app_skills_dir,
+                &env.temp_dir,
+                describe,
+            ),
+            SkillImportSource::SkillFile { file } => import::prepare_skill_file_import(
+                file,
+                &env.app_skills_dir,
+                &env.home_dir,
+                &env.temp_dir,
+                describe,
+            ),
+            SkillImportSource::Zip { file } => import::prepare_zip_import(
+                file,
+                &env.app_skills_dir,
+                &env.temp_dir,
+                |bytes, root| archive::extract(bytes, root, false, "", false),
+                describe,
+            ),
             SkillImportSource::Github { address } => {
-                let parsed = github::parse_github_skill_address(address)
-                    .ok_or_else(|| import::SkillImportError::new("bad-address", "Not a GitHub address the app accepts"))?;
-                let mut get = |url: &str, accept: &str, limit: usize| github_get(url, accept, limit, aborted);
+                let parsed = github::parse_github_skill_address(address).ok_or_else(|| {
+                    import::SkillImportError::new(
+                        "bad-address",
+                        "Not a GitHub address the app accepts",
+                    )
+                })?;
+                let mut get =
+                    |url: &str, accept: &str, limit: usize| github_get(url, accept, limit, aborted);
                 let resolved = github::resolve_github_skill_address(&parsed, &mut get)?;
-                let bytes = github::download_github_archive(&resolved.owner, &resolved.repo, &resolved.commit, None, &mut get)?;
+                let bytes = github::download_github_archive(
+                    &resolved.owner,
+                    &resolved.repo,
+                    &resolved.commit,
+                    None,
+                    &mut get,
+                )?;
                 let origin = import::SkillImportOrigin::Github {
                     repo: format!("{}/{}", resolved.owner, resolved.repo),
-                    ref_: resolved.ref_, commit: resolved.commit, path: resolved.path,
+                    ref_: resolved.ref_,
+                    commit: resolved.commit,
+                    path: resolved.path,
                 };
-                import::prepare_github_archive(origin, resolved.skill.as_deref(), &bytes, &env.app_skills_dir, &env.temp_dir,
+                import::prepare_github_archive(
+                    origin,
+                    resolved.skill.as_deref(),
+                    &bytes,
+                    &env.app_skills_dir,
+                    &env.temp_dir,
                     |bytes, root, path| archive::extract(bytes, root, true, path, true),
-                    preview::describe_candidates, aborted)
+                    preview::describe_candidates,
+                    aborted,
+                )
             }
         }
     }
@@ -426,24 +539,49 @@ impl SkillImporter for ShellSkillImporter {
         options: &CheckUpdateOptions,
         aborted: Option<Aborted<'_>>,
     ) -> Result<GitHubSkillUpdateCheck, Thrown> {
-        use main_core::packages::ai_provider::{user_skills_archive as archive, user_skills_github as github, user_skills_import as import, user_skills_preview as preview};
+        use main_core::packages::ai_provider::{
+            user_skills_archive as archive, user_skills_github as github,
+            user_skills_import as import, user_skills_preview as preview,
+        };
         import::check_github_skill_update(
-            &options.skill_dir, &options.app_skills_dir, &options.temp_dir,
+            &options.skill_dir,
+            &options.app_skills_dir,
+            &options.temp_dir,
             |repo| github::validate_repo(repo).map_err(Into::into),
             |repo, ref_| {
-                let address = github::parse_github_skill_address(repo)
-                    .ok_or_else(|| import::SkillImportError::new("not-github", "The source record names no repository"))?;
-                let mut get = |url: &str, accept: &str, limit: usize| github_get(url, accept, limit, aborted);
-                github::github_ref_commit(&address.owner, &address.repo, ref_, &mut get).map_err(Into::into)
+                let address = github::parse_github_skill_address(repo).ok_or_else(|| {
+                    import::SkillImportError::new(
+                        "not-github",
+                        "The source record names no repository",
+                    )
+                })?;
+                let mut get =
+                    |url: &str, accept: &str, limit: usize| github_get(url, accept, limit, aborted);
+                github::github_ref_commit(&address.owner, &address.repo, ref_, &mut get)
+                    .map_err(Into::into)
             },
             |repo, commit| {
-                let address = github::parse_github_skill_address(repo)
-                    .ok_or_else(|| import::SkillImportError::new("not-github", "The source record names no repository"))?;
-                let mut get = |url: &str, accept: &str, limit: usize| github_get(url, accept, limit, aborted);
-                github::download_github_archive(&address.owner, &address.repo, commit, None, &mut get).map_err(Into::into)
+                let address = github::parse_github_skill_address(repo).ok_or_else(|| {
+                    import::SkillImportError::new(
+                        "not-github",
+                        "The source record names no repository",
+                    )
+                })?;
+                let mut get =
+                    |url: &str, accept: &str, limit: usize| github_get(url, accept, limit, aborted);
+                github::download_github_archive(
+                    &address.owner,
+                    &address.repo,
+                    commit,
+                    None,
+                    &mut get,
+                )
+                .map_err(Into::into)
             },
             |bytes, root, path| archive::extract(bytes, root, true, path, false),
-            |dir, rel, app, ignored| preview::describe_skill_candidate(dir, rel, app, &[ignored.to_owned()]),
+            |dir, rel, app, ignored| {
+                preview::describe_skill_candidate(dir, rel, app, &[ignored.to_owned()])
+            },
             aborted,
         )
     }
@@ -459,27 +597,52 @@ impl SkillImporter for ShellSkillImporter {
             commit_skill_install,
         };
         let result = (|| {
-            let candidate = check.update.candidates.first()
+            let candidate = check
+                .update
+                .candidates
+                .first()
                 .ok_or_else(|| SkillImportError::new("no-skills", "Nothing to update"))?;
             if candidate.problem == Some("too-large") {
-                return Err(SkillImportError::new("too-large", format!("{} is too large", candidate.name)).into());
+                return Err(SkillImportError::new(
+                    "too-large",
+                    format!("{} is too large", candidate.name),
+                )
+                .into());
             }
             if candidate.problem.is_some() {
-                return Err(SkillImportError::new("not-installable", format!("{} cannot be installed", candidate.name)).into());
+                return Err(SkillImportError::new(
+                    "not-installable",
+                    format!("{} cannot be installed", candidate.name),
+                )
+                .into());
             }
             let plan = SkillInstallPlan {
                 candidate: candidate.clone(),
                 folder_name: jscompat::node_path::host::basename(&options.skill_dir, None),
                 replace_dirs: vec![options.skill_dir.clone()],
                 source: Some(SkillInstallSource {
-                    repo: check.record.repo.clone(), ref_: check.record.ref_.clone(),
-                    path: check.record.path.clone(), commit: check.commit.clone(),
+                    repo: check.record.repo.clone(),
+                    ref_: check.record.ref_.clone(),
+                    path: check.record.path.clone(),
+                    commit: check.commit.clone(),
                 }),
             };
-            let mut dirs = commit_skill_install(&options.app_skills_dir, &[plan], &mut CommitSkillInstallOptions {
-                now_ms: now_ms(), discard_replaced: Some(discard), limits: None, random: None,
-            })?;
-            Ok(InstalledSkill { key: candidate.key.clone(), name: candidate.name.clone(), dir: dirs.remove(0), replaced: true })
+            let mut dirs = commit_skill_install(
+                &options.app_skills_dir,
+                &[plan],
+                &mut CommitSkillInstallOptions {
+                    now_ms: now_ms(),
+                    discard_replaced: Some(discard),
+                    limits: None,
+                    random: None,
+                },
+            )?;
+            Ok(InstalledSkill {
+                key: candidate.key.clone(),
+                name: candidate.name.clone(),
+                dir: dirs.remove(0),
+                replaced: true,
+            })
         })();
         self.dispose_skill_import(&check.update);
         result
@@ -487,13 +650,17 @@ impl SkillImporter for ShellSkillImporter {
 
     fn export_skill_zip(&self, skill_dir: &str, out_path: &str) -> Result<(), Thrown> {
         main_core::packages::ai_provider::user_skills_import::export_skill_bundle_zip(
-            &[skill_dir.to_owned()], out_path, now_ms(),
+            &[skill_dir.to_owned()],
+            out_path,
+            now_ms(),
         )
     }
 
     fn export_skill_bundle_zip(&self, skill_dirs: &[String], out_path: &str) -> Result<(), Thrown> {
         main_core::packages::ai_provider::user_skills_import::export_skill_bundle_zip(
-            skill_dirs, out_path, now_ms(),
+            skill_dirs,
+            out_path,
+            now_ms(),
         )
     }
 }
@@ -509,15 +676,29 @@ impl TemplateCopyTabs for ShellTemplateCopyTabs {
         let local = pending.clone();
         let copy = copy.clone();
         let started = crate::host::w::on_core_local(move |provided| {
-            let Some(done) = local.borrow_mut().take() else { return };
-            let Some(tabs) = provided.all::<shell_ipc_w::tabs::TabsState>().into_iter().next() else {
+            let Some(done) = local.borrow_mut().take() else {
+                return;
+            };
+            let Some(tabs) = provided
+                .all::<shell_ipc_w::tabs::TabsState>()
+                .into_iter()
+                .next()
+            else {
                 return done(Ok(None));
             };
-            tabs.open_template_copy_owned(&copy, requester, Box::new(move |result| {
-                done(result.map(|opened| opened.map(|(tab_id, view)| OpenedCopy {
-                    tab_id, view, owns_copy: false,
-                })));
-            }));
+            tabs.open_template_copy_owned(
+                &copy,
+                requester,
+                Box::new(move |result| {
+                    done(result.map(|opened| {
+                        opened.map(|(tab_id, view)| OpenedCopy {
+                            tab_id,
+                            view,
+                            owns_copy: false,
+                        })
+                    }));
+                }),
+            );
         });
         if !started && let Some(done) = pending.borrow_mut().take() {
             done(Err("Core thread is unavailable".into()));
@@ -536,15 +717,28 @@ impl TemplateCopyTabs for ShellTemplateCopyTabs {
     fn open_files(&self, done: Box<dyn FnOnce(Result<Vec<OpenFileState>, OpenFilesSourceFailed>)>) {
         let mut done = Some(done);
         let _ = crate::host::w::on_core_local(|provided| {
-            let Some(tabs) = provided.all::<shell_ipc_w::tabs::TabsState>().into_iter().next() else {
+            let Some(tabs) = provided
+                .all::<shell_ipc_w::tabs::TabsState>()
+                .into_iter()
+                .next()
+            else {
                 return;
             };
             let Some(done) = done.take() else { return };
             tabs.open_documents(Box::new(move |result| {
-                done(result.map(|documents| documents.into_iter().map(|document| OpenFileState {
-                    file_path: document.file_path,
-                    dirty: document.dirty,
-                }).collect()).map_err(|_| OpenFilesSourceFailed));
+                done(
+                    result
+                        .map(|documents| {
+                            documents
+                                .into_iter()
+                                .map(|document| OpenFileState {
+                                    file_path: document.file_path,
+                                    dirty: document.dirty,
+                                })
+                                .collect()
+                        })
+                        .map_err(|_| OpenFilesSourceFailed),
+                );
             }));
         });
         if let Some(done) = done {
@@ -555,7 +749,11 @@ impl TemplateCopyTabs for ShellTemplateCopyTabs {
     fn focus_tab(&self, tab_id: &str) -> bool {
         let tab_id = tab_id.to_owned();
         crate::host::w::on_core(move |provided| {
-            let Some(tabs) = provided.all::<shell_ipc_w::tabs::TabsState>().into_iter().next() else {
+            let Some(tabs) = provided
+                .all::<shell_ipc_w::tabs::TabsState>()
+                .into_iter()
+                .next()
+            else {
                 return false;
             };
             let exists = tabs
@@ -572,7 +770,11 @@ impl TemplateCopyTabs for ShellTemplateCopyTabs {
 
     fn follow_opener_project(&self, copy: ViewId, opener: ViewId) {
         let _ = crate::host::w::on_core(move |provided| {
-            if let Some(tabs) = provided.all::<shell_ipc_w::tabs::TabsState>().into_iter().next() {
+            if let Some(tabs) = provided
+                .all::<shell_ipc_w::tabs::TabsState>()
+                .into_iter()
+                .next()
+            {
                 let opener = main_core::shell::projects::new_documents::NewDocumentOpener::Window {
                     web_contents_id: i64::from(opener.0),
                 };

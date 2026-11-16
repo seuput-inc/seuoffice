@@ -17,11 +17,19 @@ fn waiter() -> (mpsc::SyncSender<Result<(), PageError>>, Answers) {
 fn owner_of(view: u32) -> (NativeRequestOwner, RendererGeneration) {
     let epoch = RendererGeneration::new();
     let context = NativeContext::with_owner_loss((), epoch.clone(), epoch.loss_token());
-    (NativeRequestOwner { view: ViewId(view), context }, epoch)
+    (
+        NativeRequestOwner {
+            view: ViewId(view),
+            context,
+        },
+        epoch,
+    )
 }
 
 fn headless_export(
-    issuer: &NativeInvocationIssuer, surface: Surface, cancel: CancelToken,
+    issuer: &NativeInvocationIssuer,
+    surface: Surface,
+    cancel: CancelToken,
 ) -> shell_contract::ipc::NativeInvocationOperation {
     issuer.issue(
         NativeInvocationSelection::HeadlessExport {
@@ -47,7 +55,9 @@ fn every_native_invocation_and_print_loss_wakes_the_waiting_call_once() {
         let issuer = NativeInvocationIssuer::new(shutdown.clone());
         let operation = headless_export(&issuer, Surface::Sheets, operation_cancel.clone());
         let created = RendererGeneration::new();
-        let invocation = operation.reserve_target(ViewId(901), created.clone()).unwrap();
+        let invocation = operation
+            .reserve_target(ViewId(901), created.clone())
+            .unwrap();
         let (owner, registered) = owner_of(901);
         let cancel = CancelToken::default();
         let pending = CancelToken::default();
@@ -61,8 +71,10 @@ fn every_native_invocation_and_print_loss_wakes_the_waiting_call_once() {
             stop: stop.clone(),
         };
         let (send, received) = waiter();
-        let _subscriptions =
-            subscribe_losses(authority.losses(&cancel, &pending, &actor, &print).unwrap(), &send);
+        let _subscriptions = subscribe_losses(
+            authority.losses(&cancel, &pending, &actor, &print).unwrap(),
+            &send,
+        );
         match expired {
             0 => cancel.cancel(),
             1 => pending.cancel(),
@@ -75,7 +87,11 @@ fn every_native_invocation_and_print_loss_wakes_the_waiting_call_once() {
             8 => operation.finish(),
             _ => stop.cancel(),
         }
-        assert_eq!(received.try_recv().unwrap(), Err(PageError::Cancelled), "loss {expired}");
+        assert_eq!(
+            received.try_recv().unwrap(),
+            Err(PageError::Cancelled),
+            "loss {expired}"
+        );
         assert!(received.try_recv().is_err(), "loss {expired} answers once");
     }
 }
@@ -94,7 +110,9 @@ fn every_additional_captured_participant_wakes_the_waiting_call() {
     for expired in 0..12 {
         let issuer = NativeInvocationIssuer::new(CancelToken::default());
         let operation = headless_export(&issuer, Surface::Docs, CancelToken::default());
-        let invocation = operation.reserve_target(ViewId(900), RendererGeneration::new()).unwrap();
+        let invocation = operation
+            .reserve_target(ViewId(900), RendererGeneration::new())
+            .unwrap();
         let (owner, _root) = owner_of(900);
         let (participants, epochs): (Vec<_>, Vec<_>) = (1..13).map(owner_of).unzip();
         let authority = Authority::Native {
@@ -114,7 +132,11 @@ fn every_additional_captured_participant_wakes_the_waiting_call() {
             .unwrap();
         let _subscriptions = subscribe_losses(losses, &send);
         epochs[expired].revoke();
-        assert_eq!(received.try_recv().unwrap(), Err(PageError::Cancelled), "owner {expired}");
+        assert_eq!(
+            received.try_recv().unwrap(),
+            Err(PageError::Cancelled),
+            "owner {expired}"
+        );
     }
 }
 
@@ -153,8 +175,10 @@ fn existing_document_print_losses_wake_the_waiting_call() {
             stop: stop.clone(),
         };
         let (send, received) = waiter();
-        let _subscriptions =
-            subscribe_losses(authority.losses(&cancel, &pending, &stop, &print).unwrap(), &send);
+        let _subscriptions = subscribe_losses(
+            authority.losses(&cancel, &pending, &stop, &print).unwrap(),
+            &send,
+        );
         match expired {
             0 => cancel.cancel(),
             1 => pending.cancel(),
@@ -166,7 +190,11 @@ fn existing_document_print_losses_wake_the_waiting_call() {
             7 => operation_cancel.cancel(),
             _ => shutdown.cancel(),
         }
-        assert_eq!(received.try_recv().unwrap(), Err(PageError::Cancelled), "loss {expired}");
+        assert_eq!(
+            received.try_recv().unwrap(),
+            Err(PageError::Cancelled),
+            "loss {expired}"
+        );
     }
 }
 
@@ -198,5 +226,8 @@ fn multi_owner_print_callback_cancel_wakes_the_waiting_call() {
 #[test]
 fn a_print_caller_reads_cancel_and_stale_as_its_own_messages() {
     assert_eq!(owned_error(PageError::Cancelled), "Print request expired.");
-    assert_eq!(owned_error(PageError::Stale), "Print request is no longer available.");
+    assert_eq!(
+        owned_error(PageError::Stale),
+        "Print request is no longer available."
+    );
 }

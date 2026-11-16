@@ -15,16 +15,16 @@ pub(crate) mod diagram_headless;
 mod file_parse;
 mod page_renderer;
 pub(crate) mod save_guard;
-mod sheets_shell;
 pub(crate) mod sheets_headless;
+mod sheets_shell;
 pub(crate) mod shells;
+mod sidecar;
 pub(crate) mod slides_engine;
 pub(crate) mod slides_fonts;
 mod slides_generate;
 pub(crate) mod slides_media;
 pub(crate) mod slides_shell;
 mod slides_templates;
-mod sidecar;
 mod workbook;
 mod workbook_crypto;
 mod workbook_csv;
@@ -85,7 +85,8 @@ pub fn install(hosts: &mut Hosts, cx: &HostContext) -> Result<(), String> {
     hosts.insert(xmind);
     let diagram: shell_ipc_d1::diagram::DiagramEngineHost = Arc::new(diagram::Engine);
     hosts.insert(diagram);
-    let renderer: shell_ipc_d1::mindmap::PageRendererHost = Arc::new(page_renderer::Renderer(cx.clone()));
+    let renderer: shell_ipc_d1::mindmap::PageRendererHost =
+        Arc::new(page_renderer::Renderer(cx.clone()));
     hosts.insert(renderer);
     shells::install_mindmap(hosts);
     shells::install_diagram(hosts, cx);

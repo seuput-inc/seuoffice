@@ -21,17 +21,23 @@ pub(super) fn open(bytes: Bytes) -> Result<OpenedBook, String> {
         "fixedLayout": info.fixed_layout,
         "verticalWriting": info.vertical_writing,
     });
-    Ok(OpenedBook { summary, doc_hash: epub_document_hash(bytes.as_slice()) })
+    Ok(OpenedBook {
+        summary,
+        doc_hash: epub_document_hash(bytes.as_slice()),
+    })
 }
 
 pub(super) fn read_text(bytes: Bytes, path: &str) -> Option<DecodedText> {
     let EpubOpenResult::Opened(book) = open_epub(bytes.as_slice(), &EPUB_ZIP_LIMITS) else {
         return None;
     };
-    book.read_text(path).ok().flatten().map(|decoded| DecodedText {
-        text: decoded.text,
-        valid: decoded.valid,
-    })
+    book.read_text(path)
+        .ok()
+        .flatten()
+        .map(|decoded| DecodedText {
+            text: decoded.text,
+            valid: decoded.valid,
+        })
 }
 
 #[cfg(test)]

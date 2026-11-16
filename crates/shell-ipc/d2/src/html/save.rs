@@ -880,7 +880,9 @@ impl Exporter {
                     let pending = finish.pending();
                     let effects = finish.effects().clone();
                     let destination = finish.destination().clone();
-                    let callback = Box::new(move |saved| match saved {
+                    let callback: Box<
+                        dyn FnOnce(Result<shell_contract::hosts::SavedFile<PathBuf>, String>),
+                    > = Box::new(move |saved| match saved {
                         Err(error) => done(failure(error)),
                         Ok(saved) => acknowledged.finish_saved_owned(
                             view,

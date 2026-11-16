@@ -21,9 +21,12 @@ use windows::Win32::UI::Controls::{
 use windows::core::{BOOL, PCWSTR};
 
 use super::{Kind, Spec};
-use std::sync::Arc;
-use crate::host::dialog::owned::{Session, windows::{task_callback, task_registration}};
 use crate::host::dialog::owned::windows::with_hwnd;
+use crate::host::dialog::owned::{
+    Session,
+    windows::{task_callback, task_registration},
+};
+use std::sync::Arc;
 
 /// the id of button `i`
 const FIRST_BUTTON: i32 = 1000;
@@ -53,19 +56,32 @@ fn icon_of(kind: Kind) -> PCWSTR {
     }
 }
 
-
-pub(super) fn show_owned(spec: &Spec, parent: Option<&Window>, session: &Arc<Session>) -> Result<MessageBoxAnswer, String> {
+pub(super) fn show_owned(
+    spec: &Spec,
+    parent: Option<&Window>,
+    session: &Arc<Session>,
+) -> Result<MessageBoxAnswer, String> {
     show_impl(spec, parent, Some(session))
 }
 
-fn show_impl(spec: &Spec, parent: Option<&Window>, session: Option<&Arc<Session>>) -> Result<MessageBoxAnswer, String> {
+fn show_impl(
+    spec: &Spec,
+    parent: Option<&Window>,
+    session: Option<&Arc<Session>>,
+) -> Result<MessageBoxAnswer, String> {
     match parent {
-        Some(parent) => with_hwnd(parent, |window| show_with_parent(spec, Some(window), session))?,
+        Some(parent) => with_hwnd(parent, |window| {
+            show_with_parent(spec, Some(window), session)
+        })?,
         None => show_with_parent(spec, None, session),
     }
 }
 
-fn show_with_parent(spec: &Spec, parent: Option<HWND>, session: Option<&Arc<Session>>) -> Result<MessageBoxAnswer, String> {
+fn show_with_parent(
+    spec: &Spec,
+    parent: Option<HWND>,
+    session: Option<&Arc<Session>>,
+) -> Result<MessageBoxAnswer, String> {
     let title = wide(spec.title.as_deref().unwrap_or("SeuOffice"));
     let (instruction, content) = if spec.message.is_empty() {
         (spec.detail.clone().unwrap_or_default(), None)

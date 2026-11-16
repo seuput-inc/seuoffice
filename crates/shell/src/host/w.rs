@@ -30,7 +30,6 @@ pub fn install(hosts: &mut Hosts, _cx: &HostContext) {
     hosts.insert(clock);
 }
 
-
 thread_local! {
     /// What the batches provide each other, kept on the core thread for the
     /// shell's own hosts whose calls start elsewhere (a menu click, a worker)
@@ -100,7 +99,9 @@ pub(crate) fn post_core(job: impl FnOnce(&Provided, &Services) + Send + 'static)
 struct CorePostFailure(Option<Box<dyn FnOnce() + Send>>);
 impl Drop for CorePostFailure {
     fn drop(&mut self) {
-        if let Some(failure) = self.0.take() { failure(); }
+        if let Some(failure) = self.0.take() {
+            failure();
+        }
     }
 }
 
@@ -136,7 +137,6 @@ pub fn register_hooks(
     Ok(())
 }
 
-
 #[cfg(test)]
 mod checked_post_tests {
     use super::*;
@@ -146,11 +146,15 @@ mod checked_post_tests {
     fn discarded_guard_reports_failure_once_and_disarmed_guard_reports_nothing() {
         let failures = Arc::new(AtomicUsize::new(0));
         let observed = failures.clone();
-        let guard = CorePostFailure(Some(Box::new(move || { observed.fetch_add(1, Ordering::SeqCst); })));
+        let guard = CorePostFailure(Some(Box::new(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+        })));
         drop(guard);
         assert_eq!(failures.load(Ordering::SeqCst), 1);
         let observed = failures.clone();
-        let mut guard = CorePostFailure(Some(Box::new(move || { observed.fetch_add(1, Ordering::SeqCst); })));
+        let mut guard = CorePostFailure(Some(Box::new(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+        })));
         drop(guard.0.take());
         drop(guard);
         assert_eq!(failures.load(Ordering::SeqCst), 1);
@@ -166,14 +170,22 @@ mod checked_post_tests {
                     let failures = Arc::new(AtomicUsize::new(0));
                     let jobs = Arc::new(AtomicUsize::new(0));
                     let observed = failures.clone();
-                    let mut guard = CorePostFailure(Some(Box::new(move || { observed.fetch_add(1, Ordering::SeqCst); })));
+                    let mut guard = CorePostFailure(Some(Box::new(move || {
+                        observed.fetch_add(1, Ordering::SeqCst);
+                    })));
                     if queued && registered && !panic_before_disarm {
                         drop(guard.0.take());
                         jobs.fetch_add(1, Ordering::SeqCst);
                     }
                     drop(guard);
-                    assert_eq!(failures.load(Ordering::SeqCst) + jobs.load(Ordering::SeqCst), 1);
-                    assert_eq!(jobs.load(Ordering::SeqCst), usize::from(queued && registered && !panic_before_disarm));
+                    assert_eq!(
+                        failures.load(Ordering::SeqCst) + jobs.load(Ordering::SeqCst),
+                        1
+                    );
+                    assert_eq!(
+                        jobs.load(Ordering::SeqCst),
+                        usize::from(queued && registered && !panic_before_disarm)
+                    );
                 }
             }
         }
@@ -195,13 +207,17 @@ mod checked_post_tests {
         let failures = Arc::new(AtomicUsize::new(0));
         let observed = failures.clone();
         let _ = std::panic::catch_unwind(move || {
-            let _guard = CorePostFailure(Some(Box::new(move || { observed.fetch_add(1, Ordering::SeqCst); })));
+            let _guard = CorePostFailure(Some(Box::new(move || {
+                observed.fetch_add(1, Ordering::SeqCst);
+            })));
             panic!("discarded before registration");
         });
         assert_eq!(failures.load(Ordering::SeqCst), 1);
         let observed = failures.clone();
         let _ = std::panic::catch_unwind(move || {
-            let mut guard = CorePostFailure(Some(Box::new(move || { observed.fetch_add(1, Ordering::SeqCst); })));
+            let mut guard = CorePostFailure(Some(Box::new(move || {
+                observed.fetch_add(1, Ordering::SeqCst);
+            })));
             drop(guard.0.take());
             panic!("accepted job failed");
         });

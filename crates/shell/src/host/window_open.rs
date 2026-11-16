@@ -4,9 +4,12 @@
 //! asked: open the URL in the operating system's browser (and mail client),
 //! or nothing. A page without a bridge has no surface and gets nothing.
 
-use shell_contract::Surface;
-use shell_contract::{ViewId, runtime::{RendererGeneration, Views}};
 use crate::native::DocumentContext;
+use shell_contract::Surface;
+use shell_contract::{
+    ViewId,
+    runtime::{RendererGeneration, Views},
+};
 
 use crate::ipc::native_owner::{self, NativeOwnerAuthority};
 use crate::views::ViewTable;
@@ -71,30 +74,47 @@ pub fn external_target(policy: OpenPolicy, url: &str) -> Option<String> {
 /// supplies its retained creation generation and the popup producer's token;
 /// a current-view lookup alone never authorizes the effect.
 pub fn requested(
-    surface: Option<Surface>, views: &ViewTable, view: ViewId,
-    generation: &RendererGeneration, origin: &DocumentContext, url: &str,
+    surface: Option<Surface>,
+    views: &ViewTable,
+    view: ViewId,
+    generation: &RendererGeneration,
+    origin: &DocumentContext,
+    url: &str,
 ) -> Result<(), String> {
     let Some(target) = external_target(policy_of(surface), url) else {
         crate::trace::trace!("window", "window.open of {surface:?} refused: {url}");
         return Ok(());
     };
-    if !views.sender_of(view).is_some_and(|sender| Some(sender.surface) == surface) {
+    if !views
+        .sender_of(view)
+        .is_some_and(|sender| Some(sender.surface) == surface)
+    {
         return Err("The external-link source surface is no longer available.".into());
     }
     let owner = native_owner::capture_owner(views, view, generation)?;
-    if !owner.context.authority_ref::<NativeOwnerAuthority>().is_some_and(|proof| proof.origin == *origin) {
+    if !owner
+        .context
+        .authority_ref::<NativeOwnerAuthority>()
+        .is_some_and(|proof| proof.origin == *origin)
+    {
         return Err("The external-link source does not match the native popup origin.".into());
     }
-    let cancel = owner.loss_token().ok_or("The external-link source owner lease is unavailable.")?;
+    let cancel = owner
+        .loss_token()
+        .ok_or("The external-link source owner lease is unavailable.")?;
     std::thread::Builder::new()
         .name("shell-open-external".into())
         .spawn(move || {
             // Admission selects the immutable operation; the OS call must not
             // execute under a native-context, renderer or cancellation lock.
-            let open = native_owner::with_owner_effect(&owner, &cancel, || move || super::os_shell::open_external(&target));
+            let open = native_owner::with_owner_effect(&owner, &cancel, || {
+                move || super::os_shell::open_external(&target)
+            });
             match open {
                 Some(open) => {
-                    if let Err(error) = open() { eprintln!("shell: opening an external link: {error}"); }
+                    if let Err(error) = open() {
+                        eprintln!("shell: opening an external link: {error}");
+                    }
                 }
                 None => eprintln!("shell: external-link source was revoked before dispatch"),
             }
@@ -154,14 +174,31 @@ mod tests {
 
     #[test]
     fn generate_is_web_only_without_changing_other_apps_mail_policy() {
-        assert_eq!(target(Surface::ShellGenerate, "https://example.com/").as_deref(), Some("https://example.com/"));
-        assert_eq!(target(Surface::ShellGenerate, "http://example.com/").as_deref(), Some("http://example.com/"));
-        for url in ["mailto:a@example.com", "file:///tmp/document", "javascript:alert(1)", "data:text/html,x"] {
+        assert_eq!(
+            target(Surface::ShellGenerate, "https://example.com/").as_deref(),
+            Some("https://example.com/")
+        );
+        assert_eq!(
+            target(Surface::ShellGenerate, "http://example.com/").as_deref(),
+            Some("http://example.com/")
+        );
+        for url in [
+            "mailto:a@example.com",
+            "file:///tmp/document",
+            "javascript:alert(1)",
+            "data:text/html,x",
+        ] {
             assert_eq!(target(Surface::ShellGenerate, url), None);
         }
         for surface in [Surface::Html, Surface::Hwp, Surface::Markdown, Surface::Pdf] {
-            assert_eq!(target(surface, "mailto:a@example.com").as_deref(), Some("mailto:a@example.com"));
+            assert_eq!(
+                target(surface, "mailto:a@example.com").as_deref(),
+                Some("mailto:a@example.com")
+            );
         }
-        assert_eq!(external_target(policy_of(None), "https://example.com/"), None);
+        assert_eq!(
+            external_target(policy_of(None), "https://example.com/"),
+            None
+        );
     }
 }

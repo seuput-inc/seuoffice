@@ -737,7 +737,8 @@ pub(crate) fn entries(
             let e = Rc::clone(&e);
             let c = c.clone();
             let window_label = label.clone();
-            e.shell.present_open_tab(
+            let opener = Rc::clone(&e);
+            opener.shell.present_open_tab(
                 owner,
                 &label,
                 Box::new(move |opened| {

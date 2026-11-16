@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use shell_ipc_d2::hwp::{ParsedFile, ParsedFileKind};
 
 pub(super) fn parse(path: &str) -> ParsedFile {
@@ -23,7 +23,10 @@ fn convert(value: Value) -> Result<ParsedFile, String> {
         _ => return Err("file parser returned an invalid kind".into()),
     };
     Ok(ParsedFile {
-        ok: value.get("ok").and_then(Value::as_bool).ok_or("file parser returned no ok flag")?,
+        ok: value
+            .get("ok")
+            .and_then(Value::as_bool)
+            .ok_or("file parser returned no ok flag")?,
         kind,
         text: string("text"),
         error: string("error"),
@@ -32,11 +35,22 @@ fn convert(value: Value) -> Result<ParsedFile, String> {
 }
 
 pub(super) fn diagram_picture_has_no_original(file_name: String, bytes: Vec<u8>) -> bool {
-    seu_host::call("fileparse.readDiagramText", &json!({
-        "fileName": file_name,
-        "bytesBase64": jscompat::base64(&bytes),
-    })).ok().and_then(|answer| answer.get("reason").and_then(Value::as_str).map(str::to_owned))
-        .as_deref() == Some("no_original")
+    seu_host::call(
+        "fileparse.readDiagramText",
+        &json!({
+            "fileName": file_name,
+            "bytesBase64": jscompat::base64(&bytes),
+        }),
+    )
+    .ok()
+    .and_then(|answer| {
+        answer
+            .get("reason")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    })
+    .as_deref()
+        == Some("no_original")
 }
 
 #[cfg(test)]
@@ -45,7 +59,9 @@ mod tests {
 
     #[test]
     fn parser_failure_keeps_damage_and_message() {
-        let result = convert(json!({"ok": false, "kind": "text", "error": "damaged", "damaged": true})).unwrap();
+        let result =
+            convert(json!({"ok": false, "kind": "text", "error": "damaged", "damaged": true}))
+                .unwrap();
         assert!(!result.ok);
         assert!(result.damaged);
         assert_eq!(result.error.as_deref(), Some("damaged"));

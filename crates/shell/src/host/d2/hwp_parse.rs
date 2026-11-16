@@ -12,15 +12,24 @@ pub(crate) fn text(bytes: &[u8]) -> Result<String, String> {
 }
 
 pub(super) fn memos(bytes: &[u8]) -> Result<Vec<HwpMemo>, String> {
-    file_parse::hwp::hwp_memos_of(bytes).map(|memos| memos.into_iter().map(|memo| {
-        let field = |name| memo.get(name).and_then(serde_json::Value::as_str).map(str::to_owned);
-        HwpMemo {
-            author: field("author"),
-            date: field("date"),
-            text: field("text"),
-            place: field("place"),
-        }
-    }).collect())
+    file_parse::hwp::hwp_memos_of(bytes).map(|memos| {
+        memos
+            .into_iter()
+            .map(|memo| {
+                let field = |name| {
+                    memo.get(name)
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                };
+                HwpMemo {
+                    author: field("author"),
+                    date: field("date"),
+                    text: field("text"),
+                    place: field("place"),
+                }
+            })
+            .collect()
+    })
 }
 
 #[cfg(test)]

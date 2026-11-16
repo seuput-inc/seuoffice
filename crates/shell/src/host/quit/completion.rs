@@ -52,11 +52,7 @@ mod tests {
     #[test]
     fn accepted_job_with_discarded_completion_reports_failure() {
         let (send, receive) = mpsc::channel();
-        post_with_completion(
-            |job| job(),
-            drop,
-            move |result| send.send(result).unwrap(),
-        );
+        post_with_completion(|job| job(), drop, move |result| send.send(result).unwrap());
         assert!(matches!(receive.try_recv(), Ok(Err(_))));
     }
 
@@ -76,7 +72,10 @@ mod tests {
         let done = pending.lock().unwrap().take().unwrap();
         done(Ok(()));
         assert_eq!(receive.try_recv(), Ok(Ok(())));
-        assert!(matches!(receive.try_recv(), Err(mpsc::TryRecvError::Disconnected)));
+        assert!(matches!(
+            receive.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
     }
 
     #[test]
@@ -87,6 +86,9 @@ mod tests {
             |done| done.finish(Err("session persistence failed".into())),
             move |result| send.send(result).unwrap(),
         );
-        assert_eq!(receive.try_recv(), Ok(Err("session persistence failed".into())));
+        assert_eq!(
+            receive.try_recv(),
+            Ok(Err("session persistence failed".into()))
+        );
     }
 }

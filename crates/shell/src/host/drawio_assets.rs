@@ -52,7 +52,10 @@ fn read_exact_length(reader: &mut impl Read, len: usize) -> io::Result<Vec<u8>> 
     reader.read_exact(&mut bytes)?;
     let mut extra = [0];
     if reader.read(&mut extra)? != 0 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "asset grew while reading"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "asset grew while reading",
+        ));
     }
     Ok(bytes)
 }

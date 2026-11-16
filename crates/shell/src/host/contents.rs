@@ -26,9 +26,7 @@ use super::HostContext;
 use super::window::Windows;
 use crate::native::page::blocking;
 use crate::native::platform::{Current, PrintOps, PrintOutcome};
-use crate::native::{
-    CaptureSpec, DocumentContext, HeaderFooter, PageError, PdfSpec, WebviewExt,
-};
+use crate::native::{CaptureSpec, DocumentContext, HeaderFooter, PageError, PdfSpec, WebviewExt};
 use crate::views::ViewTable;
 
 /// a print of a large document can take a while
@@ -52,15 +50,20 @@ pub(crate) fn capture_png(webview: &Webview, spec: CaptureSpec) -> Result<Vec<u8
 /// `webContents.printToPDF` of `webview`, blocking. Not from the UI thread.
 pub(crate) fn print_pdf(webview: &Webview, spec: PdfSpec) -> Result<Vec<u8>, String> {
     let page = webview.page()?;
-    page.blocking(PAGE_TIMEOUT, |done| page.print_pdf(spec, None, done)).map_err(page_error_text)
+    page.blocking(PAGE_TIMEOUT, |done| page.print_pdf(spec, None, done))
+        .map_err(page_error_text)
 }
 
 /// Script evaluation in `webview`'s page, blocking. Not from the UI thread.
 pub(crate) fn evaluate(
-    webview: &Webview, js: &str, await_promise: bool,
+    webview: &Webview,
+    js: &str,
+    await_promise: bool,
 ) -> Result<Value, PageError> {
     let page = webview.page().map_err(PageError::Platform)?;
-    page.blocking(PAGE_TIMEOUT, |done| page.evaluate(js, await_promise, None, done))
+    page.blocking(PAGE_TIMEOUT, |done| {
+        page.evaluate(js, await_promise, None, done)
+    })
 }
 
 /// The system print dialog of `webview`; returns when the platform says how it ended
@@ -75,8 +78,10 @@ struct ShellContents {
 }
 
 pub fn install(hosts: &mut Hosts, cx: &HostContext) {
-    let contents: ContentsHost =
-        Arc::new(ShellContents { table: cx.views.clone(), windows: cx.windows.clone() });
+    let contents: ContentsHost = Arc::new(ShellContents {
+        table: cx.views.clone(),
+        windows: cx.windows.clone(),
+    });
     hosts.insert(contents);
 }
 
@@ -160,7 +165,11 @@ pub(crate) fn pdf_spec(options: &IpcValue) -> PdfSpec {
         _ => {}
     }
     if let Some(margins) = field(options, "margins") {
-        for (slot, key) in spec.margins_in.iter_mut().zip(["top", "right", "bottom", "left"]) {
+        for (slot, key) in spec
+            .margins_in
+            .iter_mut()
+            .zip(["top", "right", "bottom", "left"])
+        {
             if let Some(margin) = number(field(margins, key)) {
                 *slot = margin;
             }
@@ -182,7 +191,9 @@ pub(crate) fn pdf_spec(options: &IpcValue) -> PdfSpec {
 /// The browser and committed document an owned print is bound to. `origin` must be the
 /// registered document of the very browser behind `webview`.
 fn capture_target(
-    webview: &Webview, origin: &DocumentContext, generation: RendererGeneration,
+    webview: &Webview,
+    origin: &DocumentContext,
+    generation: RendererGeneration,
 ) -> Result<OwnedPrintTarget, String> {
     let frame = webview.native_browser()?;
     if !frame.is_same_browser(origin.browser()) {
@@ -191,20 +202,32 @@ fn capture_target(
     let document = origin
         .current_document()
         .ok_or_else(|| "The captured print document is no longer current.".to_owned())?;
-    Ok(OwnedPrintTarget { frame, document, generation })
+    Ok(OwnedPrintTarget {
+        frame,
+        document,
+        generation,
+    })
 }
 
 impl ShellContents {
     fn webview_of(&self, view: ViewId) -> Result<Webview, String> {
-        self.windows.webview(view).ok_or_else(|| format!("no view {}", view.0))
+        self.windows
+            .webview(view)
+            .ok_or_else(|| format!("no view {}", view.0))
     }
 
     /// One print of `view` under `authority`. `proof` is the owner whose native origin must
     /// independently prove it is the captured browser and document.
     #[allow(clippy::too_many_arguments)]
     fn print_owned(
-        &self, view: ViewId, proof: &NativeRequestOwner, authority: Authority, actor: CancelToken,
-        generation: RendererGeneration, cancel: &CancelToken, pending: &CancelToken,
+        &self,
+        view: ViewId,
+        proof: &NativeRequestOwner,
+        authority: Authority,
+        actor: CancelToken,
+        generation: RendererGeneration,
+        cancel: &CancelToken,
+        pending: &CancelToken,
         options: &IpcValue,
     ) -> Result<Vec<u8>, String> {
         let _actor_lifetime = ActorLifetime(actor.clone());
@@ -216,8 +239,13 @@ impl ShellContents {
         // The view lookup obtains only a transport conduit.
         let webview = self.webview_of(view)?;
         let target = capture_target(&webview, origin, generation)?;
-        let owner =
-            Owner { authority, cancel: cancel.clone(), pending: pending.clone(), actor, target };
+        let owner = Owner {
+            authority,
+            cancel: cancel.clone(),
+            pending: pending.clone(),
+            actor,
+            target,
+        };
         owner.print_pdf(&webview, pdf_spec(options))
     }
 }
@@ -232,13 +260,22 @@ impl Contents for ShellContents {
     }
 
     fn print_to_pdf_owned(
-        &self, origin: &NativeRequestOwner, destination: &NativeRequestOwner, cancel: &CancelToken,
-        pending: &CancelToken, options: IpcValue,
+        &self,
+        origin: &NativeRequestOwner,
+        destination: &NativeRequestOwner,
+        cancel: &CancelToken,
+        pending: &CancelToken,
+        options: IpcValue,
     ) -> Result<Vec<u8>, String> {
-        let generation =
-            destination.context.renderer().cloned().ok_or("Print renderer is unavailable.")?;
-        let authority =
-            Authority::Pair { origin: origin.clone(), destination: destination.clone() };
+        let generation = destination
+            .context
+            .renderer()
+            .cloned()
+            .ok_or("Print renderer is unavailable.")?;
+        let authority = Authority::Pair {
+            origin: origin.clone(),
+            destination: destination.clone(),
+        };
         self.print_owned(
             destination.view,
             destination,
@@ -252,9 +289,14 @@ impl Contents for ShellContents {
     }
 
     fn print_to_pdf_owned_many_extra(
-        &self, origin: &NativeRequestOwner, destination: &NativeRequestOwner,
-        participants: &[NativeRequestOwner], cancel: &CancelToken, pending: &CancelToken,
-        additional: &[CancelToken], options: IpcValue,
+        &self,
+        origin: &NativeRequestOwner,
+        destination: &NativeRequestOwner,
+        participants: &[NativeRequestOwner],
+        cancel: &CancelToken,
+        pending: &CancelToken,
+        additional: &[CancelToken],
+        options: IpcValue,
     ) -> Result<Vec<u8>, String> {
         let actor = CancelToken::default();
         let mut captured = Vec::with_capacity(participants.len() + 1);
@@ -279,9 +321,13 @@ impl Contents for ShellContents {
     }
 
     fn print_to_pdf_native_invocation(
-        &self, document: &shell_contract::ipc::NativeInvocationDocument,
-        owner: &NativeRequestOwner, participants: &[NativeRequestOwner], cancel: &CancelToken,
-        pending: &CancelToken, options: IpcValue,
+        &self,
+        document: &shell_contract::ipc::NativeInvocationDocument,
+        owner: &NativeRequestOwner,
+        participants: &[NativeRequestOwner],
+        cancel: &CancelToken,
+        pending: &CancelToken,
+        options: IpcValue,
     ) -> Result<Vec<u8>, String> {
         let actor = CancelToken::default();
         let authority = Authority::Native {
@@ -303,9 +349,13 @@ impl Contents for ShellContents {
     }
 
     fn print_to_pdf_existing_document(
-        &self, binding: &shell_contract::ipc::NativeExistingDocumentBinding,
-        participants: &[NativeRequestOwner], cancel: &CancelToken, pending: &CancelToken,
-        additional: &[CancelToken], options: IpcValue,
+        &self,
+        binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+        participants: &[NativeRequestOwner],
+        cancel: &CancelToken,
+        pending: &CancelToken,
+        additional: &[CancelToken],
+        options: IpcValue,
     ) -> Result<Vec<u8>, String> {
         let actor = CancelToken::default();
         let authority = Authority::ExistingDocument {
@@ -375,7 +425,12 @@ mod tests {
     use super::*;
 
     fn object(entries: Vec<(&str, IpcValue)>) -> IpcValue {
-        IpcValue::Object(entries.into_iter().map(|(k, v)| (k.to_owned(), v)).collect())
+        IpcValue::Object(
+            entries
+                .into_iter()
+                .map(|(k, v)| (k.to_owned(), v))
+                .collect(),
+        )
     }
 
     #[test]
@@ -386,7 +441,10 @@ mod tests {
             ("pageSize", IpcValue::String("A4".into())),
             (
                 "margins",
-                object(vec![("top", IpcValue::Number(0.0)), ("left", IpcValue::Number(0.5))]),
+                object(vec![
+                    ("top", IpcValue::Number(0.0)),
+                    ("left", IpcValue::Number(0.5)),
+                ]),
             ),
             ("pageRanges", IpcValue::String("1-2".into())),
             ("scale", IpcValue::Number(0.9)),
@@ -406,7 +464,10 @@ mod tests {
         );
         let custom = object(vec![(
             "pageSize",
-            object(vec![("width", IpcValue::Number(5.0)), ("height", IpcValue::Number(7.0))]),
+            object(vec![
+                ("width", IpcValue::Number(5.0)),
+                ("height", IpcValue::Number(7.0)),
+            ]),
         )]);
         assert_eq!(pdf_spec(&custom).paper_in, Some((5.0, 7.0)));
         assert_eq!(pdf_spec(&IpcValue::Undefined), PdfSpec::default());
@@ -432,7 +493,10 @@ mod tests {
 
     #[test]
     fn a_page_error_reads_as_its_own_message() {
-        assert_eq!(page_error_text(PageError::Timeout), PageError::Timeout.to_string());
+        assert_eq!(
+            page_error_text(PageError::Timeout),
+            PageError::Timeout.to_string()
+        );
         assert_eq!(
             page_error_text(PageError::Unsupported("transparent")),
             "transparent is not supported on this platform"

@@ -21,9 +21,7 @@ use tauri::Url;
 
 use super::browser::{BrowserCore, BrowserIdentity};
 use super::defer::defer;
-use super::document::{
-    DocumentContext, DocumentCore, DocumentIdentity, DocumentRevocation,
-};
+use super::document::{DocumentContext, DocumentCore, DocumentIdentity, DocumentRevocation};
 use super::events::{LoadError, RevokeReason};
 use super::ids::{BrowserId, NavigationId};
 use super::lifecycle::BrowserClose;
@@ -78,7 +76,9 @@ impl<'a> Navigator<'a> {
     /// Navigate and receive the committed document once. Only one observed navigation can be
     /// pending per browser.
     pub fn navigate_observed(
-        &self, url: Url, done: impl FnOnce(Result<ObservedDocument, String>) + Send + 'static,
+        &self,
+        url: Url,
+        done: impl FnOnce(Result<ObservedDocument, String>) + Send + 'static,
     ) -> Result<ObservedNavigation, String> {
         let control = self.0.control().ok_or("The webview is not attached.")?;
         let observed = Observed::new(url.clone(), Box::new(done), Arc::downgrade(&self.0.core));
@@ -109,7 +109,9 @@ pub struct ObservedDocumentSubscription {
 
 impl std::fmt::Debug for ObservedDocument {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ObservedDocument").field("url", &self.url).finish_non_exhaustive()
+        f.debug_struct("ObservedDocument")
+            .field("url", &self.url)
+            .finish_non_exhaustive()
     }
 }
 
@@ -133,10 +135,14 @@ impl ObservedDocument {
     /// Called once when the document stops being live, with the reason. An already lost
     /// document calls back (deferred) at once.
     pub fn when_lost(
-        &self, callback: impl FnOnce(RevokeReason) + Send + 'static,
+        &self,
+        callback: impl FnOnce(RevokeReason) + Send + 'static,
     ) -> Result<ObservedDocumentSubscription, String> {
         let revocation = self.document.subscribe_or_deliver(Box::new(callback))?;
-        Ok(ObservedDocumentSubscription { _revocation: revocation, _document: self.document.clone() })
+        Ok(ObservedDocumentSubscription {
+            _revocation: revocation,
+            _document: self.document.clone(),
+        })
     }
 }
 
@@ -168,7 +174,8 @@ pub struct ObservedNavigation {
 
 impl ObservedNavigation {
     pub fn cancel(&self) {
-        self.pending.finish(Err("Observed navigation was cancelled.".into()));
+        self.pending
+            .finish(Err("Observed navigation was cancelled.".into()));
     }
 }
 
@@ -222,7 +229,11 @@ impl Observed {
         }
     }
 
-    pub(crate) fn on_navigation_started(self: &Arc<Self>, navigation: &NavigationIdentity, url: &Url) {
+    pub(crate) fn on_navigation_started(
+        self: &Arc<Self>,
+        navigation: &NavigationIdentity,
+        url: &Url,
+    ) {
         let failure = {
             let mut state = self.lock();
             match state.phase {
@@ -245,7 +256,10 @@ impl Observed {
     }
 
     pub(crate) fn on_committed(
-        self: &Arc<Self>, navigation: &NavigationIdentity, document: &Arc<DocumentCore>, url: &Url,
+        self: &Arc<Self>,
+        navigation: &NavigationIdentity,
+        document: &Arc<DocumentCore>,
+        url: &Url,
     ) {
         let accepted = {
             let state = self.lock();
@@ -257,7 +271,10 @@ impl Observed {
         };
         match accepted {
             Some(true) => {
-                self.finish(Ok(ObservedDocument { document: document.clone(), url: url.clone() }));
+                self.finish(Ok(ObservedDocument {
+                    document: document.clone(),
+                    url: url.clone(),
+                }));
             }
             Some(false) => self.finish(Err("A different document committed.".into())),
             None => {}
@@ -326,7 +343,11 @@ fn deliver_failure(listener: Arc<FailureListener>, error: String) {
         if !listener.active.swap(false, Ordering::AcqRel) {
             return;
         }
-        let callback = listener.callback.lock().unwrap_or_else(|error| error.into_inner()).take();
+        let callback = listener
+            .callback
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
         if let Some(callback) = callback {
             callback(error);
         }
@@ -360,7 +381,9 @@ pub struct ReloadIdentity(Weak<Reload>);
 impl ReloadIdentity {
     /// True for the successor registered by THIS transaction.
     pub fn matches_registered(&self, context: &DocumentContext) -> bool {
-        self.0.upgrade().is_some_and(|reload| reload.matches(context))
+        self.0
+            .upgrade()
+            .is_some_and(|reload| reload.matches(context))
     }
 }
 
@@ -374,7 +397,8 @@ impl Clone for ReloadReservation {
 impl Drop for ReloadReservation {
     fn drop(&mut self) {
         if self.0.handles.fetch_sub(1, Ordering::AcqRel) == 1 {
-            self.0.finish(Err("Native reload reservation was dropped.".into()));
+            self.0
+                .finish(Err("Native reload reservation was dropped.".into()));
         }
     }
 }
@@ -414,7 +438,11 @@ impl Reload {
                 Ok(context) => state.successor = Some(context.identity().clone()),
                 Err(error) => state.failure = Some(error.clone()),
             }
-            (state.completion.take(), std::mem::take(&mut state.listeners), state.failure.clone())
+            (
+                state.completion.take(),
+                std::mem::take(&mut state.listeners),
+                state.failure.clone(),
+            )
         };
         if let Some(core) = self.core.upgrade() {
             core.clear_reload(self);
@@ -451,7 +479,11 @@ impl Reload {
         }
     }
 
-    pub(crate) fn on_navigation_started(self: &Arc<Self>, navigation: &NavigationIdentity, url: &Url) {
+    pub(crate) fn on_navigation_started(
+        self: &Arc<Self>,
+        navigation: &NavigationIdentity,
+        url: &Url,
+    ) {
         let failure = {
             let mut state = self.lock();
             match state.phase {
@@ -459,8 +491,12 @@ impl Reload {
                     state.phase = ReloadPhase::Bound(navigation.id);
                     None
                 }
-                ReloadPhase::Dispatched => Some("The dispatched reload became a different navigation."),
-                ReloadPhase::Prepared => Some("A navigation replaced the reload document before dispatch."),
+                ReloadPhase::Dispatched => {
+                    Some("The dispatched reload became a different navigation.")
+                }
+                ReloadPhase::Prepared => {
+                    Some("A navigation replaced the reload document before dispatch.")
+                }
                 ReloadPhase::Bound(_) | ReloadPhase::Committed(_) => {
                     Some("A second navigation started before the reload registered.")
                 }
@@ -473,7 +509,10 @@ impl Reload {
     }
 
     pub(crate) fn on_committed(
-        self: &Arc<Self>, navigation: &NavigationIdentity, document: &DocumentIdentity, url: &Url,
+        self: &Arc<Self>,
+        navigation: &NavigationIdentity,
+        document: &DocumentIdentity,
+        url: &Url,
     ) {
         enum Step {
             Commit,
@@ -513,7 +552,9 @@ impl Reload {
         }
         let next = match &self.lock().phase {
             ReloadPhase::Committed(document) if document == context.identity() => Next::Finish,
-            ReloadPhase::Dispatched | ReloadPhase::Bound(_) | ReloadPhase::Committed(_) => Next::Fail,
+            ReloadPhase::Dispatched | ReloadPhase::Bound(_) | ReloadPhase::Committed(_) => {
+                Next::Fail
+            }
             ReloadPhase::Prepared | ReloadPhase::Finished => Next::Ignore,
         };
         match next {
@@ -536,8 +577,8 @@ impl Reload {
     }
 
     pub(crate) fn on_refused(self: &Arc<Self>, url: &Url) {
-        let affected =
-            matches!(self.lock().phase, ReloadPhase::Dispatched) && url.as_str() == self.url.as_str();
+        let affected = matches!(self.lock().phase, ReloadPhase::Dispatched)
+            && url.as_str() == self.url.as_str();
         if affected {
             self.fail("The shell refused the reload navigation.");
         }
@@ -586,7 +627,10 @@ impl ReloadReservation {
 
     /// The receipt of the browser being reloaded; `None` once the browser is gone.
     pub fn browser_close(&self) -> Option<BrowserClose> {
-        self.0.core.upgrade().map(|core| core.close_receipt().clone())
+        self.0
+            .core
+            .upgrade()
+            .map(|core| core.close_receipt().clone())
     }
 
     pub fn matches_registered(&self, context: &DocumentContext) -> bool {
@@ -594,7 +638,8 @@ impl ReloadReservation {
     }
 
     pub fn on_failure(
-        &self, callback: impl FnOnce(String) + Send + 'static,
+        &self,
+        callback: impl FnOnce(String) + Send + 'static,
     ) -> Result<ReloadFailureSubscription, String> {
         let listener = Arc::new(FailureListener {
             active: AtomicBool::new(true),
@@ -622,14 +667,21 @@ impl ReloadReservation {
     /// Dispatch the approved reload. The completion runs once with the registered successor
     /// or the reason the transaction failed.
     pub(crate) fn dispatch(
-        &self, browser: &BrowserIdentity, admission: ReloadAdmission, completion: ReloadCompletion,
+        &self,
+        browser: &BrowserIdentity,
+        admission: ReloadAdmission,
+        completion: ReloadCompletion,
     ) {
         let reload = &self.0;
         {
             let mut state = reload.lock();
             if !matches!(state.phase, ReloadPhase::Prepared) {
                 drop(state);
-                defer(move || completion(Err("Native reload was already dispatched or cancelled.".into())));
+                defer(move || {
+                    completion(Err(
+                        "Native reload was already dispatched or cancelled.".into()
+                    ))
+                });
                 return;
             }
             state.completion = Some(completion);
@@ -670,7 +722,8 @@ mod tests {
 
     type Results<T> = Arc<Mutex<Vec<Result<T, String>>>>;
 
-    fn recorder<T: Send + 'static>() -> (Results<T>, impl FnOnce(Result<T, String>) + Send + 'static) {
+    fn recorder<T: Send + 'static>() -> (Results<T>, impl FnOnce(Result<T, String>) + Send + 'static)
+    {
         let results: Results<T> = Arc::default();
         let sink = results.clone();
         (results, move |result| sink.lock().unwrap().push(result))
@@ -680,14 +733,24 @@ mod tests {
         url("https://example.test/a")
     }
 
-    fn prepared(label: &str) -> (Arc<FakeControl>, BrowserIdentity, DocumentContext, ReloadReservation) {
+    fn prepared(
+        label: &str,
+    ) -> (
+        Arc<FakeControl>,
+        BrowserIdentity,
+        DocumentContext,
+        ReloadReservation,
+    ) {
         let control = FakeControl::new();
         let (browser, context) = registered_context_with_control(label, control.clone());
         let reservation = ReloadReservation::prepare(&context).unwrap();
         (control, browser, context, reservation)
     }
 
-    fn dispatch_ok(reservation: &ReloadReservation, browser: &BrowserIdentity) -> Results<DocumentContext> {
+    fn dispatch_ok(
+        reservation: &ReloadReservation,
+        browser: &BrowserIdentity,
+    ) -> Results<DocumentContext> {
         let (results, completion) = recorder();
         reservation.dispatch(browser, Box::new(|| Ok(())), Box::new(completion));
         results
@@ -701,10 +764,19 @@ mod tests {
         assert_eq!(*control.reloads.lock().unwrap(), 1);
 
         assert!(browser.core.admit_navigation(&page()));
-        assert!(old.is_revoked(), "the predecessor ends when the reload navigation is admitted");
-        assert!(results.lock().unwrap().is_empty(), "the predecessor's loss is not a failure");
+        assert!(
+            old.is_revoked(),
+            "the predecessor ends when the reload navigation is admitted"
+        );
+        assert!(
+            results.lock().unwrap().is_empty(),
+            "the predecessor's loss is not a failure"
+        );
         browser.core.commit(&page());
-        assert!(results.lock().unwrap().is_empty(), "committed but not registered yet");
+        assert!(
+            results.lock().unwrap().is_empty(),
+            "committed but not registered yet"
+        );
         let successor = browser.core.register_document(TEST_NONCE).unwrap();
 
         let results = results.lock().unwrap();
@@ -718,24 +790,45 @@ mod tests {
     fn a_newer_reservation_supersedes_the_older_one() {
         let (_control, browser, context, first) = prepared("reload-supersede");
         let (failures, on_failure) = recorder::<()>();
-        let _subscription = first.on_failure(move |reason| on_failure(Err(reason))).unwrap();
+        let _subscription = first
+            .on_failure(move |reason| on_failure(Err(reason)))
+            .unwrap();
         let second = ReloadReservation::prepare(&context).unwrap();
         assert_eq!(failures.lock().unwrap().len(), 1);
-        assert!(failures.lock().unwrap()[0].as_ref().unwrap_err().contains("superseded"));
+        assert!(
+            failures.lock().unwrap()[0]
+                .as_ref()
+                .unwrap_err()
+                .contains("superseded")
+        );
 
         let stale = dispatch_ok(&first, &browser);
-        assert!(stale.lock().unwrap()[0].is_err(), "a superseded reservation cannot be dispatched");
+        assert!(
+            stale.lock().unwrap()[0].is_err(),
+            "a superseded reservation cannot be dispatched"
+        );
         let live = dispatch_ok(&second, &browser);
-        assert!(live.lock().unwrap().is_empty(), "the newer reservation is still in flight");
+        assert!(
+            live.lock().unwrap().is_empty(),
+            "the newer reservation is still in flight"
+        );
     }
 
     #[test]
     fn a_page_initiated_navigation_before_dispatch_fails_the_reservation() {
         let (control, browser, _context, reservation) = prepared("reload-raced");
-        assert!(browser.core.admit_navigation(&url("https://example.test/elsewhere")));
+        assert!(
+            browser
+                .core
+                .admit_navigation(&url("https://example.test/elsewhere"))
+        );
         let results = dispatch_ok(&reservation, &browser);
         assert!(results.lock().unwrap()[0].is_err());
-        assert_eq!(*control.reloads.lock().unwrap(), 0, "no reload was dispatched");
+        assert_eq!(
+            *control.reloads.lock().unwrap(),
+            0,
+            "no reload was dispatched"
+        );
     }
 
     #[test]
@@ -755,14 +848,24 @@ mod tests {
     fn refused_admission_and_refused_dispatch_report_the_reason() {
         let (control, browser, _old, reservation) = prepared("reload-refused");
         let (results, completion) = recorder::<DocumentContext>();
-        reservation.dispatch(&browser, Box::new(|| Err("the owner moved on".into())), Box::new(completion));
-        assert_eq!(results.lock().unwrap()[0].as_ref().unwrap_err(), "the owner moved on");
+        reservation.dispatch(
+            &browser,
+            Box::new(|| Err("the owner moved on".into())),
+            Box::new(completion),
+        );
+        assert_eq!(
+            results.lock().unwrap()[0].as_ref().unwrap_err(),
+            "the owner moved on"
+        );
         assert_eq!(*control.reloads.lock().unwrap(), 0);
 
         let (control, browser, _old, reservation) = prepared("reload-webview-refused");
         control.fail_reload.store(true, Ordering::Release);
         let results = dispatch_ok(&reservation, &browser);
-        assert_eq!(results.lock().unwrap()[0].as_ref().unwrap_err(), "reload refused");
+        assert_eq!(
+            results.lock().unwrap()[0].as_ref().unwrap_err(),
+            "reload refused"
+        );
     }
 
     #[test]
@@ -770,7 +873,10 @@ mod tests {
         let (_control, browser, _old, reservation) = prepared("reload-failure");
         let results = dispatch_ok(&reservation, &browser);
         assert!(browser.core.admit_navigation(&page()));
-        browser.core.finish_load(Err(LoadError { code: Some(-3), description: "offline".into() }));
+        browser.core.finish_load(Err(LoadError {
+            code: Some(-3),
+            description: "offline".into(),
+        }));
         assert!(results.lock().unwrap()[0].is_err());
 
         let (_control, browser, _old, reservation) = prepared("reload-retired");
@@ -783,7 +889,9 @@ mod tests {
     fn the_last_dropped_handle_fails_the_transaction_and_a_clone_keeps_it_alive() {
         let (_control, _browser, _context, reservation) = prepared("reload-handles");
         let (failures, on_failure) = recorder::<()>();
-        let _subscription = reservation.on_failure(move |reason| on_failure(Err(reason))).unwrap();
+        let _subscription = reservation
+            .on_failure(move |reason| on_failure(Err(reason)))
+            .unwrap();
         let clone = reservation.clone();
         drop(reservation);
         assert!(failures.lock().unwrap().is_empty());
@@ -800,7 +908,10 @@ mod tests {
         let _receipt = browser.navigator().navigate_observed(page(), done).unwrap();
         assert_eq!(*control.navigations.lock().unwrap(), [page().to_string()]);
         assert!(
-            browser.navigator().navigate_observed(page(), |_| ()).is_err(),
+            browser
+                .navigator()
+                .navigate_observed(page(), |_| ())
+                .is_err(),
             "one observed navigation at a time"
         );
 
@@ -812,13 +923,21 @@ mod tests {
 
         let lost = Arc::new(Mutex::new(Vec::new()));
         let sink = lost.clone();
-        let _subscription = observed.when_lost(move |reason| sink.lock().unwrap().push(reason)).unwrap();
-        assert!(browser.core.admit_navigation(&url("https://example.test/next")));
+        let _subscription = observed
+            .when_lost(move |reason| sink.lock().unwrap().push(reason))
+            .unwrap();
+        assert!(
+            browser
+                .core
+                .admit_navigation(&url("https://example.test/next"))
+        );
         assert_eq!(*lost.lock().unwrap(), [RevokeReason::Navigation]);
 
         let late = Arc::new(Mutex::new(Vec::new()));
         let sink = late.clone();
-        let _already = observed.when_lost(move |reason| sink.lock().unwrap().push(reason)).unwrap();
+        let _already = observed
+            .when_lost(move |reason| sink.lock().unwrap().push(reason))
+            .unwrap();
         assert_eq!(*late.lock().unwrap(), [RevokeReason::Navigation]);
     }
 
@@ -830,7 +949,12 @@ mod tests {
         let (results, done) = recorder::<ObservedDocument>();
         browser.navigator().navigate_observed(page(), done).unwrap();
         browser.core.navigation_refused(&page());
-        assert!(results.lock().unwrap()[0].as_ref().unwrap_err().contains("refused"));
+        assert!(
+            results.lock().unwrap()[0]
+                .as_ref()
+                .unwrap_err()
+                .contains("refused")
+        );
 
         let (results, done) = recorder::<ObservedDocument>();
         let receipt = browser.navigator().navigate_observed(page(), done).unwrap();
@@ -841,7 +965,10 @@ mod tests {
         let (results, done) = recorder::<ObservedDocument>();
         browser.navigator().navigate_observed(page(), done).unwrap();
         assert!(browser.core.admit_navigation(&page()));
-        browser.core.finish_load(Err(LoadError { code: None, description: "dns".into() }));
+        browser.core.finish_load(Err(LoadError {
+            code: None,
+            description: "dns".into(),
+        }));
         assert!(results.lock().unwrap()[0].is_err());
     }
 }

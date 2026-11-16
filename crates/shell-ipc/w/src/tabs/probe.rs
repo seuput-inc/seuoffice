@@ -3904,7 +3904,7 @@ impl TabHooks for Hooks {
                                 std::slice::from_ref(&target),
                                 &cancel,
                                 &pending,
-                                || target,
+                                || target.clone(),
                             )
                         });
                 match captured {
@@ -4098,7 +4098,7 @@ impl TabHooks for Hooks {
                             std::slice::from_ref(&target),
                             &cancel,
                             &pending,
-                            || target,
+                            || target.clone(),
                         )
                     }) {
                         Ok(target) => target,

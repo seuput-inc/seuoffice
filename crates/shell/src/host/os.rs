@@ -66,8 +66,12 @@ static LAUNCH: Mutex<Launch> = Mutex::new(Launch {
 /// Called once on the core thread when the first native Shell registration is
 /// installed. Later OS events are separate immutable startup operations.
 pub(crate) fn take_startup_paths() -> Result<Vec<String>, String> {
-    let mut launch = LAUNCH.lock().map_err(|_| "The native launch queue is unavailable.")?;
-    if launch.ready { return Err("The initial native launch was already consumed.".into()); }
+    let mut launch = LAUNCH
+        .lock()
+        .map_err(|_| "The native launch queue is unavailable.")?;
+    if launch.ready {
+        return Err("The initial native launch was already consumed.".into());
+    }
     launch.ready = true;
     Ok(std::mem::take(&mut launch.pending))
 }

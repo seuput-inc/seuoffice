@@ -1,16 +1,28 @@
 //! Hidden Sheets renderer using its ordinary queued-open and PDF export handshake.
 use std::cell::RefCell;
-use std::rc::Rc;
 use std::collections::HashMap;
-use std::sync::{Arc, Condvar, Mutex, OnceLock, atomic::{AtomicBool, AtomicU64, Ordering}};
+use std::rc::Rc;
+use std::sync::{
+    Arc, Condvar, Mutex, OnceLock,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
 use std::time::Duration;
 
+use crate::native::{
+    BrowserCloseSubscription, BrowserId, DocumentContext, NativeEventKind, WebviewExt,
+};
 use main_core::packages::electron_utils::headless_export::HeadlessExportRequest;
 use main_core::shell::headless_export::HeadlessExportProduct;
-use shell_contract::{Surface, ViewId, WindowId, ipc::{NativeInvocationOperation, NativeInvocationTarget}, runtime::{CancelSubscription, RendererGeneration, Views}};
-use crate::native::{BrowserCloseSubscription, BrowserId, DocumentContext, NativeEventKind, WebviewExt};
+use shell_contract::{
+    Surface, ViewId, WindowId,
+    ipc::{NativeInvocationOperation, NativeInvocationTarget},
+    runtime::{CancelSubscription, RendererGeneration, Views},
+};
 
-use crate::host::{HostContext, window::{Bridge, ViewSpec, WindowOptions, WindowSpec}};
+use crate::host::{
+    HostContext,
+    window::{Bridge, ViewSpec, WindowOptions, WindowSpec},
+};
 
 type Done = Box<dyn FnOnce(Result<Option<HeadlessExportProduct>, String>) + Send>;
 const URL: &str = "genoffice-app://sheets/index.html";
@@ -21,7 +33,11 @@ thread_local! {
     static REGISTRATIONS: RefCell<HashMap<u64, Rc<shell_ipc_d1::sheets::RegisteredTab>>> = RefCell::new(HashMap::new());
 }
 
-fn terminal_cleanup_ready(browser_closed: bool, actor_drained: bool, window_terminal: bool) -> bool {
+fn terminal_cleanup_ready(
+    browser_closed: bool,
+    actor_drained: bool,
+    window_terminal: bool,
+) -> bool {
     browser_closed && actor_drained && window_terminal
 }
 
@@ -43,13 +59,21 @@ struct Deadline {
 
 impl Deadline {
     fn stop(&self) {
-        *self.stopped.lock().unwrap_or_else(|error| error.into_inner()) = true;
+        *self
+            .stopped
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = true;
         self.wake.notify_all();
     }
 
     fn expired(&self, timeout: Duration) -> bool {
-        let stopped = self.stopped.lock().unwrap_or_else(|error| error.into_inner());
-        let (stopped, elapsed) = self.wake.wait_timeout_while(stopped, timeout, |stopped| !*stopped)
+        let stopped = self
+            .stopped
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let (stopped, elapsed) = self
+            .wake
+            .wait_timeout_while(stopped, timeout, |stopped| !*stopped)
             .unwrap_or_else(|error| error.into_inner());
         elapsed.timed_out() && !*stopped
     }
@@ -84,8 +108,13 @@ impl Drop for CreationGuard {
     fn drop(&mut self) {
         if let Some(job) = self.0.take() {
             job.creation_finished.store(true, Ordering::Release);
-            if job.settled.load(Ordering::Acquire) { job.close_created(); }
-            else { job.finish(Err("The hidden Sheets constructor task was discarded".into())); }
+            if job.settled.load(Ordering::Acquire) {
+                job.close_created();
+            } else {
+                job.finish(Err(
+                    "The hidden Sheets constructor task was discarded".into()
+                ));
+            }
         }
     }
 }
@@ -102,30 +131,52 @@ impl Drop for DestroyGuard {
 
 impl Export {
     fn finish(self: &Arc<Self>, mut result: Result<(), String>) {
-        if self.settled.swap(true, Ordering::AcqRel) { return; }
+        if self.settled.swap(true, Ordering::AcqRel) {
+            return;
+        }
         if result.is_ok() {
             result = match self.created.get() {
-                Some(created) if created.generation.is_active() && self.cx.views.renderer_generation(created.view)
-                    .is_some_and(|current| current.same_generation(&created.generation)) => {
-                    if self.registered.get().is_some_and(|origin| origin.is_registered()
-                        && self.browser.get() == Some(&origin.browser().id())) {
+                Some(created)
+                    if created.generation.is_active()
+                        && self.cx.views.renderer_generation(created.view).is_some_and(
+                            |current| current.same_generation(&created.generation),
+                        ) =>
+                {
+                    if self.registered.get().is_some_and(|origin| {
+                        origin.is_registered() && self.browser.get() == Some(&origin.browser().id())
+                    }) {
                         created.target.registered_document().and_then(|document| {
-                            crate::ipc::native_owner::with_native_invocation_effect(&created.target,
-                                document.owner(), self.operation.cancel(), self.operation.shutdown(), || ())
-                                .ok_or_else(|| "The Sheets native invocation expired before completion".into())
+                            crate::ipc::native_owner::with_native_invocation_effect(
+                                &created.target,
+                                document.owner(),
+                                self.operation.cancel(),
+                                self.operation.shutdown(),
+                                || (),
+                            )
+                            .ok_or_else(|| {
+                                "The Sheets native invocation expired before completion".into()
+                            })
                         })
-                    } else { Err("The Sheets exporter has no matching registered native document".into()) }
+                    } else {
+                        Err("The Sheets exporter has no matching registered native document".into())
+                    }
                 }
                 _ => Err("The Sheets export renderer was replaced".into()),
             };
         }
-        *self.result.lock().unwrap_or_else(|error| error.into_inner()) = Some(result);
+        *self
+            .result
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(result);
         self.deadline.stop();
         self.close_created();
     }
 
     fn append_cleanup_error(&self, error: String) {
-        let mut result = self.result.lock().unwrap_or_else(|error| error.into_inner());
+        let mut result = self
+            .result
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if let Some(current) = result.take() {
             *result = Some(Err(match current {
                 Ok(()) => format!("The Sheets export completed, but cleanup failed: {error}"),
@@ -136,60 +187,88 @@ impl Export {
 
     fn close_created(self: &Arc<Self>) {
         if self.created.get().is_none() {
-            if self.creation_finished.load(Ordering::Acquire) { self.complete(); }
+            if self.creation_finished.load(Ordering::Acquire) {
+                self.complete();
+            }
             return;
         }
-        if !self.creation_finished.load(Ordering::Acquire) { return; }
+        if !self.creation_finished.load(Ordering::Acquire) {
+            return;
+        }
         if !self.window_terminal.load(Ordering::Acquire)
-            && !self.cleanup_started.swap(true, Ordering::AcqRel) {
+            && !self.cleanup_started.swap(true, Ordering::AcqRel)
+        {
             self.clone().destroy();
         }
-        let proof = self.native_receipt.lock().unwrap_or_else(|error| error.into_inner()).clone();
-        let Some(proof) = proof else { return; };
-        if self.cleanup_finished.swap(true, Ordering::AcqRel) { return; }
+        let proof = self
+            .native_receipt
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        let Some(proof) = proof else {
+            return;
+        };
+        if self.cleanup_finished.swap(true, Ordering::AcqRel) {
+            return;
+        }
         let job = self.clone();
         let unavailable = self.clone();
-        crate::host::w::post_core_checked(move |_, _| {
-            let registration = REGISTRATIONS.with(|registrations| registrations.borrow().get(&job.id).cloned());
-            match (registration, shell_ipc_d1::sheets::views()) {
-                (Some(registration), Some(editor)) => {
-                    let completed = job.clone();
-                    editor.finish_headless_export(registration, proof, Box::new(move |result| {
-                        match result {
-                            Ok(()) => {
-                                REGISTRATIONS.with(|registrations| { registrations.borrow_mut().remove(&completed.id); });
-                                completed.actor_drained.store(true, Ordering::Release);
-                                completed.complete();
-                            }
-                            Err(error) => {
-                                completed.append_cleanup_error(error);
-                                completed.report_cleanup_failure();
-                            }
-                        }
-                    }));
+        crate::host::w::post_core_checked(
+            move |_, _| {
+                let registration = REGISTRATIONS
+                    .with(|registrations| registrations.borrow().get(&job.id).cloned());
+                match (registration, shell_ipc_d1::sheets::views()) {
+                    (Some(registration), Some(editor)) => {
+                        let completed = job.clone();
+                        editor.finish_headless_export(
+                            registration,
+                            proof,
+                            Box::new(move |result| match result {
+                                Ok(()) => {
+                                    REGISTRATIONS.with(|registrations| {
+                                        registrations.borrow_mut().remove(&completed.id);
+                                    });
+                                    completed.actor_drained.store(true, Ordering::Release);
+                                    completed.complete();
+                                }
+                                Err(error) => {
+                                    completed.append_cleanup_error(error);
+                                    completed.report_cleanup_failure();
+                                }
+                            }),
+                        );
+                    }
+                    (None, _) if !job.actor_started.load(Ordering::Acquire) => {
+                        job.actor_drained.store(true, Ordering::Release);
+                        job.complete();
+                    }
+                    _ => {
+                        job.append_cleanup_error(
+                            "The Sheets headless registration is unavailable".into(),
+                        );
+                        job.report_cleanup_failure();
+                    }
                 }
-                (None, _) if !job.actor_started.load(Ordering::Acquire) => {
-                    job.actor_drained.store(true, Ordering::Release);
-                    job.complete();
-                }
-                _ => {
-                    job.append_cleanup_error("The Sheets headless registration is unavailable".into());
-                    job.report_cleanup_failure();
-                }
-            }
-        }, move || {
-            unavailable.append_cleanup_error("The Sheets core services are unavailable".into());
-            unavailable.report_cleanup_failure();
-        });
+            },
+            move || {
+                unavailable.append_cleanup_error("The Sheets core services are unavailable".into());
+                unavailable.report_cleanup_failure();
+            },
+        );
     }
 
     fn destroy(self: Arc<Self>) {
-        let Some(created) = self.created.get() else { self.complete(); return; };
+        let Some(created) = self.created.get() else {
+            self.complete();
+            return;
+        };
         if let Err(error) = created.proof.close().request_close() {
             self.append_cleanup_error(error);
             self.report_cleanup_failure();
         }
-        let Ok(window) = created.window_lifecycle.window_handle() else { return; };
+        let Ok(window) = created.window_lifecycle.window_handle() else {
+            return;
+        };
         let ui = self.cx.ui.clone();
         let pending = DestroyGuard(Some(self.clone()));
         ui.post(Box::new(move || {
@@ -207,38 +286,76 @@ impl Export {
     }
 
     fn report_cleanup_failure(&self) {
-        let result = self.result.lock().unwrap_or_else(|error| error.into_inner()).take();
-        let done = self.done.lock().unwrap_or_else(|error| error.into_inner()).take();
-        if let (Some(done), Some(result)) = (done, result) { done(result.map(|()| None)); }
+        let result = self
+            .result
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        let done = self
+            .done
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        if let (Some(done), Some(result)) = (done, result) {
+            done(result.map(|()| None));
+        }
     }
 
     fn complete(&self) {
-        if self.created.get().is_some() && !terminal_cleanup_ready(
-            self.closed.load(Ordering::Acquire),
-            self.actor_drained.load(Ordering::Acquire),
-            self.window_terminal.load(Ordering::Acquire),
-        ) { return; }
-        let subscription = self.closing.lock().unwrap_or_else(|error| error.into_inner()).take();
+        if self.created.get().is_some()
+            && !terminal_cleanup_ready(
+                self.closed.load(Ordering::Acquire),
+                self.actor_drained.load(Ordering::Acquire),
+                self.window_terminal.load(Ordering::Acquire),
+            )
+        {
+            return;
+        }
+        let subscription = self
+            .closing
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
         drop(subscription);
         if self.closed.load(Ordering::Acquire) {
             if let Some(created) = self.created.get() {
-                self.cx.views.remove_view_if_generation(created.view, &created.generation);
+                self.cx
+                    .views
+                    .remove_view_if_generation(created.view, &created.generation);
                 self.cx.views.remove_window(created.window);
             }
         }
-        let result = self.result.lock().unwrap_or_else(|error| error.into_inner()).take();
-        let Some(result) = result else { return; };
-        let done = self.done.lock().unwrap_or_else(|error| error.into_inner()).take();
-        if let Some(done) = done { done(result.map(|()| None)); }
+        let result = self
+            .result
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        let Some(result) = result else {
+            return;
+        };
+        let done = self
+            .done
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        if let Some(done) = done {
+            done(result.map(|()| None));
+        }
     }
 }
 
 pub(crate) fn export_headless(
-    cx: &HostContext, input: &str, out: &str, _format: &str,
-    _request: &HeadlessExportRequest, operation: &NativeInvocationOperation, done: Done,
+    cx: &HostContext,
+    input: &str,
+    out: &str,
+    _format: &str,
+    _request: &HeadlessExportRequest,
+    operation: &NativeInvocationOperation,
+    done: Done,
 ) -> Result<(), String> {
     let mut accepted = Err("Sheets headless export requires the registered core thread".to_owned());
-    let expected_url = crate::app_scheme::webview_url(URL).ok_or("The Sheets renderer URL is unavailable")?;
+    let expected_url =
+        crate::app_scheme::webview_url(URL).ok_or("The Sheets renderer URL is unavailable")?;
     let input = input.to_owned();
     let out = out.to_owned();
     let cx = cx.clone();
@@ -252,22 +369,37 @@ pub(crate) fn export_headless(
         let job = Arc::new(Export {
             id: NEXT_EXPORT.fetch_add(1, Ordering::Relaxed),
             native_receipt: Mutex::new(None),
-            cx: cx.clone(), created: OnceLock::new(), creation_finished: AtomicBool::new(false),
-            operation: operation.clone(), cancellation: Mutex::new(Vec::new()),
+            cx: cx.clone(),
+            created: OnceLock::new(),
+            creation_finished: AtomicBool::new(false),
+            operation: operation.clone(),
+            cancellation: Mutex::new(Vec::new()),
             actor_started: AtomicBool::new(false),
-            committed: AtomicBool::new(false), registered: OnceLock::new(), browser: OnceLock::new(),
-            closing: Mutex::new(None), closed: AtomicBool::new(false), settled: AtomicBool::new(false),
-            actor_drained: AtomicBool::new(false), window_terminal: AtomicBool::new(false),
-            cleanup_started: AtomicBool::new(false), cleanup_finished: AtomicBool::new(false),
-            result: Mutex::new(None), done: Mutex::new(done.take()),
+            committed: AtomicBool::new(false),
+            registered: OnceLock::new(),
+            browser: OnceLock::new(),
+            closing: Mutex::new(None),
+            closed: AtomicBool::new(false),
+            settled: AtomicBool::new(false),
+            actor_drained: AtomicBool::new(false),
+            window_terminal: AtomicBool::new(false),
+            cleanup_started: AtomicBool::new(false),
+            cleanup_finished: AtomicBool::new(false),
+            result: Mutex::new(None),
+            done: Mutex::new(done.take()),
             deadline: Arc::new(Deadline::default()),
         });
         for cancel in [operation.cancel(), operation.shutdown()] {
             let weak = Arc::downgrade(&job);
             let subscription = cancel.on_cancel(move || {
-                if let Some(job) = weak.upgrade() { job.finish(Err("The Sheets headless invocation was cancelled".into())); }
+                if let Some(job) = weak.upgrade() {
+                    job.finish(Err("The Sheets headless invocation was cancelled".into()));
+                }
             });
-            job.cancellation.lock().unwrap_or_else(|error| error.into_inner()).push(subscription);
+            job.cancellation
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(subscription);
         }
         let ui = cx.ui.clone();
         let creation_guard = CreationGuard(Some(job.clone()));
@@ -542,7 +674,10 @@ mod tests {
         for browser in [false, true] {
             for drain in [false, true] {
                 for window in [false, true] {
-                    assert_eq!(super::terminal_cleanup_ready(browser, drain, window), browser && drain && window);
+                    assert_eq!(
+                        super::terminal_cleanup_ready(browser, drain, window),
+                        browser && drain && window
+                    );
                 }
             }
         }
@@ -559,5 +694,4 @@ mod tests {
     fn an_unsettled_export_reaches_its_deadline() {
         assert!(Deadline::default().expired(Duration::ZERO));
     }
-
 }

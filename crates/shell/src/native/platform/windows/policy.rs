@@ -27,7 +27,9 @@ impl PolicyOps for Platform {
     /// `top_level` (the document class) but never `main_frame`: the navigation hook judged the
     /// main frame's navigation once, as it started.
     fn apply_policy(
-        platform: &PlatformWebview, browser: &BrowserIdentity, policy: &RequestPolicy,
+        platform: &PlatformWebview,
+        browser: &BrowserIdentity,
+        policy: &RequestPolicy,
     ) -> Result<(), String> {
         let failed =
             |what: &'static str| move |error: windows::core::Error| format!("{what}: {error}");
@@ -78,8 +80,9 @@ impl PolicyOps for Platform {
         // SAFETY: UI thread, inside the `with_webview` closure that attached the observers; the
         // settings, the filter and the handler belong to this webview.
         unsafe {
-            let settings =
-                core.Settings().map_err(failed("The WebView2 settings are unavailable"))?;
+            let settings = core
+                .Settings()
+                .map_err(failed("The WebView2 settings are unavailable"))?;
             settings
                 .SetIsScriptEnabled(policy.javascript())
                 .map_err(failed("The page script policy could not be applied"))?;

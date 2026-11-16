@@ -10,7 +10,12 @@ use shell_ipc_w::tabs::TabsState;
 
 use super::visible::string;
 
-pub(super) fn dispatch(state: Rc<TabsState>, services: Services, call: HostCall, done: Box<dyn FnOnce(Settled)>) {
+pub(super) fn dispatch(
+    state: Rc<TabsState>,
+    services: Services,
+    call: HostCall,
+    done: Box<dyn FnOnce(Settled)>,
+) {
     if call.method != "resolve" {
         return done(Err(format!("unknown TargetResolver.{}", call.method)));
     }
@@ -22,7 +27,10 @@ pub(super) fn dispatch(state: Rc<TabsState>, services: Services, call: HostCall,
         Some(family) => family.editor(),
         None => return done(Err("invalid document family".to_owned())),
     };
-    let focus = matches!(call.args.get(2).and_then(|v| v.get("focus")).as_deref(), Some(JsonValue::Bool(true)));
+    let focus = matches!(
+        call.args.get(2).and_then(|v| v.get("focus")).as_deref(),
+        Some(JsonValue::Bool(true))
+    );
     let next = state.clone();
     let lookup = state.clone();
     state.open_documents(Box::new(move |result| {
@@ -35,19 +43,24 @@ pub(super) fn dispatch(state: Rc<TabsState>, services: Services, call: HostCall,
             Err(error) => return done(Err(error)),
         };
         let id = tab.id.clone();
-        let finish = move |answer: Result<TabLoadResult<shell_contract::ViewId>, String>| {
-            match answer {
+        let finish =
+            move |answer: Result<TabLoadResult<shell_contract::ViewId>, String>| match answer {
                 Ok(TabLoadResult::Ready(view)) if services.views.sender_of(view).is_some() => {
                     if focus && !tab.active && !next.reveal_tab(&tab.id) {
-                        eprintln!("[mcp] could not bring the target document into view: {}", tab.id);
+                        eprintln!(
+                            "[mcp] could not bring the target document into view: {}",
+                            tab.id
+                        );
                     }
                     done(Ok(Some(JsonValue::Number(f64::from(view.0)))));
                 }
-                Ok(TabLoadResult::NeedsUser) => done(Err(format!("\"{}\" needs user interaction before it can open", tab.title))),
+                Ok(TabLoadResult::NeedsUser) => done(Err(format!(
+                    "\"{}\" needs user interaction before it can open",
+                    tab.title
+                ))),
                 Ok(_) => done(Err(format!("\"{}\" is no longer open", tab.title))),
                 Err(error) => done(Err(error)),
-            }
-        };
+            };
         if lookup.is_detached_tab(&id) {
             match lookup.tab_contents(&id) {
                 Some(view) => finish(Ok(TabLoadResult::Ready(view))),

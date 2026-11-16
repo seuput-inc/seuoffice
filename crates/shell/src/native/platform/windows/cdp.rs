@@ -79,7 +79,10 @@ impl Subscription {
     pub(super) fn cancel(self) {
         // SAFETY: UI thread. A failure means the webview is already gone, which removed
         // the handler with it.
-        let _ = unsafe { self.receiver.remove_DevToolsProtocolEventReceived(self.token) };
+        let _ = unsafe {
+            self.receiver
+                .remove_DevToolsProtocolEventReceived(self.token)
+        };
     }
 }
 
@@ -88,12 +91,16 @@ pub(super) struct Cdp {
     core: ICoreWebView2,
 }
 
-fn answer(
-    method: &str, status: windows::core::Result<()>, json: &str,
-) -> Result<Value, PageError> {
+fn answer(method: &str, status: windows::core::Result<()>, json: &str) -> Result<Value, PageError> {
     if let Err(error) = status {
-        let detail = if json.is_empty() { String::new() } else { format!(": {json}") };
-        return Err(PageError::Platform(format!("{method} failed: {error}{detail}")));
+        let detail = if json.is_empty() {
+            String::new()
+        } else {
+            format!(": {json}")
+        };
+        return Err(PageError::Platform(format!(
+            "{method} failed: {error}{detail}"
+        )));
     }
     if json.is_empty() {
         return Ok(Value::Null);
@@ -110,7 +117,10 @@ fn evaluated(answer: Value) -> Result<Value, PageError> {
             .unwrap_or("script evaluation failed");
         return Err(PageError::Platform(message.to_owned()));
     }
-    Ok(answer.pointer("/result/value").cloned().unwrap_or(Value::Null))
+    Ok(answer
+        .pointer("/result/value")
+        .cloned()
+        .unwrap_or(Value::Null))
 }
 
 fn data_bytes(method: &str, answer: &Value) -> Result<Vec<u8>, PageError> {
@@ -176,7 +186,9 @@ fn virtual_key(chord: &KeyChord) -> u32 {
     {
         return u32::from(*byte);
     }
-    if let Some(number) = code.strip_prefix('F').and_then(|rest| rest.parse::<u32>().ok())
+    if let Some(number) = code
+        .strip_prefix('F')
+        .and_then(|rest| rest.parse::<u32>().ok())
         && (1..=12).contains(&number)
     {
         return 111 + number;
@@ -229,12 +241,19 @@ fn key_events(chord: &KeyChord) -> VecDeque<(&'static str, Value)> {
     } else {
         None
     };
-    let mut down = base(if text.is_some() { "keyDown" } else { "rawKeyDown" });
+    let mut down = base(if text.is_some() {
+        "keyDown"
+    } else {
+        "rawKeyDown"
+    });
     if let Some(text) = text {
         down["text"] = json!(text);
         down["unmodifiedText"] = json!(text);
     }
-    VecDeque::from([("Input.dispatchKeyEvent", down), ("Input.dispatchKeyEvent", base("keyUp"))])
+    VecDeque::from([
+        ("Input.dispatchKeyEvent", down),
+        ("Input.dispatchKeyEvent", base("keyUp")),
+    ])
 }
 
 impl Cdp {
@@ -247,19 +266,22 @@ impl Cdp {
     pub(super) fn call(&self, method: &'static str, params: &Value, then: Reply<Value>) {
         let pending = Pending::new(then);
         let handler_pending = pending.clone();
-        let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
-            move |status, json| {
+        let handler =
+            CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |status, json| {
                 handler_pending.complete(answer(method, status, &json));
                 Ok(())
-            },
-        ));
+            }));
         let name = HSTRING::from(method);
         let parameters = HSTRING::from(params.to_string());
         // SAFETY: UI thread; WebView2 copies both strings and holds the handler it was given.
-        let sent =
-            unsafe { self.core.CallDevToolsProtocolMethod(&name, &parameters, &handler) };
+        let sent = unsafe {
+            self.core
+                .CallDevToolsProtocolMethod(&name, &parameters, &handler)
+        };
         if let Err(error) = sent {
-            pending.complete(Err(PageError::Platform(format!("{method} failed: {error}"))));
+            pending.complete(Err(PageError::Platform(format!(
+                "{method} failed: {error}"
+            ))));
         }
     }
 
@@ -281,16 +303,21 @@ impl Cdp {
     }
 
     pub(super) fn subscribe(
-        &self, event: &str, mut handle: impl FnMut(&Value) + 'static,
+        &self,
+        event: &str,
+        mut handle: impl FnMut(&Value) + 'static,
     ) -> Result<Subscription, PageError> {
         let fail = |error: windows::core::Error| {
             PageError::Platform(format!("subscribing to {event} failed: {error}"))
         };
         // SAFETY: UI thread; the receiver outlives the registration it owns.
-        let receiver = unsafe { self.core.GetDevToolsProtocolEventReceiver(&HSTRING::from(event)) }
-            .map_err(fail)?;
-        let handler = DevToolsProtocolEventReceivedEventHandler::create(Box::new(
-            move |_, args| {
+        let receiver = unsafe {
+            self.core
+                .GetDevToolsProtocolEventReceiver(&HSTRING::from(event))
+        }
+        .map_err(fail)?;
+        let handler =
+            DevToolsProtocolEventReceivedEventHandler::create(Box::new(move |_, args| {
                 let Some(args) = args else {
                     return Ok(());
                 };
@@ -301,8 +328,7 @@ impl Cdp {
                     handle(&value);
                 }
                 Ok(())
-            },
-        ));
+            }));
         let mut token = 0i64;
         // SAFETY: UI thread; `token` is written once by the call.
         unsafe { receiver.add_DevToolsProtocolEventReceived(&handler, &mut token) }
@@ -355,12 +381,18 @@ impl Cdp {
             "deviceScaleFactor": viewport.device_scale_factor,
             "mobile": false,
         });
-        self.steps(VecDeque::from([("Emulation.setDeviceMetricsOverride", params)]), done);
+        self.steps(
+            VecDeque::from([("Emulation.setDeviceMetricsOverride", params)]),
+            done,
+        );
     }
 
     pub(super) fn add_init_script(&self, source: String, done: Reply<()>) {
         let params = json!({ "source": source });
-        self.steps(VecDeque::from([("Page.addScriptToEvaluateOnNewDocument", params)]), done);
+        self.steps(
+            VecDeque::from([("Page.addScriptToEvaluateOnNewDocument", params)]),
+            done,
+        );
     }
 
     pub(super) fn key(&self, chord: &KeyChord, done: Reply<()>) {
@@ -394,7 +426,9 @@ impl Cdp {
                         restore.call(
                             OVERRIDE,
                             &json!({}),
-                            Box::new(move |restored| done(shot.and_then(|png| restored.map(|_| png)))),
+                            Box::new(move |restored| {
+                                done(shot.and_then(|png| restored.map(|_| png)))
+                            }),
                         );
                     }),
                 );
@@ -422,9 +456,9 @@ impl Cdp {
                 };
                 let number = |pointer: &str| metrics.pointer(pointer).and_then(Value::as_f64);
                 let area = if whole_page {
-                    number("/cssContentSize/width").zip(number("/cssContentSize/height")).map(
-                        |(width, height)| clip(0.0, 0.0, width, height, spec.scale),
-                    )
+                    number("/cssContentSize/width")
+                        .zip(number("/cssContentSize/height"))
+                        .map(|(width, height)| clip(0.0, 0.0, width, height, spec.scale))
                 } else {
                     number("/cssVisualViewport/clientWidth")
                         .zip(number("/cssVisualViewport/clientHeight"))
@@ -485,7 +519,10 @@ fn touch(shared: &Shared, change: impl FnOnce(&mut Quiet)) {
 }
 
 fn request_id(params: &Value) -> Option<String> {
-    params.get("requestId").and_then(Value::as_str).map(str::to_owned)
+    params
+        .get("requestId")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
 }
 
 /// Waits until the page is loaded and no request has been in flight for `spec.quiet_ms`,
@@ -540,16 +577,18 @@ pub(super) fn wait_quiet(webview: &Webview, cdp: Cdp, spec: QuietSpec, done: Don
     let cleanup = UiBound::new((cdp.clone(), subscriptions));
     let owner = webview.clone();
     let timer_state = shared.clone();
-    let spawned = std::thread::Builder::new().name("webview-quiet".into()).spawn(move || {
-        let result = await_quiet(&timer_state, started, spec);
-        // The handlers and the protocol domains are released on the UI thread.
-        let _ = owner.with_webview(move |_| {
-            let (cdp, subscriptions) = cleanup.into_inner();
-            subscriptions.into_iter().for_each(Subscription::cancel);
-            cdp.call("Network.disable", &json!({}), Box::new(|_| ()));
+    let spawned = std::thread::Builder::new()
+        .name("webview-quiet".into())
+        .spawn(move || {
+            let result = await_quiet(&timer_state, started, spec);
+            // The handlers and the protocol domains are released on the UI thread.
+            let _ = owner.with_webview(move |_| {
+                let (cdp, subscriptions) = cleanup.into_inner();
+                subscriptions.into_iter().for_each(Subscription::cancel);
+                cdp.call("Network.disable", &json!({}), Box::new(|_| ()));
+            });
+            done(result);
         });
-        done(result);
-    });
     if let Err(error) = spawned {
         // The closure (and with it `done`) is gone; the caller sees `Cancelled`.
         eprintln!("shell: the page quiet timer could not start: {error}");
@@ -643,7 +682,10 @@ mod tests {
         let ctrl_e = KeyChord {
             key: "e".into(),
             code: "KeyE".into(),
-            modifiers: Modifiers { ctrl: true, ..Modifiers::default() },
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
         };
         let events = key_events(&ctrl_e);
         assert_eq!(events[0].1["type"], json!("rawKeyDown"));
@@ -651,7 +693,11 @@ mod tests {
         assert_eq!(events[0].1["windowsVirtualKeyCode"], json!(69));
         assert_eq!(events[1].1["type"], json!("keyUp"));
 
-        let typed = KeyChord { key: "a".into(), code: "KeyA".into(), modifiers: Modifiers::default() };
+        let typed = KeyChord {
+            key: "a".into(),
+            code: "KeyA".into(),
+            modifiers: Modifiers::default(),
+        };
         let events = key_events(&typed);
         assert_eq!(events[0].1["type"], json!("keyDown"));
         assert_eq!(events[0].1["text"], json!("a"));
@@ -660,9 +706,15 @@ mod tests {
     #[test]
     fn a_script_exception_surfaces_its_description() {
         let thrown = json!({"exceptionDetails": {"exception": {"description": "Error: stale"}}});
-        assert_eq!(evaluated(thrown), Err(PageError::Platform("Error: stale".into())));
+        assert_eq!(
+            evaluated(thrown),
+            Err(PageError::Platform("Error: stale".into()))
+        );
         let value = json!({"result": {"type": "number", "value": 2}});
         assert_eq!(evaluated(value), Ok(json!(2)));
-        assert_eq!(evaluated(json!({"result": {"type": "undefined"}})), Ok(Value::Null));
+        assert_eq!(
+            evaluated(json!({"result": {"type": "undefined"}})),
+            Ok(Value::Null)
+        );
     }
 }

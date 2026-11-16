@@ -1,107 +1,185 @@
-use std::rc::Rc;
-use main_core::shell::recovery_shell::{RestoredTabOpener, UnloadedTabSpec};
 use main_core::packages::electron_utils::recovery_store::RecoveryIdentity;
-use shell_contract::ipc::{NativeInvocationOperation, NativeInvocationPurpose, NativeInvocationSelection, NativeRecoveryCopy, NativeRecoveryDecision};
+use main_core::shell::recovery_shell::{RestoredTabOpener, UnloadedTabSpec};
 use shell_contract::Surface;
+use shell_contract::ipc::{
+    NativeInvocationOperation, NativeInvocationPurpose, NativeInvocationSelection,
+    NativeRecoveryCopy, NativeRecoveryDecision,
+};
+use std::rc::Rc;
 
 /// The factory is retained only by the native startup recovery runtime.
-pub(crate) type RecoveryIssuer = Rc<dyn Fn(NativeInvocationSelection,shell_contract::runtime::CancelToken) -> Result<NativeInvocationOperation,String>>;
+pub(crate) type RecoveryIssuer = Rc<
+    dyn Fn(
+        NativeInvocationSelection,
+        shell_contract::runtime::CancelToken,
+    ) -> Result<NativeInvocationOperation, String>,
+>;
 
-pub(crate) type StartupIssuer = Rc<dyn Fn(NativeInvocationSelection,shell_contract::runtime::CancelToken) -> Result<NativeInvocationOperation,String>>;
+pub(crate) type StartupIssuer = Rc<
+    dyn Fn(
+        NativeInvocationSelection,
+        shell_contract::runtime::CancelToken,
+    ) -> Result<NativeInvocationOperation, String>,
+>;
 
 pub(crate) fn issue_startup(
-    issuer:&StartupIssuer,paths:&[String],reopened_by_installer:bool,
-    shutdown:&shell_contract::runtime::CancelToken,
-) -> Result<NativeInvocationOperation,String> {
-    let selection=NativeInvocationSelection::StartupLaunch {
-        paths:paths.iter().map(std::path::PathBuf::from).collect(),
+    issuer: &StartupIssuer,
+    paths: &[String],
+    reopened_by_installer: bool,
+    shutdown: &shell_contract::runtime::CancelToken,
+) -> Result<NativeInvocationOperation, String> {
+    let selection = NativeInvocationSelection::StartupLaunch {
+        paths: paths.iter().map(std::path::PathBuf::from).collect(),
         reopened_by_installer,
     };
-    let cancel=shell_contract::runtime::CancelToken::default();
-    let operation=issuer(selection.clone(),cancel.clone())?;
-    if operation.selection()!=&selection || operation.purpose()!=NativeInvocationPurpose::StartupLaunch
-        || !operation.cancel().same_token(&cancel) || !operation.shutdown().same_token(shutdown) {
+    let cancel = shell_contract::runtime::CancelToken::default();
+    let operation = issuer(selection.clone(), cancel.clone())?;
+    if operation.selection() != &selection
+        || operation.purpose() != NativeInvocationPurpose::StartupLaunch
+        || !operation.cancel().same_token(&cancel)
+        || !operation.shutdown().same_token(shutdown)
+    {
         operation.finish();
-        return Err("The startup issuer returned a different selected operation or lifetime".into());
+        return Err(
+            "The startup issuer returned a different selected operation or lifetime".into(),
+        );
     }
-    if operation.with_active(||()).is_none() {
+    if operation.with_active(|| ()).is_none() {
         operation.finish();
         return Err("The startup operation is no longer active".into());
     }
     Ok(operation)
 }
 
-fn selection(spec:&UnloadedTabSpec) -> Result<NativeInvocationSelection,String> {
+fn selection(spec: &UnloadedTabSpec) -> Result<NativeInvocationSelection, String> {
     let surface = match spec.kind.as_str() {
-        "docs" => Surface::Docs, "sheets" => Surface::Sheets, "slides" => Surface::Slides,
-        "pdf" => Surface::Pdf, "markdown" => Surface::Markdown, "html" => Surface::Html,
-        "mindmap" => Surface::Mindmap, "hwp" => Surface::Hwp, "diagram" => Surface::Diagram,
+        "docs" => Surface::Docs,
+        "sheets" => Surface::Sheets,
+        "slides" => Surface::Slides,
+        "pdf" => Surface::Pdf,
+        "markdown" => Surface::Markdown,
+        "html" => Surface::Html,
+        "mindmap" => Surface::Mindmap,
+        "hwp" => Surface::Hwp,
+        "diagram" => Surface::Diagram,
         "epub" => Surface::Epub,
-        _ => return Err(format!("Unknown recovery editor kind {}",spec.kind)),
+        _ => return Err(format!("Unknown recovery editor kind {}", spec.kind)),
     };
     let selection = match &spec.opener {
-        RestoredTabOpener::File => match spec.file_path.as_deref().filter(|path| !path.is_empty()) {
-            Some(path) => NativeInvocationSelection::RecoveryFile { surface,path:path.into(),decision:NativeRecoveryDecision::Original },
-            None => NativeInvocationSelection::RecoveryBlank { surface,title:spec.title.clone() },
-        },
-        RestoredTabOpener::UntitledCopy { copy,save_as_default_path } => {
-            if copy.kind() != spec.kind { return Err("The recovery copy belongs to another editor kind".into()); }
+        RestoredTabOpener::File => {
+            match spec.file_path.as_deref().filter(|path| !path.is_empty()) {
+                Some(path) => NativeInvocationSelection::RecoveryFile {
+                    surface,
+                    path: path.into(),
+                    decision: NativeRecoveryDecision::Original,
+                },
+                None => NativeInvocationSelection::RecoveryBlank {
+                    surface,
+                    title: spec.title.clone(),
+                },
+            }
+        }
+        RestoredTabOpener::UntitledCopy {
+            copy,
+            save_as_default_path,
+        } => {
+            if copy.kind() != spec.kind {
+                return Err("The recovery copy belongs to another editor kind".into());
+            }
             let copy = match copy {
-                RecoveryIdentity::File(file) => NativeRecoveryCopy::File { path:file.file_path.clone().into() },
-                RecoveryIdentity::Untitled(copy) => NativeRecoveryCopy::Untitled { id:copy.untitled_id.clone(),ext:copy.ext.clone() },
+                RecoveryIdentity::File(file) => NativeRecoveryCopy::File {
+                    path: file.file_path.clone().into(),
+                },
+                RecoveryIdentity::Untitled(copy) => NativeRecoveryCopy::Untitled {
+                    id: copy.untitled_id.clone(),
+                    ext: copy.ext.clone(),
+                },
             };
-            NativeInvocationSelection::RecoveryCopy { surface,copy,title:spec.title.clone(),
-                save_as_default:save_as_default_path.as_deref().filter(|path| !path.is_empty()).map(Into::into) }
+            NativeInvocationSelection::RecoveryCopy {
+                surface,
+                copy,
+                title: spec.title.clone(),
+                save_as_default: save_as_default_path
+                    .as_deref()
+                    .filter(|path| !path.is_empty())
+                    .map(Into::into),
+            }
         }
     };
     Ok(selection)
 }
 
-fn issue(issuer:&RecoveryIssuer,selection:&NativeInvocationSelection,cancel:shell_contract::runtime::CancelToken) -> Result<NativeInvocationOperation,String> {
-    let operation = issuer(selection.clone(),cancel.clone())?;
-    if operation.purpose() != NativeInvocationPurpose::Recovery || operation.selection() != selection
-        || !operation.cancel().same_token(&cancel) {
+fn issue(
+    issuer: &RecoveryIssuer,
+    selection: &NativeInvocationSelection,
+    cancel: shell_contract::runtime::CancelToken,
+) -> Result<NativeInvocationOperation, String> {
+    let operation = issuer(selection.clone(), cancel.clone())?;
+    if operation.purpose() != NativeInvocationPurpose::Recovery
+        || operation.selection() != selection
+        || !operation.cancel().same_token(&cancel)
+    {
         operation.finish();
-        return Err("The recovery issuer returned a different selected operation or lifetime".into());
+        return Err(
+            "The recovery issuer returned a different selected operation or lifetime".into(),
+        );
     }
-    if operation.with_active(||()).is_none() {
+    if operation.with_active(|| ()).is_none() {
         operation.finish();
         return Err("The selected recovery plan is no longer active".into());
     }
     Ok(operation)
 }
 
-pub(crate) fn capture(issuer:&RecoveryIssuer,spec:&UnloadedTabSpec) -> Result<NativeInvocationOperation,String> {
-    issue(issuer,&selection(spec)?,shell_contract::runtime::CancelToken::default())
+pub(crate) fn capture(
+    issuer: &RecoveryIssuer,
+    spec: &UnloadedTabSpec,
+) -> Result<NativeInvocationOperation, String> {
+    issue(
+        issuer,
+        &selection(spec)?,
+        shell_contract::runtime::CancelToken::default(),
+    )
 }
 
 pub(crate) struct RecoveryPlan {
-    issuer:RecoveryIssuer,
-    selection:NativeInvocationSelection,
-    cancel:shell_contract::runtime::CancelToken,
-    guard:NativeInvocationOperation,
+    issuer: RecoveryIssuer,
+    selection: NativeInvocationSelection,
+    cancel: shell_contract::runtime::CancelToken,
+    guard: NativeInvocationOperation,
 }
 
 impl RecoveryPlan {
-    pub(crate) fn capture(issuer:&RecoveryIssuer,spec:&UnloadedTabSpec) -> Result<Self,String> {
-        let selection=selection(spec)?;
-        let cancel=shell_contract::runtime::CancelToken::default();
-        let guard=issue(issuer,&selection,cancel.clone())?;
-        Ok(Self { issuer:issuer.clone(),selection,cancel,guard })
+    pub(crate) fn capture(issuer: &RecoveryIssuer, spec: &UnloadedTabSpec) -> Result<Self, String> {
+        let selection = selection(spec)?;
+        let cancel = shell_contract::runtime::CancelToken::default();
+        let guard = issue(issuer, &selection, cancel.clone())?;
+        Ok(Self {
+            issuer: issuer.clone(),
+            selection,
+            cancel,
+            guard,
+        })
     }
 
-    pub(crate) fn guard(&self) -> NativeInvocationOperation { self.guard.clone() }
-    pub(crate) fn selection(&self) -> &NativeInvocationSelection { &self.selection }
+    pub(crate) fn guard(&self) -> NativeInvocationOperation {
+        self.guard.clone()
+    }
+    pub(crate) fn selection(&self) -> &NativeInvocationSelection {
+        &self.selection
+    }
 
     pub(crate) fn cancel(&self) {
         self.cancel.cancel();
         self.guard.finish();
     }
 
-    pub(crate) fn attempt(&self) -> Result<NativeInvocationOperation,String> {
-        if self.guard.with_active(||()).is_none() { return Err("The selected recovery plan is no longer active".into()); }
-        let child=issue(&self.issuer,&self.selection,self.cancel.clone())?;
-        if self.guard.with_active(||()).is_none() {
+    pub(crate) fn attempt(&self) -> Result<NativeInvocationOperation, String> {
+        if self.guard.with_active(|| ()).is_none() {
+            return Err("The selected recovery plan is no longer active".into());
+        }
+        let child = issue(&self.issuer, &self.selection, self.cancel.clone())?;
+        if self.guard.with_active(|| ()).is_none() {
             child.finish();
             return Err("The selected recovery plan is no longer active".into());
         }
@@ -116,67 +194,111 @@ impl Drop for RecoveryPlan {
 }
 
 #[cfg(test)]
-pub(crate) fn test_startup(issuer:&shell_contract::ipc::NativeInvocationIssuer)->NativeInvocationOperation {
-    let generation=shell_contract::runtime::RendererGeneration::new();
-    let owner=shell_contract::ipc::NativeRequestOwner { view:shell_contract::ViewId(1),
-        context:shell_contract::ipc::NativeContext::with_owner_loss((),generation,shell_contract::runtime::CancelToken::default()) };
-    issuer.issue_startup(Vec::new(),false,owner,shell_contract::runtime::CancelToken::default())
+pub(crate) fn test_startup(
+    issuer: &shell_contract::ipc::NativeInvocationIssuer,
+) -> NativeInvocationOperation {
+    let generation = shell_contract::runtime::RendererGeneration::new();
+    let owner = shell_contract::ipc::NativeRequestOwner {
+        view: shell_contract::ViewId(1),
+        context: shell_contract::ipc::NativeContext::with_owner_loss(
+            (),
+            generation,
+            shell_contract::runtime::CancelToken::default(),
+        ),
+    };
+    issuer.issue_startup(
+        Vec::new(),
+        false,
+        owner,
+        shell_contract::runtime::CancelToken::default(),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shell_contract::ipc::{NativeInvocationIssuer,NativeRecoveryCopy};
+    use main_core::packages::electron_utils::recovery_store::{
+        RecoveryIdentity, RecoveryUntitledIdentity,
+    };
+    use shell_contract::ipc::{NativeInvocationIssuer, NativeRecoveryCopy};
     use shell_contract::runtime::CancelToken;
-    use main_core::packages::electron_utils::recovery_store::{RecoveryIdentity,RecoveryUntitledIdentity};
 
     #[test]
     fn selection_captures_copy_title_and_save_suggestion() {
-        let issuer=Rc::new(NativeInvocationIssuer::new(CancelToken::default()));
-        let startup=test_startup(&issuer);
-        let root=startup.clone();
-        let factory:RecoveryIssuer=Rc::new(move |selection,cancel|issuer.issue_recovery_child(&root,selection,cancel));
-        let spec=UnloadedTabSpec { kind:"docs".into(),title:"Selected".into(),file_path:None,
-            opener:RestoredTabOpener::UntitledCopy {
-                copy:RecoveryIdentity::Untitled(RecoveryUntitledIdentity { kind:"docs".into(),untitled_id:"original-id".into(),ext:".docx".into() }),
-                save_as_default_path:Some("/original/suggestion.docx".into()),
-            } };
-        let operation=capture(&factory,&spec).unwrap();
+        let issuer = Rc::new(NativeInvocationIssuer::new(CancelToken::default()));
+        let startup = test_startup(&issuer);
+        let root = startup.clone();
+        let factory: RecoveryIssuer =
+            Rc::new(move |selection, cancel| issuer.issue_recovery_child(&root, selection, cancel));
+        let spec = UnloadedTabSpec {
+            kind: "docs".into(),
+            title: "Selected".into(),
+            file_path: None,
+            opener: RestoredTabOpener::UntitledCopy {
+                copy: RecoveryIdentity::Untitled(RecoveryUntitledIdentity {
+                    kind: "docs".into(),
+                    untitled_id: "original-id".into(),
+                    ext: ".docx".into(),
+                }),
+                save_as_default_path: Some("/original/suggestion.docx".into()),
+            },
+        };
+        let operation = capture(&factory, &spec).unwrap();
         assert!(operation.is_child_of(&startup));
-        assert!(matches!(operation.selection(),NativeInvocationSelection::RecoveryCopy {
+        assert!(
+            matches!(operation.selection(),NativeInvocationSelection::RecoveryCopy {
             surface:Surface::Docs,copy:NativeRecoveryCopy::Untitled { id,ext },title,save_as_default:Some(path)
-        } if id=="original-id" && ext==".docx" && title=="Selected" && path==std::path::Path::new("/original/suggestion.docx")));
+        } if id=="original-id" && ext==".docx" && title=="Selected" && path==std::path::Path::new("/original/suggestion.docx"))
+        );
         operation.finish();
     }
 
     #[test]
     fn rejects_issuer_that_relabels_selected_operation() {
-        let issuer=Rc::new(NativeInvocationIssuer::new(CancelToken::default()));
-        let startup=test_startup(&issuer);
-        let factory:RecoveryIssuer=Rc::new(move |_,cancel|issuer.issue_recovery_child(&startup,
-            NativeInvocationSelection::RecoveryBlank { surface:Surface::Docs,title:"different".into() },cancel));
-        let spec=UnloadedTabSpec { kind:"docs".into(),title:"Selected".into(),file_path:None,opener:RestoredTabOpener::File };
-        assert!(capture(&factory,&spec).is_err());
+        let issuer = Rc::new(NativeInvocationIssuer::new(CancelToken::default()));
+        let startup = test_startup(&issuer);
+        let factory: RecoveryIssuer = Rc::new(move |_, cancel| {
+            issuer.issue_recovery_child(
+                &startup,
+                NativeInvocationSelection::RecoveryBlank {
+                    surface: Surface::Docs,
+                    title: "different".into(),
+                },
+                cancel,
+            )
+        });
+        let spec = UnloadedTabSpec {
+            kind: "docs".into(),
+            title: "Selected".into(),
+            file_path: None,
+            opener: RestoredTabOpener::File,
+        };
+        assert!(capture(&factory, &spec).is_err());
     }
 
     #[test]
     fn os_launch_issues_exact_paths_and_obeys_shutdown() {
-        let shutdown=CancelToken::default();
-        let issuer=Rc::new(NativeInvocationIssuer::new(shutdown.clone()));
-        let shell=test_startup(&issuer).startup_owner().unwrap().clone();
-        let factory:StartupIssuer=Rc::new(move |selection,cancel|match selection {
-            NativeInvocationSelection::StartupLaunch { paths,reopened_by_installer }=>Ok(issuer.issue_startup(paths,reopened_by_installer,shell.clone(),cancel)),
-            _=>Err("not startup".into()),
+        let shutdown = CancelToken::default();
+        let issuer = Rc::new(NativeInvocationIssuer::new(shutdown.clone()));
+        let shell = test_startup(&issuer).startup_owner().unwrap().clone();
+        let factory: StartupIssuer = Rc::new(move |selection, cancel| match selection {
+            NativeInvocationSelection::StartupLaunch {
+                paths,
+                reopened_by_installer,
+            } => Ok(issuer.issue_startup(paths, reopened_by_installer, shell.clone(), cancel)),
+            _ => Err("not startup".into()),
         });
-        let first=issue_startup(&factory,&["/one.docx".into()],false,&shutdown).unwrap();
-        let second=issue_startup(&factory,&["/two.pdf".into()],false,&shutdown).unwrap();
-        assert_ne!(first.selection(),second.selection());
-        assert!(matches!(first.selection(),NativeInvocationSelection::StartupLaunch { paths,reopened_by_installer:false }
-            if paths==&[std::path::PathBuf::from("/one.docx")]));
+        let first = issue_startup(&factory, &["/one.docx".into()], false, &shutdown).unwrap();
+        let second = issue_startup(&factory, &["/two.pdf".into()], false, &shutdown).unwrap();
+        assert_ne!(first.selection(), second.selection());
+        assert!(
+            matches!(first.selection(),NativeInvocationSelection::StartupLaunch { paths,reopened_by_installer:false }
+            if paths==&[std::path::PathBuf::from("/one.docx")])
+        );
         first.finish();
-        assert!(second.with_active(||()).is_some());
+        assert!(second.with_active(|| ()).is_some());
         shutdown.cancel();
-        assert!(second.with_active(||()).is_none());
-        assert!(issue_startup(&factory,&["/late.docx".into()],false,&shutdown).is_err());
+        assert!(second.with_active(|| ()).is_none());
+        assert!(issue_startup(&factory, &["/late.docx".into()], false, &shutdown).is_err());
     }
 }

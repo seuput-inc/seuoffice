@@ -34,8 +34,9 @@ static LAST_FOCUSED: Mutex<Option<BrowserIdentity>> = Mutex::new(None);
 /// events say which view of a window with several views is the one in use.
 pub fn note_view_event(event: &NativeEvent) {
     if matches!(event.kind, NativeEventKind::View(ViewEvent::Focus)) {
-        *LAST_FOCUSED.lock().unwrap_or_else(|error| error.into_inner()) =
-            Some(event.browser.clone());
+        *LAST_FOCUSED
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(event.browser.clone());
     }
 }
 
@@ -53,18 +54,24 @@ impl FocusCapture {
         if !is_ui_thread() {
             return Err("A menu focus capture must run on the UI thread.".into());
         }
-        let native = app.try_state::<Native>().ok_or("The native module is not installed.")?;
+        let native = app
+            .try_state::<Native>()
+            .ok_or("The native module is not installed.")?;
         let key = native_app_key_window_handle(app)?
             .ok_or("No application window has the keyboard focus.")?;
         let in_key_window = |label: &str| {
-            app.get_webview(label).is_some_and(|webview| webview.window().label() == key.label())
+            app.get_webview(label)
+                .is_some_and(|webview| webview.window().label() == key.label())
         };
         let tracked = {
-            let mut last = LAST_FOCUSED.lock().unwrap_or_else(|error| error.into_inner());
+            let mut last = LAST_FOCUSED
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             if last.as_ref().is_some_and(|browser| !browser.is_open()) {
                 *last = None;
             }
-            last.clone().filter(|browser| in_key_window(browser.label()))
+            last.clone()
+                .filter(|browser| in_key_window(browser.label()))
         };
         let browser = match tracked {
             Some(browser) => browser,
@@ -139,9 +146,7 @@ type Handler = Box<dyn Fn(ContextMenuRequest) + Send + Sync>;
 static HANDLER: OnceLock<Handler> = OnceLock::new();
 
 /// Receive every authenticated right click, on the UI thread. Once per process.
-pub fn install(
-    handler: impl Fn(ContextMenuRequest) + Send + Sync + 'static,
-) -> Result<(), String> {
+pub fn install(handler: impl Fn(ContextMenuRequest) + Send + Sync + 'static) -> Result<(), String> {
     HANDLER
         .set(Box::new(handler))
         .map_err(|_| "The context menu handler is already installed.".to_owned())
@@ -180,7 +185,11 @@ pub async fn ipc_context_menu(webview: Webview, request: Request<'_>) -> Result<
             let spelling = payload.spelling();
             let params = payload.into_params(spelling);
             if let Some(handler) = HANDLER.get() {
-                handler(ContextMenuRequest { label, origin, params });
+                handler(ContextMenuRequest {
+                    label,
+                    origin,
+                    params,
+                });
             }
         })
         .map_err(|error| error.to_string())
@@ -200,7 +209,9 @@ struct Payload {
 
 impl Payload {
     fn parse(value: &Value) -> Result<Self, String> {
-        let object = value.as_object().ok_or("Invalid context menu: not an object.")?;
+        let object = value
+            .as_object()
+            .ok_or("Invalid context menu: not an object.")?;
         let flags = match object.get("editFlags") {
             None | Some(Value::Null) => Map::new(),
             Some(Value::Object(flags)) => flags.clone(),
@@ -228,7 +239,10 @@ impl Payload {
 
     /// The word under the click when it is misspelled, with the checker's replacements.
     fn spelling(&self) -> Option<(String, Vec<String>)> {
-        let word = self.word.as_deref().filter(|word| self.is_editable && !word.is_empty())?;
+        let word = self
+            .word
+            .as_deref()
+            .filter(|word| self.is_editable && !word.is_empty())?;
         match Current::is_misspelled(word) {
             Ok(true) => {}
             Ok(false) => return None,
@@ -381,13 +395,7 @@ pub fn replace_misspelling_script(misspelled: &str, replacement: &str, x: f64, y
 }
 
 /// Replace the misspelled word of the right click on the view's page.
-pub fn replace_misspelling(
-    webview: &Webview,
-    misspelled: &str,
-    replacement: &str,
-    x: f64,
-    y: f64,
-) {
+pub fn replace_misspelling(webview: &Webview, misspelled: &str, replacement: &str, x: f64, y: f64) {
     let page = match webview.page() {
         Ok(page) => page,
         Err(error) => return eprintln!("shell: replacing a misspelling: {error}"),
@@ -437,7 +445,12 @@ mod tests {
         assert_eq!((params.x, params.y), (12.5, 40.0));
         assert_eq!(
             params.edit_flags,
-            EditFlags { can_cut: true, can_copy: false, can_paste: true, can_select_all: false }
+            EditFlags {
+                can_cut: true,
+                can_copy: false,
+                can_paste: true,
+                can_select_all: false
+            }
         );
     }
 
@@ -481,7 +494,10 @@ mod tests {
         value["word"] = json!("w".repeat(WORD_MAX_CHARS + 1));
         assert_eq!(Payload::parse(&value).unwrap().word, None);
         value["word"] = json!("don't");
-        assert_eq!(Payload::parse(&value).unwrap().word.as_deref(), Some("don't"));
+        assert_eq!(
+            Payload::parse(&value).unwrap().word.as_deref(),
+            Some("don't")
+        );
     }
 
     #[test]

@@ -11,10 +11,19 @@ pub(super) fn open_files(then: Box<dyn FnOnce(Option<Result<Vec<OpenFileState>, 
             return done(Some(Err(())));
         };
         tabs.open_documents(Box::new(move |result| {
-            done(Some(result.map(|documents| documents.into_iter().map(|document| OpenFileState {
-                file_path: document.file_path,
-                dirty: document.dirty,
-            }).collect()).map_err(|_| ())));
+            done(Some(
+                result
+                    .map(|documents| {
+                        documents
+                            .into_iter()
+                            .map(|document| OpenFileState {
+                                file_path: document.file_path,
+                                dirty: document.dirty,
+                            })
+                            .collect()
+                    })
+                    .map_err(|_| ()),
+            ));
         }));
     });
     if !ran {

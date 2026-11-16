@@ -23,12 +23,19 @@ pub enum Flavor {
 }
 
 impl Flavor {
-    pub const CURRENT: Self = if cfg!(windows) { Self::LocalhostHttp } else { Self::Scheme };
+    pub const CURRENT: Self = if cfg!(windows) {
+        Self::LocalhostHttp
+    } else {
+        Self::Scheme
+    };
 }
 
 /// Schemes a webview resolves itself; they have no logical shape.
 fn is_builtin(scheme: &str) -> bool {
-    matches!(scheme, "http" | "https" | "about" | "data" | "blob" | "file" | "ws" | "wss" | "tauri")
+    matches!(
+        scheme,
+        "http" | "https" | "about" | "data" | "blob" | "file" | "ws" | "wss" | "tauri"
+    )
 }
 
 /// The URL to give the webview for a logical custom-scheme URL; anything else is unchanged.
@@ -137,7 +144,10 @@ mod tests {
             assert_eq!(back.scheme(), logical.scheme());
             assert_eq!(back.host_str(), logical.host_str());
             assert_eq!(back.query(), logical.query());
-            assert_eq!(back.path().trim_end_matches('/'), logical.path().trim_end_matches('/'));
+            assert_eq!(
+                back.path().trim_end_matches('/'),
+                logical.path().trim_end_matches('/')
+            );
         }
     }
 
@@ -150,7 +160,10 @@ mod tests {
         assert!(logical_url_for(Flavor::Scheme, &url("about:blank")).is_none());
         let web = url("https://example.org/a");
         assert_eq!(platform_url_for(Flavor::LocalhostHttp, &web), web);
-        assert_eq!(platform_url_for(Flavor::LocalhostHttp, &url("about:blank")).as_str(), "about:blank");
+        assert_eq!(
+            platform_url_for(Flavor::LocalhostHttp, &url("about:blank")).as_str(),
+            "about:blank"
+        );
     }
 
     #[test]

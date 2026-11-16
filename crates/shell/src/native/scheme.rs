@@ -64,7 +64,11 @@ fn deliver_cancel(listener: Arc<CancelListener>) {
         if !listener.active.swap(false, Ordering::AcqRel) {
             return;
         }
-        let callback = listener.callback.lock().unwrap_or_else(|error| error.into_inner()).take();
+        let callback = listener
+            .callback
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
         if let Some(callback) = callback {
             callback();
         }
@@ -80,7 +84,10 @@ struct RequestState {
 
 impl RequestState {
     fn new() -> Arc<Self> {
-        Arc::new(Self { phase: Mutex::new(Phase::Open), cancellation: Mutex::default() })
+        Arc::new(Self {
+            phase: Mutex::new(Phase::Open),
+            cancellation: Mutex::default(),
+        })
     }
 
     fn cancel(&self) {
@@ -91,7 +98,10 @@ impl RequestState {
             }
         }
         let listeners = {
-            let mut state = self.cancellation.lock().unwrap_or_else(|error| error.into_inner());
+            let mut state = self
+                .cancellation
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             state.cancelled = true;
             std::mem::take(&mut state.listeners)
         };
@@ -100,12 +110,19 @@ impl RequestState {
         }
     }
 
-    fn subscribe(&self, callback: Box<dyn FnOnce() + Send>) -> Result<RequestCancelSubscription, String> {
-        let listener =
-            Arc::new(CancelListener { active: AtomicBool::new(true), callback: Mutex::new(Some(callback)) });
+    fn subscribe(
+        &self,
+        callback: Box<dyn FnOnce() + Send>,
+    ) -> Result<RequestCancelSubscription, String> {
+        let listener = Arc::new(CancelListener {
+            active: AtomicBool::new(true),
+            callback: Mutex::new(Some(callback)),
+        });
         let cancelled = {
-            let mut state =
-                self.cancellation.lock().map_err(|_| "Native request cancellation state was poisoned.")?;
+            let mut state = self
+                .cancellation
+                .lock()
+                .map_err(|_| "Native request cancellation state was poisoned.")?;
             if !state.cancelled {
                 state.listeners.retain(|l| l.active.load(Ordering::Acquire));
                 state.listeners.push(listener.clone());
@@ -120,14 +137,19 @@ impl RequestState {
 
     /// Open to accepted; the only way to answer.
     fn accept(&self) -> Result<(), &'static str> {
-        let mut phase = self.phase.lock().map_err(|_| "Request response state was poisoned.")?;
+        let mut phase = self
+            .phase
+            .lock()
+            .map_err(|_| "Request response state was poisoned.")?;
         match *phase {
             Phase::Open => {
                 *phase = Phase::Accepted;
                 Ok(())
             }
             Phase::Cancelled => Err("The original native request was cancelled."),
-            Phase::Accepted | Phase::Submitted => Err("The original native request was already answered."),
+            Phase::Accepted | Phase::Submitted => {
+                Err("The original native request was already answered.")
+            }
         }
     }
 
@@ -185,10 +207,19 @@ impl SchemeRequestContext {
                         Err(_) => state.cancel(),
                     },
                 }
-                (browser.navigation(), committed.map(|core| core.identity.clone()))
+                (
+                    browser.navigation(),
+                    committed.map(|core| core.identity.clone()),
+                )
             }
         };
-        Self { browser, navigation, document, state, _watches: Arc::new(Mutex::new(watches)) }
+        Self {
+            browser,
+            navigation,
+            document,
+            state,
+            _watches: Arc::new(Mutex::new(watches)),
+        }
     }
 
     pub fn browser_id(&self) -> Option<super::BrowserId> {
@@ -218,14 +249,17 @@ impl SchemeRequestContext {
     /// Observe the end of this request's document (or browser). The callback runs once,
     /// outside every lock.
     pub fn on_cancel(
-        &self, callback: impl FnOnce() + Send + 'static,
+        &self,
+        callback: impl FnOnce() + Send + 'static,
     ) -> Result<RequestCancelSubscription, String> {
         self.state.subscribe(Box::new(callback))
     }
 
     /// The gate for answering this request, once.
     pub fn response_gate(&self) -> ResponseGate {
-        ResponseGate { state: self.state.clone() }
+        ResponseGate {
+            state: self.state.clone(),
+        }
     }
 }
 
@@ -241,7 +275,10 @@ impl ResponseGate {
         if !self.state.is_open() {
             return Err("The original native request is no longer open.".into());
         }
-        Ok(Prepared { state: self.state.clone(), response })
+        Ok(Prepared {
+            state: self.state.clone(),
+            response,
+        })
     }
 }
 
@@ -285,7 +322,11 @@ impl Prepared {
     /// gate around this call. One shot.
     pub fn accept(self, responder: UriSchemeResponder) -> Result<Accepted, Rejected> {
         match self.state.accept() {
-            Ok(()) => Ok(Accepted { state: self.state, response: self.response, responder }),
+            Ok(()) => Ok(Accepted {
+                state: self.state,
+                response: self.response,
+                responder,
+            }),
             Err(reason) => Err(Rejected { reason, responder }),
         }
     }
@@ -307,7 +348,10 @@ impl Accepted {
 mod tests {
     use super::*;
     use crate::native::NativeSpec;
-    use crate::native::browser::{BridgeMode, testing::{TEST_NONCE, url}};
+    use crate::native::browser::{
+        BridgeMode,
+        testing::{TEST_NONCE, url},
+    };
 
     fn browser(native: &Native, label: &str) -> BrowserIdentity {
         let spec = NativeSpec::new().bridge(BridgeMode::Invoke);
@@ -346,20 +390,32 @@ mod tests {
         let (cancelled, callback) = counted();
         let _subscription = context.on_cancel(callback).unwrap();
 
-        browser.core.admit_navigation(&url("https://example.test/b"));
+        browser
+            .core
+            .admit_navigation(&url("https://example.test/b"));
         assert_eq!(*cancelled.lock().unwrap(), 1, "the issuing document ended");
         assert!(context.current_document_context().is_none());
-        assert!(context.response_gate().prepare(Response::new(Cow::Borrowed(&b""[..]))).is_err());
+        assert!(
+            context
+                .response_gate()
+                .prepare(Response::new(Cow::Borrowed(&b""[..])))
+                .is_err()
+        );
     }
 
     #[test]
     fn a_hidden_target_request_before_commit_ends_with_its_browser() {
         let native = Native::default();
         let browser = browser(&native, "scheme-target");
-        browser.core.admit_navigation(&url("html-asset://token/root.html"));
+        browser
+            .core
+            .admit_navigation(&url("html-asset://token/root.html"));
         let context = SchemeRequestContext::capture(&native, "scheme-target");
         assert!(context.document().is_none(), "nothing committed yet");
-        assert!(context.navigation().is_some(), "the one admitted navigation");
+        assert!(
+            context.navigation().is_some(),
+            "the one admitted navigation"
+        );
         let (cancelled, callback) = counted();
         let _subscription = context.on_cancel(callback).unwrap();
         browser.core.retire();
@@ -372,7 +428,10 @@ mod tests {
         let browser = browser(&native, "scheme-late");
         browser.core.retire();
         let context = SchemeRequestContext::capture(&native, "scheme-late");
-        assert!(context.browser_state().is_none(), "a retired browser is no registered browser");
+        assert!(
+            context.browser_state().is_none(),
+            "a retired browser is no registered browser"
+        );
 
         let state = RequestState::new();
         let (kept, keep) = counted();

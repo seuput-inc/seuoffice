@@ -254,11 +254,11 @@ impl TabsState {
             {
                 let lifetime = entries.remove(&id).expect("the exact lifetime is present");
                 return Err(AdoptedLifetimeFailure::CallerOwned(
-                    CallerOwnedAdoptedLifetime {
+                    Box::new(CallerOwnedAdoptedLifetime {
                         error,
                         state: self.this.clone(),
                         lifetime,
-                    },
+                    }),
                 ));
             }
             return Err(AdoptedLifetimeFailure::Retained(RetainedAdoptedLifetime {

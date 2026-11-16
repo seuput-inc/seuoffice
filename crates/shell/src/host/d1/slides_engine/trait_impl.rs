@@ -1,5 +1,8 @@
 use shell_contract::IpcValue;
-use shell_ipc_d1::slides::engine::{DeckId, DeckSize, EngineError, GeneratedPage, GroupChildFrame, ImageInfo, MasterPart, PictureMedia, RenderOwner, SlideRef, SlidesEngine, Snapshot, TxnRequest, TxnResult};
+use shell_ipc_d1::slides::engine::{
+    DeckId, DeckSize, EngineError, GeneratedPage, GroupChildFrame, ImageInfo, MasterPart,
+    PictureMedia, RenderOwner, SlideRef, SlidesEngine, Snapshot, TxnRequest, TxnResult,
+};
 
 use super::NativeSlidesEngine;
 

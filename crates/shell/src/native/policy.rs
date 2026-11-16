@@ -51,8 +51,16 @@ pub struct Blocks {
 }
 
 impl Blocks {
-    pub const NOTHING: Self = Self { web: false, loopback_open: false, files: false };
-    pub const EVERYTHING: Self = Self { web: true, loopback_open: false, files: true };
+    pub const NOTHING: Self = Self {
+        web: false,
+        loopback_open: false,
+        files: false,
+    };
+    pub const EVERYTHING: Self = Self {
+        web: true,
+        loopback_open: false,
+        files: true,
+    };
 }
 
 /// Where the webview keeps its cookies, storage and cache.
@@ -125,7 +133,9 @@ pub(crate) fn store_for(storage: Storage, scratch_root: Option<&Path>) -> Option
 
 /// The per-run `SEUOFFICE_USER_DATA` folder, when a test driver or the measurement set one.
 pub(crate) fn scratch_root() -> Option<PathBuf> {
-    std::env::var_os("SEUOFFICE_USER_DATA").filter(|value| !value.is_empty()).map(PathBuf::from)
+    std::env::var_os("SEUOFFICE_USER_DATA")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 type Allow = Arc<dyn Fn(&PolicyRequest<'_>) -> bool + Send + Sync>;
@@ -215,8 +225,12 @@ mod tests {
             top_level: true,
             main_frame: true,
         };
-        let frame =
-            PolicyRequest { url: page.url, bound_scheme: None, top_level: false, main_frame: false };
+        let frame = PolicyRequest {
+            url: page.url,
+            bound_scheme: None,
+            top_level: false,
+            main_frame: false,
+        };
         assert!(policy.allows(&page));
         assert!(!policy.allows(&frame));
         assert!(policy.javascript());
@@ -226,7 +240,10 @@ mod tests {
 
     #[test]
     fn named_storage_is_stable_and_distinct_per_name() {
-        assert_eq!(Storage::named("ieum-diagram"), Storage::named("ieum-diagram"));
+        assert_eq!(
+            Storage::named("ieum-diagram"),
+            Storage::named("ieum-diagram")
+        );
         assert_ne!(Storage::named("ieum-diagram"), Storage::named("other"));
         assert!(matches!(Storage::named("x"), Storage::Isolated(_)));
     }

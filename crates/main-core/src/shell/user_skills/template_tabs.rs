@@ -266,7 +266,7 @@ enum PendingKind {
     Preview {
         preview_id: String,
         owner_id: f64,
-        input: PreviewInput,
+        input: Box<PreviewInput>,
     },
     Copy {
         request: String,
@@ -549,7 +549,7 @@ impl TemplateTabs {
             PendingKind::Preview {
                 preview_id,
                 owner_id,
-                input: input.clone(),
+                input: Box::new(input.clone()),
             },
         )
     }

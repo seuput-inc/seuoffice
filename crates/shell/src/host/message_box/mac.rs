@@ -6,6 +6,8 @@
 //! suppression button. With a parent window the alert is a sheet; the call
 //! still waits for it in a modal session, as `dialog.showMessageBoxSync` does.
 
+use crate::host::dialog::owned::macos::with_ns_window;
+use crate::host::dialog::owned::{Session, macos::register_alert};
 use block2::RcBlock;
 use objc2::MainThreadMarker;
 use objc2_app_kit::{
@@ -14,10 +16,8 @@ use objc2_app_kit::{
 };
 use objc2_foundation::NSString;
 use shell_contract::hosts::MessageBoxAnswer;
-use tauri::Window;
 use std::sync::Arc;
-use crate::host::dialog::owned::{Session, macos::register_alert};
-use crate::host::dialog::owned::macos::with_ns_window;
+use tauri::Window;
 
 use super::{Kind, Spec};
 
@@ -41,21 +41,34 @@ fn style_of(kind: Kind) -> NSAlertStyle {
     }
 }
 
-
-pub(super) fn show_owned(spec: &Spec, parent: Option<&Window>, session: &Arc<Session>) -> Result<MessageBoxAnswer, String> {
+pub(super) fn show_owned(
+    spec: &Spec,
+    parent: Option<&Window>,
+    session: &Arc<Session>,
+) -> Result<MessageBoxAnswer, String> {
     show_impl(spec, parent, Some(session))
 }
 
-fn show_impl(spec: &Spec, parent: Option<&Window>, session: Option<&Arc<Session>>) -> Result<MessageBoxAnswer, String> {
+fn show_impl(
+    spec: &Spec,
+    parent: Option<&Window>,
+    session: Option<&Arc<Session>>,
+) -> Result<MessageBoxAnswer, String> {
     match parent {
-        Some(parent) => with_ns_window(&crate::native::WindowExt::native_window_handle(parent)?, parent, |window| {
-            show_with_parent(spec, Some(window), session)
-        })?,
+        Some(parent) => with_ns_window(
+            &crate::native::WindowExt::native_window_handle(parent)?,
+            parent,
+            |window| show_with_parent(spec, Some(window), session),
+        )?,
         None => show_with_parent(spec, None, session),
     }
 }
 
-fn show_with_parent(spec: &Spec, parent_window: Option<&NSWindow>, session: Option<&Arc<Session>>) -> Result<MessageBoxAnswer, String> {
+fn show_with_parent(
+    spec: &Spec,
+    parent_window: Option<&NSWindow>,
+    session: Option<&Arc<Session>>,
+) -> Result<MessageBoxAnswer, String> {
     let mtm = MainThreadMarker::new().ok_or("not on the main thread")?;
 
     let alert = NSAlert::new(mtm);
@@ -95,8 +108,12 @@ fn show_with_parent(spec: &Spec, parent_window: Option<&NSWindow>, session: Opti
         }
     }
 
-    let registration = session.map(|session| register_alert(session, &alert)).transpose()?;
-    if let Some(session) = session { session.check()?; }
+    let registration = session
+        .map(|session| register_alert(session, &alert))
+        .transpose()?;
+    if let Some(session) = session {
+        session.check()?;
+    }
     let response: NSModalResponse = match &parent_window {
         Some(window) => {
             let app = NSApplication::sharedApplication(mtm);
@@ -106,7 +123,11 @@ fn show_with_parent(spec: &Spec, parent_window: Option<&NSWindow>, session: Opti
                 RcBlock::new(move |code: NSModalResponse| {
                     if let Some((id, exact)) = &owned {
                         if !crate::host::dialog::owned::macos::alert_is_registered(*id, exact)
-                            || !app.modalWindow().as_deref().is_some_and(|modal| std::ptr::eq(modal, &**exact)) {
+                            || !app
+                                .modalWindow()
+                                .as_deref()
+                                .is_some_and(|modal| std::ptr::eq(modal, &**exact))
+                        {
                             return;
                         }
                     }
@@ -114,14 +135,19 @@ fn show_with_parent(spec: &Spec, parent_window: Option<&NSWindow>, session: Opti
                 })
             };
             alert.beginSheetModalForWindow_completionHandler(window, Some(&end));
-            if session.is_some_and(|session| session.cancelled()) { 0 }
-            else { app.runModalForWindow(&alert.window()) }
+            if session.is_some_and(|session| session.cancelled()) {
+                0
+            } else {
+                app.runModalForWindow(&alert.window())
+            }
         }
         None => alert.runModal(),
     };
     if session.is_some() {
         let window = alert.window();
-        if let Some(parent) = window.sheetParent() { parent.endSheet_returnCode(&window, response); }
+        if let Some(parent) = window.sheetParent() {
+            parent.endSheet_returnCode(&window, response);
+        }
         window.orderOut(None);
     }
     drop(registration);

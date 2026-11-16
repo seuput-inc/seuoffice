@@ -25,9 +25,9 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use shell_contract::ids::{RequestId, ViewId};
+use shell_contract::ipc::Reply;
 use shell_contract::runtime::{Thread, run_on};
 use shell_contract::value::IpcValue;
-use shell_contract::ipc::Reply;
 use tauri::AppHandle;
 
 use crate::ipc::Ipc;

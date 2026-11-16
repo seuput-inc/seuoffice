@@ -29,8 +29,9 @@ mod native;
 pub(crate) use native::PreparedTrash;
 
 pub(crate) type Authorize<'a> = dyn FnMut(
-    &mut dyn FnMut() -> Result<(), main_core::node_fs::NodeError>,
-) -> Result<(), main_core::node_fs::NodeError> + 'a;
+        &mut dyn FnMut() -> Result<(), main_core::node_fs::NodeError>,
+    ) -> Result<(), main_core::node_fs::NodeError>
+    + 'a;
 
 #[cfg(test)]
 mod fixtures;

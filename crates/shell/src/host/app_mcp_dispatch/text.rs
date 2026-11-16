@@ -16,7 +16,11 @@ pub(super) fn dispatch(
     call: HostCall,
     done: Box<dyn FnOnce(Settled)>,
 ) {
-    let id = match view_id(call.args.first()).and_then(|id| u32::try_from(id).map(ViewId).map_err(|_| "invalid document view id".into())) {
+    let id = match view_id(call.args.first()).and_then(|id| {
+        u32::try_from(id)
+            .map(ViewId)
+            .map_err(|_| "invalid document view id".into())
+    }) {
         Ok(id) => id,
         Err(error) => return done(Err(error)),
     };
@@ -55,12 +59,19 @@ pub(super) fn dispatch(
     match call.method {
         "read" => {
             let views = services.views.clone();
-            editor.read_text(id, Box::new(move |result| {
-                if views.sender_of(id).is_none() {
-                    return done(Err("the document view is closed".into()));
-                }
-                done(result.map(|text| Some(JsonValue::String(text))).map_err(|error| error.to_string()));
-            }));
+            editor.read_text(
+                id,
+                Box::new(move |result| {
+                    if views.sender_of(id).is_none() {
+                        return done(Err("the document view is closed".into()));
+                    }
+                    done(
+                        result
+                            .map(|text| Some(JsonValue::String(text)))
+                            .map_err(|error| error.to_string()),
+                    );
+                }),
+            );
         }
         "save" => {
             let path: std::path::PathBuf = match string(call.args.get(1)) {
@@ -70,26 +81,45 @@ pub(super) fn dispatch(
             let Some(generation) = services.views.renderer_generation(id) else {
                 return done(Err("the document renderer is unavailable".into()));
             };
-            let Some(effects) = services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>() else {
+            let Some(effects) = services
+                .hosts
+                .get::<shell_contract::hosts::OwnedEffectsHost>()
+            else {
                 return done(Err("native document effects are unavailable".into()));
             };
-            let owner = match effects.capture_owner(id, &generation)
+            let owner = match effects
+                .capture_owner(id, &generation)
                 .map_err(|error| error.to_string())
-                .and_then(|owner| editor.capture_document_owner(id, owner).map_err(|error| error.to_string())) {
+                .and_then(|owner| {
+                    editor
+                        .capture_document_owner(id, owner)
+                        .map_err(|error| error.to_string())
+                }) {
                 Ok(owner) => owner,
                 Err(error) => return done(Err(error)),
             };
             let cancel = shell_contract::runtime::CancelToken::default();
             let pending = shell_contract::runtime::CancelToken::default();
             let binding = match crate::host::native_commands::issue_existing_save(
-                expected, id, shell_contract::ipc::NativeSaveSelection::ExactPath(path.clone()), owner, cancel.clone(),
+                expected,
+                id,
+                shell_contract::ipc::NativeSaveSelection::ExactPath(path.clone()),
+                owner,
+                cancel.clone(),
             ) {
                 Ok(binding) => binding,
                 Err(error) => return done(Err(error)),
             };
-            editor.save_to_path_native(id, path, binding, cancel, pending, Box::new(move |result| {
-                done(result.map(|()| None).map_err(|error| error.to_string()));
-            }));
+            editor.save_to_path_native(
+                id,
+                path,
+                binding,
+                cancel,
+                pending,
+                Box::new(move |result| {
+                    done(result.map(|()| None).map_err(|error| error.to_string()));
+                }),
+            );
         }
         _ => done(Err(format!("unknown {}.{}", call.control, call.method))),
     }

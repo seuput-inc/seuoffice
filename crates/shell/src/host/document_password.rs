@@ -1,7 +1,9 @@
 //! Shared asynchronous Office document password prompts.
-mod strings;
 mod owned;
-pub(crate) use owned::{open_password_window_owned, open_password_window_prepared, open_password_window_saved};
+mod strings;
+pub(crate) use owned::{
+    open_password_window_owned, open_password_window_prepared, open_password_window_saved,
+};
 mod service;
 pub(crate) use service::{DocumentPasswordService, PasswordPrompt};
 
@@ -9,27 +11,55 @@ pub(crate) fn install(hosts: &mut shell_contract::Hosts, cx: &HostContext) {
     hosts.insert(std::sync::Arc::new(DocumentPasswordService::new(cx)));
 }
 
-use shell_contract::ids::{ViewId, WindowId};
-use shell_contract::Surface;
-use tauri::Manager;
 use crate::native::WindowExt;
+use shell_contract::Surface;
+use shell_contract::ids::{ViewId, WindowId};
+use tauri::Manager;
 
 use super::window::{Bridge, ViewSpec, WindowOptions, WindowSpec};
-use super::{on_ui, HostContext};
+use super::{HostContext, on_ui};
 
 /// Called on a worker, never on the core or UI thread.
-pub(crate) fn open_password_window(cx: &HostContext, parent: Option<WindowId>, title: &str) -> Option<ViewId> {
+pub(crate) fn open_password_window(
+    cx: &HostContext,
+    parent: Option<WindowId>,
+    title: &str,
+) -> Option<ViewId> {
     let spec = WindowSpec {
-        title: title.to_owned(), size: (440.0, 312.0), min_size: None,
-        visible: false, decorations: false, transparent: true, resizable: false,
-        parent, focus: false, main: false,
-        view: ViewSpec { url: "genoffice-app://shell/pdf-password.html".into(), bridge: Bridge::Surface(Surface::ShellPdfPassword) },
+        title: title.to_owned(),
+        size: (440.0, 312.0),
+        min_size: None,
+        visible: false,
+        decorations: false,
+        transparent: true,
+        resizable: false,
+        parent,
+        focus: false,
+        main: false,
+        view: ViewSpec {
+            url: "genoffice-app://shell/pdf-password.html".into(),
+            bridge: Bridge::Surface(Surface::ShellPdfPassword),
+        },
     };
-    let options = WindowOptions { center: true, minimizable: false, maximizable: false, fullscreenable: false, ..Default::default() };
+    let options = WindowOptions {
+        center: true,
+        minimizable: false,
+        maximizable: false,
+        fullscreenable: false,
+        ..Default::default()
+    };
     let windows = cx.windows.clone();
-    let (window, view) = on_ui(&cx.ui, move || windows.open_window_with_options(spec, options)).ok()?;
-    let child = cx.views.label_of_window(window).and_then(|label| cx.app.get_window(&label));
-    let owner = parent.and_then(|id| cx.views.label_of_window(id)).and_then(|label| cx.app.get_window(&label));
+    let (window, view) = on_ui(&cx.ui, move || {
+        windows.open_window_with_options(spec, options)
+    })
+    .ok()?;
+    let child = cx
+        .views
+        .label_of_window(window)
+        .and_then(|label| cx.app.get_window(&label));
+    let owner = parent
+        .and_then(|id| cx.views.label_of_window(id))
+        .and_then(|label| cx.app.get_window(&label));
     let ready = match (child, parent, owner) {
         (Some(child), Some(_), Some(owner)) => child.begin_modal(&owner).is_ok(),
         (Some(_), None, _) => true,
@@ -52,7 +82,7 @@ pub(crate) fn unlock_office(
     prompt: crate::host::document_password::PasswordPrompt,
     bytes: &[u8],
 ) -> Result<Option<(Vec<u8>, String)>, String> {
-    use main_core::packages::office_encryption::{decrypt_office_file, OfficeDecryptReason};
+    use main_core::packages::office_encryption::{OfficeDecryptReason, decrypt_office_file};
     let result = (|| {
         match decrypt_office_file(bytes, "VelvetSweatshop") {
             Ok(plain) => return Ok(Some((plain, "VelvetSweatshop".to_owned()))),
@@ -62,7 +92,12 @@ pub(crate) fn unlock_office(
         let mut retry = false;
         loop {
             let (send, receive) = std::sync::mpsc::sync_channel(1);
-            prompt.ask(retry, Box::new(move |answer| { let _ = send.send(answer); }));
+            prompt.ask(
+                retry,
+                Box::new(move |answer| {
+                    let _ = send.send(answer);
+                }),
+            );
             let Some(password) = receive.recv().map_err(|error| error.to_string())?? else {
                 return Ok(None);
             };
@@ -104,7 +139,12 @@ pub(crate) fn unlock_saved(
     let target = document.target();
     let mut input = None;
     crate::ipc::native_owner::with_saved_document_input_effect(
-        &document, &[], target.cancel(), target.pending(), &[], &mut |saved| {
+        &document,
+        &[],
+        target.cancel(),
+        target.pending(),
+        &[],
+        &mut |saved| {
             input = Some(saved.clone());
             Ok(())
         },
@@ -115,7 +155,12 @@ pub(crate) fn unlock_saved(
     let mut answer = Some(answer);
     let mut admitted = None;
     crate::ipc::native_owner::with_saved_document_effect(
-        &document, &[], target.cancel(), target.pending(), &[], &mut || {
+        &document,
+        &[],
+        target.cancel(),
+        target.pending(),
+        &[],
+        &mut || {
             admitted = answer.take();
             Ok(())
         },

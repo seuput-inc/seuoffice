@@ -95,7 +95,9 @@ static MISSPELLING: Mutex<Option<(ViewId, String, f64, f64)>> = Mutex::new(None)
 
 /// The misspelled word the last right click of `view` was on, with the click
 pub(super) fn last_misspelling(view: ViewId) -> Option<(String, f64, f64)> {
-    let last = MISSPELLING.lock().unwrap_or_else(|error| error.into_inner());
+    let last = MISSPELLING
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     last.as_ref()
         .filter(|(clicked, ..)| *clicked == view)
         .map(|(_, word, x, y)| (word.clone(), *x, *y))
@@ -149,9 +151,10 @@ fn pop_up(
     params: ContextMenuParams,
     zoom: f64,
 ) {
-    *MISSPELLING.lock().unwrap_or_else(|error| error.into_inner()) =
-        (!params.misspelled_word.is_empty())
-            .then(|| (view, params.misspelled_word.clone(), params.x, params.y));
+    *MISSPELLING
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = (!params.misspelled_word.is_empty())
+        .then(|| (view, params.misspelled_word.clone(), params.x, params.y));
     if intercept_context_menu(services, provided, view, &params) {
         return;
     }
@@ -498,33 +501,151 @@ mod tests {
     /// A save dialog that picks `path`
     struct Picks(Option<PathBuf>);
 
-    fn synthetic_owned_dialog_admit(origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken) -> Result<(), String> {
-        let source = origin.context.renderer().ok_or("synthetic dialog source is unbound")?;
-        let target = destination.context.renderer().ok_or("synthetic dialog destination is unbound")?;
+    fn synthetic_owned_dialog_admit(
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+    ) -> Result<(), String> {
+        let source = origin
+            .context
+            .renderer()
+            .ok_or("synthetic dialog source is unbound")?;
+        let target = destination
+            .context
+            .renderer()
+            .ok_or("synthetic dialog destination is unbound")?;
         let source_loss = origin.loss_token();
         let target_loss = destination.loss_token();
-        source.with_active_pair(target, || shell_contract::runtime::CancelToken::with_active_all([Some(cancel), Some(pending), source_loss.as_ref(), target_loss.as_ref()], || ()))
-            .flatten().ok_or_else(|| "Renderer document is no longer available.".into())
+        source
+            .with_active_pair(target, || {
+                shell_contract::runtime::CancelToken::with_active_all(
+                    [
+                        Some(cancel),
+                        Some(pending),
+                        source_loss.as_ref(),
+                        target_loss.as_ref(),
+                    ],
+                    || (),
+                )
+            })
+            .flatten()
+            .ok_or_else(|| "Renderer document is no longer available.".into())
     }
 
     impl Dialogs for Picks {
         shell_contract::synthetic_recovery_dialog_methods!();
-        fn message_prepared(&self, parent: Option<shell_contract::WindowId>, options: shell_contract::hosts::MessageBox, target: shell_contract::ipc::RecoveryOpenTarget, snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot, done: Box<dyn FnOnce(Result<shell_contract::hosts::MessageBoxAnswer, String>) + Send>) { done(shell_contract::hosts::synthetic::recovery_dialog(&target, &snapshot, || self.message(parent, &options))); }
-        fn save_prepared(&self, parent: Option<shell_contract::WindowId>, options: shell_contract::hosts::FileDialog, target: shell_contract::ipc::RecoveryOpenTarget, snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot, done: Box<dyn FnOnce(Result<Option<shell_contract::ipc::RecoveryPreparedDestination>, String>) + Send>) { done(shell_contract::hosts::synthetic::recovery_save(&target, &snapshot, || self.save(parent, &options))); }
-        fn open_owned(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<Vec<std::path::PathBuf>>, String>) + Send>) {
-            done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.open(parent, &options)));
+        fn message_prepared(
+            &self,
+            parent: Option<shell_contract::WindowId>,
+            options: shell_contract::hosts::MessageBox,
+            target: shell_contract::ipc::RecoveryOpenTarget,
+            snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
+            done: Box<dyn FnOnce(Result<shell_contract::hosts::MessageBoxAnswer, String>) + Send>,
+        ) {
+            done(shell_contract::hosts::synthetic::recovery_dialog(
+                &target,
+                &snapshot,
+                || self.message(parent, &options),
+            ));
         }
-        fn save_owned(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>) {
-            done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.save(parent, &options)));
+        fn save_prepared(
+            &self,
+            parent: Option<shell_contract::WindowId>,
+            options: shell_contract::hosts::FileDialog,
+            target: shell_contract::ipc::RecoveryOpenTarget,
+            snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
+            done: Box<
+                dyn FnOnce(Result<Option<shell_contract::ipc::RecoveryPreparedDestination>, String>)
+                    + Send,
+            >,
+        ) {
+            done(shell_contract::hosts::synthetic::recovery_save(
+                &target,
+                &snapshot,
+                || self.save(parent, &options),
+            ));
         }
-        fn message_owned(&self, parent: Option<WindowId>, options: MessageBox, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>) {
-            done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.message(parent, &options)));
+        fn open_owned(
+            &self,
+            parent: Option<WindowId>,
+            options: FileDialog,
+            origin: shell_contract::ipc::NativeRequestOwner,
+            destination: shell_contract::ipc::NativeRequestOwner,
+            cancel: shell_contract::runtime::CancelToken,
+            pending: shell_contract::runtime::CancelToken,
+            done: Box<dyn FnOnce(Result<Option<Vec<std::path::PathBuf>>, String>) + Send>,
+        ) {
+            done(
+                synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending)
+                    .map(|()| self.open(parent, &options)),
+            );
         }
-        fn save_owned_many(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>) {
-            done(shell_contract::hosts::synthetic::admit_many(&origin, &participants, &cancel, &pending, || self.save(parent, &options)));
+        fn save_owned(
+            &self,
+            parent: Option<WindowId>,
+            options: FileDialog,
+            origin: shell_contract::ipc::NativeRequestOwner,
+            destination: shell_contract::ipc::NativeRequestOwner,
+            cancel: shell_contract::runtime::CancelToken,
+            pending: shell_contract::runtime::CancelToken,
+            done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>,
+        ) {
+            done(
+                synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending)
+                    .map(|()| self.save(parent, &options)),
+            );
         }
-        fn message_owned_many(&self, parent: Option<WindowId>, options: MessageBox, origin: shell_contract::ipc::NativeRequestOwner, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>) {
-            done(shell_contract::hosts::synthetic::admit_many(&origin, &participants, &cancel, &pending, || self.message(parent, &options)));
+        fn message_owned(
+            &self,
+            parent: Option<WindowId>,
+            options: MessageBox,
+            origin: shell_contract::ipc::NativeRequestOwner,
+            destination: shell_contract::ipc::NativeRequestOwner,
+            cancel: shell_contract::runtime::CancelToken,
+            pending: shell_contract::runtime::CancelToken,
+            done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>,
+        ) {
+            done(
+                synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending)
+                    .map(|()| self.message(parent, &options)),
+            );
+        }
+        fn save_owned_many(
+            &self,
+            parent: Option<WindowId>,
+            options: FileDialog,
+            origin: shell_contract::ipc::NativeRequestOwner,
+            participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+            cancel: shell_contract::runtime::CancelToken,
+            pending: shell_contract::runtime::CancelToken,
+            done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>,
+        ) {
+            done(shell_contract::hosts::synthetic::admit_many(
+                &origin,
+                &participants,
+                &cancel,
+                &pending,
+                || self.save(parent, &options),
+            ));
+        }
+        fn message_owned_many(
+            &self,
+            parent: Option<WindowId>,
+            options: MessageBox,
+            origin: shell_contract::ipc::NativeRequestOwner,
+            participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+            cancel: shell_contract::runtime::CancelToken,
+            pending: shell_contract::runtime::CancelToken,
+            done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>,
+        ) {
+            done(shell_contract::hosts::synthetic::admit_many(
+                &origin,
+                &participants,
+                &cancel,
+                &pending,
+                || self.message(parent, &options),
+            ));
         }
         fn open(&self, _: Option<WindowId>, _: &FileDialog) -> Option<Vec<PathBuf>> {
             None

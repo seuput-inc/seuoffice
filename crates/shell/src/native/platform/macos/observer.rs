@@ -257,7 +257,9 @@ struct Decision {
 fn describe(action: &WKNavigationAction) -> (bool, Option<Url>) {
     // SAFETY: plain getters on the action WebKit passed.
     unsafe {
-        let main_frame = action.targetFrame().is_some_and(|frame| frame.isMainFrame());
+        let main_frame = action
+            .targetFrame()
+            .is_some_and(|frame| frame.isMainFrame());
         let url = action
             .request()
             .URL()
@@ -275,7 +277,9 @@ fn admit(
     url: Option<&Url>,
     policy: WKNavigationActionPolicy,
 ) -> WKNavigationActionPolicy {
-    let Some(url) = url.filter(|_| main_frame) else { return policy };
+    let Some(url) = url.filter(|_| main_frame) else {
+        return policy;
+    };
     if policy == WKNavigationActionPolicy::Allow {
         if browser.observe_navigation_allowed(url) {
             policy
@@ -292,7 +296,13 @@ fn admit(
 
 impl Decision {
     fn run(self, open: bool) {
-        let Self { delegate, webview, action, preferences, handler } = self;
+        let Self {
+            delegate,
+            webview,
+            action,
+            preferences,
+            handler,
+        } = self;
         let chain = delegate.ivars();
         let (main_frame, url) = describe(&action);
         let browser = delegate.browser();
@@ -410,7 +420,10 @@ impl ChainedDelegate {
         }
         let description = error.localizedDescription().to_string();
         if let Some(browser) = self.browser() {
-            browser.observe_load(Err(LoadError { code: i32::try_from(code).ok(), description }));
+            browser.observe_load(Err(LoadError {
+                code: i32::try_from(code).ok(),
+                description,
+            }));
         }
     }
 
@@ -428,7 +441,9 @@ impl ChainedDelegate {
         else {
             return;
         };
-        let Some(browser) = self.browser() else { return };
+        let Some(browser) = self.browser() else {
+            return;
+        };
         if browser.url().as_ref() != Some(&url) {
             browser.observe_address(&url);
         }
@@ -436,9 +451,10 @@ impl ChainedDelegate {
 
     fn view_has_focus(&self) -> bool {
         let chain = self.ivars();
-        let (Some(window), Some(view)) =
-            (chain.window.as_ref().and_then(|window| window.load()), chain.webview.load())
-        else {
+        let (Some(window), Some(view)) = (
+            chain.window.as_ref().and_then(|window| window.load()),
+            chain.webview.load(),
+        ) else {
             return false;
         };
         // SAFETY: `firstResponder` is a plain getter of NSWindow.
@@ -458,7 +474,11 @@ impl ChainedDelegate {
             std::mem::replace(&mut state.in_view, inside) != inside
         };
         if changed && let Some(browser) = self.browser() {
-            browser.observe_view(if inside { ViewEvent::Focus } else { ViewEvent::Blur });
+            browser.observe_view(if inside {
+                ViewEvent::Focus
+            } else {
+                ViewEvent::Blur
+            });
         }
     }
 
@@ -491,9 +511,11 @@ impl ChainedDelegate {
         let browser = self
             .browser()
             .ok_or_else(|| "The browser retired before its observers attached.".to_owned())?;
-        let retired = browser.when_closed(move |_| weak.retire()).map_err(|error| {
-            format!("The navigation observer could not follow the browser: {error}")
-        })?;
+        let retired = browser
+            .when_closed(move |_| weak.retire())
+            .map_err(|error| {
+                format!("The navigation observer could not follow the browser: {error}")
+            })?;
         let inside = self.view_has_focus();
         let mut state = self.ivars().state.borrow_mut();
         state.in_view = inside;
@@ -539,9 +561,8 @@ impl ChainedDelegate {
 /// The chained delegate of a web view, by the association `attach` made.
 fn associated(view: &AnyObject) -> Option<Retained<ChainedDelegate>> {
     // SAFETY: reads the association this module wrote; the object is retained at once.
-    let object = unsafe {
-        objc2::ffi::objc_getAssociatedObject(ptr::from_ref(view), address(&ASSOCIATION))
-    };
+    let object =
+        unsafe { objc2::ffi::objc_getAssociatedObject(ptr::from_ref(view), address(&ASSOCIATION)) };
     let object = NonNull::new(object.cast_mut())?;
     // SAFETY: only this module stores under that key, and it stores a `ChainedDelegate`.
     unsafe { Retained::retain(object.as_ptr().cast::<ChainedDelegate>()) }
@@ -588,7 +609,11 @@ impl Observe for Platform {
         let window: Option<&AnyObject> = NonNull::new(platform.ns_window().cast::<AnyObject>())
             .map(|window| unsafe { window.as_ref() });
         let javascript = browser.policy().is_none_or(|policy| policy.javascript());
-        let gate = if browser.policy().is_some() { Gate::Waiting(Vec::new()) } else { Gate::Open };
+        let gate = if browser.policy().is_some() {
+            Gate::Waiting(Vec::new())
+        } else {
+            Gate::Open
+        };
         let chain = Chain {
             wry: Weak::from_retained(&wry),
             webview: Weak::new(view),

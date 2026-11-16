@@ -20,14 +20,19 @@ pub(crate) fn system_locale() -> Result<String, String> {
     // SAFETY: the API receives the full writable slice and its checked length.
     let length = unsafe { GetUserDefaultLocaleName(&mut buffer) };
     if length <= 1 {
-        return Err(format!("reading the regional locale: {}", std::io::Error::last_os_error()));
+        return Err(format!(
+            "reading the regional locale: {}",
+            std::io::Error::last_os_error()
+        ));
     }
-    String::from_utf16(&buffer[..length as usize - 1]).map_err(|e| format!("invalid regional locale: {e}"))
+    String::from_utf16(&buffer[..length as usize - 1])
+        .map_err(|e| format!("invalid regional locale: {e}"))
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
 pub(crate) fn system_locale() -> Result<String, String> {
-    let locale = ["LC_ALL", "LC_TIME", "LANG"].into_iter()
+    let locale = ["LC_ALL", "LC_TIME", "LANG"]
+        .into_iter()
         .filter_map(|name| std::env::var(name).ok())
         .find(|value| !value.is_empty())
         .unwrap_or_else(|| "C".to_owned());
@@ -36,6 +41,12 @@ pub(crate) fn system_locale() -> Result<String, String> {
     }
     // The consumer chooses Gregorian dates from the region, not POSIX
     // calendar, encoding or script modifiers.
-    Ok(locale.split('@').next().unwrap_or(&locale)
-        .split('.').next().unwrap_or(&locale).replace('_', "-"))
+    Ok(locale
+        .split('@')
+        .next()
+        .unwrap_or(&locale)
+        .split('.')
+        .next()
+        .unwrap_or(&locale)
+        .replace('_', "-"))
 }

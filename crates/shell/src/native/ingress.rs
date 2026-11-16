@@ -48,7 +48,10 @@ pub fn nonce_of(headers: &HeaderMap) -> Option<[u8; NONCE_LEN]> {
 }
 
 pub(crate) fn nonce_eq(left: &[u8; NONCE_LEN], right: &[u8; NONCE_LEN]) -> bool {
-    left.iter().zip(right).fold(0u8, |diff, (a, b)| diff | (a ^ b)) == 0
+    left.iter()
+        .zip(right)
+        .fold(0u8, |diff, (a, b)| diff | (a ^ b))
+        == 0
 }
 
 /// One frame the bridge pulls from the outbox (`seuoffice-ipc://localhost/outbox/<id>`).
@@ -86,10 +89,16 @@ pub struct ReplySink(Arc<Outbox>);
 
 impl ReplySink {
     pub(crate) fn new(
-        document: DocumentId, revoked: Arc<AtomicBool>,
+        document: DocumentId,
+        revoked: Arc<AtomicBool>,
         wake: Box<dyn Fn() -> Result<(), String> + Send + Sync>,
     ) -> Self {
-        Self(Arc::new(Outbox { document, revoked, queue: Mutex::default(), wake }))
+        Self(Arc::new(Outbox {
+            document,
+            revoked,
+            queue: Mutex::default(),
+            wake,
+        }))
     }
 
     pub fn document_id(&self) -> DocumentId {
@@ -101,13 +110,28 @@ impl ReplySink {
     }
 
     pub fn send(&self, callback: u32, raw: bool, body: Vec<u8>) -> Result<(), String> {
-        self.push(ReplyFrame { callback, channel: None, raw, body })
+        self.push(ReplyFrame {
+            callback,
+            channel: None,
+            raw,
+            body,
+        })
     }
 
     pub fn send_channel(
-        &self, callback: u32, index: u64, raw: bool, body: Vec<u8>, end: bool,
+        &self,
+        callback: u32,
+        index: u64,
+        raw: bool,
+        body: Vec<u8>,
+        end: bool,
     ) -> Result<(), String> {
-        self.push(ReplyFrame { callback, channel: Some((index, end)), raw, body })
+        self.push(ReplyFrame {
+            callback,
+            channel: Some((index, end)),
+            raw,
+            body,
+        })
     }
 
     fn push(&self, frame: ReplyFrame) -> Result<(), String> {
@@ -116,7 +140,10 @@ impl ReplySink {
             return Err("Native document is no longer available.".into());
         }
         let wake = {
-            let mut queue = outbox.queue.lock().map_err(|_| "Native reply queue was poisoned.")?;
+            let mut queue = outbox
+                .queue
+                .lock()
+                .map_err(|_| "Native reply queue was poisoned.")?;
             if queue.frames.len() >= MAX_FRAMES
                 || queue.bytes.saturating_add(frame.body.len()) > MAX_BYTES
             {
@@ -137,14 +164,22 @@ impl ReplySink {
 
     /// Take every queued frame. Called by the outbox scheme handler for the redeemed document.
     pub fn drain(&self) -> Vec<ReplyFrame> {
-        let mut queue = self.0.queue.lock().unwrap_or_else(|error| error.into_inner());
+        let mut queue = self
+            .0
+            .queue
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         queue.wake_sent = false;
         queue.bytes = 0;
         queue.frames.drain(..).collect()
     }
 
     pub(crate) fn close(&self) {
-        let mut queue = self.0.queue.lock().unwrap_or_else(|error| error.into_inner());
+        let mut queue = self
+            .0
+            .queue
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         queue.frames.clear();
         queue.bytes = 0;
     }
@@ -158,7 +193,12 @@ pub struct ChannelQueue {
 
 impl ChannelQueue {
     pub fn enqueue(
-        &self, callback: u32, index: u64, raw: bool, body: Vec<u8>, end: bool,
+        &self,
+        callback: u32,
+        index: u64,
+        raw: bool,
+        body: Vec<u8>,
+        end: bool,
     ) -> Result<(), String> {
         self.sink.send_channel(callback, index, raw, body, end)
     }
@@ -167,7 +207,9 @@ impl ChannelQueue {
 /// The document a request authenticated as, or `None`: absent header, malformed nonce,
 /// unknown label, iframe (no nonce), unregistered or revoked document.
 pub fn redeem(
-    native: &super::Native, webview_label: &str, headers: &HeaderMap,
+    native: &super::Native,
+    webview_label: &str,
+    headers: &HeaderMap,
 ) -> Option<DocumentContext> {
     let nonce = nonce_of(headers)?;
     native.browser(webview_label)?.core.redeem(&nonce)

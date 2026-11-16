@@ -10,14 +10,26 @@ pub(super) fn save(
     edits: &[(String, Vec<Replacement>)],
     now: f64,
 ) -> Result<SavedBytes, String> {
-    let edits: Vec<_> = edits.iter().map(|(path, replacements)| {
-        (path.clone(), replacements.iter().map(|replacement| RangeReplacement {
-            start: replacement.start as f64,
-            end: replacement.end as f64,
-            text: replacement.text.encode_utf16().collect(),
-        }).collect())
-    }).collect();
-    let options = EpubSaveOptions { limits: &EPUB_ZIP_LIMITS, now };
+    let edits: Vec<_> = edits
+        .iter()
+        .map(|(path, replacements)| {
+            (
+                path.clone(),
+                replacements
+                    .iter()
+                    .map(|replacement| RangeReplacement {
+                        start: replacement.start as f64,
+                        end: replacement.end as f64,
+                        text: replacement.text.encode_utf16().collect(),
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    let options = EpubSaveOptions {
+        limits: &EPUB_ZIP_LIMITS,
+        now,
+    };
     match save_epub(SaveOriginal::Bytes(bytes.as_slice()), &edits, &options)
         .map_err(|error| error.message)?
     {
@@ -33,8 +45,8 @@ pub(super) fn save(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use std::io::{Cursor, Write};
+    use std::sync::Arc;
 
     fn book() -> Vec<u8> {
         let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
@@ -42,9 +54,18 @@ mod tests {
             .compression_method(zip::CompressionMethod::Stored);
         for (path, body) in [
             ("mimetype", "application/epub+zip"),
-            ("META-INF/container.xml", r#"<?xml version="1.0"?><container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#),
-            ("book.opf", r#"<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Book</dc:title><dc:identifier id="id">book</dc:identifier><dc:language>en</dc:language></metadata><manifest><item id="c" href="chapter.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c"/></spine></package>"#),
-            ("chapter.xhtml", r#"<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Hello</p></body></html>"#),
+            (
+                "META-INF/container.xml",
+                r#"<?xml version="1.0"?><container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#,
+            ),
+            (
+                "book.opf",
+                r#"<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Book</dc:title><dc:identifier id="id">book</dc:identifier><dc:language>en</dc:language></metadata><manifest><item id="c" href="chapter.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c"/></spine></package>"#,
+            ),
+            (
+                "chapter.xhtml",
+                r#"<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Hello</p></body></html>"#,
+            ),
         ] {
             zip.start_file(path, options).unwrap();
             zip.write_all(body.as_bytes()).unwrap();
@@ -55,13 +76,18 @@ mod tests {
     #[test]
     fn chapter_edit_survives_save() {
         let original = Arc::new(book());
-        let chapter = super::super::epub_book::read_text(original.clone(), "chapter.xhtml").unwrap().text;
+        let chapter = super::super::epub_book::read_text(original.clone(), "chapter.xhtml")
+            .unwrap()
+            .text;
         let start = chapter.find("Hello").unwrap();
-        let edits = vec![("chapter.xhtml".to_owned(), vec![Replacement {
-            start,
-            end: start + 5,
-            text: "World".to_owned(),
-        }])];
+        let edits = vec![(
+            "chapter.xhtml".to_owned(),
+            vec![Replacement {
+                start,
+                end: start + 5,
+                text: "World".to_owned(),
+            }],
+        )];
         let SavedBytes::Changed(saved) = save(original, &edits, 0.0).unwrap() else {
             panic!("chapter edit was not saved");
         };

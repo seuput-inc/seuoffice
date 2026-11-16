@@ -53,8 +53,11 @@ struct Request {
 
 impl Request {
     fn finish(&self, result: Result<Value, EvalError>) {
-        let Some(completion) =
-            self.completion.lock().unwrap_or_else(|error| error.into_inner()).take()
+        let Some(completion) = self
+            .completion
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
         else {
             return;
         };
@@ -70,7 +73,12 @@ impl Request {
     }
 
     fn abandon(&self) {
-        drop(self.completion.lock().unwrap_or_else(|error| error.into_inner()).take());
+        drop(
+            self.completion
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take(),
+        );
     }
 }
 
@@ -107,20 +115,30 @@ pub(crate) fn wrap_script(document: DocumentId, source: &str) -> String {
 }
 
 fn script_error(message: String) -> EvalError {
-    if message.contains(STALE_MARKER) { EvalError::StaleDocument } else { EvalError::Script(message) }
+    if message.contains(STALE_MARKER) {
+        EvalError::StaleDocument
+    } else {
+        EvalError::Script(message)
+    }
 }
 
 pub(crate) fn start(
-    origin: &DocumentContext, source: String, completion: Completion,
+    origin: &DocumentContext,
+    source: String,
+    completion: Completion,
 ) -> Result<DocumentEvaluation, EvalError> {
     let control = origin
         .browser()
         .control()
         .ok_or_else(|| EvalError::Transport("the webview is not attached".into()))?;
-    let request = Arc::new(Request { origin: origin.clone(), completion: Mutex::new(Some(completion)) });
+    let request = Arc::new(Request {
+        origin: origin.clone(),
+        completion: Mutex::new(Some(completion)),
+    });
     let lost = request.clone();
-    let subscription =
-        origin.on_revoke(move || lost.finish(Err(EvalError::StaleDocument))).ok_or(EvalError::StaleDocument)?;
+    let subscription = origin
+        .on_revoke(move || lost.finish(Err(EvalError::StaleDocument)))
+        .ok_or(EvalError::StaleDocument)?;
     let script = wrap_script(origin.identity().id(), &source);
     let reply = request.clone();
     // Dispatch inside the gate: a revocation cannot interleave between check and send.
@@ -131,7 +149,10 @@ pub(crate) fn start(
         )
     });
     match sent {
-        Some(Ok(())) => Ok(DocumentEvaluation { request, _loss: subscription }),
+        Some(Ok(())) => Ok(DocumentEvaluation {
+            request,
+            _loss: subscription,
+        }),
         Some(Err(error)) => {
             request.abandon();
             Err(EvalError::Transport(error))
@@ -164,7 +185,9 @@ mod tests {
         let (_browser, context) = registered_context_with_control("eval-ok", control.clone());
         let answers = Arc::new(Mutex::new(Vec::new()));
         let sink = answers.clone();
-        let evaluation = context.evaluate("1+1".into(), move |r| sink.lock().unwrap().push(r)).unwrap();
+        let evaluation = context
+            .evaluate("1+1".into(), move |r| sink.lock().unwrap().push(r))
+            .unwrap();
         control.answer_evaluation(Ok(Value::from(2)));
         control.answer_evaluation(Ok(Value::from(3)));
         assert_eq!(*answers.lock().unwrap(), [Ok(Value::from(2))]);
@@ -177,23 +200,38 @@ mod tests {
         let (_browser, context) = registered_context_with_control("eval-stale", control.clone());
         let answers = Arc::new(Mutex::new(Vec::new()));
         let sink = answers.clone();
-        let evaluation = context.evaluate("1".into(), move |r| sink.lock().unwrap().push(r)).unwrap();
-        context.0.revoke(RevokeReason::Navigation).unwrap().deliver();
+        let evaluation = context
+            .evaluate("1".into(), move |r| sink.lock().unwrap().push(r))
+            .unwrap();
+        context
+            .0
+            .revoke(RevokeReason::Navigation)
+            .unwrap()
+            .deliver();
         control.answer_evaluation(Ok(Value::from(1)));
         assert_eq!(*answers.lock().unwrap(), [Err(EvalError::StaleDocument)]);
         drop(evaluation);
 
-        let (_other_browser, other) = registered_context_with_control("eval-cancel", FakeControl::new());
+        let (_other_browser, other) =
+            registered_context_with_control("eval-cancel", FakeControl::new());
         let cancelled = Arc::new(Mutex::new(Vec::new()));
         let sink = cancelled.clone();
-        drop(other.evaluate("1".into(), move |r| sink.lock().unwrap().push(r)).unwrap());
+        drop(
+            other
+                .evaluate("1".into(), move |r| sink.lock().unwrap().push(r))
+                .unwrap(),
+        );
         assert_eq!(*cancelled.lock().unwrap(), [Err(EvalError::Cancelled)]);
     }
 
     #[test]
     fn evaluating_on_a_revoked_document_is_refused_up_front() {
-        let (_browser, context) = registered_context_with_control("eval-revoked", FakeControl::new());
+        let (_browser, context) =
+            registered_context_with_control("eval-revoked", FakeControl::new());
         context.0.revoke(RevokeReason::Close).unwrap().deliver();
-        assert_eq!(context.evaluate("1".into(), |_| ()).err(), Some(EvalError::StaleDocument));
+        assert_eq!(
+            context.evaluate("1".into(), |_| ()).err(),
+            Some(EvalError::StaleDocument)
+        );
     }
 }

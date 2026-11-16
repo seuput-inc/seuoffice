@@ -20,13 +20,14 @@ use shell_contract::runtime::{RendererGeneration, Views};
 use shell_contract::{Hosts, MainWindowHost, Surface};
 use tauri::webview::{NewWindowResponse, WebviewBuilder};
 use tauri::{
-    AppHandle, LogicalPosition, LogicalSize, Manager, Webview, WebviewUrl, WebviewWindowBuilder, WindowBuilder,
+    AppHandle, LogicalPosition, LogicalSize, Manager, Webview, WebviewUrl, WebviewWindowBuilder,
+    WindowBuilder,
 };
 
 use crate::native::{
-    self, BridgeMode, BrowserCreation, DocumentContext, Native, NativeEvent, NativeEventKind, NativeSpec,
-    NavigationStart, RequestPolicy, ViewEvent, WebviewBuilderExt, WebviewWindowBuilderExt, WindowBuilderExt,
-    WindowCreation,
+    self, BridgeMode, BrowserCreation, DocumentContext, Native, NativeEvent, NativeEventKind,
+    NativeSpec, NavigationStart, RequestPolicy, ViewEvent, WebviewBuilderExt,
+    WebviewWindowBuilderExt, WindowBuilderExt, WindowCreation,
 };
 
 use super::{HostContext, window_open};
@@ -50,19 +51,42 @@ struct NativeClosureProofState {
 }
 
 impl NativeClosureProof {
-    pub(crate) fn new(close: native::BrowserClose, view: ViewId, created: shell_contract::runtime::RendererGeneration) -> Self {
-        let (issuer, reservation, owner) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(view, created);
-        Self { close, reservation, owner, teardown: Arc::new(OnceLock::new()), state: Arc::new(std::sync::Mutex::new(NativeClosureProofState {
-            issuer: Some(issuer), receipt: None,
-        })) }
+    pub(crate) fn new(
+        close: native::BrowserClose,
+        view: ViewId,
+        created: shell_contract::runtime::RendererGeneration,
+    ) -> Self {
+        let (issuer, reservation, owner) =
+            shell_contract::ipc::NativeClosureIssuer::new_with_owner(view, created);
+        Self {
+            close,
+            reservation,
+            owner,
+            teardown: Arc::new(OnceLock::new()),
+            state: Arc::new(std::sync::Mutex::new(NativeClosureProofState {
+                issuer: Some(issuer),
+                receipt: None,
+            })),
+        }
     }
 
-    pub(crate) fn reservation(&self) -> &shell_contract::ipc::NativeClosureReservation { &self.reservation }
-    pub(crate) fn owner(&self) -> &shell_contract::ipc::NativeBrowserOwner { &self.owner }
-    pub(crate) fn close(&self) -> native::BrowserClose { self.close.clone() }
+    pub(crate) fn reservation(&self) -> &shell_contract::ipc::NativeClosureReservation {
+        &self.reservation
+    }
+    pub(crate) fn owner(&self) -> &shell_contract::ipc::NativeBrowserOwner {
+        &self.owner
+    }
+    pub(crate) fn close(&self) -> native::BrowserClose {
+        self.close.clone()
+    }
 
-    pub(crate) fn bind_teardown(&self, teardown: Arc<crate::views::ViewRemovalDelivery>) -> Result<(), String> {
-        self.teardown.set(teardown).map_err(|_| "The native view teardown is already bound".into())
+    pub(crate) fn bind_teardown(
+        &self,
+        teardown: Arc<crate::views::ViewRemovalDelivery>,
+    ) -> Result<(), String> {
+        self.teardown
+            .set(teardown)
+            .map_err(|_| "The native view teardown is already bound".into())
     }
 
     pub(crate) fn teardown(&self) -> Option<Arc<crate::views::ViewRemovalDelivery>> {
@@ -70,12 +94,21 @@ impl NativeClosureProof {
     }
 
     pub(crate) fn dispatch_close(
-        &self, mut permit: shell_contract::ipc::NativeBrowserClosePermit,
-    ) -> Result<shell_contract::ipc::NativeBrowserClosePermit, (String, shell_contract::ipc::NativeBrowserClosePermit)> {
+        &self,
+        mut permit: shell_contract::ipc::NativeBrowserClosePermit,
+    ) -> Result<
+        shell_contract::ipc::NativeBrowserClosePermit,
+        (String, shell_contract::ipc::NativeBrowserClosePermit),
+    > {
         if !permit.reservation().same_reservation(&self.reservation) {
-            return Err(("The native close permit belongs to another browser".into(), permit));
+            return Err((
+                "The native close permit belongs to another browser".into(),
+                permit,
+            ));
         }
-        if let Err(error) = permit.begin_dispatch() { return Err((error, permit)); }
+        if let Err(error) = permit.begin_dispatch() {
+            return Err((error, permit));
+        }
         match self.close.request_close() {
             Ok(()) => Ok(permit),
             Err(error) => {
@@ -97,8 +130,12 @@ impl NativeClosureProof {
         self.close.when_closed(move |outcome| {
             let receipt = {
                 let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-                if let Some(receipt) = &state.receipt { receipt.clone() } else {
-                    let Some(issuer) = state.issuer.take() else { return; };
+                if let Some(receipt) = &state.receipt {
+                    receipt.clone()
+                } else {
+                    let Some(issuer) = state.issuer.take() else {
+                        return;
+                    };
                     let receipt = match outcome {
                         native::BrowserCloseOutcome::Retired => issuer.closed(),
                         native::BrowserCloseOutcome::NotCreated => issuer.not_created(),
@@ -111,12 +148,17 @@ impl NativeClosureProof {
         })
     }
 
-    pub(crate) fn watch(&self, callback: Box<dyn FnOnce(shell_contract::ipc::NativeClosureReceipt) + Send>) -> Result<(), String> {
+    pub(crate) fn watch(
+        &self,
+        callback: Box<dyn FnOnce(shell_contract::ipc::NativeClosureReceipt) + Send>,
+    ) -> Result<(), String> {
         let retained = Arc::new(std::sync::Mutex::new((false, None)));
         let callback_retained = retained.clone();
         let subscription = self.when_closed(move |receipt| {
             let subscription = {
-                let mut state = callback_retained.lock().unwrap_or_else(|error| error.into_inner());
+                let mut state = callback_retained
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
                 state.0 = true;
                 state.1.take()
             };
@@ -126,7 +168,9 @@ impl NativeClosureProof {
         let mut subscription = Some(subscription);
         {
             let mut state = retained.lock().unwrap_or_else(|error| error.into_inner());
-            if !state.0 { state.1 = subscription.take(); }
+            if !state.0 {
+                state.1 = subscription.take();
+            }
         }
         drop(subscription);
         Ok(())
@@ -134,13 +178,20 @@ impl NativeClosureProof {
 }
 
 impl shell_ipc_w::tabs::host::NativeBrowserCloseProducer for NativeClosureProof {
-    fn watch(&self, done: Box<dyn FnOnce(shell_contract::ipc::NativeClosureReceipt) + Send>) -> Result<(), String> {
+    fn watch(
+        &self,
+        done: Box<dyn FnOnce(shell_contract::ipc::NativeClosureReceipt) + Send>,
+    ) -> Result<(), String> {
         NativeClosureProof::watch(self, done)
     }
 
     fn dispatch_close(
-        &self, permit: shell_contract::ipc::NativeBrowserClosePermit,
-    ) -> Result<shell_contract::ipc::NativeBrowserClosePermit, (String, shell_contract::ipc::NativeBrowserClosePermit)> {
+        &self,
+        permit: shell_contract::ipc::NativeBrowserClosePermit,
+    ) -> Result<
+        shell_contract::ipc::NativeBrowserClosePermit,
+        (String, shell_contract::ipc::NativeBrowserClosePermit),
+    > {
         NativeClosureProof::dispatch_close(self, permit)
     }
 }
@@ -162,7 +213,6 @@ pub(crate) struct PreparedDeferredWindow {
     window_submission: WindowCreation,
 }
 
-
 pub(crate) struct ChildCreationError {
     pub(crate) message: String,
     pub(crate) close: Option<native::BrowserClose>,
@@ -170,7 +220,13 @@ pub(crate) struct ChildCreationError {
 }
 
 impl From<String> for ChildCreationError {
-    fn from(message: String) -> Self { Self { message, close: None, proof: None } }
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            close: None,
+            proof: None,
+        }
+    }
 }
 
 type FrameCallback = Arc<dyn Fn(ViewId, &NativeEvent) + Send + Sync>;
@@ -189,10 +245,16 @@ fn frame_event(view: ViewId, label: &str, event: &NativeEvent) {
 
 fn view_event(view: ViewId, event: &NativeEvent) {
     let event = match &event.kind {
-        NativeEventKind::View(ViewEvent::Focus) => Some(shell_ipc_w::projects::PageEvent::Focus(view)),
-        NativeEventKind::View(ViewEvent::Blur) => Some(shell_ipc_w::projects::PageEvent::Blur(view)),
-        NativeEventKind::NavigationStarted { same_document: false, .. } =>
-            Some(shell_ipc_w::projects::PageEvent::Navigated(view)),
+        NativeEventKind::View(ViewEvent::Focus) => {
+            Some(shell_ipc_w::projects::PageEvent::Focus(view))
+        }
+        NativeEventKind::View(ViewEvent::Blur) => {
+            Some(shell_ipc_w::projects::PageEvent::Blur(view))
+        }
+        NativeEventKind::NavigationStarted {
+            same_document: false,
+            ..
+        } => Some(shell_ipc_w::projects::PageEvent::Navigated(view)),
         _ => None,
     };
     if let Some(event) = event {
@@ -205,9 +267,13 @@ fn frame_line(label: &str, event: &NativeEvent) {
     let what = match &event.kind {
         NativeEventKind::NavigationStarted { url, .. } => format!("navigation started {url}"),
         NativeEventKind::DocumentCommitted { url, .. } => format!("document committed {url}"),
-        NativeEventKind::NavigationFailed { url, error, .. } => format!("NAVIGATION FAILED {url} {error}"),
+        NativeEventKind::NavigationFailed { url, error, .. } => {
+            format!("NAVIGATION FAILED {url} {error}")
+        }
         NativeEventKind::LoadFinished { ok, .. } => format!("load finished ok={ok}"),
-        NativeEventKind::WebviewProcessFailed { kind } => format!("WEBVIEW PROCESS FAILED {kind:?}"),
+        NativeEventKind::WebviewProcessFailed { kind } => {
+            format!("WEBVIEW PROCESS FAILED {kind:?}")
+        }
         _ => return,
     };
     trace!("frame", "{label} {what}");
@@ -228,7 +294,9 @@ fn event_sink(view: ViewId, label: String, on_frame: Option<FrameCallback>) -> n
 /// What a view with a bridge may load: the shell's own pages, and what the caller allows.
 /// Without a bridge the caller's policy stands alone.
 fn view_policy(
-    bridge: Bridge, base: Option<RequestPolicy>, navigation: Option<NavigationFilter>,
+    bridge: Bridge,
+    base: Option<RequestPolicy>,
+    navigation: Option<NavigationFilter>,
 ) -> Option<RequestPolicy> {
     if bridge.surface().is_none() {
         return base;
@@ -260,7 +328,10 @@ fn view_policy(
 
 /// `Native::attach` runs on the UI thread, after the build returned.
 fn attach_native(
-    app: &AppHandle, native: &Native, webview: &Webview, browser: &native::BrowserIdentity,
+    app: &AppHandle,
+    native: &Native,
+    webview: &Webview,
+    browser: &native::BrowserIdentity,
 ) -> Result<(), String> {
     if native::defer::is_ui_thread() {
         return native.attach(webview, browser);
@@ -382,23 +453,33 @@ impl Default for WindowOptions {
 #[cfg(target_os = "macos")]
 fn disable_native_fullscreen(app: &AppHandle, window: &tauri::WebviewWindow) -> Result<(), String> {
     fn apply(window: &tauri::WebviewWindow) -> Result<(), String> {
+        use crate::native::WindowExt;
         use objc2::rc::Retained;
         use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
-        use crate::native::WindowExt;
 
-        let handle = window.as_ref().window().native_window_handle().map_err(|error| error.to_string())?;
-        handle.with_window(|_| {
-            let _main = objc2::MainThreadMarker::new().ok_or_else(|| "not on the main thread".to_owned())?;
-            let pointer = window.ns_window().map_err(|error| error.to_string())?;
-            // SAFETY: the creation-bound native window remains admitted for this operation.
-            let native = unsafe { Retained::retain(pointer.cast::<NSWindow>()) }
-                .ok_or_else(|| "window has no native NSWindow".to_owned())?;
-            let mut behavior = native.collectionBehavior();
-            behavior.remove(NSWindowCollectionBehavior::FullScreenPrimary | NSWindowCollectionBehavior::FullScreenAuxiliary);
-            behavior.insert(NSWindowCollectionBehavior::FullScreenNone);
-            native.setCollectionBehavior(behavior);
-            Ok(())
-        }).map_err(|error| error.to_string())?
+        let handle = window
+            .as_ref()
+            .window()
+            .native_window_handle()
+            .map_err(|error| error.to_string())?;
+        handle
+            .with_window(|_| {
+                let _main = objc2::MainThreadMarker::new()
+                    .ok_or_else(|| "not on the main thread".to_owned())?;
+                let pointer = window.ns_window().map_err(|error| error.to_string())?;
+                // SAFETY: the creation-bound native window remains admitted for this operation.
+                let native = unsafe { Retained::retain(pointer.cast::<NSWindow>()) }
+                    .ok_or_else(|| "window has no native NSWindow".to_owned())?;
+                let mut behavior = native.collectionBehavior();
+                behavior.remove(
+                    NSWindowCollectionBehavior::FullScreenPrimary
+                        | NSWindowCollectionBehavior::FullScreenAuxiliary,
+                );
+                behavior.insert(NSWindowCollectionBehavior::FullScreenNone);
+                native.setCollectionBehavior(behavior);
+                Ok(())
+            })
+            .map_err(|error| error.to_string())?
     }
 
     if objc2::MainThreadMarker::new().is_some() {
@@ -408,7 +489,8 @@ fn disable_native_fullscreen(app: &AppHandle, window: &tauri::WebviewWindow) -> 
     let (send, receive) = std::sync::mpsc::sync_channel(1);
     app.run_on_main_thread(move || {
         let _ = send.send(apply(&window));
-    }).map_err(|error| error.to_string())?;
+    })
+    .map_err(|error| error.to_string())?;
     receive.recv().map_err(|error| error.to_string())?
 }
 
@@ -418,8 +500,9 @@ fn disable_native_fullscreen(_: &AppHandle, _: &tauri::WebviewWindow) -> Result<
 }
 
 type ClosedCallback = Box<dyn FnOnce(WindowId) + Send>;
-static CLOSED_CALLBACKS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<WindowId, ClosedCallback>>> =
-    std::sync::LazyLock::new(Default::default);
+static CLOSED_CALLBACKS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<WindowId, ClosedCallback>>,
+> = std::sync::LazyLock::new(Default::default);
 
 pub(crate) fn window_destroyed(window: WindowId) {
     let callback = CLOSED_CALLBACKS.lock().unwrap().remove(&window);
@@ -450,7 +533,9 @@ impl Windows {
 
     fn url_of(url: &str) -> Result<WebviewUrl, String> {
         if url == "about:blank" {
-            return tauri::Url::parse(url).map(WebviewUrl::External).map_err(|error| error.to_string());
+            return tauri::Url::parse(url)
+                .map(WebviewUrl::External)
+                .map_err(|error| error.to_string());
         }
         app_scheme::webview_url(url)
             .map(WebviewUrl::External)
@@ -465,7 +550,8 @@ impl Windows {
         origin: Option<(f64, f64)>,
         visible: bool,
     ) -> Result<WindowId, String> {
-        self.open_empty_window_handle(title, size, min_size, origin, visible).map(|(id, _, _)| id)
+        self.open_empty_window_handle(title, size, min_size, origin, visible)
+            .map(|(id, _, _)| id)
     }
 
     pub(crate) fn open_empty_window_handle(
@@ -475,7 +561,14 @@ impl Windows {
         min_size: (f64, f64),
         origin: Option<(f64, f64)>,
         visible: bool,
-    ) -> Result<(WindowId, tauri::Window, Arc<crate::views::NativeWindowLifecycle>), String> {
+    ) -> Result<
+        (
+            WindowId,
+            tauri::Window,
+            Arc<crate::views::NativeWindowLifecycle>,
+        ),
+        String,
+    > {
         let native = self.native()?;
         let creation = WindowCreation::new().ok_or("Native creation ids are exhausted.")?;
         let id = self.views.new_window_id();
@@ -530,16 +623,24 @@ impl Windows {
     }
 
     pub fn reparent_view(&self, view: ViewId, window: WindowId) -> Result<(), String> {
-        let webview = self.webview(view).ok_or_else(|| format!("no view {}", view.0))?;
-        let label = self.views.label_of_window(window)
+        let webview = self
+            .webview(view)
+            .ok_or_else(|| format!("no view {}", view.0))?;
+        let label = self
+            .views
+            .label_of_window(window)
             .ok_or_else(|| format!("no window {}", window.0))?;
-        let target = self.app.get_window(&label)
+        let target = self
+            .app
+            .get_window(&label)
             .ok_or_else(|| format!("window {} is gone", window.0))?;
         let previous = webview.window();
         if let Err(error) = webview.reparent(&target) {
             return match webview.reparent(&previous) {
                 Ok(()) => Err(format!("reparenting view: {error}")),
-                Err(rollback) => Err(format!("reparenting view: {error}; restoring parent: {rollback}")),
+                Err(rollback) => Err(format!(
+                    "reparenting view: {error}; restoring parent: {rollback}"
+                )),
             };
         }
         if let Err(error) = self.views.move_view(view, window) {
@@ -556,25 +657,50 @@ impl Windows {
         self.open_window_with_options(spec, WindowOptions::default())
     }
 
-    pub fn open_window_with_options(&self, spec: WindowSpec, options: WindowOptions) -> Result<(WindowId, ViewId), String> {
+    pub fn open_window_with_options(
+        &self,
+        spec: WindowSpec,
+        options: WindowOptions,
+    ) -> Result<(WindowId, ViewId), String> {
         self.open_window_native(spec, options, false, None)
     }
 
-    fn open_window_native(&self, spec: WindowSpec, options: WindowOptions, explicit_navigation: bool, reserved: Option<PreparedDeferredWindow>) -> Result<(WindowId, ViewId), String> {
+    fn open_window_native(
+        &self,
+        spec: WindowSpec,
+        options: WindowOptions,
+        explicit_navigation: bool,
+        reserved: Option<PreparedDeferredWindow>,
+    ) -> Result<(WindowId, ViewId), String> {
         let url = Self::url_of(&spec.view.url)?;
         let native = self.native()?;
-        let reserved_identity = reserved.as_ref().map(|entry| (entry.window, entry.view, entry.created.clone(), entry.surface, entry.window_lifecycle.clone()));
+        let reserved_identity = reserved.as_ref().map(|entry| {
+            (
+                entry.window,
+                entry.view,
+                entry.created.clone(),
+                entry.surface,
+                entry.window_lifecycle.clone(),
+            )
+        });
         let (window, view, mut registration) = match &reserved_identity {
             Some((window, view, _, _, _)) => (*window, *view, None),
             None => {
                 let registration = self.views.allocate_view()?;
-                (self.views.new_window_id(), registration.view(), Some(registration))
+                (
+                    self.views.new_window_id(),
+                    registration.view(),
+                    Some(registration),
+                )
             }
         };
         if let Some((_, _, created, surface, lifecycle)) = &reserved_identity {
             let bound = self.views.view_window_captured(view, created).ok();
             if spec.view.bridge.surface() != Some(*surface)
-                || !bound.is_some_and(|(current, token)| current == window && Arc::ptr_eq(&token, lifecycle)) {
+                || !bound.is_some_and(|(current, token)| {
+                    current == window && Arc::ptr_eq(&token, lifecycle)
+                })
+            {
                 return Err("The reserved native window no longer matches its view".into());
             }
         }
@@ -639,7 +765,14 @@ impl Windows {
                 if let Some(callback) = &on_open {
                     callback(view, &origin, url.as_str());
                 } else if let Some(created) = popup_generation.get() {
-                    let _ = window_open::requested(asked_by, &popup_views, view, created, &origin, url.as_str());
+                    let _ = window_open::requested(
+                        asked_by,
+                        &popup_views,
+                        view,
+                        created,
+                        &origin,
+                        url.as_str(),
+                    );
                 }
             }
             NewWindowResponse::Deny
@@ -695,12 +828,17 @@ impl Windows {
                 };
                 let proof = NativeClosureProof::new(creation.receipt(), view, captured.clone());
                 let admitted = (|| {
-                    self.views.set_closure_proof(view, &captured, proof.clone())?;
-                    let prepared = self.views.prepare_browser_owner(view, &captured, proof.owner())?;
-                    proof.reservation().with_initial_owner(proof.owner(), |transition| {
-                        prepared.validate(transition)?.commit();
-                        Ok(())
-                    })
+                    self.views
+                        .set_closure_proof(view, &captured, proof.clone())?;
+                    let prepared =
+                        self.views
+                            .prepare_browser_owner(view, &captured, proof.owner())?;
+                    proof
+                        .reservation()
+                        .with_initial_owner(proof.owner(), |transition| {
+                            prepared.validate(transition)?.commit();
+                            Ok(())
+                        })
                 })();
                 if let Err(error) = admitted {
                     CLOSED_CALLBACKS.lock().unwrap().remove(&window);
@@ -723,12 +861,18 @@ impl Windows {
         if let Some(creation) = browser_creation {
             native_spec = native_spec.native_creation(creation);
         }
-        if let Some(policy) = view_policy(spec.view.bridge, options.request_policy, options.on_navigation) {
+        if let Some(policy) = view_policy(
+            spec.view.bridge,
+            options.request_policy,
+            options.on_navigation,
+        ) {
             native_spec = native_spec.request_policy(policy);
         }
         let abandon = |error: String| -> Result<(WindowId, ViewId), String> {
             CLOSED_CALLBACKS.lock().unwrap().remove(&window);
-            if reserved_identity.is_none() { self.views.remove_window(window); }
+            if reserved_identity.is_none() {
+                self.views.remove_window(window);
+            }
             Err(error)
         };
         if let Err(error) = native.reserve_window(&label, window_creation) {
@@ -764,7 +908,9 @@ impl Windows {
                 if let Err(error) = configured {
                     CLOSED_CALLBACKS.lock().unwrap().remove(&window);
                     let _ = built.close();
-                    if reserved_identity.is_none() { self.views.remove_window(window); }
+                    if reserved_identity.is_none() {
+                        self.views.remove_window(window);
+                    }
                     return Err(error);
                 }
                 trace!("window", "window {} built", window.0);
@@ -776,7 +922,6 @@ impl Windows {
             }
         }
     }
-
 
     pub(crate) fn add_reserved_view(
         &self,
@@ -793,10 +938,16 @@ impl Windows {
     ) -> Result<CreatedChild, ChildCreationError> {
         let url = Self::url_of(&spec.url)?;
         if !window_lifecycle.belongs_to(window) {
-            return Err("The captured parent window does not match".to_owned().into());
+            return Err("The captured parent window does not match"
+                .to_owned()
+                .into());
         }
-        let surface = spec.bridge.surface().ok_or_else(|| "A reserved child must have a bridge".to_owned())?;
-        self.views.validate_reserved_view(view, created, window, surface, window_lifecycle)?;
+        let surface = spec
+            .bridge
+            .surface()
+            .ok_or_else(|| "A reserved child must have a bridge".to_owned())?;
+        self.views
+            .validate_reserved_view(view, created, window, surface, window_lifecycle)?;
         let native = self.native()?;
         let parent = window_lifecycle.window_handle()?;
         let view_label = format!("view-{}", view.0);
@@ -817,28 +968,50 @@ impl Windows {
         let popup_native = native.clone();
         let popup_label = view_label.clone();
         builder = builder.on_new_window(move |url, _features| {
-            if let (Some(origin), Some(created)) = (popup_native.current_context(&popup_label), popup_generation.get()) {
-                let _ = window_open::requested(asked_by, &popup_views, view, created, &origin, url.as_str());
+            if let (Some(origin), Some(created)) = (
+                popup_native.current_context(&popup_label),
+                popup_generation.get(),
+            ) {
+                let _ = window_open::requested(
+                    asked_by,
+                    &popup_views,
+                    view,
+                    created,
+                    &origin,
+                    url.as_str(),
+                );
             }
             NewWindowResponse::Deny
         });
         let _ = generation.set(created.clone());
         if let Some(proof) = &prepared_proof {
-            if !generation.get().is_some_and(|created| proof.reservation().matches(view, created)) {
-                return Err("The native closure reservation does not match the view".to_owned().into());
+            if !generation
+                .get()
+                .is_some_and(|created| proof.reservation().matches(view, created))
+            {
+                return Err("The native closure reservation does not match the view"
+                    .to_owned()
+                    .into());
             }
         }
         let creation = match (submission, &prepared_proof) {
             (Some(creation), Some(proof)) => {
                 if !proof.close().same_reservation(&creation.receipt()) {
-                    return Err("The native closure proof belongs to another creation".to_owned().into());
+                    return Err("The native closure proof belongs to another creation"
+                        .to_owned()
+                        .into());
                 }
                 creation
             }
             (Some(creation), None) => creation,
-            (None, None) => BrowserCreation::new().ok_or_else(|| "Native creation ids are exhausted.".to_owned())?,
+            (None, None) => BrowserCreation::new()
+                .ok_or_else(|| "Native creation ids are exhausted.".to_owned())?,
             (None, Some(_)) => {
-                return Err("A prepared native closure proof needs its creation reservation".to_owned().into());
+                return Err(
+                    "A prepared native closure proof needs its creation reservation"
+                        .to_owned()
+                        .into(),
+                );
             }
         };
         let close = creation.receipt();
@@ -846,7 +1019,9 @@ impl Windows {
             Some(proof) => Some(proof),
             None => {
                 let proof = NativeClosureProof::new(close.clone(), view, created.clone());
-                self.views.set_closure_proof(view, created, proof.clone()).map_err(ChildCreationError::from)?;
+                self.views
+                    .set_closure_proof(view, created, proof.clone())
+                    .map_err(ChildCreationError::from)?;
                 Some(proof)
             }
         };
@@ -854,33 +1029,62 @@ impl Windows {
             .bridge(spec.bridge.bridge_mode())
             .native_creation(creation)
             .native_events(event_sink(view, view_label.clone(), on_frame));
-        if let Some(policy) = view_policy(spec.bridge, options.request_policy, options.on_navigation) {
+        if let Some(policy) =
+            view_policy(spec.bridge, options.request_policy, options.on_navigation)
+        {
             native_spec = native_spec.request_policy(policy);
         }
         let (builder, browser) = match builder.native(&native, &view_label, native_spec) {
             Ok(native_builder) => native_builder,
-            Err(error) => return Err(ChildCreationError { message: error, close: Some(close), proof }),
+            Err(error) => {
+                return Err(ChildCreationError {
+                    message: error,
+                    close: Some(close),
+                    proof,
+                });
+            }
         };
         match parent.add_child(builder) {
             Ok(built) => {
                 if let Some(created) = generation.get() {
-                    if let Err(error) = crate::ipc::bind_native_webview(&built, view, created.clone()) {
-                        return Err(ChildCreationError { message: error, close: Some(close), proof });
+                    if let Err(error) =
+                        crate::ipc::bind_native_webview(&built, view, created.clone())
+                    {
+                        return Err(ChildCreationError {
+                            message: error,
+                            close: Some(close),
+                            proof,
+                        });
                     }
                 }
                 if let Err(error) = attach_native(&self.app, &native, &built, &browser) {
-                    return Err(ChildCreationError { message: error, close: Some(close), proof });
+                    return Err(ChildCreationError {
+                        message: error,
+                        close: Some(close),
+                        proof,
+                    });
                 }
-                Ok(CreatedChild { view, webview: built, close, proof })
+                Ok(CreatedChild {
+                    view,
+                    webview: built,
+                    close,
+                    proof,
+                })
             }
-            Err(error) => {
-                Err(ChildCreationError { message: format!("adding a view: {error}"), close: Some(close), proof })
-            }
+            Err(error) => Err(ChildCreationError {
+                message: format!("adding a view: {error}"),
+                close: Some(close),
+                proof,
+            }),
         }
     }
 
-    pub(crate) fn reserve_deferred_window(&self, surface: Surface) -> Result<PreparedDeferredWindow, String> {
-        let window_submission = WindowCreation::new().ok_or("Native creation ids are exhausted.")?;
+    pub(crate) fn reserve_deferred_window(
+        &self,
+        surface: Surface,
+    ) -> Result<PreparedDeferredWindow, String> {
+        let window_submission =
+            WindowCreation::new().ok_or("Native creation ids are exhausted.")?;
         let submission = BrowserCreation::new().ok_or("Native creation ids are exhausted.")?;
         let window = self.views.new_window_id();
         let registration = self.views.allocate_view()?;
@@ -904,11 +1108,23 @@ impl Windows {
             let _ = self.views.remove_window_captured(window, &window_lifecycle);
             return Err(error);
         }
-        Ok(PreparedDeferredWindow { window, view, created, proof, window_lifecycle, surface, submission, window_submission })
+        Ok(PreparedDeferredWindow {
+            window,
+            view,
+            created,
+            proof,
+            window_lifecycle,
+            surface,
+            submission,
+            window_submission,
+        })
     }
 
     pub(crate) fn open_reserved_deferred_window(
-        &self, mut spec: WindowSpec, options: WindowOptions, reservation: PreparedDeferredWindow,
+        &self,
+        mut spec: WindowSpec,
+        options: WindowOptions,
+        reservation: PreparedDeferredWindow,
     ) -> Result<(WindowId, ViewId), String> {
         spec.view.url = "about:blank".to_owned();
         spec.visible = false;
@@ -926,9 +1142,12 @@ impl Windows {
     }
 
     pub fn load_view(&self, view: ViewId, url: &str) -> Result<(), String> {
-        let url = app_scheme::webview_url(url).ok_or_else(|| format!("'{url}' is not a renderer page"))?;
-        self.webview(view).ok_or_else(|| format!("no view {}", view.0))?
-            .navigate(url).map_err(|error| error.to_string())
+        let url = app_scheme::webview_url(url)
+            .ok_or_else(|| format!("'{url}' is not a renderer page"))?;
+        self.webview(view)
+            .ok_or_else(|| format!("no view {}", view.0))?
+            .navigate(url)
+            .map_err(|error| error.to_string())
     }
 
     /// `webContents.reload()`; `false` when the view is gone or the reload was refused

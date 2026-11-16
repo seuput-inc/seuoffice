@@ -101,13 +101,20 @@ pub fn cancel_index(buttons: &[String], cancel_id: Option<usize>) -> usize {
         .unwrap_or(0)
 }
 
-
-pub(crate) fn show_owned(options: &MessageBox, parent: Option<&Window>, session: &std::sync::Arc<crate::host::dialog::owned::Session>) -> Result<MessageBoxAnswer, String> {
+pub(crate) fn show_owned(
+    options: &MessageBox,
+    parent: Option<&Window>,
+    session: &std::sync::Arc<crate::host::dialog::owned::Session>,
+) -> Result<MessageBoxAnswer, String> {
     let spec = Spec::of(options);
     #[cfg(target_os = "macos")]
-    { mac::show_owned(&spec, parent, session) }
+    {
+        mac::show_owned(&spec, parent, session)
+    }
     #[cfg(windows)]
-    { win::show_owned(&spec, parent, session) }
+    {
+        win::show_owned(&spec, parent, session)
+    }
 }
 
 #[cfg(test)]

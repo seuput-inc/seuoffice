@@ -61,7 +61,10 @@ use crate::paths::ShellPaths;
 
 pub(super) fn install(hosts: &mut Hosts, _cx: &HostContext) {
     let shell: DriveShellHost = Arc::new(ShellDrive {
-        parser: hosts.get::<FileParseHost>().cloned().expect("W file parser"),
+        parser: hosts
+            .get::<FileParseHost>()
+            .cloned()
+            .expect("W file parser"),
         home: hosts.get::<HomeFilesHost>().cloned().expect("W home files"),
     });
     hosts.insert(shell);
@@ -85,13 +88,16 @@ impl DriveShell for ShellDrive {
 
     fn open_path(&self, path: &str, done: Box<dyn FnOnce(bool) + Send>) {
         let shown = path.to_owned();
-        crate::host::d2::docs_tabs::route_path_native(path.to_owned(), Box::new(move |result| match result {
-            Ok(opened) => done(opened),
-            Err(error) => {
-                eprintln!("shell: opening Drive copy {shown}: {error}");
-                done(false);
-            }
-        }));
+        crate::host::d2::docs_tabs::route_path_native(
+            path.to_owned(),
+            Box::new(move |result| match result {
+                Ok(opened) => done(opened),
+                Err(error) => {
+                    eprintln!("shell: opening Drive copy {shown}: {error}");
+                    done(false);
+                }
+            }),
+        );
     }
 
     fn is_open(&self, path: &str) -> bool {
@@ -113,38 +119,53 @@ impl DriveShell for ShellDrive {
         }
         let view = ViewId(id as u32);
         on_core(move |provided| {
-            provided.all::<TabsState>().into_iter().next()
+            provided
+                .all::<TabsState>()
+                .into_iter()
+                .next()
                 .and_then(|tabs| tabs.document_of(view))
                 .and_then(|document| document.file_path)
-        }).flatten()
+        })
+        .flatten()
     }
 
     fn parse_file_to_text(&self, path: &Path) -> ParsedText {
         match self.parser.parse_file_to_text(path) {
             Ok(parsed) => ParsedText {
                 ok: parsed.ok,
-                kind: Some(match parsed.kind {
-                    ParsedKind::Text => "text",
-                    ParsedKind::Image => "image",
-                    ParsedKind::Unsupported => "unsupported",
-                }.into()),
+                kind: Some(
+                    match parsed.kind {
+                        ParsedKind::Text => "text",
+                        ParsedKind::Image => "image",
+                        ParsedKind::Unsupported => "unsupported",
+                    }
+                    .into(),
+                ),
                 text: parsed.text,
             },
-            Err(_) => ParsedText { ok: false, kind: None, text: None },
+            Err(_) => ParsedText {
+                ok: false,
+                kind: None,
+                text: None,
+            },
         }
     }
 
     fn watch(&self, dir: &Path, on_change: Arc<dyn Fn(&Path) + Send + Sync>) -> StopWatch {
         let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-            if let Ok(event) = event && !matches!(event.kind, notify::EventKind::Access(_)) {
+            if let Ok(event) = event
+                && !matches!(event.kind, notify::EventKind::Access(_))
+            {
                 for path in event.paths {
                     on_change(&path);
                 }
             }
-        }).and_then(|mut watcher| {
+        })
+        .and_then(|mut watcher| {
             watcher.watch(dir, RecursiveMode::Recursive)?;
             Ok(watcher)
-        }).ok();
+        })
+        .ok();
         Box::new(move || drop(watcher))
     }
 }

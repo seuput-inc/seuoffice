@@ -33,7 +33,11 @@ use crate::native::policy::{Blocks, RequestPolicy};
 /// The content rule list as WebKit's JSON, or `None` when nothing needs blocking.
 /// (`url-filter` has no alternation, so each scheme family is a rule of its own.)
 fn rules(blocks: Blocks) -> Option<String> {
-    let Blocks { web, loopback_open, files } = blocks;
+    let Blocks {
+        web,
+        loopback_open,
+        files,
+    } = blocks;
     let block = |filter: &str, spare_loopback: bool| {
         let mut trigger = json!({ "url-filter": filter });
         if spare_loopback {
@@ -55,14 +59,20 @@ fn rules(blocks: Blocks) -> Option<String> {
 /// The store keeps compiled lists by identifier; the same rules always map to the same one.
 fn identifier_of(rules: &str) -> String {
     let digest = Sha256::digest(rules.as_bytes());
-    let hex: String = digest.iter().take(8).map(|byte| format!("{byte:02x}")).collect();
+    let hex: String = digest
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     format!("seuoffice-policy-{hex}")
 }
 
 /// Compile and install the rules, then release the navigations held for them. Runs inside
 /// `with_webview`, on the UI thread; WebKit answers the compile on the main queue.
 fn install(
-    platform: &PlatformWebview, browser: &BrowserIdentity, blocks: Blocks,
+    platform: &PlatformWebview,
+    browser: &BrowserIdentity,
+    blocks: Blocks,
 ) -> Result<(), String> {
     let mtm = MainThreadMarker::new()
         .ok_or_else(|| "The request policy must be applied on the UI thread.".to_owned())?;
@@ -127,7 +137,9 @@ fn install(
 
 impl PolicyOps for Platform {
     fn apply_policy(
-        platform: &PlatformWebview, browser: &BrowserIdentity, policy: &RequestPolicy,
+        platform: &PlatformWebview,
+        browser: &BrowserIdentity,
+        policy: &RequestPolicy,
     ) -> Result<(), String> {
         install(platform, browser, policy.blocks())
     }
@@ -152,7 +164,10 @@ mod tests {
 
     #[test]
     fn a_policy_that_declares_files_only_blocks_only_files() {
-        let only_files = Blocks { files: true, ..Blocks::NOTHING };
+        let only_files = Blocks {
+            files: true,
+            ..Blocks::NOTHING
+        };
         let text = rules(only_files).unwrap();
         assert!(text.contains("^file://"));
         assert!(!text.contains("https"));
@@ -161,9 +176,16 @@ mod tests {
 
     #[test]
     fn loopback_stays_open_when_the_policy_declares_it() {
-        let blocks = Blocks { web: true, loopback_open: true, files: true };
+        let blocks = Blocks {
+            web: true,
+            loopback_open: true,
+            files: true,
+        };
         let rules: Value = serde_json::from_str(&rules(blocks).unwrap()).unwrap();
-        assert_eq!(rules[0]["trigger"]["unless-domain"], json!(["localhost", "127.0.0.1"]));
+        assert_eq!(
+            rules[0]["trigger"]["unless-domain"],
+            json!(["localhost", "127.0.0.1"])
+        );
         assert!(rules[2]["trigger"].get("unless-domain").is_none());
     }
 

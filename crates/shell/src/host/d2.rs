@@ -21,17 +21,17 @@ mod epub_open_files;
 mod epub_ranges;
 mod epub_save;
 mod epub_shell;
-pub(crate) mod hwp_host;
+pub(crate) mod html_headless;
+mod html_host;
 pub(crate) mod hwp_headless;
+pub(crate) mod hwp_host;
 pub(crate) mod hwp_parse;
 mod hwp_tracked;
-mod html_host;
-pub(crate) mod html_headless;
-mod markdown_host;
+mod job_migration;
 pub(crate) mod markdown_headless;
+mod markdown_host;
 pub(crate) mod odt_export;
 pub(crate) mod pdf;
-mod job_migration;
 
 pub(super) static RESULT_STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -49,8 +49,12 @@ pub(crate) fn docx_media_response_for_permit(
     uri: &str,
     cancel: shell_contract::runtime::CancelToken,
 ) -> Result<main_core::docs::lazy_media::MediaAnswer, String> {
-    let media = DOCS_MEDIA.get().ok_or_else(|| "The document media service is not available".to_owned())?;
-    media.host.response_for(permit, uri, &media.fonts_dir, cancel)
+    let media = DOCS_MEDIA
+        .get()
+        .ok_or_else(|| "The document media service is not available".to_owned())?;
+    media
+        .host
+        .response_for(permit, uri, &media.fonts_dir, cancel)
 }
 
 thread_local! {
@@ -58,7 +62,10 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
-pub(crate) fn set_active_docs_resolver(view: Option<shell_contract::ViewId>, null_if_destroyed: bool) {
+pub(crate) fn set_active_docs_resolver(
+    view: Option<shell_contract::ViewId>,
+    null_if_destroyed: bool,
+) {
     ACTIVE_DOCS.with(|active| active.set(view.map(|view| (view, null_if_destroyed))));
 }
 
@@ -69,19 +76,33 @@ pub fn install(hosts: &mut Hosts, cx: &HostContext) -> Result<(), String> {
         let fonts_dir = if cfg!(debug_assertions) {
             let apps = std::env::var_os("SEUOFFICE_APPS_DIR")
                 .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps")));
-            jscompat::node_path::host::resolve(&[&apps.join("shell").to_string_lossy(), "..", "..", "packages/ui/template-fonts"])
+                .unwrap_or_else(|| {
+                    std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps"))
+                });
+            jscompat::node_path::host::resolve(&[
+                &apps.join("shell").to_string_lossy(),
+                "..",
+                "..",
+                "packages/ui/template-fonts",
+            ])
         } else {
-            crate::paths::resources_path(&cx.app).ok_or("application resources are unavailable")?
-                .join("template-fonts").to_string_lossy().into_owned()
+            crate::paths::resources_path(&cx.app)
+                .ok_or("application resources are unavailable")?
+                .join("template-fonts")
+                .to_string_lossy()
+                .into_owned()
         };
         let media = DocsMedia {
             host: docs_lazy::LazyHost::new()?,
             fonts_dir,
         };
-        DOCS_MEDIA.set(media).map_err(|_| "document media service is already initialized".to_owned())?;
+        DOCS_MEDIA
+            .set(media)
+            .map_err(|_| "document media service is already initialized".to_owned())?;
     }
-    let media = DOCS_MEDIA.get().ok_or("document media service is not available")?;
+    let media = DOCS_MEDIA
+        .get()
+        .ok_or("document media service is not available")?;
     hosts.insert(docs_engine::host(&media.host));
     let docs_shell = docs_shell::host(cx, hosts)?;
     hosts.insert(docs_shell);
@@ -93,6 +114,6 @@ pub fn install(hosts: &mut Hosts, cx: &HostContext) -> Result<(), String> {
     hosts.insert(epub_shell::host(cx.ui.clone()));
     hosts.insert(epub_engine::host());
     hwp_host::install(hosts, cx);
-    pdf::reload::install(hosts,cx);
+    pdf::reload::install(hosts, cx);
     Ok(())
 }

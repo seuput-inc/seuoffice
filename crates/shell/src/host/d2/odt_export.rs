@@ -15,23 +15,29 @@ pub(super) fn convert(docx: &[u8]) -> Result<OdtConversion, String> {
 }
 
 pub(crate) fn convert_at(docx: &[u8], clock: HostNow) -> Result<OdtConversion, String> {
-    let converted = docx_to_odt(docx, &jscompat::JsMap::new(), clock)
-        .map_err(|error| error.to_string())?;
+    let converted =
+        docx_to_odt(docx, &jscompat::JsMap::new(), clock).map_err(|error| error.to_string())?;
     Ok(OdtConversion {
         odt: converted.odt_bytes,
-        report: converted.report.into_iter().map(|item| ReportItem {
-            kind: match item.kind {
-                ReportKind::Converted => "converted",
-                ReportKind::Dropped => "dropped",
-            }.to_owned(),
-            feature: item.feature.as_str().to_owned(),
-            count: item.count as f64,
-        }).collect(),
+        report: converted
+            .report
+            .into_iter()
+            .map(|item| ReportItem {
+                kind: match item.kind {
+                    ReportKind::Converted => "converted",
+                    ReportKind::Dropped => "dropped",
+                }
+                .to_owned(),
+                feature: item.feature.as_str().to_owned(),
+                count: item.count as f64,
+            })
+            .collect(),
     })
 }
 
 pub(super) fn convert_cancellable(
-    docx: &[u8], cancel: &shell_contract::runtime::CancelToken,
+    docx: &[u8],
+    cancel: &shell_contract::runtime::CancelToken,
 ) -> Result<OdtConversion, String> {
     let now = chrono::Local::now();
     let clock = HostNow {

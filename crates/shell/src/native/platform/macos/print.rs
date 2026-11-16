@@ -20,10 +20,10 @@ use objc2_foundation::{NSCopying, NSObject, NSPoint, NSRect, NSSize, NSURL};
 use objc2_web_kit::{WKPreferences, WKWebView};
 use tauri::Webview;
 
+use super::Platform;
 use super::header_footer::{self, Plan};
 use super::header_footer_view;
 use super::page::{Surface, object, run};
-use super::Platform;
 use crate::native::page::{Done, HeaderFooter, PageError, PdfSpec, parse_page_ranges};
 use crate::native::platform::{PrintOps, PrintOutcome};
 
@@ -41,7 +41,10 @@ fn fit_view(operation: &NSPrintOperation, view: &WKWebView, paper: NSSize) {
     let sized = bounds.size.width > 0.0 && bounds.size.height > 0.0;
     let size = if sized { bounds.size } else { paper };
     if let Some(page) = operation.view() {
-        page.setFrame(NSRect { origin: NSPoint { x: 0.0, y: 0.0 }, size });
+        page.setFrame(NSRect {
+            origin: NSPoint { x: 0.0, y: 0.0 },
+            size,
+        });
     }
 }
 
@@ -66,12 +69,18 @@ impl Backgrounds {
                 return if wanted {
                     Err(PageError::Unsupported("printBackground"))
                 } else {
-                    Ok(Self { preferences, previous: None })
+                    Ok(Self {
+                        preferences,
+                        previous: None,
+                    })
                 };
             }
             let previous: bool = msg_send![target, _shouldPrintBackgrounds];
             let _: () = msg_send![target, _setShouldPrintBackgrounds: wanted];
-            Ok(Self { preferences, previous: Some(previous) })
+            Ok(Self {
+                preferences,
+                previous: Some(previous),
+            })
         }
     }
 }
@@ -101,7 +110,10 @@ fn saving_info(spec: &PdfSpec, target: &Path) -> Result<Retained<NSPrintInfo>, P
     if let Some((width, height)) = spec.paper_in {
         let (width, height) = (width * POINTS, height * POINTS);
         info.setPaperSize(if spec.landscape {
-            NSSize { width: height, height: width }
+            NSSize {
+                width: height,
+                height: width,
+            }
         } else {
             NSSize { width, height }
         });
@@ -130,7 +142,10 @@ fn saving_info(spec: &PdfSpec, target: &Path) -> Result<Retained<NSPrintInfo>, P
 fn scratch_file() -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let number = NEXT.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("seuoffice-print-{}-{number}.pdf", std::process::id()))
+    std::env::temp_dir().join(format!(
+        "seuoffice-print-{}-{number}.pdf",
+        std::process::id()
+    ))
 }
 
 fn print_to(surface: &Surface<'_>, spec: &PdfSpec, target: &Path) -> Result<(), PageError> {
@@ -159,10 +174,13 @@ fn slice_pages(bytes: Vec<u8>, ranges: &[RangeInclusive<u32>]) -> Result<Vec<u8>
     }
     let mut document = lopdf::Document::load_mem(&bytes).map_err(slicing)?;
     let total = u32::try_from(document.get_pages().len()).unwrap_or(u32::MAX);
-    let dropped: Vec<u32> =
-        (1..=total).filter(|page| !ranges.iter().any(|range| range.contains(page))).collect();
+    let dropped: Vec<u32> = (1..=total)
+        .filter(|page| !ranges.iter().any(|range| range.contains(page)))
+        .collect();
     if dropped.len() == usize::try_from(total).unwrap_or(usize::MAX) {
-        return Err(PageError::Invalid("the page range selects no page".to_owned()));
+        return Err(PageError::Invalid(
+            "the page range selects no page".to_owned(),
+        ));
     }
     if dropped.is_empty() {
         return Ok(bytes);
@@ -225,7 +243,12 @@ pub(super) fn save_pdf(surface: &Surface<'_>, spec: PdfSpec, done: Done<Vec<u8>>
     if let Some(option) = refused {
         return done(Err(PageError::Unsupported(option)));
     }
-    let ranges = match spec.page_ranges.as_deref().map(parse_page_ranges).transpose() {
+    let ranges = match spec
+        .page_ranges
+        .as_deref()
+        .map(parse_page_ranges)
+        .transpose()
+    {
         Ok(ranges) => ranges.unwrap_or_default(),
         Err(error) => return done(Err(error)),
     };
@@ -277,7 +300,9 @@ define_class!(
 
 impl DialogAnswer {
     fn new(mtm: MainThreadMarker, done: Done<PrintOutcome>) -> Retained<Self> {
-        let answer = Answer { done: RefCell::new(Some(done)) };
+        let answer = Answer {
+            done: RefCell::new(Some(done)),
+        };
         let this = mtm.alloc::<Self>().set_ivars(answer);
         // SAFETY: NSObject's plain `init`.
         unsafe { msg_send![super(this), init] }

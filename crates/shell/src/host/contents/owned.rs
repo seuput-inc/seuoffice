@@ -8,7 +8,7 @@ use shell_contract::runtime::{CancelSubscription, CancelToken, RendererGeneratio
 use tauri::Webview;
 
 use crate::native::defer::is_ui_thread;
-use crate::native::{BrowserState, Done, DocumentIdentity, Fence, PageError, PdfSpec, WebviewExt};
+use crate::native::{BrowserState, DocumentIdentity, Done, Fence, PageError, PdfSpec, WebviewExt};
 
 /// The document a print is bound to: the browser and its committed document at capture.
 #[derive(Clone)]
@@ -91,65 +91,94 @@ impl Owner {
         };
         let (cancel, pending, generation) = (&self.cancel, &self.pending, &self.target.generation);
         let result = match &self.authority {
-            Authority::Pair { origin, destination } => owners::with_print_pair_effect(
-                origin, destination, generation, &self.actor, cancel, pending, action,
+            Authority::Pair {
+                origin,
+                destination,
+            } => owners::with_print_pair_effect(
+                origin,
+                destination,
+                generation,
+                &self.actor,
+                cancel,
+                pending,
+                action,
             ),
-            Authority::Native { invocation, owner, participants, stop } => {
-                owners::with_native_invocation_print_many_effect(
-                    invocation,
-                    owner,
-                    participants,
-                    cancel,
-                    pending,
-                    &self.actor,
-                    stop,
-                    generation,
-                    action,
-                )
-            }
-            Authority::ExistingDocument { binding, participants, additional, stop } => {
-                owners::with_existing_document_print_effect(
-                    binding,
-                    participants,
-                    cancel,
-                    pending,
-                    stop,
-                    generation,
-                    &additional.iter().collect::<Vec<_>>(),
-                    action,
-                )
-            }
-            Authority::OwnedMany { origin, participants, additional, stop } => {
-                owners::with_owned_print_many_extra_effect(
-                    origin,
-                    participants,
-                    cancel,
-                    pending,
-                    stop,
-                    generation,
-                    &additional.iter().collect::<Vec<_>>(),
-                    action,
-                )
-            }
-            Authority::NativeManyExtra { invocation, owner, participants, additional, stop } => {
-                owners::with_native_invocation_print_many_extra_effect(
-                    invocation,
-                    owner,
-                    participants,
-                    cancel,
-                    pending,
-                    stop,
-                    generation,
-                    &additional.iter().collect::<Vec<_>>(),
-                    action,
-                )
-            }
+            Authority::Native {
+                invocation,
+                owner,
+                participants,
+                stop,
+            } => owners::with_native_invocation_print_many_effect(
+                invocation,
+                owner,
+                participants,
+                cancel,
+                pending,
+                &self.actor,
+                stop,
+                generation,
+                action,
+            ),
+            Authority::ExistingDocument {
+                binding,
+                participants,
+                additional,
+                stop,
+            } => owners::with_existing_document_print_effect(
+                binding,
+                participants,
+                cancel,
+                pending,
+                stop,
+                generation,
+                &additional.iter().collect::<Vec<_>>(),
+                action,
+            ),
+            Authority::OwnedMany {
+                origin,
+                participants,
+                additional,
+                stop,
+            } => owners::with_owned_print_many_extra_effect(
+                origin,
+                participants,
+                cancel,
+                pending,
+                stop,
+                generation,
+                &additional.iter().collect::<Vec<_>>(),
+                action,
+            ),
+            Authority::NativeManyExtra {
+                invocation,
+                owner,
+                participants,
+                additional,
+                stop,
+            } => owners::with_native_invocation_print_many_extra_effect(
+                invocation,
+                owner,
+                participants,
+                cancel,
+                pending,
+                stop,
+                generation,
+                &additional.iter().collect::<Vec<_>>(),
+                action,
+            ),
         };
-        result.flatten().ok_or_else(|| "Print request is no longer available.".into())
+        result
+            .flatten()
+            .ok_or_else(|| "Print request is no longer available.".into())
     }
 
     pub fn losses(&self) -> Result<Vec<CancelToken>, String> {
-        self.authority.losses(&self.cancel, &self.pending, &self.actor, &self.target.generation)
+        self.authority.losses(
+            &self.cancel,
+            &self.pending,
+            &self.actor,
+            &self.target.generation,
+        )
     }
 
     /// The one authority a page operation takes: its effect starts only while `effect`
@@ -163,7 +192,8 @@ impl Owner {
     /// thread. Losing any owner wakes the wait; the answer is admitted once more before it
     /// is returned.
     pub fn page<T: Send + 'static>(
-        &self, start: impl FnOnce(Fence, Done<T>),
+        &self,
+        start: impl FnOnce(Fence, Done<T>),
     ) -> Result<T, PageError> {
         if is_ui_thread() {
             return Err(PageError::Platform(
@@ -179,18 +209,24 @@ impl Owner {
                 let _ = send.try_send(result);
             }),
         );
-        let answer = receive.recv_timeout(super::PAGE_TIMEOUT).map_err(|_| PageError::Timeout)?;
+        let answer = receive
+            .recv_timeout(super::PAGE_TIMEOUT)
+            .map_err(|_| PageError::Timeout)?;
         let value = answer?;
         self.effect(|| value).map_err(|_| PageError::Stale)
     }
 
     pub fn print_pdf(&self, webview: &Webview, spec: PdfSpec) -> Result<Vec<u8>, String> {
         let page = webview.page()?;
-        self.page(|fence, done| page.print_pdf(spec, Some(fence), done)).map_err(owned_error)
+        self.page(|fence, done| page.print_pdf(spec, Some(fence), done))
+            .map_err(owned_error)
     }
 
     pub fn evaluate(
-        &self, webview: &Webview, js: &str, await_promise: bool,
+        &self,
+        webview: &Webview,
+        js: &str,
+        await_promise: bool,
     ) -> Result<Value, PageError> {
         let page = webview.page().map_err(PageError::Platform)?;
         self.page(|fence, done| page.evaluate(js, await_promise, Some(fence), done))
@@ -199,22 +235,45 @@ impl Owner {
 
 impl Authority {
     pub(crate) fn losses(
-        &self, cancel: &CancelToken, pending: &CancelToken, actor: &CancelToken,
+        &self,
+        cancel: &CancelToken,
+        pending: &CancelToken,
+        actor: &CancelToken,
         generation: &RendererGeneration,
     ) -> Result<Vec<CancelToken>, String> {
-        let mut losses =
-            vec![cancel.clone(), pending.clone(), actor.clone(), generation.loss_token()];
+        let mut losses = vec![
+            cancel.clone(),
+            pending.clone(),
+            actor.clone(),
+            generation.loss_token(),
+        ];
         match self {
-            Authority::Pair { origin, destination } => {
-                losses.push(origin.loss_token().ok_or("Print origin lifetime is unavailable.")?);
+            Authority::Pair {
+                origin,
+                destination,
+            } => {
                 losses.push(
-                    destination.loss_token().ok_or("Print destination lifetime is unavailable.")?,
+                    origin
+                        .loss_token()
+                        .ok_or("Print origin lifetime is unavailable.")?,
+                );
+                losses.push(
+                    destination
+                        .loss_token()
+                        .ok_or("Print destination lifetime is unavailable.")?,
                 );
             }
-            Authority::Native { invocation, owner, participants, stop } => {
+            Authority::Native {
+                invocation,
+                owner,
+                participants,
+                stop,
+            } => {
                 losses.push(stop.clone());
                 losses.push(
-                    owner.loss_token().ok_or("Print destination lifetime is unavailable.")?,
+                    owner
+                        .loss_token()
+                        .ok_or("Print destination lifetime is unavailable.")?,
                 );
                 for participant in participants {
                     losses.push(
@@ -225,12 +284,20 @@ impl Authority {
                 }
                 push_invocation(&mut losses, invocation);
             }
-            Authority::ExistingDocument { binding, participants, additional, stop } => {
+            Authority::ExistingDocument {
+                binding,
+                participants,
+                additional,
+                stop,
+            } => {
                 losses.push(stop.clone());
                 losses.extend(additional.iter().cloned());
                 push_leases(&mut losses, binding.owner());
                 losses.push(
-                    binding.owner().loss_token().ok_or("Print document lifetime is unavailable.")?,
+                    binding
+                        .owner()
+                        .loss_token()
+                        .ok_or("Print document lifetime is unavailable.")?,
                 );
                 for participant in participants {
                     losses.push(
@@ -244,12 +311,27 @@ impl Authority {
                 losses.push(binding.operation().shutdown().clone());
                 losses.push(binding.operation().loss_token());
             }
-            Authority::OwnedMany { origin, participants, additional, stop }
-            | Authority::NativeManyExtra { owner: origin, participants, additional, stop, .. } => {
+            Authority::OwnedMany {
+                origin,
+                participants,
+                additional,
+                stop,
+            }
+            | Authority::NativeManyExtra {
+                owner: origin,
+                participants,
+                additional,
+                stop,
+                ..
+            } => {
                 losses.push(stop.clone());
                 losses.extend(additional.iter().cloned());
                 for owner in std::iter::once(origin).chain(participants.iter()) {
-                    losses.push(owner.loss_token().ok_or("Print owner lifetime is unavailable.")?);
+                    losses.push(
+                        owner
+                            .loss_token()
+                            .ok_or("Print owner lifetime is unavailable.")?,
+                    );
                     push_leases(&mut losses, owner);
                 }
                 if let Authority::NativeManyExtra { invocation, .. } = self {
@@ -283,7 +365,8 @@ fn push_leases(losses: &mut Vec<CancelToken>, owner: &NativeRequestOwner) {
 /// Every loss answers the waiting call once with `Cancelled`; a token that is already lost
 /// answers during the subscription.
 pub(crate) fn subscribe_losses<T: Send + 'static>(
-    losses: Vec<CancelToken>, answer: &mpsc::SyncSender<Result<T, PageError>>,
+    losses: Vec<CancelToken>,
+    answer: &mpsc::SyncSender<Result<T, PageError>>,
 ) -> Vec<CancelSubscription> {
     losses
         .into_iter()

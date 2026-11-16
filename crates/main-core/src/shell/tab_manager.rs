@@ -2378,6 +2378,22 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
         self.finish_open(host, id, view, TabKind::Html, title, None, true)
     }
 
+    /// [`Self::resume_html_present_tab`] for a view whose native closure binding the new tab
+    /// must retain for its lifetime.
+    pub fn resume_html_present_tab_bound(
+        &mut self,
+        host: &mut dyn TabHost<V, B>,
+        view: V,
+        title: &str,
+        binding: B,
+    ) -> String {
+        let id = self.resume_html_present_tab(host, view, title);
+        if let Some(index) = self.index_of(&id) {
+            self.tabs[index].binding = Some(binding);
+        }
+        id
+    }
+
     /// `cycleTab`: step through the strip in order and wrap at the ends
     pub fn cycle_tab(&mut self, host: &mut dyn TabHost<V, B>, direction: i32) {
         if self.tabs.len() < 2 {

@@ -78,7 +78,9 @@ const VOID_ELEMENTS: [&str; 14] = [
 const RAW_TEXT: [&str; 4] = ["script", "style", "textarea", "title"];
 
 pub(super) fn failure(what: impl Display) -> PageError {
-    PageError::Platform(format!("The header and footer could not be added to the PDF: {what}"))
+    PageError::Platform(format!(
+        "The header and footer could not be added to the PDF: {what}"
+    ))
 }
 
 // ---- template substitution ----
@@ -125,7 +127,10 @@ struct Tag<'a> {
 fn raw_end(html: &str, from: usize, name: &str) -> usize {
     let needle = format!("</{name}");
     // ASCII lower casing keeps every byte offset.
-    html[from..].to_ascii_lowercase().find(&needle).map_or(html.len(), |at| from + at)
+    html[from..]
+        .to_ascii_lowercase()
+        .find(&needle)
+        .map_or(html.len(), |at| from + at)
 }
 
 /// The first tag at or after `from`. Comments and a `<` that starts no tag are skipped.
@@ -167,7 +172,14 @@ fn next_tag(html: &str, from: usize) -> Option<Tag<'_>> {
         let raw = !closing && RAW_TEXT.contains(&name.as_str());
         let resume = if raw { raw_end(html, end, &name) } else { end };
         let attributes = &html[name_end..end - 1];
-        return Some(Tag { start, end, resume, closing, name, attributes });
+        return Some(Tag {
+            start,
+            end,
+            resume,
+            closing,
+            name,
+            attributes,
+        });
     }
 }
 
@@ -257,7 +269,11 @@ fn escape_into(out: &mut String, text: &str) {
 /// `template` with the content of every element that has a value class replaced by that value
 /// as escaped text. An empty template is Chromium's built-in `default`.
 pub(super) fn fill(template: &str, default: &str, values: &Values<'_>) -> String {
-    let template = if template.is_empty() { default } else { template };
+    let template = if template.is_empty() {
+        default
+    } else {
+        template
+    };
     let mut out = String::with_capacity(template.len());
     let (mut written, mut scan) = (0, 0);
     while let Some(tag) = next_tag(template, scan) {
@@ -265,7 +281,9 @@ pub(super) fn fill(template: &str, default: &str, values: &Values<'_>) -> String
         if tag.closing || VOID_ELEMENTS.contains(&tag.name.as_str()) {
             continue;
         }
-        let Some(text) = values.for_classes(class_of(tag.attributes)) else { continue };
+        let Some(text) = values.for_classes(class_of(tag.attributes)) else {
+            continue;
+        };
         let close = content_end(template, &tag);
         out.push_str(&template[written..tag.end]);
         escape_into(&mut out, &text);
@@ -345,14 +363,29 @@ pub(super) struct Matrix {
 }
 
 impl Matrix {
-    const IDENTITY: Self = Self { a: 1.0, b: 0.0, c: 0.0, d: 1.0, e: 0.0, f: 0.0 };
+    const IDENTITY: Self = Self {
+        a: 1.0,
+        b: 0.0,
+        c: 0.0,
+        d: 1.0,
+        e: 0.0,
+        f: 0.0,
+    };
 
     fn scale(factor: f64) -> Self {
-        Self { a: factor, d: factor, ..Self::IDENTITY }
+        Self {
+            a: factor,
+            d: factor,
+            ..Self::IDENTITY
+        }
     }
 
     fn translate(x: f64, y: f64) -> Self {
-        Self { e: x, f: y, ..Self::IDENTITY }
+        Self {
+            e: x,
+            f: y,
+            ..Self::IDENTITY
+        }
     }
 
     /// This transform first, then `next`.
@@ -408,9 +441,30 @@ impl Bounds {
     fn upright(&self) -> Matrix {
         let (w, h) = (self.width, self.height);
         let turn = match self.rotate {
-            90 => Matrix { a: 0.0, b: 1.0, c: -1.0, d: 0.0, e: w, f: 0.0 },
-            180 => Matrix { a: -1.0, b: 0.0, c: 0.0, d: -1.0, e: w, f: h },
-            270 => Matrix { a: 0.0, b: -1.0, c: 1.0, d: 0.0, e: 0.0, f: h },
+            90 => Matrix {
+                a: 0.0,
+                b: 1.0,
+                c: -1.0,
+                d: 0.0,
+                e: w,
+                f: 0.0,
+            },
+            180 => Matrix {
+                a: -1.0,
+                b: 0.0,
+                c: 0.0,
+                d: -1.0,
+                e: w,
+                f: h,
+            },
+            270 => Matrix {
+                a: 0.0,
+                b: -1.0,
+                c: 1.0,
+                d: 0.0,
+                e: 0.0,
+                f: h,
+            },
             _ => Matrix::IDENTITY,
         };
         turn.then(Matrix::translate(self.x, self.y))
@@ -480,7 +534,13 @@ fn bounds_of(document: &Document, page: ObjectId) -> Result<Bounds, PageError> {
         Ok(turn @ (0 | 90 | 180 | 270)) => turn,
         _ => return Err(failure("a page has an unsupported Rotate")),
     };
-    Ok(Bounds { x, y, width, height, rotate })
+    Ok(Bounds {
+        x,
+        y,
+        width,
+        height,
+        rotate,
+    })
 }
 
 // ---- the plan ----
@@ -522,8 +582,11 @@ fn selected(ranges: &[RangeInclusive<u32>], page: u32) -> bool {
 /// The jobs and stamps for the pages `ranges` selects. Page numbers and the page count are the
 /// body document's, not the selection's.
 pub(super) fn plan(
-    document: &Document, margins_in: [f64; 4], templates: &HeaderFooter,
-    ranges: &[RangeInclusive<u32>], context: &Context,
+    document: &Document,
+    margins_in: [f64; 4],
+    templates: &HeaderFooter,
+    ranges: &[RangeInclusive<u32>],
+    context: &Context,
 ) -> Result<Plan, PageError> {
     let pages = document.get_pages();
     let total_pages = u32::try_from(pages.len()).unwrap_or(u32::MAX);
@@ -563,7 +626,9 @@ pub(super) fn plan(
             continue;
         }
         if header.is_some() && top < MIN_BAND_PX {
-            return Err(PageError::Invalid("The top margin is too small for a header.".to_owned()));
+            return Err(PageError::Invalid(
+                "The top margin is too small for a header.".to_owned(),
+            ));
         }
         if footer.is_some() && bottom < MIN_BAND_PX {
             return Err(PageError::Invalid(
@@ -571,18 +636,32 @@ pub(super) fn plan(
             ));
         }
         let (has_header, has_footer) = (header.is_some(), footer.is_some());
-        let (head, foot) = (header.as_deref().unwrap_or(""), footer.as_deref().unwrap_or(""));
+        let (head, foot) = (
+            header.as_deref().unwrap_or(""),
+            footer.as_deref().unwrap_or(""),
+        );
         let html = wrapper_html(&canvas, head, foot);
         let job = match known.get(&html) {
             Some(&job) => job,
             None => {
                 let job = jobs.len();
                 known.insert(html.clone(), job);
-                jobs.push(Job { html, canvas, header: has_header, footer: has_footer });
+                jobs.push(Job {
+                    html,
+                    canvas,
+                    header: has_header,
+                    footer: has_footer,
+                });
                 job
             }
         };
-        stamps.push(Stamp { page, bounds, job, header: has_header, footer: has_footer });
+        stamps.push(Stamp {
+            page,
+            bounds,
+            job,
+            header: has_header,
+            footer: has_footer,
+        });
     }
     Ok(Plan { jobs, stamps })
 }
@@ -672,8 +751,12 @@ fn import(target: &mut Document, bytes: &[u8]) -> Result<Form, PageError> {
         return Err(failure("a rendered strip is rotated"));
     }
     let content = source.get_page_content(page).map_err(failure)?;
-    let mut copier =
-        Copier { source: &source, target: &mut *target, ids: HashMap::new(), queue: Vec::new() };
+    let mut copier = Copier {
+        source: &source,
+        target: &mut *target,
+        ids: HashMap::new(),
+        queue: Vec::new(),
+    };
     let resources = inherited(&source, page, b"Resources")
         .map(|resources| copier.remap(resources))
         .unwrap_or_else(|| Object::Dictionary(Dictionary::new()));
@@ -684,27 +767,42 @@ fn import(target: &mut Document, bytes: &[u8]) -> Result<Form, PageError> {
     dictionary.set(
         "BBox",
         Object::Array(
-            [bounds.x, bounds.y, bounds.x + bounds.width, bounds.y + bounds.height]
-                .into_iter()
-                .map(Object::from)
-                .collect(),
+            [
+                bounds.x,
+                bounds.y,
+                bounds.x + bounds.width,
+                bounds.y + bounds.height,
+            ]
+            .into_iter()
+            .map(Object::from)
+            .collect(),
         ),
     );
     dictionary.set("Resources", resources);
     let mut stream = Stream::new(dictionary, content);
     stream.compress().map_err(failure)?;
     let id = target.add_object(stream);
-    Ok(Form { id, bbox: [bounds.x, bounds.y, bounds.width, bounds.height] })
+    Ok(Form {
+        id,
+        bbox: [bounds.x, bounds.y, bounds.width, bounds.height],
+    })
 }
 
 /// Give `page` a `Resources` of its own, so that adding to it leaves the pages that share an
 /// inherited one alone.
 fn own_resources(document: &mut Document, page: ObjectId) -> Result<(), PageError> {
-    if document.get_dictionary(page).map_err(failure)?.has(b"Resources") {
+    if document
+        .get_dictionary(page)
+        .map_err(failure)?
+        .has(b"Resources")
+    {
         return Ok(());
     }
     if let Some(resources) = inherited(document, page, b"Resources").cloned() {
-        document.get_dictionary_mut(page).map_err(failure)?.set("Resources", resources);
+        document
+            .get_dictionary_mut(page)
+            .map_err(failure)?
+            .set("Resources", resources);
     }
     Ok(())
 }
@@ -721,12 +819,16 @@ fn sees_xobject(document: &Document, page: ObjectId, name: &str) -> bool {
 /// Draw `forms` on `page`. The page's own content is wrapped in `q`/`Q` first, so that the
 /// strips are drawn in the default graphics state whatever the content leaves behind.
 fn draw(
-    document: &mut Document, page: ObjectId, forms: &[(String, ObjectId, Matrix)],
+    document: &mut Document,
+    page: ObjectId,
+    forms: &[(String, ObjectId, Matrix)],
 ) -> Result<(), PageError> {
     own_resources(document, page)?;
     let mut operators = String::from("Q\n");
     for (name, form, placement) in forms {
-        document.add_xobject(page, name.as_bytes().to_vec(), *form).map_err(failure)?;
+        document
+            .add_xobject(page, name.as_bytes().to_vec(), *form)
+            .map_err(failure)?;
         if !sees_xobject(document, page, name) {
             return Err(failure("a page's resources cannot take a strip"));
         }
@@ -738,27 +840,42 @@ fn draw(
     let mut contents = vec![Object::Reference(open)];
     contents.extend(bodies.into_iter().map(Object::Reference));
     contents.push(Object::Reference(close));
-    document.get_dictionary_mut(page).map_err(failure)?.set("Contents", contents);
+    document
+        .get_dictionary_mut(page)
+        .map_err(failure)?
+        .set("Contents", contents);
     Ok(())
 }
 
 /// Draw the rendered strips of each job on the pages stamped with it.
 pub(super) fn apply(
-    document: &mut Document, stamps: &[Stamp], strips: &[Strips],
+    document: &mut Document,
+    stamps: &[Stamp],
+    strips: &[Strips],
 ) -> Result<(), PageError> {
     let mut forms: Vec<(Option<Form>, Option<Form>)> = Vec::with_capacity(strips.len());
     for rendered in strips {
-        let header = rendered.header.as_deref().map(|bytes| import(document, bytes)).transpose()?;
-        let footer = rendered.footer.as_deref().map(|bytes| import(document, bytes)).transpose()?;
+        let header = rendered
+            .header
+            .as_deref()
+            .map(|bytes| import(document, bytes))
+            .transpose()?;
+        let footer = rendered
+            .footer
+            .as_deref()
+            .map(|bytes| import(document, bytes))
+            .transpose()?;
         forms.push((header, footer));
     }
     for stamp in stamps {
-        let (header, footer) =
-            forms.get(stamp.job).ok_or_else(|| failure("a page has no rendered strip"))?;
+        let (header, footer) = forms
+            .get(stamp.job)
+            .ok_or_else(|| failure("a page has no rendered strip"))?;
         let mut placed = Vec::new();
-        for (band, wanted, form, tag) in
-            [(Band::Header, stamp.header, header, "h"), (Band::Footer, stamp.footer, footer, "f")]
-        {
+        for (band, wanted, form, tag) in [
+            (Band::Header, stamp.header, header, "h"),
+            (Band::Footer, stamp.footer, footer, "f"),
+        ] {
             match (wanted, form) {
                 (false, _) => {}
                 (true, None) => return Err(failure("a strip was not rendered")),
@@ -806,7 +923,10 @@ mod tests {
 
     #[test]
     fn substituted_text_is_escaped() {
-        assert_eq!(filled("<i class=\"title\"></i>"), "<i class=\"title\">Q&amp;A &lt;1&gt;</i>");
+        assert_eq!(
+            filled("<i class=\"title\"></i>"),
+            "<i class=\"title\">Q&amp;A &lt;1&gt;</i>"
+        );
     }
 
     #[test]
@@ -839,13 +959,18 @@ mod tests {
 
     #[test]
     fn an_element_that_is_never_closed_runs_to_the_end() {
-        assert_eq!(filled("<span class=\"date\">stale"), "<span class=\"date\">11/16/26, 4:07 PM");
+        assert_eq!(
+            filled("<span class=\"date\">stale"),
+            "<span class=\"date\">11/16/26, 4:07 PM"
+        );
     }
 
     #[test]
     fn an_empty_template_is_chromiums_built_in_one() {
         let footer = fill("", DEFAULT_FOOTER, &values(2, 5));
-        assert!(footer.contains("<span class='pageNumber'>2</span>/<span class='totalPages'>5</span>"));
+        assert!(
+            footer.contains("<span class='pageNumber'>2</span>/<span class='totalPages'>5</span>")
+        );
         assert!(footer.contains("tauri://localhost/x?a=1&amp;b=2"));
         assert!(fill("", DEFAULT_HEADER, &values(2, 5)).contains("11/16/26, 4:07 PM"));
     }
@@ -862,7 +987,12 @@ mod tests {
 
     #[test]
     fn the_wrapper_page_has_the_pages_size_and_both_templates() {
-        let canvas = Canvas { width: 800.0, height: 1000.0, top: 96.0, bottom: 48.0 };
+        let canvas = Canvas {
+            width: 800.0,
+            height: 1000.0,
+            top: 96.0,
+            bottom: 48.0,
+        };
         let html = wrapper_html(&canvas, "<b>H</b>", "<i>F</i>");
         assert!(html.contains("body{width:800px;height:1000px}"));
         assert!(html.contains("#header{height:96px}#footer{height:48px}"));
@@ -874,7 +1004,10 @@ mod tests {
     }
 
     fn at(matrix: &Matrix, x: f64, y: f64) -> (f64, f64) {
-        (matrix.a * x + matrix.c * y + matrix.e, matrix.b * x + matrix.d * y + matrix.f)
+        (
+            matrix.a * x + matrix.c * y + matrix.e,
+            matrix.b * x + matrix.d * y + matrix.f,
+        )
     }
 
     fn near(actual: (f64, f64), expected: (f64, f64)) {
@@ -885,7 +1018,13 @@ mod tests {
     }
 
     fn page(rotate: u32) -> Bounds {
-        Bounds { x: 0.0, y: 0.0, width: 600.0, height: 800.0, rotate }
+        Bounds {
+            x: 0.0,
+            y: 0.0,
+            width: 600.0,
+            height: 800.0,
+            rotate,
+        }
     }
 
     #[test]
@@ -901,7 +1040,11 @@ mod tests {
 
     #[test]
     fn the_media_box_origin_and_the_strips_own_origin_are_honoured() {
-        let bounds = Bounds { x: 10.0, y: 20.0, ..page(0) };
+        let bounds = Bounds {
+            x: 10.0,
+            y: 20.0,
+            ..page(0)
+        };
         let footer = bounds.placement(Band::Footer, [5.0, 7.0, 800.0, 96.0]);
         near(at(&footer, 5.0, 7.0), (10.0, 20.0));
         near(at(&footer, 805.0, 103.0), (610.0, 92.0));
@@ -944,7 +1087,10 @@ mod tests {
             let mut page = Dictionary::from_iter([
                 ("Type", name("Page")),
                 ("Parent", Object::Reference(tree_id)),
-                ("MediaBox", Object::Array(bounds.iter().map(|n| Object::Integer(*n)).collect())),
+                (
+                    "MediaBox",
+                    Object::Array(bounds.iter().map(|n| Object::Integer(*n)).collect()),
+                ),
                 ("Contents", Object::Reference(content)),
             ]);
             if !inherit {
@@ -974,11 +1120,18 @@ mod tests {
     const A4: [i64; 4] = [0, 0, 600, 800];
 
     fn context() -> Context {
-        Context { date: "today".into(), title: "Sheet".into(), url: "tauri://x".into() }
+        Context {
+            date: "today".into(),
+            title: "Sheet".into(),
+            url: "tauri://x".into(),
+        }
     }
 
     fn templates(header: &str, footer: &str) -> HeaderFooter {
-        HeaderFooter { header_template: header.into(), footer_template: footer.into() }
+        HeaderFooter {
+            header_template: header.into(),
+            footer_template: footer.into(),
+        }
     }
 
     const NUMBERED: &str = "<span class=\"pageNumber\"></span>";
@@ -989,13 +1142,23 @@ mod tests {
     fn the_page_number_and_count_are_the_documents_whatever_the_selection() {
         let document = Document::load_mem(&pdf(&[A4, A4, A4], false)).unwrap();
         let header = "<span class=\"pageNumber\"></span>/<span class=\"totalPages\"></span>";
-        let plan = plan(&document, MARGINS, &templates(header, NONE), &[2..=3], &context());
+        let plan = plan(
+            &document,
+            MARGINS,
+            &templates(header, NONE),
+            &[2..=3],
+            &context(),
+        );
         let plan = plan.unwrap();
         assert_eq!(plan.stamps.len(), 2);
         assert_eq!(plan.jobs.len(), 2);
         let second = "<span class=\"pageNumber\">2</span>/<span class=\"totalPages\">3</span>";
         assert!(plan.jobs[0].html.contains(second));
-        assert!(plan.jobs[1].html.contains("<span class=\"pageNumber\">3</span>/"));
+        assert!(
+            plan.jobs[1]
+                .html
+                .contains("<span class=\"pageNumber\">3</span>/")
+        );
     }
 
     #[test]
@@ -1005,7 +1168,13 @@ mod tests {
         let same = plan(&document, MARGINS, &plain, &[], &context()).unwrap();
         assert_eq!(same.stamps.len(), 3);
         assert_eq!(same.jobs.len(), 2, "one job per page size");
-        let numbered = plan(&document, MARGINS, &templates(NUMBERED, NONE), &[], &context());
+        let numbered = plan(
+            &document,
+            MARGINS,
+            &templates(NUMBERED, NONE),
+            &[],
+            &context(),
+        );
         assert_eq!(numbered.unwrap().jobs.len(), 3);
     }
 
@@ -1015,7 +1184,10 @@ mod tests {
         let none = plan(&document, MARGINS, &templates(NONE, NONE), &[], &context()).unwrap();
         assert!(none.jobs.is_empty() && none.stamps.is_empty());
         let footer = plan(&document, MARGINS, &templates(NONE, "x"), &[], &context()).unwrap();
-        assert_eq!((footer.jobs[0].header, footer.jobs[0].footer), (false, true));
+        assert_eq!(
+            (footer.jobs[0].header, footer.jobs[0].footer),
+            (false, true)
+        );
     }
 
     #[test]
@@ -1023,7 +1195,11 @@ mod tests {
         let document = Document::load_mem(&pdf(&[A4], false)).unwrap();
         let plan = plan(&document, MARGINS, &templates("", ""), &[], &context()).unwrap();
         assert_eq!((plan.jobs[0].header, plan.jobs[0].footer), (true, true));
-        assert!(plan.jobs[0].html.contains("<div class='title text center'>Sheet</div>"));
+        assert!(
+            plan.jobs[0]
+                .html
+                .contains("<div class='title text center'>Sheet</div>")
+        );
     }
 
     #[test]
@@ -1040,9 +1216,21 @@ mod tests {
     fn rotate_and_media_box_are_read_from_the_page_or_its_tree() {
         let mut document = Document::load_mem(&pdf(&[[10, 20, 610, 820]], true)).unwrap();
         let page = *document.get_pages().get(&1).unwrap();
-        document.get_dictionary_mut(page).unwrap().set("Rotate", Object::Integer(-90));
+        document
+            .get_dictionary_mut(page)
+            .unwrap()
+            .set("Rotate", Object::Integer(-90));
         let bounds = bounds_of(&document, page).unwrap();
-        assert_eq!(bounds, Bounds { x: 10.0, y: 20.0, width: 600.0, height: 800.0, rotate: 270 });
+        assert_eq!(
+            bounds,
+            Bounds {
+                x: 10.0,
+                y: 20.0,
+                width: 600.0,
+                height: 800.0,
+                rotate: 270
+            }
+        );
         assert_eq!(bounds.visual(), (800.0, 600.0));
     }
 
@@ -1050,8 +1238,14 @@ mod tests {
         let mut document = Document::load_mem(&pdf(&[A4, A4], inherit)).unwrap();
         let t = templates(NUMBERED, NONE);
         let Plan { jobs, stamps } = plan(&document, MARGINS, &t, &[2..=2], &context()).unwrap();
-        assert_eq!((jobs.len(), jobs[0].header, jobs[0].footer), (1, true, false));
-        let strips = [Strips { header: Some(pdf(&[[0, 0, 800, 96]], false)), footer: None }];
+        assert_eq!(
+            (jobs.len(), jobs[0].header, jobs[0].footer),
+            (1, true, false)
+        );
+        let strips = [Strips {
+            header: Some(pdf(&[[0, 0, 800, 96]], false)),
+            footer: None,
+        }];
         apply(&mut document, &stamps, &strips).unwrap();
         let mut saved = Vec::new();
         document.save_to(&mut saved).unwrap();
@@ -1063,31 +1257,56 @@ mod tests {
         let (document, _) = stamped(false);
         let pages = document.get_pages();
         let untouched = document.get_dictionary(pages[&1]).unwrap();
-        assert!(matches!(untouched.get(b"Contents"), Ok(Object::Reference(_))));
+        assert!(matches!(
+            untouched.get(b"Contents"),
+            Ok(Object::Reference(_))
+        ));
         let page = document.get_dictionary(pages[&2]).unwrap();
         let contents = page.get(b"Contents").unwrap().as_array().unwrap();
         assert_eq!(contents.len(), 3);
         let content = String::from_utf8(document.get_page_content(pages[&2]).unwrap()).unwrap();
         let drawn = "Q\nq 0.750000 0.000000 0.000000 0.750000 0.000000 728.000000 cm \
                      /SeuOfficeHF0h Do Q";
-        let (own, strip) = (content.find("(page 1) Tj").unwrap(), content.find(drawn).unwrap());
+        let (own, strip) = (
+            content.find("(page 1) Tj").unwrap(),
+            content.find(drawn).unwrap(),
+        );
         assert!(content.starts_with("q\n") && own < strip, "{content}");
         let resources = page.get(b"Resources").unwrap().as_dict().unwrap();
-        assert!(resources.get(b"Font").is_ok(), "the page keeps its own font");
+        assert!(
+            resources.get(b"Font").is_ok(),
+            "the page keeps its own font"
+        );
         let xobjects = resources.get(b"XObject").unwrap().as_dict().unwrap();
-        let form = xobjects.get(b"SeuOfficeHF0h").unwrap().as_reference().unwrap();
+        let form = xobjects
+            .get(b"SeuOfficeHF0h")
+            .unwrap()
+            .as_reference()
+            .unwrap();
         let form = document.get_object(form);
         let form = form.unwrap().as_stream().unwrap();
-        assert_eq!(form.dict.get(b"Subtype").unwrap().as_name().unwrap(), b"Form");
+        assert_eq!(
+            form.dict.get(b"Subtype").unwrap().as_name().unwrap(),
+            b"Form"
+        );
         let bbox = form.dict.get(b"BBox").unwrap().as_array().unwrap();
         let bbox: Vec<f32> = bbox.iter().map(|n| n.as_float().unwrap()).collect();
         assert_eq!(bbox, [0.0, 0.0, 800.0, 96.0]);
         let text = String::from_utf8(form.decompressed_content().unwrap()).unwrap();
         assert!(text.contains("(page 0) Tj"), "{text}");
         let fonts = form.dict.get(b"Resources").unwrap().as_dict().unwrap();
-        let font = fonts.get(b"Font").unwrap().as_dict().unwrap().get(b"F1").unwrap();
+        let font = fonts
+            .get(b"Font")
+            .unwrap()
+            .as_dict()
+            .unwrap()
+            .get(b"F1")
+            .unwrap();
         let font = document.dereference(font).unwrap().1.as_dict().unwrap();
-        assert_eq!(font.get(b"BaseFont").unwrap().as_name().unwrap(), b"Helvetica");
+        assert_eq!(
+            font.get(b"BaseFont").unwrap().as_name().unwrap(),
+            b"Helvetica"
+        );
     }
 
     #[test]
@@ -1099,7 +1318,14 @@ mod tests {
         let page = document.get_dictionary(pages[&2]).unwrap();
         let resources = page.get(b"Resources").unwrap().as_dict().unwrap();
         assert!(resources.get(b"Font").is_ok());
-        assert!(resources.get(b"XObject").unwrap().as_dict().unwrap().has(b"SeuOfficeHF0h"));
+        assert!(
+            resources
+                .get(b"XObject")
+                .unwrap()
+                .as_dict()
+                .unwrap()
+                .has(b"SeuOfficeHF0h")
+        );
     }
 
     #[test]

@@ -15,7 +15,10 @@ fn ui_thread() -> Result<MainThreadMarker, String> {
 
 /// The `NSWindow` behind a Tauri window, for the duration of the calling job.
 fn native(window: &Window) -> Result<&NSWindow, String> {
-    let pointer = window.ns_window().map_err(|error| error.to_string())?.cast::<NSWindow>();
+    let pointer = window
+        .ns_window()
+        .map_err(|error| error.to_string())?
+        .cast::<NSWindow>();
     // SAFETY: Tauri returns the live window it owns; the reference is only used on the UI
     // thread inside the caller, which does not outlive the Tauri window handle borrowed here.
     unsafe { pointer.as_ref() }.ok_or_else(|| "The window has no native window yet.".to_owned())
@@ -34,7 +37,10 @@ impl WindowOps for Platform {
         if std::ptr::eq(child, owner) {
             return Err("A window cannot be modal to itself.".to_owned());
         }
-        if child.sheetParent().is_some_and(|parent| std::ptr::eq(&*parent, owner)) {
+        if child
+            .sheetParent()
+            .is_some_and(|parent| std::ptr::eq(&*parent, owner))
+        {
             return Ok(());
         }
         owner.beginSheet_completionHandler(child, None);
@@ -56,7 +62,9 @@ impl WindowOps for Platform {
             return Ok(None);
         };
         for (label, window) in app.windows() {
-            let Ok(pointer) = window.ns_window() else { continue };
+            let Ok(pointer) = window.ns_window() else {
+                continue;
+            };
             if std::ptr::eq(pointer.cast::<NSWindow>(), &*key) {
                 return Ok(Some(label));
             }

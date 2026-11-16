@@ -1,14 +1,20 @@
 use jscompat::JsonValue;
-use std::rc::Rc;
 use main_core::shell::mcp::mcp_server::{HostCall, Settled};
 use main_core::shell::mcp::tools::document_tools::McpEditorCommandName;
 use main_core::shell::mcp::tools::sheets_tools::SheetsCommandName;
 use shell_ipc_a::mcp::McpBridgeControl;
+use std::rc::Rc;
 
-pub(super) fn dispatch(bridge: Rc<dyn McpBridgeControl>, call: HostCall, done: Box<dyn FnOnce(Settled)>) {
-    let callback = Box::new(move |answer: Result<Option<JsonValue>, shell_contract::IpcError>| {
-        done(answer.map_err(|error| error.to_string()));
-    });
+pub(super) fn dispatch(
+    bridge: Rc<dyn McpBridgeControl>,
+    call: HostCall,
+    done: Box<dyn FnOnce(Settled)>,
+) {
+    let callback = Box::new(
+        move |answer: Result<Option<JsonValue>, shell_contract::IpcError>| {
+            done(answer.map_err(|error| error.to_string()));
+        },
+    );
     match (call.control, call.method) {
         ("DocsControl", "openBlankTab") => bridge.docs_open_blank_tab(callback),
         ("SheetsControl", "openBlankTab") => bridge.sheets_open_blank_tab(callback),
@@ -27,8 +33,13 @@ pub(super) fn dispatch(bridge: Rc<dyn McpBridgeControl>, call: HostCall, done: B
                 Ok((view, command))
             })();
             match parsed {
-                Ok((view, command)) => bridge.docs_run_command(view, command, call.args.get(2).cloned(), callback),
-                Err(error) => callback(Err(shell_contract::IpcError { name: None, message: error })),
+                Ok((view, command)) => {
+                    bridge.docs_run_command(view, command, call.args.get(2).cloned(), callback)
+                }
+                Err(error) => callback(Err(shell_contract::IpcError {
+                    name: None,
+                    message: error,
+                })),
             }
         }
         ("SheetsControl", "runCommand") => {
@@ -43,17 +54,32 @@ pub(super) fn dispatch(bridge: Rc<dyn McpBridgeControl>, call: HostCall, done: B
                 Ok((view, command))
             })();
             match parsed {
-                Ok((view, command)) => bridge.sheets_run_command(view, command, call.args.get(2).cloned(), callback),
-                Err(error) => callback(Err(shell_contract::IpcError { name: None, message: error })),
+                Ok((view, command)) => {
+                    bridge.sheets_run_command(view, command, call.args.get(2).cloned(), callback)
+                }
+                Err(error) => callback(Err(shell_contract::IpcError {
+                    name: None,
+                    message: error,
+                })),
             }
         }
-        _ => callback(Err(shell_contract::IpcError { name: None, message: format!("unknown {}.{}", call.control, call.method) })),
+        _ => callback(Err(shell_contract::IpcError {
+            name: None,
+            message: format!("unknown {}.{}", call.control, call.method),
+        })),
     }
 }
 
 pub(super) fn view_id(value: Option<&JsonValue>) -> Result<i64, String> {
     match value {
-        Some(JsonValue::Number(number)) if number.is_finite() && number.fract() == 0.0 && *number >= 1.0 && *number <= u32::MAX as f64 => Ok(*number as i64),
+        Some(JsonValue::Number(number))
+            if number.is_finite()
+                && number.fract() == 0.0
+                && *number >= 1.0
+                && *number <= u32::MAX as f64 =>
+        {
+            Ok(*number as i64)
+        }
         _ => Err("invalid document view id".to_owned()),
     }
 }

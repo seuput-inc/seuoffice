@@ -209,7 +209,9 @@ impl Observe for Platform {
             Ok(())
         }));
         // SAFETY: as above.
-        registered("SourceChanged", unsafe { core.add_SourceChanged(&handler, &mut token) })?;
+        registered("SourceChanged", unsafe {
+            core.add_SourceChanged(&handler, &mut token)
+        })?;
 
         let identity = browser.clone();
         let handler = ProcessFailedEventHandler::create(Box::new(move |_, args| {
@@ -225,7 +227,9 @@ impl Observe for Platform {
             Ok(())
         }));
         // SAFETY: as above.
-        registered("ProcessFailed", unsafe { core.add_ProcessFailed(&handler, &mut token) })?;
+        registered("ProcessFailed", unsafe {
+            core.add_ProcessFailed(&handler, &mut token)
+        })?;
 
         let identity = browser.clone();
         let handler = FocusChangedEventHandler::create(Box::new(move |_, _| {
@@ -233,7 +237,9 @@ impl Observe for Platform {
             Ok(())
         }));
         // SAFETY: as above.
-        registered("GotFocus", unsafe { controller.add_GotFocus(&handler, &mut token) })?;
+        registered("GotFocus", unsafe {
+            controller.add_GotFocus(&handler, &mut token)
+        })?;
 
         let identity = browser.clone();
         let handler = FocusChangedEventHandler::create(Box::new(move |_, _| {
@@ -241,7 +247,9 @@ impl Observe for Platform {
             Ok(())
         }));
         // SAFETY: as above.
-        registered("LostFocus", unsafe { controller.add_LostFocus(&handler, &mut token) })?;
+        registered("LostFocus", unsafe {
+            controller.add_LostFocus(&handler, &mut token)
+        })?;
 
         Ok(())
     }
@@ -256,13 +264,22 @@ mod tests {
     #[test]
     fn only_the_latest_uncancelled_navigation_reports_its_outcome() {
         let tracked = Tracked::default();
-        assert!(tracked.reports(1), "an outcome before any start is reported");
+        assert!(
+            tracked.reports(1),
+            "an outcome before any start is reported"
+        );
         tracked.started(1, false);
         tracked.started(2, false);
-        assert!(!tracked.reports(1), "the superseded navigation's cancellation is ignored");
+        assert!(
+            !tracked.reports(1),
+            "the superseded navigation's cancellation is ignored"
+        );
         assert!(tracked.reports(2));
         tracked.started(3, true);
-        assert!(!tracked.reports(3), "a navigation the policy cancelled has no outcome");
+        assert!(
+            !tracked.reports(3),
+            "a navigation the policy cancelled has no outcome"
+        );
         assert!(tracked.reports(2));
     }
 
@@ -276,6 +293,9 @@ mod tests {
             failure(COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED),
             Some(ProcessFailure::BrowserProcessExited)
         );
-        assert_eq!(failure(COREWEBVIEW2_PROCESS_FAILED_KIND_FRAME_RENDER_PROCESS_EXITED), None);
+        assert_eq!(
+            failure(COREWEBVIEW2_PROCESS_FAILED_KIND_FRAME_RENDER_PROCESS_EXITED),
+            None
+        );
     }
 }

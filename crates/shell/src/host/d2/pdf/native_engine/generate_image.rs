@@ -6,12 +6,8 @@ use main_core::packages::ai_search::media_tools::document_media_roots;
 use main_core::slides::ai_ipc::MediaToolOptions;
 use shell_contract::{IpcValue, runtime::CancelToken};
 
-pub(crate) type ImageTool = fn(
-    &str,
-    &JsonValue,
-    &MediaToolOptions,
-    &CancelToken,
-) -> Result<JsonValue, JsonValue>;
+pub(crate) type ImageTool =
+    fn(&str, &JsonValue, &MediaToolOptions, &CancelToken) -> Result<JsonValue, JsonValue>;
 
 /// The caller supplies the live generator and the core-time status snapshot.
 pub(crate) fn generate_image(
@@ -25,8 +21,14 @@ pub(crate) fn generate_image(
     tool: ImageTool,
 ) -> Result<IpcValue, String> {
     generate_with(
-        settings_path, prompt, aspect_ratio, open_path, pasted_dir, cancel,
-        statuses, tool,
+        settings_path,
+        prompt,
+        aspect_ratio,
+        open_path,
+        pasted_dir,
+        cancel,
+        statuses,
+        tool,
     )
 }
 
@@ -67,17 +69,22 @@ fn ipc_value(value: &JsonValue) -> IpcValue {
         JsonValue::Number(value) => IpcValue::Number(*value),
         JsonValue::String(value) => IpcValue::String(value.clone()),
         JsonValue::Array(values) => IpcValue::Array(values.iter().map(ipc_value).collect()),
-        JsonValue::Object(values) => IpcValue::Object(values.entries().into_iter()
-            .map(|(key, value)| (key.to_owned(), ipc_value(value))).collect()),
+        JsonValue::Object(values) => IpcValue::Object(
+            values
+                .entries()
+                .into_iter()
+                .map(|(key, value)| (key.to_owned(), ipc_value(value)))
+                .collect(),
+        ),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
     use jscompat::{json_value_from_serde, json_value_to_serde};
     use serde_json::json;
+    use std::cell::Cell;
 
     #[test]
     fn request_uses_live_statuses_document_roots_and_original_signal() {
@@ -85,20 +92,42 @@ mod tests {
         for state in ["signed-out", "ready"] {
             let cancel = CancelToken::default();
             let result = generate_with(
-                "/user/ai-settings.json", "red kite", Some("16:9"),
-                Some("/docs/report.pdf"), "/staging", &cancel,
-                { calls.set(calls.get() + 1); json_value_from_serde(&json!({"codex": {"state": state}})) },
+                "/user/ai-settings.json",
+                "red kite",
+                Some("16:9"),
+                Some("/docs/report.pdf"),
+                "/staging",
+                &cancel,
+                {
+                    calls.set(calls.get() + 1);
+                    json_value_from_serde(&json!({"codex": {"state": state}}))
+                },
                 |settings, request, options, signal| {
                     assert_eq!(settings, "/user/ai-settings.json");
-                    assert_eq!(json_value_to_serde(request), json!({"prompt":"red kite","aspectRatio":"16:9"}));
+                    assert_eq!(
+                        json_value_to_serde(request),
+                        json!({"prompt":"red kite","aspectRatio":"16:9"})
+                    );
                     assert_eq!(options.media_roots, ["/docs", "/staging"]);
-                    assert_eq!(json_value_to_serde(&options.context), json!({"path":"screen","statuses":{"codex":{"state":state}}}));
+                    assert_eq!(
+                        json_value_to_serde(&options.context),
+                        json!({"path":"screen","statuses":{"codex":{"state":state}}})
+                    );
                     cancel.cancel();
                     assert!(signal.is_cancelled());
-                    Ok(json_value_from_serde(&json!({"url":"file:///generated.png"})))
+                    Ok(json_value_from_serde(
+                        &json!({"url":"file:///generated.png"}),
+                    ))
                 },
-            ).unwrap();
-            assert_eq!(result, IpcValue::Object(vec![("url".into(), IpcValue::String("file:///generated.png".into()))]));
+            )
+            .unwrap();
+            assert_eq!(
+                result,
+                IpcValue::Object(vec![(
+                    "url".into(),
+                    IpcValue::String("file:///generated.png".into())
+                )])
+            );
         }
         assert_eq!(calls.get(), 2);
     }
@@ -106,14 +135,20 @@ mod tests {
     #[test]
     fn unsaved_document_uses_only_staging_and_propagates_tool_errors() {
         let error = generate_with(
-            "settings", "", None, None, "/staging", &CancelToken::default(),
+            "settings",
+            "",
+            None,
+            None,
+            "/staging",
+            &CancelToken::default(),
             json_value_from_serde(&json!({})),
             |_, request, options, _| {
                 assert_eq!(json_value_to_serde(request), json!({"prompt":""}));
                 assert_eq!(options.media_roots, ["/staging"]);
                 Err(json_value_from_serde(&json!({"message":"provider failed"})))
             },
-        ).unwrap_err();
+        )
+        .unwrap_err();
         assert_eq!(error, "provider failed");
     }
 }

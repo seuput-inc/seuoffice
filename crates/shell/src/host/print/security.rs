@@ -2,11 +2,16 @@ use std::path::Path;
 use tauri::Url;
 
 pub(super) fn scripts_enabled(profile: shell_ipc_m::hosts::PrintProfile) -> bool {
-    !matches!(profile, shell_ipc_m::hosts::PrintProfile::Static | shell_ipc_m::hosts::PrintProfile::MindmapExport)
+    !matches!(
+        profile,
+        shell_ipc_m::hosts::PrintProfile::Static | shell_ipc_m::hosts::PrintProfile::MindmapExport
+    )
 }
 
 pub(super) fn allows(request: &str, page: &Url) -> bool {
-    let Ok(url) = Url::parse(request) else { return false };
+    let Ok(url) = Url::parse(request) else {
+        return false;
+    };
     if url.scheme() == "data" {
         return true;
     }
@@ -32,7 +37,6 @@ fn same_path(requested: &Path, allowed: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     #[test]
     fn pdf_export_disables_scripts_but_dialog_keeps_them() {

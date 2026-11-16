@@ -101,7 +101,11 @@ fn deliver(listener: Arc<Listener>, outcome: BrowserCloseOutcome) {
         if !listener.active.swap(false, Ordering::AcqRel) {
             return;
         }
-        let callback = listener.callback.lock().unwrap_or_else(|error| error.into_inner()).take();
+        let callback = listener
+            .callback
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
         if let Some(callback) = callback {
             callback(outcome);
         }
@@ -113,7 +117,11 @@ fn deliver_creation(listener: Arc<CreationListener>, outcome: BrowserCreationOut
         if !listener.active.swap(false, Ordering::AcqRel) {
             return;
         }
-        let callback = listener.callback.lock().unwrap_or_else(|error| error.into_inner()).take();
+        let callback = listener
+            .callback
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
         if let Some(callback) = callback {
             callback(outcome);
         }
@@ -133,9 +141,14 @@ struct Submission {
 impl BrowserSubmission {
     fn new(close: BrowserClose, creation: CreationId) -> Self {
         {
-            let mut state = close.state.lock().unwrap_or_else(|error| error.into_inner());
-            state.submissions =
-                state.submissions.checked_add(1).expect("native submission count exhausted");
+            let mut state = close
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            state.submissions = state
+                .submissions
+                .checked_add(1)
+                .expect("native submission count exhausted");
         }
         Self(Arc::new(Submission { close, creation }))
     }
@@ -164,7 +177,10 @@ pub struct BrowserCreation(BrowserSubmission);
 impl BrowserCreation {
     /// `None` only when the creation counter is exhausted.
     pub fn new() -> Option<Self> {
-        Some(Self(BrowserSubmission::new(BrowserClose::default(), CreationId::mint()?)))
+        Some(Self(BrowserSubmission::new(
+            BrowserClose::default(),
+            CreationId::mint()?,
+        )))
     }
 
     pub fn receipt(&self) -> BrowserClose {
@@ -182,8 +198,10 @@ impl BrowserClose {
     /// proven failure before creation.
     pub fn request_close(&self) -> Result<(), String> {
         let request = {
-            let mut state =
-                self.state.lock().map_err(|_| "Native browser close state was poisoned.")?;
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| "Native browser close state was poisoned.")?;
             if state.terminal.is_some() {
                 return Ok(());
             }
@@ -198,7 +216,9 @@ impl BrowserClose {
 
     fn release_submission(&self) {
         let listeners = {
-            let Ok(mut state) = self.state.lock() else { return };
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
             state.submissions = state.submissions.saturating_sub(1);
             if state.submissions != 0 || state.terminal.is_some() || state.claimed {
                 return;
@@ -214,8 +234,10 @@ impl BrowserClose {
 
     /// The browser now exists; abandonment no longer means "not created".
     pub(crate) fn claim(&self) -> Result<(), String> {
-        let mut state =
-            self.state.lock().map_err(|_| "Native browser close state was poisoned.")?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "Native browser close state was poisoned.")?;
         if state.terminal.is_some() || state.claimed {
             return Err("Native browser close reservation was already used.".into());
         }
@@ -225,8 +247,10 @@ impl BrowserClose {
 
     pub(crate) fn bind_request(&self, request: RequestClose) -> Result<(), String> {
         let requested = {
-            let mut state =
-                self.state.lock().map_err(|_| "Native browser close state was poisoned.")?;
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| "Native browser close state was poisoned.")?;
             if state.terminal.is_some() || !state.claimed || state.request.is_some() {
                 return Err("Native browser close reservation was already used.".into());
             }
@@ -244,17 +268,22 @@ impl BrowserClose {
     }
 
     pub fn when_created(
-        &self, callback: impl FnOnce(BrowserCreationOutcome) + Send + 'static,
+        &self,
+        callback: impl FnOnce(BrowserCreationOutcome) + Send + 'static,
     ) -> Result<BrowserCreationSubscription, String> {
         let listener = Arc::new(CreationListener {
             active: AtomicBool::new(true),
             callback: Mutex::new(Some(Box::new(callback))),
         });
         let result = {
-            let mut state =
-                self.state.lock().map_err(|_| "Native browser creation state was poisoned.")?;
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| "Native browser creation state was poisoned.")?;
             if state.creation.is_none() {
-                state.creation_listeners.retain(|l| l.active.load(Ordering::Acquire));
+                state
+                    .creation_listeners
+                    .retain(|l| l.active.load(Ordering::Acquire));
                 state.creation_listeners.push(listener.clone());
             }
             state.creation
@@ -280,15 +309,18 @@ impl BrowserClose {
     }
 
     pub fn when_closed(
-        &self, callback: impl FnOnce(BrowserCloseOutcome) + Send + 'static,
+        &self,
+        callback: impl FnOnce(BrowserCloseOutcome) + Send + 'static,
     ) -> Result<BrowserCloseSubscription, String> {
         let listener = Arc::new(Listener {
             active: AtomicBool::new(true),
             callback: Mutex::new(Some(Box::new(callback))),
         });
         let terminal = {
-            let mut state =
-                self.state.lock().map_err(|_| "Native browser close state was poisoned.")?;
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| "Native browser close state was poisoned.")?;
             if state.terminal.is_none() {
                 state.listeners.retain(|l| l.active.load(Ordering::Acquire));
                 state.listeners.push(listener.clone());
@@ -417,7 +449,11 @@ fn deliver_window(listener: Arc<WindowListener>, outcome: WindowCloseOutcome) {
         if !listener.active.swap(false, Ordering::AcqRel) {
             return;
         }
-        let callback = listener.callback.lock().unwrap_or_else(|error| error.into_inner()).take();
+        let callback = listener
+            .callback
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
         if let Some(callback) = callback {
             callback(outcome);
         }
@@ -436,8 +472,11 @@ fn deliver_closing(listeners: Vec<Arc<ClosingListener>>) {
             if !listener.active.swap(false, Ordering::AcqRel) {
                 return;
             }
-            let callback =
-                listener.callback.lock().unwrap_or_else(|error| error.into_inner()).take();
+            let callback = listener
+                .callback
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
             if let Some(callback) = callback {
                 callback();
             }
@@ -472,16 +511,27 @@ impl WindowSubmission {
 impl WindowCreation {
     /// `None` only when the creation counter is exhausted.
     pub fn new() -> Option<Self> {
-        let inner = WindowSubmissionInner { close: WindowClose::default(), creation: CreationId::mint()? };
-        Some(Self { submission: Some(WindowSubmission(Arc::new(inner))) })
+        let inner = WindowSubmissionInner {
+            close: WindowClose::default(),
+            creation: CreationId::mint()?,
+        };
+        Some(Self {
+            submission: Some(WindowSubmission(Arc::new(inner))),
+        })
     }
 
     pub fn receipt(&self) -> WindowClose {
-        self.submission.as_ref().expect("window reservation consumed").close()
+        self.submission
+            .as_ref()
+            .expect("window reservation consumed")
+            .close()
     }
 
     pub fn creation_id(&self) -> CreationId {
-        self.submission.as_ref().expect("window reservation consumed").creation()
+        self.submission
+            .as_ref()
+            .expect("window reservation consumed")
+            .creation()
     }
 
     pub(crate) fn submit(mut self) -> WindowSubmission {
@@ -493,16 +543,22 @@ impl WindowClose {
     /// Observe closure admission revocation, including an already closing window. This is
     /// not the later destroy acknowledgement.
     pub fn when_closing(
-        &self, callback: impl FnOnce() + Send + 'static,
+        &self,
+        callback: impl FnOnce() + Send + 'static,
     ) -> Result<WindowClosingSubscription, String> {
         let listener = Arc::new(ClosingListener {
             active: AtomicBool::new(true),
             callback: Mutex::new(Some(Box::new(callback))),
         });
         let closing = {
-            let mut state = self.state.lock().map_err(|_| "native window state poisoned")?;
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| "native window state poisoned")?;
             if !state.closing {
-                state.closing_listeners.retain(|l| l.active.load(Ordering::Acquire));
+                state
+                    .closing_listeners
+                    .retain(|l| l.active.load(Ordering::Acquire));
                 state.closing_listeners.push(listener.clone());
             }
             state.closing
@@ -514,14 +570,18 @@ impl WindowClose {
     }
 
     pub fn when_closed(
-        &self, callback: impl FnOnce(WindowCloseOutcome) + Send + 'static,
+        &self,
+        callback: impl FnOnce(WindowCloseOutcome) + Send + 'static,
     ) -> Result<WindowCloseSubscription, String> {
         let listener = Arc::new(WindowListener {
             active: AtomicBool::new(true),
             callback: Mutex::new(Some(Box::new(callback))),
         });
         let outcome = {
-            let mut state = self.state.lock().map_err(|_| "native window state poisoned")?;
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| "native window state poisoned")?;
             if state.outcome.is_none() {
                 state.listeners.retain(|l| l.active.load(Ordering::Acquire));
                 state.listeners.push(listener.clone());
@@ -539,11 +599,15 @@ impl WindowClose {
     }
 
     pub fn is_open(&self) -> bool {
-        self.state.lock().is_ok_and(|state| !state.closing && state.outcome.is_none())
+        self.state
+            .lock()
+            .is_ok_and(|state| !state.closing && state.outcome.is_none())
     }
 
     pub(crate) fn claim(&self) -> bool {
-        let Ok(mut state) = self.state.lock() else { return false };
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
         if state.claimed || state.closing || state.outcome.is_some() {
             return false;
         }
@@ -553,7 +617,9 @@ impl WindowClose {
 
     /// The native window now exists.
     pub(crate) fn allocated(&self) -> bool {
-        let Ok(mut state) = self.state.lock() else { return false };
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
         if !state.claimed || state.allocated || state.closing || state.outcome.is_some() {
             return false;
         }
@@ -563,7 +629,9 @@ impl WindowClose {
 
     fn abandon(&self) {
         let (closing, listeners) = {
-            let Ok(mut state) = self.state.lock() else { return };
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
             if state.claimed || state.allocated {
                 return;
             }
@@ -583,7 +651,9 @@ impl WindowClose {
     /// The window build failed before a native window existed.
     pub(crate) fn not_created(&self) {
         let (closing, listeners) = {
-            let Ok(mut state) = self.state.lock() else { return };
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
             if state.allocated {
                 return;
             }
@@ -620,14 +690,18 @@ impl WindowClose {
             return None;
         }
         state.active = state.active.checked_add(1)?;
-        Some(WindowEffect { close: self.clone() })
+        Some(WindowEffect {
+            close: self.clone(),
+        })
     }
 
     /// `WindowEvent::Destroyed` was observed. The receipt completes after the last admitted
     /// effect finished.
     pub(crate) fn destroyed(&self) {
         let listeners = {
-            let Ok(mut state) = self.state.lock() else { return };
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
             if !state.allocated {
                 return;
             }
@@ -650,7 +724,9 @@ impl WindowClose {
 impl Drop for WindowEffect {
     fn drop(&mut self) {
         let (listeners, outcome) = {
-            let Ok(mut state) = self.close.state.lock() else { return };
+            let Ok(mut state) = self.close.state.lock() else {
+                return;
+            };
             state.active -= 1;
             if state.active != 0 {
                 return;
@@ -690,7 +766,9 @@ mod tests {
         assert_eq!(receipt.outcomes().1, Some(BrowserCloseOutcome::NotCreated));
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = seen.clone();
-        let _late = receipt.when_closed(move |outcome| sink.lock().unwrap().push(outcome)).unwrap();
+        let _late = receipt
+            .when_closed(move |outcome| sink.lock().unwrap().push(outcome))
+            .unwrap();
         assert_eq!(*seen.lock().unwrap(), [BrowserCloseOutcome::NotCreated]);
         assert!(BrowserClose::default().outcomes().1.is_none());
     }
@@ -713,7 +791,10 @@ mod tests {
         drop(other_hook);
         assert_eq!(
             receipt.outcomes(),
-            (Some(BrowserCreationOutcome::Failed), Some(BrowserCloseOutcome::NotCreated))
+            (
+                Some(BrowserCreationOutcome::Failed),
+                Some(BrowserCloseOutcome::NotCreated)
+            )
         );
     }
 
@@ -803,7 +884,9 @@ mod tests {
         close.begin_close();
         let heard = Arc::new(Mutex::new(false));
         let flag = heard.clone();
-        let _subscription = close.when_closing(move || *flag.lock().unwrap() = true).unwrap();
+        let _subscription = close
+            .when_closing(move || *flag.lock().unwrap() = true)
+            .unwrap();
         assert!(*heard.lock().unwrap());
         assert!(!close.is_open());
     }

@@ -42,15 +42,24 @@ mod queue {
     static DRAINING: AtomicBool = AtomicBool::new(false);
 
     pub(super) fn push(job: Job) {
-        QUEUE.lock().unwrap_or_else(|error| error.into_inner()).push_back(job);
+        QUEUE
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push_back(job);
     }
 
     pub(super) fn pop() -> Option<Job> {
-        QUEUE.lock().unwrap_or_else(|error| error.into_inner()).pop_front()
+        QUEUE
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .pop_front()
     }
 
     pub(super) fn is_empty() -> bool {
-        QUEUE.lock().unwrap_or_else(|error| error.into_inner()).is_empty()
+        QUEUE
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_empty()
     }
 
     /// False when another drain is already running.
@@ -186,7 +195,10 @@ mod tests {
             let _hold = hold();
             let queued = log.clone();
             defer(move || queued.lock().unwrap().push("ran"));
-            assert!(log.lock().unwrap().is_empty(), "nothing runs under the gate");
+            assert!(
+                log.lock().unwrap().is_empty(),
+                "nothing runs under the gate"
+            );
         }
         assert_eq!(*log.lock().unwrap(), ["ran"]);
     }

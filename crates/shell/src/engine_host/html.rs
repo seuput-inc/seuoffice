@@ -11,8 +11,8 @@ use tauri::{AppHandle, Manager, Webview, WebviewUrl, WebviewWindow, WebviewWindo
 use crate::native::{
     BrowserClose, BrowserCloseSubscription, BrowserCreation, BrowserState, CaptureSpec, Done,
     Native, NativeEvent, NativeEventKind, NativeSpec, NavigationStart, ObservedDocument,
-    ObservedDocumentSubscription, PageError, QuietSpec, Rect, RequestPolicy, Viewport,
-    WebviewExt, WebviewWindowBuilderExt, WindowClose, WindowCloseSubscription, WindowCreation,
+    ObservedDocumentSubscription, PageError, QuietSpec, Rect, RequestPolicy, Viewport, WebviewExt,
+    WebviewWindowBuilderExt, WindowClose, WindowCloseSubscription, WindowCreation,
 };
 
 const CANCELLED: &str = "HTML conversion was cancelled";
@@ -72,8 +72,13 @@ static PAGES: LazyLock<Mutex<HashMap<u64, Arc<Page>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn close_error(page: &Arc<Page>, error: String) {
-    let waiters =
-        std::mem::take(&mut page.close_state.lock().unwrap_or_else(|p| p.into_inner()).waiters);
+    let waiters = std::mem::take(
+        &mut page
+            .close_state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .waiters,
+    );
     for waiter in waiters {
         waiter(Err(error.clone()));
     }
@@ -94,7 +99,11 @@ fn close_error(page: &Arc<Page>, error: String) {
                 return;
             }
             close(&page);
-            let window_ready = page.window.lock().unwrap_or_else(|p| p.into_inner()).is_some();
+            let window_ready = page
+                .window
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_some();
             if page.browser_close_requested.load(Ordering::Acquire)
                 && (!window_ready || page.window_close_requested.load(Ordering::Acquire))
             {
@@ -126,7 +135,10 @@ fn terminal(page: &Arc<Page>, browser: bool) {
         std::mem::take(&mut state.waiters)
     };
     let mut pages = PAGES.lock().unwrap_or_else(|p| p.into_inner());
-    if pages.get(&page.id).is_some_and(|current| Arc::ptr_eq(current, page)) {
+    if pages
+        .get(&page.id)
+        .is_some_and(|current| Arc::ptr_eq(current, page))
+    {
         pages.remove(&page.id);
     }
     drop(pages);
@@ -144,7 +156,11 @@ fn close(page: &Arc<Page>) {
         page.browser_close_requested.store(false, Ordering::Release);
         close_error(page, error);
     }
-    let window = page.window.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let window = page
+        .window
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
     if let Some(window) = window {
         if page.window_close_requested.swap(true, Ordering::AcqRel) {
             return;
@@ -152,7 +168,9 @@ fn close(page: &Arc<Page>) {
         let captured = page.clone();
         if let Err(error) = page.app.run_on_main_thread(move || {
             if let Err(error) = window.destroy() {
-                captured.window_close_requested.store(false, Ordering::Release);
+                captured
+                    .window_close_requested
+                    .store(false, Ordering::Release);
                 close_error(&captured, error.to_string());
             }
         }) {
@@ -163,14 +181,22 @@ fn close(page: &Arc<Page>) {
 }
 
 pub(super) fn close_request(id: u64) {
-    let page = PAGES.lock().unwrap_or_else(|p| p.into_inner()).get(&id).cloned();
+    let page = PAGES
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&id)
+        .cloned();
     if let Some(page) = page {
         close(&page);
     }
 }
 
 pub(super) fn after_close(id: u64, waiter: CloseWaiter) {
-    let page = PAGES.lock().unwrap_or_else(|p| p.into_inner()).get(&id).cloned();
+    let page = PAGES
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&id)
+        .cloned();
     let Some(page) = page else {
         waiter(Ok(()));
         return;
@@ -205,13 +231,17 @@ impl Drop for Opening {
 }
 
 fn webview(page: &Page) -> Result<Webview, String> {
-    page.app.get_webview(&page.label).ok_or_else(|| "HTML conversion page is closed".into())
+    page.app
+        .get_webview(&page.label)
+        .ok_or_else(|| "HTML conversion page is closed".into())
 }
 
 /// Start one page operation and wait for its single completion, the cancellation or the
 /// timeout, whichever comes first. An operation that finishes after that is dropped.
 fn page_call<T: Send + 'static>(
-    cancel: &CancelToken, timeout: Duration, call: impl FnOnce(Done<T>),
+    cancel: &CancelToken,
+    timeout: Duration,
+    call: impl FnOnce(Done<T>),
 ) -> Result<T, PageError> {
     if cancel.is_cancelled() {
         return Err(PageError::Cancelled);
@@ -224,9 +254,15 @@ fn page_call<T: Send + 'static>(
     call(Box::new(move |result| {
         let _ = sent.try_send(result);
     }));
-    let result = received.recv_timeout(timeout).unwrap_or(Err(PageError::Timeout));
+    let result = received
+        .recv_timeout(timeout)
+        .unwrap_or(Err(PageError::Timeout));
     drop(subscription);
-    if cancel.is_cancelled() { Err(PageError::Cancelled) } else { result }
+    if cancel.is_cancelled() {
+        Err(PageError::Cancelled)
+    } else {
+        result
+    }
 }
 
 fn describe(what: &str, error: PageError) -> String {
@@ -240,7 +276,9 @@ fn describe(what: &str, error: PageError) -> String {
 
 /// A page operation of the opening or configuration phase: any failure ends the page.
 fn setup<T: Send + 'static>(
-    page: &Arc<Page>, cancel: &CancelToken, call: impl FnOnce(Done<T>),
+    page: &Arc<Page>,
+    cancel: &CancelToken,
+    call: impl FnOnce(Done<T>),
 ) -> Result<T, String> {
     page_call(cancel, PAGE_CALL_TIMEOUT, call).map_err(|error| {
         close(page);
@@ -264,7 +302,10 @@ fn open(app: &AppHandle, id: u64, request: &Value, cancel: &CancelToken) -> Resu
             .get("path")
             .and_then(Value::as_str)
             .ok_or("HTML conversion needs a document")?;
-        (AssetKind::Html, TargetDocument::Existing(std::path::PathBuf::from(path)))
+        (
+            AssetKind::Html,
+            TargetDocument::Existing(std::path::PathBuf::from(path)),
+        )
     };
     let owner = request
         .get("ownerViewId")
@@ -278,7 +319,10 @@ fn open(app: &AppHandle, id: u64, request: &Value, cancel: &CancelToken) -> Resu
         id,
         app: app.clone(),
         label: label.clone(),
-        navigation: Arc::new(Mutex::new(Navigation { document: None, started: false })),
+        navigation: Arc::new(Mutex::new(Navigation {
+            document: None,
+            started: false,
+        })),
         grant: Mutex::new(None),
         closing: AtomicBool::new(false),
         browser_close_requested: AtomicBool::new(false),
@@ -300,7 +344,11 @@ fn open(app: &AppHandle, id: u64, request: &Value, cancel: &CancelToken) -> Resu
         }
         pages.insert(id, page.clone());
     }
-    let mut opening = Opening { id, cancel: cancel.clone(), complete: false };
+    let mut opening = Opening {
+        id,
+        cancel: cancel.clone(),
+        complete: false,
+    };
     let browser_page = Arc::downgrade(&page);
     let browser_subscription = page.browser_close.when_closed(move |_| {
         if let Some(page) = browser_page.upgrade() {
@@ -314,7 +362,10 @@ fn open(app: &AppHandle, id: u64, request: &Value, cancel: &CancelToken) -> Resu
         }
     })?;
     {
-        let mut state = page.close_state.lock().map_err(|_| "HTML close state poisoned")?;
+        let mut state = page
+            .close_state
+            .lock()
+            .map_err(|_| "HTML close state poisoned")?;
         state.browser_subscription = Some(browser_subscription);
         state.window_subscription = Some(window_subscription);
     }
@@ -366,8 +417,13 @@ fn open(app: &AppHandle, id: u64, request: &Value, cancel: &CancelToken) -> Resu
     if cancel.is_cancelled() {
         return Err(CANCELLED.into());
     }
-    *page.navigation.lock().map_err(|_| "HTML navigation policy poisoned")? =
-        Navigation { document: Some(url.clone()), started: false };
+    *page
+        .navigation
+        .lock()
+        .map_err(|_| "HTML navigation policy poisoned")? = Navigation {
+        document: Some(url.clone()),
+        started: false,
+    };
     *page.grant.lock().map_err(|_| "HTML asset grant poisoned")? = Some(grant);
     opening.complete = true;
     Ok(json!({"url": url}))
@@ -376,11 +432,16 @@ fn open(app: &AppHandle, id: u64, request: &Value, cancel: &CancelToken) -> Resu
 /// Create the hidden window and its native browser on the UI thread. The browser starts at
 /// `about:blank`; `blank` completes once it is attached and committed, or when it failed.
 fn build(
-    app: &AppHandle, page: &Arc<Page>, browser_creation: BrowserCreation,
-    window_creation: WindowCreation, blank: mpsc::SyncSender<Result<(), String>>,
+    app: &AppHandle,
+    page: &Arc<Page>,
+    browser_creation: BrowserCreation,
+    window_creation: WindowCreation,
+    blank: mpsc::SyncSender<Result<(), String>>,
     cancel: &CancelToken,
 ) -> Result<BrowserState, String> {
-    let native = app.try_state::<Native>().ok_or("The native module is not installed.")?;
+    let native = app
+        .try_state::<Native>()
+        .ok_or("The native module is not installed.")?;
     let label = page.label.as_str();
     native.reserve_window(label, window_creation)?;
     let navigation = page.navigation.clone();
@@ -390,7 +451,10 @@ fn build(
         if !request.main_frame {
             return true;
         }
-        navigation.lock().map(|mut navigation| navigation.allow(request.url)).unwrap_or(false)
+        navigation
+            .lock()
+            .map(|mut navigation| navigation.allow(request.url))
+            .unwrap_or(false)
     })
     .with_javascript(true);
     let failed = blank.clone();
@@ -437,8 +501,9 @@ fn build(
         }
     };
     let view: &Webview = window.as_ref();
-    let attached =
-        native.window_created(&view.window()).and_then(|()| native.attach(view, &browser));
+    let attached = native
+        .window_created(&view.window())
+        .and_then(|()| native.attach(view, &browser));
     if let Err(error) = attached {
         let _ = window.destroy();
         return Err(error);
@@ -450,7 +515,10 @@ fn build(
             super::target_crashed(id);
         }
     });
-    *page.window.lock().map_err(|_| "HTML window state poisoned")? = Some(window);
+    *page
+        .window
+        .lock()
+        .map_err(|_| "HTML window state poisoned")? = Some(window);
     if page.closing.load(Ordering::Acquire) {
         close(page);
     }
@@ -465,7 +533,11 @@ fn build(
 }
 
 pub(super) fn dispatch(
-    app: &AppHandle, id: u64, request: &Value, operation: &str, input: &Value,
+    app: &AppHandle,
+    id: u64,
+    request: &Value,
+    operation: &str,
+    input: &Value,
     cancel: &CancelToken,
 ) -> Result<Value, String> {
     if operation == "html.open" {
@@ -497,16 +569,26 @@ pub(super) fn dispatch(
             };
             let width = edge("width").ok_or("invalid viewport width")?;
             let height = edge("height").ok_or("invalid viewport height")?;
-            let scale = input.get("deviceScaleFactor").and_then(Value::as_f64).unwrap_or(1.0);
+            let scale = input
+                .get("deviceScaleFactor")
+                .and_then(Value::as_f64)
+                .unwrap_or(1.0);
             if !scale.is_finite() || scale <= 0.0 {
                 return Err("invalid device scale factor".into());
             }
-            let viewport = Viewport { width, height, device_scale_factor: scale };
+            let viewport = Viewport {
+                width,
+                height,
+                device_scale_factor: scale,
+            };
             setup(&page, cancel, |done| ops.set_viewport(viewport, done))?;
             Value::Null
         }
         "html.goto" => {
-            let url = input.get("url").and_then(Value::as_str).ok_or("navigation URL is missing")?;
+            let url = input
+                .get("url")
+                .and_then(Value::as_str)
+                .ok_or("navigation URL is missing")?;
             let belongs = page
                 .navigation
                 .lock()
@@ -517,8 +599,10 @@ pub(super) fn dispatch(
             if !belongs {
                 return Err("navigation URL does not belong to this request".into());
             }
-            let timeout =
-                input.get("timeoutMs").and_then(Value::as_u64).ok_or("navigation timeout is missing")?;
+            let timeout = input
+                .get("timeoutMs")
+                .and_then(Value::as_u64)
+                .ok_or("navigation timeout is missing")?;
             let deadline = Instant::now()
                 .checked_add(Duration::from_millis(timeout))
                 .ok_or("navigation timeout is too large")?;
@@ -528,12 +612,12 @@ pub(super) fn dispatch(
                 let _ = wake.try_send(Err(CANCELLED.to_owned()));
             });
             let parsed = tauri::Url::parse(url).map_err(|error| error.to_string())?;
-            let navigation = view
-                .native_browser()?
-                .navigator()
-                .navigate_observed(parsed, move |result| {
-                    let _ = sent.try_send(result);
-                })?;
+            let navigation =
+                view.native_browser()?
+                    .navigator()
+                    .navigate_observed(parsed, move |result| {
+                        let _ = sent.try_send(result);
+                    })?;
             let observed = received
                 .recv_timeout(deadline.saturating_duration_since(Instant::now()))
                 .map_err(|_| "HTML navigation timed out".to_owned())
@@ -570,8 +654,10 @@ pub(super) fn dispatch(
                     }
                 }
             })?;
-            *page.document.lock().map_err(|_| "HTML document state poisoned")? =
-                Some((document, subscription));
+            *page
+                .document
+                .lock()
+                .map_err(|_| "HTML document state poisoned")? = Some((document, subscription));
             if lost.load(Ordering::Acquire) && !page.closing.load(Ordering::Acquire) {
                 super::target_crashed(id);
                 return Err("HTML conversion document was lost".into());
@@ -588,8 +674,10 @@ pub(super) fn dispatch(
             Value::Null
         }
         "html.evaluate" => {
-            let expression =
-                input.get("expression").and_then(Value::as_str).ok_or("expression is missing")?;
+            let expression = input
+                .get("expression")
+                .and_then(Value::as_str)
+                .ok_or("expression is missing")?;
             page_call(cancel, PAGE_CALL_TIMEOUT, |done| {
                 ops.evaluate(expression, true, None, done)
             })
@@ -598,10 +686,14 @@ pub(super) fn dispatch(
         // A classic script (the converter's helper scripts are IIFEs with a trailing `;`),
         // run for its effect; `html.evaluate` takes one expression and answers with its value.
         "html.script" => {
-            let source =
-                input.get("source").and_then(Value::as_str).ok_or("script source is missing")?;
-            page_call(cancel, PAGE_CALL_TIMEOUT, |done| ops.run_script(source, None, done))
-                .map_err(|error| describe("JavaScript script", error))?;
+            let source = input
+                .get("source")
+                .and_then(Value::as_str)
+                .ok_or("script source is missing")?;
+            page_call(cancel, PAGE_CALL_TIMEOUT, |done| {
+                ops.run_script(source, None, done)
+            })
+            .map_err(|error| describe("JavaScript script", error))?;
             Value::Null
         }
         "html.initScript" => {
@@ -613,8 +705,10 @@ pub(super) fn dispatch(
             Value::Null
         }
         "html.screenshot" => {
-            let transparent =
-                input.get("omitBackground").and_then(Value::as_bool).unwrap_or(false);
+            let transparent = input
+                .get("omitBackground")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let clip = match input.get("clip").filter(|value| !value.is_null()) {
                 Some(clip) => Some(screenshot_clip(clip)?),
                 None => None,
@@ -643,10 +737,17 @@ pub(super) fn dispatch(
 fn screenshot_clip(clip: &Value) -> Result<Rect, String> {
     let clip = clip.as_object().ok_or("invalid screenshot clip")?;
     let number = |name: &str| {
-        clip.get(name).and_then(Value::as_f64).filter(|value| value.is_finite())
+        clip.get(name)
+            .and_then(Value::as_f64)
+            .filter(|value| value.is_finite())
     };
     match (number("x"), number("y"), number("width"), number("height")) {
-        (Some(x), Some(y), Some(width), Some(height)) => Ok(Rect { x, y, width, height }),
+        (Some(x), Some(y), Some(width), Some(height)) => Ok(Rect {
+            x,
+            y,
+            width,
+            height,
+        }),
         _ => Err("invalid screenshot clip".into()),
     }
 }
@@ -658,8 +759,10 @@ mod tests {
 
     #[test]
     fn target_admits_only_one_authorized_navigation() {
-        let mut navigation =
-            Navigation { document: Some("html-asset://cap/_document".into()), started: false };
+        let mut navigation = Navigation {
+            document: Some("html-asset://cap/_document".into()),
+            started: false,
+        };
         assert!(navigation.allow("about:blank"));
         assert!(!navigation.allow("file:///private/data"));
         assert!(navigation.allow("html-asset://cap/_document"));
@@ -674,7 +777,10 @@ mod tests {
     #[test]
     fn screenshot_clip_needs_four_finite_numbers() {
         let rect = screenshot_clip(&json!({"x": 1, "y": 2, "width": 3.5, "height": 4})).unwrap();
-        assert_eq!((rect.x, rect.y, rect.width, rect.height), (1.0, 2.0, 3.5, 4.0));
+        assert_eq!(
+            (rect.x, rect.y, rect.width, rect.height),
+            (1.0, 2.0, 3.5, 4.0)
+        );
         assert!(screenshot_clip(&json!({"x": 1, "y": 2, "width": 3})).is_err());
         assert!(screenshot_clip(&json!("clip")).is_err());
     }

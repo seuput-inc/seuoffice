@@ -12,7 +12,10 @@ use crate::native::platform::SpellOps;
 const NOT_FOUND: usize = isize::MAX as usize;
 
 fn whole(word: &NSString) -> NSRange {
-    NSRange { location: 0, length: word.length() }
+    NSRange {
+        location: 0,
+        length: word.length(),
+    }
 }
 
 fn word_of(text: &str) -> Option<Retained<NSString>> {
@@ -22,7 +25,9 @@ fn word_of(text: &str) -> Option<Retained<NSString>> {
 
 impl SpellOps for Platform {
     fn suggestions(word: &str) -> Result<Vec<String>, String> {
-        let Some(word) = word_of(word) else { return Ok(Vec::new()) };
+        let Some(word) = word_of(word) else {
+            return Ok(Vec::new());
+        };
         let checker = NSSpellChecker::sharedSpellChecker();
         let guesses = checker.guessesForWordRange_inString_language_inSpellDocumentWithTag(
             whole(&word),
@@ -31,12 +36,20 @@ impl SpellOps for Platform {
             0,
         );
         Ok(guesses
-            .map(|guesses| guesses.to_vec().iter().map(|guess| guess.to_string()).collect())
+            .map(|guesses| {
+                guesses
+                    .to_vec()
+                    .iter()
+                    .map(|guess| guess.to_string())
+                    .collect()
+            })
             .unwrap_or_default())
     }
 
     fn is_misspelled(word: &str) -> Result<bool, String> {
-        let Some(word) = word_of(word) else { return Ok(false) };
+        let Some(word) = word_of(word) else {
+            return Ok(false);
+        };
         let found = NSSpellChecker::sharedSpellChecker().checkSpellingOfString_startingAt(&word, 0);
         Ok(found.location != NOT_FOUND)
     }

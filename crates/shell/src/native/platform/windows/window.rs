@@ -83,7 +83,10 @@ impl WindowOps for Platform {
                 // SAFETY: a live window of this thread.
                 let was_enabled = unsafe { IsWindowEnabled(owner) }.as_bool();
                 set_enabled(owner, false);
-                Owner { was_enabled, children: Vec::new() }
+                Owner {
+                    was_enabled,
+                    children: Vec::new(),
+                }
             });
             entry.children.push(key(child));
             modals.blocking.insert(key(child), key(owner));
@@ -102,7 +105,9 @@ impl WindowOps for Platform {
                 return Ok(());
             };
             // A child destroyed without ending its modality must not keep the owner disabled.
-            entry.children.retain(|other| *other != child && exists(from_key(*other)));
+            entry
+                .children
+                .retain(|other| *other != child && exists(from_key(*other)));
             if !entry.children.is_empty() {
                 return Ok(());
             }

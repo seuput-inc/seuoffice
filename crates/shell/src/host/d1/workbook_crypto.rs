@@ -9,16 +9,33 @@ pub(super) fn unlock(
 ) -> Result<Option<Unlocked>, UnlockFailure> {
     const DEFAULT: &str = "VelvetSweatshop";
     match decrypt_office_file(bytes, DEFAULT) {
-        Ok(bytes) => return Ok(Some(Unlocked { bytes, password: DEFAULT.into(), asked: false })),
+        Ok(bytes) => {
+            return Ok(Some(Unlocked {
+                bytes,
+                password: DEFAULT.into(),
+                asked: false,
+            }));
+        }
         Err(error) if error.reason == OfficeDecryptReason::WrongPassword => {}
         Err(_) => return Err(UnlockFailure::Decrypt),
     }
     let mut retry = false;
     loop {
-        let Some(password) = ask(retry)? else { return Ok(None); };
-        if password.is_empty() { retry = true; continue; }
+        let Some(password) = ask(retry)? else {
+            return Ok(None);
+        };
+        if password.is_empty() {
+            retry = true;
+            continue;
+        }
         match decrypt_office_file(bytes, &password) {
-            Ok(bytes) => return Ok(Some(Unlocked { bytes, password, asked: true })),
+            Ok(bytes) => {
+                return Ok(Some(Unlocked {
+                    bytes,
+                    password,
+                    asked: true,
+                }));
+            }
             Err(error) if error.reason == OfficeDecryptReason::WrongPassword => retry = true,
             Err(_) => return Err(UnlockFailure::Decrypt),
         }

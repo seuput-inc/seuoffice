@@ -2,10 +2,10 @@ use std::rc::Rc;
 
 use jscompat::JsonValue;
 use main_core::shell::mcp::mcp_server::{HostCall, Settled};
+use shell_contract::Surface;
 use shell_contract::ids::ViewId;
 use shell_contract::provided::Provided;
 use shell_contract::runtime::Services;
-use shell_contract::Surface;
 
 use super::visible::view_id;
 
@@ -18,9 +18,18 @@ pub(super) struct Recovery {
 impl Recovery {
     pub(super) fn new(provided: &Provided) -> Self {
         Self {
-            docs: provided.all::<shell_ipc_d2::docs::editors::DocsEditors>().into_iter().next(),
-            pdf: provided.all::<shell_ipc_d2::pdf::editor::editors::PdfEditors>().into_iter().next(),
-            hwp: provided.all::<shell_ipc_d2::hwp::HwpEditors>().into_iter().next(),
+            docs: provided
+                .all::<shell_ipc_d2::docs::editors::DocsEditors>()
+                .into_iter()
+                .next(),
+            pdf: provided
+                .all::<shell_ipc_d2::pdf::editor::editors::PdfEditors>()
+                .into_iter()
+                .next(),
+            hwp: provided
+                .all::<shell_ipc_d2::hwp::HwpEditors>()
+                .into_iter()
+                .next(),
         }
     }
 
@@ -55,13 +64,33 @@ impl Recovery {
             return Err("the document view belongs to another editor".to_owned());
         }
         match kind.as_str() {
-            "docs" => self.docs.as_ref().ok_or("Word editor is unavailable")?.discard_recovery(view),
-            "sheets" => shell_ipc_d1::sheets::editors::views().ok_or("Sheets editor is unavailable")?.discard_recovery(view),
-            "slides" => shell_ipc_d1::slides::views().ok_or("Slides editor is unavailable")?.discard_recovery(view),
-            "pdf" => self.pdf.as_ref().ok_or("PDF editor is unavailable")?.discard_recovery(view),
-            "mindmap" => shell_ipc_d1::mindmap::handle().ok_or("Mindmap editor is unavailable")?.discard_recovery(view),
-            "hwp" => self.hwp.as_ref().ok_or("HWP editor is unavailable")?.discard_recovery_copy(view),
-            "diagram" => shell_ipc_d1::diagram::views().ok_or("Diagram editor is unavailable")?.discard_recovery(view),
+            "docs" => self
+                .docs
+                .as_ref()
+                .ok_or("Word editor is unavailable")?
+                .discard_recovery(view),
+            "sheets" => shell_ipc_d1::sheets::editors::views()
+                .ok_or("Sheets editor is unavailable")?
+                .discard_recovery(view),
+            "slides" => shell_ipc_d1::slides::views()
+                .ok_or("Slides editor is unavailable")?
+                .discard_recovery(view),
+            "pdf" => self
+                .pdf
+                .as_ref()
+                .ok_or("PDF editor is unavailable")?
+                .discard_recovery(view),
+            "mindmap" => shell_ipc_d1::mindmap::handle()
+                .ok_or("Mindmap editor is unavailable")?
+                .discard_recovery(view),
+            "hwp" => self
+                .hwp
+                .as_ref()
+                .ok_or("HWP editor is unavailable")?
+                .discard_recovery_copy(view),
+            "diagram" => shell_ipc_d1::diagram::views()
+                .ok_or("Diagram editor is unavailable")?
+                .discard_recovery(view),
             "epub" => (),
             _ => unreachable!(),
         }

@@ -21,7 +21,10 @@ use crate::native::policy::PolicyRequest;
 /// `http(s)://genoffice-app-diagram.localhost/x` on Windows. `None` for web and inline URLs.
 pub(crate) fn bound_scheme(url: &Url) -> Option<&str> {
     match url.scheme() {
-        "http" | "https" => url.host_str()?.strip_suffix(".localhost").filter(|scheme| !scheme.is_empty()),
+        "http" | "https" => url
+            .host_str()?
+            .strip_suffix(".localhost")
+            .filter(|scheme| !scheme.is_empty()),
         "about" | "data" | "blob" | "file" | "ws" | "wss" => None,
         other => Some(other),
     }
@@ -55,7 +58,11 @@ pub(crate) fn on_navigation(browser: &BrowserIdentity, url: &Url) -> bool {
             return false;
         }
     }
-    if Current::NAVIGATION_HOOK_IS_MAIN_FRAME { browser.observe_navigation_allowed(url) } else { true }
+    if Current::NAVIGATION_HOOK_IS_MAIN_FRAME {
+        browser.observe_navigation_allowed(url)
+    } else {
+        true
+    }
 }
 
 /// The `on_page_load` hook.
@@ -79,9 +86,18 @@ mod tests {
 
     #[test]
     fn the_bound_scheme_is_the_same_on_both_url_shapes() {
-        assert_eq!(bound_scheme(&url("genoffice-app-diagram://localhost/index.html")), Some("genoffice-app-diagram"));
-        assert_eq!(bound_scheme(&url("http://genoffice-app-diagram.localhost/index.html")), Some("genoffice-app-diagram"));
-        assert_eq!(bound_scheme(&url("https://genoffice-app-diagram.localhost/")), Some("genoffice-app-diagram"));
+        assert_eq!(
+            bound_scheme(&url("genoffice-app-diagram://localhost/index.html")),
+            Some("genoffice-app-diagram")
+        );
+        assert_eq!(
+            bound_scheme(&url("http://genoffice-app-diagram.localhost/index.html")),
+            Some("genoffice-app-diagram")
+        );
+        assert_eq!(
+            bound_scheme(&url("https://genoffice-app-diagram.localhost/")),
+            Some("genoffice-app-diagram")
+        );
         assert_eq!(bound_scheme(&url("https://example.org/")), None);
         assert_eq!(bound_scheme(&url("http://localhost/")), None);
         assert_eq!(bound_scheme(&url("data:text/plain,hi")), None);
@@ -89,7 +105,9 @@ mod tests {
     }
 
     fn policy_browser(
-        label: &str, allow: fn(&PolicyRequest<'_>) -> bool, control: std::sync::Arc<FakeControl>,
+        label: &str,
+        allow: fn(&PolicyRequest<'_>) -> bool,
+        control: std::sync::Arc<FakeControl>,
     ) -> BrowserIdentity {
         use crate::native::browser::{BridgeMode, BrowserCore, Config};
         use crate::native::lifecycle::BrowserCreation;
@@ -117,9 +135,15 @@ mod tests {
         browser.observe_policy_installed();
 
         assert!(!on_navigation(&browser, &url("https://evil.test/")));
-        assert!(browser.navigation().is_none(), "a refused navigation is not admitted");
+        assert!(
+            browser.navigation().is_none(),
+            "a refused navigation is not admitted"
+        );
         assert!(on_navigation(&browser, &url("https://example.test/a")));
-        assert_eq!(browser.navigation().is_some(), Current::NAVIGATION_HOOK_IS_MAIN_FRAME);
+        assert_eq!(
+            browser.navigation().is_some(),
+            Current::NAVIGATION_HOOK_IS_MAIN_FRAME
+        );
     }
 
     #[test]
@@ -128,19 +152,39 @@ mod tests {
         let browser = policy_browser("policy-hold", |_| true, control.clone());
         let ready = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = ready.clone();
-        browser.navigator().when_ready(move |result| sink.lock().unwrap().push(result));
+        browser
+            .navigator()
+            .when_ready(move |result| sink.lock().unwrap().push(result));
 
-        assert!(on_navigation(&browser, &url("about:blank")), "a blank page fetches nothing");
-        assert!(!on_navigation(&browser, &url("https://example.test/a")), "held, not started");
-        assert!(!on_navigation(&browser, &url("https://example.test/b")), "only the first is kept");
+        assert!(
+            on_navigation(&browser, &url("about:blank")),
+            "a blank page fetches nothing"
+        );
+        assert!(
+            !on_navigation(&browser, &url("https://example.test/a")),
+            "held, not started"
+        );
+        assert!(
+            !on_navigation(&browser, &url("https://example.test/b")),
+            "only the first is kept"
+        );
         assert!(browser.navigation().is_none());
-        assert!(ready.lock().unwrap().is_empty(), "not ready before the policy is enforced");
+        assert!(
+            ready.lock().unwrap().is_empty(),
+            "not ready before the policy is enforced"
+        );
         assert!(control.navigations.lock().unwrap().is_empty());
 
         browser.observe_policy_installed();
-        assert_eq!(*control.navigations.lock().unwrap(), ["https://example.test/a"]);
+        assert_eq!(
+            *control.navigations.lock().unwrap(),
+            ["https://example.test/a"]
+        );
         assert_eq!(*ready.lock().unwrap(), [Ok(())]);
-        assert!(on_navigation(&browser, &url("https://example.test/a")), "judged normally now");
+        assert!(
+            on_navigation(&browser, &url("https://example.test/a")),
+            "judged normally now"
+        );
     }
 
     #[test]
@@ -157,20 +201,31 @@ mod tests {
             FakeControl::new(),
         );
         browser.observe_policy_installed();
-        with_navigation_frame(false, || on_navigation(&browser, &url("https://example.test/f")));
+        with_navigation_frame(false, || {
+            on_navigation(&browser, &url("https://example.test/f"))
+        });
         assert!(!SAW_MAIN_FRAME.load(Ordering::SeqCst));
-        with_navigation_frame(true, || on_navigation(&browser, &url("https://example.test/m")));
+        with_navigation_frame(true, || {
+            on_navigation(&browser, &url("https://example.test/m"))
+        });
         assert!(SAW_MAIN_FRAME.load(Ordering::SeqCst));
     }
 
     #[test]
     fn started_commits_and_finished_confirms_only_without_an_adapter() {
-        let (browser, _events) = browser_with_events("public-load", FakeControl::new(), NavigationStart::Automatic);
+        let (browser, _events) = browser_with_events(
+            "public-load",
+            FakeControl::new(),
+            NavigationStart::Automatic,
+        );
         let address = url("https://example.test/a");
         on_page_load(&browser, PageLoadEvent::Started, &address);
         assert!(browser.document().is_some());
         let before = browser.observation();
         on_page_load(&browser, PageLoadEvent::Finished, &address);
-        assert_eq!(browser.observation() != before, !Current::CONFIRMS_LOAD_OUTCOME);
+        assert_eq!(
+            browser.observation() != before,
+            !Current::CONFIRMS_LOAD_OUTCOME
+        );
     }
 }

@@ -1,12 +1,14 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use main_core::shell::document_password_prompt::{AskId, DocumentPasswordPrompts, Effect, PromptId};
+use main_core::shell::document_password_prompt::{
+    AskId, DocumentPasswordPrompts, Effect, PromptId,
+};
 use shell_contract::ids::WindowId;
-use shell_ipc_d2::pdf::tools::PdfTools;
-use shell_ipc_w::editor_files::UiLanguage;
 use shell_contract::ipc::NativeRequestOwner;
 use shell_contract::runtime::{CancelSubscription, CancelToken};
+use shell_ipc_d2::pdf::tools::PdfTools;
+use shell_ipc_w::editor_files::UiLanguage;
 use tauri::Manager;
 
 use super::super::{HostContext, w::on_core, w_files::ShellLanguage};
@@ -24,8 +26,14 @@ struct PromptAuthority {
 #[derive(Clone)]
 enum PromptScope {
     Renderer(PromptAuthority),
-    Prepared { target: shell_contract::ipc::RecoveryOpenTarget, snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot },
-    Saved { document: shell_contract::ipc::NativeSavedDocument, factory: shell_ipc_d2::pdf::tools::SavedPasswordWindowFactory },
+    Prepared {
+        target: shell_contract::ipc::RecoveryOpenTarget,
+        snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
+    },
+    Saved {
+        document: shell_contract::ipc::NativeSavedDocument,
+        factory: shell_ipc_d2::pdf::tools::SavedPasswordWindowFactory,
+    },
 }
 
 struct OwnedScope {
@@ -51,7 +59,10 @@ impl State {
     }
 
     fn cancel_answers(&mut self, prompt: PromptId) -> Vec<Callback> {
-        self.callbacks.extract_if(|_, (owner, _)| *owner == prompt).map(|(_, (_, callback))| callback).collect()
+        self.callbacks
+            .extract_if(|_, (owner, _)| *owner == prompt)
+            .map(|(_, (_, callback))| callback)
+            .collect()
     }
 }
 
@@ -72,9 +83,15 @@ impl DocumentPasswordService {
     pub(crate) fn new(cx: &HostContext) -> Self {
         let (worker, receiver) = std::sync::mpsc::channel::<Box<dyn FnOnce() + Send>>();
         std::thread::spawn(move || {
-            while let Ok(job) = receiver.recv() { job(); }
+            while let Ok(job) = receiver.recv() {
+                job();
+            }
         });
-        Self { cx: cx.clone(), state: Arc::new(Mutex::new(State::default())), worker }
+        Self {
+            cx: cx.clone(),
+            state: Arc::new(Mutex::new(State::default())),
+            worker,
+        }
     }
 
     pub(crate) fn create(&self, parent: Option<WindowId>, file_name: String) -> PasswordPrompt {
@@ -84,9 +101,16 @@ impl DocumentPasswordService {
             state.parents.insert(id, parent);
             id
         };
-        let prompt = PasswordPrompt { service: self.clone(), id };
+        let prompt = PasswordPrompt {
+            service: self.clone(),
+            id,
+        };
         if let Some(parent) = parent {
-            let owner = self.cx.views.label_of_window(parent).and_then(|label| self.cx.app.get_window(&label));
+            let owner = self
+                .cx
+                .views
+                .label_of_window(parent)
+                .and_then(|label| self.cx.app.get_window(&label));
             if let Some(owner) = owner {
                 let closed = prompt.clone();
                 owner.on_window_event(move |event| {
@@ -95,30 +119,77 @@ impl DocumentPasswordService {
                         std::thread::spawn(move || closed.abort());
                     }
                 });
-                if self.cx.views.label_of_window(parent).and_then(|label| self.cx.app.get_window(&label)).is_none() {
+                if self
+                    .cx
+                    .views
+                    .label_of_window(parent)
+                    .and_then(|label| self.cx.app.get_window(&label))
+                    .is_none()
+                {
                     prompt.abort();
                 }
-            } else { prompt.abort(); }
+            } else {
+                prompt.abort();
+            }
         }
         prompt
     }
 
     pub(crate) fn create_owned(
-        &self, parent: Option<WindowId>, file_name: String,
-        source: NativeRequestOwner, destination: NativeRequestOwner, cancel: CancelToken, pending: CancelToken,
+        &self,
+        parent: Option<WindowId>,
+        file_name: String,
+        source: NativeRequestOwner,
+        destination: NativeRequestOwner,
+        cancel: CancelToken,
+        pending: CancelToken,
     ) -> Result<PasswordPrompt, String> {
-        let source_loss = source.loss_token().ok_or("The password source owner lease is unavailable")?;
-        let destination_loss = destination.loss_token().ok_or("The password destination owner lease is unavailable")?;
+        let source_loss = source
+            .loss_token()
+            .ok_or("The password source owner lease is unavailable")?;
+        let destination_loss = destination
+            .loss_token()
+            .ok_or("The password destination owner lease is unavailable")?;
         let prompt = self.create(parent, file_name);
-        let authority = PromptAuthority { source, destination, cancel, pending };
+        let authority = PromptAuthority {
+            source,
+            destination,
+            cancel,
+            pending,
+        };
         let key = jscompat::random_uuid();
-        let accepted = crate::ipc::native_owner::with_paired_effect(&authority.source, &authority.destination, &authority.cancel, &authority.pending, || {
-            self.state.lock().unwrap_or_else(|error| error.into_inner()).owned.insert(prompt.id,
-                OwnedScope { key, authority: Some(PromptScope::Renderer(authority.clone())), losses: Vec::new(), closing: None });
-        });
-        if accepted.is_none() { prompt.abort(); return Err("The password request expired before preparation".into()); }
+        let accepted = crate::ipc::native_owner::with_paired_effect(
+            &authority.source,
+            &authority.destination,
+            &authority.cancel,
+            &authority.pending,
+            || {
+                self.state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .owned
+                    .insert(
+                        prompt.id,
+                        OwnedScope {
+                            key,
+                            authority: Some(PromptScope::Renderer(authority.clone())),
+                            losses: Vec::new(),
+                            closing: None,
+                        },
+                    );
+            },
+        );
+        if accepted.is_none() {
+            prompt.abort();
+            return Err("The password request expired before preparation".into());
+        }
         let mut losses = Vec::new();
-        for loss in [source_loss, destination_loss, authority.cancel.clone(), authority.pending.clone()] {
+        for loss in [
+            source_loss,
+            destination_loss,
+            authority.cancel.clone(),
+            authority.pending.clone(),
+        ] {
             let weak = Arc::downgrade(&self.state);
             let cx = self.cx.clone();
             let worker = self.worker.clone();
@@ -129,13 +200,21 @@ impl DocumentPasswordService {
                 let worker = worker.clone();
                 crate::host::w::post_core(move |_, _| {
                     if let Some(state) = weak.upgrade() {
-                        PasswordPrompt { service: DocumentPasswordService { cx, state, worker }, id }.abort();
+                        PasswordPrompt {
+                            service: DocumentPasswordService { cx, state, worker },
+                            id,
+                        }
+                        .abort();
                     }
                 });
             }));
         }
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some(scope) = state.owned.get_mut(&prompt.id).filter(|scope| scope.authority.is_some()) {
+        if let Some(scope) = state
+            .owned
+            .get_mut(&prompt.id)
+            .filter(|scope| scope.authority.is_some())
+        {
             scope.losses = losses;
         }
         drop(state);
@@ -143,20 +222,52 @@ impl DocumentPasswordService {
     }
 
     pub(crate) fn create_prepared(
-        &self, target: shell_contract::ipc::RecoveryOpenTarget, snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot, file_name: String,
+        &self,
+        target: shell_contract::ipc::RecoveryOpenTarget,
+        snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
+        file_name: String,
     ) -> Result<PasswordPrompt, String> {
         use shell_contract::runtime::Views;
-        let created = self.cx.views.renderer_generation(target.view()).ok_or("The recovery window is unavailable")?;
-        if !created.same_generation(target.created()) { return Err("The recovery window generation changed".into()); }
-        let parent = self.cx.views.sender_of(target.view()).ok_or("The recovery window is unavailable")?.window;
+        let created = self
+            .cx
+            .views
+            .renderer_generation(target.view())
+            .ok_or("The recovery window is unavailable")?;
+        if !created.same_generation(target.created()) {
+            return Err("The recovery window generation changed".into());
+        }
+        let parent = self
+            .cx
+            .views
+            .sender_of(target.view())
+            .ok_or("The recovery window is unavailable")?
+            .window;
         let tokens = snapshot.preparation_loss_tokens()?;
         let prompt = self.create(Some(parent), file_name);
         let key = jscompat::random_uuid();
-        let accepted = crate::ipc::native_owner::with_recovery_seed_snapshot(&target, &snapshot, || {
-            self.state.lock().unwrap_or_else(|error| error.into_inner()).owned.insert(prompt.id,
-                OwnedScope { key, authority: Some(PromptScope::Prepared { target: target.clone(), snapshot: snapshot.clone() }), losses: Vec::new(), closing: None });
-        });
-        if accepted.is_none() { prompt.abort(); return Err("The recovery request expired before password preparation".into()); }
+        let accepted =
+            crate::ipc::native_owner::with_recovery_seed_snapshot(&target, &snapshot, || {
+                self.state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .owned
+                    .insert(
+                        prompt.id,
+                        OwnedScope {
+                            key,
+                            authority: Some(PromptScope::Prepared {
+                                target: target.clone(),
+                                snapshot: snapshot.clone(),
+                            }),
+                            losses: Vec::new(),
+                            closing: None,
+                        },
+                    );
+            });
+        if accepted.is_none() {
+            prompt.abort();
+            return Err("The recovery request expired before password preparation".into());
+        }
         let mut losses = Vec::new();
         for loss in tokens {
             let weak = Arc::downgrade(&self.state);
@@ -164,62 +275,134 @@ impl DocumentPasswordService {
             let worker = self.worker.clone();
             let id = prompt.id;
             losses.push(loss.on_cancel(move || {
-                let weak = weak.clone(); let cx = cx.clone(); let worker = worker.clone();
+                let weak = weak.clone();
+                let cx = cx.clone();
+                let worker = worker.clone();
                 crate::host::w::post_core(move |_, _| {
                     if let Some(state) = weak.upgrade() {
-                        PasswordPrompt { service: DocumentPasswordService { cx, state, worker }, id }.abort();
+                        PasswordPrompt {
+                            service: DocumentPasswordService { cx, state, worker },
+                            id,
+                        }
+                        .abort();
                     }
                 });
             }));
         }
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some(scope) = state.owned.get_mut(&prompt.id).filter(|scope| scope.authority.is_some()) {
+        if let Some(scope) = state
+            .owned
+            .get_mut(&prompt.id)
+            .filter(|scope| scope.authority.is_some())
+        {
             scope.losses = losses;
         }
         drop(state);
         Ok(prompt)
     }
 
-    pub(crate) fn create_saved(&self, document: shell_contract::ipc::NativeSavedDocument, file_name: String) -> Result<PasswordPrompt, String> {
+    pub(crate) fn create_saved(
+        &self,
+        document: shell_contract::ipc::NativeSavedDocument,
+        file_name: String,
+    ) -> Result<PasswordPrompt, String> {
         let target = document.target();
-        let (parent, lifecycle) = self.cx.views.view_window_captured(target.view(), target.created())?;
+        let (parent, lifecycle) = self
+            .cx
+            .views
+            .view_window_captured(target.view(), target.created())?;
         let operation = target.output().selection().binding().operation();
-        let mut tokens = vec![target.cancel().clone(), target.pending().clone(), operation.cancel().clone(), operation.shutdown().clone()];
+        let mut tokens = vec![
+            target.cancel().clone(),
+            target.pending().clone(),
+            operation.cancel().clone(),
+            operation.shutdown().clone(),
+        ];
         tokens.extend_from_slice(target.additional());
         for owner in std::iter::once(target.output().selection().binding().owner())
-            .chain(target.participants().iter()).chain(std::iter::once(document.owner())) {
-            tokens.push(owner.loss_token().ok_or("The saved password owner lease is unavailable")?);
+            .chain(target.participants().iter())
+            .chain(std::iter::once(document.owner()))
+        {
+            tokens.push(
+                owner
+                    .loss_token()
+                    .ok_or("The saved password owner lease is unavailable")?,
+            );
         }
         let factory_cx = self.cx.clone();
         let factory_lifecycle = lifecycle.clone();
         let expected = target.clone();
-        let factory: shell_ipc_d2::pdf::tools::SavedPasswordWindowFactory = Arc::new(move |title, document, done| {
-            if !document.target().same_target(&expected) {
-                return Err("The password window belongs to another saved document".into());
-            }
-            super::open_password_window_saved(&factory_cx, parent, factory_lifecycle.clone(), title, document, done)
-        });
+        let factory: shell_ipc_d2::pdf::tools::SavedPasswordWindowFactory =
+            Arc::new(move |title, document, done| {
+                if !document.target().same_target(&expected) {
+                    return Err("The password window belongs to another saved document".into());
+                }
+                super::open_password_window_saved(
+                    &factory_cx,
+                    parent,
+                    factory_lifecycle.clone(),
+                    title,
+                    document,
+                    done,
+                )
+            });
         let key = jscompat::random_uuid();
         let id = {
-            let mut state = self.state.lock().map_err(|_| "The password service is unavailable")?;
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| "The password service is unavailable")?;
             let id = state.model.create(&file_name);
             state.parents.insert(id, Some(parent));
-            state.owned.insert(id, OwnedScope { key, authority: None, losses: Vec::new(), closing: None });
+            state.owned.insert(
+                id,
+                OwnedScope {
+                    key,
+                    authority: None,
+                    losses: Vec::new(),
+                    closing: None,
+                },
+            );
             id
         };
-        let prompt = PasswordPrompt { service: self.clone(), id };
-        let mut authority = Some(PromptScope::Saved { document: document.clone(), factory });
-        let result = crate::ipc::native_owner::with_saved_document_effect(&document, &[], target.cancel(), target.pending(), &[], &mut || {
-            let mut state = self.state.lock().map_err(|_| "The password service is unavailable")?;
-            let scope = state.owned.get_mut(&id).ok_or("The prepared password prompt is unavailable")?;
-            scope.authority = authority.take();
-            Ok(())
+        let prompt = PasswordPrompt {
+            service: self.clone(),
+            id,
+        };
+        let mut authority = Some(PromptScope::Saved {
+            document: document.clone(),
+            factory,
         });
-        if let Err(error) = result { prompt.abort(); return Err(error); }
+        let result = crate::ipc::native_owner::with_saved_document_effect(
+            &document,
+            &[],
+            target.cancel(),
+            target.pending(),
+            &[],
+            &mut || {
+                let mut state = self
+                    .state
+                    .lock()
+                    .map_err(|_| "The password service is unavailable")?;
+                let scope = state
+                    .owned
+                    .get_mut(&id)
+                    .ok_or("The prepared password prompt is unavailable")?;
+                scope.authority = authority.take();
+                Ok(())
+            },
+        );
+        if let Err(error) = result {
+            prompt.abort();
+            return Err(error);
+        }
         let closed = prompt.clone();
         let closing = match lifecycle.when_closing(move || closed.abort()) {
             Ok(closing) => closing,
-            Err(error) => { prompt.abort(); return Err(error); }
+            Err(error) => {
+                prompt.abort();
+                return Err(error);
+            }
         };
         let mut losses = Vec::new();
         for loss in tokens {
@@ -227,16 +410,29 @@ impl DocumentPasswordService {
             let cx = self.cx.clone();
             let worker = self.worker.clone();
             losses.push(loss.on_cancel(move || {
-                let weak = weak.clone(); let cx = cx.clone(); let worker = worker.clone();
+                let weak = weak.clone();
+                let cx = cx.clone();
+                let worker = worker.clone();
                 crate::host::w::post_core(move |_, _| {
                     if let Some(state) = weak.upgrade() {
-                        PasswordPrompt { service: DocumentPasswordService { cx, state, worker }, id }.abort();
+                        PasswordPrompt {
+                            service: DocumentPasswordService { cx, state, worker },
+                            id,
+                        }
+                        .abort();
                     }
                 });
             }));
         }
-        let mut state = self.state.lock().map_err(|_| "The password service is unavailable")?;
-        if let Some(scope) = state.owned.get_mut(&id).filter(|scope| scope.authority.is_some()) {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "The password service is unavailable")?;
+        if let Some(scope) = state
+            .owned
+            .get_mut(&id)
+            .filter(|scope| scope.authority.is_some())
+        {
             scope.losses = losses;
             scope.closing = Some(closing);
         }
@@ -247,14 +443,26 @@ impl DocumentPasswordService {
     fn retire_owned(&self, prompt: PromptId) {
         let retired = {
             let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            state.owned.get_mut(&prompt).map(|scope| (scope.authority.take(), std::mem::take(&mut scope.losses), scope.closing.take()))
+            state.owned.get_mut(&prompt).map(|scope| {
+                (
+                    scope.authority.take(),
+                    std::mem::take(&mut scope.losses),
+                    scope.closing.take(),
+                )
+            })
         };
         drop(retired);
     }
 
     fn complete(&self, ask: AskId, answer: Result<Option<String>, String>) {
-        let callback = self.state.lock().expect("document password state").take_answer(ask);
-        if let Some(callback) = callback { callback(answer); }
+        let callback = self
+            .state
+            .lock()
+            .expect("document password state")
+            .take_answer(ask);
+        if let Some(callback) = callback {
+            callback(answer);
+        }
     }
 
     fn effects(&self, effects: Vec<Effect>) {
@@ -263,11 +471,18 @@ impl DocumentPasswordService {
                 Effect::Cancelled { ask } => {
                     let (callback, interrupted) = {
                         let mut state = self.state.lock().expect("document password state");
-                        let interrupted = state.callbacks.get(&ask).is_some_and(|(id, _)| state.aborted_saved.contains(id));
+                        let interrupted = state
+                            .callbacks
+                            .get(&ask)
+                            .is_some_and(|(id, _)| state.aborted_saved.contains(id));
                         (state.take_answer(ask), interrupted)
                     };
                     if let Some(callback) = callback {
-                        callback(if interrupted { Err("The saved password request was interrupted".into()) } else { Ok(None) });
+                        callback(if interrupted {
+                            Err("The saved password request was interrupted".into())
+                        } else {
+                            Ok(None)
+                        });
                     }
                 }
                 Effect::CloseWindow { prompt } => {
@@ -276,19 +491,44 @@ impl DocumentPasswordService {
                         let interrupted = state.aborted_saved.contains(&prompt);
                         (state.cancel_answers(prompt), interrupted)
                     };
-                    let key = self.state.lock().unwrap_or_else(|error| error.into_inner()).owned.get(&prompt).map(|scope| scope.key.clone());
+                    let key = self
+                        .state
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .owned
+                        .get(&prompt)
+                        .map(|scope| scope.key.clone());
                     let _ = on_core(move |provided| {
                         if let Some(tools) = provided.all::<PdfTools>().pop() {
-                            if let Some(key) = key { tools.close_password_dialog_owned(&key); }
-                            else { tools.close_password_dialog(); }
+                            if let Some(key) = key {
+                                tools.close_password_dialog_owned(&key);
+                            } else {
+                                tools.close_password_dialog();
+                            }
                         }
                     });
                     for callback in callbacks {
-                        callback(if interrupted { Err("The saved password request was interrupted".into()) } else { Ok(None) });
+                        callback(if interrupted {
+                            Err("The saved password request was interrupted".into())
+                        } else {
+                            Ok(None)
+                        });
                     }
                 }
-                Effect::Prompt { prompt, ask, file_name, retry } => {
-                    let parent = self.state.lock().expect("document password state").parents.get(&prompt).copied().flatten();
+                Effect::Prompt {
+                    prompt,
+                    ask,
+                    file_name,
+                    retry,
+                } => {
+                    let parent = self
+                        .state
+                        .lock()
+                        .expect("document password state")
+                        .parents
+                        .get(&prompt)
+                        .copied()
+                        .flatten();
                     let service = self.clone();
                     if self.worker.send(Box::new(move || {
                         let lang = ShellLanguage(service.cx.ui.clone()).lang();
@@ -367,17 +607,36 @@ impl PasswordPrompt {
         let pending = callback.clone();
         let prompt = self.clone();
         let accepted = on_core(move |_| {
-            let callback = pending.lock().expect("password callback").take().expect("password callback present");
+            let callback = pending
+                .lock()
+                .expect("password callback")
+                .take()
+                .expect("password callback present");
             let aborted = {
-                let state = prompt.service.state.lock().expect("document password state");
-                (state.aborted.contains(&prompt.id), state.aborted_saved.contains(&prompt.id))
+                let state = prompt
+                    .service
+                    .state
+                    .lock()
+                    .expect("document password state");
+                (
+                    state.aborted.contains(&prompt.id),
+                    state.aborted_saved.contains(&prompt.id),
+                )
             };
             if aborted.0 {
-                callback(if aborted.1 { Err("The saved password request was interrupted".into()) } else { Ok(None) });
+                callback(if aborted.1 {
+                    Err("The saved password request was interrupted".into())
+                } else {
+                    Ok(None)
+                });
                 return;
             }
             let effects = {
-                let mut state = prompt.service.state.lock().expect("document password state");
+                let mut state = prompt
+                    .service
+                    .state
+                    .lock()
+                    .expect("document password state");
                 let (ask, effects) = state.model.ask(prompt.id, retry);
                 state.callbacks.insert(ask, (prompt.id, callback));
                 effects
@@ -394,8 +653,14 @@ impl PasswordPrompt {
         let prompt = self.clone();
         let _ = on_core(move |_| {
             let effects = {
-                let mut state = prompt.service.state.lock().expect("document password state");
-                if state.owned.get(&prompt.id).is_some_and(|scope| matches!(&scope.authority, Some(PromptScope::Saved { .. }))) {
+                let mut state = prompt
+                    .service
+                    .state
+                    .lock()
+                    .expect("document password state");
+                if state.owned.get(&prompt.id).is_some_and(|scope| {
+                    matches!(&scope.authority, Some(PromptScope::Saved { .. }))
+                }) {
                     state.aborted_saved.insert(prompt.id);
                 }
                 state.aborted.insert(prompt.id);
@@ -406,11 +671,16 @@ impl PasswordPrompt {
         });
     }
 
-
     pub(crate) fn close(&self) {
         let prompt = self.clone();
         let _ = on_core(move |_| {
-            let effects = prompt.service.state.lock().expect("document password state").model.close(prompt.id);
+            let effects = prompt
+                .service
+                .state
+                .lock()
+                .expect("document password state")
+                .model
+                .close(prompt.id);
             prompt.service.retire_owned(prompt.id);
             prompt.service.effects(effects);
         });
@@ -430,17 +700,37 @@ mod tests {
         let (second_ask, _) = state.model.ask(second, false);
         let answers = Arc::new(Mutex::new(Vec::new()));
         let first_answers = answers.clone();
-        state.callbacks.insert(first_ask, (first, Box::new(move |answer| first_answers.lock().unwrap().push(("first", answer)))));
+        state.callbacks.insert(
+            first_ask,
+            (
+                first,
+                Box::new(move |answer| first_answers.lock().unwrap().push(("first", answer))),
+            ),
+        );
         let second_answers = answers.clone();
-        state.callbacks.insert(second_ask, (second, Box::new(move |answer| second_answers.lock().unwrap().push(("second", answer)))));
+        state.callbacks.insert(
+            second_ask,
+            (
+                second,
+                Box::new(move |answer| second_answers.lock().unwrap().push(("second", answer))),
+            ),
+        );
         let callbacks = state.cancel_answers(first);
-        for callback in callbacks { callback(Ok(None)); }
+        for callback in callbacks {
+            callback(Ok(None));
+        }
         assert!(state.take_answer(first_ask).is_none());
         assert!(state.cancel_answers(first).is_empty());
         let second = state.take_answer(second_ask).unwrap();
         second(Ok(Some("second-password".into())));
         assert!(state.take_answer(second_ask).is_none());
-        assert_eq!(*answers.lock().unwrap(), vec![("first", Ok(None)), ("second", Ok(Some("second-password".into())))]);
+        assert_eq!(
+            *answers.lock().unwrap(),
+            vec![
+                ("first", Ok(None)),
+                ("second", Ok(Some("second-password".into())))
+            ]
+        );
     }
 
     #[test]
@@ -450,7 +740,13 @@ mod tests {
         let (ask, _) = state.model.ask(prompt, false);
         let answers = Arc::new(Mutex::new(Vec::new()));
         let observed = answers.clone();
-        state.callbacks.insert(ask, (prompt, Box::new(move |answer| observed.lock().unwrap().push(answer))));
+        state.callbacks.insert(
+            ask,
+            (
+                prompt,
+                Box::new(move |answer| observed.lock().unwrap().push(answer)),
+            ),
+        );
         state.take_answer(ask).unwrap()(Ok(Some("correct".into())));
         assert!(state.cancel_answers(prompt).is_empty());
         assert_eq!(*answers.lock().unwrap(), vec![Ok(Some("correct".into()))]);

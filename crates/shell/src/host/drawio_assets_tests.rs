@@ -7,22 +7,42 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Scratch(PathBuf);
 impl Scratch {
     fn new() -> Self {
-        let parent = PathBuf::from(std::env::var_os("SEUOFFICE_NATIVE_TEST_SCRATCH")
-            .expect("hosted test must supply an isolated scratch root"));
-        let root = parent.join(format!("drawio-assets-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let parent = PathBuf::from(
+            std::env::var_os("SEUOFFICE_NATIVE_TEST_SCRATCH")
+                .expect("hosted test must supply an isolated scratch root"),
+        );
+        let root = parent.join(format!(
+            "drawio-assets-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         fs::create_dir(&root).unwrap();
         Self(root)
     }
 }
 impl Drop for Scratch {
-    fn drop(&mut self) { fs::remove_dir_all(&self.0).unwrap(); }
+    fn drop(&mut self) {
+        fs::remove_dir_all(&self.0).unwrap();
+    }
 }
 
 #[test]
 fn rejects_untrusted_paths_without_accessing_files() {
-    let absolute = if cfg!(windows) { Path::new("C:\\root") } else { Path::new("/root") };
+    let absolute = if cfg!(windows) {
+        Path::new("C:\\root")
+    } else {
+        Path::new("/root")
+    };
     assert!(read(Path::new("relative-root"), Path::new("a"), 16).is_err());
-    for path in ["", "../outside", "a/../../outside", "/absolute", "C:\\outside", "a\\outside", "a:stream"] {
+    for path in [
+        "",
+        "../outside",
+        "a/../../outside",
+        "/absolute",
+        "C:\\outside",
+        "a\\outside",
+        "a:stream",
+    ] {
         assert!(read(absolute, Path::new(path), 16).is_err(), "{path}");
     }
 }
@@ -43,8 +63,14 @@ fn reads_regular_file_and_enforces_length_and_type() {
 #[test]
 fn exact_length_rejects_truncation_and_growth() {
     assert_eq!(read_exact_length(&mut &b"ok"[..], 2).unwrap(), b"ok");
-    assert_eq!(read_exact_length(&mut &b"x"[..], 2).unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
-    assert_eq!(read_exact_length(&mut &b"xyz"[..], 2).unwrap_err().kind(), io::ErrorKind::InvalidData);
+    assert_eq!(
+        read_exact_length(&mut &b"x"[..], 2).unwrap_err().kind(),
+        io::ErrorKind::UnexpectedEof
+    );
+    assert_eq!(
+        read_exact_length(&mut &b"xyz"[..], 2).unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
 }
 
 #[cfg(unix)]
@@ -103,13 +129,24 @@ fn confinement_model_never_follows_replaced_link() {
     // A captured directory identity is retained even when its parent entry
     // changes; a subsequent walk must not follow the replacement link.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum Entry { Directory(u8), Link(u8), Missing }
+    enum Entry {
+        Directory(u8),
+        Link(u8),
+        Missing,
+    }
     fn open_directory(entry: Entry) -> Option<u8> {
-        match entry { Entry::Directory(id) => Some(id), _ => None }
+        match entry {
+            Entry::Directory(id) => Some(id),
+            _ => None,
+        }
     }
     let original = 1;
     let outside = 2;
-    for replacement in [Entry::Directory(original), Entry::Link(outside), Entry::Missing] {
+    for replacement in [
+        Entry::Directory(original),
+        Entry::Link(outside),
+        Entry::Missing,
+    ] {
         let already_open = open_directory(Entry::Directory(original)).unwrap();
         assert_eq!(already_open, original);
         let subsequent_open = open_directory(replacement);

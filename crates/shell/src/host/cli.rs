@@ -7,7 +7,9 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use jscompat::JsonValue;
-use main_core::shell::mcp::cli_runner::{CliRunOptions, CliRunOutcome, CliRunner, MAX_CLI_OUTPUT_BYTES, clamp_timeout_ms, parse_json};
+use main_core::shell::mcp::cli_runner::{
+    CliRunOptions, CliRunOutcome, CliRunner, MAX_CLI_OUTPUT_BYTES, clamp_timeout_ms, parse_json,
+};
 
 pub(crate) struct BundledCli(PathBuf);
 
@@ -20,25 +22,42 @@ impl BundledCli {
 impl CliRunner for BundledCli {
     fn run(&self, args: &[String], options: &CliRunOptions) -> CliRunOutcome {
         let cli = self.0.join("cli");
-        let node = cli.join("node").join(if cfg!(windows) { "node.exe" } else { "node" });
+        let node = cli
+            .join("node")
+            .join(if cfg!(windows) { "node.exe" } else { "node" });
         let mut command = Command::new(node);
-        command.arg(cli.join("seuoffice.cjs")).args(args).arg("--json")
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        command
+            .arg(cli.join("seuoffice.cjs"))
+            .args(args)
+            .arg("--json")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         command.env("ELECTRON_RUN_AS_NODE", "1");
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x08000000);
         }
-        let sidecar = self.0.join("native").join(if cfg!(windows) { "xlsx-sidecar.exe" } else { "xlsx-sidecar" });
+        let sidecar = self.0.join("native").join(if cfg!(windows) {
+            "xlsx-sidecar.exe"
+        } else {
+            "xlsx-sidecar"
+        });
         if sidecar.is_file() {
             command.env("XLSX_SIDECAR_PATH", sidecar);
         }
         let mut child = match command.spawn() {
             Ok(child) => child,
-            Err(error) => return CliRunOutcome {
-                ok: false, code: -1.0, json: None, stdout: String::new(), stderr: error.to_string(),
-            },
+            Err(error) => {
+                return CliRunOutcome {
+                    ok: false,
+                    code: -1.0,
+                    json: None,
+                    stdout: String::new(),
+                    stderr: error.to_string(),
+                };
+            }
         };
         if let Some(mut stdin) = child.stdin.take() {
             let input = options.input.clone();
@@ -50,8 +69,20 @@ impl CliRunner for BundledCli {
         }
         let (tx, rx) = mpsc::sync_channel(16);
         for (is_stdout, stream) in [
-            (true, child.stdout.take().map(|s| Box::new(s) as Box<dyn Read + Send>)),
-            (false, child.stderr.take().map(|s| Box::new(s) as Box<dyn Read + Send>)),
+            (
+                true,
+                child
+                    .stdout
+                    .take()
+                    .map(|s| Box::new(s) as Box<dyn Read + Send>),
+            ),
+            (
+                false,
+                child
+                    .stderr
+                    .take()
+                    .map(|s| Box::new(s) as Box<dyn Read + Send>),
+            ),
         ] {
             let tx = tx.clone();
             std::thread::spawn(move || {
@@ -60,7 +91,14 @@ impl CliRunner for BundledCli {
                     loop {
                         match stream.read(&mut buffer) {
                             Ok(0) => break,
-                            Ok(n) => if tx.send((is_stdout, Ok(Some(buffer[..n].to_vec())))).is_err() { return; },
+                            Ok(n) => {
+                                if tx
+                                    .send((is_stdout, Ok(Some(buffer[..n].to_vec()))))
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                            }
                             Err(error) => {
                                 let _ = tx.send((is_stdout, Err(error.to_string())));
                                 return;
@@ -72,7 +110,8 @@ impl CliRunner for BundledCli {
             });
         }
         drop(tx);
-        let deadline = Instant::now() + Duration::from_millis(clamp_timeout_ms(options.timeout_ms) as u64);
+        let deadline =
+            Instant::now() + Duration::from_millis(clamp_timeout_ms(options.timeout_ms) as u64);
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         let mut closed = 0;
@@ -87,10 +126,16 @@ impl CliRunner for BundledCli {
                 Ok((_, Ok(None))) => closed += 1,
                 Ok((is_stdout, Ok(Some(chunk)))) => {
                     if stdout.len() + stderr.len() + chunk.len() > MAX_CLI_OUTPUT_BYTES {
-                        failure = Some(format!("output truncated past {MAX_CLI_OUTPUT_BYTES} bytes"));
+                        failure = Some(format!(
+                            "output truncated past {MAX_CLI_OUTPUT_BYTES} bytes"
+                        ));
                         break;
                     }
-                    if is_stdout { stdout.extend(chunk); } else { stderr.extend(chunk); }
+                    if is_stdout {
+                        stdout.extend(chunk);
+                    } else {
+                        stderr.extend(chunk);
+                    }
                 }
                 Ok((_, Err(error))) => {
                     failure = Some(error);
@@ -121,11 +166,24 @@ impl CliRunner for BundledCli {
         if let Some(failure) = failure {
             stderr.push('\n');
             stderr.push_str(&failure);
-            return CliRunOutcome { ok: false, code: -1.0, json: None, stdout, stderr };
+            return CliRunOutcome {
+                ok: false,
+                code: -1.0,
+                json: None,
+                stdout,
+                stderr,
+            };
         }
         let code = status.and_then(|status| status.code()).unwrap_or(-1) as f64;
         let json = parse_json(&stdout);
-        let ok = code == 0.0 && matches!(json.as_ref().and_then(|value| value.get("status")).as_deref(), Some(JsonValue::String(value)) if value == "ok");
-        CliRunOutcome { ok, code, json, stdout, stderr }
+        let ok = code == 0.0
+            && matches!(json.as_ref().and_then(|value| value.get("status")).as_deref(), Some(JsonValue::String(value)) if value == "ok");
+        CliRunOutcome {
+            ok,
+            code,
+            json,
+            stdout,
+            stderr,
+        }
     }
 }

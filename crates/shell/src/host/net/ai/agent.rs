@@ -308,7 +308,9 @@ impl AgentServices for Services {
         let pending = std::rc::Rc::new(std::cell::RefCell::new(Some(done)));
         let local = pending.clone();
         let started = crate::host::w::on_core_local(move |provided| {
-            let Some(done) = local.borrow_mut().take() else { return };
+            let Some(done) = local.borrow_mut().take() else {
+                return;
+            };
             let Some(core) = provided.all::<TemplateTabsCore>().into_iter().next() else {
                 return done(Err(no_skills_port()));
             };

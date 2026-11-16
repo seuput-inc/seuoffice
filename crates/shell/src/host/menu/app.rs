@@ -1944,8 +1944,14 @@ fn build_menu(
 }
 
 /// On the UI thread: numbers the items, makes the Tauri menu and sets it
-fn set_menu(app: &AppHandle, kind: TabKind, menus: Vec<Node>, check_updates: String, revision: u64) {
-    if let Err(error) = set_menu_result(app,kind,menus,check_updates,revision) {
+fn set_menu(
+    app: &AppHandle,
+    kind: TabKind,
+    menus: Vec<Node>,
+    check_updates: String,
+    revision: u64,
+) {
+    if let Err(error) = set_menu_result(app, kind, menus, check_updates, revision) {
         eprintln!("shell: setting the {kind:?} menu: {error}");
     }
 }
@@ -1953,16 +1959,28 @@ fn set_menu(app: &AppHandle, kind: TabKind, menus: Vec<Node>, check_updates: Str
 static NEXT_MENU_REVISION: AtomicU64 = AtomicU64::new(1);
 static APPLIED_MENU_REVISION: AtomicU64 = AtomicU64::new(0);
 
-fn set_menu_result(app: &AppHandle, kind: TabKind, mut menus: Vec<Node>, check_updates: String, revision: u64) -> tauri::Result<()> {
-    if revision < APPLIED_MENU_REVISION.load(Ordering::Acquire) { return Ok(()); }
+fn set_menu_result(
+    app: &AppHandle,
+    kind: TabKind,
+    mut menus: Vec<Node>,
+    check_updates: String,
+    revision: u64,
+) -> tauri::Result<()> {
+    if revision < APPLIED_MENU_REVISION.load(Ordering::Acquire) {
+        return Ok(());
+    }
     let clicks = number(&mut menus, &NEXT_ID);
     let mut named = Named::new();
-    let menu = build_menu(app,&menus,&mut named)?;
+    let menu = build_menu(app, &menus, &mut named)?;
     app.set_menu(menu)?;
-    *lock(&CLICKS) = Some((kind,clicks));
+    *lock(&CLICKS) = Some((kind, clicks));
     *lock(&NAMED) = Some(named);
-    *lock(&SHOWN) = Some(Shown { kind,menus,check_updates });
-    APPLIED_MENU_REVISION.store(revision,Ordering::Release);
+    *lock(&SHOWN) = Some(Shown {
+        kind,
+        menus,
+        check_updates,
+    });
+    APPLIED_MENU_REVISION.store(revision, Ordering::Release);
     Ok(())
 }
 
@@ -1985,12 +2003,11 @@ pub(crate) fn install(cx: &HostContext) {
         views: cx.views.clone(),
         effects: crate::ipc::native_owner::effects_host(cx),
     });
-    cx.app
-        .on_menu_event(|app, event| {
-            if !crate::host::w_tabs::menu_event(event.id().as_ref()) {
-                dispatch(app, event.id().as_ref());
-            }
-        });
+    cx.app.on_menu_event(|app, event| {
+        if !crate::host::w_tabs::menu_event(event.id().as_ref()) {
+            dispatch(app, event.id().as_ref());
+        }
+    });
 }
 
 /// `applyMenuFor(kind)`: sets the application menu of the active editor of
@@ -2000,11 +2017,11 @@ pub(crate) fn apply_menu_for(app: &AppHandle, kind: TabKind) {
     *lock(&KIND) = Some(kind);
     let app = app.clone();
     post_core(move |provided, services| {
-        let (menus,check_updates) = match prepare_menu(&app,kind,provided,services) {
+        let (menus, check_updates) = match prepare_menu(&app, kind, provided, services) {
             Ok(snapshot) => snapshot,
             Err(error) => return eprintln!("shell: the {kind:?} menu: {error}"),
         };
-        let revision = NEXT_MENU_REVISION.fetch_add(1,Ordering::Relaxed);
+        let revision = NEXT_MENU_REVISION.fetch_add(1, Ordering::Relaxed);
         let on_ui = app.clone();
         let set = move || set_menu(&on_ui, kind, menus, check_updates, revision);
         if let Err(error) = app.run_on_main_thread(set) {
@@ -2019,41 +2036,81 @@ enum MenuTarget {
     Captured(Option<ViewId>),
 }
 
-fn prepare_menu(app: &AppHandle, kind: TabKind, provided: &Provided, services: &Services) -> Result<(Vec<Node>,String),String> {
-    prepare_menu_for(app,kind,MenuTarget::Active,provided,services)
+fn prepare_menu(
+    app: &AppHandle,
+    kind: TabKind,
+    provided: &Provided,
+    services: &Services,
+) -> Result<(Vec<Node>, String), String> {
+    prepare_menu_for(app, kind, MenuTarget::Active, provided, services)
 }
 
-fn prepare_menu_for(app: &AppHandle, kind: TabKind, target: MenuTarget, provided: &Provided, services: &Services) -> Result<(Vec<Node>,String),String> {
+fn prepare_menu_for(
+    app: &AppHandle,
+    kind: TabKind,
+    target: MenuTarget,
+    provided: &Provided,
+    services: &Services,
+) -> Result<(Vec<Node>, String), String> {
     let lang = current_lang(services).map_err(|error| error.to_string())?;
     let docs_view = if kind == TabKind::Docs {
         let view = match target {
-            MenuTarget::Active => shell_tabs(provided).and_then(|tabs| tabs.active_editor(TabKind::Docs)),
+            MenuTarget::Active => {
+                shell_tabs(provided).and_then(|tabs| tabs.active_editor(TabKind::Docs))
+            }
             MenuTarget::Captured(view) => view,
         };
-        view.and_then(|view| DOCS_VIEW_STATE.get()?(provided,view)).unwrap_or_default()
-    } else { DocsViewState::default() };
-    let mut ctx = Ctx::new(Os::current(),lang,app.package_info().name.clone(),DEV_TOOLS,
-        if kind == TabKind::Docs { recent_documents(services) } else { Vec::new() },
-        docs_view,seams_of(provided));
-    if let Some((items,view)) = super::doc_links::file_menu(kind) {
+        view.and_then(|view| DOCS_VIEW_STATE.get()?(provided, view))
+            .unwrap_or_default()
+    } else {
+        DocsViewState::default()
+    };
+    let mut ctx = Ctx::new(
+        Os::current(),
+        lang,
+        app.package_info().name.clone(),
+        DEV_TOOLS,
+        if kind == TabKind::Docs {
+            recent_documents(services)
+        } else {
+            Vec::new()
+        },
+        docs_view,
+        seams_of(provided),
+    );
+    if let Some((items, view)) = super::doc_links::file_menu(kind) {
         if let MenuTarget::Captured(expected) = target {
-            if expected != Some(view) { return Err("activation document-link target changed before menu preparation".into()); }
+            if expected != Some(view) {
+                return Err(
+                    "activation document-link target changed before menu preparation".into(),
+                );
+            }
         }
-        ctx.doc_links = doc_link_nodes(&items,view);
+        ctx.doc_links = doc_link_nodes(&items, view);
     }
-    Ok((menu_for(kind,&ctx),ctx.labels.check_updates().to_owned()))
+    Ok((menu_for(kind, &ctx), ctx.labels.check_updates().to_owned()))
 }
 
 pub(crate) fn prepare_activation_menu(
-    app: &AppHandle, kind: TabKind, target: Option<ViewId>, provided: &Provided, services: &Services,
-) -> Result<Arc<dyn Fn() -> Result<(),String> + Send + Sync>,String> {
-    let (menus,check_updates) = prepare_menu_for(app,kind,MenuTarget::Captured(target),provided,services)?;
-    let revision = NEXT_MENU_REVISION.fetch_add(1,Ordering::Relaxed);
+    app: &AppHandle,
+    kind: TabKind,
+    target: Option<ViewId>,
+    provided: &Provided,
+    services: &Services,
+) -> Result<Arc<dyn Fn() -> Result<(), String> + Send + Sync>, String> {
+    let (menus, check_updates) =
+        prepare_menu_for(app, kind, MenuTarget::Captured(target), provided, services)?;
+    let revision = NEXT_MENU_REVISION.fetch_add(1, Ordering::Relaxed);
     let app = app.clone();
     Ok(Arc::new(move || {
-        if revision < APPLIED_MENU_REVISION.load(Ordering::Acquire) { return Ok(()); }
-        set_menu_result(&app,kind,menus.clone(),check_updates.clone(),revision).map_err(|error| error.to_string())?;
-        if APPLIED_MENU_REVISION.load(Ordering::Acquire) == revision { *lock(&KIND) = Some(kind); }
+        if revision < APPLIED_MENU_REVISION.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        set_menu_result(&app, kind, menus.clone(), check_updates.clone(), revision)
+            .map_err(|error| error.to_string())?;
+        if APPLIED_MENU_REVISION.load(Ordering::Acquire) == revision {
+            *lock(&KIND) = Some(kind);
+        }
         Ok(())
     }))
 }
@@ -2079,8 +2136,8 @@ impl SavedMenu {
         cancel: &shell_contract::runtime::CancelToken,
         pending: &shell_contract::runtime::CancelToken,
         effects: &shell_contract::hosts::OwnedEffectsHost,
-    ) -> Result<Option<Self>,String> {
-        Self::capture_many(origin,destination,&[],cancel,pending,effects)
+    ) -> Result<Option<Self>, String> {
+        Self::capture_many(origin, destination, &[], cancel, pending, effects)
     }
 
     pub(crate) fn capture_many(
@@ -2090,79 +2147,162 @@ impl SavedMenu {
         cancel: &shell_contract::runtime::CancelToken,
         pending: &shell_contract::runtime::CancelToken,
         effects: &shell_contract::hosts::OwnedEffectsHost,
-    ) -> Result<Option<Self>,String> {
-        Self::capture_many_extra(origin,destination,participants,cancel,pending,&[],effects)
+    ) -> Result<Option<Self>, String> {
+        Self::capture_many_extra(
+            origin,
+            destination,
+            participants,
+            cancel,
+            pending,
+            &[],
+            effects,
+        )
     }
 
     pub(crate) fn capture_many_extra(
-        origin:&shell_contract::ipc::NativeRequestOwner,destination:&shell_contract::ipc::NativeRequestOwner,
-        participants:&[shell_contract::ipc::NativeRequestOwner],cancel:&shell_contract::runtime::CancelToken,
-        pending:&shell_contract::runtime::CancelToken,additional:&[shell_contract::runtime::CancelToken],
-        effects:&shell_contract::hosts::OwnedEffectsHost,
-    )->Result<Option<Self>,String> {
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+    ) -> Result<Option<Self>, String> {
         use shell_contract::runtime::Views as _;
-        let mut captured = Vec::with_capacity(participants.len()+2);
+        let mut captured = Vec::with_capacity(participants.len() + 2);
         captured.push(destination.clone());
         captured.extend_from_slice(participants);
-        let extra:Vec<_>=additional.iter().collect();
-        effects.with_owned_effect_many_extra(origin,&captured,cancel,pending,&extra,&mut || Ok(()))?;
-        let Some(shell) = SHELL.get() else { return Ok(None); };
-        let Some(window) = shell.windows.shell_window() else { return Ok(None); };
-        let generation = shell.views.renderer_generation(window.view).ok_or("the menu renderer is unavailable")?;
-        let recipient = effects.capture_owner(window.view,&generation)?;
+        let extra: Vec<_> = additional.iter().collect();
+        effects.with_owned_effect_many_extra(
+            origin,
+            &captured,
+            cancel,
+            pending,
+            &extra,
+            &mut || Ok(()),
+        )?;
+        let Some(shell) = SHELL.get() else {
+            return Ok(None);
+        };
+        let Some(window) = shell.windows.shell_window() else {
+            return Ok(None);
+        };
+        let generation = shell
+            .views
+            .renderer_generation(window.view)
+            .ok_or("the menu renderer is unavailable")?;
+        let recipient = effects.capture_owner(window.view, &generation)?;
         let mut services = None;
-        if !crate::host::w::on_core_services_local(|_,installed| services = Some(installed.clone())) {
+        if !crate::host::w::on_core_services_local(|_, installed| {
+            services = Some(installed.clone())
+        }) {
             return Err("saved menu capture requires the registered core thread".into());
         }
         captured.push(recipient.clone());
-        Ok(Some(Self { source:origin.clone(),participants:Arc::new(captured),recipient,cancel:cancel.clone(),
-            pending:pending.clone(),additional:additional.to_vec(),effects:effects.clone(),app:shell.app.clone(),services:services.ok_or("core services unavailable")? }))
+        Ok(Some(Self {
+            source: origin.clone(),
+            participants: Arc::new(captured),
+            recipient,
+            cancel: cancel.clone(),
+            pending: pending.clone(),
+            additional: additional.to_vec(),
+            effects: effects.clone(),
+            app: shell.app.clone(),
+            services: services.ok_or("core services unavailable")?,
+        }))
     }
 
-    pub(crate) fn accept_document(&self)->Result<(),String> {
-        let extra:Vec<_>=self.additional.iter().collect();
-        self.effects.with_owned_effect_many_extra(&self.source,&self.participants[..self.participants.len()-1],&self.cancel,&self.pending,&extra,&mut || Ok(()))
+    pub(crate) fn accept_document(&self) -> Result<(), String> {
+        let extra: Vec<_> = self.additional.iter().collect();
+        self.effects.with_owned_effect_many_extra(
+            &self.source,
+            &self.participants[..self.participants.len() - 1],
+            &self.cancel,
+            &self.pending,
+            &extra,
+            &mut || Ok(()),
+        )
     }
 
-    pub(crate) fn accept_completed_snapshot(&self)->Result<(),String> {
-        let extra:Vec<_>=self.additional.iter().collect();
-        self.effects.with_owned_effect_many_extra(&self.recipient,std::slice::from_ref(&self.recipient),&self.cancel,&self.pending,&extra,&mut || Ok(()))
+    pub(crate) fn accept_completed_snapshot(&self) -> Result<(), String> {
+        let extra: Vec<_> = self.additional.iter().collect();
+        self.effects.with_owned_effect_many_extra(
+            &self.recipient,
+            std::slice::from_ref(&self.recipient),
+            &self.cancel,
+            &self.pending,
+            &extra,
+            &mut || Ok(()),
+        )
     }
 
-    pub(crate) fn emit(&self,channel:&str,args:Vec<IpcValue>)->Result<(),String> {
-        let extra:Vec<_>=self.additional.iter().collect();
-        self.effects.emit_owned_many_extra(&self.source,&self.participants,self.participants.len()-1,&self.cancel,&self.pending,&extra,channel,args)
+    pub(crate) fn emit(&self, channel: &str, args: Vec<IpcValue>) -> Result<(), String> {
+        let extra: Vec<_> = self.additional.iter().collect();
+        self.effects.emit_owned_many_extra(
+            &self.source,
+            &self.participants,
+            self.participants.len() - 1,
+            &self.cancel,
+            &self.pending,
+            &extra,
+            channel,
+            args,
+        )
     }
 
-    pub(crate) fn refresh(self, kind: TabKind, done: Box<dyn FnOnce(Result<(),String>)>) {
-        if let Err(error) = self.accept_document() { done(Err(error)); return; }
-        if *lock(&KIND) != Some(kind) { done(Ok(())); return; }
+    pub(crate) fn refresh(self, kind: TabKind, done: Box<dyn FnOnce(Result<(), String>)>) {
+        if let Err(error) = self.accept_document() {
+            done(Err(error));
+            return;
+        }
+        if *lock(&KIND) != Some(kind) {
+            done(Ok(()));
+            return;
+        }
         let mut prepared = None;
         let available = crate::host::w::on_core_local(|provided| {
-            prepared = Some(prepare_menu(&self.app,kind,provided,&self.services));
+            prepared = Some(prepare_menu(&self.app, kind, provided, &self.services));
         });
         if !available {
-            done(Err("saved menu refresh requires the registered core thread".into())); return;
+            done(Err(
+                "saved menu refresh requires the registered core thread".into(),
+            ));
+            return;
         }
         let snapshot = match prepared {
             Some(snapshot) => snapshot,
-            None => { done(Err("saved menu snapshot is unavailable".into())); return; }
+            None => {
+                done(Err("saved menu snapshot is unavailable".into()));
+                return;
+            }
         };
         if let Err(error) = self.accept_document() {
-            done(Err(error)); return;
+            done(Err(error));
+            return;
         }
-        let (menus,check_updates) = match snapshot {
+        let (menus, check_updates) = match snapshot {
             Ok(snapshot) => snapshot,
             Err(error) => {
                 eprintln!("shell: the {kind:?} menu: {error}");
-                done(Ok(())); return;
+                done(Ok(()));
+                return;
             }
         };
-        let revision = NEXT_MENU_REVISION.fetch_add(1,Ordering::Relaxed);
-        let completion = shell_ipc_w::home_files::back_to_core(self.services.core.clone(),done);
+        let revision = NEXT_MENU_REVISION.fetch_add(1, Ordering::Relaxed);
+        let completion = shell_ipc_w::home_files::back_to_core(self.services.core.clone(), done);
         let app = self.app;
-        self.effects.post_ui_owned_many_extra(self.source,Arc::unwrap_or_clone(self.participants),self.cancel,self.pending,self.additional,
-            Box::new(move || set_menu_result(&app,kind,menus,check_updates,revision).map_err(|error| error.to_string())),completion);
+        self.effects.post_ui_owned_many_extra(
+            self.source,
+            Arc::unwrap_or_clone(self.participants),
+            self.cancel,
+            self.pending,
+            self.additional,
+            Box::new(move || {
+                set_menu_result(&app, kind, menus, check_updates, revision)
+                    .map_err(|error| error.to_string())
+            }),
+            completion,
+        );
     }
 }
 
@@ -2172,8 +2312,8 @@ pub(crate) fn prepare_docs_menu_refresh_owned(
     cancel: &shell_contract::runtime::CancelToken,
     pending: &shell_contract::runtime::CancelToken,
     effects: &shell_contract::hosts::OwnedEffectsHost,
-) -> Result<Option<shell_ipc_d2::docs::hosts::OwnedMenuRefresh>,String> {
-    prepare_docs_menu_refresh_many_owned(origin,destination,&[],cancel,pending,effects)
+) -> Result<Option<shell_ipc_d2::docs::hosts::OwnedMenuRefresh>, String> {
+    prepare_docs_menu_refresh_many_owned(origin, destination, &[], cancel, pending, effects)
 }
 
 pub(crate) fn prepare_docs_menu_refresh_many_owned(
@@ -2183,26 +2323,55 @@ pub(crate) fn prepare_docs_menu_refresh_many_owned(
     cancel: &shell_contract::runtime::CancelToken,
     pending: &shell_contract::runtime::CancelToken,
     effects: &shell_contract::hosts::OwnedEffectsHost,
-) -> Result<Option<shell_ipc_d2::docs::hosts::OwnedMenuRefresh>,String> {
-    prepare_docs_menu_refresh_many_owned_extra(origin,destination,participants,cancel,pending,&[],effects)
+) -> Result<Option<shell_ipc_d2::docs::hosts::OwnedMenuRefresh>, String> {
+    prepare_docs_menu_refresh_many_owned_extra(
+        origin,
+        destination,
+        participants,
+        cancel,
+        pending,
+        &[],
+        effects,
+    )
 }
 
 pub(crate) fn prepare_docs_menu_refresh_many_owned_extra(
-    origin:&shell_contract::ipc::NativeRequestOwner,destination:&shell_contract::ipc::NativeRequestOwner,
-    participants:&[shell_contract::ipc::NativeRequestOwner],cancel:&shell_contract::runtime::CancelToken,
-    pending:&shell_contract::runtime::CancelToken,additional:&[shell_contract::runtime::CancelToken],
-    effects:&shell_contract::hosts::OwnedEffectsHost,
-) -> Result<Option<shell_ipc_d2::docs::hosts::OwnedMenuRefresh>,String> {
+    origin: &shell_contract::ipc::NativeRequestOwner,
+    destination: &shell_contract::ipc::NativeRequestOwner,
+    participants: &[shell_contract::ipc::NativeRequestOwner],
+    cancel: &shell_contract::runtime::CancelToken,
+    pending: &shell_contract::runtime::CancelToken,
+    additional: &[shell_contract::runtime::CancelToken],
+    effects: &shell_contract::hosts::OwnedEffectsHost,
+) -> Result<Option<shell_ipc_d2::docs::hosts::OwnedMenuRefresh>, String> {
     if *lock(&KIND) != Some(TabKind::Docs) {
-        let mut captured = Vec::with_capacity(participants.len()+1);
+        let mut captured = Vec::with_capacity(participants.len() + 1);
         captured.push(destination.clone());
         captured.extend_from_slice(participants);
-        let extra:Vec<_>=additional.iter().collect();
-        effects.with_owned_effect_many_extra(origin,&captured,cancel,pending,&extra,&mut || Ok(()))?;
+        let extra: Vec<_> = additional.iter().collect();
+        effects.with_owned_effect_many_extra(
+            origin,
+            &captured,
+            cancel,
+            pending,
+            &extra,
+            &mut || Ok(()),
+        )?;
         return Ok(None);
     }
-    Ok(SavedMenu::capture_many_extra(origin,destination,participants,cancel,pending,additional,effects)?
-        .map(|captured| Box::new(move |done| captured.refresh(TabKind::Docs,done)) as shell_ipc_d2::docs::hosts::OwnedMenuRefresh))
+    Ok(SavedMenu::capture_many_extra(
+        origin,
+        destination,
+        participants,
+        cancel,
+        pending,
+        additional,
+        effects,
+    )?
+    .map(|captured| {
+        Box::new(move |done| captured.refresh(TabKind::Docs, done))
+            as shell_ipc_d2::docs::hosts::OwnedMenuRefresh
+    }))
 }
 
 #[derive(Clone)]
@@ -2225,64 +2394,148 @@ impl ExistingDocumentSavedMenu {
         pending: &shell_contract::runtime::CancelToken,
         additional: &[shell_contract::runtime::CancelToken],
         effects: &shell_contract::hosts::OwnedEffectsHost,
-    ) -> Result<Option<Self>,String> {
+    ) -> Result<Option<Self>, String> {
         use shell_contract::runtime::Views as _;
-        let extra:Vec<_>=additional.iter().collect();
-        effects.with_existing_document_save_effect_extra(binding,participants,cancel,pending,&extra,&mut || Ok(()))?;
-        let Some(shell) = SHELL.get() else { return Ok(None); };
-        let Some(window) = shell.windows.shell_window() else { return Ok(None); };
-        let generation = shell.views.renderer_generation(window.view).ok_or("the menu renderer is unavailable")?;
-        let recipient = effects.capture_owner(window.view,&generation)?;
+        let extra: Vec<_> = additional.iter().collect();
+        effects.with_existing_document_save_effect_extra(
+            binding,
+            participants,
+            cancel,
+            pending,
+            &extra,
+            &mut || Ok(()),
+        )?;
+        let Some(shell) = SHELL.get() else {
+            return Ok(None);
+        };
+        let Some(window) = shell.windows.shell_window() else {
+            return Ok(None);
+        };
+        let generation = shell
+            .views
+            .renderer_generation(window.view)
+            .ok_or("the menu renderer is unavailable")?;
+        let recipient = effects.capture_owner(window.view, &generation)?;
         let mut captured = participants.to_vec();
         captured.push(recipient);
-        effects.with_existing_document_save_effect_extra(binding,&captured,cancel,pending,&extra,&mut || Ok(()))?;
+        effects.with_existing_document_save_effect_extra(
+            binding,
+            &captured,
+            cancel,
+            pending,
+            &extra,
+            &mut || Ok(()),
+        )?;
         let mut services = None;
-        if !crate::host::w::on_core_services_local(|_,installed| services=Some(installed.clone())) {
+        if !crate::host::w::on_core_services_local(|_, installed| {
+            services = Some(installed.clone())
+        }) {
             return Err("saved menu capture requires the registered core thread".into());
         }
-        Ok(Some(Self { binding:binding.clone(),participants:Arc::new(captured),cancel:cancel.clone(),
-            pending:pending.clone(),additional:additional.to_vec(),effects:effects.clone(),app:shell.app.clone(),services:services.ok_or("core services unavailable")? }))
+        Ok(Some(Self {
+            binding: binding.clone(),
+            participants: Arc::new(captured),
+            cancel: cancel.clone(),
+            pending: pending.clone(),
+            additional: additional.to_vec(),
+            effects: effects.clone(),
+            app: shell.app.clone(),
+            services: services.ok_or("core services unavailable")?,
+        }))
     }
 
-    pub(crate) fn emit(&self,channel:&str,args:Vec<IpcValue>)->Result<(),String> {
-        let extra:Vec<_>=self.additional.iter().collect();
-        self.effects.emit_existing_document_save_many_extra(&self.binding,&self.participants,self.participants.len()-1,
-            &self.cancel,&self.pending,&extra,channel,args)
+    pub(crate) fn emit(&self, channel: &str, args: Vec<IpcValue>) -> Result<(), String> {
+        let extra: Vec<_> = self.additional.iter().collect();
+        self.effects.emit_existing_document_save_many_extra(
+            &self.binding,
+            &self.participants,
+            self.participants.len() - 1,
+            &self.cancel,
+            &self.pending,
+            &extra,
+            channel,
+            args,
+        )
     }
 
-    pub(crate) fn refresh(self,kind:TabKind,done:Box<dyn FnOnce(Result<(),String>)>) {
-        let extra:Vec<_>=self.additional.iter().collect();
-        if let Err(error)=self.effects.with_existing_document_save_effect_extra(&self.binding,&self.participants,&self.cancel,&self.pending,&extra,&mut || Ok(())) {
+    pub(crate) fn refresh(self, kind: TabKind, done: Box<dyn FnOnce(Result<(), String>)>) {
+        let extra: Vec<_> = self.additional.iter().collect();
+        if let Err(error) = self.effects.with_existing_document_save_effect_extra(
+            &self.binding,
+            &self.participants,
+            &self.cancel,
+            &self.pending,
+            &extra,
+            &mut || Ok(()),
+        ) {
             return done(Err(error));
         }
-        if *lock(&KIND)!=Some(kind) { return done(Ok(())); }
-        let mut prepared=None;
-        if !crate::host::w::on_core_local(|provided| prepared=Some(prepare_menu(&self.app,kind,provided,&self.services))) {
-            return done(Err("saved menu refresh requires the registered core thread".into()));
+        if *lock(&KIND) != Some(kind) {
+            return done(Ok(()));
         }
-        let (menus,check_updates)=match prepared {
-            Some(Ok(snapshot))=>snapshot,
-            Some(Err(error))=>return done(Err(error)),
-            None=>return done(Err("saved menu snapshot is unavailable".into())),
+        let mut prepared = None;
+        if !crate::host::w::on_core_local(|provided| {
+            prepared = Some(prepare_menu(&self.app, kind, provided, &self.services))
+        }) {
+            return done(Err(
+                "saved menu refresh requires the registered core thread".into(),
+            ));
+        }
+        let (menus, check_updates) = match prepared {
+            Some(Ok(snapshot)) => snapshot,
+            Some(Err(error)) => return done(Err(error)),
+            None => return done(Err("saved menu snapshot is unavailable".into())),
         };
-        let revision=NEXT_MENU_REVISION.fetch_add(1,Ordering::Relaxed);
-        let completion=shell_ipc_w::home_files::back_to_core(self.services.core.clone(),done);
-        let app=self.app;
-        self.effects.post_ui_existing_document_save_extra(self.binding,Arc::unwrap_or_clone(self.participants),self.cancel,self.pending,self.additional,
-            Box::new(move || set_menu_result(&app,kind,menus,check_updates,revision).map_err(|error|error.to_string())),completion);
+        let revision = NEXT_MENU_REVISION.fetch_add(1, Ordering::Relaxed);
+        let completion = shell_ipc_w::home_files::back_to_core(self.services.core.clone(), done);
+        let app = self.app;
+        self.effects.post_ui_existing_document_save_extra(
+            self.binding,
+            Arc::unwrap_or_clone(self.participants),
+            self.cancel,
+            self.pending,
+            self.additional,
+            Box::new(move || {
+                set_menu_result(&app, kind, menus, check_updates, revision)
+                    .map_err(|error| error.to_string())
+            }),
+            completion,
+        );
     }
 }
 
 pub(crate) fn prepare_docs_menu_refresh_existing_document(
-    binding:&shell_contract::ipc::NativeExistingDocumentBinding,participants:&[shell_contract::ipc::NativeRequestOwner],
-    cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,additional:&[shell_contract::runtime::CancelToken],
-    effects:&shell_contract::hosts::OwnedEffectsHost,
-) -> Result<Option<shell_ipc_w::home_files::OwnedHomeRefresh>,String> {
-    let extra:Vec<_>=additional.iter().collect();
-    effects.with_existing_document_save_effect_extra(binding,participants,cancel,pending,&extra,&mut || Ok(()))?;
-    if *lock(&KIND)!=Some(TabKind::Docs) { return Ok(None); }
-    Ok(ExistingDocumentSavedMenu::capture(binding,participants,cancel,pending,additional,effects)?
-        .map(|menu| Box::new(move |done| menu.refresh(TabKind::Docs,done)) as shell_ipc_w::home_files::OwnedHomeRefresh))
+    binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+    participants: &[shell_contract::ipc::NativeRequestOwner],
+    cancel: &shell_contract::runtime::CancelToken,
+    pending: &shell_contract::runtime::CancelToken,
+    additional: &[shell_contract::runtime::CancelToken],
+    effects: &shell_contract::hosts::OwnedEffectsHost,
+) -> Result<Option<shell_ipc_w::home_files::OwnedHomeRefresh>, String> {
+    let extra: Vec<_> = additional.iter().collect();
+    effects.with_existing_document_save_effect_extra(
+        binding,
+        participants,
+        cancel,
+        pending,
+        &extra,
+        &mut || Ok(()),
+    )?;
+    if *lock(&KIND) != Some(TabKind::Docs) {
+        return Ok(None);
+    }
+    Ok(ExistingDocumentSavedMenu::capture(
+        binding,
+        participants,
+        cancel,
+        pending,
+        additional,
+        effects,
+    )?
+    .map(|menu| {
+        Box::new(move |done| menu.refresh(TabKind::Docs, done))
+            as shell_ipc_w::home_files::OwnedHomeRefresh
+    }))
 }
 
 #[derive(Clone)]
@@ -2301,42 +2554,96 @@ impl SavedDocumentMenu {
     pub(crate) fn capture(
         document: &shell_contract::ipc::NativeSavedDocument,
         participants: &[shell_contract::ipc::NativeRequestOwner],
-        cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
-        additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+        effects: &shell_contract::hosts::OwnedEffectsHost,
     ) -> Result<Option<Self>, String> {
         use shell_contract::runtime::Views as _;
         let extra: Vec<_> = additional.iter().collect();
-        effects.with_native_saved_document_input(document, participants, cancel, pending, &extra, &mut |_| Ok(()))?;
-        let Some(shell) = SHELL.get() else { return Ok(None); };
-        let Some(window) = shell.windows.shell_window() else { return Ok(None); };
-        let generation = shell.views.renderer_generation(window.view).ok_or("the menu renderer is unavailable")?;
+        effects.with_native_saved_document_input(
+            document,
+            participants,
+            cancel,
+            pending,
+            &extra,
+            &mut |_| Ok(()),
+        )?;
+        let Some(shell) = SHELL.get() else {
+            return Ok(None);
+        };
+        let Some(window) = shell.windows.shell_window() else {
+            return Ok(None);
+        };
+        let generation = shell
+            .views
+            .renderer_generation(window.view)
+            .ok_or("the menu renderer is unavailable")?;
         let recipient = effects.capture_owner(window.view, &generation)?;
         let mut captured = participants.to_vec();
         captured.push(recipient);
-        effects.with_native_saved_document_input(document, &captured, cancel, pending, &extra, &mut |_| Ok(()))?;
+        effects.with_native_saved_document_input(
+            document,
+            &captured,
+            cancel,
+            pending,
+            &extra,
+            &mut |_| Ok(()),
+        )?;
         let mut services = None;
-        if !crate::host::w::on_core_services_local(|_, installed| services = Some(installed.clone())) {
+        if !crate::host::w::on_core_services_local(|_, installed| {
+            services = Some(installed.clone())
+        }) {
             return Err("saved menu capture requires the registered core thread".into());
         }
-        Ok(Some(Self { document: document.clone(), participants: Arc::new(captured), cancel: cancel.clone(),
-            pending: pending.clone(), additional: additional.to_vec(), effects: effects.clone(), app: shell.app.clone(),
-            services: services.ok_or("core services unavailable")? }))
+        Ok(Some(Self {
+            document: document.clone(),
+            participants: Arc::new(captured),
+            cancel: cancel.clone(),
+            pending: pending.clone(),
+            additional: additional.to_vec(),
+            effects: effects.clone(),
+            app: shell.app.clone(),
+            services: services.ok_or("core services unavailable")?,
+        }))
     }
 
     pub(crate) fn emit(&self, channel: &str, args: Vec<IpcValue>) -> Result<(), String> {
         let extra: Vec<_> = self.additional.iter().collect();
-        self.effects.emit_native_saved_document_input(&self.document, &self.participants, self.participants.len() - 1,
-            &self.cancel, &self.pending, &extra, channel, args)
+        self.effects.emit_native_saved_document_input(
+            &self.document,
+            &self.participants,
+            self.participants.len() - 1,
+            &self.cancel,
+            &self.pending,
+            &extra,
+            channel,
+            args,
+        )
     }
 
     pub(crate) fn refresh(self, kind: TabKind, done: Box<dyn FnOnce(Result<(), String>)>) {
         let extra: Vec<_> = self.additional.iter().collect();
-        if let Err(error) = self.effects.with_native_saved_document_input(&self.document, &self.participants,
-            &self.cancel, &self.pending, &extra, &mut |_| Ok(())) { return done(Err(error)); }
-        if *lock(&KIND) != Some(kind) { return done(Ok(())); }
+        if let Err(error) = self.effects.with_native_saved_document_input(
+            &self.document,
+            &self.participants,
+            &self.cancel,
+            &self.pending,
+            &extra,
+            &mut |_| Ok(()),
+        ) {
+            return done(Err(error));
+        }
+        if *lock(&KIND) != Some(kind) {
+            return done(Ok(()));
+        }
         let mut prepared = None;
-        if !crate::host::w::on_core_local(|provided| prepared = Some(prepare_menu(&self.app, kind, provided, &self.services))) {
-            return done(Err("saved menu refresh requires the registered core thread".into()));
+        if !crate::host::w::on_core_local(|provided| {
+            prepared = Some(prepare_menu(&self.app, kind, provided, &self.services))
+        }) {
+            return done(Err(
+                "saved menu refresh requires the registered core thread".into(),
+            ));
         }
         let (menus, check_updates) = match prepared {
             Some(Ok(snapshot)) => snapshot,
@@ -2346,22 +2653,48 @@ impl SavedDocumentMenu {
         let revision = NEXT_MENU_REVISION.fetch_add(1, Ordering::Relaxed);
         let completion = shell_ipc_w::home_files::back_to_core(self.services.core.clone(), done);
         let app = self.app;
-        self.effects.post_ui_native_saved_document_input(self.document, Arc::unwrap_or_clone(self.participants),
-            self.cancel, self.pending, self.additional,
-            Box::new(move || set_menu_result(&app, kind, menus, check_updates, revision).map_err(|error| error.to_string())), completion);
+        self.effects.post_ui_native_saved_document_input(
+            self.document,
+            Arc::unwrap_or_clone(self.participants),
+            self.cancel,
+            self.pending,
+            self.additional,
+            Box::new(move || {
+                set_menu_result(&app, kind, menus, check_updates, revision)
+                    .map_err(|error| error.to_string())
+            }),
+            completion,
+        );
     }
 }
 
 pub(crate) fn prepare_docs_menu_refresh_saved_document(
-    document: &shell_contract::ipc::NativeSavedDocument, participants: &[shell_contract::ipc::NativeRequestOwner],
-    cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
-    additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost,
+    document: &shell_contract::ipc::NativeSavedDocument,
+    participants: &[shell_contract::ipc::NativeRequestOwner],
+    cancel: &shell_contract::runtime::CancelToken,
+    pending: &shell_contract::runtime::CancelToken,
+    additional: &[shell_contract::runtime::CancelToken],
+    effects: &shell_contract::hosts::OwnedEffectsHost,
 ) -> Result<Option<shell_ipc_w::home_files::OwnedHomeRefresh>, String> {
     let extra: Vec<_> = additional.iter().collect();
-    effects.with_native_saved_document_input(document, participants, cancel, pending, &extra, &mut |_| Ok(()))?;
-    if *lock(&KIND) != Some(TabKind::Docs) { return Ok(None); }
-    Ok(SavedDocumentMenu::capture(document, participants, cancel, pending, additional, effects)?
-        .map(|menu| Box::new(move |done| menu.refresh(TabKind::Docs, done)) as shell_ipc_w::home_files::OwnedHomeRefresh))
+    effects.with_native_saved_document_input(
+        document,
+        participants,
+        cancel,
+        pending,
+        &extra,
+        &mut |_| Ok(()),
+    )?;
+    if *lock(&KIND) != Some(TabKind::Docs) {
+        return Ok(None);
+    }
+    Ok(
+        SavedDocumentMenu::capture(document, participants, cancel, pending, additional, effects)?
+            .map(|menu| {
+                Box::new(move |done| menu.refresh(TabKind::Docs, done))
+                    as shell_ipc_w::home_files::OwnedHomeRefresh
+            }),
+    )
 }
 
 #[derive(Clone)]
@@ -2378,39 +2711,87 @@ pub(crate) struct RecoverySavedMenu {
 
 impl RecoverySavedMenu {
     pub(crate) fn capture(
-        receipt: &shell_contract::ipc::RecoverySeedReceipt, receiver: &shell_contract::ipc::NativeRequestOwner,
-        cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
+        receipt: &shell_contract::ipc::RecoverySeedReceipt,
+        receiver: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
         effects: &shell_contract::hosts::OwnedEffectsHost,
     ) -> Result<Option<Self>, String> {
-        effects.with_recovery_open_effect_pending(receipt, receiver, cancel, pending, &mut || Ok(()))?;
-        let Some(shell) = SHELL.get() else { return Ok(None); };
-        let Some(window) = shell.windows.shell_window() else { return Ok(None); };
-        let generation = shell.views.renderer_generation(window.view).ok_or("the menu renderer is unavailable")?;
+        effects.with_recovery_open_effect_pending(
+            receipt,
+            receiver,
+            cancel,
+            pending,
+            &mut || Ok(()),
+        )?;
+        let Some(shell) = SHELL.get() else {
+            return Ok(None);
+        };
+        let Some(window) = shell.windows.shell_window() else {
+            return Ok(None);
+        };
+        let generation = shell
+            .views
+            .renderer_generation(window.view)
+            .ok_or("the menu renderer is unavailable")?;
         let recipient = effects.capture_owner(window.view, &generation)?;
-        effects.with_recovery_open_effect_many(receipt, receiver, &[recipient.clone()], cancel, pending, &mut || Ok(()))?;
+        effects.with_recovery_open_effect_many(
+            receipt,
+            receiver,
+            &[recipient.clone()],
+            cancel,
+            pending,
+            &mut || Ok(()),
+        )?;
         let mut services = None;
-        if !crate::host::w::on_core_services_local(|_, installed| services = Some(installed.clone())) {
+        if !crate::host::w::on_core_services_local(|_, installed| {
+            services = Some(installed.clone())
+        }) {
             return Err("recovery menu capture requires the core thread".into());
         }
-        Ok(Some(Self { receipt: receipt.clone(), receiver: receiver.clone(), recipient,
-            cancel: cancel.clone(), pending: pending.clone(), effects: effects.clone(),
-            app: shell.app.clone(), services: services.ok_or("core services unavailable")? }))
+        Ok(Some(Self {
+            receipt: receipt.clone(),
+            receiver: receiver.clone(),
+            recipient,
+            cancel: cancel.clone(),
+            pending: pending.clone(),
+            effects: effects.clone(),
+            app: shell.app.clone(),
+            services: services.ok_or("core services unavailable")?,
+        }))
     }
 
     pub(crate) fn emit(&self, channel: &str, args: Vec<IpcValue>) -> Result<(), String> {
         self.effects.emit_recovery_open_many(
-            &self.receipt, &self.receiver, &[self.recipient.clone()], 0,
-            &self.cancel, &self.pending, channel, args,
+            &self.receipt,
+            &self.receiver,
+            &[self.recipient.clone()],
+            0,
+            &self.cancel,
+            &self.pending,
+            channel,
+            args,
         )
     }
 
     pub(crate) fn refresh(self, kind: TabKind, done: Box<dyn FnOnce(Result<(), String>)>) {
-        if let Err(error) = self.effects.with_recovery_open_effect_many(&self.receipt, &self.receiver, &[self.recipient.clone()], &self.cancel, &self.pending, &mut || Ok(())) {
+        if let Err(error) = self.effects.with_recovery_open_effect_many(
+            &self.receipt,
+            &self.receiver,
+            &[self.recipient.clone()],
+            &self.cancel,
+            &self.pending,
+            &mut || Ok(()),
+        ) {
             return done(Err(error));
         }
-        if *lock(&KIND) != Some(kind) { return done(Ok(())); }
+        if *lock(&KIND) != Some(kind) {
+            return done(Ok(()));
+        }
         let mut prepared = None;
-        if !crate::host::w::on_core_local(|provided| prepared = Some(prepare_menu(&self.app, kind, provided, &self.services))) {
+        if !crate::host::w::on_core_local(|provided| {
+            prepared = Some(prepare_menu(&self.app, kind, provided, &self.services))
+        }) {
             return done(Err("recovery menu refresh requires the core thread".into()));
         }
         let (menus, check_updates) = match prepared {
@@ -2423,26 +2804,53 @@ impl RecoverySavedMenu {
         let ui = self.services.ui.clone();
         let app = self.app.clone();
         ui.post(Box::new(move || {
-            let mut action = Some(move || set_menu_result(&app, kind, menus, check_updates, revision).map_err(|error| error.to_string()));
+            let mut action = Some(move || {
+                set_menu_result(&app, kind, menus, check_updates, revision)
+                    .map_err(|error| error.to_string())
+            });
             let mut accepted = None;
-            let result = self.effects.with_recovery_open_effect_many(&self.receipt, &self.receiver, &[self.recipient.clone()], &self.cancel, &self.pending, &mut || {
-                accepted = action.take();
-                Ok(())
-            }).and_then(|()| accepted.ok_or("recovery menu action was not admitted")?());
+            let result = self
+                .effects
+                .with_recovery_open_effect_many(
+                    &self.receipt,
+                    &self.receiver,
+                    &[self.recipient.clone()],
+                    &self.cancel,
+                    &self.pending,
+                    &mut || {
+                        accepted = action.take();
+                        Ok(())
+                    },
+                )
+                .and_then(|()| accepted.ok_or("recovery menu action was not admitted")?());
             done(result);
         }));
     }
 }
 
 pub(crate) fn prepare_docs_menu_refresh_recovery(
-    receipt: shell_contract::ipc::RecoverySeedReceipt, receiver: shell_contract::ipc::NativeRequestOwner,
-    cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+    receipt: shell_contract::ipc::RecoverySeedReceipt,
+    receiver: shell_contract::ipc::NativeRequestOwner,
+    cancel: shell_contract::runtime::CancelToken,
+    pending: shell_contract::runtime::CancelToken,
     effects: shell_contract::hosts::OwnedEffectsHost,
 ) -> Result<Option<shell_ipc_d2::docs::hosts::OwnedMenuRefresh>, String> {
-    effects.with_recovery_open_effect_pending(&receipt, &receiver, &cancel, &pending, &mut || Ok(()))?;
-    if *lock(&KIND) != Some(TabKind::Docs) { return Ok(None); }
-    Ok(RecoverySavedMenu::capture(&receipt, &receiver, &cancel, &pending, &effects)?
-        .map(|menu| Box::new(move |done| menu.refresh(TabKind::Docs, done)) as shell_ipc_d2::docs::hosts::OwnedMenuRefresh))
+    effects.with_recovery_open_effect_pending(
+        &receipt,
+        &receiver,
+        &cancel,
+        &pending,
+        &mut || Ok(()),
+    )?;
+    if *lock(&KIND) != Some(TabKind::Docs) {
+        return Ok(None);
+    }
+    Ok(
+        RecoverySavedMenu::capture(&receipt, &receiver, &cancel, &pending, &effects)?.map(|menu| {
+            Box::new(move |done| menu.refresh(TabKind::Docs, done))
+                as shell_ipc_d2::docs::hosts::OwnedMenuRefresh
+        }),
+    )
 }
 
 pub(crate) fn prepare_docs_menu_refresh_native(
@@ -2453,13 +2861,36 @@ pub(crate) fn prepare_docs_menu_refresh_native(
     use shell_contract::runtime::Views as _;
     let cancel = operation.cancel().clone();
     let pending = operation.shutdown().clone();
-    effects.with_native_command_preparation_effect(operation, expected, &[], &cancel, &pending, &mut || Ok(()))?;
-    if *lock(&KIND) != Some(TabKind::Docs) { return Ok(None); }
-    let Some(shell) = SHELL.get() else { return Ok(None); };
-    let Some(window) = shell.windows.shell_window() else { return Ok(None); };
-    let generation = shell.views.renderer_generation(window.view).ok_or("the menu renderer is unavailable")?;
+    effects.with_native_command_preparation_effect(
+        operation,
+        expected,
+        &[],
+        &cancel,
+        &pending,
+        &mut || Ok(()),
+    )?;
+    if *lock(&KIND) != Some(TabKind::Docs) {
+        return Ok(None);
+    }
+    let Some(shell) = SHELL.get() else {
+        return Ok(None);
+    };
+    let Some(window) = shell.windows.shell_window() else {
+        return Ok(None);
+    };
+    let generation = shell
+        .views
+        .renderer_generation(window.view)
+        .ok_or("the menu renderer is unavailable")?;
     let recipient = effects.capture_owner(window.view, &generation)?;
-    effects.with_native_command_preparation_effect(operation, expected, std::slice::from_ref(&recipient), &cancel, &pending, &mut || Ok(()))?;
+    effects.with_native_command_preparation_effect(
+        operation,
+        expected,
+        std::slice::from_ref(&recipient),
+        &cancel,
+        &pending,
+        &mut || Ok(()),
+    )?;
     let mut services = None;
     if !crate::host::w::on_core_services_local(|_, installed| services = Some(installed.clone())) {
         return Err("native command menu capture requires the core thread".into());
@@ -2470,13 +2901,26 @@ pub(crate) fn prepare_docs_menu_refresh_native(
     let effects = effects.clone();
     let app = shell.app.clone();
     Ok(Some(Box::new(move |done| {
-        if let Err(error) = effects.with_native_command_preparation_effect(&operation, &expected, std::slice::from_ref(&recipient), &cancel, &pending, &mut || Ok(())) {
+        if let Err(error) = effects.with_native_command_preparation_effect(
+            &operation,
+            &expected,
+            std::slice::from_ref(&recipient),
+            &cancel,
+            &pending,
+            &mut || Ok(()),
+        ) {
             return done(Err(error));
         }
-        if *lock(&KIND) != Some(TabKind::Docs) { return done(Ok(())); }
+        if *lock(&KIND) != Some(TabKind::Docs) {
+            return done(Ok(()));
+        }
         let mut snapshot = None;
-        if !crate::host::w::on_core_local(|provided| snapshot = Some(prepare_menu(&app, TabKind::Docs, provided, &services))) {
-            return done(Err("native command menu refresh requires the core thread".into()));
+        if !crate::host::w::on_core_local(|provided| {
+            snapshot = Some(prepare_menu(&app, TabKind::Docs, provided, &services))
+        }) {
+            return done(Err(
+                "native command menu refresh requires the core thread".into()
+            ));
         }
         let (menus, check_updates) = match snapshot {
             Some(Ok(snapshot)) => snapshot,
@@ -2486,12 +2930,24 @@ pub(crate) fn prepare_docs_menu_refresh_native(
         let revision = NEXT_MENU_REVISION.fetch_add(1, Ordering::Relaxed);
         let done = shell_ipc_w::home_files::back_to_core(services.core.clone(), done);
         services.ui.post(Box::new(move || {
-            let mut action = Some(move || set_menu_result(&app, TabKind::Docs, menus, check_updates, revision).map_err(|error| error.to_string()));
+            let mut action = Some(move || {
+                set_menu_result(&app, TabKind::Docs, menus, check_updates, revision)
+                    .map_err(|error| error.to_string())
+            });
             let mut accepted = None;
-            let result = effects.with_native_command_preparation_effect(&operation, &expected, std::slice::from_ref(&recipient), &cancel, &pending, &mut || {
-                accepted = action.take();
-                Ok(())
-            }).and_then(|()| (accepted.ok_or("native command menu action was not admitted")?)());
+            let result = effects
+                .with_native_command_preparation_effect(
+                    &operation,
+                    &expected,
+                    std::slice::from_ref(&recipient),
+                    &cancel,
+                    &pending,
+                    &mut || {
+                        accepted = action.take();
+                        Ok(())
+                    },
+                )
+                .and_then(|()| (accepted.ok_or("native command menu action was not admitted")?)());
             done(result);
         }));
     })))
@@ -2608,20 +3064,30 @@ fn dispatch(app: &AppHandle, id: &str) {
         let captured = (|| {
             let shell = SHELL.get().ok_or("The native menu host is unavailable.")?;
             let activation = native::menu::FocusCapture::capture(app)?;
-            let (view, generation) = shell.views.capture_native_menu_target(activation.origin())
+            let (view, generation) = shell
+                .views
+                .capture_native_menu_target(activation.origin())
                 .ok_or("The native menu document is no longer available.")?;
             let owner = shell.effects.capture_owner(view, &generation)?;
-            let proof = owner.context.authority_ref::<crate::ipc::native_owner::NativeOwnerAuthority>()
+            let proof = owner
+                .context
+                .authority_ref::<crate::ipc::native_owner::NativeOwnerAuthority>()
                 .ok_or("The native menu document has no authenticated owner.")?;
             if !activation.is_live() || proof.origin != *activation.origin() {
                 return Err("The native menu document changed during capture.".to_owned());
             }
-            Ok((view, shell_ipc_a::generate::host::GenerateAuthority::native_menu(
-                owner.context, shell_contract::runtime::CancelToken::default(),
-            )))
+            Ok((
+                view,
+                shell_ipc_a::generate::host::GenerateAuthority::native_menu(
+                    owner.context,
+                    shell_contract::runtime::CancelToken::default(),
+                ),
+            ))
         })();
         match captured {
-            Ok((view, authority)) => post_core(move |_, _| super::doc_links::run_click(&DocLinkClick::Make, view, Some(authority))),
+            Ok((view, authority)) => post_core(move |_, _| {
+                super::doc_links::run_click(&DocLinkClick::Make, view, Some(authority))
+            }),
             Err(error) => eprintln!("shell: native Generate menu refused: {error}"),
         }
         return;
@@ -2678,20 +3144,34 @@ pub(crate) fn app_menu_activate(id: u32, cx: shell_contract::ipc::CallContext) {
             post_core(move |_, _| super::doc_links::run_click(&click, view, Some(authority)));
         }
         Act::UserGuide => {
-            let Some(context)=cx.native.clone() else {
+            let Some(context) = cx.native.clone() else {
                 eprintln!("Could not open help: the popup request has no authenticated owner");
                 return;
             };
-            let origin=shell_contract::ipc::NativeRequestOwner { view:cx.sender.view,context };
-            let cancel=cx.cancel.clone();
-            crate::host::w::post_core_checked(move |_,services| {
-                let Some(home)=services.hosts.get::<HomeAppHost>() else {
-                    return eprintln!("Could not open help: home services are unavailable");
-                };
-                home.open_help_owned(None,origin,cancel,shell_contract::runtime::CancelToken::default(),Box::new(|result| {
-                    if let Err(error)=result { eprintln!("Could not open help: {error}"); }
-                }));
-            },||eprintln!("Could not open help: the core thread is unavailable"));
+            let origin = shell_contract::ipc::NativeRequestOwner {
+                view: cx.sender.view,
+                context,
+            };
+            let cancel = cx.cancel.clone();
+            crate::host::w::post_core_checked(
+                move |_, services| {
+                    let Some(home) = services.hosts.get::<HomeAppHost>() else {
+                        return eprintln!("Could not open help: home services are unavailable");
+                    };
+                    home.open_help_owned(
+                        None,
+                        origin,
+                        cancel,
+                        shell_contract::runtime::CancelToken::default(),
+                        Box::new(|result| {
+                            if let Err(error) = result {
+                                eprintln!("Could not open help: {error}");
+                            }
+                        }),
+                    );
+                },
+                || eprintln!("Could not open help: the core thread is unavailable"),
+            );
         }
         act => perform(&shell.app, kind, act),
     }
@@ -2893,14 +3373,11 @@ fn run(act: Act, kind: TabKind, provided: &Provided, services: &Services) {
         }
         Act::Feedback => {
             let services = services.clone();
-            services
-                .workers
-                .clone()
-                .spawn(Box::new(move || {
-                    if let Err(error) = open_feedback_survey(&services) {
-                        eprintln!("shell: opening the feedback survey: {error}");
-                    }
-                }));
+            services.workers.clone().spawn(Box::new(move || {
+                if let Err(error) = open_feedback_survey(&services) {
+                    eprintln!("shell: opening the feedback survey: {error}");
+                }
+            }));
         }
         Act::UserGuide => crate::host::w_home::open_help_from_menu(None),
         Act::ThirdPartyNotices => {

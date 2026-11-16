@@ -69,7 +69,12 @@ pub struct CaptureSpec {
 
 impl Default for CaptureSpec {
     fn default() -> Self {
-        Self { clip: None, full_page: false, transparent: false, scale: 1.0 }
+        Self {
+            clip: None,
+            full_page: false,
+            transparent: false,
+            scale: 1.0,
+        }
     }
 }
 
@@ -86,7 +91,9 @@ impl CaptureSpec {
                 && clip.width > 0.0
                 && clip.height > 0.0)
         {
-            return Err(PageError::Invalid("capture clip must have a positive size".into()));
+            return Err(PageError::Invalid(
+                "capture clip must have a positive size".into(),
+            ));
         }
         Ok(())
     }
@@ -137,10 +144,18 @@ impl Default for PdfSpec {
 impl PdfSpec {
     pub fn validate(&self) -> Result<(), PageError> {
         if !(self.scale.is_finite() && (0.1..=2.0).contains(&self.scale)) {
-            return Err(PageError::Invalid("PDF scale must be between 0.1 and 2".into()));
+            return Err(PageError::Invalid(
+                "PDF scale must be between 0.1 and 2".into(),
+            ));
         }
-        if self.margins_in.iter().any(|margin| !margin.is_finite() || *margin < 0.0) {
-            return Err(PageError::Invalid("PDF margins must not be negative".into()));
+        if self
+            .margins_in
+            .iter()
+            .any(|margin| !margin.is_finite() || *margin < 0.0)
+        {
+            return Err(PageError::Invalid(
+                "PDF margins must not be negative".into(),
+            ));
         }
         if let Some((width, height)) = self.paper_in
             && !(width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0)
@@ -171,8 +186,16 @@ pub fn parse_page_ranges(text: &str) -> Result<Vec<std::ops::RangeInclusive<u32>
                 page..=page
             }
             Some((start, end)) => {
-                let start = if start.trim().is_empty() { 1 } else { number(start).ok_or_else(invalid)? };
-                let end = if end.trim().is_empty() { u32::MAX } else { number(end).ok_or_else(invalid)? };
+                let start = if start.trim().is_empty() {
+                    1
+                } else {
+                    number(start).ok_or_else(invalid)?
+                };
+                let end = if end.trim().is_empty() {
+                    u32::MAX
+                } else {
+                    number(end).ok_or_else(invalid)?
+                };
                 if start > end {
                     return Err(invalid());
                 }
@@ -244,7 +267,10 @@ impl<T> DoneSlot<T> {
     }
 
     fn take(&self) -> Option<Done<T>> {
-        self.0.lock().unwrap_or_else(|error| error.into_inner()).take()
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
     }
 }
 
@@ -252,7 +278,9 @@ impl<T> DoneSlot<T> {
 /// owns completing it. When the fence refuses, `done` completes with [`PageError::Stale`]
 /// and the effect never runs.
 pub(crate) fn run_fenced<T: 'static>(
-    fence: Option<&Fence>, done: Done<T>, effect: impl FnOnce(Done<T>),
+    fence: Option<&Fence>,
+    done: Done<T>,
+    effect: impl FnOnce(Done<T>),
 ) {
     let slot = DoneSlot::new(done);
     let mut effect = Some(effect);
@@ -278,16 +306,20 @@ pub(crate) fn run_fenced<T: 'static>(
 /// The sync shape callers expect from the old `cdp()`: block this thread for the answer.
 /// Never call it on the UI thread, which the answer needs.
 pub fn blocking<T: Send + 'static>(
-    timeout: Duration, call: impl FnOnce(Done<T>),
+    timeout: Duration,
+    call: impl FnOnce(Done<T>),
 ) -> Result<T, PageError> {
     if is_ui_thread() {
-        return Err(PageError::Platform("A blocking page operation was started on the UI thread.".into()));
+        return Err(PageError::Platform(
+            "A blocking page operation was started on the UI thread.".into(),
+        ));
     }
     blocking_unchecked(timeout, call)
 }
 
 fn blocking_unchecked<T: Send + 'static>(
-    timeout: Duration, call: impl FnOnce(Done<T>),
+    timeout: Duration,
+    call: impl FnOnce(Done<T>),
 ) -> Result<T, PageError> {
     let (send, receive) = mpsc::sync_channel(1);
     call(Box::new(move |result| {
@@ -336,7 +368,9 @@ impl PageOps {
     pub fn run_script(&self, source: &str, fence: Option<Fence>, done: Done<()>) {
         let webview = self.webview.clone();
         let source = source.to_owned();
-        run_fenced(fence.as_ref(), done, move |done| Current::run_script(&webview, source, done));
+        run_fenced(fence.as_ref(), done, move |done| {
+            Current::run_script(&webview, source, done)
+        });
     }
 
     pub fn capture_png(&self, spec: CaptureSpec, fence: Option<Fence>, done: Done<Vec<u8>>) {
@@ -344,7 +378,9 @@ impl PageOps {
             return done(Err(error));
         }
         let webview = self.webview.clone();
-        run_fenced(fence.as_ref(), done, move |done| Current::capture_png(&webview, spec, done));
+        run_fenced(fence.as_ref(), done, move |done| {
+            Current::capture_png(&webview, spec, done)
+        });
     }
 
     pub fn print_pdf(&self, spec: PdfSpec, fence: Option<Fence>, done: Done<Vec<u8>>) {
@@ -352,7 +388,9 @@ impl PageOps {
             return done(Err(error));
         }
         let webview = self.webview.clone();
-        run_fenced(fence.as_ref(), done, move |done| Current::print_pdf(&webview, spec, done));
+        run_fenced(fence.as_ref(), done, move |done| {
+            Current::print_pdf(&webview, spec, done)
+        });
     }
 
     pub fn edit(&self, command: EditCommand, done: Done<()>) {
@@ -374,11 +412,15 @@ impl PageOps {
 
     pub fn wait_quiet(&self, spec: QuietSpec, fence: Option<Fence>, done: Done<()>) {
         let webview = self.webview.clone();
-        run_fenced(fence.as_ref(), done, move |done| Current::wait_quiet(&webview, spec, done));
+        run_fenced(fence.as_ref(), done, move |done| {
+            Current::wait_quiet(&webview, spec, done)
+        });
     }
 
     pub fn blocking<T: Send + 'static>(
-        &self, timeout: Duration, call: impl FnOnce(Done<T>),
+        &self,
+        timeout: Duration,
+        call: impl FnOnce(Done<T>),
     ) -> Result<T, PageError> {
         blocking(timeout, call)
     }
@@ -391,7 +433,10 @@ mod tests {
     fn collect<T: Send + 'static>() -> (Arc<Mutex<Vec<Result<T, PageError>>>>, Done<T>) {
         let results = Arc::new(Mutex::new(Vec::new()));
         let sink = results.clone();
-        (results, Box::new(move |result| sink.lock().unwrap().push(result)))
+        (
+            results,
+            Box::new(move |result| sink.lock().unwrap().push(result)),
+        )
     }
 
     fn fence_that(live: bool) -> Fence {
@@ -423,7 +468,9 @@ mod tests {
         let (results, done) = collect::<u32>();
         let ran = Arc::new(Mutex::new(false));
         let flag = ran.clone();
-        run_fenced(Some(&fence_that(false)), done, move |_| *flag.lock().unwrap() = true);
+        run_fenced(Some(&fence_that(false)), done, move |_| {
+            *flag.lock().unwrap() = true
+        });
         assert!(!*ran.lock().unwrap());
         assert_eq!(*results.lock().unwrap(), [Err(PageError::Stale)]);
     }
@@ -432,7 +479,9 @@ mod tests {
     fn a_fence_that_never_runs_the_effect_cannot_leave_the_caller_waiting() {
         let (results, done) = collect::<()>();
         let silent: Fence = Arc::new(|_: &mut dyn FnMut()| Ok::<(), String>(()));
-        run_fenced(Some(&silent), done, |_| unreachable!("the fence did not run the effect"));
+        run_fenced(Some(&silent), done, |_| {
+            unreachable!("the fence did not run the effect")
+        });
         assert_eq!(*results.lock().unwrap(), [Err(PageError::Stale)]);
     }
 
@@ -462,8 +511,14 @@ mod tests {
 
     #[test]
     fn page_ranges_follow_the_chromium_syntax() {
-        assert_eq!(parse_page_ranges("").unwrap(), Vec::<std::ops::RangeInclusive<u32>>::new());
-        assert_eq!(parse_page_ranges("1-3, 5, 8-").unwrap(), [1..=3, 5..=5, 8..=u32::MAX]);
+        assert_eq!(
+            parse_page_ranges("").unwrap(),
+            Vec::<std::ops::RangeInclusive<u32>>::new()
+        );
+        assert_eq!(
+            parse_page_ranges("1-3, 5, 8-").unwrap(),
+            [1..=3, 5..=5, 8..=u32::MAX]
+        );
         assert_eq!(parse_page_ranges("-2").unwrap(), [1..=2]);
         assert!(parse_page_ranges("0").is_err());
         assert!(parse_page_ranges("3-1").is_err());
@@ -474,13 +529,60 @@ mod tests {
     #[test]
     fn specs_reject_values_the_platform_would_misread() {
         assert!(PdfSpec::default().validate().is_ok());
-        assert!(PdfSpec { scale: 0.0, ..PdfSpec::default() }.validate().is_err());
-        assert!(PdfSpec { margins_in: [0.0, 0.0, -1.0, 0.0], ..PdfSpec::default() }.validate().is_err());
-        assert!(PdfSpec { paper_in: Some((8.27, 0.0)), ..PdfSpec::default() }.validate().is_err());
-        assert!(PdfSpec { page_ranges: Some("x".into()), ..PdfSpec::default() }.validate().is_err());
+        assert!(
+            PdfSpec {
+                scale: 0.0,
+                ..PdfSpec::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            PdfSpec {
+                margins_in: [0.0, 0.0, -1.0, 0.0],
+                ..PdfSpec::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            PdfSpec {
+                paper_in: Some((8.27, 0.0)),
+                ..PdfSpec::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            PdfSpec {
+                page_ranges: Some("x".into()),
+                ..PdfSpec::default()
+            }
+            .validate()
+            .is_err()
+        );
         assert!(CaptureSpec::default().validate().is_ok());
-        assert!(CaptureSpec { scale: f64::NAN, ..CaptureSpec::default() }.validate().is_err());
-        let empty = Rect { x: 0.0, y: 0.0, width: 0.0, height: 10.0 };
-        assert!(CaptureSpec { clip: Some(empty), ..CaptureSpec::default() }.validate().is_err());
+        assert!(
+            CaptureSpec {
+                scale: f64::NAN,
+                ..CaptureSpec::default()
+            }
+            .validate()
+            .is_err()
+        );
+        let empty = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 10.0,
+        };
+        assert!(
+            CaptureSpec {
+                clip: Some(empty),
+                ..CaptureSpec::default()
+            }
+            .validate()
+            .is_err()
+        );
     }
 }

@@ -74,7 +74,12 @@ impl NativeSpec {
     }
 
     pub(crate) fn into_parts(self) -> (Config, Option<BrowserCreation>) {
-        let config = Config { sink: self.sink, start: self.start, bridge: self.bridge, policy: self.policy };
+        let config = Config {
+            sink: self.sink,
+            start: self.start,
+            bridge: self.bridge,
+            policy: self.policy,
+        };
         (config, self.creation)
     }
 }
@@ -95,7 +100,9 @@ macro_rules! install_hooks {
             .on_page_load(move |_, payload| {
                 tauri_public::on_page_load(&loading, payload.event(), payload.url());
             });
-        let storage = $identity.policy().map_or(Storage::Default, RequestPolicy::storage);
+        let storage = $identity
+            .policy()
+            .map_or(Storage::Default, RequestPolicy::storage);
         match store_for(storage, scratch_root().as_deref()) {
             Some(Store::Identifier(id)) => builder.data_store_identifier(id),
             Some(Store::Directory(directory)) => builder.data_directory(directory),
@@ -106,11 +113,21 @@ macro_rules! install_hooks {
 
 /// `WebviewBuilder` (a child view inside a window).
 pub trait WebviewBuilderExt: Sized {
-    fn native(self, native: &Native, label: &str, spec: NativeSpec) -> Result<(Self, BrowserIdentity), String>;
+    fn native(
+        self,
+        native: &Native,
+        label: &str,
+        spec: NativeSpec,
+    ) -> Result<(Self, BrowserIdentity), String>;
 }
 
 impl WebviewBuilderExt for WebviewBuilder<Wry> {
-    fn native(self, native: &Native, label: &str, spec: NativeSpec) -> Result<(Self, BrowserIdentity), String> {
+    fn native(
+        self,
+        native: &Native,
+        label: &str,
+        spec: NativeSpec,
+    ) -> Result<(Self, BrowserIdentity), String> {
         let (identity, submission) = native.register(label, spec)?;
         let builder = install_hooks!(self, identity, submission);
         Ok((builder, identity))
@@ -119,11 +136,21 @@ impl WebviewBuilderExt for WebviewBuilder<Wry> {
 
 /// `WebviewWindowBuilder` (a window with one view).
 pub trait WebviewWindowBuilderExt: Sized {
-    fn native(self, native: &Native, label: &str, spec: NativeSpec) -> Result<(Self, BrowserIdentity), String>;
+    fn native(
+        self,
+        native: &Native,
+        label: &str,
+        spec: NativeSpec,
+    ) -> Result<(Self, BrowserIdentity), String>;
 }
 
 impl<M: Manager<Wry>> WebviewWindowBuilderExt for WebviewWindowBuilder<'_, Wry, M> {
-    fn native(self, native: &Native, label: &str, spec: NativeSpec) -> Result<(Self, BrowserIdentity), String> {
+    fn native(
+        self,
+        native: &Native,
+        label: &str,
+        spec: NativeSpec,
+    ) -> Result<(Self, BrowserIdentity), String> {
         let (identity, submission) = native.register(label, spec)?;
         let builder = install_hooks!(self, identity, submission);
         Ok((builder, identity))
@@ -133,11 +160,21 @@ impl<M: Manager<Wry>> WebviewWindowBuilderExt for WebviewWindowBuilder<'_, Wry, 
 /// `WindowBuilder` (a bare window): reserve the window receipt. Report the build result with
 /// `Native::window_created` or `Native::window_failed`.
 pub trait WindowBuilderExt: Sized {
-    fn native_window_creation(self, native: &Native, label: &str, creation: WindowCreation) -> Result<Self, String>;
+    fn native_window_creation(
+        self,
+        native: &Native,
+        label: &str,
+        creation: WindowCreation,
+    ) -> Result<Self, String>;
 }
 
 impl<M: Manager<Wry>> WindowBuilderExt for WindowBuilder<'_, Wry, M> {
-    fn native_window_creation(self, native: &Native, label: &str, creation: WindowCreation) -> Result<Self, String> {
+    fn native_window_creation(
+        self,
+        native: &Native,
+        label: &str,
+        creation: WindowCreation,
+    ) -> Result<Self, String> {
         native.reserve_window(label, creation)?;
         Ok(self)
     }
@@ -150,7 +187,9 @@ pub(crate) struct TauriControl {
 
 impl WebviewControl for TauriControl {
     fn navigate(&self, url: &Url) -> Result<(), String> {
-        self.webview.navigate(url.clone()).map_err(|error| error.to_string())
+        self.webview
+            .navigate(url.clone())
+            .map_err(|error| error.to_string())
     }
 
     fn reload(&self) -> Result<(), String> {
@@ -161,14 +200,21 @@ impl WebviewControl for TauriControl {
     /// the `Retired` receipt's condition.
     fn close(&self) -> Result<(), String> {
         self.webview.close().map_err(|error| error.to_string())?;
-        if self.webview.app_handle().get_webview(self.webview.label()).is_some() {
+        if self
+            .webview
+            .app_handle()
+            .get_webview(self.webview.label())
+            .is_some()
+        {
             return Err("The webview is still registered after close.".into());
         }
         Ok(())
     }
 
     fn evaluate(
-        &self, script: String, done: Box<dyn FnOnce(Result<Value, String>) + Send>,
+        &self,
+        script: String,
+        done: Box<dyn FnOnce(Result<Value, String>) + Send>,
     ) -> Result<(), String> {
         Current::evaluate(
             &self.webview,
@@ -189,7 +235,9 @@ impl WebviewControl for TauriControl {
 pub(crate) fn attach(webview: &Webview, browser: &BrowserIdentity) -> Result<(), String> {
     let core = browser.core.clone();
     core.claim_creation()?;
-    let control: Arc<dyn WebviewControl> = Arc::new(TauriControl { webview: webview.clone() });
+    let control: Arc<dyn WebviewControl> = Arc::new(TauriControl {
+        webview: webview.clone(),
+    });
     let closer = control.clone();
     let retiring = core.clone();
     core.close_receipt().bind_request(Arc::new(move || {
@@ -217,7 +265,10 @@ pub(crate) fn attach(webview: &Webview, browser: &BrowserIdentity) -> Result<(),
 }
 
 fn run_on_ui(webview: &Webview, job: impl FnOnce() + Send + 'static) -> Result<(), String> {
-    webview.app_handle().run_on_main_thread(job).map_err(|error| error.to_string())
+    webview
+        .app_handle()
+        .run_on_main_thread(job)
+        .map_err(|error| error.to_string())
 }
 
 /// A webview together with its native browser, for work that must run on the UI thread.
@@ -233,10 +284,15 @@ pub trait WebviewExt {
     /// The open native browser behind this webview.
     fn native_browser(&self) -> Result<BrowserIdentity, String> {
         let webview = self.as_webview();
-        let native = webview.try_state::<Native>().ok_or("The native module is not installed.")?;
-        native
-            .browser(webview.label())
-            .ok_or_else(|| format!("No open native browser for the webview {}.", webview.label()))
+        let native = webview
+            .try_state::<Native>()
+            .ok_or("The native module is not installed.")?;
+        native.browser(webview.label()).ok_or_else(|| {
+            format!(
+                "No open native browser for the webview {}.",
+                webview.label()
+            )
+        })
     }
 
     fn native_browser_close(&self) -> Result<BrowserClose, String> {
@@ -245,12 +301,18 @@ pub trait WebviewExt {
 
     /// Typed page operations (replaces the CDP surface).
     fn page(&self) -> Result<PageOps, String> {
-        Ok(PageOps::new(self.as_webview().clone(), self.native_browser()?))
+        Ok(PageOps::new(
+            self.as_webview().clone(),
+            self.native_browser()?,
+        ))
     }
 
     /// Run `job` on the UI thread with the webview and its browser. Replaces
     /// `with_cef_webview`.
-    fn with_native<F: FnOnce(&NativeWebview) + Send + 'static>(&self, job: F) -> Result<(), String> {
+    fn with_native<F: FnOnce(&NativeWebview) + Send + 'static>(
+        &self,
+        job: F,
+    ) -> Result<(), String> {
         self.with_native_async(move |native| {
             if let Ok(native) = native {
                 job(native);
@@ -260,7 +322,8 @@ pub trait WebviewExt {
 
     /// Like `with_native`, but a browser that retired first is reported to the closure.
     fn with_native_async<F: FnOnce(Result<&NativeWebview, String>) + Send + 'static>(
-        &self, job: F,
+        &self,
+        job: F,
     ) -> Result<(), String> {
         let webview = self.as_webview().clone();
         let identity = self.native_browser();
@@ -273,7 +336,9 @@ pub trait WebviewExt {
     /// Dispatch an approved reload on the UI thread; `done` completes once with the
     /// registered successor or the reason the transaction failed.
     fn reload_reserved(
-        &self, reservation: &ReloadReservation, admission: ReloadAdmission,
+        &self,
+        reservation: &ReloadReservation,
+        admission: ReloadAdmission,
         done: impl FnOnce(Result<DocumentContext, String>) + Send + 'static,
     ) -> Result<(), String> {
         let browser = self.native_browser()?;
@@ -285,12 +350,18 @@ pub trait WebviewExt {
 
     /// Show or hide the view; `done` reports `Err` when the browser retired first.
     fn set_visible_checked(
-        &self, visible: bool, done: impl FnOnce(Result<(), String>) + Send + 'static,
+        &self,
+        visible: bool,
+        done: impl FnOnce(Result<(), String>) + Send + 'static,
     ) -> Result<(), String> {
         let webview = self.as_webview().clone();
         let browser = self.native_browser()?;
         run_on_ui(self.as_webview(), move || {
-            let changed = if visible { webview.show() } else { webview.hide() };
+            let changed = if visible {
+                webview.show()
+            } else {
+                webview.hide()
+            };
             let result = changed.map_err(|error| error.to_string()).and_then(|()| {
                 browser
                     .with_live_browser(|| ())
@@ -329,6 +400,10 @@ mod tests {
         assert!(config.policy.is_some_and(|policy| !policy.javascript()));
         assert!(config.sink.is_none() && creation.is_none());
         let (config, _) = NativeSpec::new().into_parts();
-        assert_eq!(config.bridge, BridgeMode::None, "no bridge unless asked for");
+        assert_eq!(
+            config.bridge,
+            BridgeMode::None,
+            "no bridge unless asked for"
+        );
     }
 }

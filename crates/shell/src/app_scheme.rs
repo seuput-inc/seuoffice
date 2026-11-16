@@ -28,7 +28,10 @@ pub const SHELL_HOST: &str = "shell";
 
 /// Every host the shell serves: the renderer hosts of `main_core` and the shell's own
 pub fn hosts() -> impl Iterator<Item = &'static str> {
-    RENDERER_HOSTS.iter().copied().chain([SHELL_HOST, crate::engine_host::SCHEME_HOST])
+    RENDERER_HOSTS
+        .iter()
+        .copied()
+        .chain([SHELL_HOST, crate::engine_host::SCHEME_HOST])
 }
 
 pub fn scheme_of(host: &str) -> String {
@@ -102,20 +105,30 @@ pub fn webview_url(electron_url: &str) -> Option<Url> {
 
 pub(crate) fn native_origin(host: &str) -> String {
     #[cfg(any(windows, target_os = "android"))]
-    { format!("http://{SCHEME_PREFIX}{host}.localhost") }
+    {
+        format!("http://{SCHEME_PREFIX}{host}.localhost")
+    }
     #[cfg(not(any(windows, target_os = "android")))]
-    { format!("{SCHEME_PREFIX}{host}://localhost") }
+    {
+        format!("{SCHEME_PREFIX}{host}://localhost")
+    }
 }
 
 fn renderer_host(url: &Url) -> Option<&str> {
     #[cfg(any(windows, target_os = "android"))]
     {
-        if url.scheme() != "http" { return None; }
-        url.host_str()?.strip_suffix(".localhost")?.strip_prefix(SCHEME_PREFIX)
+        if url.scheme() != "http" {
+            return None;
+        }
+        url.host_str()?
+            .strip_suffix(".localhost")?
+            .strip_prefix(SCHEME_PREFIX)
     }
     #[cfg(not(any(windows, target_os = "android")))]
     {
-        if url.host_str() != Some("localhost") { return None; }
+        if url.host_str() != Some("localhost") {
+            return None;
+        }
         url.scheme().strip_prefix(SCHEME_PREFIX)
     }
 }

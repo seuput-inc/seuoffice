@@ -26,6 +26,9 @@ mod tests {
         let plain = b"PK\x03\x04synthetic document bytes";
         let encrypted = encrypt(plain, "correct horse").unwrap();
         assert_eq!(decrypt(&encrypted, "correct horse").unwrap(), plain);
-        assert_eq!(decrypt(&encrypted, "wrong").unwrap_err().reason, "wrong-password");
+        assert_eq!(
+            decrypt(&encrypted, "wrong").unwrap_err().reason,
+            "wrong-password"
+        );
     }
 }

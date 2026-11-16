@@ -10,7 +10,10 @@ pub fn languages() -> Result<Vec<String>, String> {
     use objc2_foundation::NSLocale;
 
     let preferred = NSLocale::preferredLanguages().to_vec();
-    Ok(preferred.iter().map(|language| language.to_string()).collect())
+    Ok(preferred
+        .iter()
+        .map(|language| language.to_string())
+        .collect())
 }
 
 /// The user's preferred languages as BCP 47 tags, most preferred first (`ko-KR`, `en-US`).

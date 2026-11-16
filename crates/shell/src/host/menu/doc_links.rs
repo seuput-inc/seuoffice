@@ -42,8 +42,8 @@ use main_core::shell::document_links_shell::{
 use main_core::shell::tab_manager::TabKind;
 use shell_contract::ids::{ViewId, WindowId};
 use shell_contract::runtime::{PathName, Services};
-use shell_ipc_m::{MenuDict, current_lang, menu_label};
 use shell_ipc_a::generate::host::GenerateAuthority;
+use shell_ipc_m::{MenuDict, current_lang, menu_label};
 
 use super::super::shell_tabs::{ShellTabs, shell_tabs};
 use super::super::w::post_core;
@@ -213,10 +213,12 @@ pub(crate) fn make_from_document(view: ViewId, authority: GenerateAuthority) {
         eprintln!("[generate] document command refused: {error}");
         return;
     }
-    with_links(|links| links.make_from_document_with(&Contents(view), move |host, request| {
-        let open = host.open.clone();
-        defer(move || open(request, authority));
-    }));
+    with_links(|links| {
+        links.make_from_document_with(&Contents(view), move |host, request| {
+            let open = host.open.clone();
+            defer(move || open(request, authority));
+        })
+    });
 }
 
 /// `once('destroyed')` of a view the records hold
@@ -235,45 +237,63 @@ pub(crate) fn refresh_document_link_menu() {
 }
 
 pub(crate) fn refresh_saved_menu(
-    menu:Option<super::SavedMenu>,done:Box<dyn FnOnce(Result<(),String>)>,
+    menu: Option<super::SavedMenu>,
+    done: Box<dyn FnOnce(Result<(), String>)>,
 ) {
-    let kind = LINKS.with(|slot| slot.borrow_mut().as_mut().and_then(|links| links.saved_menu_kind()));
-    match (menu,kind) {
-        (Some(menu),Some(kind)) => menu.refresh(kind,done),
+    let kind = LINKS.with(|slot| {
+        slot.borrow_mut()
+            .as_mut()
+            .and_then(|links| links.saved_menu_kind())
+    });
+    match (menu, kind) {
+        (Some(menu), Some(kind)) => menu.refresh(kind, done),
         _ => done(Ok(())),
     }
 }
 
 pub(crate) fn refresh_recovery_saved_menu(
-    menu: Option<super::RecoverySavedMenu>, done: Box<dyn FnOnce(Result<(), String>)>,
+    menu: Option<super::RecoverySavedMenu>,
+    done: Box<dyn FnOnce(Result<(), String>)>,
 ) {
-    let kind = LINKS.with(|slot| slot.borrow_mut().as_mut().and_then(|links| links.saved_menu_kind()));
+    let kind = LINKS.with(|slot| {
+        slot.borrow_mut()
+            .as_mut()
+            .and_then(|links| links.saved_menu_kind())
+    });
     match (menu, kind) {
         (Some(menu), Some(kind)) => menu.refresh(kind, done),
         _ => done(Ok(())),
     }
 }
 pub(crate) fn refresh_existing_document_saved_menu(
-    menu:Option<super::ExistingDocumentSavedMenu>,done:Box<dyn FnOnce(Result<(),String>)>,
+    menu: Option<super::ExistingDocumentSavedMenu>,
+    done: Box<dyn FnOnce(Result<(), String>)>,
 ) {
-    let kind=LINKS.with(|slot|slot.borrow_mut().as_mut().and_then(|links|links.saved_menu_kind()));
-    match (menu,kind) {
-        (Some(menu),Some(kind))=>menu.refresh(kind,done),
-        _=>done(Ok(())),
-    }
-}
-
-pub(crate) fn refresh_saved_document_menu(
-    menu: Option<super::SavedDocumentMenu>, done: Box<dyn FnOnce(Result<(), String>)>,
-) {
-    let kind = LINKS.with(|slot| slot.borrow_mut().as_mut().and_then(|links| links.saved_menu_kind()));
+    let kind = LINKS.with(|slot| {
+        slot.borrow_mut()
+            .as_mut()
+            .and_then(|links| links.saved_menu_kind())
+    });
     match (menu, kind) {
         (Some(menu), Some(kind)) => menu.refresh(kind, done),
         _ => done(Ok(())),
     }
 }
 
-
+pub(crate) fn refresh_saved_document_menu(
+    menu: Option<super::SavedDocumentMenu>,
+    done: Box<dyn FnOnce(Result<(), String>)>,
+) {
+    let kind = LINKS.with(|slot| {
+        slot.borrow_mut()
+            .as_mut()
+            .and_then(|links| links.saved_menu_kind())
+    });
+    match (menu, kind) {
+        (Some(menu), Some(kind)) => menu.refresh(kind, done),
+        _ => done(Ok(())),
+    }
+}
 
 /// `documentLinkFileMenuItems(kind)`: the entries and the view their clicks
 /// act on; nothing before A attached or without a document of that kind
