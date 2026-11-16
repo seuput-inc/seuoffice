@@ -1,6 +1,6 @@
 # crates/shell
 
-3단계의 껍데기다. Tauri 3 알파 + `tauri-runtime-cef`(CEF)로 만든 실행 파일 하나이고, `main-core`를 같은 프로세스에 링크한다. 근거는 결정 0025(Rust 전환), 0029(껍데기 선택), 0030(중심 프로세스 `main-core`)이고, 모양은 `docs/seuoffice/3단계-셸-계약.md`가 정한다. 이 폴더는 자기 작업 공간과 잠금 파일을 가진다(`crates/Cargo.toml`이 `exclude`). CEF가 약 1 GB 내려받기라 Mac과 Windows 러너에서만 짓는다(`.github/workflows/seuoffice-shell.yml`).
+3단계의 껍데기다. 안정판 Tauri 2.12.5가 운영체제의 웹뷰(macOS WKWebView, Windows WebView2)로 띄우는 실행 파일 하나이고, `main-core`를 같은 프로세스에 링크한다. 근거는 결정 0025(Rust 전환), 0029(껍데기 선택), 0030(중심 프로세스 `main-core`)이고, 모양은 `docs/seuoffice/3단계-셸-계약.md`가 정한다. 이 폴더는 자기 작업 공간과 잠금 파일을 가진다(`crates/Cargo.toml`이 `exclude`). 웹뷰는 운영체제가 주므로 Mac과 Windows 러너에서만 짓는다(`.github/workflows/seuoffice-shell.yml`). 웹뷰와 셸 사이의 층은 `src/native/`다: 웹뷰마다 Rust가 새기는 신원(`BrowserId`, `NavigationId`, `DocumentId`)과 문서마다 브리지가 등록하는 비밀 값이 IPC 권한의 근거다.
 
 ## 지금 되는 것과 안 되는 것
 
@@ -18,23 +18,23 @@
 
 ## 짓기와 점검
 
-러너 밖에서 CEF를 받지 않고 점검하려면(`cef` 크레이트의 `dox` 기능을 쓴다):
+러너 밖에서는 짓지 않는다. `check-local.sh`는 Mac과 Windows에서만 돈다(WebView 헤더와 OS API가 있어야 한다):
 
 ```sh
 node crates/shell/bridge/preloads.mjs        # src/preload.rs가 묶음을 포함하므로 먼저
 crates/shell/ci/check-local.sh check
 crates/shell/ci/check-local.sh clippy --no-deps --all-targets -- -D warnings
-crates/shell/ci/check-local.sh test          # 순수한 시험만 돈다. CEF는 부르지 않는다
+crates/shell/ci/check-local.sh test          # 순수한 상태 기계의 시험(`native::`)과 호스트 시험이 돈다
 ```
 
-러너에서는 워크플로가 같은 순서로 지은 뒤 측정까지 돌린다. Mac은 `npx tauri build --bundles app`(CEF 프레임워크가 `.app` 안에 있어야 한다), Windows는 `cargo build --release`다. `cef-dll-sys`는 CEF 실행 파일들을 빌드 스크립트 OUT_DIR에서 세 단계 위로 복사하는데, 새 cargo의 빌드 폴더 배치에서는 `target/release/build`에 떨어져 `target/release`의 exe 옆에 `libcef.dll`이 없다(실행하면 bash가 127). 그래서 워크플로가 CEF 배포판에서 `target/release`로 따로 복사한다. CEF 목록(`index.json`)이 `cef` 크레이트의 10 MB 상한을 넘어 `ci/cef-index-mirror.py`로 줄인 목록을 내준다(`CEF_DOWNLOAD_URL`).
+러너에서는 워크플로가 같은 순서로 지은 뒤 측정까지 돈다. Mac은 `npx tauri build --bundles app`, Windows는 `cargo build --release`다. 내려받을 런타임이 없으므로 `.app`과 exe에 웹뷰를 따로 넣지 않는다. 작업 단위마다의 빠른 점검은 워크플로를 `gate=check`로 부르는 `check` 일이다(`cargo check`만 돌려 몇 분 안에 끝나고, `ci/slice-diagnostics.mjs`가 맡은 파일의 진단 수를 센다). 잠금 파일은 Ubuntu 러너의 `lock` 일로 한 번 만들어 가져온다(워크플로의 `gate=lock`).
 
 ## 환경 변수와 인자
 
 |                               | 뜻                                                                                                                                                                           |
 | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `SEUOFFICE_SHELL_PARTIAL=1`   | 채널 표가 덜 찼어도 시작한다. 없으면 `Completeness::Complete`라서 처리기가 없는 채널이 하나라도 있으면 시작하지 않고 목록을 찍는다. 묶음이 다 차기 전에는 이것이 있어야 뜬다 |
-| `SEUOFFICE_USER_DATA`         | userData 폴더를 바꾼다(Electron 판의 시험 몰이꾼과 같다). Chromium 프로필은 그 옆 `<값>-cef`에 둔다                                                                          |
+| `SEUOFFICE_USER_DATA`         | userData 폴더를 바꾼다(Electron 판의 시험 몰이꾼과 같다). 웹뷰 저장소는 Windows에서 그 아래 `webview2/`에, macOS에서는 폴더 경로에서 만든 데이터 저장소 식별자에 둔다 |
 | `SEUOFFICE_APPS_DIR`          | `apps` 폴더. 기본은 빌드한 체크아웃이다. 렌더러는 `<apps>/<앱>/out/renderer`에서 읽는다                                                                                      |
 | `--measure-dialog <out.json>` | 아래 측정                                                                                                                                                                    |
 | `SEUOFFICE_SHELL_TRACE=1`     | 시각이 붙은 IPC 길 기록(`src/trace.rs`)을 stderr에 남긴다. `--measure-dialog`은 늘 켠다                                                                                      |
@@ -55,7 +55,7 @@ src/preload.rs     묶은 preload를 바이너리에 넣음
 src/paths.rs       app.getPath
 src/host/      호스트들(dialog, os_shell, clipboard, contents, window, w, unbuilt 와 다른 묶음의 빈 파일)
 src/measure.rs --measure-dialog
-ci/            CEF 목록 줄이기, 로컬 점검
+ci/            로컬 점검, 맡은 파일별 진단 세기(slice-diagnostics.mjs)
 ```
 
 ## IPC (계약 2절의 실제 모양)
@@ -63,13 +63,13 @@ ci/            CEF 목록 줄이기, 로컬 점검
 - 명령 `ipc_invoke`의 본문은 프레임 `{id, channel, args}`(raw)다. 명령은 받았다는 표시만 답하고, 처리기의 답은 그 뷰의 출력 흐름에 `{reply: id, value | error}` 프레임으로 간다. `ipc_send`는 `{channel, args}`이고 답이 없다.
 - 출력 흐름은 Tauri `ipc::Channel`이다. 브리지가 페이지가 시작될 때 `ipc_listen`으로 건넨다. 그 전에 나가는 프레임은 `TauriOutlet`이 기다려 두었다가(최대 1024개) 흐름이 열리면 순서대로 보낸다. 같은 뷰가 `ipc_listen`을 다시 부르면 새 문서로 보고 이전 문서의 호출을 취소한다.
 - 브리지는 명령을 한 줄로 세운다(앞 명령의 받았다는 표시를 기다린 뒤 다음을 보낸다). 동시에 보낸 요청은 Tauri의 HTTP 길에서 순서가 뒤바뀔 수 있는데, 처리기는 뷰마다 보낸 순서를 지켜야 해서다. 대가는 호출마다 받았다는 표시 한 번의 왕복이다.
-- 동기 호출은 **`http://seuoffice-ipc.localhost/<채널>`로 가는 동기 XHR**이다. 계약 문서의 `seuoffice-ipc://sync/<ch>`는 Electron/WKWebView식 이름이고, CEF 런타임은 사용자 스킴을 `http://<스킴>.localhost`로만 내준다. 같은 스킴이 표에 없는 예약 채널 셋을 답한다: `webutils:dropped-paths`, `webframe:set-zoom-factor`, `webframe:get-zoom-factor`.
+- 동기 호출은 **`seuoffice-ipc` 스킴으로 가는 동기 XHR**이다. macOS는 `seuoffice-ipc://localhost/<채널>`, Windows는 `http://seuoffice-ipc.localhost/<채널>`이고, 문서의 비밀 값이 `x-seuoffice-doc` 머리글로 따라간다. 같은 스킴이 표에 없는 예약 채널 셋을 답한다: `webutils:dropped-paths`, `webframe:set-zoom-factor`, `webframe:get-zoom-factor`.
 - 보낸 이는 호출한 웹뷰의 이름표로 찾는다(`ViewTable`). 브리지가 없는 웹뷰의 메시지는 거절하고, 채널의 `surfaces`에 없는 웹뷰는 `Dispatcher`가 거절한다. 브리지가 있는 웹뷰는 자기 앱 스킴 밖으로 이동하지 못하고(`on_navigation`) `window.open`도 못 연다.
 - 처리기의 panic은 `catch_unwind`로 오류 답이 된다. 이를 위해 `Cargo.toml`의 release 프로필이 `panic = "unwind"`다.
 
 ## 렌더러 주소
 
-Electron 판은 `genoffice-app://<host>/<파일>`로 내줬고 처리기들(`main_core`의 `renderer_url`)이 지금도 그 이름으로 페이지를 부른다. CEF 런타임은 사용자 스킴을 `http://<스킴>.localhost/`로만 내주므로 호스트마다 스킴을 하나씩 둔다: `http://genoffice-app-<host>.localhost/<파일>`. 호스트마다 출처가 따로라서 localStorage와 IndexedDB가 호스트별로 갈린다(Electron도 그랬다). `app_scheme::webview_url`과 `electron_url`이 두 모양을 바꾼다. 처리기 쪽은 바뀌지 않는다. 호스트는 `main_core`의 `RENDERER_HOSTS` 열하나에 셸 자신의 `shell`이 더해진 것이고, 폴더는 `<apps>/<앱>/out/renderer`(`help`는 셸 것)다. 포장한 셸은 `<resources>/renderer/<host>`를 먼저 본다(묶음 설정은 묶음 U).
+Electron 판은 `genoffice-app://<host>/<파일>`로 내줬고 처리기들(`main_core`의 `renderer_url`)이 지금도 그 이름으로 페이지를 부른다. 웹뷰는 호스트마다 스킴을 하나씩 두는 모양이 필요하므로 `genoffice-app-<host>`를 쓴다. 주소는 운영체제마다 다르다: macOS는 `genoffice-app-<host>://localhost/<파일>`, Windows는 `http://genoffice-app-<host>.localhost/<파일>`이다. 호스트마다 출처가 따로라서 localStorage와 IndexedDB가 호스트별로 갈린다(Electron도 그랬다). `app_scheme::webview_url`과 `electron_url`이 두 모양을 바꾼다. 처리기 쪽은 바뀌지 않는다. 호스트는 `main_core`의 `RENDERER_HOSTS` 열하나에 셸 자신의 `shell`이 더해진 것이고, 폴더는 `<apps>/<앱>/out/renderer`(`help`는 셸 것)다. 포장한 셸은 `<resources>/renderer/<host>`를 먼저 본다(묶음 설정은 묶음 U).
 
 ## preload
 
@@ -78,7 +78,7 @@ Electron 판은 `genoffice-app://<host>/<파일>`로 내줬고 처리기들(`mai
 계약과 다른 점:
 
 - Tauri 내부 객체를 전역에서 **지우지는 못한다**. Tauri 자신의 `invoke`가 호출마다 `window.__TAURI_INTERNALS__`를 읽기 때문이다(`scripts/core.js`). 브리지는 참조를 클로저에 잡고 속성을 열거되지 않게 고정한다. 웹뷰에는 capability가 없어 플러그인 명령은 막혀 있고, 셸의 명령 셋은 `Dispatcher`의 surface 검사가 지킨다.
-- `webFrame`은 확대 배율만 이어졌다. `isWordMisspelled`와 `getWordSuggestions`(sheets의 `nativeSpell`)는 CEF 페이지에서 닿는 철자 엔진이 없어 `false`와 `[]`를 답하고 한 번 경고한다.
+- `webFrame`은 확대 배율만 이어졌다. `isWordMisspelled`와 `getWordSuggestions`(sheets의 `nativeSpell`)는 macOS에서 `NSSpellChecker`로 답하고, Windows에서는 WebView2에 닿는 철자 엔진이 없어 `false`와 `[]`를 답한다.
 - `webUtils.getPathForFile`은 창의 끌어 놓기 이벤트가 준 경로를 `dataTransfer.files` 순서로 짝짓는다. 끌어 놓기 이벤트가 DOM 이벤트보다 먼저 오는지는 러너에서 처음 본다.
 
 ## 호스트
@@ -109,14 +109,14 @@ Electron 판은 `genoffice-app://<host>/<파일>`로 내줬고 처리기들(`mai
 
 ## 첫 러너 실행에서 확인할 것
 
-1. **빌드**: Mac `.app`에 CEF 프레임워크가 들어가고, Windows `target/release`에 `libcef.dll` 등이 복사된다.
+1. **빌드**: Mac `.app`과 Windows `target/release`가 만들어지고, 운영체제 웹뷰(WKWebView, WebView2)를 쓰므로 따로 복사할 런타임이 없다.
 2. **시작**: `shell: N handlers registered`가 찍히고(`PARTIAL`이 필요 없는 측정 모드는 `AsRegistered`), 측정 창이 뜬다. `genoffice-app-shell.localhost`가 파일 처리기로 내주는 HTML에 Tauri와 preload 스크립트가 들어가는지.
 3. **`ipc_listen`의 `Channel`**: 첫 프레임이 와서 `measureIpc.invoke`가 풀린다.
 4. **동기 XHR**: `http://seuoffice-ipc.localhost/…`로 교차 출처 요청이 되고(`Access-Control-Allow-Origin: *`), `sync.error`가 없다.
 5. **측정값**: `idle`과 `echo`가 시제품 값과 비슷한지, 직렬화한 명령의 값이 얼마나 느린지. `dialog`의 `during`이 2초 가까이 되는 것은 설계대로다. 받아들일 수 없는 쪽은 `ui`와 `core` 가운데 어느 쪽 값이 큰지로 가른다.
 6. 팝업 거부와 `on_navigation`이 페이지를 막지 않는지(측정 페이지는 앱 스킴 밖으로 나가지 않는다).
 
-러너에서 처음 보는 것이라 로컬에서 확인하지 못한 API는 다음이다: `Window::add_child`(탭 뷰, 아직 부르지 않음), `WebviewCefExt::on_dev_tools_protocol`로 받은 CDP 결과의 `data` 모양(`Page.printToPDF`는 시제품이 같은 방식으로 썼다), 끌어 놓기 이벤트와 DOM `drop`의 순서, 앱 스킴 HTML에 주입되는 초기화 스크립트가 `<head>` 맨 앞인지.
+러너에서 처음 보는 것이라 로컬에서 확인하지 못한 API는 다음이다: `Window::add_child`(탭 뷰, 아직 부르지 않음), WebView2의 CDP 결과(`Page.printToPDF`, `Page.captureScreenshot`)의 `data` 모양, macOS `NSPrintOperation`의 PDF 쪽수와 여백, 끌어 놓기 이벤트와 DOM `drop`의 순서, 앱 스킴 HTML에 주입되는 초기화 스크립트가 `<head>` 맨 앞인지, WKWebView에서 사용자 스킴으로 가는 동기 XHR.
 
 ## 기록(trace)
 
@@ -125,7 +125,7 @@ Electron 판은 `genoffice-app://<host>/<파일>`로 내줬고 처리기들(`mai
 - `window`: 창을 연 주소, 브리지 종류, 초기화 스크립트 크기.
 - `scheme`: 앱 스킴 요청과 답.
 - `page`, `frame`: 페이지 시작과 끝, 이동 실패, 렌더러 종료.
-- `console`: 그 웹뷰의 console을 CEF `on_console_message`로 받은 것.
+- `console`: 그 웹뷰의 console. 브리지가 `trace::enabled()`일 때만 전달한다.
 - `ipc`, `sync`: 명령이 닿은 것(뷰, 채널, 인자 수, 바이트).
 - `outlet`: 출력 흐름이 열린 것과 보낸 프레임.
 - `measure`: 측정 처리기.

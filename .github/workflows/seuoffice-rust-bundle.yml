@@ -18,8 +18,6 @@ permissions:
   contents: read
 
 env:
-  CEF_CRATE_VERSION: '154.5.0'
-  CEF_VERSION: '154.0.34'
   ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
 
 jobs:
@@ -83,26 +81,16 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version-file: .nvmrc
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable branch, 2026-07
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
+          toolchain: 1.95.0
           targets: wasm32-wasip1
-      - name: Prepare pinned Tauri source
-        run: bash crates/shell/ci/prepare-tauri-source.sh
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           workspaces: |
             crates/shell
             apps/sheets/native/xlsx-engine
           cache-on-failure: true
-      - name: CEF path
-        run: echo "CEF_PATH=$HOME/.cache/tauri-cef" >> "$GITHUB_ENV"
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
-        with:
-          path: ~/.cache/tauri-cef
-          key: shell-cef-${{ runner.os }}-${{ runner.arch }}-${{ env.CEF_CRATE_VERSION }}
-      - name: ninja (Windows)
-        if: matrix.platform == 'win'
-        run: ninja --version || choco install ninja -y
       - name: Install dependencies
         run: npm ci
       - name: Prepare RHWP source
@@ -146,13 +134,6 @@ jobs:
           APPLE_SIGNING_IDENTITY: '-'
         run: |
           set -euo pipefail
-          python3 ci/cef-index-mirror.py 8099 "$CEF_VERSION" > "$RUNNER_TEMP/cef-mirror.log" 2>&1 &
-          mirror=$!
-          trap 'kill "$mirror" 2>/dev/null || true' EXIT
-          ready=false
-          for _ in $(seq 1 90); do if curl -sf http://127.0.0.1:8099/index.json -o /dev/null; then ready=true; break; fi; sleep 1; done
-          [ "$ready" = true ]
-          export CEF_DOWNLOAD_URL=http://127.0.0.1:8099
           preflight_first=true
           profile_preflight() {
             PREFLIGHT_FIRST="$preflight_first" PREFLIGHT_RECEIPT="$(cygpath -w "$RUNNER_TEMP/profile-preflight.json")" powershell -NoProfile -NonInteractive -Command '
@@ -200,7 +181,7 @@ jobs:
               suffix=''
               [ "$channel" != stable ] || suffix='-stable'
               if [ '${{ matrix.platform }}' = win ]; then
-                npx tauri build --config bundle/windows.conf.json --config "{\"version\":\"$v\"}" --bundles nsis --verbose
+                npx tauri build --config bundle/windows.conf.json --config "{\"version\":\"$v\"}" --bundles nsis --verbose -- --locked
                 [ "$(find target/release/bundle/nsis -name '*.exe' -type f | wc -l | tr -d ' ')" = 1 ]
                 built_installer=$(find target/release/bundle/nsis -name '*.exe' -type f)
                 installer="$out/SeuOffice-Setup-$v$suffix.exe"
@@ -220,7 +201,7 @@ jobs:
                 profile_preflight
                 node bundle/release-feed.mjs feed --version "$v" --platform win32 "$installer"
               else
-                npx tauri build --config bundle/macos.conf.json --config "{\"version\":\"$v\"}" --bundles app,dmg --verbose
+                npx tauri build --config bundle/macos.conf.json --config "{\"version\":\"$v\"}" --bundles app,dmg --verbose -- --locked
                 [ "$(find target/release/bundle/macos -maxdepth 1 -name '*.app' -type d | wc -l | tr -d ' ')" = 1 ]
                 [ "$(find target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -type f | wc -l | tr -d ' ')" = 1 ]
                 app=$(find target/release/bundle/macos -maxdepth 1 -name '*.app' -type d)

@@ -1,7 +1,6 @@
-// The Node runtime the seuoffice command line runs on in the CEF build
-// (packages/cli, decision of 2026-11-14: the CLI stays TypeScript, so the
-// installer carries a Node of its own; the Electron build ran it on the app
-// binary with ELECTRON_RUN_AS_NODE, which CEF does not have).
+// The Node runtime the seuoffice command line runs on in the Tauri build
+// (packages/cli stays TypeScript, so the installer carries its own Node;
+// the Electron build ran it on the app binary with ELECTRON_RUN_AS_NODE).
 //
 //   node crates/shell/bundle/node-runtime.mjs [--platform darwin|win32] [--arch arm64|x64]
 //

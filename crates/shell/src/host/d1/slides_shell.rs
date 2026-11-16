@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
-use cef::{ImplBrowser, ImplDisplay, ImplFrame};
+use cef::{ImplBrowser, ImplFrame};
+#[cfg(not(any(target_os = "macos", windows)))]
+use cef::ImplDisplay;
 use clipboard_rs::{Clipboard as _, ClipboardContent, ClipboardContext, RustImageData};
 use clipboard_rs::common::RustImage;
 use main_core::packages::electron_utils::generate_handoff::GenerateHandoffTarget;
@@ -17,14 +19,18 @@ use shell_contract::{IpcValue, Surface, ViewId, WindowId};
 use shell_ipc_d1::slides::engine::{Display, EngineError, HeadlessExportTarget, PdfExportAnswer, PreparedOpen, PresenterWindowAction, RenderOwner, SlidesShell, SlidesShellHost, TakenHandoff};
 use shell_ipc_m::hosts::{PrintProfile, PrintSurface, PrintWindowSpec};
 use shell_ipc_w::tabs::TabsState;
-use tauri::{Manager, LogicalPosition, LogicalSize};
+use tauri::Manager;
+#[cfg(not(windows))]
+use tauri::{LogicalPosition, LogicalSize};
 use tauri_runtime_cef::{FrameEventKind, WebviewCefExt};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use tauri_runtime_cef::WindowCefExt;
 
 use crate::host::{HostContext, on_ui, w::{on_core, post_core}};
 use crate::host::window::{Bridge, ViewSpec, WindowOptions, WindowSpec};
 
+#[cfg(any(target_os = "macos", windows))]
+mod display;
 #[cfg(target_os = "macos")]
 mod fullscreen_move;
 use crate::ipc::native_owner;
@@ -306,12 +312,14 @@ fn clipboard<T: Send + 'static>(cx: &HostContext, work: impl FnOnce(&ClipboardCo
     })
 }
 
+#[cfg(not(any(target_os = "macos", windows)))]
 fn display(native: &cef::Display, work_area: bool) -> Display {
     let bounds = if work_area { native.work_area() } else { native.bounds() };
     Display { id: native.id(), x: f64::from(bounds.x), y: f64::from(bounds.y),
         width: f64::from(bounds.width), height: f64::from(bounds.height) }
 }
 
+#[cfg(not(any(target_os = "macos", windows)))]
 fn display_by_id(id: i64) -> Result<cef::Display, String> {
     let mut displays = vec![None; cef::display_get_count()];
     cef::display_get_alls(Some(&mut displays));
@@ -319,9 +327,25 @@ fn display_by_id(id: i64) -> Result<cef::Display, String> {
         .ok_or_else(|| "The presentation display was disconnected".into())
 }
 
+#[cfg(any(target_os = "macos", windows))]
+fn display_by_id(id: i64) -> Result<display::NativeDisplay, String> { display::by_id(id) }
+
+#[cfg(any(target_os = "macos", windows))]
+fn display(native: &display::NativeDisplay, work_area: bool) -> Display {
+    if work_area { native.work } else { native.bounds }
+}
+
 fn set_bounds(window: &tauri::Window, bounds: Display) -> Result<(), String> {
-    window.set_position(LogicalPosition::new(bounds.x, bounds.y)).map_err(|error| error.to_string())?;
-    window.set_size(LogicalSize::new(bounds.width, bounds.height)).map_err(|error| error.to_string())
+    #[cfg(windows)]
+    {
+        window.set_position(tauri::PhysicalPosition::new(bounds.x, bounds.y)).map_err(|error| error.to_string())?;
+        window.set_size(tauri::PhysicalSize::new(bounds.width, bounds.height)).map_err(|error| error.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        window.set_position(LogicalPosition::new(bounds.x, bounds.y)).map_err(|error| error.to_string())?;
+        window.set_size(LogicalSize::new(bounds.width, bounds.height)).map_err(|error| error.to_string())
+    }
 }
 
 fn fullscreen_on(cx: &HostContext, window: WindowId, bounds: Display) -> Result<(), String> {
@@ -330,11 +354,10 @@ fn fullscreen_on(cx: &HostContext, window: WindowId, bounds: Display) -> Result<
 }
 
 fn fullscreen_window_on(window: &tauri::Window, bounds: Display) -> Result<(), String> {
+    let bounds = display(&display_by_id(bounds.id)?, false);
     #[cfg(target_os = "macos")]
     {
-        if window.is_simple_fullscreen().map_err(|error| error.to_string())? {
-            window.set_simple_fullscreen(false).map_err(|error| error.to_string())?;
-        }
+        window.set_simple_fullscreen(false).map_err(|error| error.to_string())?;
         set_bounds(&window, bounds)?;
         window.set_simple_fullscreen(true).map_err(|error| error.to_string())
     }
@@ -358,9 +381,14 @@ fn move_presenter_native(native: &tauri::Window, target: Display) -> Result<(), 
     if simple { native.set_simple_fullscreen(false).map_err(|error| error.to_string())?; }
     set_bounds(native, bounds)?;
     if fullscreen {
-        let point = cef::Point { x: (bounds.x + bounds.width / 2.0) as i32, y: (bounds.y + bounds.height / 2.0) as i32 };
-        let physical = cef::display_convert_screen_point_to_pixels(Some(&point));
-        native.set_fullscreen_on_monitor(tauri::PhysicalPosition::new(f64::from(physical.x), f64::from(physical.y))).map_err(|error| error.to_string())?;
+        #[cfg(not(windows))]
+        {
+            let point = cef::Point { x: (bounds.x + bounds.width / 2.0) as i32, y: (bounds.y + bounds.height / 2.0) as i32 };
+            let physical = cef::display_convert_screen_point_to_pixels(Some(&point));
+            native.set_fullscreen_on_monitor(tauri::PhysicalPosition::new(f64::from(physical.x), f64::from(physical.y))).map_err(|error| error.to_string())?;
+        }
+        #[cfg(windows)]
+        native.set_fullscreen_on_monitor(tauri::PhysicalPosition::new(bounds.x + bounds.width / 2.0, bounds.y + bounds.height / 2.0)).map_err(|error| error.to_string())?;
     }
     #[cfg(target_os = "macos")]
     if simple { native.set_simple_fullscreen(true).map_err(|error| error.to_string())?; }
@@ -1112,6 +1140,7 @@ fn open_audience(cx: &HostContext, display: Display, source: RenderOwner, cancel
     let ui = cx.ui.clone();
     ui.post(Box::new(move || {
         let result = native_owner::run_accepted_ui_pair(start.cx.ui.as_ref(), &start.source, &start.source, &start.cancel, &start.pending, || {
+            let display = display(&display_by_id(display.id)?, false);
             let frames = start.clone();
             let closed = start.clone();
             let options = WindowOptions {
@@ -1153,7 +1182,7 @@ fn open_audience(cx: &HostContext, display: Display, source: RenderOwner, cancel
             }
             start.cx.views.prepare_slides_media(view)?;
             let native = native_window(&start.cx, window)?;
-            native.set_position(LogicalPosition::new(display.x, display.y)).map_err(|error| error.to_string())?;
+            set_bounds(&native, display)?;
             native.set_background_color(Some(tauri::utils::config::Color(0, 0, 0, 255))).map_err(|error| error.to_string())?;
             start.cx.windows.load_view(view, "genoffice-app://slides/index.html?mode=audience")
         }).and_then(|result| result);
@@ -1414,17 +1443,39 @@ impl SlidesShell for Shell {
 
     fn ask_microphone(&self, done: Box<dyn FnOnce(Result<bool, String>) + Send>) { self.cx.ui.post(Box::new(move || microphone(done))); }
 
-    fn displays(&self) -> Vec<Display> {
+    fn displays(&self) -> Result<Vec<Display>, EngineError> {
         on_ui(&self.cx.ui, || {
-            let mut displays = vec![None; cef::display_get_count()];
-            cef::display_get_alls(Some(&mut displays));
-            displays.into_iter().flatten().map(|native| display(&native, false)).collect()
-        })
+            #[cfg(any(target_os = "macos", windows))]
+            { display::all().map(|displays| displays.into_iter().map(|display| display.bounds).collect()) }
+            #[cfg(not(any(target_os = "macos", windows)))]
+            {
+                let mut displays = vec![None; cef::display_get_count()];
+                cef::display_get_alls(Some(&mut displays));
+                Ok(displays.into_iter().flatten().map(|native| display(&native, false)).collect())
+            }
+        }).map_err(EngineError)
     }
 
     fn display_of(&self, window: Option<WindowId>) -> Result<Display, EngineError> {
+        #[cfg(any(target_os = "macos", windows))]
+        let window = window.map(|id| {
+            self.cx.views.window_lifecycle(id).ok_or("The presentation window is gone".to_owned())?.window_handle()
+        }).transpose().map_err(EngineError)?;
+        #[cfg(not(any(target_os = "macos", windows)))]
         let cx = self.cx.clone();
         on_ui(&self.cx.ui, move || {
+            #[cfg(any(target_os = "macos", windows))]
+            {
+                match window {
+                    Some(window) => {
+                        let handle = window.native_window_handle().map_err(|error| error.to_string())?;
+                        handle.with_window(|_| display::for_window(&window)).map_err(|error| error.to_string())?
+                    }
+                    None => display::primary(),
+                }
+            }
+            #[cfg(not(any(target_os = "macos", windows)))]
+            {
             let native = if let Some(window) = window {
                 let window = native_window(&cx, window)?;
                 let position = window.outer_position().map_err(|error| error.to_string())?;
@@ -1433,6 +1484,7 @@ impl SlidesShell for Shell {
                 cef::display_get_matching_bounds(Some(&bounds), 1)
             } else { cef::display_get_primary() };
             native.map(|native| display(&native, false)).ok_or_else(|| "The native display is unavailable".to_owned())
+            }
         }).map_err(EngineError)
     }
 
@@ -1444,7 +1496,7 @@ impl SlidesShell for Shell {
             #[cfg(target_os = "macos")]
             {
                 let native = native_window(&cx, window)?;
-                if native.is_simple_fullscreen().map_err(|error| error.to_string())? { native.set_simple_fullscreen(false).map_err(|error| error.to_string())?; }
+                native.set_simple_fullscreen(false).map_err(|error| error.to_string())?;
             }
             cx.windows.close_window(window)
         }));

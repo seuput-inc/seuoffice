@@ -1,24 +1,42 @@
 name: seuoffice shell
 
-# The stage 3 shell (crates/shell, decision 0029): Tauri 3 on the CEF runtime
-# with main-core linked in. Built on the Mac and Windows runners only: the cef
-# crate downloads the CEF distribution (about 1 GB), which no workstation and no
-# Linux job needs. Each job
+# The stage 3 shell uses Tauri 2 and the system webview, with main-core linked in.
+# Built on the Mac and Windows runners. The default gate (`full`) is, per job,
 #   1. bundles the preloads (crates/shell/bridge/preloads.mjs, 19 of them),
 #   2. builds the shell,
 #   3. runs `--measure-dialog` (the IPC measurement the contract asks of
 #      batch W) where the runner has a display, and uploads its JSON.
 # Start it by hand while the branch is young:
 #   gh workflow run "seuoffice shell" --ref <branch>
+# The other gates are for the Tauri 2 migration:
+#   gate=check  `cargo check` on both OSes in minutes (no wasm, engine host or bundle), then
+#               crates/shell/ci/slice-diagnostics.mjs counts the diagnostics in `owned`
+#   gate=lock   Ubuntu only: regenerates crates/shell/Cargo.lock from the exact `source_sha`
+#               and uploads it as an artifact. Nothing is committed from CI.
 
 on:
   push:
-    branches: ['feat/rust-shell-*']
+    branches: ['feat/rust-shell-*', 'feat/tauri2-*']
     paths:
       - 'crates/shell/**'
       - '.github/workflows/seuoffice-shell.yml'
   workflow_dispatch:
     inputs:
+      gate:
+        description: "full (build, clippy, tests, measurement), check (cargo check and per-file diagnostics) or lock (regenerate Cargo.lock on Ubuntu)"
+        type: choice
+        options: [full, check, lock]
+        default: full
+      owned:
+        description: "gate=check: comma-separated path prefixes whose diagnostics must be zero"
+        default: crates/shell/src/native/,crates/shell/src/main.rs
+      source_sha:
+        description: "gate=lock: the exact commit to generate the lock from (40 hex digits)"
+        default: ''
+      regenerate:
+        description: "gate=lock: use `cargo generate-lockfile` (newest of everything) instead of `cargo update --workspace`"
+        type: boolean
+        default: false
       bundle:
         description: Also build the installers and their update feed (the bundle job, batch U)
         type: boolean
@@ -34,19 +52,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: seuoffice-shell-${{ github.ref }}
+  group: seuoffice-shell-${{ github.ref }}-${{ inputs.gate || 'push' }}
   cancel-in-progress: true
 
 env:
-  # the version of the cef crate Cargo.lock pins, and the CEF distribution it
-  # downloads (the build metadata of cef-dll-sys 154.5.0+154.0.34)
-  CEF_CRATE_VERSION: '154.5.0'
-  CEF_VERSION: '154.0.34'
   # the preload bundles need the workspace packages' sources, not Electron
   ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
 
 jobs:
   mac:
+    if: github.event_name != 'workflow_dispatch' || inputs.gate == 'full'
     runs-on: macos-latest
     timeout-minutes: 90
     defaults:
@@ -60,33 +75,18 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable branch, 2026-07
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
+          toolchain: 1.95.0
           components: rustfmt, clippy
           targets: wasm32-wasip1
-      - name: Prepare pinned Tauri window lifetime source
-        working-directory: .
-        run: bash crates/shell/ci/prepare-tauri-source.sh
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: crates/shell
           cache-on-failure: true
 
-      # The cef crate downloads the CEF distribution into CEF_PATH on the first
-      # build; one cache entry per CEF version serves later runs.
-      - name: CEF path
-        run: echo "CEF_PATH=${USERPROFILE:-$HOME}/.cache/tauri-cef" >> "$GITHUB_ENV"
-      - name: restore the CEF cache
-        id: cef-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/tauri-cef
-          key: shell-cef-${{ runner.os }}-${{ runner.arch }}-${{ env.CEF_CRATE_VERSION }}
-
       - name: tools
         run: |
-          cmake --version
-          ninja --version || brew install ninja
           rustc --version
           cargo --version
 
@@ -122,32 +122,15 @@ jobs:
       - name: build the app bundle
         id: build
         run: |
-          # the CDN's index.json is past the 10 MB body limit of the cef crate's build script
-          python3 ci/cef-index-mirror.py 8099 "$CEF_VERSION" > "$RUNNER_TEMP/cef-mirror.log" 2>&1 &
-          mirror=$!
-          trap 'kill $mirror 2>/dev/null || true' EXIT
-          for _ in $(seq 1 90); do curl -sf http://127.0.0.1:8099/index.json -o /dev/null && break; sleep 1; done
-          cat "$RUNNER_TEMP/cef-mirror.log"
-          export CEF_DOWNLOAD_URL=http://127.0.0.1:8099
           start=$(date +%s)
-          npx tauri build --bundles app --verbose --config '{"bundle":{"resources":{"out/engine-host":"engine-host","../../apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar":"native/xlsx-sidecar","../../packages/pdf2docx/ocr-helper/vision-ocr":"ocr/vision-ocr"}}}'
+          npx tauri build --bundles app --verbose --config '{"bundle":{"resources":{"out/engine-host":"engine-host","../../apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar":"native/xlsx-sidecar","../../packages/pdf2docx/ocr-helper/vision-ocr":"ocr/vision-ocr"}}}' -- --locked
           echo "seconds=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
 
-      - name: save the CEF cache
-        if: always() && steps.cef-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/tauri-cef
-          key: shell-cef-${{ runner.os }}-${{ runner.arch }}-${{ env.CEF_CRATE_VERSION }}
-
       - name: clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: unit tests
-        run: |
-          app=$(find target/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)
-          test -n "$app"
-          DYLD_FRAMEWORK_PATH="$PWD/$app/Contents/Frameworks${DYLD_FRAMEWORK_PATH:+:$DYLD_FRAMEWORK_PATH}" cargo test --release
+        run: cargo test --locked --release
 
       - name: measure the dialog (--measure-dialog)
         timeout-minutes: 10
@@ -155,7 +138,7 @@ jobs:
           out="$RUNNER_TEMP/measure"
           mkdir -p "$out"
           app=$(find target/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)
-          find "$app/Contents/MacOS" "$app/Contents/Frameworks" -maxdepth 1 -ls | tee "$out/app-contents.txt"
+          find "$app/Contents/MacOS" -maxdepth 1 -ls | tee "$out/app-contents.txt"
           set +e
           SEUOFFICE_USER_DATA="$out/userdata" "$app/Contents/MacOS/SeuOffice" --measure-dialog "$out/dialog.json" 2>&1 | tee "$out/shell.log"
           status=${PIPESTATUS[0]}
@@ -175,6 +158,7 @@ jobs:
           if-no-files-found: warn
 
   win:
+    if: github.event_name != 'workflow_dispatch' || inputs.gate == 'full'
     runs-on: windows-latest
     timeout-minutes: 90
     defaults:
@@ -186,31 +170,18 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable branch, 2026-07
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
+          toolchain: 1.95.0
           components: clippy
           targets: wasm32-wasip1
-      - name: Prepare pinned Tauri window lifetime source
-        working-directory: .
-        run: bash crates/shell/ci/prepare-tauri-source.sh
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: crates/shell
           cache-on-failure: true
 
-      - name: CEF path
-        run: echo "CEF_PATH=${USERPROFILE}/.cache/tauri-cef" >> "$GITHUB_ENV"
-      - name: restore the CEF cache
-        id: cef-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/tauri-cef
-          key: shell-cef-${{ runner.os }}-${{ runner.arch }}-${{ env.CEF_CRATE_VERSION }}
-
       - name: tools
         run: |
-          cmake --version
-          ninja --version || choco install ninja -y
           rustc --version
           cargo --version
 
@@ -238,20 +209,11 @@ jobs:
           node packages/pdf2docx/ocr-helper/build-win.mjs
           node apps/shell/src/main/quick-look/build-win.mjs
 
-      # No installer yet (batch U): the build copies the CEF runtime files next
-      # to the executable (cef-dll-sys), so target/release runs as it is.
       - name: build
         id: build
         run: |
-          # the CDN's index.json is past the 10 MB body limit of the cef crate's build script
-          python3 ci/cef-index-mirror.py 8099 "$CEF_VERSION" > "$RUNNER_TEMP/cef-mirror.log" 2>&1 &
-          mirror=$!
-          trap 'kill $mirror 2>/dev/null || true' EXIT
-          for _ in $(seq 1 90); do curl -sf http://127.0.0.1:8099/index.json -o /dev/null && break; sleep 1; done
-          cat "$RUNNER_TEMP/cef-mirror.log"
-          export CEF_DOWNLOAD_URL=http://127.0.0.1:8099
           start=$(date +%s)
-          cargo build --release --verbose
+          cargo build --locked --release --verbose
           echo "seconds=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
           mkdir -p target/release/resources/{engine-host,native,ocr,quicklook}
           cp -R out/engine-host/. target/release/resources/engine-host/
@@ -260,31 +222,11 @@ jobs:
           cp ../../apps/shell/src/main/quick-look/win-quicklook.exe target/release/resources/quicklook/
           ls -la target/release
 
-      - name: save the CEF cache
-        if: always() && steps.cef-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/tauri-cef
-          key: shell-cef-${{ runner.os }}-${{ runner.arch }}-${{ env.CEF_CRATE_VERSION }}
-
-      # cef-dll-sys copies the CEF runtime files next to the executable by
-      # walking up from its build script's OUT_DIR, which cargo's newer build
-      # directory layout puts one level too deep: target/release holds
-      # SeuOffice.exe and no libcef.dll, and bash reports a missing DLL as
-      # exit 127. Copy them from the CEF distribution itself.
-      - name: CEF runtime next to the executable
-        run: |
-          cef_dll=$(find "$CEF_PATH" -name libcef.dll | head -1)
-          echo "libcef.dll in the CEF distribution: $cef_dll"
-          test -n "$cef_dll"
-          cp -rn "$(dirname "$cef_dll")"/. target/release/
-          echo "--- target/release"
-          find target/release -maxdepth 1 -type f -print | head -60
       - name: clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: unit tests
-        run: PATH="$PWD/target/release:$PATH" cargo test --release
+        run: cargo test --locked --release
 
       - name: measure the dialog (--measure-dialog)
         timeout-minutes: 10
@@ -293,7 +235,7 @@ jobs:
           mkdir -p "$out"
           ls target/release > "$out/target-release.txt"
           exe=./target/release/SeuOffice.exe
-          ls -la "$exe" target/release/libcef.dll
+          ls -la "$exe"
           set +e
           SEUOFFICE_USER_DATA="$out/userdata" "$exe" --measure-dialog "$out/dialog.json" 2>&1 | tee "$out/shell.log"
           status=${PIPESTATUS[0]}
@@ -314,7 +256,7 @@ jobs:
           if-no-files-found: warn
 
   bundle-version:
-    if: github.event_name == 'workflow_dispatch' && inputs.bundle
+    if: github.event_name == 'workflow_dispatch' && inputs.gate == 'full' && inputs.bundle
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -340,3 +282,125 @@ jobs:
       version: ${{ needs.bundle-version.outputs.version }}
       next_version: ${{ inputs.next_version }}
     secrets: inherit
+
+  # The per-slice gate of the Tauri 2 migration: `cargo check` of the real shell on both OSes.
+  # It skips the wasm engine, the engine host and the bundle, so it takes minutes, and
+  # slice-diagnostics.mjs says which files still carry compiler errors. Errors in files a
+  # slice does not own are expected until every slice landed (the crate cannot be green
+  # earlier), so the gate fails only on the owned prefixes.
+  check:
+    if: github.event_name == 'workflow_dispatch' && inputs.gate == 'check'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: crates/shell
+          cache-on-failure: true
+
+      - name: npm ci (esbuild and the workspace packages of the preloads)
+        run: npm ci --ignore-scripts
+      - name: rhwp source
+        run: node tools/build-rhwp-core.mjs --source-only
+      - name: preloads
+        run: node crates/shell/bridge/preloads.mjs
+
+      - name: cargo check
+        id: check
+        run: |
+          set +e
+          bash crates/shell/ci/check-local.sh check --all-targets --message-format=json > "$RUNNER_TEMP/diag.json" 2> "$RUNNER_TEMP/check.stderr"
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+          tail -n 40 "$RUNNER_TEMP/check.stderr"
+      - name: diagnostics of the owned files
+        env:
+          OWNED: ${{ inputs.owned }}
+          CHECK_STATUS: ${{ steps.check.outputs.status }}
+        run: |
+          node crates/shell/ci/slice-diagnostics.mjs "$RUNNER_TEMP/diag.json" --owned "$OWNED" --cargo-status "$CHECK_STATUS"
+      - name: upload the diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: shell-check-${{ runner.os }}
+          path: |
+            ${{ runner.temp }}/diag.json
+            ${{ runner.temp }}/check.stderr
+          if-no-files-found: warn
+
+  # Cargo.lock of crates/shell, generated once on Ubuntu from an exact commit and handed over
+  # as an artifact. The shell is its own workspace, so no other lock moves. A person reviews
+  # the diff and imports it; CI never commits.
+  lock:
+    if: github.event_name == 'workflow_dispatch' && inputs.gate == 'lock'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - name: the checkout is the exact commit asked for
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          case "$SOURCE_SHA" in
+            *[!0-9a-f]*|'') echo "source_sha must be 40 lowercase hex digits" >&2; exit 1 ;;
+          esac
+          test "${#SOURCE_SHA}" -eq 40 || { echo "source_sha must be 40 hex digits" >&2; exit 1; }
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.95.0
+      - name: input hashes
+        run: |
+          mkdir -p "$RUNNER_TEMP/lock"
+          {
+            echo "source_sha $(git rev-parse HEAD)"
+            sha256sum crates/shell/Cargo.toml crates/shell/Cargo.lock
+          } | tee "$RUNNER_TEMP/lock/input-hashes.txt"
+      - name: resolve
+        env:
+          REGENERATE: ${{ inputs.regenerate }}
+        run: |
+          if [ "$REGENERATE" = "true" ]; then
+            cargo generate-lockfile --manifest-path crates/shell/Cargo.toml
+          else
+            cargo update --manifest-path crates/shell/Cargo.toml --workspace
+          fi
+      - name: the lock satisfies the manifest
+        run: cargo metadata --manifest-path crates/shell/Cargo.toml --locked --format-version 1 > /dev/null
+      - name: the lock is the Tauri 2 lock
+        run: |
+          if grep -nE '^name = "(cef|cef-dll-sys|tauri-runtime-cef)"$' crates/shell/Cargo.lock; then
+            echo "the lock still names the CEF runtime" >&2; exit 1
+          fi
+          grep -A1 -E '^name = "tauri"$' crates/shell/Cargo.lock | tee "$RUNNER_TEMP/lock/tauri.txt"
+          grep -q '^version = "2.12.5"$' "$RUNNER_TEMP/lock/tauri.txt"
+          grep -qE '^name = "objc2-web-kit"$' crates/shell/Cargo.lock
+          grep -qE '^name = "webview2-com"$' crates/shell/Cargo.lock
+      - name: output hashes
+        run: |
+          cp crates/shell/Cargo.lock "$RUNNER_TEMP/lock/Cargo.lock"
+          sha256sum crates/shell/Cargo.toml crates/shell/Cargo.lock | tee "$RUNNER_TEMP/lock/output-hashes.txt"
+      - name: upload the lock
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: shell-cargo-lock
+          path: ${{ runner.temp }}/lock/
+          retention-days: 7
+          if-no-files-found: error

@@ -110,7 +110,7 @@ impl Capture {
         on_ui(&self.cx.ui, move || native_owner::run_accepted_ui(cx.ui.as_ref(), &owner, &cancel, || {
             use tauri_runtime_cef::WindowCefExt;
             let handle = window.native_window_handle().map_err(|error| error.to_string())?;
-            handle.with_window(|_| native_window_id(&window)).map_err(|error| error.to_string())?
+            handle.with_window(native_window_id).map_err(|error| error.to_string())?
         }).and_then(|result| result))
     }
 }
@@ -192,14 +192,19 @@ fn permission_status() -> Result<String, String> {
 fn permission_status() -> Result<String, String> { Ok("granted".into()) }
 
 #[cfg(target_os = "macos")]
-fn native_window_id(window: &tauri::Window) -> Result<Option<u32>, String> {
-    let pointer = window.ns_window().map_err(|error| error.to_string())?;
-    let window = unsafe { pointer.cast::<objc2_app_kit::NSWindow>().as_ref() }.ok_or("The native window handle is unavailable")?;
+fn native_window_id(window: &(impl raw_window_handle::HasWindowHandle + ?Sized)) -> Result<Option<u32>, String> {
+    use raw_window_handle::RawWindowHandle;
+    let RawWindowHandle::AppKit(handle) = window.window_handle().map_err(|error| error.to_string())?.as_raw() else {
+        return Err("The capture provider does not recognize this native window handle".into());
+    };
+    // SAFETY: the guarded native window remains live on the UI thread for this call.
+    let view = unsafe { handle.ns_view.cast::<objc2_app_kit::NSView>().as_ref() };
+    let window = view.window().ok_or("The native window handle is unavailable")?;
     u32::try_from(window.windowNumber()).map(Some).map_err(|_| "The native window identifier is out of range".into())
 }
 #[cfg(not(target_os = "macos"))]
-fn native_window_id(window: &tauri::Window) -> Result<Option<u32>, String> {
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+fn native_window_id(window: &(impl raw_window_handle::HasWindowHandle + ?Sized)) -> Result<Option<u32>, String> {
+    use raw_window_handle::RawWindowHandle;
     match window.window_handle().map_err(|error| error.to_string())?.as_raw() {
         #[cfg(windows)]
         RawWindowHandle::Win32(handle) => Ok(Some(handle.hwnd.get() as u32)),

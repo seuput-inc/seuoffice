@@ -24,7 +24,7 @@ impl DrawioAssets {
                 .and_then(std::path::Path::parent)
                 .ok_or("The diagram module root is unavailable")?.join("apps/diagram/out"),
         };
-        let mut ancestors = vec!["http://genoffice-app-diagram.localhost".to_owned()];
+        let mut ancestors = vec![crate::app_scheme::native_origin("diagram")];
         ancestors.extend(dev_origins);
         Ok(Self { root: module.join("drawio"), bridge: module.join("bridge/bridge.js"), ancestors })
     }

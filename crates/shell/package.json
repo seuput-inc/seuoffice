@@ -2,8 +2,8 @@
   "name": "seuoffice-shell",
   "private": true,
   "version": "0.13.0",
-  "description": "Pins the Tauri 3 alpha CLI that builds crates/shell (the pair of decision 0029)",
+  "description": "Pins the stable Tauri CLI that builds crates/shell",
   "devDependencies": {
-    "@tauri-apps/cli": "3.0.0-alpha.6"
+    "@tauri-apps/cli": "2.12.4"
   }
 }

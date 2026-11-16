@@ -27,7 +27,7 @@ node crates/shell/bundle/release-feed.mjs feed --version <판> <설치 파일>..
 
 ## 명령줄과 Node
 
-Electron 판은 명령줄을 앱 실행 파일로 돌렸다(`ELECTRON_RUN_AS_NODE=1`). CEF 판에는 Node가 없어서 설치본이 Node를 `resources/cli/node`에 싣는다(2026-11-14 메인 세션 결정). 셸은 `ELECTRON_RUN_AS_NODE=1`로 시작되면 창을 띄우지 않고 그 Node에 인자를 그대로 넘긴다(`src/host/os.rs`). 그래서 실행기, 사용자 에이전트 설정에 이미 적힌 MCP 항목(`SeuOffice.exe` + `ELECTRON_RUN_AS_NODE`)이 고치지 않고 돈다.
+Electron 판은 명령줄을 앱 실행 파일로 돌렸다(`ELECTRON_RUN_AS_NODE=1`). Tauri 셸에는 Node가 없어서 설치본이 Node를 `resources/cli/node`에 싣는다(2026-11-14 메인 세션 결정). 셸은 `ELECTRON_RUN_AS_NODE=1`로 시작되면 창을 띄우지 않고 그 Node에 인자를 그대로 넘긴다(`src/host/os.rs`). 그래서 실행기, 사용자 에이전트 설정에 이미 적힌 MCP 항목(`SeuOffice.exe` + `ELECTRON_RUN_AS_NODE`)이 고치지 않고 돈다.
 
 설치본이 커지는 정도(2026-11-14, Node 22.23.5를 이 Mac에서 잼): Windows는 `node.exe` 83.0 MB, LZMA로 21.1 MB. macOS arm64는 `node` 107.8 MB, deflate로 35.3 MB.
 
@@ -49,5 +49,5 @@ Linux 패키지 조립과 해당 소스 배포, 합성 레거시 DB·외부 토�
 
 ## 아직 안 된 것
 
-- macOS의 종류별 문서 아이콘(Electron 판의 `icon: 'docx'` 들). Tauri 3의 파일 연결에는 아이콘 칸이 없다.
+- macOS의 종류별 문서 아이콘(Electron 판의 `icon: 'docx'` 들)은 아직 별도 검증이 필요하다.
 - 이 설정으로 만든 설치본은 아직 러너에서 지어 보지 않았다(2026-11-14 러너 정지). `hooks.nsh`는 Tauri 템플릿 머리와 훅 자리를 흉내 낸 틀에 넣어 `makensis` 3.13(Homebrew)으로 컴파일만 해 봤다. Windows에서 돌려 보지는 않았다.

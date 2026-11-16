@@ -1,10 +1,10 @@
 //! The stage 3 shell (decisions 0025, 0029, 0030; the stage 3 shell contract
-//! under docs/seuoffice): Tauri 3 on the CEF runtime, with `main-core` linked
-//! in this process.
+//! under docs/seuoffice): Tauri 2 on the system webviews (WKWebView on macOS,
+//! WebView2 on Windows), with `main-core` linked in this process.
 //!
 //! Three kinds of thread (the contract, section 3):
 //!
-//! - the UI thread runs the Tauri/CEF event loop; windows, menus, dialogs and
+//! - the UI thread runs the Tauri event loop; windows, menus, dialogs and
 //!   the clipboard are touched there only;
 //! - the core thread runs every handler in arrival order, and holds
 //!   `main-core`'s state;
@@ -25,13 +25,14 @@
 )]
 
 mod app_scheme;
-mod engine_host;
 mod drawio_scheme;
+mod engine_host;
 mod headless;
 mod host;
-mod ipc;
 mod index_worker_process;
+mod ipc;
 mod measure;
+mod native;
 mod odt_worker;
 mod paths;
 mod preload;
@@ -54,7 +55,6 @@ use shell_core::dispatch::{CatchingWorkers, Dispatcher};
 use shell_core::outlet::OutletSink;
 use shell_core::table::{Completeness, StartError, build};
 use tauri::{AppHandle, DragDropEvent, Manager, WebviewEvent, WindowEvent};
-use tauri_runtime_cef::Cef;
 
 use crate::host::HostContext;
 use crate::host::window::{Bridge, ViewSpec, WindowSpec, WindowOptions, Windows};
@@ -105,7 +105,7 @@ impl Options {
     }
 }
 
-/// The Tauri/CEF event loop as a [`Thread`]
+/// The Tauri event loop as a [`Thread`]
 struct TauriUi {
     app: AppHandle,
     main: ThreadId,
@@ -259,12 +259,12 @@ fn open_first_window(windows: &Windows, options: &Options, services: &Services,
     let context = context.clone();
     let paths = paths.clone();
     let shutdown = options.invocation_shutdown.clone();
-    let startup_frame: Option<Arc<dyn Fn(shell_contract::ViewId, &tauri_runtime_cef::FrameEvent) + Send + Sync>> =
-        main.then(|| Arc::new(move |view, event: &tauri_runtime_cef::FrameEvent| {
+    type StartupFrame = Arc<dyn Fn(shell_contract::ViewId, &native::NativeEvent) + Send + Sync>;
+    let startup_frame: Option<StartupFrame> = main.then(|| {
+        Arc::new(move |view, event: &native::NativeEvent| {
             use std::sync::atomic::Ordering;
-            let tauri_runtime_cef::FrameEventKind::NativeContextRegistered { origin } = &event.kind else { return; };
-            if !event.is_main || event.browser_id != origin.browser_id() || event.frame_id != origin.frame_id()
-                || shutdown.is_cancelled() { return; }
+            let native::NativeEventKind::DocumentRegistered { context: origin } = &event.kind else { return; };
+            if shutdown.is_cancelled() || !event.browser.is_same_browser(origin.browser()) { return; }
             let Some(sender) = context.views.sender_of(view) else { return; };
             let Some(generation) = context.views.renderer_generation(view) else { return; };
             let Some(captured) = context.views.capture_native_owner(view, &generation) else { return; };
@@ -272,7 +272,8 @@ fn open_first_window(windows: &Windows, options: &Options, services: &Services,
             let Some(owner) = crate::ipc::native_owner::owner(view, captured.origin, captured.renderer, ()) else { return; };
             if first.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() { return; }
             install_first_shell_startup(services.clone(), context.clone(), paths.clone(), shutdown.clone(), sender.window, owner);
-        }) as Arc<dyn Fn(shell_contract::ViewId, &tauri_runtime_cef::FrameEvent) + Send + Sync>);
+        }) as StartupFrame
+    });
     windows
         .open_window_with_options(WindowSpec {
             title: title.into(),
@@ -381,7 +382,6 @@ fn start(
 /// The renderer folders, found once on the first request
 static ROOTS: OnceLock<Vec<(String, String)>> = OnceLock::new();
 
-#[tauri_runtime_cef::cef_entry_point]
 fn main() {
     match index_worker_process::dispatch_if_sign_worker() {
         Ok(true) => return,
@@ -439,37 +439,19 @@ fn main() {
     let views = Arc::new(ViewTable::new(outlet.clone(), core_thread.clone()));
     let paths = Arc::new(ShellPaths::new());
 
-    // Chromium's profile stays out of the Electron build's userData folder:
-    // by default it is `{user cache}/com.seuput.seuoffice/cef`. A scratch
-    // userData (a test driver, the measurement) takes its own beside it.
-    let mut cef = Cef::default().native_custom_schemes([
-        "seuoffice-docx-media", "md-asset", "html-asset", "seuoffice-slide-media", "drawio-app",
-    ]);
-    if let Some(heap) = worker_heap {
-        cef = cef.javascript_flags(format!("--max-old-space-size={heap}"));
-    }
-    if let Some(dir) = std::env::var_os("SEUOFFICE_USER_DATA").filter(|v| !v.is_empty()) {
-        let cache = if worker_mode {
-            PathBuf::from(dir).join("cef")
-        } else {
-            let mut cache = dir;
-            cache.push("-cef");
-            PathBuf::from(cache)
-        };
-        cef = cef.root_cache_path(cache);
-    }
-
     let mut builder = tauri::Builder::default()
-        .runtime(cef)
         .invoke_system(include_str!("../bridge/invoke-system.js"))
         .invoke_handler(tauri::generate_handler![
+            ipc::ipc_register,
+            ipc::ipc_render_ready,
             ipc::ipc_invoke,
             ipc::ipc_send,
             ipc::ipc_listen,
             engine_host::engine_host_ready,
             engine_host::engine_host_reply,
             engine_host::engine_host_callback
-        ])
+        ]);
+    builder = native::install(builder)
         .register_asynchronous_uri_scheme_protocol(ipc::sync::SCHEME, ipc::sync::handle);
     let drawio_assets = Arc::new(OnceLock::<Result<Arc<drawio_scheme::DrawioAssets>, String>>::new());
     builder = builder.register_asynchronous_uri_scheme_protocol("drawio-app", move |ctx, request, responder| {
@@ -477,7 +459,12 @@ fn main() {
             drawio_scheme::DrawioAssets::new(paths::resources_path(ctx.app_handle()), Vec::new()).map(Arc::new)
         });
         match assets {
-            Ok(assets) => drawio_scheme::handle(assets.clone(), request, responder),
+            Ok(assets) => {
+                let origin = native::SchemeRequestContext::capture(
+                    &ctx.app_handle().state::<native::Native>(), ctx.webview_label(),
+                );
+                drawio_scheme::handle(assets.clone(), origin, request, responder)
+            }
             Err(error) => {
                 eprintln!("shell: cannot initialize Diagram assets: {error}");
                 let mut response = tauri::http::Response::new(Vec::new());
@@ -495,9 +482,12 @@ fn main() {
         let scheme_views = views.clone();
         let scheme_core = core_thread.clone();
         builder = builder.register_asynchronous_uri_scheme_protocol(name, move |ctx, request, responder| {
+            let origin = native::SchemeRequestContext::capture(
+                &ctx.app_handle().state::<native::Native>(), ctx.webview_label(),
+            );
             host::asset_protocol::handle(
                 scheme, ctx.app_handle().clone(), scheme_views.clone(), scheme_core.clone(),
-                ctx.webview_label().to_owned(), request, responder,
+                ctx.webview_label().to_owned(), origin, request, responder,
             );
         });
     }
@@ -544,6 +534,9 @@ fn main() {
     let build_failure_output = options.headless_output.clone();
     let application = builder
         .on_window_event(|window, event| {
+            if let Some(registry) = window.try_state::<native::Native>() {
+                registry.on_window_event(window, event);
+            }
             if let WindowEvent::Destroyed = event {
                 engine_host::window_destroyed(window.app_handle(), window.label());
             }
@@ -580,6 +573,7 @@ fn main() {
         })
         .setup(move |app| {
             let handle = app.handle().clone();
+            native::Native::bind_ui(&handle);
             let views = setup_views;
             let paths = setup_paths;
             engine_host::install(&handle).map_err(std::io::Error::other)?;

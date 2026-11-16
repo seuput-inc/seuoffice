@@ -1,4 +1,4 @@
-// The update feed of a CEF release, as electron-builder wrote it for the
+// The update feed of a Tauri release, as electron-builder wrote it for the
 // Electron build, so one release serves both and the updater
 // (src/host/update/feed.rs) reads it the same way.
 //

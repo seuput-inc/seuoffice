@@ -1,15 +1,13 @@
 [package]
 name = "seuoffice-shell"
-description = "The stage 3 shell of SeuOffice: Tauri 3 on the CEF runtime, main-core linked in-process (decisions 0025, 0029, 0030)"
+description = "The stage 3 shell of SeuOffice: Tauri 2 on system webviews, main-core linked in-process"
 version = "0.13.0"
 edition = "2024"
 rust-version = "1.95"
 license = "Apache-2.0"
 publish = false
 
-# Its own workspace and lock: crates/Cargo.toml excludes this folder. CEF is a
-# download of about 1 GB, so it is built on the Mac and Windows runners only
-# (.github/workflows/seuoffice-shell.yml), never in the workspace tests.
+# Its own workspace and lock: crates/Cargo.toml excludes this folder.
 [workspace]
 
 # the executable is what the bundle ships, so it carries the product name
@@ -18,27 +16,22 @@ name = "SeuOffice"
 path = "src/main.rs"
 
 [features]
-# Chromium DevTools in a release build too (a debug build has them anyway)
-devtools = ["tauri/devtools", "tauri-runtime-cef/devtools"]
+# Webview developer tools in release builds too.
+devtools = ["tauri/devtools"]
 # a release build on Windows without a console window; the runner builds leave
 # it off so the logs and the measurement's output stay on stdout and stderr
 windows-gui = []
 
 [build-dependencies]
-tauri-build = "=3.0.0-alpha.4"
+tauri-build = "=2.7.4"
 serde_json = "1"
 sha2 = "0.10"
 
 [dependencies]
-# The Tauri 3 alpha and its CEF runtime are pinned together (decision 0029, 3):
-# the pair the prototype built and ran on the runners. `unstable` is Window::add_child,
-# which the tabs of the shell window (several webviews in one window) need.
-tauri = { version = "=3.0.0-alpha.6", features = ["unstable", "tray-icon"] }
-# unstable: the CEF builder extensions of child webviews (console and frame observers)
-tauri-runtime-cef = { version = "=3.0.0-alpha.7", features = ["unstable"] }
-# the CEF API itself, the version tauri-runtime-cef pulls (no second copy):
-# CefBrowserHost and the request context's preferences, which Tauri does not expose
-cef = "=154.5.0"
+# `unstable` enables child webviews for tabs within a shell window; `macos-private-api` is
+# the transparent password window on macOS (tauri.conf.json app.macOSPrivateApi, Developer ID
+# distribution only).
+tauri = { version = "=2.12.5", features = ["unstable", "tray-icon", "macos-private-api"] }
 # the shell's one HTTP client, the version tauri already pulls: the updater's
 # feed and download (U, host/update.rs, blocking on workers) and A's network
 # ports (host/net/). The system's TLS and trust store and proxy, as
@@ -141,17 +134,24 @@ pollster = "=1.0.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # the Dock menu (host/menu/dock.rs): applicationDockMenu: added to the NSApp delegate's class;
-# the message box with any number of buttons and a checkbox (host/message_box/mac.rs): NSAlert
+# the message box with any number of buttons and a checkbox (host/message_box/mac.rs): NSAlert;
+# native/platform/macos: window ops, key events, print operation and spell checker
 objc2 = "0.6.5"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSAlert", "NSApplication", "NSButton", "NSControl", "NSMenu", "NSMenuItem", "NSOpenPanel", "NSSavePanel", "NSPanel", "NSResponder", "NSView", "NSWindow", "NSImage", "NSBitmapImageRep", "NSScreen"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSObject", "NSString", "NSLocale", "NSURL", "NSData", "NSDictionary", "NSArray", "NSError", "NSGeometry", "objc2-core-foundation"] }
-# the sheet's completion handler
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSAlert", "NSApplication", "NSButton", "NSControl", "NSMenu", "NSMenuItem", "NSOpenPanel", "NSSavePanel", "NSPanel", "NSResponder", "NSView", "NSWindow", "NSImage", "NSBitmapImageRep", "NSScreen", "NSGraphics", "NSEvent", "NSPrintInfo", "NSPrintOperation", "NSPrintPanel", "NSSpellChecker"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSObject", "NSString", "NSLocale", "NSURL", "NSData", "NSDictionary", "NSArray", "NSError", "NSGeometry", "NSValue", "NSRunLoop", "NSNotification", "NSKeyValueCoding", "objc2-core-foundation"] }
+# the OS webview behind wry (native/platform/macos): navigation delegate chaining, script
+# evaluation, snapshots, content rule lists and the page's print operation
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "objc2-app-kit", "block2", "WKWebView", "WKWebViewConfiguration", "WKNavigationDelegate", "WKNavigation", "WKNavigationAction", "WKNavigationResponse", "WKFrameInfo", "WKUserContentController", "WKUserScript", "WKContentRuleList", "WKContentRuleListStore", "WKContentWorld", "WKPreferences", "WKWebpagePreferences", "WKPDFConfiguration", "WKSnapshotConfiguration", "WKUIDelegate", "WKWebsiteDataStore", "WKError"] }
+# the sheet's completion handler and the web view's completion blocks
 block2 = "0.6"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 # the silent print loop (host/print/windows.rs): Windows.Data.Pdf pages into a GDI printer DC
-windows = { version = "0.62", features = ["Data_Pdf", "Foundation", "Graphics_Imaging", "Storage_Streams", "UI", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Graphics_Printing", "Win32_Storage_Xps", "Win32_Storage_FileSystem", "Win32_System_WinRT", "Win32_UI_Controls", "Win32_UI_WindowsAndMessaging", "Win32_Globalization", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Console", "Win32_Security", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Com"] }
+windows = { version = "0.62", features = ["Data_Pdf", "Foundation", "Graphics_Imaging", "Storage_Streams", "UI", "Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Graphics_Printing", "Win32_Storage_Xps", "Win32_Storage_FileSystem", "Win32_System_WinRT", "Win32_UI_Controls", "Win32_UI_WindowsAndMessaging", "Win32_Globalization", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Console", "Win32_Security", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Com", "Win32_System_Com_StructuredStorage"] }
+# the WebView2 interfaces behind wry (native/platform/windows): CDP, focus, process failure;
+# the version wry 0.57 resolves, built on the same `windows` 0.62 as the line above
+webview2-com = "0.39"
 
 [dev-dependencies]
 # the fakes of A's, M's and U's hosts for the_batches_register_over_the_stubs
@@ -162,8 +162,6 @@ shell-ipc-w = { path = "../shell-ipc/w", features = ["probe"] }
 
 [patch.crates-io]
 regress = { path = "../vendor/regress" }
-# the context-menu hook batch M needs (crates/vendor/tauri-runtime-cef/VENDORED.md)
-tauri-runtime-cef = { path = "../vendor/tauri-runtime-cef" }
 
 [profile.release]
 opt-level = 3

@@ -2,14 +2,13 @@
 //! shell contract, `renderer-protocol`).
 //!
 //! The Electron build served `genoffice-app://<host>/<file>` and every handler
-//! still names its pages that way (`main_core`'s `renderer_url`). The CEF
-//! runtime serves a custom scheme only as `http://<scheme>.localhost/`, so
-//! each host gets a scheme of its own, `genoffice-app-<host>`: the page is
-//! `http://genoffice-app-<host>.localhost/<file>`. One origin per host keeps
-//! what the host's origin owned in Electron (localStorage, IndexedDB, the
-//! permission grants) apart from the other hosts. [`webview_url`] and
-//! [`electron_url`] translate between the two forms; nothing else has to
-//! know the difference.
+//! still names its pages that way (`main_core`'s `renderer_url`). Each host
+//! gets its own native scheme, `genoffice-app-<host>`. System WebViews load it
+//! as `<scheme>://localhost/` on macOS and Linux, or as
+//! `http://<scheme>.localhost/` on Windows. One origin per host keeps its
+//! localStorage, IndexedDB and permission grants apart from the other hosts.
+//! [`webview_url`] and [`electron_url`] translate between the two forms;
+//! navigation URLs never authenticate an IPC caller.
 
 use std::path::PathBuf;
 
@@ -86,28 +85,45 @@ pub fn roots(resources: Option<PathBuf>, measure_page: bool) -> Vec<(String, Str
         .collect()
 }
 
-/// `genoffice-app://docs/index.html?x` as the webview loads it:
-/// `http://genoffice-app-docs.localhost/index.html?x`. None for any other URL.
+/// The platform-native custom-protocol URL for an Electron renderer page.
+/// Windows uses an HTTP localhost origin; macOS and Linux retain the scheme.
 pub fn webview_url(electron_url: &str) -> Option<Url> {
     let url = Url::parse(electron_url).ok()?;
     if url.scheme() != RENDERER_SCHEME {
         return None;
     }
     let host = url.host_str()?;
-    let mut out = Url::parse(&format!("http://{}.localhost/", scheme_of(host))).ok()?;
+    let mut out = Url::parse(&native_origin(host)).ok()?;
     out.set_path(url.path());
     out.set_query(url.query());
     out.set_fragment(url.fragment());
     Some(out)
 }
 
+pub(crate) fn native_origin(host: &str) -> String {
+    #[cfg(any(windows, target_os = "android"))]
+    { format!("http://{SCHEME_PREFIX}{host}.localhost") }
+    #[cfg(not(any(windows, target_os = "android")))]
+    { format!("{SCHEME_PREFIX}{host}://localhost") }
+}
+
+fn renderer_host(url: &Url) -> Option<&str> {
+    #[cfg(any(windows, target_os = "android"))]
+    {
+        if url.scheme() != "http" { return None; }
+        url.host_str()?.strip_suffix(".localhost")?.strip_prefix(SCHEME_PREFIX)
+    }
+    #[cfg(not(any(windows, target_os = "android")))]
+    {
+        if url.host_str() != Some("localhost") { return None; }
+        url.scheme().strip_prefix(SCHEME_PREFIX)
+    }
+}
+
 /// The reverse: a page URL of the webview as the handlers know it
 #[allow(dead_code)] // `webContents.getURL()` of the handlers that read a view's page: the WindowsHost
 pub fn electron_url(url: &Url) -> Option<String> {
-    let host = url
-        .host_str()?
-        .strip_suffix(".localhost")?
-        .strip_prefix(SCHEME_PREFIX)?;
+    let host = renderer_host(url)?;
     let mut out = Url::parse(&format!("{RENDERER_SCHEME}://{host}/")).ok()?;
     out.set_path(url.path());
     out.set_query(url.query());
@@ -118,10 +134,11 @@ pub fn electron_url(url: &Url) -> Option<String> {
 /// Whether a navigation stays on the shell's own pages: a webview with a bridge
 /// goes nowhere else (the contract, section 2, "permissions")
 pub fn is_own_page(url: &Url) -> bool {
-    url.scheme() == "http"
-        && url.host_str().is_some_and(|h| {
-            h.ends_with(".localhost") && (h.starts_with(SCHEME_PREFIX) || h == "tauri.localhost")
-        })
+    #[cfg(any(windows, target_os = "android"))]
+    let default_page = url.scheme() == "http" && url.host_str() == Some("tauri.localhost");
+    #[cfg(not(any(windows, target_os = "android")))]
+    let default_page = url.scheme() == "tauri" && url.host_str() == Some("localhost");
+    default_page || renderer_host(url).is_some()
 }
 
 fn mime_of(path: &str) -> &'static str {
@@ -235,10 +252,11 @@ mod tests {
     #[test]
     fn urls_translate_both_ways() {
         let url = webview_url("genoffice-app://docs/index.html?mode=tab#top").unwrap();
-        assert_eq!(
-            url.as_str(),
-            "http://genoffice-app-docs.localhost/index.html?mode=tab#top"
-        );
+        #[cfg(any(windows, target_os = "android"))]
+        let expected = "http://genoffice-app-docs.localhost/index.html?mode=tab#top";
+        #[cfg(not(any(windows, target_os = "android")))]
+        let expected = "genoffice-app-docs://localhost/index.html?mode=tab#top";
+        assert_eq!(url.as_str(), expected);
         assert_eq!(
             electron_url(&url).as_deref(),
             Some("genoffice-app://docs/index.html?mode=tab#top")
@@ -252,6 +270,9 @@ mod tests {
         assert!(!is_own_page(
             &Url::parse("https://genoffice-app-docs.localhost/").unwrap()
         ));
+        let foreign_host = Url::parse("genoffice-app-docs://example.com/index.html").unwrap();
+        assert!(electron_url(&foreign_host).is_none());
+        assert!(!is_own_page(&foreign_host));
     }
 
     #[test]
