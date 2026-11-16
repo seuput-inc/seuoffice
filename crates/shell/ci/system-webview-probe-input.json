@@ -1,0 +1,130 @@
+{
+  "schema": "seuoffice-system-webview-diagnostic-v3",
+  "kind": "throwaway-current-renderer-native-engine-diagnostic",
+  "sourceSha": "ad56ec727fc25695fd14261fdfe2b6a755da81a6",
+  "sourceActualParent": "ff12e95b7398ce1d09bca6f6bd95d44dd68cc2cf",
+  "definitionParent": "ad56ec727fc25695fd14261fdfe2b6a755da81a6",
+  "frozenPolicyBase": "1e9d0ec1ad96c7862dec0ee1b3ec7d47f3148483",
+  "sourceManifest": {
+    "path": "crates/shell/ci/system-webview-source-manifest.json",
+    "sha256": "003d364cde721dd261a6cb189f650a4e78aa13616f87bb13ede1237bbf6dbcaa",
+    "entries": 1558
+  },
+  "inheritedCanonicalRhwp": {
+    "path": "tools/build-rhwp-core.mjs",
+    "sha256": "f3a8f06da1371947aaef149e73d0810dd69fca94b760d3d8cca33d711e5c46f1"
+  },
+  "frozenPrepush": {
+    "path": "tools/prepush.mjs",
+    "sha256": "746d068d92907dea15376057a8523afeda36f0f29593a439137918855ccc22d5",
+    "base": "1e9d0ec1ad96c7862dec0ee1b3ec7d47f3148483",
+    "sourceAndDefinitionIndependentRequired": true,
+    "authorizedCorrection": {
+      "approvalRequest": "root-tauri-native-scope-fmt-all-disposition-20261116",
+      "onlyCommandChange": "cargo fmt --manifest-path crates/Cargo.toml --all -- --check",
+      "scope": "all actual virtualworkspace members; standalone shell remains separately gated",
+      "criterionUnchanged": "1e9d0ec1ad96c7862dec0ee1b3ec7d47f3148483",
+      "protectedClosedNoticeChanged": false
+    },
+    "previousSha256": "64c82ffe03995e6a518998c90ae354920473d48e0f35caaa01afadd5b938c4d6"
+  },
+  "scripts": [
+    {
+      "path": "tools/system-webview-probe/frontend/contract.json",
+      "packetPath": "frontend/contract.json",
+      "bytes": 1286,
+      "sha256": "47b51fae1adc0b0c005081dcae826fd1477925b7de3b41642192f505ee7444d0",
+      "mode": "100644"
+    },
+    {
+      "path": "tools/system-webview-probe/frontend/make_fixture.py",
+      "packetPath": "frontend/make_fixture.py",
+      "bytes": 4206,
+      "sha256": "ef9f4017db9f51335fce1cd6a4ff37b735f9e3fdfbf8cf3a76f18d81fb707fee",
+      "mode": "100644"
+    },
+    {
+      "path": "tools/system-webview-probe/frontend/probe/index.html",
+      "packetPath": "frontend/probe/index.html",
+      "bytes": 571,
+      "sha256": "689310007d901e283056a9f324efc51967fa38fbad3927ac06e1996b2a1ef713",
+      "mode": "100644"
+    },
+    {
+      "path": "tools/system-webview-probe/frontend/probe/probe.js",
+      "packetPath": "frontend/probe/probe.js",
+      "bytes": 12106,
+      "sha256": "195be7b70dfcfe8f1b32fe3cefcfa66ad5a8390525dc8796e40779d9fbc8a218",
+      "mode": "100644"
+    },
+    {
+      "path": "tools/system-webview-probe/native/electron.cjs",
+      "packetPath": "native/electron.cjs",
+      "bytes": 4083,
+      "sha256": "7b7356f1cdb46b9e0ef85b172d4b1772bc1cb5b4d4acc7268958eebcb725ee83",
+      "mode": "100644"
+    },
+    {
+      "path": "tools/system-webview-probe/native/wkwebview.py",
+      "packetPath": "native/wkwebview.py",
+      "bytes": 10433,
+      "sha256": "566c2cd3c45fd8a4c865b0742819650e3ca0f875d15d8217b42041be65ce71d1",
+      "mode": "100644"
+    },
+    {
+      "path": "tools/system-webview-probe/requirements.txt",
+      "packetPath": "requirements.txt",
+      "bytes": 505,
+      "sha256": "432147e4047a213a9846367adce7b4ebee3b507d8ac7c0120aaabf37f58437d3",
+      "mode": "100644"
+    },
+    {
+      "path": "tools/system-webview-probe/run_probe.py",
+      "packetPath": "run_probe.py",
+      "bytes": 11149,
+      "sha256": "fce6145d9e779484c71223223e4a448e2bf9968d53d2ff34daa4df6073486741",
+      "mode": "100644"
+    }
+  ],
+  "scope": {
+    "hostedOnly": true,
+    "runner": "macos-latest",
+    "engines": ["Electron 43.8.3", "native macOS WKWebView"],
+    "invocationsPerEngine": 1,
+    "python": "3.12",
+    "pdfRaster": "same pinned PDFium 5.15.2 / 96dpi RGBA",
+    "fixture": "same deterministic synthetic Korean/Latin DOCX, SHA256 a8c9478aa0b562ddad77a62e741715703476f52bcb173287d4afff2c46cb56ae",
+    "nativeProfiles": "nonpersistent WKWebsiteDataStore; ephemeral Electron userData under own output",
+    "print": "diagnostic-cloned-dom, not actual application PDF consumer"
+  },
+  "productGreen": false,
+  "wholeCrateChecked": false,
+  "candidateBuilt": false,
+  "nativeAuthorityVerified": false,
+  "releaseAcceptance": false,
+  "oldS5D5QandNssUnchanged": true,
+  "staticReviewFixes": [
+    "explicit NSWindow Python-owned lifetime",
+    "settle after explicit font loads",
+    "post-edit healthy pagination snapshot",
+    "ordered full paragraph text retention with exactly one expected edit",
+    "PDF consumer raster comparison, not PDF internal visitor commands",
+    "Electron43.8.3 documented larger-than-screen diagnostic window retains required1280x900 check",
+    "WK async print result accepts only string before JSON decode; null pending state is not decoded",
+    "browser globals use existing per-file declaration convention, empty loop removed, caught stylesheet error retains cause",
+    "new source includes exactly four observed workspace compiler/clippy repairs, not stable Tauri WIP",
+    "actual main-core compiler repair input across fifteen exact source paths",
+    "Root-approved --all formatter target correction, unchanged criterion and standalone shell gate",
+    "persistent native and JS print phase observation only; WK PDF stall root cause remains UNKNOWN, no mechanism or timeout change"
+  ],
+  "executionState": "UNRUN_NEW_EXACT_INPUT_PENDING_DEFINITION_PUBLICATION_AND_MAIN_REVIEW",
+  "oldFailureRun": 43784764617,
+  "retiredPremise": {
+    "retiredPremise": "Resolving the JavaScript null-poll parsing error is sufficient to reach WK PDF completion.",
+    "evidence": "Run43772616016 WK JSONDecodeError changed to run43784764617 WK180sTimeout; neither records print phase at failure. Electron now actual1280x900 screenshot/PDF complete; WK actual1280x900 screenshot complete and editor outcome complete.",
+    "testBeforeMechanismFix": "Persist phase/status at every native/JS print preparation and callback boundary in a new exact diagnostic input; retain existing180s deadline and parent timeout. Do not guess which stage stalled or switch native print API before that observation.",
+    "actualRootCause": "UNKNOWN",
+    "oldInputsRerun": false,
+    "productGreen": false
+  }
+}
