@@ -19,12 +19,15 @@ fn setup(name: &str) -> (Kit, TestRegistry, shell_contract::ipc::Sender, PathBuf
     std::fs::create_dir_all(dir.join("userdata")).unwrap();
     let kit = Kit::new(&dir, crate::insert_fakes);
     let registry = registered(&kit);
+    // the native host gives every capture of one renderer the same origin
+    kit.host::<std::sync::Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>()
+        .share_capture_origins();
     let sender = kit.view(1, Surface::Slides);
     (kit, registry, sender, dir)
 }
 
-/// `testkit::call` with the native context a production ingress captures: the
-/// renderer generation and its owner-loss token, which a save needs to own its origin.
+/// `testkit::call` with the native context the shell's owned effects capture for
+/// the view's renderer: its owner-loss token and the origin its saves compare against.
 fn call(
     registry: &TestRegistry,
     sender: shell_contract::ipc::Sender,
@@ -35,15 +38,17 @@ fn call(
         .handlers
         .get(channel)
         .unwrap_or_else(|| panic!("no handler for {channel}"));
-    let native = super::views()
-        .and_then(|slides| slides.0.services.views.renderer_generation(sender.view))
-        .map(|generation| {
-            shell_contract::ipc::NativeContext::with_owner_loss(
-                (),
-                generation.clone(),
-                generation.loss_token(),
-            )
-        });
+    let native = super::views().and_then(|slides| {
+        let generation = slides.0.services.views.renderer_generation(sender.view)?;
+        slides
+            .0
+            .services
+            .hosts
+            .get::<shell_contract::hosts::OwnedEffectsHost>()?
+            .capture_owner(sender.view, &generation)
+            .ok()
+            .map(|owner| owner.context)
+    });
     let cx = shell_contract::ipc::CallContext {
         sender,
         request: None,

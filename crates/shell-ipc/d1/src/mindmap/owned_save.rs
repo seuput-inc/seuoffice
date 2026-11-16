@@ -1389,15 +1389,25 @@ pub(super) fn save(app: &MindmapApp, cx: &CallContext, args: Args, responder: Re
             Ok((opened, bytes)) if opened.status == OpenStatus::Ok => {
                 app.resolve_owned_target(cx, id, value, bytes, responder)
             }
-            Ok((opened, _)) => fail(
-                app,
-                id,
-                responder,
-                thrown(format!(
-                    "mindmap: refusing to write a file that would not open ({})",
-                    opened.status.as_str()
-                )),
-            ),
+            Ok((opened, _)) => {
+                // Electron answers `{ ok: false, error }` (only an engine failure throws)
+                let result = app.pending_for(&cx, id).and_then(|request| {
+                    request.effect(|| {
+                        Ok(obj([
+                            ("ok", IpcValue::Bool(false)),
+                            (
+                                "error",
+                                string(format!(
+                                    "mindmap: refusing to write a file that would not open ({})",
+                                    opened.status.as_str()
+                                )),
+                            ),
+                        ]))
+                    })
+                });
+                app.finish_owned_save(id, Ok(false));
+                responder.reply(result);
+            }
             Err(error) => fail(app, id, responder, thrown(error)),
         },
     );

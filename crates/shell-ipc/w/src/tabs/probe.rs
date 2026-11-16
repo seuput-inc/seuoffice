@@ -7999,6 +7999,10 @@ mod command_tests {
             let view = fake.w().make_view();
             let generation = RendererGeneration::new();
             let closure = fixture_reserve(&fake, view, generation.clone());
+            closure
+                .reservation
+                .with_initial_owner(&closure.owner, |_| Ok(()))
+                .unwrap();
             let owner = fixture_register_owner(&fake, view, &generation, Surface::Sheets).unwrap();
             let token = Arc::new(());
             {

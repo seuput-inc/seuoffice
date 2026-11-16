@@ -1075,7 +1075,10 @@ impl Rt {
     ) {
         assert!(matches!(
             channel,
-            "docs:write-recovery-now-done" | "hwp:recovery-flushed" | "docs:close-save-result"
+            "docs:write-recovery-now-done"
+                | "hwp:recovery-flushed"
+                | "docs:close-save-result"
+                | "docs:close-check-result"
         ));
         let (kind, handler) = self
             .table
