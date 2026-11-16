@@ -230,6 +230,7 @@ pub trait SlidesEngine: Send + Sync {
     fn save_to_file(&self, deck: DeckId, path: &str) -> Result<(), EngineError>;
     /// `commitSaved(opened)`
     fn commit_saved(&self, deck: DeckId) -> Result<(), EngineError>;
+    #[allow(clippy::too_many_arguments)]
     fn commit_saved_owned(
         &self,
         deck: DeckId,
@@ -241,6 +242,7 @@ pub trait SlidesEngine: Send + Sync {
         additional: &[shell_contract::runtime::CancelToken],
         effects: &shell_contract::hosts::OwnedEffectsHost,
     ) -> Result<(), EngineError>;
+    #[allow(clippy::too_many_arguments)]
     fn commit_saved_existing_document(
         &self,
         deck: DeckId,
@@ -611,6 +613,7 @@ pub enum PresenterWindowAction {
 pub trait SlidesShell: Send + Sync {
     /// `slidesOpenedHook(wc, path)`
     fn opened(&self, view: ViewId, path: &str);
+    #[allow(clippy::too_many_arguments)]
     fn file_saved_owned(
         &self,
         origin: &RenderOwner,
@@ -623,6 +626,7 @@ pub trait SlidesShell: Send + Sync {
         additional: &[shell_contract::runtime::CancelToken],
         done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>,
     );
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn file_saved_existing_document(
         &self,
         revision: shell_contract::ipc::NativeSaveRevisionAuthority,
@@ -637,6 +641,7 @@ pub trait SlidesShell: Send + Sync {
         >,
         done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>,
     );
+    #[allow(clippy::too_many_arguments)]
     fn set_window_title_existing_document(
         &self,
         destination: shell_contract::ipc::NativeSaveDestination,
@@ -648,6 +653,7 @@ pub trait SlidesShell: Send + Sync {
         title: String,
         done: Box<dyn FnOnce(Result<(), String>)>,
     );
+    #[allow(clippy::too_many_arguments)]
     fn set_window_title_owned(
         &self,
         origin: &RenderOwner,
@@ -669,6 +675,7 @@ pub trait SlidesShell: Send + Sync {
         action: PresenterWindowAction,
         done: Box<dyn FnOnce(Result<(), String>) + Send>,
     );
+    #[allow(clippy::too_many_arguments)]
     fn prepare_reveal_export(
         &self,
         output: shell_contract::ipc::SavedPublication,
@@ -694,6 +701,7 @@ pub trait SlidesShell: Send + Sync {
     fn can_write_new_document(&self) -> bool;
     /// `runtime.writeNewDocument(view, name, bytes)`: the path written, or
     /// `None` when no project was chosen
+    #[allow(clippy::too_many_arguments)]
     fn write_new_document_owned(
         &self,
         origin: &RenderOwner,
@@ -734,6 +742,7 @@ pub trait SlidesShell: Send + Sync {
     fn native_clipboard(&self, view: ViewId, op: &str);
     /// the prepare step of `slides:open` and friends, answered through
     /// `done` (from any thread) so a password prompt never blocks the core
+    #[allow(clippy::too_many_arguments)]
     fn prepare_for_open_owned(
         &self,
         parent: Option<WindowId>,
@@ -752,6 +761,7 @@ pub trait SlidesShell: Send + Sync {
         done: Box<dyn FnOnce(Result<PreparedOpen, String>) + Send>,
     );
     /// Prompt for and unlock the selected encrypted copy before navigation.
+    #[allow(clippy::type_complexity)]
     fn unlock_recovery_copy_prepared(
         &self,
         target: shell_contract::ipc::RecoveryOpenTarget,
@@ -760,12 +770,14 @@ pub trait SlidesShell: Send + Sync {
         bytes: Vec<u8>,
         done: Box<dyn FnOnce(Result<Option<(Vec<u8>, String)>, String>) + Send>,
     );
+    #[allow(clippy::type_complexity)]
     fn unlock_saved_document(
         &self,
         document: shell_contract::ipc::NativeSavedDocument,
         title: String,
         done: Box<dyn FnOnce(Result<Option<(Vec<u8>, String)>, String>) + Send>,
     );
+    #[allow(clippy::too_many_arguments)]
     fn export_pdf_owned(
         &self,
         op: &IpcValue,
@@ -777,6 +789,7 @@ pub trait SlidesShell: Send + Sync {
         additional: &[shell_contract::runtime::CancelToken],
         effects: &shell_contract::hosts::OwnedEffectsHost,
     ) -> PdfExportAnswer;
+    #[allow(clippy::too_many_arguments)]
     fn export_pdf_native_invocation(
         &self,
         op: &IpcValue,
@@ -789,6 +802,7 @@ pub trait SlidesShell: Send + Sync {
         additional: &[shell_contract::runtime::CancelToken],
         effects: &shell_contract::hosts::OwnedEffectsHost,
     ) -> PdfExportAnswer;
+    #[allow(clippy::too_many_arguments)]
     fn export_pdf_existing_document(
         &self,
         op: &IpcValue,
@@ -808,6 +822,7 @@ pub trait SlidesShell: Send + Sync {
     fn display_of(&self, window: Option<WindowId>) -> Result<Display, EngineError>;
     /// Creates the audience window and captures its native owner at creation.
     /// The shell calls [`crate::slides::audience_closed`] when it closes.
+    #[allow(clippy::type_complexity)]
     fn open_audience_window(
         &self,
         display: Display,

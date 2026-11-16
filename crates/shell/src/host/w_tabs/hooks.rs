@@ -86,6 +86,42 @@ impl shell_ipc_w::tabs::host::EditorSeedRollback for SheetsRegistrationRollback 
     }
 }
 
+/// Releases a Slides actor's native registration when its exact closure receipt arrives.
+pub(super) struct SlidesActorRollback(pub(super) ViewId);
+impl SlidesActorRollback {
+    fn retire(&self, proof: &shell_contract::ipc::NativeClosureReceipt) -> Result<(), String> {
+        shell_ipc_d1::slides::views()
+            .ok_or("Slides editor is not registered")?
+            .retire_native_closed(self.0, proof)
+    }
+}
+impl shell_ipc_w::tabs::host::EditorSeedRollback for SlidesActorRollback {
+    fn retire_closed(
+        &self,
+        proof: shell_contract::ipc::NativeClosureReceipt,
+        done: Box<dyn FnOnce(Result<(), String>)>,
+    ) {
+        done(self.retire(&proof));
+    }
+    fn retire_adopted(
+        &self,
+        proof: shell_contract::ipc::NativeClosureReceipt,
+        done: Box<dyn FnOnce(Result<(), String>)>,
+    ) {
+        done(self.retire(&proof));
+    }
+    fn retire_superseded(
+        &self,
+        _: shell_contract::ipc::NativeBrowserSuperseded,
+        done: Box<dyn FnOnce(Result<(), String>)>,
+    ) {
+        done(Ok(()));
+    }
+    fn rollback(&self, done: Box<dyn FnOnce(Result<(), String>)>) {
+        done(Ok(()));
+    }
+}
+
 struct DocsOpenRollback(shell_ipc_d2::docs::editors::DocsOpenReceipt);
 impl shell_ipc_w::tabs::host::EditorSeedRollback for DocsOpenRollback {
     fn retire_closed(
@@ -784,7 +820,7 @@ impl Hooks {
                 }
                 match result {
                     Err(error) => {
-                        let completion = Box::new(move |result: Result<(), String>| {
+                        let completion: Box<dyn FnOnce(Result<(), String>)> = Box::new(move |result: Result<(), String>| {
                             done(Err(result.err().unwrap_or_else(|| {
                                 "Recovery failure unexpectedly succeeded".into()
                             })));
@@ -1608,8 +1644,9 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
             .views
             .prepare_browser_owner(view, &created, prepared.proof.owner())
             .map_err(TabError)?;
-        let constructor = Box::new(move |done| {
+        let constructor = Box::new(move |done: super::native_command::Done| {
             let registered = (|| -> Result<(), String> {
+                let slides_rollback = actors.slides_rollback(view);
                 crate::ipc::native_owner::with_native_command_creation_effect(
                     &operation,
                     &command,
@@ -1648,6 +1685,9 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
                     },
                 )
                 .ok_or("The native command expired before actor registration")??;
+                if let Some(actor) = slides_rollback {
+                    rollback.borrow_mut().push(actor);
+                }
                 if let Some(token) = docs {
                     let receipt = token.finish()?;
                     let lease = receipt.lease();
@@ -1834,6 +1874,7 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
             created,
             Box::new(move |owner, cancel, pending, then| {
                 let registered = (|| -> Result<(), String> {
+                    let slides_rollback = actors.slides_rollback(prepared.view);
                     crate::ipc::native_owner::with_created_effect(
                         &owner,
                         &prepared.generation,
@@ -1870,6 +1911,9 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
                         },
                     )
                     .ok_or("The editor creation authority expired")??;
+                    if let Some(actor) = slides_rollback {
+                        rollback.borrow_mut().push(actor);
+                    }
                     if let Some(docs) = docs {
                         let receipt = docs.finish()?;
                         let lease = receipt.lease();
@@ -1976,6 +2020,9 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
             .map(|token| super::spare_actor::SheetsSpareActor::new(token.prepare_receipt()));
         if let Some(actor) = &spare_actor {
             rollback.borrow_mut().push(actor.clone());
+        }
+        if let Some(actor) = actors.slides_rollback(view) {
+            rollback.borrow_mut().push(actor);
         }
         let proof = prepared.proof.clone();
         let browser = proof.owner().clone();
@@ -3296,7 +3343,7 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
                 }
                 match result {
                     Err(error) => {
-                        let completion = Box::new(move |result: Result<(), String>| {
+                        let completion: Box<dyn FnOnce(Result<(), String>)> = Box::new(move |result: Result<(), String>| {
                             done(Err(result.err().unwrap_or_else(|| {
                                 "Recovery failure unexpectedly succeeded".into()
                             })));
@@ -3470,7 +3517,7 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
                 }
                 match result {
                     Err(error) => {
-                        let completion = Box::new(move |result: Result<(), String>| {
+                        let completion: Box<dyn FnOnce(Result<(), String>)> = Box::new(move |result: Result<(), String>| {
                             done(Err(result.err().unwrap_or_else(|| {
                                 "Recovery failure unexpectedly succeeded".into()
                             })));

@@ -15,9 +15,11 @@ mod committed;
 mod creation_cleanup;
 mod generated;
 mod generated_cleanup;
+mod help;
 mod native_command;
 mod pending_output;
 mod receipt_retirement;
+mod startup_native;
 mod saved_input;
 mod tab_load;
 pub(crate) use adopted_lifetime::AdoptedEditorLifetime;
@@ -2471,6 +2473,41 @@ impl TabsState {
         cancel: CancelToken,
         done: Box<dyn FnOnce(Result<Option<ViewId>, String>)>,
     ) {
+        self.route_owned(path, owner, cancel, self.manager_epoch.get(), None, done);
+    }
+
+    /// `routeDocumentPath` for a caller holding an activation authority (the startup launch):
+    /// the authority, its cancel and pending tokens are admitted before the route starts, then
+    /// the route runs for the authority's captured owner. `done` runs once, after the document
+    /// is shown, found already open, or the route ended without one.
+    pub fn route_document_path_authorized(
+        &self,
+        path: String,
+        authority: super::super::activation::TabActivationAuthority,
+        cancel: CancelToken,
+        pending: CancelToken,
+        done: Box<dyn FnOnce(Result<Option<ViewId>, String>)>,
+    ) {
+        let Some(effects) = self
+            .services
+            .hosts
+            .get::<shell_contract::hosts::OwnedEffectsHost>()
+            .cloned()
+        else {
+            return done(Err("Owned route effects are unavailable".into()));
+        };
+        let admitted = super::super::activation::driver::admit(
+            &effects,
+            &authority,
+            &[],
+            &cancel,
+            &pending,
+            || Ok(()),
+        );
+        if let Err(error) = admitted {
+            return done(Err(error));
+        }
+        let owner = authority.owner().clone();
         self.route_owned(path, owner, cancel, self.manager_epoch.get(), None, done);
     }
 

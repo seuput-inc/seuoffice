@@ -148,6 +148,7 @@ impl EventSink for Events {
 
 #[derive(Default)]
 pub struct FakeNativeRetirements {
+    #[allow(clippy::type_complexity)]
     listeners: Mutex<
         Vec<(
             Arc<std::sync::atomic::AtomicBool>,
@@ -202,14 +203,14 @@ impl shell_contract::runtime::NativeViewRetirements for FakeNativeRetirements {
                 .map_err(|_| "test terminal listeners poisoned")?
                 .clone();
             for (active, listener) in listeners {
-                if active.load(std::sync::atomic::Ordering::Acquire) {
-                    if let Err(error) = listener(event.clone()) {
-                        self.pending
-                            .lock()
-                            .map_err(|_| "test terminal queue poisoned")?
-                            .push_front(event);
-                        return Err(error);
-                    }
+                if active.load(std::sync::atomic::Ordering::Acquire)
+                    && let Err(error) = listener(event.clone())
+                {
+                    self.pending
+                        .lock()
+                        .map_err(|_| "test terminal queue poisoned")?
+                        .push_front(event);
+                    return Err(error);
                 }
             }
             count += 1;
@@ -235,6 +236,7 @@ pub struct FakeViews {
     pub listeners: Mutex<Vec<Box<dyn Fn(ViewId) + Send + Sync>>>,
     generations:
         Mutex<std::collections::HashMap<ViewId, shell_contract::runtime::RendererGeneration>>,
+    #[allow(clippy::type_complexity)]
     replacements:
         Mutex<Vec<Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>>>,
 }
@@ -973,8 +975,10 @@ pub fn call(
 
 /// The registry after `register` ran over `kit`
 pub fn registered(kit: &Kit) -> TestRegistry {
-    let mut registry = TestRegistry::default();
-    registry.views = Some(kit.views.clone());
+    let mut registry = TestRegistry {
+        views: Some(kit.views.clone()),
+        ..Default::default()
+    };
     crate::register(&mut registry, &kit.services).expect("D1 registers");
     registry
 }

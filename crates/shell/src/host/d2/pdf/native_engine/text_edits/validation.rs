@@ -163,7 +163,7 @@ pub(super) fn validate(bytes: &[u8], edits: &[V], cancel: &CancelToken) -> Resul
         let result = (|| {
             let text_page = handle(call(&mut session, "FPDFText_LoadPage", &[reference(page)])?)?
                 .ok_or("could not load PDF text page")?;
-            let result = (|| {
+            let result: Result<(), String> = (|| {
                 let mut objects = Vec::new();
                 walk(
                     &mut session,

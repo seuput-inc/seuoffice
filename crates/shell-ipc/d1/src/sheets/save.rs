@@ -178,16 +178,14 @@ pub(super) fn wake_generated_publication(core: &Core, id: &str) {
             pending.task.clone(),
         )
     };
-    if delivery.is_none() {
-        if let Some(task) = &task {
-            match task.take_redelivery() {
-                Ok(restored) => delivery = restored,
-                Err(error) => {
-                    if let Some(pending) =
-                        core.state.borrow_mut().generated_publications.get_mut(id)
-                    {
-                        pending.last_error = Some(error);
-                    }
+    if delivery.is_none()
+        && let Some(task) = &task
+    {
+        match task.take_redelivery() {
+            Ok(restored) => delivery = restored,
+            Err(error) => {
+                if let Some(pending) = core.state.borrow_mut().generated_publications.get_mut(id) {
+                    pending.last_error = Some(error);
                 }
             }
         }
@@ -784,10 +782,8 @@ fn acknowledge_published(
         if current.csv_source_path.as_deref() == Some(requested) {
             current.csv_source_path = Some(actual.clone());
         }
-        if let Some((path, _)) = current.disk_state.as_mut() {
-            if *path == requested {
-                *path = actual.clone();
-            }
+        if let Some((path, _)) = current.disk_state.as_mut() && *path == requested {
+            *path = actual.clone();
         }
         if current.recovery_identity.as_ref() == Some(&file_identity(requested)) {
             current.recovery_identity = Some(file_identity(&actual));
@@ -1052,10 +1048,6 @@ fn disk_changed(env: &Env) -> IpcError {
 }
 
 /// `saveWorkbook`
-pub fn save_workbook(env: &Env, view: ViewId, input: IpcValue) -> Result<IpcValue, IpcError> {
-    save_workbook_with_owner(env, view, input, None)
-}
-
 pub fn save_workbook_with_owner(
     env: &Env,
     view: ViewId,

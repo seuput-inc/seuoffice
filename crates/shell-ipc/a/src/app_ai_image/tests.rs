@@ -50,6 +50,7 @@ impl Workers for Threads {
 struct Live(
     Mutex<HashSet<u32>>,
     Mutex<std::collections::HashMap<ViewId, shell_contract::runtime::RendererGeneration>>,
+    #[allow(clippy::type_complexity)]
     Mutex<Vec<Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>>>,
 );
 
@@ -77,7 +78,7 @@ impl Views for Live {
                 .lock()
                 .unwrap()
                 .entry(view)
-                .or_insert_with(shell_contract::runtime::RendererGeneration::new)
+                .or_default()
                 .clone(),
         )
     }

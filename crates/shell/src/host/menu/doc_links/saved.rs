@@ -409,7 +409,7 @@ impl SavedLinks {
         metadata::submit(
             &path,
             move || {
-                let mut refusal = None;
+                let refusal = std::cell::RefCell::new(None);
                 let mut admit = |effect: &mut dyn FnMut()| {
                     admit(
                         &effects,
@@ -426,7 +426,7 @@ impl SavedLinks {
                         },
                     )
                     .map_err(|error| {
-                        refusal = Some(error.clone());
+                        *refusal.borrow_mut() = Some(error.clone());
                         main_core::node_fs::NodeError {
                             code: None,
                             message: error,
@@ -435,12 +435,12 @@ impl SavedLinks {
                 };
                 for file in writes {
                     if let Err(error) = main_core::packages::electron_utils::atomic_write::write_json_atomic_authorized(&io_path,&file.to_json(),&mut admit) {
-                    if refusal.is_some() { break; }
+                    if refusal.borrow().is_some() { break; }
                     // DocumentLinks.commit warns but still delivers its change listeners.
                     eprintln!("[document-links] could not write the records: {}",error.message);
                 }
                 }
-                Ok(refusal.map_or(Ok(()), Err))
+                Ok(refusal.into_inner().map_or(Ok(()), Err))
             },
             move |result| {
                 completion(

@@ -196,7 +196,7 @@ impl HwpShell for Shell {
         let mut callback = Some(done);
         let entered = crate::host::w::on_core_local(|_| {
             if let Some(done) = callback.take() {
-                crate::host::d1::shells::file_saved_existing_document(
+                crate::host::d2::native_save::file_saved_existing_document(
                     selection,
                     participants,
                     cancel,

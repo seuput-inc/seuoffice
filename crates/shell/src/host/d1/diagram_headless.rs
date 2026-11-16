@@ -6,7 +6,7 @@ use shell_contract::ipc::{
     NativeInvocationOperation, NativeInvocationSelection, NativeInvocationTarget,
     NativeRequestOwner,
 };
-use shell_contract::runtime::{CancelSubscription, RendererGeneration};
+use shell_contract::runtime::{CancelSubscription, RendererGeneration, Views};
 use shell_contract::{Surface, ViewId};
 use std::sync::{Arc, Mutex};
 

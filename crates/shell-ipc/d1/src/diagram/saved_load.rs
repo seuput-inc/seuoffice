@@ -872,14 +872,12 @@ pub(super) fn acknowledge(
             "The saved diagram acknowledgement was not admitted".into()
         })));
     }
-    if let Some(mut slot) = completed {
-        if let Some(done) = slot.done.take() {
-            done(if ok {
-                Ok(shell_contract::editors::SavedDocumentLoadOutcome::Applied)
-            } else {
-                Err(thrown(error))
-            });
-        }
+    if let Some(mut slot) = completed && let Some(done) = slot.done.take() {
+        done(if ok {
+            Ok(shell_contract::editors::SavedDocumentLoadOutcome::Applied)
+        } else {
+            Err(thrown(error))
+        });
     }
     Ok(true)
 }

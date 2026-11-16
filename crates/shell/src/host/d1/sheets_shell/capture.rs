@@ -190,7 +190,7 @@ impl Capture {
                     .native_window_handle()
                     .map_err(|error| error.to_string())?;
                 handle
-                    .with_window(native_window_id)
+                    .with_window(|window| native_window_id(window))
                     .map_err(|error| error.to_string())?
             })
             .and_then(|result| result)

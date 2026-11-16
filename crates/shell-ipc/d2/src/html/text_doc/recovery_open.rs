@@ -367,7 +367,6 @@ impl TextDocs {
             &mut commit,
         );
         drop(commit);
-        drop(validate);
         if let Some(revoked) = revoked {
             revoked.cancel();
         }

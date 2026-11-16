@@ -219,10 +219,8 @@ fn begin_generated_publication(
 
 fn fail_generated_preparation(app: &App, id: &str, error: String) {
     let entry = app.state.borrow_mut().generated_publications.remove(id);
-    if let Some(mut entry) = entry {
-        if let Some(consumer) = entry.consumer.take() {
-            consumer(app, &Err(error))();
-        }
+    if let Some(mut entry) = entry && let Some(consumer) = entry.consumer.take() {
+        consumer(app, &Err(error))();
     }
 }
 
@@ -262,11 +260,11 @@ fn start_generated_publication(app: &App, id: &str) {
         .get_mut(id)
         .and_then(|entry| entry.prepared.take());
     let Some(prepared) = prepared else { return };
-    if let Err(failure) = prepared.start() {
-        if let Some(entry) = app.state.borrow_mut().generated_publications.get_mut(id) {
-            entry.failure = Some(failure.error);
-            entry.prepared = Some(failure.prepared);
-        }
+    if let Err(failure) = prepared.start()
+        && let Some(entry) = app.state.borrow_mut().generated_publications.get_mut(id)
+    {
+        entry.failure = Some(failure.error);
+        entry.prepared = Some(failure.prepared);
     }
 }
 
@@ -392,23 +390,21 @@ fn resume_generated_publication(app: &App, id: &str) {
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .is_none();
-    if empty {
-        if let Some(task) = task.as_ref() {
-            match task.take_redelivery() {
-                Ok(Some(delivery)) => {
-                    let mut slot = inbox
-                        .delivery
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner());
-                    if slot.is_none() {
-                        *slot = Some(delivery);
-                    }
+    if empty && let Some(task) = task.as_ref() {
+        match task.take_redelivery() {
+            Ok(Some(delivery)) => {
+                let mut slot = inbox
+                    .delivery
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if slot.is_none() {
+                    *slot = Some(delivery);
                 }
-                Ok(None) => {}
-                Err(error) => {
-                    if let Some(entry) = app.state.borrow_mut().generated_publications.get_mut(id) {
-                        entry.failure = Some(error);
-                    }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                if let Some(entry) = app.state.borrow_mut().generated_publications.get_mut(id) {
+                    entry.failure = Some(error);
                 }
             }
         }

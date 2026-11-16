@@ -97,6 +97,7 @@ pub fn land_generated_pages(app: &App, cx: &CallContext, args: Args) -> Reply {
     Ok(reply)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn land(
     app: &App,
     owner: &super::engine::RenderOwner,

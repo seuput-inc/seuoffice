@@ -217,10 +217,10 @@ pub(super) fn run_accepted_ui<T>(
             let mut captured = Vec::with_capacity(participants.len() + 1);
             captured.push(owner.clone());
             captured.extend_from_slice(participants);
-            let extra: Vec<_> = additional.iter().collect();
+            let extra: &[shell_contract::runtime::CancelToken] = additional;
             let mut action = Some(action);
             let mut accepted = None;
-            path.with_effect(effects, &captured, cancel, pending, &extra, &mut || {
+            path.with_effect(effects, &captured, cancel, pending, extra, &mut || {
                 accepted = action.take();
                 Ok(())
             })?;
@@ -287,7 +287,7 @@ fn prepared_step(
                 return done(Err("A non-close UI step received a close permit".into()));
             }
             let core = services.core.clone();
-            let complete = shell_ipc_w::home_files::back_to_core(core, move |result| {
+            let complete = shell_ipc_w::home_files::back_to_core(core, move |result: Result<(), String>| {
                 done(result.map(|()| shell_ipc_w::tabs::TabUiStepOutcome::Applied))
             });
             let Some(effects) = services

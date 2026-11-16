@@ -81,20 +81,31 @@ impl LoadError {
 }
 
 type LoadThen = Box<dyn FnOnce(Result<Loaded, LoadError>)>;
+type PrepareThen = Box<dyn FnOnce(Option<(String, Option<RecoveryLoadScope>)>)>;
+type PublishedFile = Result<(String, std::sync::Arc<std::fs::File>), String>;
+type PreparedRecovery = Result<
+    (
+        Option<Vec<u8>>,
+        Option<main_core::packages::electron_utils::recovery_store::RecoveryMetadataPlan>,
+    ),
+    String,
+>;
 
 #[derive(Clone)]
-pub(super) struct LoadAuthority {
+pub(crate) struct LoadAuthority {
     pub(super) owner: shell_contract::ipc::NativeRequestOwner,
     pub(super) cancel: shell_contract::runtime::CancelToken,
 }
 
 pub(super) enum PreparedRecoveryCopy {
     Original,
-    Restore(Option<main_core::packages::electron_utils::recovery_store::RecoveryPinnedSnapshot>),
+    Restore(
+        Option<Box<main_core::packages::electron_utils::recovery_store::RecoveryPinnedSnapshot>>,
+    ),
 }
 
 #[derive(Clone)]
-pub(super) struct RecoveryLoadScope {
+pub(crate) struct RecoveryLoadScope {
     pub(super) receipt: shell_contract::ipc::RecoverySeedReceipt,
     pub(super) snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
     pub(super) owner: shell_contract::ipc::NativeRequestOwner,
@@ -349,9 +360,8 @@ impl Docs {
             let mut rejected = None;
             let result = main_core::packages::electron_utils::legacy_import_prefs::write_legacy_import_skip_authorized(
                 &settings, "word97", true, &mut |effect| {
-                    scope.file_effect(effect).map_err(|error| {
+                    scope.file_effect(effect).inspect_err(|error| {
                         rejected = Some(error.message.clone());
-                        error
                     })
                 },
             );
@@ -399,7 +409,7 @@ impl Docs {
         target: shell_contract::ipc::RecoveryCommittedDestination,
         bytes: Vec<u8>,
         scope: RecoveryLoadScope,
-        then: Box<dyn FnOnce(Result<(String, std::sync::Arc<std::fs::File>), String>)>,
+        then: Box<dyn FnOnce(PublishedFile)>,
     ) {
         kit::on_worker(
             &self.services,
@@ -450,9 +460,8 @@ impl Docs {
                     let marker = rejected.clone();
                     let admission = scope.admission();
                     let checked: main_core::packages::electron_utils::atomic_write::owned::Admission =
-                    std::sync::Arc::new(move |effect| admission(effect).map_err(|error| {
+                    std::sync::Arc::new(move |effect| admission(effect).inspect_err(|_| {
                         marker.store(true, Ordering::Release);
-                        error
                     }));
                     let result = main_core::packages::electron_utils::default_save_dir::configured_default_save_dir_owned(
                     &super::adapters::Paths(paths.as_ref()), &mut proposed, super::recovery_now_ms(), checked,
@@ -520,9 +529,8 @@ impl Docs {
                         &io_path,
                         &JsonValue::Array(next),
                         &mut |effect| {
-                            scope.file_effect(effect).map_err(|error| {
+                            scope.file_effect(effect).inspect_err(|error| {
                                 denied = Some(error.message.clone());
-                                error
                             })
                         },
                     );
@@ -564,11 +572,10 @@ impl Docs {
 
     fn prepare_legacy_recovery(
         self: &Rc<Self>,
-        view: ViewId,
         path: String,
         parent: Option<WindowId>,
         scope: RecoveryLoadScope,
-        then: Box<dyn FnOnce(Option<(String, Option<RecoveryLoadScope>)>)>,
+        then: PrepareThen,
     ) {
         let settings = self.user_data(&["app-settings.json"]);
         let worker_settings = settings.clone();
@@ -627,7 +634,6 @@ impl Docs {
                             .replace_all(&basename(&path), |_| ".docx".to_owned()),
                     ]);
                     after_docs.pick_legacy_recovery(
-                        view,
                         path,
                         suggested,
                         parent,
@@ -686,12 +692,11 @@ impl Docs {
 
     fn pick_legacy_recovery(
         self: &Rc<Self>,
-        view: ViewId,
         source: String,
         suggested: String,
         parent: Option<WindowId>,
         scope: RecoveryLoadScope,
-        then: Box<dyn FnOnce(Option<(String, Option<RecoveryLoadScope>)>)>,
+        then: PrepareThen,
     ) {
         let docs = self.clone();
         let saved_scope = scope.clone();
@@ -751,11 +756,11 @@ impl Docs {
                             let retry_scope = scope.clone();
                             let detail = checked_docs.tm("docImportOriginalTarget");
                             return checked_docs.legacy_error_recovery(parent, detail, scope, Box::new(move || {
-                                retry_docs.pick_legacy_recovery(view, source, suggested, parent, retry_scope, then);
+                                retry_docs.pick_legacy_recovery(source, suggested, parent, retry_scope, then);
                             }));
                         }
                         if retry {
-                            return checked_docs.pick_legacy_recovery(view, source, format!("{chosen}.docx"), parent, scope, then);
+                            return checked_docs.pick_legacy_recovery(source, format!("{chosen}.docx"), parent, scope, then);
                         }
                         let target = target.for_docs_docx();
                         let publish_docs = checked_docs.clone();
@@ -802,13 +807,13 @@ impl Docs {
         path: String,
         parent: Option<WindowId>,
         recovery: Option<RecoveryLoadScope>,
-        then: Box<dyn FnOnce(Option<(String, Option<RecoveryLoadScope>)>)>,
+        then: PrepareThen,
     ) {
         if !is_word97_path(&path) {
             return then(Some((path, recovery)));
         }
         if let Some(scope) = recovery {
-            return self.prepare_legacy_recovery(view, path, parent, scope, then);
+            return self.prepare_legacy_recovery(path, parent, scope, then);
         }
         if let Ok((_, size)) = stat(&path)
             && size as u64 > LEGACY_DOC_MAX_BYTES
@@ -1235,7 +1240,7 @@ impl Docs {
         view: ViewId,
         path: String,
         scope: RecoveryLoadScope,
-        then: Box<dyn FnOnce(Result<(Option<Vec<u8>>, Option<main_core::packages::electron_utils::recovery_store::RecoveryMetadataPlan>), String>)>,
+        then: Box<dyn FnOnce(PreparedRecovery)>,
     ) {
         let selected = scope.effect(|| {
             let decision = self
@@ -1299,8 +1304,7 @@ impl Docs {
                 let identity = file_identity(&path);
                 super::recovery::with_store(&shared, &root, &shell, |store| {
                     scope
-                        .effect(|| store.clear_discarded(&identity))
-                        .map_err(|error| error)?
+                        .effect(|| store.clear_discarded(&identity))?
                         .map_err(|error| error.message)
                 })?;
                 match prepared {
@@ -1314,9 +1318,8 @@ impl Docs {
                             let mut rejected = None;
                             let result = plan.write_via(&mut |path, value| {
                             let result = main_core::packages::electron_utils::atomic_write::write_json_atomic_authorized(
-                                path, value, &mut |effect| scope.file_effect(effect).map_err(|error| {
+                                path, value, &mut |effect| scope.file_effect(effect).inspect_err(|error| {
                                     rejected = Some(error.message.clone());
-                                    error
                                 }),
                             );
                             if rejected.is_some() { result.map(|()| true) } else { Ok(result.is_ok()) }
@@ -1337,7 +1340,7 @@ impl Docs {
         view: ViewId,
         path: String,
         scope: RecoveryLoadScope,
-        then: Box<dyn FnOnce(Result<(Option<Vec<u8>>, Option<main_core::packages::electron_utils::recovery_store::RecoveryMetadataPlan>), String>)>,
+        then: Box<dyn FnOnce(PreparedRecovery)>,
     ) {
         if self.shell.is_headless() {
             return then(scope.effect(|| (None, None)));
@@ -1426,7 +1429,7 @@ impl Docs {
         path: String,
         scope: RecoveryLoadScope,
         discard: bool,
-        then: Box<dyn FnOnce(Result<(Option<Vec<u8>>, Option<main_core::packages::electron_utils::recovery_store::RecoveryMetadataPlan>), String>)>,
+        then: Box<dyn FnOnce(PreparedRecovery)>,
     ) {
         let shared = self.recovery_shared.clone();
         let root = self.user_data(&[]);
@@ -1458,8 +1461,8 @@ impl Docs {
                     let mut denied = None;
                     let result = plan.write_via(&mut |path, value| {
                     let result = main_core::packages::electron_utils::atomic_write::write_json_atomic_authorized(
-                        path, value, &mut |effect| scope.file_effect(effect).map_err(|error| {
-                            denied = Some(error.message.clone()); error
+                        path, value, &mut |effect| scope.file_effect(effect).inspect_err(|error| {
+                            denied = Some(error.message.clone());
                         }),
                     );
                     if denied.is_some() { result.map(|()| true) } else { Ok(result.is_ok()) }
@@ -1541,20 +1544,17 @@ impl Docs {
             &self.services,
             move || {
                 let _work = worker_scope.work.clone();
-                if failed {
-                    if let Some(plan) = later {
-                        let mut rejected = None;
-                        let result = plan.write_via(&mut |path, value| {
-                        let result = main_core::packages::electron_utils::atomic_write::write_json_atomic_authorized(
-                            path, value, &mut |effect| worker_scope.file_effect(effect).map_err(|error| {
-                                rejected = Some(error.message.clone());
-                                error
-                            }),
-                        );
-                        if rejected.is_some() { result.map(|()| true) } else { Ok(result.is_ok()) }
-                    });
-                        result.map_err(|error| error.message)?;
-                    }
+                if failed && let Some(plan) = later {
+                    let mut rejected = None;
+                    let result = plan.write_via(&mut |path, value| {
+                    let result = main_core::packages::electron_utils::atomic_write::write_json_atomic_authorized(
+                        path, value, &mut |effect| worker_scope.file_effect(effect).inspect_err(|error| {
+                            rejected = Some(error.message.clone());
+                        }),
+                    );
+                    if rejected.is_some() { result.map(|()| true) } else { Ok(result.is_ok()) }
+                });
+                    result.map_err(|error| error.message)?;
                 }
                 worker_scope.effect(|| ())
             },
@@ -2699,7 +2699,6 @@ pub(super) struct HeadlessPublication {
     pub(super) document: shell_contract::ipc::NativeInvocationDocument,
     pub(super) owner: shell_contract::ipc::NativeRequestOwner,
     pub(super) cancel: shell_contract::runtime::CancelToken,
-    pub(super) path: String,
     pub(super) effects: shell_contract::hosts::OwnedEffectsHost,
     pub(super) pending: shell_contract::runtime::CancelToken,
 }
@@ -2825,7 +2824,6 @@ impl Docs {
             owner,
             cancel: cx.cancel.clone(),
             pending,
-            path: path.to_owned(),
             effects,
         }))
     }
@@ -2839,6 +2837,7 @@ impl Docs {
         self.allow_pdf_write(view, &out_path);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn begin_headless_export_native(
         self: &Rc<Self>,
         view: ViewId,

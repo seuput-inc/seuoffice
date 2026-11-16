@@ -327,7 +327,7 @@ impl Scope {
 
 #[derive(Clone)]
 pub(super) enum RenameScope {
-    Renderer(Scope),
+    Renderer(Box<Scope>),
     Native {
         snapshot: shell_contract::ipc::NativeSaveRevisionSnapshot,
         expected_path: PathBuf,
@@ -1074,6 +1074,7 @@ impl Hwp {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn file_renamed_owned(
         self: &Rc<Self>,
         view: ViewId,
@@ -1107,9 +1108,16 @@ impl Hwp {
             recovery: None,
             native_destination: None,
         };
-        self.file_renamed_scoped(view, old_path, new_path, RenameScope::Renderer(scope), then);
+        self.file_renamed_scoped(
+            view,
+            old_path,
+            new_path,
+            RenameScope::Renderer(Box::new(scope)),
+            then,
+        );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn file_renamed_recovery(
         self: &Rc<Self>,
         view: ViewId,
@@ -1147,9 +1155,16 @@ impl Hwp {
             recovery: Some((receipt.clone(), snapshot)),
             native_destination: None,
         };
-        self.file_renamed_scoped(view, old_path, new_path, RenameScope::Renderer(scope), then);
+        self.file_renamed_scoped(
+            view,
+            old_path,
+            new_path,
+            RenameScope::Renderer(Box::new(scope)),
+            then,
+        );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn file_renamed_existing_document(
         self: &Rc<Self>,
         view: ViewId,

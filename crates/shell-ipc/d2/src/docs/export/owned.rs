@@ -6,6 +6,7 @@ use main_core::packages::electron_utils::atomic_write::atomic_write_file_authori
 
 type Pick = Box<dyn FnOnce(Result<Option<String>, Reply>)>;
 
+#[allow(clippy::too_many_arguments)]
 fn target(
     d: &Rc<Docs>,
     scope: Scope,
@@ -98,10 +99,10 @@ fn finish(
     if let Err(error) = scope.check() {
         return responder.reply(Err(kit::error(error)));
     }
-    if !temporary {
-        if let Err(error) = scope.note_landed(&path) {
-            return responder.reply(Err(kit::error(error)));
-        }
+    if !temporary
+        && let Err(error) = scope.note_landed(&path)
+    {
+        return responder.reply(Err(kit::error(error)));
     }
     let mut answer = Obj::new().set("ok", true).set("path", path.clone());
     if let Some(dropped) = dropped {
@@ -700,6 +701,7 @@ pub(super) fn hwp(d: &Rc<Docs>, scope: Scope, args: kit::Args, responder: Respon
         _ => responder.reply(Ok(bad_hwp_request())),
     }
 }
+#[allow(clippy::too_many_arguments)]
 fn convert_hwp(
     d: &Rc<Docs>,
     scope: Scope,

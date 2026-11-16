@@ -1173,6 +1173,6 @@ mod tests {
                 .contains("could not be removed")
         );
         assert_eq!(deck.deck, before);
-        assert_eq!(deck.archive.entries(), &entries);
+        assert!(deck.archive.entries().iter().eq(entries.iter()));
     }
 }

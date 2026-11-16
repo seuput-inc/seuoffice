@@ -270,6 +270,7 @@ impl Docs {
         self.start_owned_close(scope, None, then);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn request_close_captured_many(
         self: &Rc<Self>,
         view: ViewId,
@@ -855,10 +856,10 @@ impl Docs {
                 .fail_recovery_view(view, "Docs recovery request was replaced");
             let (left, error, then) = (left.clone(), error.clone(), then.clone());
             let one_done = move |result: Result<(), Failure>| {
-                if let Err(failure) = result {
-                    if error.borrow().is_none() {
-                        *error.borrow_mut() = Some(failure);
-                    }
+                if let Err(failure) = result
+                    && error.borrow().is_none()
+                {
+                    *error.borrow_mut() = Some(failure);
                 }
                 left.set(left.get() - 1);
                 if left.get() == 0 {

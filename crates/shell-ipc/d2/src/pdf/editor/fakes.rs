@@ -674,9 +674,7 @@ impl FakeShell {
         request: &IpcValue,
         owner: ViewId,
     ) -> Option<Result<IpcValue, String>> {
-        if answers.case.get("createDocument").is_none() {
-            return None;
-        }
+        answers.case.get("createDocument")?;
         calls
             .lock()
             .unwrap()

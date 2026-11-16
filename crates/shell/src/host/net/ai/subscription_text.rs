@@ -76,7 +76,7 @@ fn fill(template: &str, provider: &str, vendor: &str) -> String {
 fn object(fields: &[(&str, String)]) -> JsonValue {
     let mut out = JsObject::new();
     for (key, value) in fields {
-        out.set(key, JsonValue::String(value.clone()));
+        out.set(*key, JsonValue::String(value.clone()));
     }
     JsonValue::Object(out)
 }

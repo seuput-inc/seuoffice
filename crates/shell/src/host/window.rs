@@ -952,9 +952,7 @@ impl Windows {
         let parent = window_lifecycle.window_handle()?;
         let view_label = format!("view-{}", view.0);
         let generation = Arc::new(OnceLock::new());
-        let mut builder = WebviewBuilder::new(&view_label, url)
-            .position(LogicalPosition::new(bounds.x, bounds.y))
-            .size(LogicalSize::new(bounds.width, bounds.height));
+        let mut builder = WebviewBuilder::new(&view_label, url);
         trace!(
             "window",
             "add view {} '{view_label}' to window {} {}", view.0, window.0, spec.url
@@ -1044,7 +1042,11 @@ impl Windows {
                 });
             }
         };
-        match parent.add_child(builder) {
+        match parent.add_child(
+            builder,
+            LogicalPosition::new(bounds.x, bounds.y),
+            LogicalSize::new(bounds.width, bounds.height),
+        ) {
             Ok(built) => {
                 if let Some(created) = generation.get() {
                     if let Err(error) =

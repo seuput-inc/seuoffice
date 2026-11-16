@@ -79,6 +79,7 @@ struct TestViews {
     gone: Mutex<HashSet<u32>>,
     listeners: Mutex<Vec<ViewListener>>,
     generations: Mutex<HashMap<ViewId, shell_contract::runtime::RendererGeneration>>,
+    #[allow(clippy::type_complexity)]
     replacements:
         Mutex<Vec<Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>>>,
 }
@@ -121,7 +122,7 @@ impl Views for TestViews {
                 .lock()
                 .unwrap()
                 .entry(view)
-                .or_insert_with(shell_contract::runtime::RendererGeneration::new)
+                .or_default()
                 .clone(),
         )
     }

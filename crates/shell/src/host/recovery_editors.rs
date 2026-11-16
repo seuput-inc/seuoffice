@@ -333,7 +333,7 @@ impl RecoveryEditors for Editors {
                                         shell_ipc_w::tabs::AdoptedLifetimeFailure::CallerOwned(
                                             input,
                                         ) => super::recovery_openers::DirectLifetime::CallerOwned(
-                                            input,
+                                            *input,
                                         ),
                                         shell_ipc_w::tabs::AdoptedLifetimeFailure::Retained(
                                             retained,

@@ -324,7 +324,7 @@ fn start_if_possible() {
             let delivery_core = services.core.clone();
             let delivery_services = services.clone();
             super::recovery_openers::cancel_all_and_drain(Box::new(move |recovery| {
-                let finish = Box::new(move |headless| {
+                let finish: super::headless_cleanup::Done = Box::new(move |headless| {
                     let result = match (recovery, headless) {
                         (Ok(()), result) | (result, Ok(())) => result,
                         (Err(first), Err(second)) => Err(format!("{first}; {second}")),

@@ -112,6 +112,7 @@ pub trait PageRenderer: Send + Sync {
     /// `pageToPdf(html)` of `export-main.ts`: the page as a one-page
     /// landscape A4 PDF; blocks, run on a worker
     fn page_to_pdf(&self, html: &str) -> Result<Vec<u8>, String>;
+    #[allow(clippy::too_many_arguments)]
     fn page_to_pdf_owned(
         &self,
         html: &str,
@@ -143,6 +144,7 @@ pub type PageRendererHost = Arc<dyn PageRenderer>;
 pub trait MindmapShell: Send + Sync {
     /// `fileSavedHook(wc, path)`: a save landed on a new path
     fn file_saved(&self, _view: ViewId, _path: &str) {}
+    #[allow(clippy::too_many_arguments)]
     fn file_saved_owned(
         &self,
         origin: &shell_contract::ipc::NativeRequestOwner,
@@ -155,6 +157,7 @@ pub trait MindmapShell: Send + Sync {
         path: std::path::PathBuf,
         done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>,
     );
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn file_saved_existing_document(
         &self,
         revision: shell_contract::ipc::NativeSaveRevisionAuthority,
@@ -187,6 +190,7 @@ pub trait MindmapShell: Send + Sync {
     fn has_new_document_writer(&self) -> bool {
         false
     }
+    #[allow(clippy::too_many_arguments)]
     fn write_new_document_owned(
         &self,
         origin: &shell_contract::ipc::NativeRequestOwner,

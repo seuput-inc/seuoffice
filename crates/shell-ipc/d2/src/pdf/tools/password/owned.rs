@@ -286,6 +286,7 @@ impl Password {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn prompt_owned(
         &self,
         parent: Option<shell_contract::WindowId>,

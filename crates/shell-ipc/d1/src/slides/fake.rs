@@ -658,14 +658,13 @@ impl SlidesEngine for FakeEngine {
             .bindings
             .lock()
             .map_err(|error| EngineError(error.to_string()))?;
-        if let Some(bound) = bindings.get_mut(&deck) {
-            if bound
+        if let Some(bound) = bindings.get_mut(&deck)
+            && bound
                 .get(&owner.view)
                 .zip(owner.context.renderer())
                 .is_some_and(|(current, owner)| current.same_generation(owner))
-            {
-                bound.remove(&owner.view);
-            }
+        {
+            bound.remove(&owner.view);
         }
         Ok(())
     }

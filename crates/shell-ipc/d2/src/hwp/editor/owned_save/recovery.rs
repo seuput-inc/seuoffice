@@ -49,24 +49,6 @@ impl Store {
         );
     }
 
-    fn admitted<R>(
-        &self,
-        scope: &Scope,
-        mut action: impl FnMut(&RecoveryStore<'_>) -> Result<R, String>,
-    ) -> Result<R, String> {
-        loop {
-            let mut answer = None;
-            scope.effect(&mut || {
-                answer = self.try_with(&mut action);
-                Ok(())
-            })?;
-            if let Some(answer) = answer {
-                return answer;
-            }
-            self.wait();
-        }
-    }
-
     fn admitted_rename<R>(
         &self,
         scope: &RenameScope,
@@ -196,6 +178,7 @@ impl Hwp {
         self.prepare_saved_recovery(view, before, reason, scope, store, resets, done);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn prepare_saved_recovery(
         self: &Rc<Self>,
         view: ViewId,
@@ -272,15 +255,13 @@ impl Hwp {
                     for recipient in resets {
                         if let Err(message) =
                             scope.emit_to(&recipient, "hwp:recovery-reset", vec![])
-                        {
-                            if !scope
+                            && (!scope
                                 .authority_loss()
                                 .is_some_and(|loss| !loss.is_cancelled())
                                 || scope.cancel.is_cancelled()
-                                || scope.pending.is_cancelled()
-                            {
-                                return done(Err(error(message)));
-                            }
+                                || scope.pending.is_cancelled())
+                        {
+                            return done(Err(error(message)));
                         }
                     }
                 }

@@ -22,7 +22,7 @@ pub(crate) enum PreparedRecovery {
         password: Option<String>,
         disk: Option<SaveDiskState>,
         recovered: bool,
-        snapshot: Option<RecoveryPinnedSnapshot>,
+        snapshot: Option<Box<RecoveryPinnedSnapshot>>,
     },
     Untitled {
         bytes: Vec<u8>,
@@ -138,12 +138,11 @@ pub(crate) fn abandon(app: &App, view: ViewId) {
             .remove(&view)
             .and_then(|(_, receipt, _)| receipt)
     });
-    if let Some(receipt) = receipt {
-        if let Ok(notification) =
+    if let Some(receipt) = receipt
+        && let Ok(notification) =
             receipt.fail_after_loss("The presentation recovery target was released".into())
-        {
-            notification.notify();
-        }
+    {
+        notification.notify();
     }
 }
 
@@ -224,16 +223,13 @@ fn start(
             })
         }));
     }
-    if let Some(pending) = app
-        .state
-        .borrow_mut()
-        .pending_recovery_seeds
-        .get_mut(&view)
-        .filter(|pending| pending.ticket == ticket)
     {
+        let mut state = app.state.borrow_mut();
+        let pending = state
+            .pending_recovery_seeds
+            .get_mut(&view)
+            .filter(|pending| pending.ticket == ticket)?;
         pending.subscriptions = subscriptions;
-    } else {
-        return None;
     }
     Some((
         ticket,
@@ -335,6 +331,7 @@ fn copy_state(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn repair_failed_copy(
     app: &App,
     effects: OwnedEffectsHost,
@@ -408,10 +405,9 @@ fn repair_failed_copy(
                     Err(error.message.clone()),
                 )
                 .is_err()
+                && let Ok(notification) = receipt.fail_after_loss(error.message.clone())
             {
-                if let Ok(notification) = receipt.fail_after_loss(error.message.clone()) {
-                    notification.notify();
-                }
+                notification.notify();
             }
             responder.reply(Err(error));
             app.pump();
@@ -486,7 +482,7 @@ fn prepare_file(
                             &shared, &directory, &identity, &admission,
                         )
                         .map_err(|error| error.message)?;
-                        retained_snapshot = Some(snapshot);
+                        retained_snapshot = Some(Box::new(snapshot));
                         if engine.is_encrypted_ooxml(&copy).map_err(|error| error.0)? {
                             match password.as_deref().and_then(|password| {
                                 engine.decrypt_office_file(&copy, password).ok()
@@ -532,6 +528,7 @@ fn prepare_file(
     }));
 }
 
+#[allow(clippy::type_complexity)]
 fn restore_unlocked(
     app: &App,
     view: ViewId,
@@ -939,7 +936,7 @@ pub(crate) fn consume(
                     authority_snapshot,
                     owner,
                     cx.cancel.clone(),
-                    snapshot,
+                    *snapshot,
                     error,
                     response,
                 );
@@ -954,10 +951,9 @@ pub(crate) fn consume(
                     Err(error.message.clone()),
                 )
                 .is_err()
+                && let Ok(notification) = receipt.fail_after_loss(error.message.clone())
             {
-                if let Ok(notification) = receipt.fail_after_loss(error.message.clone()) {
-                    notification.notify();
-                }
+                notification.notify();
             }
             Err(error)
         }

@@ -31,9 +31,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use jscompat::node_path::host::basename;
-use main_core::packages::electron_utils::recovery_contract::{
-    RecoveryOpenDecision, RecoveryOpenFileRequest, RecoveryOpenUntitledRequest,
-};
 use main_core::packages::electron_utils::recovery_prompt::{
     RecoveryOpenResult, ResolveRecoveryOnOpenOptions, resolve_recovery_on_open,
 };
@@ -83,14 +80,10 @@ pub(crate) struct TextRecoveryHost {
     pub open_path: Box<dyn Fn(ViewId) -> Option<String>>,
     /// the main side's unsaved-changes flag for the view
     pub is_dirty: Box<dyn Fn(ViewId) -> bool>,
-    /// point an existing view at a file: grant it, make it the open path and the save target
-    pub adopt_file: PathHook,
     /// the restored text replaces the file's: record the disk state the save guard compares with
     pub restored_file: PathHook,
     /// last-resort title of an untitled document's copy
     pub untitled_fallback_title: Box<dyn Fn() -> String>,
-    /// `contents.reload()`
-    pub reload: Box<dyn Fn(ViewId)>,
     /// `Date.now()`, the time a copy records
     pub now_ms: Box<dyn Fn() -> f64>,
 }
@@ -145,7 +138,6 @@ type Waiter = Box<dyn FnOnce(Result<(), Failure>)>;
 
 #[derive(Default)]
 struct ViewState {
-    saved_identity: Option<Rc<()>>,
     /// the copy identity while the document has no save path
     untitled: Option<RecoveryIdentity>,
     /// the text of this tab's last copy; None when there is none to compare with
@@ -154,14 +146,8 @@ struct ViewState {
     owns: bool,
     /// the renderer process died: the copy outlives the view
     crashed: bool,
-    /// the renderer already asked how to open (a later decision reloads it)
-    asked: bool,
     /// the per-file prompt is open: no copy is written until it is answered
     resolving: bool,
-    /// the shell's answer for the next open
-    decision: Option<RecoveryOpenDecision>,
-    /// an untitled copy to load on the next open
-    untitled_seed: Option<RecoveryIdentity>,
     owned_open: Option<OwnedOpenSeed>,
     /// the title the shell gave an untitled copy, or the editor's provisional title
     title: Option<String>,
@@ -193,75 +179,8 @@ pub(crate) struct TextRecovery {
     contents: ContentsHost,
     shared: SharedRecoveryHost,
     views: RefCell<HashMap<ViewId, ViewState>>,
-    saved_reservations: Cell<usize>,
     owned_renames: RefCell<HashMap<ViewId, rename_owned::OwnedRename>>,
     title_source: RefCell<Option<TitleSource>>,
-}
-
-pub(crate) struct PreparedSavedTracking {
-    recovery: Rc<TextRecovery>,
-    view: ViewId,
-    identity: Rc<()>,
-    state: Option<ViewState>,
-}
-
-#[derive(Clone)]
-pub(crate) struct SavedTracking {
-    view: ViewId,
-    identity: Rc<()>,
-}
-
-impl Drop for PreparedSavedTracking {
-    fn drop(&mut self) {
-        if self.state.is_some() {
-            self.recovery
-                .saved_reservations
-                .set(self.recovery.saved_reservations.get() - 1);
-        }
-    }
-}
-
-impl PreparedSavedTracking {
-    pub(crate) fn with_validated(
-        &mut self,
-        next: &mut dyn FnMut() -> Result<(), String>,
-    ) -> Result<SavedTracking, String> {
-        if self.state.is_none() {
-            return Err("the recovery tracking stage was already committed".into());
-        }
-        let mut views = self
-            .recovery
-            .views
-            .try_borrow_mut()
-            .map_err(|_| "the recovery tracking map is busy")?;
-        if views.contains_key(&self.view) {
-            return Err("the recovery tracking view already exists".into());
-        }
-        next()?;
-        let state = self
-            .state
-            .take()
-            .expect("the recovery tracking stage was validated");
-        views.insert(self.view, state);
-        self.recovery
-            .saved_reservations
-            .set(self.recovery.saved_reservations.get() - 1);
-        Ok(SavedTracking {
-            view: self.view,
-            identity: self.identity.clone(),
-        })
-    }
-}
-
-impl SavedTracking {
-    pub(crate) fn matches(&self, recovery: &TextRecovery) -> bool {
-        recovery
-            .views
-            .borrow()
-            .get(&self.view)
-            .and_then(|state| state.saved_identity.as_ref())
-            .is_some_and(|identity| Rc::ptr_eq(identity, &self.identity))
-    }
 }
 
 fn file_identity(kind: &str, file_path: &str) -> RecoveryIdentity {
@@ -302,7 +221,6 @@ impl TextRecovery {
             services: services.clone(),
             host,
             views: RefCell::default(),
-            saved_reservations: Cell::new(0),
             owned_renames: RefCell::default(),
             title_source: RefCell::default(),
         })
@@ -387,26 +305,6 @@ impl TextRecovery {
         }
     }
 
-    /// the renderer process is gone or reloads: it will ask again (or never)
-    fn reload_if_asked(&self, view: ViewId) {
-        let asked = self
-            .views
-            .borrow_mut()
-            .get_mut(&view)
-            .is_some_and(|s| std::mem::take(&mut s.asked));
-        if !asked {
-            return;
-        }
-        if self.is_destroyed(view) {
-            // the TypeScript leaves `asked` set on a destroyed view
-            if let Some(s) = self.views.borrow_mut().get_mut(&view) {
-                s.asked = true;
-            }
-            return;
-        }
-        (self.host.reload)(view)
-    }
-
     /// the copy `identity` is (or was) this view's: its save or open path, or what it last wrote
     fn shows_copy(&self, view: ViewId, state: &ViewState, identity: &RecoveryIdentity) -> bool {
         if state.written_as.as_ref() == Some(identity) || state.untitled.as_ref() == Some(identity)
@@ -451,11 +349,6 @@ impl TextRecovery {
         }
     }
 
-    fn read_text(&self, identity: &RecoveryIdentity) -> Option<String> {
-        self.with_store(|store| store.read_copy(identity))
-            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-    }
-
     /// another live view shows the same file and already settled its copy question
     fn sibling_owns_path(&self, view: ViewId, file_path: &str) -> bool {
         let others: Vec<(ViewId, bool)> = self
@@ -473,47 +366,9 @@ impl TextRecovery {
         })
     }
 
-    pub(crate) fn prepare_saved_tracking(
-        self: &Rc<Self>,
-        view: ViewId,
-    ) -> Result<PreparedSavedTracking, String> {
-        let count = self
-            .saved_reservations
-            .get()
-            .checked_add(1)
-            .ok_or("the recovery tracking capacity is exhausted")?;
-        let mut views = self
-            .views
-            .try_borrow_mut()
-            .map_err(|_| "the recovery tracking map is busy")?;
-        if views.contains_key(&view) {
-            return Err("the recovery tracking view already exists".into());
-        }
-        views
-            .try_reserve(count)
-            .map_err(|error| error.to_string())?;
-        drop(views);
-        let identity = Rc::new(());
-        let state = ViewState {
-            saved_identity: Some(identity.clone()),
-            ..ViewState::default()
-        };
-        self.saved_reservations.set(count);
-        Ok(PreparedSavedTracking {
-            recovery: self.clone(),
-            view,
-            identity,
-            state: Some(state),
-        })
-    }
-
     /// start tracking a view (once, when it is created)
     pub(crate) fn track(&self, view: ViewId) {
-        let mut views = self.views.borrow_mut();
-        if !views.contains_key(&view) && self.saved_reservations.get() != 0 {
-            views.reserve(self.saved_reservations.get().saturating_add(1));
-        }
-        views.entry(view).or_default();
+        self.views.borrow_mut().entry(view).or_default();
     }
 
     /// the renderer process died: its copy outlives the view
@@ -689,66 +544,14 @@ impl TextRecovery {
     }
 
     /// The renderer's open question: the text to load instead of the file, or
-    /// None. `original_path` names the file an untitled restored copy came
-    /// from: it tells the editor the format, not the save target.
+    /// None.
     pub(crate) fn resolve_open(&self, view: ViewId) -> Option<RecoveredText> {
-        let (seed, save_as_default) = {
-            let mut views = self.views.borrow_mut();
-            if !views.contains_key(&view) && self.saved_reservations.get() != 0 {
-                views.reserve(self.saved_reservations.get().saturating_add(1));
-            }
-            let state = views.entry(view).or_default();
-            state.asked = true;
-            if (self.host.is_headless)() {
-                return None;
-            }
-            (
-                state.untitled_seed.take(),
-                state.save_as_default_path.clone(),
-            )
-        };
-        if let Some(seed) = seed {
-            let text = self.read_text(&seed)?;
-            self.quietly(
-                "mark loaded",
-                self.with_store(|store| store.mark_copy_loaded(&seed)),
-            );
-            self.set_owns(view);
-            // the file this copy was of: the old path of a missing original,
-            // or the original an untitled copy names; the document stays untitled
-            let original_path = save_as_default.or(match &seed {
-                RecoveryIdentity::File(f) => Some(f.file_path.clone()),
-                RecoveryIdentity::Untitled(_) => None,
-            });
-            return Some(RecoveredText {
-                text,
-                original_path,
-            });
+        self.views.borrow_mut().entry(view).or_default();
+        if (self.host.is_headless)() {
+            return None;
         }
         let file_path = (self.host.open_path)(view).filter(|p| !p.is_empty())?;
         let identity = file_identity(self.host.kind, &file_path);
-        let decision = self
-            .views
-            .borrow_mut()
-            .get_mut(&view)
-            .and_then(|s| s.decision.take());
-        match decision {
-            Some(RecoveryOpenDecision::Original) => return None,
-            Some(RecoveryOpenDecision::Restore) => {
-                let text = self.read_text(&identity)?;
-                self.quietly(
-                    "mark loaded",
-                    self.with_store(|store| store.mark_copy_loaded(&identity)),
-                );
-                self.set_owns(view);
-                (self.host.restored_file)(view, &file_path);
-                return Some(RecoveredText {
-                    text,
-                    original_path: None,
-                });
-            }
-            None => {}
-        }
         if self.sibling_owns_path(view, &file_path) {
             return None;
         }
@@ -875,10 +678,10 @@ impl TextRecovery {
                     token.clone(),
                     Box::new(move |result| {
                         kit::clear(timer);
-                        if let Err(error) = result {
-                            if first_error.borrow().is_none() {
-                                *first_error.borrow_mut() = Some(error);
-                            }
+                        if let Err(error) = result
+                            && first_error.borrow().is_none()
+                        {
+                            *first_error.borrow_mut() = Some(error);
                         }
                         pending.set(pending.get() - 1);
                         if pending.get() == 0 {
@@ -903,32 +706,6 @@ impl TextRecovery {
                 callback(result);
             }
         }
-    }
-
-    /// `contract.openFileWithDecision`: load `file_path` into a view the shell made
-    pub(crate) fn open_file_with_decision(&self, view: ViewId, request: &RecoveryOpenFileRequest) {
-        self.track(view);
-        (self.host.adopt_file)(view, &request.file_path);
-        if let Some(state) = self.views.borrow_mut().get_mut(&view) {
-            state.decision = Some(request.decision);
-        }
-        self.reload_if_asked(view);
-    }
-
-    /// `contract.openUntitledCopy`: load a copy into a view as an untitled tab
-    pub(crate) fn open_untitled_copy(&self, view: ViewId, request: &RecoveryOpenUntitledRequest) {
-        {
-            let mut views = self.views.borrow_mut();
-            if !views.contains_key(&view) && self.saved_reservations.get() != 0 {
-                views.reserve(self.saved_reservations.get().saturating_add(1));
-            }
-            let state = views.entry(view).or_default();
-            state.untitled = Some(request.copy.clone());
-            state.untitled_seed = Some(request.copy.clone());
-            state.title = Some(request.title.clone());
-            state.save_as_default_path = request.save_as_default_path.clone();
-        }
-        self.reload_if_asked(view);
     }
 
     /// `contract.isUnprotectable`: every copy here is plain text the user could have saved
@@ -1188,9 +965,6 @@ mod tests {
     use std::rc::Rc;
     use std::time::Duration;
 
-    use main_core::packages::electron_utils::recovery_contract::{
-        RecoveryOpenDecision, RecoveryOpenFileRequest, RecoveryOpenUntitledRequest,
-    };
     use main_core::packages::electron_utils::recovery_store::{
         RecoveryIdentity, resume_discarded_copies,
     };
@@ -1212,7 +986,6 @@ mod tests {
         dirty: HashSet<ViewId>,
         headless: bool,
         restored: Vec<(ViewId, String)>,
-        reloaded: Vec<ViewId>,
     }
 
     fn recovery(rt: &Rt) -> (Rc<TextRecovery>, Rc<RefCell<Editor>>) {
@@ -1221,13 +994,7 @@ mod tests {
             let ed = Rc::clone(&ed);
             Box::new(move |v| f(&ed.borrow(), v))
         };
-        let (d, h, a, r, l) = (
-            Rc::clone(&ed),
-            Rc::clone(&ed),
-            Rc::clone(&ed),
-            Rc::clone(&ed),
-            Rc::clone(&ed),
-        );
+        let (d, h, r) = (Rc::clone(&ed), Rc::clone(&ed), Rc::clone(&ed));
         let host = TextRecoveryHost {
             kind: "markdown",
             untitled_ext: ".md",
@@ -1237,40 +1004,12 @@ mod tests {
             save_path: e(|ed, v| ed.save.get(&v).cloned()),
             open_path: e(|ed, v| ed.open.get(&v).cloned()),
             is_dirty: Box::new(move |v| d.borrow().dirty.contains(&v)),
-            adopt_file: Box::new(move |v, p| {
-                let mut ed = a.borrow_mut();
-                ed.open.insert(v, p.into());
-                ed.save.insert(v, p.into());
-            }),
             restored_file: Box::new(move |v, p| r.borrow_mut().restored.push((v, p.into()))),
             untitled_fallback_title: Box::new(|| "Untitled".into()),
-            reload: Box::new(move |v| l.borrow_mut().reloaded.push(v)),
             now_ms: Box::new(super::ui::now_ms),
         };
         let hosts = super::RecoveryHosts::need(&rt.services).unwrap();
         (TextRecovery::new(&rt.services, host, hosts), ed)
-    }
-
-    #[test]
-    fn saved_tracking_is_invisible_until_the_admitted_initializer_succeeds() {
-        let rt = test_rt();
-        let (recovery, _) = recovery(&rt);
-        let view = ViewId(42);
-        let mut staged = recovery.prepare_saved_tracking(view).unwrap();
-        assert!(!recovery.views.borrow().contains_key(&view));
-        assert!(
-            staged
-                .with_validated(&mut || Err("rejected".into()))
-                .is_err()
-        );
-        assert!(!recovery.views.borrow().contains_key(&view));
-        let receipt = staged.with_validated(&mut || Ok(())).unwrap();
-        assert!(receipt.matches(&recovery));
-        assert!(staged.with_validated(&mut || Ok(())).is_err());
-        assert!(recovery.prepare_saved_tracking(view).is_err());
-        recovery.views.borrow_mut().remove(&view);
-        recovery.track(view);
-        assert!(!receipt.matches(&recovery));
     }
 
     fn copy_dir(rt: &Rt) -> std::path::PathBuf {
@@ -1516,56 +1255,6 @@ mod tests {
         ed.borrow_mut().headless = true;
         rec.forget(a);
         assert_eq!(rec.resolve_open(b), None);
-        assert!(rt.script().calls.is_empty());
-    }
-
-    #[test]
-    fn the_shells_decisions_load_the_copy_without_asking() {
-        let rt = test_rt();
-        let (rec, ed) = recovery(&rt);
-        let doc = rt.dir.join("d.md").to_string_lossy().into_owned();
-        let w = file_view(&rt, &ed, 9, &doc);
-        rec.track(w);
-        ed.borrow_mut().dirty.insert(w);
-        rec.write_copy(w, Some("saved copy"));
-        ed.borrow_mut().dirty.clear();
-        ed.borrow_mut().save.clear();
-        ed.borrow_mut().open.clear();
-        rec.forget(w);
-        let v = rt.view(1, Surface::Markdown).view;
-        rec.track(v);
-        // the renderer asked already: the decision reloads it
-        assert_eq!(rec.resolve_open(v), None);
-        rec.open_file_with_decision(
-            v,
-            &RecoveryOpenFileRequest {
-                file_path: doc.clone(),
-                decision: RecoveryOpenDecision::Restore,
-            },
-        );
-        assert_eq!(ed.borrow().reloaded, vec![v]);
-        assert_eq!(ed.borrow().open.get(&v), Some(&doc));
-        assert_eq!(
-            rec.resolve_open(v).map(|r| r.text),
-            Some("saved copy".into())
-        );
-        // an untitled copy seeds the next open and names its original
-        let copy = rec.identity_of(v).unwrap();
-        rec.open_untitled_copy(
-            v,
-            &RecoveryOpenUntitledRequest {
-                copy,
-                title: "Lost".into(),
-                save_as_default_path: None,
-            },
-        );
-        assert_eq!(
-            rec.resolve_open(v),
-            Some(RecoveredText {
-                text: "saved copy".into(),
-                original_path: Some(doc.clone())
-            })
-        );
         assert!(rt.script().calls.is_empty());
     }
 

@@ -2063,7 +2063,7 @@ mod tests {
             .issue_existing_document_save(
                 Surface::Html,
                 owner.view,
-                "/tmp/page.html".into(),
+                shell_contract::ipc::NativeSaveSelection::ExactPath("/tmp/page.html".into()),
                 owner,
                 CancelToken::default(),
             )

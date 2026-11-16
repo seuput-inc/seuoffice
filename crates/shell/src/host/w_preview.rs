@@ -299,6 +299,7 @@ impl QuickLookWindow for QuickWindow {
             background_throttling: None,
             request_policy: None,
             on_open: None,
+            on_navigation: None,
             on_frame: Some(Arc::new(move |view, event| match &event.kind {
                 NativeEventKind::LoadFinished { ok: true, .. } => ready.window_ready(view),
                 NativeEventKind::LoadFinished { ok: false, .. } => {

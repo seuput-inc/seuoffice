@@ -32,10 +32,10 @@ impl RenameScope {
         let mut action = Some(action);
         let mut result = None;
         let mut effect = || {
-            if let RenameAuthority::NativeRevision(snapshot, expected) = &self.authority {
-                if snapshot.selection().path() != expected {
-                    return Err("The native save destination changed".into());
-                }
+            if let RenameAuthority::NativeRevision(snapshot, expected) = &self.authority
+                && snapshot.selection().path() != expected
+            {
+                return Err("The native save destination changed".into());
             }
             let value = action
                 .take()
@@ -232,6 +232,7 @@ impl MindmapApp {
         Ok(native)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::mindmap) fn rename_path_owned(
         &self,
         view: ViewId,
@@ -261,6 +262,7 @@ impl MindmapApp {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::mindmap) fn rename_path_many_owned_extra(
         &self,
         view: ViewId,
@@ -314,6 +316,7 @@ impl MindmapApp {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::mindmap) fn rename_path_native(
         &self,
         view: ViewId,
@@ -344,6 +347,7 @@ impl MindmapApp {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::mindmap) fn rename_path_native_revision(
         &self,
         view: ViewId,
@@ -375,6 +379,7 @@ impl MindmapApp {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::mindmap) fn rename_path_recovery(
         &self,
         view: ViewId,
@@ -408,6 +413,7 @@ impl MindmapApp {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn rename_path(
         &self,
         view: ViewId,

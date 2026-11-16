@@ -90,13 +90,12 @@ impl Docs {
                 _loss: loss,
             },
         );
-        if let Some(previous) = previous {
-            if let Ok(notification) = previous
+        if let Some(previous) = previous
+            && let Ok(notification) = previous
                 .receipt
                 .fail_after_loss("the Docs recovery seed was replaced".into())
-            {
-                notification.notify();
-            }
+        {
+            notification.notify();
         }
     }
 
@@ -421,16 +420,15 @@ pub(super) fn blank(
         Ok(snapshot) => snapshot,
         Err(error) => return failed(done, error),
     };
-    if let RecoveryOpenContext::NativeStartup(operation) = &snapshot.context {
-        if !matches!(operation.selection(), NativeInvocationSelection::RecoveryBlank {
+    if let RecoveryOpenContext::NativeStartup(operation) = &snapshot.context
+        && !matches!(operation.selection(), NativeInvocationSelection::RecoveryBlank {
             surface: shell_contract::Surface::Docs, title: selected,
         } if selected == &title)
-        {
-            return failed(
-                done,
-                "the Docs blank recovery does not match the selected native operation",
-            );
-        }
+    {
+        return failed(
+            done,
+            "the Docs blank recovery does not match the selected native operation",
+        );
     }
     let Some(effects) = docs
         .services
@@ -667,7 +665,7 @@ pub(super) fn file(
             main_core::packages::electron_utils::recovery_contract::RecoveryOpenDecision::Restore => {
                 let pinned = owned::admitted(&admit, move || RecoveryPinnedRead::open(&root, &identity))
                     .map_err(|error| error.message)?;
-                super::open::PreparedRecoveryCopy::Restore(pinned.ok().and_then(|pinned| pinned.read().ok()))
+                super::open::PreparedRecoveryCopy::Restore(pinned.ok().and_then(|pinned| pinned.read().ok()).map(Box::new))
             }
         };
         Ok((prepared, source_file))
@@ -842,9 +840,8 @@ pub(super) fn untitled(
                                 let marker = rejected.clone();
                                 let inner = metadata_admit.clone();
                                 let checked: Admission = Arc::new(move |effect| {
-                                    inner(effect).map_err(|error| {
+                                    inner(effect).inspect_err(|_| {
                                         marker.store(true, Ordering::Release);
-                                        error
                                     })
                                 });
                                 let result = owned::write_json(path, value, checked);
@@ -927,9 +924,8 @@ pub(super) fn untitled(
                         let marker = rejected.clone();
                         let inner = admit.clone();
                         let checked: Admission = Arc::new(move |effect| {
-                            inner(effect).map_err(|error| {
+                            inner(effect).inspect_err(|_| {
                                 marker.store(true, Ordering::Release);
-                                error
                             })
                         });
                         let result = owned::write_json(path, value, checked);

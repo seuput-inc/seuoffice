@@ -22,7 +22,7 @@ enum ActorAdmission {
 
 pub enum DocsDisposalOutcome {
     NotRetired {
-        actor: DocsActorDisposal,
+        actor: Box<DocsActorDisposal>,
         error: String,
     },
     Retired {
@@ -265,13 +265,13 @@ impl DocsActorDisposal {
         if require_live_request {
             let Some(target) = self.target.clone() else {
                 return done(DocsDisposalOutcome::NotRetired {
-                    actor: self,
+                    actor: Box::new(self),
                     error: "The Word actor has no captured request owner.".into(),
                 });
             };
             if let Err(error) = docs.checked_document_owner(view, target) {
                 return done(DocsDisposalOutcome::NotRetired {
-                    actor: self,
+                    actor: Box::new(self),
                     error: error.to_string(),
                 });
             }
@@ -284,7 +284,7 @@ impl DocsActorDisposal {
             .is_some_and(|current| current.same_session(&self.permit))
         {
             return done(DocsDisposalOutcome::NotRetired {
-                actor: self,
+                actor: Box::new(self),
                 error: "The captured Word actor was replaced.".into(),
             });
         }
@@ -357,7 +357,7 @@ impl DocsActorDisposal {
         drop(detach);
         if !accepted {
             return done(DocsDisposalOutcome::NotRetired {
-                actor: self,
+                actor: Box::new(self),
                 error: admitted
                     .err()
                     .unwrap_or_else(|| "The Word retirement was not admitted.".into()),
@@ -390,17 +390,16 @@ impl DocsActorDisposal {
             drop(binding);
         }
         let mut failure = admitted.err();
-        if let Some(pending) = pending_media {
-            if let Err(error) = docs.engine.forget_lazy_media_owner(pending) {
-                if failure.is_none() {
-                    failure = Some(error);
-                }
-            }
+        if let Some(pending) = pending_media
+            && let Err(error) = docs.engine.forget_lazy_media_owner(pending)
+            && failure.is_none()
+        {
+            failure = Some(error);
         }
-        if let Err(error) = docs.engine.forget_lazy_media_owner(permit) {
-            if failure.is_none() {
-                failure = Some(error);
-            }
+        if let Err(error) = docs.engine.forget_lazy_media_owner(permit)
+            && failure.is_none()
+        {
+            failure = Some(error);
         }
         let shared = docs.recovery_shared.clone();
         let user_data = docs.user_data(&[]);

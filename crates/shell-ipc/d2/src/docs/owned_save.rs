@@ -88,9 +88,6 @@ impl Scope {
             SaveAuthority::Renderer(_) => None,
         }
     }
-    pub(super) fn callback_owner(&self) -> Option<&NativeRequestOwner> {
-        self.1.as_ref()
-    }
     pub(super) fn additional_cancellation(&self) -> &[CancelToken] {
         &self.2
     }
@@ -735,6 +732,7 @@ pub(super) fn start(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn start_native(
     docs: &Rc<Docs>,
     view: ViewId,
@@ -1093,8 +1091,8 @@ pub(super) fn answer(docs: &Docs, cx: &CallContext, token: &str, ok: bool, error
             let mut waiter = None;
             let mut accepted = None;
             let admitted = scope.with_generated_terminal_commit(&mut || {
-                let result = if !ok && error.is_some() {
-                    Err(error.unwrap().to_owned())
+                let result = if !ok && let Some(error) = error {
+                    Err(error.to_owned())
                 } else if ok && !scope.saved_target() {
                     Err("the requested document was not saved".into())
                 } else {
@@ -1119,8 +1117,8 @@ pub(super) fn answer(docs: &Docs, cx: &CallContext, token: &str, ok: bool, error
             return;
         }
         let result = scope.check().and_then(|()| {
-            if !ok && error.is_some() {
-                Err(error.unwrap().to_owned())
+            if !ok && let Some(error) = error {
+                Err(error.to_owned())
             } else if ok && !scope.saved_target() {
                 Err("the requested document was not saved".into())
             } else {
@@ -1300,7 +1298,7 @@ fn cleanup_saved(
         &docs.services,
         move || {
             super::recovery::with_store(&shared, &user_data, &shell, |store| {
-                let mut remove = |identity: &RecoveryIdentity| -> Result<bool, String> {
+                let remove = |identity: &RecoveryIdentity| -> Result<bool, String> {
                     let mut rejected = None;
                     let result = store.delete_copy_authorized(
                         identity,
@@ -1441,6 +1439,7 @@ fn push_recent(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn after_write(
     docs: &Rc<Docs>,
     view: ViewId,
@@ -1554,6 +1553,7 @@ pub(super) fn after_write(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn file_renamed_many(
     docs: &Rc<Docs>,
     view: ViewId,
@@ -1666,6 +1666,7 @@ pub(super) fn file_renamed_many(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn file_renamed_existing_document(
     docs: &Rc<Docs>,
     view: ViewId,
@@ -1783,6 +1784,7 @@ pub(super) fn file_renamed_existing_document(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn file_renamed_recovery(
     docs: &Rc<Docs>,
     view: ViewId,

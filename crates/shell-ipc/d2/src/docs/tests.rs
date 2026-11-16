@@ -2966,7 +2966,7 @@ fn terminal_browser_receipt_retires_only_captured_actor() {
         Box::new(move |result| *reply.borrow_mut() = Some(result)),
     );
     let actor = match rejected.borrow_mut().take().unwrap() {
-        super::editors::DocsDisposalOutcome::NotRetired { actor, .. } => actor,
+        super::editors::DocsDisposalOutcome::NotRetired { actor, .. } => *actor,
         _ => panic!("foreign browser retired the Docs actor"),
     };
     assert!(permit.is_active());
@@ -3075,7 +3075,7 @@ fn canceled_disposal_admission_does_not_retire_the_captured_actor() {
         Box::new(move |result| *completed.borrow_mut() = Some(result)),
     );
     let actor = match await_disposal(&mut t, &answer) {
-        super::editors::DocsDisposalOutcome::NotRetired { actor, .. } => actor,
+        super::editors::DocsDisposalOutcome::NotRetired { actor, .. } => *actor,
         _ => panic!("canceled admission retired the actor"),
     };
     assert!(permit.is_active());
@@ -4652,7 +4652,6 @@ fn saved_disposal_rejects_other_browser_and_settles_after_commit() {
                 *completion.borrow_mut() = Some(result)
             })),
             token: "saved-token".into(),
-            response: None,
             started: false,
             applying: false,
             recovered: false,

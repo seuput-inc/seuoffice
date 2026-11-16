@@ -1232,7 +1232,7 @@ fn recovery_file_waits_for_exact_renderer_and_initialized_ack() {
         RecoveryEditorContract, RecoveryOpenDecision, RecoveryOpenFileRequest,
     };
     use shell_contract::ipc::{RecoveryOpenContext, RecoveryOpenTarget};
-    use shell_contract::runtime::{CancelToken, Views};
+    use shell_contract::runtime::CancelToken;
     let s = setup("diagram-recovery-exact");
     let (tab, path) = s.tab(401, Some(("diagram.drawio", DIAGRAM)));
     let path = path.unwrap();
@@ -1328,7 +1328,7 @@ fn recovery_preparation_cancelled_before_worker_cannot_commit_seed() {
         RecoveryEditorContract, RecoveryOpenDecision, RecoveryOpenFileRequest,
     };
     use shell_contract::ipc::{RecoveryOpenContext, RecoveryOpenTarget};
-    use shell_contract::runtime::{CancelToken, Views};
+    use shell_contract::runtime::CancelToken;
     let s = setup("diagram-recovery-cancel");
     let (tab, path) = s.tab(402, Some(("diagram.drawio", DIAGRAM)));
     let generation = s.kit.services.views.renderer_generation(tab.view).unwrap();

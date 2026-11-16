@@ -305,10 +305,10 @@ impl DocumentEditors for DiagramEditors {
         {
             return Err(thrown("The diagram renderer was replaced"));
         }
-        if let Some(expected) = native.context.document_lease() {
-            if !expected.same_generation(&document) {
-                return Err(thrown("The diagram document was replaced"));
-            }
+        if let Some(expected) = native.context.document_lease()
+            && !expected.same_generation(&document)
+        {
+            return Err(thrown("The diagram document was replaced"));
         }
         native.context = native.context.with_document_lease(document);
         Ok(native)

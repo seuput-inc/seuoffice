@@ -26,9 +26,22 @@ struct Created {
     window: WindowId,
     view: ViewId,
     generation: RendererGeneration,
+    /// Absent only where a test records the identity without a native window
+    live: Option<Live>,
+}
+
+struct Live {
     lifecycle: Arc<crate::views::NativeWindowLifecycle>,
     native: tauri::Window,
     handle: crate::native::WindowHandle,
+}
+
+impl Created {
+    fn live(&self) -> Result<&Live, String> {
+        self.live
+            .as_ref()
+            .ok_or_else(|| "The generate window has no native window.".into())
+    }
 }
 
 struct Identity {
@@ -606,9 +619,11 @@ impl GenerateWindows {
                                 window,
                                 view,
                                 generation,
-                                lifecycle: created_lifecycle.clone(),
-                                native: native.clone(),
-                                handle: handle.clone(),
+                                live: Some(Live {
+                                    lifecycle: created_lifecycle.clone(),
+                                    native: native.clone(),
+                                    handle: handle.clone(),
+                                }),
                             })
                             .map_err(|_| "The generate window identity was already assigned.")?;
                         generate_caption::configure(&native, &handle, &permit, &options)?;
@@ -843,9 +858,10 @@ impl GenerateWindows {
     ) -> Result<(), String> {
         let entry = self.entry(window)?;
         let created = entry.created()?;
-        let permit = created.lifecycle.admit_native_effect()?;
-        let native = created.native.clone();
-        let handle = created.handle.clone();
+        let live = created.live()?;
+        let permit = live.lifecycle.admit_native_effect()?;
+        let native = live.native.clone();
+        let handle = live.handle.clone();
         let overlay = overlay.clone();
         self.with_entry(authority, entry, move |_, _| {
             generate_caption::update(&native, &handle, &permit, &overlay)
@@ -995,7 +1011,8 @@ mod tests {
                 .set(Created {
                     window: WindowId(7),
                     view: ViewId(9),
-                    generation: original.clone()
+                    generation: original.clone(),
+                    live: None,
                 })
                 .is_ok()
         );
@@ -1006,7 +1023,8 @@ mod tests {
                 .set(Created {
                     window: WindowId(7),
                     view: ViewId(9),
-                    generation: replacement.clone()
+                    generation: replacement.clone(),
+                    live: None,
                 })
                 .is_err()
         );

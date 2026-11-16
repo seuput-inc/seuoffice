@@ -243,16 +243,17 @@ pub struct OwnedPasswordWindowActions {
     /// Cleanup-only. Valid before creation and after authority revocation.
     pub close: Arc<dyn Fn() + Send + Sync>,
     /// Completes only after the original captured native window was focused.
+    #[allow(clippy::type_complexity)]
     pub focus: Arc<dyn Fn(Box<dyn FnOnce(Result<(), String>) + Send>) + Send + Sync>,
 }
+/// Reports the created password window's view and its captured native owner.
+pub type PasswordWindowDone =
+    Box<dyn FnOnce(Result<(ViewId, shell_contract::ipc::NativeRequestOwner), String>) + Send>;
 pub type SavedPasswordWindowFactory = Arc<
     dyn Fn(
             String,
             shell_contract::ipc::NativeSavedDocument,
-            Box<
-                dyn FnOnce(Result<(ViewId, shell_contract::ipc::NativeRequestOwner), String>)
-                    + Send,
-            >,
+            PasswordWindowDone,
         ) -> Result<OwnedPasswordWindowActions, String>
         + Send
         + Sync,
@@ -280,6 +281,7 @@ pub trait PdfToolsShell: Send + Sync {
     fn open_password_window(&self, parent: Option<WindowId>, title: &str) -> Option<ViewId>;
     /// Starts real native construction without waiting on the core thread.
     /// Controls are returned immediately; `done` carries the actual created owner.
+    #[allow(clippy::too_many_arguments)]
     fn open_password_window_owned(
         &self,
         parent: Option<WindowId>,
@@ -288,11 +290,10 @@ pub trait PdfToolsShell: Send + Sync {
         destination: shell_contract::ipc::NativeRequestOwner,
         cancel: CancelToken,
         pending: CancelToken,
-        done: Box<
-            dyn FnOnce(Result<(ViewId, shell_contract::ipc::NativeRequestOwner), String>) + Send,
-        >,
+        done: PasswordWindowDone,
     ) -> OwnedPasswordWindowActions;
 
+    #[allow(clippy::too_many_arguments)]
     fn open_password_window_prepared(
         &self,
         parent: Option<WindowId>,
@@ -301,9 +302,7 @@ pub trait PdfToolsShell: Send + Sync {
         snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
         cancel: CancelToken,
         pending: CancelToken,
-        done: Box<
-            dyn FnOnce(Result<(ViewId, shell_contract::ipc::NativeRequestOwner), String>) + Send,
-        >,
+        done: PasswordWindowDone,
     ) -> OwnedPasswordWindowActions;
 
     /// `deps.openResult(path)` (index.ts: reload an open text tab, else
@@ -337,16 +336,23 @@ pub trait PdfToolsShell: Send + Sync {
     /// `tabManager` is set: the shell window and its tabs exist (false
     /// before the app is ready)
     fn has_tab_manager(&self) -> bool;
-    /// `tabManager.openHwpTab(copy, { untitledCopy: { title, importedPdf: true } })`
-    /// and `webContentsForTab` of it: the new tab's view, if it has one. `then` runs on the
-    /// core thread once the tab is open (or the open failed); never twice.
+    /// `tabManager.openHwpTab(copy, { untitledCopy: { title, importedPdf: true } })`: the new
+    /// tab's view as its exact native closure watch, `None` when it has no view to watch.
+    /// `then` runs on the core thread once the tab is open (or the open failed); never twice.
     fn open_hwp_copy(
         &self,
         copy: &str,
         title: &str,
-        then: Box<dyn FnOnce(Result<Option<ViewId>, String>)>,
+        then: Box<dyn FnOnce(Result<Option<HwpImportReady>, String>)>,
     );
 }
+
+/// An opened imported-PDF Hangul tab with the native closure watch of that exact view.
+pub type HwpImportReady = main_core::shell::tab_manager::ViewCreationReady<
+    (ViewId, shell_contract::runtime::RendererGeneration),
+    shell_contract::ipc::NativeClosureReceipt,
+    shell_contract::ipc::NativeClosureReservation,
+>;
 
 pub type PdfToolsShellHost = Arc<dyn PdfToolsShell>;
 
@@ -656,10 +662,10 @@ pub(crate) mod fake {
         }
 
         fn png_data_url(&self, width: f64, height: f64, bgra: &[u8]) -> Result<String, String> {
-            if let Some(answer) = self.answer("png_data_url", json!([width, height, bgra.len()])) {
-                if answer.get("error").and_then(Value::as_str).is_some() {
-                    return Err(text(&answer["error"]));
-                }
+            if let Some(answer) = self.answer("png_data_url", json!([width, height, bgra.len()]))
+                && answer.get("error").and_then(Value::as_str).is_some()
+            {
+                return Err(text(&answer["error"]));
             }
             Ok(format!("data:image/png;base64,{width}x{height}"))
         }
@@ -948,15 +954,58 @@ pub(crate) mod fake {
             &self,
             copy: &str,
             title: &str,
-            then: Box<dyn FnOnce(Result<Option<ViewId>, String>)>,
+            then: Box<dyn FnOnce(Result<Option<HwpImportReady>, String>)>,
         ) {
             self.log(json!(["tabManager.openHwpTab", copy, title]));
             then(match self.answer("open_hwp_copy", json!([copy, title])) {
                 Some(Value::String(e)) => Err(e),
-                Some(a) => Ok(a.as_u64().map(|v| ViewId(v as u32))),
+                Some(a) => Ok(a.as_u64().map(|v| hwp_ready(ViewId(v as u32)))),
                 None => Ok(None),
             })
         }
+    }
+
+    type HwpWatchers =
+        Arc<Mutex<Vec<Box<dyn FnOnce(shell_contract::ipc::NativeClosureReceipt) + Send>>>>;
+    type HwpClosure = (shell_contract::ipc::NativeClosureIssuer, HwpWatchers);
+
+    thread_local! {
+        /// the native closure of each Hangul copy tab the fake opened
+        static HWP_VIEWS: std::cell::RefCell<HashMap<ViewId, HwpClosure>> =
+            std::cell::RefCell::new(HashMap::new());
+    }
+
+    fn hwp_ready(view: ViewId) -> HwpImportReady {
+        let generation = shell_contract::runtime::RendererGeneration::new();
+        let (issuer, reservation) =
+            shell_contract::ipc::NativeClosureIssuer::new(view, generation.clone());
+        let watchers: HwpWatchers = Arc::default();
+        let queued = watchers.clone();
+        HWP_VIEWS.with(|views| views.borrow_mut().insert(view, (issuer, watchers)));
+        HwpImportReady {
+            view: (view, generation),
+            reservation,
+            closure: Arc::new(move |callback| {
+                queued.lock().unwrap().push(callback);
+                Ok(())
+            }),
+            cleanup: Arc::new(|done| done(Err("The fake has no pending cleanup".into()))),
+        }
+    }
+
+    /// the native browser of a Hangul copy tab closed; false when the fake opened none
+    #[cfg(test)]
+    pub fn close_hwp_view(view: ViewId) -> bool {
+        let Some((issuer, watchers)) = HWP_VIEWS.with(|views| views.borrow_mut().remove(&view))
+        else {
+            return false;
+        };
+        let receipt = issuer.closed();
+        let callbacks = std::mem::take(&mut *watchers.lock().unwrap());
+        for callback in callbacks {
+            callback(receipt.clone());
+        }
+        true
     }
 
     #[cfg(test)]

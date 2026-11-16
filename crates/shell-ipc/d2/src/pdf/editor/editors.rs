@@ -478,10 +478,10 @@ impl PdfEditors {
                 let left = Rc::clone(&left);
                 move |result: Result<(), Failure>| {
                     let mut state = left.borrow_mut();
-                    if let Err(error) = result {
-                        if state.1.is_none() {
-                            state.1 = Some(error);
-                        }
+                    if let Err(error) = result
+                        && state.1.is_none()
+                    {
+                        state.1 = Some(error);
                     }
                     state.0 -= 1;
                     if state.0 == 0 {
@@ -505,10 +505,10 @@ impl PdfEditors {
             let mine = waiting.clone();
             let timeout_token = token.clone();
             let timer = kit::after(&ed.services, COPY_FLUSH_TIMEOUT, move || {
-                if let Some(ed) = me.upgrade() {
-                    if let Some(view) = ed.st.borrow_mut().views.get_mut(&view) {
-                        view.copy_flush.remove(&timeout_token);
-                    }
+                if let Some(ed) = me.upgrade()
+                    && let Some(view) = ed.st.borrow_mut().views.get_mut(&view)
+                {
+                    view.copy_flush.remove(&timeout_token);
                 }
                 resolve(&mine, Err(Failure("PDF recovery flush timed out".into())));
             });
@@ -995,10 +995,10 @@ impl DocumentEditors for PdfEditors {
                         return done(Err(error(message)));
                     }
                     let target = path.path().to_string_lossy().into_owned();
-                    if let super::owned_save::SaveDestination::Native(selection) = path {
-                        if let Err(message) = authority.set_selection(selection) {
-                            return done(Err(error(message)));
-                        }
+                    if let super::owned_save::SaveDestination::Native(selection) = path
+                        && let Err(message) = authority.set_selection(selection)
+                    {
+                        return done(Err(error(message)));
                     }
                     editor.request_save_as_outcome_impl(
                         view,
@@ -1064,10 +1064,10 @@ impl DocumentEditors for PdfEditors {
                 }) {
                     return done(Err(error(message)));
                 }
-                if let Some(selection) = selection {
-                    if let Err(message) = authority.set_selection(selection) {
-                        return done(Err(error(message)));
-                    }
+                if let Some(selection) = selection
+                    && let Err(message) = authority.set_selection(selection)
+                {
+                    return done(Err(error(message)));
                 }
             }
             return ed.request_renderer_save_impl(

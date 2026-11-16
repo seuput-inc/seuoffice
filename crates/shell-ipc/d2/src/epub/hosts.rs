@@ -309,6 +309,7 @@ pub trait EpubShell: Send + Sync {
     ) -> Result<f64, String>;
     /// `fileSavedHook(contents, path)`: a save landed on a new path
     fn file_saved(&self, view: ViewId, path: &str);
+    #[allow(clippy::too_many_arguments)]
     fn file_saved_owned(
         &self,
         origin: &shell_contract::ipc::NativeRequestOwner,
@@ -321,6 +322,7 @@ pub trait EpubShell: Send + Sync {
         path: &str,
         done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>,
     );
+    #[allow(clippy::too_many_arguments)]
     fn file_saved_existing_document(
         &self,
         destination: shell_contract::ipc::NativeSaveDestination,
@@ -333,6 +335,7 @@ pub trait EpubShell: Send + Sync {
     );
     /// The open-files source, answered on the core thread. `None` means no
     /// source is set; `Some(Err)` means it failed and all files are unsafe.
+    #[allow(clippy::type_complexity)]
     fn open_files(&self, then: Box<dyn FnOnce(Option<Result<Vec<OpenFileState>, ()>>)>);
     /// `randomBytes(16).toString('hex')`: a view's asset token, a flush
     /// request id

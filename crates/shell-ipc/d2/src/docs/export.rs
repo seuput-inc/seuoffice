@@ -269,13 +269,13 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
         "docs:export-pdf",
         move |cx, args, responder| {
             let view = cx.sender.view;
-            match d.owned_save_scope(&cx, args.get(6)) {
+            match d.owned_save_scope(cx, args.get(6)) {
                 Ok(Some(scope)) => return owned::pdf(&d, scope, args, responder),
                 Ok(None) => {}
                 Err(error) => return responder.reply(Err(error)),
             }
             let publication =
-                match d.capture_headless_publication(&cx, args.str(3).unwrap_or(""), "pdf") {
+                match d.capture_headless_publication(cx, args.str(3).unwrap_or(""), "pdf") {
                     Ok(publication) => publication,
                     Err(error) => return responder.reply(Err(kit::error(error))),
                 };
@@ -391,13 +391,13 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
         "docs:export-html",
         move |cx, args, responder| {
             let view = cx.sender.view;
-            match d.owned_save_scope(&cx, args.get(3)) {
+            match d.owned_save_scope(cx, args.get(3)) {
                 Ok(Some(scope)) => return owned::html(&d, scope, args, responder),
                 Ok(None) => {}
                 Err(error) => return responder.reply(Err(error)),
             }
             let publication =
-                match d.capture_headless_publication(&cx, args.str(2).unwrap_or(""), "html") {
+                match d.capture_headless_publication(cx, args.str(2).unwrap_or(""), "html") {
                     Ok(publication) => publication,
                     Err(error) => return responder.reply(Err(kit::error(error))),
                 };
@@ -474,13 +474,13 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
         "docs:export-markdown",
         move |cx, args, responder| {
             let view = cx.sender.view;
-            match d.owned_save_scope(&cx, args.get(4)) {
+            match d.owned_save_scope(cx, args.get(4)) {
                 Ok(Some(scope)) => return owned::markdown(&d, scope, args, responder),
                 Ok(None) => {}
                 Err(error) => return responder.reply(Err(error)),
             }
             let publication =
-                match d.capture_headless_publication(&cx, args.str(3).unwrap_or(""), "md") {
+                match d.capture_headless_publication(cx, args.str(3).unwrap_or(""), "md") {
                     Ok(publication) => publication,
                     Err(error) => return responder.reply(Err(kit::error(error))),
                 };
@@ -587,7 +587,7 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
         "docs:export-hwp",
         move |cx, mut args, responder| {
             let view = cx.sender.view;
-            match d.owned_save_scope(&cx, args.get(4)) {
+            match d.owned_save_scope(cx, args.get(4)) {
                 Ok(Some(scope)) => return owned::hwp(&d, scope, args, responder),
                 Ok(None) => {}
                 Err(error) => return responder.reply(Err(error)),
@@ -701,13 +701,13 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
         "docs:save-merged-pdf",
         move |cx, args, responder| {
             let view = cx.sender.view;
-            match d.owned_save_scope(&cx, args.get(4)) {
+            match d.owned_save_scope(cx, args.get(4)) {
                 Ok(Some(scope)) => return owned::merged(&d, scope, args, responder),
                 Ok(None) => {}
                 Err(error) => return responder.reply(Err(error)),
             }
             let publication =
-                match d.capture_headless_publication(&cx, args.str(2).unwrap_or(""), "pdf") {
+                match d.capture_headless_publication(cx, args.str(2).unwrap_or(""), "pdf") {
                     Ok(publication) => publication,
                     Err(error) => return responder.reply(Err(kit::error(error))),
                 };
@@ -783,7 +783,7 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
         "docs:pick-export-images-target",
         move |cx, args, responder| {
             let view = cx.sender.view;
-            match d.owned_save_scope(&cx, args.get(0)) {
+            match d.owned_save_scope(cx, args.get(0)) {
                 Ok(Some(scope)) => return owned::pick_images(&d, scope, responder),
                 Ok(None) => {}
                 Err(error) => return responder.reply(Err(error)),
@@ -827,7 +827,7 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
         "docs:take-export-pdf",
         move |cx, args, responder| {
             let view = cx.sender.view;
-            match d.owned_save_scope(&cx, args.get(1)) {
+            match d.owned_save_scope(cx, args.get(1)) {
                 Ok(Some(scope)) => return owned::take_pdf(&d, scope, args, responder),
                 Ok(None) => {}
                 Err(error) => return responder.reply(Err(error)),
@@ -867,7 +867,7 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
         "docs:write-export-image",
         move |cx, args, responder| {
             let view = cx.sender.view;
-            match d.owned_save_scope(&cx, args.get(3)) {
+            match d.owned_save_scope(cx, args.get(3)) {
                 Ok(Some(scope)) => return owned::image(&d, scope, args, responder),
                 Ok(None) => {}
                 Err(error) => return responder.reply(Err(error)),
@@ -927,7 +927,7 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
     let d = docs.clone();
     all.push(kit::invoke_later(
         "docs:owned-print-pdf-buffer",
-        move |cx, args, responder| match d.owned_save_scope(&cx, args.get(3)) {
+        move |cx, args, responder| match d.owned_save_scope(cx, args.get(3)) {
             Ok(Some(scope)) => owned::print_buffer(&d, scope, args, responder),
             Ok(None) => responder.reply(Err(kit::error(
                 "owned PDF printing requires its pending save token",

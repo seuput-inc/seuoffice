@@ -524,7 +524,9 @@ pub(crate) mod tests {
     fn a_panicking_effect_revokes_every_fenced_document() {
         let (_a_browser, a) = registered_context("gate-panic-a");
         let (_b_browser, b) = registered_context("gate-panic-b");
-        let result = std::panic::catch_unwind(|| a.with_live_pair(&b, || panic!("effect failed")));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            a.with_live_pair(&b, || panic!("effect failed"))
+        }));
         assert!(result.is_err());
         assert!(a.is_revoked() && b.is_revoked());
     }

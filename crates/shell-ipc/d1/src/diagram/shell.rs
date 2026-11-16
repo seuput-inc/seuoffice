@@ -27,6 +27,7 @@ pub trait DiagramShell: Send + Sync {
         file_name: &str,
         bytes: &[u8],
     ) -> Option<Result<Option<String>, String>>;
+    #[allow(clippy::too_many_arguments)]
     fn write_new_document_owned(
         &self,
         origin: &shell_contract::ipc::NativeRequestOwner,
@@ -41,6 +42,7 @@ pub trait DiagramShell: Send + Sync {
 
     /// `setDiagramFileSavedHook`: a save landed on a new path
     fn file_saved(&self, view: ViewId, path: &str);
+    #[allow(clippy::too_many_arguments)]
     fn file_saved_owned(
         &self,
         origin: &shell_contract::ipc::NativeRequestOwner,
@@ -53,6 +55,7 @@ pub trait DiagramShell: Send + Sync {
         path: &str,
         done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>,
     );
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn file_saved_existing_document(
         &self,
         revision: shell_contract::ipc::NativeSaveRevisionAuthority,

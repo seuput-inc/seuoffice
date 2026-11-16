@@ -2197,7 +2197,7 @@ impl SavedMenu {
         let Some(shell) = SHELL.get() else {
             return Ok(None);
         };
-        let Some(window) = shell.windows.shell_window() else {
+        let Some(window) = shell.views.marked_main() else {
             return Ok(None);
         };
         let generation = shell
@@ -2421,7 +2421,7 @@ impl ExistingDocumentSavedMenu {
         let Some(shell) = SHELL.get() else {
             return Ok(None);
         };
-        let Some(window) = shell.windows.shell_window() else {
+        let Some(window) = shell.views.marked_main() else {
             return Ok(None);
         };
         let generation = shell
@@ -2585,7 +2585,7 @@ impl SavedDocumentMenu {
         let Some(shell) = SHELL.get() else {
             return Ok(None);
         };
-        let Some(window) = shell.windows.shell_window() else {
+        let Some(window) = shell.views.marked_main() else {
             return Ok(None);
         };
         let generation = shell
@@ -2730,6 +2730,7 @@ impl RecoverySavedMenu {
         pending: &shell_contract::runtime::CancelToken,
         effects: &shell_contract::hosts::OwnedEffectsHost,
     ) -> Result<Option<Self>, String> {
+        use shell_contract::runtime::Views as _;
         effects.with_recovery_open_effect_pending(
             receipt,
             receiver,
@@ -2740,7 +2741,7 @@ impl RecoverySavedMenu {
         let Some(shell) = SHELL.get() else {
             return Ok(None);
         };
-        let Some(window) = shell.windows.shell_window() else {
+        let Some(window) = shell.views.marked_main() else {
             return Ok(None);
         };
         let generation = shell
@@ -2888,7 +2889,7 @@ pub(crate) fn prepare_docs_menu_refresh_native(
     let Some(shell) = SHELL.get() else {
         return Ok(None);
     };
-    let Some(window) = shell.windows.shell_window() else {
+    let Some(window) = shell.views.marked_main() else {
         return Ok(None);
     };
     let generation = shell

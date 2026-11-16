@@ -35,14 +35,6 @@ fn is_freemind(path: &str) -> bool {
     path.to_lowercase().ends_with(".mm")
 }
 
-fn failure(message: impl Into<String>) -> IpcValue {
-    obj([("ok", IpcValue::Bool(false)), ("error", string(message))])
-}
-
-fn ok_with(key: &str, value: IpcValue) -> IpcValue {
-    obj([("ok", IpcValue::Bool(true)), (key, value)])
-}
-
 /// The path picked in a save dialog over the view's window, or `None` when it
 /// was cancelled or picked nothing (`picked.canceled || !picked.filePath`)
 pub(super) fn pick_save_path(

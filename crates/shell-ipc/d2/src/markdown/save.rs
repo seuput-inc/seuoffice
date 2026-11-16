@@ -462,6 +462,7 @@ impl Md {
     }
 
     /// `markdown:save`
+    #[allow(clippy::too_many_arguments)]
     fn save(
         self: &Rc<Self>,
         view: ViewId,
@@ -472,10 +473,10 @@ impl Md {
         conflict_checked: bool,
         done: Exported,
     ) {
-        if let Some(owner) = &owned {
-            if let Err(error) = owner.check_document(&self.e.docs, view) {
-                return done(failure(error));
-            }
+        if let Some(owner) = &owned
+            && let Err(error) = owner.check_document(&self.e.docs, view)
+        {
+            return done(failure(error));
         }
         let docs = &self.e.docs;
         let IpcValue::String(text) = field(request, "text") else {
@@ -507,24 +508,25 @@ impl Md {
         let holds_hidden = matches!(field(request, "holdsHiddenContent"), IpcValue::Bool(true));
         let path_at_request = docs.save_path(view);
         let recovery_at_request = docs.recovery().identity_of(view);
-        if !conflict_checked && !save_as {
-            if let (Some(owner), Some(path)) = (&owned, &path_at_request) {
-                let me = Rc::clone(self);
-                let input = request.clone();
-                return docs.conflict_stops_save_owned(
-                    view,
-                    path.clone(),
-                    auto,
-                    owner.clone(),
-                    move |stops| match stops {
-                        Err(error) => done(failure(error)),
-                        Ok(true) => done(failure("external-modified")),
-                        Ok(false) => {
-                            me.save(view, &input, owned, resolved, project_checked, true, done)
-                        }
-                    },
-                );
-            }
+        if !conflict_checked
+            && !save_as
+            && let (Some(owner), Some(path)) = (&owned, &path_at_request)
+        {
+            let me = Rc::clone(self);
+            let input = request.clone();
+            return docs.conflict_stops_save_owned(
+                view,
+                path.clone(),
+                auto,
+                owner.clone(),
+                move |stops| match stops {
+                    Err(error) => done(failure(error)),
+                    Ok(true) => done(failure("external-modified")),
+                    Ok(false) => {
+                        me.save(view, &input, owned, resolved, project_checked, true, done)
+                    }
+                },
+            );
         }
         if owned.is_none()
             && !save_as
@@ -543,64 +545,63 @@ impl Md {
             && forced.is_none()
             && path_at_request.is_none()
             && !save_as
+            && let (Some(owner), Some(suggested)) = (&owned, &suggested)
         {
-            if let (Some(owner), Some(suggested)) = (&owned, &suggested) {
-                let base = file_name_base(suggested);
-                if !base.is_empty() {
-                    let shell = self.shell.clone();
-                    let owner = owner.clone();
-                    let file_name = format!("{base}.md");
-                    let bytes = text.as_bytes().to_vec();
-                    let me = Rc::clone(self);
-                    let input = request.clone();
-                    let admission = owner.publication_admission(&self.services);
-                    let selecting = owner.clone();
-                    return kit::on_worker(
-                        &self.services,
-                        move || match owner.authority() {
-                            crate::html::text_doc::SaveAuthority::Renderer(origin) => shell
-                                .write_new_document_owned(
-                                    origin,
-                                    owner.destination(),
-                                    &owner.cancel(),
-                                    &owner.pending(),
-                                    owner.effects(),
-                                    admission,
-                                    &file_name,
-                                    &bytes,
-                                ),
-                            crate::html::text_doc::SaveAuthority::Native(binding) => shell
-                                .write_new_document_existing_document(
-                                    binding,
-                                    owner.participants(),
-                                    &owner.cancel(),
-                                    &owner.pending(),
-                                    owner.additional(),
-                                    owner.effects(),
-                                    admission,
-                                    &file_name,
-                                    &bytes,
-                                ),
-                        },
-                        move |placed| match placed.and_then(|path| {
-                            if let Some(path) = &path {
-                                selecting.select_project_destination(path)?;
-                            }
-                            Ok(path)
-                        }) {
-                            Err(error) => done(failure(error)),
-                            Ok(path) => me.save(
-                                view,
-                                &input,
-                                owned,
-                                path.map(|p| (p.to_string_lossy().into_owned(), true)),
-                                true,
-                                true,
-                                done,
+            let base = file_name_base(suggested);
+            if !base.is_empty() {
+                let shell = self.shell.clone();
+                let owner = owner.clone();
+                let file_name = format!("{base}.md");
+                let bytes = text.as_bytes().to_vec();
+                let me = Rc::clone(self);
+                let input = request.clone();
+                let admission = owner.publication_admission(&self.services);
+                let selecting = owner.clone();
+                return kit::on_worker(
+                    &self.services,
+                    move || match owner.authority() {
+                        crate::html::text_doc::SaveAuthority::Renderer(origin) => shell
+                            .write_new_document_owned(
+                                origin,
+                                owner.destination(),
+                                &owner.cancel(),
+                                &owner.pending(),
+                                owner.effects(),
+                                admission,
+                                &file_name,
+                                &bytes,
                             ),
-                        },
-                    );
-                }
+                        crate::html::text_doc::SaveAuthority::Native(binding) => shell
+                            .write_new_document_existing_document(
+                                binding,
+                                owner.participants(),
+                                &owner.cancel(),
+                                &owner.pending(),
+                                owner.additional(),
+                                owner.effects(),
+                                admission,
+                                &file_name,
+                                &bytes,
+                            ),
+                    },
+                    move |placed| match placed.and_then(|path| {
+                        if let Some(path) = &path {
+                            selecting.select_project_destination(path)?;
+                        }
+                        Ok(path)
+                    }) {
+                        Err(error) => done(failure(error)),
+                        Ok(path) => me.save(
+                            view,
+                            &input,
+                            owned,
+                            path.map(|p| (p.to_string_lossy().into_owned(), true)),
+                            true,
+                            true,
+                            done,
+                        ),
+                    },
+                );
             }
         }
         let placed = match (&suggested, &path_at_request) {
@@ -821,12 +822,11 @@ impl Md {
                                 Err(error) => done(failure(error)),
                                 Ok(path) => {
                                     let mut result = result;
-                                    if let IpcValue::Object(entries) = &mut result {
-                                        if let Some((_, value)) =
+                                    if let IpcValue::Object(entries) = &mut result
+                                        && let Some((_, value)) =
                                             entries.iter_mut().find(|(key, _)| key == "path")
-                                        {
-                                            *value = path.to_string_lossy().into_owned().into_ipc();
-                                        }
+                                    {
+                                        *value = path.to_string_lossy().into_owned().into_ipc();
                                     }
                                     done(result)
                                 }

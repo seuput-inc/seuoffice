@@ -80,6 +80,7 @@ pub(super) fn push_owned(
 }
 
 impl App {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn prepare_recent_move(
         &self,
         origin: &NativeRequestOwner,
@@ -160,6 +161,7 @@ impl App {
             })
         }))
     }
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn prepare_recent_move_recovery(
         &self,
         receipt: &shell_contract::ipc::RecoverySeedReceipt,

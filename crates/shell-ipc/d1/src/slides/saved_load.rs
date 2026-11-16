@@ -107,6 +107,23 @@ impl PreparedSavedDocument for Prepared {
     }
 }
 
+/// Releases what an exactly closed native actor left behind: its owner entry, its
+/// attached session and its queued seed. The drops run after the state borrow ends.
+pub(super) fn release_closed_actor(app: &App, view: ViewId) {
+    let released = {
+        let mut state = app.state.borrow_mut();
+        state.native_actor_owners.remove(&view);
+        if state.active_view == Some(view) {
+            state.active_view = None;
+        }
+        state.pending_by_view.remove(&view);
+        let binding = state.detach_view_retiring(view);
+        let seed = super::owned_seed::detach_seed_on_view_gone(&mut state, view);
+        (binding, seed)
+    };
+    drop(released);
+}
+
 impl SavedActorRegistration for Registration {
     fn retire_closed(&self, proof: NativeClosureReceipt, then: Then<()>) {
         if !matches!(self.phase.get(), Phase::Committed | Phase::Closed)
@@ -120,6 +137,7 @@ impl SavedActorRegistration for Registration {
                 "The saved presentation close proof does not match",
             )));
         }
+        let first_close = self.phase.get() != Phase::Closed;
         fail(
             &self.app,
             self.target.view(),
@@ -127,6 +145,9 @@ impl SavedActorRegistration for Registration {
             "The presentation view was closed",
         );
         self.phase.set(Phase::Closed);
+        if first_close {
+            release_closed_actor(&self.app, self.target.view());
+        }
         then(Ok(()));
     }
 
@@ -822,17 +843,15 @@ pub(super) fn initialized(
     }
     let slot = completed;
     let ok = matches!(args.get(1), shell_contract::IpcValue::Bool(true));
-    if let Some(mut slot) = slot {
-        if let Some(done) = slot.done.take() {
-            done(if ok {
-                Ok(shell_contract::editors::SavedDocumentLoadOutcome::Applied)
-            } else {
-                Err(thrown(
-                    args.str(2)
-                        .unwrap_or("The presentation could not be initialized"),
-                ))
-            });
-        }
+    if let Some(mut slot) = slot && let Some(done) = slot.done.take() {
+        done(if ok {
+            Ok(shell_contract::editors::SavedDocumentLoadOutcome::Applied)
+        } else {
+            Err(thrown(
+                args.str(2)
+                    .unwrap_or("The presentation could not be initialized"),
+            ))
+        });
     }
     Some(Ok(shell_contract::IpcValue::Null))
 }

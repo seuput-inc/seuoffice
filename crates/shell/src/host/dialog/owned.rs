@@ -157,21 +157,15 @@ impl Session {
 
     fn new_saved(document: &shell_contract::ipc::NativeSavedDocument) -> Result<Arc<Self>, String> {
         let target = document.target();
-        let operation = target.output().selection().binding().operation();
+        let output = target.output();
         let mut tokens = vec![
             target.cancel().clone(),
             target.pending().clone(),
             target.created().loss_token(),
-            operation.loss_token(),
-            operation.cancel().clone(),
-            operation.shutdown().clone(),
         ];
+        tokens.extend(output.loss_tokens()?);
         tokens.extend_from_slice(target.additional());
-        Self::append_recovery_owners(
-            &mut tokens,
-            target.output().selection().binding().owner(),
-            target.participants(),
-        )?;
+        Self::append_recovery_owners(&mut tokens, output.source_owner(), target.participants())?;
         Self::append_recovery_owners(&mut tokens, document.owner(), &[])?;
         Self::with_tokens(tokens)
     }

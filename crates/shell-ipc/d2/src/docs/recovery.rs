@@ -157,10 +157,10 @@ impl RecoveryBook {
                 },
             );
         }
-        if let Err(error) = self.drop_untitled_result(store, tab, reason) {
-            if failure.is_none() {
-                failure = Some(error);
-            }
+        if let Err(error) = self.drop_untitled_result(store, tab, reason)
+            && failure.is_none()
+        {
+            failure = Some(error);
         }
         failure.map_or(Ok(()), Err)
     }

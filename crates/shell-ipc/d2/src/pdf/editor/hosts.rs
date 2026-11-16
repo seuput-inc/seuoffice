@@ -330,6 +330,7 @@ pub trait PdfEngine: Send + Sync {
     /// the reader `listSystemCertificates` and `openSystemSigner` take
     fn describe_certificate(&self, input: &[u8]) -> Option<CertSummary>;
     /// Open and retain the selected identity only in a cancellable isolated worker.
+    #[allow(clippy::type_complexity)]
     fn open_signing_session(
         &self,
         source: &CertificateSource,
@@ -356,6 +357,7 @@ pub trait PdfEngine: Send + Sync {
     /// documentMediaRoots(openPath, pastedDir), context: { path: 'screen',
     /// statuses: sharedSubscriptionStatuses() }, signal })` (ai-search); the
     /// call ends when `cancel` fires
+    #[allow(clippy::too_many_arguments)]
     fn generate_image(
         &self,
         settings_path: &str,
@@ -420,6 +422,7 @@ pub trait PdfShell: Send + Sync {
         request: &IpcValue,
         owner: ViewId,
     ) -> Option<Result<IpcValue, String>>;
+    #[allow(clippy::too_many_arguments)]
     fn create_document_owned(
         &self,
         request: IpcValue,
@@ -443,6 +446,7 @@ pub trait PdfShell: Send + Sync {
     fn new_document_dir(&self, view: ViewId) -> Option<String>;
     /// `pdfRedactionSavedHook(wc, path)`: a derived copy became the tab's document
     fn redaction_saved(&self, view: ViewId, path: &str) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn redaction_saved_owned(
         &self,
         view: ViewId,
@@ -456,6 +460,7 @@ pub trait PdfShell: Send + Sync {
         effects: shell_contract::hosts::OwnedEffectsHost,
         done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>,
     );
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn redaction_saved_existing_document(
         &self,
         view: ViewId,

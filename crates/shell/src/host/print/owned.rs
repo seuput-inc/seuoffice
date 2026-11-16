@@ -262,8 +262,10 @@ impl Owner {
                 let loss = owner
                     .loss_token()
                     .ok_or("Print participant lifetime is unavailable.")?;
-                let stop = stop.clone();
-                losses.push(loss.on_cancel(move || stop.cancel()));
+                losses.push(loss.on_cancel({
+                    let stop = stop.clone();
+                    move || stop.cancel()
+                }));
                 for loss in owner
                     .context
                     .document_lease()

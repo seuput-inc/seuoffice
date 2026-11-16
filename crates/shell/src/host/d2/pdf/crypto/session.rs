@@ -418,7 +418,8 @@ mod tests {
             called.fetch_add(1, Ordering::SeqCst);
             Ok(Vec::new())
         });
-        let admit = Box::new(|_| Err("admission revoked".into()));
+        let admit: Box<dyn for<'a> Fn(Admission<'a>) -> Result<(), String> + Send> =
+            Box::new(|_| Err("admission revoked".into()));
         let session = Session::new(
             pdf_lib::synthetic_classic_pdf(),
             SignOptions::default(),
@@ -593,7 +594,7 @@ mod tests {
         let trusted_original = original.clone();
         let trusted_chain = vec![cert.clone(); 32];
         let verify_chain = trusted_chain.clone();
-        let admit = Box::new(move |event| {
+        let admit: Box<dyn for<'a> Fn(Admission<'a>) -> Result<(), String> + Send> = Box::new(move |event| {
             let number = observed.fetch_add(1, Ordering::SeqCst);
             match event {
                 Admission::First => assert_eq!(number, 0),

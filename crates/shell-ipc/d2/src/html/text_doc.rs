@@ -80,14 +80,58 @@ pub(crate) struct DocChannels {
     pub headless_export_done: &'static str,
 }
 
+type AssetPathsHook = Box<dyn Fn(ViewId, bool, Option<&str>, Option<&str>) -> Result<(), String>>;
+type OwnedAssetPathsHook =
+    Box<dyn Fn(&OwnedSave, bool, Option<&str>, Option<&str>) -> Result<(), String>>;
+type NativeSaveAssetPathsHook = Arc<
+    dyn Fn(
+            &shell_contract::ipc::NativeRequestOwner,
+            bool,
+            Option<&str>,
+            Option<&str>,
+        ) -> Result<super::RecoveryAssetStage, String>
+        + Send
+        + Sync,
+>;
+type SavedAssetPathsHook = Arc<
+    dyn Fn(
+            &shell_contract::ipc::NativeRequestOwner,
+            Option<&str>,
+            Option<&str>,
+        ) -> Result<super::SavedAssetStage, String>
+        + Send
+        + Sync,
+>;
+type RecoveryAssetPathsHook = Box<
+    dyn Fn(
+        &shell_contract::ipc::RecoveryOpenTarget,
+        bool,
+        Option<&str>,
+        Option<&str>,
+    ) -> Result<Box<dyn FnMut() -> Result<(), String> + Send>, String>,
+>;
+type RenameRecoveryAssetPathsHook = Arc<
+    dyn Fn(
+            &RecoveryRenameScope,
+            bool,
+            Option<&str>,
+            Option<&str>,
+        ) -> Result<super::RecoveryAssetStage, String>
+        + Send
+        + Sync,
+>;
+type RegisterCleanupHook = Box<
+    dyn Fn(
+        crate::docs::hosts::GeneratedActorWake,
+    ) -> Result<Box<dyn shell_contract::hosts::GeneratedCleanupRegistration>, String>,
+>;
+
 /// What the state asks of the app's own hosts
 pub(crate) struct DocHooks {
     /// `getUiLang()`
     pub lang: Box<dyn Fn() -> String>,
     /// `isHeadlessMode()`
     pub is_headless: Box<dyn Fn() -> bool>,
-    /// `contents.reload()`
-    pub reload: Box<dyn Fn(ViewId)>,
     /// `Date.now()`
     pub now_ms: Box<dyn Fn() -> f64>,
     /// `isPathOpenElsewhere(path)`: the shell's split-pane probe
@@ -97,56 +141,17 @@ pub(crate) struct DocHooks {
     /// `renameOwnedAssetDocument(oldPath, newPath)`
     pub rename_assets: fn(&str, &str) -> Result<(), String>,
     /// Keep the native protocol's grant synchronized with this view's paths.
-    pub asset_paths: Box<dyn Fn(ViewId, bool, Option<&str>, Option<&str>) -> Result<(), String>>,
-    pub asset_paths_owned:
-        Box<dyn Fn(&OwnedSave, bool, Option<&str>, Option<&str>) -> Result<(), String>>,
-    pub native_save_asset_paths: Arc<
-        dyn Fn(
-                &shell_contract::ipc::NativeRequestOwner,
-                bool,
-                Option<&str>,
-                Option<&str>,
-            ) -> Result<super::RecoveryAssetStage, String>
-            + Send
-            + Sync,
-    >,
-    pub saved_asset_paths: Arc<
-        dyn Fn(
-                &shell_contract::ipc::NativeRequestOwner,
-                Option<&str>,
-                Option<&str>,
-            ) -> Result<super::SavedAssetStage, String>
-            + Send
-            + Sync,
-    >,
-    pub recovery_asset_paths: Box<
-        dyn Fn(
-            &shell_contract::ipc::RecoveryOpenTarget,
-            bool,
-            Option<&str>,
-            Option<&str>,
-        ) -> Result<Box<dyn FnMut() -> Result<(), String> + Send>, String>,
-    >,
-    pub rename_recovery_asset_paths: Arc<
-        dyn Fn(
-                &RecoveryRenameScope,
-                bool,
-                Option<&str>,
-                Option<&str>,
-            ) -> Result<super::RecoveryAssetStage, String>
-            + Send
-            + Sync,
-    >,
+    pub asset_paths: AssetPathsHook,
+    pub asset_paths_owned: OwnedAssetPathsHook,
+    pub native_save_asset_paths: NativeSaveAssetPathsHook,
+    pub saved_asset_paths: SavedAssetPathsHook,
+    pub recovery_asset_paths: RecoveryAssetPathsHook,
+    pub rename_recovery_asset_paths: RenameRecoveryAssetPathsHook,
     /// html: the view presents another view's preview; its export requests
     /// are dropped and a save request is answered `true` at once
     pub presenting: Box<dyn Fn(ViewId) -> bool>,
     /// The shell's process-owned retry of one generated export's completion.
-    pub register_cleanup: Box<
-        dyn Fn(
-            crate::docs::hosts::GeneratedActorWake,
-        )
-            -> Result<Box<dyn shell_contract::hosts::GeneratedCleanupRegistration>, String>,
-    >,
+    pub register_cleanup: RegisterCleanupHook,
 }
 
 /// One view's document (the `*ByWc` maps of the TypeScript, one entry)
@@ -280,9 +285,7 @@ impl TextDocs {
                 let me = me.clone();
                 Box::new(move |v| me.upgrade().and_then(|d| f(&d, v)))
             };
-            let (dirty, adopt, restored, lang, headless, reload, title_lang, clock) = (
-                me.clone(),
-                me.clone(),
+            let (dirty, restored, lang, headless, title_lang, clock) = (
                 me.clone(),
                 me.clone(),
                 me.clone(),
@@ -301,15 +304,6 @@ impl TextDocs {
                 save_path: read(|d, v| d.save_path(v)),
                 open_path: read(|d, v| d.open_path(v)),
                 is_dirty: Box::new(move |v| dirty.upgrade().is_some_and(|d| d.is_dirty(v))),
-                adopt_file: Box::new(move |v, path| {
-                    if let Some(d) = adopt.upgrade() {
-                        d.with_view(v, |s| {
-                            s.open = Some(path.to_owned());
-                            s.save = Some(path.to_owned());
-                            s.allowed.insert(path.to_owned());
-                        })
-                    }
-                }),
                 restored_file: Box::new(move |v, path| {
                     // the save guard compares with the file as it was when the tab opened
                     if let Some(d) = restored.upgrade() {
@@ -319,11 +313,6 @@ impl TextDocs {
                 untitled_fallback_title: Box::new(move || {
                     let lang = title_lang.upgrade().map_or_else(String::new, |d| d.lang());
                     tr(&lang, untitled_title.0, untitled_title.1)
-                }),
-                reload: Box::new(move |v| {
-                    if let Some(d) = reload.upgrade() {
-                        (d.hooks.reload)(v)
-                    }
                 }),
                 now_ms: Box::new(move || clock.upgrade().map_or(0.0, |d| d.now_ms())),
             };
@@ -510,10 +499,10 @@ impl TextDocs {
         if let Some(revoked) = revoked {
             revoked.cancel();
         }
-        if changed.is_some() {
-            if let Some(request) = self.owned_saves.borrow().get(&view) {
-                request.cancel().cancel();
-            }
+        if changed.is_some()
+            && let Some(request) = self.owned_saves.borrow().get(&view)
+        {
+            request.cancel().cancel();
         }
         if let Some((tracked, open, save)) = changed
             && let Err(error) =
@@ -1132,7 +1121,7 @@ impl TextDocs {
         let d = Rc::clone(self);
         out.push(kit::invoke(ch.consume_headless_export, move |cx, _| {
             let mut target = None;
-            d.admit_headless_message(&cx, || {
+            d.admit_headless_message(cx, || {
                 target = d.headless_targets.borrow_mut().remove(&cx.sender.view);
                 Ok(())
             })?;
@@ -1146,7 +1135,7 @@ impl TextDocs {
                 _ => None,
             };
             let ok = matches!(field(state, "ok"), IpcValue::Bool(true));
-            d.admit_headless_message(&cx, || Ok(()))?;
+            d.admit_headless_message(cx, || Ok(()))?;
             d.settle_headless(cx.sender.view, ok, error);
             Ok(())
         }));

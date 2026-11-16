@@ -423,8 +423,8 @@ impl Editor {
                 .retain_unclosed(view, target.clone(), dirty);
         }
         let mut displaced_seed = None;
-        let mut displaced_saved = None;
-        let mut previous_saved_document = None;
+        let displaced_saved;
+        let previous_saved_document;
         let loss = {
             let mut state = self.st.borrow_mut();
             let slot = state.views.entry(view).or_default();

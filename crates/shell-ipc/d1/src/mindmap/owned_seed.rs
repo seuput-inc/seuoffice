@@ -147,10 +147,8 @@ impl MindmapSeedReceipt {
         if mine {
             state.owned_seeds.remove(&self.view);
         }
-        if let Some(Some(entry)) = previous.take() {
-            if !entry.retired.get() {
-                state.owned_seeds.insert(self.view, entry);
-            }
+        if let Some(Some(entry)) = previous.take() && !entry.retired.get() {
+            state.owned_seeds.insert(self.view, entry);
         }
         state
             .owned_seed_versions
@@ -224,6 +222,7 @@ impl PreparedMindmapSeed {
 }
 
 impl MindmapApp {
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare_seed_in_transition(
         &self,
         view: ViewId,
@@ -287,6 +286,7 @@ impl MindmapApp {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn queue_seed_owned(
         &self,
         view: ViewId,

@@ -186,9 +186,17 @@ pub(super) enum Script {
 
 fn classified(name: &str, latin_only: bool) -> Option<Script> {
     let name = nfkc(name);
-    let ja = js_regex!(r"[぀-ヿ]|mincho|meiryo|hiragino|osaka|yugoth|yu (gothic|mincho)|ms (ui )?p?(gothic|mincho)|明朝|biz ud|kozuka|小塚|(sans|serif) jp\b", "i").test(&name);
-    let ko = js_regex!(r"[가-힣ᄀ-ᇿ㄰-㆏]|malgun|batang|gulim|dotum|gungsuh|myeongjo|myungjo|nanum|korean|hangul|apple (sd )?gothic|applemyungjo|(sans|serif) kr\b", "i").test(&name);
-    let tc = js_regex!(r"jhenghei|p?mingliu|biaukai|dfkai|kaiu|正黑|細明|標楷|蘋方|儷[黑宋]|-繁|繁體|pingfang (tc|hk)|(heiti|songti|kaiti|lihei|lisong) tc|(sans|serif) (tc|hk)\b", "i").test(&name);
+    // The kana and hangul ranges hold no cased letter, so they are tested directly: a class
+    // outside ASCII under `i` without `u` is refused by `js_regex!`.
+    let kana = name.chars().any(|ch| ('぀'..='ヿ').contains(&ch));
+    let hangul = name
+        .chars()
+        .any(|ch| matches!(ch as u32, 0xac00..=0xd7a3 | 0x1100..=0x11ff | 0x3130..=0x318f));
+    let ja = kana
+        || js_regex!(r"mincho|meiryo|hiragino|osaka|yugoth|yu (gothic|mincho)|ms (ui )?p?(gothic|mincho)|明朝|biz ud|kozuka|小塚|(sans|serif) jp\b", "i").test(&name);
+    let ko = hangul
+        || js_regex!(r"malgun|batang|gulim|dotum|gungsuh|myeongjo|myungjo|nanum|korean|hangul|apple (sd )?gothic|applemyungjo|(sans|serif) kr\b", "i").test(&name);
+    let tc = js_regex!(r"jhenghei|p?mingliu|biaukai|dfkai|kaiu|正黑|細明|標楷|蘋方|儷黑|儷宋|-繁|繁體|pingfang (tc|hk)|(heiti|songti|kaiti|lihei|lisong) tc|(sans|serif) (tc|hk)\b", "i").test(&name);
     if !latin_only {
         return if ja {
             Some(Script::Ja)
@@ -200,13 +208,10 @@ fn classified(name: &str, latin_only: bool) -> Option<Script> {
             None
         };
     }
-    if name.chars().any(|ch| ('぀'..='ヿ').contains(&ch)) {
+    if kana {
         return Some(Script::Ja);
     }
-    if name
-        .chars()
-        .any(|ch| matches!(ch as u32, 0xac00..=0xd7a3 | 0x1100..=0x11ff | 0x3130..=0x318f))
-    {
+    if hangul {
         return Some(Script::Ko);
     }
     if name.chars().any(|ch| ('一'..='鿿').contains(&ch)) {

@@ -194,16 +194,6 @@ impl MindmapApp {
         }
     }
 
-    /// `viewSaved`: the view's map reached the disk: its copies go, and it is no longer untitled
-    pub(super) fn view_saved(&self, view: ViewId) {
-        self.delete_owned(view, RecoveryDeleteReason::Saved, true);
-        if let Some(recovery) = self.0.state.borrow_mut().recovery.get_mut(&view) {
-            recovery.untitled_copy = None;
-            recovery.save_as_default = None;
-            recovery.title = None;
-        }
-    }
-
     /// `viewDropped`: "Don't Save" (the close prompt, or a tool closing the
     /// map without saving): the copies go, and no new one is taken while the
     /// tab closes. When the tab is still there after the hold, its renderer

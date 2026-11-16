@@ -99,6 +99,11 @@ impl AgentWindowFrame for Frame {
         None
     }
 
+    /// The page is the app-scheme file the create step checks against
+    fn built_file(&self) -> String {
+        AGENT_PAGE.to_owned()
+    }
+
     fn create(&self, options: &Value, load: &Value) -> Result<ViewId, String> {
         let page = load
             .get("file")

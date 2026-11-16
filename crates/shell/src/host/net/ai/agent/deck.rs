@@ -32,7 +32,10 @@ impl Deck {
                 .by_index_raw(index)
                 .map_err(|error| error.to_string())?;
             entries.push(DeckEntry {
-                name: entry.name().to_owned(),
+                name: entry
+                    .name()
+                    .map_err(|error| error.to_string())?
+                    .into_owned(),
                 dir: entry.is_dir(),
             });
         }

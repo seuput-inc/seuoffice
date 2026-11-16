@@ -268,6 +268,7 @@ impl Editor {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn after_save_owned(
         self: &Rc<Self>,
         view: ViewId,
@@ -303,6 +304,7 @@ impl Editor {
         authority.redaction_saved(&self.shell, view, &target, back);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn after_save_owned_ready(
         self: &Rc<Self>,
         view: ViewId,
@@ -394,7 +396,7 @@ impl Editor {
                         editor.rec.borrow_mut().copy_landed(
                             view,
                             identity.clone(),
-                            Ok(result.clone()),
+                            Ok(*result),
                         );
                     }
                     if let Err(message) = &result {
@@ -511,6 +513,7 @@ impl Editor {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn save(
     e: &Rc<Editor>,
     view: ViewId,
@@ -545,10 +548,10 @@ fn save(
             }
         }
     };
-    if let Some(owned) = &authority {
-        if let Err(message) = owned.current() {
-            return reply.reply(Ok(failed(message)));
-        }
+    if let Some(owned) = &authority
+        && let Err(message) = owned.current()
+    {
+        return reply.reply(Ok(failed(message)));
     }
     let callback_cancel = cancel.clone();
     let cancel = authority
@@ -572,63 +575,64 @@ fn save(
     if target != path && granted_target.as_deref() != Some(target.as_str()) {
         return reply.reply(Ok(failed("pdf: target path not granted to this view")));
     }
-    if let Some(owned) = &authority {
-        if let Err(message) = owned.validate_target(std::path::Path::new(&target)) {
-            return reply.reply(Ok(failed(message)));
-        }
+    if let Some(owned) = &authority
+        && let Err(message) = owned.validate_target(std::path::Path::new(&target))
+    {
+        return reply.reply(Ok(failed(message)));
     }
-    if !conflict_confirmed && target == path {
-        if let Some(owned) = &authority {
-            let recorded =
-                e.st.borrow()
-                    .views
-                    .get(&view)
-                    .and_then(|slot| slot.disk_states.get(&path).cloned());
-            let conflicted = e.shell.is_path_open_elsewhere(&path)
-                && main_core::packages::electron_utils::save_conflict::is_modified_since(
-                    recorded.as_ref(),
-                    &path,
-                );
-            if conflicted {
-                if field(&request, "auto") == &IpcValue::Bool(true) {
-                    return reply.reply(Ok(failed("external-modified")));
-                }
-                let labels =
-                    main_core::packages::electron_utils::save_conflict_labels::save_conflict_labels(
-                        &e.lang(),
-                    );
-                let options = shell_contract::hosts::MessageBox {
-                    kind: Some("warning".into()),
-                    message: labels.message.into(),
-                    detail: Some(labels.detail.into()),
-                    buttons: vec![labels.overwrite.into(), labels.cancel.into()],
-                    default_id: Some(0),
-                    cancel_id: Some(1),
-                    ..Default::default()
-                };
-                let editor = e.clone();
-                let confirmed_authority = owned.clone();
-                let back = kit::back_on_core(
-                    &e.services,
-                    move |answer: Result<shell_contract::hosts::MessageBoxAnswer, String>| {
-                        match answer {
-                            Ok(answer) if answer.response == 0 => save(
-                                &editor,
-                                view,
-                                request,
-                                context,
-                                callback_cancel,
-                                reply,
-                                true,
-                                Some(confirmed_authority),
-                            ),
-                            Ok(_) => reply.reply(Ok(failed("external-modified"))),
-                            Err(message) => reply.reply(Ok(failed(message))),
-                        }
-                    },
-                );
-                return owned.message_dialog(&e.dialogs, e.contents.window_of(view), options, back);
+    if !conflict_confirmed
+        && target == path
+        && let Some(owned) = &authority
+    {
+        let recorded =
+            e.st.borrow()
+                .views
+                .get(&view)
+                .and_then(|slot| slot.disk_states.get(&path).cloned());
+        let conflicted = e.shell.is_path_open_elsewhere(&path)
+            && main_core::packages::electron_utils::save_conflict::is_modified_since(
+                recorded.as_ref(),
+                &path,
+            );
+        if conflicted {
+            if field(&request, "auto") == &IpcValue::Bool(true) {
+                return reply.reply(Ok(failed("external-modified")));
             }
+            let labels =
+                main_core::packages::electron_utils::save_conflict_labels::save_conflict_labels(
+                    &e.lang(),
+                );
+            let options = shell_contract::hosts::MessageBox {
+                kind: Some("warning".into()),
+                message: labels.message,
+                detail: Some(labels.detail),
+                buttons: vec![labels.overwrite, labels.cancel],
+                default_id: Some(0),
+                cancel_id: Some(1),
+                ..Default::default()
+            };
+            let editor = e.clone();
+            let confirmed_authority = owned.clone();
+            let back = kit::back_on_core(
+                &e.services,
+                move |answer: Result<shell_contract::hosts::MessageBoxAnswer, String>| {
+                    match answer {
+                        Ok(answer) if answer.response == 0 => save(
+                            &editor,
+                            view,
+                            request,
+                            context,
+                            callback_cancel,
+                            reply,
+                            true,
+                            Some(confirmed_authority),
+                        ),
+                        Ok(_) => reply.reply(Ok(failed("external-modified"))),
+                        Err(message) => reply.reply(Ok(failed(message))),
+                    }
+                },
+            );
+            return owned.message_dialog(&e.dialogs, e.contents.window_of(view), options, back);
         }
     }
     let annotations = match field(&request, "annotations") {
@@ -692,10 +696,10 @@ fn save(
                                 .reply(Ok(obj([("ok", true.into_ipc())])));
                             Ok(())
                         });
-                        if let Err(message) = admitted {
-                            if let Some(reply) = reply {
-                                reply.reply(Ok(failed(message)));
-                            }
+                        if let Err(message) = admitted
+                            && let Some(reply) = reply
+                        {
+                            reply.reply(Ok(failed(message)));
                         }
                     } else {
                         ed.remember_disk_state(view, &target, state);
@@ -793,10 +797,10 @@ fn save(
             }
         },
         move |result| {
-            if let Some(owned) = &completion_authority {
-                if let Err(message) = owned.current() {
-                    return reply.reply(Ok(failed(message)));
-                }
+            if let Some(owned) = &completion_authority
+                && let Err(message) = owned.current()
+            {
+                return reply.reply(Ok(failed(message)));
             }
             match result {
                 Ok(skips) => match completion_authority {
@@ -1090,10 +1094,10 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
                     if let Err(m) = result {
                         return reply.reply(Ok(failed(m)));
                     }
-                    if let Some(owned) = &completion_authority {
-                        if let Err(message) = owned.current() {
-                            return reply.reply(Ok(failed(message)));
-                        }
+                    if let Some(owned) = &completion_authority
+                        && let Err(message) = owned.current()
+                    {
+                        return reply.reply(Ok(failed(message)));
                     }
                     if let Some(owned) = completion_authority {
                         return ed.after_adopt_owned(view, path, target, owned, reply);

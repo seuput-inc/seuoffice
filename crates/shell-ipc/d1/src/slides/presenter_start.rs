@@ -153,6 +153,7 @@ impl App {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn audience_started(
         &self,
         presenter: ViewId,

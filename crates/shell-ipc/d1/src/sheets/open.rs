@@ -560,10 +560,8 @@ fn open_workbook_session_captured(
                         tab.remove_session(previous);
                     }
                     tab.set_session(&id, registered);
-                    if saved.is_some() {
-                        if let Some(load) = tab.saved_load.borrow_mut().as_mut() {
-                            load.session_id = Some(saved_session_id);
-                        }
+                    if saved.is_some() && let Some(load) = tab.saved_load.borrow_mut().as_mut() {
+                        load.session_id = Some(saved_session_id);
                     }
                     if let Some((_, native)) = &headless {
                         tab.set_current_path(Some(native.logical_path.clone()));
@@ -1532,14 +1530,14 @@ pub(super) fn open_selected_workbook(
         let id = opened.session_id.clone();
         env.core(move |core| {
             let mut state = core.state.borrow_mut();
-            if let Some(tab) = state.tab_mut(view) {
-                if headless.as_ref().is_none_or(|expected| {
+            if let Some(tab) = state.tab_mut(view)
+                && headless.as_ref().is_none_or(|expected| {
                     tab.headless_target
                         .as_ref()
                         .is_some_and(|actual| actual.created().same_generation(expected.created()))
-                }) {
-                    tab.remove_session(&id);
-                }
+                })
+            {
+                tab.remove_session(&id);
             }
         });
         cleanup_session(

@@ -339,11 +339,10 @@ impl Hwp {
                 original = Some(std::fs::File::open(&path).map_err(|error| {
                     main_core::node_fs::node_error(&error, "open", &path).message
                 })?);
-                if let Some(identity) = identity {
-                    match RecoveryPinnedRead::open(&user_data, identity) {
-                        Ok(pinned) => copy = Some(pinned),
-                        Err(_) => {}
-                    }
+                if let Some(identity) = identity
+                    && let Ok(pinned) = RecoveryPinnedRead::open(&user_data, identity)
+                {
+                    copy = Some(pinned);
                 }
                 self.change(view, |state| {
                     state
@@ -359,7 +358,7 @@ impl Hwp {
         if let Err(message) = admission {
             return reply.reply(Err(error(message)));
         }
-        let (Some(plan), Some(mut original)) = (prepared, original) else {
+        let (Some(plan), Some(original)) = (prepared, original) else {
             return reply.reply(Err(error("HWP recovery read was not admitted")));
         };
         let engine = Arc::clone(&self.engine);
@@ -395,13 +394,7 @@ impl Hwp {
                 };
                 let read =
                     read_hwp_bytes(&engine, bytes, Some(disk)).map_err(|error| error.message)?;
-                let snapshot = match copy {
-                    Some(copy) => match copy.read() {
-                        Ok(snapshot) => Some(snapshot),
-                        Err(_) => None,
-                    },
-                    None => None,
-                };
+                let snapshot = copy.and_then(|copy| copy.read().ok());
                 Ok((plan, read, snapshot))
             },
             move |result| {

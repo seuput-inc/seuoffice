@@ -613,7 +613,7 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
                     },
                 );
             }
-            let recovery = match super::recovery_open::read_scope(&e, &cx, &path) {
+            let recovery = match super::recovery_open::read_scope(&e, cx, &path) {
                 Ok(scope) => scope,
                 Err(message) => return reply.reply(Err(error(message))),
             };
@@ -674,7 +674,7 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
             let Some(path) = e.granted(view, args.get(0)) else {
                 return reply.reply(Err(error(NOT_GRANTED)));
             };
-            let recovery = match super::recovery_open::read_scope(&e, &cx, &path) {
+            let recovery = match super::recovery_open::read_scope(&e, cx, &path) {
                 Ok(scope) => scope,
                 Err(message) => return reply.reply(Err(error(message))),
             };

@@ -347,7 +347,7 @@ fn body_edit(
 }
 fn apply_text(op: &IpcValue, ctx: &mut OpContext<'_>) -> Result<TxnRecord, String> {
     let (target, group, id) = locate(ctx, op, true)?;
-    let previous = deck::patch_slide_xml(ctx.slide(&target));
+    let previous = deck::patch_slide_xml(ctx.slide_mut(&target));
     let edit = edit_paragraphs(op);
     let (before, level_dirty, note) = if let Some(group_id) = &group {
         let (gi, ci) =
@@ -501,7 +501,7 @@ fn apply_text(op: &IpcValue, ctx: &mut OpContext<'_>) -> Result<TxnRecord, Strin
             )?;
         }
     }
-    let current = deck::patch_slide_xml(ctx.slide(&target));
+    let current = deck::patch_slide_xml(ctx.slide_mut(&target));
     let path = ctx.slide(&target).path.as_deref().unwrap_or("").to_owned();
     cleanup_superseded_part_resources(ctx.opened, &path, &previous, &current)?;
     if level_dirty {

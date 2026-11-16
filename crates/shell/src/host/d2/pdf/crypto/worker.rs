@@ -633,7 +633,7 @@ pub(super) fn run_sign_worker(output: std::fs::File) -> Result<(), String> {
                     &dir,
                     &nickname,
                     password,
-                    &mut channel.lock().map_err(|_| "signing channel unavailable")?,
+                    &mut *channel.lock().map_err(|_| "signing channel unavailable")?,
                 )?;
                 Ok(Identity::P12(super::pkcs12::open(
                     &p12,
@@ -651,7 +651,7 @@ pub(super) fn run_sign_worker(output: std::fs::File) -> Result<(), String> {
         Ok(identity) => identity,
         Err(error) => {
             return send_open_failure(
-                &mut channel.lock().map_err(|_| "signing channel unavailable")?,
+                &mut *channel.lock().map_err(|_| "signing channel unavailable")?,
                 error,
             );
         }

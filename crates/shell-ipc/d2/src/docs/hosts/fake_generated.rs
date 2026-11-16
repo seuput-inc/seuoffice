@@ -7,6 +7,7 @@ use shell_contract::hosts::{
 use std::sync::{Arc, Mutex, Weak};
 
 type ResultValue = Result<GeneratedPathOutcome, String>;
+type Drainer = Box<dyn FnOnce(Result<(), String>) + Send>;
 struct State {
     observer: Option<GeneratedPathObserver>,
     wake: Option<GeneratedPathWake>,
@@ -15,7 +16,7 @@ struct State {
     started: bool,
     finished: bool,
     outstanding: bool,
-    drainers: Vec<Box<dyn FnOnce(Result<(), String>) + Send>>,
+    drainers: Vec<Drainer>,
 }
 struct Pending {
     own: Weak<Pending>,
@@ -46,10 +47,10 @@ impl Pending {
             state.result = Some(result);
             state.observer.take()
         };
-        if let Some(observer) = observer {
-            if let Ok(Some(delivery)) = self.take_redelivery() {
-                observer(delivery);
-            }
+        if let Some(observer) = observer
+            && let Ok(Some(delivery)) = self.take_redelivery()
+        {
+            observer(delivery);
         }
     }
 }

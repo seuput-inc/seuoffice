@@ -697,7 +697,7 @@ fn build_series(entry: &serde_json::Value, index: usize, scatter: bool) -> Resul
         let numeric = categories.len() == values.len()
             && !categories.is_empty()
             && numbers.iter().all(|n| n.is_finite());
-        let x = if numeric {
+        let x: Vec<String> = if numeric {
             numbers
                 .iter()
                 .map(|v| jscompat::number_to_string(*v))

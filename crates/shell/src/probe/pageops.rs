@@ -20,6 +20,7 @@
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use tauri::Manager;
 
 use super::harness::{
     Ctx, Direct, Opened, app_url, destroy, eval, open_direct, page_of, platform, record_op,

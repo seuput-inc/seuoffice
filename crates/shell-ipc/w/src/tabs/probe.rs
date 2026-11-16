@@ -7519,6 +7519,68 @@ mod command_tests {
         assert!(!fake.view_destroyed(existing_view));
     }
 
+    #[test]
+    fn help_open_cancelled_before_admission_starts_no_view() {
+        use shell_contract::runtime::{CancelToken, RendererGeneration};
+
+        let views = Arc::new(RegisteredViews::default());
+        let shell = shell_contract::ipc::Sender {
+            view: ViewId(1),
+            window: WindowId(1),
+            surface: Surface::Shell,
+        };
+        let generation = RendererGeneration::new();
+        views
+            .0
+            .lock()
+            .unwrap()
+            .insert(shell.view, (shell, generation.clone()));
+        let registrar_views = views.clone();
+        let registrar: ProbeViewRegistrar = Arc::new(move |sender, generation| {
+            registrar_views
+                .0
+                .lock()
+                .unwrap()
+                .insert(sender.view, (sender, generation));
+            Ok(())
+        });
+        let mut hosts = Hosts::default();
+        probe_hosts(&mut hosts, &json!({}));
+        hosts.insert(registrar);
+        let ui = Arc::new(QueuedUi::default());
+        let services = shell_contract::hosts::synthetic::SyntheticOwnedEffects::install(Services {
+            ui: ui.clone(),
+            core: Arc::new(TestThread),
+            workers: Arc::new(TestWorkers),
+            events: Arc::new(TestEvents),
+            views,
+            paths: Arc::new(TestPaths),
+            hosts: Arc::new(hosts),
+        });
+        let state = probe_state(&services, Rc::new(Provided::default())).unwrap();
+        let fake = services.hosts.get::<Arc<WorldBox>>().unwrap().0.clone();
+        let effects = services
+            .hosts
+            .get::<shell_contract::hosts::OwnedEffectsHost>()
+            .unwrap();
+        let owner = effects.capture_owner(shell.view, &generation).unwrap();
+        let next_view = fake.w().next_view;
+        let cancel = CancelToken::default();
+        cancel.cancel();
+        let result = Rc::new(std::cell::RefCell::new(None));
+        let observed = result.clone();
+        state.open_help_owned(
+            Some("diagram".into()),
+            owner,
+            cancel,
+            CancelToken::default(),
+            Box::new(move |reply| *observed.borrow_mut() = Some(reply.map_err(|error| error.0))),
+        );
+        ui.run();
+        assert!(matches!(&*result.borrow(), Some(Err(_))));
+        assert_eq!(fake.w().next_view, next_view);
+    }
+
     struct TestEvents;
     impl shell_contract::ipc::EventSink for TestEvents {
         fn emit(

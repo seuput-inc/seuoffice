@@ -1162,13 +1162,12 @@ fn superseded_mindmap_seed_is_not_restored_by_successor_rollback() {
     first.retire_superseded(&proof).unwrap();
     second.rollback().unwrap();
     assert!(
-        h.app
+        !h.app
             .0
             .state
             .borrow()
             .owned_seeds
-            .get(&h.sender.view)
-            .is_none()
+            .contains_key(&h.sender.view)
     );
 }
 

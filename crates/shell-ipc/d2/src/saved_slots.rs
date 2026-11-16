@@ -642,10 +642,8 @@ fn drain<H: SavedHost>(host: &Rc<H>, view: ViewId) {
         });
         match answer {
             Ok((value, starts)) => {
-                if starts {
-                    if let Some(slot) = host.slots().0.borrow_mut().get_mut(&view) {
-                        slot.applying = true;
-                    }
+                if starts && let Some(slot) = host.slots().0.borrow_mut().get_mut(&view) {
+                    slot.applying = true;
                 }
                 waiter.reply.reply(Ok(value));
             }

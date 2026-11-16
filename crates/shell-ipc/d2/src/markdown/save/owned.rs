@@ -4,7 +4,6 @@ pub(super) use images::{Image, dispose_images};
 use super::*;
 use crate::html::text_doc::OwnedSave;
 use shell_contract::ipc::{CallContext, NativeContext};
-use shell_contract::runtime::CancelToken;
 
 #[derive(Clone)]
 pub(super) struct Approved {

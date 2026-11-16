@@ -195,7 +195,6 @@ impl Editor {
 
     fn cert_material(
         self: &Rc<Self>,
-        view: ViewId,
         entry: CertEntry,
         password: String,
         store_password: Option<String>,
@@ -233,7 +232,6 @@ impl Editor {
                         slot.waiting.push_back(Box::new(move || {
                             match (weak_editor.upgrade(), weak_cache.upgrade()) {
                                 (Some(editor), Some(cache)) => editor.cert_material(
-                                    view,
                                     CertEntry::System { reference, cache },
                                     password,
                                     store_password,
@@ -355,10 +353,8 @@ impl Editor {
                     .is_none_or(|cache| cache.borrow().epoch == epoch);
                 if !current || !valid_epoch {
                     token.cancel();
-                    if valid_epoch {
-                        if let Some(cache) = &cache {
-                            cache.borrow_mut().state = CertificateState::Invalid;
-                        }
+                    if valid_epoch && let Some(cache) = &cache {
+                        cache.borrow_mut().state = CertificateState::Invalid;
                     }
                     then(Err(certificate_expired()));
                     if let Some(cache) = &cache {
@@ -619,7 +615,6 @@ fn sign(
             let owner = snapshot.owner.clone();
             let cert_ed = ed.clone();
             ed.cert_material(
-                view,
                 entry,
                 password,
                 store_password,
@@ -907,7 +902,6 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
             };
             let inspect_cancel = cx.cancel.clone();
             e.cert_material(
-                view,
                 entry,
                 password,
                 store_password(args.get(2)),

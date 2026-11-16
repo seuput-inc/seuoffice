@@ -187,7 +187,7 @@ pub(super) fn convert(
     for index in 0..template.len() {
         cancelled(control)?;
         let mut entry = template.by_index(index).map_err(io_error)?;
-        let path = entry.name().to_owned();
+        let path = entry.name().map_err(io_error)?.into_owned();
         if entry.is_dir() {
             writer.add_directory(&path, options).map_err(io_error)?;
             continue;

@@ -436,7 +436,7 @@ pub(super) fn erase(
     }
     let text_page = handle(call(session, "FPDFText_LoadPage", &[reference(page)])?)?
         .ok_or("could not load PDF text page")?;
-    let result = (|| {
+    let result: Result<Vec<bool>, String> = (|| {
         let refs = edits.iter().collect::<Vec<_>>();
         let mut failures = Vec::new();
         let mut tree = None;

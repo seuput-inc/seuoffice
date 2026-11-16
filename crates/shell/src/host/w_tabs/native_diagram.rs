@@ -37,7 +37,10 @@ fn is_visio_drawing(bytes: &[u8]) -> bool {
         let Ok(entry) = archive.by_index(index) else {
             return false;
         };
-        if entry.name().eq_ignore_ascii_case("visio/document.xml") {
+        if entry
+            .name()
+            .is_ok_and(|name| name.eq_ignore_ascii_case("visio/document.xml"))
+        {
             has_document = true;
         }
     }

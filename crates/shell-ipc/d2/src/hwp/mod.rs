@@ -81,6 +81,7 @@ pub trait HwpEngine: Send + Sync {
     /// The source `setOpenFilesSource` registered (`seuoffice.open-files-source`):
     /// `None` when no source is registered (nothing is blocked), `Some(Err)`
     /// when the source threw or rejected (every file counts as unsaved)
+    #[allow(clippy::type_complexity)]
     fn open_files(
         &self,
         then: Box<dyn FnOnce(Option<Result<Vec<OpenFileState>, OpenFilesSourceFailed>>)>,
@@ -156,6 +157,7 @@ pub trait HwpShell: Send + Sync {
     fn new_document_dir(&self, view: ViewId) -> Option<String>;
     /// `fileSavedHook?.(wc, path)`: a save landed on a new path
     fn file_saved(&self, view: ViewId, path: &str);
+    #[allow(clippy::too_many_arguments)]
     fn file_saved_owned(
         &self,
         view: ViewId,
@@ -167,6 +169,7 @@ pub trait HwpShell: Send + Sync {
         effects: shell_contract::hosts::OwnedEffectsHost,
         done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>,
     );
+    #[allow(clippy::too_many_arguments)]
     fn file_saved_existing_document(
         &self,
         view: ViewId,

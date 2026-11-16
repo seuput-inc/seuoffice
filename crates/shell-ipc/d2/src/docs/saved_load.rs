@@ -178,13 +178,13 @@ pub(super) fn prepare_content(
         recovery,
     })
 }
+type PreparedSavedLoad = Result<(DecodedSaved, SavedContent, String, Option<(f64, f64)>), String>;
 pub(super) struct SavedLoad {
     pub(super) target: NativeSavedTarget,
     pub(super) document: Option<NativeSavedDocument>,
     pub(super) waiter: Option<(CallContext, Responder)>,
     pub(super) done: Option<Then<SavedDocumentLoadOutcome>>,
     pub(super) token: String,
-    pub(super) response: Option<IpcValue>,
     pub(super) started: bool,
     pub(super) applying: bool,
     pub(super) recovered: bool,
@@ -280,10 +280,8 @@ pub(super) fn worker_callback<T: Send + 'static>(
                 None => false,
             }
         };
-        if active {
-            if let Some(value) = value {
-                then(value);
-            }
+        if active && let Some(value) = value {
+            then(value);
         }
     });
     *callback
@@ -454,7 +452,6 @@ pub(super) fn prepare(
         waiter: None,
         done: None,
         token: docs.shell.random_uuid(),
-        response: None,
         started: false,
         applying: false,
         recovered: false,
@@ -1299,9 +1296,8 @@ pub(super) fn write_copy_state(
                 path,
                 value,
                 &mut |effect| {
-                    admit(effect).map_err(|error| {
+                    admit(effect).inspect_err(|error| {
                         denied = Some(error.message.clone());
-                        error
                     })
                 },
             );
@@ -1528,7 +1524,7 @@ fn prepare_on_worker(
     let deliver = match worker_callback(
         docs,
         &target,
-        move |result: Result<(DecodedSaved, SavedContent, String, Option<(f64, f64)>), String>| {
+        move |result: PreparedSavedLoad| {
             let (decoded, content, data_url, disk) = match result {
                 Ok(prepared) => prepared,
                 Err(error) => return loading.abort(&continued, &error),
@@ -1557,14 +1553,14 @@ fn prepare_on_worker(
                 permit.clone(),
                 cancel,
             )?;
-            if content.recovery_failed {
-                if let Some((snapshot, _)) = &content.recovery {
-                    write_copy_state(
-                        snapshot,
-                        main_core::packages::electron_utils::recovery_store::RecoveryCopyState::Later,
-                        &admit,
-                    )?;
-                }
+            if content.recovery_failed
+                && let Some((snapshot, _)) = &content.recovery
+            {
+                write_copy_state(
+                    snapshot,
+                    main_core::packages::electron_utils::recovery_store::RecoveryCopyState::Later,
+                    &admit,
+                )?;
             }
             let data_url = engine.hand_off_bytes(content.bytes.clone(), permit)?;
             let disk = document

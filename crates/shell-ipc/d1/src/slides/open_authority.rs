@@ -135,7 +135,7 @@ impl OpenAuthority {
                 document,
                 raw,
                 &self.cancel,
-                &[self.source.clone()],
+                std::slice::from_ref(&self.source),
                 target.cancel(),
                 target.pending(),
                 &extra,

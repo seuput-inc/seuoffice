@@ -14,6 +14,7 @@ use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
 use serde_json::json;
+use tauri::Manager;
 
 use super::harness::{
     Ctx, Direct, Opened, app_url, destroy, open_direct, record_op, scheme_url, wait_done, wait_load,

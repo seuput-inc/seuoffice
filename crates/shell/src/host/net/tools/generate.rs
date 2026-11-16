@@ -632,6 +632,19 @@ fn generate_document_tab(
     })
 }
 
+/// The generate window names its opener with a float id; the tab host with an integer one
+fn tab_opener(
+    opener: Option<NewDocumentOpener>,
+) -> Option<main_core::shell::projects::new_documents::NewDocumentOpener> {
+    use main_core::shell::projects::new_documents::NewDocumentOpener as Tab;
+    opener.map(|opener| match opener {
+        NewDocumentOpener::Home => Tab::Home,
+        NewDocumentOpener::Window { web_contents_id } => Tab::Window {
+            web_contents_id: web_contents_id as i64,
+        },
+    })
+}
+
 fn failed_save(to_path: bool, message: String) -> SaveAnswer {
     let error = Failure(message);
     if to_path {
@@ -967,7 +980,7 @@ impl GenerateShell for ShellGenerate {
         let editor = shell_ipc_w::tabs::GeneratedEditorOpen::Generate {
             target,
             handoff: value,
-            opener,
+            opener: tab_opener(opener),
         };
         open_generated_tab(authority, editor, request, cleanup, then)
     }
@@ -1022,7 +1035,7 @@ impl GenerateShell for ShellGenerate {
         let editor = shell_ipc_w::tabs::GeneratedEditorOpen::Conversion {
             target,
             document: value,
-            opener,
+            opener: tab_opener(opener),
         };
         open_generated_tab(authority, editor, request, cleanup, then)
     }

@@ -192,10 +192,9 @@ impl Core {
             .tab(view)
             .and_then(|tab| tab.headless_target.as_ref())
             .map(|target| target.created())
+            && !expected.is_some_and(|actual| actual.same_generation(created))
         {
-            if !expected.is_some_and(|actual| actual.same_generation(created)) {
-                return;
-            }
+            return;
         }
         let waiter = state.headless_waiters.remove(&view);
         drop(state);

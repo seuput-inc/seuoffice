@@ -149,7 +149,7 @@ impl shell_contract::editors::SavedActorRegistration for DocsSavedReceipt {
             receipt,
             Box::new(move |outcome| match outcome {
                 super::disposal::DocsDisposalOutcome::NotRetired { actor, error } => {
-                    *candidate.borrow_mut() = Some(actor);
+                    *candidate.borrow_mut() = Some(*actor);
                     state.set(SavedState::Committed);
                     waiter(Err(error));
                 }
@@ -223,10 +223,10 @@ impl shell_contract::editors::SavedActorRegistration for DocsSavedReceipt {
 
 impl Drop for DocsPreparedRegistration {
     fn drop(&mut self) {
-        if !self.committed {
-            if let Some(receipt) = &self.saved_receipt {
-                let _ = receipt.abort_prepared();
-            }
+        if !self.committed
+            && let Some(receipt) = &self.saved_receipt
+        {
+            let _ = receipt.abort_prepared();
         }
     }
 }

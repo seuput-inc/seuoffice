@@ -564,6 +564,7 @@ impl DocsEditors {
         super::dirty_owned::start(&self.0, view, owner, cancel, then)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn query_dirty_captured_many(
         &self,
         view: ViewId,
@@ -591,6 +592,7 @@ impl DocsEditors {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn request_close_captured_many(
         &self,
         view: ViewId,
@@ -708,6 +710,7 @@ impl DocsEditors {
         self.0.create_ai_document(request, owner, then)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn create_ai_document_owned(
         &self,
         request: IpcValue,
@@ -731,6 +734,7 @@ impl DocsEditors {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn begin_headless_export_native(
         &self,
         view: ViewId,

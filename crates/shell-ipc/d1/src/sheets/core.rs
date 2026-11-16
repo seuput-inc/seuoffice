@@ -128,6 +128,7 @@ pub struct TabState {
     pub(super) saved_load: Rc<std::cell::RefCell<Option<SavedLoad>>>,
     pub headless_target: Option<shell_contract::ipc::NativeInvocationTarget>,
     pub(super) headless_work: Option<Arc<HeadlessWork>>,
+    #[allow(clippy::type_complexity)]
     pub(super) headless_drain: Option<Box<dyn FnOnce(Result<(), String>)>>,
 }
 
@@ -490,6 +491,7 @@ pub struct AppState {
     pub shutdown: ShutdownLatch,
     pub tab_recovery: HashMap<ViewId, TabRecovery>,
     pub decided_opens: HashMap<ViewId, (String, RecoveryOpenDecision)>,
+    #[allow(clippy::type_complexity)]
     pub write_now_waiters: HashMap<
         String,
         (
@@ -582,10 +584,8 @@ impl AppState {
 
     pub(super) fn remove_queued_workbook(&mut self, view: ViewId) -> Option<QueuedWorkbook> {
         let removed = self.queued_workbooks.remove(&view);
-        if removed.is_some() {
-            if let Some(tab) = self.tab_mut(view) {
-                tab.queue_revision = Rc::new(());
-            }
+        if removed.is_some() && let Some(tab) = self.tab_mut(view) {
+            tab.queue_revision = Rc::new(());
         }
         removed
     }

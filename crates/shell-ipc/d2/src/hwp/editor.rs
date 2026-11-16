@@ -197,6 +197,7 @@ pub enum UntitledOption {
 struct RecoveryBatch {
     remaining: usize,
     failure: Option<main_core::shell::renderer_disposal::Failure>,
+    #[allow(clippy::type_complexity)]
     done: Option<Box<dyn FnOnce(Result<(), main_core::shell::renderer_disposal::Failure>)>>,
 }
 type RecoveryPending = (
@@ -450,10 +451,10 @@ impl Hwp {
         let Some((_, _, batch)) = pending else { return };
         let completion = {
             let mut batch = batch.borrow_mut();
-            if let Err(error) = result {
-                if batch.failure.is_none() {
-                    batch.failure = Some(main_core::shell::renderer_disposal::Failure(error));
-                }
+            if let Err(error) = result
+                && batch.failure.is_none()
+            {
+                batch.failure = Some(main_core::shell::renderer_disposal::Failure(error));
             }
             batch.remaining -= 1;
             if batch.remaining == 0 {
@@ -1681,6 +1682,7 @@ impl Hwp {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn commit_ready(
         self: &Rc<Self>,
         view: ViewId,

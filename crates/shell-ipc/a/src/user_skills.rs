@@ -1977,6 +1977,7 @@ mod tests {
         listeners: Mutex<Vec<Listener>>,
         generations:
             Mutex<std::collections::HashMap<ViewId, shell_contract::runtime::RendererGeneration>>,
+        #[allow(clippy::type_complexity)]
         replacements: Mutex<
             Vec<Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>>,
         >,
@@ -2012,7 +2013,7 @@ mod tests {
             Some(
                 lock(&self.generations)
                     .entry(view)
-                    .or_insert_with(shell_contract::runtime::RendererGeneration::new)
+                    .or_default()
                     .clone(),
             )
         }

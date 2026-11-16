@@ -46,8 +46,11 @@ use super::state::Decision;
 type CaseLog = Arc<Mutex<Vec<Value>>>;
 
 #[cfg(test)]
+type DeferredGuard = Box<dyn FnOnce(Result<(), String>) + Send>;
+
+#[cfg(test)]
 #[derive(Default)]
-pub(super) struct DeferredGuards(pub Mutex<Vec<Box<dyn FnOnce(Result<(), String>) + Send>>>);
+pub(super) struct DeferredGuards(pub Mutex<Vec<DeferredGuard>>);
 
 /// One view the shell made before the case's first call
 pub(super) struct OpenView {

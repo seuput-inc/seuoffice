@@ -45,10 +45,10 @@ impl Epub {
         {
             return Err(kit::error("The book renderer was replaced"));
         }
-        if let Some(expected) = native.context.document_lease() {
-            if !expected.same_generation(&document) {
-                return Err(kit::error("The book document was replaced"));
-            }
+        if let Some(expected) = native.context.document_lease()
+            && !expected.same_generation(&document)
+        {
+            return Err(kit::error("The book document was replaced"));
         }
         native.context = native.context.with_document_lease(document);
         Ok(native)

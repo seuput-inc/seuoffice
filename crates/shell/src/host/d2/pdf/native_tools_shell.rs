@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use main_core::shell::app_settings::read_app_settings;
 use shell_contract::{ViewId, WindowId, runtime::Views};
-use shell_ipc_d2::pdf::tools::{PdfTab, PdfToolsShell, PdfToolsShellHost, TabKind};
+use shell_ipc_d2::pdf::tools::{HwpImportReady, PdfTab, PdfToolsShell, PdfToolsShellHost, TabKind};
 use shell_ipc_w::editor_files::UiLanguage;
 use tauri::Manager;
 
@@ -179,7 +179,7 @@ impl PdfToolsShell for Shell {
         &self,
         copy: &str,
         title: &str,
-        then: Box<dyn FnOnce(Result<Option<ViewId>, String>)>,
+        then: Box<dyn FnOnce(Result<Option<HwpImportReady>, String>)>,
     ) {
         tabs::open_hwp_copy(copy, title, then);
     }

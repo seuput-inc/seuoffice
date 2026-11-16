@@ -938,7 +938,10 @@ fn run_presenter_action(
 fn field<'a>(value: &'a IpcValue, key: &str) -> &'a IpcValue {
     static UNDEFINED: IpcValue = IpcValue::Undefined;
     match value {
-        IpcValue::Object(fields) => fields.get(key).unwrap_or(&UNDEFINED),
+        IpcValue::Object(fields) => fields
+            .iter()
+            .find(|(name, _)| name == key)
+            .map_or(&UNDEFINED, |(_, value)| value),
         _ => &UNDEFINED,
     }
 }
@@ -1945,7 +1948,7 @@ impl Shell {
                     kind: Some("warning".into()), message: import_message(korean, &extension),
                     detail: Some(import_text(korean, if legacy { ImportText::PptDetail } else { ImportText::OdpDetail }).into()),
                     buttons: if korean { vec!["변환 후 열기".into(), "취소".into()] } else { vec!["Convert and open".into(), "Cancel".into()] },
-                    default_id: Some(0), cancel_id: Some(1), no_link: true,
+                    default_id: Some(0), cancel_id: Some(1),
                     checkbox_label: (!legacy).then(|| if korean { "다음부터 묻지 않고 변환".into() } else { "Convert without asking next time".into() }),
                     ..Default::default()
                 })?;
@@ -2374,7 +2377,7 @@ fn open_audience(
             &start.cancel,
             &start.pending,
             || {
-                let display = display(&display_by_id(display.id)?, false);
+                let display = self::display(&display_by_id(display.id)?, false);
                 let frames = start.clone();
                 let closed = start.clone();
                 let options = WindowOptions {
@@ -3379,13 +3382,16 @@ mod tests {
             CancelToken::default(),
         );
         let generation = RendererGeneration::new();
-        let (_issuer, reservation) =
-            shell_contract::ipc::NativeClosureIssuer::new(ViewId(42), generation.clone());
+        let (_issuer, reservation, owner) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(
+            ViewId(42),
+            generation.clone(),
+        );
         let target = RecoveryOpenTarget::bind(
             RecoveryOpenContext::NativeStartup(operation),
             ViewId(42),
             generation,
             reservation,
+            owner,
         )
         .unwrap();
         let snapshot = target.authority_snapshot().unwrap();

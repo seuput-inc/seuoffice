@@ -31,10 +31,10 @@ impl RenameAuthority {
     ) -> Result<(), String> {
         let mut used = false;
         let mut admitted = || {
-            if let RenameOrigin::Native(snapshot, expected) = &self.origin {
-                if snapshot.selection().path() != expected {
-                    return Err("PDF native save destination changed".into());
-                }
+            if let RenameOrigin::Native(snapshot, expected) = &self.origin
+                && snapshot.selection().path() != expected
+            {
+                return Err("PDF native save destination changed".into());
             }
             if used {
                 return Err("PDF rename effect was invoked more than once.".into());
@@ -142,6 +142,7 @@ impl RenameAuthority {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run(
     editor: &Rc<Editor>,
     view: ViewId,
@@ -172,6 +173,7 @@ pub(super) fn run(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run_native(
     editor: &Rc<Editor>,
     view: ViewId,
@@ -206,6 +208,7 @@ pub(super) fn run_native(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_impl(
     editor: &Rc<Editor>,
     view: ViewId,
@@ -340,7 +343,6 @@ fn run_impl(
             return then(Err(kit::error(error)));
         }
         drop(transition);
-        drop(before_notify);
         for (index, owner) in explicit.iter().enumerate() {
             if owner
                 .pdf_revision()
@@ -464,7 +466,6 @@ fn run_impl(
                             Ok(())
                         },
                     );
-                    drop(before_notify);
                     if let Some(done) = done.into_inner() {
                         done(Err(kit::error(result.err().unwrap_or_else(|| {
                             "PDF revision transition did not deliver its receipt".into()

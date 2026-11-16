@@ -289,6 +289,7 @@ pub(super) fn routes(app: &MindmapApp) -> Vec<Route> {
     routes
 }
 
+#[allow(clippy::type_complexity)]
 fn export_owned(
     app: &MindmapApp,
     cx: &CallContext,

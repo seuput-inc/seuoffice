@@ -370,7 +370,7 @@ fn recovery_dialog_retains_every_startup_and_creation_lifetime() {
         let shutdown = CancelToken::default();
         let cancel = CancelToken::default();
         let created = RendererGeneration::new();
-        let (_, closure) = shell_contract::ipc::NativeClosureIssuer::new(
+        let (_, closure, browser) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(
             shell_contract::ViewId(71),
             created.clone(),
         );
@@ -388,6 +388,7 @@ fn recovery_dialog_retains_every_startup_and_creation_lifetime() {
             shell_contract::ViewId(71),
             created.clone(),
             closure,
+            browser,
         )
         .unwrap();
         let session =
@@ -414,7 +415,7 @@ fn recovery_dialog_retains_all_renderer_participant_losses() {
         let created = RendererGeneration::new();
         let cancel = CancelToken::default();
         let pending = CancelToken::default();
-        let (_, closure) = shell_contract::ipc::NativeClosureIssuer::new(
+        let (_, closure, browser) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(
             shell_contract::ViewId(3),
             created.clone(),
         );
@@ -428,6 +429,7 @@ fn recovery_dialog_retains_all_renderer_participant_losses() {
             shell_contract::ViewId(3),
             created.clone(),
             closure,
+            browser,
         )
         .unwrap();
         let session =
@@ -456,8 +458,8 @@ fn committed_recovery_dialog_tracks_receiver_document_and_pending_loss() {
             .with_document_lease(document.clone());
         let cancel = CancelToken::default();
         let pending = CancelToken::default();
-        let (_, closure) =
-            shell_contract::ipc::NativeClosureIssuer::new(receiver.view, generation.clone());
+        let (_, closure, browser) =
+            shell_contract::ipc::NativeClosureIssuer::new_with_owner(receiver.view, generation.clone());
         let target = RecoveryOpenTarget::bind(
             RecoveryOpenContext::Renderer {
                 source,
@@ -468,6 +470,7 @@ fn committed_recovery_dialog_tracks_receiver_document_and_pending_loss() {
             receiver.view,
             generation.clone(),
             closure,
+            browser,
         )
         .unwrap();
         let receipt = target.commit_seed_from_admitted(|| Ok(())).unwrap();
@@ -511,7 +514,7 @@ fn startup_recovery_dialog_retains_request_constraint_losses() {
             CancelToken::default(),
         );
         let created = RendererGeneration::new();
-        let (_, closure) = shell_contract::ipc::NativeClosureIssuer::new(
+        let (_, closure, browser) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(
             shell_contract::ViewId(13),
             created.clone(),
         );
@@ -520,6 +523,7 @@ fn startup_recovery_dialog_retains_request_constraint_losses() {
             shell_contract::ViewId(13),
             created,
             closure,
+            browser,
             RecoveryRequestConstraint {
                 source,
                 participants: vec![participant],
@@ -559,13 +563,14 @@ fn recovery_request_document_loss_cancels_native_session() {
         CancelToken::default(),
     );
     let created = RendererGeneration::new();
-    let (_, closure) =
-        shell_contract::ipc::NativeClosureIssuer::new(shell_contract::ViewId(22), created.clone());
+    let (_, closure, browser) =
+        shell_contract::ipc::NativeClosureIssuer::new_with_owner(shell_contract::ViewId(22), created.clone());
     let target = RecoveryOpenTarget::bind_request(
         RecoveryOpenContext::NativeStartup(operation),
         shell_contract::ViewId(22),
         created,
         closure,
+        browser,
         RecoveryRequestConstraint {
             source,
             participants: Vec::new(),

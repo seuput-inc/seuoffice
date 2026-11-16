@@ -507,7 +507,7 @@ impl Export {
             proof,
             Box::new(move |outcome| match outcome {
                 shell_ipc_d2::docs::editors::DocsDisposalOutcome::NotRetired { actor, error } => {
-                    *restore.borrow_mut() = Some(actor);
+                    *restore.borrow_mut() = Some(*actor);
                     job.retain_close_retry(Some(restore), receipt, error);
                 }
                 shell_ipc_d2::docs::editors::DocsDisposalOutcome::Retired { cleanup } => {
@@ -584,7 +584,7 @@ impl Export {
                             actor,
                             error,
                         } => {
-                            *restore.borrow_mut() = Some(actor);
+                            *restore.borrow_mut() = Some(*actor);
                             Some(error)
                         }
                         shell_ipc_d2::docs::editors::DocsDisposalOutcome::Retired { cleanup } => {

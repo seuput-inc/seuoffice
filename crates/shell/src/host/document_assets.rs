@@ -2211,13 +2211,14 @@ mod tests {
         let view = ViewId(987_000_091);
         let other = ViewId(987_000_092);
         let created = RendererGeneration::new();
-        let (_closure_issuer, closure) =
-            shell_contract::ipc::NativeClosureIssuer::new(view, created.clone());
+        let (_closure_issuer, closure, browser) =
+            shell_contract::ipc::NativeClosureIssuer::new_with_owner(view, created.clone());
         let target = RecoveryOpenTarget::bind(
             RecoveryOpenContext::NativeStartup(operation.clone()),
             view,
             created,
             closure,
+            browser,
         )
         .unwrap();
         let mut publish = prepare_recovery_paths(

@@ -4,8 +4,7 @@
 //! PowerPoint, Excel and Hangul conversions (`pdf:convert-office`, the
 //! `exportPdfAs*Local` and `openPdfAsHwp` flows of `shell/index.ts`).
 
-use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::cell::Cell;
 use std::rc::Rc;
 
 use jscompat::js_regex;
@@ -18,17 +17,12 @@ use shell_contract::ipc::Target;
 use shell_contract::runtime::PathName;
 use shell_contract::{IpcError, IpcValue, ViewId, WindowId};
 
-use super::hosts::{ConvertError, OfficeConversion, PdfTab, TabKind, extension};
+use super::hosts::{ConvertError, HwpImportReady, OfficeConversion, PdfTab, TabKind, extension};
 use super::password::Password;
 use super::{Ctx, int_text, js_filter, js_len, js_str, js_strs, options};
 use crate::kit::{self, Entry, IntoIpc, as_str, field, obj};
 
 const MAX_PATH: usize = 4096;
-type HwpImportReady = main_core::shell::tab_manager::ViewCreationReady<
-    (ViewId, shell_contract::runtime::RendererGeneration),
-    shell_contract::ipc::NativeClosureReceipt,
-    shell_contract::ipc::NativeClosureReservation,
->;
 
 fn retain_hwp_import(
     directory: String,
@@ -58,12 +52,11 @@ fn retain_hwp_import(
         Ok(()) => done(Ok(())),
         Err(error) => {
             (ready.cleanup)(Box::new(move |result| {
-                if let Ok(receipt) = result {
-                    if receipt.matches(&reservation, view, &generation)
-                        && receipt.outcome() == shell_contract::ipc::NativeClosureOutcome::Closed
-                    {
-                        let _ = std::fs::remove_dir_all(directory);
-                    }
+                if let Ok(receipt) = result
+                    && receipt.matches(&reservation, view, &generation)
+                    && receipt.outcome() == shell_contract::ipc::NativeClosureOutcome::Closed
+                {
+                    let _ = std::fs::remove_dir_all(directory);
                 }
                 done(Err(error));
             }));
@@ -140,28 +133,14 @@ pub struct Convert {
     password: Password,
     /// `exportingPdfDocx`: one office conversion at a time, dialogs included
     exporting: Rc<Cell<bool>>,
-    /// the folders of the PDF copies each Hangul tab imports
-    hwp_copies: Rc<RefCell<HashMap<ViewId, String>>>,
-    _gone: Rc<dyn Fn(ViewId)>,
 }
 
 impl Convert {
     pub fn new(ctx: &Rc<Ctx>, password: &Password) -> Self {
-        let hwp_copies: Rc<RefCell<HashMap<ViewId, String>>> = Rc::default();
-        let weak = Rc::downgrade(&hwp_copies);
-        // the copy goes with the tab
-        let gone = kit::on_view_destroyed(&ctx.services, move |view| {
-            let dir = weak.upgrade().and_then(|m| m.borrow_mut().remove(&view));
-            if let Some(dir) = dir {
-                let _ = std::fs::remove_dir_all(dir);
-            }
-        });
         Convert {
             ctx: ctx.clone(),
             password: password.clone(),
             exporting: Rc::default(),
-            hwp_copies,
-            _gone: gone,
         }
     }
 
@@ -301,7 +280,7 @@ impl Convert {
                 return then(Err(e.message));
             }
         };
-        let me = self.clone();
+        let ctx = self.ctx.clone();
         self.ctx.shell.open_hwp_copy(
             &copy,
             &base,
@@ -310,9 +289,9 @@ impl Convert {
                     let _ = std::fs::remove_dir_all(&dir);
                     then(Err(e))
                 }
-                Ok(Some(view)) => {
-                    me.hwp_copies.borrow_mut().insert(view, dir);
-                    then(Ok(()))
+                // the copy stays until this exact view's native closure is observed
+                Ok(Some(ready)) => {
+                    retain_hwp_import(dir, ready, kit::back_on_core(&ctx.services, then))
                 }
                 Ok(None) => {
                     let _ = std::fs::remove_dir_all(&dir);
@@ -936,6 +915,8 @@ mod tests {
         assert_eq!(call[1], json!("Report"));
         assert_eq!(std::fs::read(&copy).unwrap(), b"%PDF");
         t.rt.destroy(ViewId(7));
+        assert!(std::path::Path::new(&copy).exists());
+        assert!(super::super::hosts::fake::close_hwp_view(ViewId(7)));
         assert!(!std::path::Path::new(&copy).exists());
         let e =
             t.rt.invoke_now("pdf:convert-office", pdf, vec!["hwp".into_ipc()])

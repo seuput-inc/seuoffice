@@ -148,7 +148,7 @@ mod tests {
         );
         assert!(update_note_link_doc_hash(root, pdf, "newhash").unwrap());
         let found = read_note_links(root).unwrap();
-        assert_eq!(found.links.entries()[0].1.doc_hash, "newhash");
+        assert_eq!(found.links.iter().next().unwrap().1.doc_hash, "newhash");
         std::fs::remove_dir_all(root).unwrap();
     }
 }

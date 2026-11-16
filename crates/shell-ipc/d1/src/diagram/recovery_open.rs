@@ -530,10 +530,9 @@ impl DiagramViews {
                 && effect_host
                     .settle_recovery_seed(&receipt, &receiver, &cx.cancel, Err(error.clone()))
                     .is_err()
+                && let Ok(notification) = receipt.fail_after_loss(error.clone())
             {
-                if let Ok(notification) = receipt.fail_after_loss(error.clone()) {
-                    notification.notify();
-                }
+                notification.notify();
             }
             return Err(thrown(error));
         }
@@ -601,14 +600,13 @@ impl DiagramViews {
             )
             .map_err(thrown)?;
         self.with_state(|state| {
-            if let Some(entry) = state.views.get_mut(&cx.sender.view) {
-                if entry
+            if let Some(entry) = state.views.get_mut(&cx.sender.view)
+                && entry
                     .recovery_applying
                     .as_ref()
                     .is_some_and(|pending| pending.token == token)
-                {
-                    entry.recovery_applying = None;
-                }
+            {
+                entry.recovery_applying = None;
             }
         });
         Ok(IpcValue::Null)
@@ -622,12 +620,11 @@ impl DiagramViews {
             .take()
             .map(|applying| applying.receipt)
             .or_else(|| entry.recovery_seed.take().and_then(|seed| seed.receipt));
-        if let Some(receipt) = receipt {
-            if let Ok(notification) =
+        if let Some(receipt) = receipt
+            && let Ok(notification) =
                 receipt.fail_after_loss("The diagram recovery target was released".into())
-            {
-                notification.notify();
-            }
+        {
+            notification.notify();
         }
         if let Some(pending) = pending {
             (pending.done)(Err(Failure("The diagram view was closed".into())));
@@ -647,12 +644,11 @@ impl DiagramViews {
                 .or_else(|| entry.recovery_seed.take().and_then(|seed| seed.receipt));
             (pending, receipt)
         });
-        if let Some(receipt) = receipt {
-            if let Ok(notification) =
+        if let Some(receipt) = receipt
+            && let Ok(notification) =
                 receipt.fail_after_loss("The diagram recovery target was released".into())
-            {
-                notification.notify();
-            }
+        {
+            notification.notify();
         }
         if let Some(pending) = pending {
             (pending.done)(Err(Failure("The diagram view was closed".into())));

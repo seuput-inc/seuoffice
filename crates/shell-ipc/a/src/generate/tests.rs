@@ -368,10 +368,12 @@ struct World {
     authorities: Vec<GenerateAuthority>,
     conversion_cleanups: usize,
     defer_target: bool,
+    #[allow(clippy::type_complexity)]
     target_replies: Vec<Box<dyn FnOnce(Result<(), String>) + Send>>,
     target_epochs: Vec<shell_contract::runtime::RendererGeneration>,
     target_losses: Vec<CancelToken>,
     defer_reveal: bool,
+    #[allow(clippy::type_complexity)]
     reveal_replies: Vec<Box<dyn FnOnce(Result<(), String>) + Send>>,
 }
 
@@ -419,16 +421,11 @@ impl GenerateShell for FakeShell {
         if let GenerateOrigin::WindowEvent {
             identity, event, ..
         } = &authority.origin
-        {
-            if let GenerateWindowEvent::Ready { origin }
+            && let GenerateWindowEvent::Ready { origin }
             | GenerateWindowEvent::OpenLink { origin } = event
-            {
-                if !Arc::ptr_eq(&identity.as_arc(), &origin.as_arc()) {
-                    return Err(
-                        "model native event origin does not match its bound document".into(),
-                    );
-                }
-            }
+            && !Arc::ptr_eq(&identity.as_arc(), &origin.as_arc())
+        {
+            return Err("model native event origin does not match its bound document".into());
         }
         self.0.lock().unwrap().authorities.push(authority.clone());
         Ok(())
@@ -637,11 +634,12 @@ impl GenerateShell for FakeShell {
         );
         let target_epoch = target.0.clone();
         let target_loss = target.1.clone();
-        let finish: Box<dyn FnOnce(Result<(), String>) + Send> = Box::new(move |loaded: Result<(), String>| {
-            then(loaded.and_then(|()| {
-                GenerateCommittedOpen::new(request.token, Box::new(target), cleanup)
-            }));
-        });
+        let finish: Box<dyn FnOnce(Result<(), String>) + Send> =
+            Box::new(move |loaded: Result<(), String>| {
+                then(loaded.and_then(|()| {
+                    GenerateCommittedOpen::new(request.token, Box::new(target), cleanup)
+                }));
+            });
         let result = {
             let mut w = self.0.lock().unwrap();
             w.target_epochs.push(target_epoch);
@@ -702,13 +700,14 @@ impl GenerateShell for FakeShell {
         }
         let authority = authority.clone();
         let world = self.0.clone();
-        let finish: Box<dyn FnOnce(Result<(), String>) + Send> = Box::new(move |result: Result<(), String>| {
-            let result = result.and_then(|()| authority.check_cancelled());
-            if result.is_ok() {
-                world.lock().unwrap().log.push(format!("reveal {tab_id}"));
-            }
-            then(result);
-        });
+        let finish: Box<dyn FnOnce(Result<(), String>) + Send> =
+            Box::new(move |result: Result<(), String>| {
+                let result = result.and_then(|()| authority.check_cancelled());
+                if result.is_ok() {
+                    world.lock().unwrap().log.push(format!("reveal {tab_id}"));
+                }
+                then(result);
+            });
         let mut world = self.0.lock().unwrap();
         if world.defer_reveal {
             world.reveal_replies.push(finish);

@@ -154,6 +154,7 @@ pub(super) fn start(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn start_captured(
     docs: &Rc<Docs>,
     source: NativeRequestOwner,

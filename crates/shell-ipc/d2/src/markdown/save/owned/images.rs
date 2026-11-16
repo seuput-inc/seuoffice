@@ -110,10 +110,9 @@ impl Md {
                     core.post(Box::new(move || {
                         if let Some((me, id)) =
                             CLEANUP.with(|entries| entries.borrow_mut().remove(&cleanup))
+                            && let Some(me) = me.upgrade()
                         {
-                            if let Some(me) = me.upgrade() {
-                                me.dispose_image(&id);
-                            }
+                            me.dispose_image(&id);
                         }
                     }))
                 });

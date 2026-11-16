@@ -627,9 +627,9 @@ mod tests {
 
     #[test]
     fn center_crop_preserves_proportions() {
-        let crop = crop(400.0, 200.0, 100.0, 100.0).unwrap();
+        let insets = crop(400.0, 200.0, 100.0, 100.0).unwrap();
         assert_eq!(
-            (crop.l.0, crop.r.0, crop.t.0, crop.b.0),
+            (insets.l.0, insets.r.0, insets.t.0, insets.b.0),
             (0.25, 0.25, 0.0, 0.0)
         );
         assert!(crop(100.0, 100.0, 100.0, 100.0).is_none());

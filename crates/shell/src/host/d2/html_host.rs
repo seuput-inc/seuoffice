@@ -453,7 +453,7 @@ impl HtmlShell for Shell {
         effects: shell_contract::hosts::OwnedEffectsHost,
         then: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<PathBuf>, String>)>,
     ) {
-        crate::host::d1::shells::file_saved_existing_document(
+        super::native_save::file_saved_existing_document(
             destination,
             participants,
             cancel,

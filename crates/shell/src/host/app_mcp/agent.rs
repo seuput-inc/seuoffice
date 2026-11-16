@@ -26,7 +26,7 @@ use jscompat::JsonValue;
 use main_core::packages::electron_utils::default_save_dir::configured_default_save_dir;
 use main_core::packages::mcp_sdk::server::{Command, StartId, StopId, Ticket};
 use main_core::shell::agent::agent_mcp::{
-    AgentMcpDeps, AgentMcpHost, AgentMcpServer, AgentSkillProposalInput, SourceRedactor,
+    AgentMcpDeps, AgentMcpHost, AgentMcpServer, SourceRedactor,
     start_agent_mcp_server,
 };
 use main_core::shell::agent::agent_mcp_relay::{
@@ -34,7 +34,7 @@ use main_core::shell::agent::agent_mcp_relay::{
     AgentRelayHub, AgentRelayScope, RelayCallId, RelayDone, RelayStep,
 };
 use main_core::shell::agent::agent_sessions::{AgentMcpRelay, RelayAnswer, RelayAskRequest};
-use main_core::shell::agent::agent_skills::AgentOpenTab;
+use main_core::shell::agent::agent_skills::{AgentOpenTab, AgentSkillProposalInput};
 use main_core::shell::mcp::mcp_server::{HostCall, McpHost, McpServerService, Settled};
 use main_core::shell::mcp::tools::open_documents_tools::list_call;
 use shell_contract::Hosts;

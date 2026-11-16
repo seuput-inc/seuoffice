@@ -2,6 +2,7 @@ use super::*;
 use crate::html::text_doc::HeadlessPublication;
 
 impl Exporter {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn export_invocation(
         self: &Rc<Self>,
         view: ViewId,

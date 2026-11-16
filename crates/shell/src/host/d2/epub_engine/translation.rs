@@ -14,7 +14,7 @@ use std::collections::HashMap;
 
 fn opened(bytes: &[u8]) -> Result<epub_engine::types::EpubBook, String> {
     match open_epub(bytes, &EPUB_ZIP_LIMITS) {
-        EpubOpenResult::Opened(book) => Ok(book),
+        EpubOpenResult::Opened(book) => Ok(*book),
         EpubOpenResult::Refused { reason, .. } => Err(reason.as_str().to_owned()),
     }
 }

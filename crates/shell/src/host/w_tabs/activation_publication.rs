@@ -379,8 +379,8 @@ pub(super) fn admit(
             let mut captured = Vec::with_capacity(participants.len() + 1);
             captured.push(owner.clone());
             captured.extend_from_slice(participants);
-            let extra: Vec<_> = additional.iter().collect();
-            path.with_effect(effects, &captured, cancel, pending, &extra, effect)
+            let extra: &[CancelToken] = additional;
+            path.with_effect(effects, &captured, cancel, pending, extra, effect)
         }
         TabActivationAuthority::SavedDocument {
             document,

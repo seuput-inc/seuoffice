@@ -54,6 +54,11 @@ pub(crate) fn on_core<R: Send + 'static>(
     }
 }
 
+/// The core thread's shared [`Provided`]; `None` off the core thread or before registration.
+pub(crate) fn core_provided() -> Option<Rc<Provided>> {
+    CORE_PROVIDED.with(|p| p.borrow().clone())
+}
+
 /// Runs a non-Send continuation only on the owning core thread.
 /// Returns false before registration or when called from another thread.
 pub(crate) fn on_core_local(job: impl FnOnce(&Provided)) -> bool {

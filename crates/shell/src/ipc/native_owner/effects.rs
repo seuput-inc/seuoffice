@@ -3028,7 +3028,7 @@ fn with_recovery_pdf_revision_transition(
         native.with_live(|| assets.with_lease_live_fenced(|| generations.with_active_retiring(&mut retirement, |_| {
             slides.with_active(|| media.with_active(|| pdf.with_live_retiring(&mut plan, |admitted| {
                 cancellation.with_active(|| {
-                    let apply = || action.take().expect("single PDF admission")(admitted, renewal);
+                    let mut apply = || action.take().expect("single PDF admission")(admitted, renewal);
                     match target.invocation_target() {
                         Some(invocation) => invocation.with_registered_state(&registered, apply).ok_or("The recovery target was replaced.")?,
                         None => apply(),
@@ -4081,7 +4081,7 @@ impl OwnedEffects for NativeOwnedEffects {
                 cancel,
                 pending,
                 Some((old, successor, &mut notifications)),
-                |_, retirement| {
+                |_, retirement| -> Result<(), String> {
                     let admitted = retirement.ok_or("Missing admitted Docs media retirement")?;
                     let mut staged = Some(staged);
                     let mut committed = false;

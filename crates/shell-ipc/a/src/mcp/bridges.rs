@@ -578,6 +578,7 @@ mod tests {
         })
     }
     thread_local! {
+        #[allow(clippy::type_complexity)]
         static PENDING_OPEN: RefCell<Option<Box<dyn FnOnce(Result<ViewId, String>)>>> = RefCell::new(None);
     }
 

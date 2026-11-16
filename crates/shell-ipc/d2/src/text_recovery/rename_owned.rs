@@ -121,6 +121,8 @@ impl RenameAuthorization {
     }
 }
 
+type RenameDone = Box<dyn FnOnce(Result<(), String>)>;
+
 pub(super) struct OwnedRename {
     token: String,
     request: RenameAuthorization,
@@ -128,8 +130,8 @@ pub(super) struct OwnedRename {
     new: RecoveryIdentity,
     claimed: bool,
     failure: Option<String>,
-    done: Option<Box<dyn FnOnce(Result<(), String>)>>,
-    subscriptions: Vec<CancelSubscription>,
+    done: Option<RenameDone>,
+    _subscriptions: Vec<CancelSubscription>,
 }
 
 #[derive(Clone)]
@@ -443,7 +445,7 @@ impl TextRecovery {
                     claimed: false,
                     failure: None,
                     done: done.take(),
-                    subscriptions: subscriptions.take().unwrap_or_default(),
+                    _subscriptions: subscriptions.take().unwrap_or_default(),
                 },
             );
             follows = true;
@@ -580,10 +582,10 @@ impl TextRecovery {
             if entry.claimed {
                 return Err("the recovery flush was already received".into());
             }
-            if let RecoveryIdentity::File(file) = &entry.new {
-                if (self.host.save_path)(view).as_deref() != Some(file.file_path.as_str()) {
-                    return Err("the recovery destination changed".into());
-                }
+            if let RecoveryIdentity::File(file) = &entry.new
+                && (self.host.save_path)(view).as_deref() != Some(file.file_path.as_str())
+            {
+                return Err("the recovery destination changed".into());
             }
             entry.claimed = true;
             identity = Some(entry.new.clone());
@@ -710,6 +712,7 @@ impl TextRecovery {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn prepare_rename_delete(
         self: &Rc<Self>,
         view: ViewId,
@@ -783,7 +786,7 @@ impl TextRecovery {
                         plan.remove_owned(&mut |effect| {
                             main_core::packages::electron_utils::atomic_write::owned::admitted(
                                 &admission,
-                                move || effect(),
+                                effect,
                             )
                         })
                         .map_err(|error| error.message)?;

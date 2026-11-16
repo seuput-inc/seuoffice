@@ -66,6 +66,7 @@ pub trait HtmlEngine: Send + Sync {
         cancel: &shell_contract::runtime::CancelToken,
         pending: &shell_contract::runtime::CancelToken,
     ) -> Result<Vec<u8>, String>;
+    #[allow(clippy::too_many_arguments)]
     fn print_pdf_native(
         &self,
         binding: &shell_contract::ipc::NativeExistingDocumentBinding,
@@ -186,6 +187,7 @@ pub trait HtmlShell: Send + Sync {
         file_name: &str,
         bytes: &[u8],
     ) -> Result<Option<PathBuf>, String>;
+    #[allow(clippy::too_many_arguments)]
     fn write_new_document_owned(
         &self,
         origin: &shell_contract::ipc::NativeRequestOwner,
@@ -219,6 +221,7 @@ pub trait HtmlShell: Send + Sync {
         open: Option<&str>,
         save: Option<&str>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn asset_paths_changed_owned(
         &self,
         origin: &shell_contract::ipc::NativeRequestOwner,
@@ -251,6 +254,7 @@ pub trait HtmlShell: Send + Sync {
         open: Option<&str>,
         save: Option<&str>,
     ) -> Result<Box<dyn FnMut() -> Result<(), String> + Send>, String>;
+    #[allow(clippy::too_many_arguments)]
     fn prepare_rename_asset_paths_recovery(
         &self,
         receipt: &shell_contract::ipc::RecoverySeedReceipt,
@@ -267,6 +271,7 @@ pub trait HtmlShell: Send + Sync {
     fn asset_present_owner(&self, view: ViewId, owner: Option<ViewId>) -> Result<(), String>;
     /// `fileSavedHook(contents, path)`
     fn file_saved(&self, view: ViewId, path: &Path);
+    #[allow(clippy::too_many_arguments)]
     fn file_saved_owned(
         &self,
         origin: shell_contract::ipc::NativeRequestOwner,
@@ -279,6 +284,7 @@ pub trait HtmlShell: Send + Sync {
         path: PathBuf,
         then: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<PathBuf>, String>)>,
     );
+    #[allow(clippy::too_many_arguments)]
     fn file_saved_native(
         &self,
         destination: shell_contract::ipc::NativeSaveDestination,
@@ -295,6 +301,7 @@ pub trait HtmlShell: Send + Sync {
     fn docx_exported(&self, path: &Path) -> bool;
     /// `docxExportPrepareHook(path)`: `then(true)` when no hook is set
     fn docx_export_prepare(&self, path: &Path, then: Box<dyn FnOnce(bool)>);
+    #[allow(clippy::too_many_arguments)]
     fn docx_export_prepare_owned(
         &self,
         origin: shell_contract::ipc::NativeRequestOwner,
@@ -305,6 +312,7 @@ pub trait HtmlShell: Send + Sync {
         path: PathBuf,
         then: Box<dyn FnOnce(Result<bool, String>)>,
     );
+    #[allow(clippy::too_many_arguments)]
     fn docx_export_prepare_native(
         &self,
         selection: shell_contract::ipc::NativeSaveDestination,
@@ -446,6 +454,7 @@ impl HtmlEditors {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn export_headless_invocation(
         &self,
         view: ViewId,
@@ -506,8 +515,7 @@ pub(crate) fn entries(
     let os = services.hosts.need::<OsShellHost>(Batch::D2)?;
     let contents = services.hosts.need::<ContentsHost>(Batch::D2)?;
     let state: Rc<RefCell<HtmlState>> = Rc::default();
-    let (s1, s2, s3, s4, s5, s6) = (
-        shell.clone(),
+    let (s1, s2, s4, s5, s6) = (
         shell.clone(),
         shell.clone(),
         shell.clone(),
@@ -527,7 +535,6 @@ pub(crate) fn entries(
         DocHooks {
             lang: Box::new(move || s1.ui_lang()),
             is_headless: Box::new(move || s2.is_headless()),
-            reload: Box::new(move |v| s3.reload(v)),
             now_ms: Box::new(move || s6.now_ms()),
             open_elsewhere: Box::new(move |p| s4.is_path_open_elsewhere(p)),
             discard_pending_assets: |path| discard_pending_owned_assets(path).errors,

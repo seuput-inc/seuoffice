@@ -61,6 +61,16 @@ impl OrdinaryActorStages {
     fn is_empty(&self) -> bool {
         self.slides.is_none() && self.diagram.is_none()
     }
+    fn slides_rollback(
+        &self,
+        view: ViewId,
+    ) -> Option<Rc<dyn shell_ipc_w::tabs::host::EditorSeedRollback>> {
+        self.slides.as_ref().map(
+            |_| -> Rc<dyn shell_ipc_w::tabs::host::EditorSeedRollback> {
+                Rc::new(hooks::SlidesActorRollback(view))
+            },
+        )
+    }
     fn with_validated(
         &mut self,
         transition: &shell_contract::ipc::NativeBrowserTransition<'_>,
@@ -113,8 +123,18 @@ impl Hooks {
         done: Box<dyn FnOnce(shell_ipc_w::tabs::host::ViewCreationResult<ViewId>)>,
     ) {
         let mut actors = OrdinaryActorStages::default();
-        match self.prepare_editor_view(spec, false, |_| Ok(()), &mut actors) {
-            Ok(prepared) => {
+        let mut docs = None;
+        match self.prepare_editor_view_impl(
+            spec,
+            false,
+            |_| Ok(()),
+            Some(&mut docs),
+            None,
+            false,
+            None,
+            &mut actors,
+        ) {
+            Ok(mut prepared) => {
                 let browser = prepared.cx.views.prepare_browser_owner(
                     prepared.view,
                     &prepared.generation,
@@ -128,17 +148,46 @@ impl Hooks {
                                 prepared.proof.owner(),
                                 |transition| {
                                     let mut browser = Some(browser.validate(transition)?);
+                                    let mut guard = docs
+                                        .as_mut()
+                                        .map(|token| token.validate_in_transition(transition, None))
+                                        .transpose()?;
                                     actors.with_validated(transition, &mut || {
                                         browser
                                             .take()
                                             .ok_or("The native browser guard was consumed")?
                                             .commit();
+                                        if let Some(actor) = guard.take() {
+                                            actor.commit();
+                                        }
                                         Ok(())
                                     })
                                 },
                             )
                         })
                         .ok_or_else(|| "The editor creation generation expired".to_owned())?
+                });
+                let adopted = adopted.and_then(|()| {
+                    let Some(token) = docs.take() else {
+                        return Ok(());
+                    };
+                    let view = prepared.view;
+                    let lease = token.finish()?.lease();
+                    prepared.cx.views.set_docs_media_lease(view, lease.clone())?;
+                    let session = crate::host::document_assets::register_session(
+                        view,
+                        crate::host::document_assets::AssetKind::Docs,
+                    )?;
+                    prepared.cx.views.set_docs_asset_session(view, session)?;
+                    prepared.docs_lease = Some(lease);
+                    if let EditorViewSpec::Docs { path: Some(path) } = spec
+                        && !path.is_empty()
+                    {
+                        self.editor::<shell_ipc_d2::docs::editors::DocsEditors>("Docs")
+                            .map_err(|error| error.0)?
+                            .queue_open(view, (*path).to_owned());
+                    }
+                    Ok(())
                 });
                 match adopted {
                     Ok(()) => accepted::schedule_plain(prepared, done),
@@ -745,7 +794,7 @@ pub(crate) fn set_html_simple_fullscreen_window(
                         behavior.insert(NSWindowCollectionBehavior::FullScreenNone);
                     }
                     native.setCollectionBehavior(behavior);
-                    Ok(())
+                    Ok::<(), String>(())
                 })
                 .map_err(|error| error.to_string())?
         })
@@ -1645,7 +1694,7 @@ impl WindowsHost for NativeWindows {
             participants,
             cancel,
             pending,
-            Box::new(move |frame| {
+            Box::new(move |frame: native_command::FrameCallback| {
                 create_cx
                     .windows
                     .add_reserved_view(

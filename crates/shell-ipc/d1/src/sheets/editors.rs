@@ -33,12 +33,10 @@ enum RegistrationPhase {
 pub struct PreparedTabRegistration {
     core: Core,
     view: ViewId,
-    created: shell_contract::runtime::RendererGeneration,
     reservation: shell_contract::ipc::NativeClosureReservation,
     owner: shell_contract::ipc::NativeBrowserOwner,
     tab: Option<TabState>,
     previous_active: std::rc::Rc<std::cell::Cell<Option<ViewId>>>,
-    retired: std::rc::Rc<std::cell::Cell<bool>>,
     committed: bool,
     receipt: RegisteredTab,
 }
@@ -720,27 +718,27 @@ impl RegisteredTab {
         drop(headless);
         tab.document.revoke();
         let saved_load = tab.saved_load.borrow_mut().take();
-        if let Some(mut load) = saved_load {
-            if let Some(done) = load.completion.take() {
-                done(Err(thrown("The saved workbook view was closed")));
-            }
+        if let Some(mut load) = saved_load && let Some(done) = load.completion.take() {
+            done(Err(thrown("The saved workbook view was closed")));
         }
-        if let Some(mut recovery) = recovery {
-            if !recovery.crashed && !recovery.discarded && reported == 0.0 {
-                for (_, session) in &tab.sessions {
-                    if self.core.session_has_unsaved_copy(session)
-                        && let Some(identity) =
-                            super::recovery_policy::session_recovery_identity(session)
-                        && let Some(key) = self.core.env.copy_key(&identity)
-                    {
-                        recovery.keep.insert(key);
-                    }
+        if let Some(mut recovery) = recovery
+            && !recovery.crashed
+            && !recovery.discarded
+            && reported == 0.0
+        {
+            for (_, session) in &tab.sessions {
+                if self.core.session_has_unsaved_copy(session)
+                    && let Some(identity) =
+                        super::recovery_policy::session_recovery_identity(session)
+                    && let Some(key) = self.core.env.copy_key(&identity)
+                {
+                    recovery.keep.insert(key);
                 }
-                for (key, identity) in &recovery.written {
-                    if !recovery.keep.contains(key) {
-                        let _ = self.core.env.with_store(|store| store.delete_copy(identity,
-                            main_core::packages::electron_utils::recovery_store::RecoveryDeleteReason::ClosedClean));
-                    }
+            }
+            for (key, identity) in &recovery.written {
+                if !recovery.keep.contains(key) {
+                    let _ = self.core.env.with_store(|store| store.delete_copy(identity,
+                        main_core::packages::electron_utils::recovery_store::RecoveryDeleteReason::ClosedClean));
                 }
             }
         }
@@ -1122,12 +1120,11 @@ impl Core {
                     {
                         return Err("The saved workbook acknowledgement was superseded".into());
                     }
-                    if !ok {
-                        if let Some(session_id) = current.session_id.as_ref() {
-                            if let Some(session) = tab.remove_session(session_id) {
-                                cleanup = Some((session_id.clone(), session));
-                            }
-                        }
+                    if !ok
+                        && let Some(session_id) = current.session_id.as_ref()
+                        && let Some(session) = tab.remove_session(session_id)
+                    {
+                        cleanup = Some((session_id.clone(), session));
                     }
                     finished = saved.take();
                     Ok(())
@@ -1390,6 +1387,7 @@ impl Core {
         Ok((scope, waiter.transition.clone()))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn request_owned_save(
         &self,
         view: ViewId,
@@ -1977,12 +1975,11 @@ impl Core {
             }
             matched = true;
         }
-        if matched {
-            if let Some(tab) = self.state.borrow_mut().tab_mut(view)
-                && tab.current_path.as_deref() == Some(old_path)
-            {
-                tab.set_current_path(Some(new_path.to_owned()));
-            }
+        if matched
+            && let Some(tab) = self.state.borrow_mut().tab_mut(view)
+            && tab.current_path.as_deref() == Some(old_path)
+        {
+            tab.set_current_path(Some(new_path.to_owned()));
         }
         matched
     }
@@ -2350,10 +2347,10 @@ impl DocumentEditors for SheetsEditors {
         if native.view != view || !tab.document.is_active() {
             return Err(thrown("The workbook document capability does not match"));
         }
-        if let Some(captured) = native.context.document_lease() {
-            if !captured.same_generation(&tab.document) {
-                return Err(thrown("The workbook document was replaced"));
-            }
+        if let Some(captured) = native.context.document_lease()
+            && !captured.same_generation(&tab.document)
+        {
+            return Err(thrown("The workbook document was replaced"));
         }
         let actual = native.context.renderer();
         let saved = tab.saved_load.borrow();
@@ -3356,6 +3353,7 @@ fn schedule_workbook_nudge(core: &Core, generation: u64, started: f64) {
 }
 
 impl SheetsViews {
+    #[allow(clippy::too_many_arguments)]
     pub fn begin_headless_export(
         &self,
         view: ViewId,
@@ -3529,15 +3527,14 @@ impl SheetsViews {
         state.tabs.reserve(1);
         drop(state);
         let tab = TabState::new();
-        let retired = tab.registration_retired.clone();
         let receipt = RegisteredTab {
             core: self.0.clone(),
             view,
-            created: created.clone(),
+            created,
             reservation: reservation.clone(),
             owner: owner.clone(),
             previous_active: previous_active.clone(),
-            retired: retired.clone(),
+            retired: tab.registration_retired.clone(),
             closed: std::rc::Rc::new(std::cell::Cell::new(false)),
             superseded: std::rc::Rc::new(std::cell::Cell::new(false)),
             phase: std::rc::Rc::new(std::cell::Cell::new(RegistrationPhase::Prepared)),
@@ -3545,12 +3542,10 @@ impl SheetsViews {
         Ok(PreparedTabRegistration {
             core: self.0.clone(),
             view,
-            created,
             reservation: reservation.clone(),
             owner: owner.clone(),
             tab: Some(tab),
             previous_active,
-            retired,
             committed: false,
             receipt,
         })

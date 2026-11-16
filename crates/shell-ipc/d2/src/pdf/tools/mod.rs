@@ -322,6 +322,7 @@ impl PdfTools {
 
     /// One attempt under the original captured owners. The key identifies the
     /// retained prompt across retries; it does not grant authority to a new caller.
+    #[allow(clippy::too_many_arguments)]
     pub fn prompt_password_owned(
         &self,
         parent: Option<WindowId>,

@@ -392,6 +392,7 @@ impl PreparedGenerateHandoff {
 
 #[cfg(test)]
 /// Called at constructed-target admission, before load. Success transfers the immutable request.
+#[allow(clippy::too_many_arguments)]
 pub fn queue_generate_handoff_owned(
     provided: &Provided,
     view: ViewId,
@@ -668,6 +669,7 @@ impl PreparedConverted {
 
 #[cfg(test)]
 /// Only an actor's admitted initializer calls this bounded state commit, before publishing its seed.
+#[allow(clippy::too_many_arguments)]
 pub fn record_generate_converted_fenced(
     provided: &Provided,
     view: ViewId,
@@ -745,6 +747,7 @@ mod tests {
     use shell_contract::hosts::OwnedEffects;
     use shell_contract::ipc::NativeContext;
     use std::sync::Arc;
+    #[allow(clippy::too_many_arguments)]
     fn queue_generate_handoff_owned(
         provided: &Provided,
         view: ViewId,

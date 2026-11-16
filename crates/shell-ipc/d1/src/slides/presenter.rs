@@ -14,10 +14,10 @@ type Reply = Result<IpcValue, IpcError>;
 impl App {
     fn detach_bound_view(&self, view: ViewId) {
         let binding = self.state.borrow().binding_of(view);
-        if let Some((deck, owner)) = binding {
-            if let Err(error) = self.engine.unbind_view(deck, &owner) {
-                eprintln!("[slides] view unbind failed: {}", error.0);
-            }
+        if let Some((deck, owner)) = binding
+            && let Err(error) = self.engine.unbind_view(deck, &owner)
+        {
+            eprintln!("[slides] view unbind failed: {}", error.0);
         }
         self.state.borrow_mut().detach_view(view);
     }
@@ -171,15 +171,14 @@ pub fn presenter_ink(app: &App, cx: &CallContext, args: Args) -> Result<(), IpcE
 
 pub fn presenter_end(app: &App, cx: &CallContext, _args: Args) -> Reply {
     let incoming = super::session::render_owner(cx)?;
-    if let Some(show) = app.state.borrow().presenter_shows.get(&incoming.view) {
-        if !incoming
+    if let Some(show) = app.state.borrow().presenter_shows.get(&incoming.view)
+        && !incoming
             .context
             .renderer()
             .zip(show.owner.context.renderer())
             .is_some_and(|(actual, expected)| actual.same_generation(expected))
-        {
-            return Err(thrown("The presenter document was replaced"));
-        }
+    {
+        return Err(thrown("The presenter document was replaced"));
     }
     app.close_presenter_show(incoming.view);
     Ok(IpcValue::Undefined)

@@ -76,10 +76,10 @@ impl RenameScope {
         let mut output = None;
         let mut failure = None;
         let mut effect = || {
-            if let RenameAuthority::Native(snapshot, expected) = &self.authority {
-                if snapshot.selection().path() != expected {
-                    return Err("The native save destination changed".into());
-                }
+            if let RenameAuthority::Native(snapshot, expected) = &self.authority
+                && snapshot.selection().path() != expected
+            {
+                return Err("The native save destination changed".into());
             }
             let run = action
                 .take()
@@ -299,6 +299,7 @@ impl DiagramViews {
             .collect()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn request_native_save(
         &self,
         view: ViewId,
@@ -358,6 +359,7 @@ impl DiagramViews {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn request_owned_save_in(
         &self,
         view: ViewId,
@@ -491,10 +493,10 @@ impl DiagramViews {
             }
             _ => None,
         };
-        if let Some(destination) = &native_destination {
-            if let Err(error) = scope.retain_native_selection(destination) {
-                return then(Err(error));
-            }
+        if let Some(destination) = &native_destination
+            && let Err(error) = scope.retain_native_selection(destination)
+        {
+            return then(Err(error));
         }
         if self.with_state(|state| {
             state
@@ -621,10 +623,10 @@ impl DiagramViews {
                     }
                 };
                 let mut retained_scope = scope.clone();
-                if let Some(destination) = &native_destination {
-                    if let Err(error) = retained_scope.retain_native_selection(destination) {
-                        return views.finish_owned_save(view, &id, Err(error));
-                    }
+                if let Some(destination) = &native_destination
+                    && let Err(error) = retained_scope.retain_native_selection(destination)
+                {
+                    return views.finish_owned_save(view, &id, Err(error));
                 }
                 let result = scope.effect(|| {
                     remember_save_path(
@@ -861,9 +863,9 @@ impl DiagramViews {
                     );
                 let options = shell_contract::hosts::MessageBox {
                     kind: Some("warning".into()),
-                    message: labels.message.into(),
-                    detail: Some(labels.detail.into()),
-                    buttons: vec![labels.overwrite.into(), labels.cancel.into()],
+                    message: labels.message,
+                    detail: Some(labels.detail),
+                    buttons: vec![labels.overwrite, labels.cancel],
                     default_id: Some(0),
                     cancel_id: Some(1),
                     ..Default::default()
@@ -903,6 +905,7 @@ impl DiagramViews {
         }));
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn write_owned_diagram(
         &self,
         view: ViewId,
@@ -1525,6 +1528,7 @@ impl DiagramViews {
         }));
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn rename_owned_diagram(
         &self,
         view: ViewId,
@@ -1552,6 +1556,7 @@ impl DiagramViews {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn rename_native_diagram(
         &self,
         view: ViewId,
@@ -1580,6 +1585,7 @@ impl DiagramViews {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn rename_recovery_diagram(
         &self,
         view: ViewId,
@@ -1610,6 +1616,7 @@ impl DiagramViews {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn rename_diagram(
         &self,
         view: ViewId,

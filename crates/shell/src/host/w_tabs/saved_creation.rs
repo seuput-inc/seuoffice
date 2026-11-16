@@ -410,7 +410,10 @@ pub(super) fn start_spare(
     let native_ready = original
         .context
         .authority_ref::<NativeOwnerAuthority>()
-        .filter(|proof| proof.view == original.view)
+        .filter(|_| {
+            native_owner::authenticated_owner(&original.context)
+                .is_some_and(|owner| owner.view == original.view)
+        })
         .and_then(|proof| proof.origin.document_ready());
     let Some(native_ready) = native_ready else {
         return fail_owned_ready(

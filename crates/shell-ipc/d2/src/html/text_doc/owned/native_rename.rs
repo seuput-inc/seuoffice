@@ -103,6 +103,7 @@ impl NativeRenameScope {
 }
 
 impl TextDocs {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn file_renamed_existing_document(
         self: &Rc<Self>,
         view: ViewId,

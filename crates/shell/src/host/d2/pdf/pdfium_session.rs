@@ -148,23 +148,23 @@ impl PdfiumSession {
     }
     fn exchange(&mut self, command: Value) -> Result<Value, PdfiumError> {
         if self.cancel.is_cancelled() {
-            return Err(PdfiumError::from("PDFium session cancelled".into()));
+            return Err(PdfiumError::from("PDFium session cancelled".to_owned()));
         }
         self.commands
             .send(command)
-            .map_err(|_| PdfiumError::from("PDFium session closed".into()))?;
+            .map_err(|_| PdfiumError::from("PDFium session closed".to_owned()))?;
         loop {
             match self.results.recv_timeout(Duration::from_millis(100)) {
                 Ok(_) if self.cancel.is_cancelled() => {
-                    return Err(PdfiumError::from("PDFium session cancelled".into()));
+                    return Err(PdfiumError::from("PDFium session cancelled".to_owned()));
                 }
                 Ok(value) => return value,
                 Err(mpsc::RecvTimeoutError::Timeout) if !self.cancel.is_cancelled() => continue,
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    return Err(PdfiumError::from("PDFium session cancelled".into()));
+                    return Err(PdfiumError::from("PDFium session cancelled".to_owned()));
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err(PdfiumError::from("PDFium session closed".into()));
+                    return Err(PdfiumError::from("PDFium session closed".to_owned()));
                 }
             }
         }
@@ -183,18 +183,18 @@ impl PdfiumSession {
         self.exchange(json!({"op":"batch","calls":commands}))?
             .as_array()
             .cloned()
-            .ok_or_else(|| PdfiumError::from("invalid PDFium batch response".into()))
+            .ok_or_else(|| PdfiumError::from("invalid PDFium batch response".to_owned()))
     }
     pub(crate) fn supports(&mut self, name: &str) -> Result<bool, PdfiumError> {
         self.exchange(json!({"op":"supports","name":name}))?
             .as_bool()
-            .ok_or_else(|| PdfiumError::from("invalid PDFium capability response".into()))
+            .ok_or_else(|| PdfiumError::from("invalid PDFium capability response".to_owned()))
     }
     pub(crate) fn alloc(&mut self, size: usize) -> Result<u64, PdfiumError> {
         self.exchange(json!({"op":"alloc","size":size}))?
             .get("ref")
             .and_then(Value::as_u64)
-            .ok_or_else(|| PdfiumError::from("invalid PDFium buffer handle".into()))
+            .ok_or_else(|| PdfiumError::from("invalid PDFium buffer handle".to_owned()))
     }
     pub(crate) fn read(
         &mut self,
@@ -204,12 +204,12 @@ impl PdfiumSession {
     ) -> Result<Vec<u8>, PdfiumError> {
         let value = self.exchange(json!({"op":"read","ref":buffer,"offset":offset,"len":len}))?;
         if value.get("type").and_then(Value::as_str) != Some("bytes") {
-            return Err(PdfiumError::from("invalid PDFium byte response".into()));
+            return Err(PdfiumError::from("invalid PDFium byte response".to_owned()));
         }
         let bytes = value
             .get("base64")
             .and_then(Value::as_str)
-            .ok_or_else(|| PdfiumError::from("invalid PDFium byte response".into()))?;
+            .ok_or_else(|| PdfiumError::from("invalid PDFium byte response".to_owned()))?;
         base64::engine::general_purpose::STANDARD
             .decode(bytes)
             .map_err(|e| PdfiumError::from(e.to_string()))
@@ -238,7 +238,7 @@ pub(crate) fn render_page_png(
 ) -> Result<Option<Vec<u8>>, PdfiumError> {
     use image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
     if !scale.is_finite() || scale <= 0.0 || page_index as u128 > MAX_ID as u128 {
-        return Err(PdfiumError::from("invalid PDFium page or scale".into()));
+        return Err(PdfiumError::from("invalid PDFium page or scale".to_owned()));
     }
     let mut session = PdfiumSession::open_with_cancel(bytes, password, cancel.clone())?;
     let document = json!({"ref":session.document()});
@@ -249,16 +249,16 @@ pub(crate) fn render_page_png(
     let page_id = page
         .get("ref")
         .and_then(Value::as_u64)
-        .ok_or_else(|| PdfiumError::from("invalid PDFium page".into()))?;
+        .ok_or_else(|| PdfiumError::from("invalid PDFium page".to_owned()))?;
     let page = json!({"ref":page_id});
     let width = session
         .call("FPDF_GetPageWidthF", &[page.clone()])?
         .as_f64()
-        .ok_or_else(|| PdfiumError::from("invalid PDF page width".into()))?;
+        .ok_or_else(|| PdfiumError::from("invalid PDF page width".to_owned()))?;
     let height = session
         .call("FPDF_GetPageHeightF", &[page.clone()])?
         .as_f64()
-        .ok_or_else(|| PdfiumError::from("invalid PDF page height".into()))?;
+        .ok_or_else(|| PdfiumError::from("invalid PDF page height".to_owned()))?;
     let (w, h) = ((width * scale).ceil(), (height * scale).ceil());
     if !w.is_finite()
         || !h.is_finite()
@@ -268,7 +268,7 @@ pub(crate) fn render_page_png(
         || h > 32768.0
         || w * h > 67_108_864.0
     {
-        return Err(PdfiumError::from("invalid PDFium render dimensions".into()));
+        return Err(PdfiumError::from("invalid PDFium render dimensions".to_owned()));
     }
     let (w, h) = (w as u32, h as u32);
     let bitmap = session.call("FPDFBitmap_Create", &[json!(w), json!(h), json!(1)])?;
@@ -278,7 +278,7 @@ pub(crate) fn render_page_png(
     let bitmap_id = bitmap
         .get("ref")
         .and_then(Value::as_u64)
-        .ok_or_else(|| PdfiumError::from("invalid PDFium bitmap".into()))?;
+        .ok_or_else(|| PdfiumError::from("invalid PDFium bitmap".to_owned()))?;
     let bitmap = json!({"ref":bitmap_id});
     session.call(
         "FPDFBitmap_FillRect",
@@ -308,33 +308,33 @@ pub(crate) fn render_page_png(
         .call("FPDFBitmap_GetStride", &[bitmap.clone()])?
         .as_u64()
         .and_then(|v| usize::try_from(v).ok())
-        .ok_or_else(|| PdfiumError::from("invalid PDFium bitmap stride".into()))?;
+        .ok_or_else(|| PdfiumError::from("invalid PDFium bitmap stride".to_owned()))?;
     let format = session
         .call("FPDFBitmap_GetFormat", &[bitmap.clone()])?
         .as_u64()
-        .ok_or_else(|| PdfiumError::from("invalid PDFium bitmap format".into()))?;
+        .ok_or_else(|| PdfiumError::from("invalid PDFium bitmap format".to_owned()))?;
     let memory = session
         .call("FPDFBitmap_GetBuffer", &[bitmap])?
         .get("ref")
         .and_then(Value::as_u64)
-        .ok_or_else(|| PdfiumError::from("invalid PDFium bitmap buffer".into()))?;
+        .ok_or_else(|| PdfiumError::from("invalid PDFium bitmap buffer".to_owned()))?;
     let len = stride
         .checked_mul(h as usize)
-        .ok_or_else(|| PdfiumError::from("invalid PDFium bitmap length".into()))?;
+        .ok_or_else(|| PdfiumError::from("invalid PDFium bitmap length".to_owned()))?;
     let pixels = session.read(memory, 0, len)?;
     let channels = match format {
         1 => 1,
         2 => 3,
         3 | 4 => 4,
-        _ => return Err(PdfiumError::from("unsupported PDFium bitmap format".into())),
+        _ => return Err(PdfiumError::from("unsupported PDFium bitmap format".to_owned())),
     };
     if stride < (w as usize) * channels {
-        return Err(PdfiumError::from("invalid PDFium bitmap stride".into()));
+        return Err(PdfiumError::from("invalid PDFium bitmap stride".to_owned()));
     }
     let mut rgba = Vec::with_capacity((w as usize) * (h as usize) * 4);
     for row in pixels.chunks_exact(stride) {
         if cancel.is_cancelled() {
-            return Err(PdfiumError::from("PDFium session cancelled".into()));
+            return Err(PdfiumError::from("PDFium session cancelled".to_owned()));
         }
         for pixel in row[..(w as usize) * channels].chunks_exact(channels) {
             match format {
@@ -453,7 +453,7 @@ pub(crate) fn close_request(request_id: u64) {
                 transport.cancel.cancel();
                 let _ = transport
                     .results
-                    .send(Err(PdfiumError::from("PDFium session closed".into())));
+                    .send(Err(PdfiumError::from("PDFium session closed".to_owned())));
             }
         }
     }

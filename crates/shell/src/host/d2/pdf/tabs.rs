@@ -4,7 +4,7 @@ use crate::host::w::{on_core, on_core_local};
 use main_core::shell::tab_manager::{TabKind as CoreKind, canonical_path};
 use shell_contract::ViewId;
 use shell_ipc_d2::pdf::editor::editors::PdfEditors;
-use shell_ipc_d2::pdf::tools::{PdfTab, TabKind};
+use shell_ipc_d2::pdf::tools::{HwpImportReady, PdfTab, TabKind};
 use shell_ipc_w::tabs::TabsState;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -240,7 +240,7 @@ pub(super) fn has_tab_manager() -> bool {
 pub(super) fn open_hwp_copy(
     copy: &str,
     title: &str,
-    done: Box<dyn FnOnce(Result<Option<ViewId>, String>)>,
+    done: Box<dyn FnOnce(Result<Option<HwpImportReady>, String>)>,
 ) {
     let pending = Rc::new(RefCell::new(Some(done)));
     let local = pending.clone();
@@ -268,7 +268,7 @@ pub(super) fn open_hwp_copy(
             operation,
             Box::new(move |result| {
                 drop(cancel);
-                done(result.map(Some));
+                done(result);
             }),
         );
     });

@@ -141,25 +141,14 @@ pub(crate) struct Docs {
     /// `headlessExportTargets`: out path and format
     headless_targets: ViewMap<(String, String)>,
     /// `headlessExportWaiters`
-    headless_waiters: RefCell<
-        HashMap<
-            ViewId,
-            (
-                Option<(
-                    shell_contract::ipc::NativeInvocationTarget,
-                    shell_contract::runtime::CancelToken,
-                )>,
-                HeadlessThen,
-            ),
-        >,
-    >,
+    headless_waiters: RefCell<HashMap<ViewId, HeadlessWaiter>>,
     /// the close guard and the other renderer round trips
     close: Close,
     /// `viewMenuStateByWebContents`: aiSidebar, darkCanvas, odt
     view_menu: ViewMap<[bool; 3]>,
     /// keeps the view-destroyed listener registered for as long as this lives
     _destroyed: RefCell<Option<DestroyedHook>>,
-    _replaced: RefCell<Option<Rc<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration)>>>,
+    _replaced: RefCell<Option<ReplacedHook>>,
 }
 
 #[derive(Clone)]
@@ -186,6 +175,14 @@ struct SyntheticMediaBinding {
 
 /// What a headless export's caller gets: done, or the renderer's reason
 pub(crate) type HeadlessThen = Box<dyn FnOnce(Result<(), String>)>;
+type HeadlessWaiter = (
+    Option<(
+        shell_contract::ipc::NativeInvocationTarget,
+        shell_contract::runtime::CancelToken,
+    )>,
+    HeadlessThen,
+);
+type ReplacedHook = Rc<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration)>;
 
 type DestroyedHook = Rc<dyn Fn(ViewId)>;
 
@@ -507,11 +504,11 @@ impl Docs {
         }
         self.torn_down.borrow_mut().remove(&view);
         #[cfg(any(test, feature = "probe"))]
-        if let Some(permit) = lease.current() {
-            if let Some(binding) = self.synthetic_media_binding(view, &permit)? {
-                let previous = self.synthetic_media.borrow_mut().insert(view, binding);
-                drop(previous);
-            }
+        if let Some(permit) = lease.current()
+            && let Some(binding) = self.synthetic_media_binding(view, &permit)?
+        {
+            let previous = self.synthetic_media.borrow_mut().insert(view, binding);
+            drop(previous);
         }
         Ok(lease)
     }

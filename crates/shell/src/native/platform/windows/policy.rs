@@ -37,7 +37,7 @@ impl PolicyOps for Platform {
         let core = unsafe { platform.controller().CoreWebView2() }
             .map_err(failed("The WebView2 core is unavailable"))?;
         let environment = platform.environment();
-        let policy = policy.clone();
+        let request_policy = policy.clone();
         let handler = WebResourceRequestedEventHandler::create(Box::new(move |_, args| {
             let Some(args) = args else {
                 return Ok(());
@@ -52,7 +52,7 @@ impl PolicyOps for Platform {
                 (take_pwstr(uri), context)
             };
             let allowed = match Url::parse(&uri) {
-                Ok(url) => policy.allows(&PolicyRequest {
+                Ok(url) => request_policy.allows(&PolicyRequest {
                     url: &uri,
                     bound_scheme: bound_scheme(&url),
                     top_level: context == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT,

@@ -260,7 +260,8 @@ fn install_first_shell_startup(
             let failure_shutdown = shutdown.clone();
             host::recovery_launch::install_native_launch(
                 services,
-                provided,
+                host::w::core_provided()
+                    .ok_or("The core service registry is unavailable on this thread.")?,
                 context,
                 window,
                 owner,

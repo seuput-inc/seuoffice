@@ -608,6 +608,7 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
 }
 
 impl Docs {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn create_ai_document_owned(
         self: &Rc<Self>,
         request: IpcValue,

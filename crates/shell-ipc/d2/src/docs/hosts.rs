@@ -208,6 +208,7 @@ pub trait DocsShell: Send + Sync {
     fn now_ms(&self) -> f64;
     /// `fileSavedHook(wc, path)`: the path the shell filed the new file under
     fn file_saved(&self, view: ViewId, path: &str) -> Option<String>;
+    #[allow(clippy::too_many_arguments)]
     fn file_saved_owned(
         &self,
         origin: shell_contract::ipc::NativeRequestOwner,
@@ -219,6 +220,7 @@ pub trait DocsShell: Send + Sync {
         path: std::path::PathBuf,
         done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>,
     );
+    #[allow(clippy::too_many_arguments)]
     fn file_saved_existing_document(
         &self,
         destination: shell_contract::ipc::NativeSaveDestination,
@@ -257,6 +259,7 @@ pub trait DocsShell: Send + Sync {
     ) -> Result<Option<OwnedMenuRefresh>, String>;
     /// `fileOpenedHook(wcId, path)`
     fn file_opened(&self, view: ViewId, path: &str);
+    #[allow(clippy::too_many_arguments)]
     fn file_opened_recovery(
         &self,
         path: String,
@@ -320,6 +323,7 @@ pub trait DocsShell: Send + Sync {
         content: serde_json::Value,
         owner: ViewId,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn open_ai_doc_tab_owned(
         &self,
         content: serde_json::Value,
@@ -332,6 +336,7 @@ pub trait DocsShell: Send + Sync {
     );
     /// `shellHooks.openGeneratedPath(path)`: `false` when no tab took it
     fn open_generated_path(&self, path: &str) -> Result<bool, String>;
+    #[allow(clippy::too_many_arguments)]
     fn prepare_generated_output(
         &self,
         output: shell_contract::ipc::SavedPublication,
@@ -406,6 +411,10 @@ mod fake {
 
     /// The case's host log (tools/ipc-diff/README.md, "Batch hosts")
     type ProbeLog = Arc<Mutex<Vec<Value>>>;
+    type QueryRuntime = (
+        Arc<dyn shell_contract::runtime::Views>,
+        Arc<dyn shell_contract::ipc::EventSink>,
+    );
 
     /// The fake of both hosts, mirrored by tools/ipc-diff/groups/d2/docs-fakes.ts.
     /// `case` is `hosts.d2.docs`: `case[<method name>]` is the answer, an
@@ -443,14 +452,7 @@ mod fake {
         pub calls: Arc<Mutex<Vec<Value>>>,
         probe: Option<ProbeLog>,
         uuids: Arc<Mutex<u64>>,
-        query_runtime: Arc<
-            Mutex<
-                Option<(
-                    Arc<dyn shell_contract::runtime::Views>,
-                    Arc<dyn shell_contract::ipc::EventSink>,
-                )>,
-            >,
-        >,
+        query_runtime: Arc<Mutex<Option<QueryRuntime>>>,
     }
 
     impl Fake {
@@ -464,6 +466,7 @@ mod fake {
             }
         }
 
+        #[cfg(test)]
         pub(crate) fn bind_query_runtime(&self, services: &shell_contract::runtime::Services) {
             *self.query_runtime.lock().unwrap() =
                 Some((services.views.clone(), services.events.clone()));

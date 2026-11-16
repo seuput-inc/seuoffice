@@ -197,10 +197,10 @@ impl RenameScope {
         let mut action = Some(action);
         let mut output = None;
         let mut effect = || {
-            if let RenameAuthority::Native(snapshot, expected) = &self.authority {
-                if snapshot.selection().path() != expected {
-                    return Err("The native save destination changed".into());
-                }
+            if let RenameAuthority::Native(snapshot, expected) = &self.authority
+                && snapshot.selection().path() != expected
+            {
+                return Err("The native save destination changed".into());
             }
             let run = action
                 .take()
@@ -373,6 +373,7 @@ impl Epub {
         self.begin_owned_in(view, mode, path, Some(origin), cancel, None, then);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn begin_native(
         self: &Rc<Self>,
         view: ViewId,
@@ -441,6 +442,7 @@ impl Epub {
         self.begin_owned_in(view, mode, path, None, cancel, Some(scope), then);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn begin_owned_in(
         self: &Rc<Self>,
         view: ViewId,
@@ -587,10 +589,10 @@ impl Epub {
         }
         let mut subscriptions = Vec::new();
         let mut losses = vec![scope.cancel.clone(), scope.document.loss_token()];
-        if let SaveAuthority::Renderer(origin) = &scope.authority {
-            if let Some(loss) = origin.loss_token() {
-                losses.push(loss);
-            }
+        if let SaveAuthority::Renderer(origin) = &scope.authority
+            && let Some(loss) = origin.loss_token()
+        {
+            losses.push(loss);
         }
         if let SaveAuthority::Native(binding) = &scope.authority {
             losses.push(binding.operation().loss_token());
@@ -957,9 +959,9 @@ impl Epub {
             );
         let options = MessageBox {
             kind: Some("warning".into()),
-            message: labels.message.into(),
-            detail: Some(labels.detail.into()),
-            buttons: vec![labels.overwrite.into(), labels.cancel.into()],
+            message: labels.message,
+            detail: Some(labels.detail),
+            buttons: vec![labels.overwrite, labels.cancel],
             default_id: Some(0),
             cancel_id: Some(1),
             ..Default::default()
@@ -1087,12 +1089,11 @@ impl Epub {
                                         entry.save_path = Some(path.clone());
                                         entry.open_path = Some(path.clone());
                                         entry.allowed.insert(path.clone());
-                                        if path != published_target {
-                                            if let Some(disk) =
+                                        if path != published_target
+                                            && let Some(disk) =
                                                 entry.disk_states.remove(&published_target)
-                                            {
-                                                entry.disk_states.insert(path.clone(), disk);
-                                            }
+                                        {
+                                            entry.disk_states.insert(path.clone(), disk);
                                         }
                                     });
                                     Ok(object(vec![
@@ -1162,6 +1163,7 @@ impl Epub {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn rename_owned_book(
         self: &Rc<Self>,
         view: ViewId,
@@ -1189,6 +1191,7 @@ impl Epub {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn rename_native_book(
         self: &Rc<Self>,
         view: ViewId,
@@ -1217,6 +1220,7 @@ impl Epub {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn rename_recovery_book(
         self: &Rc<Self>,
         view: ViewId,
@@ -1247,6 +1251,7 @@ impl Epub {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn rename_book(
         self: &Rc<Self>,
         view: ViewId,

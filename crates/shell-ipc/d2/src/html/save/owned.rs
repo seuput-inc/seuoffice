@@ -1,6 +1,7 @@
 use super::*;
 
 impl Exporter {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn export_owned(
         self: &Rc<Self>,
         view: ViewId,

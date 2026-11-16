@@ -62,6 +62,7 @@ pub(super) fn prepare(
         .ok_or("The document disposal request is no longer authorized")?;
     let native_disposal = Arc::new(Disposal {
         cx: hooks.cx.clone(),
+        events: hooks.services.events.clone(),
         target: target.clone(),
         native,
         renderer,
@@ -137,18 +138,20 @@ impl DocsDisposalOperation for PreparedDisposal {
                     &cancel,
                     &pending,
                     |retirement| {
-                        effect()?;
+                        let owner = native_owner::authenticated_browser_owner(&target.context)
+                            .ok_or("The disposal target has no adopted browser owner")?;
+                        owner.reservation().with_owner(owner, |transition| effect(transition))?;
                         if let Some(document) = target.context.document_lease() {
                             retirement.retire(document)?;
                         }
-                        Ok(())
+                        Ok::<(), String>(())
                     },
                 )
                 .ok_or_else(|| "The original document disposal authority expired".to_owned())?
             }),
             Box::new(move |result| match result {
                 shell_ipc_d2::docs::editors::DocsDisposalOutcome::NotRetired { actor, error } => {
-                    *operation.actor.borrow_mut() = Some(actor);
+                    *operation.actor.borrow_mut() = Some(*actor);
                     operation.busy.set(false);
                     done(Err(error));
                 }
@@ -185,6 +188,7 @@ impl PreparedDisposal {
 
 struct Disposal {
     cx: HostContext,
+    events: Arc<dyn shell_contract::ipc::EventSink>,
     target: NativeRequestOwner,
     native: DocumentContext,
     renderer: CapturedRenderer,
@@ -285,8 +289,14 @@ impl Disposal {
             if !self.active(attempt) {
                 return;
             }
-            let frame = shell_core::outlet::event_frame("docs:teardown", &[]);
-            let script = format!("(()=>{{{frame};return true;}})()");
+            if let Err(error) = self.events.emit_to_owner_checked(&self.target, "docs:teardown", Vec::new()) {
+                return self.finish(
+                    attempt,
+                    Err(format!("The captured Docs teardown event was not delivered: {error}")),
+                );
+            }
+            // The wake that drains the event is ordered before this round trip in the page.
+            let script = "true".to_owned();
             let completed = self.clone();
             self.teardown_uncertain.store(true, Ordering::Release);
             match self.native.evaluate(script, move |result| {

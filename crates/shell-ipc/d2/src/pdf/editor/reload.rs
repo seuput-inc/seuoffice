@@ -80,10 +80,10 @@ pub(super) fn cancel_saved(
             return;
         }
         let removed = slot.saved_reload.take();
-        if let Some(pending) = &removed {
-            if pending.swapped {
-                slot.saved_failed = Some(pending.path.clone());
-            }
+        if let Some(pending) = &removed
+            && pending.swapped
+        {
+            slot.saved_failed = Some(pending.path.clone());
         }
         removed
     };
@@ -309,10 +309,10 @@ pub(super) fn settle_saved(
             let slot = state.views.get_mut(&cx.sender.view);
             slot.and_then(|slot| {
                 let pending = slot.saved_reload.take();
-                if let Some(pending) = &pending {
-                    if pending.swapped {
-                        slot.saved_failed = Some(pending.path.clone());
-                    }
+                if let Some(pending) = &pending
+                    && pending.swapped
+                {
+                    slot.saved_failed = Some(pending.path.clone());
                 }
                 pending
             })

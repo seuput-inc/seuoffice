@@ -63,7 +63,6 @@ impl TextRecovery {
                     .take()
                     .ok_or("the recovery seed was already consumed")?;
                 let token = seed.token.clone();
-                state.asked = true;
                 recovered = Some(match value {
                     Some(RecoveredText {
                         text,
@@ -156,10 +155,10 @@ impl TextRecovery {
             .get(&view)
             .and_then(|state| state.owned_open.as_ref())
             .and_then(|seed| seed.receipt.borrow().clone());
-        if let Some(receipt) = receipt {
-            if let Ok(deferred) = receipt.fail_after_loss(error.to_owned()) {
-                deferred.notify();
-            }
+        if let Some(receipt) = receipt
+            && let Ok(deferred) = receipt.fail_after_loss(error.to_owned())
+        {
+            deferred.notify();
         }
     }
 }
@@ -195,13 +194,6 @@ impl TextRecovery {
             .path(PathName::UserData)
             .to_string_lossy()
             .into_owned();
-        if self.saved_reservations.get() != 0 {
-            self.views
-                .try_borrow_mut()
-                .map_err(|_| "the recovery tracking map is busy")?
-                .try_reserve(self.saved_reservations.get().saturating_add(1))
-                .map_err(|error| error.to_string())?;
-        }
         if let Some(identity) = &seed.identity {
             main_core::packages::electron_utils::recovery_store::recovery_copy_path(
                 &data, identity,
@@ -248,8 +240,6 @@ impl TextRecovery {
             let mut views = self.views.borrow_mut();
             let state = views.entry(target.view()).or_default();
             state.owns = seed.recovered.is_some();
-            state.decision = None;
-            state.untitled_seed = None;
             state.untitled = if seed.untitled { seed.identity } else { None };
             state.title = seed.title;
             state.save_as_default_path = seed.save_as_default;
@@ -413,19 +403,18 @@ impl TextRecovery {
                         resume = true;
                     }
                 }
-            } else if reason == RecoveryDeleteReason::Saved {
-                if let Some(state) = self.views.borrow_mut().get_mut(&view) {
-                    state.last_text = None;
-                    state.owns = false;
-                }
+            } else if reason == RecoveryDeleteReason::Saved
+                && let Some(state) = self.views.borrow_mut().get_mut(&view)
+            {
+                state.last_text = None;
+                state.owns = false;
             }
             if reason == RecoveryDeleteReason::Saved
                 && (self.host.save_path)(view).is_some_and(|path| !path.is_empty())
+                && let Some(state) = self.views.borrow_mut().get_mut(&view)
             {
-                if let Some(state) = self.views.borrow_mut().get_mut(&view) {
-                    state.untitled = None;
-                    state.save_as_default_path = None;
-                }
+                state.untitled = None;
+                state.save_as_default_path = None;
             }
             Ok(())
         });

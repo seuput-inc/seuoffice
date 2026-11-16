@@ -284,10 +284,10 @@ impl Docs {
             reply = reply.set("path", path);
         }
         reply = reply.set("passwordIntentPending", pending);
-        if let Some(scope) = &scope {
-            if let Err(error) = scope.check() {
-                return responder.reply(Err(kit::error(error)));
-            }
+        if let Some(scope) = &scope
+            && let Err(error) = scope.check()
+        {
+            return responder.reply(Err(kit::error(error)));
         }
         if !w.encrypted || w.hashes.is_empty() {
             return responder.reply(if permit.is_active() {
@@ -306,10 +306,10 @@ impl Docs {
                     return responder
                         .reply(Err(kit::error("The document media session is closed.")));
                 }
-                if let Some(scope) = &scope {
-                    if let Err(error) = scope.check() {
-                        return responder.reply(Err(kit::error(error)));
-                    }
+                if let Some(scope) = &scope
+                    && let Err(error) = scope.check()
+                {
+                    return responder.reply(Err(kit::error(error)));
                 }
                 responder.reply(
                     result
@@ -324,6 +324,7 @@ impl Docs {
         self.with_store(|store| self.book.borrow_mut().note_saved(store, view, paths));
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn complete_save(
         self: &Rc<Self>,
         view: ViewId,
@@ -437,10 +438,10 @@ impl Docs {
         if self.is_torn_down(view) || !self.can_doc_write(view, &path) {
             return responder.reply(Ok(failed(NOT_OPENED)));
         }
-        if let Some(scope) = &scope {
-            if let Err(error) = scope.capture_current_destination(self, &path) {
-                return responder.reply(Err(kit::error(error)));
-            }
+        if let Some(scope) = &scope
+            && let Err(error) = scope.capture_current_destination(self, &path)
+        {
+            return responder.reply(Err(kit::error(error)));
         }
         let Some(permit) = self.media_permit(view) else {
             return responder.reply(Err(kit::error(
@@ -947,10 +948,10 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                                 Some(Err(e)) => return responder.reply(Ok(failed(e))),
                                 Some(Ok(Some(p))) => p,
                             };
-                            if let Some(scope) = &scope {
-                                if let Err(error) = scope.capture_project_destination(&d3, &path) {
-                                    return responder.reply(Ok(failed(error)));
-                                }
+                            if let Some(scope) = &scope
+                                && let Err(error) = scope.capture_project_destination(&d3, &path)
+                            {
+                                return responder.reply(Ok(failed(error)));
                             }
                             d3.complete_save(
                                 view,
@@ -1000,12 +1001,11 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
             if !authorized {
                 return responder.reply(Ok(failed("save target was not authorized")));
             }
-            if let Some(scope) = &scope {
-                if scope.target().is_none() {
-                    if let Err(error) = scope.capture_current_destination(&d, &path) {
-                        return responder.reply(Err(kit::error(error)));
-                    }
-                }
+            if let Some(scope) = &scope
+                && scope.target().is_none()
+                && let Err(error) = scope.capture_current_destination(&d, &path)
+            {
+                return responder.reply(Err(kit::error(error)));
             }
             let existed = std::path::Path::new(&path).exists();
             if !kit::truthy(args.get(2)) && existed {

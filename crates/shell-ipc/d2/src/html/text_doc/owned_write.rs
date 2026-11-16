@@ -110,37 +110,36 @@ impl Committed {
             Some(Prepared::Markdown(p)) => (p.text.as_str(), p.image_sources.clone()),
             None => (input.text.as_str(), input.image_sources.clone()),
         };
-        if !input.placed {
-            if let Err(error) =
+        if !input.placed
+            && let Err(error) =
                 atomic_write_file_authorized(&input.target, text.as_bytes(), &mut |effect| {
                     admit(request, &mut || {
                         effect();
                         Ok(())
                     })
                 })
-            {
-                let rollback = match &prepared {
-                    Some(Prepared::Html(p)) => {
-                        html::rollback_prepared_save_as_assets_authorized(p, &mut |effect| {
-                            admit(request, effect)
-                        })
-                    }
-                    Some(Prepared::Markdown(p)) => {
-                        markdown::rollback_prepared_save_as_assets_authorized(p, &mut |effect| {
-                            admit(request, effect)
-                        })
-                    }
-                    None => Ok(()),
-                };
-                if let Err(error) = rollback {
-                    eprintln!(
-                        "[{}] prepared asset rollback incomplete: {}",
-                        if input.html { "html" } else { "markdown" },
-                        error.message
-                    );
+        {
+            let rollback = match &prepared {
+                Some(Prepared::Html(p)) => {
+                    html::rollback_prepared_save_as_assets_authorized(p, &mut |effect| {
+                        admit(request, effect)
+                    })
                 }
-                return Err(error.message);
+                Some(Prepared::Markdown(p)) => {
+                    markdown::rollback_prepared_save_as_assets_authorized(p, &mut |effect| {
+                        admit(request, effect)
+                    })
+                }
+                None => Ok(()),
+            };
+            if let Err(error) = rollback {
+                eprintln!(
+                    "[{}] prepared asset rollback incomplete: {}",
+                    if input.html { "html" } else { "markdown" },
+                    error.message
+                );
             }
+            return Err(error.message);
         }
         let pending = match &prepared {
             Some(Prepared::Html(p)) => p.created.iter().map(|r| r.name.clone()).collect(),
@@ -190,35 +189,34 @@ impl Committed {
                 if input.html { "html" } else { "markdown" }
             );
         }
-        if input.save_as {
-            if let Some(current) = input
+        if input.save_as
+            && let Some(current) = input
                 .current
                 .as_ref()
                 .filter(|p| resolve(&[p]) != resolve(&[&input.target]))
-            {
-                let errors = if input.html {
-                    html::resolve_source_pending_after_save_as_authorized(
-                        current,
-                        &input.pending,
-                        &mut |effect| admit(request, effect),
-                    )
-                    .map_err(|e| e.message)?
-                    .errors
-                } else {
-                    markdown::resolve_source_pending_after_save_as_authorized(
-                        current,
-                        &input.pending,
-                        &mut |effect| admit(request, effect),
-                    )
-                    .map_err(|e| e.message)?
-                    .errors
-                };
-                if !errors.is_empty() {
-                    eprintln!(
-                        "[{}] source asset reconciliation incomplete: {errors:?}",
-                        if input.html { "html" } else { "markdown" }
-                    );
-                }
+        {
+            let errors = if input.html {
+                html::resolve_source_pending_after_save_as_authorized(
+                    current,
+                    &input.pending,
+                    &mut |effect| admit(request, effect),
+                )
+                .map_err(|e| e.message)?
+                .errors
+            } else {
+                markdown::resolve_source_pending_after_save_as_authorized(
+                    current,
+                    &input.pending,
+                    &mut |effect| admit(request, effect),
+                )
+                .map_err(|e| e.message)?
+                .errors
+            };
+            if !errors.is_empty() {
+                eprintln!(
+                    "[{}] source asset reconciliation incomplete: {errors:?}",
+                    if input.html { "html" } else { "markdown" }
+                );
             }
         }
         let (rewrites, text) = match self.prepared {

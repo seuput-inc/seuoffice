@@ -343,6 +343,86 @@ fn generated_seed_requires_the_exact_native_close_receipt() {
             .contains_key(&target.view)
     );
 }
+
+#[test]
+fn closed_native_actor_leaves_no_session_and_no_seed() {
+    use shell_contract::{ipc::NativeClosureIssuer, runtime::CancelToken};
+    let (kit, registry, issuer, _) = setup("slides-native-actor-close");
+    let target = kit.view(2, Surface::Slides);
+    invoke(&registry, target, "slides:new-blank", vec![num(960.0)]);
+    let effects = kit
+        .services
+        .hosts
+        .get::<shell_contract::hosts::OwnedEffectsHost>()
+        .unwrap()
+        .clone();
+    let source = effects
+        .capture_owner(
+            issuer.view,
+            &kit.services.views.renderer_generation(issuer.view).unwrap(),
+        )
+        .unwrap();
+    let created = kit.services.views.renderer_generation(target.view).unwrap();
+    let (close, reservation, browser) =
+        NativeClosureIssuer::new_with_owner(target.view, created.clone());
+    let slides = super::views().unwrap();
+    let mut actor = slides
+        .prepare_native_tab(target.view, &created, None, browser.clone())
+        .unwrap();
+    let seed = slides
+        .prepare_seed_in_transition(
+            target.view,
+            vec![1],
+            "deck".into(),
+            source,
+            CancelToken::default(),
+            created.clone(),
+            reservation.clone(),
+            browser.clone(),
+        )
+        .unwrap();
+    let seed = reservation
+        .with_initial_owner(&browser, |transition| {
+            actor.commit(transition, &mut || Ok(()))?;
+            seed.commit(transition, &mut || Ok(()))
+        })
+        .unwrap();
+    drop(seed);
+    assert!(slides.has_session(target.view));
+    assert!(
+        slides
+            .0
+            .state
+            .borrow()
+            .owned_seeds
+            .contains_key(&target.view)
+    );
+    let (wrong, _) = NativeClosureIssuer::new(target.view, created.clone());
+    assert!(
+        slides
+            .retire_native_closed(target.view, &wrong.closed())
+            .is_err()
+    );
+    assert!(slides.has_session(target.view));
+    slides
+        .retire_native_closed(target.view, &close.closed())
+        .unwrap();
+    assert!(!slides.has_session(target.view));
+    assert!(
+        !slides
+            .0
+            .state
+            .borrow()
+            .owned_seeds
+            .contains_key(&target.view)
+    );
+    assert!(
+        slides
+            .retire_native_closed(target.view, &close.closed())
+            .is_err()
+    );
+}
+
 #[test]
 fn adopted_seed_close_retires_only_the_exact_insertion() {
     use shell_contract::{ipc::NativeClosureIssuer, runtime::CancelToken};

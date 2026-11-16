@@ -98,7 +98,9 @@ impl RecoveryReady {
         let proof = browser.proof.clone();
         let watch_target = target.clone();
         let watch_core = self.core;
-        let closure = Arc::new(move |done| {
+        let closure: main_core::shell::tab_manager::ViewClosureWatch<
+            shell_contract::ipc::NativeBrowserRetirement,
+        > = Arc::new(move |done| {
             let target = watch_target.clone();
             let core = watch_core.clone();
             proof.watch(Box::new(move |receipt| {
@@ -1335,6 +1337,7 @@ pub(crate) fn create_recovery_view_owned(
         }
     };
     let registered = (|| -> Result<(), String> {
+        let slides_rollback = actors.slides_rollback(view);
         native_owner::with_recovery_seed_effect(&opening.target, || -> Result<(), String> {
             prepared
                 .proof
@@ -1360,6 +1363,9 @@ pub(crate) fn create_recovery_view_owned(
                 })
         })
         .ok_or("The recovery actor preparation authority expired")??;
+        if let Some(actor) = slides_rollback {
+            rollback.borrow_mut().push(actor);
+        }
         if let Some(pdf) = pdf {
             let receipt = pdf.recovery_retirement(opening.target.clone())?;
             rollback.borrow_mut().push(Rc::new(PdfRetirement(receipt)));

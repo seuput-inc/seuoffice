@@ -405,7 +405,7 @@ mod tests {
             context: shell_contract::ipc::NativeContext::new(()),
         };
         let cancel = shell_contract::runtime::CancelToken::default();
-        let authority = super::signed_commit::NativeSigningAuthority::new();
+        let authority = crate::host::d2::pdf::signed_commit::NativeSigningAuthority::new();
         assert!(!authority.is_current(&owner, &cancel));
         cancel.cancel();
         assert!(!authority.is_current(&owner, &cancel));

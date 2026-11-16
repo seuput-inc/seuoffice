@@ -150,12 +150,7 @@ fn recovery_open_decision_queues_the_requested_workbook_for_that_view() {
     };
     let w = world("sheets-recovery-contract", Value::Null);
     let tab = w.tab(1);
-    let generation = w
-        .kit
-        .services
-        .views
-        .renderer_generation(tab.view)
-        .unwrap();
+    let generation = w.kit.services.views.renderer_generation(tab.view).unwrap();
     let source = w.native_owner(w.kit.view(44, Surface::Shell));
     let cancel = shell_contract::runtime::CancelToken::default();
     let (_issuer, reservation, browser_owner) =
@@ -173,16 +168,16 @@ fn recovery_open_decision_queues_the_requested_workbook_for_that_view() {
         browser_owner,
     )
     .unwrap();
-    let contract = w
-        .registry
-        .provided
-        .all::<dyn RecoveryEditorContract<
-            shell_contract::ViewId,
-            shell_contract::ipc::RecoveryOpenTarget,
-        >>()
-        .into_iter()
-        .find(|editor| editor.kind() == "sheets")
-        .unwrap();
+    let contract =
+        w.registry
+            .provided
+            .all::<dyn RecoveryEditorContract<
+                    shell_contract::ViewId,
+                    shell_contract::ipc::RecoveryOpenTarget,
+                >>()
+            .into_iter()
+            .find(|editor| editor.kind() == "sheets")
+            .unwrap();
     let settled = Rc::new(RefCell::new(None));
     let done = settled.clone();
     contract.open_file_with_decision(
@@ -900,7 +895,7 @@ fn external_links_resolve_only_the_owning_tab_session() {
 
 #[test]
 fn unsaved_workbook_name_is_reserved_until_unmarked() {
-    let w = world("sheets-unsaved-mark", Value::Null);
+    let _w = world("sheets-unsaved-mark", Value::Null);
     let sheets = views().unwrap();
     sheets.mark_unsaved_new("backing.xlsx", "proposed.xlsm", "temp");
     assert!(sheets.suggested_path_taken("proposed.xlsm"));
@@ -1502,6 +1497,7 @@ fn unit_outcome() -> (UnitOutcome, shell_contract::editors::Then<()>) {
 
 type HeadlessOutcome = Rc<RefCell<Option<Result<(), String>>>>;
 
+#[allow(clippy::type_complexity)]
 fn headless_outcome() -> (HeadlessOutcome, Box<dyn FnOnce(Result<(), String>)>) {
     let cell: HeadlessOutcome = Rc::default();
     let then = cell.clone();
@@ -2273,11 +2269,7 @@ fn owned_save_request(
     w: &World,
     sender: Sender,
     target: PathBuf,
-) -> (
-    String,
-    shell_contract::runtime::CancelToken,
-    Rc<RefCell<Option<Result<(), IpcError>>>>,
-) {
+) -> (String, shell_contract::runtime::CancelToken, UnitOutcome) {
     let origin = w.kit.view(44, Surface::Shell);
     let origin = w.native_owner(origin);
     let cancel = shell_contract::runtime::CancelToken::default();
@@ -2677,7 +2669,7 @@ fn recovery_rename_respects_cancellation_and_notifies_after_success() {
         &receipt,
         &receiver,
         &destination,
-        &[source_owner.clone()],
+        std::slice::from_ref(&source_owner),
         &cancel,
         &pending,
         then,

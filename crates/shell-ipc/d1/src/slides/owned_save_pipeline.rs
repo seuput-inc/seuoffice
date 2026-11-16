@@ -31,6 +31,8 @@ mod project;
 mod publication;
 pub(in crate::slides) use project::save_into_project;
 
+type WriteDone = Box<dyn FnOnce(&App, Result<(), IpcError>)>;
+
 pub(in crate::slides) struct PendingWrite {
     scope: SaveScope,
     previous: String,
@@ -39,7 +41,7 @@ pub(in crate::slides) struct PendingWrite {
     op_seq: Option<u64>,
     remaining: usize,
     failure: Option<IpcError>,
-    done: Box<dyn FnOnce(&App, Result<(), IpcError>)>,
+    done: WriteDone,
 }
 
 impl App {
@@ -108,6 +110,7 @@ impl App {
         Ok(native)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::slides) fn rename_path_owned(
         &self,
         view: ViewId,
@@ -132,6 +135,7 @@ impl App {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::slides) fn rename_path_many_owned(
         &self,
         view: ViewId,
@@ -158,6 +162,7 @@ impl App {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::slides) fn rename_path_many_owned_extra(
         &self,
         view: ViewId,
@@ -220,6 +225,7 @@ impl App {
         then(result);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::slides) fn rename_path_recovery(
         &self,
         view: ViewId,
@@ -307,6 +313,7 @@ impl App {
         then(result);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::slides) fn rename_path_existing(
         &self,
         view: ViewId,
@@ -370,6 +377,7 @@ impl App {
         then(result);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::slides) fn rename_path_revision(
         &self,
         view: ViewId,
@@ -478,6 +486,7 @@ impl App {
         }
         Ok(())
     }
+    #[allow(clippy::type_complexity)]
     fn pick_save_owned(
         &self,
         scope: &SaveScope,
@@ -606,7 +615,7 @@ impl App {
         scope: SaveScope,
         path: String,
         make_parent: bool,
-        done: Box<dyn FnOnce(&App, Result<(), IpcError>)>,
+        done: WriteDone,
     ) {
         let prepare = (|| {
             if matches!(

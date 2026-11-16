@@ -97,10 +97,8 @@ impl StagedBinding {
 
 impl Drop for StagedBinding {
     fn drop(&mut self) {
-        if self.armed {
-            if let Err(error) = self.engine.unbind_view(self.deck, &self.owner) {
-                eprintln!("[slides] staged binding cleanup failed: {}", error.0);
-            }
+        if self.armed && let Err(error) = self.engine.unbind_view(self.deck, &self.owner) {
+            eprintln!("[slides] staged binding cleanup failed: {}", error.0);
         }
     }
 }
@@ -302,8 +300,13 @@ pub struct AppState {
     pub pending_open_path: Option<String>,
     pub(super) owned_seeds: HashMap<ViewId, super::owned_seed::OwnedSeed>,
     pub(super) saved_loads: HashMap<ViewId, super::saved_load::SavedLoad>,
-    pub(super) saved_actor_identities: HashMap<ViewId, Rc<()>>,
-    pub(super) native_actor_owners: HashMap<ViewId, shell_contract::ipc::NativeBrowserOwner>,
+    pub(super) native_actor_owners: HashMap<
+        ViewId,
+        (
+            shell_contract::ipc::NativeBrowserOwner,
+            shell_contract::runtime::RendererGeneration,
+        ),
+    >,
     pub(super) headless_targets: HashMap<ViewId, shell_contract::ipc::NativeInvocationDocument>,
     /// `pendingByWc`
     pub pending_by_view: HashMap<ViewId, String>,
@@ -360,36 +363,6 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub(super) fn reserve_saved_actor(&mut self, view: ViewId) -> Result<(), String> {
-        if self.saved_actor_identities.contains_key(&view) {
-            return Err("The saved presentation actor already exists".into());
-        }
-        self.saved_actor_identities
-            .try_reserve(1)
-            .map_err(|_| "The saved presentation actor could not be reserved".into())
-    }
-
-    pub(super) fn saved_actor(&self, view: ViewId) -> Option<Rc<()>> {
-        self.saved_actor_identities.get(&view).cloned()
-    }
-
-    /// Call only after the actor and browser transition have been validated.
-    pub(super) fn install_saved_actor(&mut self, view: ViewId, identity: Rc<()>) -> Option<Rc<()>> {
-        self.saved_actor_identities.insert(view, identity)
-    }
-
-    pub(super) fn claim_saved_actor(&mut self, view: ViewId, identity: &Rc<()>) -> bool {
-        if !self
-            .saved_actor_identities
-            .get(&view)
-            .is_some_and(|current| Rc::ptr_eq(current, identity))
-        {
-            return false;
-        }
-        self.saved_actor_identities.remove(&view);
-        true
-    }
-
     /// `sessions.get(view)`
     pub fn session(&self, view: ViewId) -> Option<&SlideSession> {
         let slot = self.attach.get(&view)?.slot;
@@ -549,6 +522,7 @@ impl AppState {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn replace_shared_retiring<F: FnOnce(&mut SlideSession)>(
         &mut self,
         plan: &mut super::shared_open::SharedOpen,

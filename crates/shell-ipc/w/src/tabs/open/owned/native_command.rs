@@ -12,6 +12,13 @@ use shell_contract::ipc::{
 };
 use std::rc::Rc;
 
+/// An opened imported-PDF Hangul tab with the native closure watch of that exact view.
+pub type HwpCopyReady = main_core::shell::tab_manager::ViewCreationReady<
+    (shell_contract::ViewId, shell_contract::runtime::RendererGeneration),
+    shell_contract::ipc::NativeClosureReceipt,
+    shell_contract::ipc::NativeClosureReservation,
+>;
+
 impl TabsState {
     pub fn route_document_path_native(
         &self,
@@ -583,7 +590,7 @@ impl TabsState {
         path: String,
         title: String,
         operation: NativeInvocationOperation,
-        done: Box<dyn FnOnce(Result<shell_contract::ViewId, String>)>,
+        done: Box<dyn FnOnce(Result<Option<HwpCopyReady>, String>)>,
     ) {
         let expected = NativeEditorCommand::HwpCopy {
             path: std::path::PathBuf::from(&path),
@@ -596,11 +603,34 @@ impl TabsState {
                 imported_pdf: true,
             }),
         };
+        let state = self.rc();
         self.open_native_editor(
             request,
             operation,
             expected,
-            Box::new(move |result| done(result.map(|(_, view, _)| view))),
+            Box::new(move |result| {
+                done(result.map(|(_, view, generation)| {
+                    // no entry means the view already retired, so its copy has nothing to wait for
+                    let (reservation, watch) = state.adopted_editor_closure(view, &generation)?;
+                    Some(HwpCopyReady {
+                        view: (view, generation),
+                        reservation,
+                        closure: std::sync::Arc::new(move |callback| {
+                            watch(Box::new(move |retirement| {
+                                if let shell_contract::ipc::NativeBrowserRetirement::Closed(
+                                    receipt,
+                                ) = retirement
+                                {
+                                    callback(receipt);
+                                }
+                            }))
+                        }),
+                        cleanup: std::sync::Arc::new(|done| {
+                            done(Err("The Hangul copy tab has no pending cleanup".into()))
+                        }),
+                    })
+                }));
+            }),
         );
     }
 

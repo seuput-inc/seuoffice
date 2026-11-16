@@ -200,6 +200,7 @@ pub trait WorkbookEngine: Send + Sync {
         cancel: &shell_contract::runtime::CancelToken,
         pending: &shell_contract::runtime::CancelToken,
     ) -> EngineResult<Arc<dyn NativeWorkbookSnapshot>>;
+    #[allow(clippy::too_many_arguments)]
     fn open_native_invocation(
         &self,
         snapshot: &Arc<dyn NativeWorkbookSnapshot>,
@@ -223,6 +224,7 @@ pub trait WorkbookEngine: Send + Sync {
         actual: &shell_contract::ipc::NativeRequestOwner,
         actual_cancel: &shell_contract::runtime::CancelToken,
     ) -> EngineResult<Arc<dyn NativeWorkbookSnapshot>>;
+    #[allow(clippy::too_many_arguments)]
     fn open_saved_document(
         &self,
         snapshot: &Arc<dyn NativeWorkbookSnapshot>,
@@ -373,6 +375,7 @@ pub type CreateDocumentAnswer = IpcValue;
 pub trait SheetsShell: Send + Sync {
     /// `workbookOpenedHook(wc, path)`: the tab title and recent files
     fn workbook_opened(&self, view: ViewId, path: &str);
+    #[allow(clippy::too_many_arguments)]
     fn workbook_opened_owned(
         &self,
         view: ViewId,
@@ -383,6 +386,7 @@ pub trait SheetsShell: Send + Sync {
         pending: shell_contract::runtime::CancelToken,
         then: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>,
     );
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn workbook_opened_existing_document(
         &self,
         revision: shell_contract::ipc::NativeSaveRevisionAuthority,
@@ -419,6 +423,7 @@ pub trait SheetsShell: Send + Sync {
     fn new_document_dir(&self, view: ViewId) -> Option<String>;
     /// `runtime.writeNewDocument(wcId, fileName, bytes)`: the path written, or
     /// `None` when the panel has no project
+    #[allow(clippy::too_many_arguments)]
     fn write_new_document_owned(
         &self,
         origin: &shell_contract::ipc::NativeRequestOwner,
@@ -438,6 +443,7 @@ pub trait SheetsShell: Send + Sync {
         )>,
         String,
     >;
+    #[allow(clippy::too_many_arguments)]
     fn create_document_owned(
         &self,
         request: IpcValue,
@@ -452,6 +458,7 @@ pub trait SheetsShell: Send + Sync {
     );
     /// `runtime.openGeneratedPath(path)`: opened in a tab (true) or not
     fn open_generated_path(&self, path: &str) -> bool;
+    #[allow(clippy::too_many_arguments)]
     fn open_generated_path_owned(
         &self,
         output: shell_contract::ipc::SavedPublication,
@@ -464,6 +471,7 @@ pub trait SheetsShell: Send + Sync {
         accepted: shell_contract::hosts::PdfReloadAccepted,
         wake: shell_contract::hosts::GeneratedPathWake,
     ) -> Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String>;
+    #[allow(clippy::too_many_arguments)]
     fn export_pdf_written_owned(
         &self,
         output: shell_contract::ipc::SavedPublication,

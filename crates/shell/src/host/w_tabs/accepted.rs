@@ -409,7 +409,8 @@ fn finish_install(
     fallback: Option<crate::host::window::NativeClosureProof>,
     result: Result<crate::host::window::CreatedChild, InstallError>,
 ) {
-    let finish = Box::new(
+    let finish: Box<dyn FnOnce(Result<crate::host::window::CreatedChild, InstallError>) + Send> =
+        Box::new(
         move |result: Result<crate::host::window::CreatedChild, InstallError>| {
             let result = match result {
                 Ok(child) if !generation.is_active() => Err(InstallError::after_creation(

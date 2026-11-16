@@ -229,6 +229,7 @@ impl MindmapApp {
         self.request_save_with_scope(view, mode, path, request, done);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn request_save_native(
         &self,
         view: ViewId,
@@ -948,10 +949,10 @@ impl MindmapApp {
                     .or_default()
                     .insert(path.clone(), disk);
             }
-            if let Some(previous) = previous.as_ref().filter(|old| *old != &path) {
-                if let Some(states) = state.disk_states.get_mut(&view) {
-                    states.remove(previous);
-                }
+            if let Some(previous) = previous.as_ref().filter(|old| *old != &path)
+                && let Some(states) = state.disk_states.get_mut(&view)
+            {
+                states.remove(previous);
             }
             Ok(state
                 .recovery

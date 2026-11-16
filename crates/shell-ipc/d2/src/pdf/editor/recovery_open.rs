@@ -194,10 +194,9 @@ impl PdfRecoveryRetirement {
         if let Err(error) = self.0.target.drain_work(
             self.0.editor.services.core.clone(),
             Box::new(move || back(())),
-        ) {
-            if let Some(completion) = finish.borrow_mut().take() {
-                completion.finish(Err(error));
-            }
+        ) && let Some(completion) = finish.borrow_mut().take()
+        {
+            completion.finish(Err(error));
         }
     }
 
@@ -247,10 +246,9 @@ impl PdfRecoveryRetirement {
         if let Err(error) = self.0.target.drain_work(
             self.0.editor.services.core.clone(),
             Box::new(move || back(())),
-        ) {
-            if let Some(completion) = finish.borrow_mut().take() {
-                completion.finish(Err(error));
-            }
+        ) && let Some(completion) = finish.borrow_mut().take()
+        {
+            completion.finish(Err(error));
         }
     }
 }
@@ -1017,10 +1015,10 @@ pub(super) fn open_copy(
         Ok(snapshot) => snapshot,
         Err(error) => return done(Err(Failure(error))),
     };
-    if let RecoveryOpenContext::NativeStartup(operation) = &snapshot.context {
-        if !matches_native_copy_selection(operation.selection(), &request) {
-            return done(Err(Failure("PDF recovery selection mismatch".into())));
-        }
+    if let RecoveryOpenContext::NativeStartup(operation) = &snapshot.context
+        && !matches_native_copy_selection(operation.selection(), &request)
+    {
+        return done(Err(Failure("PDF recovery selection mismatch".into())));
     }
     let Some(effects) = ed.services.hosts.get::<OwnedEffectsHost>().cloned() else {
         return done(Err(Failure("PDF recovery admission unavailable".into())));
@@ -1118,7 +1116,7 @@ pub(super) fn open_copy(
                 .map_err(|error| error.to_string())?;
             file.write_all(&bytes).map_err(|error| error.to_string())?;
             drop(file);
-            let outcome = (|| {
+            (|| {
                 let mut ticket = None;
                 seed(
                     &worker_effects,
@@ -1169,8 +1167,7 @@ pub(super) fn open_copy(
                     .map_err(|error| error.message)?;
                 }
                 Ok((ticket, worker_work.clone()))
-            })();
-            outcome
+            })()
         },
         move |result| {
             let core_preparation = preparation;

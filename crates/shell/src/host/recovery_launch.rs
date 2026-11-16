@@ -676,8 +676,8 @@ fn admit_activation_session(
             let mut captured = Vec::with_capacity(participants.len() + 1);
             captured.push(owner.clone());
             captured.extend_from_slice(participants);
-            let extra: Vec<_> = additional.iter().collect();
-            path.with_effect(effects, &captured, cancel, pending, &extra, commit)
+            let extra: &[shell_contract::runtime::CancelToken] = additional;
+            path.with_effect(effects, &captured, cancel, pending, extra, commit)
         }
         A::SavedDocument {
             document,

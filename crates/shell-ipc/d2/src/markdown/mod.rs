@@ -130,6 +130,7 @@ pub trait MarkdownShell: Send + Sync {
         file_name: &str,
         bytes: &[u8],
     ) -> Result<Option<PathBuf>, String>;
+    #[allow(clippy::too_many_arguments)]
     fn write_new_document_owned(
         &self,
         origin: &shell_contract::ipc::NativeRequestOwner,
@@ -163,6 +164,7 @@ pub trait MarkdownShell: Send + Sync {
         open: Option<&str>,
         save: Option<&str>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn asset_paths_changed_owned(
         &self,
         origin: &shell_contract::ipc::NativeRequestOwner,
@@ -195,6 +197,7 @@ pub trait MarkdownShell: Send + Sync {
         open: Option<&str>,
         save: Option<&str>,
     ) -> Result<Box<dyn FnMut() -> Result<(), String> + Send>, String>;
+    #[allow(clippy::too_many_arguments)]
     fn prepare_rename_asset_paths_recovery(
         &self,
         receipt: &shell_contract::ipc::RecoverySeedReceipt,
@@ -209,6 +212,7 @@ pub trait MarkdownShell: Send + Sync {
     ) -> Result<crate::html::RecoveryAssetStage, String>;
     /// `fileSavedHook(contents, path)`
     fn file_saved(&self, view: ViewId, path: &Path);
+    #[allow(clippy::too_many_arguments)]
     fn file_saved_owned(
         &self,
         origin: shell_contract::ipc::NativeRequestOwner,
@@ -221,6 +225,7 @@ pub trait MarkdownShell: Send + Sync {
         path: PathBuf,
         then: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<PathBuf>, String>)>,
     );
+    #[allow(clippy::too_many_arguments)]
     fn file_saved_native(
         &self,
         destination: shell_contract::ipc::NativeSaveDestination,
@@ -430,10 +435,10 @@ impl MarkdownSeedRollback {
         {
             return Err("the generated Markdown seed is still current".into());
         }
-        if let Some(previous) = self.previous.borrow_mut().take() {
-            if previous.outcome.get() == SeedOutcome::Pending {
-                previous.outcome.set(SeedOutcome::Replaced);
-            }
+        if let Some(previous) = self.previous.borrow_mut().take()
+            && previous.outcome.get() == SeedOutcome::Pending
+        {
+            previous.outcome.set(SeedOutcome::Replaced);
         }
         self.previous_legacy.borrow_mut().take();
         if self.outcome.get() == SeedOutcome::Pending {
@@ -487,10 +492,10 @@ impl MarkdownSeedRollback {
             Some(current) if Rc::ptr_eq(&current.identity, &self.identity) => {
                 let removed = self.seeds.remove(self.view);
                 self.outcome.set(SeedOutcome::Retired);
-                if let Some(previous) = self.previous.borrow_mut().take() {
-                    if previous.outcome.get() == SeedOutcome::Pending {
-                        previous.outcome.set(SeedOutcome::Replaced);
-                    }
+                if let Some(previous) = self.previous.borrow_mut().take()
+                    && previous.outcome.get() == SeedOutcome::Pending
+                {
+                    previous.outcome.set(SeedOutcome::Replaced);
                 }
                 self.previous_legacy.borrow_mut().take();
                 self.completed.set(true);
@@ -541,10 +546,10 @@ impl MarkdownSeedRollback {
 
 impl Drop for MarkdownSeedRollback {
     fn drop(&mut self) {
-        if let Some(previous) = self.previous.get_mut().take() {
-            if previous.outcome.get() == SeedOutcome::Pending {
-                previous.outcome.set(SeedOutcome::Replaced);
-            }
+        if let Some(previous) = self.previous.get_mut().take()
+            && previous.outcome.get() == SeedOutcome::Pending
+        {
+            previous.outcome.set(SeedOutcome::Replaced);
         }
     }
 }
@@ -644,6 +649,7 @@ impl MarkdownEditors {
     }
 
     /// Generated content belongs to the exact native view created for that request.
+    #[allow(clippy::too_many_arguments)]
     pub fn queue_seed_owned(
         &self,
         view: ViewId,
@@ -811,8 +817,7 @@ pub(crate) fn entries(
     let shell = services.hosts.need::<MarkdownShellHost>(Batch::D2)?;
     let engine = services.hosts.need::<MarkdownEngineHost>(Batch::D2)?;
     let os = services.hosts.need::<OsShellHost>(Batch::D2)?;
-    let (s1, s2, s3, s4, s5) = (
-        shell.clone(),
+    let (s1, s2, s4, s5) = (
         shell.clone(),
         shell.clone(),
         shell.clone(),
@@ -831,7 +836,6 @@ pub(crate) fn entries(
         DocHooks {
             lang: Box::new(move || s1.ui_lang()),
             is_headless: Box::new(move || s2.is_headless()),
-            reload: Box::new(move |v| s3.reload(v)),
             now_ms: Box::new(move || s5.now_ms()),
             open_elsewhere: Box::new(move |p| s4.is_path_open_elsewhere(p)),
             discard_pending_assets: |path| discard_pending_owned_assets(path).errors,

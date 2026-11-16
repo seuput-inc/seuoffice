@@ -75,7 +75,7 @@ pub(super) fn on_core<T>(
     if !crate::host::w::on_core_local(|provided| result = Some(work(provided))) {
         return Err("Generation metadata access requires the core thread.".into());
     }
-    result.ok_or_else(|| "Generation core access did not execute.".into())?
+    result.ok_or_else(|| "Generation core access did not execute.".to_owned())?
 }
 
 #[cfg(test)]
@@ -102,7 +102,7 @@ mod tests {
     fn native_less_and_fabricated_contexts_never_run_effects() {
         for authority in [renderer(None), renderer(Some(NativeContext::new(())))] {
             assert!(commit(&authority, || panic!("unauthenticated effect")).is_err());
-            assert!(compute(&authority, || panic!("unauthenticated IO")).is_err());
+            assert!(compute::<()>(&authority, || panic!("unauthenticated IO")).is_err());
         }
     }
     #[test]

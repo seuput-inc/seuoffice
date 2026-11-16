@@ -10,7 +10,7 @@ pub(super) fn dispatch(
     call: HostCall,
     done: Box<dyn FnOnce(Settled)>,
 ) {
-    let callback = Box::new(
+    let callback: shell_contract::editors::Then<Option<JsonValue>> = Box::new(
         move |answer: Result<Option<JsonValue>, shell_contract::IpcError>| {
             done(answer.map_err(|error| error.to_string()));
         },

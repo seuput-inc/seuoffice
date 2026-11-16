@@ -17,11 +17,7 @@ use main_core::packages::electron_utils::message_box::{
     MessageBox as MessageBoxTrait, MessageBoxOptions, ParentWindow,
 };
 use main_core::packages::electron_utils::recovery_store::{RecoveryIdentity, SharedRecoveryState};
-use main_core::packages::electron_utils::save_conflict::ProbeThrew;
-use main_core::packages::electron_utils::save_conflict::{
-    SaveConflictAnswer, SaveConflictOptions, SaveDiskState, confirm_overwrite_if_conflicted,
-    record_disk_state, should_defer_auto_save,
-};
+use main_core::packages::electron_utils::save_conflict::{SaveDiskState, record_disk_state};
 use main_core::packages::i18n::Lang;
 use shell_contract::hosts::{Dialogs, MessageBox};
 use shell_contract::ipc::RegisterError;
@@ -451,80 +447,6 @@ impl MindmapApp {
             .entry(view)
             .or_default()
             .insert(path.to_owned(), state);
-    }
-
-    pub(super) fn forget_disk_state(&self, view: ViewId, path: &str) {
-        let mut state = self.0.state.borrow_mut();
-        let Some(states) = state.disk_states.get_mut(&view) else {
-            return;
-        };
-        states.remove(path);
-        if states.is_empty() {
-            state.disk_states.remove(&view);
-        }
-    }
-
-    /// `conflictStopsSave`: this save must stop instead of writing
-    pub(super) fn conflict_stops_save(&self, view: ViewId, path: &str, auto: bool) -> bool {
-        let shell = &self.0.shell;
-        if !shell.is_path_open_elsewhere(path) {
-            return false;
-        }
-        let recorded = self
-            .0
-            .state
-            .borrow()
-            .disk_states
-            .get(&view)
-            .and_then(|states| states.get(path))
-            .cloned();
-        let probe = |p: &str| -> Result<bool, ProbeThrew> { Ok(shell.is_path_open_elsewhere(p)) };
-        if auto {
-            return should_defer_auto_save(Some(&probe), path, recorded.as_ref());
-        }
-        let parent = self.window_of(view).map(Win);
-        let lang = self.lang();
-        let dialog = HostBox(&*self.0.dialogs);
-        confirm_overwrite_if_conflicted(&SaveConflictOptions {
-            probe: Some(&probe),
-            dialog: &dialog,
-            parent: parent.as_ref(),
-            path,
-            recorded: recorded.as_ref(),
-            lang: lang.as_str(),
-        }) == SaveConflictAnswer::Cancel
-    }
-
-    /// `adoptWrittenPath`: the view's map now lives at `target` (just written)
-    pub(super) fn adopt_written_path(
-        &self,
-        view: ViewId,
-        target: &str,
-        previous_path: Option<&str>,
-    ) {
-        {
-            let mut state = self.0.state.borrow_mut();
-            state.save_path.insert(view, target.to_owned());
-            // a stale open path would make a reloaded renderer load the OLD file
-            state.open_path.insert(view, target.to_owned());
-            state
-                .allowed
-                .entry(view)
-                .or_default()
-                .insert(target.to_owned());
-            state.dirty.remove(&view);
-        }
-        // the map is on disk: its recovery copies have done their part
-        self.view_saved(view);
-        self.remember_disk_state(view, target);
-        if let Some(previous) = previous_path
-            && previous != target
-        {
-            self.forget_disk_state(view, previous);
-        }
-        if previous_path != Some(target) {
-            self.0.shell.file_saved(view, target);
-        }
     }
 
     /// `refuseWrites`: the view's file did not open; it has no save target and gets none

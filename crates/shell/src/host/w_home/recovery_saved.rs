@@ -348,12 +348,17 @@ impl Prepared {
                                                 if let Err(error) = result {
                                                     return done(Err(error));
                                                 }
-                                                (moved.notify)(Box::new(
-                                                    move |result| match result {
+                                                (moved.notify)(
+                                                    std::rc::Rc::new(
+                                                        |_: &shell_contract::ipc::NativeSaveRevisionReceipt| {
+                                                            Err("renderer saved-file publication cannot accept a native revision".into())
+                                                        },
+                                                    ),
+                                                    Box::new(move |result| match result {
                                                         Ok(()) => finish(ack, session, done),
                                                         Err(error) => done(Err(error)),
-                                                    },
-                                                ));
+                                                    }),
+                                                );
                                             }),
                                         );
                                     }),

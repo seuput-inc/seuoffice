@@ -76,7 +76,6 @@ pub(crate) enum SaveAuthority {
     Native(shell_contract::ipc::NativeExistingDocumentBinding),
 }
 struct SelectedState {
-    revision: shell_contract::ipc::NativeSaveRevisionAuthority,
     snapshot: std::sync::Mutex<shell_contract::ipc::NativeSaveRevisionSnapshot>,
 }
 impl SelectedState {
@@ -87,7 +86,6 @@ impl SelectedState {
         let revision = shell_contract::ipc::NativeSaveRevisionAuthority::new(destination, aliases);
         let snapshot = revision.snapshot()?;
         Ok(Self {
-            revision,
             snapshot: std::sync::Mutex::new(snapshot),
         })
     }
@@ -159,27 +157,6 @@ impl OwnedSave {
     pub(crate) fn effects(&self) -> &OwnedEffectsHost {
         &self.0.effects
     }
-    pub(crate) fn admit_file(
-        &self,
-        docs: &TextDocs,
-        effect: &mut dyn FnMut() -> Result<(), main_core::node_fs::NodeError>,
-    ) -> Result<(), main_core::node_fs::NodeError> {
-        let mut result = None;
-        self.effect(docs, || {
-            result = Some(effect());
-            Ok(())
-        })
-        .map_err(|message| main_core::node_fs::NodeError {
-            code: None,
-            message,
-        })?;
-        result.unwrap_or_else(|| {
-            Err(main_core::node_fs::NodeError {
-                code: None,
-                message: "save effect was not admitted".into(),
-            })
-        })
-    }
     pub(crate) fn check_document(&self, docs: &TextDocs, view: ViewId) -> Result<(), String> {
         self.effect(docs, || Ok(()))?;
         if docs.save_path(view) != self.0.original_save
@@ -237,11 +214,6 @@ impl OwnedSave {
                 }
             }
         }
-    }
-    pub(crate) fn native_revision(
-        &self,
-    ) -> Option<&shell_contract::ipc::NativeSaveRevisionAuthority> {
-        self.0.selected.get().map(|selected| &selected.revision)
     }
     pub(crate) fn native_destination(
         &self,
@@ -414,6 +386,7 @@ impl TextDocs {
         }
         Ok(native)
     }
+    #[cfg(test)]
     pub(crate) fn take_owned_save(
         &self,
         view: ViewId,
@@ -503,6 +476,7 @@ impl TextDocs {
         }
         Ok(Some(request))
     }
+    #[allow(clippy::too_many_arguments)]
     fn begin_owned(
         self: &Rc<Self>,
         view: ViewId,
@@ -566,19 +540,19 @@ impl TextDocs {
         subscriptions.push(combined.on_cancel(move || {
             core.post(Box::new(move || {
                 let waiting = WAITING.with(|waiting| waiting.borrow().get(&id).cloned());
-                if let Some((docs, view)) = waiting {
-                    if let Some(docs) = docs.upgrade() {
-                        let active = docs
-                            .owned_saves
-                            .borrow()
-                            .get(&view)
-                            .is_some_and(|request| request.0.id == id);
-                        if active {
-                            docs.owned_saves.borrow_mut().remove(&view);
-                            let waiter = docs.save_waiters.borrow_mut().remove(&view);
-                            if let Some(waiter) = waiter {
-                                waiter(false);
-                            }
+                if let Some((docs, view)) = waiting
+                    && let Some(docs) = docs.upgrade()
+                {
+                    let active = docs
+                        .owned_saves
+                        .borrow()
+                        .get(&view)
+                        .is_some_and(|request| request.0.id == id);
+                    if active {
+                        docs.owned_saves.borrow_mut().remove(&view);
+                        let waiter = docs.save_waiters.borrow_mut().remove(&view);
+                        if let Some(waiter) = waiter {
+                            waiter(false);
                         }
                     }
                 }
@@ -660,10 +634,13 @@ impl TextDocs {
         } else {
             (self.ch.save_request, vec![mode.into_ipc()])
         };
-        if let Err(_) = request.effect(self, || {
-            self.services.events.emit(Target::View(view), channel, args);
-            Ok(())
-        }) {
+        if request
+            .effect(self, || {
+                self.services.events.emit(Target::View(view), channel, args);
+                Ok(())
+            })
+            .is_err()
+        {
             self.owned_saves.borrow_mut().remove(&view);
             let waiter = self.save_waiters.borrow_mut().remove(&view);
             if let Some(waiter) = waiter {
@@ -681,6 +658,7 @@ impl TextDocs {
     ) {
         self.begin_owned(view, mode, None, origin, cancel, None, false, then)
     }
+    #[allow(clippy::too_many_arguments)]
     fn begin_native(
         self: &Rc<Self>,
         view: ViewId,
@@ -769,18 +747,18 @@ impl TextDocs {
         subscriptions.push(signal.on_cancel(move || {
             core.post(Box::new(move || {
                 let waiting = WAITING.with(|waiting| waiting.borrow().get(&id).cloned());
-                if let Some((docs, view)) = waiting {
-                    if let Some(docs) = docs.upgrade() {
-                        let active = docs.owned_saves.borrow().get(&view).is_some_and(|request| {
-                            request.0.id == id
-                                && !request.0.claimed.load(std::sync::atomic::Ordering::Acquire)
-                        });
-                        if active {
-                            docs.owned_saves.borrow_mut().remove(&view);
-                            let waiter = docs.save_waiters.borrow_mut().remove(&view);
-                            if let Some(waiter) = waiter {
-                                waiter(false);
-                            }
+                if let Some((docs, view)) = waiting
+                    && let Some(docs) = docs.upgrade()
+                {
+                    let active = docs.owned_saves.borrow().get(&view).is_some_and(|request| {
+                        request.0.id == id
+                            && !request.0.claimed.load(std::sync::atomic::Ordering::Acquire)
+                    });
+                    if active {
+                        docs.owned_saves.borrow_mut().remove(&view);
+                        let waiter = docs.save_waiters.borrow_mut().remove(&view);
+                        if let Some(waiter) = waiter {
+                            waiter(false);
                         }
                     }
                 }
@@ -891,8 +869,8 @@ impl TextDocs {
         } else {
             "save"
         };
-        if let SaveAuthority::Native(binding) = request.authority() {
-            if request
+        if let SaveAuthority::Native(binding) = request.authority()
+            && request
                 .effects()
                 .emit_existing_document_save_many(
                     binding,
@@ -904,12 +882,11 @@ impl TextDocs {
                     vec![mode.into_ipc()],
                 )
                 .is_err()
-            {
-                self.owned_saves.borrow_mut().remove(&view);
-                let waiter = self.save_waiters.borrow_mut().remove(&view);
-                if let Some(waiter) = waiter {
-                    waiter(false);
-                }
+        {
+            self.owned_saves.borrow_mut().remove(&view);
+            let waiter = self.save_waiters.borrow_mut().remove(&view);
+            if let Some(waiter) = waiter {
+                waiter(false);
             }
         }
     }
@@ -1006,13 +983,12 @@ impl TextDocs {
                         };
                         if let Some(path) =
                             picked.as_ref().filter(|path| !path.as_os_str().is_empty())
-                        {
-                            if let Err(error) = guard.effect(&docs, || {
+                            && let Err(error) = guard.effect(&docs, || {
                                 remember_save_path(&mut docs.remembered(), &path.to_string_lossy());
                                 Ok(())
-                            }) {
-                                return then(Err(error));
-                            }
+                            })
+                        {
+                            return then(Err(error));
                         }
                         then(Ok(picked.map(|p| p.to_string_lossy().into_owned())));
                     },
@@ -1270,6 +1246,7 @@ impl TextDocs {
 }
 
 impl TextDocs {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn file_renamed_recovery(
         self: &Rc<Self>,
         view: ViewId,
@@ -1512,6 +1489,7 @@ impl TextDocs {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn file_renamed_owned(
         self: &Rc<Self>,
         view: ViewId,
@@ -1537,6 +1515,7 @@ impl TextDocs {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn file_renamed_many_owned_extra(
         self: &Rc<Self>,
         view: ViewId,
@@ -1559,8 +1538,8 @@ impl TextDocs {
             Ok(destination) => destination,
             Err(error) => return then(Err(error)),
         };
-        if let Some(active) = self.owned_saves.borrow().get(&view) {
-            if !active.cancel().same_token(cancel)
+        if let Some(active) = self.owned_saves.borrow().get(&view)
+            && (!active.cancel().same_token(cancel)
                 || !active.pending().same_token(pending)
                 || !active.origin().is_some_and(|active_origin| {
                     Arc::ptr_eq(&active_origin.context.as_arc(), &origin.context.as_arc())
@@ -1568,12 +1547,11 @@ impl TextDocs {
                 || !Arc::ptr_eq(
                     &active.destination().context.as_arc(),
                     &destination.context.as_arc(),
-                )
-            {
-                return then(Err(kit::error(
-                    "document rename conflicts with its pending save",
-                )));
-            }
+                ))
+        {
+            return then(Err(kit::error(
+                "document rename conflicts with its pending save",
+            )));
         }
         let Some(effects) = self.services.hosts.get::<OwnedEffectsHost>().cloned() else {
             return then(Err(kit::error("owned rename effects are unavailable")));

@@ -222,10 +222,9 @@ impl SlidesSeedRollback {
         if displaced
             .as_ref()
             .is_some_and(|seed| seed.status.get() == SeedStatus::Queued)
+            && let Some(seed) = displaced.take()
         {
-            if let Some(seed) = displaced.take() {
-                state.owned_seeds.insert(self.view, seed);
-            }
+            state.owned_seeds.insert(self.view, seed);
         }
         self.status.set(SeedStatus::RolledBack);
         drop(state);
@@ -262,6 +261,7 @@ pub(super) fn detach_seed_on_view_gone(
 }
 
 impl super::SlidesViews {
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare_seed_in_transition(
         &self,
         view: ViewId,
@@ -323,6 +323,7 @@ impl super::SlidesViews {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn queue_seed_owned(
         &self,
         view: ViewId,

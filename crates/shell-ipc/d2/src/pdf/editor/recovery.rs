@@ -992,14 +992,13 @@ impl Recovery {
     }
 
     pub(super) fn finish_renamed(&mut self, id: ViewId, rename: &RecoveryRename) {
-        if let Some(state) = self.views.get_mut(&id) {
-            if state
+        if let Some(state) = self.views.get_mut(&id)
+            && state
                 .owned_copy
                 .as_ref()
                 .is_some_and(|owned| same_identity(owned, &rename.owned))
-            {
-                state.owned_copy = Some(rename.next.clone());
-            }
+        {
+            state.owned_copy = Some(rename.next.clone());
         }
     }
 
@@ -1123,6 +1122,7 @@ impl Recovery {
         }
     }
 
+    #[allow(clippy::type_complexity)]
     pub(super) fn closed_cleanup(
         &self,
         target: &shell_contract::ipc::RecoveryOpenTarget,
@@ -1162,10 +1162,10 @@ impl Recovery {
             return Ok((work, None));
         };
         let state = &retired.state;
-        if let Some(path) = &state.work_file {
-            if !work.contains(path) {
-                work.push(path.clone());
-            }
+        if let Some(path) = &state.work_file
+            && !work.contains(path)
+        {
+            work.push(path.clone());
         }
         let deletion = if !adopted {
             None
@@ -1208,10 +1208,10 @@ impl Recovery {
             .iter()
             .find(|entry| entry.target.same_binding(target))
         {
-            if let Some(path) = &retired.state.work_file {
-                if !work.contains(path) {
-                    work.push(path.clone());
-                }
+            if let Some(path) = &retired.state.work_file
+                && !work.contains(path)
+            {
+                work.push(path.clone());
             }
         } else if target.is_seed_committed() {
             return Err("PDF recovery state was not retained for supersession".into());

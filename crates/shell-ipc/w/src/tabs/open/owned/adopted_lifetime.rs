@@ -10,6 +10,12 @@ use std::{
     rc::{Rc, Weak},
 };
 
+/// An adopted editor's exact native reservation with its closure watch.
+pub(in crate::tabs) type AdoptedClosure = (
+    NativeClosureReservation,
+    ViewClosureWatch<NativeBrowserRetirement>,
+);
+
 type RetirementObserver = Box<dyn FnOnce(NativeBrowserRetirement)>;
 #[derive(Default)]
 struct RetirementTerminal {
@@ -409,6 +415,20 @@ impl TabsState {
             *id
         };
         self.finish_adopted_editor(id)
+    }
+
+    /// The native closure of the editor adopted for this exact view and renderer; `None` once
+    /// its retirement finished, which only follows an observed closure.
+    pub(in crate::tabs) fn adopted_editor_closure(
+        &self,
+        view: ViewId,
+        created: &RendererGeneration,
+    ) -> Option<AdoptedClosure> {
+        self.adopted_editors
+            .borrow()
+            .values()
+            .find(|entry| entry.view == view && entry.reservation.matches(view, created))
+            .map(|entry| (entry.reservation.clone(), entry.watch.clone()))
     }
 
     pub fn retry_adopted_editor_lifetimes(&self) -> Result<(), String> {

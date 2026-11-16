@@ -91,6 +91,7 @@ impl SaveAuthority {
             SaveOrigin::Renderer(_) => Err("PDF save is not native-owned".into()),
         }
     }
+    #[allow(clippy::type_complexity)]
     fn native_scope(
         &self,
     ) -> Result<
@@ -533,17 +534,17 @@ impl SaveAuthority {
     }
     fn clear_save_as_flow(&self) {
         use crate::kit::IntoIpc;
-        if let Ok(Some(destination)) = self.participants().map(|owners| owners.into_iter().next()) {
-            if let Some(loss) = destination.loss_token() {
-                let _ = self.effects.emit_owned(
-                    &destination,
-                    &destination,
-                    &loss,
-                    &loss,
-                    "pdf:save-as-flow",
-                    vec![false.into_ipc(), self.id.clone().into_ipc()],
-                );
-            }
+        if let Ok(Some(destination)) = self.participants().map(|owners| owners.into_iter().next())
+            && let Some(loss) = destination.loss_token()
+        {
+            let _ = self.effects.emit_owned(
+                &destination,
+                &destination,
+                &loss,
+                &loss,
+                "pdf:save-as-flow",
+                vec![false.into_ipc(), self.id.clone().into_ipc()],
+            );
         }
     }
     pub fn with_request_scope(
@@ -711,7 +712,7 @@ impl SaveAuthority {
             return Err(error);
         }
         admitted.map_err(|message| main_core::node_fs::NodeError {
-            code: Some("ECANCELED".into()),
+            code: Some("ECANCELED"),
             message,
         })
     }
@@ -938,7 +939,6 @@ impl SaveAuthority {
                 Ok(())
             },
         )?;
-        drop(before_notify);
         if let Some(error) = cleanup_error.into_inner() {
             return Err(error);
         }
@@ -1173,6 +1173,7 @@ impl Editor {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn pick_owned_untitled(
         &self,
         view: ViewId,
@@ -1282,10 +1283,10 @@ impl Editor {
                         Err(message) => return reply.reply(Err(crate::kit::error(message))),
                     },
                 };
-                if let Some(selection) = selection {
-                    if let Err(message) = check.set_selection(selection) {
-                        return reply.reply(Err(crate::kit::error(message)));
-                    }
+                if let Some(selection) = selection
+                    && let Err(message) = check.set_selection(selection)
+                {
+                    return reply.reply(Err(crate::kit::error(message)));
                 }
                 let destination = match check.participants() {
                     Ok(owners) => match owners.into_iter().next() {

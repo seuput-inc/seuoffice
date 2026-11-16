@@ -115,6 +115,7 @@ fn open_worker(
     })
 }
 
+#[allow(clippy::type_complexity)]
 fn copy_worker(
     env: &Env,
     channel: &'static str,

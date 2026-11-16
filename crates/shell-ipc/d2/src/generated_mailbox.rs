@@ -102,7 +102,6 @@ struct Entry {
     settled: bool,
     acking: bool,
     registration: Option<Box<dyn shell_contract::hosts::GeneratedCleanupRegistration>>,
-    retry: Arc<RetryWake>,
 }
 
 trait Wake: Send + Sync {
@@ -136,6 +135,7 @@ impl<T: Send> Wake for CallbackInbox<T> {
 #[derive(Default)]
 pub(crate) struct CleanupMailbox {
     entries: RefCell<HashMap<u64, Entry>>,
+    #[allow(clippy::type_complexity)]
     callbacks: RefCell<HashMap<u64, (u64, Arc<dyn Wake>)>>,
 }
 
@@ -246,10 +246,9 @@ pub(crate) fn begin<A: Actor>(actor: &Rc<A>, consumer: Consumer) -> Option<Ticke
             settled: false,
             acking: false,
             registration: None,
-            retry: retry.clone(),
         },
     );
-    let retry_signal = retry.clone();
+    let retry_signal = retry;
     let actor_wake: GeneratedActorWake = Arc::new(move |done| {
         let replay = retry_signal
             .replay
@@ -364,14 +363,14 @@ fn start_prepared<A: Actor>(actor: &Rc<A>, id: u64) -> Result<(), String> {
         .borrow_mut()
         .get_mut(&id)
         .and_then(|entry| entry.prepared.take());
-    if let Some(prepared) = prepared {
-        if let Err(failure) = prepared.start() {
-            let error = failure.error;
-            if let Some(entry) = actor.mailbox().entries.borrow_mut().get_mut(&id) {
-                entry.prepared = Some(failure.prepared);
-            }
-            return Err(error);
+    if let Some(prepared) = prepared
+        && let Err(failure) = prepared.start()
+    {
+        let error = failure.error;
+        if let Some(entry) = actor.mailbox().entries.borrow_mut().get_mut(&id) {
+            entry.prepared = Some(failure.prepared);
         }
+        return Err(error);
     }
     Ok(())
 }
@@ -416,10 +415,9 @@ fn dispatch<A: Actor>(actor: &Rc<A>, id: u64) {
             }
             if let Err(GeneratedObserveFailure { observer, wake, .. }) =
                 receipt.observe(observer, wake)
+                && let Some(entry) = actor.mailbox().entries.borrow_mut().get_mut(&id)
             {
-                if let Some(entry) = actor.mailbox().entries.borrow_mut().get_mut(&id) {
-                    entry.observer = Some((observer, wake));
-                }
+                entry.observer = Some((observer, wake));
             }
             return;
         }

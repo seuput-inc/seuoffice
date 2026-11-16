@@ -430,7 +430,7 @@ pub(super) fn verify_text_edits(
         let result = (|| {
             let text_page = handle(call(&mut session, "FPDFText_LoadPage", &[reference(page)])?)?
                 .ok_or("could not load PDF text page")?;
-            let result = (|| {
+            let result: Result<(), String> = (|| {
                 let mut objects = Vec::new();
                 walk(
                     &mut session,

@@ -3,7 +3,7 @@ use super::Docs;
 use crate::docs::hosts::GeneratedActorWake;
 use shell_contract::runtime::Services;
 
-pub(super) use crate::generated_mailbox::{CleanupMailbox, Finished, begin, callback, wake};
+pub(super) use crate::generated_mailbox::{CleanupMailbox, begin, callback, wake};
 
 impl crate::generated_mailbox::Actor for Docs {
     fn services(&self) -> &Services {

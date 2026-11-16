@@ -221,7 +221,7 @@ pub(super) fn apply(op: &IpcValue, ctx: &mut OpContext<'_>) -> Option<Result<Txn
             let poster = field(op, "poster")
                 .filter(|v| !matches!(v, IpcValue::Undefined))
                 .map(|v| {
-                    Ok(MediaBytes {
+                    Ok::<_, String>(MediaBytes {
                         bytes: bytes(Some(v), name, "poster")?,
                         ext: field(op, "posterExt").and_then(string).unwrap_or("").into(),
                     })

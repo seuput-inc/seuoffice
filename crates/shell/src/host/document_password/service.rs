@@ -311,15 +311,11 @@ impl DocumentPasswordService {
             .cx
             .views
             .view_window_captured(target.view(), target.created())?;
-        let operation = target.output().selection().binding().operation();
-        let mut tokens = vec![
-            target.cancel().clone(),
-            target.pending().clone(),
-            operation.cancel().clone(),
-            operation.shutdown().clone(),
-        ];
+        let output = target.output();
+        let mut tokens = vec![target.cancel().clone(), target.pending().clone()];
+        tokens.extend(output.loss_tokens()?);
         tokens.extend_from_slice(target.additional());
-        for owner in std::iter::once(target.output().selection().binding().owner())
+        for owner in std::iter::once(output.source_owner())
             .chain(target.participants().iter())
             .chain(std::iter::once(document.owner()))
         {

@@ -1162,14 +1162,13 @@ pub fn clear_narration(app: &App, cx: &CallContext, args: Args) -> Reply {
         };
         let mut targets = Vec::new();
         for i in &indexes {
-            if let Some(idx) = slide_index(i, len) {
-                if app
+            if let Some(idx) = slide_index(i, len)
+                && app
                     .engine
                     .has_narration(s.deck(), idx)
                     .map_err(|error| thrown(error.0))?
-                {
-                    targets.push(i);
-                }
+            {
+                targets.push(i);
             }
         }
         if targets.is_empty() {

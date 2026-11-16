@@ -103,6 +103,7 @@ pub struct PreparedNativeSlides {
     app_index: usize,
     view: ViewId,
     owner: shell_contract::ipc::NativeBrowserOwner,
+    created: shell_contract::runtime::RendererGeneration,
     path: Option<String>,
     committed: bool,
 }
@@ -127,7 +128,7 @@ impl PreparedNativeSlides {
             next()?;
             state
                 .native_actor_owners
-                .insert(self.view, self.owner.clone());
+                .insert(self.view, (self.owner.clone(), self.created.clone()));
             if let Some(path) = self.path.take() {
                 state.pending_by_view.insert(self.view, path);
             }
@@ -173,9 +174,38 @@ impl SlidesViews {
             app_index: self.0.registry_index,
             view,
             owner,
+            created: created.clone(),
             path,
             committed: false,
         })
+    }
+
+    /// The exact close of a native presentation actor: its owner entry, attached session
+    /// and queued seed are released once, and a second call finds no actor.
+    pub fn retire_native_closed(
+        &self,
+        view: ViewId,
+        proof: &shell_contract::ipc::NativeClosureReceipt,
+    ) -> Result<(), String> {
+        let (owner, created) = self
+            .0
+            .state
+            .borrow()
+            .native_actor_owners
+            .get(&view)
+            .cloned()
+            .ok_or("The presentation actor is not registered")?;
+        if !proof.matches(owner.reservation(), view, &created) {
+            return Err("The native close receipt does not match the presentation actor".into());
+        }
+        proof.with_terminal_owner(&owner, |transition| {
+            if !transition.matches(owner.reservation(), &owner) {
+                return Err("The presentation terminal owner changed".into());
+            }
+            Ok(())
+        })?;
+        saved_load::release_closed_actor(&self.0, view);
+        Ok(())
     }
 }
 
@@ -243,14 +273,14 @@ impl SlidesViews {
             return Err(thrown("the deck model is invalid"));
         };
         let slides_value = deck.get("slides");
-        let Some(JsonValue::Array(slides)) = slides_value.as_deref() else {
+        let Some(JsonValue::Array(slides)) = slides_value else {
             return Err(thrown("the deck model has no slides"));
         };
         Ok(slides.iter().any(|slide| {
             let JsonValue::Object(slide) = slide else {
                 return false;
             };
-            match slide.get("elements").as_deref() {
+            match slide.get("elements") {
                 Some(JsonValue::Array(elements)) => elements.iter().any(element_withholds),
                 _ => false,
             }

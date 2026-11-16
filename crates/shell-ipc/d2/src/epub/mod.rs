@@ -992,13 +992,11 @@ impl Epub {
         self.saved.release_view(view);
         let gone = self.state.borrow_mut().views.remove(&view);
         let Some(gone) = gone else { return };
-        if let Some(pending) = &gone.recovery {
-            if let Some(receipt) = &pending.receipt {
-                if let Ok(notification) = receipt.fail_after_loss("The EPUB view was closed".into())
-                {
-                    notification.notify();
-                }
-            }
+        if let Some(pending) = &gone.recovery
+            && let Some(receipt) = &pending.receipt
+            && let Ok(notification) = receipt.fail_after_loss("The EPUB view was closed".into())
+        {
+            notification.notify();
         }
         if let Some(document) = gone.document {
             document.revoke();
@@ -1115,13 +1113,12 @@ impl Epub {
         let (held, save_path) = self
             .view(view, |v| (v.session.clone(), v.save_path.clone()))
             .unwrap_or_default();
-        if recovery.is_none() {
-            if let Some(held) = held
-                && held.borrow().is_dirty()
-                && save_path.as_deref() == Some(path.as_str())
-            {
-                return reply.reply(Ok(self.opened(view, &path, &held)));
-            }
+        if recovery.is_none()
+            && let Some(held) = held
+            && held.borrow().is_dirty()
+            && save_path.as_deref() == Some(path.as_str())
+        {
+            return reply.reply(Ok(self.opened(view, &path, &held)));
         }
         let document = if let Some(scope) = &recovery {
             match self.begin_recovery_open(view, &path, scope) {

@@ -1491,6 +1491,24 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
         }
     }
 
+    /// [`Self::commit_help_open`] for a view whose native closure binding a newly
+    /// created tab must retain for its lifetime; an existing tab drops `binding`.
+    pub fn commit_help_open_bound(
+        &mut self,
+        plan: PreparedHelpOpen,
+        view: V,
+        title: String,
+        binding: B,
+    ) -> HelpOpenCommit<V> {
+        let commit = self.commit_help_open(plan, view, title);
+        if let HelpOpenCommit::Created { id, .. } = &commit
+            && let Some(index) = self.index_of(id)
+        {
+            self.tabs[index].binding = Some(binding);
+        }
+        commit
+    }
+
     /// the part every `open*Tab` shares after its view is made: add it hidden,
     /// track it, push the tab and activate it
     #[allow(clippy::too_many_arguments)]

@@ -262,17 +262,13 @@ impl MindmapApp {
                 }))
             }));
         }
-        if let Some(pending) = self
-            .0
-            .state
-            .borrow_mut()
-            .recovery_preparing
-            .get_mut(&view)
-            .filter(|pending| pending.ticket == ticket)
         {
+            let mut state = self.0.state.borrow_mut();
+            let pending = state
+                .recovery_preparing
+                .get_mut(&view)
+                .filter(|pending| pending.ticket == ticket)?;
             pending.subscriptions = subscriptions;
-        } else {
-            return None;
         }
         Some((
             ticket,
@@ -375,12 +371,11 @@ impl MindmapApp {
                         .and_then(|seed| seed.receipt)
                 })
         };
-        if let Some(receipt) = receipt {
-            if let Ok(notification) =
+        if let Some(receipt) = receipt
+            && let Ok(notification) =
                 receipt.fail_after_loss("The map recovery target was released".into())
-            {
-                notification.notify();
-            }
+        {
+            notification.notify();
         }
         if let Some(pending) = pending {
             (pending.done)(Err(Failure("The mindmap view was closed".into())));
@@ -734,10 +729,9 @@ impl MindmapApp {
                         Err(error.message.clone()),
                     )
                     .is_err()
+                    && let Ok(notification) = receipt.fail_after_loss(error.message.clone())
                 {
-                    if let Ok(notification) = receipt.fail_after_loss(error.message.clone()) {
-                        notification.notify();
-                    }
+                    notification.notify();
                 }
                 Err(error)
             }
@@ -795,10 +789,9 @@ impl MindmapApp {
                     .map_err(thrown)?
                     .settle_recovery_seed(&receipt, &owner, &cx.cancel, Err(error.message.clone()))
                     .is_err()
+                    && let Ok(notification) = receipt.fail_after_loss(error.message.clone())
                 {
-                    if let Ok(notification) = receipt.fail_after_loss(error.message.clone()) {
-                        notification.notify();
-                    }
+                    notification.notify();
                 }
                 Err(error)
             }

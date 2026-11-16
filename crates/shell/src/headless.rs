@@ -289,7 +289,10 @@ fn placeholders(
         .json
         .as_ref()
         .and_then(|json| json.get("message"))
-        .and_then(|value| value.as_str().map(str::to_owned))
+        .and_then(|value| match &*value {
+            jscompat::JsonValue::String(text) => Some(text.clone()),
+            _ => None,
+        })
         .filter(|message| !message.is_empty())
         .unwrap_or_else(|| result.stderr.trim().to_owned());
     Err(if message.is_empty() {
