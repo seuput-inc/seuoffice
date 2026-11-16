@@ -426,27 +426,37 @@ impl MarkdownShell for Shell {
     fn docx_exported(&self, path: &std::path::Path) {
         let _ = super::docs_tabs::open_generated(&path.to_string_lossy());
     }
-    fn export_written_owned(
+    fn prepare_generated_output(
         &self,
-        origin: shell_contract::ipc::NativeRequestOwner,
-        destination: shell_contract::ipc::NativeRequestOwner,
+        output: shell_contract::ipc::SavedPublication,
+        input: Option<shell_contract::ipc::NativeSavedInput>,
+        kind: &'static str,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
         cancel: shell_contract::runtime::CancelToken,
         pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
         effects: shell_contract::hosts::OwnedEffectsHost,
-        path: std::path::PathBuf,
-        kind: &'static str,
-        then: Box<dyn FnOnce(Result<(), String>)>,
-    ) {
-        super::html_host::export_written_owned(
-            path,
+        accepted: shell_contract::hosts::PdfReloadAccepted,
+        wake: shell_contract::hosts::GeneratedPathWake,
+    ) -> Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String> {
+        super::html_host::prepare_generated_output(
+            output,
+            input,
             kind,
-            origin,
-            destination,
+            participants,
             cancel,
             pending,
+            additional,
             effects,
-            then,
+            accepted,
+            wake,
         )
+    }
+    fn register_generated_actor_cleanup(
+        &self,
+        wake: shell_ipc_d2::docs::hosts::GeneratedActorWake,
+    ) -> Result<Box<dyn shell_contract::hosts::GeneratedCleanupRegistration>, String> {
+        super::docs_shell::cleanup::register(&self.0.headless_cleanup, wake)
     }
 }
 pub(super) fn print_window(cx: &HostContext) -> Box<dyn MarkdownPrintWindow> {

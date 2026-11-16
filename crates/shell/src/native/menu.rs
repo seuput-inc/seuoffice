@@ -339,13 +339,13 @@ pub fn reload(webview: &Webview, ignore_cache: bool) -> Result<(), String> {
     }
 }
 
-/// Add a word to the system user dictionary, shared by every view and kept across runs.
-/// `Ok(false)` where the platform has no dictionary to add to (Windows). UI thread.
+/// Add a word to the system user dictionary, shared by every view and kept across runs
+/// (macOS `NSSpellChecker`, Windows `ISpellChecker`). UI thread.
 pub fn learn_word(word: &str) -> Result<bool, String> {
     Current::learn(word)
 }
 
-/// Take a word out of the system user dictionary. `Ok(false)` where the platform cannot.
+/// Take a word out of the system user dictionary. UI thread.
 pub fn unlearn_word(word: &str) -> Result<bool, String> {
     Current::unlearn(word)
 }

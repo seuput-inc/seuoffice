@@ -112,7 +112,9 @@ pub(super) fn matches_spec(
         NativeEditorCommand::SaveDocument { .. }
         | NativeEditorCommand::HwpCopy { .. }
         | NativeEditorCommand::OpenHome
-        | NativeEditorCommand::OpenHelp { .. } => false,
+        | NativeEditorCommand::OpenHelp { .. }
+        | NativeEditorCommand::ActivateTab { .. }
+        | NativeEditorCommand::HydrateTab { .. } => false,
     }
 }
 

@@ -53,7 +53,7 @@ impl shell_ipc_w::tabs::host::EditorSeedRollback for DocsRegistrationRollback {
 }
 
 pub(super) struct SheetsRegistrationRollback(
-    pub(super) shell_ipc_d1::sheets::editors::RegisteredTab,
+    pub(super) shell_ipc_d1::sheets::RegisteredTab,
 );
 impl shell_ipc_w::tabs::host::EditorSeedRollback for SheetsRegistrationRollback {
     fn retire_closed(
@@ -116,7 +116,7 @@ impl shell_ipc_w::tabs::host::EditorSeedRollback for DocsOpenRollback {
     }
 }
 
-struct WorkbookQueueRollback(shell_ipc_d1::sheets::editors::WorkbookQueueReceipt);
+struct WorkbookQueueRollback(shell_ipc_d1::sheets::WorkbookQueueReceipt);
 impl shell_ipc_w::tabs::host::EditorSeedRollback for WorkbookQueueRollback {
     fn retire_closed(
         &self,
@@ -172,7 +172,7 @@ impl shell_ipc_w::tabs::host::EditorSeedRollback for DocsBlankRollback {
     }
 }
 
-struct SheetsBlankRollback(shell_ipc_d1::sheets::editors::BlankSeedReceipt);
+struct SheetsBlankRollback(shell_ipc_d1::sheets::BlankSeedReceipt);
 impl shell_ipc_w::tabs::host::EditorSeedRollback for SheetsBlankRollback {
     fn retire_closed(
         &self,
@@ -884,7 +884,7 @@ impl Hooks {
         let view = view_id(id).ok_or_else(|| TabError("invalid editor view id".into()))?;
         let unavailable = || TabError(format!("{} editor unavailable", kind.as_str()));
         match kind {
-            TabKind::Sheets => Ok(shell_ipc_d1::sheets::editors::views()
+            TabKind::Sheets => Ok(shell_ipc_d1::sheets::views()
                 .ok_or_else(unavailable)?
                 .pending_edit_count(view)
                 > 0.0),
@@ -2694,7 +2694,7 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
         };
         let mut workbook = match workbook.filter(|path| !path.is_empty()) {
             Some(path) => Some(
-                shell_ipc_d1::sheets::editors::views()
+                shell_ipc_d1::sheets::views()
                     .ok_or_else(|| TabError("Sheets editor is not registered".into()))?
                     .prepare_workbook_queue(view, path, created.clone(), reservation, browser)
                     .map_err(TabError)?,
@@ -2902,7 +2902,7 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
         };
         let sheets = if workbook.is_some() || sheets_blank {
             Some(
-                shell_ipc_d1::sheets::editors::views()
+                shell_ipc_d1::sheets::views()
                     .ok_or_else(|| TabError("Sheets editor is not registered".into()))?,
             )
         } else {
@@ -3197,7 +3197,6 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
         view: ViewId,
         expected: &shell_contract::runtime::RendererGeneration,
     ) {
-        crate::host::d2::docs_tabs::discard_docs_ai_seed(&self.provided, view, expected);
         shell_ipc_a::user_skills::drop_generate_handoff_owned(&self.provided, view, expected);
         if self
             .cx
@@ -4025,7 +4024,7 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
     fn sheets_pending_edit_count(&self, id: i64) -> f64 {
         view_id(id)
             .and_then(|view| {
-                shell_ipc_d1::sheets::editors::views().map(|s| s.pending_edit_count(view))
+                shell_ipc_d1::sheets::views().map(|s| s.pending_edit_count(view))
             })
             .unwrap_or(f64::INFINITY)
     }
@@ -4048,7 +4047,7 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
         crate::host::d2::set_active_docs_resolver(view, null_if_destroyed);
     }
     fn set_active_sheets_web_contents(&self, view: Option<ViewId>) {
-        shell_ipc_d1::sheets::editors::views()
+        shell_ipc_d1::sheets::views()
             .expect("Sheets editor unavailable")
             .set_active_view(view);
     }
@@ -4088,17 +4087,17 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
             );
     }
     fn set_sheets_new_blank(&self) {
-        shell_ipc_d1::sheets::editors::views()
+        shell_ipc_d1::sheets::views()
             .expect("Sheets editor unavailable")
             .set_new_blank();
     }
     fn queue_workbook_for_view(&self, view: ViewId, path: &str) {
-        shell_ipc_d1::sheets::editors::views()
+        shell_ipc_d1::sheets::views()
             .expect("Sheets editor unavailable")
             .queue_workbook(view, path);
     }
     fn nudge_queued_workbook(&self, view: ViewId) {
-        shell_ipc_d1::sheets::editors::views()
+        shell_ipc_d1::sheets::views()
             .expect("Sheets editor unavailable")
             .nudge_queued_workbook(view);
     }
@@ -4144,22 +4143,8 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
     fn diagram_tab_identity(&self, id: i64) -> Option<DiagramIdentity> {
         self.diagram_identity(id)
     }
-    fn opener_open(
-        &self,
-        opener: &main_core::shell::tab_manager::Opener,
-        context: &main_core::shell::tab_manager::UnloadedTabOpenContext,
-    ) -> Result<main_core::shell::tab_manager::LoadedTabView<ViewId>, String> {
-        crate::host::recovery_openers::open(opener, context)
-    }
-    fn opener_needs_user(
-        &self,
-        opener: &main_core::shell::tab_manager::Opener,
-        context: &main_core::shell::tab_manager::UnloadedTabOpenContext,
-    ) -> Result<bool, String> {
-        crate::host::recovery_openers::needs_user(opener, context)
-    }
     fn reset_sheets_shutting_down(&self) {
-        shell_ipc_d1::sheets::editors::views()
+        shell_ipc_d1::sheets::views()
             .expect("Sheets editor unavailable")
             .reset_shutting_down();
         // every guard that refuses a close calls this: a quit under way is off
@@ -4625,7 +4610,7 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
             .open();
     }
     fn start_queued_workbook_nudge(&self) {
-        shell_ipc_d1::sheets::editors::views()
+        shell_ipc_d1::sheets::views()
             .expect("Sheets editor unavailable")
             .start_queued_workbook_nudge();
     }
@@ -4640,22 +4625,22 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
         super::blank_pdf()
     }
     fn sheets_suggested_path_taken(&self, path: &str) -> bool {
-        shell_ipc_d1::sheets::editors::views()
+        shell_ipc_d1::sheets::views()
             .expect("Sheets editor unavailable")
             .suggested_path_taken(path)
     }
     fn mark_sheets_unsaved_new(&self, backing: &str, suggested: &str, dir: &str) {
-        shell_ipc_d1::sheets::editors::views()
+        shell_ipc_d1::sheets::views()
             .expect("Sheets editor unavailable")
             .mark_unsaved_new(backing, suggested, dir);
     }
     fn unmark_sheets_unsaved_new(&self, backing: &str) {
-        shell_ipc_d1::sheets::editors::views()
+        shell_ipc_d1::sheets::views()
             .expect("Sheets editor unavailable")
             .unmark_unsaved_new(backing);
     }
     fn mark_sheets_untitled_path(&self, path: &str) {
-        shell_ipc_d1::sheets::editors::views()
+        shell_ipc_d1::sheets::views()
             .expect("Sheets editor unavailable")
             .mark_untitled_path(path);
     }

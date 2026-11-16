@@ -122,39 +122,21 @@ pub trait MHost: Send + Sync {
     /// `runtime.openGeneratedPath?.(path)`: false when the runtime has none
     /// or did not open it
     fn open_generated_path(&self, path: &str) -> bool;
-    /// Complete the actual owned generated-path open or folder reveal asynchronously.
-    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-    fn export_written_owned(
+    /// Prepare the retained open or folder reveal of a published PDF. Called on
+    /// the core thread, where the output was published under its save authority.
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_generated_output(
         &self,
-        path: std::path::PathBuf,
-        origin: shell_contract::ipc::NativeRequestOwner,
-        destination: shell_contract::ipc::NativeRequestOwner,
-        cancel: shell_contract::runtime::CancelToken,
-        pending: shell_contract::runtime::CancelToken,
-        effects: shell_contract::hosts::OwnedEffectsHost,
-        accepted: shell_contract::hosts::PdfReloadAccepted,
-        wake: shell_contract::hosts::GeneratedPathWake,
-        done: Box<
-            dyn FnOnce(Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String>)
-                + Send,
-        >,
-    );
-    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-    fn export_written_existing_document(
-        &self,
-        selection: shell_contract::ipc::NativeSaveDestination,
+        output: shell_contract::ipc::SavedPublication,
+        input: Option<shell_contract::ipc::NativeSavedInput>,
         participants: Vec<shell_contract::ipc::NativeRequestOwner>,
         cancel: shell_contract::runtime::CancelToken,
         pending: shell_contract::runtime::CancelToken,
-        effects: shell_contract::hosts::OwnedEffectsHost,
         additional: Vec<shell_contract::runtime::CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
         accepted: shell_contract::hosts::PdfReloadAccepted,
         wake: shell_contract::hosts::GeneratedPathWake,
-        done: Box<
-            dyn FnOnce(Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String>)
-                + Send,
-        >,
-    );
+    ) -> Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String>;
     /// `configuredDefaultSaveDir(app)`
     fn default_save_dir(&self) -> String;
 

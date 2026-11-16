@@ -18,8 +18,8 @@ use main_core::shell::detached_windows::{
 use main_core::shell::split_layout::Rect;
 use main_core::shell::tab_lifecycle::{RecentlyClosedTracker, create_recently_closed_tracker};
 use main_core::shell::tab_manager::{
-    Deferred, DetachedTab, DiagramIdentity, EditorCalls, LoadedTabView, Opener, Ready,
-    SplitViewState, TabError, TabHost, TabKind, TabResult, UnloadedTabOpenContext, ViewSpec,
+    Deferred, DetachedTab, DiagramIdentity, EditorCalls, Ready, SplitViewState, TabError, TabHost,
+    TabKind, TabResult, ViewSpec,
 };
 use serde_json::Value;
 use shell_contract::ids::{ViewId, WindowId};
@@ -36,6 +36,8 @@ pub(super) enum Effect {
     SplitChanged(Option<SplitViewState>),
     /// `dockHost.dock(tab)`
     Dock(Box<DetachedTab<ViewId, super::host::RetainedSpareBinding>>),
+    /// An unloaded tab was asked for: the state loads and activates it
+    LoadTab(String),
 }
 
 pub(super) struct Bridge {
@@ -293,12 +295,8 @@ impl TabHost<ViewId, super::host::RetainedSpareBinding> for Bridge {
     fn diagram_tab_identity(&mut self, wc_id: i64) -> Option<DiagramIdentity> {
         self.hooks.diagram_tab_identity(wc_id)
     }
-    fn opener_open(
-        &mut self,
-        opener: &Opener,
-        context: &UnloadedTabOpenContext,
-    ) -> Result<LoadedTabView<ViewId>, String> {
-        self.hooks.opener_open(opener, context)
+    fn request_tab_load(&mut self, id: &str) {
+        self.effects.push_back(Effect::LoadTab(id.to_owned()));
     }
     fn warn(&mut self, message: &str, error: &str) {
         self.hooks.warn(message, error)

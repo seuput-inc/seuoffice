@@ -24,8 +24,8 @@ pub(crate) mod owned_saved;
 #[cfg(feature = "probe")]
 mod probe;
 mod project_seam;
-mod startup;
 mod shell_close;
+mod startup;
 mod state;
 pub mod window_snapshot;
 mod wire;
@@ -97,6 +97,33 @@ fn ok() -> Result<IpcValue, IpcError> {
     Ok(IpcValue::Undefined)
 }
 
+/// What a renderer request hands the tab loads it starts: its captured owner
+/// and its cancellation
+fn request_principal(
+    cx: &CallContext,
+) -> Result<(shell_contract::ipc::NativeRequestOwner, shell_contract::runtime::CancelToken), IpcError>
+{
+    let Some(context) = cx.native.clone() else {
+        return Err(invoke_error(
+            "The authenticated tab request owner is unavailable".into(),
+        ));
+    };
+    Ok((
+        shell_contract::ipc::NativeRequestOwner {
+            view: cx.sender.view,
+            context,
+        },
+        cx.cancel.clone(),
+    ))
+}
+
+fn invoke_error(message: String) -> IpcError {
+    IpcError {
+        name: Some("Error".into()),
+        message,
+    }
+}
+
 pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), RegisterError> {
     let windows: WindowsHostRef = services.hosts.need(Batch::W)?;
     let provided = registry.provided();
@@ -132,17 +159,26 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
     })?;
 
     let s = state.clone();
-    handle(
-        registry,
-        "tabs:activate",
-        ChannelKind::Invoke,
-        move |_, args| {
-            if let Some(id) = string(args.first()).filter(|id| !id.is_empty()) {
-                s.activate(id);
-            }
-            ok()
-        },
-    )?;
+    later(registry, "tabs:activate", move |cx, args, reply| {
+        let Some(id) = string(args.first()).filter(|id| !id.is_empty()) else {
+            return reply.reply(ok());
+        };
+        let (owner, cancel) = match request_principal(cx) {
+            Ok(principal) => principal,
+            Err(error) => return reply.reply(Err(error)),
+        };
+        s.reveal_tab_owned(
+            id,
+            owner,
+            cancel,
+            Box::new(move |done| {
+                reply.reply(
+                    done.map(|()| IpcValue::Undefined)
+                        .map_err(invoke_error),
+                )
+            }),
+        );
+    })?;
 
     let s = state.clone();
     later(registry, "tabs:close", move |_, args, reply| {
@@ -203,36 +239,57 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
 
     // ---- detach, tear off, dock ----
     let s = state.clone();
-    handle(
-        registry,
-        "tabs:detach",
-        ChannelKind::Invoke,
-        move |_, args| {
-            if let Some(id) = string(args.first())
-                && s.can_detach(id)
-            {
-                s.detach_tab_to_window(id);
-            }
-            ok()
-        },
-    )?;
+    later(registry, "tabs:detach", move |cx, args, reply| {
+        let Some(id) = string(args.first()).filter(|id| s.can_detach(id)) else {
+            return reply.reply(ok());
+        };
+        let principal = match request_principal(cx) {
+            Ok(principal) => principal,
+            Err(error) => return reply.reply(Err(error)),
+        };
+        let id = id.to_owned();
+        let state = s.clone();
+        s.hydrate_tabs(
+            vec![id.clone()],
+            Some(principal),
+            Box::new(move |result| {
+                reply.reply(match result {
+                    Ok(()) => {
+                        state.detach_tab_to_window(&id);
+                        ok()
+                    }
+                    Err(message) => Err(invoke_error(message)),
+                })
+            }),
+        );
+    })?;
 
     let s = state.clone();
-    handle(
-        registry,
-        "tabs:tear-off",
-        ChannelKind::Invoke,
-        move |_, args| {
-            let (Some(id), Some(x), Some(y)) = (
-                string(args.first()),
-                finite(args.get(1)),
-                finite(args.get(2)),
-            ) else {
-                return Ok(IpcValue::Bool(false));
-            };
-            Ok(IpcValue::Bool(s.tear_off(id, x, y)))
-        },
-    )?;
+    later(registry, "tabs:tear-off", move |cx, args, reply| {
+        let (Some(id), Some(x), Some(y)) = (
+            string(args.first()),
+            finite(args.get(1)),
+            finite(args.get(2)),
+        ) else {
+            return reply.reply(Ok(IpcValue::Bool(false)));
+        };
+        let principal = match request_principal(cx) {
+            Ok(principal) => principal,
+            Err(error) => return reply.reply(Err(error)),
+        };
+        let id = id.to_owned();
+        let state = s.clone();
+        s.hydrate_tabs(
+            vec![id.clone()],
+            Some(principal),
+            Box::new(move |result| {
+                reply.reply(match result {
+                    Ok(()) => Ok(IpcValue::Bool(state.tear_off(&id, x, y))),
+                    Err(message) => Err(invoke_error(message)),
+                })
+            }),
+        );
+    })?;
 
     let s = state.clone();
     handle(

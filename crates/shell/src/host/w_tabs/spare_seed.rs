@@ -10,7 +10,7 @@ use shell_contract::{
     },
     runtime::CancelToken,
 };
-use shell_ipc_d1::sheets::editors::{
+use shell_ipc_d1::sheets::{
     BlankSeedReceipt, PreparedBlankSeed, PreparedWorkbookQueue, WorkbookQueueReceipt,
 };
 use shell_ipc_w::tabs::host::{
@@ -238,7 +238,7 @@ pub(super) fn prepare(
         .get::<OwnedEffectsHost>()
         .cloned()
         .ok_or("Owned Sheets effects are unavailable")?;
-    let sheets = shell_ipc_d1::sheets::editors::views().ok_or("The Sheets actor is unavailable")?;
+    let sheets = shell_ipc_d1::sheets::views().ok_or("The Sheets actor is unavailable")?;
     let nudge = workbook.is_some();
     let workbook = workbook
         .map(|path| {

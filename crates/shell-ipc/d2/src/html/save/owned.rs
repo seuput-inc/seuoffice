@@ -352,51 +352,46 @@ impl Exporter {
         self.e
             .docs
             .publish_export_owned(view, target, bytes, request, move |published| {
-                if let Err(error) = published {
-                    return done(failure(error));
-                }
+                let published = match published {
+                    Err(error) => return done(failure(error)),
+                    Ok(published) => published,
+                };
                 if me.e.docs.is_headless() {
                     return done(saved_at(&output));
                 }
-                let path = output.clone();
-                let file = PathBuf::from(output);
-                let reveal = file.clone();
                 let shell = me.e.shell.clone();
-                let hook = me.e.shell.clone();
-                let os = me.os.clone();
-                let (destination, cancel, pending, effects) = (
-                    retained.destination().clone(),
-                    retained.cancel(),
-                    retained.pending(),
-                    retained.effects().clone(),
-                );
-                retained.export_written(
-                    move |origin, then| {
-                        shell.export_written_owned(
-                            origin,
-                            destination,
+                let prepare: crate::html::text_doc::Prepare = Box::new(
+                    move |output,
+                          input,
+                          participants,
+                          cancel,
+                          pending,
+                          additional,
+                          effects,
+                          accepted,
+                          wake| {
+                        shell.prepare_generated_output(
+                            output,
+                            input,
+                            format,
+                            participants,
                             cancel,
                             pending,
+                            additional,
                             effects,
-                            file,
-                            format,
-                            then,
+                            accepted,
+                            wake,
                         )
                     },
-                    &mut || {
-                        let opened = match format {
-                            "pdf" => hook.open_generated_path(&reveal),
-                            "docx" | "odt" => hook.docx_exported(&reveal),
-                            _ => false,
-                        };
-                        if !opened {
-                            os.show_item_in_folder(&reveal);
-                        }
-                        Ok(())
-                    },
+                );
+                me.e.docs.complete_export(
+                    retained,
+                    published,
+                    me.os.clone(),
+                    prepare,
                     Box::new(move |opened| match opened {
                         Err(error) => done(failure(error)),
-                        Ok(()) => done(saved_at(&path)),
+                        Ok(()) => done(saved_at(&output)),
                     }),
                 );
             });

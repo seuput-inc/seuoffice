@@ -89,6 +89,16 @@ pub enum NativeEditorCommand {
     OpenHelp {
         topic: Option<String>,
     },
+    /// Load the tab's document if it is unloaded, then make it the active tab
+    /// (a menu, OS or service asked the strip to show this tab).
+    ActivateTab {
+        tab_id: String,
+    },
+    /// Load the tab's document if it is unloaded without activating it
+    /// (an application service needs the tab's editor view).
+    HydrateTab {
+        tab_id: String,
+    },
 }
 
 /// The actual already-selected native input. The issuer, not a renderer, supplies
@@ -152,9 +162,10 @@ impl NativeInvocationSelection {
                 NativeEditorCommand::OpenFile { surface, .. }
                 | NativeEditorCommand::NewDocument { surface, .. }
                 | NativeEditorCommand::SaveDocument { surface, .. } => *surface,
-                NativeEditorCommand::OpenHome | NativeEditorCommand::OpenHelp { .. } => {
-                    Surface::Shell
-                }
+                NativeEditorCommand::OpenHome
+                | NativeEditorCommand::OpenHelp { .. }
+                | NativeEditorCommand::ActivateTab { .. }
+                | NativeEditorCommand::HydrateTab { .. } => Surface::Shell,
                 NativeEditorCommand::HwpCopy { .. } => Surface::Hwp,
             },
             Self::RecoveryFile { surface, .. }

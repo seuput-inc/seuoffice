@@ -28,7 +28,11 @@ pub fn init(dir: &Path, name: &str) -> Result<(), String> {
     let path = dir.join(format!("{name}.jsonl"));
     let file = File::create(&path).map_err(|error| format!("{}: {error}", path.display()))?;
     RECORDER
-        .set(Recorder { file: Mutex::new(file), started: Instant::now(), dir: dir.to_owned() })
+        .set(Recorder {
+            file: Mutex::new(file),
+            started: Instant::now(),
+            dir: dir.to_owned(),
+        })
         .map_err(|_| "the probe record was opened twice".to_owned())
 }
 
@@ -39,16 +43,22 @@ pub fn out_dir() -> Option<&'static Path> {
 
 /// Milliseconds since `init`.
 pub fn now_ms() -> f64 {
-    RECORDER.get().map_or(0.0, |recorder| recorder.started.elapsed().as_secs_f64() * 1000.0)
+    RECORDER.get().map_or(0.0, |recorder| {
+        recorder.started.elapsed().as_secs_f64() * 1000.0
+    })
 }
 
 fn wall_ms() -> u128 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_millis())
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis())
 }
 
 /// Append one record. `fields` is an object (anything else is stored under `value`).
 pub fn record(src: &str, ev: &str, fields: Value) {
-    let Some(recorder) = RECORDER.get() else { return };
+    let Some(recorder) = RECORDER.get() else {
+        return;
+    };
     let mut map = match fields {
         Value::Object(map) => map,
         Value::Null => Map::new(),
@@ -64,7 +74,10 @@ pub fn record(src: &str, ev: &str, fields: Value) {
     map.insert("ev".into(), json!(ev));
     let mut line = Value::Object(map).to_string();
     line.push('\n');
-    let mut file = recorder.file.lock().unwrap_or_else(|error| error.into_inner());
+    let mut file = recorder
+        .file
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let _ = file.write_all(line.as_bytes());
     let _ = file.flush();
 }
@@ -85,17 +98,29 @@ pub struct Timeline {
 
 impl Timeline {
     pub fn push(&self, kind: &str, v: Value) {
-        let rec = Rec { kind: kind.to_owned(), v };
-        self.recs.lock().unwrap_or_else(|error| error.into_inner()).push(rec);
+        let rec = Rec {
+            kind: kind.to_owned(),
+            v,
+        };
+        self.recs
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(rec);
         self.changed.notify_all();
     }
 
     pub fn snapshot(&self) -> Vec<Rec> {
-        self.recs.lock().unwrap_or_else(|error| error.into_inner()).clone()
+        self.recs
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
     }
 
     pub fn len(&self) -> usize {
-        self.recs.lock().unwrap_or_else(|error| error.into_inner()).len()
+        self.recs
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .len()
     }
 
     /// Block until `ready` holds for the records so far, or `timeout` passes.
@@ -120,7 +145,9 @@ impl Timeline {
 
     /// Wait for a record of `kind` at index `from` or later.
     pub fn wait_kind(&self, kind: &str, from: usize, timeout: Duration) -> bool {
-        self.wait(timeout, |recs| recs.iter().skip(from).any(|rec| rec.kind == kind))
+        self.wait(timeout, |recs| {
+            recs.iter().skip(from).any(|rec| rec.kind == kind)
+        })
     }
 }
 
@@ -134,7 +161,9 @@ pub fn pages() -> &'static Timeline {
 pub fn wait_page(label: &str, ev: &str, from: usize, timeout: Duration) -> Option<Rec> {
     let timeline = pages();
     timeline.wait(timeout, |recs| {
-        recs.iter().skip(from).any(|rec| rec.kind == ev && rec.v["view"] == label)
+        recs.iter()
+            .skip(from)
+            .any(|rec| rec.kind == ev && rec.v["view"] == label)
     });
     timeline
         .snapshot()

@@ -173,7 +173,7 @@ impl Hooks {
         prepare: impl FnOnce(ViewId) -> Result<(), String>,
         docs_prepared: Option<&mut Option<shell_ipc_d2::docs::editors::DocsPreparedRegistration>>,
         sheets_prepared: Option<
-            &mut Option<shell_ipc_d1::sheets::editors::PreparedTabRegistration>,
+            &mut Option<shell_ipc_d1::sheets::PreparedTabRegistration>,
         >,
         recovery: bool,
         captured_window: Option<(WindowId, Arc<crate::views::NativeWindowLifecycle>)>,
@@ -201,7 +201,7 @@ impl Hooks {
             &mut Option<shell_ipc_d2::docs::editors::DocsPreparedRegistration>,
         >,
         mut sheets_prepared: Option<
-            &mut Option<shell_ipc_d1::sheets::editors::PreparedTabRegistration>,
+            &mut Option<shell_ipc_d1::sheets::PreparedTabRegistration>,
         >,
         recovery: bool,
         captured_window: Option<(WindowId, Arc<crate::views::NativeWindowLifecycle>)>,
@@ -362,7 +362,7 @@ impl Hooks {
                     }
                 }
                 EditorViewSpec::Sheets { .. } => {
-                    let sheets = shell_ipc_d1::sheets::editors::views()
+                    let sheets = shell_ipc_d1::sheets::views()
                         .ok_or_else(|| TabError("Sheets editor is not registered".into()))?;
                     if let Some(slot) = sheets_prepared.as_deref_mut() {
                         *slot = Some(
@@ -791,7 +791,7 @@ fn prepare_recovery_view(
     path: Option<&str>,
     untitled: bool,
     docs: &mut Option<shell_ipc_d2::docs::editors::DocsPreparedRegistration>,
-    sheets: &mut Option<shell_ipc_d1::sheets::editors::PreparedTabRegistration>,
+    sheets: &mut Option<shell_ipc_d1::sheets::PreparedTabRegistration>,
     actors: &mut OrdinaryActorStages,
 ) -> Result<accepted::PreparedEditorView, String> {
     use main_core::shell::tab_manager::TabKind;
@@ -842,7 +842,7 @@ fn prepare_recovery_view(
 }
 
 pub(crate) fn nudge_recovery_sheets() -> Result<(), String> {
-    shell_ipc_d1::sheets::editors::views()
+    shell_ipc_d1::sheets::views()
         .ok_or_else(|| "Sheets editor is not registered".to_owned())?
         .start_queued_workbook_nudge();
     Ok(())
@@ -1833,7 +1833,7 @@ fn menu_item(
     app: &tauri::AppHandle,
     token: u64,
     entry: &MenuEntry,
-) -> tauri::Result<tauri::menu::MenuItemKind<tauri::DynRuntime>> {
+) -> tauri::Result<tauri::menu::MenuItemKind<tauri::Wry>> {
     use tauri::menu::{CheckMenuItem, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
     if !entry.submenu.is_empty() {
         let submenu = Submenu::new(app, &entry.label, entry.enabled)?;

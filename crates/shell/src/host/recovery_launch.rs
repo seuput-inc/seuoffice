@@ -834,7 +834,13 @@ fn run_activation_session(
     match current {
         ActivationSessionPhase::Complete => return done(Ok(())),
         ActivationSessionPhase::Write(plan, admission) => {
-            return write_activation_session(captured.runtime.clone(), plan, admission, phase, done);
+            return write_activation_session(
+                captured.runtime.clone(),
+                plan,
+                admission,
+                phase,
+                done,
+            );
         }
         ActivationSessionPhase::Prepare => {}
     }

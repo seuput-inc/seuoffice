@@ -1,7 +1,7 @@
 //! `AiCoreHost` and `SlidesAiHost`: the two hosts that share what the AI
-//! libraries of `@seuoffice/ai-search` answer. The tool capabilities and the
-//! remote image download are main-core's; the search backends, the page
-//! reader and the media tools are not in main-core and stay stubs.
+//! libraries of `@seuoffice/ai-search` answer. The tool capabilities, the
+//! search backends, the page reader and the remote image download are real;
+//! the media tools live in [`super::media_tools`].
 
 use jscompat::JsonValue;
 use main_core::packages::ai_provider::settings_secrets::AiSecretCodec;
@@ -16,10 +16,8 @@ use shell_contract::runtime::CancelToken;
 use shell_ipc_a::ai_core::{AiCoreHost, RemoteImage};
 use shell_ipc_a::slides_ai::SlidesAiHost;
 
+use super::{UiLang, codec, codex_image_available, fetch, read_url, search, subscription_statuses};
 use super::native_image::Decoder;
-use super::{
-    UiLang, codec, codex_image_available, fetch, not_built, subscription_statuses, unbuilt,
-};
 
 /// `{ path, statuses?, dataDir? }`
 fn context_of(value: &JsonValue) -> AiToolCallContext {
@@ -87,19 +85,22 @@ impl AiCoreHost for AiCore {
         tool_capabilities(settings, context)
     }
 
-    fn web_search(&self, _: &str, _: f64, _: &SearchOptions) -> SearchAnswer {
-        unbuilt("AiCoreHost::web_search");
-        Err(not_built())
+    fn web_search(&self, query: &str, max_results: f64, options: &SearchOptions) -> SearchAnswer {
+        search::web_search(query, max_results, options)
     }
 
-    fn image_search(&self, _: &str, _: f64, _: &SearchOptions) -> SearchAnswer {
-        unbuilt("AiCoreHost::image_search");
-        Err(not_built())
+    fn image_search(&self, query: &str, max_results: f64, options: &SearchOptions) -> SearchAnswer {
+        search::image_search(query, max_results, options)
     }
 
-    fn read_url(&self, _: &str, _: &str, _: f64, _: &CancelToken) -> Result<JsonValue, JsonValue> {
-        unbuilt("AiCoreHost::read_url");
-        Err(not_built())
+    fn read_url(
+        &self,
+        settings_path: &str,
+        url: &str,
+        offset: f64,
+        signal: &CancelToken,
+    ) -> Result<JsonValue, JsonValue> {
+        Ok(read_url::read_url(settings_path, url, offset, signal))
     }
 
     fn fetch_remote_image(&self, url: &str) -> Option<RemoteImage> {

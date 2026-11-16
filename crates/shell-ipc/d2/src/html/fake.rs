@@ -255,20 +255,36 @@ pub(crate) struct FakeHtml {
     pub answers: Arc<Answers>,
     taken: Mutex<Vec<u32>>,
     pub(crate) export_views: Mutex<Vec<ViewId>>,
-    os: shell_contract::hosts::OsShellHost,
+}
+
+/// What the shell's opening hook answers for an export of `kind`: a PDF goes
+/// to `open_generated_path`, a converted document to `docx_exported`.
+fn generated_open(answers: &Answers, kind: &str, path: &str) -> bool {
+    match kind {
+        "pdf" => {
+            if !answers.has("open_generated_path") {
+                return false;
+            }
+            answers.log(json!(["openGeneratedPath", path]));
+            answers.bool("open_generated_path", path, false)
+        }
+        "docx" | "odt" => {
+            if !answers.bool("docx_exported", path, false) {
+                return false;
+            }
+            answers.log(json!(["docxExportedHook", path]));
+            true
+        }
+        _ => false,
+    }
 }
 
 impl FakeHtml {
-    pub(crate) fn new(
-        case: &Value,
-        probe: Option<ProbeLog>,
-        os: shell_contract::hosts::OsShellHost,
-    ) -> Self {
+    pub(crate) fn new(case: &Value, probe: Option<ProbeLog>) -> Self {
         FakeHtml {
             answers: Arc::new(Answers::new(case, probe)),
             taken: Mutex::default(),
             export_views: Mutex::default(),
-            os,
         }
     }
 }
@@ -897,32 +913,41 @@ impl HtmlShell for FakeHtml {
         );
         then(result.map(|()| go));
     }
-    fn export_written_owned(
+    fn prepare_generated_output(
         &self,
-        origin: shell_contract::ipc::NativeRequestOwner,
-        destination: shell_contract::ipc::NativeRequestOwner,
+        output: shell_contract::ipc::SavedPublication,
+        input: Option<shell_contract::ipc::NativeSavedInput>,
+        kind: &'static str,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
         cancel: shell_contract::runtime::CancelToken,
         pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
         effects: shell_contract::hosts::OwnedEffectsHost,
-        path: PathBuf,
-        kind: &'static str,
-        then: Box<dyn FnOnce(Result<(), String>)>,
-    ) {
-        let result =
-            effects.with_owned_effect(&origin, &destination, &cancel, &pending, &mut || {
-                if !self.is_headless() {
-                    let opened = match kind {
-                        "pdf" => self.open_generated_path(&path),
-                        "docx" | "odt" => self.docx_exported(&path),
-                        _ => false,
-                    };
-                    if !opened {
-                        self.os.show_item_in_folder(&path);
-                    }
-                }
-                Ok(())
-            });
-        then(result);
+        _accepted: shell_contract::hosts::PdfReloadAccepted,
+        _wake: shell_contract::hosts::GeneratedPathWake,
+    ) -> Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String> {
+        if input
+            .as_ref()
+            .is_some_and(|input| !input.output().same_publication(&output))
+        {
+            return Err("The synthetic saved input does not match the publication".into());
+        }
+        let answers = self.answers.clone();
+        Ok(crate::docs::hosts::fake_generated::scripted_open(
+            output,
+            participants,
+            cancel,
+            pending,
+            additional,
+            effects,
+            move |path| Ok(generated_open(&answers, kind, path)),
+        ))
+    }
+    fn register_generated_actor_cleanup(
+        &self,
+        _wake: crate::docs::hosts::GeneratedActorWake,
+    ) -> Result<Box<dyn shell_contract::hosts::GeneratedCleanupRegistration>, String> {
+        Ok(Box::new(crate::docs::hosts::fake_generated::NoCleanup))
     }
     fn take_generate_handoff_owned(
         &self,

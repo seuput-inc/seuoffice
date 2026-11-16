@@ -628,12 +628,11 @@ pub trait TabHost<V, B>: EditorCalls<V> {
     fn diagram_tab_identity(&mut self, wc_id: i64) -> Option<DiagramIdentity>;
 
     // ---- openers of unloaded tabs ----
-    /// `opener.open(context)`; `Err` is what it throws
-    fn opener_open(
-        &mut self,
-        opener: &Opener,
-        context: &UnloadedTabOpenContext,
-    ) -> Result<LoadedTabView<V>, String>;
+    /// An unloaded tab was asked for (activation, pane entry, detach, path
+    /// lookup). The host loads it through its opener under a native authority
+    /// and activates it when that settles; the manager step that asked does not
+    /// proceed on this call.
+    fn request_tab_load(&mut self, id: &str);
     /// `console.warn(message, error)`
     fn warn(&mut self, message: &str, error: &str);
 }
@@ -772,6 +771,9 @@ pub enum EnsureStep<V> {
         ready: Ready,
         next: EnsureAfterReady<V>,
     },
+    /// the tab is still unloaded: the host loads it through its opener without
+    /// activating it, then answers with `resume_ensure_loaded(id, result)`
+    Load { id: String },
     /// the `ensureTabLoaded` promise rejected with this message
     Rejected(String),
 }
@@ -2557,17 +2559,57 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
     /// the part after the opener's `needsUser` check
     fn ensure_after_opener(&mut self, host: &mut dyn TabHost<V, B>, id: &str) -> EnsureStep<V> {
         // the answer may have taken a while: the tab can be gone or loaded by now
-        if self.index_of(id).is_none() {
+        let Some(tab) = self.tab_by_id(id) else {
             return EnsureStep::Done(TabLoadResult::Missing);
+        };
+        if tab.opener.is_some() && tab.view.is_none() {
+            return EnsureStep::Load { id: id.to_owned() };
         }
-        if !self.load_tab(host, id) {
-            let title = self
-                .tab_by_id(id)
-                .map(|t| t.title.clone())
-                .unwrap_or_default();
+        self.ensure_lazy(host, id)
+    }
+
+    /// the end of the load of [`EnsureStep::Load`]: the tab now has its view,
+    /// or the load failed with this message
+    pub fn resume_ensure_loaded(
+        &mut self,
+        host: &mut dyn TabHost<V, B>,
+        id: &str,
+        answer: Result<(), String>,
+    ) -> EnsureStep<V> {
+        let Some(tab) = self.tab_by_id(id) else {
+            return EnsureStep::Done(TabLoadResult::Missing);
+        };
+        if answer.is_err() || tab.view.is_none() {
+            let title = tab.title.clone();
             return EnsureStep::Rejected(format!("\"{title}\" could not be opened"));
         }
         self.ensure_lazy(host, id)
+    }
+
+    /// What an opener needs to load this unloaded tab: `None` when the tab is
+    /// gone, loaded, or has no opener
+    pub fn unloaded_tab(&self, id: &str) -> Option<(Opener, UnloadedTabOpenContext)> {
+        let index = self.index_of(id)?;
+        let tab = &self.tabs[index];
+        if tab.view.is_some() {
+            return None;
+        }
+        Some((tab.opener?, self.open_context(index)))
+    }
+
+    /// The tab showing this file, an unloaded one too (`findTabByPath`'s
+    /// match without its load); the caller hydrates it before `find_tab_by_path`
+    pub fn tab_id_for_path(&self, path: Option<&str>) -> Option<String> {
+        let wanted = canonical_path(path);
+        self.tabs
+            .iter()
+            .find(|t| {
+                (t.view.is_some() || t.opener.is_some())
+                    && truthy_opt(&t.file_path)
+                    && !t.present
+                    && canonical_path(t.file_path.as_deref()) == wanted
+            })
+            .map(|t| t.id.clone())
     }
 
     /// `const lazy = tab.lazy` and what follows it
@@ -2630,18 +2672,20 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
             file_path: tab.file_path.clone().filter(|p| !p.is_empty()),
         }
     }
-
-    /// Make an unloaded tab's editor view through its opener, once. True when
-    /// the tab has its view afterwards (or never needed one); false when the
-    /// opener failed, leaving the tab unloaded for the next try.
+    /// True when the tab has its view (or never needed one). An unloaded tab
+    /// is handed to the host to load asynchronously and this step stops, as
+    /// it did when the opener failed.
     fn load_tab(&mut self, host: &mut dyn TabHost<V, B>, id: &str) -> bool {
-        let plan = match self.prepare_tab_load(id) {
-            Ok(Some(plan)) => plan,
-            Ok(None) => return true,
-            Err(_) => return false,
+        let Some(index) = self.index_of(id) else {
+            return true;
         };
-        let loaded = host.opener_open(plan.opener(), plan.context());
-        self.resume_tab_load(host, plan, loaded).is_ok()
+        if self.tabs[index].opener.is_none() || self.tabs[index].view.is_some() {
+            return true;
+        }
+        if !self.loading_ids.iter().any(|loading| loading == id) {
+            host.request_tab_load(id);
+        }
+        false
     }
 
     pub fn prepare_tab_load(&mut self, id: &str) -> Result<Option<PreparedTabLoad>, String> {
@@ -2986,7 +3030,7 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
         next: SplitViewState,
         active_tab_id: Option<&str>,
     ) {
-        // entering a pane is a first activation: an unloaded pane document loads now
+        // entering a pane is a first activation: an unloaded pane document must already be loaded
         for id in [&next.a_tab_id, &next.b_tab_id] {
             let unloaded = self.tab_by_id(id).is_some_and(|t| t.opener.is_some());
             if unloaded && !self.load_tab(host, id) {
@@ -3035,7 +3079,7 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
                 return Ok(());
             }
         }
-        // a dropped unloaded tab enters a pane: load it before it is placed
+        // a dropped unloaded tab must be loaded before it is placed; the caller hydrates it first
         if matches!(
             intent,
             SplitDropIntent::Create(_) | SplitDropIntent::Replace | SplitDropIntent::Reorient(_)
@@ -3765,7 +3809,7 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
                 return None;
             }
         }
-        // an unloaded tab leaves with a live document: it loads first
+        // an unloaded tab leaves with a live document: the caller hydrates it first
         if !self.load_tab(host, id)
             || self.tabs[idx].view.is_none()
             || self.tabs[idx].binding.is_none()
@@ -3860,8 +3904,8 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
     }
 
     /// `findTabByPath`: the editor tab showing this file, whichever module
-    /// owns it; an unloaded tab for the file is loaded so its view can be
-    /// handed out
+    /// owns it; an unloaded tab for the file is not loaded here (the caller
+    /// hydrates it, see [`TabManager::tab_id_for_path`]) and does not match
     pub fn find_tab_by_path(
         &mut self,
         host: &mut dyn TabHost<V, B>,

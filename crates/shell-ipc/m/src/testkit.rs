@@ -843,11 +843,13 @@ impl EventSink for Recorder {
     }
 }
 
+type ReplacementListener =
+    Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>;
+
 struct FakeViews {
     views: Vec<Sender>,
     generations: std::collections::HashMap<ViewId, shell_contract::runtime::RendererGeneration>,
-    replacements:
-        Mutex<Vec<Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>>>,
+    replacements: Mutex<Vec<ReplacementListener>>,
 }
 
 impl Views for FakeViews {

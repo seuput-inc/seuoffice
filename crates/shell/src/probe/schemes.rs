@@ -40,9 +40,12 @@ pub fn install(builder: tauri::Builder<Wry>) -> tauri::Builder<Wry> {
         .register_asynchronous_uri_scheme_protocol(SINK, sink)
         .register_asynchronous_uri_scheme_protocol(crate::ipc::sync::SCHEME, ipc_recorder);
     for name in STANDINS {
-        builder = builder.register_asynchronous_uri_scheme_protocol(name, move |ctx, request, responder| {
-            standin(name, ctx, request, responder);
-        });
+        builder = builder.register_asynchronous_uri_scheme_protocol(
+            name,
+            move |ctx, request, responder| {
+                standin(name, ctx, request, responder);
+            },
+        );
     }
     builder
 }
@@ -65,33 +68,59 @@ fn query_of(request: &http::Request<Vec<u8>>) -> Vec<(String, String)> {
     let query = request.uri().query().unwrap_or("");
     Url::parse(&format!("http://probe.invalid/?{query}")).map_or_else(
         |_| Vec::new(),
-        |url| url.query_pairs().map(|(key, value)| (key.into_owned(), value.into_owned())).collect(),
+        |url| {
+            url.query_pairs()
+                .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                .collect()
+        },
     )
 }
 
 fn param(query: &[(String, String)], name: &str) -> Option<String> {
-    query.iter().find(|(key, _)| key == name).map(|(_, value)| value.clone())
+    query
+        .iter()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.clone())
 }
 
-fn sink(ctx: UriSchemeContext<'_, Wry>, request: http::Request<Vec<u8>>, responder: UriSchemeResponder) {
+fn sink(
+    ctx: UriSchemeContext<'_, Wry>,
+    request: http::Request<Vec<u8>>,
+    responder: UriSchemeResponder,
+) {
     let label = ctx.webview_label().to_owned();
     let query = query_of(&request);
     if let Some(text) = param(&query, "d") {
         match serde_json::from_str::<Value>(&text) {
             Ok(Value::Object(mut map)) => {
-                let ev = map.remove("ev").and_then(|value| value.as_str().map(str::to_owned)).unwrap_or_default();
+                let ev = map
+                    .remove("ev")
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .unwrap_or_default();
                 map.insert("view".into(), json!(label));
                 let value = Value::Object(map);
                 log::pages().push(&ev, value.clone());
                 record("page", &ev, value);
             }
-            _ => record("rust", "sink.unreadable", json!({ "view": label, "text": text })),
+            _ => record(
+                "rust",
+                "sink.unreadable",
+                json!({ "view": label, "text": text }),
+            ),
         }
     }
-    responder.respond(reply(StatusCode::NO_CONTENT, "text/plain", Vec::<u8>::new()));
+    responder.respond(reply(
+        StatusCode::NO_CONTENT,
+        "text/plain",
+        Vec::<u8>::new(),
+    ));
 }
 
-fn ipc_recorder(ctx: UriSchemeContext<'_, Wry>, request: http::Request<Vec<u8>>, responder: UriSchemeResponder) {
+fn ipc_recorder(
+    ctx: UriSchemeContext<'_, Wry>,
+    request: http::Request<Vec<u8>>,
+    responder: UriSchemeResponder,
+) {
     let header = |name: &str| request.headers().get(name).map(|value| value.len());
     let value = json!({
         "scheme": crate::ipc::sync::SCHEME,
@@ -120,7 +149,10 @@ fn standin(
     let view = ctx.webview_label().to_owned();
     let path = request.uri().path().trim_start_matches('/').to_owned();
     let query = query_of(&request);
-    let milliseconds = param(&query, "ms").and_then(|text| text.parse::<u64>().ok()).unwrap_or(0).min(20_000);
+    let milliseconds = param(&query, "ms")
+        .and_then(|text| text.parse::<u64>().ok())
+        .unwrap_or(0)
+        .min(20_000);
     let id = param(&query, "id").unwrap_or_default();
     record(
         "scheme",

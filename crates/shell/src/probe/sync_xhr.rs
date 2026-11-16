@@ -42,12 +42,23 @@ pub fn run(ctx: &Ctx) -> Result<(), String> {
             bridge: Bridge::Surface(Surface::Shell),
         },
     };
-    let options = WindowOptions { on_frame: Some(on_frame), ..WindowOptions::default() };
+    let options = WindowOptions {
+        on_frame: Some(on_frame),
+        ..WindowOptions::default()
+    };
     let (window, view) = ctx.windows.open_window_with_options(spec, options)?;
     let label = format!("view-{}", view.0);
-    record("rust", "win.open", json!({ "label": label, "window": window.0, "url": app_url("shell", "p1-sync-xhr.html"), "real": true }));
+    record(
+        "rust",
+        "win.open",
+        json!({ "label": label, "window": window.0, "url": app_url("shell", "p1-sync-xhr.html"), "real": true }),
+    );
     let done = wait_page(&label, "page.done", 0, Duration::from_secs(90)).is_some();
     record("rust", "p1.wait", json!({ "page_done": done }));
     super::harness::destroy(ctx, &label);
-    if done { Ok(()) } else { Err("the P1 page did not finish".into()) }
+    if done {
+        Ok(())
+    } else {
+        Err("the P1 page did not finish".into())
+    }
 }

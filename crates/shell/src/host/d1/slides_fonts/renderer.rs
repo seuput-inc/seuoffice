@@ -4,11 +4,11 @@ use serde_json::{Value, json};
 
 /// The evaluator must be bound to the ingress native document token and main
 /// execution context. Current-context evaluation after navigation is unsafe.
-pub(super) struct BoundRenderer<E> {
+pub(in crate::host::d1) struct BoundRenderer<E> {
     evaluate: E,
 }
 impl<E> BoundRenderer<E> {
-    pub(super) fn new(evaluate: E) -> Self {
+    pub(in crate::host::d1) fn new(evaluate: E) -> Self {
         Self { evaluate }
     }
 }

@@ -152,7 +152,8 @@ impl TabsState {
             Ok(_) => self.windows.window_destroy(window),
             Err(error) => {
                 // the dirty tabs could not be read: the window stays, as for a Cancel
-                self.hooks.warn("[shell] window close prompt failed:", &error);
+                self.hooks
+                    .warn("[shell] window close prompt failed:", &error);
                 self.hooks.reset_sheets_shutting_down();
                 self.hooks.cancel_update_restart();
             }
@@ -183,9 +184,9 @@ impl TabsState {
             }
             CloseStep::Rejected(error) => self.settle_shell_close(window, Err(error)),
             CloseStep::CloseWindow => {
-                if let Err(error) = self.shell_guard(window, false, |guard, host| {
-                    guard.after_close(host)
-                }) {
+                if let Err(error) =
+                    self.shell_guard(window, false, |guard, host| guard.after_close(host))
+                {
                     self.hooks.warn("[shell] window close failed:", &error);
                 }
                 self.windows.window_destroy(window);
@@ -203,7 +204,9 @@ impl TabsState {
             Ok(Some(step)) => self.drive_shell_close(window, step),
             // the manager went away with the window: no prompt is waiting on it
             Ok(None) => {}
-            Err(error) => self.hooks.warn("[shell] window close prompt failed:", &error),
+            Err(error) => self
+                .hooks
+                .warn("[shell] window close prompt failed:", &error),
         }
     }
 

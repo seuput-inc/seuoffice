@@ -130,22 +130,27 @@ pub(super) fn note(path: &str, text: Option<&str>, done: Box<dyn FnOnce(Result<b
         let shown = path.clone();
         tabs.open_document_path(
             &shown,
-            Box::new(move |result| {
-                let outcome = match result {
-                    Ok(true) => match opened.view_of_file(&path) {
-                        None => Ok(false),
-                        Some(view) => match (text, editor) {
-                            (Some(text), Some(editor)) => {
-                                editor.queue_note_append(view, &path, &text);
-                                Ok(true)
-                            }
-                            (Some(_), None) => Ok(false),
-                            (None, _) => Ok(true),
-                        },
-                    },
-                    other => other,
-                };
-                done(outcome);
+            Box::new(move |result| match result {
+                Ok(true) => {
+                    let shown_path = path.clone();
+                    opened.view_of_file(
+                        &shown_path,
+                        Box::new(move |view| {
+                            done(match view {
+                                None => Ok(false),
+                                Some(view) => match (text, editor) {
+                                    (Some(text), Some(editor)) => {
+                                        editor.queue_note_append(view, &path, &text);
+                                        Ok(true)
+                                    }
+                                    (Some(_), None) => Ok(false),
+                                    (None, _) => Ok(true),
+                                },
+                            });
+                        }),
+                    );
+                }
+                other => done(other),
             }),
         );
     });

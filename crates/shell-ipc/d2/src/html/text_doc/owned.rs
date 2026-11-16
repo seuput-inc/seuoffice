@@ -371,20 +371,6 @@ impl OwnedSave {
             .zip(self.0.destination.context.renderer())
             .is_some_and(|(a, b)| a.same_generation(b))
     }
-    /// Follow-up of a written export (open or reveal it). A renderer-owned save
-    /// asks the shell under its origin; a native save runs `native` inside its
-    /// own admission, which has no renderer origin to hand over.
-    pub(crate) fn export_written(
-        &self,
-        renderer: impl FnOnce(NativeRequestOwner, Box<dyn FnOnce(Result<(), String>)>),
-        native: &mut dyn FnMut() -> Result<(), String>,
-        then: Box<dyn FnOnce(Result<(), String>)>,
-    ) {
-        match self.origin() {
-            Some(origin) => renderer(origin.clone(), then),
-            None => then(self.admit(native)),
-        }
-    }
 }
 impl TextDocs {
     pub(crate) fn capture_document_owner(
@@ -1850,13 +1836,15 @@ impl TextDocs {
         }
     }
 
+    /// Stages the export beside its target on a worker and publishes it on this
+    /// core turn under the save's authority; nothing public is truncated.
     pub(crate) fn publish_export_owned(
         self: &Rc<Self>,
         view: ViewId,
         target: String,
         bytes: Vec<u8>,
         request: OwnedSave,
-        then: impl FnOnce(Result<(), String>) + 'static,
+        then: impl FnOnce(Result<crate::staged::Published, String>) + 'static,
     ) {
         if let Err(error) = request.check_document(self, view) {
             return then(Err(error));
@@ -1864,24 +1852,26 @@ impl TextDocs {
         if let Err(error) = request.check_target(Path::new(&target)) {
             return then(Err(error));
         }
-        let worker = request.clone();
         let docs = Rc::clone(self);
         kit::on_worker(
             &self.services,
             move || {
-                main_core::packages::electron_utils::atomic_write::atomic_write_file_authorized(
-                    &target,
-                    &bytes,
-                    &mut |effect| {
-                        super::owned_write::admit(&worker, &mut || {
-                            effect();
-                            Ok(())
-                        })
-                    },
+                crate::staged::StagedOutput::prepare(
+                    Path::new(&target),
+                    bytes,
+                    file_commit::PublicationMode::Replace,
                 )
-                .map_err(|error| error.message)
+                .map(|staged| (target, staged))
             },
-            move |result| then(result.and_then(|()| request.check_document(&docs, view))),
+            move |staged| {
+                then(
+                    staged
+                        .and_then(|(target, staged)| request.publish_staged(&target, staged))
+                        .and_then(|published| {
+                            request.check_document(&docs, view).map(|()| published)
+                        }),
+                )
+            },
         );
     }
 }

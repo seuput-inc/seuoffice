@@ -234,8 +234,9 @@ pub trait AgentWindowFrame: Send + Sync {
     /// hands a safe URL to the OS and denies the window, show on `ready-to-show`,
     /// then the load (`{ url }` or `{ file }`). `options` and `load` are what
     /// `agent_window_options` and `agent_window_load` answered. The window ending
-    /// is the view's destruction (`Views::on_destroyed`)
-    fn create(&self, options: &serde_json::Value, load: &serde_json::Value) -> ViewId;
+    /// is the view's destruction (`Views::on_destroyed`). `Err` is what the
+    /// constructor threw: no window is open then
+    fn create(&self, options: &serde_json::Value, load: &serde_json::Value) -> Result<ViewId, String>;
 }
 
 pub type AgentWindowFrameHost = Arc<dyn AgentWindowFrame>;

@@ -213,10 +213,16 @@ impl Runtime {
     fn set_tray(&self, visible: bool) {
         let app = self.cx.app.clone();
         let lang = super::ShellLanguage(self.cx.ui.clone()).lang();
+        let control = self
+            .state
+            .lock()
+            .expect("quick look runtime")
+            .control
+            .clone();
         super::on_ui(&self.cx.ui, move || {
             if visible {
                 if app.tray_by_id("quick-look").is_none() {
-                    if let Err(error) = create_tray(&app, lang) {
+                    if let Err(error) = create_tray(&app, lang, control) {
                         eprintln!("creating quick look tray: {error}");
                     }
                 } else if let Some(tray) = app.tray_by_id("quick-look") {
@@ -259,7 +265,7 @@ impl Runtime {
 fn menu(
     app: &tauri::AppHandle,
     lang: main_core::packages::i18n::Lang,
-) -> tauri::Result<tauri::menu::Menu<tauri::DynRuntime>> {
+) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use main_core::packages::i18n::Lang;
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
     let (open, quit) = match lang {
@@ -296,8 +302,8 @@ fn update_menu(
 fn create_tray(
     app: &tauri::AppHandle,
     lang: main_core::packages::i18n::Lang,
+    control: Option<shell_ipc_w::quick_look::QuickLookControl>,
 ) -> Result<(), String> {
-    use tauri::Manager;
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
     let bytes = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -314,7 +320,7 @@ fn create_tray(
         .tooltip(tooltip(lang))
         .menu(&menu)
         .menu_on_left_click(false)
-        .on_menu_event(|app, event| match event.id().as_ref() {
+        .on_menu_event(move |app, event| match event.id().as_ref() {
             "quick-look-open" => super::post_core(|provided, _| {
                 if let Some(tabs) = provided
                     .all::<shell_ipc_w::tabs::TabsState>()
@@ -324,10 +330,13 @@ fn create_tray(
                     tabs.reveal_shell_window();
                 }
             }),
+            // `stopQuickLookRuntime(); app.quit()`: the quit goes through every editor's
+            // unsaved-changes guard like any other quit
             "quick-look-quit" => {
-                for window in app.windows().into_values() {
-                    let _ = window.close();
+                if let Some(control) = control.clone() {
+                    super::post_core(move |_, _| control.stop());
                 }
+                crate::host::quit::request_quit(app);
             }
             _ => {}
         })

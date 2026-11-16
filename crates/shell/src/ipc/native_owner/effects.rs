@@ -457,15 +457,14 @@ impl PreparedOwnerTransition<'_> {
                             .with_active_retiring(retirement, |capability| {
                                 slides
                                     .with_active(|| match media_retirement {
-                                        Some((old, successor, notifications)) => {
-                                            media
-                                                .with_active_retiring(
-                                                    old,
-                                                    successor,
-                                                    notifications,
-                                                    |media_retirement| {
-                                                        pdf.with_live(|| {
-                                                            cancellation.with_active(|| {
+                                        Some((old, successor, notifications)) => media
+                                            .with_active_retiring(
+                                                old,
+                                                successor,
+                                                notifications,
+                                                |media_retirement| {
+                                                    pdf.with_live(|| {
+                                                        cancellation.with_active(|| {
                                                                 effect
                                                                     .take()
                                                                     .expect("single admission")(
@@ -473,12 +472,11 @@ impl PreparedOwnerTransition<'_> {
                                                                     Some(media_retirement),
                                                                 )
                                                             })
-                                                        })
-                                                        .flatten()
-                                                    },
-                                                )
-                                                .flatten()
-                                        }
+                                                    })
+                                                    .flatten()
+                                                },
+                                            )
+                                            .flatten(),
                                         None => media
                                             .with_active(|| {
                                                 pdf.with_live(|| {

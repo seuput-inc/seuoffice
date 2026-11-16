@@ -11,7 +11,7 @@ fn invalid(message: &'static str) -> io::Error {
 
 /// Open every component beneath an absolute root without following links, then
 /// read the exact bounded length from the same regular-file handle.
-pub(super) fn read(root: &Path, relative: &Path, max_bytes: u64) -> io::Result<Vec<u8>> {
+pub(crate) fn read(root: &Path, relative: &Path, max_bytes: u64) -> io::Result<Vec<u8>> {
     if !root.is_absolute() {
         return Err(invalid("asset root must be absolute"));
     }

@@ -458,12 +458,10 @@ pub(in super::super) fn commit_activation_with_spare<T>(
                     committed.ok_or("The spare close did not commit activation")?,
                     CommittedSpareClose::Won(permit),
                 )),
-                shell_contract::ipc::NativeBrowserCloseClaim::Superseded(proof) => {
-                    Ok((
-                        apply()?,
-                        CommittedSpareClose::Superseded(Box::new(binding), proof),
-                    ))
-                }
+                shell_contract::ipc::NativeBrowserCloseClaim::Superseded(proof) => Ok((
+                    apply()?,
+                    CommittedSpareClose::Superseded(Box::new(binding), proof),
+                )),
             }
         } else {
             Ok((apply()?, CommittedSpareClose::None))

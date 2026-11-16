@@ -15,6 +15,7 @@ mod menu;
 mod print;
 mod settings;
 mod spell;
+mod staged;
 mod value;
 
 #[cfg(any(test, feature = "probe"))]

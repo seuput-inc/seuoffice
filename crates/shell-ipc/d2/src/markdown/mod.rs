@@ -233,17 +233,27 @@ pub trait MarkdownShell: Send + Sync {
     );
     /// `docxExportedHook(path)`: a "convert and open in Docs" export landed
     fn docx_exported(&self, path: &Path);
-    fn export_written_owned(
+    /// Open or reveal a published PDF export through a retained generated-path
+    /// operation.
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_generated_output(
         &self,
-        origin: shell_contract::ipc::NativeRequestOwner,
-        destination: shell_contract::ipc::NativeRequestOwner,
+        output: shell_contract::ipc::SavedPublication,
+        input: Option<shell_contract::ipc::NativeSavedInput>,
+        kind: &'static str,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
         cancel: shell_contract::runtime::CancelToken,
         pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
         effects: shell_contract::hosts::OwnedEffectsHost,
-        path: PathBuf,
-        kind: &'static str,
-        then: Box<dyn FnOnce(Result<(), String>)>,
-    );
+        accepted: shell_contract::hosts::PdfReloadAccepted,
+        wake: shell_contract::hosts::GeneratedPathWake,
+    ) -> Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String>;
+    /// The shell's process-owned retry of one generated export's completion.
+    fn register_generated_actor_cleanup(
+        &self,
+        wake: crate::docs::hosts::GeneratedActorWake,
+    ) -> Result<Box<dyn shell_contract::hosts::GeneratedCleanupRegistration>, String>;
     /// `randomUUID()` of the page image exports (session ids, folder names)
     /// and of the Docs conversions (session folder, file names)
     fn random_uuid(&self) -> String {
@@ -814,6 +824,7 @@ pub(crate) fn entries(
     let saved_assets = shell.clone();
     let recovery_assets = shell.clone();
     let rename_recovery_assets = shell.clone();
+    let cleanup_shell = shell.clone();
     let docs = TextDocs::new(
         services,
         CHANNELS,
@@ -864,6 +875,9 @@ pub(crate) fn entries(
                 )
             }),
             presenting: Box::new(|_| false),
+            register_cleanup: Box::new(move |wake| {
+                cleanup_shell.register_generated_actor_cleanup(wake)
+            }),
         },
         ("Untitled", "제목 없음"),
     )?;
@@ -1217,11 +1231,7 @@ fn lock(index: &SharedIndex) -> std::sync::MutexGuard<'_, WikiIndex> {
 #[cfg(any(test, feature = "probe"))]
 pub(crate) fn fakes(hosts: &mut shell_contract::Hosts, case: &serde_json::Value) {
     let probe = hosts.get::<crate::html::fake::ProbeLog>().cloned();
-    let os = hosts
-        .get::<OsShellHost>()
-        .expect("fake OS shell is installed")
-        .clone();
-    let fake = Arc::new(fake::FakeMarkdown::new(case, probe, os));
+    let fake = Arc::new(fake::FakeMarkdown::new(case, probe));
     hosts.insert::<MarkdownEngineHost>(fake.clone());
     hosts.insert::<MarkdownShellHost>(fake.clone());
     hosts.insert::<Arc<fake::FakeMarkdown>>(fake);

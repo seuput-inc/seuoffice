@@ -315,54 +315,34 @@ impl MHost for Fake {
         self.log(json!(["openGeneratedPath", path]));
         self.bool_or("openGenerated", false)
     }
-    fn export_written_owned(
+    fn prepare_generated_output(
         &self,
-        _path: std::path::PathBuf,
-        _origin: shell_contract::ipc::NativeRequestOwner,
-        _destination: shell_contract::ipc::NativeRequestOwner,
-        _cancel: shell_contract::runtime::CancelToken,
-        _pending: shell_contract::runtime::CancelToken,
-        _effects: shell_contract::hosts::OwnedEffectsHost,
-        _accepted: shell_contract::hosts::PdfReloadAccepted,
-        _wake: shell_contract::hosts::GeneratedPathWake,
-        done: Box<
-            dyn FnOnce(Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String>)
-                + Send,
-        >,
-    ) {
-        done(Err("No generated-path native receipt was scripted".into()));
-    }
-    fn export_written_existing_document(
-        &self,
-        selection: shell_contract::ipc::NativeSaveDestination,
+        output: shell_contract::ipc::SavedPublication,
+        _input: Option<shell_contract::ipc::NativeSavedInput>,
         participants: Vec<shell_contract::ipc::NativeRequestOwner>,
         cancel: shell_contract::runtime::CancelToken,
         pending: shell_contract::runtime::CancelToken,
-        _effects: shell_contract::hosts::OwnedEffectsHost,
         additional: Vec<shell_contract::runtime::CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
         _accepted: shell_contract::hosts::PdfReloadAccepted,
         _wake: shell_contract::hosts::GeneratedPathWake,
-        done: Box<
-            dyn FnOnce(Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String>)
-                + Send,
-        >,
-    ) {
+    ) -> Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String> {
         let log = self.log.clone();
         let should_open = self.bool_or("openGenerated", false);
         let task = SyntheticGeneratedTask::new();
         let action = Box::new(move || {
+            let path = output.path().to_string_lossy().into_owned();
             let mut opened = None;
-            shell_contract::hosts::synthetic::with_existing_document_save_extra(
-                selection.binding(),
+            output.with_effect(
+                effects.as_ref(),
                 &participants,
                 &cancel,
                 &pending,
                 &additional.iter().collect::<Vec<_>>(),
                 &mut || {
-                    log.lock().unwrap().push(json!([
-                        "openGeneratedPath",
-                        selection.path().to_string_lossy()
-                    ]));
+                    log.lock()
+                        .unwrap()
+                        .push(json!(["openGeneratedPath", path]));
                     opened = Some(should_open);
                     Ok(())
                 },
@@ -373,10 +353,10 @@ impl MHost for Fake {
                 None => Err("Synthetic generated path was not admitted".into()),
             }
         });
-        done(Ok(Box::new(SyntheticGeneratedPrepared {
+        Ok(Box::new(SyntheticGeneratedPrepared {
             task,
             action: Some(action),
-        })));
+        }))
     }
 
     fn default_save_dir(&self) -> String {

@@ -25,7 +25,10 @@ pub struct Ctx {
 
 impl Ctx {
     pub fn new(context: &HostContext) -> Self {
-        Self { app: context.app.clone(), windows: context.windows.clone() }
+        Self {
+            app: context.app.clone(),
+            windows: context.windows.clone(),
+        }
     }
 
     pub fn native(&self) -> Native {
@@ -52,8 +55,10 @@ pub fn platform() -> &'static str {
 /// shape (`genoffice-app-<host>://localhost/...` on macOS, `http://genoffice-app-<host>.localhost/...`
 /// on Windows).
 pub fn app_url(host: &str, page: &str) -> String {
-    app_scheme::webview_url(&format!("genoffice-app://{host}/probe/{page}"))
-        .map_or_else(|| format!("genoffice-app://{host}/probe/{page}"), |url| url.to_string())
+    app_scheme::webview_url(&format!("genoffice-app://{host}/probe/{page}")).map_or_else(
+        || format!("genoffice-app://{host}/probe/{page}"),
+        |url| url.to_string(),
+    )
 }
 
 /// The same for a scheme the probe serves itself.
@@ -109,11 +114,19 @@ pub struct Opened {
 /// The event as plain data: its kind and what it carries.
 pub fn describe(event: &NativeEvent) -> (&'static str, Value) {
     match &event.kind {
-        NativeEventKind::NavigationStarted { navigation, url, same_document } => (
+        NativeEventKind::NavigationStarted {
+            navigation,
+            url,
+            same_document,
+        } => (
             "NavigationStarted",
             json!({ "navigation": navigation.id().get(), "url": url.as_str(), "same_document": same_document }),
         ),
-        NativeEventKind::DocumentCommitted { navigation, document, url } => (
+        NativeEventKind::DocumentCommitted {
+            navigation,
+            document,
+            url,
+        } => (
             "DocumentCommitted",
             json!({ "navigation": navigation.id().get(), "document": document.id().get(), "url": url.as_str() }),
         ),
@@ -129,7 +142,11 @@ pub fn describe(event: &NativeEvent) -> (&'static str, Value) {
             "DocumentRevoked",
             json!({ "document": document.id().get(), "reason": format!("{reason:?}") }),
         ),
-        NativeEventKind::NavigationFailed { navigation, url, error } => (
+        NativeEventKind::NavigationFailed {
+            navigation,
+            url,
+            error,
+        } => (
             "NavigationFailed",
             json!({
                 "navigation": navigation.id().get(),
@@ -138,13 +155,17 @@ pub fn describe(event: &NativeEvent) -> (&'static str, Value) {
                 "description": error.description,
             }),
         ),
-        NativeEventKind::LoadFinished { navigation, ok } => {
-            ("LoadFinished", json!({ "navigation": navigation.id().get(), "ok": ok }))
+        NativeEventKind::LoadFinished { navigation, ok } => (
+            "LoadFinished",
+            json!({ "navigation": navigation.id().get(), "ok": ok }),
+        ),
+        NativeEventKind::AddressChanged { url } => {
+            ("AddressChanged", json!({ "url": url.as_str() }))
         }
-        NativeEventKind::AddressChanged { url } => ("AddressChanged", json!({ "url": url.as_str() })),
-        NativeEventKind::WebviewProcessFailed { kind } => {
-            ("WebviewProcessFailed", json!({ "kind": format!("{kind:?}") }))
-        }
+        NativeEventKind::WebviewProcessFailed { kind } => (
+            "WebviewProcessFailed",
+            json!({ "kind": format!("{kind:?}") }),
+        ),
         NativeEventKind::View(view) => ("View", json!({ "event": format!("{view:?}") })),
         NativeEventKind::Retired { outcome } => {
             ("Retired", json!({ "outcome": format!("{outcome:?}") }))
@@ -171,7 +192,11 @@ pub fn open_direct(ctx: &Ctx, spec: Direct) -> Result<Opened, String> {
     let (send, receive) = mpsc::sync_channel(1);
     let app = ctx.app.clone();
     let build_timeline = timeline.clone();
-    record("rust", "win.open", json!({ "label": label, "url": spec.url, "visible": spec.visible, "bridge": format!("{:?}", spec.bridge) }));
+    record(
+        "rust",
+        "win.open",
+        json!({ "label": label, "url": spec.url, "visible": spec.visible, "bridge": format!("{:?}", spec.bridge) }),
+    );
     ctx.app
         .run_on_main_thread(move || {
             let _ = send.send(build(&app, spec, build_timeline));
@@ -182,15 +207,27 @@ pub fn open_direct(ctx: &Ctx, spec: Direct) -> Result<Opened, String> {
         .map_err(|_| "building the window timed out".to_owned())
         .and_then(|result| result);
     match browser {
-        Ok(browser) => Ok(Opened { label, timeline, browser }),
+        Ok(browser) => Ok(Opened {
+            label,
+            timeline,
+            browser,
+        }),
         Err(error) => {
-            record("rust", "win.open.failed", json!({ "label": label, "error": error }));
+            record(
+                "rust",
+                "win.open.failed",
+                json!({ "label": label, "error": error }),
+            );
             Err(error)
         }
     }
 }
 
-fn build(app: &AppHandle, spec: Direct, timeline: Arc<Timeline>) -> Result<BrowserIdentity, String> {
+fn build(
+    app: &AppHandle,
+    spec: Direct,
+    timeline: Arc<Timeline>,
+) -> Result<BrowserIdentity, String> {
     let native = app.state::<Native>().inner().clone();
     let url = tauri::Url::parse(&spec.url).map_err(|error| error.to_string())?;
     let label = spec.label.clone();
@@ -267,23 +304,38 @@ pub fn wait_done(label: &str, from: usize, seconds: u64) -> bool {
 
 /// Wait until the browser reports the end of a load after the `from`th event.
 pub fn wait_load(opened: &Opened, from: usize, seconds: u64) -> bool {
-    opened.timeline.wait_kind("LoadFinished", from, Duration::from_secs(seconds))
+    opened
+        .timeline
+        .wait_kind("LoadFinished", from, Duration::from_secs(seconds))
 }
 
 pub fn eval(page: &PageOps, js: &str, seconds: u64) -> Result<Value, PageError> {
-    page.blocking(Duration::from_secs(seconds), |done| page.evaluate(js, true, None, done))
+    page.blocking(Duration::from_secs(seconds), |done| {
+        page.evaluate(js, true, None, done)
+    })
 }
 
 /// Record the outcome of one operation.
 pub fn record_op(name: &str, label: &str, started: f64, result: Result<Value, String>) {
     let ms = log::now_ms() - started;
     match result {
-        Ok(value) => record("rust", "op", json!({ "name": name, "view": label, "ok": true, "ms": ms, "value": value })),
-        Err(error) => record("rust", "op", json!({ "name": name, "view": label, "ok": false, "ms": ms, "error": error })),
+        Ok(value) => record(
+            "rust",
+            "op",
+            json!({ "name": name, "view": label, "ok": true, "ms": ms, "value": value }),
+        ),
+        Err(error) => record(
+            "rust",
+            "op",
+            json!({ "name": name, "view": label, "ok": false, "ms": ms, "error": error }),
+        ),
     }
 }
 
 /// Keeps values alive until the process ends (evaluation handles that must outlive their call).
 pub fn keep<T: Send + 'static>(store: &Mutex<Vec<T>>, value: T) {
-    store.lock().unwrap_or_else(|error| error.into_inner()).push(value);
+    store
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .push(value);
 }

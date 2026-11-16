@@ -226,7 +226,7 @@ impl TabsState {
         );
     }
 
-    fn activate_native_existing(
+    pub(super) fn activate_native_existing(
         &self,
         id: String,
         operation: NativeInvocationOperation,
@@ -326,6 +326,7 @@ impl TabsState {
                         plan,
                         command: operation.clone(),
                         shell: shell_owner,
+                        prepared: None,
                     },
                     done: Completion::Plain(completion),
                     generated_cleanup: None,

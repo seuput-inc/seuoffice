@@ -5,7 +5,7 @@ mod annotation_delete;
 mod blank_pages;
 mod clipboard;
 mod decrypt;
-mod document_edits;
+pub(crate) mod document_edits;
 mod form_draw_tree;
 mod generate_image;
 pub(crate) mod image_edits;

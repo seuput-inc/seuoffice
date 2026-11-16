@@ -11,10 +11,12 @@
 //! continuation keyed by view, emits the request, and the renderer's answer
 //! (or a timer as the TypeScript's `setTimeout`) runs it on the core thread.
 
+mod generated;
 mod headless;
 mod owned;
 mod recovery_open;
 mod saved;
+pub(crate) use generated::Prepare;
 pub(crate) use headless::HeadlessPublication;
 pub(crate) use owned::{NativeRenameScope, OwnedSave, RecoveryRenameScope, SaveAuthority};
 pub(crate) mod owned_write;
@@ -138,6 +140,13 @@ pub(crate) struct DocHooks {
     /// html: the view presents another view's preview; its export requests
     /// are dropped and a save request is answered `true` at once
     pub presenting: Box<dyn Fn(ViewId) -> bool>,
+    /// The shell's process-owned retry of one generated export's completion.
+    pub register_cleanup: Box<
+        dyn Fn(
+            crate::docs::hosts::GeneratedActorWake,
+        )
+            -> Result<Box<dyn shell_contract::hosts::GeneratedCleanupRegistration>, String>,
+    >,
 }
 
 /// One view's document (the `*ByWc` maps of the TypeScript, one entry)
@@ -212,6 +221,8 @@ pub(crate) struct TextDocs {
     memory: Arc<Mutex<DialogMemory>>,
     /// `configuredDefaultSaveDir`'s fallback state
     save_dir: Arc<Mutex<SaveDirState>>,
+    /// the generated exports whose open or reveal outlives one core turn
+    cleanup_mailbox: crate::generated_mailbox::CleanupMailbox,
 }
 
 /// what runs when a view is destroyed
@@ -338,6 +349,7 @@ impl TextDocs {
                 destroyed_hook: RefCell::default(),
                 memory,
                 save_dir,
+                cleanup_mailbox: crate::generated_mailbox::CleanupMailbox::default(),
             }
         });
         let me = Rc::downgrade(&docs);

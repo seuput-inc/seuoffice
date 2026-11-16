@@ -196,7 +196,7 @@ impl Md {
             .publish_export_owned(view, target, bytes, owner, move |published| {
                 done(match published {
                     Err(error) => failure(error),
-                    Ok(()) => saved_at(&output),
+                    Ok(_) => saved_at(&output),
                 })
             });
     }
@@ -225,47 +225,47 @@ impl Md {
                 let output = target.clone();
                 me.e.docs
                     .publish_export_owned(view, target, bytes, retained, move |published| {
-                        if let Err(error) = published {
-                            return done(failure(error));
-                        }
+                        let published = match published {
+                            Err(error) => return done(failure(error)),
+                            Ok(published) => published,
+                        };
                         if finished.e.docs.is_headless() {
                             return done(saved_at(&output));
                         }
-                        let path = output.clone();
-                        let file = std::path::PathBuf::from(output);
-                        let reveal = file.clone();
                         let shell = finished.shell.clone();
-                        let hook = finished.shell.clone();
-                        let os = finished.os.clone();
-                        let (destination, cancel, pending, effects) = (
-                            final_owner.destination().clone(),
-                            final_owner.cancel(),
-                            final_owner.pending(),
-                            final_owner.effects().clone(),
-                        );
-                        final_owner.export_written(
-                            move |origin, then| {
-                                shell.export_written_owned(
-                                    origin,
-                                    destination,
+                        let prepare: crate::html::text_doc::Prepare = Box::new(
+                            move |output,
+                                  input,
+                                  participants,
+                                  cancel,
+                                  pending,
+                                  additional,
+                                  effects,
+                                  accepted,
+                                  wake| {
+                                shell.prepare_generated_output(
+                                    output,
+                                    input,
+                                    "pdf",
+                                    participants,
                                     cancel,
                                     pending,
+                                    additional,
                                     effects,
-                                    file,
-                                    "pdf",
-                                    then,
+                                    accepted,
+                                    wake,
                                 )
                             },
-                            &mut || {
-                                if !hook.open_generated_path(&reveal) {
-                                    os.show_item_in_folder(&reveal);
-                                }
-                                Ok(())
-                            },
+                        );
+                        finished.e.docs.complete_export(
+                            final_owner,
+                            published,
+                            finished.os.clone(),
+                            prepare,
                             Box::new(move |opened| {
                                 done(match opened {
                                     Err(error) => failure(error),
-                                    Ok(()) => saved_at(&path),
+                                    Ok(()) => saved_at(&output),
                                 })
                             }),
                         );

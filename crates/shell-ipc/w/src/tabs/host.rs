@@ -23,8 +23,7 @@ use std::sync::Arc;
 use main_core::shell::detached_windows::{RecId, WindowOptions};
 use main_core::shell::split_layout::Rect;
 use main_core::shell::tab_manager::{
-    Deferred, LoadedTabView, Opener, SplitViewState, TabKind, TabResult, UnloadedTabOpenContext,
-    ViewSpec,
+    Deferred, Opener, SplitViewState, TabKind, TabResult, UnloadedTabOpenContext, ViewSpec,
 };
 use serde_json::Value;
 use shell_contract::editors::Then;
@@ -976,17 +975,6 @@ pub trait TabHooks {
         &self,
         wc_id: i64,
     ) -> Option<main_core::shell::tab_manager::DiagramIdentity>;
-    /// `opener.open(context)` of an unloaded tab
-    fn opener_open(
-        &self,
-        opener: &Opener,
-        context: &UnloadedTabOpenContext,
-    ) -> Result<LoadedTabView<ViewId>, String>;
-    fn opener_needs_user(
-        &self,
-        opener: &Opener,
-        context: &UnloadedTabOpenContext,
-    ) -> Result<bool, String>;
     /// the Sheets close guard re-arms after a vetoed close
     fn reset_sheets_shutting_down(&self);
     fn cancel_update_restart(&self);

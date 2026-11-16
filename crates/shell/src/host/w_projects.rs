@@ -137,7 +137,7 @@ impl LegacyProjectStore for StoreHost {
     fn sheets_session_path(&self, view: ViewId, session: &Value) -> Option<String> {
         let session = session.as_str()?.to_owned();
         on_core(move |_| {
-            shell_ipc_d1::sheets::editors::views()?
+            shell_ipc_d1::sheets::views()?
                 .external_link_session(view, &session)
                 .map(|(path, _)| path)
         })

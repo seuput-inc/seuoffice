@@ -33,7 +33,7 @@ impl Drop for Snapshot {
     }
 }
 
-pub(super) fn admit<R>(
+pub(in crate::host::d1) fn admit<R>(
     document: &NativeInvocationDocument,
     cancel: &CancelToken,
     pending: &CancelToken,
@@ -179,7 +179,7 @@ impl Drop for SavedSnapshot {
     }
 }
 
-pub(super) fn admit_saved<R>(
+pub(in crate::host::d1) fn admit_saved<R>(
     document: &shell_contract::ipc::NativeSavedDocument,
     actual: &shell_contract::ipc::NativeRequestOwner,
     actual_cancel: &shell_contract::runtime::CancelToken,

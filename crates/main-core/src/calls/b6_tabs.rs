@@ -195,6 +195,7 @@ struct World {
     failures: Vec<String>,
     close_answers: VecDeque<CloseAnswer>,
     readies: HashMap<u64, ReadyState>,
+    load_requests: Vec<String>,
     reported: HashSet<u64>,
     openers: HashMap<u64, OpenerSpec>,
     cursor: (f64, f64),
@@ -278,6 +279,7 @@ impl World {
             failures: Vec::new(),
             close_answers: VecDeque::new(),
             readies: HashMap::new(),
+            load_requests: Vec::new(),
             reported: HashSet::new(),
             openers: HashMap::new(),
             cursor: (0.0, 0.0),
@@ -868,42 +870,8 @@ impl TabHost<View, ()> for World {
         self.state(wc_id).identity.clone()
     }
 
-    fn opener_open(
-        &mut self,
-        opener: &Opener,
-        context: &UnloadedTabOpenContext,
-    ) -> Result<LoadedTabView<View>, String> {
-        let spec = self.openers.get(&opener.id).cloned();
-        self.log(vec![
-            Value::from("opener.open"),
-            Value::from(opener.id),
-            context.to_value(),
-        ]);
-        let Some(spec) = spec else {
-            return Err("no such opener".to_owned());
-        };
-        if spec.plain {
-            let view = fixture_plain_editor_view(self, context.kind, context.file_path.as_deref())
-                .map_err(|e| e.0)?;
-            return Ok(LoadedTabView { view, ready: None });
-        }
-        if spec.fails {
-            return Err("opener failed".to_owned());
-        }
-        let view = self.make_view();
-        let state = match spec.ready.as_str() {
-            "none" => {
-                return Ok(LoadedTabView { view, ready: None });
-            }
-            "resolved" => ReadyState::Resolved,
-            "rejected" => ReadyState::Rejected("document failed".to_owned()),
-            _ => ReadyState::Pending,
-        };
-        self.readies.insert(opener.id, state);
-        Ok(LoadedTabView {
-            view,
-            ready: Some(Ready(opener.id)),
-        })
+    fn request_tab_load(&mut self, id: &str) {
+        self.load_requests.push(id.to_owned());
     }
 
     fn warn(&mut self, message: &str, error: &str) {
@@ -1451,6 +1419,17 @@ fn drive_ensure(
                 return w.settle(sink, shown);
             }
             EnsureStep::Rejected(message) => return w.settle(sink, error_value(&message)),
+            EnsureStep::Load { id } => {
+                let loaded = match tm.prepare_tab_load(&id) {
+                    Ok(Some(plan)) => {
+                        let opened = open_fixture_opener(w, plan.opener(), plan.context());
+                        tm.resume_tab_load(w, plan, opened).map(|_| ())
+                    }
+                    Ok(None) => Ok(()),
+                    Err(error) => Err(error),
+                };
+                step = tm.resume_ensure_loaded(w, &id, loaded);
+            }
             EnsureStep::NeedsUser {
                 opener,
                 context,
@@ -1556,7 +1535,94 @@ fn scenario_call(args: &[Value], cx: &mut Context) -> Answer {
     Ok(Some(Value::Array(results)))
 }
 
+/// The fixture opener the script world gives an unloaded tab (`opener.open`)
+fn open_fixture_opener(
+    w: &mut World,
+    opener: &Opener,
+    context: &UnloadedTabOpenContext,
+) -> Result<LoadedTabView<View>, String> {
+    let spec = w.openers.get(&opener.id).cloned();
+    w.log(vec![
+        Value::from("opener.open"),
+        Value::from(opener.id),
+        context.to_value(),
+    ]);
+    let Some(spec) = spec else {
+        return Err("no such opener".to_owned());
+    };
+    if spec.plain {
+        let view = fixture_plain_editor_view(w, context.kind, context.file_path.as_deref())
+            .map_err(|e| e.0)?;
+        return Ok(LoadedTabView { view, ready: None });
+    }
+    if spec.fails {
+        return Err("opener failed".to_owned());
+    }
+    let view = w.make_view();
+    let state = match spec.ready.as_str() {
+        "none" => {
+            return Ok(LoadedTabView { view, ready: None });
+        }
+        "resolved" => ReadyState::Resolved,
+        "rejected" => ReadyState::Rejected("document failed".to_owned()),
+        _ => ReadyState::Pending,
+    };
+    w.readies.insert(opener.id, state);
+    Ok(LoadedTabView {
+        view,
+        ready: Some(Ready(opener.id)),
+    })
+}
+
+/// What the shell's async hydration does for one unloaded tab: open it through
+/// its opener and adopt the view, without activating it
+fn hydrate_fixture_tab(w: &mut World, tm: &mut TabManager<View, ()>, id: &str) {
+    if let Ok(Some(plan)) = tm.prepare_tab_load(id) {
+        let loaded = open_fixture_opener(w, plan.opener(), plan.context());
+        let _ = tm.resume_tab_load(w, plan, loaded);
+    }
+}
+
+/// The shell hydrates the tabs an operation needs loaded before it runs it,
+/// and loads and activates the tab a manager activation asked for afterwards
 fn run_op(
+    name: &str,
+    o: &Value,
+    w: &mut World,
+    tm: &mut TabManager<View, ()>,
+    dw: &mut DetachedWindows<View, Win, ()>,
+    platform: &str,
+    sink: Sink,
+) -> Value {
+    let preload: Vec<String> = match name {
+        "splitWith" => str_of(o, "tab").map(str::to_owned).into_iter().collect(),
+        "beginSplit" => [str_of(o, "a"), str_of(o, "b")]
+            .into_iter()
+            .flatten()
+            .map(str::to_owned)
+            .collect(),
+        "detach" => vec![str_of(o, "id").unwrap_or("").to_owned()],
+        "find" => tm
+            .tab_id_for_path(str_of(o, "path"))
+            .into_iter()
+            .collect(),
+        _ => Vec::new(),
+    };
+    for id in &preload {
+        hydrate_fixture_tab(w, tm, id);
+    }
+    let out = run_op_inner(name, o, w, tm, dw, platform, sink);
+    while !w.load_requests.is_empty() {
+        let requested = std::mem::take(&mut w.load_requests);
+        for id in requested {
+            hydrate_fixture_tab(w, tm, &id);
+            tm.activate_tab(w, &id);
+        }
+    }
+    out
+}
+
+fn run_op_inner(
     name: &str,
     o: &Value,
     w: &mut World,

@@ -15,14 +15,19 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use super::harness::{Ctx, Direct, Opened, app_url, destroy, open_direct, record_op, scheme_url, wait_done, wait_load};
+use super::harness::{
+    Ctx, Direct, Opened, app_url, destroy, open_direct, record_op, scheme_url, wait_done, wait_load,
+};
 use super::log::{self, record};
 use crate::native::{Blocks, RequestPolicy};
 
 /// A loopback HTTP server: answers every request `ok` with CORS open, and records it.
 fn serve() -> Result<u16, String> {
     let listener = TcpListener::bind("127.0.0.1:0").map_err(|error| error.to_string())?;
-    let port = listener.local_addr().map_err(|error| error.to_string())?.port();
+    let port = listener
+        .local_addr()
+        .map_err(|error| error.to_string())?
+        .port();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             std::thread::spawn(move || answer(stream));
@@ -35,7 +40,11 @@ fn answer(mut stream: TcpStream) {
     let mut buffer = [0u8; 2048];
     let read = stream.read(&mut buffer).unwrap_or(0);
     let head = String::from_utf8_lossy(&buffer[..read]).into_owned();
-    record("rust", "server.request", json!({ "line": head.lines().next().unwrap_or("") }));
+    record(
+        "rust",
+        "server.request",
+        json!({ "line": head.lines().next().unwrap_or("") }),
+    );
     let body = "ok";
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -68,11 +77,22 @@ fn navigate(ctx: &Ctx, label: &str, url: &str) -> Result<(), String> {
 /// One navigation of an open browser, with its events marked.
 fn step(ctx: &Ctx, opened: &Opened, name: &str, url: &str, settle_ms: u64) {
     let base = opened.timeline.len();
-    record("rust", "p7.step", json!({ "name": name, "url": url, "view": opened.label, "base": base }));
+    record(
+        "rust",
+        "p7.step",
+        json!({ "name": name, "url": url, "view": opened.label, "base": base }),
+    );
     let started = log::now_ms();
-    record_op(&format!("navigate.{name}"), &opened.label, started, navigate(ctx, &opened.label, url).map(|()| json!(null)));
+    record_op(
+        &format!("navigate.{name}"),
+        &opened.label,
+        started,
+        navigate(ctx, &opened.label, url).map(|()| json!(null)),
+    );
     opened.timeline.wait(Duration::from_secs(25), |recs| {
-        recs.iter().skip(base).any(|rec| rec.kind == "LoadFinished" || rec.kind == "NavigationFailed")
+        recs.iter()
+            .skip(base)
+            .any(|rec| rec.kind == "LoadFinished" || rec.kind == "NavigationFailed")
     });
     std::thread::sleep(Duration::from_millis(settle_ms));
     record(
@@ -94,25 +114,87 @@ pub fn run(ctx: &Ctx) -> Result<(), String> {
         return Err("the first page did not load".into());
     }
     std::thread::sleep(Duration::from_millis(600));
-    step(ctx, &opened, "unregistered-scheme", "x-seuoffice-probe-unregistered://host/path", 1200);
-    step(ctx, &opened, "app-404", &app_url("shell", "missing-404.html"), 1200);
-    step(ctx, &opened, "standin-500", &scheme_url("html-asset", "status/500"), 1200);
-    step(ctx, &opened, "standin-200", &scheme_url("html-asset", "status/200"), 1200);
-    step(ctx, &opened, "connection-refused", "http://127.0.0.1:9/", 1500);
-    step(ctx, &opened, "redirect", &scheme_url("html-asset", "redirect?to=%2Fstatus%2F200"), 1500);
+    step(
+        ctx,
+        &opened,
+        "unregistered-scheme",
+        "x-seuoffice-probe-unregistered://host/path",
+        1200,
+    );
+    step(
+        ctx,
+        &opened,
+        "app-404",
+        &app_url("shell", "missing-404.html"),
+        1200,
+    );
+    step(
+        ctx,
+        &opened,
+        "standin-500",
+        &scheme_url("html-asset", "status/500"),
+        1200,
+    );
+    step(
+        ctx,
+        &opened,
+        "standin-200",
+        &scheme_url("html-asset", "status/200"),
+        1200,
+    );
+    step(
+        ctx,
+        &opened,
+        "connection-refused",
+        "http://127.0.0.1:9/",
+        1500,
+    );
+    step(
+        ctx,
+        &opened,
+        "redirect",
+        &scheme_url("html-asset", "redirect?to=%2Fstatus%2F200"),
+        1500,
+    );
 
     // a navigation overtaken by the next one before it answers
     let base = opened.timeline.len();
-    record("rust", "p7.step", json!({ "name": "supersede", "view": label, "base": base }));
+    record(
+        "rust",
+        "p7.step",
+        json!({ "name": "supersede", "view": label, "base": base }),
+    );
     let slow = scheme_url("html-asset", "doc-slow?ms=3000");
-    record_op("navigate.supersede.first", label, log::now_ms(), navigate(ctx, label, &slow).map(|()| json!(null)));
+    record_op(
+        "navigate.supersede.first",
+        label,
+        log::now_ms(),
+        navigate(ctx, label, &slow).map(|()| json!(null)),
+    );
     std::thread::sleep(Duration::from_millis(400));
-    record_op("navigate.supersede.second", label, log::now_ms(), navigate(ctx, label, &app_url("shell", "p7-ok.html")).map(|()| json!(null)));
-    opened.timeline.wait(Duration::from_secs(20), |recs| recs.iter().skip(base).any(|rec| rec.kind == "LoadFinished"));
+    record_op(
+        "navigate.supersede.second",
+        label,
+        log::now_ms(),
+        navigate(ctx, label, &app_url("shell", "p7-ok.html")).map(|()| json!(null)),
+    );
+    opened.timeline.wait(Duration::from_secs(20), |recs| {
+        recs.iter().skip(base).any(|rec| rec.kind == "LoadFinished")
+    });
     std::thread::sleep(Duration::from_millis(4000));
-    record("rust", "p7.step.end", json!({ "name": "supersede", "view": label, "events": opened.timeline.len() - base }));
+    record(
+        "rust",
+        "p7.step.end",
+        json!({ "name": "supersede", "view": label, "events": opened.timeline.len() - base }),
+    );
 
-    step(ctx, &opened, "frame", &app_url("shell", "p7-frame.html"), 2000);
+    step(
+        ctx,
+        &opened,
+        "frame",
+        &app_url("shell", "p7-frame.html"),
+        2000,
+    );
     destroy(ctx, label);
 
     // a main-frame navigation the policy refuses
@@ -120,13 +202,23 @@ pub fn run(ctx: &Ctx) -> Result<(), String> {
     let mut spec = Direct::new(refuse, &app_url("shell", "p7-ok.html"));
     spec.policy = Some(RequestPolicy::new(|request| {
         let refused = request.main_frame && request.url.contains("refused-target");
-        record("rust", "policy.request", json!({ "view": "probe-p7-refuse", "url": request.url, "top_level": request.top_level, "main_frame": request.main_frame, "allowed": !refused }));
+        record(
+            "rust",
+            "policy.request",
+            json!({ "view": "probe-p7-refuse", "url": request.url, "top_level": request.top_level, "main_frame": request.main_frame, "allowed": !refused }),
+        );
         !refused
     }));
     let opened = open_direct(ctx, spec)?;
     wait_load(&opened, 0, 40);
     std::thread::sleep(Duration::from_millis(600));
-    step(ctx, &opened, "policy-refused", &app_url("shell", "refused-target.html"), 1500);
+    step(
+        ctx,
+        &opened,
+        "policy-refused",
+        &app_url("shell", "refused-target.html"),
+        1500,
+    );
     destroy(ctx, refuse);
 
     // sub-resources over http: allowed by one policy, refused by the other
@@ -134,16 +226,28 @@ pub fn run(ctx: &Ctx) -> Result<(), String> {
         ("allow", RequestPolicy::new(|_| true)),
         (
             "block",
-            RequestPolicy::new(|request| !request.url.starts_with("http://127.0.0.1"))
-                .with_blocks(Blocks { web: true, loopback_open: false, files: false }),
+            RequestPolicy::new(|request| !request.url.starts_with("http://127.0.0.1")).with_blocks(
+                Blocks {
+                    web: true,
+                    loopback_open: false,
+                    files: false,
+                },
+            ),
         ),
     ] {
         let net = format!("probe-p7-net-{tag}");
         let from = log::pages().len();
-        let mut spec = Direct::new(&net, &format!("{}?port={port}&tag={tag}", app_url("shell", "p7-net.html")));
+        let mut spec = Direct::new(
+            &net,
+            &format!("{}?port={port}&tag={tag}", app_url("shell", "p7-net.html")),
+        );
         spec.policy = Some(policy);
         open_direct(ctx, spec)?;
-        record("rust", "p7.net", json!({ "tag": tag, "page_done": wait_done(&net, from, 25) }));
+        record(
+            "rust",
+            "p7.net",
+            json!({ "tag": tag, "page_done": wait_done(&net, from, 25) }),
+        );
         destroy(ctx, &net);
     }
 
@@ -151,9 +255,15 @@ pub fn run(ctx: &Ctx) -> Result<(), String> {
     let scheme = "probe-p7-scheme";
     let from = log::pages().len();
     let mut spec = Direct::new(scheme, &app_url("shell", "p7-refuse.html"));
-    spec.policy = Some(RequestPolicy::new(|request| !request.url.contains("html-asset")));
+    spec.policy = Some(RequestPolicy::new(|request| {
+        !request.url.contains("html-asset")
+    }));
     open_direct(ctx, spec)?;
-    record("rust", "p7.scheme", json!({ "page_done": wait_done(scheme, from, 25) }));
+    record(
+        "rust",
+        "p7.scheme",
+        json!({ "page_done": wait_done(scheme, from, 25) }),
+    );
     std::thread::sleep(Duration::from_millis(1000));
     destroy(ctx, scheme);
     Ok(())

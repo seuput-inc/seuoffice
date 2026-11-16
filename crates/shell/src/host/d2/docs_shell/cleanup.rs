@@ -73,7 +73,7 @@ impl shell_contract::hosts::GeneratedCleanupRegistration for ActorRegistration {
     }
 }
 
-pub(super) fn register(
+pub(in crate::host::d2) fn register(
     supervisor: &Arc<Supervisor>,
     wake: GeneratedActorWake,
 ) -> Result<Box<dyn shell_contract::hosts::GeneratedCleanupRegistration>, String> {

@@ -315,17 +315,27 @@ pub trait HtmlShell: Send + Sync {
         effects: shell_contract::hosts::OwnedEffectsHost,
         then: Box<dyn FnOnce(Result<bool, String>)>,
     );
-    fn export_written_owned(
+    /// Open or reveal a published export through a retained generated-path
+    /// operation. `kind` is `"pdf"`, `"docx"` or `"odt"`.
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_generated_output(
         &self,
-        origin: shell_contract::ipc::NativeRequestOwner,
-        destination: shell_contract::ipc::NativeRequestOwner,
+        output: shell_contract::ipc::SavedPublication,
+        input: Option<shell_contract::ipc::NativeSavedInput>,
+        kind: &'static str,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
         cancel: shell_contract::runtime::CancelToken,
         pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
         effects: shell_contract::hosts::OwnedEffectsHost,
-        path: PathBuf,
-        kind: &'static str,
-        then: Box<dyn FnOnce(Result<(), String>)>,
-    );
+        accepted: shell_contract::hosts::PdfReloadAccepted,
+        wake: shell_contract::hosts::GeneratedPathWake,
+    ) -> Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String>;
+    /// The shell's process-owned retry of one generated export's completion.
+    fn register_generated_actor_cleanup(
+        &self,
+        wake: crate::docs::hosts::GeneratedActorWake,
+    ) -> Result<Box<dyn shell_contract::hosts::GeneratedCleanupRegistration>, String>;
     /// `takeGenerateHandoff('html', webContentsId)`
     fn take_generate_handoff_owned(
         &self,
@@ -510,6 +520,7 @@ pub(crate) fn entries(
     let saved_assets = shell.clone();
     let recovery_assets = shell.clone();
     let rename_recovery_assets = shell.clone();
+    let cleanup_shell = shell.clone();
     let docs = TextDocs::new(
         services,
         CHANNELS,
@@ -560,6 +571,9 @@ pub(crate) fn entries(
                 )
             }),
             presenting: Box::new(move |v| s5.borrow().present_owner.contains_key(&v)),
+            register_cleanup: Box::new(move |wake| {
+                cleanup_shell.register_generated_actor_cleanup(wake)
+            }),
         },
         ("Untitled", "제목 없음"),
     )?;
@@ -849,11 +863,7 @@ fn present_full_screen(
 #[cfg(any(test, feature = "probe"))]
 pub(crate) fn fakes(hosts: &mut shell_contract::Hosts, case: &serde_json::Value) {
     let probe = hosts.get::<fake::ProbeLog>().cloned();
-    let os = hosts
-        .get::<OsShellHost>()
-        .expect("fake OS shell is installed")
-        .clone();
-    let fake = Arc::new(fake::FakeHtml::new(case, probe, os));
+    let fake = Arc::new(fake::FakeHtml::new(case, probe));
     hosts.insert::<HtmlEngineHost>(fake.clone());
     hosts.insert::<HtmlShellHost>(fake.clone());
     hosts.insert::<Arc<fake::FakeHtml>>(fake);

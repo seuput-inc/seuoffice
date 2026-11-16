@@ -363,21 +363,24 @@ impl CapturedSavedShell for Captured {
                 .reservation()
                 .same_reservation(&spare.browser.reservation)
         {
-            return Err(TabError("The saved spare browser reservation changed".into()));
+            return Err(TabError(
+                "The saved spare browser reservation changed".into(),
+            ));
         }
         let origin = original
             .context
             .authority_ref::<NativeOwnerAuthority>()
             .map(|authority| authority.origin.clone())
             .ok_or_else(|| TabError("The saved spare has no native authority".into()))?;
-        let captured =
-            native_owner::capture_owner(&cx.views, view, &expected).map_err(TabError)?;
+        let captured = native_owner::capture_owner(&cx.views, view, &expected).map_err(TabError)?;
         if captured
             .context
             .authority_ref::<NativeOwnerAuthority>()
             .is_none_or(|authority| authority.origin != origin)
         {
-            return Err(TabError("The saved spare native document was replaced".into()));
+            return Err(TabError(
+                "The saved spare native document was replaced".into(),
+            ));
         }
         let actor = spare
             .spare_actor
@@ -405,7 +408,8 @@ impl CapturedSavedShell for Captured {
             additional.clone(),
         )
         .map_err(TabError)?;
-        let replacement = native_owner::prepare_saved_spare_replacement(&target).map_err(TabError)?;
+        let replacement =
+            native_owner::prepare_saved_spare_replacement(&target).map_err(TabError)?;
         let successor_target = replacement.successor().clone();
         let successor = successor_target.browser().clone();
         let mut transfer = actor.prepare_transfer().map_err(TabError)?;

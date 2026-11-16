@@ -28,7 +28,7 @@ pub(super) type Capture = Box<
     dyn FnOnce(
         shell_contract::ViewId,
         NativeRequestOwner,
-    ) -> Result<NativeRequestOwner, shell_contract::ipc::IpcError>,
+    ) -> Result<NativeRequestOwner, shell_contract::error::IpcError>,
 >;
 pub(super) type Seed = Box<
     dyn FnOnce(
@@ -598,7 +598,7 @@ fn seed_finished(
     id: u64,
     result: Result<
         shell_contract::editors::SavedDocumentLoadOutcome,
-        shell_contract::ipc::IpcError,
+        shell_contract::error::IpcError,
     >,
 ) {
     match result {

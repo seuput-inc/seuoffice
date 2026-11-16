@@ -501,52 +501,47 @@ impl HtmlShell for Shell {
         effects: shell_contract::hosts::OwnedEffectsHost,
         then: Box<dyn FnOnce(Result<bool, String>)>,
     ) {
-        let callback = std::rc::Rc::new(std::cell::RefCell::new(Some(then)));
-        let accepted = callback.clone();
-        if !crate::host::w::on_core_local(move |provided| {
-            let done = accepted
-                .borrow_mut()
-                .take()
-                .expect("export callback is consumed once");
-            let Some(tabs) = provided.all::<TabsState>().into_iter().next() else {
-                return done(Err("Tabs services are not available".into()));
-            };
-            tabs.prepare_html_docx_export_existing_document(
-                selection,
-                participants,
-                cancel,
-                pending,
-                additional,
-                effects,
-                done,
-            );
-        }) {
-            if let Some(done) = callback.borrow_mut().take() {
-                done(Err("Core services are not available".into()));
-            }
-        }
-    }
-    fn export_written_owned(
-        &self,
-        origin: shell_contract::ipc::NativeRequestOwner,
-        destination: shell_contract::ipc::NativeRequestOwner,
-        cancel: shell_contract::runtime::CancelToken,
-        pending: shell_contract::runtime::CancelToken,
-        effects: shell_contract::hosts::OwnedEffectsHost,
-        path: PathBuf,
-        kind: &'static str,
-        then: Box<dyn FnOnce(Result<(), String>)>,
-    ) {
-        export_written_owned(
-            path,
-            kind,
-            origin,
-            destination,
+        prepare_docx_native(
+            selection,
+            participants,
             cancel,
             pending,
+            additional,
             effects,
             then,
+        );
+    }
+    fn prepare_generated_output(
+        &self,
+        output: shell_contract::ipc::SavedPublication,
+        input: Option<shell_contract::ipc::NativeSavedInput>,
+        kind: &'static str,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        accepted: shell_contract::hosts::PdfReloadAccepted,
+        wake: shell_contract::hosts::GeneratedPathWake,
+    ) -> Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String> {
+        prepare_generated_output(
+            output,
+            input,
+            kind,
+            participants,
+            cancel,
+            pending,
+            additional,
+            effects,
+            accepted,
+            wake,
         )
+    }
+    fn register_generated_actor_cleanup(
+        &self,
+        wake: shell_ipc_d2::docs::hosts::GeneratedActorWake,
+    ) -> Result<Box<dyn shell_contract::hosts::GeneratedCleanupRegistration>, String> {
+        super::docs_shell::cleanup::register(&self.0.headless_cleanup, wake)
     }
     fn take_generate_handoff_owned(
         &self,
@@ -849,39 +844,94 @@ fn prepare_docx_owned(
     }
 }
 
-pub(super) fn export_written_owned(
-    path: PathBuf,
-    kind: &'static str,
-    origin: shell_contract::ipc::NativeRequestOwner,
-    destination: shell_contract::ipc::NativeRequestOwner,
+/// The stale Word tab of a native "convert and open in Docs" export. The save's
+/// authority is checked before the tab is closed and again before the answer,
+/// so a lost destination or cancelled save never reports the export ready.
+#[allow(clippy::too_many_arguments)]
+fn prepare_docx_native(
+    selection: shell_contract::ipc::NativeSaveDestination,
+    participants: Vec<shell_contract::ipc::NativeRequestOwner>,
     cancel: shell_contract::runtime::CancelToken,
     pending: shell_contract::runtime::CancelToken,
+    additional: Vec<shell_contract::runtime::CancelToken>,
     effects: shell_contract::hosts::OwnedEffectsHost,
-    then: Box<dyn FnOnce(Result<(), String>)>,
+    then: Box<dyn FnOnce(Result<bool, String>)>,
 ) {
+    let path = selection.path().to_string_lossy().into_owned();
+    let admit = move || {
+        let extra: Vec<_> = additional.iter().collect();
+        effects.with_existing_document_destination_effect(
+            &selection,
+            selection.path(),
+            &participants,
+            &cancel,
+            &pending,
+            &extra,
+            &mut || Ok(()),
+        )
+    };
+    if let Err(error) = admit() {
+        return then(Err(error));
+    }
     let callback = std::rc::Rc::new(std::cell::RefCell::new(Some(then)));
     let accepted = callback.clone();
     if !crate::host::w::on_core_local(move |provided| {
-        let done = accepted
-            .borrow_mut()
-            .take()
-            .expect("export callback is consumed once");
+        let Some(done) = accepted.borrow_mut().take() else {
+            return;
+        };
         let Some(tabs) = provided.all::<TabsState>().into_iter().next() else {
             return done(Err("Tabs services are not available".into()));
         };
-        tabs.export_written_owned(
-            path,
-            kind,
-            origin,
-            destination,
-            cancel,
-            pending,
-            effects,
-            done,
+        tabs.prepare_html_docx_export(
+            &path,
+            Box::new(move |ready| done(ready.and_then(|ready| admit().map(|()| ready)))),
         );
     }) {
         if let Some(done) = callback.borrow_mut().take() {
             done(Err("Core services are not available".into()));
         }
     }
+}
+
+/// Prepares the retained open or reveal of a published export on the core
+/// thread, where it was published.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn prepare_generated_output(
+    output: shell_contract::ipc::SavedPublication,
+    input: Option<shell_contract::ipc::NativeSavedInput>,
+    kind: &'static str,
+    participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+    cancel: shell_contract::runtime::CancelToken,
+    pending: shell_contract::runtime::CancelToken,
+    additional: Vec<shell_contract::runtime::CancelToken>,
+    effects: shell_contract::hosts::OwnedEffectsHost,
+    accepted: shell_contract::hosts::PdfReloadAccepted,
+    wake: shell_contract::hosts::GeneratedPathWake,
+) -> Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String> {
+    let mut result = None;
+    let on_core = crate::host::w::on_core_local(|provided| {
+        result = Some(match provided.all::<TabsState>().into_iter().next() {
+            Some(tabs) => tabs
+                .prepare_generated_output(
+                    output,
+                    input,
+                    kind,
+                    participants,
+                    cancel,
+                    pending,
+                    additional,
+                    effects,
+                    accepted,
+                    wake,
+                )
+                .map(|prepared| {
+                    Box::new(prepared) as Box<dyn shell_contract::hosts::PreparedGeneratedPath>
+                }),
+            None => Err("The tab manager is unavailable".into()),
+        });
+    });
+    if !on_core {
+        return Err("The exported document must be prepared on the core thread".into());
+    }
+    result.ok_or_else(|| "The tab manager did not prepare the exported document".to_owned())?
 }

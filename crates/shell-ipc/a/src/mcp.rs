@@ -25,6 +25,7 @@ pub mod bridges;
 mod kit;
 mod local;
 pub mod net;
+mod relay_hub;
 mod remote;
 #[cfg(test)]
 mod testing;
@@ -393,6 +394,8 @@ pub struct Hub {
     /// the handlers waiting on the hub, by ticket
     pending: RefCell<HashMap<Ticket, Responder>>,
     downloads: RefCell<Vec<Download>>,
+    /// the calls of an agent session's relays waiting on the hub, by ticket
+    agent_calls: RefCell<HashMap<Ticket, Box<dyn FnOnce(HubValue)>>>,
 }
 
 impl Hub {
@@ -404,6 +407,11 @@ impl Hub {
             let notices = self.ipc.borrow_mut().take_changed();
             let quiet = settled.is_empty() && notices.is_empty();
             for (ticket, value) in settled {
+                let call = self.agent_calls.borrow_mut().remove(&ticket);
+                if let Some(call) = call {
+                    call(value);
+                    continue;
+                }
                 let reply = self.pending.borrow_mut().remove(&ticket);
                 if let Some(reply) = reply {
                     reply.reply(answer(value));
@@ -577,6 +585,7 @@ impl McpHubPort {
             ipc: RefCell::new(McpHubIpc::new(hub)),
             pending: RefCell::new(HashMap::new()),
             downloads: RefCell::new(Vec::new()),
+            agent_calls: RefCell::new(HashMap::new()),
         });
         HUBS.with(|all| all.borrow_mut().insert(id, Rc::downgrade(&hub)));
         services.views.on_destroyed(Box::new(move |view| {
@@ -779,7 +788,7 @@ impl McpHubPorts for McpHubPort {
 /// `safeStorage` ([`crate::secrets::SafeStorageHost`]), unless the shell
 /// inserted a [`McpSafeStorage`] of its own (the probe's stand-in)
 pub fn hub_factory() -> crate::Factory<dyn McpHubPorts> {
-    crate::Factory::new(|services, _| {
+    crate::Factory::new(|services, provided| {
         let hosts = &services.hosts;
         let batch = shell_contract::Batch::A;
         let storage: McpSafeStorage = match hosts.get::<McpSafeStorage>() {
@@ -795,6 +804,8 @@ pub fn hub_factory() -> crate::Factory<dyn McpHubPorts> {
             hosts.need::<ShellUiHost>(batch)?,
             storage,
         );
+        // the agent window's relays call the hub through the concrete port
+        provided.add::<McpHubPort>(port.clone());
         let port: Rc<dyn McpHubPorts> = port;
         Ok(port)
     })

@@ -49,7 +49,7 @@ pub(crate) fn queue_generate_handoff(
     value: &serde_json::Value,
 ) -> Result<(), String> {
     let handoff: GenerateHandoff =
-        serde::Deserialize::deserialize(value).map_err(|error| error.to_string())?;
+        jscompat::serde::Deserialize::deserialize(value).map_err(|error| error.to_string())?;
     shell_ipc_a::user_skills::shared_handoff_store(provided)
         .borrow_mut()
         .queue_generate_handoff(f64::from(view.0), handoff);
@@ -136,7 +136,7 @@ pub(crate) fn prepare_generate_handoff_owned(
     effects: OwnedEffectsHost,
 ) -> Result<PreparedGeneratedSeed, String> {
     let handoff: GenerateHandoff =
-        serde::Deserialize::deserialize(value).map_err(|error| error.to_string())?;
+        jscompat::serde::Deserialize::deserialize(value).map_err(|error| error.to_string())?;
     let prepared = shell_ipc_a::user_skills::prepare_generate_handoff(
         provided,
         view,

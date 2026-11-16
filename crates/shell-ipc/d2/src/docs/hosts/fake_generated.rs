@@ -176,12 +176,12 @@ impl GeneratedPathPending for Pending {
     }
 }
 
-pub(super) struct Prepared {
+pub(crate) struct Prepared {
     pending: Arc<Pending>,
     work: Option<Box<dyn FnOnce() -> ResultValue>>,
 }
 impl Prepared {
-    pub(super) fn new(work: impl FnOnce() -> ResultValue + 'static) -> Self {
+    pub(crate) fn new(work: impl FnOnce() -> ResultValue + 'static) -> Self {
         Self {
             pending: Pending::create(),
             work: Some(Box::new(work)),
@@ -227,4 +227,85 @@ impl PreparedGeneratedPath for Prepared {
             }),
         }
     }
+}
+
+/// A scripted open of a published output. `open` runs inside the output's
+/// admission with its path and answers whether the shell opened it; a
+/// refusal is `NotOpened`, which the editor answers by revealing the file.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn scripted_open(
+    output: shell_contract::ipc::SavedPublication,
+    participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+    cancel: shell_contract::runtime::CancelToken,
+    pending: shell_contract::runtime::CancelToken,
+    additional: Vec<shell_contract::runtime::CancelToken>,
+    effects: shell_contract::hosts::OwnedEffectsHost,
+    open: impl FnOnce(&str) -> Result<bool, String> + 'static,
+) -> Box<dyn PreparedGeneratedPath> {
+    Box::new(Prepared::new(move || {
+        let path = output
+            .path()
+            .to_str()
+            .ok_or("The synthetic generated path is not Unicode")?
+            .to_owned();
+        let extra: Vec<_> = additional.iter().collect();
+        let mut open = Some(open);
+        let mut opened = None;
+        output.with_effect(
+            effects.as_ref(),
+            &participants,
+            &cancel,
+            &pending,
+            &extra,
+            &mut || {
+                let open = open.take().ok_or("The synthetic open ran twice")?;
+                opened = Some(open(&path)?);
+                Ok(())
+            },
+        )?;
+        match opened {
+            Some(false) => Ok(GeneratedPathOutcome::NotOpened),
+            Some(true) => {
+                let receipt = match &output {
+                    shell_contract::ipc::SavedPublication::Native(native) => {
+                        shell_contract::hosts::CommittedGeneratedPath::from_existing_document_save(
+                            native.selection().clone(),
+                            native.selection().binding().owner().clone(),
+                            participants,
+                            cancel,
+                            pending,
+                            additional,
+                            effects,
+                        )
+                    }
+                    shell_contract::ipc::SavedPublication::Renderer(renderer) => {
+                        let mut captured = participants;
+                        captured.extend_from_slice(renderer.participants());
+                        let mut controls = additional;
+                        controls.push(renderer.cancel().clone());
+                        controls.push(renderer.pending().clone());
+                        controls.extend_from_slice(renderer.additional());
+                        shell_contract::hosts::CommittedGeneratedPath::from_loaded_target(
+                            renderer.origin().clone(),
+                            renderer.destination().clone(),
+                            renderer.destination().clone(),
+                            cancel,
+                            pending,
+                            effects,
+                        )
+                        .and_then(|receipt| receipt.with_captured_participants(&captured))
+                        .and_then(|receipt| receipt.with_captured_cancellations(&controls))
+                    }
+                }?;
+                Ok(GeneratedPathOutcome::Opened(Arc::new(receipt)))
+            }
+            None => Err("The synthetic generated output was not admitted".into()),
+        }
+    }))
+}
+
+/// The fixture shell has no process-owned retry to register.
+pub(crate) struct NoCleanup;
+impl shell_contract::hosts::GeneratedCleanupRegistration for NoCleanup {
+    fn complete(self: Box<Self>) {}
 }

@@ -23,7 +23,9 @@ use serde_json::{Value, json};
 use shell_contract::Surface;
 use tauri::{AppHandle, Manager, WebviewUrl};
 
-use super::harness::{Ctx, Direct, app_url, destroy, eval, note_event, open_direct, page_of, record_op, wait_done};
+use super::harness::{
+    Ctx, Direct, app_url, destroy, eval, note_event, open_direct, page_of, record_op, wait_done,
+};
 use super::log::{self, Timeline, record};
 use crate::host::window::{Bridge, ViewSpec, WindowOptions, WindowSpec};
 use crate::native::{
@@ -45,11 +47,19 @@ pub fn run(ctx: &Ctx) -> Result<(), String> {
     ] {
         record("rust", "po.suite", json!({ "suite": name }));
         if let Err(error) = part(ctx) {
-            record("rust", "po.suite.failed", json!({ "suite": name, "error": error }));
+            record(
+                "rust",
+                "po.suite.failed",
+                json!({ "suite": name, "error": error }),
+            );
             problems.push(format!("{name}: {error}"));
         }
     }
-    if problems.is_empty() { Ok(()) } else { Err(problems.join("; ")) }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems.join("; "))
+    }
 }
 
 fn new_window(ctx: &Ctx) -> Result<(), String> {
@@ -59,20 +69,32 @@ fn new_window(ctx: &Ctx) -> Result<(), String> {
     spec.bridge = BridgeMode::Invoke;
     spec.new_window = true;
     let opened = open_direct(ctx, spec)?;
-    let ready = opened.timeline.wait_kind("DocumentReady", 0, Duration::from_secs(30));
+    let ready = opened
+        .timeline
+        .wait_kind("DocumentReady", 0, Duration::from_secs(30));
     let done = wait_done(label, from, 60);
-    record("rust", "p9.wait", json!({ "document_ready": ready, "page_done": done }));
+    record(
+        "rust",
+        "p9.wait",
+        json!({ "document_ready": ready, "page_done": done }),
+    );
     for variant in ["open", "features", "anchor", "iframe"] {
         record("rust", "p9.variant.start", json!({ "name": variant }));
         let started = log::now_ms();
-        let result = page_of(ctx, label)
-            .and_then(|page| eval(&page, &format!("window.__variant('{variant}')"), 20).map_err(|error| error.to_string()));
+        let result = page_of(ctx, label).and_then(|page| {
+            eval(&page, &format!("window.__variant('{variant}')"), 20)
+                .map_err(|error| error.to_string())
+        });
         record_op(&format!("variant.{variant}"), label, started, result);
         std::thread::sleep(Duration::from_millis(1200));
     }
     record("rust", "p9.variant.start", json!({ "name": "key" }));
     let started = log::now_ms();
-    let chord = KeyChord { key: "x".into(), code: "KeyX".into(), modifiers: Modifiers::default() };
+    let chord = KeyChord {
+        key: "x".into(),
+        code: "KeyX".into(),
+        modifiers: Modifiers::default(),
+    };
     let result = page_of(ctx, label).and_then(|page| {
         page.blocking(Duration::from_secs(20), |done| page.key(chord, done))
             .map(|()| Value::Null)
@@ -85,7 +107,11 @@ fn new_window(ctx: &Ctx) -> Result<(), String> {
 }
 
 /// A bare window with one child webview, built on the UI thread as the shell builds its tabs.
-fn build_child(app: &AppHandle, timeline: &Arc<Timeline>, url: &str) -> Result<BrowserIdentity, String> {
+fn build_child(
+    app: &AppHandle,
+    timeline: &Arc<Timeline>,
+    url: &str,
+) -> Result<BrowserIdentity, String> {
     let native = app.state::<Native>().inner().clone();
     let window = tauri::window::WindowBuilder::new(app, HOST)
         .title(HOST)
@@ -93,13 +119,21 @@ fn build_child(app: &AppHandle, timeline: &Arc<Timeline>, url: &str) -> Result<B
         .build()
         .map_err(|error| error.to_string())?;
     let sink_timeline = timeline.clone();
-    let sink: EventSink = Arc::new(move |event: &NativeEvent| note_event(CHILD, &sink_timeline, event));
-    let spec = NativeSpec::new().bridge(BridgeMode::Invoke).native_events(sink);
+    let sink: EventSink =
+        Arc::new(move |event: &NativeEvent| note_event(CHILD, &sink_timeline, event));
+    let spec = NativeSpec::new()
+        .bridge(BridgeMode::Invoke)
+        .native_events(sink);
     let url = tauri::Url::parse(url).map_err(|error| error.to_string())?;
-    let builder = tauri::webview::WebviewBuilder::<tauri::Wry>::new(CHILD, WebviewUrl::External(url));
+    let builder =
+        tauri::webview::WebviewBuilder::<tauri::Wry>::new(CHILD, WebviewUrl::External(url));
     let (builder, browser) = builder.native(&native, CHILD, spec)?;
     let webview = window
-        .add_child(builder, tauri::LogicalPosition::new(0.0, 0.0), tauri::LogicalSize::new(500.0, 380.0))
+        .add_child(
+            builder,
+            tauri::LogicalPosition::new(0.0, 0.0),
+            tauri::LogicalSize::new(500.0, 380.0),
+        )
         .map_err(|error| error.to_string())?;
     native.attach(&webview, &browser)?;
     Ok(browser)
@@ -111,7 +145,11 @@ fn child_close(ctx: &Ctx) -> Result<(), String> {
     let app = ctx.app.clone();
     let build_timeline = timeline.clone();
     let url = app_url("shell", "blank.html");
-    record("rust", "win.open", json!({ "label": CHILD, "url": url, "child": true }));
+    record(
+        "rust",
+        "win.open",
+        json!({ "label": CHILD, "url": url, "child": true }),
+    );
     ctx.app
         .run_on_main_thread(move || {
             let _ = send.send(build_child(&app, &build_timeline, &url));
@@ -181,11 +219,19 @@ fn window_retired(ctx: &Ctx) -> Result<(), String> {
     let mut spec = Direct::new(label, &app_url("shell", "blank.html"));
     spec.bridge = BridgeMode::Invoke;
     let opened = open_direct(ctx, spec)?;
-    let ready = opened.timeline.wait_kind("DocumentReady", 0, Duration::from_secs(30));
+    let ready = opened
+        .timeline
+        .wait_kind("DocumentReady", 0, Duration::from_secs(30));
     let started = log::now_ms();
     destroy(ctx, label);
-    let retired = opened.timeline.wait_kind("Retired", 0, Duration::from_secs(8));
-    record("rust", "p9.window_retired", json!({ "document_ready": ready, "retired": retired, "ms": log::now_ms() - started }));
+    let retired = opened
+        .timeline
+        .wait_kind("Retired", 0, Duration::from_secs(8));
+    record(
+        "rust",
+        "p9.window_retired",
+        json!({ "document_ready": ready, "retired": retired, "ms": log::now_ms() - started }),
+    );
     Ok(())
 }
 
@@ -198,7 +244,9 @@ fn focus(ctx: &Ctx) -> Result<(), String> {
         windows.push(open_direct(ctx, spec)?);
     }
     for opened in &windows {
-        opened.timeline.wait_kind("LoadFinished", 0, Duration::from_secs(30));
+        opened
+            .timeline
+            .wait_kind("LoadFinished", 0, Duration::from_secs(30));
     }
     for opened in &windows {
         let base = opened.timeline.len();
@@ -208,9 +256,14 @@ fn focus(ctx: &Ctx) -> Result<(), String> {
             .ok_or_else(|| format!("no window {}", opened.label))
             .and_then(|window| window.set_focus().map_err(|error| error.to_string()));
         let focused = opened.timeline.wait(Duration::from_secs(4), |recs| {
-            recs.iter().skip(base).any(|rec| rec.kind == "View" && rec.v["event"] == "Focus")
+            recs.iter()
+                .skip(base)
+                .any(|rec| rec.kind == "View" && rec.v["event"] == "Focus")
         });
-        let is_focused = ctx.app.get_webview_window(&opened.label).and_then(|window| window.is_focused().ok());
+        let is_focused = ctx
+            .app
+            .get_webview_window(&opened.label)
+            .and_then(|window| window.is_focused().ok());
         record(
             "rust",
             "p9.focus",
@@ -235,17 +288,34 @@ fn real_windows(ctx: &Ctx) -> Result<(), String> {
         parent,
         focus: false,
         main: false,
-        view: ViewSpec { url: "genoffice-app://shell/probe/blank.html".into(), bridge: Bridge::Surface(Surface::Shell) },
+        view: ViewSpec {
+            url: "genoffice-app://shell/probe/blank.html".into(),
+            bridge: Bridge::Surface(Surface::Shell),
+        },
     };
     let mut labels = Vec::new();
-    let first = ctx.windows.open_window_with_options(spec(None, false), WindowOptions::default());
-    record("rust", "p9.real", json!({ "what": "window", "ok": first.is_ok(), "error": first.as_ref().err() }));
-    let Ok((window, view)) = first else { return Ok(()) };
+    let first = ctx
+        .windows
+        .open_window_with_options(spec(None, false), WindowOptions::default());
+    record(
+        "rust",
+        "p9.real",
+        json!({ "what": "window", "ok": first.is_ok(), "error": first.as_ref().err() }),
+    );
+    let Ok((window, view)) = first else {
+        return Ok(());
+    };
     labels.push(format!("view-{}", view.0));
     std::thread::sleep(Duration::from_millis(1500));
     // a child window above it, transparent (macOS needs the private API the config enables)
-    let second = ctx.windows.open_window_with_options(spec(Some(window), true), WindowOptions::default());
-    record("rust", "p9.real", json!({ "what": "transparent child window", "ok": second.is_ok(), "error": second.as_ref().err() }));
+    let second = ctx
+        .windows
+        .open_window_with_options(spec(Some(window), true), WindowOptions::default());
+    record(
+        "rust",
+        "p9.real",
+        json!({ "what": "transparent child window", "ok": second.is_ok(), "error": second.as_ref().err() }),
+    );
     if let Ok((_, view)) = second {
         labels.push(format!("view-{}", view.0));
     }

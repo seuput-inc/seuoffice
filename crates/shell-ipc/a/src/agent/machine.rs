@@ -1554,7 +1554,9 @@ impl Inner {
         let title = frame.window_title(&lang);
         let options = agent_window_options(&lang, &title, &frame.preload_path());
         let load = agent_window_load(frame.renderer_url().as_deref(), &frame.built_file());
-        frame.create(&options, &load);
+        if let Err(error) = frame.create(&options, &load) {
+            eprintln!("shell: the agent window did not open: {error}");
+        }
     }
 
     /// `isAgentWindowContents(sender)`

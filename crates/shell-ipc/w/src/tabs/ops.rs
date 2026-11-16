@@ -25,12 +25,6 @@ impl TabsState {
             .unwrap_or_default()
     }
 
-    pub(super) fn activate(&self, id: &str) {
-        self.inner
-            .borrow_mut()
-            .manager_call(|m, b| m.activate_tab(b, id));
-    }
-
     pub(super) fn reorder(&self, id: &str, to_index: f64) {
         self.inner
             .borrow_mut()

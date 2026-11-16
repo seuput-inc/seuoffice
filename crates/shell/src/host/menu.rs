@@ -326,116 +326,52 @@ impl MHost for ShellM {
         crate::host::d2::docs_tabs::open_generated(path).unwrap_or(false)
     }
 
-    fn export_written_owned(
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_generated_output(
         &self,
-        path: std::path::PathBuf,
-        origin: shell_contract::ipc::NativeRequestOwner,
-        destination: shell_contract::ipc::NativeRequestOwner,
-        cancel: shell_contract::runtime::CancelToken,
-        pending: shell_contract::runtime::CancelToken,
-        effects: shell_contract::hosts::OwnedEffectsHost,
-        accepted: shell_contract::hosts::PdfReloadAccepted,
-        wake: shell_contract::hosts::GeneratedPathWake,
-        done: Box<
-            dyn FnOnce(Result<shell_contract::hosts::GeneratedPathDispatchOutcome, String>) + Send,
-        >,
-    ) {
-        let callback = Arc::new(std::sync::Mutex::new(Some(done)));
-        let on_core = callback.clone();
-        crate::host::w::post_core_checked(
-            move |provided, _| {
-                let done = on_core
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .take();
-                let Some(done) = done else {
-                    return;
-                };
-                let Some(tabs) = provided
-                    .all::<shell_ipc_w::tabs::TabsState>()
-                    .into_iter()
-                    .next()
-                else {
-                    return done(Err("The tab manager is unavailable".into()));
-                };
-                tabs.export_written_owned(
-                    path,
-                    "pdf",
-                    origin,
-                    destination,
-                    cancel,
-                    pending,
-                    effects,
-                    accepted,
-                    done,
-                );
-            },
-            move || {
-                let done = callback
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .take();
-                if let Some(done) = done {
-                    done(Err("The shell core is unavailable".into()));
-                }
-            },
-        );
-    }
-
-    fn export_written_existing_document(
-        &self,
-        selection: shell_contract::ipc::NativeSaveDestination,
+        output: shell_contract::ipc::SavedPublication,
+        input: Option<shell_contract::ipc::NativeSavedInput>,
         participants: Vec<shell_contract::ipc::NativeRequestOwner>,
         cancel: shell_contract::runtime::CancelToken,
         pending: shell_contract::runtime::CancelToken,
-        effects: shell_contract::hosts::OwnedEffectsHost,
         additional: Vec<shell_contract::runtime::CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
         accepted: shell_contract::hosts::PdfReloadAccepted,
         wake: shell_contract::hosts::GeneratedPathWake,
-        done: Box<
-            dyn FnOnce(Result<shell_contract::hosts::GeneratedPathDispatchOutcome, String>) + Send,
-        >,
-    ) {
-        let callback = Arc::new(std::sync::Mutex::new(Some(done)));
-        let on_core = callback.clone();
-        crate::host::w::post_core_checked(
-            move |provided, _| {
-                let Some(done) = on_core
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .take()
-                else {
-                    return;
-                };
-                let Some(tabs) = provided
+    ) -> Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String> {
+        let mut result = None;
+        let on_core = crate::host::w::on_core_local(|provided| {
+            result = Some(
+                match provided
                     .all::<shell_ipc_w::tabs::TabsState>()
                     .into_iter()
                     .next()
-                else {
-                    return done(Err("The tab manager is unavailable".into()));
-                };
-                tabs.export_written_existing_document(
-                    selection,
-                    "pdf",
-                    participants,
-                    cancel,
-                    pending,
-                    additional,
-                    effects,
-                    accepted,
-                    done,
-                );
-            },
-            move || {
-                if let Some(done) = callback
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .take()
                 {
-                    done(Err("The shell core is unavailable".into()));
-                }
-            },
-        );
+                    Some(tabs) => tabs
+                        .prepare_generated_output(
+                            output,
+                            input,
+                            "pdf",
+                            participants,
+                            cancel,
+                            pending,
+                            additional,
+                            effects,
+                            accepted,
+                            wake,
+                        )
+                        .map(|prepared| {
+                            Box::new(prepared)
+                                as Box<dyn shell_contract::hosts::PreparedGeneratedPath>
+                        }),
+                    None => Err("The tab manager is unavailable".into()),
+                },
+            );
+        });
+        if !on_core {
+            return Err("The exported PDF must be prepared on the core thread".into());
+        }
+        result.ok_or_else(|| "The tab manager did not prepare the exported PDF".to_owned())?
     }
 
     fn default_save_dir(&self) -> String {
@@ -465,8 +401,8 @@ impl MHost for ShellM {
         }
     }
 
-    /// The system's user dictionary, shared by every app: Windows has none to take a word
-    /// out of
+    /// The system's user dictionary, shared by every app (`NSSpellChecker`, Windows
+    /// `ISpellChecker2`)
     fn spell_remove_word(&self, word: &str) {
         let word = word.to_owned();
         match on_ui(&self.ui, move || native::menu::unlearn_word(&word)) {
@@ -477,8 +413,9 @@ impl MHost for ShellM {
     }
 
     /// The system checks spelling in the languages it picks itself, on both systems:
-    /// Electron listed none on macOS, and the system webviews have no call to choose them
-    /// on Windows either
+    /// Electron listed none on macOS, and WebView2 has no call to list or choose them (its
+    /// language is the environment's, fixed when wry creates it). No languages listed hides
+    /// the UI's language submenu, so `spell_set_languages` is never reached from it.
     fn spell_languages(&self, _view: ViewId) -> Vec<String> {
         Vec::new()
     }

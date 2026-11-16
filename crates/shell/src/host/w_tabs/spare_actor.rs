@@ -4,7 +4,7 @@ use std::rc::Rc;
 use shell_contract::ipc::{
     NativeBrowserOwner, NativeBrowserSuperseded, NativeBrowserTransition, NativeClosureReceipt,
 };
-use shell_ipc_d1::sheets::editors::{PreparedTabClose, PreparedTabTransfer, RegisteredTab};
+use shell_ipc_d1::sheets::{PreparedTabClose, PreparedTabTransfer, RegisteredTab};
 use shell_ipc_w::tabs::host::{EditorSeedRollback, SpareActor, SpareClosePlan, SpareTransferPlan};
 
 pub(super) struct SheetsSpareActor {
@@ -128,7 +128,7 @@ impl SpareTransferPlan for TransferPlan {
         Ok(())
     }
 }
-struct SavedBarrier(shell_ipc_d1::sheets::editors::PreparedSavedWorkbookBarrier);
+struct SavedBarrier(shell_ipc_d1::sheets::PreparedSavedWorkbookBarrier);
 impl shell_ipc_w::tabs::host::SpareSavedBarrier for SavedBarrier {
     fn with_validated(
         &mut self,

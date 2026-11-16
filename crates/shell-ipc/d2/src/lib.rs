@@ -12,6 +12,7 @@
 // their host traits and calls their editors' shell-facing methods.
 pub mod docs;
 pub mod epub;
+mod generated_mailbox;
 pub mod html;
 pub mod hwp;
 mod kit;

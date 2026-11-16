@@ -8,13 +8,13 @@
 //! the registered document to evaluate an expression at once (S2: the page may not know its
 //! registration yet).
 
-use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::json;
 
-use super::harness::{Direct, Ctx, app_url, destroy, open_direct, wait_done};
+use super::harness::{Ctx, Direct, app_url, destroy, open_direct, wait_done};
 use super::log::record;
 use crate::native::{BridgeMode, DocumentEvaluation, NativeEvent, NativeEventKind};
 
@@ -25,7 +25,9 @@ pub fn run(ctx: &Ctx) -> Result<(), String> {
     let mut spec = Direct::new(label, &app_url("shell", "p2-a.html"));
     spec.bridge = BridgeMode::Invoke;
     spec.hook = Some(Arc::new(move |event: &NativeEvent| {
-        let NativeEventKind::DocumentRegistered { context } = &event.kind else { return };
+        let NativeEventKind::DocumentRegistered { context } = &event.kind else {
+            return;
+        };
         let document = context.identity().id().get();
         let started = super::log::now_ms();
         let result = context.evaluate("1 + 1".to_owned(), move |result| {
@@ -43,14 +45,28 @@ pub fn run(ctx: &Ctx) -> Result<(), String> {
         });
         match result {
             Ok(handle) => super::harness::keep(&kept, handle),
-            Err(error) => record("rust", "p2.eval.at_registration", json!({ "document": document, "ok": false, "error": error.to_string() })),
+            Err(error) => record(
+                "rust",
+                "p2.eval.at_registration",
+                json!({ "document": document, "ok": false, "error": error.to_string() }),
+            ),
         }
     }));
     let opened = open_direct(ctx, spec)?;
-    let ready = opened.timeline.wait_kind("DocumentReady", 0, Duration::from_secs(30));
-    record("rust", "p2.wait", json!({ "what": "first DocumentReady", "ok": ready }));
+    let ready = opened
+        .timeline
+        .wait_kind("DocumentReady", 0, Duration::from_secs(30));
+    record(
+        "rust",
+        "p2.wait",
+        json!({ "what": "first DocumentReady", "ok": ready }),
+    );
     let finished = wait_done(label, 0, 90);
-    record("rust", "p2.wait", json!({ "what": "page sequence", "ok": finished }));
+    record(
+        "rust",
+        "p2.wait",
+        json!({ "what": "page sequence", "ok": finished }),
+    );
     // late events of the last restore or re-registration
     std::thread::sleep(Duration::from_secs(3));
     // a reload that ignores the cache (the menu's Reload with ignore_cache)
@@ -60,7 +76,9 @@ pub fn run(ctx: &Ctx) -> Result<(), String> {
         .get_webview(label)
         .ok_or_else(|| "no webview".to_owned())
         .and_then(|webview| crate::native::menu::reload(&webview, true));
-    let registered = opened.timeline.wait_kind("DocumentRegistered", base, Duration::from_secs(15));
+    let registered = opened
+        .timeline
+        .wait_kind("DocumentRegistered", base, Duration::from_secs(15));
     record(
         "rust",
         "p2.reload_ignoring_cache",
@@ -85,5 +103,9 @@ pub fn run(ctx: &Ctx) -> Result<(), String> {
         json!({ "registered": state.is_some(), "state": state, "browser_url": opened.browser.url().map(|url| url.to_string()) }),
     );
     destroy(ctx, label);
-    if finished { Ok(()) } else { Err("the P2 page sequence did not finish".into()) }
+    if finished {
+        Ok(())
+    } else {
+        Err("the P2 page sequence did not finish".into())
+    }
 }

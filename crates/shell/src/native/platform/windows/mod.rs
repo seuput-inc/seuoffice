@@ -7,6 +7,7 @@
 //! - `page.rs`: `PageDriver` and `PrintOps`, with the CDP driver in `cdp.rs`
 //! - `window.rs`: `WindowOps`
 //! - `policy.rs`: `PolicyOps`
+//! - `spell.rs`: `SpellOps` over the Windows spell checker and its user dictionary
 //! - `caption.rs`: `CaptionStyle`, `configure`, `update` (Generate's DWM caption, Windows 11
 //!   build 22000+; Windows 10 keeps the default caption and logs once)
 //!
@@ -17,29 +18,8 @@ mod cdp;
 mod observer;
 mod page;
 mod policy;
+mod spell;
 mod window;
-
-use super::SpellOps;
 
 /// The marker type every Windows trait impl is written for.
 pub(crate) struct Platform;
-
-/// WebView2 has no spell-check API the shell can reach: no suggestions and no user
-/// dictionary. Chromium's own underline stays. The answers are honest, not simulated.
-impl SpellOps for Platform {
-    fn suggestions(_word: &str) -> Result<Vec<String>, String> {
-        Ok(Vec::new())
-    }
-
-    fn is_misspelled(_word: &str) -> Result<bool, String> {
-        Ok(false)
-    }
-
-    fn learn(_word: &str) -> Result<bool, String> {
-        Ok(false)
-    }
-
-    fn unlearn(_word: &str) -> Result<bool, String> {
-        Ok(false)
-    }
-}

@@ -157,9 +157,49 @@ impl TabsState {
     }
 
     /// `tabManager?.findTabByPath(path) ?? findDetachedTabByPath(path)`: the
-    /// view of the editor that shows this file (an unloaded tab for it is
-    /// loaded first)
-    pub fn view_of_file(&self, path: &str) -> Option<ViewId> {
+    /// view of the editor that shows this file; an unloaded tab for it loads
+    /// first (under a native command, without activating it), so `done` runs
+    /// once that settled
+    pub fn view_of_file(&self, path: &str, done: Box<dyn FnOnce(Option<ViewId>)>) {
+        let id = self
+            .inner
+            .borrow()
+            .manager
+            .as_ref()
+            .and_then(|m| m.tab_id_for_path(Some(path)));
+        let Some(id) = id else {
+            return done(self.detached_view_of_file(path));
+        };
+        let state = self.rc();
+        let path = path.to_owned();
+        self.hydrate_tabs(
+            vec![id],
+            None,
+            Box::new(move |result| match result {
+                Ok(()) => done(state.loaded_view_of_file(&path)),
+                Err(error) => {
+                    state
+                        .hooks
+                        .warn("[tabs] a tab could not be loaded:", &error);
+                    done(state.detached_view_of_file(&path))
+                }
+            }),
+        );
+    }
+
+    /// Whether a tab (loaded or not) or a detached window shows this file; it
+    /// loads nothing
+    pub fn has_tab_for_file(&self, path: &str) -> bool {
+        let in_strip = self
+            .inner
+            .borrow()
+            .manager
+            .as_ref()
+            .is_some_and(|m| m.tab_id_for_path(Some(path)).is_some());
+        in_strip || self.detached_view_of_file(path).is_some()
+    }
+
+    fn loaded_view_of_file(&self, path: &str) -> Option<ViewId> {
         let mut g = self.inner.borrow_mut();
         if let Some(found) = g.manager_call(|m, b| {
             m.find_tab_by_path(
@@ -171,6 +211,16 @@ impl TabsState {
         {
             return found;
         }
+        let Inner {
+            detached, bridge, ..
+        } = &mut *g;
+        detached
+            .find_detached_tab_by_path(bridge, path)
+            .map(|found| found.view)
+    }
+
+    fn detached_view_of_file(&self, path: &str) -> Option<ViewId> {
+        let mut g = self.inner.borrow_mut();
         let Inner {
             detached, bridge, ..
         } = &mut *g;

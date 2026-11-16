@@ -38,6 +38,50 @@ fn gated_cleanup(
     )
 }
 
+impl TabsState {
+    /// The saved file is already open in a non-PDF tab: that tab is the
+    /// generated result, so it activates under the saved request's shell owner
+    /// and the caller is answered `Opened` for it.
+    #[allow(clippy::too_many_arguments)]
+    fn show_existing_saved_tab(
+        &self,
+        id: String,
+        owner: NativeRequestOwner,
+        cancel: CancelToken,
+        pending: CancelToken,
+        effects: OwnedEffectsHost,
+        epoch: u64,
+        finish: SavedOpenDone,
+    ) {
+        let source = owner.clone();
+        let request_cancel = cancel.clone();
+        self.activate_owned(
+            id,
+            owner.clone(),
+            cancel,
+            epoch,
+            None,
+            Box::new(move |result| {
+                finish(
+                    result
+                        .and_then(|(_, view, generation)| {
+                            let target = effects.capture_owner(view, &generation)?;
+                            CommittedGeneratedPath::from_loaded_target(
+                                source,
+                                target,
+                                owner,
+                                request_cancel,
+                                pending,
+                                effects,
+                            )
+                        })
+                        .map(|receipt| GeneratedPathOutcome::Opened(Arc::new(receipt))),
+                )
+            }),
+        );
+    }
+}
+
 /// What the fresh-editor continuation keeps from the original request.
 struct SavedOpen {
     id: u64,
@@ -53,9 +97,10 @@ struct SavedOpen {
 
 impl TabsState {
     /// Open a committed saved input as an editor. A PDF already open at the
-    /// path is reloaded in place; any other open tab or an unsupported kind
-    /// reports `NotOpened`, so the caller reveals the file instead of granting
-    /// new editor authority. A reserved Sheets spare view receives the saved
+    /// path is reloaded in place; any other tab already open at the path is
+    /// activated as the result (`Opened`). An unsupported kind reports
+    /// `NotOpened`, so the caller reveals the file instead of granting new
+    /// editor authority. A reserved Sheets spare view receives the saved
     /// document instead of a new view.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn open_saved_input_owned(
@@ -121,7 +166,18 @@ impl TabsState {
                     accepted,
                     finish,
                 ),
-                _ => finish(Ok(GeneratedPathOutcome::NotOpened)),
+                _ => {
+                    drop((input, path, accepted, participants, additional));
+                    self.show_existing_saved_tab(
+                        id,
+                        shell_owner,
+                        cancel,
+                        pending,
+                        effects,
+                        epoch,
+                        finish,
+                    )
+                }
             };
         }
         // Acceptance exists only for an in-place PDF reload; a fresh editor has none.

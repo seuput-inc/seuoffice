@@ -388,7 +388,7 @@ pub trait DocsShell: Send + Sync {
 pub type DocsShellHost = Arc<dyn DocsShell>;
 
 #[cfg(any(test, feature = "probe"))]
-mod fake_generated;
+pub(crate) mod fake_generated;
 
 #[cfg(test)]
 pub(crate) use fake::Fake;

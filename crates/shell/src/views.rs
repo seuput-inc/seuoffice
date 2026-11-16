@@ -96,7 +96,9 @@ impl PreparedBrowserOwner {
                 if transition.matches_owner(previous) && transition.proposes_owner(&self.owner) => {
             }
             _ => {
-                return Err("The browser owner transition does not match the captured owner".into());
+                return Err(
+                    "The browser owner transition does not match the captured owner".into(),
+                );
             }
         }
         drop(current);

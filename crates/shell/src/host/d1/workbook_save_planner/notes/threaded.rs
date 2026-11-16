@@ -1,9 +1,8 @@
 //! Excel threaded comments, persons and legacy comment mirrors.
 use std::collections::{HashMap, HashSet};
 
-use super::{
-    Legacy, PackageEditor, append_rel, escape, note_ref, re, sheets, state::resolve_rel_target,
-};
+use super::super::state::resolve_rel_target;
+use super::{Legacy, PackageEditor, append_rel, escape, note_ref, re, sheets};
 use serde_json::Value;
 
 pub(super) const REL_TYPE: &str =

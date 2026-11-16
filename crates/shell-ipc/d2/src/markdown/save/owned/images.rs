@@ -286,32 +286,10 @@ impl Md {
                     return done(saved_at(&dir));
                 }
                 let first = std::path::PathBuf::from(finished.first);
-                let shell = me.shell.clone();
-                let os = me.os.clone();
-                let (destination, cancel, pending, effects) = (
-                    owner.destination().clone(),
-                    owner.cancel(),
-                    owner.pending(),
-                    owner.effects().clone(),
-                );
-                let revealed = first.clone();
-                owner.export_written(
-                    move |origin, then| {
-                        shell.export_written_owned(
-                            origin,
-                            destination,
-                            cancel,
-                            pending,
-                            effects,
-                            first,
-                            "reveal",
-                            then,
-                        )
-                    },
-                    &mut || {
-                        os.show_item_in_folder(&revealed);
-                        Ok(())
-                    },
+                me.e.docs.reveal_written(
+                    &owner,
+                    me.os.clone(),
+                    first,
                     Box::new(move |revealed| {
                         done(match revealed {
                             Err(error) => failure(error),

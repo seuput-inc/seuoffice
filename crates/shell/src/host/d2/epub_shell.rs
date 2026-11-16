@@ -50,7 +50,7 @@ impl EpubShell for Shell {
                 .into_iter()
                 .next()
                 .ok_or_else(|| "The tab manager is not available".to_owned())?;
-            Ok(tabs.view_of_file(&path).is_some())
+            Ok(tabs.has_tab_for_file(&path))
         })
         .ok_or_else(|| "Core services are not available".to_owned())?
     }

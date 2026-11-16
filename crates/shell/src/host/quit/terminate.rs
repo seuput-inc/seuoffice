@@ -64,7 +64,9 @@ fn add(class: &AnyClass) {
         )
     };
     if !added.as_bool() {
-        eprintln!("[quit] the delegate refused the terminate hook; a Dock or log out quit is not guarded");
+        eprintln!(
+            "[quit] the delegate refused the terminate hook; a Dock or log out quit is not guarded"
+        );
     }
 }
 

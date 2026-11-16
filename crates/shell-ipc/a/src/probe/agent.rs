@@ -110,7 +110,7 @@ impl AgentWindowFrame for Frame {
         "/probe/renderer/agent.html".into()
     }
 
-    fn create(&self, options: &Value, load: &Value) -> ViewId {
+    fn create(&self, options: &Value, load: &Value) -> Result<ViewId, String> {
         push(
             &self.log,
             json!(["BrowserWindow.new", options["width"], options["height"]]),
@@ -118,7 +118,7 @@ impl AgentWindowFrame for Frame {
         push(&self.log, json!(["BrowserWindow.load", load]));
         let view = ViewId(2);
         *self.view.lock().expect("the view") = Some(view);
-        view
+        Ok(view)
     }
 }
 

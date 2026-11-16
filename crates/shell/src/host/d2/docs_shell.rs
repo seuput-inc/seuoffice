@@ -1,5 +1,5 @@
 //! Shell services used by the Word editor.
-mod cleanup;
+pub(super) mod cleanup;
 
 use main_core::packages::electron_utils::safe_remote_url::Response;
 use main_core::packages::i18n::Lang;

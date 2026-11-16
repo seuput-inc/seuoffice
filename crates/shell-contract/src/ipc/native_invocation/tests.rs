@@ -1216,3 +1216,33 @@ fn triple_recovery_binding_keeps_exact_lineage_and_browser_owner() {
     );
     assert!(child.is_child_of(&snapshot.command.as_ref().unwrap().command));
 }
+
+#[test]
+fn tab_commands_are_root_native_commands_of_the_shell_surface() {
+    let issuer = NativeInvocationIssuer::new(CancelToken::default());
+    for command in [
+        NativeEditorCommand::ActivateTab {
+            tab_id: "tab-1".into(),
+        },
+        NativeEditorCommand::HydrateTab {
+            tab_id: "tab-1".into(),
+        },
+    ] {
+        let operation = issuer.issue_command(command.clone(), CancelToken::default());
+        assert!(operation.is_root_native_command());
+        assert_eq!(operation.purpose(), NativeInvocationPurpose::NativeCommand);
+        assert_eq!(operation.selection().surface(), Surface::Shell);
+        assert_eq!(
+            operation.selection(),
+            &NativeInvocationSelection::NativeCommand(command)
+        );
+    }
+    assert_ne!(
+        NativeEditorCommand::ActivateTab {
+            tab_id: "tab-1".into()
+        },
+        NativeEditorCommand::HydrateTab {
+            tab_id: "tab-1".into()
+        }
+    );
+}

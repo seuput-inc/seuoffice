@@ -5,7 +5,10 @@
 //! thread and settle back onto that owner. PDF, HWP and CLI tools therefore do
 //! not block the UI or the core thread.
 
+mod agent;
 mod transport;
+
+pub(crate) use agent::{AgentMcpEnv, ServerStarted, has_hub, start_agent_relays, start_agent_server};
 
 use std::collections::HashMap;
 use std::path::PathBuf;

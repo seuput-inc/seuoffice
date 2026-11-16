@@ -2890,35 +2890,6 @@ impl SlidesShell for Shell {
         Ok(())
     }
 
-    fn set_bleed(&self, view: ViewId, on: bool) {
-        post_core(move |provided, _| {
-            let result = provided
-                .all::<TabsState>()
-                .into_iter()
-                .next()
-                .ok_or("The tab manager is unavailable")
-                .and_then(|tabs| {
-                    tabs.with_manager(|manager, host| {
-                        manager.set_content_bleed(host, i64::from(view.0), on)
-                    })
-                    .ok_or("The tab manager was released")
-                });
-            if let Err(error) = result {
-                eprintln!("[slides] cannot update presentation bleed: {error}");
-            }
-        });
-    }
-
-    fn show_fullscreen_window(&self, window: WindowId, on: bool) {
-        let cx = self.cx.clone();
-        log_error(
-            "updating show fullscreen",
-            on_ui(&self.cx.ui, move || {
-                crate::host::w_tabs::set_html_simple_fullscreen(&cx, window, on)
-            }),
-        );
-    }
-
     fn read_clipboard_buffer(&self, format: &str) -> Result<Vec<u8>, EngineError> {
         let format = format.to_owned();
         clipboard(&self.cx, move |clipboard| {
@@ -3223,25 +3194,6 @@ impl SlidesShell for Shell {
                         .map_err(|error| error.to_string())?;
                 }
                 cx.windows.close_window(window)
-            }),
-        );
-    }
-
-    fn fullscreen_on_display(&self, window: WindowId, display: Display) {
-        let cx = self.cx.clone();
-        log_error(
-            "placing fullscreen presentation",
-            on_ui(&self.cx.ui, move || fullscreen_on(&cx, window, display)),
-        );
-    }
-
-    fn move_presenter_window(&self, window: WindowId, target: Display) {
-        let cx = self.cx.clone();
-        log_error(
-            "moving presenter window",
-            on_ui(&self.cx.ui, move || {
-                let native = native_window(&cx, window)?;
-                move_presenter_native(&native, target)
             }),
         );
     }

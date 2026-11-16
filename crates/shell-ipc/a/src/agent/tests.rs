@@ -185,14 +185,18 @@ impl AgentWindowFrame for Frame {
     fn built_file(&self) -> String {
         "/app/renderer/agent.html".into()
     }
-    fn create(&self, options: &serde_json::Value, load: &serde_json::Value) -> ViewId {
+    fn create(
+        &self,
+        options: &serde_json::Value,
+        load: &serde_json::Value,
+    ) -> Result<ViewId, String> {
         self.created
             .lock()
             .unwrap()
             .push((options.clone(), load.clone()));
         *self.view.lock().unwrap() = Some(ViewId(WINDOW_VIEW));
         self.views.0.lock().unwrap().insert(WINDOW_VIEW);
-        ViewId(WINDOW_VIEW)
+        Ok(ViewId(WINDOW_VIEW))
     }
 }
 
@@ -778,7 +782,8 @@ impl World {
     /// the window is open (as W's `create` leaves it)
     fn open_window(&self) {
         self.frame
-            .create(&serde_json::json!({}), &serde_json::json!({}));
+            .create(&serde_json::json!({}), &serde_json::json!({}))
+            .unwrap();
         self.frame.created.lock().unwrap().clear();
     }
 

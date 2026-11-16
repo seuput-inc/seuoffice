@@ -35,7 +35,11 @@ use shell_contract::{
 
 pub use self::core::HeadlessReport;
 use self::core::{Env, core_at, create_core};
-pub use self::editors::{PreparedSavedWorkbookBarrier, RegisteredTab, SheetsViews, views};
+pub use self::editors::{
+    BlankSeedReceipt, PreparedBlankSeed, PreparedSavedWorkbookBarrier, PreparedTabClose,
+    PreparedTabRegistration, PreparedTabTransfer, PreparedWorkbookQueue, RegisteredTab,
+    SheetsViews, WorkbookQueueReceipt, views,
+};
 use self::editors::{SheetsEditors, install_views};
 use self::engine::{ScreenCaptureHost, SheetsShellHost, WorkbookEngineHost};
 use crate::host::{LocaleHost, RecoveryStateHost, Shared, on_view_gone};

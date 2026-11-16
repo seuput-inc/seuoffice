@@ -4,11 +4,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use main_core::packages::ai_provider::settings_secrets::AiSecretCodec;
 use main_core::shell::file_index::decider::{DecisionCallOptions, JevDocument, evaluate};
-use main_core::shell::home_api::FileSearchSettings;
+use main_core::shell::home_api::DecisionEndpoint;
 use shell_contract::Hosts;
 use shell_contract::runtime::Thread;
 use shell_ipc_w::home_files::Home;
-use shell_ipc_w::home_settings::{HomeApp, HomeAppHost, McpSettings, McpStatus};
+use shell_ipc_w::home_settings::{
+    FileSearchSettings, HomeApp, HomeAppHost, McpSettings, McpStatus,
+};
 use shell_ipc_w::tabs::TabsState;
 use tauri::Manager;
 
@@ -135,8 +137,9 @@ impl HomeApp for App {
     }
     fn probe_decision(&self, settings: &FileSearchSettings) -> Result<(), String> {
         let options = DecisionCallOptions {
-            endpoint: settings.endpoint,
-            key: settings.keys.get(settings.endpoint).to_owned(),
+            endpoint: DecisionEndpoint::from_id(settings.endpoint)
+                .ok_or_else(|| format!("unknown decision endpoint: {}", settings.endpoint))?,
+            key: settings.key().to_owned(),
             custom_base_url: settings.custom_base_url.clone(),
             custom_model: settings.custom_model.clone(),
             cloudflare_account_id: settings.cloudflare_account_id.clone(),

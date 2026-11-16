@@ -1,7 +1,7 @@
-use serde::de::{self, DeserializeOwned, IntoDeserializer, MapAccess, SeqAccess, Visitor};
+use jscompat::serde::de::{self, DeserializeOwned, IntoDeserializer, MapAccess, SeqAccess, Visitor};
 use shell_contract::IpcValue;
 
-pub(super) fn decode<T: DeserializeOwned>(value: &IpcValue) -> Result<T, String> {
+pub(in crate::host::pptx_ops) fn decode<T: DeserializeOwned>(value: &IpcValue) -> Result<T, String> {
     jscompat::reading_leniently(|| T::deserialize(Value(value))).map_err(|e| e.to_string())
 }
 struct Value<'a>(&'a IpcValue);
@@ -55,7 +55,7 @@ impl<'de> de::Deserializer<'de> for Value<'de> {
             _ => Err(de::Error::custom("expected enum string")),
         }
     }
-    serde::forward_to_deserialize_any! { bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf unit unit_struct newtype_struct seq tuple tuple_struct map struct identifier ignored_any }
+    jscompat::serde::forward_to_deserialize_any! { bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf unit unit_struct newtype_struct seq tuple tuple_struct map struct identifier ignored_any }
 }
 struct ByteSequence<'a>(std::slice::Iter<'a, u8>);
 impl<'de> SeqAccess<'de> for ByteSequence<'de> {

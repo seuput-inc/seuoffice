@@ -7,13 +7,18 @@
 //! | `lang`, `theme`, `statuses`, `ai_settings`, `random_uuid` | real |
 //! | `list_skills`, `enabled_for_agent`, `open_template_preview` | real: the skills port's `SkillsCore` and `TemplateTabsCore`, through `Provided` on the core thread (the template copy's tab manager is the user skills host's own stub) |
 //! | `process_alive`, `exec_file` | real (`std::process`; `exec_file` blocks to its end, bounded by the request's timeout: only the session folders' sweep on a worker asks it) |
-//! | `open_documents`, `open_path` | stub (the tab manager) |
-//! | `build_skill_bundle` | stub: no bundle (`buildAgentSkillBundle` is not in main-core) |
-//! | `has_app_mcp`, `start_app_mcp` | stub: no app MCP server (`startAgentMcpServer` is not in main-core) |
-//! | `has_user_mcp`, `start_relays` | no hub: `start_relays` answers no relays, as an absent hub does |
-//! | `run_claude` | stub (`startClaudeAgentSession` is not in main-core) |
-//! | `deck_open`, `deck_text` | stub (the shell has no zip crate: `zip` would do both) |
-//! | `AgentWindowFrame` | stub: no window; `create` panics "not built yet" |
+//! | `open_documents`, `open_path` | real: the tab manager's open and detached files; the native `OpenFile` route (`docs_tabs::route_path_native`) |
+//! | `build_skill_bundle` | real: [`skill_bundle`] (`buildAgentSkillBundle`) |
+//! | `has_app_mcp`, `start_app_mcp` | real: one loopback server per session ([`app_mcp::start_agent_server`]) |
+//! | `has_user_mcp`, `start_relays` | real: a relay per server of the MCP hub ([`app_mcp::start_agent_relays`]); an absent hub answers no relays |
+//! | `run_claude` | real: [`claude`] (`startClaudeAgentSession`) on the AI runtime's driver |
+//! | `deck_open`, `deck_text` | real: [`deck`] (the `zip` crate, the PPTX zip gate first) |
+//! | `AgentWindowFrame` | real: [`frame`], a window of the window host with the `ShellAgent` bridge |
+
+mod claude;
+mod deck;
+mod frame;
+mod skill_bundle;
 
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -30,17 +35,24 @@ use main_core::shell::agent::agent_window::{TemplatePreviewInput, TemplatePrevie
 use main_core::shell::app_settings::read_app_settings;
 use main_core::shell::user_skills::template_tabs::PreviewInput;
 use main_core::shell::user_skills::user_skills_service::{AgentEnabledSkill, Failure};
-use shell_contract::ViewId;
 use shell_contract::hosts::Hosts;
 use shell_contract::runtime::{AppPaths, PathName};
+use shell_contract::{Surface, ViewId};
 use shell_ipc_a::agent::{
-    AgentServices, AgentServicesHost, AgentWindowFrame, AgentWindowFrameHost, AppMcpStarted,
-    ClaudeSession, Fault, RelayAsker, RelaysStarted, RunnerFault, SessionRef, SkillHooks,
+    AgentServices, AgentServicesHost, AgentWindowFrameHost, AppMcpStarted, ClaudeSession, Fault,
+    RelayAsker, RelaysStarted, RunnerFault, SessionRef, SkillHooks,
 };
 use shell_ipc_a::user_skills::{SkillsCore, TemplateTabsCore};
+use shell_ipc_w::tabs::{TabsState, native_open_surface};
 
+use self::deck::Deck;
+use self::frame::Frame;
 use super::settings::SettingsFile;
-use super::{NOT_BUILT, UiLang, subscription_statuses, unbuilt};
+use super::{UiLang, subscription_statuses};
+use crate::host::HostContext;
+use crate::host::app_mcp::{self, AgentMcpEnv};
+use crate::host::d2::docs_tabs;
+use crate::host::update;
 use crate::host::w::on_core;
 use crate::paths::ShellPaths;
 
@@ -199,6 +211,9 @@ fn exec_file(request: &ExecRequest) -> String {
 struct Services {
     lang: UiLang,
     settings: SettingsFile,
+    /// what a session's app MCP server is made from; `None` where the shell has no editors to offer
+    mcp: Option<Arc<AgentMcpEnv>>,
+    deck: Deck,
 }
 
 impl AgentServices for Services {
@@ -222,14 +237,35 @@ impl AgentServices for Services {
         })
     }
 
+    /// `[...tabManager.openFilePaths(), ...detachedFilePaths()]`
     fn open_documents(&self) -> Vec<String> {
-        unbuilt("AgentServices::open_documents");
-        Vec::new()
+        on_core(|provided| {
+            provided
+                .all::<TabsState>()
+                .first()
+                .map(|tabs| tabs.all_file_paths())
+        })
+        .flatten()
+        .unwrap_or_default()
     }
 
-    fn open_path(&self, _: &str) -> bool {
-        unbuilt("AgentServices::open_path");
-        false
+    /// `routeDocumentPath(path)`: false where the file is not there or no editor takes its type;
+    /// the open itself goes through the native `OpenFile` route, which settles later
+    fn open_path(&self, path: &str) -> bool {
+        if !std::path::Path::new(path).exists() {
+            return false;
+        }
+        let routable = native_open_surface(path) != Surface::Shell;
+        let shown = path.to_owned();
+        docs_tabs::route_path_native(
+            path.to_owned(),
+            Box::new(move |opened| {
+                if let Err(error) = opened {
+                    eprintln!("shell: the agent window could not open {shown}: {error}");
+                }
+            }),
+        );
+        routable
     }
 
     fn list_skills(&self) -> Result<Vec<AgentSkillListEntry>, String> {
@@ -278,11 +314,10 @@ impl AgentServices for Services {
 
     fn build_skill_bundle(
         &self,
-        _: &[JsonValue],
-        _: &str,
+        skills: &[JsonValue],
+        dir: &str,
     ) -> Result<Option<AgentSkillBundle>, Fault> {
-        unbuilt("AgentServices::build_skill_bundle");
-        Ok(None)
+        skill_bundle::build_agent_skill_bundle(skills, dir).map(Some)
     }
 
     fn open_template_preview(
@@ -336,53 +371,65 @@ impl AgentServices for Services {
     }
 
     fn has_app_mcp(&self) -> bool {
-        false
+        self.mcp.is_some()
     }
 
+    /// `startAgentMcpServer({ ...mcp, skillTools }, projectRoot)`: the session's own server on a
+    /// thread of its own, its skill tools bound to `hooks`
     fn start_app_mcp(
         &self,
-        _: &str,
+        project_root: &str,
         _: &SessionRef,
-        _: Arc<dyn SkillHooks>,
+        hooks: Arc<dyn SkillHooks>,
     ) -> Result<AppMcpStarted, Fault> {
-        unbuilt("AgentServices::start_app_mcp");
-        Err(Fault::new(NOT_BUILT))
-    }
-
-    fn has_user_mcp(&self) -> bool {
-        false
-    }
-
-    /// An absent hub answers no relays
-    fn start_relays(&self, _: &SessionRef, _: Arc<dyn RelayAsker>) -> Result<RelaysStarted, Fault> {
-        Ok(RelaysStarted {
-            relays: Vec::new(),
-            keep_results_inside: Vec::new(),
-            stop: Box::new(|| {}),
+        let env = self
+            .mcp
+            .clone()
+            .ok_or_else(|| Fault::new("the MCP runtime is not configured"))?;
+        let started = app_mcp::start_agent_server(env, project_root.to_owned(), hooks)
+            .map_err(Fault::new)?;
+        Ok(AppMcpStarted {
+            url: started.url,
+            token: started.token,
+            stop: started.stop,
         })
+    }
+
+    /// `userMcp` is always given (the hub of the person's servers); an absent hub answers no relays
+    fn has_user_mcp(&self) -> bool {
+        true
+    }
+
+    fn start_relays(
+        &self,
+        session: &SessionRef,
+        ask: Arc<dyn RelayAsker>,
+    ) -> Result<RelaysStarted, Fault> {
+        if !app_mcp::has_hub() {
+            return Ok(RelaysStarted {
+                relays: Vec::new(),
+                keep_results_inside: Vec::new(),
+                stop: Box::new(|| {}),
+            });
+        }
+        app_mcp::start_agent_relays(update::app_version().to_owned(), &session.session_id, ask)
+            .map_err(Fault::new)
     }
 
     fn run_claude(
         &self,
-        _: &AgentSessionOptions,
-        _: Arc<dyn Fn(JsonValue) + Send + Sync>,
+        options: &AgentSessionOptions,
+        on_event: Arc<dyn Fn(JsonValue) + Send + Sync>,
     ) -> Result<Arc<dyn ClaudeSession>, RunnerFault> {
-        unbuilt("AgentServices::run_claude");
-        Err(RunnerFault {
-            problem: None,
-            kind: None,
-            fault: Fault::new(NOT_BUILT),
-        })
+        claude::run(options, on_event)
     }
 
-    fn deck_open(&self, _: &[u8]) -> Result<Vec<DeckEntry>, String> {
-        unbuilt("AgentServices::deck_open");
-        Err(NOT_BUILT.to_owned())
+    fn deck_open(&self, bytes: &[u8]) -> Result<Vec<DeckEntry>, String> {
+        self.deck.open(bytes)
     }
 
-    fn deck_text(&self, _: usize) -> Result<String, String> {
-        unbuilt("AgentServices::deck_text");
-        Err(NOT_BUILT.to_owned())
+    fn deck_text(&self, index: usize) -> Result<String, String> {
+        self.deck.text(index)
     }
 
     fn process_alive(&self, pid: f64) -> bool {
@@ -394,59 +441,17 @@ impl AgentServices for Services {
     }
 }
 
-/// The agent window's frame: no window is built, so there is none open
-struct Frame;
-
-impl AgentWindowFrame for Frame {
-    fn view(&self) -> Option<ViewId> {
-        unbuilt("AgentWindowFrame::view");
-        None
-    }
-
-    fn is_minimized(&self) -> bool {
-        unbuilt("AgentWindowFrame::is_minimized");
-        false
-    }
-
-    fn reveal(&self, _: bool) {
-        unbuilt("AgentWindowFrame::reveal");
-    }
-
-    fn window_title(&self, _: &str) -> String {
-        unbuilt("AgentWindowFrame::window_title");
-        String::new()
-    }
-
-    fn preload_path(&self) -> String {
-        unbuilt("AgentWindowFrame::preload_path");
-        String::new()
-    }
-
-    fn renderer_url(&self) -> Option<String> {
-        unbuilt("AgentWindowFrame::renderer_url");
-        None
-    }
-
-    fn built_file(&self) -> String {
-        unbuilt("AgentWindowFrame::built_file");
-        String::new()
-    }
-
-    fn create(&self, _: &serde_json::Value, _: &serde_json::Value) -> ViewId {
-        unbuilt("AgentWindowFrame::create");
-        panic!("AgentWindowFrame::create is not built yet")
-    }
-}
-
 /// Inserts the two hosts and the factory of the agent window's port
-pub fn install(hosts: &mut Hosts, lang: &UiLang) {
+pub fn install(hosts: &mut Hosts, lang: &UiLang, cx: &HostContext) {
     let paths = ShellPaths::new();
     let services: AgentServicesHost = Arc::new(Services {
         lang: lang.clone(),
         settings: SettingsFile::new(paths.path(PathName::UserData), paths.path(PathName::Home)),
+        mcp: AgentMcpEnv::new(cx, hosts).map(Arc::new),
+        deck: Deck::default(),
     });
     hosts.insert(services);
-    let frame: AgentWindowFrameHost = Arc::new(Frame);
+    let frame: AgentWindowFrameHost = Arc::new(Frame::default());
     hosts.insert(frame);
     hosts.insert(shell_ipc_a::agent::factory());
 }

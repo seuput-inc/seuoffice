@@ -316,22 +316,20 @@ impl RecoveryEditors for Editors {
                 match result {
                     Ok(ready) => {
                         let (owner, cleanup, binding) = ready.into_parts();
-                        let adoption = match (
-                            owner.context.renderer().cloned(),
-                            adoption_tabs.as_ref(),
-                        ) {
-                            (Some(created), Some(tabs)) => tabs
-                                .retain_adopted_editor(
-                                    owner.view,
-                                    created,
-                                    binding.reservation,
-                                    binding.owner,
-                                    binding.closure,
-                                    adopted_rollback,
-                                )
-                                .map_err(|failure| {
-                                    let error = failure.message().to_owned();
-                                    let lifetime = match failure {
+                        let adoption =
+                            match (owner.context.renderer().cloned(), adoption_tabs.as_ref()) {
+                                (Some(created), Some(tabs)) => tabs
+                                    .retain_adopted_editor(
+                                        owner.view,
+                                        created,
+                                        binding.reservation,
+                                        binding.owner,
+                                        binding.closure,
+                                        adopted_rollback,
+                                    )
+                                    .map_err(|failure| {
+                                        let error = failure.message().to_owned();
+                                        let lifetime = match failure {
                                         shell_ipc_w::tabs::AdoptedLifetimeFailure::CallerOwned(
                                             input,
                                         ) => super::recovery_openers::DirectLifetime::CallerOwned(
@@ -343,11 +341,13 @@ impl RecoveryEditors for Editors {
                                             retained.into_handle(),
                                         ),
                                     };
-                                    (error, Some(lifetime))
-                                }),
-                            (None, _) => Err(("The recovery renderer is unavailable".into(), None)),
-                            (_, None) => Err(("The tab manager is unavailable".into(), None)),
-                        };
+                                        (error, Some(lifetime))
+                                    }),
+                                (None, _) => {
+                                    Err(("The recovery renderer is unavailable".into(), None))
+                                }
+                                (_, None) => Err(("The tab manager is unavailable".into(), None)),
+                            };
                         match adoption {
                             Ok(handle) => {
                                 let active = handle.is_unclosed().and_then(|unclosed| {

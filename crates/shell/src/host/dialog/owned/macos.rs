@@ -135,7 +135,7 @@ pub(super) fn files(
     save: bool,
     session: &Arc<Session>,
 ) -> Result<Option<Vec<PathBuf>>, String> {
-    let previous = crate::native::native_app_key_window_handle(app)?;
+    let previous = crate::native::window::native_app_key_window_handle(app)?;
     let result = match parent {
         Some(parent) => with_ns_window(&parent.native_window_handle()?, parent, |window| {
             files_with_parent(spec, Some(window), save, session)

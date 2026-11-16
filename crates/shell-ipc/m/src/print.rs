@@ -1027,6 +1027,7 @@ fn hwp_print(
     owned: Option<&shell_contract::editors::OwnedPdfGrant>,
     native: Option<&NativeHwpPrint>,
     additional: &[shell_contract::runtime::CancelToken],
+    staged: &mut Option<crate::staged::StagedOutput>,
 ) -> Reply {
     let tmp = env.tmp();
     let result = (|| -> Result<Value, JsError> {
@@ -1066,30 +1067,17 @@ fn hwp_print(
             return Ok(json!({ "ok": true, "canceled": true }));
         }
         let bytes = print_pdf(begin_print_job_to_pdf(job, &tmp, &mut create))?;
-        if let Some(grant) = owned {
-            main_core::packages::electron_utils::atomic_write::atomic_write_file_authorized(
-                &target,
-                &bytes,
-                &mut |effect| {
-                    pdf_grant_effect(
-                        &grant.authority,
-                        &grant.destination,
-                        &grant.effects,
-                        &grant.cancel,
-                        &grant.pending,
-                        additional,
-                        &mut || {
-                            effect();
-                            Ok(())
-                        },
-                    )
-                    .map_err(|message| main_core::node_fs::NodeError {
-                        code: None,
-                        message,
-                    })
-                },
-            )
-            .map_err(JsError::from)?;
+        if owned.is_some() {
+            // staged beside the destination; the core turn publishes it under the
+            // grant's authority, so nothing public is written or truncated here
+            *staged = Some(
+                crate::staged::StagedOutput::prepare(
+                    std::path::Path::new(&target),
+                    bytes,
+                    file_commit::PublicationMode::Replace,
+                )
+                .map_err(JsError::plain)?,
+            );
         } else if let Some(native) = native {
             main_core::packages::electron_utils::atomic_write::atomic_write_file_authorized(
                 &target,
@@ -1308,10 +1296,11 @@ fn hwp(registry: &mut dyn Registry, cx: &Rc<Ctx>, env: &Env) -> Result<(), Regis
         let worker_env = e.clone();
         let callback_cancel = call.cancel.clone();
         e.workers.spawn(Box::new(move || {
-            let answer = hwp_print(&worker_env, view, &job, pdf, given_path, current, lang, owned.as_ref(), native.as_ref().map(|(_, native)| native), std::slice::from_ref(&callback_cancel));
+            let mut staged = None;
+            let answer = hwp_print(&worker_env, view, &job, pdf, given_path, current, lang, owned.as_ref(), native.as_ref().map(|(_, native)| native), std::slice::from_ref(&callback_cancel), &mut staged);
             if let Some(grant) = owned {
                 let shell_contract::editors::OwnedPdfGrant {
-                    path, request_token: _, authority, destination, cancel, pending,
+                    path: _, request_token: _, authority, destination, cancel, pending,
                     effects, accepted, accepted_losses, complete,
                 } = grant;
                 let completion = OwnedHwpCompletion {
@@ -1321,23 +1310,41 @@ fn hwp(registry: &mut dyn Registry, cx: &Rc<Ctx>, env: &Env) -> Result<(), Regis
                 let succeeded = matches!(&answer, Ok(IpcValue::Object(fields))
                     if fields.iter().any(|(key, value)| key == "ok" && *value == IpcValue::Bool(true))
                         && fields.iter().any(|(key, value)| key == "path" && matches!(value, IpcValue::String(_))));
-                if succeeded && !worker_env.host.headless() {
-                    let additional = completion.additional.clone();
-                    let (wake, callback) = prepare_hwp_publication(
-                        &worker_env.state, view, completion, reply, answer, worker_env.core.clone());
-                    match &authority {
-                        shell_contract::editors::OwnedPdfGrantAuthority::Renderer(origin) =>
-                            worker_env.host.export_written_owned(path, origin.clone(), destination, cancel, pending, effects, accepted, wake, callback),
-                        shell_contract::editors::OwnedPdfGrantAuthority::ExistingDocument { selection, participants } => {
-                            let mut captured = participants.clone();
-                            captured.push(destination);
-                            worker_env.host.export_written_existing_document(selection.clone(), captured, cancel, pending, effects, additional, accepted, wake, callback)
+                let publisher = worker_env.clone();
+                // the output is published on the core turn, under the grant's authority
+                worker_env.core.post(Box::new(move || {
+                    let mut published = None;
+                    let answer = match staged.filter(|_| succeeded) {
+                        Some(staged) => match publish_hwp_pdf(&completion, staged) {
+                            Ok(done) => {
+                                published = Some(done);
+                                answer
+                            }
+                            Err(error) => failed(error),
+                        },
+                        None => answer,
+                    };
+                    match published {
+                        Some((output, input)) if !publisher.host.headless() => {
+                            let additional = completion.additional.clone();
+                            let mut participants = match &authority {
+                                shell_contract::editors::OwnedPdfGrantAuthority::Renderer(_) => Vec::new(),
+                                shell_contract::editors::OwnedPdfGrantAuthority::ExistingDocument { participants, .. } => participants.clone(),
+                            };
+                            if matches!(authority, shell_contract::editors::OwnedPdfGrantAuthority::ExistingDocument { .. }) {
+                                participants.push(destination);
+                            }
+                            let (wake, callback) = prepare_hwp_publication(
+                                &publisher.state, view, completion, reply, answer, publisher.core.clone());
+                            callback(publisher.host.prepare_generated_output(
+                                output, Some(input), participants, cancel, pending, additional, effects, accepted, wake));
+                        }
+                        _ => {
+                            drop(accepted);
+                            finish_owned_hwp_print(&publisher.state, view, completion, reply, answer, None);
                         }
                     }
-                } else {
-                    drop(accepted);
-                    finish_owned_hwp_print(&worker_env.state, view, completion, reply, answer, None);
-                }
+                }));
             } else if let Some((_, native)) = native {
                 finish_native_hwp_print(&worker_env.state, view, native, reply, answer);
             } else {
@@ -1346,6 +1353,50 @@ fn hwp(registry: &mut dyn Registry, cx: &Rc<Ctx>, env: &Env) -> Result<(), Regis
             }
         }));
     })
+}
+
+/// Publishes the staged PDF on the core turn under the grant's authority.
+fn publish_hwp_pdf(
+    completion: &OwnedHwpCompletion,
+    mut staged: crate::staged::StagedOutput,
+) -> Result<crate::staged::Published, String> {
+    let commit = staged.take()?;
+    let path = commit.path().to_owned();
+    let result = match &completion.authority {
+        shell_contract::editors::OwnedPdfGrantAuthority::Renderer(origin) => completion
+            .effects
+            .publish_owned_staged_write(
+                origin,
+                &completion.destination,
+                &[],
+                &completion.cancel,
+                &completion.pending,
+                &completion.additional,
+                &path,
+                commit,
+            ),
+        shell_contract::editors::OwnedPdfGrantAuthority::ExistingDocument {
+            selection,
+            participants,
+        } => {
+            if selection.path() != path {
+                staged.restore(commit);
+                return Err("hwp: the PDF destination does not match its selection".into());
+            }
+            let mut captured = participants.clone();
+            captured.push(completion.destination.clone());
+            completion.effects.publish_native_staged_write_validated(
+                selection,
+                &captured,
+                &completion.cancel,
+                &completion.pending,
+                &completion.additional,
+                commit,
+                &mut || Ok(()),
+            )
+        }
+    };
+    staged.conclude(result)
 }
 
 fn finish_native_hwp_print(

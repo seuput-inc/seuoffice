@@ -12,7 +12,7 @@
 //! | [`PrintOps`] | `print.rs` | `page.rs` |
 //! | [`WindowOps`] | `window.rs` | `window.rs` |
 //! | [`PolicyOps`] | `policy.rs` | `policy.rs` |
-//! | [`SpellOps`] | `spell.rs` | `mod.rs` (honestly unsupported) |
+//! | [`SpellOps`] | `spell.rs` | `spell.rs` |
 //!
 //! Windows also exposes `windows::caption::{CaptionStyle, configure, update}`. A missing or
 //! partial impl fails the compile in [`assert_adapter`]; there is no runtime fallback and no
@@ -186,9 +186,9 @@ pub(crate) trait SpellOps {
     /// Replacement suggestions for a misspelled word; empty when there are none.
     fn suggestions(word: &str) -> Result<Vec<String>, String>;
     fn is_misspelled(word: &str) -> Result<bool, String>;
-    /// Add to the user dictionary; false when the platform has none.
+    /// Add to the user dictionary.
     fn learn(word: &str) -> Result<bool, String>;
-    /// Remove from the user dictionary; false when the platform cannot.
+    /// Remove from the user dictionary.
     fn unlearn(word: &str) -> Result<bool, String>;
 }
 

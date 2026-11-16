@@ -88,7 +88,9 @@ fn parse() -> Option<Request> {
 /// Register the probe's schemes on the builder, after the shell's own. A no-op without
 /// `--probe`.
 pub fn install(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
-    let Some(request) = request() else { return builder };
+    let Some(request) = request() else {
+        return builder;
+    };
     if let Err(error) = log::init(&request.out, &request.name) {
         eprintln!("shell: probe: {error}");
         std::process::exit(2);
@@ -116,13 +118,18 @@ pub fn run(request: &Request, context: &HostContext) -> Result<(), String> {
     std::thread::Builder::new()
         .name("probe".into())
         .spawn(move || {
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dispatch(&ctx, &name)));
+            let outcome =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dispatch(&ctx, &name)));
             let (ok, error) = match outcome {
                 Ok(Ok(())) => (true, None),
                 Ok(Err(error)) => (false, Some(error)),
                 Err(_) => (false, Some("the probe panicked".to_owned())),
             };
-            log::record("rust", "probe.end", json!({ "probe": name, "ok": ok, "error": error }));
+            log::record(
+                "rust",
+                "probe.end",
+                json!({ "probe": name, "ok": ok, "error": error }),
+            );
             finished.app.exit(if ok { 0 } else { 3 });
         })
         .map_err(|error| error.to_string())?;
@@ -130,7 +137,11 @@ pub fn run(request: &Request, context: &HostContext) -> Result<(), String> {
         .name("probe-deadline".into())
         .spawn(|| {
             std::thread::sleep(DEADLINE);
-            log::record("rust", "probe.timeout", json!({ "after_s": DEADLINE.as_secs() }));
+            log::record(
+                "rust",
+                "probe.timeout",
+                json!({ "after_s": DEADLINE.as_secs() }),
+            );
             std::process::exit(124);
         })
         .map(|_| ())

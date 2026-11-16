@@ -19,6 +19,7 @@ mod native_command;
 mod pending_output;
 mod receipt_retirement;
 mod saved_input;
+mod tab_load;
 pub(crate) use adopted_lifetime::AdoptedEditorLifetime;
 pub use adopted_lifetime::{
     AdoptedLifetimeFailure, AdoptedLifetimeHandle, CallerOwnedAdoptedLifetime,
@@ -355,6 +356,8 @@ enum Step {
         plan: PreparedTabLoad,
         command: shell_contract::ipc::NativeInvocationOperation,
         shell: NativeRequestOwner,
+        /// Set for a hydration that adopts the view without activating it
+        prepared: Option<PreparedSurvivorHydration>,
     },
     GeneratedLoaded {
         id: String,
@@ -1511,6 +1514,7 @@ impl TabsState {
                 plan,
                 command,
                 shell,
+                prepared,
             } => {
                 return self.finish_hydration(
                     epoch,
@@ -1518,7 +1522,7 @@ impl TabsState {
                     shell,
                     None,
                     Some(command),
-                    None,
+                    prepared,
                     cancel,
                     result,
                     done,

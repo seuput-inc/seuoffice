@@ -22,8 +22,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use main_core::shell::detached_windows::WindowOptions;
 use main_core::shell::split_layout::Rect;
 use main_core::shell::tab_manager::{
-    DiagramIdentity, HwpUntitledCopy, LoadedTabView, Opener, SplitViewState, TabError, TabKind,
-    TabResult, UnloadedTabOpenContext, ViewSpec,
+    DiagramIdentity, HwpUntitledCopy, Opener, SplitViewState, TabError, TabKind, TabResult,
+    UnloadedTabOpenContext, ViewSpec,
 };
 use serde_json::{Map, Value, json};
 use shell_contract::Hosts;
@@ -5622,20 +5622,6 @@ impl TabHooks for Hooks {
         self.log("diagramTabIdentity", vec![json!(wc_id)]);
         None
     }
-    fn opener_open(
-        &self,
-        _opener: &Opener,
-        _context: &UnloadedTabOpenContext,
-    ) -> Result<LoadedTabView<ViewId>, String> {
-        Err("no opener in the probe".to_owned())
-    }
-    fn opener_needs_user(
-        &self,
-        _opener: &Opener,
-        _context: &UnloadedTabOpenContext,
-    ) -> Result<bool, String> {
-        Err("no opener in the probe".to_owned())
-    }
     fn reset_sheets_shutting_down(&self) {
         self.log("resetSheetsShuttingDown", vec![]);
     }
@@ -7955,7 +7941,8 @@ mod command_tests {
             });
             let shared: Rc<dyn super::super::host::SpareActor> = actor.clone();
             let mut ready = fixture_ready(&fake, view, ());
-            ready.reservation.registration = NativeBrowserRegistration::Registered(owner);
+            ready.reservation.registration =
+                super::super::host::NativeBrowserRegistration::Registered(owner);
             let spare = super::super::host::RetainedSpareBinding::new(
                 ready.reservation,
                 Rc::default(),
@@ -7963,9 +7950,8 @@ mod command_tests {
             );
             (spare, view, closure, actor)
         };
-        let unused_cleanup = || -> ViewCreationCleanup {
-            Arc::new(|done| done(Err("unused cleanup".into())))
-        };
+        let unused_cleanup =
+            || -> ViewCreationCleanup { Arc::new(|done| done(Err("unused cleanup".into()))) };
 
         let (spare, view, closure, actor) = make_spare();
         let original_browser = closure.owner.clone();
@@ -8032,7 +8018,7 @@ mod command_tests {
         assert!(ready.reservation.owner.same_owner(target.browser()));
         assert!(matches!(
             ready.reservation.registration,
-            NativeBrowserRegistration::Registered(_)
+            super::super::host::NativeBrowserRegistration::Registered(_)
         ));
         assert!(actor.state.borrow().owner.same_owner(target.browser()));
         assert!(fake.w().saved_barriers.contains_key(&view));

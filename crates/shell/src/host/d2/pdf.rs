@@ -2,7 +2,7 @@
 
 mod binary_job;
 mod compress;
-mod crypto;
+pub(crate) mod crypto;
 mod file_ops;
 mod image_info;
 mod image_output;

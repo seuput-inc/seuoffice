@@ -223,8 +223,34 @@ impl Inner {
                 Effect::Changed => self.on_changed(),
                 Effect::SplitChanged(state) => self.on_split_changed(state),
                 Effect::Dock(tab) => self.dock(*tab),
+                Effect::LoadTab(id) => self.request_load(id),
             }
         }
+    }
+
+    /// A manager step asked for an unloaded tab: loading it needs the state
+    /// itself (this runs inside a manager call), so it runs on the core thread
+    /// once the call returned.
+    fn request_load(&mut self, id: String) {
+        let core = CURRENT.with(|current| {
+            current
+                .borrow()
+                .as_ref()
+                .map(|state| state.services.core.clone())
+        });
+        let Some(core) = core else {
+            self.bridge.hooks.warn(
+                "[tabs] a tab could not be loaded:",
+                "the tab state is not running",
+            );
+            return;
+        };
+        core.post(Box::new(move || {
+            let state = CURRENT.with(|current| current.borrow().clone());
+            if let Some(state) = state {
+                state.load_requested(&id);
+            }
+        }));
     }
 
     /// `createShellWindow`'s `onChanged`
@@ -803,13 +829,50 @@ impl TabsState {
                     context,
                     next,
                 } => {
-                    let answer = self.hooks.opener_needs_user(&opener, &context);
-                    match self.with_manager(|manager, host| {
-                        manager.resume_ensure_needs_user(host, next, answer)
-                    }) {
-                        Some(next) => step = next,
-                        None => return done(Ok(TabLoadResult::Missing)),
-                    }
+                    let source = match self.captured_shell_owner() {
+                        Ok((_, owner)) => owner,
+                        Err(error) => return done(Err(error)),
+                    };
+                    let cancel = shell_contract::runtime::CancelToken::default();
+                    let state = self.rc();
+                    self.hooks.opener_needs_user_owned(
+                        &opener,
+                        &context,
+                        source,
+                        cancel.clone(),
+                        cancel.clone(),
+                        Box::new(move |answer| {
+                            drop(cancel);
+                            match state.with_manager(|manager, host| {
+                                manager.resume_ensure_needs_user(host, next, answer)
+                            }) {
+                                Some(step) => state.drive_ensure(step, done),
+                                None => done(Ok(TabLoadResult::Missing)),
+                            }
+                        }),
+                    );
+                    return;
+                }
+                EnsureStep::Load { id } => {
+                    let state = self.rc();
+                    let target = id.clone();
+                    self.hydrate_tab_native(
+                        &target,
+                        Box::new(move |answer| {
+                            if let Err(error) = &answer {
+                                state
+                                    .hooks
+                                    .warn("[tabs] a restored tab could not be opened:", error);
+                            }
+                            match state.with_manager(|manager, host| {
+                                manager.resume_ensure_loaded(host, &id, answer)
+                            }) {
+                                Some(step) => state.drive_ensure(step, done),
+                                None => done(Ok(TabLoadResult::Missing)),
+                            }
+                        }),
+                    );
+                    return;
                 }
                 EnsureStep::AwaitReady { ready, next } => {
                     self.ensure_waits

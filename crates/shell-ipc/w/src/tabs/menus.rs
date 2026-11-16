@@ -365,9 +365,22 @@ impl TabsState {
                     g.split_pane_of_document(split.as_ref(), &tab_id, file_path.as_deref());
                 let intent = g.decide_drop(split.as_ref(), is_pane, doc_pane, dropped);
                 if intent.is_some() {
-                    g.manager_call(|m, b| {
-                        let _ = m.split_with(b, &tab_id, intent);
-                    });
+                    drop(g);
+                    let state = self.rc();
+                    self.hydrate_tabs(
+                        vec![tab_id.clone()],
+                        None,
+                        Box::new(move |result| match result {
+                            Ok(()) => {
+                                state.inner.borrow_mut().manager_call(|m, b| {
+                                    let _ = m.split_with(b, &tab_id, intent);
+                                });
+                            }
+                            Err(error) => state
+                                .hooks
+                                .warn("[tabs] a tab could not be loaded to split:", &error),
+                        }),
+                    );
                 }
             }
             MenuAction::Tab(click) => self.run_tab_click(click),
@@ -380,8 +393,8 @@ impl TabsState {
             MenuClick::Save(id) => self.document_action(&id, "save"),
             MenuClick::SaveAs(id) => self.document_action(&id, "saveAs"),
             MenuClick::Print(id) => self.document_action(&id, "print"),
-            MenuClick::OpenInNewWindow(id) => self.detach_tab_to_window(&id),
-            MenuClick::SplitBeside(id) => self.split_beside(&id),
+            MenuClick::OpenInNewWindow(id) => self.detach_tab_to_window_native(&id),
+            MenuClick::SplitBeside(id) => self.split_beside_native(&id),
             MenuClick::Rename(id) => {
                 self.inner
                     .borrow()
@@ -475,6 +488,40 @@ impl TabsState {
             self.hooks
                 .tab_document_action(kind, view, &tab_id, path.as_deref(), act);
         }
+    }
+
+    /// A menu entry detaches a tab: an unloaded one loads under a native
+    /// command first, then leaves for its own window
+    fn detach_tab_to_window_native(&self, id: &str) {
+        let state = self.rc();
+        let id = id.to_owned();
+        self.hydrate_tabs(
+            vec![id.clone()],
+            None,
+            Box::new(move |result| match result {
+                Ok(()) => state.detach_tab_to_window(&id),
+                Err(error) => state
+                    .hooks
+                    .warn("[tabs] a tab could not be loaded to open in a window:", &error),
+            }),
+        );
+    }
+
+    /// A menu entry puts a tab beside the shell window: an unloaded one loads
+    /// under a native command first
+    fn split_beside_native(&self, id: &str) {
+        let state = self.rc();
+        let id = id.to_owned();
+        self.hydrate_tabs(
+            vec![id.clone()],
+            None,
+            Box::new(move |result| match result {
+                Ok(()) => state.split_beside(&id),
+                Err(error) => state
+                    .hooks
+                    .warn("[tabs] a tab could not be loaded to split beside:", &error),
+            }),
+        );
     }
 
     /// `detachTabToWindow`: "Open in New Window" reparents the tab's live view

@@ -71,19 +71,13 @@ impl MarkdownPrintWindow for FakeWindow {
 pub(crate) struct FakeMarkdown {
     pub answers: Arc<Answers>,
     ids: AtomicU32,
-    os: shell_contract::hosts::OsShellHost,
 }
 
 impl FakeMarkdown {
-    pub(crate) fn new(
-        case: &Value,
-        probe: Option<ProbeLog>,
-        os: shell_contract::hosts::OsShellHost,
-    ) -> Self {
+    pub(crate) fn new(case: &Value, probe: Option<ProbeLog>) -> Self {
         FakeMarkdown {
             answers: Arc::new(Answers::new(case, probe)),
             ids: AtomicU32::new(0),
-            os,
         }
     }
 }
@@ -534,33 +528,56 @@ impl MarkdownShell for FakeMarkdown {
         self.answers
             .log(json!(["docxExportedHook", path.to_string_lossy()]));
     }
-    fn export_written_owned(
+    fn prepare_generated_output(
         &self,
-        origin: shell_contract::ipc::NativeRequestOwner,
-        destination: shell_contract::ipc::NativeRequestOwner,
+        output: shell_contract::ipc::SavedPublication,
+        input: Option<shell_contract::ipc::NativeSavedInput>,
+        kind: &'static str,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
         cancel: shell_contract::runtime::CancelToken,
         pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
         effects: shell_contract::hosts::OwnedEffectsHost,
-        path: PathBuf,
-        kind: &'static str,
-        then: Box<dyn FnOnce(Result<(), String>)>,
-    ) {
-        let result =
-            effects.with_owned_effect(&origin, &destination, &cancel, &pending, &mut || {
-                if !self.is_headless() {
-                    match kind {
-                        "pdf" => {
-                            if !self.open_generated_path(&path) {
-                                self.os.show_item_in_folder(&path);
-                            }
+        _accepted: shell_contract::hosts::PdfReloadAccepted,
+        _wake: shell_contract::hosts::GeneratedPathWake,
+    ) -> Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String> {
+        if input
+            .as_ref()
+            .is_some_and(|input| !input.output().same_publication(&output))
+        {
+            return Err("The synthetic saved input does not match the publication".into());
+        }
+        let answers = self.answers.clone();
+        Ok(crate::docs::hosts::fake_generated::scripted_open(
+            output,
+            participants,
+            cancel,
+            pending,
+            additional,
+            effects,
+            move |path| {
+                Ok(match kind {
+                    "pdf" => {
+                        answers.has("open_generated_path") && {
+                            answers.log(json!(["openGeneratedPath", path]));
+                            answers.bool("open_generated_path", path, false)
                         }
-                        "docx" | "odt" => self.docx_exported(&path),
-                        _ => self.os.show_item_in_folder(&path),
                     }
-                }
-                Ok(())
-            });
-        then(result);
+                    "docx" | "odt" => {
+                        answers.answer("docx_exported", path);
+                        answers.log(json!(["docxExportedHook", path]));
+                        true
+                    }
+                    _ => false,
+                })
+            },
+        ))
+    }
+    fn register_generated_actor_cleanup(
+        &self,
+        _wake: crate::docs::hosts::GeneratedActorWake,
+    ) -> Result<Box<dyn shell_contract::hosts::GeneratedCleanupRegistration>, String> {
+        Ok(Box::new(crate::docs::hosts::fake_generated::NoCleanup))
     }
     fn random_uuid(&self) -> String {
         let n = self.ids.fetch_add(1, Ordering::Relaxed) + 1;

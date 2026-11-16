@@ -3,21 +3,19 @@
 //! subscription logins and the entry's AI preferences reach beyond main-core
 //! and the shared hosts, and the factories of those ports.
 //!
-//! What the shell can do now is real; what needs a part that is not built yet
-//! (tabs, the TypeScript libraries that main-core does not hold) is a logged
-//! stub: `unbuilt("Trait::method")` once per call site, then the answer an app
-//! with nothing open gives.
+//! What the shell can do is real; what a port needs beyond it comes from the
+//! hosts the shell inserts.
 //!
 //! | trait | now |
 //! | --- | --- |
-//! | `ai_core::AiCoreHost` | real: `ui_lang` (W's one answer), `subscription_statuses` and `ai_tool_capabilities` (main-core over the subscription service's state), `is_headless_mode` (the shell has no headless export), `fetch_remote_image` (main-core's SSRF-guarded download over reqwest). Stub: `web_search`, `image_search`, `read_url` (the `@seuoffice/ai-search` backends are not in main-core) |
+//! | `ai_core::AiCoreHost` | real: `ui_lang` (W's one answer), `subscription_statuses` and `ai_tool_capabilities` (main-core over the subscription service's state), `is_headless_mode` (the shell has no headless export), `web_search`, `image_search` and `read_url` ([`shared`] over reqwest and the SSRF guard), `fetch_remote_image` (main-core's SSRF-guarded download over reqwest) |
 //! | `ai_core::PendingAiDocs` | real: one shared accepted-initialization store |
 //! | `ai_naming::NamingContext` | real (`NamingChat` is not inserted: the port drives the AI runtime itself) |
 //! | `app_ai_image::AppAiImageHost` | real: statuses and the Codex route state. Stub: `codex_generate_image` (`createCodexImageCliGenerator` is not in main-core) |
 //! | `slides_ai::SlidesAiHost` | real: `ui_lang`, `secret_codec`, statuses, `ai_tool_capabilities`, `fetch_remote_image`, `image_decoder` (the `image` crate). Stub: `generate_image`, `analyze_media` (`@seuoffice/ai-search` media tools) |
-//! | `free_ai::FreeAiHost` | real: settings read and write (the AI settings file, the codec), `window_state`, `window_command`, `net` and `open_router` (reqwest, a loopback server). Gap: a write does not start the key model listing `writeRendererAiSettings` follows with (the refresher is the shared AI port's) |
-//! | `subscription::SubscriptionShell` | real: `ui_lang`, `signature_valid` (ring). Stub: `login_window_text`, `chat_gpt_sign_in_pages` (the strings of `strings-ai-subscription` are not in main-core) |
-//! | `shell_ai_prefs::ShellUi` | real: `document_locale` (from W's one UI language), the shell window raised. Stub: opening the home tab (tabs are not built) |
+//! | `free_ai::FreeAiHost` | real: settings read and write (the AI settings file, the codec; a write lists the key providers whose key changed), `window_state`, `window_command`, `net` and `open_router` (reqwest, a loopback server) |
+//! | `subscription::SubscriptionShell` | real: `ui_lang`, `signature_valid` (ring), `login_window_text` and `chat_gpt_sign_in_pages` ([`subscription_text`]) |
+//! | `shell_ai_prefs::ShellUi` | real: `document_locale` (from W's one UI language), `show_home_tab` (the shell window raised, the Home tab opened) |
 //! | `outbound::OutboundShell` | real: `lang` |
 //! | `agent::AgentServices`, `AgentWindowFrame` | see [`agent`] |
 //!
@@ -29,19 +27,24 @@ mod agent;
 pub(crate) mod codex_image;
 pub(crate) mod fetch;
 mod free;
+mod html_text;
 mod jwt;
 pub(crate) mod media_tools;
 mod native_image;
+mod parallel_mcp;
+mod read_url;
+mod search;
 mod settings;
 mod shared;
+mod subscription_text;
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use jscompat::{JsObject, JsonValue};
 use main_core::packages::ai_provider::settings_secrets::AiSecretCodec;
 use main_core::packages::ai_provider::subscription_ipc::shared_subscription_statuses;
 use main_core::packages::ai_provider::task::JsError;
-use main_core::packages::i18n::{Lang, document_locale_for, html_lang, normalize_lang};
+use main_core::packages::i18n::{Lang, document_locale_for, normalize_lang};
 use shell_contract::hosts::Hosts;
 use shell_contract::ids::ViewId;
 use shell_contract::runtime::{AppPaths, CancelToken, PathName, Thread, Views};
@@ -59,23 +62,6 @@ use tauri::{AppHandle, Manager};
 use super::super::HostContext;
 use super::super::secrets::CODEC;
 use crate::views::ViewTable;
-
-const NOT_BUILT: &str = "not built yet";
-
-/// What is not built is said once per call site
-fn unbuilt(what: &'static str) {
-    static SEEN: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
-    let mut seen = SEEN.lock().unwrap_or_else(|p| p.into_inner());
-    if !seen.contains(&what) {
-        seen.push(what);
-        eprintln!("shell: not built yet: {what}");
-    }
-}
-
-/// What a library that is not built throws
-fn not_built() -> JsonValue {
-    JsError::error(NOT_BUILT).to_json()
-}
 
 /// The language of the UI: W's `UiLanguage`, taken once from [`Hosts`] (W's
 /// hosts are installed before these). `ko` where the shell has none.
@@ -211,27 +197,14 @@ impl SubscriptionShell for Subscription {
         self.lang.code()
     }
 
-    fn login_window_text(&self, _lang: &str, _provider: &str) -> JsonValue {
-        unbuilt("SubscriptionShell::login_window_text");
-        // `{ title?, guide?, closing? }`: the window keeps the program's own text
-        JsonValue::Object(JsObject::new())
+    fn login_window_text(&self, lang: &str, provider: &str) -> JsonValue {
+        // `{ title?, guide?, closing? }`: a provider the strings do not know keeps the program's own text
+        subscription_text::login_window_text(normalize_lang(Some(lang)), provider)
+            .unwrap_or_else(|| JsonValue::Object(JsObject::new()))
     }
 
     fn chat_gpt_sign_in_pages(&self, lang: &str) -> JsonValue {
-        unbuilt("SubscriptionShell::chat_gpt_sign_in_pages");
-        let tag = html_lang(normalize_lang(Some(lang)));
-        // `{ done, failed }`, each `{ lang, title, body }`: the words are not built
-        let page = || {
-            let mut page = JsObject::new();
-            page.set("lang", JsonValue::String(tag.to_owned()));
-            page.set("title", JsonValue::String(String::new()));
-            page.set("body", JsonValue::String(String::new()));
-            JsonValue::Object(page)
-        };
-        let mut pages = JsObject::new();
-        pages.set("done", page());
-        pages.set("failed", page());
-        JsonValue::Object(pages)
+        subscription_text::chat_gpt_sign_in_pages(normalize_lang(Some(lang)))
     }
 
     fn signature_valid(
@@ -248,9 +221,6 @@ impl SubscriptionShell for Subscription {
 /// `ShellUi`
 struct Ui {
     lang: UiLang,
-    app: AppHandle,
-    ui: Arc<dyn Thread>,
-    views: Arc<ViewTable>,
 }
 
 impl ShellUi for Ui {
@@ -258,19 +228,17 @@ impl ShellUi for Ui {
         document_locale_for(Some(self.lang.get().as_str()))
     }
 
+    /// `win.restore()`, `win.show()`, `win.focus()`, `tabManager.openHomeTab()`: the
+    /// shell window comes back (made first when it was closed), then the Home tab
+    /// opens or is activated. Runs where the tabs live, at once on the core thread
+    /// so the settings event the caller sends next finds the Home view.
     fn show_home_tab(&self) {
-        if let Some(main) = self.views.main() {
-            let (app, views) = (self.app.clone(), self.views.clone());
-            super::super::on_ui(&self.ui, move || {
-                if let Some(window) = window_of(&app, &views, main.view) {
-                    // `win.restore()`, `win.show()`, `win.focus()`
-                    let _ = window.unminimize();
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
-            });
-        }
-        unbuilt("ShellUi::show_home_tab (tabManager.openHomeTab)");
+        let _ = crate::host::w::on_core(|provided| {
+            if let Some(tabs) = crate::host::shell_tabs::shell_tabs(provided) {
+                tabs.reveal_shell_window();
+                tabs.open_home_tab();
+            }
+        });
     }
 }
 
@@ -296,12 +264,7 @@ pub fn install(hosts: &mut Hosts, cx: &HostContext) {
     hosts.insert(image);
     let subscription: SubscriptionShellHost = Arc::new(Subscription { lang: lang.clone() });
     hosts.insert(subscription);
-    let ui: ShellUiHost = Arc::new(Ui {
-        lang: lang.clone(),
-        app: cx.app.clone(),
-        ui: cx.ui.clone(),
-        views: cx.views.clone(),
-    });
+    let ui: ShellUiHost = Arc::new(Ui { lang: lang.clone() });
     hosts.insert(ui);
     let free: shell_ipc_a::free_ai::FreeAiHostHandle = Arc::new(free::FreeAi::new(
         lang.clone(),
@@ -321,5 +284,5 @@ pub fn install(hosts: &mut Hosts, cx: &HostContext) {
     hosts.insert(shell_ipc_a::slides_ai::proposal_factory());
     hosts.insert(shell_ipc_a::free_ai::factory());
     hosts.insert(shell_ipc_a::subscription::factory());
-    agent::install(hosts, &lang);
+    agent::install(hosts, &lang, cx);
 }

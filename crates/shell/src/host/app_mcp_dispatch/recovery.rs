@@ -69,7 +69,7 @@ impl Recovery {
                 .as_ref()
                 .ok_or("Word editor is unavailable")?
                 .discard_recovery(view),
-            "sheets" => shell_ipc_d1::sheets::editors::views()
+            "sheets" => shell_ipc_d1::sheets::views()
                 .ok_or("Sheets editor is unavailable")?
                 .discard_recovery(view),
             "slides" => shell_ipc_d1::slides::views()

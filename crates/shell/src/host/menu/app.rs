@@ -63,7 +63,7 @@ use shell_ipc_w::tabs::{MenuEntry, MenuEntryKind};
 use tauri::menu::{
     CheckMenuItem, IsMenuItem, Menu, MenuItem as TauriItem, PredefinedMenuItem, Submenu,
 };
-use tauri::{AppHandle, DynRuntime, Manager};
+use tauri::{AppHandle, Manager, Wry};
 
 use super::super::HostContext;
 use super::super::shell_tabs::shell_tabs;
@@ -1813,8 +1813,8 @@ static NAMED: Mutex<Option<HashMap<&'static str, NamedItem>>> = Mutex::new(None)
 
 #[derive(Clone)]
 enum NamedItem {
-    Check(CheckMenuItem<DynRuntime>),
-    Plain(TauriItem<DynRuntime>),
+    Check(CheckMenuItem<Wry>),
+    Plain(TauriItem<Wry>),
 }
 
 /// The docs host's `activeViewMenuState()`: what a docs view last reported for
@@ -1830,14 +1830,14 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 // ---- Tauri ----
 
 enum Built {
-    Item(TauriItem<DynRuntime>),
-    Check(CheckMenuItem<DynRuntime>),
-    Predefined(PredefinedMenuItem<DynRuntime>),
-    Submenu(Submenu<DynRuntime>),
+    Item(TauriItem<Wry>),
+    Check(CheckMenuItem<Wry>),
+    Predefined(PredefinedMenuItem<Wry>),
+    Submenu(Submenu<Wry>),
 }
 
 impl Built {
-    fn as_item(&self) -> &dyn IsMenuItem<DynRuntime> {
+    fn as_item(&self) -> &dyn IsMenuItem<Wry> {
         match self {
             Built::Item(i) => i,
             Built::Check(i) => i,
@@ -1851,7 +1851,7 @@ fn predefined(
     app: &AppHandle,
     role: Role,
     label: Option<&str>,
-) -> tauri::Result<PredefinedMenuItem<DynRuntime>> {
+) -> tauri::Result<PredefinedMenuItem<Wry>> {
     match role {
         Role::About => PredefinedMenuItem::about(app, label, None),
         Role::Services => PredefinedMenuItem::services(app, label),
@@ -1925,7 +1925,7 @@ fn build_node(app: &AppHandle, node: &Node, named: &mut Named) -> tauri::Result<
         }
         Node::Menu { label, role, items } => {
             let built = build_nodes(app, items, named)?;
-            let refs: Vec<&dyn IsMenuItem<DynRuntime>> = built.iter().map(Built::as_item).collect();
+            let refs: Vec<&dyn IsMenuItem<Wry>> = built.iter().map(Built::as_item).collect();
             let menu = Submenu::with_items(app, label, true, &refs)?;
             // the NSApp roles exist only in the macOS build of muda
             #[cfg(target_os = "macos")]
@@ -1952,9 +1952,9 @@ fn build_menu(
     app: &AppHandle,
     menus: &[Node],
     named: &mut Named,
-) -> tauri::Result<Menu<DynRuntime>> {
+) -> tauri::Result<Menu<Wry>> {
     let built = build_nodes(app, menus, named)?;
-    let refs: Vec<&dyn IsMenuItem<DynRuntime>> = built.iter().map(Built::as_item).collect();
+    let refs: Vec<&dyn IsMenuItem<Wry>> = built.iter().map(Built::as_item).collect();
     Menu::with_items(app, &refs)
 }
 

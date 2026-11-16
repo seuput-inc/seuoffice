@@ -33,7 +33,12 @@ struct Case {
 }
 
 fn a4(margin: f64) -> PdfSpec {
-    PdfSpec { paper_in: Some(A4), margins_in: [margin; 4], print_background: true, ..PdfSpec::default() }
+    PdfSpec {
+        paper_in: Some(A4),
+        margins_in: [margin; 4],
+        print_background: true,
+        ..PdfSpec::default()
+    }
 }
 
 fn cases() -> Vec<Case> {
@@ -49,14 +54,20 @@ fn cases() -> Vec<Case> {
         Case {
             name: "docs-landscape",
             page: "p4-docs.html",
-            spec: PdfSpec { landscape: true, ..a4(0.6) },
+            spec: PdfSpec {
+                landscape: true,
+                ..a4(0.6)
+            },
             expect: json!({ "pages": 3, "media": [841.9, 595.3], "tolerance": 3.0 }),
             shown: &[false],
         },
         Case {
             name: "css-page-size",
             page: "p4-sheets.html",
-            spec: PdfSpec { prefer_css_page_size: true, ..a4(0.4) },
+            spec: PdfSpec {
+                prefer_css_page_size: true,
+                ..a4(0.4)
+            },
             // `@page { size: A4 landscape; margin: 12mm }`
             expect: json!({ "pages": 2, "media": [841.9, 595.3], "marker": { "left": 34.0, "top": 34.0, "size": 36.0 }, "tolerance": 3.0 }),
             shown: &[false],
@@ -71,7 +82,10 @@ fn cases() -> Vec<Case> {
         Case {
             name: "bg-off",
             page: "p4-docs.html",
-            spec: PdfSpec { print_background: false, ..a4(0.6) },
+            spec: PdfSpec {
+                print_background: false,
+                ..a4(0.6)
+            },
             expect: json!({ "pages": 3, "fill": { "rgb": [30, 58, 138], "present": false } }),
             shown: &[false],
         },
@@ -85,21 +99,30 @@ fn cases() -> Vec<Case> {
         Case {
             name: "ranges-2-4-5",
             page: "p4-ranges.html",
-            spec: PdfSpec { page_ranges: Some("2,4-5".into()), ..a4(0.6) },
+            spec: PdfSpec {
+                page_ranges: Some("2,4-5".into()),
+                ..a4(0.6)
+            },
             expect: json!({ "pages": 3, "swatches": [2, 4, 5] }),
             shown: &[false],
         },
         Case {
             name: "ranges-1",
             page: "p4-ranges.html",
-            spec: PdfSpec { page_ranges: Some("1".into()), ..a4(0.6) },
+            spec: PdfSpec {
+                page_ranges: Some("1".into()),
+                ..a4(0.6)
+            },
             expect: json!({ "pages": 1, "swatches": [1] }),
             shown: &[false],
         },
         Case {
             name: "scale-half",
             page: "p4-docs.html",
-            spec: PdfSpec { scale: 0.5, ..a4(0.6) },
+            spec: PdfSpec {
+                scale: 0.5,
+                ..a4(0.6)
+            },
             expect: json!({ "pages": 3, "marker": { "size": 18.0 }, "tolerance": 2.0 }),
             shown: &[false],
         },
@@ -142,7 +165,9 @@ fn cases() -> Vec<Case> {
 fn templates() -> HeaderFooter {
     let style = "font-size:9px;width:100%;text-align:center";
     HeaderFooter {
-        header_template: format!("<div style=\"{style}\"><span class=\"title\"></span> 머리글</div>"),
+        header_template: format!(
+            "<div style=\"{style}\"><span class=\"title\"></span> 머리글</div>"
+        ),
         footer_template: format!(
             "<div style=\"{style}\"><span class=\"pageNumber\"></span> / \
              <span class=\"totalPages\"></span> 바닥글</div>"
@@ -182,22 +207,33 @@ pub fn run(ctx: &Ctx) -> Result<(), String> {
             let _opened = match open_direct(ctx, window) {
                 Ok(opened) => opened,
                 Err(error) => {
-                    record("rust", "p4.result", json!({ "case": case.name, "variant": variant, "ok": false, "error": error }));
+                    record(
+                        "rust",
+                        "p4.result",
+                        json!({ "case": case.name, "variant": variant, "ok": false, "error": error }),
+                    );
                     failed += 1;
                     continue;
                 }
             };
             if !wait_done(&label, from, 40) {
-                record("rust", "p4.loaded", json!({ "case": case.name, "variant": variant, "page_done": false }));
+                record(
+                    "rust",
+                    "p4.loaded",
+                    json!({ "case": case.name, "variant": variant, "page_done": false }),
+                );
             }
             let started = log::now_ms();
             let result = page_of(ctx, &label).and_then(|page| {
-                page.blocking(Duration::from_secs(120), |done| page.print_pdf(case.spec.clone(), None, done))
-                    .map_err(|error| error.to_string())
+                page.blocking(Duration::from_secs(120), |done| {
+                    page.print_pdf(case.spec.clone(), None, done)
+                })
+                .map_err(|error| error.to_string())
             });
             match result {
                 Ok(bytes) => {
-                    let written = std::fs::write(ctx.artifact(&file), &bytes).map_err(|error| error.to_string());
+                    let written = std::fs::write(ctx.artifact(&file), &bytes)
+                        .map_err(|error| error.to_string());
                     record(
                         "rust",
                         "p4.result",
@@ -207,12 +243,20 @@ pub fn run(ctx: &Ctx) -> Result<(), String> {
                 }
                 Err(error) => {
                     failed += 1;
-                    record("rust", "p4.result", json!({ "case": case.name, "variant": variant, "ok": false, "error": error, "ms": log::now_ms() - started }));
+                    record(
+                        "rust",
+                        "p4.result",
+                        json!({ "case": case.name, "variant": variant, "ok": false, "error": error, "ms": log::now_ms() - started }),
+                    );
                 }
             }
             destroy(ctx, &label);
             std::thread::sleep(Duration::from_millis(400));
         }
     }
-    if failed == 0 { Ok(()) } else { Err(format!("{failed} print runs failed")) }
+    if failed == 0 {
+        Ok(())
+    } else {
+        Err(format!("{failed} print runs failed"))
+    }
 }

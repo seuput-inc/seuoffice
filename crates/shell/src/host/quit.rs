@@ -222,7 +222,10 @@ fn close_every_window(app: &AppHandle) {
     }
     for window in windows.into_values() {
         if let Err(error) = window.close() {
-            eprintln!("[quit] window '{}' did not accept the close: {error}", window.label());
+            eprintln!(
+                "[quit] window '{}' did not accept the close: {error}",
+                window.label()
+            );
         }
     }
 }
@@ -248,7 +251,7 @@ fn quit_not_started(reason: &str) {
 /// `before-quit`: no close prompt may fall through to Save from here on and no
 /// editor clean-up may delete a recovery copy. On core.
 fn mark_editors_shutting_down() {
-    if let Some(sheets) = shell_ipc_d1::sheets::editors::views() {
+    if let Some(sheets) = shell_ipc_d1::sheets::views() {
         sheets.mark_shutting_down();
     }
 }
@@ -257,7 +260,7 @@ fn mark_editors_shutting_down() {
 /// off core.
 fn reset_editors_shutting_down() {
     super::w::post_core(|_, _| {
-        if let Some(sheets) = shell_ipc_d1::sheets::editors::views() {
+        if let Some(sheets) = shell_ipc_d1::sheets::views() {
             sheets.reset_shutting_down();
         }
     });
@@ -328,9 +331,8 @@ fn start_if_possible() {
                     };
                     delivery_core.post(Box::new(move || {
                         done.finish(
-                            result.and_then(|()| {
-                                drain_native_terminals(&delivery_services, startup)
-                            }),
+                            result
+                                .and_then(|()| drain_native_terminals(&delivery_services, startup)),
                         );
                     }));
                 });

@@ -28,11 +28,21 @@ pub fn run(ctx: &Ctx) -> Result<(), String> {
     spec.bridge = BridgeMode::Invoke;
     spec.size = (640.0, 520.0);
     let opened = open_direct(ctx, spec)?;
-    let ready = opened.timeline.wait_kind("DocumentReady", 0, Duration::from_secs(30));
+    let ready = opened
+        .timeline
+        .wait_kind("DocumentReady", 0, Duration::from_secs(30));
     let done = wait_done(LABEL, from, 60);
-    record("rust", "p8.wait", json!({ "document_ready": ready, "page_done": done }));
+    record(
+        "rust",
+        "p8.wait",
+        json!({ "document_ready": ready, "page_done": done }),
+    );
     // the command runs on the UI thread and the refusal is logged there
     std::thread::sleep(Duration::from_secs(2));
     destroy(ctx, LABEL);
-    if done { Ok(()) } else { Err("the P8 page did not finish".into()) }
+    if done {
+        Ok(())
+    } else {
+        Err("the P8 page did not finish".into())
+    }
 }
