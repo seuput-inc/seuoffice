@@ -25,7 +25,7 @@ enum Authority {
     },
     Saved {
         document: Box<shell_contract::ipc::NativeSavedDocument>,
-        parent: tauri::Window,
+        parent: Box<tauri::Window>,
     },
 }
 
@@ -504,7 +504,7 @@ pub(crate) fn open_password_window_saved(
         title,
         Authority::Saved {
             document: Box::new(document),
-            parent: parent_window,
+            parent: Box::new(parent_window),
         },
         cancel,
         pending,
@@ -686,7 +686,7 @@ fn open_password_window(
                         .renderer_generation(view)
                         .ok_or("The password creation generation is unavailable")?;
                     let parent = match &opening.authority {
-                        Authority::Saved { parent, .. } => Some(parent.clone()),
+                        Authority::Saved { parent, .. } => Some((**parent).clone()),
                         _ => parent
                             .map(|parent| {
                                 let label = opening
