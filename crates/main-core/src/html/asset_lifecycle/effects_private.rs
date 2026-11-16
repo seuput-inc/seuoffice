@@ -69,16 +69,10 @@ impl CapturedAssetOutput {
     /// namespace effect; later bulk writes affect only this private payload.
     pub fn create_payload(&self, admit: &mut AssetAdmission<'_>) -> R<PrivateAssetPayload> {
         let mut effects = Effects::new(admit);
-        let mut diagnostics = Vec::new();
-        let stage = create_private_stage(
-            &self.parent.directory,
-            &mut effects,
-            &mut diagnostics,
-            || self.check(),
-        )?;
+        let stage = create_private_stage(&self.parent.directory, &mut effects, || self.check())?;
         Ok(PrivateAssetPayload {
             stage,
-            diagnostics,
+            diagnostics: Vec::new(),
             cleaned: false,
         })
     }
@@ -198,17 +192,15 @@ impl PrivateAssetPayload {
                 ),
             });
         }
-        #[cfg(windows)]
-        if let Err(error) =
-            native::remove_handle(&self.stage.directory.file, &self.stage.directory.path)
-        {
+        // The payload is published or gone by now, so the directory is empty.
+        // It is found again through its handle (Windows) or the pinned parent
+        // (Unix), never through a path that could name something else.
+        if let Err(error) = self.stage.remove_directory() {
             self.diagnostics.push(format!(
                 "private export staging retained at {}: {}",
                 self.stage.directory.path, error.message
             ));
         }
-        // Unix deliberately leaves the empty outer entry: there is no
-        // directory-unlink-if-inode primitive. Never unlink its mutable name.
         self.cleaned = true;
         Ok(std::mem::take(&mut self.diagnostics))
     }

@@ -1905,10 +1905,16 @@ impl RecoveryEditors for RecEditors {
                     Value::Object(shown),
                 ],
             );
-            match field_str(&self.spec, "contractOpens") {
-                Some("throws") => return done(Err(Failure("open threw".into()))),
-                Some("rejects") => return done(Err(Failure("open rejected".into()))),
-                _ => {}
+            // The TypeScript only warns about a contract that throws or
+            // rejects and still returns the view; this stand-in for the host
+            // does the same, which is what tools/main-diff compares.
+            let refusal = match field_str(&self.spec, "contractOpens") {
+                Some("throws") => Some("open threw"),
+                Some("rejects") => Some("open rejected"),
+                _ => None,
+            };
+            if let Some(message) = refusal {
+                self.warn("[recovery] the copy could not be opened:", message);
             }
         } else if kind == "sheets" {
             self.after_sheets_open_soon();

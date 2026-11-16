@@ -156,7 +156,7 @@ fn pinned_source_changed_before_stage_is_not_published() {
     let source_root = fs::canonicalize(root.path("source")).unwrap();
     let source = source_root.join("image.png").to_str().unwrap().to_owned();
     let pinned = PinnedSource::capture(source_root.to_str().unwrap(), &source).unwrap();
-    let mut session = Session::open(&root.text("target/doc.html"), None).unwrap();
+    let mut session = Session::open(&root.text("target/doc.html"), None, "html").unwrap();
     let mut changed = false;
     let mut admit = |effect: &mut dyn FnMut() -> R<()>| {
         if !changed {
@@ -511,11 +511,12 @@ fn manifest_fallback_opens_under_admission_and_writes_after_it_returns() {
         result
     };
     let mut effects = Effects::new(&mut admission);
-    let mut session = Session::open(&document, None).unwrap();
+    let mut session = Session::open(&document, None, "html").unwrap();
     assert_eq!(session.read_manifest(&path).unwrap().unwrap(), b"before");
     let expected = session.manifest.as_ref().unwrap().1.clone();
     let directory = session.directory.as_ref().unwrap().clone();
-    let stage = session.stage(&mut effects).unwrap();
+    let stage = session.stage(&mut effects, |_, _| refused("no private stage"));
+    let stage = stage.unwrap();
     let mut writer = ManifestWriter {
         directory,
         name: "manifest.json".into(),
@@ -553,7 +554,7 @@ fn cleanup_only_refusal_does_not_reclassify_an_already_published_manifest() {
         result
     };
     let mut effects = Effects::new(&mut admission);
-    let mut session = Session::open(&document, None).unwrap();
+    let mut session = Session::open(&document, None, "html").unwrap();
     assert!(session.read_manifest(&path).unwrap().is_none());
     session
         .write_manifest(&path, b"published", &mut effects)
@@ -580,7 +581,7 @@ fn stale_rescue_directory_does_not_block_manifest_publication() {
     fs::create_dir(&rescue).unwrap();
     let mut admission = allow;
     let mut effects = Effects::new(&mut admission);
-    let mut session = Session::open(&document, None).unwrap();
+    let mut session = Session::open(&document, None, "html").unwrap();
     assert!(session.read_manifest(&path).unwrap().is_none());
     session
         .write_manifest(&path, b"published", &mut effects)
@@ -986,4 +987,166 @@ fn private_payload_content_witness_rejects_change_before_publication() {
         fs::read(root.path("target/page.png")).unwrap(),
         b"existing final"
     );
+}
+
+#[cfg(unix)]
+fn staging_entries(root: &Scratch, folder: &str) -> Vec<String> {
+    fs::read_dir(root.path(folder))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(".seuoffice-assets-stage-"))
+        .collect()
+}
+
+#[cfg(unix)]
+#[test]
+fn private_staging_does_not_outlive_prepare_and_rollback() {
+    let root = Scratch::new("staging-removed");
+    root.file("source/image.png", b"original");
+    fs::create_dir_all(root.path("target")).unwrap();
+    let plan = html::prepare_assets_for_save_as_authorized(
+        &root.text("source/doc.html"),
+        &root.text("target/doc.html"),
+        "<img src=\"image.png\">",
+        &[],
+        &mut allow,
+    )
+    .unwrap();
+    assert!(plan.staging_diagnostics.is_empty());
+    assert!(staging_entries(&root, "target/assets").is_empty());
+    html::rollback_prepared_save_as_assets_authorized(&plan, &mut allow).unwrap();
+    assert!(staging_entries(&root, "target/assets").is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn private_staging_does_not_outlive_a_failed_prepare() {
+    let root = Scratch::new("staging-failed");
+    root.file("source/image.png", b"original");
+    fs::create_dir_all(root.path("target")).unwrap();
+    let error = html::prepare_assets_for_save_as_authorized(
+        &root.text("source/doc.html"),
+        &root.text("target/doc.html"),
+        "no images",
+        &["image.png".to_owned()],
+        &mut allow,
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.message,
+        "could not safely rewrite a Markdown image during Save As"
+    );
+    assert!(staging_entries(&root, "target/assets").is_empty());
+    assert!(!root.path("target/assets/image.png").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn private_payload_drop_removes_its_staging_directory() {
+    let root = Scratch::new("private-removed");
+    fs::create_dir_all(root.path("target")).unwrap();
+    let output = CapturedAssetOutput::capture(&root.text("target/page.png")).unwrap();
+    let mut abandoned = output.create_payload(&mut allow).unwrap();
+    abandoned.write(b"never published").unwrap();
+    assert_eq!(staging_entries(&root, "target").len(), 1);
+    drop(abandoned);
+    assert!(staging_entries(&root, "target").is_empty());
+    let mut published = output.create_payload(&mut allow).unwrap();
+    published.write(b"published bytes").unwrap();
+    published.publish(&output, true, &mut allow).unwrap();
+    drop(published);
+    assert!(staging_entries(&root, "target").is_empty());
+    assert_eq!(
+        fs::read(root.path("target/page.png")).unwrap(),
+        b"published bytes"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn assets_path_that_is_no_real_directory_is_refused_as_the_typescript_words_it() {
+    use std::os::unix::fs::symlink;
+    let root = Scratch::new("assets-not-directory");
+    root.file("file-target/assets", b"a file");
+    root.file("real/keep", b"kept");
+    fs::create_dir_all(root.path("link-target")).unwrap();
+    symlink(root.path("real"), root.path("link-target/assets")).unwrap();
+    for folder in ["file-target", "link-target"] {
+        let document = root.text(&format!("{folder}/doc.html"));
+        for app in ["html", "markdown"] {
+            let error = Session::open(&document, None, app).err().unwrap();
+            assert_eq!(
+                error.message,
+                format!("{app} assets path must be a real directory")
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn manifest_that_is_no_regular_file_is_refused_as_the_typescript_words_it() {
+    use std::os::unix::fs::symlink;
+    let root = Scratch::new("manifest-not-file");
+    fs::create_dir_all(root.path("target/assets/folder.json")).unwrap();
+    root.file("outside.json", b"unrelated");
+    symlink(
+        root.path("outside.json"),
+        root.path("target/assets/link.json"),
+    )
+    .unwrap();
+    let mut session = Session::open(&root.text("target/doc.html"), None, "html").unwrap();
+    for name in ["folder.json", "link.json"] {
+        let error = session
+            .read_manifest(&root.text(&format!("target/assets/{name}")))
+            .unwrap_err();
+        assert_eq!(error.message, "asset manifest path must be a real file");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn unwritable_assets_folder_is_reported_as_the_operation_node_runs() {
+    use std::os::unix::fs::PermissionsExt;
+    // SAFETY: geteuid has no arguments or side effects.
+    if unsafe { libc::geteuid() } == 0 {
+        // root writes into a read-only folder, so nothing is refused
+        return;
+    }
+    let root = Scratch::new("unwritable");
+    root.file("source/image.png", b"original");
+    let assets = root.path("target/assets");
+    fs::create_dir_all(&assets).unwrap();
+    fs::set_permissions(&assets, fs::Permissions::from_mode(0o555)).unwrap();
+    let copy = html::prepare_assets_for_save_as_authorized(
+        &root.text("source/doc.html"),
+        &root.text("target/doc.html"),
+        "<img src=\"image.png\">",
+        &[],
+        &mut allow,
+    );
+    let manifest = root.text("target/assets/manifest.json");
+    let mut session = Session::open(&root.text("target/doc.html"), None, "html").unwrap();
+    let mut admission = allow;
+    let mut effects = Effects::new(&mut admission);
+    assert!(session.read_manifest(&manifest).unwrap().is_none());
+    let write = session.write_manifest(&manifest, b"manifest", &mut effects);
+    fs::set_permissions(&assets, fs::Permissions::from_mode(0o755)).unwrap();
+    let copy = copy.unwrap_err();
+    let source = fs::canonicalize(root.path("source/image.png")).unwrap();
+    let target = root.path("target/assets/image.png");
+    let expected = format!(
+        "EACCES: permission denied, copyfile '{}' -> '{}'",
+        source.display(),
+        target.display()
+    );
+    assert_eq!(copy.code, Some("EACCES"));
+    assert_eq!(copy.message, expected);
+    let write = write.unwrap_err();
+    let prefix = format!("EACCES: permission denied, open '{manifest}.");
+    assert_eq!(write.code, Some("EACCES"));
+    assert!(write.message.starts_with(&prefix));
+    assert!(write.message.ends_with(".tmp'"));
+    assert!(staging_entries(&root, "target/assets").is_empty());
 }

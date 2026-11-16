@@ -257,16 +257,27 @@ pub const JSON_MAX_DEPTH: usize = 128;
 /// place and its last value; `__proto__` is an own key like any other.
 /// Nesting deeper than [`JSON_MAX_DEPTH`] is refused.
 pub fn json_parse(text: &str) -> Result<JsonValue, JsonSyntaxError> {
+    json_parse_flagging_lone_surrogates(text).map(|(value, _)| value)
+}
+
+/// [`json_parse`], and whether any string or key of the text held a lone
+/// surrogate (a `\uD800` escape without its other half). Such a string is
+/// U+FFFD in the value, which is not the text JavaScript holds, so a caller
+/// whose answer would carry that text refuses it on the flag.
+pub fn json_parse_flagging_lone_surrogates(
+    text: &str,
+) -> Result<(JsonValue, bool), JsonSyntaxError> {
     let mut parser = Parser {
         text,
         bytes: text.as_bytes(),
         at: 0,
+        lone_surrogate: false,
     };
     parser.space();
     let value = parser.value(0)?;
     parser.space();
     if parser.at == parser.bytes.len() {
-        Ok(value)
+        Ok((value, parser.lone_surrogate))
     } else {
         Err(parser.located("Unexpected non-whitespace character after JSON"))
     }
@@ -295,6 +306,7 @@ struct Parser<'a> {
     text: &'a str,
     bytes: &'a [u8],
     at: usize,
+    lone_surrogate: bool,
 }
 
 impl Parser<'_> {
@@ -539,8 +551,9 @@ impl Parser<'_> {
         let mut out = String::new();
         // a \u escape of a high surrogate, waiting for a \u escape of a low one
         let mut high: Option<u16> = None;
-        let flush = |out: &mut String, high: &mut Option<u16>| {
+        let flush = |parser: &mut Self, out: &mut String, high: &mut Option<u16>| {
             if high.take().is_some() {
+                parser.lone_surrogate = true;
                 out.push(char::REPLACEMENT_CHARACTER);
             }
         };
@@ -551,14 +564,14 @@ impl Parser<'_> {
                 self.at += 1;
             }
             if self.at > from {
-                flush(&mut out, &mut high);
+                flush(self, &mut out, &mut high);
                 // the run stops at an ASCII byte, so it ends on a character boundary
                 out.push_str(&self.text[from..self.at]);
             }
             match self.peek() {
                 Some(b'"') => {
                     self.at += 1;
-                    flush(&mut out, &mut high);
+                    flush(self, &mut out, &mut high);
                     return Ok(out);
                 }
                 Some(b'\\') => {
@@ -586,11 +599,14 @@ impl Parser<'_> {
                                     );
                                     continue;
                                 }
+                                self.lone_surrogate = true;
                                 out.push(char::REPLACEMENT_CHARACTER);
                             }
                             if (0xD800..0xDC00).contains(&unit) {
                                 high = Some(unit);
                             } else {
+                                let lone = (0xDC00..0xE000).contains(&unit);
+                                self.lone_surrogate |= lone;
                                 out.push(
                                     char::from_u32(u32::from(unit))
                                         .unwrap_or(char::REPLACEMENT_CHARACTER),
@@ -614,7 +630,7 @@ impl Parser<'_> {
                         None => return Err(self.unexpected()),
                     };
                     self.at += 1;
-                    flush(&mut out, &mut high);
+                    flush(self, &mut out, &mut high);
                     out.push(plain);
                 }
                 None => return Err(self.located("Unterminated string in JSON")),

@@ -301,6 +301,24 @@ pub struct LazyMedia {
     sources: JsMap<Source>,
 }
 
+/// Whether two handles name the same file object, so that an entry table read
+/// through one still describes the other. Without file ids (Windows) the
+/// table's own stamp, the size and the modification time, is all there is.
+fn same_object(a: &fs::File, b: &fs::File) -> bool {
+    let (Ok(a), Ok(b)) = (a.metadata(), b.metadata()) else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        a.dev() == b.dev() && a.ino() == b.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        a.len() == b.len() && a.modified().ok() == b.modified().ok()
+    }
+}
+
 impl LazyMedia {
     pub fn new() -> Self {
         Self::default()
@@ -310,7 +328,7 @@ impl LazyMedia {
         match self.sources.get_mut(hash) {
             Some(source) => {
                 let same_file = match (&source.file, &file) {
-                    (Some(old), Some(new)) => Arc::ptr_eq(old, new),
+                    (Some(old), Some(new)) => Arc::ptr_eq(old, new) || same_object(old, new),
                     (None, None) => true,
                     _ => false,
                 };
@@ -348,22 +366,20 @@ impl LazyMedia {
         wc_id: f64,
     ) -> Result<Option<OpenedLazyDocx>, JsError> {
         lib.check_cancelled()?;
-        let file = match source_file {
-            Some(file) => file,
-            None => match fs::File::open(file_path) {
-                Ok(file) => Arc::new(file),
-                Err(_) => {
-                    lib.check_cancelled()?;
-                    return Ok(None);
-                }
-            },
-        };
-        let zip = match lib.open_zip_file(file_path, Some(file.clone())) {
+        let pinned = source_file.or_else(|| fs::File::open(file_path).ok().map(Arc::new));
+        // The library is asked even where the file cannot be opened: its
+        // `openZipFile` is what refuses it in the TypeScript.
+        let zip = match lib.open_zip_file(file_path, pinned.clone()) {
             Ok(zip) => zip,
             Err(_) => {
                 lib.check_cancelled()?;
                 return Ok(None);
             }
+        };
+        let Some(file) = pinned else {
+            // opened by the library alone: no handle to hash or to serve from
+            lib.close_zip_file(zip);
+            return Ok(None);
         };
         let opened = (|| -> Result<Option<OpenedLazyDocx>, JsError> {
             let mut media = 0u64;

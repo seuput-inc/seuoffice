@@ -194,8 +194,8 @@ pub(super) struct QuarantineMoveError {
     pub(super) retained: Option<Quarantine>,
 }
 
-#[cfg(test)]
-fn duplicate(directory: &Directory) -> R<Directory> {
+/// A second descriptor of the same directory object.
+pub(super) fn duplicate(directory: &Directory) -> R<Directory> {
     Ok(Directory {
         file: directory
             .file
@@ -586,6 +586,37 @@ impl Directory {
         // SAFETY: the parent descriptor and validated component remain live.
         if unsafe { libc::unlinkat(self.file.as_raw_fd(), name.as_ptr(), 0) } != 0 {
             return Err(node_error(&io::Error::last_os_error(), "unlink", &path));
+        }
+        Ok(())
+    }
+    /// Removes the private staging directory `staged`, which this operation
+    /// made as the entry `name` of this directory. The name must still lead,
+    /// without following a link, to the object `staged` holds, and the
+    /// kernel refuses anything but an empty directory. There is no
+    /// inode-conditional unlink: a name swapped between the check and the
+    /// call can only cost an empty directory that carries this operation's
+    /// random name.
+    pub(super) fn remove_private_child(&self, name: &str, staged: &Self) -> R<()> {
+        let path = jscompat::node_path::host::join(&[&self.path, name]);
+        let current = self
+            .child_directory(name, false, false)?
+            .ok_or_else(|| node_error_named("ENOENT", "rmdir", &path))?;
+        let held = version(&staged.file, &staged.path)?;
+        let named = version(&current.file, &path)?;
+        if !held.same_object(&named) {
+            return Err(NodeError {
+                code: None,
+                message: "private asset staging changed before removal".into(),
+            });
+        }
+        let component = segment(name, &path)?;
+        // SAFETY: the parent descriptor and the validated component remain
+        // live; AT_REMOVEDIR unlinks only an empty directory and never follows a link.
+        let removed = unsafe {
+            libc::unlinkat(self.file.as_raw_fd(), component.as_ptr(), libc::AT_REMOVEDIR)
+        };
+        if removed != 0 {
+            return Err(node_error(&io::Error::last_os_error(), "rmdir", &path));
         }
         Ok(())
     }

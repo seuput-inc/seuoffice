@@ -1,6 +1,6 @@
 use crate::node_fs::{NodeError, namespaced, node_error, node_error_named};
 use crate::packages::electron_utils::atomic_write::{
-    AtomicByteWriteBackend, atomic_write_file_with_backend, rescue_path_for,
+    AtomicByteWriteBackend, atomic_write_file_with_backend, rescue_path_for, temp_path_beside,
 };
 use jscompat::node_path::host::{basename, dirname, join, resolve};
 use sha2::{Digest, Sha256};
@@ -26,6 +26,14 @@ fn refused(message: &str) -> NodeError {
     NodeError {
         code: None,
         message: message.into(),
+    }
+}
+/// `copyFile(from, to)` refused for the system error `code`: Node names both paths.
+fn copyfile_error(code: &'static str, from: &str, to: &str) -> NodeError {
+    let named = node_error_named(code, "copyfile", from);
+    NodeError {
+        code: named.code,
+        message: format!("{} -> '{to}'", named.message),
     }
 }
 
@@ -208,6 +216,12 @@ struct Stage {
     file: Option<File>,
     content_version: Option<native::Version>,
     published: bool,
+    /// The pinned parent of the private directory and the entry name it has
+    /// there: enough to remove exactly that directory again.
+    #[cfg(unix)]
+    container: native::Directory,
+    #[cfg(unix)]
+    entry: String,
 }
 impl Stage {
     fn cleanup(&mut self) -> R<()> {
@@ -276,37 +290,50 @@ impl Stage {
         )?);
         Ok(())
     }
+    /// Removes the private directory this stage lives in, once its payload is
+    /// published or gone. Only the directory this operation created, found
+    /// again through its handle or its pinned parent, is ever removed.
+    fn remove_directory(&self) -> R<()> {
+        #[cfg(windows)]
+        {
+            native::remove_handle(&self.directory.file, &self.directory.path)
+        }
+        #[cfg(unix)]
+        {
+            self.container
+                .remove_private_child(&self.entry, &self.directory)
+        }
+    }
 }
 
 fn create_private_stage(
     parent: &native::Directory,
     effects: &mut Effects<'_, '_>,
-    diagnostics: &mut Vec<String>,
     validate: impl FnOnce() -> R<()>,
 ) -> R<Stage> {
     let mut random = [0u8; 16];
     getrandom::fill(&mut random).map_err(|error| refused(&error.to_string()))?;
     let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
     let name = format!(".seuoffice-assets-stage-{suffix}");
+    // Held before the directory exists: a failure here leaves nothing behind.
+    #[cfg(unix)]
+    let container = native::duplicate(parent)?;
     let directory = effects.run(|| {
         validate()?;
         parent
             .child_directory(&name, true, true)?
             .ok_or_else(|| refused("private asset staging was not created"))
     })?;
-    #[cfg(unix)]
-    diagnostics.push(format!(
-        "private asset staging retained at {}",
-        directory.path
-    ));
-    #[cfg(windows)]
-    let _ = diagnostics;
     Ok(Stage {
         directory,
         name: "payload".into(),
         file: None,
         content_version: None,
         published: false,
+        #[cfg(unix)]
+        container,
+        #[cfg(unix)]
+        entry: name,
     })
 }
 
@@ -326,7 +353,13 @@ impl Drop for Session {
     }
 }
 impl Session {
-    pub(crate) fn open(document: &str, ownership: Option<&PreparedAssetOwnership>) -> R<Self> {
+    /// `app` names the editor in the error Node's `existingAssetsDir` gives an
+    /// assets path that is no real directory.
+    pub(crate) fn open(
+        document: &str,
+        ownership: Option<&PreparedAssetOwnership>,
+        app: &str,
+    ) -> R<Self> {
         let parent_path = dirname(&resolve(&[document]));
         let directory = if let Some(ownership) = ownership {
             if ownership.0.parent_path != parent_path {
@@ -336,15 +369,21 @@ impl Session {
             Some(ownership.0.clone())
         } else {
             match native::Directory::open(&parent_path, true) {
-                Ok(parent) => parent
-                    .child_directory("assets", false, false)?
-                    .map(|directory| {
+                Ok(parent) => match parent.child_directory("assets", false, false) {
+                    Ok(found) => found.map(|directory| {
                         Arc::new(AssetDirectory {
                             parent,
                             parent_path,
                             directory,
                         })
                     }),
+                    // a file or a link where the folder belongs
+                    Err(error) if matches!(error.code, Some("ENOTDIR" | "ELOOP")) => {
+                        let message = format!("{app} assets path must be a real directory");
+                        return Err(refused(&message));
+                    }
+                    Err(error) => return Err(error),
+                },
                 Err(error) if error.code == Some("ENOENT") => None,
                 Err(error) => return Err(error),
             }
@@ -425,7 +464,14 @@ impl Session {
             return Ok(None);
         };
         directory.check()?;
-        let Some(mut file) = directory.directory.read(&name)? else {
+        let found = match directory.directory.read(&name) {
+            // a folder, a link or a special file where the list belongs
+            Err(error) if matches!(error.code, Some("ELOOP" | "EISDIR" | "EINVAL")) => {
+                return Err(refused("asset manifest path must be a real file"));
+            }
+            other => other?,
+        };
+        let Some(mut file) = found else {
             self.manifest = Some((name, None));
             return Ok(None);
         };
@@ -488,11 +534,21 @@ impl Session {
         })?;
         Ok(true)
     }
-    fn stage(&mut self, effects: &mut Effects<'_, '_>) -> R<Stage> {
+    /// `unavailable` words a failure to make the private directory as the
+    /// error Node gives the operation it stands in for: the TypeScript has no
+    /// such directory and meets an unwritable folder at its own first write.
+    /// It gets the system code and the path of the assets folder.
+    fn stage(
+        &mut self,
+        effects: &mut Effects<'_, '_>,
+        unavailable: impl FnOnce(&'static str, &str) -> NodeError,
+    ) -> R<Stage> {
         self.ensure(effects)?;
         let directory = self.dir()?.clone();
-        create_private_stage(&directory.directory, effects, &mut self.diagnostics, || {
-            directory.check()
+        let made = create_private_stage(&directory.directory, effects, || directory.check());
+        made.map_err(|error| match error.code {
+            Some(code) => unavailable(code, &directory.directory.path),
+            None => error,
         })
     }
     pub(crate) fn copy_pinned(
@@ -502,7 +558,9 @@ impl Session {
         effects: &mut Effects<'_, '_>,
     ) -> R<String> {
         let source_path = source.path.as_str();
-        let mut stage = self.stage(effects)?;
+        let mut stage = self.stage(effects, |code, assets| {
+            copyfile_error(code, source_path, &join(&[assets, name]))
+        })?;
         let result = (|| {
             #[cfg(windows)]
             {
@@ -554,18 +612,12 @@ impl Session {
         result.map_err(|error| self.failure(error))
     }
     fn finish_stage(&mut self, stage: &Stage) {
-        #[cfg(windows)]
-        {
-            if let Err(error) = native::remove_handle(&stage.directory.file, &stage.directory.path)
-            {
-                self.diagnostics.push(format!(
-                    "private asset staging retained at {}: {}",
-                    stage.directory.path, error.message
-                ));
-            }
+        if let Err(error) = stage.remove_directory() {
+            self.diagnostics.push(format!(
+                "private asset staging retained at {}: {}",
+                stage.directory.path, error.message
+            ));
         }
-        #[cfg(unix)]
-        let _ = stage;
     }
     pub(crate) fn write_manifest(
         &mut self,
@@ -586,7 +638,9 @@ impl Session {
             Ok(None) => Ok(None),
             Err(error) => Err(error),
         };
-        let stage = self.stage(effects)?;
+        let stage = self.stage(effects, |code, _| {
+            node_error_named(code, "open", &temp_path_beside(path))
+        })?;
         let mut backend = ManifestWriter {
             directory,
             name,

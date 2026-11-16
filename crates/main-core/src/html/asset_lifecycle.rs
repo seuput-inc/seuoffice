@@ -1717,7 +1717,7 @@ fn remove_created_records(document_path: &str, created: &[OwnedAssetRecord]) -> 
     }
     let mut admit = |effect: &mut dyn FnMut() -> Res<()>| effect();
     let mut effects = Effects::new(&mut admit);
-    let mut session = Session::open(document_path, None)?;
+    let mut session = Session::open(document_path, None, "html")?;
     remove_created_records_in(document_path, created, &mut session, &mut effects)
 }
 
@@ -1838,7 +1838,7 @@ pub fn prepare_assets_for_save_as_authorized(
     let mut created: Vec<OwnedAssetRecord> = Vec::new();
     let mut rewrites: JsMap<String> = JsMap::new();
     let mut effects = Effects::new(admit);
-    let mut session = Session::open(target_document_path, None)?;
+    let mut session = Session::open(target_document_path, None, "html")?;
     session.ensure(&mut effects)?;
     let locked = with_manifest_lock(target_document_path, |manifest_path| {
         let mut manifest = read_manifest_scoped(&mut session, manifest_path)?;
@@ -1984,7 +1984,7 @@ pub fn rollback_prepared_save_as_assets_authorized(
         .ownership
         .as_ref()
         .ok_or_else(|| plain("prepared assets have no native ownership"))?;
-    let mut session = Session::open(&plan.target_document_path, Some(ownership))?;
+    let mut session = Session::open(&plan.target_document_path, Some(ownership), "html")?;
     let mut effects = Effects::new(admit);
     let result = remove_created_records_in(
         &plan.target_document_path,
@@ -2017,7 +2017,7 @@ fn resolve_pending_owned_assets(
     admit: &mut AssetAdmission<'_>,
 ) -> Res<ReconcileResult> {
     let mut effects = Effects::new(admit);
-    let mut session = Session::open(document_path, None)?;
+    let mut session = Session::open(document_path, None, "html")?;
     let mut result = ReconcileResult::default();
     let locked = with_manifest_lock(document_path, |manifest_path| {
         let mut manifest = read_manifest_scoped(&mut session, manifest_path)?;
@@ -2170,7 +2170,7 @@ pub fn reconcile_owned_assets_authorized(
     admit: &mut AssetAdmission<'_>,
 ) -> Res<ReconcileResult> {
     let mut effects = Effects::new(admit);
-    let mut session = Session::open(document_path, None)?;
+    let mut session = Session::open(document_path, None, "html")?;
     let mut result = ReconcileResult::default();
     let locked = with_manifest_lock(document_path, |manifest_path| {
         let mut manifest = read_manifest_scoped(&mut session, manifest_path)?;
@@ -2304,7 +2304,7 @@ pub fn rename_owned_asset_document_authorized(
         return Ok(());
     }
     let mut effects = Effects::new(admit);
-    let mut session = Session::open(new_document_path, None)?;
+    let mut session = Session::open(new_document_path, None, "html")?;
     let result = with_manifest_lock(new_document_path, |manifest_path| {
         let mut manifest = read_manifest_scoped(&mut session, manifest_path)?;
         let old_key = document_key(old_document_path);

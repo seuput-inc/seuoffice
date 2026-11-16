@@ -697,7 +697,7 @@ fn remove_created_records(document_path: &str, created: &[OwnedAssetRecord]) -> 
     if created.is_empty() {
         return Ok(());
     }
-    let mut session = Session::open(document_path, None)?;
+    let mut session = Session::open(document_path, None, "markdown")?;
     let mut admit = |effect: &mut dyn FnMut() -> R<()>| effect();
     let mut effects = Effects::new(&mut admit);
     remove_created_records_in(document_path, created, &mut session, &mut effects)
@@ -820,7 +820,7 @@ pub fn prepare_assets_for_save_as_authorized(
     let mut created: Vec<OwnedAssetRecord> = Vec::new();
     let mut rewrites: JsMap<String> = JsMap::new();
     let mut effects = Effects::new(admit);
-    let mut session = Session::open(target_document_path, None)?;
+    let mut session = Session::open(target_document_path, None, "markdown")?;
     session.ensure(&mut effects)?;
     let lock = effects::manifest_lock(target_document_path);
     let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -955,7 +955,7 @@ pub fn rollback_prepared_save_as_assets_authorized(
         .ownership
         .as_ref()
         .ok_or_else(|| plain_error("prepared assets have no native ownership"))?;
-    let mut session = Session::open(&plan.target_document_path, Some(ownership))?;
+    let mut session = Session::open(&plan.target_document_path, Some(ownership), "markdown")?;
     let mut effects = Effects::new(admit);
     let result = remove_created_records_in(
         &plan.target_document_path,
@@ -1088,7 +1088,7 @@ fn resolve_pending_owned_assets(
     admit: &mut AssetAdmission<'_>,
 ) -> R<ReconcileResult> {
     let mut effects = Effects::new(admit);
-    let mut session = Session::open(document_path, None)?;
+    let mut session = Session::open(document_path, None, "markdown")?;
     let mut result = ReconcileResult::default();
     if let Err(error) = resolve_pending_inner(
         document_path,
@@ -1291,7 +1291,7 @@ pub fn reconcile_owned_assets_authorized(
     admit: &mut AssetAdmission<'_>,
 ) -> R<ReconcileResult> {
     let mut effects = Effects::new(admit);
-    let mut session = Session::open(document_path, None)?;
+    let mut session = Session::open(document_path, None, "markdown")?;
     let mut result = ReconcileResult::default();
     if let Err(error) = reconcile_inner(
         document_path,
@@ -1324,7 +1324,7 @@ pub fn rename_owned_asset_document_authorized(
         return Ok(());
     }
     let mut effects = Effects::new(admit);
-    let mut session = Session::open(new_document_path, None)?;
+    let mut session = Session::open(new_document_path, None, "markdown")?;
     let lock = effects::manifest_lock(new_document_path);
     let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
     let manifest_path = locked_manifest_path(new_document_path);

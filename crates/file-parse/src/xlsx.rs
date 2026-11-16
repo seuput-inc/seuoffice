@@ -1136,13 +1136,33 @@ fn non_negative_integer(value: Option<&Value>) -> Result<f64, Unreadable> {
     }
 }
 
+/// `JSON.parse` of a redaction record as a `serde_json` value. A lone
+/// surrogate in the record is the text the TypeScript reads and a Rust string
+/// cannot hold; U+FFFD in its place would write a label the record does not
+/// have, so the record is refused.
+fn parse_record_json(text: &str) -> Result<Value, RecordJsonError> {
+    match jscompat::json_parse_flagging_lone_surrogates(text) {
+        Ok((_, true)) => Err(RecordJsonError::LoneSurrogate),
+        Ok((parsed, false)) => Ok(jscompat::json_value_to_serde(&parsed)),
+        Err(error) => Err(RecordJsonError::Syntax(error.message().to_owned())),
+    }
+}
+
+enum RecordJsonError {
+    Syntax(String),
+    LoneSurrogate,
+}
+
 /// `parseRedactionPart` of the gateway.
 fn parse_redaction_part_detailed(text: &str) -> Result<Vec<SheetRedactionState>, String> {
-    let parsed = jscompat::json_parse(text).map_err(|error| format!(
-        "{REDACTION_PART_PATH} is not valid JSON — refusing to save, because reading it as \"no withheld cells\" would reveal the values it records. ({})",
-        error.message()
-    ))?;
-    let parsed = jscompat::json_value_to_serde(&parsed);
+    let parsed = parse_record_json(text).map_err(|error| match error {
+        RecordJsonError::Syntax(message) => format!(
+            "{REDACTION_PART_PATH} is not valid JSON — refusing to save, because reading it as \"no withheld cells\" would reveal the values it records. ({message})"
+        ),
+        RecordJsonError::LoneSurrogate => format!(
+            "{REDACTION_PART_PATH} holds a lone surrogate, which a Rust string cannot — refusing to save, because reading it as \"no withheld cells\" would reveal the values it records."
+        ),
+    })?;
     let Value::Object(root) = parsed else {
         return Err(format!("{REDACTION_PART_PATH} must hold an object."));
     };
@@ -1314,11 +1334,15 @@ fn parse_redaction_name_mirror_detailed(
             continue;
         }
         let body = unmirror_formula(&element_text(workbook_xml, &element));
-        let payload = jscompat::json_parse(&body).map_err(|error| format!(
-            "Defined name \"{name}\" does not hold a redaction mirror this version can read — refusing to open the workbook as if nothing were withheld. ({})", error.message()
-        ))?;
-        let (sheet_name, mark) =
-            mirror_mark_of(name, &jscompat::json_value_to_serde(&payload), sheet_order)?;
+        let payload = parse_record_json(&body).map_err(|error| match error {
+            RecordJsonError::Syntax(message) => format!(
+                "Defined name \"{name}\" does not hold a redaction mirror this version can read — refusing to open the workbook as if nothing were withheld. ({message})"
+            ),
+            RecordJsonError::LoneSurrogate => format!(
+                "Defined name \"{name}\" holds a lone surrogate, which a Rust string cannot — refusing to open the workbook as if nothing were withheld."
+            ),
+        })?;
+        let (sheet_name, mark) = mirror_mark_of(name, &payload, sheet_order)?;
         match by_sheet
             .iter_mut()
             .find(|state| state.sheet_name == sheet_name)
