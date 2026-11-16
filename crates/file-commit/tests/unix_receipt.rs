@@ -357,7 +357,7 @@ fn renamed_written_snapshot_is_bound_to_the_real_commit() {
     };
     let snapshot = match plan.publish() {
         Ok(snapshot) => snapshot,
-        Err((error, _)) => panic!("{error}"),
+        Err(failure) => panic!("{}", failure.0),
     };
     assert_eq!(snapshot.bytes().as_ptr(), pointer);
     assert_eq!(snapshot.bytes(), b"owned stage bytes");
@@ -464,7 +464,7 @@ fn receipt_requarantine_never_deletes_a_replacement() {
     };
     let snapshot = match plan.publish() {
         Ok(snapshot) => snapshot,
-        Err((error, _)) => panic!("{error}"),
+        Err(failure) => panic!("{}", failure.0),
     };
     fs::remove_file(&target).unwrap();
     fs::write(&target, b"replacement").unwrap();

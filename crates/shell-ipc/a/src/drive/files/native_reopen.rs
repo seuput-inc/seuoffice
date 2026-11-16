@@ -324,7 +324,7 @@ impl Transaction {
         if from_private && digest(from)?.as_ref() != Some(expected) {
             return Err("A Drive staging source changed".into());
         }
-        rename_no_replace(path_text(from)?, path_text(to)?).map_err(|error| error.to_string())?;
+        rename_no_replace(path_text(from)?, path_text(to)?).map_err(|error| error.message)?;
         self.inverse.push(Inverse {
             from: to.to_owned(),
             to: from.to_owned(),
@@ -397,28 +397,28 @@ impl Transaction {
         while let Some(step) = self.inverse.last_mut() {
             if step.from_private {
                 rename_no_replace(path_text(&step.from)?, path_text(&step.to)?)
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| error.message)?;
                 self.inverse.pop();
                 continue;
             }
             if let Some(held) = step.held.as_ref() {
                 rename_no_replace(path_text(held)?, path_text(&step.from)?)
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| error.message)?;
                 step.held = None;
                 return Err("A Drive rollback source was replaced".into());
             }
             let held = reserve_name(&self.quarantine.join("rollback"))?;
             rename_no_replace(path_text(&step.from)?, path_text(&held)?)
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| error.message)?;
             step.held = Some(held.clone());
             if digest(&held)?.as_ref() != Some(&step.expected) {
                 rename_no_replace(path_text(&held)?, path_text(&step.from)?)
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| error.message)?;
                 step.held = None;
                 return Err("A Drive rollback source was replaced".into());
             }
             rename_no_replace(path_text(&held)?, path_text(&step.to)?)
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| error.message)?;
             self.inverse.pop();
         }
         self.cleanup()

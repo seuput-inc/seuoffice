@@ -1205,7 +1205,7 @@ fn stale_actor_revision_cannot_truncate_native_save() {
         _ => panic!("stale stage was not retained"),
     };
     assert_eq!(fs::read(&path).unwrap(), b"original");
-    let (stage, _) = stage.into_parts();
+    let (stage, _) = (*stage).into_parts();
     assert!(stage.remove().is_ok());
     directory.remove().unwrap();
     fs::remove_dir_all(dir).unwrap();

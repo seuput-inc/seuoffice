@@ -1394,6 +1394,9 @@ pub(crate) struct PendingHwpPublication {
     pub(crate) payload: Option<PendingHwpPayload>,
     pub(crate) delivery: Option<shell_contract::hosts::GeneratedTerminalDelivery>,
     pub(crate) settling: bool,
+    /// Terminal deliveries whose outcome was a still-pending cleanup. They stay
+    /// unacknowledged, newest acknowledged first, until the original reply settled.
+    pub(crate) cleanup: Vec<shell_contract::hosts::GeneratedTerminalDelivery>,
 }
 
 pub(crate) struct PendingHwpPayload {
@@ -1420,6 +1423,31 @@ fn store_hwp_delivery(
         }
     }
     drop(result);
+}
+
+fn hwp_wake(
+    state: &MStateRef,
+    view: ViewId,
+    terminal: &Arc<Mutex<Option<Result<shell_contract::hosts::GeneratedTerminalDelivery, String>>>>,
+    core: Arc<dyn shell_contract::runtime::Thread>,
+) -> shell_contract::hosts::GeneratedPathWake {
+    let weak_state = Arc::downgrade(state);
+    let terminal = terminal.clone();
+    Arc::new(move || {
+        wake_hwp_publication(weak_state.clone(), view, terminal.clone(), core.clone());
+    })
+}
+
+fn hwp_observer(
+    terminal: &Arc<Mutex<Option<Result<shell_contract::hosts::GeneratedTerminalDelivery, String>>>>,
+    wake: &shell_contract::hosts::GeneratedPathWake,
+) -> shell_contract::hosts::GeneratedPathObserver {
+    let terminal = terminal.clone();
+    let wake = wake.clone();
+    Box::new(move |delivery| {
+        store_hwp_delivery(&terminal, Ok(delivery));
+        wake();
+    })
 }
 
 struct PreparedHwpStart {
@@ -1505,19 +1533,10 @@ fn prepare_hwp_publication(
             }),
             delivery: None,
             settling: false,
+            cleanup: Vec::new(),
         },
     );
-    let weak_state = Arc::downgrade(state);
-    let wake_core = core.clone();
-    let wake_terminal = terminal.clone();
-    let wake: shell_contract::hosts::GeneratedPathWake = Arc::new(move || {
-        wake_hwp_publication(
-            weak_state.clone(),
-            view,
-            wake_terminal.clone(),
-            wake_core.clone(),
-        );
-    });
+    let wake = hwp_wake(state, view, &terminal, core);
     let notify = wake.clone();
     let state = state.clone();
     let done = Box::new(
@@ -1531,13 +1550,7 @@ fn prepare_hwp_publication(
                         notify();
                         return;
                     }
-                    let observer_terminal = terminal.clone();
-                    let observer_wake = notify.clone();
-                    let observer: shell_contract::hosts::GeneratedPathObserver =
-                        Box::new(move |delivery| {
-                            store_hwp_delivery(&observer_terminal, Ok(delivery));
-                            observer_wake();
-                        });
+                    let observer = hwp_observer(&terminal, &notify);
                     let observer_failed = match receipt.observe(observer, notify.clone()) {
                         Ok(()) => false,
                         Err(failure) => {
@@ -1587,58 +1600,75 @@ pub(crate) fn wake_hwp_publication(
     terminal: Arc<Mutex<Option<Result<shell_contract::hosts::GeneratedTerminalDelivery, String>>>>,
     core: Arc<dyn shell_contract::runtime::Thread>,
 ) {
+    let hold_core = core.clone();
     core.post(Box::new(move || {
         let Some(state) = weak_state.upgrade() else {
             return;
         };
         retry_prepared_hwp(&terminal);
+        retry_hwp_cleanup_observer(&state, view, &terminal);
         state.recover_hwp_delivery(view, &terminal);
-        let Some((payload, mut delivery)) = state.take_ready_hwp_publication(view, &terminal)
+        let Some((payload, delivery)) = state.take_ready_hwp_publication(view, &terminal)
         else {
             return;
         };
+        let mut delivery = match delivery {
+            Ok(delivery) => delivery,
+            Err(error) => {
+                if let Some(PendingHwpPayload {
+                    grant,
+                    reply,
+                    answer,
+                }) = payload
+                {
+                    finish_owned_hwp_print(
+                        &state,
+                        view,
+                        grant,
+                        reply,
+                        answer,
+                        Some(HwpPublicationTerminal::Failed(&error)),
+                    );
+                }
+                state.finish_hwp_publication_ack(view, &terminal, None);
+                return;
+            }
+        };
         if let Some(payload) = payload {
-            match &delivery {
-                Ok(delivery) => finish_hwp_publication_on_core(
-                    &state,
-                    view,
-                    payload.grant,
-                    payload.reply,
-                    payload.answer,
-                    delivery.result(),
-                ),
-                Err(error) => finish_hwp_publication_on_core(
-                    &state,
-                    view,
-                    payload.grant,
-                    payload.reply,
-                    payload.answer,
-                    &Err(error.clone()),
-                ),
+            if let Some((payload, pending)) =
+                finish_hwp_publication_on_core(&state, view, payload, delivery.result())
+            {
+                hold_hwp_cleanup_pending(
+                    &state, view, &terminal, hold_core, payload, delivery, pending,
+                );
+                return;
             }
         }
-        let retry = match &mut delivery {
-            Ok(delivery) => match delivery.acknowledge() {
-                Ok(()) => false,
-                Err(error) => {
-                    eprintln!("hwp: generated PDF terminal acknowledgement failed: {error}");
-                    true
-                }
-            },
-            Err(_) => false,
+        let retry = loop {
+            if let Err(error) = delivery.acknowledge() {
+                eprintln!("hwp: generated PDF terminal acknowledgement failed: {error}");
+                break Some(delivery);
+            }
+            match state.next_hwp_cleanup_delivery(view, &terminal) {
+                Some(next) => delivery = next,
+                None => break None,
+            }
         };
-        state.finish_hwp_publication_ack(view, &terminal, if retry { delivery.ok() } else { None });
+        state.finish_hwp_publication_ack(view, &terminal, retry);
     }));
 }
 
+/// A cleanup still pending is not a terminal result: the reply, the grant and
+/// the pending operation go back to the caller unsettled.
 fn finish_hwp_publication_on_core(
     state: &MStateRef,
     view: ViewId,
-    grant: OwnedHwpCompletion,
-    reply: Responder,
-    answer: Reply,
+    payload: PendingHwpPayload,
     outcome: &Result<shell_contract::hosts::GeneratedPathOutcome, String>,
-) {
+) -> Option<(
+    PendingHwpPayload,
+    Arc<dyn shell_contract::hosts::GeneratedPathPending>,
+)> {
     let terminal = match outcome {
         Ok(shell_contract::hosts::GeneratedPathOutcome::Opened(receipt)) => {
             HwpPublicationTerminal::Opened(receipt)
@@ -1646,9 +1676,51 @@ fn finish_hwp_publication_on_core(
         Ok(shell_contract::hosts::GeneratedPathOutcome::NotOpened) => {
             HwpPublicationTerminal::NotOpened
         }
+        Ok(shell_contract::hosts::GeneratedPathOutcome::CleanupPending(pending)) => {
+            return Some((payload, pending.clone()));
+        }
         Err(error) => HwpPublicationTerminal::Failed(error),
     };
+    let PendingHwpPayload {
+        grant,
+        reply,
+        answer,
+    } = payload;
     finish_owned_hwp_print(state, view, grant, reply, answer, Some(terminal));
+    None
+}
+
+fn hold_hwp_cleanup_pending(
+    state: &MStateRef,
+    view: ViewId,
+    terminal: &Arc<Mutex<Option<Result<shell_contract::hosts::GeneratedTerminalDelivery, String>>>>,
+    core: Arc<dyn shell_contract::runtime::Thread>,
+    payload: PendingHwpPayload,
+    delivery: shell_contract::hosts::GeneratedTerminalDelivery,
+    pending: Arc<dyn shell_contract::hosts::GeneratedPathPending>,
+) {
+    state.retain_hwp_cleanup_pending(view, terminal, payload, delivery, pending.clone());
+    let wake = hwp_wake(state, view, terminal, core);
+    if let Err(failure) = pending.observe(hwp_observer(terminal, &wake), wake) {
+        eprintln!(
+            "hwp: generated PDF cleanup observer was not installed: {}",
+            failure.error
+        );
+        let _ = state.retain_hwp_observer(view, &pending, (failure.observer, failure.wake));
+    }
+}
+
+fn retry_hwp_cleanup_observer(
+    state: &MStateRef,
+    view: ViewId,
+    terminal: &Arc<Mutex<Option<Result<shell_contract::hosts::GeneratedTerminalDelivery, String>>>>,
+) {
+    let Some(pending) = state.unobserved_hwp_cleanup(view, terminal) else {
+        return;
+    };
+    if let Err(error) = state.retry_hwp_publication_observer(view, &pending) {
+        eprintln!("hwp: generated PDF cleanup observer retry failed: {error}");
+    }
 }
 
 fn finish_owned_hwp_print(

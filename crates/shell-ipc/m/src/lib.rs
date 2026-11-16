@@ -127,9 +127,11 @@ impl Docs {
         view: ViewId,
         token: &str,
         generation: &shell_contract::runtime::RendererGeneration,
+        actual: Option<&shell_contract::ipc::NativeRequestOwner>,
+        caller_cancel: &shell_contract::runtime::CancelToken,
     ) -> Option<shell_contract::editors::OwnedPdfGrant> {
         self.editor(view)?
-            .take_owned_pdf_grant(view, token, generation)
+            .take_owned_pdf_grant(view, token, generation, actual, caller_cancel)
     }
 
     pub fn take_native_headless_pdf_grant(

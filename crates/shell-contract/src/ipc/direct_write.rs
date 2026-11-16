@@ -210,8 +210,8 @@ pub enum DirectWriteCompletion {
 }
 
 pub enum StagedWriteError {
-    Admission { error: String, stage: file_commit::OwnedWrittenCommit },
-    Io { error: io::Error, stage: file_commit::OwnedWrittenCommit },
+    Admission { error: String, stage: Box<file_commit::OwnedWrittenCommit> },
+    Io { error: io::Error, stage: Box<file_commit::OwnedWrittenCommit> },
     CommittedButNotAdmitted { error: String, snapshot: file_commit::CommittedWriteSnapshot },
 }
 
@@ -233,12 +233,12 @@ fn publish_staged_inner<E: OwnedEffects + ?Sized>(
     mut validate: Option<&mut dyn FnMut() -> Result<(), String>>,
 ) -> Result<(SavedPublication, file_commit::CommittedWriteSnapshot), StagedWriteError> {
     if stage.path() != scope.path {
-        return Err(StagedWriteError::Admission { error: "The staged output does not match its captured destination.".into(), stage });
+        return Err(StagedWriteError::Admission { error: "The staged output does not match its captured destination.".into(), stage: Box::new(stage) });
     }
     let prepared_renderer = if matches!(&scope.origin, DirectWriteOrigin::Renderer { .. }) {
         match RendererCommittedOutput::prepare(scope.clone()) {
             Ok(value) => Some(value),
-            Err(error) => return Err(StagedWriteError::Admission { error, stage }),
+            Err(error) => return Err(StagedWriteError::Admission { error, stage: Box::new(stage) }),
         }
     } else { None };
     let mut native_selection = match &scope.origin { DirectWriteOrigin::Native(value) => Some(value.clone()), _ => None };
@@ -249,7 +249,7 @@ fn publish_staged_inner<E: OwnedEffects + ?Sized>(
         if let Some(validate) = validate.as_mut() { validate()?; }
         let staged = stage.take().ok_or("The staged output was already consumed.")?;
         match staged.publish() {
-            Err((error, staged)) => outcome = Some(Err((error, staged))),
+            Err(failed) => outcome = Some(Err(failed)),
             Ok(snapshot) => {
                 let publication = match &scope.origin {
                     DirectWriteOrigin::Native(_) => native_selection.take()
@@ -266,14 +266,17 @@ fn publish_staged_inner<E: OwnedEffects + ?Sized>(
         Ok(())
     });
     match outcome {
-        Some(Err((error, stage))) => Err(StagedWriteError::Io { error, stage }),
+        Some(Err(failed)) => {
+            let (error, stage) = *failed;
+            Err(StagedWriteError::Io { error, stage: Box::new(stage) })
+        }
         Some(Ok((publication, snapshot))) => match (admission, publication) {
             (Ok(()), Ok(publication)) => Ok((publication, snapshot)),
             (Err(error), _) | (Ok(()), Err(error)) => Err(StagedWriteError::CommittedButNotAdmitted { error, snapshot }),
         },
         None => Err(StagedWriteError::Admission {
             error: admission.err().unwrap_or_else(|| "The staged output was not admitted.".into()),
-            stage: stage.expect("unconsumed staged output"),
+            stage: Box::new(stage.expect("unconsumed staged output")),
         }),
     }
 }

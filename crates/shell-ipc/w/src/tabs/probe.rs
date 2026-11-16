@@ -7054,6 +7054,80 @@ mod command_tests {
         }
     }
     #[test]
+    fn generated_open_cancelled_before_admission_starts_no_view() {
+        use main_core::packages::electron_utils::generate_handoff::GenerateHandoffTarget;
+        use shell_contract::runtime::{CancelToken, RendererGeneration};
+
+        let views = Arc::new(RegisteredViews::default());
+        let shell = shell_contract::ipc::Sender {
+            view: ViewId(1),
+            window: WindowId(1),
+            surface: Surface::Shell,
+        };
+        let generation = RendererGeneration::new();
+        views.0.lock().unwrap().insert(shell.view, (shell, generation.clone()));
+        let registrar_views = views.clone();
+        let registrar: ProbeViewRegistrar = Arc::new(move |sender, generation| {
+            registrar_views.0.lock().unwrap().insert(sender.view, (sender, generation));
+            Ok(())
+        });
+        let mut hosts = Hosts::default();
+        probe_hosts(&mut hosts, &json!({}));
+        hosts.insert(registrar);
+        let ui = Arc::new(QueuedUi::default());
+        let services = shell_contract::hosts::synthetic::SyntheticOwnedEffects::install(Services {
+            ui: ui.clone(),
+            core: Arc::new(TestThread),
+            workers: Arc::new(TestWorkers),
+            events: Arc::new(TestEvents),
+            views,
+            paths: Arc::new(TestPaths),
+            hosts: Arc::new(hosts),
+        });
+        let state = probe_state(&services, Rc::new(Provided::default())).unwrap();
+        let fake = services.hosts.get::<Arc<WorldBox>>().unwrap().0.clone();
+        let effects = services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap();
+        let owner = effects.capture_owner(shell.view, &generation).unwrap();
+        let next_view = fake.w().next_view;
+        let cancel = CancelToken::default();
+        cancel.cancel();
+        let result = Rc::new(std::cell::RefCell::new(None));
+        let observed = result.clone();
+        state.open_generated_editor_owned(
+            super::super::open::GeneratedEditorOpen::Generate {
+                target: GenerateHandoffTarget::Slides,
+                handoff: json!({"text": "fixture"}),
+                opener: Some(main_core::shell::projects::new_documents::NewDocumentOpener::Home),
+            },
+            owner.clone(),
+            cancel,
+            Box::new(move |reply| *observed.borrow_mut() = Some(reply.map(|tab| tab.view()))),
+        );
+        ui.run();
+        assert!(matches!(&*result.borrow(), Some(Err(error)) if error == "The initialized tab operation is no longer active"));
+        assert_eq!(fake.w().next_view, next_view);
+        assert!(fake.w().generated.is_empty());
+
+        let pending = CancelToken::default();
+        pending.cancel();
+        let result = Rc::new(std::cell::RefCell::new(None));
+        let observed = result.clone();
+        state.open_initialized_editor_owned(
+            main_core::shell::tab_manager::EditorOpen::Slides { path: None },
+            owner,
+            Vec::new(),
+            CancelToken::default(),
+            pending,
+            Some(main_core::shell::projects::new_documents::NewDocumentOpener::Home),
+            Box::new(move |reply| *observed.borrow_mut() = Some(reply.map(|tab| tab.view()))),
+        );
+        ui.run();
+        assert!(matches!(&*result.borrow(), Some(Err(error)) if error == "The initialized tab operation is no longer active"));
+        assert_eq!(fake.w().next_view, next_view);
+        assert!(fake.w().generated.is_empty());
+    }
+
+    #[test]
     fn canceled_generated_open_retires_its_view_and_preserves_existing_tab() {
         use main_core::packages::electron_utils::generate_handoff::GenerateHandoffTarget;
         use shell_contract::runtime::{CancelToken, RendererGeneration};

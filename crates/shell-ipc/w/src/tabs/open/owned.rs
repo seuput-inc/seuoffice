@@ -395,6 +395,7 @@ pub(super) enum GeneratedCapturedTab {
 }
 
 pub(super) struct GeneratedCleanupAuthority {
+    pub operation: u64,
     pub source: NativeRequestOwner,
     pub shell: NativeRequestOwner,
     pub shell_window: super::super::host::ShellWindow,
@@ -402,13 +403,12 @@ pub(super) struct GeneratedCleanupAuthority {
     pub cleanup: CancelToken,
     pub participants: Vec<NativeRequestOwner>,
     pub survivors: Vec<GeneratedCapturedTab>,
-    pub preview: Option<
-        main_core::shell::tab_manager::GeneratedRemovalPreview<
-            ViewId,
-            super::super::host::RetainedSpareBinding,
-        >,
+    pub preview: main_core::shell::tab_manager::GeneratedRemovalPreview<
+        ViewId,
+        super::super::host::RetainedSpareBinding,
     >,
-    pub reservation: Option<shell_contract::ipc::NativeClosureReservation>,
+    pub reservation: shell_contract::ipc::NativeClosureReservation,
+    pub browser: shell_contract::ipc::NativeBrowserOwner,
     pub retirement: std::rc::Rc<RefCell<Option<shell_contract::ipc::NativeBrowserRetirement>>>,
     pub cancel: CancelToken,
     pub pending: CancelToken,

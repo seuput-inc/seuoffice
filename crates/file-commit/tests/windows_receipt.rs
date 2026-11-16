@@ -178,7 +178,7 @@ fn private_stage_publication_returns_actual_written_snapshot() {
     };
     let snapshot = match plan.publish() {
         Ok(snapshot) => snapshot,
-        Err((error, _)) => panic!("{error}"),
+        Err(failure) => panic!("{}", failure.0),
     };
     assert_eq!(snapshot.bytes().as_ptr(), pointer);
     assert_eq!(snapshot.bytes(), b"actual payload");
@@ -398,7 +398,7 @@ fn receipt_requarantine_rejects_replaced_public_name() {
     };
     let snapshot = match plan.publish() {
         Ok(snapshot) => snapshot,
-        Err((error, _)) => panic!("{error}"),
+        Err(failure) => panic!("{}", failure.0),
     };
     fs::remove_file(&target).unwrap();
     fs::write(&target, b"replacement").unwrap();

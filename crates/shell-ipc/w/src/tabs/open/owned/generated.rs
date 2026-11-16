@@ -147,6 +147,9 @@ impl TabsState {
         opener: Option<NewDocumentOpener>,
         done: GeneratedDone,
     ) {
+        if cancel.is_cancelled() || pending.is_cancelled() {
+            return done(Err("The initialized tab operation is no longer active".into()));
+        }
         let epoch = self.manager_epoch.get();
         let has_opener = opener.is_some();
         let state = self.this.clone();
@@ -616,21 +619,6 @@ impl TabsState {
             }
         };
         let rollback: super::super::super::host::EditorSeedRollbackStore = std::rc::Rc::default();
-        let mut generated_cleanup = GeneratedCleanupAuthority {
-            source: source.clone(),
-            shell: cleanup_shell.1,
-            shell_window: cleanup_shell.0,
-            manager_epoch: epoch,
-            cleanup: self.hooks.cleanup_lifetime(),
-            participants: cleanup_participants,
-            survivors: tabs,
-            preview: None,
-            reservation: None,
-            retirement: std::rc::Rc::new(RefCell::new(None)),
-            cancel: cancel.clone(),
-            pending: pending.clone(),
-            rollback: rollback.clone(),
-        };
         if let Err(error) = self.begin_creation(id) {
             let state = self.rc();
             let reply = std::rc::Rc::new(RefCell::new(Some(done)));
@@ -757,8 +745,23 @@ impl TabsState {
                 return;
             }
         };
-        generated_cleanup.reservation = Some(binding.reservation.clone());
-        generated_cleanup.preview = Some(preview);
+        let generated_cleanup = GeneratedCleanupAuthority {
+            operation: id,
+            source: source.clone(),
+            shell: cleanup_shell.1,
+            shell_window: cleanup_shell.0,
+            manager_epoch: epoch,
+            cleanup: self.hooks.cleanup_lifetime(),
+            participants: cleanup_participants,
+            survivors: tabs,
+            preview,
+            reservation: binding.reservation.clone(),
+            browser: binding.owner.clone(),
+            retirement: std::rc::Rc::new(RefCell::new(None)),
+            cancel: cancel.clone(),
+            pending: pending.clone(),
+            rollback: rollback.clone(),
+        };
         let (coordinator, cleanup) =
             match super::generated_cleanup::GeneratedCleanupCoordinator::prepare(
                 self.rc(),

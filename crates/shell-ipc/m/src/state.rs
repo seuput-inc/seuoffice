@@ -225,6 +225,69 @@ impl MState {
         }
     }
 
+    /// A delivered cleanup that is still pending settles nothing: the payload
+    /// goes back, the delivery waits for acknowledgement, and the pending
+    /// operation becomes the receipt whose terminal result is awaited.
+    pub(crate) fn retain_hwp_cleanup_pending(
+        &self,
+        view: ViewId,
+        terminal: &Arc<
+            Mutex<Option<Result<shell_contract::hosts::GeneratedTerminalDelivery, String>>>,
+        >,
+        payload: crate::print::PendingHwpPayload,
+        delivery: shell_contract::hosts::GeneratedTerminalDelivery,
+        pending: Arc<dyn shell_contract::hosts::GeneratedPathPending>,
+    ) {
+        let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        let displaced = match state.hwp_pending.iter_mut().find(|(candidate, entry)| {
+            *candidate == view && Arc::ptr_eq(&entry.terminal, terminal)
+        }) {
+            Some((_, entry)) => {
+                entry.payload = Some(payload);
+                entry.cleanup.push(delivery);
+                entry.settling = false;
+                Ok((entry.receipt.replace(pending), entry.observer.take()))
+            }
+            None => Err((payload, delivery)),
+        };
+        drop(state);
+        drop(displaced);
+    }
+
+    /// The newest delivery held for a pending cleanup, to acknowledge once the
+    /// delivery that settled the original reply was acknowledged.
+    pub(crate) fn next_hwp_cleanup_delivery(
+        &self,
+        view: ViewId,
+        terminal: &Arc<
+            Mutex<Option<Result<shell_contract::hosts::GeneratedTerminalDelivery, String>>>,
+        >,
+    ) -> Option<shell_contract::hosts::GeneratedTerminalDelivery> {
+        let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        let (_, entry) = state.hwp_pending.iter_mut().find(|(candidate, entry)| {
+            *candidate == view && Arc::ptr_eq(&entry.terminal, terminal)
+        })?;
+        entry.cleanup.pop()
+    }
+
+    /// The pending cleanup whose observer registration failed and must be retried.
+    pub(crate) fn unobserved_hwp_cleanup(
+        &self,
+        view: ViewId,
+        terminal: &Arc<
+            Mutex<Option<Result<shell_contract::hosts::GeneratedTerminalDelivery, String>>>,
+        >,
+    ) -> Option<Arc<dyn shell_contract::hosts::GeneratedPathPending>> {
+        let state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        let (_, entry) = state.hwp_pending.iter().find(|(candidate, entry)| {
+            *candidate == view && Arc::ptr_eq(&entry.terminal, terminal)
+        })?;
+        if entry.cleanup.is_empty() || entry.observer.is_none() {
+            return None;
+        }
+        entry.receipt.clone()
+    }
+
     pub fn wake_hwp_publications(self: &Arc<Self>, core: Arc<dyn shell_contract::runtime::Thread>) {
         let entries = self
             .inner

@@ -449,7 +449,17 @@ fn named_object_matches(directory: &File, name: &std::ffi::CStr, file: &File) ->
         return Err(io::Error::last_os_error());
     }
     let actual = unsafe { actual.assume_init() };
-    Ok(actual.st_dev as u64 == expected.dev() && actual.st_ino as u64 == expected.ino())
+    Ok(stat_dev(&actual) == expected.dev() && actual.st_ino == expected.ino())
+}
+
+#[cfg(unix)]
+fn stat_dev(stat: &libc::stat) -> u64 {
+    // macOS declares st_dev as a signed 32-bit dev_t; std's MetadataExt::dev
+    // sign-extends it the same way. Linux declares it as u64 already.
+    #[cfg(target_os = "linux")]
+    { stat.st_dev }
+    #[cfg(not(target_os = "linux"))]
+    { stat.st_dev as u64 }
 }
 
 #[cfg(unix)]
@@ -659,10 +669,13 @@ impl OwnedWrittenCommit {
     pub fn path(&self) -> &Path { &self.plan.plan.receipt.path }
     pub fn mode(&self) -> PublicationMode { self.plan.plan.receipt.mode }
     pub fn into_parts(self) -> (OwnedStage, Vec<u8>) { (self.plan.into_stage(), self.bytes) }
-    pub fn publish(self) -> Result<CommittedWriteSnapshot, (io::Error, Self)> {
+    /// On failure the exact commit, with its frozen destination and payload, is
+    /// returned boxed so a retry or rescue keeps every right; only the failure
+    /// path allocates.
+    pub fn publish(self) -> Result<CommittedWriteSnapshot, Box<(io::Error, Self)>> {
         match self.plan.publish() {
             Ok(receipt) => Ok(CommittedWriteSnapshot { receipt, bytes: self.bytes }),
-            Err((error, plan)) => Err((error, Self { plan, bytes: self.bytes })),
+            Err((error, plan)) => Err(Box::new((error, Self { plan, bytes: self.bytes }))),
         }
     }
 }

@@ -101,10 +101,7 @@ pub(super) fn survivor_to_hydrate(
     String,
 > {
     use main_core::shell::tab_manager::GeneratedRemovalSurvivor;
-    let preview = authority
-        .preview
-        .as_ref()
-        .ok_or("The generated removal preview is unavailable")?;
+    let preview = &authority.preview;
     let Some(target) = preview.removal().activate.as_deref() else {
         return Ok(None);
     };
@@ -131,11 +128,7 @@ pub(super) fn validate_survivors(
     hydrated: Option<(&str, &shell_contract::ipc::NativeRequestOwner)>,
 ) -> Result<(), String> {
     use main_core::shell::tab_manager::GeneratedRemovalSurvivor;
-    let original = authority
-        .preview
-        .as_ref()
-        .ok_or("The generated removal preview is unavailable")?
-        .survivors();
+    let original = authority.preview.survivors();
     let current = current.survivors();
     if original.len() != current.len() {
         return Err("The captured survivor set changed".into());
@@ -203,7 +196,10 @@ pub(super) fn prepare_removal(
         .get::<shell_contract::hosts::OwnedEffectsHost>()
         .cloned()
         .ok_or("Owned generated cleanup is unavailable")?;
-    let effect_authority = TabActivationAuthority::Interactive(authority.source.clone());
+    // Restoration runs after the original request was cancelled, so its effects
+    // are admitted for the live shell (which owns its tab strip) under the
+    // cleanup lifetime, never under the cancelled request's tokens.
+    let effect_authority = TabActivationAuthority::Interactive(authority.shell.clone());
     let mut participants = authority.participants.clone();
     participants.push(target);
     let presentation = driver::prepare_activation_presentation(
@@ -216,15 +212,15 @@ pub(super) fn prepare_removal(
         expected_view,
         &effect_authority,
         ActivationParticipants::CapturedOnly(participants),
-        &authority.cancel,
-        &authority.pending,
+        &authority.cleanup,
+        &authority.cleanup,
     )?;
     let batch = PreparedCommittedActivationBatch {
         authority: effect_authority,
         participants: presentation.participants,
         base_count: presentation.base_count,
-        cancel: authority.cancel.clone(),
-        pending: authority.pending.clone(),
+        cancel: authority.cleanup.clone(),
+        pending: authority.cleanup.clone(),
         effects_host: presentation.effects_host,
         effects: activation.effects().to_vec(),
         native: presentation.native,
@@ -588,6 +584,14 @@ impl GeneratedCleanupCoordinator {
         spare: bool,
         installer: crate::tabs::host::GeneratedPrecloseInstaller,
     ) -> Result<(std::rc::Rc<Self>, ViewCreationCleanup), (GeneratedCleanupAuthority, String)> {
+        if authority.operation != operation
+            || !authority.reservation.same_reservation(&binding.reservation)
+            || !authority.browser.same_owner(&binding.owner)
+            || !binding.owner.reservation().same_reservation(&authority.reservation)
+            || !authority.reservation.matches(view, authority.reservation.created())
+        {
+            return Err((authority, "The generated cleanup operation or reservation changed".into()));
+        }
         let (close, cleanup) = browser_cleanup(binding.clone());
         let coordinator = std::rc::Rc::new(Self {
             state: state.clone(),
@@ -1115,14 +1119,12 @@ impl GeneratedCleanupCoordinator {
                     let authority = self.authority.borrow();
                     authority.as_ref().map(|authority| {
                         (
-                            authority.source.clone(),
                             authority.shell.clone(),
-                            authority.cancel.clone(),
-                            authority.pending.clone(),
+                            authority.cleanup.clone(),
                         )
                     })
                 };
-                let Some((source, shell, cancel, pending)) = captured else {
+                let Some((shell, cleanup)) = captured else {
                     return done(Err("The generated cleanup authority is unavailable".into()));
                 };
                 *self.hydrated.borrow_mut() = HydratedSurvivor::Opening;
@@ -1131,10 +1133,10 @@ impl GeneratedCleanupCoordinator {
                 return self.state.hydrate_generated_survivor(
                     opener,
                     context,
-                    source,
+                    shell.clone(),
                     shell,
-                    cancel,
-                    pending,
+                    cleanup.clone(),
+                    cleanup,
                     Box::new(move |result| match result {
                         Ok(super::SurvivorHydration::Ready {
                             id,

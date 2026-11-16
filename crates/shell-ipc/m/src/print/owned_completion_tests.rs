@@ -960,3 +960,143 @@ fn failed_prepared_start_retains_same_task_until_wake_retries_it() {
     assert_eq!(completions.lock().unwrap().len(), 1);
     assert_eq!(ack.calls.load(Ordering::Acquire), 1);
 }
+
+struct LoggedAck {
+    name: &'static str,
+    log: Arc<Mutex<Vec<&'static str>>>,
+}
+impl shell_contract::hosts::GeneratedTerminalAck for LoggedAck {
+    fn complete(&self) -> Result<(), String> {
+        self.log.lock().unwrap().push(self.name);
+        Ok(())
+    }
+    fn restore(&self, _result: Result<shell_contract::hosts::GeneratedPathOutcome, String>) {
+        self.log.lock().unwrap().push("restored");
+    }
+}
+
+fn unobserved_receipt(reject: bool) -> Arc<PendingReceipt> {
+    Arc::new(PendingReceipt {
+        reject: AtomicBool::new(reject),
+        observer: Mutex::new(None),
+        wake: Mutex::new(None),
+        restored: Arc::default(),
+        cancelling: AtomicBool::new(false),
+    })
+}
+
+fn deliver(
+    receipt: &PendingReceipt,
+    name: &'static str,
+    log: &Arc<Mutex<Vec<&'static str>>>,
+    result: Result<shell_contract::hosts::GeneratedPathOutcome, String>,
+) {
+    let observer = receipt
+        .observer
+        .lock()
+        .unwrap()
+        .take()
+        .expect("the receipt is observed");
+    observer(shell_contract::hosts::GeneratedTerminalDelivery::new(
+        result,
+        Arc::new(LoggedAck {
+            name,
+            log: log.clone(),
+        }),
+    ));
+}
+
+type Replies = Arc<Mutex<Vec<Reply>>>;
+type Completions = Arc<Mutex<Vec<Result<(), String>>>>;
+
+fn start_publication(outer: &Arc<PendingReceipt>) -> (Probe, MStateRef, Replies, Completions) {
+    let probe = Probe::new(json!({}), vec![sender(1, Surface::Hwp)]);
+    let state = probe.services.hosts.get::<MStateRef>().unwrap().clone();
+    let effects = probe
+        .services
+        .hosts
+        .get::<OwnedEffectsHost>()
+        .unwrap()
+        .clone();
+    let renderer = probe.services.views.renderer_generation(ViewId(1)).unwrap();
+    let owner = effects.capture_owner(ViewId(1), &renderer).unwrap();
+    let replies: Replies = Arc::default();
+    let completions: Completions = Arc::default();
+    let replied = replies.clone();
+    let completed = completions.clone();
+    let grant = OwnedHwpCompletion {
+        authority: shell_contract::editors::OwnedPdfGrantAuthority::Renderer(owner.clone()),
+        destination: owner,
+        cancel: CancelToken::default(),
+        pending: CancelToken::default(),
+        additional: Vec::new(),
+        effects,
+        accepted_losses: Arc::default(),
+        complete: Box::new(move |result| completed.lock().unwrap().push(result)),
+    };
+    let task: Arc<dyn shell_contract::hosts::GeneratedPathPending> = outer.clone();
+    assert!(state.begin_print(true, ViewId(1)));
+    handle_hwp_publication(
+        &state,
+        ViewId(1),
+        grant,
+        Responder::new(move |answer| replied.lock().unwrap().push(answer)),
+        success(),
+        Ok(FixtureOutcome::Pending(task)),
+        Arc::new(InlineCore),
+    );
+    (probe, state, replies, completions)
+}
+
+#[test]
+fn delivered_cleanup_pending_keeps_the_reply_open_until_the_nested_terminal() {
+    let outer = unobserved_receipt(false);
+    let (_probe, state, replies, completions) = start_publication(&outer);
+    let nested = unobserved_receipt(false);
+    let log: Arc<Mutex<Vec<&'static str>>> = Arc::default();
+    deliver(
+        &outer,
+        "outer",
+        &log,
+        Ok(shell_contract::hosts::GeneratedPathOutcome::CleanupPending(
+            nested.clone(),
+        )),
+    );
+    assert!(replies.lock().unwrap().is_empty());
+    assert!(completions.lock().unwrap().is_empty());
+    assert!(log.lock().unwrap().is_empty());
+    assert!(!state.begin_print(true, ViewId(1)));
+    deliver(&nested, "nested", &log, Err("cleanup finished".into()));
+    assert_eq!(replies.lock().unwrap().len(), 1);
+    assert_eq!(completions.lock().unwrap().len(), 1);
+    assert!(completions.lock().unwrap()[0].is_err());
+    assert_eq!(*log.lock().unwrap(), ["nested", "outer"]);
+    assert!(state.begin_print(true, ViewId(1)));
+    state.end_print(true, ViewId(1));
+}
+
+#[test]
+fn failed_observer_on_a_pending_cleanup_is_retried_on_the_same_receipt() {
+    let outer = unobserved_receipt(false);
+    let (_probe, state, replies, completions) = start_publication(&outer);
+    let nested = unobserved_receipt(true);
+    let log: Arc<Mutex<Vec<&'static str>>> = Arc::default();
+    deliver(
+        &outer,
+        "outer",
+        &log,
+        Ok(shell_contract::hosts::GeneratedPathOutcome::CleanupPending(
+            nested.clone(),
+        )),
+    );
+    assert!(nested.observer.lock().unwrap().is_none());
+    assert!(replies.lock().unwrap().is_empty());
+    nested.reject.store(false, Ordering::Release);
+    state.wake_hwp_publications(Arc::new(InlineCore));
+    assert!(replies.lock().unwrap().is_empty());
+    assert!(log.lock().unwrap().is_empty());
+    deliver(&nested, "nested", &log, Err("cleanup finished".into()));
+    assert_eq!(replies.lock().unwrap().len(), 1);
+    assert_eq!(completions.lock().unwrap().len(), 1);
+    assert_eq!(*log.lock().unwrap(), ["nested", "outer"]);
+}

@@ -250,7 +250,7 @@ mod unix {
             match result {
                 Ok((publication, snapshot)) => NativeRenameStep::Published { publication, snapshot, directory },
                 Err(shell_contract::ipc::StagedWriteError::Io { error, stage }) => {
-                    let prepared = PreparedStage { directory, commit: stage };
+                    let prepared = PreparedStage { directory, commit: *stage };
                     const DELAYS: [u64; 4] = [50, 100, 200, 400];
                     let retryable = matches!(error.raw_os_error(), Some(libc::EPERM | libc::EACCES | libc::EBUSY));
                     if retryable && self.next < DELAYS.len() {

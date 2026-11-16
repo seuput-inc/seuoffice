@@ -294,10 +294,13 @@ impl OwnedWrittenCommit {
     pub fn path(&self) -> &Path { &self.plan.plan.receipt.path }
     pub fn mode(&self) -> PublicationMode { self.plan.plan.receipt.mode }
     pub fn into_parts(self) -> (OwnedStage, Vec<u8>) { (self.plan.into_stage(), self.bytes) }
-    pub fn publish(self) -> Result<CommittedWriteSnapshot, (io::Error, Self)> {
+    /// On failure the exact commit, with its frozen destination and payload, is
+    /// returned boxed so a retry or rescue keeps every right; only the failure
+    /// path allocates.
+    pub fn publish(self) -> Result<CommittedWriteSnapshot, Box<(io::Error, Self)>> {
         match self.plan.publish() {
             Ok(receipt) => Ok(CommittedWriteSnapshot { receipt, bytes: self.bytes }),
-            Err((error, plan)) => Err((error, Self { plan, bytes: self.bytes })),
+            Err((error, plan)) => Err(Box::new((error, Self { plan, bytes: self.bytes }))),
         }
     }
 }
