@@ -2780,14 +2780,7 @@ mod tests {
         let new_lifecycle = table.add_window(new, "new".into());
         let (view, generation) = register(&table, old);
         table
-            .move_view_between_captured(
-                view,
-                &generation,
-                old,
-                &old_lifecycle,
-                new,
-                &new_lifecycle,
-            )
+            .move_view_between_captured(view, &generation, old, &old_lifecycle, new, &new_lifecycle)
             .unwrap();
         table.remove_window(old);
         assert_eq!(table.sender_of(view).map(|sender| sender.window), Some(new));

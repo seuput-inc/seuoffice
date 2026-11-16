@@ -471,7 +471,8 @@ impl BrowserCore {
             .unwrap_or_else(|error| error.into_inner()) = Some(control);
         let _ = self.window_label.set(window_label.into());
         self.lock().attached = true;
-        self.close.complete_creation(BrowserCreationOutcome::Attached);
+        self.close
+            .complete_creation(BrowserCreationOutcome::Attached);
         self.ready_check();
         self.replay_held_navigation();
     }

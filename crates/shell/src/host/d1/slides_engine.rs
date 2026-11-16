@@ -2883,8 +2883,8 @@ mod tests {
                 )
                 .map_err(EngineError)?
                 .unwrap();
-                let value = serde_json::to_value(&slide)
-                    .map_err(|error| EngineError(error.to_string()))?;
+                let value =
+                    serde_json::to_value(&slide).map_err(|error| EngineError(error.to_string()))?;
                 deck.masters.insert(parsed, slide);
                 Ok(value)
             })

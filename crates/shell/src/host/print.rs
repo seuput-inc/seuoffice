@@ -1401,7 +1401,6 @@ impl PrintWindow {
             .ok_or_else(|| "the print window has no page".to_owned())
     }
 
-    #[cfg(windows)]
     fn evaluate(
         &self,
         webview: &tauri::Webview,

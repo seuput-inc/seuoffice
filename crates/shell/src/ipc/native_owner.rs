@@ -22,8 +22,8 @@ pub(crate) use effects::{
     run_accepted_ui_pair, with_created_many_effect, with_many_owner_transition,
     with_native_invocation_effect, with_native_invocation_many_effect,
     with_native_invocation_print_many_effect, with_paired_effect, with_print_pair_effect,
-    with_recovery_open_effect, with_recovery_seed_effect,
-    with_service_native_invocation_effect, with_service_pair_effect,
+    with_recovery_open_effect, with_recovery_seed_effect, with_service_native_invocation_effect,
+    with_service_pair_effect,
 };
 pub(crate) use effects::{
     with_native_command_creation_effect, with_native_command_preparation_effect,

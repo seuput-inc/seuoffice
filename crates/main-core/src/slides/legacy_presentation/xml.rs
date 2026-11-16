@@ -305,11 +305,36 @@ fn unsafe_entity(value: &str) -> bool {
         || js_regex!(r#"\bSYSTEM\s+["']"#, "i").test(value)
         || js_regex!(r#"\bPUBLIC\s+["']"#, "i").test(value)
         || js_regex!(r"<!ENTITY[\s%]", "i").test(value)
-        || js_regex!(r"(?:&\w{1,20};){3,}", "i").test(value)
+        || entity_run(value)
         || js_regex!(r"\bxmlns\s*(?::\w{1,40})?\s*=", "i").test(value)
         || js_regex!(r"<!--", "i").test(value)
         || js_regex!(r"-->", "i").test(value)
         || js_regex!(r"\?>", "i").test(value)
+}
+/// `/(?:&\w{1,20};){3,}/i.test(value)` as a scan: three entity references in a row.
+fn entity_run(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let reference_end = |at: usize| -> Option<usize> {
+        if bytes.get(at) != Some(&b'&') {
+            return None;
+        }
+        let length = bytes[at + 1..].iter().take_while(|&&b| word(b)).count();
+        let end = at + 1 + length;
+        ((1..=20).contains(&length) && bytes.get(end) == Some(&b';')).then_some(end + 1)
+    };
+    (0..bytes.len()).any(|start| {
+        let mut at = start;
+        let mut count = 0;
+        while let Some(next) = reference_end(at) {
+            count += 1;
+            if count == 3 {
+                return true;
+            }
+            at = next;
+        }
+        false
+    })
 }
 fn doctype(source: &str, begin: usize, entities: &mut Entities) -> Result<usize, ()> {
     if !source[begin..].starts_with("<!DOCTYPE") {

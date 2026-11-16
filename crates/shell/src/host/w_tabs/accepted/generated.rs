@@ -487,7 +487,10 @@ fn fail(id: u64, error: TabError) {
 }
 
 fn post_pending(job: impl FnOnce() + Send + 'static) {
-    if let Some(core) = NATIVE_WINDOWS.get().and_then(|host| host.core.get()) {
+    if let Some(core) = super::super::NATIVE_WINDOWS
+        .get()
+        .and_then(|host| host.core.get())
+    {
         core.post(Box::new(job));
     }
 }

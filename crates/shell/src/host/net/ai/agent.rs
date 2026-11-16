@@ -458,6 +458,7 @@ pub fn install(hosts: &mut Hosts, lang: &UiLang, cx: &HostContext) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::*;
 
     #[cfg(unix)]
