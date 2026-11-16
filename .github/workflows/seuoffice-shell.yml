@@ -139,7 +139,13 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: unit tests
-        run: cargo test --locked --release
+        # the tests that touch the file system take an isolated scratch of this run
+        env:
+          SEUOFFICE_TEST_SCRATCH: ${{ runner.temp }}/test-scratch
+          SEUOFFICE_NATIVE_TEST_SCRATCH: ${{ runner.temp }}/native-test-scratch
+        run: |
+          mkdir -p "$SEUOFFICE_TEST_SCRATCH" "$SEUOFFICE_NATIVE_TEST_SCRATCH"
+          cargo test --locked --release
 
       - name: measure the dialog (--measure-dialog)
         timeout-minutes: 10
@@ -238,7 +244,12 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: unit tests
-        run: cargo test --locked --release
+        env:
+          SEUOFFICE_TEST_SCRATCH: ${{ runner.temp }}/test-scratch
+          SEUOFFICE_NATIVE_TEST_SCRATCH: ${{ runner.temp }}/native-test-scratch
+        run: |
+          mkdir -p "$SEUOFFICE_TEST_SCRATCH" "$SEUOFFICE_NATIVE_TEST_SCRATCH"
+          cargo test --locked --release
 
       - name: measure the dialog (--measure-dialog)
         timeout-minutes: 10

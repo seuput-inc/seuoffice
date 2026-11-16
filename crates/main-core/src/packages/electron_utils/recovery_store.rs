@@ -431,23 +431,85 @@ impl RecoveryWritePlan {
     }
 }
 
+/// Identity of one recovery namespace entry as observed when a plan was made.
+/// A replacement publishes a new file object, so the inode (or the creation
+/// time off Unix) differs even when bytes and timestamps are identical.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct EntryStamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(unix)]
+    changed: (i64, i64),
+    #[cfg(not(unix))]
+    created: Option<std::time::SystemTime>,
+}
+
+impl EntryStamp {
+    fn of(meta: &fs::Metadata) -> Self {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Self {
+                len: meta.len(),
+                modified: meta.modified().ok(),
+                device: meta.dev(),
+                inode: meta.ino(),
+                changed: (meta.ctime(), meta.ctime_nsec()),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            Self {
+                len: meta.len(),
+                modified: meta.modified().ok(),
+                created: meta.created().ok(),
+            }
+        }
+    }
+
+    fn at_path(path: &str) -> Option<Self> {
+        fs::metadata(path).ok().map(|meta| Self::of(&meta))
+    }
+}
+
 pub struct RecoveryMetadataPlan {
     path: String,
     metadata: JsonValue,
+    copy_path: String,
+    expected_copy: Option<EntryStamp>,
+    expected_metadata: Option<EntryStamp>,
 }
 
 impl RecoveryMetadataPlan {
+    /// False once either entry was replaced or changed after the plan was made.
+    fn still_current(&self) -> bool {
+        EntryStamp::at_path(&self.copy_path) == self.expected_copy
+            && EntryStamp::at_path(&self.path) == self.expected_metadata
+    }
+
+    /// `Ok(false)`: the plan was stale and nothing was written.
     pub fn write_via(
         &self,
         write: &mut dyn FnMut(&str, &JsonValue) -> Result<bool, NodeError>,
     ) -> Result<bool, NodeError> {
+        if !self.still_current() {
+            return Ok(false);
+        }
         write(&self.path, &self.metadata)
     }
 
+    /// `Ok(false)`: the plan was stale or the write failed; nothing was admitted.
     pub fn write_authorized(
         &self,
         admit: &mut super::atomic_write::WriteAdmission<'_>,
     ) -> Result<bool, NodeError> {
+        if !self.still_current() {
+            return Ok(false);
+        }
         let mut rejected = false;
         let result = super::atomic_write::write_json_atomic_authorized(
             &self.path,
@@ -1033,6 +1095,17 @@ impl RecoveryPinnedSnapshot {
         Some(RecoveryMetadataPlan {
             path: RecoveryStore::meta_path_of(&self.path),
             metadata: metadata.to_json(),
+            copy_path: self.path.clone(),
+            expected_copy: self
+                .copy_handle
+                .metadata()
+                .ok()
+                .map(|meta| EntryStamp::of(&meta)),
+            expected_metadata: self
+                .metadata_handle
+                .as_ref()
+                .and_then(|file| file.metadata().ok())
+                .map(|meta| EntryStamp::of(&meta)),
         })
     }
 }
@@ -1879,6 +1952,9 @@ impl RecoveryStore<'_> {
         Some(RecoveryMetadataPlan {
             path: Self::meta_path_of(copy),
             metadata: meta.to_json(),
+            copy_path: copy.to_owned(),
+            expected_copy: EntryStamp::at_path(copy),
+            expected_metadata: EntryStamp::at_path(&Self::meta_path_of(copy)),
         })
     }
 

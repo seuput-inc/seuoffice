@@ -361,7 +361,7 @@ mod continuation_tests {
 
     #[test]
     fn preparation_visits_every_unique_path_once_and_returns_first_ordered_failure() {
-        let raw = json!({ "mode": "ai", "kind": "markdown", "materials": ["/a.md", "/a.md", "/b.md"], "text": "" });
+        let raw = json!({ "mode": "ai", "kind": "slides", "materials": ["/a.md", "/a.md", "/b.md"], "text": "" });
         let PrepareStep::Inspect { path, run } = prepare_generate_request_begin(&raw) else {
             panic!("expected first inspection")
         };
@@ -381,7 +381,7 @@ mod continuation_tests {
     fn invalid_shape_never_requests_an_inspection() {
         assert!(matches!(
             prepare_generate_request_begin(
-                &json!({ "mode": "ai", "kind": "markdown", "materials": [] })
+                &json!({ "mode": "ai", "kind": "slides", "materials": [] })
             ),
             PrepareStep::Done(Ok(Prepared::Refused {
                 error: PrepareError::Shape(RequestShapeError::NoMaterial),

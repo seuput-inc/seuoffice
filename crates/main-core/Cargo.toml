@@ -36,7 +36,9 @@ icu_collator = "2.4"
 # node:sqlite of the file index (shell/file_index/store): SQLite with FTS5, built in (public domain; the crates MIT)
 rusqlite = { version = "0.32", features = ["bundled"] }
 openssl = { version = "=0.10.82", features = ["vendored"] }
-openssl-src = "=300.6.1"
+# Camellia: Office agile encryption names its cipher, and Node's OpenSSL (Electron) decrypts
+# Camellia; openssl-src configures `no-camellia` without this feature
+openssl-src = { version = "=300.6.1", features = ["camellia"] }
 quick-xml = "=0.41.0"
 base64 = "=0.23.1"
 zeroize = "1"

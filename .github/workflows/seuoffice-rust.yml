@@ -132,7 +132,13 @@ jobs:
 
       - name: Unit tests
         if: ${{ !cancelled() }}
-        run: cargo test --manifest-path crates/Cargo.toml --workspace
+        # the tests that touch the file system take an isolated scratch of this run
+        env:
+          SEUOFFICE_TEST_SCRATCH: ${{ runner.temp }}/test-scratch
+          SEUOFFICE_NATIVE_TEST_SCRATCH: ${{ runner.temp }}/native-test-scratch
+        run: |
+          mkdir -p "$SEUOFFICE_TEST_SCRATCH" "$SEUOFFICE_NATIVE_TEST_SCRATCH"
+          cargo test --manifest-path crates/Cargo.toml --workspace
 
       # the vendored regex engine carries patches of its own: its suite runs as published
       - name: Vendored regress tests
