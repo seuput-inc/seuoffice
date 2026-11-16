@@ -51,6 +51,31 @@ impl Locale for ShellLocale {
     }
 }
 
+/// The one shipped copy of the design templates' font set: the repository folder of a debug
+/// build, `<resources>/template-fonts` of an installed one (`templateFontsDir`).
+pub(crate) fn template_fonts_dir(app: &tauri::AppHandle) -> Result<String, String> {
+    if cfg!(debug_assertions) {
+        let apps = std::env::var_os("SEUOFFICE_APPS_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps"))
+            });
+        Ok(jscompat::node_path::host::resolve(&[
+            &apps.join("shell").to_string_lossy(),
+            "..",
+            "..",
+            "packages/ui/template-fonts",
+        ]))
+    } else {
+        crate::paths::resources_path(app)
+            .ok_or("Application resources are unavailable")?
+            .join("template-fonts")
+            .into_os_string()
+            .into_string()
+            .map_err(|_| "The template font path is not Unicode".to_owned())
+    }
+}
+
 struct WorkbookRuntime(Arc<workbook::Engine>);
 
 impl Drop for WorkbookRuntime {
@@ -90,6 +115,14 @@ pub fn install(hosts: &mut Hosts, cx: &HostContext) -> Result<(), String> {
     hosts.insert(renderer);
     shells::install_mindmap(hosts);
     shells::install_diagram(hosts, cx);
+    let engine: shell_ipc_d1::slides::engine::SlidesEngineHost =
+        Arc::new(slides_engine::NativeSlidesEngine::new(
+            cx.ui.clone(),
+            slides_fonts::FontEnvironment::native(template_fonts_dir(&cx.app)?.into()),
+            slides_engine::native_font_renderer_factory(),
+        )
+        .map_err(|error| error.0)?);
+    hosts.insert(engine);
     slides_shell::install(hosts, cx)?;
     Ok(())
 }

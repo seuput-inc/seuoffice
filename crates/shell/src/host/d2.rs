@@ -74,25 +74,7 @@ use super::HostContext;
 
 pub fn install(hosts: &mut Hosts, cx: &HostContext) -> Result<(), String> {
     if DOCS_MEDIA.get().is_none() {
-        let fonts_dir = if cfg!(debug_assertions) {
-            let apps = std::env::var_os("SEUOFFICE_APPS_DIR")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| {
-                    std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps"))
-                });
-            jscompat::node_path::host::resolve(&[
-                &apps.join("shell").to_string_lossy(),
-                "..",
-                "..",
-                "packages/ui/template-fonts",
-            ])
-        } else {
-            crate::paths::resources_path(&cx.app)
-                .ok_or("application resources are unavailable")?
-                .join("template-fonts")
-                .to_string_lossy()
-                .into_owned()
-        };
+        let fonts_dir = super::d1::template_fonts_dir(&cx.app)?;
         let media = DocsMedia {
             host: docs_lazy::LazyHost::new()?,
             fonts_dir,
@@ -115,6 +97,6 @@ pub fn install(hosts: &mut Hosts, cx: &HostContext) -> Result<(), String> {
     hosts.insert(epub_shell::host(cx.ui.clone()));
     hosts.insert(epub_engine::host());
     hwp_host::install(hosts, cx);
-    pdf::reload::install(hosts, cx);
+    pdf::install(hosts, cx);
     Ok(())
 }

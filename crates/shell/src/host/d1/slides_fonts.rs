@@ -50,6 +50,21 @@ pub(crate) struct FontEnvironment {
     pub(crate) platform: main_core::pdf::font_locate::Platform,
 }
 
+impl FontEnvironment {
+    /// The roots the Electron registry scanned: the OS font folders below the home folder, the
+    /// user font store `userData/fonts`, and the shipped design-template font set.
+    pub(crate) fn native(template: std::path::PathBuf) -> Self {
+        use shell_contract::runtime::{AppPaths, PathName};
+        let paths = crate::paths::ShellPaths::new();
+        Self {
+            home: paths.path(PathName::Home),
+            user: Some(paths.path(PathName::UserData).join("fonts")),
+            template: Some(template),
+            platform: crate::host::d2::pdf::native_callbacks::platform(),
+        }
+    }
+}
+
 pub(crate) fn install_request(
     id: u64,
     deck: shell_ipc_d1::slides::engine::DeckId,

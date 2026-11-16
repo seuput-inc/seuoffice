@@ -31,24 +31,7 @@ struct Shell {
 }
 
 pub(super) fn install(hosts: &mut Hosts, cx: &HostContext) -> Result<(), String> {
-    let fonts = if cfg!(debug_assertions) {
-        let apps = std::env::var_os("SEUOFFICE_APPS_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps")));
-        jscompat::node_path::host::resolve(&[
-            &apps.join("shell").to_string_lossy(),
-            "..",
-            "..",
-            "packages/ui/template-fonts",
-        ])
-    } else {
-        crate::paths::resources_path(&cx.app)
-            .ok_or("Application resources are unavailable")?
-            .join("template-fonts")
-            .into_os_string()
-            .into_string()
-            .map_err(|_| "The template font path is not Unicode")?
-    };
+    let fonts = super::template_fonts_dir(&cx.app)?;
     let shell: SheetsShellHost = Arc::new(Shell {
         cx: cx.clone(),
         effects: native_owner::effects_host(cx),

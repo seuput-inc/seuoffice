@@ -36,7 +36,7 @@ fn requests() -> &'static Mutex<HashMap<u64, RequestFonts>> {
     &REQUESTS
 }
 
-fn platform() -> Platform {
+pub(crate) fn platform() -> Platform {
     if cfg!(target_os = "macos") {
         Platform::Darwin
     } else if cfg!(windows) {

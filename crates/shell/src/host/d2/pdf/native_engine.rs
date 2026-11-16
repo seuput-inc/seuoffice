@@ -30,7 +30,9 @@ use shell_ipc_d2::pdf::editor::hosts::{
     SaveSkips, Shrunk, SigningSession,
 };
 
-/// Not registered until signing and vendor parity have received hosted proof.
+/// The PDF editor's engine host, installed by `pdf::install`. Signing is admitted through the
+/// captured request's own authority; token confirmation is denied because only the Linux NSS
+/// provider ever asks for one (see `protected_token`).
 pub(crate) struct NativePdfEngine {
     signing_authority: Arc<dyn crypto::SigningAuthority>,
     token_interaction: Arc<dyn crypto::ProtectedTokenInteraction>,
