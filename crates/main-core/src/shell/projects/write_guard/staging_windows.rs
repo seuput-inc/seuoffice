@@ -768,6 +768,7 @@ pub(super) fn publish_project_metadata(stage: &mut OwnedMetadataStage) -> Result
     publish_project_data_exclusive(stage)
 }
 
+#[cfg(test)]
 pub(super) fn publish_project_metadata_replace(
     stage: &mut OwnedMetadataStage,
 ) -> Result<(), NodeError> {
@@ -851,15 +852,6 @@ pub(super) fn publish_project_data_replace(
     )?;
     stage.state = StageState::Published;
     Ok(())
-}
-
-pub(super) fn publish_owned(
-    leaf: &File,
-    final_parent: &File,
-    final_name: &str,
-    display_path: &str,
-) -> Result<(), NodeError> {
-    rename_owned(leaf, final_parent, final_name, display_path, false)
 }
 
 fn rename_owned(

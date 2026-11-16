@@ -1,40 +1,484 @@
 //! Document-level repeated header, footer and physical page-number detection.
-use std::collections::{HashMap,HashSet};
-use jscompat::js_regex;
-use super::super::{ir::{ExtractedPage,FurnitureHf,PdfChar},lines::{group_into_indexed_lines,space}};
+use super::super::{
+    ir::{ExtractedPage, FurnitureHf, PdfChar},
+    lines::{group_into_indexed_lines, space},
+};
+use std::collections::{HashMap, HashSet};
 
-pub(super) struct FurnitureResult{pub drop_indices:Vec<HashSet<usize>>,pub dropped_lines:usize,pub hf:Vec<FurnitureHf>}
-#[derive(Clone)]struct BandLine{page:usize,edge:f64,indices:Vec<usize>,norm:String,page_no:bool}
-struct Slot{lines:Vec<BandLine>,pages:HashSet<usize>}
-fn visible(c:&PdfChar)->bool{!space(c.code)&&c.code>0x1f}
-fn text(pages:&[ExtractedPage],line:&BandLine)->String{let raw=line.indices.iter().map(|&i|pages[line.page].chars[i].text.as_str()).collect::<String>();raw.split_whitespace().collect::<Vec<_>>().join(" ")}
+pub(super) struct FurnitureResult {
+    pub drop_indices: Vec<HashSet<usize>>,
+    pub dropped_lines: usize,
+    pub hf: Vec<FurnitureHf>,
+}
+#[derive(Clone)]
+struct BandLine {
+    page: usize,
+    edge: f64,
+    indices: Vec<usize>,
+    norm: String,
+    page_no: bool,
+}
+struct Slot {
+    lines: Vec<BandLine>,
+    pages: HashSet<usize>,
+}
+fn visible(c: &PdfChar) -> bool {
+    !space(c.code) && c.code > 0x1f
+}
+fn text(pages: &[ExtractedPage], line: &BandLine) -> String {
+    let raw = line
+        .indices
+        .iter()
+        .map(|&i| pages[line.page].chars[i].text.as_str())
+        .collect::<String>();
+    raw.split_whitespace().collect::<Vec<_>>().join(" ")
+}
 // `/^[-—–‒―−‐·.()[\]/\s]*(?:[0-9０-９]+|[ivxlcdm]+)[-—–‒―−‐·.()[\]/\s]*$/i` read as a scan: the
 // marks and the digits are disjoint, so trimming the marks leaves the number or nothing. `i`
 // without `u` folds only ASCII, so the words are compared lowered.
-fn page_number(s:&str)->bool{let s=s.trim_matches(jscompat::is_js_space);let mark=|c:char|"-—–‒―−‐·.()[]/".contains(c)||jscompat::is_js_space(c);let core=s.trim_matches(mark);if !core.is_empty()&&(core.chars().all(|c|c.is_ascii_digit()||('０'..='９').contains(&c))||core.chars().all(|c|"ivxlcdm".contains(c.to_ascii_lowercase()))){return true}let letters=s.chars().filter(|c|!c.is_ascii_digit()&&!('０'..='９').contains(c)&&c.is_alphabetic()).collect::<String>();!letters.is_empty()&&js_regex!(r"^(?:page|of|pg|p|第|页|頁|共|ページ|стр|из)+$").test(&letters.to_lowercase())}
-fn slots(lines:Vec<BandLine>)->Vec<Slot>{let mut by_text:Vec<(String,Vec<BandLine>)>=Vec::new();let mut positions=HashMap::new();for line in lines{let index=if let Some(&i)=positions.get(&line.norm){i}else{let i=by_text.len();positions.insert(line.norm.clone(),i);by_text.push((line.norm.clone(),Vec::new()));i};by_text[index].1.push(line);}let mut out=Vec::new();for (_,mut group) in by_text{group.sort_by(|a,b|a.edge.total_cmp(&b.edge));let mut current:Vec<BandLine>=Vec::new();for line in group{if current.last().is_some_and(|prev|line.edge-prev.edge>6.){let pages=current.iter().map(|l|l.page).collect();out.push(Slot{lines:std::mem::take(&mut current),pages});}current.push(line)}if !current.is_empty(){let pages=current.iter().map(|l|l.page).collect();out.push(Slot{lines:current,pages})}}out}
-fn digit_runs(s:&str)->Vec<(u64,usize,usize)>{let mut runs=Vec::new();let mut start=None;let mut value=0u64;for (i,c) in s.char_indices(){let digit=match c{'0'..='9'=>Some(c as u32-'0' as u32),'０'..='９'=>Some(c as u32-'０' as u32),_=>None};if let Some(d)=digit{start.get_or_insert(i);value=value.saturating_mul(10).saturating_add(d as u64);}else if let Some(pos)=start.take(){runs.push((value,pos,i-pos));value=0;}}if let Some(pos)=start{runs.push((value,pos,s.len()-pos))}runs}
-fn acceptable(s:&str)->bool{s.encode_utf16().count()<=120&&!s.chars().any(|c|matches!(c,'\u{0590}'..='\u{08ff}'|'\u{fb1d}'..='\u{fdff}'|'\u{fe70}'..='\u{feff}'))}
-fn shell(pages:&[ExtractedPage],band:&str,line:&BandLine,first:bool,text:String,page_no:bool)->Option<FurnitureHf>{let visible=line.indices.iter().map(|&i|&pages[line.page].chars[i]).filter(|c|visible(c)).collect::<Vec<_>>();let c=visible.first()?;Some(FurnitureHf{band:band.into(),text,page_no,font_size_pt:c.font_size,font_family:c.font_family.clone(),bold:c.font_weight>=600,italic:c.italic,color:c.color.clone(),x0:visible.iter().map(|c|c.bounds.x0).fold(f64::INFINITY,f64::min),x1:visible.iter().map(|c|c.bounds.x1).fold(f64::NEG_INFINITY,f64::max),edge_dist_pt:line.edge,covers_first_page:first})}
-fn page_hf(pages:&[ExtractedPage],band:&str,slot:&Slot,first:usize)->Option<FurnitureHf>{let mut ordered=slot.lines.iter().collect::<Vec<_>>();ordered.sort_by_key(|l|l.page);let probes=[ordered[0],ordered[ordered.len()/2],ordered[ordered.len()-1]];let samples=probes.iter().map(|l|{let s=text(pages,l);let runs=digit_runs(&s);(s,runs)}).collect::<Vec<_>>();let count=samples[0].1.len();if count==0||samples.iter().any(|(_,runs)|runs.len()!=count){return None}let tracking=(0..count).filter(|&i|samples.iter().zip(probes.iter()).all(|((_,runs),line)|runs[i].0==line.page as u64+1)).collect::<Vec<_>>();if tracking.is_empty()||!acceptable(&samples[0].0){return None}let mut output=samples[0].0.clone();for &i in tracking.iter().rev(){let (_,at,len)=samples[0].1[i];output.replace_range(at..at+len,"\u{e001}");}shell(pages,band,probes[0],slot.pages.contains(&first),output,true)}
-fn text_hf(pages:&[ExtractedPage],band:&str,slot:&Slot,first:usize)->Option<FurnitureHf>{let mut ordered=slot.lines.iter().collect::<Vec<_>>();ordered.sort_by_key(|l|l.page);let line=ordered.get(1).copied().unwrap_or(ordered[0]);let value=text(pages,line);if value.is_empty()||!acceptable(&value){return None}shell(pages,band,line,slot.pages.contains(&first),value,false)}
-fn remove(result:&mut FurnitureResult,line:&BandLine){result.drop_indices[line.page].extend(line.indices.iter().copied());result.dropped_lines+=1;}
-pub(super) fn detect_furniture(pages:&[ExtractedPage],keep_unemitted:bool)->FurnitureResult{let mut result=FurnitureResult{drop_indices:pages.iter().map(|_|HashSet::new()).collect(),dropped_lines:0,hf:Vec::new()};let text_pages=pages.iter().enumerate().filter(|(_,p)|!p.scanned&&!p.degraded&&!p.chars.is_empty()).collect::<Vec<_>>();if text_pages.len()<2{return result}let mut top=Vec::new();let mut bottom=Vec::new();for (at,page) in &text_pages{for raw in group_into_indexed_lines(&page.chars){let visible=raw.indices.iter().map(|&i|&page.chars[i]).filter(|c|visible(c)).collect::<Vec<_>>();let joined=visible.iter().map(|c|c.text.as_str()).collect::<String>();let norm=joined.to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ");if norm.is_empty()||visible.iter().map(|c|c.font_size).fold(f64::NEG_INFINITY,f64::max)<2.5{continue}let from_top=page.height_pt-raw.baseline;let edge=if from_top<=96.{from_top}else if raw.baseline<=96.{raw.baseline}else{continue};let line=BandLine{page:*at,edge,indices:raw.indices,norm,page_no:page_number(&joined)};if from_top<=96.{top.push(line)}else{bottom.push(line)}}}let repeat_min=3usize.max((text_pages.len() as f64*0.2).ceil() as usize);let first=text_pages[0].0;
- for (band_name,band) in [("top",top),("bottom",bottom)]{let mut emitted=0;let numbered=band.iter().filter(|l|l.page_no).cloned().map(|mut l|{l.norm="#pageno".into();l}).collect();for slot in slots(numbered){if slot.pages.len()<2{continue}let entry=if slot.pages.len()>=repeat_min&&emitted<2{page_hf(pages,band_name,&slot,first)}else{None};let has=entry.is_some();if let Some(entry)=entry{result.hf.push(entry);emitted+=1}if !has&&keep_unemitted{continue}for l in &slot.lines{remove(&mut result,l)}}let mut consumed=HashSet::new();for slot in slots(band.iter().filter(|l|!l.page_no).cloned().collect()){if slot.pages.len()<repeat_min{continue}for l in &slot.lines{consumed.insert((l.page,l.indices.clone()));}let entry=if emitted<2{text_hf(pages,band_name,&slot,first)}else{None};let mut ordered=slot.lines.iter().collect::<Vec<_>>();ordered.sort_by_key(|l|l.page);if let Some(entry)=entry{result.hf.push(entry);emitted+=1;for l in ordered{remove(&mut result,l)}}else if !keep_unemitted{for l in ordered.into_iter().skip(1){remove(&mut result,l)}}}let masked=band.iter().filter(|l|!l.page_no&&!consumed.contains(&(l.page,l.indices.clone()))&&l.norm.chars().any(|c|c.is_ascii_digit()||('０'..='９').contains(&c))).cloned().map(|mut l|{let mut s=String::new();let mut in_digit=false;for c in l.norm.chars(){if c.is_ascii_digit()||('０'..='９').contains(&c){if !in_digit{s.push('#')}in_digit=true}else{in_digit=false;s.push(c)}}l.norm=s;l}).collect();for slot in slots(masked){if slot.pages.len()<repeat_min||emitted>=2{continue}let Some(entry)=page_hf(pages,band_name,&slot,first)else{continue};result.hf.push(entry);emitted+=1;for l in &slot.lines{remove(&mut result,l)}}}result}
+fn page_number(s: &str) -> bool {
+    let s = s.trim_matches(jscompat::is_js_space);
+    let mark = |c: char| "-—–‒―−‐·.()[]/".contains(c) || jscompat::is_js_space(c);
+    let core = s.trim_matches(mark);
+    if !core.is_empty()
+        && (core
+            .chars()
+            .all(|c| c.is_ascii_digit() || ('０'..='９').contains(&c))
+            || core
+                .chars()
+                .all(|c| "ivxlcdm".contains(c.to_ascii_lowercase())))
+    {
+        return true;
+    }
+    let letters = s
+        .chars()
+        .filter(|c| !c.is_ascii_digit() && !('０'..='９').contains(c) && c.is_alphabetic())
+        .collect::<String>();
+    !letters.is_empty() && is_page_words(&letters.to_lowercase())
+}
+// The JS page-word pattern is an anchored repetition of the words below, so it matches exactly
+// when the string can be cut into them. A reachability pass over the word boundaries decides it.
+fn is_page_words(s: &str) -> bool {
+    const WORDS: [&str; 11] = [
+        "page", "of", "pg", "p", "第", "页", "頁", "共", "ページ", "стр", "из",
+    ];
+    let mut reach = vec![false; s.len() + 1];
+    reach[0] = true;
+    for at in (0..s.len()).filter(|&i| s.is_char_boundary(i)) {
+        if !reach[at] {
+            continue;
+        }
+        for word in WORDS {
+            if s[at..].starts_with(word) {
+                reach[at + word.len()] = true;
+            }
+        }
+    }
+    !s.is_empty() && reach[s.len()]
+}
+fn slots(lines: Vec<BandLine>) -> Vec<Slot> {
+    let mut by_text: Vec<(String, Vec<BandLine>)> = Vec::new();
+    let mut positions = HashMap::new();
+    for line in lines {
+        let index = if let Some(&i) = positions.get(&line.norm) {
+            i
+        } else {
+            let i = by_text.len();
+            positions.insert(line.norm.clone(), i);
+            by_text.push((line.norm.clone(), Vec::new()));
+            i
+        };
+        by_text[index].1.push(line);
+    }
+    let mut out = Vec::new();
+    for (_, mut group) in by_text {
+        group.sort_by(|a, b| a.edge.total_cmp(&b.edge));
+        let mut current: Vec<BandLine> = Vec::new();
+        for line in group {
+            if current
+                .last()
+                .is_some_and(|prev| line.edge - prev.edge > 6.)
+            {
+                let pages = current.iter().map(|l| l.page).collect();
+                out.push(Slot {
+                    lines: std::mem::take(&mut current),
+                    pages,
+                });
+            }
+            current.push(line)
+        }
+        if !current.is_empty() {
+            let pages = current.iter().map(|l| l.page).collect();
+            out.push(Slot {
+                lines: current,
+                pages,
+            })
+        }
+    }
+    out
+}
+fn digit_runs(s: &str) -> Vec<(u64, usize, usize)> {
+    let mut runs = Vec::new();
+    let mut start = None;
+    let mut value = 0u64;
+    for (i, c) in s.char_indices() {
+        let digit = match c {
+            '0'..='9' => Some(c as u32 - '0' as u32),
+            '０'..='９' => Some(c as u32 - '０' as u32),
+            _ => None,
+        };
+        if let Some(d) = digit {
+            start.get_or_insert(i);
+            value = value.saturating_mul(10).saturating_add(d as u64);
+        } else if let Some(pos) = start.take() {
+            runs.push((value, pos, i - pos));
+            value = 0;
+        }
+    }
+    if let Some(pos) = start {
+        runs.push((value, pos, s.len() - pos))
+    }
+    runs
+}
+fn acceptable(s: &str) -> bool {
+    s.encode_utf16().count() <= 120
+        && !s.chars().any(
+            |c| matches!(c,'\u{0590}'..='\u{08ff}'|'\u{fb1d}'..='\u{fdff}'|'\u{fe70}'..='\u{feff}'),
+        )
+}
+fn shell(
+    pages: &[ExtractedPage],
+    band: &str,
+    line: &BandLine,
+    first: bool,
+    text: String,
+    page_no: bool,
+) -> Option<FurnitureHf> {
+    let visible = line
+        .indices
+        .iter()
+        .map(|&i| &pages[line.page].chars[i])
+        .filter(|c| visible(c))
+        .collect::<Vec<_>>();
+    let c = visible.first()?;
+    Some(FurnitureHf {
+        band: band.into(),
+        text,
+        page_no,
+        font_size_pt: c.font_size,
+        font_family: c.font_family.clone(),
+        bold: c.font_weight >= 600.,
+        italic: c.italic,
+        color: c.color.clone(),
+        x0: visible
+            .iter()
+            .map(|c| c.bounds.x0)
+            .fold(f64::INFINITY, f64::min),
+        x1: visible
+            .iter()
+            .map(|c| c.bounds.x1)
+            .fold(f64::NEG_INFINITY, f64::max),
+        edge_dist_pt: line.edge,
+        covers_first_page: first,
+    })
+}
+fn page_hf(pages: &[ExtractedPage], band: &str, slot: &Slot, first: usize) -> Option<FurnitureHf> {
+    let mut ordered = slot.lines.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|l| l.page);
+    let probes = [
+        ordered[0],
+        ordered[ordered.len() / 2],
+        ordered[ordered.len() - 1],
+    ];
+    let samples = probes
+        .iter()
+        .map(|l| {
+            let s = text(pages, l);
+            let runs = digit_runs(&s);
+            (s, runs)
+        })
+        .collect::<Vec<_>>();
+    let count = samples[0].1.len();
+    if count == 0 || samples.iter().any(|(_, runs)| runs.len() != count) {
+        return None;
+    }
+    let tracking = (0..count)
+        .filter(|&i| {
+            samples
+                .iter()
+                .zip(probes.iter())
+                .all(|((_, runs), line)| runs[i].0 == line.page as u64 + 1)
+        })
+        .collect::<Vec<_>>();
+    if tracking.is_empty() || !acceptable(&samples[0].0) {
+        return None;
+    }
+    let mut output = samples[0].0.clone();
+    for &i in tracking.iter().rev() {
+        let (_, at, len) = samples[0].1[i];
+        output.replace_range(at..at + len, "\u{e001}");
+    }
+    shell(
+        pages,
+        band,
+        probes[0],
+        slot.pages.contains(&first),
+        output,
+        true,
+    )
+}
+fn text_hf(pages: &[ExtractedPage], band: &str, slot: &Slot, first: usize) -> Option<FurnitureHf> {
+    let mut ordered = slot.lines.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|l| l.page);
+    let line = ordered.get(1).copied().unwrap_or(ordered[0]);
+    let value = text(pages, line);
+    if value.is_empty() || !acceptable(&value) {
+        return None;
+    }
+    shell(pages, band, line, slot.pages.contains(&first), value, false)
+}
+fn remove(result: &mut FurnitureResult, line: &BandLine) {
+    result.drop_indices[line.page].extend(line.indices.iter().copied());
+    result.dropped_lines += 1;
+}
+pub(super) fn detect_furniture(pages: &[ExtractedPage], keep_unemitted: bool) -> FurnitureResult {
+    let mut result = FurnitureResult {
+        drop_indices: pages.iter().map(|_| HashSet::new()).collect(),
+        dropped_lines: 0,
+        hf: Vec::new(),
+    };
+    let text_pages = pages
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| !p.scanned && !p.degraded && !p.chars.is_empty())
+        .collect::<Vec<_>>();
+    if text_pages.len() < 2 {
+        return result;
+    }
+    let mut top = Vec::new();
+    let mut bottom = Vec::new();
+    for (at, page) in &text_pages {
+        for raw in group_into_indexed_lines(&page.chars) {
+            let visible = raw
+                .indices
+                .iter()
+                .map(|&i| &page.chars[i])
+                .filter(|c| visible(c))
+                .collect::<Vec<_>>();
+            let joined = visible.iter().map(|c| c.text.as_str()).collect::<String>();
+            let norm = joined
+                .to_lowercase()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            if norm.is_empty()
+                || visible
+                    .iter()
+                    .map(|c| c.font_size)
+                    .fold(f64::NEG_INFINITY, f64::max)
+                    < 2.5
+            {
+                continue;
+            }
+            let from_top = page.height_pt - raw.baseline;
+            let edge = if from_top <= 96. {
+                from_top
+            } else if raw.baseline <= 96. {
+                raw.baseline
+            } else {
+                continue;
+            };
+            let line = BandLine {
+                page: *at,
+                edge,
+                indices: raw.indices,
+                norm,
+                page_no: page_number(&joined),
+            };
+            if from_top <= 96. {
+                top.push(line)
+            } else {
+                bottom.push(line)
+            }
+        }
+    }
+    let repeat_min = 3usize.max((text_pages.len() as f64 * 0.2).ceil() as usize);
+    let first = text_pages[0].0;
+    for (band_name, band) in [("top", top), ("bottom", bottom)] {
+        let mut emitted = 0;
+        let numbered = band
+            .iter()
+            .filter(|l| l.page_no)
+            .cloned()
+            .map(|mut l| {
+                l.norm = "#pageno".into();
+                l
+            })
+            .collect();
+        for slot in slots(numbered) {
+            if slot.pages.len() < 2 {
+                continue;
+            }
+            let entry = if slot.pages.len() >= repeat_min && emitted < 2 {
+                page_hf(pages, band_name, &slot, first)
+            } else {
+                None
+            };
+            let has = entry.is_some();
+            if let Some(entry) = entry {
+                result.hf.push(entry);
+                emitted += 1
+            }
+            if !has && keep_unemitted {
+                continue;
+            }
+            for l in &slot.lines {
+                remove(&mut result, l)
+            }
+        }
+        let mut consumed = HashSet::new();
+        for slot in slots(band.iter().filter(|l| !l.page_no).cloned().collect()) {
+            if slot.pages.len() < repeat_min {
+                continue;
+            }
+            for l in &slot.lines {
+                consumed.insert((l.page, l.indices.clone()));
+            }
+            let entry = if emitted < 2 {
+                text_hf(pages, band_name, &slot, first)
+            } else {
+                None
+            };
+            let mut ordered = slot.lines.iter().collect::<Vec<_>>();
+            ordered.sort_by_key(|l| l.page);
+            if let Some(entry) = entry {
+                result.hf.push(entry);
+                emitted += 1;
+                for l in ordered {
+                    remove(&mut result, l)
+                }
+            } else if !keep_unemitted {
+                for l in ordered.into_iter().skip(1) {
+                    remove(&mut result, l)
+                }
+            }
+        }
+        let masked = band
+            .iter()
+            .filter(|l| {
+                !l.page_no
+                    && !consumed.contains(&(l.page, l.indices.clone()))
+                    && l.norm
+                        .chars()
+                        .any(|c| c.is_ascii_digit() || ('０'..='９').contains(&c))
+            })
+            .cloned()
+            .map(|mut l| {
+                let mut s = String::new();
+                let mut in_digit = false;
+                for c in l.norm.chars() {
+                    if c.is_ascii_digit() || ('０'..='９').contains(&c) {
+                        if !in_digit {
+                            s.push('#')
+                        }
+                        in_digit = true
+                    } else {
+                        in_digit = false;
+                        s.push(c)
+                    }
+                }
+                l.norm = s;
+                l
+            })
+            .collect();
+        for slot in slots(masked) {
+            if slot.pages.len() < repeat_min || emitted >= 2 {
+                continue;
+            }
+            let Some(entry) = page_hf(pages, band_name, &slot, first) else {
+                continue;
+            };
+            result.hf.push(entry);
+            emitted += 1;
+            for l in &slot.lines {
+                remove(&mut result, l)
+            }
+        }
+    }
+    result
+}
 
 #[cfg(test)]
 mod tests {
- use super::*;
- use super::super::super::{geometry::Rect,script::Script};
- fn page(number:usize)->ExtractedPage{
-  let bounds=Rect{x0:20.,y0:20.,x1:24.,y1:30.};
-  let c=PdfChar{code:('1' as u32)+number as u32,text:(number+1).to_string(),bounds,loose_box:bounds,origin_x:20.,origin_y:20.,angle:0.,font_size:10.,font_weight:400.,font_family:"A".into(),italic:false,color:"000000".into(),hscale:None,invisible:false,is_generated:false,pdf_char_index:None,text_object_id:None,is_hyphen:false,script:Script::Latin,highlight:None,underline:false,strike:false,note_ref:None,href:None};
-  ExtractedPage{index:number,width_pt:400.,height_pt:600.,rotation:0,chars:vec![c],images:vec![],paths:vec![],degraded:false,degraded_reason:None,scanned:false,has_struct_tree:false,render:None,vector_regions:vec![],ocr_text_recovered:false,ocr_image_kept:false,text_lost:false,rotated_dropped:0,cell_data:false,bad_unicode_ratio:0.,background_render:None,content_box:None,decor_images:vec![]}
- }
- #[test]fn physical_page_numbers_become_page_field(){
-  let pages=vec![page(0),page(1),page(2)];let result=detect_furniture(&pages,false);
-  assert_eq!(result.dropped_lines,3);assert!(result.drop_indices.iter().all(|s|s.contains(&0)));
-  assert_eq!(result.hf.len(),1);assert_eq!(result.hf[0].text,"\u{e001}");assert!(result.hf[0].page_no);
- }
- #[test]fn fullwidth_numbers_are_folded(){assert_eq!(digit_runs("第１２页")[0].0,12);}
+    use super::super::super::{geometry::Rect, script::Script};
+    use super::*;
+    fn page(number: usize) -> ExtractedPage {
+        let bounds = Rect {
+            x0: 20.,
+            y0: 20.,
+            x1: 24.,
+            y1: 30.,
+        };
+        let c = PdfChar {
+            code: ('1' as u32) + number as u32,
+            text: (number + 1).to_string(),
+            bounds,
+            loose_box: bounds,
+            origin_x: 20.,
+            origin_y: 20.,
+            angle: 0.,
+            font_size: 10.,
+            font_weight: 400.,
+            font_family: "A".into(),
+            italic: false,
+            color: "000000".into(),
+            hscale: None,
+            invisible: false,
+            is_generated: false,
+            pdf_char_index: None,
+            text_object_id: None,
+            is_hyphen: false,
+            script: Script::Latin,
+            highlight: None,
+            underline: false,
+            strike: false,
+            note_ref: None,
+            href: None,
+        };
+        ExtractedPage {
+            index: number,
+            width_pt: 400.,
+            height_pt: 600.,
+            rotation: 0,
+            chars: vec![c],
+            images: vec![],
+            paths: vec![],
+            degraded: false,
+            degraded_reason: None,
+            scanned: false,
+            has_struct_tree: false,
+            render: None,
+            ocr_text_recovered: false,
+            text_lost: false,
+            cell_data: false,
+            bad_unicode_ratio: 0.,
+            background_render: None,
+            content_box: None,
+            decor_images: vec![],
+        }
+    }
+    #[test]
+    fn physical_page_numbers_become_page_field() {
+        let pages = vec![page(0), page(1), page(2)];
+        let result = detect_furniture(&pages, false);
+        assert_eq!(result.dropped_lines, 3);
+        assert!(result.drop_indices.iter().all(|s| s.contains(&0)));
+        assert_eq!(result.hf.len(), 1);
+        assert_eq!(result.hf[0].text, "\u{e001}");
+        assert!(result.hf[0].page_no);
+    }
+    #[test]
+    fn fullwidth_numbers_are_folded() {
+        assert_eq!(digit_runs("第１２页")[0].0, 12);
+    }
 }

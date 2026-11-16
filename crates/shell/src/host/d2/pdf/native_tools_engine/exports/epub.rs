@@ -1,59 +1,497 @@
 //! EPUB 3 package generation from structured PDF trees.
-mod render;
 mod language;
-use std::collections::{HashMap,HashSet};
-use std::io::{Cursor,Write};
-use sha2::{Digest,Sha256};
-use shell_contract::{IpcValue,runtime::CancelToken};
-use shell_ipc_d2::pdf::tools::JobFailure;
+mod render;
 use super::super::super::job_source::Source;
-fn field<'a>(v:&'a IpcValue,key:&str)->Option<&'a IpcValue>{match v{IpcValue::Object(f)=>f.iter().find(|(k,_)|k==key).map(|(_,v)|v),_=>None}}
-fn string<'a>(v:&'a IpcValue,key:&str)->&'a str{match field(v,key){Some(IpcValue::String(s))=>s,_=>""}}
-fn number(v:&IpcValue,key:&str)->f64{match field(v,key){Some(IpcValue::Number(n))=>*n,_=>0.}}
-fn flag(v:&IpcValue,key:&str)->bool{matches!(field(v,key),Some(IpcValue::Bool(true)))}
-fn array<'a>(v:&'a IpcValue,key:&str)->&'a [IpcValue]{match field(v,key){Some(IpcValue::Array(a))=>a,_=>&[]}}
-fn fail(s:&str)->JobFailure{JobFailure::new("failed",Some(s))}
-const CONTAINER:&str="<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<container version=\"1.0\" xmlns=\"urn:oasis:names:tc:opendocument:xmlns:container\">\n<rootfiles>\n<rootfile full-path=\"OEBPS/content.opf\" media-type=\"application/oebps-package+xml\"/>\n</rootfiles>\n</container>\n";
-const CSS:&str="body { margin: 0 4%; line-height: 1.5; }\nfigure { margin: 1em 0; text-align: center; }\nfigure img { max-width: 100%; height: auto; }\nfigure.page-image img { width: 100%; }\nfigcaption { font-size: 0.9em; }\ntable { border-collapse: collapse; margin: 1em 0; }\nth, td { border: 1px solid; padding: 0.2em 0.4em; vertical-align: top; }\ntable.caption-below caption { caption-side: bottom; }\n.math { margin: 1em 0; text-align: center; }\n.translation { margin-top: 0.25em; }\naside.footnote { font-size: 0.9em; }\nsection.cover { text-align: center; }\nsection.cover img { max-width: 100%; max-height: 100vh; }\n";
-pub(super) fn cover(job:&IpcValue,source:&Source,_progress:&(dyn Fn(f64,f64)+Sync),cancel:&CancelToken)->Result<Option<Vec<u8>>,JobFailure>{let options=field(job,"epub").unwrap_or(&IpcValue::Null);if matches!(field(options,"cover"),Some(IpcValue::Bool(false))){return Ok(None)}let password=field(job,"source").and_then(|s|field(s,"password")).and_then(|v|if let IpcValue::String(s)=v{Some(s.as_str())}else{None});crate::host::d2::pdf::pdfium_session::render_page_png(&source.bytes,password,0,1.5,cancel).map_err(|error|{let kind=if cancel.is_cancelled(){"cancelled"}else{match error.code{Some(4)=>"password-required",Some(1..=3)=>"corrupt",Some(_)=>"unsupported",None=>"failed"}};JobFailure::new(kind,Some(&error.message))})}
-struct Image{hash:String,ext:String,mime:String,data:Vec<u8>}
-struct Env<'a>{markers:HashMap<usize,String>,page_targets:HashMap<usize,String>,images:Vec<Image>,heading:usize,notes:HashMap<String,&'a IpcValue>,alt:Option<String>}
-impl render::Host for Env<'_>{
- fn marker(&self,b:&IpcValue)->String{self.markers.get(&(b as *const _ as usize)).cloned().unwrap_or_else(||format!("page-{}",number(b,"page")))}
- fn page_href(&self,p:usize)->Option<String>{self.page_targets.get(&p).cloned()}
- fn image(&mut self,b:&IpcValue)->Result<String,JobFailure>{let data=match field(b,"data"){Some(IpcValue::Bytes(_,data))=>data,_=>return Err(fail("EPUB image data missing"))};let mime=string(b,"mime");let ext=match mime{"image/png"=>"png","image/jpeg"=>"jpg",_=>return Err(fail("invalid EPUB image type"))};let hash=format!("{:x}",Sha256::digest(data))[..24].to_owned();if !self.images.iter().any(|v|v.hash==hash&&v.ext==ext){self.images.push(Image{hash:hash.clone(),ext:ext.into(),mime:mime.into(),data:data.clone()});}Ok(format!("images/{hash}.{ext}"))}
- fn heading_id(&mut self)->String{self.heading+=1;format!("h-{}",self.heading)}
- fn math(&mut self,latex:&str,display:bool)->Result<Option<String>,JobFailure>{let input=serde_json::json!({"latex":latex,"display":display});let result=crate::engine_host::call("pdf.latexMathMl",&input).map_err(|e|fail(&e.message))?;match result{serde_json::Value::Null=>Ok(None),serde_json::Value::String(s)=>Ok(Some(s)),_=>Err(fail("invalid MathML response"))}}
- fn page_alt(&self,p:usize)->String{self.alt.as_ref().map(|s|s.replace("{page}",&p.to_string())).unwrap_or_else(||format!("Page {p}"))}
- fn footnote(&self,id:&str)->Option<&IpcValue>{self.notes.get(id).copied()}
+use sha2::{Digest, Sha256};
+use shell_contract::{IpcValue, runtime::CancelToken};
+use shell_ipc_d2::pdf::tools::JobFailure;
+use std::collections::{HashMap, HashSet};
+use std::io::{Cursor, Write};
+fn field<'a>(v: &'a IpcValue, key: &str) -> Option<&'a IpcValue> {
+    match v {
+        IpcValue::Object(f) => f.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+        _ => None,
+    }
 }
-struct Nav{level:usize,href:String,text:String,children:Vec<Nav>}
-fn nav_ol(nodes:&[Nav])->String{let mut out="<ol>\n".to_owned();for n in nodes{out.push_str(&format!("<li><a href=\"{}\">{}</a>",render::attr(&n.href),render::text(&n.text)));if !n.children.is_empty(){out.push('\n');out.push_str(&nav_ol(&n.children));}out.push_str("</li>\n");}out.push_str("</ol>\n");out}
-fn insert_nav(nodes:&mut Vec<Nav>,entry:Nav){if let Some(last)=nodes.last_mut(){if last.level<entry.level{insert_nav(&mut last.children,entry);return}}nodes.push(entry)}
-fn book_id(tree:&IpcValue,title:&str)->String{let mut h=Sha256::new();h.update(format!("{title}\n{}\n{}",string(tree,"variant"),string(tree,"targetLanguage")));for p in array(tree,"pages"){h.update(format!("\n{}:{}",number(p,"page"),string(p,"fingerprint")));}let mut v=format!("{:x}",h.finalize())[..32].as_bytes().to_vec();v[12]=b'5';let n=(v[16] as char).to_digit(16).unwrap_or(0);v[16]=char::from_digit((n&3)|8,16).unwrap() as u8;let s=String::from_utf8(v).unwrap();format!("urn:uuid:{}-{}-{}-{}-{}",&s[..8],&s[8..12],&s[12..16],&s[16..20],&s[20..])}
-pub(super) fn write(tree:&IpcValue,job:&IpcValue,cover:Option<Vec<u8>>)->Result<Vec<u8>,JobFailure>{let options=field(job,"epub").unwrap_or(&IpcValue::Null);let info=field(tree,"info").unwrap_or(&IpcValue::Null);let title=[string(options,"title"),string(info,"title"),"Untitled"].into_iter().map(render::plain).find(|s|!s.is_empty()).unwrap();let author=render::plain(string(options,"author"));let languages=language::languages(tree,options)?;let lang=&languages[0];let chapters=render::chapters(tree,flag(options,"pageBreaks"));let files=(0..chapters.len()).map(|i|format!("chapter-{:03}.xhtml",i+1)).collect::<Vec<_>>();let mut env=Env{markers:HashMap::new(),page_targets:HashMap::new(),images:Vec::new(),heading:0,notes:array(tree,"footnotes").iter().map(|n|(string(n,"id").to_owned(),n)).collect(),alt:match field(options,"pageImageAlt"){Some(IpcValue::String(s))=>Some(s.clone()),_=>None}};let mut used=HashSet::new();let mut page_list=Vec::new();for (i,ch) in chapters.iter().enumerate(){for b in &ch.blocks{if string(b,"kind")!="pageBreak"{continue}let page=number(b,"page") as usize;let mut id=format!("page-{page}");let mut n=2;while !used.insert(id.clone()){id=format!("page-{page}-{n}");n+=1}env.markers.insert(*b as *const _ as usize,id.clone());if !env.page_targets.contains_key(&page){let href=format!("{}#{id}",files[i]);env.page_targets.insert(page,href.clone());page_list.push((page,href));}}}
- let mut rendered=Vec::new();for ch in &chapters{rendered.push(render::render(ch,&mut env)?)}let mut toc=Vec::new();for (i,ch) in rendered.iter().enumerate(){for h in &ch.headings{insert_nav(&mut toc,Nav{level:h.level,href:format!("{}#{}",files[i],h.id),text:h.text.clone(),children:Vec::new()});}}if toc.is_empty(){toc.push(Nav{level:1,href:files[0].clone(),text:title.clone(),children:Vec::new()})}
- let mut nav=format!("<nav epub:type=\"toc\" id=\"toc\" role=\"doc-toc\">\n<h1>{}</h1>\n{}</nav>\n",render::text(&title),nav_ol(&toc));if !page_list.is_empty(){nav.push_str("<nav epub:type=\"page-list\" id=\"page-list\" role=\"doc-pagelist\" hidden=\"hidden\">\n<ol>\n");for (n,href) in &page_list{nav.push_str(&format!("<li><a href=\"{}\">{n}</a></li>\n",render::attr(href)));}nav.push_str("</ol>\n</nav>\n");}
- let cover=cover.filter(|x|!x.is_empty());let cover_ext=if cover.as_ref().is_some_and(|b|b.starts_with(&[0xff,0xd8])){"jpg"}else{"png"};let cover_mime=if cover_ext=="jpg"{"image/jpeg"}else{"image/png"};let mut manifest=String::from("<item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>\n<item id=\"css\" href=\"style.css\" media-type=\"text/css\"/>\n");let mut spine=String::new();if cover.is_some(){manifest.push_str(&format!("<item id=\"cover-image\" href=\"images/cover.{cover_ext}\" media-type=\"{cover_mime}\" properties=\"cover-image\"/>\n<item id=\"cover\" href=\"cover.xhtml\" media-type=\"application/xhtml+xml\"/>\n"));spine.push_str("<itemref idref=\"cover\"/>\n");}for (i,r) in rendered.iter().enumerate(){let id=format!("chapter-{:03}",i+1);manifest.push_str(&format!("<item id=\"{id}\" href=\"{}\" media-type=\"application/xhtml+xml\"{}/>\n",files[i],if r.math{" properties=\"mathml\""}else{""}));spine.push_str(&format!("<itemref idref=\"{id}\"/>\n"));}for image in &env.images{manifest.push_str(&format!("<item id=\"img-{}-{}\" href=\"images/{}.{}\" media-type=\"{}\"/>\n",image.hash,image.ext,image.hash,image.ext,image.mime));}
- let id=book_id(tree,&title);let now=chrono::Utc::now();let modified=now.format("%Y-%m-%dT%H:%M:%SZ").to_string();let mut metadata=format!("<dc:identifier id=\"book-id\">{}</dc:identifier>\n<dc:title>{}</dc:title>\n",render::text(&id),render::text(&title));if !author.is_empty(){metadata.push_str(&format!("<dc:creator>{}</dc:creator>\n",render::text(&author)));}for l in &languages{metadata.push_str(&format!("<dc:language>{}</dc:language>\n",render::text(l)));}let subject=render::plain(string(info,"subject"));if !subject.is_empty(){metadata.push_str(&format!("<dc:subject>{}</dc:subject>\n",render::text(&subject)));}metadata.push_str(&format!("<meta property=\"dcterms:modified\">{modified}</meta>\n"));if cover.is_some(){metadata.push_str("<meta name=\"cover\" content=\"cover-image\"/>\n");}let opf=format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" unique-identifier=\"book-id\" xml:lang=\"{}\">\n<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n{metadata}</metadata>\n<manifest>\n{manifest}</manifest>\n<spine>\n{spine}</spine>\n</package>\n",render::attr(lang));
- use chrono::{Datelike,Timelike};let local=now.with_timezone(&chrono::Local);let timestamp=zip::DateTime::from_date_and_time(local.year().clamp(1980,2107) as u16,local.month() as u8,local.day() as u8,local.hour() as u8,local.minute() as u8,local.second() as u8).map_err(|e|fail(&e.to_string()))?;
- let mut zip=zip::ZipWriter::new(Cursor::new(Vec::new()));let stored=zip::write::SimpleFileOptions::default().last_modified_time(timestamp).compression_method(zip::CompressionMethod::Stored);let deflated=zip::write::SimpleFileOptions::default().last_modified_time(timestamp).compression_method(zip::CompressionMethod::Deflated);fn entry(z:&mut zip::ZipWriter<Cursor<Vec<u8>>>,name:&str,bytes:&[u8],opts:zip::write::SimpleFileOptions)->Result<(),JobFailure>{z.start_file(name,opts).map_err(|e|fail(&e.to_string()))?;z.write_all(bytes).map_err(|e|fail(&e.to_string()))}
- entry(&mut zip,"mimetype",b"application/epub+zip",stored)?;entry(&mut zip,"META-INF/container.xml",CONTAINER.as_bytes(),deflated)?;entry(&mut zip,"OEBPS/content.opf",opf.as_bytes(),deflated)?;entry(&mut zip,"OEBPS/nav.xhtml",render::document(&title,lang,&nav).as_bytes(),deflated)?;entry(&mut zip,"OEBPS/style.css",CSS.as_bytes(),deflated)?;if let Some(cover)=cover{entry(&mut zip,&format!("OEBPS/images/cover.{cover_ext}"),&cover,stored)?;let body=format!("<section epub:type=\"cover\" class=\"cover\">\n<img src=\"images/cover.{cover_ext}\" alt=\"{}\" role=\"doc-cover\"/>\n</section>\n",render::attr(&title));entry(&mut zip,"OEBPS/cover.xhtml",render::document(&title,lang,&body).as_bytes(),deflated)?;}for (i,r) in rendered.iter().enumerate(){entry(&mut zip,&format!("OEBPS/{}",files[i]),render::document(r.title.as_deref().unwrap_or(&title),lang,&r.body).as_bytes(),deflated)?;}for image in &env.images{entry(&mut zip,&format!("OEBPS/images/{}.{}",image.hash,image.ext),&image.data,stored)?;}Ok(zip.finish().map_err(|e|fail(&e.to_string()))?.into_inner())}
+fn string<'a>(v: &'a IpcValue, key: &str) -> &'a str {
+    match field(v, key) {
+        Some(IpcValue::String(s)) => s,
+        _ => "",
+    }
+}
+fn number(v: &IpcValue, key: &str) -> f64 {
+    match field(v, key) {
+        Some(IpcValue::Number(n)) => *n,
+        _ => 0.,
+    }
+}
+fn flag(v: &IpcValue, key: &str) -> bool {
+    matches!(field(v, key), Some(IpcValue::Bool(true)))
+}
+fn array<'a>(v: &'a IpcValue, key: &str) -> &'a [IpcValue] {
+    match field(v, key) {
+        Some(IpcValue::Array(a)) => a,
+        _ => &[],
+    }
+}
+fn fail(s: &str) -> JobFailure {
+    JobFailure::new("failed", Some(s))
+}
+const CONTAINER: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<container version=\"1.0\" xmlns=\"urn:oasis:names:tc:opendocument:xmlns:container\">\n<rootfiles>\n<rootfile full-path=\"OEBPS/content.opf\" media-type=\"application/oebps-package+xml\"/>\n</rootfiles>\n</container>\n";
+const CSS: &str = "body { margin: 0 4%; line-height: 1.5; }\nfigure { margin: 1em 0; text-align: center; }\nfigure img { max-width: 100%; height: auto; }\nfigure.page-image img { width: 100%; }\nfigcaption { font-size: 0.9em; }\ntable { border-collapse: collapse; margin: 1em 0; }\nth, td { border: 1px solid; padding: 0.2em 0.4em; vertical-align: top; }\ntable.caption-below caption { caption-side: bottom; }\n.math { margin: 1em 0; text-align: center; }\n.translation { margin-top: 0.25em; }\naside.footnote { font-size: 0.9em; }\nsection.cover { text-align: center; }\nsection.cover img { max-width: 100%; max-height: 100vh; }\n";
+pub(super) fn cover(
+    job: &IpcValue,
+    source: &Source,
+    _progress: &(dyn Fn(f64, f64) + Sync),
+    cancel: &CancelToken,
+) -> Result<Option<Vec<u8>>, JobFailure> {
+    let options = field(job, "epub").unwrap_or(&IpcValue::Null);
+    if matches!(field(options, "cover"), Some(IpcValue::Bool(false))) {
+        return Ok(None);
+    }
+    let password = field(job, "source")
+        .and_then(|s| field(s, "password"))
+        .and_then(|v| {
+            if let IpcValue::String(s) = v {
+                Some(s.as_str())
+            } else {
+                None
+            }
+        });
+    crate::host::d2::pdf::pdfium_session::render_page_png(&source.bytes, password, 0, 1.5, cancel)
+        .map_err(|error| {
+            let kind = if cancel.is_cancelled() {
+                "cancelled"
+            } else {
+                match error.code {
+                    Some(4) => "password-required",
+                    Some(1..=3) => "corrupt",
+                    Some(_) => "unsupported",
+                    None => "failed",
+                }
+            };
+            JobFailure::new(kind, Some(&error.message))
+        })
+}
+struct Image {
+    hash: String,
+    ext: String,
+    mime: String,
+    data: Vec<u8>,
+}
+struct Env<'a> {
+    markers: HashMap<usize, String>,
+    page_targets: HashMap<usize, String>,
+    images: Vec<Image>,
+    heading: usize,
+    notes: HashMap<String, &'a IpcValue>,
+    alt: Option<String>,
+}
+impl render::Host for Env<'_> {
+    fn marker(&self, b: &IpcValue) -> String {
+        self.markers
+            .get(&(b as *const _ as usize))
+            .cloned()
+            .unwrap_or_else(|| format!("page-{}", number(b, "page")))
+    }
+    fn page_href(&self, p: usize) -> Option<String> {
+        self.page_targets.get(&p).cloned()
+    }
+    fn image(&mut self, b: &IpcValue) -> Result<String, JobFailure> {
+        let data = match field(b, "data") {
+            Some(IpcValue::Bytes(_, data)) => data,
+            _ => return Err(fail("EPUB image data missing")),
+        };
+        let mime = string(b, "mime");
+        let ext = match mime {
+            "image/png" => "png",
+            "image/jpeg" => "jpg",
+            _ => return Err(fail("invalid EPUB image type")),
+        };
+        let hash = format!("{:x}", Sha256::digest(data))[..24].to_owned();
+        if !self.images.iter().any(|v| v.hash == hash && v.ext == ext) {
+            self.images.push(Image {
+                hash: hash.clone(),
+                ext: ext.into(),
+                mime: mime.into(),
+                data: data.clone(),
+            });
+        }
+        Ok(format!("images/{hash}.{ext}"))
+    }
+    fn heading_id(&mut self) -> String {
+        self.heading += 1;
+        format!("h-{}", self.heading)
+    }
+    fn math(&mut self, latex: &str, display: bool) -> Result<Option<String>, JobFailure> {
+        let input = serde_json::json!({"latex":latex,"display":display});
+        let result =
+            crate::engine_host::call("pdf.latexMathMl", &input).map_err(|e| fail(&e.message))?;
+        match result {
+            serde_json::Value::Null => Ok(None),
+            serde_json::Value::String(s) => Ok(Some(s)),
+            _ => Err(fail("invalid MathML response")),
+        }
+    }
+    fn page_alt(&self, p: usize) -> String {
+        self.alt
+            .as_ref()
+            .map(|s| s.replace("{page}", &p.to_string()))
+            .unwrap_or_else(|| format!("Page {p}"))
+    }
+    fn footnote(&self, id: &str) -> Option<&IpcValue> {
+        self.notes.get(id).copied()
+    }
+}
+struct Nav {
+    level: usize,
+    href: String,
+    text: String,
+    children: Vec<Nav>,
+}
+fn nav_ol(nodes: &[Nav]) -> String {
+    let mut out = "<ol>\n".to_owned();
+    for n in nodes {
+        out.push_str(&format!(
+            "<li><a href=\"{}\">{}</a>",
+            render::attr(&n.href),
+            render::text(&n.text)
+        ));
+        if !n.children.is_empty() {
+            out.push('\n');
+            out.push_str(&nav_ol(&n.children));
+        }
+        out.push_str("</li>\n");
+    }
+    out.push_str("</ol>\n");
+    out
+}
+fn insert_nav(nodes: &mut Vec<Nav>, entry: Nav) {
+    if let Some(last) = nodes.last_mut() {
+        if last.level < entry.level {
+            insert_nav(&mut last.children, entry);
+            return;
+        }
+    }
+    nodes.push(entry)
+}
+fn book_id(tree: &IpcValue, title: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(format!(
+        "{title}\n{}\n{}",
+        string(tree, "variant"),
+        string(tree, "targetLanguage")
+    ));
+    for p in array(tree, "pages") {
+        h.update(format!(
+            "\n{}:{}",
+            number(p, "page"),
+            string(p, "fingerprint")
+        ));
+    }
+    let mut v = format!("{:x}", h.finalize())[..32].as_bytes().to_vec();
+    v[12] = b'5';
+    let n = (v[16] as char).to_digit(16).unwrap_or(0);
+    v[16] = char::from_digit((n & 3) | 8, 16).unwrap() as u8;
+    let s = String::from_utf8(v).unwrap();
+    format!(
+        "urn:uuid:{}-{}-{}-{}-{}",
+        &s[..8],
+        &s[8..12],
+        &s[12..16],
+        &s[16..20],
+        &s[20..]
+    )
+}
+pub(super) fn write(
+    tree: &IpcValue,
+    job: &IpcValue,
+    cover: Option<Vec<u8>>,
+) -> Result<Vec<u8>, JobFailure> {
+    let options = field(job, "epub").unwrap_or(&IpcValue::Null);
+    let info = field(tree, "info").unwrap_or(&IpcValue::Null);
+    let title = [string(options, "title"), string(info, "title"), "Untitled"]
+        .into_iter()
+        .map(render::plain)
+        .find(|s| !s.is_empty())
+        .unwrap();
+    let author = render::plain(string(options, "author"));
+    let languages = language::languages(tree, options)?;
+    let lang = &languages[0];
+    let chapters = render::chapters(tree, flag(options, "pageBreaks"));
+    let files = (0..chapters.len())
+        .map(|i| format!("chapter-{:03}.xhtml", i + 1))
+        .collect::<Vec<_>>();
+    let mut env = Env {
+        markers: HashMap::new(),
+        page_targets: HashMap::new(),
+        images: Vec::new(),
+        heading: 0,
+        notes: array(tree, "footnotes")
+            .iter()
+            .map(|n| (string(n, "id").to_owned(), n))
+            .collect(),
+        alt: match field(options, "pageImageAlt") {
+            Some(IpcValue::String(s)) => Some(s.clone()),
+            _ => None,
+        },
+    };
+    let mut used = HashSet::new();
+    let mut page_list = Vec::new();
+    for (i, ch) in chapters.iter().enumerate() {
+        for b in &ch.blocks {
+            if string(b, "kind") != "pageBreak" {
+                continue;
+            }
+            let page = number(b, "page") as usize;
+            let mut id = format!("page-{page}");
+            let mut n = 2;
+            while !used.insert(id.clone()) {
+                id = format!("page-{page}-{n}");
+                n += 1
+            }
+            env.markers.insert(*b as *const _ as usize, id.clone());
+            if !env.page_targets.contains_key(&page) {
+                let href = format!("{}#{id}", files[i]);
+                env.page_targets.insert(page, href.clone());
+                page_list.push((page, href));
+            }
+        }
+    }
+    let mut rendered = Vec::new();
+    for ch in &chapters {
+        rendered.push(render::render(ch, &mut env)?)
+    }
+    let mut toc = Vec::new();
+    for (i, ch) in rendered.iter().enumerate() {
+        for h in &ch.headings {
+            insert_nav(
+                &mut toc,
+                Nav {
+                    level: h.level,
+                    href: format!("{}#{}", files[i], h.id),
+                    text: h.text.clone(),
+                    children: Vec::new(),
+                },
+            );
+        }
+    }
+    if toc.is_empty() {
+        toc.push(Nav {
+            level: 1,
+            href: files[0].clone(),
+            text: title.clone(),
+            children: Vec::new(),
+        })
+    }
+    let mut nav = format!(
+        "<nav epub:type=\"toc\" id=\"toc\" role=\"doc-toc\">\n<h1>{}</h1>\n{}</nav>\n",
+        render::text(&title),
+        nav_ol(&toc)
+    );
+    if !page_list.is_empty() {
+        nav.push_str("<nav epub:type=\"page-list\" id=\"page-list\" role=\"doc-pagelist\" hidden=\"hidden\">\n<ol>\n");
+        for (n, href) in &page_list {
+            nav.push_str(&format!(
+                "<li><a href=\"{}\">{n}</a></li>\n",
+                render::attr(href)
+            ));
+        }
+        nav.push_str("</ol>\n</nav>\n");
+    }
+    let cover = cover.filter(|x| !x.is_empty());
+    let cover_ext = if cover.as_ref().is_some_and(|b| b.starts_with(&[0xff, 0xd8])) {
+        "jpg"
+    } else {
+        "png"
+    };
+    let cover_mime = if cover_ext == "jpg" {
+        "image/jpeg"
+    } else {
+        "image/png"
+    };
+    let mut manifest = String::from(
+        "<item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>\n<item id=\"css\" href=\"style.css\" media-type=\"text/css\"/>\n",
+    );
+    let mut spine = String::new();
+    if cover.is_some() {
+        manifest.push_str(&format!("<item id=\"cover-image\" href=\"images/cover.{cover_ext}\" media-type=\"{cover_mime}\" properties=\"cover-image\"/>\n<item id=\"cover\" href=\"cover.xhtml\" media-type=\"application/xhtml+xml\"/>\n"));
+        spine.push_str("<itemref idref=\"cover\"/>\n");
+    }
+    for (i, r) in rendered.iter().enumerate() {
+        let id = format!("chapter-{:03}", i + 1);
+        manifest.push_str(&format!(
+            "<item id=\"{id}\" href=\"{}\" media-type=\"application/xhtml+xml\"{}/>\n",
+            files[i],
+            if r.math { " properties=\"mathml\"" } else { "" }
+        ));
+        spine.push_str(&format!("<itemref idref=\"{id}\"/>\n"));
+    }
+    for image in &env.images {
+        manifest.push_str(&format!(
+            "<item id=\"img-{}-{}\" href=\"images/{}.{}\" media-type=\"{}\"/>\n",
+            image.hash, image.ext, image.hash, image.ext, image.mime
+        ));
+    }
+    let id = book_id(tree, &title);
+    let now = chrono::Utc::now();
+    let modified = now.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let mut metadata = format!(
+        "<dc:identifier id=\"book-id\">{}</dc:identifier>\n<dc:title>{}</dc:title>\n",
+        render::text(&id),
+        render::text(&title)
+    );
+    if !author.is_empty() {
+        metadata.push_str(&format!(
+            "<dc:creator>{}</dc:creator>\n",
+            render::text(&author)
+        ));
+    }
+    for l in &languages {
+        metadata.push_str(&format!("<dc:language>{}</dc:language>\n", render::text(l)));
+    }
+    let subject = render::plain(string(info, "subject"));
+    if !subject.is_empty() {
+        metadata.push_str(&format!(
+            "<dc:subject>{}</dc:subject>\n",
+            render::text(&subject)
+        ));
+    }
+    metadata.push_str(&format!(
+        "<meta property=\"dcterms:modified\">{modified}</meta>\n"
+    ));
+    if cover.is_some() {
+        metadata.push_str("<meta name=\"cover\" content=\"cover-image\"/>\n");
+    }
+    let opf = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" unique-identifier=\"book-id\" xml:lang=\"{}\">\n<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n{metadata}</metadata>\n<manifest>\n{manifest}</manifest>\n<spine>\n{spine}</spine>\n</package>\n",
+        render::attr(lang)
+    );
+    use chrono::{Datelike, Timelike};
+    let local = now.with_timezone(&chrono::Local);
+    let timestamp = zip::DateTime::from_date_and_time(
+        local.year().clamp(1980, 2107) as u16,
+        local.month() as u8,
+        local.day() as u8,
+        local.hour() as u8,
+        local.minute() as u8,
+        local.second() as u8,
+    )
+    .map_err(|e| fail(&e.to_string()))?;
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let stored = zip::write::SimpleFileOptions::default()
+        .last_modified_time(timestamp)
+        .compression_method(zip::CompressionMethod::Stored);
+    let deflated = zip::write::SimpleFileOptions::default()
+        .last_modified_time(timestamp)
+        .compression_method(zip::CompressionMethod::Deflated);
+    fn entry(
+        z: &mut zip::ZipWriter<Cursor<Vec<u8>>>,
+        name: &str,
+        bytes: &[u8],
+        opts: zip::write::SimpleFileOptions,
+    ) -> Result<(), JobFailure> {
+        z.start_file(name, opts).map_err(|e| fail(&e.to_string()))?;
+        z.write_all(bytes).map_err(|e| fail(&e.to_string()))
+    }
+    entry(&mut zip, "mimetype", b"application/epub+zip", stored)?;
+    entry(
+        &mut zip,
+        "META-INF/container.xml",
+        CONTAINER.as_bytes(),
+        deflated,
+    )?;
+    entry(&mut zip, "OEBPS/content.opf", opf.as_bytes(), deflated)?;
+    entry(
+        &mut zip,
+        "OEBPS/nav.xhtml",
+        render::document(&title, lang, &nav).as_bytes(),
+        deflated,
+    )?;
+    entry(&mut zip, "OEBPS/style.css", CSS.as_bytes(), deflated)?;
+    if let Some(cover) = cover {
+        entry(
+            &mut zip,
+            &format!("OEBPS/images/cover.{cover_ext}"),
+            &cover,
+            stored,
+        )?;
+        let body = format!(
+            "<section epub:type=\"cover\" class=\"cover\">\n<img src=\"images/cover.{cover_ext}\" alt=\"{}\" role=\"doc-cover\"/>\n</section>\n",
+            render::attr(&title)
+        );
+        entry(
+            &mut zip,
+            "OEBPS/cover.xhtml",
+            render::document(&title, lang, &body).as_bytes(),
+            deflated,
+        )?;
+    }
+    for (i, r) in rendered.iter().enumerate() {
+        entry(
+            &mut zip,
+            &format!("OEBPS/{}", files[i]),
+            render::document(r.title.as_deref().unwrap_or(&title), lang, &r.body).as_bytes(),
+            deflated,
+        )?;
+    }
+    for image in &env.images {
+        entry(
+            &mut zip,
+            &format!("OEBPS/images/{}.{}", image.hash, image.ext),
+            &image.data,
+            stored,
+        )?;
+    }
+    Ok(zip.finish().map_err(|e| fail(&e.to_string()))?.into_inner())
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Read;
-    fn object(fields:Vec<(&str,IpcValue)>)->IpcValue{IpcValue::Object(fields.into_iter().map(|(k,v)|(k.into(),v)).collect())}
+    fn object(fields: Vec<(&str, IpcValue)>) -> IpcValue {
+        IpcValue::Object(fields.into_iter().map(|(k, v)| (k.into(), v)).collect())
+    }
     #[test]
     fn epub_has_stored_mimetype_navigation_and_chapter() {
-        let run=object(vec![("kind",IpcValue::String("text".into())),("text",IpcValue::String("Hello & world".into()))]);
-        let heading=object(vec![("kind",IpcValue::String("heading".into())),("page",IpcValue::Number(1.)),("level",IpcValue::Number(1.)),("runs",IpcValue::Array(vec![run]))]);
-        let tree=object(vec![("variant",IpcValue::String("original".into())),("blocks",IpcValue::Array(vec![heading])),("pages",IpcValue::Array(vec![])),("footnotes",IpcValue::Array(vec![]))]);
-        let job=object(vec![("epub",object(vec![("title",IpcValue::String("Sample".into()))]))]);
-        let bytes=write(&tree,&job,None).unwrap();let mut zip=zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
-        let first=zip.by_index(0).unwrap();assert_eq!(first.name(),"mimetype");assert_eq!(first.compression(),zip::CompressionMethod::Stored);drop(first);
-        let mut chapter=String::new();zip.by_name("OEBPS/chapter-001.xhtml").unwrap().read_to_string(&mut chapter).unwrap();assert!(chapter.contains("Hello &amp; world"));
-        let mut nav=String::new();zip.by_name("OEBPS/nav.xhtml").unwrap().read_to_string(&mut nav).unwrap();assert!(nav.contains("chapter-001.xhtml#h-1"));
+        let run = object(vec![
+            ("kind", IpcValue::String("text".into())),
+            ("text", IpcValue::String("Hello & world".into())),
+        ]);
+        let heading = object(vec![
+            ("kind", IpcValue::String("heading".into())),
+            ("page", IpcValue::Number(1.)),
+            ("level", IpcValue::Number(1.)),
+            ("runs", IpcValue::Array(vec![run])),
+        ]);
+        let tree = object(vec![
+            ("variant", IpcValue::String("original".into())),
+            ("blocks", IpcValue::Array(vec![heading])),
+            ("pages", IpcValue::Array(vec![])),
+            ("footnotes", IpcValue::Array(vec![])),
+        ]);
+        let job = object(vec![(
+            "epub",
+            object(vec![("title", IpcValue::String("Sample".into()))]),
+        )]);
+        let bytes = write(&tree, &job, None).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let first = zip.by_index(0).unwrap();
+        assert_eq!(first.name().unwrap(), "mimetype");
+        assert_eq!(first.compression(), zip::CompressionMethod::Stored);
+        drop(first);
+        let mut chapter = String::new();
+        zip.by_name("OEBPS/chapter-001.xhtml")
+            .unwrap()
+            .read_to_string(&mut chapter)
+            .unwrap();
+        assert!(chapter.contains("Hello &amp; world"));
+        let mut nav = String::new();
+        zip.by_name("OEBPS/nav.xhtml")
+            .unwrap()
+            .read_to_string(&mut nav)
+            .unwrap();
+        assert!(nav.contains("chapter-001.xhtml#h-1"));
     }
 }

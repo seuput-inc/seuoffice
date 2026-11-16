@@ -106,6 +106,8 @@ unicode-segmentation = "=1.13.3"
 unicode-general-category = "=1.1.0"
 unicode-bidi = "=0.3.18"
 unicode-bidi-mirroring = "=0.4.0"
+# NFKC of font family names in the PDF to Office font map (native_tools_engine/office/docx/fontmap.rs)
+unicode-normalization = "=0.1.26"
 encoding_rs = "0.8"
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # Native certificate and PKCS#12 primitives; the parser source is pinned to

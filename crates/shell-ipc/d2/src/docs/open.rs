@@ -33,15 +33,13 @@ use shell_contract::ipc::Target;
 use shell_contract::ipc::{Reply, Responder};
 use shell_contract::{IpcValue, ViewId, WindowId};
 
+#[cfg(any(test, feature = "probe"))]
+use super::UntitledOpen;
 use super::adapters::{HostMessageBox, Parent, picked_path};
 use super::hosts::{DecryptError, basename};
 use super::passwords::{OpenKind, docx_open_kind};
 use super::recovery::file_identity;
-#[cfg(any(test, feature = "probe"))]
-use super::UntitledOpen;
-use super::{
-    Docs, MAX_OPEN_BYTES, Obj, js_filters, js_obj, js_str, read_json, sha256_hex, stat,
-};
+use super::{Docs, MAX_OPEN_BYTES, Obj, js_filters, js_obj, js_str, read_json, sha256_hex, stat};
 use crate::kit::{self, Entry, IntoIpc};
 
 /// `LEGACY_DOC_LIMITS.maxBytes` of `packages/doc2docx`

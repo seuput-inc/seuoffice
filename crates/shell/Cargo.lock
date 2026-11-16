@@ -6644,6 +6644,7 @@ dependencies = [
  "unicode-bidi",
  "unicode-bidi-mirroring",
  "unicode-general-category",
+ "unicode-normalization",
  "unicode-segmentation",
  "webpki-root-certs",
  "webview2-com",

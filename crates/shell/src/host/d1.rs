@@ -115,13 +115,14 @@ pub fn install(hosts: &mut Hosts, cx: &HostContext) -> Result<(), String> {
     hosts.insert(renderer);
     shells::install_mindmap(hosts);
     shells::install_diagram(hosts, cx);
-    let engine: shell_ipc_d1::slides::engine::SlidesEngineHost =
-        Arc::new(slides_engine::NativeSlidesEngine::new(
+    let engine: shell_ipc_d1::slides::engine::SlidesEngineHost = Arc::new(
+        slides_engine::NativeSlidesEngine::new(
             cx.ui.clone(),
             slides_fonts::FontEnvironment::native(template_fonts_dir(&cx.app)?.into()),
             slides_engine::native_font_renderer_factory(),
         )
-        .map_err(|error| error.0)?);
+        .map_err(|error| error.0)?,
+    );
     hosts.insert(engine);
     slides_shell::install(hosts, cx)?;
     Ok(())

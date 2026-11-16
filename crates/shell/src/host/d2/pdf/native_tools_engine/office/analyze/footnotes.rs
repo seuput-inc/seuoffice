@@ -1,40 +1,434 @@
 //! Lift confidently identified PDF footnotes into anchored document notes.
+use super::super::{
+    chars::analyze_chars,
+    geometry::median,
+    ir::{Footnote, PageShapes, PdfChar},
+    lines::{IndexedRawLine, group_into_indexed_lines, space},
+};
+use super::blocks::{BlockOptions, group_into_blocks};
 use std::collections::HashSet;
-use super::super::{chars::analyze_chars, geometry::median, ir::{Footnote,PageShapes,PdfChar}, lines::{group_into_indexed_lines,space,IndexedRawLine}};
-use super::blocks::{group_into_blocks,BlockOptions};
 
-pub(super) struct DetectedFootnotes{pub body_chars:Vec<PdfChar>,pub footnotes:Vec<Footnote>}
-fn visible(c:&PdfChar)->bool{!space(c.code)&&c.code>0x1f}
-fn digit(c:&PdfChar)->Option<u32>{let mut chars=c.text.chars();let ch=chars.next()?;if chars.next().is_some(){return None}match ch{'0'..='9'=>Some(ch as u32-'0' as u32),'０'..='９'=>Some(ch as u32-'０' as u32),_=>None}}
-fn value(indices:&[usize],chars:&[PdfChar])->usize{indices.iter().fold(0,|n,&i|n*10+digit(&chars[i]).unwrap_or(0) as usize)}
-fn roman(s:&str)->Option<usize>{if s.is_empty()||s.len()>6||!s.bytes().all(|b|matches!(b,b'i'|b'v'|b'x')){return None}let nums=s.bytes().map(|b|match b{b'i'=>1i32,b'v'=>5,_=>10}).collect::<Vec<_>>();let sum=nums.iter().enumerate().map(|(i,&n)|if nums.get(i+1).copied().unwrap_or(0)>n{-n}else{n}).sum::<i32>();(1..=40).contains(&sum).then_some(sum as usize)}
-fn marker(line:&IndexedRawLine,chars:&[PdfChar],body_font:f64)->Option<usize>{let v=line.indices.iter().copied().filter(|&i|visible(&chars[i])).collect::<Vec<_>>();if v.is_empty()||v.len()>3||v.iter().map(|&i|chars[i].font_size).fold(f64::NEG_INFINITY,f64::max)>0.85*body_font{return None}if v.iter().all(|&i|digit(&chars[i]).is_some()){Some(value(&v,chars))}else{roman(&v.iter().map(|&i|chars[i].text.as_str()).collect::<String>())}}
-fn inline_marker(line:&IndexedRawLine,chars:&[PdfChar])->Option<(usize,Vec<usize>)>{let v=&line.indices;let mut i=0;while i<v.len()&&!visible(&chars[v[i]]){i+=1}let mut digits=Vec::new();while i<v.len()&&digit(&chars[v[i]]).is_some()&&digits.len()<=3{digits.push(v[i]);i+=1}if digits.is_empty()||digits.len()>3{return None}let rest=v[i..].to_vec();let visible_rest=rest.iter().copied().filter(|&i|visible(&chars[i])).collect::<Vec<_>>();if visible_rest.is_empty(){return None}let font=median(&visible_rest.iter().map(|&i|chars[i].font_size).collect::<Vec<_>>());if digits.iter().map(|&i|chars[i].font_size).fold(f64::NEG_INFINITY,f64::max)>0.85*font{return None}Some((value(&digits,chars),rest))}
-struct Note{num:usize,chars:Vec<usize>}
-fn next(prev:usize,n:usize)->bool{n==prev+1||n==prev||n==1}
-fn parse_notes(lines:&[&IndexedRawLine],chars:&[PdfChar],body_font:f64)->Option<Vec<Note>>{let mut notes=Vec::new();let mut current:Option<Note>=None;for line in lines{if let Some(n)=marker(line,chars,body_font){if let Some(note)=current.take(){notes.push(note)}current=Some(Note{num:n,chars:Vec::new()});continue}if let Some((n,rest))=inline_marker(line,chars){if current.as_ref().is_none_or(|old|next(old.num,n)){if let Some(note)=current.take(){notes.push(note)}current=Some(Note{num:n,chars:rest});continue}}let Some(note)=current.as_mut()else{return None};note.chars.extend_from_slice(&line.indices)}if let Some(note)=current{notes.push(note)}if notes.is_empty()||notes.len()>30||notes[0].num<1||notes[0].num>150{return None}for (i,note) in notes.iter().enumerate(){if i>0&&!next(notes[i-1].num,note.num){return None}if !note.chars.iter().any(|&i|visible(&chars[i])){return None}}Some(notes)}
-fn anchor(body:&[usize],chars:&[PdfChar],num:usize)->Option<Vec<usize>>{let wanted=num.to_string();for i in 0..body.len(){if chars[body[i]].note_ref.is_some(){continue}let mut indices=Vec::new();for &at in &body[i..]{if indices.len()>=wanted.len(){break}let c=&chars[at];if !visible(c)||digit(c).is_none()||c.note_ref.is_some(){break}indices.push(at)}if indices.is_empty()||value(&indices,chars).to_string()!=wanted{continue}let previous=body[..i].iter().rev().copied().find(|&at|visible(&chars[at])&&!indices.contains(&at));let after=body.get(i+indices.len()).copied().filter(|&at|visible(&chars[at]));let Some(neighbour)=previous.or(after)else{continue};let a=&chars[body[i]];let b=&chars[neighbour];if a.origin_y>=b.origin_y+0.12*b.font_size&&a.font_size<=0.85*b.font_size{return Some(indices)}}None}
-pub(super) fn detect_footnotes(chars:&[PdfChar],shapes:&mut PageShapes,page_index:usize,width:f64,height:f64)->Result<DetectedFootnotes,String>{let none=||DetectedFootnotes{body_chars:chars.to_vec(),footnotes:Vec::new()};let visible_chars=chars.iter().filter(|c|visible(c)).collect::<Vec<_>>();if visible_chars.is_empty()||shapes.strokes.is_empty(){return Ok(none())}let left=visible_chars.iter().map(|c|c.bounds.x0).fold(f64::INFINITY,f64::min);let font=median(&visible_chars.iter().map(|c|c.font_size).collect::<Vec<_>>());let font=if font==0.{12.}else{font};let mut separators=shapes.strokes.iter().enumerate().filter(|(_,s)|s.orientation=="h"&&s.width_pt<=2.&&s.bounds.width()>=36.&&s.bounds.width()<=0.5*width&&s.bounds.x0<=left+0.15*width&&s.bounds.center_y()<0.9*height).map(|(i,s)|(i,s.bounds)).collect::<Vec<_>>();separators.sort_by(|a,b|b.1.y1.total_cmp(&a.1.y1));let lines=group_into_indexed_lines(chars);
- for (sep_idx,sep) in separators{let mut below=lines.iter().filter(|l|l.baseline<sep.center_y()).collect::<Vec<_>>();below.sort_by(|a,b|b.baseline.total_cmp(&a.baseline));if below.is_empty(){continue}let Some(notes)=parse_notes(&below,chars,font)else{continue};let note_chars=below.iter().flat_map(|l|l.indices.iter().copied()).collect::<HashSet<_>>();let body=(0..chars.len()).filter(|i|!note_chars.contains(i)).collect::<Vec<_>>();let Some(last)=body.iter().rev().copied().find(|&i|visible(&chars[i]))else{return Ok(none())};let mut working=chars.to_vec();let mut dropped=HashSet::new();let mut synthetic=Vec::new();let mut footnotes=Vec::new();for (seq,note) in notes.iter().enumerate(){let id=((page_index+1)*100+seq+1).to_string();if let Some(found)=anchor(&body,&working,note.num){let first=found[0];working[first].note_ref=Some(id.clone());working[first].text.clear();dropped.extend(found.into_iter().skip(1));}else{let mut c=working[last].clone();c.text.clear();c.note_ref=Some(id.clone());c.bounds.x0=c.bounds.x1;c.loose_box.x0=c.loose_box.x1;c.origin_x=c.loose_box.x1;c.is_generated=true;synthetic.push(c);}let source=note.chars.iter().map(|&i|chars[i].clone()).collect::<Vec<_>>();let blocks=group_into_blocks(&analyze_chars(&source),None,BlockOptions::default())?;footnotes.push(Footnote{id,marker:Some(note.num.to_string()),blocks});}let mut body_chars=Vec::new();for i in body{if dropped.contains(&i){continue}body_chars.push(working[i].clone());if i==last{body_chars.append(&mut synthetic)}}shapes.strokes.remove(sep_idx);return Ok(DetectedFootnotes{body_chars,footnotes})}Ok(none())}
+pub(super) struct DetectedFootnotes {
+    pub body_chars: Vec<PdfChar>,
+    pub footnotes: Vec<Footnote>,
+}
+fn visible(c: &PdfChar) -> bool {
+    !space(c.code) && c.code > 0x1f
+}
+fn digit(c: &PdfChar) -> Option<u32> {
+    let mut chars = c.text.chars();
+    let ch = chars.next()?;
+    if chars.next().is_some() {
+        return None;
+    }
+    match ch {
+        '0'..='9' => Some(ch as u32 - '0' as u32),
+        '０'..='９' => Some(ch as u32 - '０' as u32),
+        _ => None,
+    }
+}
+fn value(indices: &[usize], chars: &[PdfChar]) -> usize {
+    indices
+        .iter()
+        .fold(0, |n, &i| n * 10 + digit(&chars[i]).unwrap_or(0) as usize)
+}
+fn roman(s: &str) -> Option<usize> {
+    if s.is_empty() || s.len() > 6 || !s.bytes().all(|b| matches!(b, b'i' | b'v' | b'x')) {
+        return None;
+    }
+    let nums = s
+        .bytes()
+        .map(|b| match b {
+            b'i' => 1i32,
+            b'v' => 5,
+            _ => 10,
+        })
+        .collect::<Vec<_>>();
+    let sum = nums
+        .iter()
+        .enumerate()
+        .map(|(i, &n)| {
+            if nums.get(i + 1).copied().unwrap_or(0) > n {
+                -n
+            } else {
+                n
+            }
+        })
+        .sum::<i32>();
+    (1..=40).contains(&sum).then_some(sum as usize)
+}
+fn marker(line: &IndexedRawLine, chars: &[PdfChar], body_font: f64) -> Option<usize> {
+    let v = line
+        .indices
+        .iter()
+        .copied()
+        .filter(|&i| visible(&chars[i]))
+        .collect::<Vec<_>>();
+    if v.is_empty()
+        || v.len() > 3
+        || v.iter()
+            .map(|&i| chars[i].font_size)
+            .fold(f64::NEG_INFINITY, f64::max)
+            > 0.85 * body_font
+    {
+        return None;
+    }
+    if v.iter().all(|&i| digit(&chars[i]).is_some()) {
+        Some(value(&v, chars))
+    } else {
+        roman(
+            &v.iter()
+                .map(|&i| chars[i].text.as_str())
+                .collect::<String>(),
+        )
+    }
+}
+fn inline_marker(line: &IndexedRawLine, chars: &[PdfChar]) -> Option<(usize, Vec<usize>)> {
+    let v = &line.indices;
+    let mut i = 0;
+    while i < v.len() && !visible(&chars[v[i]]) {
+        i += 1
+    }
+    let mut digits = Vec::new();
+    while i < v.len() && digit(&chars[v[i]]).is_some() && digits.len() <= 3 {
+        digits.push(v[i]);
+        i += 1
+    }
+    if digits.is_empty() || digits.len() > 3 {
+        return None;
+    }
+    let rest = v[i..].to_vec();
+    let visible_rest = rest
+        .iter()
+        .copied()
+        .filter(|&i| visible(&chars[i]))
+        .collect::<Vec<_>>();
+    if visible_rest.is_empty() {
+        return None;
+    }
+    let font = median(
+        &visible_rest
+            .iter()
+            .map(|&i| chars[i].font_size)
+            .collect::<Vec<_>>(),
+    );
+    if digits
+        .iter()
+        .map(|&i| chars[i].font_size)
+        .fold(f64::NEG_INFINITY, f64::max)
+        > 0.85 * font
+    {
+        return None;
+    }
+    Some((value(&digits, chars), rest))
+}
+struct Note {
+    num: usize,
+    chars: Vec<usize>,
+}
+fn next(prev: usize, n: usize) -> bool {
+    n == prev + 1 || n == prev || n == 1
+}
+fn parse_notes(lines: &[&IndexedRawLine], chars: &[PdfChar], body_font: f64) -> Option<Vec<Note>> {
+    let mut notes = Vec::new();
+    let mut current: Option<Note> = None;
+    for line in lines {
+        if let Some(n) = marker(line, chars, body_font) {
+            if let Some(note) = current.take() {
+                notes.push(note)
+            }
+            current = Some(Note {
+                num: n,
+                chars: Vec::new(),
+            });
+            continue;
+        }
+        if let Some((n, rest)) = inline_marker(line, chars) {
+            if current.as_ref().is_none_or(|old| next(old.num, n)) {
+                if let Some(note) = current.take() {
+                    notes.push(note)
+                }
+                current = Some(Note {
+                    num: n,
+                    chars: rest,
+                });
+                continue;
+            }
+        }
+        let Some(note) = current.as_mut() else {
+            return None;
+        };
+        note.chars.extend_from_slice(&line.indices)
+    }
+    if let Some(note) = current {
+        notes.push(note)
+    }
+    if notes.is_empty() || notes.len() > 30 || !(1..=150).contains(&notes[0].num) {
+        return None;
+    }
+    for (i, note) in notes.iter().enumerate() {
+        if i > 0 && !next(notes[i - 1].num, note.num) {
+            return None;
+        }
+        if !note.chars.iter().any(|&i| visible(&chars[i])) {
+            return None;
+        }
+    }
+    Some(notes)
+}
+fn anchor(body: &[usize], chars: &[PdfChar], num: usize) -> Option<Vec<usize>> {
+    let wanted = num.to_string();
+    for i in 0..body.len() {
+        if chars[body[i]].note_ref.is_some() {
+            continue;
+        }
+        let mut indices = Vec::new();
+        for &at in &body[i..] {
+            if indices.len() >= wanted.len() {
+                break;
+            }
+            let c = &chars[at];
+            if !visible(c) || digit(c).is_none() || c.note_ref.is_some() {
+                break;
+            }
+            indices.push(at)
+        }
+        if indices.is_empty() || value(&indices, chars).to_string() != wanted {
+            continue;
+        }
+        let previous = body[..i]
+            .iter()
+            .rev()
+            .copied()
+            .find(|&at| visible(&chars[at]) && !indices.contains(&at));
+        let after = body
+            .get(i + indices.len())
+            .copied()
+            .filter(|&at| visible(&chars[at]));
+        let Some(neighbour) = previous.or(after) else {
+            continue;
+        };
+        let a = &chars[body[i]];
+        let b = &chars[neighbour];
+        if a.origin_y >= b.origin_y + 0.12 * b.font_size && a.font_size <= 0.85 * b.font_size {
+            return Some(indices);
+        }
+    }
+    None
+}
+pub(super) fn detect_footnotes(
+    chars: &[PdfChar],
+    shapes: &mut PageShapes,
+    page_index: usize,
+    width: f64,
+    height: f64,
+) -> Result<DetectedFootnotes, String> {
+    let none = || DetectedFootnotes {
+        body_chars: chars.to_vec(),
+        footnotes: Vec::new(),
+    };
+    let visible_chars = chars.iter().filter(|c| visible(c)).collect::<Vec<_>>();
+    if visible_chars.is_empty() || shapes.strokes.is_empty() {
+        return Ok(none());
+    }
+    let left = visible_chars
+        .iter()
+        .map(|c| c.bounds.x0)
+        .fold(f64::INFINITY, f64::min);
+    let font = median(
+        &visible_chars
+            .iter()
+            .map(|c| c.font_size)
+            .collect::<Vec<_>>(),
+    );
+    let font = if font == 0. { 12. } else { font };
+    let mut separators = shapes
+        .strokes
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| {
+            s.orientation == "h"
+                && s.width_pt <= 2.
+                && s.bounds.width() >= 36.
+                && s.bounds.width() <= 0.5 * width
+                && s.bounds.x0 <= left + 0.15 * width
+                && s.bounds.center_y() < 0.9 * height
+        })
+        .map(|(i, s)| (i, s.bounds))
+        .collect::<Vec<_>>();
+    separators.sort_by(|a, b| b.1.y1.total_cmp(&a.1.y1));
+    let lines = group_into_indexed_lines(chars);
+    for (sep_idx, sep) in separators {
+        let mut below = lines
+            .iter()
+            .filter(|l| l.baseline < sep.center_y())
+            .collect::<Vec<_>>();
+        below.sort_by(|a, b| b.baseline.total_cmp(&a.baseline));
+        if below.is_empty() {
+            continue;
+        }
+        let Some(notes) = parse_notes(&below, chars, font) else {
+            continue;
+        };
+        let note_chars = below
+            .iter()
+            .flat_map(|l| l.indices.iter().copied())
+            .collect::<HashSet<_>>();
+        let body = (0..chars.len())
+            .filter(|i| !note_chars.contains(i))
+            .collect::<Vec<_>>();
+        let Some(last) = body.iter().rev().copied().find(|&i| visible(&chars[i])) else {
+            return Ok(none());
+        };
+        let mut working = chars.to_vec();
+        let mut dropped = HashSet::new();
+        let mut synthetic = Vec::new();
+        let mut footnotes = Vec::new();
+        for (seq, note) in notes.iter().enumerate() {
+            let id = ((page_index + 1) * 100 + seq + 1).to_string();
+            if let Some(found) = anchor(&body, &working, note.num) {
+                let first = found[0];
+                working[first].note_ref = Some(id.clone());
+                working[first].text.clear();
+                dropped.extend(found.into_iter().skip(1));
+            } else {
+                let mut c = working[last].clone();
+                c.text.clear();
+                c.note_ref = Some(id.clone());
+                c.bounds.x0 = c.bounds.x1;
+                c.loose_box.x0 = c.loose_box.x1;
+                c.origin_x = c.loose_box.x1;
+                c.is_generated = true;
+                synthetic.push(c);
+            }
+            let source = note
+                .chars
+                .iter()
+                .map(|&i| chars[i].clone())
+                .collect::<Vec<_>>();
+            let blocks = group_into_blocks(&analyze_chars(&source), None, BlockOptions::default())?;
+            footnotes.push(Footnote {
+                id,
+                marker: Some(note.num.to_string()),
+                blocks,
+            });
+        }
+        let mut body_chars = Vec::new();
+        for i in body {
+            if dropped.contains(&i) {
+                continue;
+            }
+            body_chars.push(working[i].clone());
+            if i == last {
+                body_chars.append(&mut synthetic)
+            }
+        }
+        shapes.strokes.remove(sep_idx);
+        return Ok(DetectedFootnotes {
+            body_chars,
+            footnotes,
+        });
+    }
+    Ok(none())
+}
 
 #[cfg(test)]
 mod tests {
- use super::*;
- use super::super::super::{geometry::Rect,ir::Stroke,script::Script};
- fn ch(s:&str,x:f64,y:f64,size:f64)->PdfChar{
-  let bounds=Rect{x0:x,y0:y,x1:x+4.,y1:y+size};
-  PdfChar{code:s.chars().next().unwrap() as u32,text:s.into(),bounds,loose_box:bounds,origin_x:x,origin_y:y,angle:0.,font_size:size,font_weight:400.,font_family:"A".into(),italic:false,color:"000000".into(),hscale:None,invisible:false,is_generated:false,pdf_char_index:None,text_object_id:None,is_hyphen:false,script:Script::Latin,highlight:None,underline:false,strike:false,note_ref:None,href:None}
- }
- #[test]fn raised_anchor_becomes_note_and_separator_is_consumed(){
-  let chars=vec![ch("A",10.,500.,12.),ch("1",15.,503.,7.),ch("1",10.,90.,7.),ch("N",15.,90.,10.)];
-  let mut shapes=PageShapes{strokes:vec![Stroke{bounds:Rect{x0:10.,y0:100.,x1:60.,y1:100.},orientation:"h".into(),width_pt:1.,color:"000000".into(),from_form:false}],fills:vec![],ignored_paths:0,curved_fills:vec![]};
-  let result=detect_footnotes(&chars,&mut shapes,0,400.,600.).unwrap();
-  assert_eq!(result.footnotes.len(),1);assert_eq!(result.footnotes[0].marker.as_deref(),Some("1"));
-  assert!(result.body_chars.iter().any(|c|c.note_ref.as_deref()==Some("101")&&c.text.is_empty()));assert!(shapes.strokes.is_empty());
- }
- #[test]fn separator_with_unmarked_text_stays_unchanged(){
-  let chars=vec![ch("A",10.,500.,12.),ch("N",10.,90.,10.)];
-  let mut shapes=PageShapes{strokes:vec![Stroke{bounds:Rect{x0:10.,y0:100.,x1:60.,y1:100.},orientation:"h".into(),width_pt:1.,color:"000000".into(),from_form:false}],fills:vec![],ignored_paths:0,curved_fills:vec![]};
-  let result=detect_footnotes(&chars,&mut shapes,0,400.,600.).unwrap();assert!(result.footnotes.is_empty());assert_eq!(result.body_chars.len(),2);assert_eq!(shapes.strokes.len(),1);
- }
+    use super::super::super::{geometry::Rect, ir::Stroke, script::Script};
+    use super::*;
+    fn ch(s: &str, x: f64, y: f64, size: f64) -> PdfChar {
+        let bounds = Rect {
+            x0: x,
+            y0: y,
+            x1: x + 4.,
+            y1: y + size,
+        };
+        PdfChar {
+            code: s.chars().next().unwrap() as u32,
+            text: s.into(),
+            bounds,
+            loose_box: bounds,
+            origin_x: x,
+            origin_y: y,
+            angle: 0.,
+            font_size: size,
+            font_weight: 400.,
+            font_family: "A".into(),
+            italic: false,
+            color: "000000".into(),
+            hscale: None,
+            invisible: false,
+            is_generated: false,
+            pdf_char_index: None,
+            text_object_id: None,
+            is_hyphen: false,
+            script: Script::Latin,
+            highlight: None,
+            underline: false,
+            strike: false,
+            note_ref: None,
+            href: None,
+        }
+    }
+    #[test]
+    fn raised_anchor_becomes_note_and_separator_is_consumed() {
+        let chars = vec![
+            ch("A", 10., 500., 12.),
+            ch("1", 15., 503., 7.),
+            ch("1", 10., 90., 7.),
+            ch("N", 15., 90., 10.),
+        ];
+        let mut shapes = PageShapes {
+            strokes: vec![Stroke {
+                bounds: Rect {
+                    x0: 10.,
+                    y0: 100.,
+                    x1: 60.,
+                    y1: 100.,
+                },
+                orientation: "h".into(),
+                width_pt: 1.,
+                color: "000000".into(),
+                from_form: false,
+            }],
+            fills: vec![],
+            ignored_paths: 0,
+            curved_fills: vec![],
+        };
+        let result = detect_footnotes(&chars, &mut shapes, 0, 400., 600.).unwrap();
+        assert_eq!(result.footnotes.len(), 1);
+        assert_eq!(result.footnotes[0].marker.as_deref(), Some("1"));
+        assert!(
+            result
+                .body_chars
+                .iter()
+                .any(|c| c.note_ref.as_deref() == Some("101") && c.text.is_empty())
+        );
+        assert!(shapes.strokes.is_empty());
+    }
+    #[test]
+    fn separator_with_unmarked_text_stays_unchanged() {
+        let chars = vec![ch("A", 10., 500., 12.), ch("N", 10., 90., 10.)];
+        let mut shapes = PageShapes {
+            strokes: vec![Stroke {
+                bounds: Rect {
+                    x0: 10.,
+                    y0: 100.,
+                    x1: 60.,
+                    y1: 100.,
+                },
+                orientation: "h".into(),
+                width_pt: 1.,
+                color: "000000".into(),
+                from_form: false,
+            }],
+            fills: vec![],
+            ignored_paths: 0,
+            curved_fills: vec![],
+        };
+        let result = detect_footnotes(&chars, &mut shapes, 0, 400., 600.).unwrap();
+        assert!(result.footnotes.is_empty());
+        assert_eq!(result.body_chars.len(), 2);
+        assert_eq!(shapes.strokes.len(), 1);
+    }
 }
