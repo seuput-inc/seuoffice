@@ -1,6 +1,5 @@
 mod export;
 mod native_export;
-pub use export::DocsExportCloseOutcome;
 use main_core::shell::detached_windows::DetachedOpenDocumentsRun;
 use main_core::shell::tab_manager::{OpenDocumentTab, OpenDocumentsRun, OpenDocumentsStep};
 use shell_contract::ids::ViewId;

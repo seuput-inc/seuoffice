@@ -11,7 +11,7 @@ use shell_contract::{
     ViewId,
     hosts::OwnedEffectsHost,
     ipc::NativeRequestOwner,
-    runtime::{CancelToken, Views},
+    runtime::CancelToken,
 };
 use std::{collections::VecDeque, rc::Rc, sync::Arc};
 
@@ -1059,7 +1059,7 @@ impl TabsState {
         settled: TabUiDone,
     ) {
         let weak = self.this.clone();
-        let action = Box::new(move || {
+        let action: Box<dyn FnOnce()> = Box::new(move || {
             let Some(state) = weak.upgrade() else {
                 let error = "The tab manager is unavailable".to_owned();
                 rejected(batch, error.clone());
@@ -1145,7 +1145,7 @@ impl TabsState {
         }
     }
 
-    pub(super) fn finish_split_persist(&self, result: Result<TabUiStepOutcome, String>) {
+    pub(crate) fn finish_split_persist(&self, result: Result<TabUiStepOutcome, String>) {
         match result {
             Ok(TabUiStepOutcome::Applied) => {}
             Ok(TabUiStepOutcome::CommittedCleanupPending { error, retry }) => {
@@ -1189,7 +1189,7 @@ impl TabsState {
         settled: Option<TabUiDone>,
     ) {
         let state = self.this.clone();
-        let action = Box::new(move || match state.upgrade() {
+        let action: Box<dyn FnOnce()> = Box::new(move || match state.upgrade() {
             Some(state) => start(
                 state,
                 plan,

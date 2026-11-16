@@ -19,7 +19,7 @@ use main_core::shell::split_layout::Rect;
 use main_core::shell::tab_lifecycle::{RecentlyClosedTracker, create_recently_closed_tracker};
 use main_core::shell::tab_manager::{
     Deferred, DetachedTab, DiagramIdentity, EditorCalls, LoadedTabView, Opener, Ready,
-    SplitViewState, TabHost, TabKind, TabResult, UnloadedTabOpenContext, ViewSpec,
+    SplitViewState, TabError, TabHost, TabKind, TabResult, UnloadedTabOpenContext, ViewSpec,
 };
 use serde_json::Value;
 use shell_contract::ids::{ViewId, WindowId};
@@ -237,11 +237,12 @@ impl TabHost<ViewId, super::host::RetainedSpareBinding> for Bridge {
     fn defer(&mut self, step: Deferred) {
         self.windows.set_timer(TimerKey::Tab(step), 0.0)
     }
-    fn create_view(&mut self, spec: &ViewSpec<'_>) -> TabResult<ViewId> {
-        self.hooks.create_view(spec)
-    }
-    fn create_help_view(&mut self) -> ViewId {
-        self.windows.create_help_view()
+    fn create_view(&mut self, _spec: &ViewSpec<'_>) -> TabResult<ViewId> {
+        // Views are created through the owned hooks, whose completion carries the
+        // closure receipt and browser reservation a bare `ViewId` cannot.
+        Err(TabError(
+            "Native views are created only through an owned creation request".into(),
+        ))
     }
     fn mark_docs_new_blank(&mut self, wc_id: i64) {
         self.hooks.mark_docs_new_blank(wc_id)

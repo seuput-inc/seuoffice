@@ -39,6 +39,7 @@ pub trait SlidesRecentFiles {
         pending: &crate::runtime::CancelToken,
         effects: &crate::hosts::OwnedEffectsHost,
     ) -> Result<OwnedRecentMove, String>;
+    #[allow(clippy::too_many_arguments)]
     fn prepare_moved_many_owned_extra(
         &self,
         origin: &crate::ipc::NativeRequestOwner,
@@ -49,6 +50,7 @@ pub trait SlidesRecentFiles {
         additional: &[crate::runtime::CancelToken],
         effects: &crate::hosts::OwnedEffectsHost,
     ) -> Result<OwnedRecentMove, String>;
+    #[allow(clippy::too_many_arguments)]
     fn prepare_moved_recovery(
         &self,
         receipt: &crate::ipc::RecoverySeedReceipt,
@@ -101,6 +103,7 @@ pub trait SlidesTemplateSelectionHooks {
         pending: &crate::runtime::CancelToken,
         effects: &crate::hosts::OwnedEffectsHost,
     ) -> Result<OwnedTemplateMove, String>;
+    #[allow(clippy::too_many_arguments)]
     fn prepare_moved_many_owned_extra(
         &self,
         origin: &crate::ipc::NativeRequestOwner,
@@ -111,6 +114,7 @@ pub trait SlidesTemplateSelectionHooks {
         additional: &[crate::runtime::CancelToken],
         effects: &crate::hosts::OwnedEffectsHost,
     ) -> Result<OwnedTemplateMove, String>;
+    #[allow(clippy::too_many_arguments)]
     fn prepare_moved_recovery(
         &self,
         receipt: &crate::ipc::RecoverySeedReceipt,

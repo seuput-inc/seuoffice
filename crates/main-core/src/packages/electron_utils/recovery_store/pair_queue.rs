@@ -42,7 +42,6 @@ struct State {
 }
 
 pub struct RecoveryPairQueue {
-    key: String,
     state: Mutex<State>,
     epoch: AtomicU64,
 }
@@ -75,10 +74,9 @@ pub(super) fn for_copy_path(copy: &str) -> Result<Arc<RecoveryPairQueue>, NodeEr
         .lock()
         .map_err(|_| error("recovery queues are unavailable"))?;
     Ok(queues
-        .entry(path.clone())
+        .entry(path)
         .or_insert_with(|| {
             Arc::new(RecoveryPairQueue {
-                key: path,
                 state: Mutex::new(State::default()),
                 epoch: AtomicU64::new(0),
             })
@@ -120,7 +118,7 @@ impl RecoveryPairQueue {
             };
             if self
                 .epoch
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
                     epoch.checked_add(2)
                 })
                 .is_err()
@@ -160,7 +158,7 @@ impl RecoveryPairQueue {
             };
             if self
                 .epoch
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
                     epoch.checked_add(2)
                 })
                 .is_err()
@@ -433,7 +431,6 @@ mod tests {
     #[test]
     fn delete_invalidates_prepared_write_and_partial_pair_stays_dirty() {
         let queue = Arc::new(RecoveryPairQueue {
-            key: String::new(),
             state: Mutex::new(State::default()),
             epoch: AtomicU64::new(0),
         });
@@ -468,7 +465,6 @@ mod tests {
     #[test]
     fn admitted_effect_finishes_before_queued_delete() {
         let queue = Arc::new(RecoveryPairQueue {
-            key: String::new(),
             state: Mutex::new(State::default()),
             epoch: AtomicU64::new(0),
         });
@@ -502,7 +498,6 @@ mod tests {
     #[test]
     fn partial_publication_cannot_be_acknowledged_as_clean() {
         let queue = Arc::new(RecoveryPairQueue {
-            key: String::new(),
             state: Mutex::new(State::default()),
             epoch: AtomicU64::new(0),
         });

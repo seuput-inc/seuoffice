@@ -105,7 +105,7 @@ impl TabsState {
         let callback =
             crate::home_files::back_to_core(
                 self.services.core.clone(),
-                move |result| match result {
+                move |result: Result<NativeBrowserRetirement, String>| match result {
                     Ok(receipt) => {
                         let mut pending = state.owned_creation_cleanup.borrow_mut();
                         let Some(entry) = pending

@@ -803,7 +803,7 @@ pub trait SlidesShell: Send + Sync {
     /// through `done`
     fn ask_microphone(&self, done: Box<dyn FnOnce(Result<bool, String>) + Send>);
     /// `screen.getAllDisplays()`
-    fn displays(&self) -> Vec<Display>;
+    fn displays(&self) -> Result<Vec<Display>, EngineError>;
     /// the display the window is mostly on (`getDisplayMatching`), or the primary
     fn display_of(&self, window: Option<WindowId>) -> Result<Display, EngineError>;
     /// Creates the audience window and captures its native owner at creation.

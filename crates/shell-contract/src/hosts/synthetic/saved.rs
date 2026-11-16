@@ -140,6 +140,7 @@ pub(super) fn prepared(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn document(
     model: &SyntheticOwnedEffects,
     document: &NativeSavedDocument,

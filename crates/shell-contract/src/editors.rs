@@ -188,6 +188,7 @@ pub trait DocumentEditors {
     /// renamed or moved outside the editor
     fn file_renamed(&self, view: ViewId, old_path: &Path, new_path: &Path);
 
+    #[allow(clippy::too_many_arguments)]
     fn file_renamed_owned(
         &self,
         view: ViewId,
@@ -200,6 +201,7 @@ pub trait DocumentEditors {
         then: Then<()>,
     );
 
+    #[allow(clippy::too_many_arguments)]
     fn file_renamed_many_owned_extra(
         &self,
         view: ViewId,
@@ -214,6 +216,7 @@ pub trait DocumentEditors {
         then: Then<()>,
     );
 
+    #[allow(clippy::too_many_arguments)]
     fn file_renamed_existing_document(
         &self,
         view: ViewId,
@@ -229,6 +232,7 @@ pub trait DocumentEditors {
         then: Then<Option<crate::ipc::NativeSaveRevisionReceipt>>,
     );
 
+    #[allow(clippy::too_many_arguments)]
     fn file_renamed_recovery(
         &self,
         view: ViewId,

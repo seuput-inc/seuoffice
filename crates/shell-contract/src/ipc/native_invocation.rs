@@ -1090,11 +1090,13 @@ pub struct RecoveryOpenTarget(Arc<RecoveryBinding>);
 #[derive(Clone)]
 pub struct RecoverySeedReceipt { target: RecoveryOpenTarget }
 
+type CoreWaiter = (Arc<dyn crate::runtime::Thread>, Box<dyn FnOnce() + Send>);
+
 #[derive(Default)]
 struct RecoveryWorkState {
     closing: bool,
     active: usize,
-    waiters: Vec<(Arc<dyn crate::runtime::Thread>, Box<dyn FnOnce() + Send>)>,
+    waiters: Vec<CoreWaiter>,
 }
 
 /// Liveness only, not permission to perform an effect. Retain a clone through
@@ -1185,6 +1187,7 @@ impl RecoveryOpenTarget {
     }
 
     /// A remembered startup command retains all three immutable operations.
+    #[allow(clippy::too_many_arguments)]
     pub fn bind_startup_command(context: RecoveryOpenContext, view: ViewId, created: RendererGeneration,
         closure: NativeClosureReservation, owner: NativeBrowserOwner,
         startup: StartupRecoveryConstraint, command: CommandRecoveryConstraint,
@@ -1192,6 +1195,7 @@ impl RecoveryOpenTarget {
         Self::bind_with_constraint(context, view, created, closure, owner, request, Some(startup), Some(command))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn bind_with_constraint(context: RecoveryOpenContext, view: ViewId, created: RendererGeneration,
         closure: NativeClosureReservation, owner: NativeBrowserOwner, request: Option<RecoveryRequestConstraint>, startup: Option<StartupRecoveryConstraint>,
         command: Option<CommandRecoveryConstraint>) -> Result<Self, String> {

@@ -175,6 +175,7 @@ fn regular(file: File, path: &str) -> R<File> {
 
 /// The app-created private quarantine is single-writer within this operation.
 /// Hostile same-UID modification of app-private staging is outside this scope.
+#[cfg(test)]
 #[derive(Debug)]
 pub(super) struct Quarantine {
     original: Directory,
@@ -186,12 +187,14 @@ pub(super) struct Quarantine {
 
 /// A failed post-rename acquisition must retain the inverse capability if
 /// the public name was occupied before the immediate restore could complete.
+#[cfg(test)]
 #[derive(Debug)]
 pub(super) struct QuarantineMoveError {
     pub(super) error: NodeError,
     pub(super) retained: Option<Quarantine>,
 }
 
+#[cfg(test)]
 fn duplicate(directory: &Directory) -> R<Directory> {
     Ok(Directory {
         file: directory
@@ -202,6 +205,7 @@ fn duplicate(directory: &Directory) -> R<Directory> {
     })
 }
 
+#[cfg(test)]
 fn move_exclusive(
     source: &Directory,
     source_name: &str,
@@ -249,6 +253,7 @@ fn move_exclusive(
     Ok(())
 }
 
+#[cfg(test)]
 fn identity_handle(directory: &Directory, name: &str) -> R<File> {
     let component = segment(name, &directory.path)?;
     #[cfg(target_os = "linux")]
@@ -262,6 +267,7 @@ fn identity_handle(directory: &Directory, name: &str) -> R<File> {
     opened(fd, &directory.path)
 }
 
+#[cfg(test)]
 impl Quarantine {
     pub(super) fn move_from(
         original: &Directory,

@@ -31,7 +31,7 @@
 //! guide runs may call the guide again (the chat store asks for the install
 //! id while its change holds the write).
 //!
-//! The use-time timer of `touch` is explicit: the guide records when it
+//! The use-time timer of `stage_touch` is explicit: the guide records when it
 //! would have armed `setTimeout` ([`ProjectGuide::touch_timer`]) and the
 //! caller calls [`ProjectGuide::flush_touches`] when that time comes (and at
 //! quit).
@@ -956,7 +956,7 @@ impl From<RegexLimit> for GuideError {
     }
 }
 
-/// When `touch` armed its timer and how long it asked to wait: the caller
+/// When `stage_touch` armed its timer and how long it asked to wait: the caller
 /// calls `flush_touches` at `armed_at + delay`
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TouchTimer {
@@ -1552,7 +1552,7 @@ pub struct ProjectGuide {
     /// Copied folders listed under a new id whose `project.json` still names the original
     pending_id_fix: RefCell<Vec<ProjectId>>,
     cached_install_id: RefCell<Option<String>>,
-    /// use times not written to the settings file yet (see `touch`)
+    /// use times not written to the settings file yet (see `stage_touch`)
     pending_touches: RefCell<JsMap<String>>,
     /// when each project's use time was last written (ms)
     touch_written_at: RefCell<JsMap<f64>>,
@@ -1777,15 +1777,8 @@ impl ProjectGuide {
     /// `app-settings.json` each time would rewrite the whole file per message: one
     /// project's time is written at most once per `touchWriteMs`; later times wait
     /// in memory (the list order already follows them) and are written when that
-    /// interval is over or at `flushTouches` (app quit).
-    fn touch(&self, id: &str) -> Result<(), GuideError> {
-        if self.stage_touch(id)? {
-            self.flush_touches()?;
-        }
-        Ok(())
-    }
-
-    /// Record the touch on core; `true` means the snapshot is due for a worker.
+    /// interval is over or at `flushTouches` (app quit). The touch is recorded
+    /// on core; `true` means the snapshot is due for a worker.
     fn stage_touch(&self, id: &str) -> Result<bool, GuideError> {
         let at = self.now_iso()?;
         let now_ms = self.clock();
@@ -1804,7 +1797,7 @@ impl ProjectGuide {
         Ok(false)
     }
 
-    /// The timer `touch` set, if one is armed: the caller calls
+    /// The timer `stage_touch` set, if one is armed: the caller calls
     /// `flush_touches` at its `due()` (the TypeScript's `setTimeout`)
     pub fn touch_timer(&self) -> Option<TouchTimer> {
         self.touch_timer.get()

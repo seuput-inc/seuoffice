@@ -168,7 +168,7 @@ pub enum DirectWriteStartError {
     Admission(String),
     Io(io::Error),
     IoAndAdmission { error: io::Error, admission: String },
-    OpenedButNotAdmitted { error: String, opened: UnadmittedDirectWrite },
+    OpenedButNotAdmitted { error: String, opened: Box<UnadmittedDirectWrite> },
 }
 
 impl std::fmt::Debug for DirectWriteStartError {
@@ -196,7 +196,9 @@ impl UnadmittedDirectWrite {
 pub struct CompletedDirectWrite { scope: DirectWriteScope, outcome: file_commit::DirectOwnedWriteOutcome }
 
 /// A failed write retains the original descriptor, bytes and exact progress.
-pub struct PartialAdmittedDirectWrite { scope: DirectWriteScope, partial: file_commit::PartialDirectWrite }
+pub struct PartialAdmittedDirectWrite(Box<PartialParts>);
+
+struct PartialParts { scope: DirectWriteScope, partial: file_commit::PartialDirectWrite }
 
 pub enum DirectWriteResumeError {
     Admission { error: String, partial: PartialAdmittedDirectWrite },
@@ -313,7 +315,7 @@ impl AdmittedDirectWrite {
         match (opened, admission) {
             (Some(Ok(descriptor)), Ok(())) => Ok(Self { scope, descriptor }),
             (Some(Ok(descriptor)), Err(error)) => Err(DirectWriteStartError::OpenedButNotAdmitted {
-                error, opened: UnadmittedDirectWrite { scope, _descriptor: descriptor },
+                error, opened: Box::new(UnadmittedDirectWrite { scope, _descriptor: descriptor }),
             }),
             (Some(Err(error)), Ok(())) => Err(DirectWriteStartError::Io(error)),
             (Some(Err(error)), Err(admission)) => Err(DirectWriteStartError::IoAndAdmission { error, admission }),
@@ -327,29 +329,29 @@ impl AdmittedDirectWrite {
         let Self { scope, descriptor } = self;
         match descriptor.write_owned(bytes) {
             file_commit::DirectOwnedWriteAttempt::Completed(outcome) => Ok(CompletedDirectWrite { scope, outcome }),
-            file_commit::DirectOwnedWriteAttempt::Partial { error, partial } => Err((error, PartialAdmittedDirectWrite { scope, partial })),
+            file_commit::DirectOwnedWriteAttempt::Partial { error, partial } => Err((error, PartialAdmittedDirectWrite(Box::new(PartialParts { scope, partial })))),
         }
     }
 }
 
 impl PartialAdmittedDirectWrite {
-    pub fn written(&self) -> usize { self.partial.written() }
-    pub fn bytes(&self) -> &[u8] { self.partial.bytes() }
+    pub fn written(&self) -> usize { self.0.partial.written() }
+    pub fn bytes(&self) -> &[u8] { self.0.partial.bytes() }
     /// A retry is re-admitted before writing any remaining bytes.
     pub fn resume<E: OwnedEffects + ?Sized>(self, effects: &E) -> Result<CompletedDirectWrite, DirectWriteResumeError> {
-        let Self { scope, partial } = self;
+        let PartialParts { scope, partial } = *self.0;
         if let Err(error) = scope.admit(effects, &mut || Ok(())) {
-            return Err(DirectWriteResumeError::Admission { error, partial: Self { scope, partial } });
+            return Err(DirectWriteResumeError::Admission { error, partial: Self(Box::new(PartialParts { scope, partial })) });
         }
         match partial.resume() {
             file_commit::DirectOwnedWriteAttempt::Completed(outcome) => Ok(CompletedDirectWrite { scope, outcome }),
-            file_commit::DirectOwnedWriteAttempt::Partial { error, partial } => Err(DirectWriteResumeError::Io { error, partial: Self { scope, partial } }),
+            file_commit::DirectOwnedWriteAttempt::Partial { error, partial } => Err(DirectWriteResumeError::Io { error, partial: Self(Box::new(PartialParts { scope, partial })) }),
         }
     }
 
     /// The caller may retain the exact descriptor and progress for its rescue path.
     pub fn into_rescue_parts(self) -> (file_commit::AbandonedDirectWrite, Vec<u8>, usize) {
-        self.partial.into_parts()
+        self.0.partial.into_parts()
     }
 }
 

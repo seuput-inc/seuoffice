@@ -678,15 +678,6 @@ fn referenced_names(manifest: &OwnedAssetManifest) -> HashSet<String> {
         .collect()
 }
 
-/// the `try` of the loops below: the file is the one the manifest recorded
-fn is_owned_file(path: &str, sha256: &str) -> R<bool> {
-    let info = lstat(path)?;
-    if !info.is_file() || info.file_type().is_symlink() {
-        return Ok(false);
-    }
-    Ok(sha256_file(path)? == sha256)
-}
-
 fn prune(table: &mut JsMap<Vec<String>>, keep: &dyn Fn(&str) -> bool) {
     let keys: Vec<String> = table.keys().map(str::to_owned).collect();
     for key in keys {

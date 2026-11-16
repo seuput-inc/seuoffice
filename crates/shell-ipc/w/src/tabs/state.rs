@@ -1367,7 +1367,9 @@ impl TabsState {
             let Inner {
                 detached, bridge, ..
             } = &mut *g;
-            detached.focused_detached_tab(bridge).map(|f| f.window)
+            detached
+                .focused_detached_tab(bridge)
+                .map(|focused| focused.window.window())
         };
         if let Some(window) = detached {
             self.window_event(window, WindowEvent::Close);

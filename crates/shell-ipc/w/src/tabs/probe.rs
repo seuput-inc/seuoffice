@@ -2541,6 +2541,7 @@ impl super::host::CapturedSavedShell for ProbeCapturedSavedShell {
         let start = Box::new(move |adopt: super::host::SavedManagerAdoption,
             registration: super::host::SavedManagerRegistration,
             done: Box<dyn FnOnce(ViewCreationResult<super::host::SavedViewLoaded>)>| {
+            let unstarted = &mut unstarted;
             unstarted.armed = false;
             let extra: Vec<_> = additional.iter().collect();
             let mut adopt = Some(adopt);
@@ -2559,7 +2560,7 @@ impl super::host::CapturedSavedShell for ProbeCapturedSavedShell {
             };
             if let Err(error) = result { return fail(error, done); }
             {
-                let mut world = fake.w();
+                let world = fake.w();
                 let mut line = vec![Value::from(name)];
                 line.extend(args);
                 world.log(line);
@@ -2631,7 +2632,7 @@ impl super::activation::DocsDisposalOperation for ProbeDocsDisposal {
         let fake = self.fake.clone();
         let completion = self.clone();
         let reply =
-            crate::home_files::back_to_core(self.core.clone(), move |result| {
+            crate::home_files::back_to_core(self.core.clone(), move |result: Result<(), String>| {
                 completion.running.set(false);
                 if result.is_ok() {
                     completion.closed.set(true);
@@ -3358,7 +3359,7 @@ impl TabHooks for Hooks {
                         if permit.is_some() {
                             return done(Err("Unexpected synthetic close permit".into()));
                         }
-                        let reply = crate::home_files::back_to_core(core, move |result| {
+                        let reply = crate::home_files::back_to_core(core, move |result: Result<(), String>| {
                             done(result.map(|()| super::activation::TabUiStepOutcome::Applied))
                         });
                         ui.post(Box::new(move || {
@@ -3501,7 +3502,7 @@ impl TabHooks for Hooks {
         let changed_cancel = cancel.clone();
         let changed_pending = pending.clone();
         let changed_effects = effects.clone();
-        let changed = Box::new(move |done: super::activation::TabUiDone| {
+        let changed = Box::new(move |done: super::activation::TabUiStepDone| {
             done(probe_activation_emit(
                 changed_events.as_ref(),
                 &changed_revision,
@@ -3513,7 +3514,7 @@ impl TabHooks for Hooks {
                 &changed_pending,
                 "tabs:changed",
                 changed_args,
-            ));
+            ).map(|()| super::activation::TabUiStepOutcome::Applied));
         });
         let split_origin = origin.clone();
         let split_participants = participants.clone();
@@ -3521,7 +3522,7 @@ impl TabHooks for Hooks {
         let split_pending = pending.clone();
         let split_effects = effects.clone();
         let split = Box::new(
-            move |ratio_only: bool, done: super::activation::TabUiDone| {
+            move |ratio_only: bool, done: super::activation::TabUiStepDone| {
                 let result = (|| -> Result<(), String> {
                     if !ratio_only {
                         for (id, index) in &recipients {
@@ -3568,12 +3569,12 @@ impl TabHooks for Hooks {
                         split_args,
                     )
                 })();
-                done(result);
+                done(result.map(|()| super::activation::TabUiStepOutcome::Applied));
             },
         );
         let log = self.0.clone();
         let revision = snapshot.split_memory_revision;
-        let persist_split = Box::new(move |done: super::activation::TabUiDone| {
+        let persist_split = Box::new(move |done: super::activation::TabUiStepDone| {
             let result = probe_activation_effect(
                 &effects,
                 &origin,
@@ -3592,7 +3593,7 @@ impl TabHooks for Hooks {
                     Ok(())
                 },
             );
-            done(result);
+            done(result.map(|()| super::activation::TabUiStepOutcome::Applied));
         });
         Ok(super::activation::PreparedTabActivationPublication {
             changed,
@@ -3988,6 +3989,7 @@ impl TabHooks for Hooks {
                       done: Box<
                     dyn FnOnce(ViewCreationResult<super::host::GeneratedViewCommit>),
                 >| {
+                    let unstarted = &mut unstarted;
                     unstarted.armed = false;
                     let mut adoption = Some(adopt);
                     let mut epoch_committed = false;
@@ -4060,7 +4062,7 @@ impl TabHooks for Hooks {
                         }));
                     }
                     {
-                        let mut world = fake.w();
+                        let world = fake.w();
                         let mut line = vec![Value::from(name)];
                         line.extend(args);
                         world.log(line);
@@ -4524,7 +4526,7 @@ impl TabHooks for Hooks {
                         completed: std::cell::Cell::new(false),
                     }));
             }
-            Ok(())
+            Ok::<(), TabError>(())
         })??;
         if nudge {
             let target = reused_target
@@ -4768,7 +4770,7 @@ impl TabHooks for Hooks {
         if !accepted {
             return done(Err("Synthetic export reveal was not admitted".into()));
         }
-        let mut world = self.0.w();
+        let world = self.0.w();
         if world.case["fail"].as_array().is_some_and(|items| {
             items
                 .iter()

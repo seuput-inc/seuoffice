@@ -19,7 +19,6 @@ mod detached_snapshot;
 mod documents;
 pub mod host;
 mod menus;
-pub use documents::DocsExportCloseOutcome;
 mod open;
 mod ops;
 pub(crate) mod owned_saved;

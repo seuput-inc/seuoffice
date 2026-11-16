@@ -270,12 +270,17 @@ impl PreparedRecent {
             ));
         }
         if let MetadataAuthority::Saved(saved) = &authority
-            && let Some(destination) = &saved.existing
-            && destination.path() != std::path::Path::new(&path)
+            && let Some(revision) = &saved.existing
         {
-            return done(Err(
-                "The recent file does not match the selected save destination".into(),
-            ));
+            let snapshot = match revision.snapshot() {
+                Ok(snapshot) => snapshot,
+                Err(error) => return done(Err(error)),
+            };
+            if snapshot.selection().path() != std::path::Path::new(&path) {
+                return done(Err(
+                    "The recent file does not match the selected save destination".into(),
+                ));
+            }
         }
         if let MetadataAuthority::SavedDocument { document, .. } = &authority
             && document.target().path().path() != std::path::Path::new(&path)

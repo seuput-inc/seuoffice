@@ -2,9 +2,13 @@ use super::*;
 use crate::tabs::owned_saved::SavedAuthority;
 use shell_contract::hosts::OwnedEffectsHost;
 
-pub enum DocsExportCloseOutcome {
-    Closed,
-    Retained,
+#[derive(Clone)]
+struct CapturedDocsClose {
+    origin: NativeRequestOwner,
+    destination: NativeRequestOwner,
+    target: NativeRequestOwner,
+    cancel: CancelToken,
+    pending: CancelToken,
 }
 
 impl TabsState {
@@ -19,7 +23,6 @@ impl TabsState {
         done: Box<dyn FnOnce(Result<bool, String>)>,
     ) {
         use main_core::shell::tab_manager::TabKind;
-        use shell_contract::runtime::Views;
         let authority =
             SavedAuthority::new(origin, destination, Vec::new(), cancel, pending, effects);
         if let Err(error) = authority.check() {
@@ -123,5 +126,135 @@ impl TabsState {
                 }
             }),
         );
+    }
+
+    /// Close one captured Docs tab: the dirty query and the close request run
+    /// under the captured origin, destination and document owner, and the
+    /// manager removes the tab only on the editor's confirmation.
+    pub(crate) fn close_docs_owned_many(
+        &self,
+        id: &str,
+        origin: NativeRequestOwner,
+        destination: NativeRequestOwner,
+        target: NativeRequestOwner,
+        cancel: CancelToken,
+        pending: CancelToken,
+        effects: OwnedEffectsHost,
+        done: Box<dyn FnOnce(Result<(), String>)>,
+    ) {
+        let authority = SavedAuthority::new(
+            origin.clone(),
+            destination.clone(),
+            vec![target.clone()],
+            cancel.clone(),
+            pending.clone(),
+            effects,
+        );
+        if let Err(error) = authority.check() {
+            return done(Err(error));
+        }
+        if self.tab_contents(id) != Some(target.view) {
+            return done(Err(
+                "The captured Docs tab no longer matches its document".into(),
+            ));
+        }
+        let captured = CapturedDocsClose {
+            origin,
+            destination,
+            target,
+            cancel,
+            pending,
+        };
+        let step = self
+            .inner
+            .borrow_mut()
+            .manager_call(|manager, host| manager.close_tab(host, id));
+        match step {
+            None => done(Ok(())),
+            Some(step) => self.drive_docs_close_captured(step, captured, done),
+        }
+    }
+
+    fn drive_docs_close_captured(
+        &self,
+        step: main_core::shell::tab_manager::TabCloseStep<ViewId>,
+        captured: CapturedDocsClose,
+        done: Box<dyn FnOnce(Result<(), String>)>,
+    ) {
+        use main_core::shell::tab_manager::TabCloseStep;
+        let CapturedDocsClose {
+            origin,
+            destination,
+            target,
+            cancel,
+            pending,
+        } = captured.clone();
+        match step {
+            TabCloseStep::Done => done(Ok(())),
+            TabCloseStep::Rejected(message) => done(Err(message)),
+            TabCloseStep::QueryDocsDirty { id, view } => {
+                if view != target.view {
+                    return self.resume_docs_close_captured(
+                        id,
+                        Err("The captured Docs tab changed during close".into()),
+                        captured,
+                        done,
+                    );
+                }
+                let state = self.rc();
+                self.hooks.docs_query_dirty_captured_many(
+                    view,
+                    origin,
+                    vec![target],
+                    destination,
+                    cancel,
+                    pending,
+                    Box::new(move |answer| {
+                        let answer = answer.map_err(|error| error.message);
+                        state.resume_docs_close_captured(id, answer, captured, done)
+                    }),
+                );
+            }
+            TabCloseStep::RequestClose { id, view, .. } => {
+                if view != target.view {
+                    return self.resume_docs_close_captured(
+                        id,
+                        Err("The captured Docs tab changed during close".into()),
+                        captured,
+                        done,
+                    );
+                }
+                let state = self.rc();
+                let parent = self.inner.borrow().bridge.shell.map(|shell| shell.window);
+                self.hooks.docs_request_close_captured_many(
+                    view,
+                    parent,
+                    origin,
+                    vec![target],
+                    destination,
+                    cancel,
+                    pending,
+                    Box::new(move |answer| {
+                        let answer = answer.map_err(|error| error.message);
+                        state.resume_docs_close_captured(id, answer, captured, done)
+                    }),
+                );
+            }
+        }
+    }
+
+    fn resume_docs_close_captured(
+        &self,
+        id: String,
+        answer: Result<bool, String>,
+        captured: CapturedDocsClose,
+        done: Box<dyn FnOnce(Result<(), String>)>,
+    ) {
+        let step = self
+            .inner
+            .borrow_mut()
+            .manager_call(|manager, host| manager.resume_close(host, &id, answer))
+            .unwrap_or(main_core::shell::tab_manager::TabCloseStep::Done);
+        self.drive_docs_close_captured(step, captured, done);
     }
 }

@@ -77,9 +77,21 @@ impl Drop for ReleaseAttempt {
         }
     }
 }
-impl PendingOutput {
-    pub(super) fn new(wake: GeneratedPathWake) -> Arc<Self> {
-        Arc::new(Self {
+/// Shared owner handle. The contract traits are implemented here because
+/// `Arc<PendingOutput>` is foreign to this crate.
+#[derive(Clone)]
+pub(super) struct PendingHandle(Arc<PendingOutput>);
+
+impl std::ops::Deref for PendingHandle {
+    type Target = Arc<PendingOutput>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl PendingHandle {
+    pub(super) fn new(wake: GeneratedPathWake) -> Self {
+        Self(Arc::new(PendingOutput {
             state: Mutex::new(State {
                 phase: Phase::Preparing,
                 observer: None,
@@ -95,8 +107,11 @@ impl PendingOutput {
                 drains: Vec::new(),
             }),
             cancel: CancelToken::default(),
-        })
+        }))
     }
+}
+
+impl PendingOutput {
     pub(super) fn cancellation(&self) -> CancelToken {
         self.cancel.clone()
     }
@@ -262,7 +277,7 @@ impl PendingOutput {
             }
         };
         done(Ok(GeneratedPathDispatchOutcome::Terminal(
-            GeneratedTerminalDelivery::new(result, Arc::new(self.clone())),
+            GeneratedTerminalDelivery::new(result, Arc::new(PendingHandle(self.clone()))),
         )));
     }
     pub(super) fn finish(self: &Arc<Self>, result: Result<GeneratedPathOutcome, String>) {
@@ -292,7 +307,7 @@ impl PendingOutput {
         if let (Some(observer), Some(result)) = (observer, result) {
             observer(GeneratedTerminalDelivery::new(
                 result,
-                Arc::new(self.clone()),
+                Arc::new(PendingHandle(self.clone())),
             ));
         }
     }
@@ -332,7 +347,7 @@ impl PendingOutput {
         }));
     }
 }
-impl GeneratedTerminalAck for Arc<PendingOutput> {
+impl GeneratedTerminalAck for PendingHandle {
     fn complete(&self) -> Result<(), String> {
         {
             let mut state = self
@@ -360,7 +375,7 @@ impl GeneratedTerminalAck for Arc<PendingOutput> {
         state.terminal = Some(result);
     }
 }
-impl GeneratedPathPending for Arc<PendingOutput> {
+impl GeneratedPathPending for PendingHandle {
     fn observe(
         &self,
         observer: GeneratedPathObserver,
@@ -555,7 +570,7 @@ mod tests {
 
     #[test]
     fn terminal_delivery_keeps_registration_and_drain_until_actor_ack() {
-        let operation = PendingOutput::new(Arc::new(|| {}));
+        let operation = PendingHandle::new(Arc::new(|| {}));
         let completed = Arc::new(AtomicUsize::new(0));
         operation
             .install_registration(Box::new(Registration(completed.clone())))
@@ -594,7 +609,7 @@ mod tests {
 
     #[test]
     fn second_observer_is_returned_without_invocation() {
-        let operation = PendingOutput::new(Arc::new(|| {}));
+        let operation = PendingHandle::new(Arc::new(|| {}));
         assert!(operation.observe(Box::new(|_| {}), Arc::new(|| {})).is_ok());
         let called = Arc::new(AtomicUsize::new(0));
         let callback = called.clone();
@@ -613,7 +628,7 @@ mod tests {
     fn dropped_terminal_delivery_is_restored_for_exact_redelivery() {
         let wakes = Arc::new(AtomicUsize::new(0));
         let notified = wakes.clone();
-        let operation = PendingOutput::new(Arc::new(move || {
+        let operation = PendingHandle::new(Arc::new(move || {
             notified.fetch_add(1, Ordering::SeqCst);
         }));
         let completed = Arc::new(AtomicUsize::new(0));
@@ -637,7 +652,7 @@ mod tests {
 
     #[test]
     fn discarded_release_callback_retains_registration_until_release_retry() {
-        let operation = PendingOutput::new(Arc::new(|| {}));
+        let operation = PendingHandle::new(Arc::new(|| {}));
         let completed = Arc::new(AtomicUsize::new(0));
         operation
             .install_registration(Box::new(Registration(completed.clone())))
@@ -676,7 +691,7 @@ mod tests {
     }
     #[test]
     fn indeterminate_shutdown_cancels_original_operation_without_completing_registration() {
-        let operation = PendingOutput::new(Arc::new(|| {}));
+        let operation = PendingHandle::new(Arc::new(|| {}));
         let completed = Arc::new(AtomicUsize::new(0));
         operation
             .install_registration(Box::new(Registration(completed.clone())))

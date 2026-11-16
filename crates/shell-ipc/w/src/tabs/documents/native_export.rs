@@ -35,7 +35,10 @@ impl TabsState {
         let reveal_pending = pending.clone();
         let mut reveal_additional = additional.clone();
         let reveal_effects = effects.clone();
-        let reveal = Box::new(move |operation_cancel, finish| {
+        let reveal = Box::new(move |operation_cancel: CancelToken,
+                                    finish: Box<
+            dyn FnOnce(Result<GeneratedPathOutcome, String>) + Send,
+        >| {
             let Some(state) = state.upgrade() else {
                 return finish(Err("The tab manager is unavailable".into()));
             };

@@ -355,7 +355,7 @@ impl TabsState {
         };
         let terminal_proof = proof.clone();
         let state = self.rc();
-        let done = Box::new(move |result| match result {
+        let done = Box::new(move |result: Result<(), String>| match result {
             Ok(()) => {
                 state.adopted_editors.borrow_mut().remove(&id);
                 settle_terminal(&terminal, terminal_proof);

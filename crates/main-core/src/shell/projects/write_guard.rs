@@ -32,7 +32,6 @@ use serde::{Deserialize, Serialize};
 use super::folder_files::{data_dir_name, is_data_dir_name, link_count};
 use super::paths::{is_plain_segment, path_api, relative_inside, same_path};
 use crate::node_fs::{NodeError, namespaced, node_error, node_error_fd, node_error2};
-use crate::packages::electron_utils::atomic_write::temp_path_beside;
 use crate::packages::project_store::nfc;
 use crate::shell::atomic_write::atomic_write_file;
 use crate::shell::rename_validation::is_valid_rename_name;
@@ -528,11 +527,6 @@ fn unlink(path: &str) -> Result<(), NodeError> {
     fs::remove_file(namespaced(path)).map_err(|e| node_error(&e, "unlink", path))
 }
 
-/// `rename(from, to)`
-fn rename(from: &str, to: &str) -> Result<(), NodeError> {
-    fs::rename(namespaced(from), namespaced(to)).map_err(|e| node_error2(&e, "rename", from, to))
-}
-
 /// Atomically publish a staged path without replacing an existing destination.
 pub fn rename_no_replace(from: &str, to: &str) -> Result<(), NodeError> {
     rename_no_replace_native(from, to).map_err(|error| node_error2(&error, "rename", from, to))
@@ -621,16 +615,6 @@ fn read_utf8(path: &str) -> Result<String, NodeError> {
     file.read_to_end(&mut bytes)
         .map_err(|e| node_error_fd(&e, "read"))?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
-}
-
-/// `writeFile(path, data, { flag: 'wx' })`
-fn write_new(path: &str, data: &[u8]) -> Result<(), NodeError> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(namespaced(path))
-        .map_err(|e| node_error(&e, "open", path))?;
-    file.write_all(data).map_err(|e| node_error_fd(&e, "write"))
 }
 
 /// `appendFile(path, text, { encoding: 'utf8' })`

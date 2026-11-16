@@ -11,7 +11,7 @@ pub(crate) type SavedReveal =
 
 pub struct PreparedGeneratedOperation {
     task: Arc<dyn GeneratedPathPending>,
-    operation: Arc<super::pending_output::PendingOutput>,
+    operation: super::pending_output::PendingHandle,
     start: Option<Box<dyn FnOnce()>>,
 }
 impl shell_contract::hosts::PreparedGeneratedPath for PreparedGeneratedOperation {
@@ -61,7 +61,7 @@ impl Drop for RetainedKey {
 
 struct ReopenCompletion {
     pending: bool,
-    operation: Arc<super::pending_output::PendingOutput>,
+    operation: super::pending_output::PendingHandle,
 }
 impl Drop for ReopenCompletion {
     fn drop(&mut self) {
@@ -190,13 +190,13 @@ impl TabsState {
             Err(error) => return Err(error),
         };
         let retained_id = NEXT_RETAINED_OUTPUT
-            .fetch_update(
+            .try_update(
                 std::sync::atomic::Ordering::Relaxed,
                 std::sync::atomic::Ordering::Relaxed,
                 |id| id.checked_add(1),
             )
             .map_err(|_| "The generated cleanup identity is unavailable")?;
-        let operation = super::pending_output::PendingOutput::new(wake);
+        let operation = super::pending_output::PendingHandle::new(wake);
         let task: Arc<dyn GeneratedPathPending> = Arc::new(operation.clone());
         let registration = match self.hooks.register_generated_path_task(task.clone()) {
             Ok(registration) => registration,
@@ -278,7 +278,7 @@ impl TabsState {
                                     .borrow_mut()
                                     .insert(retained_id, Some(retained.clone()));
                             });
-                            let release = Arc::new(move |done| {
+                            let release = Arc::new(move |done: Box<dyn FnOnce(Result<(), String>) + Send>| {
                                 let id = key.id;
                                 key.core.post(Box::new(move || {
                                     let result = RETAINED_OUTPUTS.with(|entries| {
@@ -345,7 +345,7 @@ impl TabsState {
                             Ok(input) => {
                                 let completed = operation.clone();
                                 let finish =
-                                    crate::home_files::back_to_core(fallback_core, move |result| {
+                                    crate::home_files::back_to_core(fallback_core, move |result: Result<GeneratedPathOutcome, String>| {
                                         match (result, reveal) {
                                             (Ok(GeneratedPathOutcome::NotOpened), Some(reveal)) => {
                                                 let token = completed.cancellation();
@@ -415,7 +415,7 @@ mod tests {
 
     #[test]
     fn start_requires_preinstalled_observer_and_returns_same_preparation() {
-        let operation = super::super::pending_output::PendingOutput::new(Arc::new(|| {}));
+        let operation = super::super::pending_output::PendingHandle::new(Arc::new(|| {}));
         operation
             .install_registration(Box::new(Registration))
             .unwrap();

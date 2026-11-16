@@ -82,7 +82,6 @@ fn validate_recovery_lineage(
     if valid { Ok(()) } else { Err(LOST.into()) }
 }
 /// Synthetic first-registration under the retained recovery lineage.
-
 pub fn register_recovery_fixture(
     target: &crate::ipc::RecoveryOpenTarget, owner: NativeRequestOwner,
 ) -> Result<(), String> {
@@ -410,6 +409,7 @@ pub fn with_native_command_creation(
         .flatten().flatten().ok_or_else(|| LOST.to_owned())?
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn with_native_command_target(
     operation: &crate::ipc::NativeInvocationOperation, expected: &crate::ipc::NativeEditorCommand,
     document: &crate::ipc::NativeInvocationDocument, owner: &NativeRequestOwner,
@@ -486,6 +486,7 @@ pub fn with_existing_document_save_extra(
     with_created_many_additional(owner, participants, operation.authority_generation(), cancel, pending, &controls, effect)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn with_startup_recovery_creation(
     startup: &crate::ipc::NativeInvocationOperation, shell: &NativeRequestOwner,
     child: &crate::ipc::NativeInvocationOperation, created: &RendererGeneration,
@@ -498,6 +499,7 @@ pub fn with_startup_recovery_creation(
     with_startup_child_creation(startup, shell, child, created, participants, cancel, pending, effect)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn with_startup_child_creation(
     startup: &crate::ipc::NativeInvocationOperation, shell: &NativeRequestOwner,
     child: &crate::ipc::NativeInvocationOperation, created: &RendererGeneration,
@@ -525,6 +527,7 @@ fn with_startup_child_creation(
 }
 
 
+#[allow(clippy::too_many_arguments)]
 pub fn with_startup_command_preparation(
     startup: &crate::ipc::NativeInvocationOperation, shell: &NativeRequestOwner,
     child: &crate::ipc::NativeInvocationOperation, expected: &crate::ipc::NativeEditorCommand,
@@ -547,6 +550,7 @@ pub fn with_startup_recovery_seed(
 }
 
 /// Fake-only joint admission of the bound startup and exact registered child.
+#[allow(clippy::too_many_arguments)]
 pub fn with_startup_recovery(
     startup: &crate::ipc::NativeInvocationOperation, shell: &NativeRequestOwner,
     child: &crate::ipc::NativeInvocationDocument, owner: &NativeRequestOwner,
@@ -556,6 +560,7 @@ pub fn with_startup_recovery(
     with_startup_recovery_additional(startup, shell, child, owner, participants, cancel, pending, &[], effect)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn with_startup_recovery_additional(
     startup: &crate::ipc::NativeInvocationOperation, shell: &NativeRequestOwner,
     child: &crate::ipc::NativeInvocationDocument, owner: &NativeRequestOwner,
@@ -566,6 +571,7 @@ fn with_startup_recovery_additional(
     with_startup_document(startup, shell, child, owner, participants, cancel, pending, additional, effect)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn with_startup_document(
     startup: &crate::ipc::NativeInvocationOperation, shell: &NativeRequestOwner,
     child: &crate::ipc::NativeInvocationDocument, owner: &NativeRequestOwner,
@@ -741,6 +747,7 @@ pub fn recovery_save(
     ).transpose())?
 }
 
+#[allow(clippy::too_many_arguments)]
 fn with_command_recovery(
     startup: Option<&crate::ipc::StartupRecoveryConstraint>,
     command: &crate::ipc::CommandRecoveryConstraint, document: &crate::ipc::NativeInvocationDocument,
@@ -829,6 +836,7 @@ pub fn with_recovery_open_snapshot(
     with_recovery_open_snapshot_impl(receipt, snapshot, receiver, &[], cancel, pending, &[], effect)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn with_recovery_open_snapshot_impl(
     receipt: &crate::ipc::RecoverySeedReceipt, snapshot: &crate::ipc::RecoveryAuthoritySnapshot,
     receiver: &NativeRequestOwner, participants: &[NativeRequestOwner], cancel: &CancelToken,
@@ -908,6 +916,7 @@ struct DocsPublication {
 }
 
 type DocsPublications = Mutex<HashMap<ViewId, Weak<DocsPublication>>>;
+type BrowserBindings = HashMap<ViewId, (Arc<dyn std::any::Any + Send + Sync>, crate::ipc::NativeBrowserOwner)>;
 
 /// Retain alongside the actual model permit's revocation subscription.
 /// Dropping publication removes lookup eligibility, not document authority.
@@ -920,8 +929,10 @@ impl Drop for SyntheticDocsBinding {
     fn drop(&mut self) {
         let Some(registry) = self.registry.upgrade() else { return };
         let mut registry = registry.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some(current) = registry.get_mut(&self.publication.view) {
-            if current.ptr_eq(&Arc::downgrade(&self.publication)) { *current = Weak::new(); }
+        if let Some(current) = registry.get_mut(&self.publication.view)
+            && current.ptr_eq(&Arc::downgrade(&self.publication))
+        {
+            *current = Weak::new();
         }
     }
 }
@@ -942,7 +953,7 @@ pub struct SyntheticDocsPublicationGuard<'a> {
 }
 
 /// Retain and drop this outside the transition, before any loss notifications.
-pub struct SyntheticDocsPrior(Option<Arc<DocsPublication>>);
+pub struct SyntheticDocsPrior { _retained: Option<Arc<DocsPublication>> }
 
 impl PreparedSyntheticDocsPublication {
     pub fn validate<'a>(&'a mut self, transition: &crate::ipc::NativeBrowserTransition<'_>,
@@ -964,7 +975,7 @@ impl SyntheticDocsPublicationGuard<'_> {
         let binding = self.binding.take().expect("validated synthetic Docs publication");
         *self.registry.get_mut(&binding.publication.view).expect("validated synthetic Docs slot") = Arc::downgrade(&binding.publication);
         let previous = self.previous.take();
-        (binding, SyntheticDocsPrior(previous))
+        (binding, SyntheticDocsPrior { _retained: previous })
     }
 }
 
@@ -1027,8 +1038,10 @@ impl SyntheticEventStreams {
 struct SyntheticDrainGuard<'a> { stream: &'a SyntheticEventStream, armed: bool }
 impl Drop for SyntheticDrainGuard<'_> {
     fn drop(&mut self) {
-        if self.armed {
-            if let Ok(mut state) = self.stream.state.lock() { state.draining = false; }
+        if self.armed
+            && let Ok(mut state) = self.stream.state.lock()
+        {
+            state.draining = false;
         }
     }
 }
@@ -1133,7 +1146,7 @@ pub struct SyntheticOwnedEffects {
     events: Arc<dyn EventSink>,
     docs: Arc<DocsPublications>,
     event_streams: Arc<SyntheticEventStreams>,
-    browsers: Arc<Mutex<HashMap<ViewId, (Arc<dyn std::any::Any + Send + Sync>, crate::ipc::NativeBrowserOwner)>>>,
+    browsers: Arc<Mutex<BrowserBindings>>,
 }
 
 impl SyntheticOwnedEffects {
@@ -1171,6 +1184,7 @@ impl SyntheticOwnedEffects {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn with_saved_target_registration(
         &self, target: &crate::ipc::NativeSavedTarget, owner: &NativeRequestOwner,
         participants: &[NativeRequestOwner], cancel: &CancelToken, pending: &CancelToken,

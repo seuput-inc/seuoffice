@@ -80,8 +80,8 @@ impl ChatStoreHost for WorkerChatHost {
     }
 
     fn now_iso(&mut self) -> Result<String, ChatStoreError> {
-        jscompat::to_iso_string(self.home.now_ms()).map_err(|error| ChatStoreError {
-            message: error.to_string(),
+        jscompat::to_iso_string(self.home.now_ms()).ok_or_else(|| ChatStoreError {
+            message: "Invalid time value".to_owned(),
             code: None,
             kind: ChatStoreErrorKind::Failure,
         })
@@ -315,7 +315,7 @@ impl Projects {
                 move |from, to| guarded_settings_commit(&commit_host, &commit_owner, from, to),
                 move || {
                     jscompat::to_iso_string(clock.now_ms())
-                        .map_err(|error| GuideError::Plain(error.to_string()))
+                        .ok_or_else(|| GuideError::Plain("Invalid time value".to_owned()))
                 },
             );
             let worker_host = WorkerChatHost {

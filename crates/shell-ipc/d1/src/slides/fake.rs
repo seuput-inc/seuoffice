@@ -2474,8 +2474,8 @@ impl SlidesShell for FakeShell {
         }
         done(Ok(self.microphone))
     }
-    fn displays(&self) -> Vec<Display> {
-        self.displays.clone()
+    fn displays(&self) -> Result<Vec<Display>, EngineError> {
+        Ok(self.displays.clone())
     }
     fn display_of(&self, window: Option<WindowId>) -> Result<Display, EngineError> {
         let first = self.displays[0];

@@ -137,6 +137,7 @@ pub struct PreparedAcceptedPdfReload {
     handoff: Option<Arc<NativeSaveReloadHandoff>>,
 }
 impl PreparedAcceptedPdfReload {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         input: crate::ipc::NativeSavedInput,
         path: crate::ipc::NativeSavedPath,
@@ -562,7 +563,6 @@ pub enum GeneratedPathOutcome {
 pub struct CommittedGeneratedPath {
     source: NativeRequestOwner,
     target: NativeRequestOwner,
-    destination: NativeRequestOwner,
     participants: Vec<NativeRequestOwner>,
     cancel: CancelToken,
     pending: CancelToken,
@@ -585,11 +585,10 @@ impl CommittedGeneratedPath {
         pending: CancelToken,
         effects: super::OwnedEffectsHost,
     ) -> Result<Self, String> {
-        let participants = vec![target.clone(), destination.clone()];
+        let participants = vec![target.clone(), destination];
         let receipt = Self {
             source,
             target,
-            destination,
             participants,
             cancel,
             pending,
@@ -626,7 +625,6 @@ impl CommittedGeneratedPath {
         let receipt = Self {
             source,
             target: reload.owner().clone(),
-            destination,
             participants,
             cancel,
             pending,
@@ -656,9 +654,8 @@ impl CommittedGeneratedPath {
         let source = selection.binding().owner().clone();
         participants.push(target.clone());
         let receipt = Self {
-            source: source.clone(),
+            source,
             target,
-            destination: source,
             participants,
             cancel,
             pending,
@@ -687,9 +684,8 @@ impl CommittedGeneratedPath {
         let target = document.owner().clone();
         participants.push(target.clone());
         let receipt = Self {
-            source: source.clone(),
+            source,
             target,
-            destination: source,
             participants,
             cancel,
             pending,
@@ -713,9 +709,8 @@ impl CommittedGeneratedPath {
         let source = reload.publication().source_owner().clone();
         let target = reload.successor.clone();
         let receipt = Self {
-            source: source.clone(),
+            source,
             target,
-            destination: source,
             participants: reload.participants.clone(),
             cancel: reload.cancel.clone(),
             pending: reload.pending.clone(),
@@ -906,6 +901,7 @@ pub type NativeSaveReloadDone = Box<dyn FnOnce(Result<Arc<NativeSaveReloadReceip
 /// All three participants are captured before output work begins. The callback
 /// remains on the core thread and completes after actual native load readiness.
 pub trait PdfReload: Send + Sync {
+    #[allow(clippy::too_many_arguments)]
     fn reload_saved_document(
         &self,
         provided: &crate::Provided,

@@ -145,8 +145,9 @@ pub struct ShellAiPrefsPort {
     pub main_window: MainWindowHost,
     core: Arc<dyn Thread>,
     workers: Arc<dyn Workers>,
-    /// `cachedAiPanelPrefs`
-    cache: Rc<RefCell<Option<AiPanelPrefs>>>,
+    /// `cachedAiPanelPrefs`: the only strong owner. Core-thread closures reach
+    /// it through `PREF_CACHES`' weak entry, so dropping the port ends them.
+    _cache: Rc<RefCell<Option<AiPanelPrefs>>>,
     cache_id: u64,
 }
 
@@ -171,7 +172,7 @@ impl ShellAiPrefsPort {
             main_window,
             core,
             workers,
-            cache,
+            _cache: cache,
             cache_id,
         }
     }

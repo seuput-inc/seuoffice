@@ -1,5 +1,6 @@
 use super::*;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn transition(
     model: &SyntheticOwnedEffects,
     receipt: &crate::ipc::RecoverySeedReceipt,

@@ -51,7 +51,7 @@ pub(super) fn preclose_mailbox(
     String,
 > {
     let id = NEXT_PRECLOSE_MAILBOX
-        .fetch_update(
+        .try_update(
             std::sync::atomic::Ordering::Relaxed,
             std::sync::atomic::Ordering::Relaxed,
             |id| id.checked_add(1),
@@ -351,6 +351,7 @@ impl BrowserClose {
         };
         let operation = Arc::downgrade(self);
         self.binding.producer.watch(Box::new(move |receipt| {
+            let guard = &mut guard;
             guard.pending = false;
             let Some(operation) = operation.upgrade() else {
                 return;
@@ -1054,7 +1055,7 @@ impl GeneratedCleanupCoordinator {
             let authority = self.authority.borrow();
             authority
                 .as_ref()
-                .ok_or("The generated cleanup authority is unavailable")
+                .ok_or_else(|| "The generated cleanup authority is unavailable".to_owned())
                 .and_then(survivor_to_hydrate)
         };
         let hydration = match hydration {

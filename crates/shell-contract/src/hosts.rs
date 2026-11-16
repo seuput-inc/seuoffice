@@ -41,10 +41,22 @@ use crate::value::IpcValue;
 pub type SaveCoreAction = Box<dyn FnOnce(&mut dyn FnMut() -> Result<(), String>) + Send>;
 pub type SaveCoreDispatch = Arc<dyn Fn(SaveCoreAction) + Send + Sync>;
 
+/// One synchronous step run inside a native admission.
+pub type AdmitStep<'a> = &'a mut dyn FnMut() -> Result<(), String>;
+/// A native admission wrapper that runs one synchronous step inside the admission.
+pub type SaveAdmitRef<'a> = &'a mut dyn FnMut(AdmitStep<'_>) -> Result<(), String>;
+/// Retains one request owner while running a synchronous step.
+pub type RetainAdmitRef<'a> =
+    &'a mut dyn FnMut(&crate::ipc::NativeRequestOwner, AdmitStep<'_>) -> Result<(), String>;
+/// Completion callback of a session publication.
+pub type SavedSessionDone = Box<dyn FnOnce(Result<(), String>)>;
+/// Completion callback of a multi-path picker.
+pub type PickedPathsDone = Box<dyn FnOnce(Result<Option<Vec<PathBuf>>, String>) + Send>;
+
 /// A core-only post-save publication. Dropping it publishes nothing.
 #[must_use]
 pub enum SavedSessionReceipt {
-    Pending(Box<dyn FnOnce(Box<dyn FnOnce(Result<(), String>)>)>),
+    Pending(Box<dyn FnOnce(SavedSessionDone)>),
     /// The original operation has no session publication, including headless fixtures.
     NoPublication,
 }
@@ -159,6 +171,7 @@ pub trait Dialogs: Send + Sync {
             dyn FnOnce(Result<Option<crate::ipc::RecoveryPreparedDestination>, String>) + Send,
         >,
     );
+    #[allow(clippy::too_many_arguments)]
     fn message_recovery_owned(
         &self,
         parent: Option<WindowId>,
@@ -170,6 +183,7 @@ pub trait Dialogs: Send + Sync {
         pending: crate::runtime::CancelToken,
         done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>,
     );
+    #[allow(clippy::too_many_arguments)]
     fn save_recovery_owned(
         &self,
         parent: Option<WindowId>,
@@ -183,6 +197,7 @@ pub trait Dialogs: Send + Sync {
             dyn FnOnce(Result<Option<crate::ipc::RecoveryCommittedDestination>, String>) + Send,
         >,
     );
+    #[allow(clippy::too_many_arguments)]
     fn save_existing_document(
         &self,
         parent: Option<WindowId>,
@@ -194,6 +209,7 @@ pub trait Dialogs: Send + Sync {
         additional: Vec<crate::runtime::CancelToken>,
         done: Box<dyn FnOnce(Result<Option<crate::ipc::NativeSaveDestination>, String>) + Send>,
     );
+    #[allow(clippy::too_many_arguments)]
     fn message_existing_document(
         &self,
         parent: Option<WindowId>,
@@ -205,6 +221,7 @@ pub trait Dialogs: Send + Sync {
         additional: Vec<crate::runtime::CancelToken>,
         done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>,
     );
+    #[allow(clippy::too_many_arguments)]
     fn save_existing_document_revision(
         &self,
         parent: Option<WindowId>,
@@ -216,6 +233,7 @@ pub trait Dialogs: Send + Sync {
         additional: Vec<crate::runtime::CancelToken>,
         done: Box<dyn FnOnce(Result<Option<crate::ipc::NativeSaveDestination>, String>) + Send>,
     );
+    #[allow(clippy::too_many_arguments)]
     fn message_existing_document_revision(
         &self,
         parent: Option<WindowId>,
@@ -227,6 +245,7 @@ pub trait Dialogs: Send + Sync {
         additional: Vec<crate::runtime::CancelToken>,
         done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>,
     );
+    #[allow(clippy::too_many_arguments)]
     fn open_owned(
         &self,
         parent: Option<WindowId>,
@@ -235,8 +254,9 @@ pub trait Dialogs: Send + Sync {
         destination: crate::ipc::NativeRequestOwner,
         cancel: crate::runtime::CancelToken,
         pending: crate::runtime::CancelToken,
-        done: Box<dyn FnOnce(Result<Option<Vec<PathBuf>>, String>) + Send>,
+        done: PickedPathsDone,
     );
+    #[allow(clippy::too_many_arguments)]
     fn save_owned(
         &self,
         parent: Option<WindowId>,
@@ -247,6 +267,7 @@ pub trait Dialogs: Send + Sync {
         pending: crate::runtime::CancelToken,
         done: Box<dyn FnOnce(Result<Option<PathBuf>, String>) + Send>,
     );
+    #[allow(clippy::too_many_arguments)]
     fn message_owned(
         &self,
         parent: Option<WindowId>,
@@ -257,6 +278,7 @@ pub trait Dialogs: Send + Sync {
         pending: crate::runtime::CancelToken,
         done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>,
     );
+    #[allow(clippy::too_many_arguments)]
     fn save_owned_many(
         &self,
         parent: Option<WindowId>,
@@ -267,6 +289,7 @@ pub trait Dialogs: Send + Sync {
         pending: crate::runtime::CancelToken,
         done: Box<dyn FnOnce(Result<Option<PathBuf>, String>) + Send>,
     );
+    #[allow(clippy::too_many_arguments)]
     fn message_owned_many(
         &self,
         parent: Option<WindowId>,
@@ -277,6 +300,7 @@ pub trait Dialogs: Send + Sync {
         pending: crate::runtime::CancelToken,
         done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>,
     );
+    #[allow(clippy::too_many_arguments)]
     fn save_owned_many_extra(
         &self,
         parent: Option<WindowId>,
@@ -288,6 +312,7 @@ pub trait Dialogs: Send + Sync {
         additional: Vec<crate::runtime::CancelToken>,
         done: Box<dyn FnOnce(Result<Option<PathBuf>, String>) + Send>,
     );
+    #[allow(clippy::too_many_arguments)]
     fn message_owned_many_extra(
         &self,
         parent: Option<WindowId>,
@@ -315,7 +340,7 @@ pub trait OsShell: Send + Sync {
     fn trash_item_authorized(
         &self,
         path: &std::path::Path,
-        admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>,
+        admit: SaveAdmitRef<'_>,
     ) -> Result<(), String>;
 }
 
@@ -368,6 +393,7 @@ pub trait Contents: Send + Sync {
         pending: &crate::runtime::CancelToken,
         options: IpcValue,
     ) -> Result<Vec<u8>, String>;
+    #[allow(clippy::too_many_arguments)]
     fn print_to_pdf_owned_many_extra(
         &self,
         origin: &crate::ipc::NativeRequestOwner,
@@ -430,7 +456,7 @@ pub trait DocsMediaTransition: Send + Sync {
     /// Synthetic hosts admit the supplied one-shot commit inside their own gate.
     fn synthetic_transition(
         &self,
-        admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>,
+        admit: SaveAdmitRef<'_>,
         after_unlock: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String>;
 }
@@ -444,7 +470,7 @@ pub trait DocsMediaStage: Send + Sync {
     fn candidate(&self) -> &(dyn std::any::Any + Send + Sync);
     fn synthetic_stage(
         &self,
-        admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>,
+        admit: SaveAdmitRef<'_>,
     ) -> Result<(), String>;
 }
 
@@ -489,6 +515,7 @@ pub trait OwnedEffects: Send + Sync {
         effect: &mut dyn FnMut(&crate::ipc::NativeSavedInput) -> Result<(), String>,
     ) -> Result<(), String>;
     /// Enqueue for a captured registered target after saved-input admission.
+    #[allow(clippy::too_many_arguments)]
     fn emit_native_saved_document_input(
         &self,
         document: &crate::ipc::NativeSavedDocument,
@@ -500,6 +527,7 @@ pub trait OwnedEffects: Send + Sync {
         channel: &str,
         args: Vec<crate::IpcValue>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn post_ui_native_saved_document_input(
         &self,
         document: crate::ipc::NativeSavedDocument,
@@ -510,6 +538,7 @@ pub trait OwnedEffects: Send + Sync {
         action: Box<dyn FnOnce() -> Result<(), String> + Send>,
         done: Box<dyn FnOnce(Result<(), String>) + Send>,
     );
+    #[allow(clippy::too_many_arguments)]
     fn with_native_saved_document_same_origin(
         &self,
         document: &crate::ipc::NativeSavedDocument,
@@ -522,6 +551,7 @@ pub trait OwnedEffects: Send + Sync {
         effect: &mut dyn FnMut(&crate::ipc::NativeSavedInput) -> Result<(), String>,
     ) -> Result<(), String>;
     /// Return after admission and enqueue, not renderer delivery.
+    #[allow(clippy::too_many_arguments)]
     fn emit_native_saved_document_same_origin(
         &self,
         document: &crate::ipc::NativeSavedDocument,
@@ -535,6 +565,7 @@ pub trait OwnedEffects: Send + Sync {
         channel: &str,
         args: Vec<crate::IpcValue>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn with_native_saved_document_transition(
         &self,
         document: &crate::ipc::NativeSavedDocument,
@@ -558,6 +589,7 @@ pub trait OwnedEffects: Send + Sync {
         stage: &dyn DocsMediaStage,
         recovery: Option<&crate::ipc::RecoverySeedReceipt>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn stage_saved_docs_media(
         &self,
         document: &crate::ipc::NativeSavedDocument,
@@ -570,6 +602,7 @@ pub trait OwnedEffects: Send + Sync {
         additional: &[&crate::runtime::CancelToken],
         stage: &dyn DocsMediaStage,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn transition_saved_docs_media(
         &self,
         document: &crate::ipc::NativeSavedDocument,
@@ -581,10 +614,7 @@ pub trait OwnedEffects: Send + Sync {
         pending: &crate::runtime::CancelToken,
         additional: &[&crate::runtime::CancelToken],
         transition: &dyn DocsMediaTransition,
-        retain: &mut dyn FnMut(
-            &crate::ipc::NativeRequestOwner,
-            &mut dyn FnMut() -> Result<(), String>,
-        ) -> Result<(), String>,
+        retain: RetainAdmitRef<'_>,
         before_notify: &mut dyn FnMut(
             &crate::ipc::NativeSavedDocument,
             &crate::ipc::NativeRequestOwner,
@@ -600,6 +630,7 @@ pub trait OwnedEffects: Send + Sync {
     /// `retain` prepares its core-local candidate before calling the one-shot
     /// commit, then publishes it infallibly before returning. It must not invoke
     /// callbacks, perform I/O, or reenter any media or authority gate.
+    #[allow(clippy::too_many_arguments)]
     fn transition_docs_media(
         &self,
         owner: &crate::ipc::NativeRequestOwner,
@@ -608,10 +639,7 @@ pub trait OwnedEffects: Send + Sync {
         pending: &crate::runtime::CancelToken,
         transition: &dyn DocsMediaTransition,
         recovery: Option<&crate::ipc::RecoverySeedReceipt>,
-        retain: &mut dyn FnMut(
-            &crate::ipc::NativeRequestOwner,
-            &mut dyn FnMut() -> Result<(), String>,
-        ) -> Result<(), String>,
+        retain: RetainAdmitRef<'_>,
     ) -> Result<crate::ipc::NativeRequestOwner, String>;
     fn with_native_command_preparation_effect(
         &self,
@@ -622,6 +650,7 @@ pub trait OwnedEffects: Send + Sync {
         pending: &crate::runtime::CancelToken,
         effect: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn with_native_command_creation_effect(
         &self,
         operation: &crate::ipc::NativeInvocationOperation,
@@ -632,6 +661,7 @@ pub trait OwnedEffects: Send + Sync {
         pending: &crate::runtime::CancelToken,
         effect: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn with_native_command_target_effect(
         &self,
         operation: &crate::ipc::NativeInvocationOperation,
@@ -643,6 +673,7 @@ pub trait OwnedEffects: Send + Sync {
         pending: &crate::runtime::CancelToken,
         effect: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn with_startup_command_preparation_effect(
         &self,
         startup: &crate::ipc::NativeInvocationOperation,
@@ -654,6 +685,7 @@ pub trait OwnedEffects: Send + Sync {
         pending: &crate::runtime::CancelToken,
         effect: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn with_startup_command_creation_effect(
         &self,
         startup: &crate::ipc::NativeInvocationOperation,
@@ -666,6 +698,7 @@ pub trait OwnedEffects: Send + Sync {
         pending: &crate::runtime::CancelToken,
         effect: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn with_startup_command_target_effect(
         &self,
         startup: &crate::ipc::NativeInvocationOperation,
@@ -705,6 +738,7 @@ pub trait OwnedEffects: Send + Sync {
         effect: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String>;
     /// Both owners must retain the same authenticated native context and renderer.
+    #[allow(clippy::too_many_arguments)]
     fn with_same_native_origin_effect(
         &self,
         expected: &crate::ipc::NativeRequestOwner,
@@ -741,6 +775,7 @@ pub trait OwnedEffects: Send + Sync {
         pending: &crate::runtime::CancelToken,
         effect: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn with_native_invocation_effect_extra(
         &self,
         document: &crate::ipc::NativeInvocationDocument,
@@ -787,9 +822,7 @@ pub trait OwnedEffects: Send + Sync {
         cancel: &crate::runtime::CancelToken,
         pending: &crate::runtime::CancelToken,
         additional: &[&crate::runtime::CancelToken],
-        use_plan: &mut dyn FnMut(
-            &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>,
-        ) -> Result<(), String>,
+        use_plan: &mut dyn FnMut(SaveAdmitRef<'_>) -> Result<(), String>,
     ) -> Result<(), String>;
     /// Open only the captured native destination inside its original admission.
     fn begin_native_direct_write(
@@ -812,6 +845,7 @@ pub trait OwnedEffects: Send + Sync {
         crate::ipc::AdmittedDirectWrite::begin(self, scope, prepared)
     }
     /// Check the actor revision inside the admission before a truncating open.
+    #[allow(clippy::too_many_arguments)]
     fn begin_native_direct_write_validated(
         &self,
         selection: &crate::ipc::NativeSaveDestination,
@@ -833,6 +867,7 @@ pub trait OwnedEffects: Send + Sync {
         crate::ipc::AdmittedDirectWrite::begin_validated(self, scope, prepared, validate)
     }
     /// Open a renderer-owned destination under the original captured owners.
+    #[allow(clippy::too_many_arguments)]
     fn begin_owned_direct_write(
         &self,
         origin: &crate::ipc::NativeRequestOwner,
@@ -885,6 +920,7 @@ pub trait OwnedEffects: Send + Sync {
     }
     /// Check actor state on the current core turn inside the publication
     /// admission. The validator receives neither the stage nor its receipt.
+    #[allow(clippy::too_many_arguments)]
     fn publish_native_staged_write_validated(
         &self,
         selection: &crate::ipc::NativeSaveDestination,
@@ -912,6 +948,7 @@ pub trait OwnedEffects: Send + Sync {
         crate::ipc::publish_staged_validated(self, scope, stage, validate)
     }
     /// Publish a prepared renderer output under the original authenticated owners.
+    #[allow(clippy::too_many_arguments)]
     fn publish_owned_staged_write(
         &self,
         origin: &crate::ipc::NativeRequestOwner,
@@ -944,6 +981,7 @@ pub trait OwnedEffects: Send + Sync {
     }
     /// Admit the actual authenticated callback only if it is the same native
     /// origin and renderer as the existing-document binding.
+    #[allow(clippy::too_many_arguments)]
     fn with_existing_document_same_origin_effect(
         &self,
         binding: &crate::ipc::NativeExistingDocumentBinding,
@@ -956,6 +994,7 @@ pub trait OwnedEffects: Send + Sync {
     ) -> Result<(), String>;
     /// The immutable selected path is compared before the same binding's
     /// canonical admission; no path can be substituted by the callback.
+    #[allow(clippy::too_many_arguments)]
     fn with_existing_document_destination_effect(
         &self,
         destination: &crate::ipc::NativeSaveDestination,
@@ -979,6 +1018,7 @@ pub trait OwnedEffects: Send + Sync {
         )
     }
     /// Admit only the exact numbered page derived from its retained selection.
+    #[allow(clippy::too_many_arguments)]
     fn with_numbered_save_destination_effect(
         &self,
         page: &crate::ipc::NativeSaveNumberedDestination,
@@ -1002,6 +1042,7 @@ pub trait OwnedEffects: Send + Sync {
         )
     }
     /// Admit the exact retained input and Drive state before a native reload starts.
+    #[allow(clippy::too_many_arguments)]
     fn with_saved_reload_acceptance(
         &self,
         input: &crate::ipc::NativeSavedInput,
@@ -1030,6 +1071,7 @@ pub trait OwnedEffects: Send + Sync {
             },
         )
     }
+    #[allow(clippy::too_many_arguments)]
     fn with_saved_reload_acceptance_effect(
         &self,
         input: &crate::ipc::NativeSavedInput,
@@ -1093,6 +1135,7 @@ pub trait OwnedEffects: Send + Sync {
             effect,
         )
     }
+    #[allow(clippy::too_many_arguments)]
     fn with_native_save_reload_many_effect_extra(
         &self,
         receipt: &NativeSaveReloadReceipt,
@@ -1103,6 +1146,7 @@ pub trait OwnedEffects: Send + Sync {
         additional: &[&crate::runtime::CancelToken],
         effect: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn with_startup_recovery_creation_effect(
         &self,
         startup: &crate::ipc::NativeInvocationOperation,
@@ -1114,6 +1158,7 @@ pub trait OwnedEffects: Send + Sync {
         pending: &crate::runtime::CancelToken,
         effect: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn with_startup_recovery_seed_effect(
         &self,
         startup: &crate::ipc::NativeInvocationOperation,
@@ -1124,6 +1169,7 @@ pub trait OwnedEffects: Send + Sync {
         pending: &crate::runtime::CancelToken,
         effect: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn with_startup_recovery_effect(
         &self,
         startup: &crate::ipc::NativeInvocationOperation,
@@ -1135,6 +1181,7 @@ pub trait OwnedEffects: Send + Sync {
         pending: &crate::runtime::CancelToken,
         effect: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn with_command_recovery_target_effect(
         &self,
         command: &crate::ipc::NativeInvocationOperation,
@@ -1176,6 +1223,7 @@ pub trait OwnedEffects: Send + Sync {
         cancel: &crate::runtime::CancelToken,
         effect: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn with_recovery_open_snapshot(
         &self,
         receipt: &crate::ipc::RecoverySeedReceipt,
@@ -1203,6 +1251,7 @@ pub trait OwnedEffects: Send + Sync {
         pending: &crate::runtime::CancelToken,
         effect: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn with_recovery_open_effect_many_extra(
         &self,
         receipt: &crate::ipc::RecoverySeedReceipt,
@@ -1213,6 +1262,7 @@ pub trait OwnedEffects: Send + Sync {
         additional: &[&crate::runtime::CancelToken],
         effect: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn with_recovery_pdf_revision_transition(
         &self,
         receipt: &crate::ipc::RecoverySeedReceipt,
@@ -1231,6 +1281,7 @@ pub trait OwnedEffects: Send + Sync {
     ) -> Result<(), String>;
     /// Atomically retire the exact multi-view PDF revisions and replace the
     /// retained native save authority. Cleanup precedes loss notifications.
+    #[allow(clippy::too_many_arguments)]
     fn with_native_save_revision_transition(
         &self,
         prepared: &mut crate::ipc::PreparedNativeSaveRevision,
@@ -1265,12 +1316,13 @@ pub trait OwnedEffects: Send + Sync {
             additional,
             &mut || {
                 snapshot
-                    .with_current(|| effect())
+                    .with_current(&mut effect)
                     .ok_or_else(|| "The native save snapshot was replaced.".to_owned())?
             },
         )
     }
     /// Admit the actual callback and the exact save epoch in one owner plan.
+    #[allow(clippy::too_many_arguments)]
     fn with_native_save_revision_same_origin_effect(
         &self,
         snapshot: &crate::ipc::NativeSaveRevisionSnapshot,
@@ -1292,12 +1344,13 @@ pub trait OwnedEffects: Send + Sync {
             additional,
             &mut || {
                 snapshot
-                    .with_current(|| effect())
+                    .with_current(&mut effect)
                     .ok_or_else(|| "The native save snapshot was replaced.".to_owned())?
             },
         )
     }
     /// Atomically replace a selected destination under its original binding.
+    #[allow(clippy::too_many_arguments)]
     fn with_native_save_selection_transition(
         &self,
         prepared: &mut crate::ipc::PreparedNativeSaveSelection,
@@ -1341,6 +1394,7 @@ pub trait OwnedEffects: Send + Sync {
             (Ok(result), Ok(()), Ok(())) => result,
         }
     }
+    #[allow(clippy::too_many_arguments)]
     fn emit_native_save_revision_snapshot(
         &self,
         snapshot: &crate::ipc::NativeSaveRevisionSnapshot,
@@ -1352,6 +1406,7 @@ pub trait OwnedEffects: Send + Sync {
         channel: &str,
         args: Vec<IpcValue>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn post_ui_native_save_revision_snapshot(
         &self,
         snapshot: crate::ipc::NativeSaveRevisionSnapshot,
@@ -1362,6 +1417,7 @@ pub trait OwnedEffects: Send + Sync {
         action: Box<dyn FnOnce() -> Result<(), String> + Send>,
         done: Box<dyn FnOnce(Result<(), String>) + Send>,
     );
+    #[allow(clippy::too_many_arguments)]
     fn emit_recovery_open_many(
         &self,
         receipt: &crate::ipc::RecoverySeedReceipt,
@@ -1373,6 +1429,7 @@ pub trait OwnedEffects: Send + Sync {
         channel: &str,
         args: Vec<crate::IpcValue>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn emit_recovery_open_snapshot(
         &self,
         receipt: &crate::ipc::RecoverySeedReceipt,
@@ -1410,6 +1467,7 @@ pub trait OwnedEffects: Send + Sync {
         pending: &crate::runtime::CancelToken,
         effect: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn with_recovery_dialog_snapshot(
         &self,
         target: &crate::ipc::RecoveryOpenTarget,
@@ -1420,6 +1478,7 @@ pub trait OwnedEffects: Send + Sync {
         pending: &crate::runtime::CancelToken,
         effect: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn emit_recovery_dialog(
         &self,
         target: &crate::ipc::RecoveryOpenTarget,
@@ -1430,6 +1489,7 @@ pub trait OwnedEffects: Send + Sync {
         channel: &str,
         args: Vec<IpcValue>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn emit_recovery_dialog_snapshot(
         &self,
         target: &crate::ipc::RecoveryOpenTarget,
@@ -1474,6 +1534,7 @@ pub trait OwnedEffects: Send + Sync {
         args: Vec<IpcValue>,
     ) -> Result<(), String>;
     /// Enqueue an immutable event to the indexed captured participant.
+    #[allow(clippy::too_many_arguments)]
     fn emit_owned_many(
         &self,
         origin: &crate::ipc::NativeRequestOwner,
@@ -1484,6 +1545,7 @@ pub trait OwnedEffects: Send + Sync {
         channel: &str,
         args: Vec<IpcValue>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn emit_owned_many_extra(
         &self,
         origin: &crate::ipc::NativeRequestOwner,
@@ -1495,6 +1557,7 @@ pub trait OwnedEffects: Send + Sync {
         channel: &str,
         args: Vec<IpcValue>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn emit_native_command_creation_many(
         &self,
         operation: &crate::ipc::NativeInvocationOperation,
@@ -1507,6 +1570,7 @@ pub trait OwnedEffects: Send + Sync {
         channel: &str,
         args: Vec<IpcValue>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn emit_native_invocation_many(
         &self,
         document: &crate::ipc::NativeInvocationDocument,
@@ -1518,6 +1582,7 @@ pub trait OwnedEffects: Send + Sync {
         channel: &str,
         args: Vec<IpcValue>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn emit_native_operation_many(
         &self,
         operation: &crate::ipc::NativeInvocationOperation,
@@ -1530,6 +1595,7 @@ pub trait OwnedEffects: Send + Sync {
         args: Vec<IpcValue>,
     ) -> Result<(), String>;
     /// Enqueue to an exact captured participant; draining happens outside gates.
+    #[allow(clippy::too_many_arguments)]
     fn emit_existing_document_save_many(
         &self,
         binding: &crate::ipc::NativeExistingDocumentBinding,
@@ -1540,6 +1606,7 @@ pub trait OwnedEffects: Send + Sync {
         channel: &str,
         args: Vec<IpcValue>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn emit_existing_document_save_many_extra(
         &self,
         binding: &crate::ipc::NativeExistingDocumentBinding,
@@ -1551,6 +1618,7 @@ pub trait OwnedEffects: Send + Sync {
         channel: &str,
         args: Vec<IpcValue>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn emit_startup_recovery_many(
         &self,
         startup: &crate::ipc::NativeInvocationOperation,
@@ -1564,6 +1632,7 @@ pub trait OwnedEffects: Send + Sync {
         channel: &str,
         args: Vec<IpcValue>,
     ) -> Result<(), String>;
+    #[allow(clippy::too_many_arguments)]
     fn post_ui_recovery_open_many(
         &self,
         receipt: crate::ipc::RecoverySeedReceipt,
@@ -1583,6 +1652,7 @@ pub trait OwnedEffects: Send + Sync {
         action: Box<dyn FnOnce() -> Result<(), String> + Send>,
         done: Box<dyn FnOnce(Result<(), String>) + Send>,
     );
+    #[allow(clippy::too_many_arguments)]
     fn post_ui_existing_document_save_extra(
         &self,
         binding: crate::ipc::NativeExistingDocumentBinding,
@@ -1594,6 +1664,7 @@ pub trait OwnedEffects: Send + Sync {
         done: Box<dyn FnOnce(Result<(), String>) + Send>,
     );
     /// Accept the exact selected path, then execute the native action outside all gates.
+    #[allow(clippy::too_many_arguments)]
     fn post_ui_existing_document_destination(
         &self,
         destination: crate::ipc::NativeSaveDestination,
@@ -1625,6 +1696,7 @@ pub trait OwnedEffects: Send + Sync {
         action: Box<dyn FnOnce() -> Result<(), String> + Send>,
         done: Box<dyn FnOnce(Result<(), String>) + Send>,
     );
+    #[allow(clippy::too_many_arguments)]
     fn post_ui_owned_many_extra(
         &self,
         origin: crate::ipc::NativeRequestOwner,

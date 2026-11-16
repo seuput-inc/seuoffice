@@ -194,6 +194,21 @@ fn pinned_source_refuses_changed_content() {
 }
 
 #[cfg(unix)]
+fn quarantine_public_image(
+    public: &native::Directory,
+    private: &native::Directory,
+) -> native::Quarantine {
+    match native::Quarantine::move_from(public, "image.png", private, "payload") {
+        Ok(receipt) => receipt,
+        Err(failure) => panic!(
+            "quarantine move failed: {}; inverse retained: {}",
+            failure.error.message,
+            failure.retained.is_some()
+        ),
+    }
+}
+
+#[cfg(unix)]
 #[test]
 fn quarantine_conflict_keeps_both_objects_and_retains_inverse() {
     let root = Scratch::new("quarantine-conflict");
@@ -202,7 +217,7 @@ fn quarantine_conflict_keeps_both_objects_and_retains_inverse() {
     let public = native::Directory::open(&root.text("public"), true).unwrap();
     let private = native::Directory::open(&root.text("private"), true).unwrap();
     let original = public.read("image.png").unwrap().unwrap();
-    let receipt = native::Quarantine::move_from(&public, "image.png", &private, "payload").unwrap();
+    let receipt = quarantine_public_image(&public, &private);
     assert!(receipt.same_object(&original).unwrap());
     root.file("public/image.png", b"replacement");
     let receipt = match receipt.restore() {
@@ -237,7 +252,7 @@ fn quarantine_detects_public_replacement_and_restores_it() {
     )
     .unwrap();
     root.file("public/image.png", b"replacement");
-    let receipt = native::Quarantine::move_from(&public, "image.png", &private, "payload").unwrap();
+    let receipt = quarantine_public_image(&public, &private);
     assert!(!receipt.same_object(&original).unwrap());
     assert!(receipt.restore().is_ok());
     assert_eq!(
@@ -267,7 +282,7 @@ fn quarantine_restores_replacement_symlink_without_touching_target() {
     )
     .unwrap();
     symlink(root.path("outside"), root.path("public/image.png")).unwrap();
-    let receipt = native::Quarantine::move_from(&public, "image.png", &private, "payload").unwrap();
+    let receipt = quarantine_public_image(&public, &private);
     assert!(!receipt.same_object(&original).unwrap());
     assert!(receipt.restore().is_ok());
     assert!(

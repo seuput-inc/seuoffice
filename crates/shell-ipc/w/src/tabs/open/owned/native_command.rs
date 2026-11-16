@@ -10,7 +10,6 @@ use main_core::shell::tab_manager::{EditorOpen, ViewCreationCleanupState};
 use shell_contract::ipc::{
     NativeEditorCommand, NativeInvocationOperation, NativeInvocationSelection,
 };
-use shell_contract::runtime::Views;
 use std::rc::Rc;
 
 impl TabsState {

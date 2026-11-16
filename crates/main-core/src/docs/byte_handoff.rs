@@ -112,7 +112,7 @@ impl MediaPermit {
         use std::sync::atomic::AtomicU64;
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let generation = NEXT
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_add(1))
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_add(1))
             .map_err(|_| "Document media generation exhausted.".to_owned())?;
         Ok(Self {
             owner: MediaOwner { view, generation },

@@ -15,7 +15,6 @@ use shell_contract::{Provided, ViewId};
 struct Ownership {
     identity: Rc<Cell<bool>>,
     created: RendererGeneration,
-    browser: Option<shell_contract::ipc::NativeBrowserOwner>,
     effects: OwnedEffectsHost,
     // This proof records the issuer; accepted payloads never reuse its live authority.
     _source_provenance: NativeRequestOwner,
@@ -368,7 +367,6 @@ impl PreparedGenerateHandoff {
             Ownership {
                 identity: self.identity.clone(),
                 created: self.created.clone(),
-                browser: Some(self.browser.clone()),
                 effects: self.effects,
                 _source_provenance: self.source,
             },
@@ -433,7 +431,6 @@ pub fn queue_generate_handoff_owned(
                 Ownership {
                     identity: identity.clone(),
                     created: created.clone(),
-                    browser: None,
                     effects: effects.clone(),
                     _source_provenance: source.clone(),
                 },
@@ -645,7 +642,6 @@ impl PreparedConverted {
             Ownership {
                 identity: self.identity.clone(),
                 created: self.created.clone(),
-                browser: Some(self.browser.clone()),
                 effects: self.effects,
                 _source_provenance: self.source,
             },
@@ -702,7 +698,6 @@ pub fn record_generate_converted_fenced(
         Ownership {
             identity: identity.clone(),
             created: created.clone(),
-            browser: None,
             effects,
             _source_provenance: source,
         },

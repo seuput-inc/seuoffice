@@ -5,7 +5,7 @@ use main_core::shell::tab_manager::{EditorOpen, PreparedTabLoad, PreparedTabOpen
 use shell_contract::{
     ViewId,
     ipc::NativeRequestOwner,
-    runtime::{CancelToken, RendererGeneration, Views},
+    runtime::{CancelToken, RendererGeneration},
 };
 
 use super::{DIAGRAM_CHECKING, TabsState, document_kind};
@@ -18,13 +18,14 @@ mod generated_cleanup;
 mod native_command;
 mod pending_output;
 mod receipt_retirement;
-pub(super) use adopted_lifetime::AdoptedEditorLifetime;
+mod saved_input;
+pub(crate) use adopted_lifetime::AdoptedEditorLifetime;
 pub use adopted_lifetime::{
     AdoptedLifetimeFailure, AdoptedLifetimeHandle, CallerOwnedAdoptedLifetime,
     RetainedAdoptedLifetime,
 };
 pub use committed::PreparedGeneratedOperation;
-pub(super) use creation_cleanup::OwnedCreationCleanup;
+pub(crate) use creation_cleanup::OwnedCreationCleanup;
 pub use generated::{CommittedGeneratedTab, GeneratedEditorOpen};
 pub use receipt_retirement::{retire_adopted_editor_receipts, rollback_editor_receipts};
 type Opened = (String, ViewId, RendererGeneration);
@@ -2369,7 +2370,7 @@ impl TabsState {
         let state = self.this.clone();
         let source = owner.clone();
         let request_cancel = cancel.clone();
-        let finish = Box::new(move |result: Result<Option<ViewId>, String>| match result {
+        let finish: Routed = Box::new(move |result: Result<Option<ViewId>, String>| match result {
             Ok(None) => {
                 if let Some(state) = state.upgrade() {
                     state.home_owned(owner, cancel, epoch, done);

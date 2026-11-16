@@ -55,7 +55,7 @@ impl TabsState {
         done: Box<dyn FnOnce(Result<Vec<String>, String>)>,
     ) {
         let state = self.rc();
-        let action = Box::new(move || {
+        let action: Box<dyn FnOnce()> = Box::new(move || {
             run_hydration(
                 state, specs, operation, owner, cancel, pending, bind, rejected, done,
             )
@@ -118,7 +118,7 @@ impl TabsState {
         done: StartupMutationDone,
     ) {
         let state = self.rc();
-        let action =
+        let action: Box<dyn FnOnce()> =
             Box::new(move || run(state, mutation, operation, owner, cancel, pending, done));
         if self.activation_running.replace(true) {
             self.activation_queue.borrow_mut().push_back(action);

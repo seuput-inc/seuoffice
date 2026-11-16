@@ -590,10 +590,6 @@ pub trait TabHost<V, B>: EditorCalls<V> {
     // ---- making views ----
     /// the `create*View` call of the spec
     fn create_view(&mut self, spec: &ViewSpec<'_>) -> TabResult<V>;
-    /// `new WebContentsView({ webPreferences })` and its
-    /// `setWindowOpenHandler` (`help_window_open`): the manual's view before
-    /// its page is loaded
-    fn create_help_view(&mut self) -> V;
 
     // ---- queues and marks of the editor modules ----
     /// `markDocsNewBlank(wcId)`
@@ -1115,22 +1111,6 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
 
     // ---- the spare Sheets view ----
 
-    fn schedule_spare_sheets_view(&mut self, host: &mut dyn TabHost<V, B>, delay_ms: f64) {
-        if host.no_spare_view_env() || self.spare_sheets_timer || self.spare_sheets_view.is_some() {
-            return;
-        }
-        // a spare sheets view belongs to the single-pane shell; it must never
-        // shadow a pane while a split is live
-        if self.split.is_some() {
-            return;
-        }
-        if self.tab_by_id(&self.active_id).map(|t| t.kind) != Some(TabKind::Sheets) {
-            return;
-        }
-        host.set_spare_timer(delay_ms);
-        self.spare_sheets_timer = true;
-    }
-
     pub fn prepare_spare_sheets_view(&mut self, host: &mut dyn TabHost<V, B>) -> bool {
         self.spare_sheets_timer = false;
         self.spare_sheets_view.is_none()
@@ -1198,35 +1178,11 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
         host.close_view(view);
     }
 
-    fn discard_spare_sheets_view(&mut self, host: &mut dyn TabHost<V, B>) {
-        if self.spare_sheets_timer {
-            host.clear_spare_timer();
-        }
-        self.spare_sheets_timer = false;
-        let spare = self.spare_sheets_view.take();
-        let Some((spare, _binding)) = spare else {
-            return;
-        };
-        host.remove_child_view(&spare);
-        host.close_view(&spare);
-    }
-
     // ---- geometry ----
 
     fn untitled(&self, host: &mut dyn TabHost<V, B>, kind: TabKind, fallback: &str) -> String {
         host.untitled_title_for(kind)
             .unwrap_or_else(|| fallback.to_owned())
-    }
-
-    /// the shell window's own content size: what a covering view fills
-    fn window_rect(&self, host: &mut dyn TabHost<V, B>) -> Rect {
-        let (width, height) = host.window_content_size();
-        Rect {
-            x: 0.0,
-            y: 0.0,
-            width,
-            height,
-        }
     }
 
     /// the layout space normal tab views live in: the window below the strip
@@ -1241,22 +1197,6 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
             width,
             height: math_max(0.0, height - strip),
         }
-    }
-
-    /// the tab whose view covers the whole window right now
-    fn cover_tab_id(&self, host: &mut dyn TabHost<V, B>) -> Option<String> {
-        if let Some(id) = &self.html_full_screen_id {
-            return Some(id.clone());
-        }
-        let view = self
-            .tab_by_id(&self.active_id)
-            .and_then(|t| t.view.as_ref());
-        if let Some(view) = view
-            && self.bleed_wc_ids.contains(&host.view_id(view))
-        {
-            return Some(self.active_id.clone());
-        }
-        None
     }
 
     fn index_of(&self, id: &str) -> Option<usize> {
@@ -1492,50 +1432,6 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
     /// `openHomeTab`
     pub fn open_home_tab(&mut self, host: &mut dyn TabHost<V, B>) {
         self.activate_tab(host, HOME_ID);
-    }
-
-    /// `openHelpTab`: the in-app user manual; a second call focuses the open
-    /// one (at the topic when given)
-    pub fn open_help_tab(
-        &mut self,
-        host: &mut dyn TabHost<V, B>,
-        topic: Option<&str>,
-    ) -> TabResult<String> {
-        let wanted = help_topic_param(topic);
-        if let Some(existing) = self.tabs.iter().find(|t| t.kind == TabKind::Help) {
-            let existing_id = existing.id.clone();
-            let existing_view = existing.view.clone();
-            // a link to one topic has to land on it even when the manual was
-            // open on another; reloading at the topic is the whole navigation
-            if let (Some(wanted), Some(view)) = (wanted, existing_view.as_ref()) {
-                let dev_url = host.renderer_dev_url();
-                let url = help_view_url(dev_url.as_deref(), Some(wanted))?;
-                host.load_url(view, &url);
-            }
-            self.activate_tab(host, &existing_id);
-            return Ok(existing_id);
-        }
-        let view = host.create_help_view();
-        let dev_url = host.renderer_dev_url();
-        let url = help_view_url(dev_url.as_deref(), wanted)?;
-        host.load_url(&view, &url);
-        let id = self.alloc_id();
-        host.add_child_view(&view);
-        host.set_visible(&view, false);
-        let title = self.untitled(host, TabKind::Help, &format!("{PRODUCT_NAME} Help"));
-        self.tabs.push(TabRecord {
-            id: id.clone(),
-            kind: TabKind::Help,
-            view: Some(view),
-            binding: None,
-            title,
-            file_path: None,
-            present: false,
-            opener: None,
-            lazy: None,
-        });
-        self.activate_tab(host, &id);
-        Ok(id)
     }
 
     pub fn prepare_help_open_pure(

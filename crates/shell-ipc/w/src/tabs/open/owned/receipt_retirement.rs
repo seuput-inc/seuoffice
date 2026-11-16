@@ -94,7 +94,7 @@ fn rollback_one(
     done: Done,
 ) {
     let next_receipt = receipt.clone();
-    let next = Box::new(move |result: Result<(), String>| {
+    let next: Done = Box::new(move |result| {
         if let Err(error) = result {
             return done(Err(error));
         }

@@ -65,11 +65,11 @@ pub(in crate::slides) fn presenter_start(
         Ok(display) => display,
         Err(error) => return responder.reply(Err(thrown(error.0))),
     };
-    let external = app
-        .shell
-        .displays()
-        .into_iter()
-        .find(|candidate| candidate.id != display.id);
+    let displays = match app.shell.displays() {
+        Ok(displays) => displays,
+        Err(error) => return responder.reply(Err(thrown(error.0))),
+    };
+    let external = displays.into_iter().find(|candidate| candidate.id != display.id);
     let ticket = {
         let mut state = app.state.borrow_mut();
         state.next_ticket += 1;

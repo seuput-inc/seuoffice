@@ -188,6 +188,7 @@ impl TabsState {
         } = &mut *g;
         detached
             .detached_window_for_web_contents(bridge, i64::from(view.0))
+            .map(|reservation| reservation.window())
             .or_else(|| bridge.shell.map(|shell| shell.window))
     }
 }

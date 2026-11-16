@@ -15,7 +15,9 @@ pub(crate) struct NativeOutputScope {
 }
 
 #[derive(Clone)]
-pub struct NativeCommittedOutput {
+pub struct NativeCommittedOutput(Arc<CommittedOutputParts>);
+
+struct CommittedOutputParts {
     selection: NativeSaveDestination,
     commit: file_commit::FileCommitReceipt,
     scope: Arc<NativeOutputScope>,
@@ -27,16 +29,15 @@ impl NativeCommittedOutput {
         if commit.path() != selection.path() {
             return Err("The committed output does not match the selected destination.".into());
         }
-        Ok(Self { selection, commit, scope })
+        Ok(Self(Arc::new(CommittedOutputParts { selection, commit, scope })))
     }
-    pub fn selection(&self) -> &NativeSaveDestination { &self.selection }
-    pub fn commit(&self) -> &file_commit::FileCommitReceipt { &self.commit }
-    pub fn participants(&self) -> &[NativeRequestOwner] { &self.scope.participants }
-    pub fn cancel(&self) -> &CancelToken { &self.scope.cancel }
-    pub fn pending(&self) -> &CancelToken { &self.scope.pending }
-    pub fn additional(&self) -> &[CancelToken] { &self.scope.additional }
-    pub(crate) fn same_scope(&self, other: &Self) -> bool { Arc::ptr_eq(&self.scope, &other.scope) }
-
+    pub fn selection(&self) -> &NativeSaveDestination { &self.0.selection }
+    pub fn commit(&self) -> &file_commit::FileCommitReceipt { &self.0.commit }
+    pub fn participants(&self) -> &[NativeRequestOwner] { &self.0.scope.participants }
+    pub fn cancel(&self) -> &CancelToken { &self.0.scope.cancel }
+    pub fn pending(&self) -> &CancelToken { &self.0.scope.pending }
+    pub fn additional(&self) -> &[CancelToken] { &self.0.scope.additional }
+    pub(crate) fn same_scope(&self, other: &Self) -> bool { Arc::ptr_eq(&self.0.scope, &other.0.scope) }
 }
 
 impl SavedPublication {
@@ -202,6 +203,7 @@ impl NativeSavedDocumentSuccessor {
 impl NativeSavedTarget {
     /// Prepare the real creator's immutable reservation before its one-time
     /// initial browser adoption. This does not itself admit an effect.
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare(
         input: NativeSavedInput, path: NativeSavedPath, surface: Surface,
         view: ViewId, created: RendererGeneration, reservation: NativeClosureReservation,

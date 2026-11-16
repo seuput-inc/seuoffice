@@ -761,26 +761,6 @@ impl TabHost<View, ()> for World {
         Ok(self.make_view())
     }
 
-    fn create_help_view(&mut self) -> View {
-        let view = self.make_view();
-        self.log(vec![
-            Value::from("newWebContentsView"),
-            Value::from(view.0),
-            json!({
-                "contextIsolation": true,
-                "nodeIntegration": false,
-                "sandbox": true,
-                "backgroundThrottling": false
-            }),
-        ]);
-        self.log(vec![
-            Value::from("setWindowOpenHandler"),
-            Value::from(view.0),
-        ]);
-        self.window_open.push(view.0);
-        view
-    }
-
     fn mark_docs_new_blank(&mut self, wc_id: i64) {
         self.log(vec![Value::from("markDocsNewBlank"), Value::from(wc_id)]);
     }
@@ -932,6 +912,30 @@ impl TabHost<View, ()> for World {
             Value::from(message),
             Value::from(error),
         ]);
+    }
+}
+
+impl World {
+    /// `new WebContentsView({ webPreferences })` and its `setWindowOpenHandler`:
+    /// the manual's view before its page is loaded
+    pub(crate) fn create_help_view(&mut self) -> View {
+        let view = self.make_view();
+        self.log(vec![
+            Value::from("newWebContentsView"),
+            Value::from(view.0),
+            json!({
+                "contextIsolation": true,
+                "nodeIntegration": false,
+                "sandbox": true,
+                "backgroundThrottling": false
+            }),
+        ]);
+        self.log(vec![
+            Value::from("setWindowOpenHandler"),
+            Value::from(view.0),
+        ]);
+        self.window_open.push(view.0);
+        view
     }
 }
 

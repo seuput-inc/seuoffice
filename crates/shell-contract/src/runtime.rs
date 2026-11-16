@@ -127,10 +127,10 @@ impl CancelToken {
         }
         // The source's observer lock is already released. A public cancel after
         // renderer retirement still wakes this independent signal exactly once.
-        if external {
-            if let Some(signal) = self.0.external_loss.get() {
-                signal.cancel();
-            }
+        if external
+            && let Some(signal) = self.0.external_loss.get()
+        {
+            signal.cancel();
         }
     }
 
@@ -454,6 +454,12 @@ impl AdmittedDocumentRetirement<'_> {
         }
         self.renewed[index] = true;
         Ok(prepared.owner)
+    }
+}
+
+impl Default for RendererGeneration {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

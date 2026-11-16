@@ -186,7 +186,7 @@ impl Projects {
             Err(error) => Err(Thrown(error.message)),
         };
         drop(completion);
-        self.guide().report_mutation_warnings(&warnings);
+        self.guide().report_write_warnings(&warnings);
         self.advance(answer, reply);
     }
 }
