@@ -879,7 +879,7 @@ impl ProjectWriteGuard {
         }
         .map_err(E::from)?;
         #[cfg(unix)]
-        let mut check = || {
+        let check = || {
             if let Some(scope) = scope {
                 if !scope.matches()? {
                     return Ok(false);

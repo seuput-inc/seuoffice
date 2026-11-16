@@ -449,8 +449,8 @@ impl ChatStoreHost for ChatHost {
     fn now_iso(&mut self) -> Result<String, ChatStoreError> {
         let at = self.clock.get();
         self.clock.set(at + self.tick);
-        to_iso_string(at).map_err(|error| ChatStoreError {
-            message: error.to_string(),
+        to_iso_string(at).ok_or_else(|| ChatStoreError {
+            message: "Invalid time value".to_owned(),
             code: None,
             kind: ChatStoreErrorKind::Failure,
         })

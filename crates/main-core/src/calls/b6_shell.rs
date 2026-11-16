@@ -3230,7 +3230,7 @@ mod recovery_reentrancy_tests {
         assert!(
             !log.borrow()
                 .iter()
-                .any(|line| line.to_string().contains("settled"))
+                .any(|line| line.first().and_then(Value::as_str) == Some("settled"))
         );
     }
 
@@ -3305,7 +3305,7 @@ mod recovery_reentrancy_tests {
         assert!(
             !log.borrow()
                 .iter()
-                .any(|line| line.to_string().contains("openHomeTab"))
+                .any(|line| line.first().and_then(Value::as_str) == Some("openHomeTab"))
         );
     }
 
@@ -3394,7 +3394,7 @@ mod recovery_reentrancy_tests {
         assert!(
             !log.borrow()
                 .iter()
-                .any(|line| line.to_string().contains("settled"))
+                .any(|line| line.first().and_then(Value::as_str) == Some("settled"))
         );
         let LaunchStep::Need(LaunchNeed::Settled, _) = machine.resume(
             LaunchReply::Completed(Ok(())),

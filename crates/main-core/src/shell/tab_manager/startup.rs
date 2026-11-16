@@ -236,7 +236,7 @@ mod tests {
 
     #[test]
     fn rejected_binding_does_not_allocate_or_insert_and_retry_uses_same_id() {
-        let mut tabs = TabManager::<u64>::new();
+        let mut tabs = TabManager::<u64, ()>::new();
         let prepared = tabs.prepare_startup_add(spec(7), String::new());
         let error = tabs.commit_startup_mutation(prepared, &mut |opener, id| {
             assert_eq!(opener.id, 7);
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn stale_preparation_rejects_before_binding() {
-        let mut tabs = TabManager::<u64>::new();
+        let mut tabs = TabManager::<u64, ()>::new();
         let old = tabs.prepare_startup_add(spec(1), String::new());
         let fresh = tabs.prepare_startup_add(spec(2), String::new());
         tabs.commit_startup_mutation(fresh, &mut |_, _| Ok(()))
@@ -277,7 +277,7 @@ mod tests {
 
     #[test]
     fn hydration_binds_the_whole_batch_before_mutating() {
-        let mut tabs = TabManager::<u64>::new();
+        let mut tabs = TabManager::<u64, ()>::new();
         let prepared = tabs.prepare_startup_hydrate(vec![spec(1), spec(2)]);
         assert!(
             tabs.commit_startup_hydrate(prepared, &mut |bindings| {
@@ -304,7 +304,7 @@ mod tests {
 
     #[test]
     fn stale_hydration_never_binds_any_opener() {
-        let mut tabs = TabManager::<u64>::new();
+        let mut tabs = TabManager::<u64, ()>::new();
         let stale = tabs.prepare_startup_hydrate(vec![spec(1), spec(2)]);
         let change = tabs.prepare_startup_add(spec(3), String::new());
         tabs.commit_startup_mutation(change, &mut |_, _| Ok(()))
@@ -323,7 +323,7 @@ mod tests {
 
     #[test]
     fn hydration_rejects_missing_captured_title_before_binding() {
-        let mut tabs = TabManager::<u64>::new();
+        let mut tabs = TabManager::<u64, ()>::new();
         let mut missing = spec(1);
         missing.title = None;
         let prepared = tabs.prepare_startup_hydrate(vec![missing]);

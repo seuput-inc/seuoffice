@@ -113,7 +113,7 @@ pub(super) fn merge(source: &Path, target: &Path) -> io::Result<Option<f64>> {
         return Ok(Some(next - 1.0));
     }
     let temp = temporary_path(target)?;
-    let result = (|| {
+    let result: io::Result<()> = (|| {
         let mut out = OpenOptions::new()
             .write(true)
             .create_new(true)

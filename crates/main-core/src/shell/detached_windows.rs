@@ -1494,7 +1494,7 @@ mod snapshot_tests {
             close_phase: None,
             closed: false,
         }));
-        windows.detached.set("4".into(), 0);
+        windows.detached.set("4", 0);
         windows
     }
 

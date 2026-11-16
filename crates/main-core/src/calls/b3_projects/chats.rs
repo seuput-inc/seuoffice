@@ -410,8 +410,8 @@ impl ChatStoreHost for FakeHost {
     fn now_iso(&mut self) -> Result<String, ChatStoreError> {
         let mut world = self.world.borrow_mut();
         world.clock_ms += 1000.0;
-        to_iso_string(world.clock_ms).map_err(|error| ChatStoreError {
-            message: error.to_string(),
+        to_iso_string(world.clock_ms).ok_or_else(|| ChatStoreError {
+            message: "Invalid time value".to_owned(),
             code: None,
             kind: crate::shell::projects::chat_store::ChatStoreErrorKind::Failure,
         })

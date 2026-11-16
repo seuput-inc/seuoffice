@@ -1601,7 +1601,7 @@ impl ProjectIpc {
 
     pub fn finish_selection<P>(
         &mut self,
-        deps: &mut ProjectIpcDeps<'_, P>,
+        _deps: &mut ProjectIpcDeps<'_, P>,
         request: SelectionRequest,
         result: Result<ProjectSelection, Thrown>,
     ) -> Result<IpcStep<P>, Thrown> {

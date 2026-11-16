@@ -1789,7 +1789,7 @@ fn run_op(
                 file_name: str_of(c, "fileName").unwrap_or("").to_owned(),
                 title: str_of(c, "title").unwrap_or("").to_owned(),
             };
-            let opened = match TabManager::<View>::template_editor_open(&copy) {
+            let opened = match TabManager::<View, ()>::template_editor_open(&copy) {
                 None => Ok(None),
                 Some(request) => {
                     if copy.editor == "pdf" {
@@ -2449,7 +2449,7 @@ mod dirty_failure_tests {
     #[test]
     fn failed_slides_dirty_check_rejects_close_and_keeps_tab() {
         let mut world = World::new(&Value::Null);
-        let mut tabs = TabManager::<View>::new();
+        let mut tabs = TabManager::<View, ()>::new();
         let id =
             fixture_open_editor(&mut world, &mut tabs, EditorOpen::Slides { path: None }).unwrap();
         let view = tabs.web_contents_for_tab(&id).unwrap();

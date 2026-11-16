@@ -783,7 +783,7 @@ impl HwpRecovery {
             return Ok(Vec::new());
         }
         let directory = e.user_data_dir();
-        let path = |identity| {
+        let path = |identity: &RecoveryIdentity| {
             crate::packages::electron_utils::recovery_store::recovery_copy_path(
                 &directory, identity,
             )
@@ -2281,6 +2281,42 @@ mod tests {
         assert_eq!(result.unwrap_err().message, "revoked");
         assert_eq!(std::fs::read(&source).unwrap(), content);
         assert!(!directory.join("untitled").exists());
+    }
+
+    #[test]
+    fn recovery_adoption_repeated_admission_preserves_source() {
+        use crate::packages::electron_utils::recovery_store::{
+            RecoveryAdoptOptions, RecoveryAdoptPlan,
+        };
+        let r = rig();
+        let directory = r.e.dir.join("userData").join("hwp-autosave");
+        std::fs::create_dir_all(&directory).unwrap();
+        let source = directory.join("source.hwpx");
+        let content = zip_bytes(9);
+        std::fs::write(&source, &content).unwrap();
+        let options = RecoveryAdoptOptions {
+            title: "Recovered".into(),
+            ext: ".hwpx".into(),
+            state: None,
+            original_path: None,
+        };
+        let plan = RecoveryAdoptPlan::prepare(
+            &r.e.user_data_dir(),
+            "hwp",
+            source.to_str().unwrap(),
+            &options,
+            &|| "00000000-0000-4000-8000-000000000001".into(),
+            &|| 1234.0,
+        )
+        .unwrap()
+        .unwrap();
+        let result = plan.publish_authorized(&mut |effect| {
+            effect();
+            effect();
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&source).unwrap(), content);
     }
 
     #[test]

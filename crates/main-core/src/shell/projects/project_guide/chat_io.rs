@@ -115,7 +115,7 @@ impl ChatGuideAuthority {
         };
         let guard = ProjectWriteGuard::new(&self.platform);
         let directory = guard
-            .chats_directory(&authority.path, &target.0, false, &mut |_effect| {
+            .chats_directory(&authority.path, Some(&target.0), false, &mut |_effect| {
                 Err(NodeError {
                     code: None,
                     message: "trash validation cannot create directories".into(),
@@ -389,7 +389,7 @@ impl OwnedChatGuide {
             .ok_or_else(|| unknown_project(&self.seed.project_id))?;
         Ok(self
             .guard
-            .chats_directory(root, data_dir, create, &mut |effect| {
+            .chats_directory(root, Some(data_dir), create, &mut |effect| {
                 self.authorization.effect(effect)
             })?)
     }

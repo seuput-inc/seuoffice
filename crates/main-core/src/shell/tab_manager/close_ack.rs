@@ -311,7 +311,7 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
         Ok(effects)
     }
 
-    fn take_removed_tab(&mut self, id: &str) -> Option<(usize, TabRecord<V, B>)> {
+    pub(super) fn take_removed_tab(&mut self, id: &str) -> Option<(usize, TabRecord<V, B>)> {
         let idx = self.index_of(id)?;
         if self.html_full_screen_id.as_deref() == Some(id) {
             self.html_full_screen_id = None;
@@ -319,7 +319,7 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
         Some((idx, self.tabs.remove(idx)))
     }
 
-    fn after_leaving_strip_state(&mut self, id: &str, idx: usize) -> TabRemovalState {
+    pub(super) fn after_leaving_strip_state(&mut self, id: &str, idx: usize) -> TabRemovalState {
         let survivor = self
             .split
             .as_ref()

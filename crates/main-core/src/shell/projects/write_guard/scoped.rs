@@ -142,7 +142,7 @@ impl ProjectWriteGuard {
         let root_handle = open_stage_dir(root)?;
         #[cfg(windows)]
         let root_handle = staging_windows::open_existing_dir(root)?;
-        let mut open_data = || -> Result<Option<fs::File>, WriteGuardError> {
+        let open_data = || -> Result<Option<fs::File>, WriteGuardError> {
             #[cfg(unix)]
             {
                 if !stage_handle_matches(&root_handle, root)? {
@@ -171,7 +171,7 @@ impl ProjectWriteGuard {
         let Some(data_handle) = data else {
             return Ok(None);
         };
-        let mut open_chats = || -> Result<Option<fs::File>, WriteGuardError> {
+        let open_chats = || -> Result<Option<fs::File>, WriteGuardError> {
             #[cfg(unix)]
             {
                 if !stage_handle_matches(&root_handle, root)?

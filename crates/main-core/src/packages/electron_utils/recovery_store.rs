@@ -628,10 +628,19 @@ impl RecoveryAdoptPlan {
             }
             RecoveryAdoptAction::MakeDirectory(path) => {
                 create_adoption_directory(path, &mut |effect| {
+                    let mut effect = Some(effect);
                     let mut result = None;
+                    let mut repeated = false;
                     admit(&mut || {
-                        result = Some(effect());
+                        if let Some(effect) = effect.take() {
+                            result = Some(effect());
+                        } else {
+                            repeated = true;
+                        }
                     })?;
+                    if repeated {
+                        return Err(plain("recovery adoption effect was admitted more than once"));
+                    }
                     result.ok_or_else(|| plain("recovery adoption effect was not admitted"))
                 })
             }
