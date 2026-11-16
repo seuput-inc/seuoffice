@@ -84,12 +84,15 @@ impl Renderer {
     ) -> Result<Vec<u8>, String> {
         let path =
             std::env::temp_dir().join(format!("seuoffice-mindmap-pdf-{}", jscompat::random_uuid()));
-        let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
-        {
+        let builder = {
             use std::os::unix::fs::DirBuilderExt;
+            let mut builder = std::fs::DirBuilder::new();
             builder.mode(0o700);
-        }
+            builder
+        };
+        #[cfg(not(unix))]
+        let builder = std::fs::DirBuilder::new();
         builder.create(&path).map_err(|error| error.to_string())?;
         let directory = WorkDir(path);
         let page = directory.0.join("map.html");

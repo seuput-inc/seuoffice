@@ -17,8 +17,11 @@ use super::odt_export::{OdtConversion, ReportItem};
 use super::{Handoff, HtmlEngine, HtmlShell, ParsedFile};
 
 #[cfg(test)]
+type PendingFileGuard = (Box<dyn FnOnce(Result<(), String>)>, Result<(), String>);
+
+#[cfg(test)]
 thread_local! {
-    static PENDING_FILE_GUARD: std::cell::RefCell<Option<(Box<dyn FnOnce(Result<(), String>)>, Result<(), String>)>> =
+    static PENDING_FILE_GUARD: std::cell::RefCell<Option<PendingFileGuard>> =
         std::cell::RefCell::new(None);
 }
 

@@ -160,7 +160,7 @@ fn files_with_parent(
 ) -> Result<Option<Vec<PathBuf>>, String> {
     let mtm = MainThreadMarker::new().ok_or("Native dialog is not on the main thread.")?;
     let app = NSApplication::sharedApplication(mtm);
-    let previous_policy = unsafe { app.activationPolicy() };
+    let previous_policy = app.activationPolicy();
     let panel: Retained<NSSavePanel> = if save {
         NSSavePanel::savePanel(mtm)
     } else {

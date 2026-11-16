@@ -670,9 +670,8 @@ mod tests {
         let generation = RendererGeneration::new();
         let (issuer, reservation) = NativeClosureIssuer::new(view, generation.clone());
         let (foreign, _) = NativeClosureIssuer::new(view, generation.clone());
-        let callbacks: Arc<
-            Mutex<Vec<Box<dyn FnOnce(shell_contract::ipc::NativeClosureReceipt) + Send>>>,
-        > = Arc::default();
+        type Callbacks = Vec<Box<dyn FnOnce(shell_contract::ipc::NativeClosureReceipt) + Send>>;
+        let callbacks: Arc<Mutex<Callbacks>> = Arc::default();
         let queued = callbacks.clone();
         let make_ready = || super::HwpImportReady {
             view: (view, generation.clone()),

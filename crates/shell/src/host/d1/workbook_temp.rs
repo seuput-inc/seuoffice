@@ -8,12 +8,15 @@ pub(super) struct WorkDir(PathBuf);
 impl WorkDir {
     pub fn create(prefix: &str) -> EngineResult<Self> {
         let path = std::env::temp_dir().join(format!("{prefix}{}", jscompat::random_uuid()));
-        let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
-        {
+        let builder = {
             use std::os::unix::fs::DirBuilderExt;
+            let mut builder = std::fs::DirBuilder::new();
             builder.mode(0o700);
-        }
+            builder
+        };
+        #[cfg(not(unix))]
+        let builder = std::fs::DirBuilder::new();
         builder.create(&path).map_err(|error| {
             engine_error(
                 main_core::node_fs::node_error(&error, "mkdir", &path.to_string_lossy()).message,

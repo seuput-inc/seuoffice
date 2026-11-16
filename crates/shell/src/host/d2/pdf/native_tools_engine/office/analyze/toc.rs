@@ -7,7 +7,9 @@ use super::units::{cluster_unit_rows,LineUnit};
 pub(super) const LEADER_PAGE_MIN_LINES:usize=10;
 pub(super) const LEADER_PAGE_MIN_SHARE:f64=0.3;
 fn page_number(s:&str)->bool {jscompat::js_regex!(r"^(?:[0-9]{1,4}|[ivxlcdm]{1,6})$","i").test(s)}
-fn leader_match(s:&str)->Option<(String,String)>{let re=jscompat::js_regex!(r"^(.*?[^\s._\-–—])\s*([.·_\-–—]\s*){4,}\s*([0-9]{1,4}|[ivxlcdm]{1,6})\s*$","i");let m=re.exec(s)?;Some((m.get(1)?.into(),m.get(3)?.into()))}
+// The roman digits list both cases instead of `i`: the classes hold dashes above U+007F,
+// which `i` without `u` does not fold, so the match is the same.
+fn leader_match(s:&str)->Option<(String,String)>{let re=jscompat::js_regex!(r"^(.*?[^\s._\-–—])\s*([.·_\-–—]\s*){4,}\s*([0-9]{1,4}|[ivxlcdmIVXLCDM]{1,6})\s*$");let m=re.exec(s)?;Some((m.get(1)?.into(),m.get(3)?.into()))}
 pub(super) fn has_dot_leader_run(chars:&[PdfChar])->bool {
     let(mut count,mut armed,mut i)=(0,false,0);while i<chars.len(){let c=&chars[i];if [".","·","_","-","–","—"].contains(&c.text.as_str()){count+=1;if count>=4{armed=true;}i+=1;}else if c.text==" "||c.code==0x20{i+=1;}else if armed && c.text.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric){let mut j=i;while j<chars.len()&&chars[j].text.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric){j+=1;}let token:String=chars[i..j].iter().map(|c|c.text.as_str()).collect();if chars[j..].iter().all(|c|c.text==" "||c.code==0x20)&&page_number(&token){return true;}count=0;armed=false;i=j;}else{count=0;armed=false;i+=1;}}false
 }

@@ -207,7 +207,7 @@ fn class_of(attributes: &str) -> &str {
                 at += 1;
             }
             match bytes.get(at) {
-                Some(&(quote @ (b'"' | b'\''))) => {
+                Some(&quote @ (b'"' | b'\'')) => {
                     let begin = at + 1;
                     let close = attributes[begin..]
                         .find(char::from(quote))

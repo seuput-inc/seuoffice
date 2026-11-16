@@ -116,6 +116,7 @@ impl EventSink for Recorder {
 }
 
 type Listener = Box<dyn Fn(ViewId) + Send + Sync>;
+type Replacement = Arc<dyn Fn(ViewId, RendererGeneration) + Send + Sync>;
 
 #[derive(Default)]
 struct FakeViews {
@@ -123,7 +124,7 @@ struct FakeViews {
     listeners: Mutex<Vec<Arc<Listener>>>,
     generations: Mutex<HashMap<ViewId, RendererGeneration>>,
     browser_lifetimes: Mutex<HashMap<ViewId, CancelToken>>,
-    replacements: Mutex<Vec<Arc<dyn Fn(ViewId, RendererGeneration) + Send + Sync>>>,
+    replacements: Mutex<Vec<Replacement>>,
 }
 
 impl Views for FakeViews {
@@ -893,26 +894,25 @@ impl Rt {
             },
         };
         let mut reply_authority = None;
-        if channel == "docs:consume-pending-open" && kind == ChannelKind::Invoke {
-            if let Some(effects) = self
+        if channel == "docs:consume-pending-open"
+            && kind == ChannelKind::Invoke
+            && let Some(effects) = self
                 .services
                 .hosts
                 .get::<Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>()
                 .cloned()
-            {
-                if let Some(native) = cx.native.take() {
-                    let (owner, authority) =
-                        shell_contract::hosts::synthetic::SyntheticReplyAuthority::attach(
-                            shell_contract::ipc::NativeRequestOwner {
-                                view: from.view,
-                                context: native,
-                            },
-                            &cx.cancel,
-                        );
-                    cx.native = Some(owner.context);
-                    reply_authority = Some((effects, authority));
-                }
-            }
+            && let Some(native) = cx.native.take()
+        {
+            let (owner, authority) =
+                shell_contract::hosts::synthetic::SyntheticReplyAuthority::attach(
+                    shell_contract::ipc::NativeRequestOwner {
+                        view: from.view,
+                        context: native,
+                    },
+                    &cx.cancel,
+                );
+            cx.native = Some(owner.context);
+            reply_authority = Some((effects, authority));
         }
         let slot: Arc<Mutex<Option<Reply>>> = Arc::default();
         let answer = Arc::clone(&slot);

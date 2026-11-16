@@ -285,7 +285,7 @@ fn native_rename_delivers_exact_revision_receipt_before_old_snapshot_loss() {
             &cell,
             expected,
             &owner,
-            &[owner.clone()],
+            std::slice::from_ref(&owner),
             &cancel,
             &CancelToken::default(),
             &[],

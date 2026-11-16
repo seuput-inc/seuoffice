@@ -4,7 +4,6 @@ use std::io::Cursor;
 use image::{ImageFormat, RgbaImage};
 use shell_contract::{WindowId, ipc::NativeRequestOwner, runtime::CancelToken};
 use shell_ipc_d1::sheets::engine::{ScreenCapture, ScreenImage, ScreenSource};
-use tauri::Manager;
 
 use crate::{
     host::{HostContext, on_ui},

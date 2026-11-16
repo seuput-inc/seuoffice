@@ -476,7 +476,7 @@ impl NativeAttempt {
             proof
         };
         let attempt = self.clone();
-        let mut guard = RecoveryRollbackGuard {
+        let guard = RecoveryRollbackGuard {
             attempt: self.clone(),
             pending: true,
         };
@@ -484,6 +484,7 @@ impl NativeAttempt {
             self.clone(),
             proof,
             Box::new(move |result| {
+                let mut guard = guard;
                 guard.pending = false;
                 let owner = attempt.entry.borrow().owner;
                 if let Some(held) = attempt.entry.borrow_mut().held_failure.as_mut() {
@@ -1712,12 +1713,13 @@ pub(crate) fn retry_direct(id: u64) {
             }));
         }
         Some(Work::Rollback(proof, rollback, owner)) => {
-            let mut guard = DirectRollbackGuard { id, pending: true };
+            let guard = DirectRollbackGuard { id, pending: true };
             shell_ipc_w::tabs::rollback_editor_receipts(
                 rollback,
                 Some(proof),
                 true,
                 Box::new(move |result| {
+                    let mut guard = guard;
                     guard.pending = false;
                     REGISTRY.with(|registry| {
                         if let Some(failure) = registry

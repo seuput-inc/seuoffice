@@ -44,35 +44,29 @@ pub use browser::{BridgeMode, BrowserIdentity, BrowserState, RegisterError, Webv
 pub use document::{
     DocumentContext, DocumentGatePlan, DocumentIdentity, DocumentReady, DocumentRevocation,
 };
-pub use eval::{DocumentEvaluation, EvalError};
-pub use events::{
-    EventSink, LoadError, NativeEvent, NativeEventKind, ProcessFailure, RevokeReason, ViewEvent,
-};
+pub use eval::DocumentEvaluation;
+pub use events::{EventSink, NativeEvent, NativeEventKind, ViewEvent};
 pub use ext::{
-    NativeSpec, NativeWebview, WebviewBuilderExt, WebviewExt, WebviewWindowBuilderExt,
+    NativeSpec, WebviewBuilderExt, WebviewExt, WebviewWindowBuilderExt,
     WindowBuilderExt,
 };
-pub use ids::{BrowserId, CreationId, DocumentId, NavigationId};
-pub use ingress::{ChannelQueue, DOCUMENT_HEADER, ReplyFrame, ReplySink};
+pub use ids::{BrowserId, CreationId};
+pub use ingress::{ChannelQueue, ReplyFrame};
 pub use lifecycle::{
     BrowserClose, BrowserCloseOutcome, BrowserCloseSubscription, BrowserCreation,
-    BrowserCreationOutcome, BrowserCreationSubscription, WindowClose, WindowCloseOutcome,
+    BrowserCreationOutcome, WindowClose, WindowCloseOutcome,
     WindowCloseSubscription, WindowClosingSubscription, WindowCreation, WindowEffect,
 };
 pub use navigation::{
-    NavigationIdentity, NavigationStart, Navigator, ObservedDocument, ObservedDocumentSubscription,
-    ObservedNavigation, ReloadAdmission, ReloadFailureSubscription, ReloadIdentity,
-    ReloadReservation,
+    NavigationIdentity, NavigationStart, ObservedDocument, ObservedDocumentSubscription,
+    ObservedNavigation, ReloadIdentity, ReloadReservation,
 };
 pub use page::{
     CaptureSpec, Done, EditCommand, Fence, HeaderFooter, KeyChord, Modifiers, PageError, PageOps,
     PdfSpec, QuietSpec, Rect, Viewport,
 };
 pub use policy::{Blocks, PolicyRequest, RequestPolicy, Storage};
-pub use scheme::{
-    Accepted, Prepared, Rejected, RequestCancelSubscription, ResponseGate, SchemeRequestContext,
-    Submitted,
-};
+pub use scheme::{RequestCancelSubscription, ResponseGate, SchemeRequestContext};
 pub use window::{WindowExt, WindowHandle};
 
 use lifecycle::WindowSubmission;

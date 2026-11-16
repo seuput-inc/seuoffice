@@ -241,7 +241,8 @@ mod tests {
             .all::<DocsEditors>()
             .pop()
             .unwrap()
-            .register_view(a.view);
+            .register_view(a.view)
+            .unwrap();
         (rt, a)
     }
 

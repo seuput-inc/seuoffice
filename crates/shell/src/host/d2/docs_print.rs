@@ -42,12 +42,15 @@ fn render(
     create: impl FnOnce(PrintWindowSpec) -> Result<Box<dyn shell_ipc_m::hosts::PrintSurface>, String>,
 ) -> Result<Vec<u8>, String> {
     let dir = std::env::temp_dir().join(format!("seuoffice-ai-doc-{}", jscompat::random_uuid()));
-    let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
-    {
+    let builder = {
         use std::os::unix::fs::DirBuilderExt;
+        let mut builder = std::fs::DirBuilder::new();
         builder.mode(0o700);
-    }
+        builder
+    };
+    #[cfg(not(unix))]
+    let builder = std::fs::DirBuilder::new();
     builder.create(&dir).map_err(|error| error.to_string())?;
     let dir = WorkDir(dir);
     let path = dir.0.join("print.html");

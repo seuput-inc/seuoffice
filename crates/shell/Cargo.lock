@@ -6585,7 +6585,6 @@ dependencies = [
  "docx-engine",
  "encoding_rs",
  "epub-engine",
- "file-commit",
  "file-parse",
  "flate2",
  "foreign-types 0.3.2",

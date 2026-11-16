@@ -9,8 +9,8 @@ mod recovery_saved;
 mod saved;
 pub(crate) use recovery_saved::docs_file_opened_recovery;
 pub(crate) use saved::{
-    project_file_renamed_existing_document, project_file_renamed_owned,
-    project_file_renamed_owned_extra, project_file_renamed_recovery,
+    project_file_renamed_existing_document, project_file_renamed_owned_extra,
+    project_file_renamed_recovery,
 };
 
 use std::collections::{HashMap, HashSet};

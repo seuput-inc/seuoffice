@@ -2,10 +2,7 @@
 use super::Hooks;
 use main_core::shell::tab_manager::TabKind;
 use shell_contract::{
-    IpcValue,
-    hosts::OwnedEffectsHost,
-    ipc::NativeRequestOwner,
-    runtime::{CancelToken, Views},
+    IpcValue, hosts::OwnedEffectsHost, ipc::NativeRequestOwner, runtime::CancelToken,
 };
 use shell_ipc_w::tabs::{
     PreparedTabActivationPublication, TabActivationAuthority, TabActivationPublicationSnapshot,

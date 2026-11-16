@@ -61,12 +61,15 @@ impl WorkDir {
             .map(|b| format!("{b:02x}"))
             .collect::<String>();
         let path = root.join(format!("ieum-codex-image-{name}"));
-        let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
-        {
+        let builder = {
             use std::os::unix::fs::DirBuilderExt;
+            let mut builder = std::fs::DirBuilder::new();
             builder.mode(0o700);
-        }
+            builder
+        };
+        #[cfg(not(unix))]
+        let builder = std::fs::DirBuilder::new();
         builder
             .create(&path)
             .map_err(|e| JsError::error(e.to_string()))?;

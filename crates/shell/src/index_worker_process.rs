@@ -247,12 +247,15 @@ pub(crate) fn spawn_with_budget(
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
     let profile = std::env::temp_dir().join(format!("seuoffice-index-{suffix}"));
-    let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
-    {
+    let builder = {
         use std::os::unix::fs::DirBuilderExt;
+        let mut builder = std::fs::DirBuilder::new();
         builder.mode(0o700);
-    }
+        builder
+    };
+    #[cfg(not(unix))]
+    let builder = std::fs::DirBuilder::new();
     builder
         .create(&profile)
         .map_err(|e| format!("creating index worker profile: {e}"))?;

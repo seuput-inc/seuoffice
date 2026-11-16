@@ -8,7 +8,7 @@ use shell_contract::{
 };
 use tauri::Manager;
 
-use super::{NativeOwnerAuthority, owner};
+use super::NativeOwnerAuthority;
 use crate::{
     host::HostContext,
     views::{NativeAssetAuthorization, SlidesViewLease},
@@ -649,30 +649,6 @@ pub(crate) fn with_service_native_invocation_effect<R>(
     )
 }
 
-pub(crate) fn with_native_invocation_print_effect<R>(
-    target: &shell_contract::ipc::NativeInvocationTarget,
-    owner: &NativeRequestOwner,
-    cancel: &CancelToken,
-    pending: &CancelToken,
-    actor: &CancelToken,
-    print_generation: &RendererGeneration,
-    effect: impl FnOnce() -> R,
-) -> Option<R> {
-    with_native_invocation_fences(
-        target,
-        owner,
-        &[],
-        None,
-        None,
-        Some(print_generation),
-        Some(actor),
-        None,
-        cancel,
-        pending,
-        effect,
-    )
-}
-
 pub(crate) fn with_native_invocation_print_many_effect<R>(
     target: &shell_contract::ipc::NativeInvocationTarget,
     owner: &NativeRequestOwner,
@@ -937,13 +913,6 @@ pub(crate) fn with_recovery_prepare_effect<R>(
     effect: impl FnOnce() -> R,
 ) -> Option<R> {
     with_recovery_pre_navigation_effect(target, None, None, None, effect)
-}
-
-pub(crate) fn with_recovery_prepared_destination_effect<R>(
-    destination: &shell_contract::ipc::RecoveryPreparedDestination,
-    effect: impl FnOnce() -> R,
-) -> Option<R> {
-    with_recovery_seed_snapshot(destination.target(), destination.snapshot(), effect)
 }
 
 pub(crate) fn commit_recovery_seed(
@@ -1921,28 +1890,6 @@ pub(crate) fn with_startup_recovery_seed_effect<R>(
         || target.with_reserved_state(effect),
     )
     .flatten()
-}
-
-pub(crate) fn with_startup_recovery_seeded_effect<R>(
-    startup: &shell_contract::ipc::NativeInvocationOperation,
-    shell: &NativeRequestOwner,
-    receipt: &shell_contract::ipc::RecoverySeedReceipt,
-    participants: &[NativeRequestOwner],
-    cancel: &CancelToken,
-    pending: &CancelToken,
-    effect: impl FnOnce() -> R,
-) -> Option<R> {
-    let snapshot = receipt.target().authority_snapshot().ok()?;
-    with_startup_recovery_seeded_snapshot(
-        startup,
-        shell,
-        receipt,
-        &snapshot,
-        participants,
-        cancel,
-        pending,
-        effect,
-    )
 }
 
 fn with_startup_recovery_seeded_snapshot<R>(

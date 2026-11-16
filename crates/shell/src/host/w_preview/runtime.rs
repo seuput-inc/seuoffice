@@ -1,4 +1,6 @@
-use std::sync::{Arc, Mutex};
+#[cfg(windows)]
+use std::sync::Arc;
+use std::sync::Mutex;
 
 #[cfg(windows)]
 use shell_ipc_w::editor_files::UiLanguage;
@@ -319,7 +321,7 @@ fn create_tray(
         .icon(icon)
         .tooltip(tooltip(lang))
         .menu(&menu)
-        .menu_on_left_click(false)
+        .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "quick-look-open" => super::post_core(|provided, _| {
                 if let Some(tabs) = provided

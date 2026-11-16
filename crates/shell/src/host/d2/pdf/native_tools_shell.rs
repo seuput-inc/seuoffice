@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use main_core::shell::app_settings::read_app_settings;
-use shell_contract::{ViewId, WindowId, runtime::Views};
+use shell_contract::{ViewId, WindowId};
 use shell_ipc_d2::pdf::tools::{HwpImportReady, PdfTab, PdfToolsShell, PdfToolsShellHost, TabKind};
 use shell_ipc_w::editor_files::UiLanguage;
 use tauri::Manager;

@@ -287,6 +287,23 @@ impl StagedOutput {
                 let cleanup = self.discard();
                 Err(failure(error, cleanup))
             }
+            Err(StagedWriteError::Unsaved {
+                error,
+                leftover: None,
+            }) => {
+                let cleanup = self.discard();
+                Err(failure(error, cleanup))
+            }
+            Err(StagedWriteError::Unsaved {
+                error,
+                leftover: Some(_),
+            }) => {
+                // the staged bytes may be the only copy: neither removed nor parked for removal
+                self.settled = true;
+                Err(thrown(format!(
+                    "{error}; the unsaved output was kept in a staging folder beside the destination"
+                )))
+            }
         }
     }
 }

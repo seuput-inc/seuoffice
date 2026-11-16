@@ -407,7 +407,8 @@ pub(crate) fn can_close_owned(captured: &CapturedRenderer) -> bool {
 mod tests {
     use super::*;
     use crate::native::browser::testing::registered_context;
-    use crate::native::{BrowserCloseOutcome, ProcessFailure, ViewEvent};
+    use crate::native::events::ProcessFailure;
+    use crate::native::{BrowserCloseOutcome, ViewEvent};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn event(browser: &BrowserState, kind: NativeEventKind) -> NativeEvent {

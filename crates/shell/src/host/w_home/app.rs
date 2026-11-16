@@ -12,7 +12,6 @@ use shell_ipc_w::home_settings::{
     FileSearchSettings, HomeApp, HomeAppHost, McpSettings, McpStatus,
 };
 use shell_ipc_w::tabs::TabsState;
-use tauri::Manager;
 
 use super::super::{HostContext, app_mcp::AppMcp, w::on_core};
 use super::decision::DecisionTransport;

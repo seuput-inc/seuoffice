@@ -930,12 +930,13 @@ impl Drop for NativeTerminalWake {
     }
 }
 fn wake_native_terminal_queue(state: Arc<Mutex<NativeTerminalState>>, core: Arc<dyn Thread>) {
-    let mut wake = NativeTerminalWake {
+    let wake = NativeTerminalWake {
         state: state.clone(),
         started: false,
     };
     let callback_core = core.clone();
     core.post(Box::new(move || {
+        let mut wake = wake;
         wake.started = true;
         if let Err(error) = drain_native_terminal_queue(&state, &callback_core) {
             eprintln!("{error}");
@@ -991,12 +992,13 @@ impl ViewRemovalDelivery {
         }
         state.running = true;
         drop(state);
-        let mut guard = ViewRemovalWake {
+        let guard = ViewRemovalWake {
             delivery: self.clone(),
             pending: true,
         };
         let delivery = self.clone();
         self.core.post(Box::new(move || {
+            let mut guard = guard;
             guard.pending = false;
             if !delivery.core.is_current() {
                 delivery.finish(

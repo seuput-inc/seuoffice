@@ -4483,7 +4483,6 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
             .spawn(Box::new(move || dialog.error(&title, &error)));
     }
     fn notify_unsupported_file(&self, path: &str) {
-        use shell_ipc_w::tabs::TabHooks;
         let ext = jscompat::node_path::host::extname(path)
             .trim_start_matches('.')
             .to_lowercase();
@@ -4501,7 +4500,6 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
         expected: shell_contract::ipc::NativeEditorCommand,
         done: Box<dyn FnOnce(Result<(), String>)>,
     ) {
-        use shell_ipc_w::tabs::TabHooks;
         if !matches!(&expected, shell_contract::ipc::NativeEditorCommand::OpenFile { path: selected, .. }
             if selected.as_os_str() == std::ffi::OsStr::new(&path))
         {
@@ -4709,7 +4707,6 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
     fn open_file_via_dialog(&self) {
         use jscompat::{JsObject, JsonValue};
         use main_core::packages::electron_utils::dialog_memory::show_open_dialog_with_memory;
-        use shell_ipc_w::tabs::TabHooks;
         let Some(parent) = super::NATIVE_WINDOWS
             .get()
             .and_then(|windows| windows.shell_window())

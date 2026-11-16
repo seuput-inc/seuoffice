@@ -44,8 +44,6 @@ pub(crate) fn set_dock_menu(
     entries: Vec<DockEntry>,
     on_click: Arc<dyn Fn(DockAction) + Send + Sync>,
 ) {
-    use tauri::Manager;
-
     let result = app.run_on_main_thread(move || {
         // run_on_main_thread only runs on the main thread, but the marker is the
         // proof AppKit calls below need

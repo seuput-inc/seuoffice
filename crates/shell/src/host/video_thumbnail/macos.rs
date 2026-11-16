@@ -36,9 +36,9 @@ pub(super) fn video_poster(path: &Path, ui: &Arc<dyn Thread>) -> Result<Option<V
         let completion = RcBlock::new(move |thumbnail: *mut AnyObject, error: *mut NSError| {
             let result = autoreleasepool(|_| {
                 if !error.is_null() {
-                    let error = unsafe { &*error };
+                    let error = &*error;
                     let code = error.code();
-                    let domain = unsafe { QLThumbnailErrorDomain.as_ref() };
+                    let domain = QLThumbnailErrorDomain.as_ref();
                     return if code == 0
                         && domain.is_some_and(|domain| error.domain().isEqualToString(domain))
                     {
@@ -50,7 +50,7 @@ pub(super) fn video_poster(path: &Path, ui: &Arc<dyn Thread>) -> Result<Option<V
                 if thumbnail.is_null() {
                     return Ok(None);
                 }
-                unsafe { encode_thumbnail(thumbnail, size) }
+                encode_thumbnail(thumbnail, size)
             });
             let _ = send.send(result);
         });

@@ -424,6 +424,16 @@ pub enum StagedWriteError {
         error: String,
         snapshot: file_commit::CommittedWriteSnapshot,
     },
+    /// The staged output could not replace the destination and the in-place
+    /// fallback did not finish the save. `leftover` is the private stage that is
+    /// still on disk: it may hold the only copy of the new bytes, so the caller
+    /// leaves it and its directory alone. `None` means the stage is already
+    /// gone because the bytes sit in the rescue file beside the destination (or
+    /// the destination already holds them).
+    Unsaved {
+        error: String,
+        leftover: Option<Box<file_commit::OwnedStage>>,
+    },
 }
 
 pub(crate) fn publish_staged<E: OwnedEffects + ?Sized>(
@@ -443,11 +453,77 @@ pub(crate) fn publish_staged_validated<E: OwnedEffects + ?Sized>(
     publish_staged_inner(effects, scope, stage, Some(validate))
 }
 
+/// Pauses between attempts to replace a destination that is only transiently
+/// locked (antivirus or an indexer on Windows); the first failure is retried
+/// after the first delay, and so on.
+const REPLACE_RETRY_DELAYS_MS: [u64; 4] = [50, 100, 200, 400];
+
+/// Most bytes of the destination's file name a rescue file name carries.
+const RESCUE_NAME_MAX_BYTES: usize = 200;
+
+fn replace_is_transient(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::PermissionDenied | io::ErrorKind::ResourceBusy
+    ) || (cfg!(windows) && matches!(error.raw_os_error(), Some(32 | 33)))
+}
+
+/// Where a save that could not be written parks its bytes: beside the
+/// destination under one stable name, so a save that keeps failing replaces the
+/// same file instead of leaving a new one on every attempt.
+fn rescue_file_name(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let mut end = name.len().min(RESCUE_NAME_MAX_BYTES);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(format!("{}.unsaved.tmp", &name[..end]))
+}
+
+/// The save landed, so a rescue file an earlier failed attempt left is stale.
+fn clear_rescue_copy(path: &Path) {
+    if let Some(name) = rescue_file_name(path) {
+        let _ = std::fs::remove_file(path.with_file_name(name));
+    }
+}
+
+/// Publishes the stage, and when the replacement is refused retries a transient
+/// refusal, then writes the destination in place, then parks the bytes in a
+/// rescue file. Every attempt is admitted again under the original owners and
+/// controls and runs `validate` first. The pauses block the calling core turn,
+/// as the retry of the Electron writer blocked its main process turn.
 fn publish_staged_inner<E: OwnedEffects + ?Sized>(
     effects: &E,
     scope: DirectWriteScope,
     stage: file_commit::OwnedWrittenCommit,
     mut validate: Option<&mut dyn FnMut() -> Result<(), String>>,
+) -> Result<(SavedPublication, file_commit::CommittedWriteSnapshot), StagedWriteError> {
+    let mut check = || match validate.as_mut() {
+        Some(validate) => validate(),
+        None => Ok(()),
+    };
+    let mut delays = REPLACE_RETRY_DELAYS_MS.into_iter();
+    let mut result = publish_once(effects, &scope, stage, &mut check);
+    loop {
+        let (error, stage) = match result {
+            Err(StagedWriteError::Io { error, stage }) => (error, stage),
+            settled => return settled,
+        };
+        match delays.next() {
+            Some(delay) if replace_is_transient(&error) => {
+                std::thread::sleep(std::time::Duration::from_millis(delay));
+                result = publish_once(effects, &scope, *stage, &mut check);
+            }
+            _ => return write_in_place(effects, &scope, error, stage, &mut check),
+        }
+    }
+}
+
+fn publish_once<E: OwnedEffects + ?Sized>(
+    effects: &E,
+    scope: &DirectWriteScope,
+    stage: file_commit::OwnedWrittenCommit,
+    validate: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<(SavedPublication, file_commit::CommittedWriteSnapshot), StagedWriteError> {
     if stage.path() != scope.path {
         return Err(StagedWriteError::Admission {
@@ -476,15 +552,14 @@ fn publish_staged_inner<E: OwnedEffects + ?Sized>(
     let mut stage = Some(stage);
     let mut outcome = None;
     let admission = scope.admit(effects, &mut || {
-        if let Some(validate) = validate.as_mut() {
-            validate()?;
-        }
+        validate()?;
         let staged = stage
             .take()
             .ok_or("The staged output was already consumed.")?;
         match staged.publish() {
             Err(failed) => outcome = Some(Err(failed)),
             Ok(snapshot) => {
+                clear_rescue_copy(&scope.path);
                 let publication = match &scope.origin {
                     DirectWriteOrigin::Native(_) => native_selection
                         .take()
@@ -532,6 +607,182 @@ fn publish_staged_inner<E: OwnedEffects + ?Sized>(
             stage: Box::new(stage.expect("unconsumed staged output")),
         }),
     }
+}
+
+/// Removes the staged object; one that stays is handed back because it may
+/// still be the only copy of the bytes.
+fn remove_stage(stage: file_commit::OwnedStage) -> Option<Box<file_commit::OwnedStage>> {
+    match stage.remove() {
+        Ok(()) => None,
+        Err((error, _)) if error.kind() == io::ErrorKind::NotFound => None,
+        Err((_, stage)) => Some(Box::new(stage)),
+    }
+}
+
+/// The replacement was refused for good. A destination the user already
+/// approved replacing is written in place, as the Electron writer fell back to
+/// `writeFile`; a destination that must not exist yet (`Exclusive`) is never
+/// overwritten. If the in-place write cannot finish, the staged bytes are
+/// copied to the rescue file.
+fn write_in_place<E: OwnedEffects + ?Sized>(
+    effects: &E,
+    scope: &DirectWriteScope,
+    error: io::Error,
+    stage: Box<file_commit::OwnedWrittenCommit>,
+    validate: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<(SavedPublication, file_commit::CommittedWriteSnapshot), StagedWriteError> {
+    if stage.mode() != file_commit::PublicationMode::Replace {
+        return Err(StagedWriteError::Io { error, stage });
+    }
+    let prepared = match scope
+        .path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "output has no parent"))
+        .and_then(file_commit::open_output_parent)
+        .and_then(|parent| file_commit::prepare_direct(&parent, &scope.path))
+    {
+        Ok(prepared) => prepared,
+        Err(_) => return Err(StagedWriteError::Io { error, stage }),
+    };
+    let begin_validate: &mut dyn FnMut() -> Result<(), String> = &mut *validate;
+    let direct = match AdmittedDirectWrite::begin_inner(
+        effects,
+        scope.clone(),
+        prepared,
+        Some(begin_validate),
+    ) {
+        Ok(direct) => direct,
+        Err(DirectWriteStartError::Admission(error)) => {
+            return Err(StagedWriteError::Admission { error, stage });
+        }
+        Err(DirectWriteStartError::IoAndAdmission { admission, .. }) => {
+            return Err(StagedWriteError::Admission {
+                error: admission,
+                stage,
+            });
+        }
+        Err(DirectWriteStartError::OpenedButNotAdmitted { error, opened }) => {
+            // the destination was truncated but the write is no longer admitted
+            drop(opened);
+            let (stage, _) = (*stage).into_parts();
+            return Err(StagedWriteError::Unsaved {
+                error,
+                leftover: Some(Box::new(stage)),
+            });
+        }
+        Err(DirectWriteStartError::Io(open_error)) => {
+            let (stage, _) = (*stage).into_parts();
+            return Err(rescue_unsaved(
+                effects,
+                scope,
+                validate,
+                open_error.to_string(),
+                stage,
+            ));
+        }
+    };
+    let (stage, bytes) = (*stage).into_parts();
+    match direct.write_owned(bytes) {
+        Ok(completed) => match completed.finish(effects) {
+            DirectWriteCompletion::Committed {
+                publication,
+                snapshot,
+            } => {
+                let _ = remove_stage(stage);
+                let _ = scope.admit(effects, &mut || {
+                    clear_rescue_copy(&scope.path);
+                    Ok(())
+                });
+                Ok((publication, snapshot))
+            }
+            DirectWriteCompletion::WrittenWithoutReceipt { error, .. } => {
+                Err(StagedWriteError::Unsaved {
+                    error: format!("The output was written but could not be confirmed: {error}"),
+                    leftover: remove_stage(stage),
+                })
+            }
+            DirectWriteCompletion::WrittenButNotAdmitted { error, snapshot } => {
+                let _ = remove_stage(stage);
+                Err(StagedWriteError::CommittedButNotAdmitted { error, snapshot })
+            }
+        },
+        Err((write_error, partial)) => {
+            drop(partial);
+            Err(rescue_unsaved(
+                effects,
+                scope,
+                validate,
+                write_error.to_string(),
+                stage,
+            ))
+        }
+    }
+}
+
+/// The in-place write failed after the destination may already have been
+/// truncated: park the staged bytes in the rescue file. The stage is removed
+/// only once those bytes are safe there.
+fn rescue_unsaved<E: OwnedEffects + ?Sized>(
+    effects: &E,
+    scope: &DirectWriteScope,
+    validate: &mut dyn FnMut() -> Result<(), String>,
+    error: String,
+    mut stage: file_commit::OwnedStage,
+) -> StagedWriteError {
+    let leftover = if copy_to_rescue(effects, scope, validate, &mut stage) {
+        remove_stage(stage)
+    } else {
+        Some(Box::new(stage))
+    };
+    StagedWriteError::Unsaved { error, leftover }
+}
+
+/// Only the descriptor-relative open and truncation of the rescue file run
+/// inside the admission; the copy itself runs after it.
+#[cfg(unix)]
+fn copy_to_rescue<E: OwnedEffects + ?Sized>(
+    effects: &E,
+    scope: &DirectWriteScope,
+    validate: &mut dyn FnMut() -> Result<(), String>,
+    stage: &mut file_commit::OwnedStage,
+) -> bool {
+    let Some(name) =
+        rescue_file_name(&scope.path).and_then(|name| std::ffi::CString::new(name).ok())
+    else {
+        return false;
+    };
+    let Ok(parent) = stage.original_parent() else {
+        return false;
+    };
+    let Ok(prepared) = file_commit::PreparedRescueCopy::new(&parent, &name, stage) else {
+        return false;
+    };
+    let mut prepared = Some(prepared);
+    let mut opened = None;
+    let admission = scope.admit(effects, &mut || {
+        validate()?;
+        let prepared = prepared
+            .take()
+            .ok_or("The rescue open was already admitted.")?;
+        opened = Some(prepared.open());
+        Ok(())
+    });
+    match (admission, opened) {
+        (Ok(()), Some(Ok(file_commit::RescueOpen::Ready(copy)))) => copy.copy().is_ok(),
+        _ => false,
+    }
+}
+
+/// The Windows stage has no handle-relative rescue copy, so the bytes stay in
+/// the private stage.
+#[cfg(not(unix))]
+fn copy_to_rescue<E: OwnedEffects + ?Sized>(
+    _effects: &E,
+    _scope: &DirectWriteScope,
+    _validate: &mut dyn FnMut() -> Result<(), String>,
+    _stage: &mut file_commit::OwnedStage,
+) -> bool {
+    false
 }
 
 impl AdmittedDirectWrite {

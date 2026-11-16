@@ -1,5 +1,5 @@
 mod shift;
-pub(super) use shift::{InsertedTableColumn, TableColumnInsertion, shift_table_part};
+pub(super) use shift::{TableColumnInsertion, shift_table_part};
 
 use super::{
     package::PackageEditor,

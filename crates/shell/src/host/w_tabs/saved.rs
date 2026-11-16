@@ -3,7 +3,7 @@ use main_core::shell::tab_manager::TabKind;
 use shell_contract::{
     hosts::{OwnedEffectsHost, SavedSessionReceipt},
     ipc::NativeRequestOwner,
-    runtime::{CancelToken, Views},
+    runtime::CancelToken,
 };
 use shell_ipc_w::tabs::{SavedPublication, SavedTabAck, TabsState};
 

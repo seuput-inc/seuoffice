@@ -490,7 +490,6 @@ impl Dialog for SaveDialog {
 mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
-    use std::time::Duration;
 
     use shell_contract::hosts::{Dialogs, MessageBox, MessageBoxAnswer};
 

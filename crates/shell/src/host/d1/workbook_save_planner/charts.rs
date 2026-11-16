@@ -263,11 +263,9 @@ fn set_legend(xml: &str, legend: &str) -> Result<String, String> {
 }
 
 fn set_axis_title(xml: &str, axis: &str, title: Option<&str>) -> Result<String, String> {
-    let mut kind = axis;
-    let pattern = format!(r"<c:{kind}>[\s\S]*?</c:{kind}>");
+    let pattern = format!(r"<c:{axis}>[\s\S]*?</c:{axis}>");
     let mut found = match_span(xml, &pattern)?;
     if found.is_none() && axis == "catAx" {
-        kind = "dateAx";
         found = match_span(xml, r"<c:dateAx>[\s\S]*?</c:dateAx>")?;
     }
     let (start, end) = found.ok_or_else(|| {

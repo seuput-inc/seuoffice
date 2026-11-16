@@ -7,33 +7,6 @@ use shell_contract::{
 
 /// Called on core. Preparation, contention waits and unpublished-temp cleanup
 /// all run on the worker, never while native admission or the store is held.
-pub(crate) fn project_file_renamed_owned(
-    services: Services,
-    origin: NativeRequestOwner,
-    destination: NativeRequestOwner,
-    participants: Vec<NativeRequestOwner>,
-    cancel: CancelToken,
-    pending: CancelToken,
-    effects: OwnedEffectsHost,
-    old: String,
-    new: String,
-    done: Box<dyn FnOnce(Result<(), String>)>,
-) {
-    project_file_renamed_owned_extra(
-        services,
-        origin,
-        destination,
-        participants,
-        cancel,
-        pending,
-        Vec::new(),
-        effects,
-        old,
-        new,
-        done,
-    );
-}
-
 pub(crate) fn project_file_renamed_owned_extra(
     services: Services,
     origin: NativeRequestOwner,

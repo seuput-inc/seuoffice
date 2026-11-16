@@ -16,7 +16,7 @@ pub(crate) use activation_publication::{
     indeterminate_retained_replies, pending_retained_replies, retry_retained_replies,
 };
 pub(crate) use hooks::default_save_dir;
-pub(crate) use recovery::{RecoveryFailure, RecoveryReady, create_recovery_view_owned};
+pub(crate) use recovery::create_recovery_view_owned;
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -353,9 +353,7 @@ impl Hooks {
                     } else {
                         // every Docs view is created through an owned path, which stages its
                         // registration with the browser owner
-                        return Err(TabError(
-                            "A Docs view needs a prepared registration".into(),
-                        ));
+                        return Err(TabError("A Docs view needs a prepared registration".into()));
                     }
                 }
                 EditorViewSpec::Sheets { .. } => {

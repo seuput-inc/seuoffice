@@ -1587,7 +1587,7 @@ fn missing_context_or_owned_host_never_enables_native_admission_legacy_save() {
         }
     }
     // The legacy oracle is an explicit synthetic host capability, not a missing-owner fallback.
-    let (mut rt, _) = super::super::tests::rt_with(serde_json::Value::Null);
+    let (rt, _) = super::super::tests::rt_with(serde_json::Value::Null);
     let sender = rt.view(1, Surface::Pdf);
     let editor = rt.provided().all::<PdfEditors>().pop().unwrap();
     editor.open_view(sender.view, None);
@@ -1651,7 +1651,7 @@ fn owned_close_waits_for_its_renderer_and_does_not_cancel_parent_request() {
 
 #[test]
 fn native_revision_stage_rejects_changed_participants_before_retiring() {
-    let (mut rt, _) = super::super::tests::rt_with(serde_json::Value::Null);
+    let (rt, _) = super::super::tests::rt_with(serde_json::Value::Null);
     let first = rt.view(1, Surface::Pdf);
     let second = rt.view(2, Surface::Pdf);
     let path = rt.dir.join("shared.pdf");

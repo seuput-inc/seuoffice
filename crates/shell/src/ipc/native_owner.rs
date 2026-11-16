@@ -17,18 +17,16 @@ pub(crate) use effects::with_service_recovery_open_effect;
 pub(crate) use effects::with_startup_command_recovery_preparation_effect;
 pub(crate) use effects::with_startup_operation_effect;
 pub(crate) use effects::{
-    capture_owner, commit_recovery_seed, host as effects_host, run_accepted_created_ui_many,
-    run_accepted_ui_many, run_accepted_ui_pair, with_created_many_effect,
-    with_many_owner_transition, with_native_invocation_effect, with_native_invocation_many_effect,
-    with_native_invocation_print_effect, with_native_invocation_print_many_effect,
-    with_paired_effect, with_print_pair_effect, with_recovery_dialog_effect,
-    with_recovery_open_effect, with_recovery_prepare_effect,
-    with_recovery_prepared_destination_effect, with_recovery_seed_effect,
-    with_service_native_invocation_effect, with_service_pair_effect,
+    capture_owner, host as effects_host, run_accepted_created_ui_many, run_accepted_ui_many,
+    run_accepted_ui_pair, with_created_many_effect, with_many_owner_transition,
+    with_native_invocation_effect, with_native_invocation_many_effect,
+    with_native_invocation_print_many_effect, with_paired_effect, with_print_pair_effect,
+    with_recovery_dialog_effect, with_recovery_open_effect, with_recovery_prepare_effect,
+    with_recovery_seed_effect, with_service_native_invocation_effect, with_service_pair_effect,
 };
 pub(crate) use effects::{
-    commit_recovery_seed_snapshot, with_recovery_open_service_snapshot,
-    with_recovery_pre_navigation_snapshot, with_recovery_seed_snapshot,
+    with_recovery_open_service_snapshot, with_recovery_pre_navigation_snapshot,
+    with_recovery_seed_snapshot,
 };
 pub(crate) use effects::{
     with_native_command_creation_effect, with_native_command_preparation_effect,
@@ -41,17 +39,13 @@ pub(crate) use effects::{
     with_startup_command_creation_effect, with_startup_command_preparation_effect,
     with_startup_command_target_effect,
 };
-pub(crate) use effects::{
-    with_startup_recovery_creation_effect, with_startup_recovery_preparation_effect,
-    with_startup_recovery_seed_effect, with_startup_recovery_seeded_effect,
-};
+pub(crate) use effects::with_startup_recovery_preparation_effect;
 pub(crate) use saved_target::with_native_saved_document_same_origin;
 pub(crate) use saved_target::{
-    PreparedSavedSpareReplacement, prepare_saved_spare_replacement, read_saved_input,
-    with_saved_document_dialog_effect, with_saved_document_effect,
-    with_saved_document_input_effect, with_saved_spare_replacement_effect,
-    with_saved_target_creation_effect, with_saved_target_registration_effect,
-    with_saved_target_seed_effect,
+    prepare_saved_spare_replacement, read_saved_input, with_saved_document_dialog_effect,
+    with_saved_document_effect, with_saved_document_input_effect,
+    with_saved_spare_replacement_effect, with_saved_target_creation_effect,
+    with_saved_target_registration_effect, with_saved_target_seed_effect,
 };
 
 use crate::native::{DocumentContext, DocumentRevocation};
@@ -613,6 +607,7 @@ fn execute_accepted<R>(action: Option<impl FnOnce() -> R>) -> Result<R, String> 
 
 #[cfg(test)]
 mod tests {
+    use super::effects::commit_recovery_seed;
     use super::*;
     use std::cell::Cell;
 

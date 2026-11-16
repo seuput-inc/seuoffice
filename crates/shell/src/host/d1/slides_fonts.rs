@@ -208,8 +208,8 @@ pub(crate) fn close_request(id: u64) {
 }
 
 pub(super) use dispatch::{
-    adopt_embedded_fonts, private_faces, private_font_data, prune, release, reset_font_metrics,
-    revoke_view, transfer_history_with,
+    private_faces, private_font_data, prune, release, reset_font_metrics, revoke_view,
+    transfer_history_with,
 };
 
 #[derive(Clone)]

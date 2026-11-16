@@ -194,7 +194,7 @@ pub(crate) fn with_hwnd<R>(
     window: &tauri::Window,
     job: impl FnOnce(HWND) -> R,
 ) -> Result<R, String> {
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use raw_window_handle::RawWindowHandle;
     window
         .native_window_handle()?
         .with_window(|handle| {

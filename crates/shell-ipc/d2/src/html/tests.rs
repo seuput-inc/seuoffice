@@ -1823,7 +1823,7 @@ fn saved_session_receipt_finalizes_after_real_text_and_recovery_state_commit() {
 #[test]
 fn owned_publication_rechecks_the_exact_save_session_at_each_namespace_effect() {
     use main_core::packages::electron_utils::atomic_write::owned::admitted;
-    let mut rt = rt();
+    let rt = rt();
     let original = doc(&rt, "publication-original.html", "old");
     let target = view_on(&rt, 1, Some(&original));
     let issuer = view_on(&rt, 2, None);

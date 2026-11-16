@@ -1,5 +1,5 @@
 use super::*;
-use shell_contract::runtime::{RendererGeneration, Views};
+use shell_contract::runtime::RendererGeneration;
 use shell_ipc_w::tabs::host::GeneratedViewCommit;
 use shell_ipc_w::tabs::host::{
     ViewCreationCleanup, ViewCreationCleanupState, ViewCreationFailure, ViewCreationReady,

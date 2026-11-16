@@ -62,12 +62,13 @@ static SURFACES: LazyLock<HashMap<String, Surface>> = LazyLock::new(|| {
         .collect()
 });
 
+type Replaced = Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>;
+
 /// The views of the case, in the order `Views::all` lists them
 struct CaseViews {
     views: Mutex<Vec<Sender>>,
     generations: Mutex<HashMap<ViewId, shell_contract::runtime::RendererGeneration>>,
-    replaced:
-        Mutex<Vec<Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>>>,
+    replaced: Mutex<Vec<Replaced>>,
 }
 
 impl Views for CaseViews {
@@ -547,13 +548,13 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
     shell_ipc_m::probe_hosts(&mut hosts, &given["m"]);
     shell_ipc_w::probe_hosts(&mut hosts, &given["w"]);
     shell_ipc_d1::probe_hosts(&mut hosts, &given["d1"]);
-    if let Some(owner) = case_owners.get(&ViewId(100)) {
-        if let Some(shell) = hosts.get::<Arc<shell_ipc_d1::slides::fake::FakeShell>>() {
-            *shell
-                .audience_owner
-                .lock()
-                .map_err(|error| error.to_string())? = Some(owner.clone());
-        }
+    if let Some(owner) = case_owners.get(&ViewId(100))
+        && let Some(shell) = hosts.get::<Arc<shell_ipc_d1::slides::fake::FakeShell>>()
+    {
+        *shell
+            .audience_owner
+            .lock()
+            .map_err(|error| error.to_string())? = Some(owner.clone());
     }
     shell_ipc_d2::probe_hosts(&mut hosts, &given["d2"]);
     let services = shell_contract::hosts::synthetic::SyntheticOwnedEffects::install(Services {

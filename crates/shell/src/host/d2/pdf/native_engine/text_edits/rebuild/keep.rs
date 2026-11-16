@@ -1,7 +1,6 @@
 //! Preserve untouched source objects, including their own fonts and spacing.
 use super::super::{
-    PdfiumSession, TextObject, buffer, call, field, integer, number, offset, ordered, reference,
-    text,
+    PdfiumSession, TextObject, buffer, call, field, integer, offset, ordered, reference, text,
 };
 use super::fold::{fold, index_of, whitespace_clamp};
 use super::style::RunStyle;

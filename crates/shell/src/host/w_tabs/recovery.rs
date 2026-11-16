@@ -11,7 +11,7 @@ use main_core::shell::tab_manager::TabKind;
 use shell_contract::{
     Provided, ViewId,
     ipc::{RecoveryOpenContext, RecoveryOpenTarget, RecoveryRequestConstraint},
-    runtime::{CancelSubscription, Services, Views},
+    runtime::{CancelSubscription, Services},
 };
 
 use crate::host::HostContext;
@@ -352,7 +352,7 @@ impl NativeClose {
         };
         match work {
             CloseWork::Watch => {
-                let mut guard = RecoveryWatchGuard {
+                let guard = RecoveryWatchGuard {
                     close: self.clone(),
                     pending: true,
                 };
@@ -360,6 +360,7 @@ impl NativeClose {
                 if self
                     .proof
                     .watch(Box::new(move |receipt| {
+                        let mut guard = guard;
                         guard.pending = false;
                         if !close.record(receipt) {
                             close.drive();
@@ -544,6 +545,7 @@ impl NativeClose {
                 let _ = target.drain_work(
                     core.clone(),
                     Box::new(move || {
+                        let mut guard = guard;
                         guard.pending = false;
                         let mut state = close
                             .state
@@ -1152,7 +1154,7 @@ pub(crate) fn create_recovery_view_owned(
             &mut actors,
         )
     };
-    let mut constructor = match (&context, &startup, &command) {
+    let constructor = match (&context, &startup, &command) {
         (RecoveryOpenContext::NativeStartup(child), Some(startup), Some(command)) => {
             native_owner::with_startup_command_recovery_preparation_effect(
                 startup,

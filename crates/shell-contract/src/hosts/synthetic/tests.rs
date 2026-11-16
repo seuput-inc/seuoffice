@@ -4691,3 +4691,189 @@ fn renderer_commit_refuses_a_cancelled_token_and_a_different_destination_path() 
         .is_err()
     );
 }
+
+#[cfg(unix)]
+fn staged_test_dir(label: &str) -> std::path::PathBuf {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let dir = std::env::temp_dir().join(format!(
+        "{label}-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&dir).unwrap();
+    dir
+}
+
+#[cfg(unix)]
+fn staged_replacement(
+    dir: &std::path::Path,
+    name: &str,
+    bytes: &[u8],
+    mode: file_commit::PublicationMode,
+) -> (file_commit::PrivateDirectory, file_commit::OwnedWrittenCommit) {
+    let parent = std::fs::File::open(dir).unwrap();
+    let directory = file_commit::PrivateDirectory::create(&parent).unwrap();
+    let pending = directory.create_stage(0o600).unwrap();
+    let written = match pending.write_owned(bytes.to_vec()) {
+        Ok(written) => written,
+        Err((error, _, _)) => panic!("{error}"),
+    };
+    let written = match written.quarantine() {
+        Ok(written) => written,
+        Err((error, _)) => panic!("{error}"),
+    };
+    let commit = match written.prepare(
+        &parent,
+        &std::ffi::CString::new(name).unwrap(),
+        &dir.join(name),
+        mode,
+    ) {
+        Ok(commit) => commit,
+        Err((error, _)) => panic!("{error}"),
+    };
+    (directory, commit)
+}
+
+#[cfg(unix)]
+fn publish_renderer_stage(
+    effects: &SyntheticOwnedEffects,
+    owner: &NativeRequestOwner,
+    path: &std::path::Path,
+    stage: file_commit::OwnedWrittenCommit,
+) -> Result<
+    (
+        crate::ipc::SavedPublication,
+        file_commit::CommittedWriteSnapshot,
+    ),
+    crate::ipc::StagedWriteError,
+> {
+    let cancel = CancelToken::default();
+    effects.publish_owned_staged_write(owner, owner, &[], &cancel, &cancel, &[], path, stage)
+}
+
+#[cfg(unix)]
+#[test]
+fn refused_replacement_is_written_in_place() {
+    use std::{fs, os::unix::fs::PermissionsExt};
+    let (effects, _, _, _, mut owner) = model();
+    leased_owner(&mut owner);
+    let dir = staged_test_dir("staged-in-place");
+    let path = dir.join("report.xlsx");
+    fs::write(&path, b"original").unwrap();
+    let (private, stage) = staged_replacement(
+        &dir,
+        "report.xlsx",
+        b"replacement",
+        file_commit::PublicationMode::Replace,
+    );
+    // a folder that refuses new names refuses the rename but not a write to the existing file
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+    let result = publish_renderer_stage(&effects, &owner, &path, stage);
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+    match result {
+        Ok((publication, snapshot)) => {
+            assert_eq!(publication.path(), path.as_path());
+            assert_eq!(snapshot.bytes(), b"replacement".as_slice());
+        }
+        _ => panic!("the in-place write did not save the output"),
+    }
+    assert_eq!(fs::read(&path).unwrap(), b"replacement");
+    // the stage is gone, so its private directory is empty
+    private.remove().unwrap();
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn unwritable_destination_parks_the_bytes_in_one_stable_rescue_file() {
+    use std::fs;
+    let (effects, _, _, _, mut owner) = model();
+    leased_owner(&mut owner);
+    let dir = staged_test_dir("staged-rescue");
+    let path = dir.join("report.xlsx");
+    // neither the rename nor an in-place write can target a directory
+    fs::create_dir(&path).unwrap();
+    for bytes in [b"first".as_slice(), b"second".as_slice()] {
+        let (private, stage) = staged_replacement(
+            &dir,
+            "report.xlsx",
+            bytes,
+            file_commit::PublicationMode::Replace,
+        );
+        match publish_renderer_stage(&effects, &owner, &path, stage) {
+            Err(crate::ipc::StagedWriteError::Unsaved {
+                error,
+                leftover: None,
+            }) => assert!(!error.is_empty()),
+            _ => panic!("the bytes were not parked in the rescue file"),
+        }
+        private.remove().unwrap();
+        assert_eq!(fs::read(dir.join("report.xlsx.unsaved.tmp")).unwrap(), bytes);
+    }
+    assert!(path.is_dir());
+    let mut names: Vec<_> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["report.xlsx", "report.xlsx.unsaved.tmp"]);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn exclusive_publication_is_never_written_over_an_existing_output() {
+    use std::fs;
+    let (effects, _, _, _, mut owner) = model();
+    leased_owner(&mut owner);
+    let dir = staged_test_dir("staged-exclusive");
+    let path = dir.join("report.xlsx");
+    fs::write(&path, b"original").unwrap();
+    let (private, stage) = staged_replacement(
+        &dir,
+        "report.xlsx",
+        b"replacement",
+        file_commit::PublicationMode::Exclusive,
+    );
+    match publish_renderer_stage(&effects, &owner, &path, stage) {
+        Err(crate::ipc::StagedWriteError::Io { error, stage }) => {
+            assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+            let (stage, _) = (*stage).into_parts();
+            assert!(stage.remove().is_ok());
+        }
+        _ => panic!("the exclusive stage was not returned"),
+    }
+    private.remove().unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"original");
+    assert!(!dir.join("report.xlsx.unsaved.tmp").exists());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn landed_save_removes_a_stale_rescue_file() {
+    use std::fs;
+    let (effects, _, _, _, mut owner) = model();
+    leased_owner(&mut owner);
+    let dir = staged_test_dir("staged-stale-rescue");
+    let path = dir.join("report.xlsx");
+    fs::write(&path, b"original").unwrap();
+    fs::write(dir.join("report.xlsx.unsaved.tmp"), b"stale").unwrap();
+    let (private, stage) = staged_replacement(
+        &dir,
+        "report.xlsx",
+        b"replacement",
+        file_commit::PublicationMode::Replace,
+    );
+    match publish_renderer_stage(&effects, &owner, &path, stage) {
+        Ok(_) => {}
+        Err(_) => panic!("the staged output was not published"),
+    }
+    private.remove().unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"replacement");
+    assert!(!dir.join("report.xlsx.unsaved.tmp").exists());
+    fs::remove_dir_all(dir).unwrap();
+}

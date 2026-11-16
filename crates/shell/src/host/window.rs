@@ -16,7 +16,7 @@ use std::sync::{Arc, OnceLock};
 
 use shell_contract::hosts::MainWindow;
 use shell_contract::ids::{ViewId, WindowId};
-use shell_contract::runtime::{RendererGeneration, Views};
+use shell_contract::runtime::RendererGeneration;
 use shell_contract::{Hosts, MainWindowHost, Surface};
 use tauri::webview::{NewWindowResponse, WebviewBuilder};
 use tauri::{

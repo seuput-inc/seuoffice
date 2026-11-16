@@ -575,7 +575,7 @@ fn exact_closed_receipt_waits_for_preparation_and_removes_only_its_work_file() {
 
 #[test]
 fn recovery_routes_reject_foreign_surface_in_the_real_dispatcher() {
-    let mut rt = Rt::new(|hosts| {
+    let rt = Rt::new(|hosts| {
         hosts.insert::<PdfEngineHost>(fakes::engine(&serde_json::Value::Null));
         hosts.insert::<PdfShellHost>(fakes::shell(&serde_json::Value::Null));
         hosts.insert(Arc::new(Mutex::new(

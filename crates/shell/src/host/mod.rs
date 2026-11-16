@@ -21,7 +21,6 @@ pub(crate) mod app_mcp_dispatch;
 pub(crate) mod asset_protocol;
 pub(crate) mod cli;
 pub mod clipboard;
-pub(crate) mod committed_writer;
 pub mod contents;
 pub mod dialog;
 pub(crate) mod document_assets;

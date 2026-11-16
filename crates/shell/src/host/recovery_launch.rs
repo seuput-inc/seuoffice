@@ -1560,9 +1560,9 @@ pub(crate) fn begin_os_session_end(
     done: ShutdownDone,
 ) -> Result<(), Failure> {
     use main_core::packages::electron_utils::recovery_contract::RecoveryEditorContract;
-    let runtime = LIVE
-        .with(|slot| slot.borrow().clone())
-        .ok_or_else(|| Failure("recovery runtime is not installed".into()))?;
+    if LIVE.with(|slot| slot.borrow().is_none()) {
+        return Err(Failure("recovery runtime is not installed".into()));
+    }
     let editors =
         provided
             .all::<dyn RecoveryEditorContract<

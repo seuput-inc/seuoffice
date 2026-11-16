@@ -47,7 +47,7 @@ use main_core::packages::ai_provider::task::JsError;
 use main_core::packages::i18n::{Lang, document_locale_for, normalize_lang};
 use shell_contract::hosts::Hosts;
 use shell_contract::ids::ViewId;
-use shell_contract::runtime::{AppPaths, CancelToken, PathName, Thread, Views};
+use shell_contract::runtime::{AppPaths, CancelToken, PathName, Views};
 use shell_ipc_a::ai_core::{PendingAiDocs, PendingAiDocsHost};
 use shell_ipc_a::ai_naming::{NamingContext, NamingContextHost};
 use shell_ipc_a::app_ai_image::{

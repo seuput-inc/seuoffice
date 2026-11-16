@@ -22,6 +22,7 @@ fn owner(t: &T, view: ViewId) -> NativeRequestOwner {
     let renderer = t.rt.services.views.renderer_generation(view).unwrap();
     effects.capture_owner(view, &renderer).unwrap()
 }
+#[allow(clippy::type_complexity)]
 fn start(
     t: &T,
     key: &str,

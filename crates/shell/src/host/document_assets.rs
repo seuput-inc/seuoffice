@@ -1543,7 +1543,7 @@ impl TargetPermit {
         &self,
         effect: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String> {
-        let mut deliver = || {
+        let deliver = || {
             let _vault = VAULT_ADMISSION
                 .lock()
                 .map_err(|_| "Markdown vault admission is poisoned")?;

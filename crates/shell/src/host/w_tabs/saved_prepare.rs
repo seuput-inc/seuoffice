@@ -7,7 +7,7 @@ use shell_contract::Surface;
 use shell_contract::ipc::{
     NativeRequestOwner, NativeSavedInput, NativeSavedPath, NativeSavedTarget,
 };
-use shell_contract::runtime::{CancelToken, Views};
+use shell_contract::runtime::CancelToken;
 use shell_ipc_w::tabs::ShellWindow;
 use shell_ipc_w::tabs::host::{
     CapturedSavedShell, EditorSeedRollbackStore, NativeBrowserBinding, NativeBrowserRegistration,

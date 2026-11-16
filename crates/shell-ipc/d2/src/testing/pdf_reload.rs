@@ -168,7 +168,6 @@ impl PdfReload for SyntheticPdfReload {
                             Ok(())
                         },
                     )?;
-                    drop(before_notify);
                     let completed = admitted
                         .into_inner()
                         .ok_or("The synthetic PDF reload completion was not admitted.")?;

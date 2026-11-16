@@ -23,7 +23,6 @@ use openssl::rsa::Padding;
 use openssl::sign::Verifier;
 use openssl::x509::{X509, X509NameRef};
 use shell_contract::IpcValue;
-use shell_contract::pdf_sign_options::SignOptions;
 use shell_ipc_d2::pdf::editor::hosts::{CertMaterial, SignFailure};
 
 fn certificate(input: &[u8]) -> Result<X509, String> {
@@ -36,7 +35,7 @@ fn name(name: &X509NameRef) -> Result<String, String> {
     name.entries()
         .map(|entry| {
             let label = entry.object().nid().short_name().unwrap_or("UNDEF");
-            let value = entry.data().as_utf8().map_err(|e| e.to_string())?;
+            let value = entry.data().to_string().map_err(|e| e.to_string())?;
             Ok(format!("{label}={value}"))
         })
         .collect::<Result<Vec<_>, String>>()

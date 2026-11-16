@@ -5,11 +5,7 @@ use std::sync::Arc;
 
 use main_core::shell::tab_manager::{TabActivationEffect, TabKind};
 use shell_contract::provided::Provided;
-use shell_contract::{
-    ViewId,
-    ipc::NativeRequestOwner,
-    runtime::{Services, Views},
-};
+use shell_contract::{ViewId, ipc::NativeRequestOwner, runtime::Services};
 use shell_ipc_w::tabs::{
     PreparedTabUiBatch, PreparedTabUiStep, ShellWindow, TabActivationAuthority,
 };

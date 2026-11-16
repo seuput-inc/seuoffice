@@ -2598,6 +2598,7 @@ fn background_document() -> (T, String) {
     (t, path)
 }
 
+#[allow(clippy::type_complexity)]
 fn owned_save_request(
     t: &mut T,
     target: PathBuf,
