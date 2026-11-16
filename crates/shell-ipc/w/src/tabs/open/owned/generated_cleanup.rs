@@ -586,10 +586,8 @@ impl GeneratedCleanupCoordinator {
         tab_id: std::rc::Rc<std::cell::RefCell<Option<String>>>,
         spare: bool,
         installer: crate::tabs::host::GeneratedPrecloseInstaller,
-    ) -> Result<
-        (std::rc::Rc<Self>, ViewCreationCleanup),
-        (Box<GeneratedCleanupAuthority>, String),
-    > {
+    ) -> Result<(std::rc::Rc<Self>, ViewCreationCleanup), (Box<GeneratedCleanupAuthority>, String)>
+    {
         if authority.operation != operation
             || !authority.reservation.same_reservation(&binding.reservation)
             || !authority.browser.same_owner(&binding.owner)

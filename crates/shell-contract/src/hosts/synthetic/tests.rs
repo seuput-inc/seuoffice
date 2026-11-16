@@ -4628,11 +4628,22 @@ fn renderer_commit_wraps_a_real_commit_of_the_destination_path() {
     let (path, receipt) = committed_receipt_fixture(&effects, &owner);
     let cancel = CancelToken::default();
     let publication = crate::ipc::SavedPublication::renderer_commit(
-        &effects, &owner, &owner, &[], &cancel, &cancel, &[], &path, receipt,
+        &effects,
+        &owner,
+        &owner,
+        &[],
+        &cancel,
+        &cancel,
+        &[],
+        &path,
+        receipt,
     )
     .unwrap();
     assert_eq!(publication.path(), path.as_path());
-    assert!(matches!(publication, crate::ipc::SavedPublication::Renderer(_)));
+    assert!(matches!(
+        publication,
+        crate::ipc::SavedPublication::Renderer(_)
+    ));
 }
 
 #[cfg(unix)]
@@ -4667,7 +4678,15 @@ fn renderer_commit_refuses_a_cancelled_token_and_a_different_destination_path() 
     let elsewhere = path.with_file_name("other.xlsx");
     assert!(
         crate::ipc::SavedPublication::renderer_commit(
-            &effects, &owner, &owner, &[], &live, &live, &[], &elsewhere, receipt,
+            &effects,
+            &owner,
+            &owner,
+            &[],
+            &live,
+            &live,
+            &[],
+            &elsewhere,
+            receipt,
         )
         .is_err()
     );

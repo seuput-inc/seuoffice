@@ -10,7 +10,6 @@
 //! value as it arrived, `None` when it was `undefined`) and the id of the
 //! sender's webContents. The answer is the value the handler returns.
 
-use jscompat::{JsObject, JsonValue};
 use super::template_tabs::{
     Opened, OpenedCopyTab, PendingCopy, PreviewEnded, PreviewInput, TemplateOpenInput,
     TemplateTabs, TemplateTabsHost,
@@ -23,6 +22,7 @@ use crate::packages::electron_utils::unsaved_files::OpenFilesHolder;
 use crate::packages::electron_utils::user_skills_channels::{
     handoff_target_of, preview_ended_of, preview_input_of, template_open_input_of,
 };
+use jscompat::{JsObject, JsonValue};
 
 fn invalid() -> JsonValue {
     UserSkillsFail {

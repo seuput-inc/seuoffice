@@ -915,9 +915,10 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                                                 })
                                             }),
                                         None => {
-                                            let binding = scope.native_binding().ok_or_else(|| {
-                                                "the project save has no authority".to_owned()
-                                            })?;
+                                            let binding =
+                                                scope.native_binding().ok_or_else(|| {
+                                                    "the project save has no authority".to_owned()
+                                                })?;
                                             shell.write_new_document_existing_document(
                                                 binding,
                                                 &scope.publication_participants(),

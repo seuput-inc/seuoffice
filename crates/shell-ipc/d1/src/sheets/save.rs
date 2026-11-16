@@ -693,7 +693,9 @@ fn retain_native_workbook_target(
     dialog: Option<shell_contract::ipc::NativeSaveDestination>,
 ) -> Result<(), IpcError> {
     use shell_contract::editors::SaveMode;
-    use shell_contract::ipc::{NativeEditorCommand, NativeInvocationSelection, NativeSaveSelection};
+    use shell_contract::ipc::{
+        NativeEditorCommand, NativeInvocationSelection, NativeSaveSelection,
+    };
     if let Some(selected) = scope.native_selection() {
         return if selected.path() == Path::new(target) {
             Ok(())

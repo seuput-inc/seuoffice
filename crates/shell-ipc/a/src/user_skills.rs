@@ -1618,9 +1618,9 @@ impl TemplateTabsCore {
                         pending,
                         opened,
                     );
-                    done(result.map(|opened| {
-                        (opened.tab_id, opened.preview_id.unwrap_or_default())
-                    }));
+                    done(
+                        result.map(|opened| (opened.tab_id, opened.preview_id.unwrap_or_default())),
+                    );
                 }),
             ),
         }

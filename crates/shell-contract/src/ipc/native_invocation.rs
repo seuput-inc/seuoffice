@@ -45,13 +45,23 @@ pub enum NativeSaveFormat {
     Epub,
     Slides,
     PdfUntitled,
-    DocsDocx { offer_exports: bool },
-    DocsOdt { offer_exports: bool },
+    DocsDocx {
+        offer_exports: bool,
+    },
+    DocsOdt {
+        offer_exports: bool,
+    },
     /// Mirrors main-core `resolve_sheets_save_as_pick`.
-    Sheets { macro_enabled: bool, offer_copies: bool },
+    Sheets {
+        macro_enabled: bool,
+        offer_copies: bool,
+    },
     /// Mirrors main-core `save_as_target`: the document's own `.hwp`/`.hwpx`
     /// (a bare name takes `fallback_hwpx`'s), or a PDF copy when offered.
-    Hwp { fallback_hwpx: bool, offer_pdf: bool },
+    Hwp {
+        fallback_hwpx: bool,
+        offer_pdf: bool,
+    },
 }
 
 /// Inputs selected by a native menu, OS or authenticated application service.

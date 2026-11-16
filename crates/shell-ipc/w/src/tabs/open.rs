@@ -150,9 +150,10 @@ impl TabsState {
         let shown = path.to_owned();
         Box::new(move |result| {
             if let Err(error) = result {
-                state
-                    .hooks
-                    .warn("[shell] opening a document failed:", &format!("{shown}: {error}"));
+                state.hooks.warn(
+                    "[shell] opening a document failed:",
+                    &format!("{shown}: {error}"),
+                );
             }
         })
     }
@@ -759,7 +760,10 @@ impl TabsState {
     }
 
     pub fn abandon_mcp_blank_sheets(&self, view: ViewId) {
-        if !matches!(self.inner.borrow().mcp_blank.get(&view), Some(McpBlank::Sheets)) {
+        if !matches!(
+            self.inner.borrow().mcp_blank.get(&view),
+            Some(McpBlank::Sheets)
+        ) {
             return;
         }
         let dirty = match self.with_manager(|manager, host| {

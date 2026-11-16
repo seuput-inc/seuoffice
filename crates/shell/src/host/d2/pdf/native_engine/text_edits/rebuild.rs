@@ -15,7 +15,7 @@ use font::{Face,OwnFace};
 use keep::Keep;
 use style::RunStyle;
 
-fn flag(v:&IpcValue,key:&str)->bool {matches!(field(v,key),Some(IpcValue::Bool(true))}
+fn flag(v:&IpcValue,key:&str)->bool {matches!(field(v,key),Some(IpcValue::Bool(true)))}
 fn present(v:&IpcValue,key:&str)->bool {field(v,key).is_some_and(|v|!matches!(v,IpcValue::Undefined))}
 fn rgb(v:Option<&IpcValue>)->Option<[u8;3]>{let IpcValue::Array(a)=v? else{return None};Some([number(a.first())? as u8,number(a.get(1))? as u8,number(a.get(2))? as u8])}
 fn pair(v:Option<&IpcValue>)->Option<[f64;2]>{let IpcValue::Array(a)=v? else{return None};Some([number(a.first())?,number(a.get(1))?])}

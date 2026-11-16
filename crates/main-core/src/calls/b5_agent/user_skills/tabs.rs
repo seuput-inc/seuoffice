@@ -397,7 +397,10 @@ fn step(env: &mut Env, step: &Value) -> Value {
             answer_of(env.open(pending), |opened| {
                 ok_with(vec![
                     ("tabId", Value::from(opened.tab_id)),
-                    ("previewId", Value::from(opened.preview_id.unwrap_or_default())),
+                    (
+                        "previewId",
+                        Value::from(opened.preview_id.unwrap_or_default()),
+                    ),
                 ])
             })
         }

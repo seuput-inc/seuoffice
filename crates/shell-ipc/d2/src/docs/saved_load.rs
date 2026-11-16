@@ -1294,16 +1294,17 @@ pub(super) fn write_copy_state(
     };
     let mut denied = None;
     plan.write_via(&mut |path, value| {
-        let result = main_core::packages::electron_utils::atomic_write::write_json_atomic_authorized(
-            path,
-            value,
-            &mut |effect| {
-                admit(effect).map_err(|error| {
-                    denied = Some(error.message.clone());
-                    error
-                })
-            },
-        );
+        let result =
+            main_core::packages::electron_utils::atomic_write::write_json_atomic_authorized(
+                path,
+                value,
+                &mut |effect| {
+                    admit(effect).map_err(|error| {
+                        denied = Some(error.message.clone());
+                        error
+                    })
+                },
+            );
         if denied.is_some() {
             result.map(|()| true)
         } else {
@@ -1348,9 +1349,12 @@ fn resolve_recovery(docs: &Rc<Docs>, loading: Loading, decoded: DecodedSaved) {
                 return loading.abort(&continued, &error);
             }
             match plan {
-                RecoveryPlan::Original => {
-                    prepare_on_worker(&continued, loading, decoded, SavedRecoveryOpenResult::Original)
-                }
+                RecoveryPlan::Original => prepare_on_worker(
+                    &continued,
+                    loading,
+                    decoded,
+                    SavedRecoveryOpenResult::Original,
+                ),
                 RecoveryPlan::Restore((snapshot, copy)) => prepare_on_worker(
                     &continued,
                     loading,
@@ -1447,10 +1451,8 @@ fn ask_recovery(
             let after = continued.clone();
             let (restored, copy) = held;
             let marked = restored.clone();
-            let deliver = match worker_callback(
-                &continued,
-                &target,
-                move |result: Result<(), String>| {
+            let deliver =
+                match worker_callback(&continued, &target, move |result: Result<(), String>| {
                     if let Err(error) = result {
                         return loading.abort(&after, &error);
                     }
@@ -1466,11 +1468,10 @@ fn ask_recovery(
                         }
                     };
                     prepare_on_worker(&after, loading, decoded, recovery)
-                },
-            ) {
-                Ok(deliver) => deliver,
-                Err(error) => return fail(&continued, &target, &error),
-            };
+                }) {
+                    Ok(deliver) => deliver,
+                    Err(error) => return fail(&continued, &target, &error),
+                };
             let identity = super::recovery::file_identity(&path);
             let snapshot = marked;
             continued.services.workers.spawn(Box::new(move || {
@@ -1536,7 +1537,8 @@ fn prepare_on_worker(
                 return loading.abort(&continued, &error);
             }
             let target = loading.document.target().clone();
-            if let Err(error) = publish_content(&continued, loading, decoded, content, data_url, disk)
+            if let Err(error) =
+                publish_content(&continued, loading, decoded, content, data_url, disk)
             {
                 fail(&continued, &target, &error);
             }

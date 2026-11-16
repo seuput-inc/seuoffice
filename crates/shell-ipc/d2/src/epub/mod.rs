@@ -243,12 +243,8 @@ pub(crate) fn entries(
         {
             let epub = e.clone();
             kit::invoke_later("epub:consume-pending", move |cx, _, reply| {
-                let reply = match saved_slots::dispatch(
-                    &epub,
-                    cx,
-                    saved_open::Kind::Pending,
-                    reply,
-                ) {
+                let reply = match saved_slots::dispatch(&epub, cx, saved_open::Kind::Pending, reply)
+                {
                     Ok(()) => return,
                     Err(reply) => reply,
                 };

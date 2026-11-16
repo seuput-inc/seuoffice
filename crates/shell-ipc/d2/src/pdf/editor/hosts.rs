@@ -438,12 +438,7 @@ pub trait PdfShell: Send + Sync {
     /// `runtime.openNote(path)`; `done` runs once on the core thread, `Err` is what it threw
     fn open_note(&self, path: &str, done: Box<dyn FnOnce(Result<bool, String>)>);
     /// `runtime.insertIntoNote(path, text)`; `done` runs once on the core thread
-    fn insert_into_note(
-        &self,
-        path: &str,
-        text: &str,
-        done: Box<dyn FnOnce(Result<bool, String>)>,
-    );
+    fn insert_into_note(&self, path: &str, text: &str, done: Box<dyn FnOnce(Result<bool, String>)>);
     /// `runtime.newDocumentDir(webContentsId)`: the view's project folder
     fn new_document_dir(&self, view: ViewId) -> Option<String>;
     /// `pdfRedactionSavedHook(wc, path)`: a derived copy became the tab's document

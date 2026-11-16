@@ -99,8 +99,7 @@ pub(super) fn admission(
                 {
                     return Err(error("save target is not an opened document"));
                 }
-                if matches!(permission, Permission::ProjectDocument)
-                    && docs.open_doc.contains(view)
+                if matches!(permission, Permission::ProjectDocument) && docs.open_doc.contains(view)
                 {
                     return Err(error("the Word document already has a saved file"));
                 }

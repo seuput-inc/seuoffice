@@ -990,9 +990,10 @@ impl HtmlShell for FakeHtml {
         }
         self.answers
             .log(json!(["presentHooks.openTab", owner.0, title]));
-        then(self
-            .answers
-            .bool("present_open_tab", format!("{} {title}", owner.0), false))
+        then(
+            self.answers
+                .bool("present_open_tab", format!("{} {title}", owner.0), false),
+        )
     }
     fn present_host_window(&self, view: ViewId) -> Option<WindowId> {
         self.answers

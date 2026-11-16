@@ -92,9 +92,7 @@ impl PreparedSavedDocument for Prepared {
             })
             .unwrap_or(false);
         let mut saved = self.docs.saved.borrow_mut();
-        if !tracked
-            || saved.contains_key(&target.view())
-            || self.docs.saved_reservations.get() == 0
+        if !tracked || saved.contains_key(&target.view()) || self.docs.saved_reservations.get() == 0
         {
             self.slot = Some(slot);
             return Err(kit::error("The saved document target is unavailable"));
@@ -145,7 +143,11 @@ impl SavedActorRegistration for Registration {
             )));
         }
         if let Some(docs) = self.docs.upgrade() {
-            release(&docs, &self.target, "The saved document browser was replaced");
+            release(
+                &docs,
+                &self.target,
+                "The saved document browser was replaced",
+            );
         }
         self.phase.set(Phase::Superseded);
         then(Ok(()));
@@ -499,7 +501,11 @@ impl TextDocs {
             responder.reply(Err(kit::error(
                 "The saved document request has no native owner",
             )));
-            return fail(self, &target, "The saved document request has no native owner");
+            return fail(
+                self,
+                &target,
+                "The saved document request has no native owner",
+            );
         };
         let actual = NativeRequestOwner { view, context };
         let path = match path_of(&target) {

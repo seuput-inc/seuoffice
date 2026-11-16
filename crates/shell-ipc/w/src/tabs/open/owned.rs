@@ -2415,7 +2415,9 @@ impl TabsState {
                             epoch,
                             None,
                             Box::new(move |result| {
-                                if matches!(result, Ok(None)) && let Some(path) = fallback {
+                                if matches!(result, Ok(None))
+                                    && let Some(path) = fallback
+                                {
                                     if let Some(state) = retry_state.upgrade() {
                                         state.route_owned(
                                             path,
@@ -2617,7 +2619,10 @@ impl TabsState {
             epoch,
             diagram,
             Box::new(move |result| {
-                if kind == TabKind::Sheets && result.is_ok() && let Some(state) = state.upgrade() {
+                if kind == TabKind::Sheets
+                    && result.is_ok()
+                    && let Some(state) = state.upgrade()
+                {
                     state.hooks.start_queued_workbook_nudge();
                 }
                 done(result.map(|(_, view, _)| Some(view)));

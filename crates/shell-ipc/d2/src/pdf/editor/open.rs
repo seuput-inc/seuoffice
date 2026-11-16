@@ -263,10 +263,14 @@ impl NoteHost for Hooks<'_> {
         self.0.shell.has_note_hooks()
     }
     fn open_note(&self, _path: &str) -> Result<bool, Thrown> {
-        Err(Thrown("The note tab opens through the asynchronous note hooks".into()))
+        Err(Thrown(
+            "The note tab opens through the asynchronous note hooks".into(),
+        ))
     }
     fn insert_into_note(&self, _path: &str, _text: &str) -> Result<bool, Thrown> {
-        Err(Thrown("The note tab opens through the asynchronous note hooks".into()))
+        Err(Thrown(
+            "The note tab opens through the asynchronous note hooks".into(),
+        ))
     }
 }
 
@@ -1005,40 +1009,43 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
 
     // the request carries text parts, never a path (reading-assist 4.9)
     let e = ed.clone();
-    all.push(kit::invoke_later("pdf:note-open", move |cx, args, reply| {
-        let view = cx.sender.view;
-        if !e.registered(view) {
-            return reply.reply(Ok(obj([
-                ("ok", false.into_ipc()),
-                ("reason", "failed".into_ipc()),
-            ])));
-        }
-        let request = parse_note_open_request(kit::to_js_json(args.get(0)).as_ref());
-        let path = e.open_path(view);
-        let prepared = e.notes.prepare_async(
-            &NoteDeps::new(&e),
-            view.0 as f64,
-            path.as_deref(),
-            request.title.as_deref(),
-            None,
-        );
-        match prepared {
-            Ok((PreparedNote::Ready { path: note, .. }, Some(pending))) => {
-                e.shell.open_note(
-                    &note,
-                    Box::new(move |opened| {
-                        let result = pending.finish(opened.map_err(thrown));
-                        reply.reply(note_result(Ok(result)));
-                    }),
-                );
+    all.push(kit::invoke_later(
+        "pdf:note-open",
+        move |cx, args, reply| {
+            let view = cx.sender.view;
+            if !e.registered(view) {
+                return reply.reply(Ok(obj([
+                    ("ok", false.into_ipc()),
+                    ("reason", "failed".into_ipc()),
+                ])));
             }
-            Ok((PreparedNote::Finished(result), _)) => reply.reply(note_result(Ok(result))),
-            Ok((PreparedNote::Ready { .. }, None)) => reply.reply(note_result(Err(Thrown(
-                "The note request lost its busy guard".into(),
-            )))),
-            Err(thrown) => reply.reply(note_result(Err(thrown))),
-        }
-    }));
+            let request = parse_note_open_request(kit::to_js_json(args.get(0)).as_ref());
+            let path = e.open_path(view);
+            let prepared = e.notes.prepare_async(
+                &NoteDeps::new(&e),
+                view.0 as f64,
+                path.as_deref(),
+                request.title.as_deref(),
+                None,
+            );
+            match prepared {
+                Ok((PreparedNote::Ready { path: note, .. }, Some(pending))) => {
+                    e.shell.open_note(
+                        &note,
+                        Box::new(move |opened| {
+                            let result = pending.finish(opened.map_err(thrown));
+                            reply.reply(note_result(Ok(result)));
+                        }),
+                    );
+                }
+                Ok((PreparedNote::Finished(result), _)) => reply.reply(note_result(Ok(result))),
+                Ok((PreparedNote::Ready { .. }, None)) => reply.reply(note_result(Err(Thrown(
+                    "The note request lost its busy guard".into(),
+                )))),
+                Err(thrown) => reply.reply(note_result(Err(thrown))),
+            }
+        },
+    ));
 
     let e = ed.clone();
     all.push(kit::invoke("pdf:note-unsaved", move |cx, _| {
@@ -1050,47 +1057,51 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
     }));
 
     let e = ed.clone();
-    all.push(kit::invoke_later("pdf:note-insert", move |cx, args, reply| {
-        let view = cx.sender.view;
-        if !e.registered(view) {
-            return reply.reply(Ok(obj([
-                ("ok", false.into_ipc()),
-                ("reason", "failed".into_ipc()),
-            ])));
-        }
-        let Some(request) = parse_note_insert_request(kit::to_js_json(args.get(0)).as_ref()) else {
-            return reply.reply(Ok(obj([
-                ("ok", false.into_ipc()),
-                ("reason", "failed".into_ipc()),
-                ("message", "invalid request".into_ipc()),
-            ])));
-        };
-        let path = e.open_path(view);
-        let prepared = e.notes.prepare_async(
-            &NoteDeps::new(&e),
-            view.0 as f64,
-            path.as_deref(),
-            request.title(),
-            Some(&request),
-        );
-        match prepared {
-            Ok((PreparedNote::Ready { path: note, text }, Some(pending))) => {
-                e.shell.insert_into_note(
-                    &note,
-                    text.as_deref().unwrap_or(""),
-                    Box::new(move |inserted| {
-                        let result = pending.finish(inserted.map_err(thrown));
-                        reply.reply(note_result(Ok(result)));
-                    }),
-                );
+    all.push(kit::invoke_later(
+        "pdf:note-insert",
+        move |cx, args, reply| {
+            let view = cx.sender.view;
+            if !e.registered(view) {
+                return reply.reply(Ok(obj([
+                    ("ok", false.into_ipc()),
+                    ("reason", "failed".into_ipc()),
+                ])));
             }
-            Ok((PreparedNote::Finished(result), _)) => reply.reply(note_result(Ok(result))),
-            Ok((PreparedNote::Ready { .. }, None)) => reply.reply(note_result(Err(Thrown(
-                "The note request lost its busy guard".into(),
-            )))),
-            Err(thrown) => reply.reply(note_result(Err(thrown))),
-        }
-    }));
+            let Some(request) = parse_note_insert_request(kit::to_js_json(args.get(0)).as_ref())
+            else {
+                return reply.reply(Ok(obj([
+                    ("ok", false.into_ipc()),
+                    ("reason", "failed".into_ipc()),
+                    ("message", "invalid request".into_ipc()),
+                ])));
+            };
+            let path = e.open_path(view);
+            let prepared = e.notes.prepare_async(
+                &NoteDeps::new(&e),
+                view.0 as f64,
+                path.as_deref(),
+                request.title(),
+                Some(&request),
+            );
+            match prepared {
+                Ok((PreparedNote::Ready { path: note, text }, Some(pending))) => {
+                    e.shell.insert_into_note(
+                        &note,
+                        text.as_deref().unwrap_or(""),
+                        Box::new(move |inserted| {
+                            let result = pending.finish(inserted.map_err(thrown));
+                            reply.reply(note_result(Ok(result)));
+                        }),
+                    );
+                }
+                Ok((PreparedNote::Finished(result), _)) => reply.reply(note_result(Ok(result))),
+                Ok((PreparedNote::Ready { .. }, None)) => reply.reply(note_result(Err(Thrown(
+                    "The note request lost its busy guard".into(),
+                )))),
+                Err(thrown) => reply.reply(note_result(Err(thrown))),
+            }
+        },
+    ));
 
     let e = ed.clone();
     all.push(kit::send("pdf:dirty-changed", move |cx, args| {

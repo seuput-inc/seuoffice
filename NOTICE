@@ -208,6 +208,20 @@ lines:
   Ajv: Copyright (c) 2015-2021 Evgeny Poberezkin
   jsonschema: Copyright (c) 2020-2026 Dmitry Dygalo
 
+Chromium print header and footer
+
+On macOS the desktop shell draws a PDF's header and footer itself
+(crates/shell/src/native/platform/macos/header_footer.rs): the wrapper page's
+CSS, its built-in default header and footer, and the rules for filling the
+date, title, url, pageNumber and totalPages classes are restated from
+Chromium's components/printing/resources/print_header_footer_template_page.html
+and components/printing/renderer/print_render_frame_helper.cc
+(https://chromium.googlesource.com/chromium/src). Chromium is Copyright The
+Chromium Authors and distributed under the BSD 3-Clause License
+(https://chromium.googlesource.com/chromium/src/+/main/LICENSE), which permits
+redistribution and use with or without modification provided its copyright
+notice, conditions and disclaimer are kept.
+
 SeuOffice brand artwork
 
 The SeuOffice app icon and logo lockup are original compositions for this

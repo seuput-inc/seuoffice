@@ -376,33 +376,34 @@ impl Hwp {
                     return done(Err(error(message)));
                 }
                 let emitted = match &scope {
-                    RenameScope::Renderer(scope) => match (scope.renderer_origin(), &scope.recovery)
-                    {
-                        (Err(message), _) => Err(message),
-                        (Ok(origin), Some((receipt, snapshot))) => {
-                            scope.effects.emit_recovery_open_snapshot(
-                                receipt,
-                                snapshot,
+                    RenameScope::Renderer(scope) => {
+                        match (scope.renderer_origin(), &scope.recovery) {
+                            (Err(message), _) => Err(message),
+                            (Ok(origin), Some((receipt, snapshot))) => {
+                                scope.effects.emit_recovery_open_snapshot(
+                                    receipt,
+                                    snapshot,
+                                    origin,
+                                    &scope.participants,
+                                    0,
+                                    &scope.cancel,
+                                    &scope.pending,
+                                    "hwp:recovery-reset",
+                                    vec![],
+                                )
+                            }
+                            (Ok(origin), None) => scope.effects.emit_owned_many_extra(
                                 origin,
                                 &scope.participants,
                                 0,
                                 &scope.cancel,
                                 &scope.pending,
+                                &scope.additional.iter().collect::<Vec<_>>(),
                                 "hwp:recovery-reset",
                                 vec![],
-                            )
+                            ),
                         }
-                        (Ok(origin), None) => scope.effects.emit_owned_many_extra(
-                            origin,
-                            &scope.participants,
-                            0,
-                            &scope.cancel,
-                            &scope.pending,
-                            &scope.additional.iter().collect::<Vec<_>>(),
-                            "hwp:recovery-reset",
-                            vec![],
-                        ),
-                    },
+                    }
                     RenameScope::Native {
                         snapshot,
                         expected_path,

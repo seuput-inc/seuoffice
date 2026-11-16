@@ -424,24 +424,19 @@ impl TabsState {
                 ai_content: None,
             }),
         };
-        self.open_native_editor(
-            request,
-            operation,
-            expected,
-            {
-                let state = self.rc();
-                Box::new(move |result| {
-                    done(result.map(|(_, view, _)| {
-                        state
-                            .inner
-                            .borrow_mut()
-                            .mcp_blank
-                            .insert(view, crate::tabs::state::McpBlank::Docs);
-                        view
-                    }))
-                })
-            },
-        );
+        self.open_native_editor(request, operation, expected, {
+            let state = self.rc();
+            Box::new(move |result| {
+                done(result.map(|(_, view, _)| {
+                    state
+                        .inner
+                        .borrow_mut()
+                        .mcp_blank
+                        .insert(view, crate::tabs::state::McpBlank::Docs);
+                    view
+                }))
+            })
+        });
     }
 
     pub fn open_mcp_blank_sheets_native(
@@ -466,24 +461,19 @@ impl TabsState {
             path: None,
             new_blank: true,
         };
-        self.open_native_editor(
-            request,
-            operation,
-            expected,
-            {
-                let state = self.rc();
-                Box::new(move |result| {
-                    done(result.map(|(_, view, _)| {
-                        state
-                            .inner
-                            .borrow_mut()
-                            .mcp_blank
-                            .insert(view, crate::tabs::state::McpBlank::Sheets);
-                        view
-                    }))
-                })
-            },
-        );
+        self.open_native_editor(request, operation, expected, {
+            let state = self.rc();
+            Box::new(move |result| {
+                done(result.map(|(_, view, _)| {
+                    state
+                        .inner
+                        .borrow_mut()
+                        .mcp_blank
+                        .insert(view, crate::tabs::state::McpBlank::Sheets);
+                    view
+                }))
+            })
+        });
     }
 
     /// A blank document of `kind` through the native `NewDocument` command: the tab opens
@@ -531,7 +521,10 @@ impl TabsState {
             surface,
             directory: None,
         };
-        let operation = match self.hooks.issue_native_command(expected.clone(), cancel.clone()) {
+        let operation = match self
+            .hooks
+            .issue_native_command(expected.clone(), cancel.clone())
+        {
             Ok(operation) => operation,
             Err(error) => return self.surface_new_tab_error(&error),
         };

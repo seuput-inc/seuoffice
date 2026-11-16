@@ -888,41 +888,47 @@ pub(crate) fn entries(
     let mut out = docs.entries();
 
     let (e, ix, sv) = (Rc::clone(&editors), Arc::clone(&index), services.clone());
-    out.push(kit::invoke_later("markdown:consume-pending", move |cx, _, responder| {
-        let responder = match e.docs.consume_saved(cx, responder) {
-            Ok(()) => return,
-            Err(responder) => responder,
-        };
-        let pending = e.docs.open_path(cx.sender.view);
-        // the vault root is known from here on: start the index so the
-        // backlinks panel and the graph usually find it already built
-        if pending.is_some()
-            && let Ok(root) = e.docs.default_save_dir()
-        {
-            let ix = Arc::clone(&ix);
-            kit::on_worker(
-                &sv,
-                move || {
-                    let mut fs = node_vault_fs(&now_ms);
-                    lock(&ix).warm_wiki_index(&root, &mut fs)
-                },
-                |()| {},
-            );
-        }
-        responder.reply(Ok(pending.into_ipc()))
-    }));
+    out.push(kit::invoke_later(
+        "markdown:consume-pending",
+        move |cx, _, responder| {
+            let responder = match e.docs.consume_saved(cx, responder) {
+                Ok(()) => return,
+                Err(responder) => responder,
+            };
+            let pending = e.docs.open_path(cx.sender.view);
+            // the vault root is known from here on: start the index so the
+            // backlinks panel and the graph usually find it already built
+            if pending.is_some()
+                && let Ok(root) = e.docs.default_save_dir()
+            {
+                let ix = Arc::clone(&ix);
+                kit::on_worker(
+                    &sv,
+                    move || {
+                        let mut fs = node_vault_fs(&now_ms);
+                        lock(&ix).warm_wiki_index(&root, &mut fs)
+                    },
+                    |()| {},
+                );
+            }
+            responder.reply(Ok(pending.into_ipc()))
+        },
+    ));
     let e = Rc::clone(&editors);
-    out.push(kit::invoke("markdown:saved-input-applied", move |cx, args| {
-        let result = args.get(0);
-        let text = |key: &str| {
-            kit::as_str(kit::field(result, key))
-                .unwrap_or_default()
-                .to_owned()
-        };
-        e.docs
-            .saved_input_applied(cx, &text("token"), &text("outcome"), &text("error"))?;
-        Ok(IpcValue::Undefined)
-    }));
+    out.push(kit::invoke(
+        "markdown:saved-input-applied",
+        move |cx, args| {
+            let result = args.get(0);
+            let text = |key: &str| {
+                kit::as_str(kit::field(result, key))
+                    .unwrap_or_default()
+                    .to_owned()
+            };
+            e.docs
+                .saved_input_applied(cx, &text("token"), &text("outcome"), &text("error"))?;
+            Ok(IpcValue::Undefined)
+        },
+    ));
     let e = Rc::clone(&editors);
     out.push(kit::invoke("markdown:seed-take", move |cx, _| {
         let view = cx.sender.view;

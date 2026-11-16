@@ -572,7 +572,10 @@ fn selected_save_normalization_is_one_hop_and_surface_bound() {
             .to_owned()
     };
     let path = std::path::PathBuf::from;
-    assert_eq!(sheets("dir/report.v2", false, true), path("dir/report.v2.xlsx"));
+    assert_eq!(
+        sheets("dir/report.v2", false, true),
+        path("dir/report.v2.xlsx")
+    );
     assert_eq!(sheets("dir/book", false, false), path("dir/book.xlsx"));
     assert_eq!(sheets("dir/book", false, true), path("dir/book"));
     assert_eq!(sheets("book.XLSX", false, true), path("book.XLSX"));

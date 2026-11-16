@@ -887,10 +887,11 @@ pub(crate) mod fake {
                 return then(false);
             }
             self.log(json!(["openDocumentPath", path]));
-            then(self
-                .answer("open_document_path", json!(path))
-                .and_then(|a| a.as_bool())
-                .unwrap_or(true))
+            then(
+                self.answer("open_document_path", json!(path))
+                    .and_then(|a| a.as_bool())
+                    .unwrap_or(true),
+            )
         }
         /// `{"id", "view", "filePath", "window"}`; none unless the case says
         fn active_pdf_tab(&self) -> Option<PdfTab> {

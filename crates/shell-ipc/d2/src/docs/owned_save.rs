@@ -396,18 +396,16 @@ impl Scope {
         self.check()?;
         let commit = staged.take()?;
         let result = match &self.0.authority {
-            SaveAuthority::Renderer(origin) => {
-                self.0.effects.publish_owned_staged_write(
-                    origin,
-                    &self.0.destination,
-                    &self.publication_participants(),
-                    &self.0.cancel,
-                    &self.0.pending,
-                    &self.2,
-                    std::path::Path::new(path),
-                    commit,
-                )
-            }
+            SaveAuthority::Renderer(origin) => self.0.effects.publish_owned_staged_write(
+                origin,
+                &self.0.destination,
+                &self.publication_participants(),
+                &self.0.cancel,
+                &self.0.pending,
+                &self.2,
+                std::path::Path::new(path),
+                commit,
+            ),
             SaveAuthority::Native(_) => {
                 let selection = match self.selected_destination(path) {
                     Ok(selection) => selection,

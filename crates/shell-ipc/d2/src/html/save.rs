@@ -1083,7 +1083,9 @@ pub(super) fn entries(
                 }
                 responder.reply(Ok(result))
             });
-            let cancel = owned.as_ref().map_or_else(|| cx.cancel.clone(), OwnedSave::cancel);
+            let cancel = owned
+                .as_ref()
+                .map_or_else(|| cx.cancel.clone(), OwnedSave::cancel);
             ex.save(view, cancel, args.get(0), owned, None, false, false, done)
         },
     ));
@@ -1281,7 +1283,14 @@ pub(super) fn entries(
                     fallback.as_deref(),
                 )
             });
-            ex.write_odt(view, cx.cancel.clone(), html, pick, skip, reply_with(responder))
+            ex.write_odt(
+                view,
+                cx.cancel.clone(),
+                html,
+                pick,
+                skip,
+                reply_with(responder),
+            )
         },
     ));
 

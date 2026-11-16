@@ -614,18 +614,26 @@ pub(crate) fn entries(
 
     let mut out = docs.entries();
     let e = Rc::clone(&editors);
-    out.push(kit::invoke_later("html:consume-pending", move |cx, _, responder| {
-        let responder = match e.docs.consume_saved(cx, responder) {
-            Ok(()) => return,
-            Err(responder) => responder,
-        };
-        responder.reply(Ok(e.docs.open_path(cx.sender.view).into_ipc()))
-    }));
+    out.push(kit::invoke_later(
+        "html:consume-pending",
+        move |cx, _, responder| {
+            let responder = match e.docs.consume_saved(cx, responder) {
+                Ok(()) => return,
+                Err(responder) => responder,
+            };
+            responder.reply(Ok(e.docs.open_path(cx.sender.view).into_ipc()))
+        },
+    ));
     let e = Rc::clone(&editors);
     out.push(kit::invoke("html:saved-input-applied", move |cx, args| {
         let result = args.get(0);
-        let text = |key: &str| kit::as_str(kit::field(result, key)).unwrap_or_default().to_owned();
-        e.docs.saved_input_applied(cx, &text("token"), &text("outcome"), &text("error"))?;
+        let text = |key: &str| {
+            kit::as_str(kit::field(result, key))
+                .unwrap_or_default()
+                .to_owned()
+        };
+        e.docs
+            .saved_input_applied(cx, &text("token"), &text("outcome"), &text("error"))?;
         Ok(IpcValue::Undefined)
     }));
     // a view opened on a file never takes a seed or a hand-off
@@ -721,29 +729,34 @@ pub(crate) fn entries(
     out.push(present_full_screen(services, &editors, contents.clone()));
     let e = Rc::clone(&editors);
     let c = contents.clone();
-    out.push(kit::invoke_later("html:present-new-tab", move |cx, args, r| {
-        let owner = cx.sender.view;
-        let label = args.str(0).unwrap_or("").to_owned();
-        let e = Rc::clone(&e);
-        let c = c.clone();
-        let window_label = label.clone();
-        e.shell.present_open_tab(
-            owner,
-            &label,
-            Box::new(move |opened| {
-                if !opened {
-                    let parent = c
-                        .window_of(owner)
-                        .or_else(|| e.shell.present_host_window(owner))
-                        .filter(|w| !e.shell.is_window_destroyed(*w));
-                    if let Some(view) = e.shell.open_present_window(owner, &window_label, parent) {
-                        e.bind_present(view, owner);
+    out.push(kit::invoke_later(
+        "html:present-new-tab",
+        move |cx, args, r| {
+            let owner = cx.sender.view;
+            let label = args.str(0).unwrap_or("").to_owned();
+            let e = Rc::clone(&e);
+            let c = c.clone();
+            let window_label = label.clone();
+            e.shell.present_open_tab(
+                owner,
+                &label,
+                Box::new(move |opened| {
+                    if !opened {
+                        let parent = c
+                            .window_of(owner)
+                            .or_else(|| e.shell.present_host_window(owner))
+                            .filter(|w| !e.shell.is_window_destroyed(*w));
+                        if let Some(view) =
+                            e.shell.open_present_window(owner, &window_label, parent)
+                        {
+                            e.bind_present(view, owner);
+                        }
                     }
-                }
-                r.reply(Ok(true.into_ipc()))
-            }),
-        )
-    }));
+                    r.reply(Ok(true.into_ipc()))
+                }),
+            )
+        },
+    ));
     let e = Rc::clone(&editors);
     out.push(kit::send("html:provisional-title", move |cx, args| {
         let view = cx.sender.view;

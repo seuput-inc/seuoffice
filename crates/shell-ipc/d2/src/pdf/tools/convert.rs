@@ -393,18 +393,21 @@ impl Convert {
             },
         ));
         let me = self.clone();
-        out.push(kit::invoke_later("pdf:convert-open-result", move |cx, args, r| {
-            let path = me
-                .request_of(cx.sender.view, args.get(0))
-                .filter(|p| js_regex!(r"\.md$", "i").test(p) && exists_sync(p));
-            match path {
-                Some(p) => me.ctx.shell.open_document_path(
-                    &p,
-                    Box::new(move |opened| r.reply(Ok(opened.into_ipc()))),
-                ),
-                None => r.reply(Ok(false.into_ipc())),
-            }
-        }));
+        out.push(kit::invoke_later(
+            "pdf:convert-open-result",
+            move |cx, args, r| {
+                let path = me
+                    .request_of(cx.sender.view, args.get(0))
+                    .filter(|p| js_regex!(r"\.md$", "i").test(p) && exists_sync(p));
+                match path {
+                    Some(p) => me.ctx.shell.open_document_path(
+                        &p,
+                        Box::new(move |opened| r.reply(Ok(opened.into_ipc()))),
+                    ),
+                    None => r.reply(Ok(false.into_ipc())),
+                }
+            },
+        ));
         let me = self.clone();
         out.push(kit::invoke("pdf:convert-reveal-result", move |cx, args| {
             let path = me
@@ -552,7 +555,10 @@ impl Export {
                 Err(m) => self.failed(ConvertError::Other(m)),
                 Ok(()) => {
                     self.report(&done);
-                    self.c.ctx.shell.open_document_path(&picked, Box::new(|_| {}));
+                    self.c
+                        .ctx
+                        .shell
+                        .open_document_path(&picked, Box::new(|_| {}));
                     self.end()
                 }
             },

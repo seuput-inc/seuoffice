@@ -1,6 +1,8 @@
 use super::*;
 use shell_contract::hosts::OwnedEffectsHost;
-use shell_contract::ipc::{NativeExistingDocumentBinding, NativeRequestOwner, NativeSaveDestination};
+use shell_contract::ipc::{
+    NativeExistingDocumentBinding, NativeRequestOwner, NativeSaveDestination,
+};
 use shell_contract::runtime::{CancelSubscription, CancelToken, RendererGeneration};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -28,14 +30,13 @@ impl ReloadWatch {
         if !marker.retires(origin) {
             return;
         }
-        let losses =
-            match origin.accepted_reload_losses(&marker, &scope.cancel, &scope.pending) {
-                Ok(losses) => losses,
-                Err(_) => {
-                    scope.pending.cancel();
-                    return;
-                }
-            };
+        let losses = match origin.accepted_reload_losses(&marker, &scope.cancel, &scope.pending) {
+            Ok(losses) => losses,
+            Err(_) => {
+                scope.pending.cancel();
+                return;
+            }
+        };
         let subscriptions = losses
             .tokens()
             .map(|loss| {
@@ -208,18 +209,16 @@ impl Scope {
                 channel,
                 args,
             ),
-            SaveAuthority::Native(binding) => {
-                self.effects.emit_existing_document_save_many_extra(
-                    binding,
-                    std::slice::from_ref(recipient),
-                    0,
-                    &self.cancel,
-                    &self.pending,
-                    &self.extra(),
-                    channel,
-                    args,
-                )
-            }
+            SaveAuthority::Native(binding) => self.effects.emit_existing_document_save_many_extra(
+                binding,
+                std::slice::from_ref(recipient),
+                0,
+                &self.cancel,
+                &self.pending,
+                &self.extra(),
+                channel,
+                args,
+            ),
         }
     }
     pub fn emit(&self, channel: &str, args: Vec<IpcValue>) -> Result<(), String> {
@@ -303,26 +302,25 @@ impl Scope {
                 self.effects.clone(),
                 done,
             ),
-            SaveAuthority::Native(binding) => match self
-                .native_destination
-                .clone()
-                .filter(|selected| {
+            SaveAuthority::Native(binding) => {
+                match self.native_destination.clone().filter(|selected| {
                     selected.matches_binding(binding) && selected.path() == Path::new(&path)
                 }) {
-                Some(selection) => shell.file_saved_existing_document(
-                    view,
-                    selection,
-                    self.participants.clone(),
-                    self.cancel.clone(),
-                    self.pending.clone(),
-                    self.additional.clone(),
-                    self.effects.clone(),
-                    done,
-                ),
-                None => done(Err(
-                    "hwp: the native save destination does not match the saved file".into(),
-                )),
-            },
+                    Some(selection) => shell.file_saved_existing_document(
+                        view,
+                        selection,
+                        self.participants.clone(),
+                        self.cancel.clone(),
+                        self.pending.clone(),
+                        self.additional.clone(),
+                        self.effects.clone(),
+                        done,
+                    ),
+                    None => done(Err(
+                        "hwp: the native save destination does not match the saved file".into(),
+                    )),
+                }
+            }
         }
     }
 }
@@ -798,10 +796,11 @@ impl Hwp {
         {
             if let SaveAuthority::Native(binding) = &scope.authority {
                 let selected = scope.effect(&mut || {
-                    let destination = shell_contract::ipc::NativeSaveDestination::from_current_document(
-                        binding.clone(),
-                        PathBuf::from(path),
-                    )?;
+                    let destination =
+                        shell_contract::ipc::NativeSaveDestination::from_current_document(
+                            binding.clone(),
+                            PathBuf::from(path),
+                        )?;
                     self.owned_saves
                         .borrow_mut()
                         .get_mut(&view)

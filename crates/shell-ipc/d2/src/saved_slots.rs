@@ -494,7 +494,9 @@ pub(crate) fn installed<H: SavedHost>(
                 .get_mut(&view)
                 .filter(|slot| slot.target.same_target(&target))
                 .ok_or("The saved document barrier was released")?;
-            slot.data = data.take().ok_or("The saved document was already installed")?;
+            slot.data = data
+                .take()
+                .ok_or("The saved document was already installed")?;
             slot.installed = true;
             Ok(())
         },
@@ -615,9 +617,10 @@ fn drain<H: SavedHost>(host: &Rc<H>, view: ViewId) {
             target.pending(),
             &extra,
             &mut |_| {
-                let live = host.slots().0.borrow().get(&view).is_some_and(|slot| {
-                    slot.target.same_target(&target) && slot.failure.is_none()
-                });
+                let live =
+                    host.slots().0.borrow().get(&view).is_some_and(|slot| {
+                        slot.target.same_target(&target) && slot.failure.is_none()
+                    });
                 if !live {
                     return Err("The saved document barrier was released".into());
                 }
