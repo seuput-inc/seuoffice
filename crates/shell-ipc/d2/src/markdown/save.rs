@@ -808,7 +808,9 @@ impl Md {
                     let effects = finish.effects().clone();
                     let destination = finish.destination().clone();
                     let callback: Box<
-                        dyn FnOnce(Result<shell_contract::hosts::SavedFile<PathBuf>, String>),
+                        dyn FnOnce(
+                            Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>,
+                        ),
                     > = Box::new(move |saved| match saved {
                         Err(error) => done(failure(error)),
                         Ok(saved) => acknowledged.finish_saved_owned(
