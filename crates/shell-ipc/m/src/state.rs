@@ -192,9 +192,7 @@ impl MState {
             pending.settling = true;
             return Some((None, Ok(delivery)));
         }
-        if pending.payload.is_none() {
-            return None;
-        }
+        pending.payload.as_ref()?;
         let delivery = {
             let mut slot = terminal.lock().unwrap_or_else(|error| error.into_inner());
             slot.take()?

@@ -1,6 +1,6 @@
 use super::*;
 use shell_contract::hosts::OwnedEffectsHost;
-use shell_contract::ipc::NativeRequestOwner;
+use shell_contract::ipc::{NativeExistingDocumentBinding, NativeRequestOwner, NativeSaveDestination};
 use shell_contract::runtime::{CancelSubscription, CancelToken, RendererGeneration};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -22,14 +22,14 @@ impl ReloadWatch {
     }
 
     fn accept(&self, scope: &Scope, marker: shell_contract::hosts::AcceptedPdfReload) {
-        if !marker.retires(&scope.origin) {
+        let Some(origin) = scope.origin() else {
+            return;
+        };
+        if !marker.retires(origin) {
             return;
         }
         let losses =
-            match scope
-                .origin
-                .accepted_reload_losses(&marker, &scope.cancel, &scope.pending)
-            {
+            match origin.accepted_reload_losses(&marker, &scope.cancel, &scope.pending) {
                 Ok(losses) => losses,
                 Err(_) => {
                     scope.pending.cancel();
@@ -69,8 +69,20 @@ mod close;
 mod recovery;
 
 #[derive(Clone)]
+pub(super) enum SaveAuthority {
+    Renderer(NativeRequestOwner),
+    Native(NativeExistingDocumentBinding),
+}
+
+/// What a save dialog picked.
+pub(super) enum Picked {
+    Path(PathBuf),
+    Destination(NativeSaveDestination),
+}
+
+#[derive(Clone)]
 pub(super) struct Scope {
-    pub origin: NativeRequestOwner,
+    pub authority: SaveAuthority,
     pub destination: NativeRequestOwner,
     pub participants: Vec<NativeRequestOwner>,
     pub cancel: CancelToken,
@@ -81,27 +93,62 @@ pub(super) struct Scope {
         shell_contract::ipc::RecoverySeedReceipt,
         shell_contract::ipc::RecoveryAuthoritySnapshot,
     )>,
+    /// the file a native save selected, kept through its write
+    pub native_destination: Option<NativeSaveDestination>,
 }
 impl Scope {
+    pub fn origin(&self) -> Option<&NativeRequestOwner> {
+        match &self.authority {
+            SaveAuthority::Renderer(origin) => Some(origin),
+            SaveAuthority::Native(_) => None,
+        }
+    }
+    /// For the steps only a renderer-owned save has: a native one refuses.
+    pub fn renderer_origin(&self) -> Result<&NativeRequestOwner, String> {
+        self.origin()
+            .ok_or_else(|| "hwp: this operation is owned by a native save".to_owned())
+    }
+    /// The lifetime of whoever asked for the save.
+    pub fn authority_loss(&self) -> Option<CancelToken> {
+        match &self.authority {
+            SaveAuthority::Renderer(origin) => origin.loss_token(),
+            SaveAuthority::Native(binding) => Some(binding.operation().loss_token()),
+        }
+    }
+    fn extra(&self) -> Vec<&CancelToken> {
+        self.additional.iter().collect()
+    }
     pub fn effect(&self, action: &mut dyn FnMut() -> Result<(), String>) -> Result<(), String> {
-        match &self.recovery {
-            Some((receipt, snapshot)) => self.effects.with_recovery_open_snapshot(
-                receipt,
-                snapshot,
-                &self.origin,
+        match (&self.authority, &self.recovery) {
+            (SaveAuthority::Renderer(origin), Some((receipt, snapshot))) => {
+                self.effects.with_recovery_open_snapshot(
+                    receipt,
+                    snapshot,
+                    origin,
+                    &self.participants,
+                    &self.cancel,
+                    &self.pending,
+                    action,
+                )
+            }
+            (SaveAuthority::Renderer(origin), None) => self.effects.with_owned_effect_many_extra(
+                origin,
                 &self.participants,
                 &self.cancel,
                 &self.pending,
+                &self.extra(),
                 action,
             ),
-            None => self.effects.with_owned_effect_many_extra(
-                &self.origin,
-                &self.participants,
-                &self.cancel,
-                &self.pending,
-                &self.additional.iter().collect::<Vec<_>>(),
-                action,
-            ),
+            (SaveAuthority::Native(binding), _) => {
+                self.effects.with_existing_document_save_effect_extra(
+                    binding,
+                    &self.participants,
+                    &self.cancel,
+                    &self.pending,
+                    &self.extra(),
+                    action,
+                )
+            }
         }
     }
     pub fn admit(&self, action: &mut dyn FnMut()) -> Result<(), main_core::node_fs::NodeError> {
@@ -113,6 +160,170 @@ impl Scope {
             code: None,
             message,
         })
+    }
+    /// The write of the document's own file: a native save writes only the
+    /// destination it selected.
+    pub fn admit_write(
+        &self,
+        path: &str,
+        action: &mut dyn FnMut(),
+    ) -> Result<(), main_core::node_fs::NodeError> {
+        let SaveAuthority::Native(binding) = &self.authority else {
+            return self.admit(action);
+        };
+        let result = match &self.native_destination {
+            Some(destination) if destination.matches_binding(binding) => {
+                self.effects.with_existing_document_destination_effect(
+                    destination,
+                    Path::new(path),
+                    &self.participants,
+                    &self.cancel,
+                    &self.pending,
+                    &self.extra(),
+                    &mut || {
+                        action();
+                        Ok(())
+                    },
+                )
+            }
+            _ => Err("hwp: the native save destination was released".to_owned()),
+        };
+        result.map_err(|message| main_core::node_fs::NodeError {
+            code: None,
+            message,
+        })
+    }
+    pub fn emit_to(
+        &self,
+        recipient: &NativeRequestOwner,
+        channel: &str,
+        args: Vec<IpcValue>,
+    ) -> Result<(), String> {
+        match &self.authority {
+            SaveAuthority::Renderer(origin) => self.effects.emit_owned(
+                origin,
+                recipient,
+                &self.cancel,
+                &self.pending,
+                channel,
+                args,
+            ),
+            SaveAuthority::Native(binding) => {
+                self.effects.emit_existing_document_save_many_extra(
+                    binding,
+                    std::slice::from_ref(recipient),
+                    0,
+                    &self.cancel,
+                    &self.pending,
+                    &self.extra(),
+                    channel,
+                    args,
+                )
+            }
+        }
+    }
+    pub fn emit(&self, channel: &str, args: Vec<IpcValue>) -> Result<(), String> {
+        self.emit_to(&self.destination, channel, args)
+    }
+    pub fn message(
+        &self,
+        dialogs: &shell_contract::DialogsHost,
+        parent: Option<WindowId>,
+        options: MessageBox,
+        done: Box<dyn FnOnce(Result<shell_contract::hosts::MessageBoxAnswer, String>) + Send>,
+    ) {
+        match &self.authority {
+            SaveAuthority::Renderer(origin) => dialogs.message_owned(
+                parent,
+                options,
+                origin.clone(),
+                self.destination.clone(),
+                self.cancel.clone(),
+                self.pending.clone(),
+                done,
+            ),
+            SaveAuthority::Native(binding) => dialogs.message_existing_document(
+                parent,
+                options,
+                binding.clone(),
+                self.participants.clone(),
+                self.cancel.clone(),
+                self.pending.clone(),
+                self.additional.clone(),
+                done,
+            ),
+        }
+    }
+    pub fn save(
+        &self,
+        dialogs: &shell_contract::DialogsHost,
+        parent: Option<WindowId>,
+        options: shell_contract::hosts::FileDialog,
+        done: Box<dyn FnOnce(Result<Option<Picked>, String>) + Send>,
+    ) {
+        match &self.authority {
+            SaveAuthority::Renderer(origin) => dialogs.save_owned(
+                parent,
+                options,
+                origin.clone(),
+                self.destination.clone(),
+                self.cancel.clone(),
+                self.pending.clone(),
+                Box::new(move |picked| done(picked.map(|path| path.map(Picked::Path)))),
+            ),
+            SaveAuthority::Native(binding) => dialogs.save_existing_document(
+                parent,
+                options,
+                binding.clone(),
+                self.participants.clone(),
+                self.cancel.clone(),
+                self.pending.clone(),
+                self.additional.clone(),
+                Box::new(move |picked| done(picked.map(|path| path.map(Picked::Destination)))),
+            ),
+        }
+    }
+    /// The save landed on a new path: the shell is told under the save's
+    /// authority.
+    pub fn file_saved(
+        &self,
+        shell: &HwpShellHost,
+        view: ViewId,
+        path: String,
+        done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>,
+    ) {
+        match &self.authority {
+            SaveAuthority::Renderer(origin) => shell.file_saved_owned(
+                view,
+                path,
+                origin.clone(),
+                self.destination.clone(),
+                self.cancel.clone(),
+                self.pending.clone(),
+                self.effects.clone(),
+                done,
+            ),
+            SaveAuthority::Native(binding) => match self
+                .native_destination
+                .clone()
+                .filter(|selected| {
+                    selected.matches_binding(binding) && selected.path() == Path::new(&path)
+                }) {
+                Some(selection) => shell.file_saved_existing_document(
+                    view,
+                    selection,
+                    self.participants.clone(),
+                    self.cancel.clone(),
+                    self.pending.clone(),
+                    self.additional.clone(),
+                    self.effects.clone(),
+                    done,
+                ),
+                None => done(Err(
+                    "hwp: the native save destination does not match the saved file".into(),
+                )),
+            },
+        }
     }
 }
 
@@ -1065,7 +1276,7 @@ impl Hwp {
         let token = token.to_owned();
         let hwp = self.clone();
         let completion_scope = scope.clone();
-        let done = Box::new(move |answer: IpcValue| {
+        let done: Box<dyn FnOnce(IpcValue)> = Box::new(move |answer: IpcValue| {
             let ok = matches!(field(&answer, "ok"), IpcValue::Bool(true));
             let mut delivery = None;
             let mut operation = None;

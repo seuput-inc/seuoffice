@@ -386,15 +386,16 @@ pub trait AgentWindowHost {
     ) -> Result<AgentProjectSkillsView, Failure>;
     /// `deps.openTemplatePreview` is set
     fn has_open_template_preview(&self) -> bool;
-    /// `deps.openTemplatePreview(owner, input)`, `owner` the page with this id.
-    /// Synchronous by rule d6: it is `templateTabs.openPreview`, whose
-    /// `open_copy` seam (copy folder, file write, tab creation) is that
-    /// module's `TemplateTabsHost`; it awaits no renderer reply here
+    /// `deps.openTemplatePreview(owner, input)`, `owner` the page with this id: it is
+    /// `templateTabs.openPreview`, whose copy folder, file write and tab creation end in the
+    /// shell opening a tab. `done` runs once, on the host's thread, when the preview tab is
+    /// open (or the open failed).
     fn open_template_preview(
         &mut self,
         owner_id: i64,
         input: &TemplatePreviewInput,
-    ) -> Result<TemplatePreviewOutcome, Failure>;
+        done: Box<dyn FnOnce(Result<TemplatePreviewOutcome, Failure>)>,
+    );
 
     /// `dialog.showOpenDialog(win, options)`: the result object (a dialog,
     /// so synchronous by rule d6)
@@ -1256,19 +1257,20 @@ pub enum TemplateBlank {
     Refused(TemplateRefusal),
 }
 
-/// the `templateBlank` handler: "make
-/// a blank template": the copy opens in a preview tab whose AI clears it
-pub fn agent_template_blank(
+/// the `templateBlank` handler, first half: "make a blank template": the copy opens in a
+/// preview tab whose AI clears it. `Err` is the answer already; `Ok` is what the host opens,
+/// and its outcome goes to [`agent_template_blank_finish`].
+pub fn agent_template_blank_begin(
     host: &mut dyn AgentWindowHost,
     shown: &AgentWindowShown,
     sender: i64,
     proposal_key: Option<&JsonValue>,
     candidate_id: Option<&JsonValue>,
     request: Option<&JsonValue>,
-) -> TemplateBlank {
+) -> Result<TemplatePreviewInput, TemplateBlank> {
     let found = agent_shown_candidate(host, shown, sender, proposal_key, candidate_id);
     let (Some((shown_card, candidate)), true) = (found, host.has_open_template_preview()) else {
-        return TemplateBlank::Refused(TemplateRefusal::NotFound);
+        return Err(TemplateBlank::Refused(TemplateRefusal::NotFound));
     };
     let tab_title = string_of(own(request, "tabTitle"))
         .map(|title| slice_utf16(title, 0.0, Some(300.0)))
@@ -1277,13 +1279,15 @@ pub fn agent_template_blank(
         .map(|text| slice_utf16(text, 0.0, Some(10_000.0)))
         .unwrap_or_default();
     if tab_title.is_empty() || text.is_empty() {
-        return TemplateBlank::Refused(TemplateRefusal::Invalid);
+        return Err(TemplateBlank::Refused(TemplateRefusal::Invalid));
     }
     let (bytes, redaction) = match agent_read_candidate(host, candidate) {
         CandidateRead::Read { bytes, redaction } => (bytes, redaction),
-        CandidateRead::Refused(refusal) => return TemplateBlank::Refused(refusal_of(refusal)),
+        CandidateRead::Refused(refusal) => {
+            return Err(TemplateBlank::Refused(refusal_of(refusal)));
+        }
     };
-    let input = TemplatePreviewInput {
+    Ok(TemplatePreviewInput {
         bytes,
         file_name: candidate.file_name.clone(),
         title: candidate.title.clone(),
@@ -1293,8 +1297,14 @@ pub fn agent_template_blank(
         original_redacted: redaction != TemplateRedaction::None,
         proposal: shown_card.proposal.clone(),
         draft: own(request, "draft").cloned(),
-    };
-    match host.open_template_preview(sender, &input) {
+    })
+}
+
+/// the `templateBlank` handler, second half: the answer for the host's outcome
+pub fn agent_template_blank_finish(
+    outcome: Result<TemplatePreviewOutcome, Failure>,
+) -> TemplateBlank {
+    match outcome {
         Ok(TemplatePreviewOutcome::Opened { tab_id, preview_id }) => {
             TemplateBlank::Ok { tab_id, preview_id }
         }

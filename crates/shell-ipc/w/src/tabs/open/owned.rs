@@ -99,6 +99,7 @@ impl Completion {
 }
 
 thread_local! {
+    #[allow(clippy::type_complexity)]
     static DIAGRAM_WAITERS: RefCell<HashMap<String, Vec<Box<dyn FnOnce()>>>> = RefCell::new(HashMap::new());
 }
 
@@ -126,7 +127,7 @@ pub(super) enum SurvivorHydration {
         owner: NativeRequestOwner,
         generation: RendererGeneration,
     },
-    AdoptedPending(AdoptedSurvivorPending),
+    AdoptedPending(Box<AdoptedSurvivorPending>),
 }
 
 pub(super) struct AdoptedSurvivorPending {
@@ -135,7 +136,6 @@ pub(super) struct AdoptedSurvivorPending {
     pub generation: RendererGeneration,
     pub closure: super::super::host::ViewClosureBinding,
     pub attempt: std::rc::Rc<dyn super::super::activation::RecoveryAttempt>,
-    pub discard: super::super::activation::RecoveryCleanup,
     pub error: String,
     pub lifetime: Option<AdoptedLifetimeFailure>,
     pub handle: Option<AdoptedLifetimeHandle>,
@@ -145,44 +145,44 @@ pub(super) struct AdoptedSurvivorPending {
 
 impl AdoptedSurvivorPending {
     pub fn retry(&mut self) -> Result<(), String> {
-        if !self.lifetime_secured {
-            if let Some(failure) = self.lifetime.take() {
-                match failure {
-                    AdoptedLifetimeFailure::CallerOwned(failure) => {
-                        if !self.generation.is_active() {
-                            self.lifetime = Some(AdoptedLifetimeFailure::CallerOwned(failure));
-                            self.error = "The adopted survivor renderer is no longer active".into();
-                            return Err(self.error.clone());
-                        }
-                        if let Err(error) = self
-                            .closure
-                            .reservation
-                            .with_owner(&self.closure.owner, |_| Ok(()))
-                        {
-                            self.lifetime = Some(AdoptedLifetimeFailure::CallerOwned(failure));
-                            self.error = error;
-                            return Err(self.error.clone());
-                        }
-                        match failure.retry() {
-                            Ok(handle) => {
-                                self.handle = Some(handle);
-                                self.lifetime_secured = true;
-                            }
-                            Err(failure) => {
-                                self.error = failure.message().to_owned();
-                                self.lifetime = Some(failure);
-                                return Err(self.error.clone());
-                            }
-                        }
-                    }
-                    AdoptedLifetimeFailure::Retained(failure) => {
-                        let result = failure.handle().retry();
-                        self.lifetime = Some(AdoptedLifetimeFailure::Retained(failure));
-                        if let Err(error) = result {
-                            self.error = error;
-                        }
+        if !self.lifetime_secured
+            && let Some(failure) = self.lifetime.take()
+        {
+            match failure {
+                AdoptedLifetimeFailure::CallerOwned(failure) => {
+                    if !self.generation.is_active() {
+                        self.lifetime = Some(AdoptedLifetimeFailure::CallerOwned(failure));
+                        self.error = "The adopted survivor renderer is no longer active".into();
                         return Err(self.error.clone());
                     }
+                    if let Err(error) = self
+                        .closure
+                        .reservation
+                        .with_owner(&self.closure.owner, |_| Ok(()))
+                    {
+                        self.lifetime = Some(AdoptedLifetimeFailure::CallerOwned(failure));
+                        self.error = error;
+                        return Err(self.error.clone());
+                    }
+                    match failure.retry() {
+                        Ok(handle) => {
+                            self.handle = Some(handle);
+                            self.lifetime_secured = true;
+                        }
+                        Err(failure) => {
+                            self.error = failure.message().to_owned();
+                            self.lifetime = Some(failure);
+                            return Err(self.error.clone());
+                        }
+                    }
+                }
+                AdoptedLifetimeFailure::Retained(failure) => {
+                    let result = failure.handle().retry();
+                    self.lifetime = Some(AdoptedLifetimeFailure::Retained(failure));
+                    if let Err(error) = result {
+                        self.error = error;
+                    }
+                    return Err(self.error.clone());
                 }
             }
         }
@@ -205,23 +205,6 @@ impl AdoptedSurvivorPending {
             self.attempt_secured = true;
         }
         Ok(())
-    }
-
-    pub fn observe_terminal(
-        &self,
-        done: Box<dyn FnOnce(shell_contract::ipc::NativeBrowserRetirement)>,
-    ) -> Result<(), String> {
-        if let Some(handle) = &self.handle {
-            handle.observe_terminal(done);
-            return Ok(());
-        }
-        match self.lifetime.as_ref() {
-            Some(AdoptedLifetimeFailure::Retained(failure)) => {
-                failure.handle().observe_terminal(done);
-                Ok(())
-            }
-            _ => Err("The survivor has no retained terminal handle".into()),
-        }
     }
 }
 
@@ -365,7 +348,7 @@ enum Step {
     Hydrate {
         plan: PreparedTabLoad,
         origin: NativeRequestOwner,
-        startup: Option<super::super::activation::StartupRecoveryConstraint>,
+        startup: Option<Box<super::super::activation::StartupRecoveryConstraint>>,
         prepared: Option<PreparedSurvivorHydration>,
     },
     NativeHydrate {
@@ -373,7 +356,6 @@ enum Step {
         command: shell_contract::ipc::NativeInvocationOperation,
         shell: NativeRequestOwner,
     },
-    GeneratedNew(PreparedTabOpen<ViewId, super::super::host::RetainedSpareBinding>),
     GeneratedLoaded {
         id: String,
         view: ViewId,
@@ -381,19 +363,6 @@ enum Step {
     GeneratedFailed {
         plan: Option<PreparedTabOpen<ViewId, super::super::host::RetainedSpareBinding>>,
         view: ViewId,
-    },
-}
-
-pub(super) enum GeneratedCapturedTab {
-    Viewless {
-        id: String,
-    },
-    Unloaded {
-        id: String,
-    },
-    Loaded {
-        id: String,
-        owner: NativeRequestOwner,
     },
 }
 
@@ -405,7 +374,6 @@ pub(super) struct GeneratedCleanupAuthority {
     pub manager_epoch: u64,
     pub cleanup: CancelToken,
     pub participants: Vec<NativeRequestOwner>,
-    pub survivors: Vec<GeneratedCapturedTab>,
     pub preview: main_core::shell::tab_manager::GeneratedRemovalPreview<
         ViewId,
         super::super::host::RetainedSpareBinding,
@@ -446,6 +414,7 @@ pub(super) struct PreparedSavedManagerAdoption {
 }
 
 impl TabsState {
+    #[allow(clippy::type_complexity)]
     pub(super) fn prepare_saved_manager_adoption(
         &self,
         plan: PreparedTabOpen<ViewId, super::super::host::RetainedSpareBinding>,
@@ -454,10 +423,10 @@ impl TabsState {
         epoch: u64,
     ) -> Result<
         PreparedSavedManagerAdoption,
-        (
+        Box<(
             PreparedTabOpen<ViewId, super::super::host::RetainedSpareBinding>,
             String,
-        ),
+        )>,
     > {
         let binding = &retained.browser;
         let original = match (
@@ -483,20 +452,20 @@ impl TabsState {
                 Some(original.browser.owner.clone())
             }
             _ => {
-                return Err((
+                return Err(Box::new((
                     plan,
                     "The saved editor reservation does not match its manager plan".into(),
-                ));
+                )));
             }
         };
         if !target.reservation().same_reservation(&binding.reservation)
             || !target.browser().same_owner(&binding.owner)
             || !binding.reservation.matches(target.view(), target.created())
         {
-            return Err((
+            return Err(Box::new((
                 plan,
                 "The saved editor reservation does not match its manager plan".into(),
-            ));
+            )));
         }
         let prepared = {
             let mut inner = self.inner.borrow_mut();
@@ -508,9 +477,9 @@ impl TabsState {
                     .prepare_editor_adoption(bridge, plan, target.view())
                     .map_err(|failure| {
                         let (plan, error) = *failure;
-                        (plan, error.0)
+                        Box::new((plan, error.0))
                     }),
-                None => Err((plan, "The shell window is unavailable".into())),
+                None => Err(Box::new((plan, "The shell window is unavailable".into()))),
             }
         }?;
         let commit = {
@@ -522,7 +491,7 @@ impl TabsState {
         };
         let commit = match commit {
             Ok(commit) => commit,
-            Err(error) => return Err((prepared.into_plan(), error)),
+            Err(error) => return Err(Box::new((prepared.into_plan(), error))),
         };
         let preview = {
             let inner = self.inner.borrow();
@@ -535,7 +504,7 @@ impl TabsState {
         };
         let preview = match preview {
             Ok(preview) => preview,
-            Err(error) => return Err((prepared.into_plan(), error)),
+            Err(error) => return Err(Box::new((prepared.into_plan(), error))),
         };
         let prepared = std::rc::Rc::new(RefCell::new(Some(prepared)));
         let adoption_prepared = prepared.clone();
@@ -940,6 +909,7 @@ impl TabsState {
         self.retain_creation_cleanup_with_rollback(cleanup, proof, Some(action), failure, done);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn fail_new_editor(
         &self,
         id: u64,
@@ -979,6 +949,7 @@ impl TabsState {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn finish_new_editor(
         &self,
         id: u64,
@@ -1392,10 +1363,10 @@ impl TabsState {
                 if let Some(error) = retirement_error {
                     return done(Err(error));
                 }
-                if let Some(seed) = spare_seed.as_mut() {
-                    if let Err(error) = seed.after_commit(&request_cancel) {
-                        return done(Err(error));
-                    }
+                if let Some(seed) = spare_seed.as_mut()
+                    && let Err(error) = seed.after_commit(&request_cancel)
+                {
+                    return done(Err(error));
                 }
                 let active_id = tab.clone();
                 let view = target.view;
@@ -1524,7 +1495,16 @@ impl TabsState {
                 prepared,
             } => {
                 return self.finish_hydration(
-                    epoch, plan, origin, startup, None, prepared, cancel, result, done, diagram,
+                    epoch,
+                    plan,
+                    origin,
+                    startup.map(|startup| *startup),
+                    None,
+                    prepared,
+                    cancel,
+                    result,
+                    done,
+                    diagram,
                 );
             }
             Step::NativeHydrate {
@@ -1557,13 +1537,6 @@ impl TabsState {
             return;
         }
         let result = match step {
-            Step::GeneratedNew(plan) => {
-                self.inner
-                    .borrow_mut()
-                    .manager_call(|manager, host| manager.cancel_editor_open(host, plan));
-                self.close_owned_result(result);
-                Err("The generated target did not commit its initialization".into())
-            }
             Step::GeneratedLoaded { id, view } => match result {
                 Ok(NativeOpened::Generated(ready))
                     if ready.view.view() == view
@@ -1611,6 +1584,7 @@ impl TabsState {
         drop(diagram);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn finish_hydration(
         &self,
         epoch: u64,
@@ -1856,19 +1830,20 @@ impl TabsState {
                         .map(|failure| failure.message().to_owned())
                         .or_else(|| adopted.as_ref().err().cloned());
                     let outcome = match error {
-                        Some(error) => SurvivorHydration::AdoptedPending(AdoptedSurvivorPending {
-                            id: id.clone(),
-                            owner: target,
-                            generation: generation.clone(),
-                            closure,
-                            attempt,
-                            discard,
-                            error,
-                            lifetime_secured: handle.is_some(),
-                            attempt_secured: handle.is_some() && adopted.is_ok(),
-                            handle,
-                            lifetime,
-                        }),
+                        Some(error) => {
+                            SurvivorHydration::AdoptedPending(Box::new(AdoptedSurvivorPending {
+                                id: id.clone(),
+                                owner: target,
+                                generation: generation.clone(),
+                                closure,
+                                attempt,
+                                error,
+                                lifetime_secured: handle.is_some(),
+                                attempt_secured: handle.is_some() && adopted.is_ok(),
+                                handle,
+                                lifetime,
+                            }))
+                        }
                         None => SurvivorHydration::Ready {
                             id: id.clone(),
                             owner: target,
@@ -2040,7 +2015,6 @@ impl TabsState {
                     .borrow_mut()
                     .manager_call(|manager, host| manager.cancel_editor_open(host, plan));
             }
-            Step::GeneratedNew(plan) => drop(plan),
             Step::GeneratedFailed { plan, .. } => drop(plan),
             Step::GeneratedLoaded { id, view } => {
                 self.inner.borrow_mut().manager_call(|manager, host| {
@@ -2063,7 +2037,6 @@ impl TabsState {
             if matches!(
                 &pending.step,
                 Step::New(_)
-                    | Step::GeneratedNew(_)
                     | Step::GeneratedLoaded { .. }
                     | Step::GeneratedFailed { .. }
                     | Step::Hydrate { .. }
@@ -2079,6 +2052,7 @@ impl TabsState {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn reveal_owned(
         &self,
         id: String,
@@ -2265,7 +2239,8 @@ impl TabsState {
 
     /// Hydrate the exact pre-close survivor without activating it. The returned
     /// owner is the one supplied by the adopted native editor, never a view lookup.
-    pub(crate) fn hydrate_generated_survivor(
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn hydrate_generated_survivor(
         &self,
         opener: main_core::shell::tab_manager::Opener,
         context: main_core::shell::tab_manager::UnloadedTabOpenContext,
@@ -2440,22 +2415,20 @@ impl TabsState {
                             epoch,
                             None,
                             Box::new(move |result| {
-                                if matches!(result, Ok(None)) {
-                                    if let Some(path) = fallback {
-                                        if let Some(state) = retry_state.upgrade() {
-                                            state.route_owned(
-                                                path,
-                                                retry_owner,
-                                                retry_cancel,
-                                                epoch,
-                                                None,
-                                                finish,
-                                            );
-                                        } else {
-                                            finish(Err("the tab manager is unavailable".into()));
-                                        }
-                                        return;
+                                if matches!(result, Ok(None)) && let Some(path) = fallback {
+                                    if let Some(state) = retry_state.upgrade() {
+                                        state.route_owned(
+                                            path,
+                                            retry_owner,
+                                            retry_cancel,
+                                            epoch,
+                                            None,
+                                            finish,
+                                        );
+                                    } else {
+                                        finish(Err("the tab manager is unavailable".into()));
                                     }
+                                    return;
                                 }
                                 finish(result);
                             }),
@@ -2644,10 +2617,8 @@ impl TabsState {
             epoch,
             diagram,
             Box::new(move |result| {
-                if kind == TabKind::Sheets && result.is_ok() {
-                    if let Some(state) = state.upgrade() {
-                        state.hooks.start_queued_workbook_nudge();
-                    }
+                if kind == TabKind::Sheets && result.is_ok() && let Some(state) = state.upgrade() {
+                    state.hooks.start_queued_workbook_nudge();
                 }
                 done(result.map(|(_, view, _)| Some(view)));
             }),

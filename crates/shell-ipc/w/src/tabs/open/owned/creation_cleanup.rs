@@ -1,4 +1,4 @@
-use crate::tabs::host::{ViewCreationCleanup, ViewCreationCleanupState, ViewCreationFailure};
+use crate::tabs::host::ViewCreationCleanup;
 use crate::tabs::state::TabsState;
 use shell_contract::ipc::NativeBrowserRetirement;
 use std::sync::Arc;
@@ -6,47 +6,18 @@ use std::sync::Arc;
 pub(crate) struct OwnedCreationCleanup {
     cleanup: Option<ViewCreationCleanup>,
     receipt: Option<NativeBrowserRetirement>,
+    #[allow(clippy::type_complexity)]
     rollback: Option<
         std::rc::Rc<dyn Fn(Option<NativeBrowserRetirement>, Box<dyn FnOnce(Result<(), String>)>)>,
     >,
     identity: Arc<()>,
     running: bool,
+    #[allow(clippy::type_complexity)]
     failure: Option<Box<dyn FnMut(&str)>>,
     completed: Option<Box<dyn FnOnce()>>,
 }
 
 impl TabsState {
-    /// Retain the exact failed reservation until its native close is acknowledged.
-    pub(crate) fn retain_creation_failure(
-        &self,
-        failure: ViewCreationFailure,
-        done: Box<dyn FnOnce(main_core::shell::tab_manager::TabError)>,
-    ) {
-        let ViewCreationFailure { error, cleanup } = failure;
-        match cleanup {
-            ViewCreationCleanupState::Complete => done(error),
-            ViewCreationCleanupState::Acknowledged(_) => done(error),
-            ViewCreationCleanupState::Pending(cleanup) => {
-                let done = std::rc::Rc::new(std::cell::RefCell::new(Some(done)));
-                let completed = done.clone();
-                let failed = done;
-                let original_message = error.0.clone();
-                let failure = Box::new(move |message: &str| {
-                    if let Some(done) = failed.borrow_mut().take() {
-                        done(main_core::shell::tab_manager::TabError(format!(
-                            "{original_message}; cleanup failed: {message}"
-                        )));
-                    }
-                });
-                let completed = Box::new(move || {
-                    if let Some(done) = completed.borrow_mut().take() {
-                        done(error);
-                    }
-                });
-                self.retain_creation_cleanup(cleanup, failure, completed);
-            }
-        }
-    }
     pub(crate) fn retain_creation_cleanup(
         &self,
         cleanup: ViewCreationCleanup,
@@ -56,6 +27,7 @@ impl TabsState {
         self.retain_creation_cleanup_with_rollback(Some(cleanup), None, None, failure, done);
     }
 
+    #[allow(clippy::type_complexity)]
     pub(crate) fn retain_creation_cleanup_with_rollback(
         &self,
         cleanup: Option<ViewCreationCleanup>,

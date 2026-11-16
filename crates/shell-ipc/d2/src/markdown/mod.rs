@@ -141,6 +141,20 @@ pub trait MarkdownShell: Send + Sync {
         file_name: &str,
         bytes: &[u8],
     ) -> Result<Option<PathBuf>, String>;
+    /// [`Self::write_new_document_owned`] for a save a native operation owns.
+    #[allow(clippy::too_many_arguments)]
+    fn write_new_document_existing_document(
+        &self,
+        binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+        admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
+        file_name: &str,
+        bytes: &[u8],
+    ) -> Result<Option<PathBuf>, String>;
     /// Replace this view's document-scoped asset roots; both None revoke them.
     fn asset_paths_changed(
         &self,
@@ -874,7 +888,11 @@ pub(crate) fn entries(
     let mut out = docs.entries();
 
     let (e, ix, sv) = (Rc::clone(&editors), Arc::clone(&index), services.clone());
-    out.push(kit::invoke("markdown:consume-pending", move |cx, _| {
+    out.push(kit::invoke_later("markdown:consume-pending", move |cx, _, responder| {
+        let responder = match e.docs.consume_saved(cx, responder) {
+            Ok(()) => return,
+            Err(responder) => responder,
+        };
         let pending = e.docs.open_path(cx.sender.view);
         // the vault root is known from here on: start the index so the
         // backlinks panel and the graph usually find it already built
@@ -891,7 +909,19 @@ pub(crate) fn entries(
                 |()| {},
             );
         }
-        Ok(pending.into_ipc())
+        responder.reply(Ok(pending.into_ipc()))
+    }));
+    let e = Rc::clone(&editors);
+    out.push(kit::invoke("markdown:saved-input-applied", move |cx, args| {
+        let result = args.get(0);
+        let text = |key: &str| {
+            kit::as_str(kit::field(result, key))
+                .unwrap_or_default()
+                .to_owned()
+        };
+        e.docs
+            .saved_input_applied(cx, &text("token"), &text("outcome"), &text("error"))?;
+        Ok(IpcValue::Undefined)
     }));
     let e = Rc::clone(&editors);
     out.push(kit::invoke("markdown:seed-take", move |cx, _| {

@@ -21,12 +21,13 @@ use crate::packages::electron_utils::unsaved_files::{
     OpenFileState, OpenFilesHolder, OpenFilesSourceFailed,
 };
 use crate::shell::user_skills::template_tabs::{
-    OpenedCopyTab, PreviewEnded, PreviewInput, TemplateCopy, TemplateOpenInput, TemplateTabs,
-    TemplateTabsHost,
+    Opened, OpenedCopyTab, PendingCopy, PreviewEnded, PreviewInput, TemplateCopy,
+    TemplateOpenInput, TemplateTabs, TemplateTabsHost,
 };
 use crate::shell::user_skills::template_tabs_ipc::{
-    PreviewOriginalAnswer, handle_finish_preview, handle_focus_tab, handle_open_preview,
-    handle_open_template, handle_preview_original, handle_take_handoff,
+    PreviewOriginalAnswer, begin_open_preview, begin_open_template, finish_open_preview,
+    finish_open_template, handle_finish_preview, handle_focus_tab, handle_preview_original,
+    handle_take_handoff,
 };
 use crate::shell::user_skills::user_skills_service::{Failure, Svc, TemplateFile, UserSkillsFail};
 
@@ -131,7 +132,10 @@ impl TemplateTabsHost for TabsHost {
             title: text("title"),
         })
     }
+}
 
+impl TabsHost {
+    /// the scenario's tab opening, answered at once
     fn open_copy(&mut self, copy: &TemplateCopy) -> Result<Option<OpenedCopyTab>, String> {
         log_line(
             &self.log,
@@ -165,7 +169,9 @@ impl TemplateTabsHost for TabsHost {
             owns_copy: bool_of(open.and_then(|o| o.get("ownsCopy"))),
         }))
     }
+}
 
+impl TemplateTabsHost for TabsHost {
     fn opener_file_path(&mut self, opener_id: f64) -> Option<String> {
         let current = self.opts.get("current")?;
         log_line(
@@ -262,6 +268,14 @@ impl Env {
         self.host.destroyed.borrow_mut().push(id);
         self.store.drop_generate_handoff(id);
         self.tabs.contents_destroyed(&mut self.host, id);
+    }
+
+    /// the scenario's tab answers at once: open the begun copy and finish it
+    fn open(&mut self, pending: Svc<PendingCopy>) -> Svc<Opened> {
+        let pending = pending?;
+        let opened = self.host.open_copy(pending.copy());
+        self.tabs
+            .finish_open(&mut self.host, &mut self.store, pending, opened)
     }
 }
 
@@ -366,49 +380,44 @@ fn step(env: &mut Env, step: &Value) -> Value {
             };
             let opener = a.get(1).and_then(Value::as_f64);
             let open_files = open_files_of(&env.host.opts);
-            answer_of(
-                env.tabs
-                    .open_template(&mut env.host, &mut env.store, &open_files, &input, opener),
-                |(tab_id, attached)| {
-                    ok_with(vec![
-                        ("tabId", Value::from(tab_id)),
-                        ("attached", Value::Bool(attached)),
-                    ])
-                },
-            )
+            let pending = env
+                .tabs
+                .begin_template(&mut env.host, &open_files, &input, opener);
+            answer_of(env.open(pending), |opened| {
+                ok_with(vec![
+                    ("tabId", Value::from(opened.tab_id)),
+                    ("attached", Value::Bool(opened.attached)),
+                ])
+            })
         }
         "openPreview" => {
             let (raw, bytes) = marked(a.get(1).unwrap_or(&Value::Null), "bytes");
             let Some(input) = PreviewInput::from_json(&js_of(&raw), bytes) else {
                 return json!({"threw": "bad step"});
             };
-            answer_of(
-                env.tabs
-                    .open_preview(&mut env.host, &mut env.store, num(0), &input),
-                |(tab_id, preview_id)| {
-                    ok_with(vec![
-                        ("tabId", Value::from(tab_id)),
-                        ("previewId", Value::from(preview_id)),
-                    ])
-                },
-            )
+            let pending = env.tabs.begin_preview(&mut env.host, num(0), &input);
+            answer_of(env.open(pending), |opened| {
+                ok_with(vec![
+                    ("tabId", Value::from(opened.tab_id)),
+                    ("previewId", Value::from(opened.preview_id.unwrap_or_default())),
+                ])
+            })
         }
         "openPreviewIds" => json!(env.tabs.open_preview_ids()),
         "openCopy" => {
             let input = a.first().unwrap_or(&Value::Null);
             let bytes = input.get("bytes").and_then(hex_bytes).unwrap_or_default();
-            answer_of(
-                env.tabs.open_copy(
-                    &mut env.host,
-                    &mut env.store,
-                    &bytes,
-                    str_of(input.get("fileName")).unwrap_or(""),
-                    str_of(input.get("title")).unwrap_or(""),
-                    str_of(input.get("text")).unwrap_or(""),
-                    &chips_of(input.get("chips")),
-                ),
-                |tab_id| ok_with(vec![("tabId", Value::from(tab_id))]),
-            )
+            let pending = env.tabs.begin_open_copy(
+                &mut env.host,
+                &bytes,
+                str_of(input.get("fileName")).unwrap_or(""),
+                str_of(input.get("title")).unwrap_or(""),
+                str_of(input.get("text")).unwrap_or(""),
+                &chips_of(input.get("chips")),
+            );
+            answer_of(env.open(pending), |opened| {
+                ok_with(vec![("tabId", Value::from(opened.tab_id))])
+            })
         }
         "previewOriginal" => match env.tabs.preview_original(num(0), text(1)) {
             Ok((bytes, file_name)) => ok_with(vec![
@@ -464,26 +473,45 @@ fn handler(env: &mut Env, ch: &str, sender: f64, a: &[Value]) -> Value {
     match ch {
         "open-template" => {
             let open_files = open_files_of(&env.host.opts);
-            json_value_to_serde(&handle_open_template(
-                &mut env.tabs,
-                &mut env.host,
-                &mut env.store,
-                &open_files,
-                at(0),
-                sender,
-            ))
+            let begun =
+                begin_open_template(&mut env.tabs, &mut env.host, &open_files, at(0), sender);
+            json_value_to_serde(&match begun {
+                Ok(pending) => {
+                    let opened = env.host.open_copy(pending.copy());
+                    finish_open_template(
+                        &mut env.tabs,
+                        &mut env.host,
+                        &mut env.store,
+                        pending,
+                        opened,
+                    )
+                }
+                Err(answer) => answer,
+            })
         }
         "open-preview" => {
             let (raw, bytes) = marked(a.first().unwrap_or(&Value::Null), "bytes");
             let raw = js_of(&raw);
-            json_value_to_serde(&handle_open_preview(
+            let begun = begin_open_preview(
                 &mut env.tabs,
                 &mut env.host,
-                &mut env.store,
                 if a.is_empty() { None } else { Some(&raw) },
                 bytes,
                 sender,
-            ))
+            );
+            json_value_to_serde(&match begun {
+                Ok(pending) => {
+                    let opened = env.host.open_copy(pending.copy());
+                    finish_open_preview(
+                        &mut env.tabs,
+                        &mut env.host,
+                        &mut env.store,
+                        pending,
+                        opened,
+                    )
+                }
+                Err(answer) => answer,
+            })
         }
         "preview-original" => match handle_preview_original(&env.tabs, at(0), sender) {
             PreviewOriginalAnswer::Original { bytes, file_name } => ok_with(vec![

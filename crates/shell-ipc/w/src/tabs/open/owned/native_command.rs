@@ -428,7 +428,19 @@ impl TabsState {
             request,
             operation,
             expected,
-            Box::new(move |result| done(result.map(|(_, view, _)| view))),
+            {
+                let state = self.rc();
+                Box::new(move |result| {
+                    done(result.map(|(_, view, _)| {
+                        state
+                            .inner
+                            .borrow_mut()
+                            .mcp_blank
+                            .insert(view, crate::tabs::state::McpBlank::Docs);
+                        view
+                    }))
+                })
+            },
         );
     }
 
@@ -458,9 +470,113 @@ impl TabsState {
             request,
             operation,
             expected,
+            {
+                let state = self.rc();
+                Box::new(move |result| {
+                    done(result.map(|(_, view, _)| {
+                        state
+                            .inner
+                            .borrow_mut()
+                            .mcp_blank
+                            .insert(view, crate::tabs::state::McpBlank::Sheets);
+                        view
+                    }))
+                })
+            },
+        );
+    }
+
+    /// A blank document of `kind` through the native `NewDocument` command: the tab opens
+    /// through the owned creation path and the folder the click remembered binds to it. A
+    /// failure is shown, as a failed create-tab click must not look like a no-op.
+    pub(in crate::tabs) fn open_new_native(&self, kind: crate::tabs::open::NewKind) {
+        use crate::tabs::open::NewKind;
+        use shell_contract::Surface;
+        let (surface, request) = match kind {
+            NewKind::Doc => (
+                Surface::Docs,
+                EditorOpen::Docs {
+                    path: None,
+                    options: Some(main_core::shell::tab_manager::OpenDocsOptions {
+                        new_blank: true,
+                        ai_content: None,
+                    }),
+                },
+            ),
+            NewKind::Sheet => (
+                Surface::Sheets,
+                EditorOpen::Sheets {
+                    path: None,
+                    new_blank: true,
+                },
+            ),
+            NewKind::Slide => (Surface::Slides, EditorOpen::Slides { path: None }),
+            NewKind::Markdown => (Surface::Markdown, EditorOpen::Markdown { path: None }),
+            NewKind::Html => (Surface::Html, EditorOpen::Html { path: None }),
+            NewKind::Mindmap => (Surface::Mindmap, EditorOpen::Mindmap { path: None }),
+            NewKind::Diagram => (Surface::Diagram, EditorOpen::Diagram { path: None }),
+            NewKind::Hwp => (
+                Surface::Hwp,
+                EditorOpen::Hwp {
+                    path: None,
+                    copy: None,
+                },
+            ),
+            NewKind::Pdf => {
+                return self.surface_new_tab_error("A blank PDF is a file, not a native document");
+            }
+        };
+        let cancel = shell_contract::runtime::CancelToken::default();
+        let expected = NativeEditorCommand::NewDocument {
+            surface,
+            directory: None,
+        };
+        let operation = match self.hooks.issue_native_command(expected.clone(), cancel.clone()) {
+            Ok(operation) => operation,
+            Err(error) => return self.surface_new_tab_error(&error),
+        };
+        let state = self.rc();
+        self.open_native_editor(
+            request,
+            operation,
+            expected,
+            Box::new(move |result| {
+                drop(cancel);
+                match result {
+                    Ok((id, _, _)) => state.bind_pending_dir(kind.key(), Some(&id)),
+                    Err(error) => state.surface_new_tab_error(&error),
+                }
+            }),
+        );
+    }
+
+    /// The imported-PDF Hangul copy (`NativeEditorCommand::HwpCopy`) opened as a new untitled tab.
+    pub fn open_hwp_copy_native(
+        &self,
+        path: String,
+        title: String,
+        operation: NativeInvocationOperation,
+        done: Box<dyn FnOnce(Result<shell_contract::ViewId, String>)>,
+    ) {
+        let expected = NativeEditorCommand::HwpCopy {
+            path: std::path::PathBuf::from(&path),
+            title: title.clone(),
+        };
+        let request = EditorOpen::Hwp {
+            path: Some(path),
+            copy: Some(main_core::shell::tab_manager::HwpCopy {
+                title,
+                imported_pdf: true,
+            }),
+        };
+        self.open_native_editor(
+            request,
+            operation,
+            expected,
             Box::new(move |result| done(result.map(|(_, view, _)| view))),
         );
     }
+
     pub(super) fn open_native_editor(
         &self,
         request: EditorOpen,

@@ -281,7 +281,8 @@ impl AgentServices for Svc {
         &self,
         owner: ViewId,
         input: &TemplatePreviewInput,
-    ) -> Result<TemplatePreviewOutcome, String> {
+        done: Box<dyn FnOnce(Result<TemplatePreviewOutcome, String>)>,
+    ) {
         push(
             &self.log,
             json!([
@@ -292,9 +293,9 @@ impl AgentServices for Svc {
         );
         let preview = &self.world["preview"];
         if let Some(message) = preview["throws"].as_str() {
-            return Err(message.to_owned());
+            return done(Err(message.to_owned()));
         }
-        Ok(if preview["ok"] == json!(true) {
+        done(Ok(if preview["ok"] == json!(true) {
             TemplatePreviewOutcome::Opened {
                 tab_id: text(preview, "tabId"),
                 preview_id: text(preview, "previewId"),
@@ -303,7 +304,7 @@ impl AgentServices for Svc {
             TemplatePreviewOutcome::Refused {
                 reason: text(preview, "reason"),
             }
-        })
+        }));
     }
 
     fn has_app_mcp(&self) -> bool {

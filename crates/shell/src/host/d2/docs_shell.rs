@@ -105,14 +105,30 @@ impl DocsShell for Shell {
         &self,
         origin: &shell_contract::ipc::NativeRequestOwner,
         destination: &shell_contract::ipc::NativeRequestOwner,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
         cancel: &shell_contract::runtime::CancelToken,
         pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+        admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<Option<(shell_contract::ipc::SavedPublication, shell_contract::ipc::NativeSavedInput)>, String> {
+        crate::host::w_projects::write_new_document_publication_owned(origin, destination, participants, cancel, pending, additional, effects, admission, name, bytes)
+    }
+    fn write_new_document_existing_document(
+        &self,
+        binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
         effects: &shell_contract::hosts::OwnedEffectsHost,
         admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
         name: &str,
         bytes: &[u8],
     ) -> Result<Option<String>, String> {
-        crate::host::w_projects::write_new_document_owned(origin, destination, cancel, pending, effects, admission, name, bytes)
+        crate::host::w_projects::write_new_document_existing_document(binding, participants, cancel, pending, additional, effects, admission, name, bytes)
     }
     fn permits_synthetic_create(&self) -> bool { false }
     fn open_ai_doc_tab_synthetic(&self, _content: serde_json::Value, _owner: ViewId) -> Result<(), String> {

@@ -273,13 +273,16 @@ impl Convert {
                 if !flushed {
                     return then(Ok(()));
                 }
-                then(me.open_pdf_copy_as_hwp(&path).map_err(kit::error))
+                me.open_pdf_copy_as_hwp(
+                    &path,
+                    Box::new(move |result| then(result.map_err(kit::error))),
+                )
             }),
         )
     }
 
-    /// `openPdfCopyAsHwp(pdfPath)`: the copy goes with the tab
-    fn open_pdf_copy_as_hwp(&self, pdf_path: &str) -> Result<(), String> {
+    /// `openPdfCopyAsHwp(pdfPath)`: the copy goes with the tab; `then` runs once the tab opens
+    fn open_pdf_copy_as_hwp(&self, pdf_path: &str, then: Box<dyn FnOnce(Result<(), String>)>) {
         let temp = self.ctx.services.paths.path(PathName::Temp);
         let dir = join(&[
             &temp.to_string_lossy(),
@@ -288,27 +291,35 @@ impl Convert {
         ]);
         let base =
             js_regex!(r"\.pdf$", "i").replace_all(&basename(pdf_path, None), |_| String::new());
-        let opened = main_core::markdown::fs_util::mkdir_p(&dir)
-            .and_then(|()| {
-                let copy = join(&[&dir, &basename(pdf_path, None)]);
-                main_core::node_fs::copy_file(pdf_path, &copy, false).map(|()| copy)
-            })
-            .map_err(|e| e.message)
-            .and_then(|copy| self.ctx.shell.open_hwp_copy(&copy, &base));
-        match opened {
+        let copy = match main_core::markdown::fs_util::mkdir_p(&dir).and_then(|()| {
+            let copy = join(&[&dir, &basename(pdf_path, None)]);
+            main_core::node_fs::copy_file(pdf_path, &copy, false).map(|()| copy)
+        }) {
+            Ok(copy) => copy,
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&dir);
-                Err(e)
+                return then(Err(e.message));
             }
-            Ok(Some(view)) => {
-                self.hwp_copies.borrow_mut().insert(view, dir);
-                Ok(())
-            }
-            Ok(None) => {
-                let _ = std::fs::remove_dir_all(&dir);
-                Ok(())
-            }
-        }
+        };
+        let me = self.clone();
+        self.ctx.shell.open_hwp_copy(
+            &copy,
+            &base,
+            Box::new(move |opened| match opened {
+                Err(e) => {
+                    let _ = std::fs::remove_dir_all(&dir);
+                    then(Err(e))
+                }
+                Ok(Some(view)) => {
+                    me.hwp_copies.borrow_mut().insert(view, dir);
+                    then(Ok(()))
+                }
+                Ok(None) => {
+                    let _ = std::fs::remove_dir_all(&dir);
+                    then(Ok(()))
+                }
+            }),
+        );
     }
 
     /// `importPdfAsHwp()`: Hangul > Import PDF. The shell asks for a PDF and
@@ -337,9 +348,16 @@ impl Convert {
         else {
             return;
         };
-        if let Err(message) = self.open_pdf_copy_as_hwp(&path) {
-            self.ctx.dialogs.error(&basename(&path, None), &message);
-        }
+        let me = self.clone();
+        let name = basename(&path, None);
+        self.open_pdf_copy_as_hwp(
+            &path,
+            Box::new(move |result| {
+                if let Err(message) = result {
+                    me.ctx.dialogs.error(&name, &message);
+                }
+            }),
+        );
     }
 
     pub fn entries(&self) -> Vec<Entry> {
@@ -375,13 +393,17 @@ impl Convert {
             },
         ));
         let me = self.clone();
-        out.push(kit::invoke("pdf:convert-open-result", move |cx, args| {
+        out.push(kit::invoke_later("pdf:convert-open-result", move |cx, args, r| {
             let path = me
                 .request_of(cx.sender.view, args.get(0))
                 .filter(|p| js_regex!(r"\.md$", "i").test(p) && exists_sync(p));
-            Ok(path
-                .is_some_and(|p| me.ctx.shell.open_document_path(&p))
-                .into_ipc())
+            match path {
+                Some(p) => me.ctx.shell.open_document_path(
+                    &p,
+                    Box::new(move |opened| r.reply(Ok(opened.into_ipc()))),
+                ),
+                None => r.reply(Ok(false.into_ipc())),
+            }
         }));
         let me = self.clone();
         out.push(kit::invoke("pdf:convert-reveal-result", move |cx, args| {
@@ -530,7 +552,7 @@ impl Export {
                 Err(m) => self.failed(ConvertError::Other(m)),
                 Ok(()) => {
                     self.report(&done);
-                    self.c.ctx.shell.open_document_path(&picked);
+                    self.c.ctx.shell.open_document_path(&picked, Box::new(|_| {}));
                     self.end()
                 }
             },

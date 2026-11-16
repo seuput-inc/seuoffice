@@ -104,46 +104,6 @@ impl SaveScope {
         })
     }
 
-    pub(in crate::slides) fn revision_destination_admission(
-        &self,
-        app: &App,
-        revision: SaveRevision,
-        path: String,
-    ) -> Admission {
-        let scope = self.clone();
-        let core = app.services.core.clone();
-        let index = app.registry_index;
-        Arc::new(move |effect| {
-            let (send, receive) = mpsc::sync_channel(1);
-            let scope = scope.clone();
-            let revision = revision.clone();
-            let path = path.clone();
-            core.post(Box::new(move || {
-                let answer =
-                    crate::slides::with_app(index, |app| match &scope.native_destination {
-                        Some(destination) => scope.request.effect_destination(
-                            destination,
-                            std::path::Path::new(&path),
-                            || {
-                                scope.check_revision_state(app, &revision)?;
-                                Ok(effect())
-                            },
-                        ),
-                        None => scope.effect_at_revision(app, &revision, effect),
-                    })
-                    .unwrap_or_else(|| Err(thrown("The presentation application was released")));
-                let _ = send.send(answer.map_err(|error| NodeError {
-                    code: None,
-                    message: error.message,
-                }));
-            }));
-            receive.recv().map_err(|_| NodeError {
-                code: None,
-                message: "The document operation dispatcher was released".into(),
-            })?
-        })
-    }
-
     pub(in crate::slides) fn revision_numbered_admission(
         &self,
         app: &App,

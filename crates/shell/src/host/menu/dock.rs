@@ -135,7 +135,7 @@ mod mac {
         entries: Vec<DockEntry>,
         on_click: Arc<dyn Fn(DockAction) + Send + Sync>,
     ) {
-        // The delegate can be replaced after startup (CEF installs its own), so
+        // The delegate can be replaced after startup, so
         // every call checks the current one instead of installing once
         let delegate = NSApplication::sharedApplication(mtm).delegate();
         if let Some(delegate) = &delegate {

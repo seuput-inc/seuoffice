@@ -1,0 +1,287 @@
+//! `PrintOps` over `NSPrintOperation`: the system print dialog, and the file print job behind
+//! `print_pdf`. WebKit's `createPDF` only renders one page, so PDFs come from a print job
+//! that saves to a file, with the page ranges applied to the finished document.
+
+use std::cell::RefCell;
+use std::ffi::c_void;
+use std::ops::RangeInclusive;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use objc2::rc::Retained;
+use objc2::runtime::Bool;
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2_app_kit::{
+    NSPaperOrientation, NSPrintInfo, NSPrintJobSavingURL, NSPrintOperation, NSPrintSaveJob,
+    NSPrintingPaginationMode,
+};
+use objc2_foundation::{NSCopying, NSObject, NSPoint, NSRect, NSSize, NSURL};
+use objc2_web_kit::{WKPreferences, WKWebView};
+use tauri::Webview;
+
+use super::page::{Surface, object, run};
+use super::Platform;
+use crate::native::page::{Done, PageError, PdfSpec, parse_page_ranges};
+use crate::native::platform::{PrintOps, PrintOutcome};
+
+/// Points per inch: `NSPrintInfo` measures paper and margins in points.
+const POINTS: f64 = 72.0;
+
+fn platform(message: &str) -> PageError {
+    PageError::Platform(message.to_owned())
+}
+
+/// The print operation lays the page out inside its own view, which must have the size of a
+/// page before the job runs; a web view without a size (hidden) falls back to the paper.
+fn fit_view(operation: &NSPrintOperation, view: &WKWebView, paper: NSSize) {
+    let bounds = view.bounds();
+    let sized = bounds.size.width > 0.0 && bounds.size.height > 0.0;
+    let size = if sized { bounds.size } else { paper };
+    if let Some(page) = operation.view() {
+        page.setFrame(NSRect { origin: NSPoint { x: 0.0, y: 0.0 }, size });
+    }
+}
+
+/// WebKit prints page backgrounds only when its (private) preference says so. The preference
+/// is switched for the duration of one job and put back when this drops.
+struct Backgrounds {
+    preferences: Retained<WKPreferences>,
+    previous: Option<bool>,
+}
+
+impl Backgrounds {
+    fn set(surface: &Surface<'_>, wanted: bool) -> Result<Self, PageError> {
+        // SAFETY: plain getters of the live web view on the UI thread.
+        let preferences = unsafe { surface.view.configuration().preferences() };
+        let target = object(&*preferences);
+        // SAFETY: both selectors are checked before they are sent.
+        unsafe {
+            let reads: bool = msg_send![target, respondsToSelector: sel!(_shouldPrintBackgrounds)];
+            let writes: bool =
+                msg_send![target, respondsToSelector: sel!(_setShouldPrintBackgrounds:)];
+            if !(reads && writes) {
+                return if wanted {
+                    Err(PageError::Unsupported("printBackground"))
+                } else {
+                    Ok(Self { preferences, previous: None })
+                };
+            }
+            let previous: bool = msg_send![target, _shouldPrintBackgrounds];
+            let _: () = msg_send![target, _setShouldPrintBackgrounds: wanted];
+            Ok(Self { preferences, previous: Some(previous) })
+        }
+    }
+}
+
+impl Drop for Backgrounds {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous {
+            // SAFETY: `set` checked that the preferences answer to the selector.
+            unsafe {
+                let target = object(&*self.preferences);
+                let _: () = msg_send![target, _setShouldPrintBackgrounds: previous];
+            }
+        }
+    }
+}
+
+/// A print job that saves to `target`: paper, orientation, margins and scale of the spec,
+/// no centering, automatic pagination.
+fn saving_info(spec: &PdfSpec, target: &Path) -> Result<Retained<NSPrintInfo>, PageError> {
+    let info = NSPrintInfo::new();
+    // The orientation first: it swaps the paper size, which is then given as oriented.
+    info.setOrientation(if spec.landscape {
+        NSPaperOrientation::Landscape
+    } else {
+        NSPaperOrientation::Portrait
+    });
+    if let Some((width, height)) = spec.paper_in {
+        let (width, height) = (width * POINTS, height * POINTS);
+        info.setPaperSize(if spec.landscape {
+            NSSize { width: height, height: width }
+        } else {
+            NSSize { width, height }
+        });
+    }
+    let [top, right, bottom, left] = spec.margins_in;
+    info.setTopMargin(top * POINTS);
+    info.setRightMargin(right * POINTS);
+    info.setBottomMargin(bottom * POINTS);
+    info.setLeftMargin(left * POINTS);
+    info.setScalingFactor(spec.scale);
+    info.setHorizontallyCentered(false);
+    info.setVerticallyCentered(false);
+    info.setHorizontalPagination(NSPrintingPaginationMode::Automatic);
+    info.setVerticalPagination(NSPrintingPaginationMode::Automatic);
+    let url = NSURL::from_file_path(target)
+        .ok_or_else(|| platform("The print target is not a file path."))?;
+    // SAFETY: the extern statics are AppKit constants; the dictionary takes an NSURL under
+    // the saving-URL key, which is what a save job reads.
+    unsafe {
+        info.setJobDisposition(NSPrintSaveJob);
+        let _: () = msg_send![&*info.dictionary(), setObject: &*url, forKey: NSPrintJobSavingURL];
+    }
+    Ok(info)
+}
+
+fn scratch_file() -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let number = NEXT.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("seuoffice-print-{}-{number}.pdf", std::process::id()))
+}
+
+fn print_to(surface: &Surface<'_>, spec: &PdfSpec, target: &Path) -> Result<(), PageError> {
+    let _backgrounds = Backgrounds::set(surface, spec.print_background)?;
+    let info = saving_info(spec, target)?;
+    // SAFETY: the info is a complete save-job description; the operation runs on the UI thread.
+    let operation = unsafe { surface.view.printOperationWithPrintInfo(&info) };
+    operation.setShowsPrintPanel(false);
+    operation.setShowsProgressPanel(false);
+    fit_view(&operation, surface.view, info.paperSize());
+    if operation.runOperation() {
+        Ok(())
+    } else {
+        Err(platform("The print operation did not complete."))
+    }
+}
+
+fn slicing(error: impl std::fmt::Display) -> PageError {
+    PageError::Platform(format!("The PDF pages could not be selected: {error}"))
+}
+
+/// Keep only the pages the ranges name. No ranges keep every page.
+fn slice_pages(bytes: Vec<u8>, ranges: &[RangeInclusive<u32>]) -> Result<Vec<u8>, PageError> {
+    if ranges.is_empty() {
+        return Ok(bytes);
+    }
+    let mut document = lopdf::Document::load_mem(&bytes).map_err(slicing)?;
+    let total = u32::try_from(document.get_pages().len()).unwrap_or(u32::MAX);
+    let dropped: Vec<u32> =
+        (1..=total).filter(|page| !ranges.iter().any(|range| range.contains(page))).collect();
+    if dropped.len() == usize::try_from(total).unwrap_or(usize::MAX) {
+        return Err(PageError::Invalid("the page range selects no page".to_owned()));
+    }
+    if dropped.is_empty() {
+        return Ok(bytes);
+    }
+    document.delete_pages(&dropped);
+    document.prune_objects();
+    let mut sliced = Vec::new();
+    document.save_to(&mut sliced).map_err(slicing)?;
+    Ok(sliced)
+}
+
+/// The PDF of a print job to a scratch file, read back and removed. `header_footer` has no
+/// WebKit equivalent and is refused rather than dropped; so are tagged output and outlines.
+pub(super) fn save_pdf(surface: &Surface<'_>, spec: PdfSpec, done: Done<Vec<u8>>) {
+    let refused = if spec.header_footer.is_some() {
+        Some("headerTemplate")
+    } else if spec.tagged {
+        Some("generateTaggedPDF")
+    } else if spec.outline {
+        Some("generateDocumentOutline")
+    } else {
+        None
+    };
+    if let Some(option) = refused {
+        return done(Err(PageError::Unsupported(option)));
+    }
+    let ranges = match spec.page_ranges.as_deref().map(parse_page_ranges).transpose() {
+        Ok(ranges) => ranges.unwrap_or_default(),
+        Err(error) => return done(Err(error)),
+    };
+    let target = scratch_file();
+    let outcome = print_to(surface, &spec, &target).and_then(|()| {
+        std::fs::read(&target)
+            .map_err(|error| {
+                PageError::Platform(format!("The printed PDF could not be read: {error}"))
+            })
+            .and_then(|bytes| slice_pages(bytes, &ranges))
+    });
+    let _ = std::fs::remove_file(&target);
+    done(outcome);
+}
+
+struct Answer {
+    done: RefCell<Option<Done<PrintOutcome>>>,
+}
+
+define_class!(
+    /// The print panel's sheet reports back to this object; it keeps itself alive until then.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "SeuOfficePrintDialogAnswer"]
+    #[ivars = Answer]
+    struct DialogAnswer;
+
+    impl DialogAnswer {
+        #[unsafe(method(printOperationDidRun:success:contextInfo:))]
+        fn did_run(&self, _operation: &NSPrintOperation, success: Bool, _context: *mut c_void) {
+            if let Some(done) = self.ivars().done.borrow_mut().take() {
+                done(Ok(if success.as_bool() {
+                    PrintOutcome::Printed
+                } else {
+                    PrintOutcome::Cancelled
+                }));
+            }
+            // SAFETY: balances the retain `print_dialog` leaked so the object lives until now;
+            // nothing touches `self` afterwards.
+            drop(unsafe { Retained::from_raw((self as *const Self).cast_mut()) });
+        }
+    }
+);
+
+impl DialogAnswer {
+    fn new(mtm: MainThreadMarker, done: Done<PrintOutcome>) -> Retained<Self> {
+        let answer = Answer { done: RefCell::new(Some(done)) };
+        let this = mtm.alloc::<Self>().set_ivars(answer);
+        // SAFETY: NSObject's plain `init`.
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+impl PrintOps for Platform {
+    fn print_dialog(webview: &Webview, done: Done<PrintOutcome>) {
+        run(webview, done, |surface, done| {
+            let Some(window) = surface.window else {
+                return done(Err(platform("The web view is not in a window.")));
+            };
+            let info = NSPrintInfo::sharedPrintInfo().copy();
+            // SAFETY: the copy of the shared info is a complete job description.
+            let operation = unsafe { surface.view.printOperationWithPrintInfo(&info) };
+            operation.setShowsPrintPanel(true);
+            operation.setShowsProgressPanel(true);
+            fit_view(&operation, surface.view, info.paperSize());
+            let answer = DialogAnswer::new(surface.mtm, done);
+            // One retain is leaked on purpose: AppKit does not retain the delegate, and
+            // `did_run` releases it.
+            let _ = Retained::into_raw(answer.clone());
+            // SAFETY: the selector is implemented by `DialogAnswer` with the signature AppKit
+            // calls (operation, success, context).
+            unsafe {
+                operation.runOperationModalForWindow_delegate_didRunSelector_contextInfo(
+                    window,
+                    Some(object(&*answer)),
+                    Some(sel!(printOperationDidRun:success:contextInfo:)),
+                    std::ptr::null_mut(),
+                );
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_ranges_keep_the_document_as_it_is() {
+        let bytes = b"%PDF-1.4 not parsed when every page is kept".to_vec();
+        assert_eq!(slice_pages(bytes.clone(), &[]).unwrap(), bytes);
+    }
+
+    #[test]
+    fn scratch_files_are_unique_per_job() {
+        assert_ne!(scratch_file(), scratch_file());
+    }
+}

@@ -5,7 +5,7 @@ use std::rc::Rc;
 use main_core::packages::electron_utils::recovery_contract::RecoveryOpenDone;
 use main_core::shell::tab_manager::TabKind;
 use shell_contract::{Provided, ViewId, ipc::{RecoveryOpenContext, RecoveryOpenTarget, RecoveryRequestConstraint}, runtime::{CancelSubscription, Services, Views}};
-use tauri_runtime_cef::{FrameEventKind, NativeBrowserCloseSubscription, NativeContextToken};
+use crate::native::{BrowserCloseSubscription, DocumentContext, NativeEvent, NativeEventKind};
 
 use crate::host::HostContext;
 use crate::ipc::native_owner::{self, NativeOwnerAuthority};
@@ -99,7 +99,6 @@ pub(super) type CloseDone = Box<dyn FnOnce(Result<shell_contract::ipc::NativeBro
 struct NativeCloseState {
     permit: Option<shell_contract::ipc::NativeBrowserClosePermit>,
     retirement: Option<shell_contract::ipc::NativeBrowserRetirement>,
-    webview: Option<tauri::Webview>,
     watching: bool,
     claiming: bool,
     claimed: bool,
@@ -257,7 +256,7 @@ impl NativeClose {
                 let close = self.clone();
                 self.cx.ui.post(Box::new(move || {
                     let mut guard = guard;
-                    let (permit, webview) = {
+                    let permit = {
                         let mut state = close.state.lock().unwrap_or_else(|poison| poison.into_inner());
                         if state.retirement.is_some() {
                             state.dispatching = false;
@@ -266,14 +265,13 @@ impl NativeClose {
                             close.drive();
                             return;
                         }
-                        (state.permit.take(), state.webview.clone())
+                        state.permit.take()
                     };
                     let Some(permit) = permit else {
                         guard.pending = false;
                         close.state.lock().unwrap_or_else(|poison| poison.into_inner()).dispatching = false;
                         return close.fail("The recovery close permit is unavailable".into());
                     };
-                    if let Some(webview) = webview { crate::host::contents::forget_webview(webview.label()); }
                     let result = close.proof.dispatch_close(permit);
                     let mut state = close.state.lock().unwrap_or_else(|poison| poison.into_inner());
                     state.dispatching = false;
@@ -403,7 +401,7 @@ struct Opening {
     proof: crate::host::window::NativeClosureProof,
     close: Arc<NativeClose>,
     browser: OnceLock<Browser>,
-    origin: OnceLock<NativeContextToken>,
+    origin: OnceLock<DocumentContext>,
     constructed: AtomicBool,
     settled: AtomicBool,
     document_ready: AtomicBool,
@@ -412,7 +410,7 @@ struct Opening {
     closed: AtomicBool,
     draining: AtomicBool,
     drained: AtomicBool,
-    subscription: Mutex<Option<NativeBrowserCloseSubscription>>,
+    subscription: Mutex<Option<BrowserCloseSubscription>>,
     losses: Mutex<Vec<CancelSubscription>>,
     result: Mutex<Option<Result<RecoveryReady, RecoveryFailure>>>,
     done: Mutex<Option<SendDone>>,
@@ -499,7 +497,7 @@ impl Opening {
         }));
     }
 
-    fn ready(self: &Arc<Self>, origin: &NativeContextToken) {
+    fn ready(self: &Arc<Self>, origin: &DocumentContext) {
         if self.settled.load(Ordering::Acquire) { return; }
         if self.origin.get() != Some(origin) { return self.fail("The recovery ready document does not match its constructor".into()); }
         self.document_ready.store(true, Ordering::Release);
@@ -587,12 +585,11 @@ impl Opening {
         if let Some(done) = done { done(result); }
     }
 
-    fn frame(self: &Arc<Self>, view: ViewId, event: &tauri_runtime_cef::FrameEvent) {
-        if self.settled.load(Ordering::Acquire) || !event.is_main { return; }
+    fn frame(self: &Arc<Self>, view: ViewId, event: &NativeEvent) {
+        if self.settled.load(Ordering::Acquire) { return; }
         if view != self.target.view() { return self.fail("The recovery browser does not match its reservation".into()); }
         match &event.kind {
-            FrameEventKind::NativeContextRegistered { origin }
-                if event.browser_id == origin.browser_id() && event.frame_id == origin.frame_id() => {
+            NativeEventKind::DocumentRegistered { context: origin } if origin.browser().is_same_browser(&event.browser) => {
                 if let Some(first) = self.origin.get() {
                     if first != origin { self.fail("The recovery native document was replaced".into()); }
                     return;
@@ -607,12 +604,11 @@ impl Opening {
                 if let Err(error) = native_owner::register_recovery_open_target(&self.target, owner) { return self.fail(error); }
                 let _ = self.origin.set(origin.clone());
             }
-            FrameEventKind::NativeDocumentReady { origin } => self.ready(origin),
-            FrameEventKind::NativeContextRevoked { origin } if self.origin.get() == Some(origin) =>
+            NativeEventKind::DocumentReady { context } if context.browser().is_same_browser(&event.browser) => self.ready(context),
+            NativeEventKind::DocumentRevoked { document, .. } if self.origin.get().is_some_and(|origin| origin.identity() == document) =>
                 self.fail("The recovery native document was revoked before load completed".into()),
-            FrameEventKind::NavigationFailed { .. } => self.fail("The recovery page did not load".into()),
-            FrameEventKind::NativeRendererTerminated { origin, process }
-                if self.origin.get() == Some(origin) && origin.renderer_process_identity().as_ref() == Some(process) =>
+            NativeEventKind::NavigationFailed { .. } => self.fail("The recovery page did not load".into()),
+            NativeEventKind::WebviewProcessFailed { .. } =>
                 self.fail("The recovery renderer stopped before load completed".into()),
             _ => {}
         }
@@ -844,7 +840,6 @@ pub(crate) fn create_recovery_view_owned(
                     drop(construction);
                 }
                 Ok(child) => {
-                    prepared_opening.close.state.lock().unwrap_or_else(|poison| poison.into_inner()).webview = Some(child.webview.clone());
                     let _ = prepared_opening.browser.set(Browser { proof: prepared_opening.proof.clone() });
                     let opening = prepared_opening.clone();
                     super::accepted::await_creation(child, Box::new(move |result| {

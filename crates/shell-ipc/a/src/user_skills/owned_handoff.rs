@@ -304,6 +304,7 @@ pub struct PreparedGenerateHandoff {
     store: Rc<RefCell<HandoffStore>>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_generate_handoff(
     provided: &Provided,
     view: ViewId,
@@ -570,6 +571,7 @@ pub struct PreparedConverted {
     event: main_core::packages::electron_utils::generate_handoff::PreparedConvertedEvent,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_generate_converted(
     provided: &Provided,
     view: ViewId,

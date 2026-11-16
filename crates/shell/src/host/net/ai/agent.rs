@@ -289,7 +289,12 @@ impl AgentServices for Services {
         &self,
         owner: ViewId,
         input: &TemplatePreviewInput,
-    ) -> Result<TemplatePreviewOutcome, String> {
+        done: Box<dyn FnOnce(Result<TemplatePreviewOutcome, String>)>,
+    ) {
+        let proposal = match serde_json::to_value(&input.proposal) {
+            Ok(proposal) => proposal,
+            Err(error) => return done(Err(error.to_string())),
+        };
         let preview = PreviewInput {
             bytes: input.bytes.clone(),
             file_name: input.file_name.clone(),
@@ -297,23 +302,34 @@ impl AgentServices for Services {
             tab_title: input.tab_title.clone(),
             text: input.text.clone(),
             original_redacted: input.original_redacted,
-            proposal: serde_json::to_value(&input.proposal).map_err(|e| e.to_string())?,
+            proposal,
             draft: input.draft.as_ref().map(json_value_to_serde),
         };
-        let opened = on_core(move |provided| {
-            provided
-                .all::<TemplateTabsCore>()
-                .first()
-                .map(|core| core.open_preview(owner, &preview))
-        })
-        .flatten()
-        .ok_or_else(no_skills_port)?;
-        match opened {
-            Ok((tab_id, preview_id)) => Ok(TemplatePreviewOutcome::Opened { tab_id, preview_id }),
-            Err(Failure::Fail(fail)) => Ok(TemplatePreviewOutcome::Refused {
-                reason: fail.reason,
-            }),
-            Err(thrown) => Err(reason(thrown)),
+        let pending = std::rc::Rc::new(std::cell::RefCell::new(Some(done)));
+        let local = pending.clone();
+        let started = crate::host::w::on_core_local(move |provided| {
+            let Some(done) = local.borrow_mut().take() else { return };
+            let Some(core) = provided.all::<TemplateTabsCore>().into_iter().next() else {
+                return done(Err(no_skills_port()));
+            };
+            core.open_preview(
+                owner,
+                &preview,
+                Box::new(move |opened| {
+                    done(match opened {
+                        Ok((tab_id, preview_id)) => {
+                            Ok(TemplatePreviewOutcome::Opened { tab_id, preview_id })
+                        }
+                        Err(Failure::Fail(fail)) => Ok(TemplatePreviewOutcome::Refused {
+                            reason: fail.reason,
+                        }),
+                        Err(thrown) => Err(reason(thrown)),
+                    })
+                }),
+            );
+        });
+        if !started && let Some(done) = pending.borrow_mut().take() {
+            done(Err("Core services are not available".into()));
         }
     }
 

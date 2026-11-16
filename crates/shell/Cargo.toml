@@ -137,7 +137,7 @@ pollster = "=1.0.1"
 # the message box with any number of buttons and a checkbox (host/message_box/mac.rs): NSAlert;
 # native/platform/macos: window ops, key events, print operation and spell checker
 objc2 = "0.6.5"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSAlert", "NSApplication", "NSButton", "NSControl", "NSMenu", "NSMenuItem", "NSOpenPanel", "NSSavePanel", "NSPanel", "NSResponder", "NSView", "NSWindow", "NSImage", "NSBitmapImageRep", "NSScreen", "NSGraphics", "NSEvent", "NSPrintInfo", "NSPrintOperation", "NSPrintPanel", "NSSpellChecker"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSAlert", "NSApplication", "NSButton", "NSControl", "NSMenu", "NSMenuItem", "NSOpenPanel", "NSSavePanel", "NSPanel", "NSResponder", "NSView", "NSWindow", "NSImage", "NSBitmapImageRep", "NSScreen", "NSGraphics", "NSEvent", "NSPrintInfo", "NSPrintOperation", "NSPrintPanel", "NSSpellChecker", "NSGraphicsContext"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSObject", "NSString", "NSLocale", "NSURL", "NSData", "NSDictionary", "NSArray", "NSError", "NSGeometry", "NSValue", "NSRunLoop", "NSNotification", "NSKeyValueCoding", "objc2-core-foundation"] }
 # the OS webview behind wry (native/platform/macos): navigation delegate chaining, script
 # evaluation, snapshots, content rule lists and the page's print operation
@@ -148,7 +148,7 @@ block2 = "0.6"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 # the silent print loop (host/print/windows.rs): Windows.Data.Pdf pages into a GDI printer DC
-windows = { version = "0.62", features = ["Data_Pdf", "Foundation", "Graphics_Imaging", "Storage_Streams", "UI", "Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Graphics_Printing", "Win32_Storage_Xps", "Win32_Storage_FileSystem", "Win32_System_WinRT", "Win32_UI_Controls", "Win32_UI_WindowsAndMessaging", "Win32_Globalization", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Console", "Win32_Security", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Com", "Win32_System_Com_StructuredStorage"] }
+windows = { version = "0.62", features = ["Data_Pdf", "Foundation", "Graphics_Imaging", "Storage_Streams", "UI", "Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Graphics_Printing", "Win32_Storage_Xps", "Win32_Storage_FileSystem", "Win32_System_WinRT", "Win32_UI_Controls", "Win32_UI_WindowsAndMessaging", "Win32_Globalization", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Console", "Win32_Security", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_UI_Input_KeyboardAndMouse"] }
 # the WebView2 interfaces behind wry (native/platform/windows): CDP, focus, process failure;
 # the version wry 0.57 resolves, built on the same `windows` 0.62 as the line above
 webview2-com = "0.39"

@@ -1181,3 +1181,358 @@ fn fail(docs: &Docs, target: &NativeSavedTarget, reason: &str) {
         done(Err(kit::error(reason)));
     }
 }
+
+/// Runs the load once the retained document and the renderer's request are
+/// both in: stage the media successor, decode off the core, then publish.
+pub(super) fn start(docs: &Rc<Docs>, view: ViewId) {
+    let target = match docs
+        .saved_loads
+        .borrow()
+        .get(&view)
+        .map(|slot| slot.target.clone())
+    {
+        Some(target) => target,
+        None => return,
+    };
+    let loading = match stage_load(docs, view) {
+        Ok(loading) => loading,
+        Err(error) => return fail(docs, &target, &error),
+    };
+    let continued = docs.clone();
+    if let Err(error) = decode_on_worker(docs, loading, move |loading, decoded| {
+        resolve_recovery(&continued, loading, decoded)
+    }) {
+        fail(docs, &target, &error);
+    }
+}
+
+type Admit = std::sync::Arc<
+    dyn Fn(&mut dyn FnMut()) -> Result<(), main_core::node_fs::NodeError> + Send + Sync,
+>;
+type CopySnapshot = (
+    std::sync::Arc<main_core::packages::electron_utils::recovery_store::RecoveryPinnedSnapshot>,
+    Box<main_core::packages::electron_utils::recovery_store::RecoveryCopyInfo>,
+);
+
+/// What the recovery store holds for the saved path, read without mutation.
+enum RecoveryPlan {
+    Original,
+    Restore(CopySnapshot),
+    Ask(CopySnapshot),
+}
+
+/// Worker-side file effects of this load run under the saved document's own
+/// admission, never a free-standing write.
+fn saved_admit(docs: &Docs, loading: &Loading) -> Result<Admit, String> {
+    let effects = docs
+        .services
+        .hosts
+        .get::<shell_contract::hosts::OwnedEffectsHost>()
+        .cloned()
+        .ok_or("Native saved document effects are unavailable")?;
+    let document = loading.document.clone();
+    let actual = loading.actual.clone();
+    let cancel = loading.request_cancel.clone();
+    Ok(std::sync::Arc::new(move |effect| {
+        let target = document.target();
+        let extra = target.additional().iter().collect::<Vec<_>>();
+        effects
+            .with_native_saved_document_same_origin(
+                &document,
+                &actual,
+                &cancel,
+                &[],
+                target.cancel(),
+                target.pending(),
+                &extra,
+                &mut |_| {
+                    effect();
+                    Ok(())
+                },
+            )
+            .map_err(|message| main_core::node_fs::NodeError {
+                code: None,
+                message,
+            })
+    }))
+}
+
+fn plan_recovery(root: &str, path: &str) -> RecoveryPlan {
+    use main_core::packages::electron_utils::recovery_store::{
+        RecoveryCopyState, RecoveryPinnedRead,
+    };
+    let identity = super::recovery::file_identity(path);
+    let Some(snapshot) = RecoveryPinnedRead::open_saved(root, &identity)
+        .ok()
+        .and_then(|pinned| pinned.read().ok())
+    else {
+        return RecoveryPlan::Original;
+    };
+    let mtime = super::stat(path).ok().map(|(mtime, _)| mtime);
+    let Some(copy) = snapshot.copy_info(mtime) else {
+        return RecoveryPlan::Original;
+    };
+    let chosen = copy.state == RecoveryCopyState::RestoreChosen;
+    let held = (std::sync::Arc::new(snapshot), Box::new(copy));
+    if chosen {
+        RecoveryPlan::Restore(held)
+    } else {
+        RecoveryPlan::Ask(held)
+    }
+}
+
+/// The copy is loaded into this document: its metadata says so.
+fn mark_restored(
+    snapshot: &main_core::packages::electron_utils::recovery_store::RecoveryPinnedSnapshot,
+    admit: &Admit,
+) -> Result<(), String> {
+    use main_core::packages::electron_utils::recovery_store::RecoveryCopyState;
+    let Some(plan) = snapshot.prepare_copy_state(RecoveryCopyState::Undecided) else {
+        return Ok(());
+    };
+    let mut denied = None;
+    plan.write_via(&mut |path, value| {
+        let result = main_core::packages::electron_utils::atomic_write::write_json_atomic_authorized(
+            path,
+            value,
+            &mut |effect| {
+                admit(effect).map_err(|error| {
+                    denied = Some(error.message.clone());
+                    error
+                })
+            },
+        );
+        if denied.is_some() {
+            result.map(|()| true)
+        } else {
+            Ok(result.is_ok())
+        }
+    })
+    .map_err(|error| error.message)
+    .map(|_| ())
+}
+
+/// `docsRecovery.resolveOpen` for a committed output: a recovery copy of the
+/// path is offered before the content loads, as the TypeScript open did.
+fn resolve_recovery(docs: &Rc<Docs>, loading: Loading, decoded: DecodedSaved) {
+    use main_core::packages::electron_utils::recovery_store::SavedRecoveryOpenResult;
+    let target = loading.document.target().clone();
+    let Some(path) = target.path().path().to_str().map(str::to_owned) else {
+        return loading.abort(docs, "The saved document path is not valid Unicode");
+    };
+    if docs.shell.is_headless() {
+        return prepare_on_worker(docs, loading, decoded, SavedRecoveryOpenResult::Original);
+    }
+    let admit = match saved_admit(docs, &loading) {
+        Ok(admit) => admit,
+        Err(error) => return loading.abort(docs, &error),
+    };
+    let root = docs.user_data(&[]);
+    let continued = docs.clone();
+    let worker_admit = admit.clone();
+    let worker_path = path.clone();
+    let deliver = match worker_callback(
+        docs,
+        &target,
+        move |result: Result<RecoveryPlan, String>| {
+            let plan = match result {
+                Ok(plan) => plan,
+                Err(error) => return loading.abort(&continued, &error),
+            };
+            if let Err(error) = loading.admit(&continued) {
+                return loading.abort(&continued, &error);
+            }
+            match plan {
+                RecoveryPlan::Original => {
+                    prepare_on_worker(&continued, loading, decoded, SavedRecoveryOpenResult::Original)
+                }
+                RecoveryPlan::Restore((snapshot, copy)) => prepare_on_worker(
+                    &continued,
+                    loading,
+                    decoded,
+                    SavedRecoveryOpenResult::Restore { snapshot, copy },
+                ),
+                RecoveryPlan::Ask(held) => {
+                    ask_recovery(&continued, loading, decoded, path, held, admit)
+                }
+            }
+        },
+    ) {
+        Ok(deliver) => deliver,
+        Err(error) => return fail(docs, &target, &error),
+    };
+    docs.services.workers.spawn(Box::new(move || {
+        deliver((|| {
+            let plan = plan_recovery(&root, &worker_path);
+            if let RecoveryPlan::Restore((snapshot, _)) = &plan {
+                mark_restored(snapshot, &worker_admit)?;
+            }
+            Ok(plan)
+        })());
+    }));
+}
+
+/// The named per-file prompt: Esc or close restores, and a file newer than
+/// the copy is said, never silently dropped.
+fn ask_recovery(
+    docs: &Rc<Docs>,
+    loading: Loading,
+    decoded: DecodedSaved,
+    path: String,
+    held: CopySnapshot,
+    admit: Admit,
+) {
+    use main_core::packages::electron_utils::recovery_store::SavedRecoveryOpenResult;
+    let target = loading.document.target().clone();
+    let labels = main_core::packages::electron_utils::recovery_labels::recovery_prompt_labels(
+        docs.lang().as_str(),
+        &super::hosts::basename(&path),
+    );
+    let detail = if held.1.file_changed_after_copy {
+        format!("{}\n\n{}", labels.detail, labels.file_changed)
+    } else {
+        labels.detail
+    };
+    let options = shell_contract::hosts::MessageBox {
+        kind: Some("question".into()),
+        message: labels.message,
+        detail: Some(detail),
+        buttons: vec![labels.restore, labels.discard],
+        default_id: Some(0),
+        cancel_id: Some(0),
+        ..Default::default()
+    };
+    let actual = loading.actual.clone();
+    let cancel = loading.request_cancel.clone();
+    let pending = target.pending().clone();
+    let parent = docs.parent(target.view());
+    let continued = docs.clone();
+    let answered = kit::back_on_core(
+        &docs.services,
+        move |answer: Result<shell_contract::hosts::MessageBoxAnswer, String>| {
+            let answer = match answer {
+                Ok(answer) => answer,
+                Err(error) => return loading.abort(&continued, &error),
+            };
+            if let Err(error) = loading.admit(&continued) {
+                return loading.abort(&continued, &error);
+            }
+            let discard = answer.response == 1;
+            let target = loading.document.target().clone();
+            let shared = continued.recovery_shared.clone();
+            let root = continued.user_data(&[]);
+            let shell = continued.shell.clone();
+            let after = continued.clone();
+            let (restored, copy) = held;
+            let marked = restored.clone();
+            let deliver = match worker_callback(
+                &continued,
+                &target,
+                move |result: Result<(), String>| {
+                    if let Err(error) = result {
+                        return loading.abort(&after, &error);
+                    }
+                    if let Err(error) = loading.admit(&after) {
+                        return loading.abort(&after, &error);
+                    }
+                    let recovery = if discard {
+                        SavedRecoveryOpenResult::Original
+                    } else {
+                        SavedRecoveryOpenResult::Restore {
+                            snapshot: restored,
+                            copy,
+                        }
+                    };
+                    prepare_on_worker(&after, loading, decoded, recovery)
+                },
+            ) {
+                Ok(deliver) => deliver,
+                Err(error) => return fail(&continued, &target, &error),
+            };
+            let identity = super::recovery::file_identity(&path);
+            let snapshot = marked;
+            continued.services.workers.spawn(Box::new(move || {
+                deliver(if discard {
+                    super::recovery::with_store(&shared, &root, &shell, |store| {
+                        store
+                            .delete_copy_authorized(
+                                &identity,
+                                main_core::packages::electron_utils::recovery_store::RecoveryDeleteReason::Discarded,
+                                &mut |effect| admit(effect),
+                            )
+                            .map_err(|error| error.message)?;
+                        Ok::<(), String>(())
+                    })
+                } else {
+                    mark_restored(&snapshot, &admit)
+                });
+            }));
+        },
+    );
+    docs.dialogs.message_owned(
+        parent,
+        options,
+        actual.clone(),
+        actual,
+        cancel,
+        pending,
+        Box::new(answered),
+    );
+}
+
+/// The load continues with the content the renderer will apply. Disk state
+/// is that of the file a later save would overwrite, as `rememberDiskState`.
+fn prepare_on_worker(
+    docs: &Rc<Docs>,
+    loading: Loading,
+    decoded: DecodedSaved,
+    recovery: main_core::packages::electron_utils::recovery_store::SavedRecoveryOpenResult,
+) {
+    let document = loading.document.clone();
+    let target = document.target().clone();
+    let engine = docs.engine.clone();
+    let permit = loading.permit.clone();
+    let cancel = loading.request_cancel.clone();
+    let continued = docs.clone();
+    let deliver = match worker_callback(
+        docs,
+        &target,
+        move |result: Result<(DecodedSaved, SavedContent, String, Option<(f64, f64)>), String>| {
+            let (decoded, content, data_url, disk) = match result {
+                Ok(prepared) => prepared,
+                Err(error) => return loading.abort(&continued, &error),
+            };
+            if let Err(error) = loading.admit(&continued) {
+                return loading.abort(&continued, &error);
+            }
+            let target = loading.document.target().clone();
+            if let Err(error) = publish_content(&continued, loading, decoded, content, data_url, disk)
+            {
+                fail(&continued, &target, &error);
+            }
+        },
+    ) {
+        Ok(deliver) => deliver,
+        Err(error) => return fail(docs, &target, &error),
+    };
+    docs.services.workers.spawn(Box::new(move || {
+        deliver((|| {
+            let content = prepare_content(
+                &document,
+                &decoded,
+                recovery,
+                engine.as_ref(),
+                permit.clone(),
+                cancel,
+            )?;
+            let data_url = engine.hand_off_bytes(content.bytes.clone(), permit)?;
+            let disk = document
+                .target()
+                .path()
+                .path()
+                .to_str()
+                .and_then(|path| super::stat(path).ok());
+            Ok((decoded, content, data_url, disk))
+        })());
+    }));
+}

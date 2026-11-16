@@ -44,6 +44,7 @@ impl Authority {
         )
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn with_prepared(
         &self,
         additional_owners: &[NativeRequestOwner],
@@ -228,9 +229,10 @@ pub fn with_committed_reopen_snapshot(
     }
     snapshot
         .files
-        .with_native_generation(&snapshot.entry, &snapshot.generation, || effect())
+        .with_native_generation(&snapshot.entry, &snapshot.generation, effect)
 }
 
+#[allow(clippy::type_complexity)]
 pub fn with_committed_reopen_state(
     receipt: &Arc<dyn NativeDriveMoveReceipt>,
     moved: bool,

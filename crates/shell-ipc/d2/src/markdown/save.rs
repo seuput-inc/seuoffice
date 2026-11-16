@@ -554,21 +554,40 @@ impl Md {
                     let me = Rc::clone(self);
                     let input = request.clone();
                     let admission = owner.publication_admission(&self.services);
+                    let selecting = owner.clone();
                     return kit::on_worker(
                         &self.services,
-                        move || {
-                            shell.write_new_document_owned(
-                                owner.origin(),
-                                owner.destination(),
-                                &owner.cancel(),
-                                &owner.pending(),
-                                owner.effects(),
-                                admission,
-                                &file_name,
-                                &bytes,
-                            )
+                        move || match owner.authority() {
+                            crate::html::text_doc::SaveAuthority::Renderer(origin) => shell
+                                .write_new_document_owned(
+                                    origin,
+                                    owner.destination(),
+                                    &owner.cancel(),
+                                    &owner.pending(),
+                                    owner.effects(),
+                                    admission,
+                                    &file_name,
+                                    &bytes,
+                                ),
+                            crate::html::text_doc::SaveAuthority::Native(binding) => shell
+                                .write_new_document_existing_document(
+                                    binding,
+                                    owner.participants(),
+                                    &owner.cancel(),
+                                    &owner.pending(),
+                                    owner.additional(),
+                                    owner.effects(),
+                                    admission,
+                                    &file_name,
+                                    &bytes,
+                                ),
                         },
-                        move |placed| match placed {
+                        move |placed| match placed.and_then(|path| {
+                            if let Some(path) = &path {
+                                selecting.select_project_destination(path)?;
+                            }
+                            Ok(path)
+                        }) {
                             Err(error) => done(failure(error)),
                             Ok(path) => me.save(
                                 view,

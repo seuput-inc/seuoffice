@@ -157,6 +157,7 @@ fn save_dialog_owned_with_fallback(
             main_core::packages::electron_utils::default_save_dir::Thrown(error.message)
         })
     };
+    let fallback_dir = FallbackDir::Resolve(&resolve);
     let prepared = {
         let memory = env
             .shared
@@ -166,11 +167,7 @@ fn save_dialog_owned_with_fallback(
         main_core::packages::electron_utils::dialog_memory::prepare_dialog_options(
             &memory,
             options,
-            if fallback {
-                Some(&FallbackDir::Resolve(&resolve))
-            } else {
-                None
-            },
+            fallback.then_some(&fallback_dir),
         )
     };
     let (tx, rx) = std::sync::mpsc::sync_channel(1);

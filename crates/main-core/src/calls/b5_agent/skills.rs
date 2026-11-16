@@ -52,8 +52,9 @@ use crate::shell::agent::agent_window::{
     agent_get_theme, agent_home_may_open, agent_is_window_contents, agent_live_owner,
     agent_open_file, agent_permission_answer, agent_pick_folder, agent_send, agent_set_prefs,
     agent_set_project_prefs, agent_set_project_skills, agent_start, agent_stop,
-    agent_template_as_is, agent_template_blank, agent_template_check, agent_window_load,
-    agent_window_options, agent_window_reuse, plan_agent_start,
+    agent_template_as_is, agent_template_blank_begin, agent_template_blank_finish,
+    agent_template_check, agent_window_load, agent_window_options, agent_window_reuse,
+    plan_agent_start,
 };
 use crate::shell::renderer_disposal::Failure;
 
@@ -1068,7 +1069,8 @@ impl AgentWindowHost for World<'_> {
         &mut self,
         owner_id: i64,
         input: &TemplatePreviewInput,
-    ) -> Result<TemplatePreviewOutcome, Failure> {
+        done: Box<dyn FnOnce(Result<TemplatePreviewOutcome, Failure>)>,
+    ) {
         let mut logged = Map::new();
         logged.insert("bytes".into(), json!(hex(&input.bytes)));
         logged.insert("fileName".into(), json!(input.file_name));
@@ -1085,8 +1087,11 @@ impl AgentWindowHost for World<'_> {
             json!(owner_id),
             Value::Object(logged),
         ]);
-        let answer = failing(Some(self.dep("preview")))?;
-        Ok(if flag(answer, "ok") {
+        let answer = match failing(Some(self.dep("preview"))) {
+            Ok(answer) => answer,
+            Err(failure) => return done(Err(failure)),
+        };
+        done(Ok(if flag(answer, "ok") {
             TemplatePreviewOutcome::Opened {
                 tab_id: text(answer, "tabId"),
                 preview_id: text(answer, "previewId"),
@@ -1095,7 +1100,7 @@ impl AgentWindowHost for World<'_> {
             TemplatePreviewOutcome::Refused {
                 reason: text(answer, "reason"),
             }
-        })
+        }))
     }
 
     fn show_open_dialog(&mut self, options: &JsObject<JsonValue>) -> JsonValue {
@@ -1451,7 +1456,24 @@ fn invoke(
             TemplateAsIs::Refused(reason) => json!({ "ok": false, "reason": reason.as_str() }),
         },
         "templateBlank" => {
-            match agent_template_blank(world, shown, sender, arg(0), arg(1), arg(2)) {
+            let begun = agent_template_blank_begin(world, shown, sender, arg(0), arg(1), arg(2));
+            let blank = match begun {
+                Err(blank) => blank,
+                Ok(input) => {
+                    let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+                    let answer = slot.clone();
+                    world.open_template_preview(
+                        sender,
+                        &input,
+                        Box::new(move |outcome| *answer.borrow_mut() = Some(outcome)),
+                    );
+                    let outcome = slot
+                        .take()
+                        .unwrap_or_else(|| Err(Failure("the preview never answered".into())));
+                    agent_template_blank_finish(outcome)
+                }
+            };
+            match blank {
                 TemplateBlank::Ok { tab_id, preview_id } => {
                     json!({ "ok": true, "tabId": tab_id, "previewId": preview_id })
                 }

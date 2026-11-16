@@ -43,7 +43,7 @@ impl Md {
         Ok(approved)
     }
 
-    fn finish_owned(&self, view: ViewId, result: IpcValue) {
+    pub(super) fn finish_owned(&self, view: ViewId, result: IpcValue) {
         let waiter = self.e.docs.take_save_waiter(view);
         if let Some(waiter) = waiter {
             waiter(saved_ok(&result));
@@ -232,14 +232,36 @@ impl Md {
                             return done(saved_at(&output));
                         }
                         let path = output.clone();
-                        finished.shell.export_written_owned(
-                            final_owner.origin().clone(),
+                        let file = std::path::PathBuf::from(output);
+                        let reveal = file.clone();
+                        let shell = finished.shell.clone();
+                        let hook = finished.shell.clone();
+                        let os = finished.os.clone();
+                        let (destination, cancel, pending, effects) = (
                             final_owner.destination().clone(),
                             final_owner.cancel(),
                             final_owner.pending(),
                             final_owner.effects().clone(),
-                            output.into(),
-                            "pdf",
+                        );
+                        final_owner.export_written(
+                            move |origin, then| {
+                                shell.export_written_owned(
+                                    origin,
+                                    destination,
+                                    cancel,
+                                    pending,
+                                    effects,
+                                    file,
+                                    "pdf",
+                                    then,
+                                )
+                            },
+                            &mut || {
+                                if !hook.open_generated_path(&reveal) {
+                                    os.show_item_in_folder(&reveal);
+                                }
+                                Ok(())
+                            },
                             Box::new(move |opened| {
                                 done(match opened {
                                     Err(error) => failure(error),

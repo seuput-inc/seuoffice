@@ -35,7 +35,7 @@ pub(super) enum Effect {
     /// `onSplitChanged`
     SplitChanged(Option<SplitViewState>),
     /// `dockHost.dock(tab)`
-    Dock(DetachedTab<ViewId, super::host::RetainedSpareBinding>),
+    Dock(Box<DetachedTab<ViewId, super::host::RetainedSpareBinding>>),
 }
 
 pub(super) struct Bridge {
@@ -404,7 +404,7 @@ impl
         self.send_to_shell("tabs:dock-preview", vec![value]);
     }
     fn dock(&mut self, tab: DetachedTab<ViewId, super::host::RetainedSpareBinding>) {
-        self.effects.push_back(Effect::Dock(tab));
+        self.effects.push_back(Effect::Dock(Box::new(tab)));
     }
     fn on_detached_changed(&mut self) {
         self.hooks.detached_changed()

@@ -15,12 +15,12 @@ let spellWarned = false
 function noSpellEngine(): void {
   if (spellWarned) return
   spellWarned = true
-  console.warn('[shell bridge] webFrame has no spell engine in the CEF shell yet')
+  console.warn('[shell bridge] webFrame has no spell engine in the shell yet')
 }
 
 /**
  * `webFrame` as the preloads use it. The zoom factor goes to the shell. The
- * spell engine (sheets' `nativeSpell`) is not reachable from a CEF page: the
+ * spell engine (sheets' `nativeSpell`) is not reachable from a page: the
  * words are all taken as spelled right until the shell answers it.
  */
 export const webFrame = {

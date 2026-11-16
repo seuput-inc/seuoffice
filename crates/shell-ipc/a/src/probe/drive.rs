@@ -799,9 +799,9 @@ impl DriveShell for FakeShell {
         self.lang
     }
 
-    fn open_path(&self, path: &str) -> bool {
+    fn open_path(&self, path: &str, done: Box<dyn FnOnce(bool) + Send>) {
         push(&self.log, json!(["routeDocumentPath", path]));
-        self.world["openPath"].as_bool() != Some(false)
+        done(self.world["openPath"].as_bool() != Some(false));
     }
 
     fn is_open(&self, path: &str) -> bool {

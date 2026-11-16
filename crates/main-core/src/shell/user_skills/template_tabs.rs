@@ -62,9 +62,6 @@ pub trait TemplateTabsHost {
     fn remove_dir(&mut self, path: &str) -> Result<(), String>;
     /// an enabled skill's template file, or why there is none
     fn template_file_of(&mut self, skill_id: &str) -> Svc<TemplateFile>;
-    /// Open a new untitled tab of the copy's editor on the copy; `None` when
-    /// it could not
-    fn open_copy(&mut self, copy: &TemplateCopy) -> Result<Option<OpenedCopyTab>, String>;
     /// The file path of the tab whose AI panel asked (the tab manager's
     /// table, or a detached document window): `None` for a document never
     /// saved or a window that is not a document. A table read, so it answers
@@ -258,14 +255,57 @@ pub fn copy_file_name_of(title: &str, extension: &str) -> String {
     )
 }
 
-/// what `openWithHandoff` opened
-struct OpenedWithHandoff {
-    tab_id: String,
-    contents_id: f64,
+/// What a begun copy open becomes once its tab exists
+enum PendingKind {
+    Template {
+        attach: Option<Vec<String>>,
+        text: String,
+        chips: Vec<HandoffSkillChip>,
+        opener_id: Option<f64>,
+    },
+    Preview {
+        preview_id: String,
+        owner_id: f64,
+        input: PreviewInput,
+    },
+    Copy {
+        request: String,
+        chips: Vec<HandoffSkillChip>,
+    },
 }
 
-/// the `handoff(target)` argument of `openWithHandoff`
-type HandoffBuilder<'a> = &'a dyn Fn(&mut dyn TemplateTabsHost, HandoffEditor) -> SkillHandoff;
+/// A copy written to disk whose tab is not open yet: the shell opens
+/// [`PendingCopy::copy`] (asynchronously), then [`TemplateTabs::finish_open`] runs with the
+/// result, or [`TemplateTabs::abandon`] when the open will never answer.
+pub struct PendingCopy {
+    copy: TemplateCopy,
+    kind: PendingKind,
+}
+
+impl PendingCopy {
+    pub fn copy(&self) -> &TemplateCopy {
+        &self.copy
+    }
+
+    /// the id of the panel that asked, when there is one
+    pub fn opener_id(&self) -> Option<f64> {
+        match &self.kind {
+            PendingKind::Template { opener_id, .. } => *opener_id,
+            PendingKind::Preview { owner_id, .. } => Some(*owner_id),
+            PendingKind::Copy { .. } => None,
+        }
+    }
+}
+
+/// What a finished copy open answers
+#[derive(Debug, Clone, PartialEq)]
+pub struct Opened {
+    pub tab_id: String,
+    /// a template opened with the asking tab's document attached
+    pub attached: bool,
+    /// set for a preview
+    pub preview_id: Option<String>,
+}
 
 /// `createTemplateTabs(deps)`: the previews still open, and the copy folders
 /// to remove when their tab goes
@@ -287,67 +327,166 @@ impl TemplateTabs {
         }
     }
 
-    /// `openWithHandoff(bytes, fileName, title, handoff)`: copy the bytes into
-    /// a fresh folder and open the copy; the hand-off goes with it
-    fn open_with_handoff(
-        &mut self,
+    /// `openWithHandoff(bytes, fileName, title, ...)`, first half: copy the bytes into a fresh
+    /// folder; the shell then opens the copy
+    fn begin_copy(
         host: &mut dyn TemplateTabsHost,
-        store: &mut HandoffStore,
         bytes: &[u8],
         file_name: &str,
         title: &str,
-        handoff: HandoffBuilder<'_>,
-    ) -> Svc<OpenedWithHandoff> {
+        kind: PendingKind,
+    ) -> Svc<PendingCopy> {
         let Some(editor) = handoff_editor_for_file(file_name) else {
             return Err(fail("bad-template").into());
         };
         let dir = host.make_copy_dir().map_err(rejected)?;
         let path = path_host::join(&[&dir, file_name]);
-        let opened = match host.write_file(&path, bytes) {
-            Ok(()) => host
-                .open_copy(&TemplateCopy {
-                    editor,
-                    path: path.clone(),
-                    dir: dir.clone(),
-                    bytes: bytes.to_vec(),
-                    file_name: file_name.to_owned(),
-                    title: title.to_owned(),
-                })
-                .unwrap_or(None),
-            Err(_) => None,
-        };
-        let Some(mut opened) = opened else {
+        if host.write_file(&path, bytes).is_err() {
             let _ = host.remove_dir(&dir);
             return Err(fail("failed").into());
-        };
-        let queued = handoff(host, editor);
-        store.queue_skill_handoff_for(&mut *opened.contents, queued);
-        let contents_id = opened.contents.id();
-        if !opened.owns_copy {
-            self.copy_dirs.push((contents_id, dir));
         }
-        Ok(OpenedWithHandoff {
-            tab_id: opened.tab_id,
-            contents_id,
+        Ok(PendingCopy {
+            copy: TemplateCopy {
+                editor,
+                path,
+                dir,
+                bytes: bytes.to_vec(),
+                file_name: file_name.to_owned(),
+                title: title.to_owned(),
+            },
+            kind,
         })
     }
 
-    /// `openTemplate(input, openerId)`: spec 5.7: the template of the skill a
-    /// request names, copied into a new tab of its editor, with the request
-    /// and every chip handed over. With `withCurrent`, the asking tab's saved
-    /// document goes along for the new tab to attach; a document never saved
-    /// or with unsaved changes is refused (`unsaved`) and nothing opens.
-    /// `open_files` is the shell's filled snapshot of the open documents, which
-    /// the unsaved check reads (index.ts's `currentDocumentOf`). Returns
-    /// `(tabId, attached)`.
-    pub fn open_template(
+    /// `openWithHandoff`, second half: the copy's tab is open (`opened`), so the hand-off goes
+    /// with it. `Ok(None)` and `Err` both mean no tab opened: the folder is removed.
+    pub fn finish_open(
         &mut self,
         host: &mut dyn TemplateTabsHost,
         store: &mut HandoffStore,
+        pending: PendingCopy,
+        opened: Result<Option<OpenedCopyTab>, String>,
+    ) -> Svc<Opened> {
+        let PendingCopy { copy, kind } = pending;
+        let Some(mut opened) = opened.unwrap_or(None) else {
+            let _ = host.remove_dir(&copy.dir);
+            return Err(fail("failed").into());
+        };
+        let editor = copy.editor;
+        let handoff = |host: &mut dyn TemplateTabsHost,
+                       text: String,
+                       chips: Vec<HandoffSkillChip>,
+                       preview: Option<Value>,
+                       attach: Option<Vec<String>>| SkillHandoff {
+            id: host.new_id(),
+            mode: "skill".to_owned(),
+            target: HandoffEditorName(editor),
+            text,
+            chips,
+            preview,
+            attach,
+            created_at: host.now(),
+        };
+        let queued = match &kind {
+            PendingKind::Template {
+                attach,
+                text,
+                chips,
+                ..
+            } => handoff(host, text.clone(), chips.clone(), None, attach.clone()),
+            PendingKind::Preview {
+                preview_id, input, ..
+            } => {
+                let mut preview = Map::new();
+                preview.insert("previewId".to_owned(), Value::from(preview_id.clone()));
+                preview.insert("title".to_owned(), Value::from(input.title.clone()));
+                preview.insert("fileName".to_owned(), Value::from(input.file_name.clone()));
+                preview.insert(
+                    "originalRedacted".to_owned(),
+                    Value::from(input.original_redacted),
+                );
+                preview.insert("proposal".to_owned(), input.proposal.clone());
+                if let Some(draft) = &input.draft {
+                    preview.insert("draft".to_owned(), draft.clone());
+                }
+                handoff(
+                    host,
+                    input.text.clone(),
+                    Vec::new(),
+                    Some(Value::Object(preview)),
+                    None,
+                )
+            }
+            PendingKind::Copy { request, chips } => {
+                handoff(host, request.clone(), chips.clone(), None, None)
+            }
+        };
+        store.queue_skill_handoff_for(&mut *opened.contents, queued);
+        let contents_id = opened.contents.id();
+        if !opened.owns_copy {
+            self.copy_dirs.push((contents_id, copy.dir));
+        }
+        match kind {
+            PendingKind::Template {
+                attach, opener_id, ..
+            } => {
+                if let Some(opener_id) = opener_id {
+                    host.copy_opened_for(contents_id, opener_id);
+                }
+                Ok(Opened {
+                    tab_id: opened.tab_id,
+                    attached: attach.is_some(),
+                    preview_id: None,
+                })
+            }
+            PendingKind::Preview {
+                preview_id,
+                owner_id,
+                input,
+            } => {
+                let record = PreviewRecord {
+                    owner_id,
+                    tab_contents_id: contents_id,
+                    original: input.bytes,
+                    file_name: input.file_name,
+                    original_redacted: input.original_redacted,
+                    ended: false,
+                };
+                self.previews.set(preview_id.as_str(), record);
+                Ok(Opened {
+                    tab_id: opened.tab_id,
+                    attached: false,
+                    preview_id: Some(preview_id),
+                })
+            }
+            PendingKind::Copy { .. } => Ok(Opened {
+                tab_id: opened.tab_id,
+                attached: false,
+                preview_id: None,
+            }),
+        }
+    }
+
+    /// The copy's open will never answer (the request was cancelled or the host went away):
+    /// remove the folder made for it.
+    pub fn abandon(host: &mut dyn TemplateTabsHost, pending: PendingCopy) {
+        let _ = host.remove_dir(&pending.copy.dir);
+    }
+
+    /// `openTemplate(input, openerId)`, first half: spec 5.7: the template of the skill a
+    /// request names, copied into a folder; the shell opens it as a new tab of its editor, with
+    /// the request and every chip handed over. With `withCurrent`, the asking tab's saved
+    /// document goes along for the new tab to attach; a document never saved or with unsaved
+    /// changes is refused (`unsaved`) and nothing opens. `open_files` is the shell's filled
+    /// snapshot of the open documents, which the unsaved check reads (index.ts's
+    /// `currentDocumentOf`).
+    pub fn begin_template(
+        &mut self,
+        host: &mut dyn TemplateTabsHost,
         open_files: &OpenFilesHolder,
         input: &TemplateOpenInput,
         opener_id: Option<f64>,
-    ) -> Svc<(String, bool)> {
+    ) -> Svc<PendingCopy> {
         let template = host.template_file_of(&input.skill_id)?;
         let editor = handoff_editor_for_file(&template.file_name);
         let mut attach: Option<Vec<String>> = None;
@@ -374,111 +513,68 @@ impl TemplateTabs {
             0.0,
             Some((template.file_name.encode_utf16().count() - extension_len) as f64),
         );
-        let attach_for_handoff = attach.clone();
-        let build = |host: &mut dyn TemplateTabsHost, target: HandoffEditor| SkillHandoff {
-            id: host.new_id(),
-            mode: "skill".to_owned(),
-            target: HandoffEditorName(target),
-            text: input.text.clone(),
-            chips: input.chips.clone(),
-            preview: None,
-            attach: attach_for_handoff.clone(),
-            created_at: host.now(),
-        };
-        let opened =
-            self.open_with_handoff(host, store, &bytes, &template.file_name, &title, &build)?;
-        if let Some(opener_id) = opener_id {
-            host.copy_opened_for(opened.contents_id, opener_id);
-        }
-        Ok((opened.tab_id, attach.is_some()))
+        Self::begin_copy(
+            host,
+            &bytes,
+            &template.file_name,
+            &title,
+            PendingKind::Template {
+                attach,
+                text: input.text.clone(),
+                chips: input.chips.clone(),
+                opener_id,
+            },
+        )
     }
 
-    /// `openPreview(owner, input)`: spec 5.6 "make a blank template": the
-    /// current document's copy in a preview tab, with the clearing request and
-    /// the pending proposal handed over. The original bytes stay here for that
-    /// tab's "save as is". Returns `(tabId, previewId)`.
-    pub fn open_preview(
+    /// `openPreview(owner, input)`, first half: spec 5.6 "make a blank template": the current
+    /// document's copy for a preview tab, with the clearing request and the pending proposal
+    /// handed over. The original bytes stay here for that tab's "save as is".
+    pub fn begin_preview(
         &mut self,
         host: &mut dyn TemplateTabsHost,
-        store: &mut HandoffStore,
         owner_id: f64,
         input: &PreviewInput,
-    ) -> Svc<(String, String)> {
+    ) -> Svc<PendingCopy> {
         let extension = path_host::extname(&input.file_name).to_lowercase();
         if handoff_editor_for_file(&input.file_name).is_none() {
             return Err(fail("bad-template").into());
         }
         let preview_id = host.new_id();
-        let build = |host: &mut dyn TemplateTabsHost, target: HandoffEditor| {
-            let mut preview = Map::new();
-            preview.insert("previewId".to_owned(), Value::from(preview_id.clone()));
-            preview.insert("title".to_owned(), Value::from(input.title.clone()));
-            preview.insert("fileName".to_owned(), Value::from(input.file_name.clone()));
-            preview.insert(
-                "originalRedacted".to_owned(),
-                Value::from(input.original_redacted),
-            );
-            preview.insert("proposal".to_owned(), input.proposal.clone());
-            if let Some(draft) = &input.draft {
-                preview.insert("draft".to_owned(), draft.clone());
-            }
-            SkillHandoff {
-                id: host.new_id(),
-                mode: "skill".to_owned(),
-                target: HandoffEditorName(target),
-                text: input.text.clone(),
-                chips: Vec::new(),
-                preview: Some(Value::Object(preview)),
-                attach: None,
-                created_at: host.now(),
-            }
-        };
-        let opened = self.open_with_handoff(
+        Self::begin_copy(
             host,
-            store,
             &input.bytes,
             &copy_file_name_of(&input.tab_title, &extension),
             &input.tab_title,
-            &build,
-        )?;
-        let record = PreviewRecord {
-            owner_id,
-            tab_contents_id: opened.contents_id,
-            original: input.bytes.clone(),
-            file_name: input.file_name.clone(),
-            original_redacted: input.original_redacted,
-            ended: false,
-        };
-        self.previews.set(preview_id.as_str(), record);
-        Ok((opened.tab_id, preview_id))
+            PendingKind::Preview {
+                preview_id,
+                owner_id,
+                input: input.clone(),
+            },
+        )
     }
 
-    /// `openCopy(input)`: any document's byte copy as a new untitled tab of
-    /// its editor, with a request (and skill chips) handed to that tab's AI
-    /// panel. Returns the `tabId`.
-    #[allow(clippy::too_many_arguments)]
-    pub fn open_copy(
+    /// `openCopy(input)`, first half: any document's byte copy for a new untitled tab of its
+    /// editor, with a request (and skill chips) handed to that tab's AI panel.
+    pub fn begin_open_copy(
         &mut self,
         host: &mut dyn TemplateTabsHost,
-        store: &mut HandoffStore,
         bytes: &[u8],
         file_name: &str,
         title: &str,
         request: &str,
         chips: &[HandoffSkillChip],
-    ) -> Svc<String> {
-        let build = |host: &mut dyn TemplateTabsHost, target: HandoffEditor| SkillHandoff {
-            id: host.new_id(),
-            mode: "skill".to_owned(),
-            target: HandoffEditorName(target),
-            text: request.to_owned(),
-            chips: chips.to_vec(),
-            preview: None,
-            attach: None,
-            created_at: host.now(),
-        };
-        let opened = self.open_with_handoff(host, store, bytes, file_name, title, &build)?;
-        Ok(opened.tab_id)
+    ) -> Svc<PendingCopy> {
+        Self::begin_copy(
+            host,
+            bytes,
+            file_name,
+            title,
+            PendingKind::Copy {
+                request: request.to_owned(),
+                chips: chips.to_vec(),
+            },
+        )
     }
 
     /// `previewOriginal(senderId, previewId)`: the preview tab's "save the

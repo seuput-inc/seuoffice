@@ -79,7 +79,9 @@ fn save_pick(
         SaveAsKind::Docx | SaveAsKind::Odt => {
             match scope {
                 Some(scope) => scope.record_pick(path).map_err(kit::error)?,
-                None => docs.save_as_picks.insert(view, path),
+                None => {
+                    docs.save_as_picks.insert(view, path);
+                }
             }
             Ok(picked.done())
         }
@@ -893,17 +895,41 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                                     let publication = publication.ok_or_else(|| {
                                         "the project save publication was not captured".to_owned()
                                     });
-                                    publication.and_then(|publication| {
-                                        shell.write_new_document_owned(
-                                            scope.origin(),
-                                            scope.destination(),
-                                            scope.cancel(),
-                                            scope.pending(),
-                                            scope.effects(),
-                                            publication,
-                                            &file_name,
-                                            &prepared.bytes,
-                                        )
+                                    publication.and_then(|publication| match scope.origin() {
+                                        Some(origin) => shell
+                                            .write_new_document_owned(
+                                                origin,
+                                                scope.destination(),
+                                                &scope.publication_participants(),
+                                                scope.cancel(),
+                                                scope.pending(),
+                                                scope.additional_cancellation(),
+                                                scope.effects(),
+                                                publication,
+                                                &file_name,
+                                                &prepared.bytes,
+                                            )
+                                            .map(|published| {
+                                                published.map(|(output, _)| {
+                                                    output.path().to_string_lossy().into_owned()
+                                                })
+                                            }),
+                                        None => {
+                                            let binding = scope.native_binding().ok_or_else(|| {
+                                                "the project save has no authority".to_owned()
+                                            })?;
+                                            shell.write_new_document_existing_document(
+                                                binding,
+                                                &scope.publication_participants(),
+                                                scope.cancel(),
+                                                scope.pending(),
+                                                scope.additional_cancellation(),
+                                                scope.effects(),
+                                                publication,
+                                                &file_name,
+                                                &prepared.bytes,
+                                            )
+                                        }
                                     })
                                 }
                                 None => shell.write_new_document(
@@ -920,6 +946,11 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                                 Some(Err(e)) => return responder.reply(Ok(failed(e))),
                                 Some(Ok(Some(p))) => p,
                             };
+                            if let Some(scope) = &scope {
+                                if let Err(error) = scope.capture_project_destination(&d3, &path) {
+                                    return responder.reply(Ok(failed(error)));
+                                }
+                            }
                             d3.complete_save(
                                 view,
                                 path,

@@ -165,7 +165,7 @@ export function makeContextBridge(target: object) {
 }
 
 /**
- * `webUtils.getPathForFile`: a CEF `File` has no path. The shell hands the
+ * `webUtils.getPathForFile`: a web `File` has no path. The shell hands the
  * paths of a drop in the order the OS gave them, which is also the order of
  * the drop's `dataTransfer.files`; this pairs them up.
  */

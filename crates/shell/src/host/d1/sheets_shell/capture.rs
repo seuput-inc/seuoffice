@@ -108,7 +108,7 @@ impl Capture {
         let owner = owner.clone();
         let cancel = cancel.clone();
         on_ui(&self.cx.ui, move || native_owner::run_accepted_ui(cx.ui.as_ref(), &owner, &cancel, || {
-            use tauri_runtime_cef::WindowCefExt;
+            use crate::native::WindowExt;
             let handle = window.native_window_handle().map_err(|error| error.to_string())?;
             handle.with_window(native_window_id).map_err(|error| error.to_string())?
         }).and_then(|result| result))

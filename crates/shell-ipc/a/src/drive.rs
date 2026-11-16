@@ -152,6 +152,7 @@ pub trait DriveService {
         admission: ReopenAdmission,
         done: PreparedReopenReply,
     );
+    #[allow(clippy::too_many_arguments)]
     fn prepare_native_reopen(
         &self,
         output: shell_contract::ipc::SavedPublication,
@@ -993,10 +994,7 @@ impl DriveService for DrivePort {
         let inner = self.inner.clone();
         let path = path.to_owned();
         self.inner.services.workers.spawn(Box::new(move || {
-            let opened = inner.files.open(&entry.source_id).is_ok() || {
-                let shell = inner.shell.clone();
-                on_core(&*inner.services.core, move || shell.open_path(&path))
-            };
+            let opened = inner.files.open(&entry.source_id).is_ok() || inner.files.open_path(&path);
             inner.services.core.post(Box::new(move || done(opened)));
         }));
         true
@@ -1140,7 +1138,7 @@ impl DriveService for DrivePort {
                             moved_commit,
                             fallback,
                             original_commit: output.commit().clone(),
-                            transaction: Arc::new(Mutex::new(transaction)),
+                            transaction: Arc::new(Mutex::new(*transaction)),
                             warning: Arc::new(Mutex::new(warning)),
                             services: inner.services.clone(),
                         },
@@ -1152,7 +1150,7 @@ impl DriveService for DrivePort {
                     } => Ok(NativeDriveReopen::CleanupPending(Arc::new(
                         native_reopen::Pending {
                             authority,
-                            transaction: Arc::new(Mutex::new(transaction)),
+                            transaction: Arc::new(Mutex::new(*transaction)),
                             original_error: error,
                             cleanup_error: Arc::new(Mutex::new(Some(rollback_error))),
                             services: inner.services.clone(),

@@ -47,6 +47,11 @@ pub enum NativeSaveFormat {
     PdfUntitled,
     DocsDocx { offer_exports: bool },
     DocsOdt { offer_exports: bool },
+    /// Mirrors main-core `resolve_sheets_save_as_pick`.
+    Sheets { macro_enabled: bool, offer_copies: bool },
+    /// Mirrors main-core `save_as_target`: the document's own `.hwp`/`.hwpx`
+    /// (a bare name takes `fallback_hwpx`'s), or a PDF copy when offered.
+    Hwp { fallback_hwpx: bool, offer_pdf: bool },
 }
 
 /// Inputs selected by a native menu, OS or authenticated application service.
@@ -474,6 +479,32 @@ impl NativeSaveDestination {
             dialog_selected: false,
         })
     }
+    /// Called only by the owning editor right after the shell's project
+    /// writer placed `path` as the first file of this exact document, while
+    /// the binding and the document are jointly admitted; never pass a
+    /// renderer-provided path. Only a plain Save names a project file.
+    pub fn from_project_document(
+        binding: NativeExistingDocumentBinding,
+        path: PathBuf,
+    ) -> Result<Self, String> {
+        if !matches!(
+            binding.operation.selection(),
+            NativeInvocationSelection::NativeCommand(NativeEditorCommand::SaveDocument {
+                selection: NativeSaveSelection::Mode(crate::editors::SaveMode::Save),
+                ..
+            })
+        ) || path.as_os_str().is_empty()
+        {
+            return Err("The native save does not place a project document.".into());
+        }
+        Ok(Self {
+            binding,
+            path,
+            raw_path: None,
+            normalized: false,
+            dialog_selected: false,
+        })
+    }
     pub fn binding(&self) -> &NativeExistingDocumentBinding {
         &self.binding
     }
@@ -516,6 +547,8 @@ impl NativeSaveDestination {
             NativeSaveFormat::DocsDocx { .. } | NativeSaveFormat::DocsOdt { .. } => {
                 surface == Surface::Docs
             }
+            NativeSaveFormat::Sheets { .. } => surface == Surface::Sheets,
+            NativeSaveFormat::Hwp { .. } => surface == Surface::Hwp,
         };
         if !compatible {
             return Err("The save format belongs to a different editor.".into());
@@ -609,6 +642,31 @@ impl NativeSaveDestination {
                         NativeSaveFormat::DiagramPng => ".drawio.png",
                         _ => unreachable!(),
                     })
+                }
+            }
+            NativeSaveFormat::Sheets {
+                macro_enabled,
+                offer_copies,
+            } => {
+                let copy = offer_copies && (ends(b".pdf") || ends(b".ods"));
+                let csv = !macro_enabled && ends(b".csv");
+                // A bare name with copies on offer asks for an extension instead.
+                let bare = offer_copies && !name.contains(&b'.');
+                let workbook = if macro_enabled { ".xlsm" } else { ".xlsx" };
+                if copy || csv || bare || ends(workbook.as_bytes()) {
+                    None
+                } else {
+                    Some(workbook)
+                }
+            }
+            NativeSaveFormat::Hwp {
+                fallback_hwpx,
+                offer_pdf,
+            } => {
+                if (offer_pdf && ends(b".pdf")) || ends(b".hwp") || ends(b".hwpx") {
+                    None
+                } else {
+                    Some(if fallback_hwpx { ".hwpx" } else { ".hwp" })
                 }
             }
         };

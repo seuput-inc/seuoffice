@@ -1078,7 +1078,7 @@ impl Epub {
                     let completion_scope = scope.clone();
                     let completion_epub = epub.clone();
                     let published_target = target.clone();
-                    let finish = Box::new(
+                    let finish: Box<dyn FnOnce(_)> = Box::new(
                         move |result: Result<shell_contract::hosts::SavedFile<String>, String>| {
                             let result = result.and_then(|saved| {
                                 let path = saved.path;

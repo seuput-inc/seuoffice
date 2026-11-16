@@ -19,7 +19,7 @@ type Job = Box<dyn FnOnce(&mut ActorState) + Send>;
 #[derive(Clone)]
 pub(crate) struct SlidesRequestAuthority {
     pub(crate) authorization: crate::views::SlidesMediaAuthorization,
-    pub(crate) token: tauri_runtime_cef::NativeContextToken,
+    pub(crate) token: crate::native::DocumentContext,
 }
 
 pub(crate) type FontRendererFactory = Arc<dyn Fn(&SlidesRequestAuthority) -> Result<Box<dyn super::slides_fonts::FontRenderer>, String> + Send + Sync>;
@@ -77,10 +77,10 @@ fn read_host_number(value: &serde_json::Value) -> Option<f64> {
 pub(crate) fn owner_authority(owner: &RenderOwner) -> Result<Arc<SlidesRequestAuthority>, EngineError> {
     let authority = owner.context.as_arc().downcast::<SlidesRequestAuthority>()
         .map_err(|_| EngineError("invalid slide document authorization".into()))?;
-    let document = authority.token.browser_state().document();
+    let document = authority.token.browser().document();
     if authority.authorization.view != owner.view || !authority.authorization.is_current()
         || !authority.token.is_live() || !owner.context.renderer().is_some_and(|renderer| renderer.is_active())
-        || !authority.authorization.matches_native_snapshot(Some(authority.token.browser_id()), authority.token.browser_state(), document.as_ref()) {
+        || !authority.authorization.matches_native_snapshot(Some(authority.token.identity().browser_id()), authority.token.browser(), document.as_ref()) {
         return Err(EngineError("slide document authorization is no longer current".into()));
     }
     Ok(authority)

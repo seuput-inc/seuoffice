@@ -269,7 +269,7 @@ impl CrashWatchHost for Watch {
         Ok(self.shell.close_document(wc.view))
     }
     fn reopen(&self, file_path: &str) -> Result<(), Failure> {
-        self.shell.open_path(file_path);
+        self.shell.open_path_reported(file_path);
         Ok(())
     }
     fn untitled_copy_of(&self, _wc: &View) -> Result<Option<()>, Failure> {

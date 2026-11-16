@@ -121,7 +121,7 @@ impl HwpEditors {
                             read_started: false,
                             read_completed: false,
                         });
-                        Ok(())
+                        Ok::<(), String>(())
                     })?;
                     Ok(())
                 });
@@ -215,7 +215,7 @@ impl HwpEditors {
                             read_started: false,
                             read_completed: false,
                         });
-                        Ok(())
+                        Ok::<(), String>(())
                     })?;
                     Ok(())
                 });

@@ -23,7 +23,7 @@ use windows::core::{BOOL, PCWSTR};
 use super::{Kind, Spec};
 use std::sync::Arc;
 use crate::host::dialog::owned::{Session, windows::{task_callback, task_registration}};
-use tauri_runtime_cef::WindowCefExt;
+use crate::host::dialog::owned::windows::with_hwnd;
 
 /// the id of button `i`
 const FIRST_BUTTON: i32 = 1000;
@@ -60,9 +60,7 @@ pub(super) fn show_owned(spec: &Spec, parent: Option<&Window>, session: &Arc<Ses
 
 fn show_impl(spec: &Spec, parent: Option<&Window>, session: Option<&Arc<Session>>) -> Result<MessageBoxAnswer, String> {
     match parent {
-        Some(parent) => parent.native_window_handle().map_err(|error| error.to_string())?
-            .with_hwnd(|window| show_with_parent(spec, Some(window), session))
-            .map_err(|error| error.to_string())?,
+        Some(parent) => with_hwnd(parent, |window| show_with_parent(spec, Some(window), session))?,
         None => show_with_parent(spec, None, session),
     }
 }

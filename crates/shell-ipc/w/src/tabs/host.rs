@@ -317,6 +317,7 @@ pub type SavedManagerRegistration = Box<
 pub struct PreparedSavedView {
     pub target: shell_contract::ipc::NativeSavedTarget,
     pub binding: NativeBrowserBinding,
+    #[allow(clippy::type_complexity)]
     pub start: Box<
         dyn FnOnce(
             SavedManagerAdoption,
@@ -328,6 +329,7 @@ pub struct PreparedSavedView {
 
 /// Native shell window and lifecycle captured before Drive or file I/O.
 pub trait CapturedSavedShell {
+    #[allow(clippy::too_many_arguments)]
     fn prepare_fresh(
         &self,
         spec: &ViewSpec<'_>,
@@ -390,6 +392,7 @@ pub struct PreparedGeneratedView {
     pub binding: NativeBrowserBinding,
     pub spare_actor: Option<std::rc::Rc<dyn SpareActor>>,
     pub installer: GeneratedPrecloseInstaller,
+    #[allow(clippy::type_complexity)]
     pub start: Box<
         dyn FnOnce(
             GeneratedManagerAdoption,
@@ -561,6 +564,7 @@ pub trait TabHooks {
         &self,
         task: std::sync::Arc<dyn shell_contract::hosts::GeneratedPathPending>,
     ) -> Result<Box<dyn shell_contract::hosts::GeneratedCleanupRegistration>, String>;
+    #[allow(clippy::too_many_arguments)]
     fn capture_generated_retry_prompt(
         &self,
         shell: ShellWindow,
@@ -588,6 +592,8 @@ pub trait TabHooks {
         spare_actor: SpareActorSlot,
         done: Box<dyn FnOnce(ViewCreationResult<shell_contract::ipc::NativeInvocationDocument>)>,
     );
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::type_complexity)]
     fn prepare_view_native_command(
         &self,
         spec: &ViewSpec<'_>,
@@ -615,6 +621,7 @@ pub trait TabHooks {
             RetainedSpareBinding,
         >],
     ) -> Result<super::activation::PreparedTabUiBatch, String>;
+    #[allow(clippy::too_many_arguments)]
     fn prepare_activation_publication_owned(
         &self,
         authority: super::activation::TabActivationAuthority,
@@ -625,6 +632,7 @@ pub trait TabHooks {
         effects: shell_contract::hosts::OwnedEffectsHost,
         snapshot: super::activation::TabActivationPublicationSnapshot,
     ) -> Result<super::activation::PreparedTabActivationPublication, String>;
+    #[allow(clippy::too_many_arguments)]
     fn prepare_docs_disposal_owned(
         &self,
         view: ViewId,
@@ -636,6 +644,7 @@ pub trait TabHooks {
         pending: shell_contract::runtime::CancelToken,
     ) -> Result<std::rc::Rc<dyn super::activation::DocsDisposalOperation>, String>;
     /// Prepare core editor registration; the owned continuation admits and constructs on UI.
+    #[allow(clippy::type_complexity)]
     fn prepare_view_owned(
         &self,
         spec: &ViewSpec<'_>,
@@ -652,6 +661,7 @@ pub trait TabHooks {
             ),
         >,
     )>;
+    #[allow(clippy::too_many_arguments)]
     fn prepare_generated_view_owned(
         &self,
         spec: &ViewSpec<'_>,
@@ -663,6 +673,7 @@ pub trait TabHooks {
         placement: Option<Option<main_core::shell::projects::new_documents::NewDocumentPlacement>>,
         rollback: EditorSeedRollbackStore,
     ) -> TabResult<PreparedGeneratedView>;
+    #[allow(clippy::too_many_arguments)]
     fn prepare_initialized_spare_owned(
         &self,
         view: ViewId,
@@ -676,6 +687,7 @@ pub trait TabHooks {
         placement: Option<Option<main_core::shell::projects::new_documents::NewDocumentPlacement>>,
         rollback: EditorSeedRollbackStore,
     ) -> TabResult<PreparedGeneratedView>;
+    #[allow(clippy::too_many_arguments)]
     fn commit_generated_seed_owned(
         &self,
         view: ViewId,
@@ -690,6 +702,7 @@ pub trait TabHooks {
         owner: &shell_contract::ipc::NativeBrowserOwner,
         rollback: &EditorSeedRollbackStore,
     ) -> TabResult<()>;
+    #[allow(clippy::too_many_arguments)]
     fn prepare_spare_editor_seed(
         &self,
         view: ViewId,
@@ -701,6 +714,7 @@ pub trait TabHooks {
         binding: &RetainedSpareBinding,
         rollback: &EditorSeedRollbackStore,
     ) -> TabResult<Box<dyn SpareSeedPlan>>;
+    #[allow(clippy::too_many_arguments)]
     fn commit_editor_seed_owned(
         &self,
         view: ViewId,
@@ -716,6 +730,7 @@ pub trait TabHooks {
         cancel: &shell_contract::runtime::CancelToken,
         pending: &shell_contract::runtime::CancelToken,
     ) -> TabResult<()>;
+    #[allow(clippy::too_many_arguments)]
     fn commit_native_editor_seed(
         &self,
         operation: &shell_contract::ipc::NativeInvocationOperation,
@@ -815,6 +830,7 @@ pub trait TabHooks {
         pending: shell_contract::runtime::CancelToken,
         done: super::activation::TabUiDone,
     );
+    #[allow(clippy::too_many_arguments)]
     fn adopt_recovery_view_owned(
         &self,
         shell: ShellWindow,
@@ -826,6 +842,7 @@ pub trait TabHooks {
         done: super::activation::TabUiDone,
     );
     /// Resolve Drive refresh without opening a tab or replacing the captured owner.
+    #[allow(clippy::type_complexity)]
     fn prepare_reopen_owned(
         &self,
         path: String,
@@ -857,6 +874,7 @@ pub trait TabHooks {
         then: Box<dyn FnOnce(Result<shell_contract::ipc::NativeDriveReopen, String>)>,
     );
     /// Read the exact committed file object on a worker, not by its display path.
+    #[allow(clippy::too_many_arguments)]
     fn read_saved_input(
         &self,
         output: shell_contract::ipc::SavedPublication,
@@ -880,6 +898,7 @@ pub trait TabHooks {
         cancel: shell_contract::runtime::CancelToken,
         then: Then<bool>,
     );
+    #[allow(clippy::too_many_arguments)]
     fn docs_query_dirty_captured_many(
         &self,
         view: ViewId,
@@ -890,6 +909,7 @@ pub trait TabHooks {
         pending: shell_contract::runtime::CancelToken,
         then: Then<bool>,
     );
+    #[allow(clippy::too_many_arguments)]
     fn docs_request_close_captured_many(
         &self,
         view: ViewId,
@@ -970,6 +990,7 @@ pub trait TabHooks {
     /// documents, refresh the document link menu, push the HWP recovery
     /// titles, note the live session
     fn tabs_changed(&self, changed: &TabsChanged);
+    #[allow(clippy::too_many_arguments)]
     fn prepare_saved_publication_owned(
         &self,
         origin: shell_contract::ipc::NativeRequestOwner,
@@ -1025,6 +1046,16 @@ pub trait TabHooks {
     // ---- documents the shell routes by extension ----
     /// `driveService?.reopen(path)`: `true` when Drive took the reopen
     fn drive_reopen(&self, path: &str) -> bool;
+    /// `routeDocumentPath` as a native `OpenFile` command: `done` runs once on the core thread
+    /// with `Ok(true)` when a tab opened or was focused, `Ok(false)` when nothing did
+    fn route_path_native(&self, path: String, done: Box<dyn FnOnce(Result<bool, String>)>);
+    /// Mints the root native operation of `command` (a menu or OS entry point has no renderer
+    /// owner); `cancel` must outlive the operation
+    fn issue_native_command(
+        &self,
+        command: shell_contract::ipc::NativeEditorCommand,
+        cancel: shell_contract::runtime::CancelToken,
+    ) -> Result<shell_contract::ipc::NativeInvocationOperation, String>;
     fn record_recent_file(&self, path: &str);
     fn record_recent_file_native(
         &self,
@@ -1044,6 +1075,7 @@ pub trait TabHooks {
     );
     /// `showAppWarning(message, detail?)`
     fn show_app_warning(&self, message: &str, detail: Option<&str>);
+    #[allow(clippy::too_many_arguments)]
     fn show_app_warning_owned(
         &self,
         message: String,
@@ -1062,9 +1094,6 @@ pub trait TabHooks {
         expected: shell_contract::ipc::NativeEditorCommand,
         done: Box<dyn FnOnce(Result<(), String>)>,
     );
-    /// `openDiagramChecked`'s refusal check of a diagram file; `Some(message)`
-    /// refuses it with this warning, `None` lets it open
-    fn diagram_open_refusal(&self, path: &str, then: Box<dyn FnOnce(Option<String>)>);
     fn diagram_open_refusal_owned(
         &self,
         path: String,

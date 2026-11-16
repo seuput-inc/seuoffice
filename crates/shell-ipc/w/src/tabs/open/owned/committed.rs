@@ -122,6 +122,7 @@ impl TabsState {
     /// Continue an actual committed publication. Drive and retained-object I/O
     /// happen off core; neither a selected path nor a successful save alone
     /// grants a new editor authority.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare_committed_output_owned(
         &self,
         output: SavedPublication,
@@ -151,16 +152,14 @@ impl TabsState {
             return Err("The written input does not belong to the committed output".into());
         }
         let extra: Vec<_> = additional.iter().collect();
-        if let Err(error) = output.with_effect(
+        output.with_effect(
             effects.as_ref(),
             &participants,
             &cancel,
             &pending,
             &extra,
             &mut || Ok(()),
-        ) {
-            return Err(error);
-        }
+        )?;
         let shell = self
             .shell_window()
             .ok_or("The shell window is unavailable")?;
@@ -168,16 +167,10 @@ impl TabsState {
             Some(generation) => generation,
             None => return Err("The shell renderer is unavailable".into()),
         };
-        let shell_owner = match effects.capture_owner(shell.view, &generation) {
-            Ok(owner) => owner,
-            Err(error) => return Err(error),
-        };
-        let captured_shell = match self.hooks.capture_saved_shell(shell, shell_owner.clone()) {
-            Ok(captured) => captured,
-            Err(error) => return Err(error),
-        };
+        let shell_owner = effects.capture_owner(shell.view, &generation)?;
+        let captured_shell = self.hooks.capture_saved_shell(shell, shell_owner.clone())?;
         participants.push(shell_owner.clone());
-        let prompt = match self.hooks.capture_generated_retry_prompt(
+        let prompt = self.hooks.capture_generated_retry_prompt(
             shell,
             shell_owner.clone(),
             output.clone(),
@@ -185,10 +178,7 @@ impl TabsState {
             cancel.clone(),
             pending.clone(),
             additional.clone(),
-        ) {
-            Ok(prompt) => prompt,
-            Err(error) => return Err(error),
-        };
+        )?;
         let retained_id = NEXT_RETAINED_OUTPUT
             .try_update(
                 std::sync::atomic::Ordering::Relaxed,
@@ -198,10 +188,7 @@ impl TabsState {
             .map_err(|_| "The generated cleanup identity is unavailable")?;
         let operation = super::pending_output::PendingHandle::new(wake);
         let task: Arc<dyn GeneratedPathPending> = Arc::new(operation.clone());
-        let registration = match self.hooks.register_generated_path_task(task.clone()) {
-            Ok(registration) => registration,
-            Err(error) => return Err(error),
-        };
+        let registration = self.hooks.register_generated_path_task(task.clone())?;
         operation.install_registration(registration)?;
         let mut additional = additional;
         additional.push(operation.cancellation());
@@ -234,7 +221,7 @@ impl TabsState {
             let next_cancel = cancel.clone();
             let next_pending = pending.clone();
             let next_additional = additional.clone();
-            let mut completion = ReopenCompletion {
+            let completion = ReopenCompletion {
                 pending: true,
                 operation: operation.clone(),
             };

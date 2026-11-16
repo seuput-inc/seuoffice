@@ -41,14 +41,24 @@ impl NativeRenameScope {
         })?;
         output.ok_or_else(|| "native rename effect was not admitted".into())
     }
-    fn admit_file(&self, effect: &mut dyn FnMut()) -> Result<(), main_core::node_fs::NodeError> {
+    fn admit_file(
+        &self,
+        effect: &mut dyn FnMut() -> Result<(), main_core::node_fs::NodeError>,
+    ) -> Result<(), main_core::node_fs::NodeError> {
+        let mut result = None;
         self.admit(&mut || {
-            effect();
+            result = Some(effect());
             Ok(())
         })
         .map_err(|message| main_core::node_fs::NodeError {
             code: None,
             message,
+        })?;
+        result.unwrap_or_else(|| {
+            Err(main_core::node_fs::NodeError {
+                code: None,
+                message: "native rename effect was not admitted".into(),
+            })
         })
     }
     pub(crate) fn emit(&self, channel: &str, args: Vec<IpcValue>) -> Result<(), String> {

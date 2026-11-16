@@ -552,9 +552,24 @@ impl WindowsHost for Unbuilt {
     fn watch_page_load(&self, _: ViewId, _: u64) {
         unbuilt("WindowsHost::watch_page_load");
     }
-    fn create_help_view(&self) -> ViewId {
+    fn create_help_view(&self, done: Box<dyn FnOnce(shell_ipc_w::tabs::host::ViewCreationResult<ViewId>)>) {
         unbuilt("WindowsHost::create_help_view");
-        panic!("WindowsHost::create_help_view is not built yet")
+        done(Err(shell_ipc_w::tabs::host::ViewCreationFailure {
+            error: TabError("Help view construction is unavailable in Unbuilt".into()),
+            cleanup: shell_ipc_w::tabs::host::ViewCreationCleanupState::Complete,
+        }));
+    }
+    fn create_help_native_command(
+        &self, _: shell_contract::ipc::NativeInvocationOperation,
+        _: Vec<shell_contract::ipc::NativeRequestOwner>, _: shell_contract::runtime::CancelToken,
+        _: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(shell_ipc_w::tabs::host::ViewCreationResult<shell_contract::ipc::NativeInvocationDocument>)>,
+    ) {
+        unbuilt("WindowsHost::create_help_native_command");
+        done(Err(shell_ipc_w::tabs::host::ViewCreationFailure {
+            error: TabError("Native help construction is unavailable in Unbuilt".into()),
+            cleanup: shell_ipc_w::tabs::host::ViewCreationCleanupState::Complete,
+        }));
     }
     fn cursor_point(&self) -> (f64, f64) {
         unbuilt("WindowsHost::cursor_point");
@@ -1002,6 +1017,16 @@ impl TabHooks for Unbuilt {
         unbuilt("TabHooks::drive_reopen");
         false
     }
+    fn route_path_native(&self, _: String, done: Box<dyn FnOnce(Result<bool, String>)>) {
+        unbuilt("TabHooks::route_path_native");
+        done(Err("Document routing is unavailable in Unbuilt".into()));
+    }
+    fn issue_native_command(
+        &self, _: shell_contract::ipc::NativeEditorCommand, _: shell_contract::runtime::CancelToken,
+    ) -> Result<shell_contract::ipc::NativeInvocationOperation, String> {
+        unbuilt("TabHooks::issue_native_command");
+        Err("Native commands are unavailable in Unbuilt".into())
+    }
     fn record_recent_file(&self, _: &str) {
         unbuilt("TabHooks::record_recent_file");
     }
@@ -1028,10 +1053,6 @@ impl TabHooks for Unbuilt {
         &self, _: String, _: Option<String>, _: shell_contract::ipc::NativeInvocationOperation,
         _: shell_contract::ipc::NativeEditorCommand, done: Box<dyn FnOnce(Result<(), String>)>,
     ) { done(Err("Native warning is unavailable in Unbuilt".into())); }
-    fn diagram_open_refusal(&self, _: &str, then: Box<dyn FnOnce(Option<String>)>) {
-        unbuilt("TabHooks::diagram_open_refusal");
-        then(None);
-    }
     fn diagram_open_refusal_owned(
         &self, _: String, _: shell_contract::ipc::NativeRequestOwner,
         _: Vec<shell_contract::ipc::NativeRequestOwner>, _: shell_contract::runtime::CancelToken,

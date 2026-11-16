@@ -996,6 +996,7 @@ impl Editor {
             .services
             .hosts
             .get::<OwnedEffectsHost>()
+            .cloned()
             .ok_or("PDF owned effects unavailable")?;
         let renderer = self
             .services

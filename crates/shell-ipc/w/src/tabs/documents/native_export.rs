@@ -6,6 +6,7 @@ use shell_contract::ipc::NativeRequestOwner;
 use shell_contract::runtime::CancelToken;
 
 impl TabsState {
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare_generated_output(
         &self,
         output: shell_contract::ipc::SavedPublication,
@@ -68,6 +69,7 @@ impl TabsState {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn reveal_publication(
         &self,
         output: shell_contract::ipc::SavedPublication,

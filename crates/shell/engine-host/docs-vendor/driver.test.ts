@@ -1,11 +1,11 @@
 import { expect, it, vi } from 'vitest'
-import { CefHtmlDriver } from './driver'
+import { HtmlPageDriver } from './driver'
 
 it('forwards viewport, serialized evaluation, and screenshot options to its own page', async () => {
   const call = vi.fn(async (operation: string, _input: unknown) =>
     operation === 'html.screenshot' ? 'AQI=' : 7,
   )
-  const driver = new CefHtmlDriver(call)
+  const driver = new HtmlPageDriver(call)
   await driver.setViewport({ width: 794, height: 1123, deviceScaleFactor: 2 })
   expect(await driver.evaluate((value: number) => value + 1, 6)).toBe(7)
   expect(

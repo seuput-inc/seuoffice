@@ -46,6 +46,17 @@ impl DocumentEditors for DocsEditors {
             .map(|(prepared, _lease)| prepared)
     }
 
+    fn load_saved_document(
+        &self,
+        document: shell_contract::ipc::NativeSavedDocument,
+        then: Then<shell_contract::editors::SavedDocumentLoadOutcome>,
+    ) {
+        let view = document.target().view();
+        if let Ok(true) = super::saved_load::queue_document(&self.0, document, then) {
+            super::saved_load::start(&self.0, view);
+        }
+    }
+
     fn owns(&self, view: ViewId) -> bool {
         self.0
             .services

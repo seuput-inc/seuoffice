@@ -8,8 +8,7 @@ use shell_contract::{ipc::NativeRequestOwner, runtime::{CancelToken, Thread}};
 use shell_contract::Surface;
 use tauri::http::{self, StatusCode};
 use tauri::{AppHandle, UriSchemeResponder};
-use tauri_runtime_cef::{NativeSchemeCancelSubscription, NativeSchemeResponseTarget, SchemeRequestProvenance};
-
+use crate::native::{RequestCancelSubscription, ResponseGate, SchemeRequestContext};
 use crate::views::{DocsMediaAuthorization, NativeAssetAuthorization, SlidesMediaAuthorization, ViewTable};
 use super::document_assets::{self, AssetKind, AssetPermit, TargetPermit};
 
@@ -41,14 +40,14 @@ fn failed(reply: &Reply) {
 
 struct Request {
     label: String,
-    provenance: SchemeRequestProvenance,
+    context: SchemeRequestContext,
     uri: String,
     accept: Option<String>,
     range: Option<String>,
     reply: Reply,
-    response: NativeSchemeResponseTarget,
+    response: ResponseGate,
     cancel: CancelToken,
-    _cancellation: NativeSchemeCancelSubscription,
+    _cancellation: RequestCancelSubscription,
 }
 
 
@@ -150,7 +149,7 @@ fn deliver(request: Request, auth: Authorization, owner: Option<NativeRequestOwn
         }
     }
     match accepted {
-        Some(Ok(answer)) => { let _ = answer.finish(); }
+        Some(Ok(answer)) => { let _ = answer.submit(); }
         Some(Err(rejected)) => {
             *request.reply.lock().unwrap_or_else(|error| error.into_inner()) = Some(rejected.into_responder());
             denied(&request.reply);
@@ -171,30 +170,30 @@ pub fn handle(
     views: Arc<ViewTable>,
     core: Arc<dyn Thread>,
     label: String,
+    context: SchemeRequestContext,
     request: http::Request<Vec<u8>>,
     responder: UriSchemeResponder,
 ) {
     let reply = Arc::new(Mutex::new(Some(responder)));
-    let Some(provenance) = request.extensions().get::<SchemeRequestProvenance>().cloned() else { denied(&reply); return; };
-    let Some(response) = request.extensions().get::<NativeSchemeResponseTarget>().cloned() else { denied(&reply); return; };
+    let response = context.response_gate();
     let cancel = CancelToken::default();
     let cancelled = cancel.clone();
-    let cancellation = match response.on_cancel(move || cancelled.cancel()) {
+    let cancellation = match context.on_cancel(move || cancelled.cancel()) {
         Ok(subscription) => subscription, Err(_) => { denied(&reply); return; }
     };
     let request = Request {
-        label, provenance, response, cancel, _cancellation: cancellation, uri: request.uri().to_string(),
+        label, context, response, cancel, _cancellation: cancellation, uri: request.uri().to_string(),
         accept: request.headers().get(http::header::ACCEPT).and_then(|v| v.to_str().ok()).map(str::to_owned),
         range: request.headers().get(http::header::RANGE).and_then(|v| v.to_str().ok()).map(str::to_owned),
         reply,
     };
     if matches!(scheme, Scheme::Html | Scheme::Markdown) {
-        let target = match document_assets::is_target_browser(&request.provenance) {
+        let target = match document_assets::is_target_browser(&request.context) {
             Ok(target) => target,
             Err(_) => { denied(&request.reply); return; }
         };
         if target {
-            let permit = match document_assets::authorize_target(&request.uri, &request.provenance) {
+            let permit = match document_assets::authorize_target(&request.uri, &request.context) {
                 Ok(Some(permit)) => permit,
                 Ok(None) => { denied(&request.reply); return; }
                 Err(_) => { failed(&request.reply); return; }
@@ -203,7 +202,7 @@ pub fn handle(
             return;
         }
     }
-    let Some(origin) = request.provenance.native_document_owner().cloned() else { denied(&request.reply); return; };
+    let Some(origin) = request.context.current_document_context() else { denied(&request.reply); return; };
         core.post(Box::new(move || {
             let failure = request.reply.clone();
             let ran = super::w::on_core_local(move |provided| {
@@ -218,7 +217,7 @@ pub fn handle(
                 }
                 let browser_owner = captured.browser_owner;
                 let auth = match scheme {
-                    Scheme::Docx => views.authorize_docs_media(&request.label, &request.provenance)
+                    Scheme::Docx => views.authorize_docs_media(&request.label, &request.context)
                         .filter(|auth| auth.view == sender.view)
                         .and_then(|auth| provided.all::<shell_ipc_d2::docs::editors::DocsEditors>().into_iter().next()
                             .and_then(|editor| editor.media_permit(auth.view))
@@ -236,7 +235,7 @@ pub fn handle(
                             let owner = crate::ipc::native_owner::asset_owner_with_browser(auth.view, origin.clone(), auth.clone(), asset_renderer, browser_owner.clone())?;
                             document_assets::authorize(auth.view, kind).ok().flatten().map(|permit| (Authorization::Asset(auth, permit), owner))
                         }),
-                    Scheme::Slides => views.authorize_slides_media(&request.label, &request.provenance)
+                    Scheme::Slides => views.authorize_slides_media(&request.label, &request.context)
                         .filter(|auth| auth.view == sender.view)
                         .and_then(|auth| crate::ipc::native_owner::owner_with_browser(auth.view, origin.clone(), renderer.clone(), auth.lease(), browser_owner.clone())
                             .map(|owner| (Authorization::Slides(auth), owner))),

@@ -243,19 +243,18 @@ impl Projects {
                     Ok(seed) => seed,
                     Err(error) => return projects.fail_chat_io(token, completion, error.message()),
                 };
-                if let ChatOperation::Delete { chat_ref } = &operation {
-                    if let Err(error) = seed.capture_chat_trash(&chat_ref.chat_id) {
-                        return projects.fail_chat_io(token, completion, error.message());
-                    }
+                if let ChatOperation::Delete { chat_ref } = &operation
+                    && let Err(error) = seed.capture_chat_trash(&chat_ref.chat_id)
+                {
+                    return projects.fail_chat_io(token, completion, error.message());
                 }
                 let authority = seed.authority();
                 let io = projects.chat_owner_core(token, || {
-                    if let ChatFinish::Append(owner) = &finish {
-                        if !projects
+                    if let ChatFinish::Append(owner) = &finish
+                        && !projects
                             .serve(|ipc, deps| ipc.chat_append_io_owner_current(deps, owner))?
-                        {
-                            return Err(Thrown("append owner changed".into()));
-                        }
+                    {
+                        return Err(Thrown("append owner changed".into()));
                     }
                     projects
                         .with_chat_store(|chats| chats.take_io(operation))

@@ -77,6 +77,7 @@ impl ConditionalPairCleanup {
 
     /// Worker entry using an owned native admission. The returned value retains
     /// every unfinished entry even when the admission fails after an effect.
+    #[allow(clippy::type_complexity)]
     pub fn step_owned(
         mut self,
         admit: &super::super::atomic_write::owned::Admission,
@@ -110,7 +111,10 @@ impl ConditionalPairCleanup {
                 Err(problem) => return Err(Box::new((problem, self))),
                 Ok(Ok(_)) => {
                     self.phase = Phase::RollbackCopy;
-                    return Err(Box::new((error("the recovery metadata was replaced"), self)));
+                    return Err(Box::new((
+                        error("the recovery metadata was replaced"),
+                        self,
+                    )));
                 }
                 Ok(Err(problem)) if problem.kind() == std::io::ErrorKind::NotFound => {
                     self.phase = Phase::DeleteCopy;
@@ -142,7 +146,10 @@ impl ConditionalPairCleanup {
             Ok(()) => match state.1.take() {
                 Some(Ok(outcome)) => Ok((cleanup, outcome)),
                 Some(Err(problem)) => Err(Box::new((problem, cleanup))),
-                None => Err(Box::new((error("recovery cleanup was not admitted"), cleanup))),
+                None => Err(Box::new((
+                    error("recovery cleanup was not admitted"),
+                    cleanup,
+                ))),
             },
         }
     }

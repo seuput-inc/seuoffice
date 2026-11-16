@@ -5,7 +5,7 @@ use main_core::packages::electron_utils::headless_export::HeadlessExportRequest;
 use main_core::shell::headless_export::HeadlessExportProduct;
 use shell_contract::{Surface, ViewId, WindowId, ipc::{NativeInvocationOperation, NativeInvocationSelection, NativeInvocationTarget}, provided::Provided, runtime::{CancelSubscription, RendererGeneration, Views}};
 use shell_ipc_d2::{html::HtmlEditors, markdown::MarkdownEditors};
-use tauri_runtime_cef::{FrameEventKind, NativeBrowserCloseSubscription, NativeContextToken, WebviewCefExt};
+use crate::native::{BrowserCloseSubscription, BrowserId, DocumentContext, NativeEvent, NativeEventKind, WebviewExt};
 
 use crate::host::{HostContext, window::{Bridge, ViewSpec, WindowOptions, WindowSpec}};
 
@@ -69,9 +69,9 @@ struct Export {
     created: OnceLock<Created>,
     creation_finished: AtomicBool,
     loading: AtomicBool,
-    browser: OnceLock<i32>,
-    registered: Mutex<Option<NativeContextToken>>,
-    closing: Mutex<Option<NativeBrowserCloseSubscription>>,
+    browser: OnceLock<BrowserId>,
+    registered: Mutex<Option<DocumentContext>>,
+    closing: Mutex<Option<BrowserCloseSubscription>>,
     closed: AtomicBool,
     settled: AtomicBool,
     result: Mutex<Option<Result<(), String>>>,
@@ -98,8 +98,8 @@ impl Export {
                 .and_then(|target| {
                     let document = target.registered_document()?;
                     let registered = self.registered.lock().unwrap_or_else(|error| error.into_inner()).clone();
-                    if !registered.as_ref().is_some_and(|origin| origin.is_verified() && origin.is_live()
-                        && self.browser.get() == Some(&origin.browser_id())) {
+                    if !registered.as_ref().is_some_and(|origin| origin.is_registered() && origin.is_live()
+                        && self.browser.get() == Some(&origin.browser().id())) {
                         return Err(format!("the {} exporter has no matching registered native document", self.kind.app()));
                     }
                     crate::ipc::native_owner::with_native_invocation_effect(
@@ -194,14 +194,14 @@ pub(super) fn export_text(cx: &HostContext, input: &str, out: &str, format: &str
         let ui = cx.ui.clone();
         ui.post(Box::new(move || {
             let frame_job = job.clone();
-            let on_frame = Arc::new(move |view: ViewId, event: &tauri_runtime_cef::FrameEvent| {
+            let on_frame = Arc::new(move |view: ViewId, event: &NativeEvent| {
                 match &event.kind {
-                    FrameEventKind::NativeContextRegistered { origin } if event.is_main && origin.is_verified()
-                        && event.browser_id == origin.browser_id() && event.frame_id == origin.frame_id()
+                    NativeEventKind::DocumentRegistered { context: origin } if origin.is_registered()
+                        && event.browser.is_same_browser(origin.browser())
                         && frame_job.loading.load(Ordering::Acquire) => {
                         let result = (|| {
                             let target = frame_job.target.get().ok_or("the hidden text target was not reserved")?;
-                            if target.view() != view || frame_job.browser.get() != Some(&origin.browser_id()) {
+                            if target.view() != view || frame_job.browser.get() != Some(&origin.browser().id()) {
                                 return Err("the hidden text browser registered an unexpected context".to_owned());
                             }
                             let owner = crate::ipc::native_owner::capture_owner(&frame_job.cx.views, view, target.created())?;
@@ -215,7 +215,7 @@ pub(super) fn export_text(cx: &HostContext, input: &str, out: &str, format: &str
                         })();
                         if let Err(error) = result { frame_job.fail(error); }
                     }
-                    FrameEventKind::RendererTerminated => frame_job.fail(format!("{} renderer stopped (terminated)", kind.app())),
+                    NativeEventKind::WebviewProcessFailed { .. } => frame_job.fail(format!("{} renderer stopped (terminated)", kind.app())),
                     _ => {}
                 }
             });
@@ -301,29 +301,31 @@ pub(super) fn export_text(cx: &HostContext, input: &str, out: &str, format: &str
                     return job.finish(Err(error));
                 }
                 let webview = job.created.get().expect("the created browser was installed").webview.clone();
-                let ready_view = webview.clone();
                 let navigation_job = job.clone();
-                if let Err(error) = webview.when_navigation_ready(move |result| {
-                    if let Err(error) = result { navigation_job.fail(error.to_string()); return; }
+                let browser = match webview.native_browser() {
+                    Ok(browser) => browser,
+                    Err(error) => return job.fail(error),
+                };
+                let ready_id = browser.id();
+                browser.navigator().when_ready(move |result| {
+                    if let Err(error) = result { navigation_job.fail(error); return; }
                     let bind_job = navigation_job.clone();
-                    if let Err(error) = ready_view.with_cef_webview(move |native| {
-                        if bind_job.settled.load(Ordering::Acquire) { return; }
-                        if bind_job.browser.set(native.snapshot().browser_id).is_err() {
-                            bind_job.fail("the hidden text browser identity was bound twice".into()); return;
-                        }
-                        let load_job = bind_job.clone();
-                        bind_job.cx.ui.post(Box::new(move || {
-                            let Some(target) = load_job.target.get() else { return load_job.fail("the hidden text target was not reserved".into()); };
-                            let result = crate::ipc::native_owner::run_native_invocation_created_ui(
-                                load_job.cx.ui.as_ref(), target, || {
-                                    load_job.loading.store(true, Ordering::Release);
-                                    load_job.cx.windows.load_view(view, kind.url())
-                                },
-                            ).and_then(|result| result);
-                            if let Err(error) = result { load_job.fail(error); }
-                        }));
-                    }) { navigation_job.fail(error.to_string()); }
-                }) { job.fail(error.to_string()); }
+                    if bind_job.settled.load(Ordering::Acquire) { return; }
+                    if bind_job.browser.set(ready_id).is_err() {
+                        bind_job.fail("the hidden text browser identity was bound twice".into()); return;
+                    }
+                    let load_job = bind_job.clone();
+                    bind_job.cx.ui.post(Box::new(move || {
+                        let Some(target) = load_job.target.get() else { return load_job.fail("the hidden text target was not reserved".into()); };
+                        let result = crate::ipc::native_owner::run_native_invocation_created_ui(
+                            load_job.cx.ui.as_ref(), target, || {
+                                load_job.loading.store(true, Ordering::Release);
+                                load_job.cx.windows.load_view(view, kind.url())
+                            },
+                        ).and_then(|result| result);
+                        if let Err(error) = result { load_job.fail(error); }
+                    }));
+                });
             }, move || {
                 if unavailable.settled.load(Ordering::Acquire) { unavailable.close_created(); }
                 else { unavailable.finish(Err("headless core services are unavailable".into())); }

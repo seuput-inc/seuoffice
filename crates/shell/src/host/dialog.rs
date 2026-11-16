@@ -38,9 +38,9 @@ pub fn install(hosts: &mut Hosts, cx: &HostContext) {
 
 pub(crate) struct OwnedDialogParent {
     window: Window,
-    permit: tauri_runtime_cef::NativeWindowEffect,
+    permit: crate::native::WindowEffect,
     closing: CancelToken,
-    _closing_subscription: tauri_runtime_cef::NativeWindowClosingSubscription,
+    _closing_subscription: crate::native::WindowClosingSubscription,
 }
 
 impl OwnedDialogParent {

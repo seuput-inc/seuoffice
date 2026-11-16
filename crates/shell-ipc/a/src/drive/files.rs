@@ -360,13 +360,13 @@ pub(super) enum NativeRefresh {
         path: PathBuf,
         entry: CacheEntry,
         generation: Arc<CacheGeneration>,
-        transaction: native_reopen::Transaction,
+        transaction: Box<native_reopen::Transaction>,
         moved_commit: file_commit::FileCommitReceipt,
         fallback: Option<std::fs::File>,
         warning: Option<String>,
     },
     CleanupPending {
-        transaction: native_reopen::Transaction,
+        transaction: Box<native_reopen::Transaction>,
         error: String,
         rollback_error: String,
     },
@@ -492,10 +492,21 @@ impl DriveFiles {
         on_core(&*self.core, move || shell.is_open(&path))
     }
 
-    fn open_path(&self, path: &str) -> bool {
+    /// Blocks the calling worker until the shell's open settles; the core thread stays free.
+    /// `false` when the open failed or the host dropped it unanswered.
+    pub(super) fn open_path(&self, path: &str) -> bool {
         let shell = self.shell.clone();
         let path = path.to_owned();
-        on_core(&*self.core, move || shell.open_path(&path))
+        let (settled, receive) = std::sync::mpsc::sync_channel(1);
+        on_core(&*self.core, move || {
+            shell.open_path(
+                &path,
+                Box::new(move |opened| {
+                    let _ = settled.send(opened);
+                }),
+            )
+        });
+        receive.recv().unwrap_or(false)
     }
 
     // ---- the entries ----
@@ -1005,7 +1016,7 @@ impl DriveFiles {
                 return match rollback {
                     Ok(()) => Err(error),
                     Err(rollback) => Ok(NativeRefresh::CleanupPending {
-                        transaction,
+                        transaction: Box::new(transaction),
                         error,
                         rollback_error: rollback,
                     }),
@@ -1021,7 +1032,7 @@ impl DriveFiles {
             path: destination,
             entry: updated,
             generation: committed_generation,
-            transaction,
+            transaction: Box::new(transaction),
             moved_commit,
             fallback,
             warning,

@@ -3,8 +3,8 @@ use main_core::shell::{generate::generate_window::GenerateWindowOptions, title_b
 
 pub(super) fn configure(
     window: &tauri::Window,
-    handle: &tauri_runtime_cef::NativeWindowHandle,
-    permit: &tauri_runtime_cef::NativeWindowEffect,
+    handle: &crate::native::WindowHandle,
+    permit: &crate::native::WindowEffect,
     options: &GenerateWindowOptions,
 ) -> Result<(), String> {
     handle.with_window(|_| {
@@ -22,17 +22,14 @@ fn configure_live(window: &tauri::Window, options: &GenerateWindowOptions) -> Re
         }
         Ok(())
     }
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(windows)]
     {
         if options.title_bar_style != Some("hidden") { return Err("Generate requires the hidden native caption overlay".into()); }
         let overlay = options.title_bar_overlay.as_ref().ok_or("Generate caption overlay is missing")?;
         let style = style(overlay)?;
-        let native = native_handle(window)?;
-        // SAFETY: GenerateWindows invokes this while its live native window is
-        // borrowed on UI, before first navigation or showing the window.
-        unsafe { tauri_runtime_cef::generate_caption::configure(native, style) }
+        crate::native::platform::windows::caption::configure(native_handle(window)?, style)
     }
-    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = (window, options);
         Err("native Generate caption is unavailable on this platform".into())
@@ -41,8 +38,8 @@ fn configure_live(window: &tauri::Window, options: &GenerateWindowOptions) -> Re
 
 pub(super) fn update(
     window: &tauri::Window,
-    handle: &tauri_runtime_cef::NativeWindowHandle,
-    permit: &tauri_runtime_cef::NativeWindowEffect,
+    handle: &crate::native::WindowHandle,
+    permit: &crate::native::WindowEffect,
     overlay: &TitleBarOverlay,
 ) -> Result<(), String> {
     handle.with_window(|_| {
@@ -52,28 +49,27 @@ pub(super) fn update(
 }
 
 fn update_live(window: &tauri::Window, overlay: &TitleBarOverlay) -> Result<(), String> {
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(windows)]
     {
         let style = style(overlay)?;
-        let native = native_handle(window)?;
-        // SAFETY: the caller owns the same live window on its UI thread.
-        unsafe { tauri_runtime_cef::generate_caption::update(native, style) }
+        crate::native::platform::windows::caption::update(native_handle(window)?, style)
     }
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(not(windows))]
     {
         let _ = (window, overlay);
         Err("this platform does not use a Generate caption overlay".into())
     }
 }
 
-#[cfg(any(windows, target_os = "linux"))]
-fn style(overlay: &TitleBarOverlay) -> Result<tauri_runtime_cef::generate_caption::CaptionStyle, String> {
+#[cfg(windows)]
+fn style(overlay: &TitleBarOverlay) -> Result<crate::native::platform::windows::caption::CaptionStyle, String> {
     if overlay.height.0 != 44.0 { return Err("Generate caption height must be 44 DIP".into()); }
-    Ok(tauri_runtime_cef::generate_caption::CaptionStyle {
+    Ok(crate::native::platform::windows::caption::CaptionStyle {
         background: color(overlay.color)?, symbols: color(overlay.symbol_color)?, height: 44,
     })
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 fn color(value: &str) -> Result<[u8;3], String> {
     let bytes = value.as_bytes();
     if bytes.len() != 7 || bytes[0] != b'#' { return Err("invalid Generate caption color".into()); }
@@ -86,12 +82,6 @@ fn color(value: &str) -> Result<[u8;3], String> {
 #[cfg(windows)]
 fn native_handle(window: &tauri::Window) -> Result<usize,String> {
     window.hwnd().map(|handle| handle.0 as usize).map_err(|error| error.to_string())
-}
-
-#[cfg(target_os = "linux")]
-fn native_handle(window: &tauri::Window) -> Result<usize,String> {
-    use gtk4::prelude::*;
-    window.gtk_window().map(|window| window.as_ptr() as usize).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

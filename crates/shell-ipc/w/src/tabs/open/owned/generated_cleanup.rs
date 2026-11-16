@@ -527,7 +527,7 @@ enum HydratedSurvivor {
         owner: shell_contract::ipc::NativeRequestOwner,
         generation: shell_contract::runtime::RendererGeneration,
     },
-    Pending(super::AdoptedSurvivorPending),
+    Pending(Box<super::AdoptedSurvivorPending>),
     Failed(String),
 }
 
@@ -569,10 +569,12 @@ pub(super) struct GeneratedCleanupCoordinator {
     retry: std::cell::RefCell<Option<crate::tabs::host::GeneratedPrecloseRetry>>,
     rollback_done: std::cell::Cell<bool>,
     phase: std::cell::RefCell<RemovalPhase>,
+    #[allow(clippy::type_complexity)]
     waiter: std::cell::RefCell<Option<Box<dyn FnOnce(Result<(), String>)>>>,
 }
 
 impl GeneratedCleanupCoordinator {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn prepare(
         state: std::rc::Rc<TabsState>,
         authority: GeneratedCleanupAuthority,
@@ -584,7 +586,10 @@ impl GeneratedCleanupCoordinator {
         tab_id: std::rc::Rc<std::cell::RefCell<Option<String>>>,
         spare: bool,
         installer: crate::tabs::host::GeneratedPrecloseInstaller,
-    ) -> Result<(std::rc::Rc<Self>, ViewCreationCleanup), (GeneratedCleanupAuthority, String)> {
+    ) -> Result<
+        (std::rc::Rc<Self>, ViewCreationCleanup),
+        (Box<GeneratedCleanupAuthority>, String),
+    > {
         if authority.operation != operation
             || !authority.reservation.same_reservation(&binding.reservation)
             || !authority.browser.same_owner(&binding.owner)
@@ -597,7 +602,7 @@ impl GeneratedCleanupCoordinator {
                 .matches(view, authority.reservation.created())
         {
             return Err((
-                authority,
+                Box::new(authority),
                 "The generated cleanup operation or reservation changed".into(),
             ));
         }
@@ -643,7 +648,7 @@ impl GeneratedCleanupCoordinator {
                     .borrow_mut()
                     .take()
                     .expect("preclose authority");
-                return Err((authority, error));
+                return Err((Box::new(authority), error));
             }
         };
         match installer(barrier, failure) {
@@ -659,7 +664,7 @@ impl GeneratedCleanupCoordinator {
                     .borrow_mut()
                     .take()
                     .expect("preclose authority");
-                Err((authority, error))
+                Err((Box::new(authority), error))
             }
         }
     }
@@ -709,6 +714,7 @@ impl GeneratedCleanupCoordinator {
         self.registration.borrow_mut().take();
     }
 
+    #[allow(clippy::type_complexity)]
     pub(super) fn rollback_action(
         self: &std::rc::Rc<Self>,
     ) -> std::rc::Rc<dyn Fn(Option<NativeBrowserRetirement>, Box<dyn FnOnce(Result<(), String>)>)>
@@ -717,6 +723,7 @@ impl GeneratedCleanupCoordinator {
         std::rc::Rc::new(move |proof, done| coordinator.clone().rollback(proof, done))
     }
 
+    #[allow(clippy::type_complexity)]
     pub(super) fn failed_lifetime_rollback(
         self: &std::rc::Rc<Self>,
         failure: Option<super::AdoptedLifetimeFailure>,

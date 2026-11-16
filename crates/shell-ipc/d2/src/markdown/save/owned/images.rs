@@ -285,14 +285,33 @@ impl Md {
                 if me.e.docs.is_headless() {
                     return done(saved_at(&dir));
                 }
-                me.shell.export_written_owned(
-                    owner.origin().clone(),
+                let first = std::path::PathBuf::from(finished.first);
+                let shell = me.shell.clone();
+                let os = me.os.clone();
+                let (destination, cancel, pending, effects) = (
                     owner.destination().clone(),
                     owner.cancel(),
                     owner.pending(),
                     owner.effects().clone(),
-                    finished.first.into(),
-                    "reveal",
+                );
+                let revealed = first.clone();
+                owner.export_written(
+                    move |origin, then| {
+                        shell.export_written_owned(
+                            origin,
+                            destination,
+                            cancel,
+                            pending,
+                            effects,
+                            first,
+                            "reveal",
+                            then,
+                        )
+                    },
+                    &mut || {
+                        os.show_item_in_folder(&revealed);
+                        Ok(())
+                    },
                     Box::new(move |revealed| {
                         done(match revealed {
                             Err(error) => failure(error),

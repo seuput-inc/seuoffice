@@ -18,6 +18,7 @@ mod attachments;
 pub mod hosts;
 mod owned;
 mod recovery;
+mod saved_open;
 mod session;
 #[cfg(test)]
 mod tests;
@@ -74,6 +75,7 @@ use hosts::{
 use session::{Session, failure, object, safe_integer};
 
 use crate::kit::{self, Args, Entry, IntoIpc, Timer, field, from_json, to_js_json, to_json};
+use crate::saved_slots;
 
 const BOOK_EXTENSION: &str = ".epub";
 /// `saveWaiters` and `closeSaveWaiters`: how long the renderer may take
@@ -195,6 +197,8 @@ struct Epub {
     state: RefCell<State>,
     /// `dialog-memory`'s last folder: the shell's one
     dialog_memory: Arc<Mutex<DialogMemory>>,
+    /// the committed outputs opened as these views' first books
+    saved: saved_slots::SavedSlots<Epub>,
     /// `wc.once('destroyed', () => forgetView(wcId))`
     _destroyed: Rc<dyn Fn(ViewId)>,
 }
@@ -225,6 +229,7 @@ pub(crate) fn entries(
             os,
             state: RefCell::default(),
             dialog_memory,
+            saved: saved_slots::SavedSlots::default(),
         }
     });
     // the concrete type too: the calls that are not `DocumentEditors`
@@ -237,20 +242,46 @@ pub(crate) fn entries(
     Ok(vec![
         {
             let epub = e.clone();
-            kit::invoke("epub:consume-pending", move |cx, _| {
+            kit::invoke_later("epub:consume-pending", move |cx, _, reply| {
+                let reply = match saved_slots::dispatch(
+                    &epub,
+                    cx,
+                    saved_open::Kind::Pending,
+                    reply,
+                ) {
+                    Ok(()) => return,
+                    Err(reply) => reply,
+                };
                 epub.track(cx);
-                epub.consume_recovery(cx)
+                reply.reply(epub.consume_recovery(cx))
             })
         },
         {
             let epub = e.clone();
             kit::invoke("epub:recovery-initialized", move |cx, args| {
+                let ok = matches!(args.get(1), IpcValue::Bool(true));
+                if let Some(token) = args.str(0)
+                    && saved_slots::initialized(
+                        &epub,
+                        cx,
+                        token,
+                        ok,
+                        args.str(2).unwrap_or("The EPUB could not be opened"),
+                    )?
+                {
+                    return Ok(IpcValue::Null);
+                }
                 epub.recovery_initialized(cx, args)
             })
         },
         {
             let epub = e.clone();
             kit::invoke_later("epub:open-file", move |cx, args, reply| {
+                let requested = saved_open::Kind::Open(args.str(0).unwrap_or_default().to_owned());
+                let reply = match saved_slots::dispatch(&epub, cx, requested, reply) {
+                    Ok(()) => return,
+                    Err(reply) => reply,
+                };
                 let view = epub.track(cx);
                 match epub.recovery_use(cx) {
                     Ok(scope) => epub.open_file(view, args, reply, scope),
@@ -962,6 +993,7 @@ impl Epub {
 
     /// `forgetView(wcId)`: the view's state goes, its waiters answer `false`
     fn forget_view(&self, view: ViewId) {
+        self.saved.release_view(view);
         let gone = self.state.borrow_mut().views.remove(&view);
         let Some(gone) = gone else { return };
         if let Some(pending) = &gone.recovery {
@@ -2482,34 +2514,24 @@ impl DocumentEditors for EpubEditors {
     fn capture_document_owner(
         &self,
         view: ViewId,
-        mut native: shell_contract::ipc::NativeRequestOwner,
+        native: shell_contract::ipc::NativeRequestOwner,
     ) -> Result<shell_contract::ipc::NativeRequestOwner, IpcError> {
-        let document = self
-            .0
-            .view(view, |entry| entry.document.clone())
-            .flatten()
-            .ok_or_else(|| kit::error("The book document is unavailable"))?;
-        if native.view != view || !document.is_active() {
-            return Err(kit::error("The book document was released"));
-        }
-        if !native
-            .context
-            .renderer()
-            .zip(self.0.services.views.renderer_generation(view).as_ref())
-            .is_some_and(|(expected, current)| {
-                expected.is_active() && expected.same_generation(current)
-            })
-            || !native.loss_token().is_some_and(|loss| !loss.is_cancelled())
-        {
-            return Err(kit::error("The book renderer was replaced"));
-        }
-        if let Some(expected) = native.context.document_lease() {
-            if !expected.same_generation(&document) {
-                return Err(kit::error("The book document was replaced"));
-            }
-        }
-        native.context = native.context.with_document_lease(document);
-        Ok(native)
+        self.0.capture_document_owner(view, native)
+    }
+
+    fn prepare_saved_document(
+        &self,
+        target: shell_contract::ipc::NativeSavedTarget,
+    ) -> Result<Box<dyn shell_contract::editors::PreparedSavedDocument>, IpcError> {
+        saved_slots::prepare(&self.0, target)
+    }
+
+    fn load_saved_document(
+        &self,
+        document: shell_contract::ipc::NativeSavedDocument,
+        then: shell_contract::editors::Then<shell_contract::editors::SavedDocumentLoadOutcome>,
+    ) {
+        saved_slots::load(&self.0, document, then, saved_open::install);
     }
 
     /// The EPUB editor has no export menu (`epub-main.ts` exports no

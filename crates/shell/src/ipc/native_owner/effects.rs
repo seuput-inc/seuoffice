@@ -39,7 +39,7 @@ pub(crate) fn with_paired_effect<R>(
 
 pub(crate) fn with_service_pair_effect<R>(
     origin: &NativeRequestOwner, destination: &NativeRequestOwner,
-    service: &tauri_runtime_cef::NativeContextToken, service_generation: &RendererGeneration,
+    service: &crate::native::DocumentContext, service_generation: &RendererGeneration,
     cancel: &CancelToken, pending: &CancelToken, effect: impl FnOnce() -> R,
 ) -> Option<R> {
     with_optional_service(origin, destination, Some(service), Some(service_generation), cancel, pending, effect)
@@ -47,7 +47,7 @@ pub(crate) fn with_service_pair_effect<R>(
 
 fn with_optional_service<R>(
     origin: &NativeRequestOwner, destination: &NativeRequestOwner,
-    service: Option<&tauri_runtime_cef::NativeContextToken>, service_generation: Option<&RendererGeneration>,
+    service: Option<&crate::native::DocumentContext>, service_generation: Option<&RendererGeneration>,
     cancel: &CancelToken, pending: &CancelToken, effect: impl FnOnce() -> R,
 ) -> Option<R> {
     with_optional_service_transition(origin, destination, service, service_generation, cancel, pending, |_| effect())
@@ -81,7 +81,7 @@ impl Drop for DeferredDocumentRetirements {
 
 fn with_optional_service_transition<R>(
     origin: &NativeRequestOwner, destination: &NativeRequestOwner,
-    service: Option<&tauri_runtime_cef::NativeContextToken>, service_generation: Option<&RendererGeneration>,
+    service: Option<&crate::native::DocumentContext>, service_generation: Option<&RendererGeneration>,
     cancel: &CancelToken, pending: &CancelToken,
     effect: impl FnOnce(&mut shell_contract::runtime::AdmittedDocumentRetirement<'_>) -> R,
 ) -> Option<R> {
@@ -114,7 +114,7 @@ fn with_optional_service_transition<R>(
             Some(cancel), Some(pending), Some(&source_loss), Some(&target_loss),
         ], || effect(retirement))).flatten()
     }).flatten()).flatten()).flatten();
-    tauri_runtime_cef::NativeContextToken::with_live_all([Some(&source.origin), Some(&target.origin), service], || match (source_asset, target_asset) {
+    crate::native::DocumentContext::with_live_all([Some(&source.origin), Some(&target.origin), service], || match (source_asset, target_asset) {
         (Some(source), Some(target)) => source.with_lease_live_pair_fenced(target, commit),
         (Some(asset), None) | (None, Some(asset)) => asset.with_lease_live_fenced(commit),
         (None, None) => Some(commit()),
@@ -140,7 +140,7 @@ pub(crate) fn with_many_owner_effect_extra<R>(
 
 pub(super) fn with_many_owner_generations_transition<R>(
     origin: &NativeRequestOwner, destinations: &[NativeRequestOwner],
-    service: Option<&tauri_runtime_cef::NativeContextToken>,
+    service: Option<&crate::native::DocumentContext>,
     additional_generations: &[&RendererGeneration], additional_cancellation: &[&CancelToken],
     cancel: &CancelToken, pending: &CancelToken,
     effect: impl FnOnce(&mut shell_contract::runtime::AdmittedDocumentRetirement<'_>) -> R,
@@ -151,14 +151,14 @@ pub(super) fn with_many_owner_generations_transition<R>(
 
 pub(crate) fn with_service_many_effect<R>(
     origin: &NativeRequestOwner, participants: &[NativeRequestOwner],
-    service: &tauri_runtime_cef::NativeContextToken, generation: &RendererGeneration,
+    service: &crate::native::DocumentContext, generation: &RendererGeneration,
     cancel: &CancelToken, pending: &CancelToken, effect: impl FnOnce() -> R,
 ) -> Option<R> {
     with_many_owner_generations_transition(origin, participants, Some(service), &[generation], &[], cancel, pending, |_| effect())
 }
 
 pub(super) struct PreparedOwnerTransition<'a> {
-    native: Option<tauri_runtime_cef::NativeContextGatePlan<'a>>,
+    native: Option<crate::native::DocumentGatePlan<'a>>,
     assets: Option<crate::views::AssetLeaseGatePlan<'a>>,
     generations: shell_contract::runtime::RendererGenerationGatePlan<'a>,
     retirement: shell_contract::runtime::DocumentRetirementPlan<'a>,
@@ -170,7 +170,7 @@ pub(super) struct PreparedOwnerTransition<'a> {
 
 pub(super) fn prepare_many_owner_generations_transition<'a>(
     origin: &'a NativeRequestOwner, destinations: &'a [NativeRequestOwner],
-    service: Option<&'a tauri_runtime_cef::NativeContextToken>,
+    service: Option<&'a crate::native::DocumentContext>,
     additional_generations: &[&'a RendererGeneration], additional_cancellation: &[&'a CancelToken],
     cancel: &'a CancelToken, pending: &'a CancelToken,
 ) -> Option<PreparedOwnerTransition<'a>> {
@@ -209,7 +209,7 @@ pub(super) fn prepare_many_owner_generations_transition<'a>(
     generations.extend_from_slice(additional_generations);
     let generations = RendererGenerationGatePlan::from_generations(generations);
     let retirement = generations.prepare_retirement(&documents).ok()?;
-    let native = tauri_runtime_cef::NativeContextGatePlan::new(&native_tokens)?;
+    let native = crate::native::DocumentGatePlan::new(&native_tokens)?;
     let assets = AssetLeaseGatePlan::new(&assets)?;
     let slides = SlidesViewLeaseGatePlan::new(&slides);
     let media = MediaPermitGatePlan::new(&media);
@@ -252,7 +252,7 @@ impl PreparedOwnerTransition<'_> {
 
 fn with_many_owner_generations_media_transition<R>(
     origin: &NativeRequestOwner, destinations: &[NativeRequestOwner],
-    service: Option<&tauri_runtime_cef::NativeContextToken>,
+    service: Option<&crate::native::DocumentContext>,
     additional_generations: &[&RendererGeneration], additional_cancellation: &[&CancelToken],
     cancel: &CancelToken, pending: &CancelToken,
     media_retirement: Option<(&MediaPermit, &MediaPermit, &mut main_core::docs::byte_handoff::DeferredMediaLoss)>,
@@ -279,7 +279,7 @@ fn same_registered_origin(target: &shell_contract::ipc::NativeInvocationTarget, 
 fn with_native_invocation_fences<R>(
     target: &shell_contract::ipc::NativeInvocationTarget, owner: &NativeRequestOwner,
     participants: &[NativeRequestOwner],
-    service: Option<&tauri_runtime_cef::NativeContextToken>, service_generation: Option<&RendererGeneration>,
+    service: Option<&crate::native::DocumentContext>, service_generation: Option<&RendererGeneration>,
     print_generation: Option<&RendererGeneration>, actor: Option<&CancelToken>, stop: Option<&CancelToken>,
     cancel: &CancelToken, pending: &CancelToken, effect: impl FnOnce() -> R,
 ) -> Option<R> {
@@ -309,7 +309,7 @@ pub(crate) fn with_native_invocation_many_effect<R>(
 
 pub(crate) fn with_service_native_invocation_effect<R>(
     target: &shell_contract::ipc::NativeInvocationTarget, owner: &NativeRequestOwner,
-    service: &tauri_runtime_cef::NativeContextToken, service_generation: &RendererGeneration,
+    service: &crate::native::DocumentContext, service_generation: &RendererGeneration,
     cancel: &CancelToken, pending: &CancelToken, effect: impl FnOnce() -> R,
 ) -> Option<R> {
     with_native_invocation_fences(target, owner, &[], Some(service), Some(service_generation), None, None, None, cancel, pending, effect)
@@ -573,7 +573,7 @@ pub(crate) fn with_native_save_revision_snapshot<R>(
 
 pub(crate) fn with_existing_document_service_effect<R>(
     binding: &shell_contract::ipc::NativeExistingDocumentBinding, participants: &[NativeRequestOwner],
-    service: &tauri_runtime_cef::NativeContextToken, generation: &RendererGeneration,
+    service: &crate::native::DocumentContext, generation: &RendererGeneration,
     cancel: &CancelToken, pending: &CancelToken, additional: &[&CancelToken], effect: impl FnOnce() -> R,
 ) -> Option<R> {
     let operation = binding.operation();
@@ -660,7 +660,7 @@ pub(crate) fn with_command_preparation_service_effect<R>(
     operation: &shell_contract::ipc::NativeInvocationOperation,
     expected: &shell_contract::ipc::NativeEditorCommand,
     startup: Option<(&shell_contract::ipc::NativeInvocationOperation, &NativeRequestOwner)>,
-    participants: &[NativeRequestOwner], service: &tauri_runtime_cef::NativeContextToken,
+    participants: &[NativeRequestOwner], service: &crate::native::DocumentContext,
     service_generation: &RendererGeneration, cancel: &CancelToken, pending: &CancelToken,
     effect: impl FnOnce() -> R,
 ) -> Option<R> {
@@ -682,7 +682,7 @@ pub(crate) fn with_command_preparation_service_effect<R>(
                 &[operation.authority_generation(), service_generation],
                 &[operation.cancel(), operation.shutdown()], cancel, pending, |_| effect())
         } else {
-            tauri_runtime_cef::NativeContextToken::with_live_all([Some(service)], ||
+            crate::native::DocumentContext::with_live_all([Some(service)], ||
                 RendererGeneration::with_active_all([Some(operation.authority_generation()), Some(service_generation)], ||
                     CancelToken::with_active_all([Some(cancel), Some(pending), Some(operation.cancel()), Some(operation.shutdown())], effect))
                     .flatten()).flatten()
@@ -1108,7 +1108,7 @@ pub(crate) fn with_recovery_open_effect<R>(
 
 pub(crate) fn with_service_recovery_open_effect<R>(
     receipt: &shell_contract::ipc::RecoverySeedReceipt, receiver: &NativeRequestOwner,
-    service: &tauri_runtime_cef::NativeContextToken, service_generation: &RendererGeneration,
+    service: &crate::native::DocumentContext, service_generation: &RendererGeneration,
     cancel: &CancelToken, effect: impl FnOnce() -> R,
 ) -> Option<R> {
     with_recovery_open_service_effect(receipt, receiver, &[], Some(service), Some(service_generation), cancel, None, effect)
@@ -1117,7 +1117,7 @@ pub(crate) fn with_service_recovery_open_effect<R>(
 fn with_recovery_open_service_effect<R>(
     receipt: &shell_contract::ipc::RecoverySeedReceipt, receiver: &NativeRequestOwner,
     participants: &[NativeRequestOwner],
-    service: Option<&tauri_runtime_cef::NativeContextToken>, service_generation: Option<&RendererGeneration>,
+    service: Option<&crate::native::DocumentContext>, service_generation: Option<&RendererGeneration>,
     cancel: &CancelToken, pending: Option<&CancelToken>, effect: impl FnOnce() -> R,
 ) -> Option<R> {
     with_recovery_open_service_effect_extra(receipt, receiver, participants, service, service_generation, cancel, pending, &[], effect)
@@ -1126,7 +1126,7 @@ fn with_recovery_open_service_effect<R>(
 fn with_recovery_open_service_effect_extra<R>(
     receipt: &shell_contract::ipc::RecoverySeedReceipt, receiver: &NativeRequestOwner,
     participants: &[NativeRequestOwner],
-    service: Option<&tauri_runtime_cef::NativeContextToken>, service_generation: Option<&RendererGeneration>,
+    service: Option<&crate::native::DocumentContext>, service_generation: Option<&RendererGeneration>,
     cancel: &CancelToken, pending: Option<&CancelToken>, additional: &[&CancelToken], effect: impl FnOnce() -> R,
 ) -> Option<R> {
     let snapshot = receipt.target().authority_snapshot().ok()?;
@@ -1136,7 +1136,7 @@ fn with_recovery_open_service_effect_extra<R>(
 pub(crate) fn with_recovery_open_service_snapshot<R>(
     receipt: &shell_contract::ipc::RecoverySeedReceipt, snapshot: &shell_contract::ipc::RecoveryAuthoritySnapshot,
     receiver: &NativeRequestOwner, participants: &[NativeRequestOwner],
-    service: Option<&tauri_runtime_cef::NativeContextToken>, service_generation: Option<&RendererGeneration>,
+    service: Option<&crate::native::DocumentContext>, service_generation: Option<&RendererGeneration>,
     cancel: &CancelToken, pending: Option<&CancelToken>, additional: &[&CancelToken], effect: impl FnOnce() -> R,
 ) -> Option<R> {
     use shell_contract::ipc::RecoveryOpenContext;
@@ -1406,7 +1406,7 @@ fn with_recovery_pdf_revision_transition(
     generations.extend(extra_generations);
     let mut generations = RendererGenerationGatePlan::from_generations(generations);
     let mut retirement = generations.prepare_retirement(&documents)?;
-    let native = tauri_runtime_cef::NativeContextGatePlan::new(&native_tokens).ok_or("The native owner is unavailable.")?;
+    let native = crate::native::DocumentGatePlan::new(&native_tokens).ok_or("The native owner is unavailable.")?;
     let assets = AssetLeaseGatePlan::new(&assets).ok_or("The asset owner is unavailable.")?;
     let mut slides = SlidesViewLeaseGatePlan::new(&slides);
     let mut media = MediaPermitGatePlan::new(&media);
@@ -1484,7 +1484,7 @@ fn with_native_save_revision_transition(
     generations.push(operation.authority_generation());
     let mut generations = RendererGenerationGatePlan::from_generations(generations);
     let mut document_retirement = generations.prepare_retirement(&documents)?;
-    let native = tauri_runtime_cef::NativeContextGatePlan::new(&native_tokens).ok_or("The native owner is unavailable.")?;
+    let native = crate::native::DocumentGatePlan::new(&native_tokens).ok_or("The native owner is unavailable.")?;
     let assets = AssetLeaseGatePlan::new(&assets).ok_or("The asset owner is unavailable.")?;
     let mut slides = SlidesViewLeaseGatePlan::new(&slides);
     let mut media = MediaPermitGatePlan::new(&media);
@@ -2326,7 +2326,7 @@ impl OwnedEffects for NativeOwnedEffects {
         generations.extend(publication_generations);
         let mut generations = RendererGenerationGatePlan::from_generations(generations);
         let mut document_retirement = generations.prepare_retirement(&documents)?;
-        let native = tauri_runtime_cef::NativeContextGatePlan::new(&native_tokens).ok_or("The native owner is unavailable.")?;
+        let native = crate::native::DocumentGatePlan::new(&native_tokens).ok_or("The native owner is unavailable.")?;
         let assets = AssetLeaseGatePlan::new(&assets).ok_or("The asset owner is unavailable.")?;
         let mut slides = SlidesViewLeaseGatePlan::new(&slides);
         let mut media = MediaPermitGatePlan::new(&media);

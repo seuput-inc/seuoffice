@@ -23,8 +23,10 @@ use tauri::{
     AppHandle, LogicalPosition, LogicalSize, Manager, Webview, WebviewUrl, WebviewWindowBuilder, WindowBuilder,
 };
 
-use tauri_runtime_cef::{
-    AsCefWindowOpener, ConsoleMessage, FrameEvent, FrameEventKind, NativeContextToken, TrustedInitMode, ViewEvent, WebviewBuilderCefExt, WebviewWindowBuilderCefExt,
+use crate::native::{
+    self, BridgeMode, BrowserCreation, DocumentContext, Native, NativeEvent, NativeEventKind, NativeSpec,
+    NavigationStart, RequestPolicy, ViewEvent, WebviewBuilderExt, WebviewWindowBuilderExt, WindowBuilderExt,
+    WindowCreation,
 };
 
 use super::{HostContext, window_open};
@@ -35,7 +37,7 @@ use crate::views::ViewTable;
 
 #[derive(Clone)]
 pub(crate) struct NativeClosureProof {
-    close: tauri_runtime_cef::NativeBrowserClose,
+    close: native::BrowserClose,
     reservation: shell_contract::ipc::NativeClosureReservation,
     owner: shell_contract::ipc::NativeBrowserOwner,
     state: Arc<std::sync::Mutex<NativeClosureProofState>>,
@@ -48,7 +50,7 @@ struct NativeClosureProofState {
 }
 
 impl NativeClosureProof {
-    pub(crate) fn new(close: tauri_runtime_cef::NativeBrowserClose, view: ViewId, created: shell_contract::runtime::RendererGeneration) -> Self {
+    pub(crate) fn new(close: native::BrowserClose, view: ViewId, created: shell_contract::runtime::RendererGeneration) -> Self {
         let (issuer, reservation, owner) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(view, created);
         Self { close, reservation, owner, teardown: Arc::new(OnceLock::new()), state: Arc::new(std::sync::Mutex::new(NativeClosureProofState {
             issuer: Some(issuer), receipt: None,
@@ -57,7 +59,7 @@ impl NativeClosureProof {
 
     pub(crate) fn reservation(&self) -> &shell_contract::ipc::NativeClosureReservation { &self.reservation }
     pub(crate) fn owner(&self) -> &shell_contract::ipc::NativeBrowserOwner { &self.owner }
-    pub(crate) fn close(&self) -> tauri_runtime_cef::NativeBrowserClose { self.close.clone() }
+    pub(crate) fn close(&self) -> native::BrowserClose { self.close.clone() }
 
     pub(crate) fn bind_teardown(&self, teardown: Arc<crate::views::ViewRemovalDelivery>) -> Result<(), String> {
         self.teardown.set(teardown).map_err(|_| "The native view teardown is already bound".into())
@@ -90,7 +92,7 @@ impl NativeClosureProof {
     pub(crate) fn when_closed(
         &self,
         callback: impl FnOnce(shell_contract::ipc::NativeClosureReceipt) + Send + 'static,
-    ) -> Result<tauri_runtime_cef::NativeBrowserCloseSubscription, String> {
+    ) -> Result<native::BrowserCloseSubscription, String> {
         let state = self.state.clone();
         self.close.when_closed(move |outcome| {
             let receipt = {
@@ -98,8 +100,8 @@ impl NativeClosureProof {
                 if let Some(receipt) = &state.receipt { receipt.clone() } else {
                     let Some(issuer) = state.issuer.take() else { return; };
                     let receipt = match outcome {
-                        tauri_runtime_cef::NativeBrowserCloseOutcome::Closed => issuer.closed(),
-                        tauri_runtime_cef::NativeBrowserCloseOutcome::NotCreated => issuer.not_created(),
+                        native::BrowserCloseOutcome::Retired => issuer.closed(),
+                        native::BrowserCloseOutcome::NotCreated => issuer.not_created(),
                     };
                     state.receipt = Some(receipt.clone());
                     receipt
@@ -146,7 +148,7 @@ impl shell_ipc_w::tabs::host::NativeBrowserCloseProducer for NativeClosureProof 
 pub(crate) struct CreatedChild {
     pub(crate) view: ViewId,
     pub(crate) webview: Webview,
-    pub(crate) close: tauri_runtime_cef::NativeBrowserClose,
+    pub(crate) close: native::BrowserClose,
     pub(crate) proof: Option<NativeClosureProof>,
 }
 pub(crate) struct PreparedDeferredWindow {
@@ -156,14 +158,14 @@ pub(crate) struct PreparedDeferredWindow {
     pub(crate) proof: NativeClosureProof,
     pub(crate) window_lifecycle: Arc<crate::views::NativeWindowLifecycle>,
     surface: Surface,
-    submission: tauri_runtime_cef::NativeBrowserSubmissionGuard,
-    window_submission: tauri_runtime_cef::NativeWindowSubmissionGuard,
+    submission: BrowserCreation,
+    window_submission: WindowCreation,
 }
 
 
 pub(crate) struct ChildCreationError {
     pub(crate) message: String,
-    pub(crate) close: Option<tauri_runtime_cef::NativeBrowserClose>,
+    pub(crate) close: Option<native::BrowserClose>,
     pub(crate) proof: Option<NativeClosureProof>,
 }
 
@@ -171,18 +173,13 @@ impl From<String> for ChildCreationError {
     fn from(message: String) -> Self { Self { message, close: None, proof: None } }
 }
 
-/// One console line of a page, as the trace shows it
-fn console_line(label: &str, message: &ConsoleMessage) {
-    trace!(
-        "console",
-        "{label} {:?} {} ({}:{})", message.level, message.message, message.source, message.line
-    );
-}
+type FrameCallback = Arc<dyn Fn(ViewId, &NativeEvent) + Send + Sync>;
+type NavigationFilter = Arc<dyn Fn(&tauri::Url) -> bool + Send + Sync>;
 
-/// A frame event of `view`: a main frame that lost its renderer goes to the
-/// crash watch (U) always; the rest is a trace line
-fn frame_event(view: ViewId, label: &str, event: &FrameEvent) {
-    if event.is_main && matches!(event.kind, FrameEventKind::RendererTerminated) {
+/// A native event of `view`: a main frame whose web content process failed goes to the
+/// crash watch always; the rest is a trace line
+fn frame_event(view: ViewId, label: &str, event: &NativeEvent) {
+    if matches!(event.kind, NativeEventKind::WebviewProcessFailed { .. }) {
         super::crash::renderer_terminated(view);
     }
     if trace::enabled() {
@@ -190,31 +187,11 @@ fn frame_event(view: ViewId, label: &str, event: &FrameEvent) {
     }
 }
 
-fn native_context_event(
-    views: &ViewTable,
-    view: ViewId,
-    generation: &OnceLock<RendererGeneration>,
-    event: &FrameEvent,
-) {
-    let Some(generation) = generation.get() else { return };
-    match &event.kind {
-        FrameEventKind::NativeContextRegistered { origin }
-            if event.is_main && event.browser_id == origin.browser_id() && event.frame_id == origin.frame_id() => {
-            views.bind_verified_native_origin(view, generation, origin);
-        }
-        FrameEventKind::NativeContextRevoked { origin }
-            if event.is_main && event.browser_id == origin.browser_id() && event.frame_id == origin.frame_id() => {
-            views.unbind_verified_native_origin(view, generation, origin);
-        }
-        _ => {}
-    }
-}
-
-fn view_event(view: ViewId, event: &ViewEvent) {
-    let event = match event {
-        ViewEvent::Focus => Some(shell_ipc_w::projects::PageEvent::Focus(view)),
-        ViewEvent::Blur => Some(shell_ipc_w::projects::PageEvent::Blur(view)),
-        ViewEvent::NavigationStarted(navigation) if !navigation.same_document =>
+fn view_event(view: ViewId, event: &NativeEvent) {
+    let event = match &event.kind {
+        NativeEventKind::View(ViewEvent::Focus) => Some(shell_ipc_w::projects::PageEvent::Focus(view)),
+        NativeEventKind::View(ViewEvent::Blur) => Some(shell_ipc_w::projects::PageEvent::Blur(view)),
+        NativeEventKind::NavigationStarted { same_document: false, .. } =>
             Some(shell_ipc_w::projects::PageEvent::Navigated(view)),
         _ => None,
     };
@@ -223,21 +200,78 @@ fn view_event(view: ViewId, event: &ViewEvent) {
     }
 }
 
-/// The frame events worth a line: where a page went and whether it loaded
-fn frame_line(label: &str, event: &FrameEvent) {
+/// The events worth a line: where a page went and whether it loaded
+fn frame_line(label: &str, event: &NativeEvent) {
     let what = match &event.kind {
-        FrameEventKind::NavigationStarted { url } => format!("navigation started {url}"),
-        FrameEventKind::DocumentCommitted { url } => format!("document committed {url}"),
-        FrameEventKind::NavigationFailed { url } => format!("NAVIGATION FAILED {url}"),
-        FrameEventKind::LoadingStateChanged { is_loading } => format!("loading {is_loading}"),
-        FrameEventKind::RendererTerminated => "RENDERER TERMINATED".to_owned(),
+        NativeEventKind::NavigationStarted { url, .. } => format!("navigation started {url}"),
+        NativeEventKind::DocumentCommitted { url, .. } => format!("document committed {url}"),
+        NativeEventKind::NavigationFailed { url, error, .. } => format!("NAVIGATION FAILED {url} {error}"),
+        NativeEventKind::LoadFinished { ok, .. } => format!("load finished ok={ok}"),
+        NativeEventKind::WebviewProcessFailed { kind } => format!("WEBVIEW PROCESS FAILED {kind:?}"),
         _ => return,
     };
-    trace!(
-        "frame",
-        "{label} {}{what}",
-        if event.is_main { "" } else { "(subframe) " }
-    );
+    trace!("frame", "{label} {what}");
+}
+
+/// One sink per browser: the shell's own handling first, then the caller's callback.
+fn event_sink(view: ViewId, label: String, on_frame: Option<FrameCallback>) -> native::EventSink {
+    Arc::new(move |event| {
+        crate::native::menu::note_view_event(event);
+        frame_event(view, &label, event);
+        view_event(view, event);
+        if let Some(callback) = &on_frame {
+            callback(view, event);
+        }
+    })
+}
+
+/// What a view with a bridge may load: the shell's own pages, and what the caller allows.
+/// Without a bridge the caller's policy stands alone.
+fn view_policy(
+    bridge: Bridge, base: Option<RequestPolicy>, navigation: Option<NavigationFilter>,
+) -> Option<RequestPolicy> {
+    if bridge.surface().is_none() {
+        return base;
+    }
+    let javascript = base.as_ref().is_none_or(RequestPolicy::javascript);
+    let storage = base.as_ref().map(RequestPolicy::storage);
+    let blocks = base.as_ref().map(RequestPolicy::blocks);
+    let policy = RequestPolicy::new(move |request| {
+        if !base.as_ref().is_none_or(|base| base.allows(request)) {
+            return false;
+        }
+        if !request.main_frame {
+            return true;
+        }
+        tauri::Url::parse(request.url).is_ok_and(|url| {
+            app_scheme::is_own_page(&url) && navigation.as_ref().is_none_or(|allow| allow(&url))
+        })
+    })
+    .with_javascript(javascript);
+    let policy = match blocks {
+        Some(blocks) => policy.with_blocks(blocks),
+        None => policy,
+    };
+    Some(match storage {
+        Some(storage) => policy.with_storage(storage),
+        None => policy,
+    })
+}
+
+/// `Native::attach` runs on the UI thread, after the build returned.
+fn attach_native(
+    app: &AppHandle, native: &Native, webview: &Webview, browser: &native::BrowserIdentity,
+) -> Result<(), String> {
+    if native::defer::is_ui_thread() {
+        return native.attach(webview, browser);
+    }
+    let (native, webview, browser) = (native.clone(), webview.clone(), browser.clone());
+    let (send, receive) = std::sync::mpsc::sync_channel(1);
+    app.run_on_main_thread(move || {
+        let _ = send.send(native.attach(&webview, &browser));
+    })
+    .map_err(|error| error.to_string())?;
+    receive.recv().map_err(|error| error.to_string())?
 }
 
 /// How a view talks to the shell
@@ -263,10 +297,10 @@ impl Bridge {
     }
 
     // This mode comes from native surface construction, never page data.
-    fn trusted_init_mode(self) -> TrustedInitMode {
+    fn bridge_mode(self) -> BridgeMode {
         match self {
-            Bridge::None => TrustedInitMode::Unprotected,
-            Bridge::Surface(_) | Bridge::Measure => TrustedInitMode::ProtectedPreload,
+            Bridge::None => BridgeMode::None,
+            Bridge::Surface(_) | Bridge::Measure => BridgeMode::Preload,
         }
     }
 
@@ -319,11 +353,9 @@ pub struct WindowOptions {
     pub fullscreenable: bool,
     pub shadow: bool,
     pub background_throttling: Option<tauri::utils::config::BackgroundThrottlingPolicy>,
-    pub on_browser_resource_request: Option<Arc<tauri_runtime_cef::BrowserResourceRequestHandler>>,
-    pub network_session: Option<tauri_runtime_cef::NativeNetworkSession>,
-    pub on_frame: Option<Arc<dyn Fn(ViewId, &FrameEvent) + Send + Sync>>,
-    pub on_view: Option<Arc<dyn Fn(ViewId, &tauri_runtime_cef::FrameNavigationState, ViewEvent) + Send + Sync>>,
-    pub on_open: Option<Arc<dyn Fn(ViewId, &NativeContextToken, &str) + Send + Sync>>,
+    pub request_policy: Option<RequestPolicy>,
+    pub on_frame: Option<FrameCallback>,
+    pub on_open: Option<Arc<dyn Fn(ViewId, &DocumentContext, &str) + Send + Sync>>,
     pub on_navigation: Option<Arc<dyn Fn(&tauri::Url) -> bool + Send + Sync>>,
     pub on_closed: Option<Box<dyn FnOnce(WindowId) + Send>>,
 }
@@ -338,10 +370,8 @@ impl Default for WindowOptions {
             fullscreenable: true,
             shadow: true,
             background_throttling: None,
-            on_browser_resource_request: None,
-            network_session: None,
+            request_policy: None,
             on_frame: None,
-            on_view: None,
             on_open: None,
             on_navigation: None,
             on_closed: None,
@@ -354,7 +384,7 @@ fn disable_native_fullscreen(app: &AppHandle, window: &tauri::WebviewWindow) -> 
     fn apply(window: &tauri::WebviewWindow) -> Result<(), String> {
         use objc2::rc::Retained;
         use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
-        use tauri_runtime_cef::WindowCefExt;
+        use crate::native::WindowExt;
 
         let handle = window.as_ref().window().native_window_handle().map_err(|error| error.to_string())?;
         handle.with_window(|_| {
@@ -446,6 +476,8 @@ impl Windows {
         origin: Option<(f64, f64)>,
         visible: bool,
     ) -> Result<(WindowId, tauri::Window, Arc<crate::views::NativeWindowLifecycle>), String> {
+        let native = self.native()?;
+        let creation = WindowCreation::new().ok_or("Native creation ids are exhausted.")?;
         let id = self.views.new_window_id();
         let label = format!("window-{}", id.0);
         let mut builder = WindowBuilder::new(&self.app, &label)
@@ -456,16 +488,25 @@ impl Windows {
         if let Some((x, y)) = origin {
             builder = builder.position(x, y);
         }
-        let lifecycle = self.views.add_window(id, label);
-        use tauri_runtime_cef::WindowBuilderCefExt;
-        let submission = tauri_runtime_cef::NativeWindowSubmissionGuard::new();
-        if let Err(error) = lifecycle.bind_terminal(submission.receipt()) {
+        let lifecycle = self.views.add_window(id, label.clone());
+        if let Err(error) = lifecycle.bind_terminal(creation.receipt()) {
             self.views.remove_window(id);
             return Err(error);
         }
-        builder = builder.native_window_submission(submission);
+        let builder = match builder.native_window_creation(&native, &label, creation) {
+            Ok(builder) => builder,
+            Err(error) => {
+                self.views.remove_window(id);
+                return Err(error);
+            }
+        };
         match builder.build() {
             Ok(window) => {
+                if let Err(error) = native.window_created(&window) {
+                    let _ = window.destroy();
+                    self.views.remove_window(id);
+                    return Err(error);
+                }
                 if let Err(error) = lifecycle.attach(window.clone()) {
                     let _ = window.destroy();
                     self.views.remove_window(id);
@@ -474,10 +515,18 @@ impl Windows {
                 Ok((id, window, lifecycle))
             }
             Err(error) => {
+                native.window_failed(&label);
                 self.views.remove_window(id);
                 Err(format!("opening a window: {error}"))
             }
         }
+    }
+
+    fn native(&self) -> Result<Native, String> {
+        self.app
+            .try_state::<Native>()
+            .map(|state| state.inner().clone())
+            .ok_or_else(|| "The native module is not installed.".to_owned())
     }
 
     pub fn reparent_view(&self, view: ViewId, window: WindowId) -> Result<(), String> {
@@ -513,6 +562,7 @@ impl Windows {
 
     fn open_window_native(&self, spec: WindowSpec, options: WindowOptions, explicit_navigation: bool, reserved: Option<PreparedDeferredWindow>) -> Result<(WindowId, ViewId), String> {
         let url = Self::url_of(&spec.view.url)?;
+        let native = self.native()?;
         let reserved_identity = reserved.as_ref().map(|entry| (entry.window, entry.view, entry.created.clone(), entry.surface, entry.window_lifecycle.clone()));
         let (window, view, mut registration) = match &reserved_identity {
             Some((window, view, _, _, _)) => (*window, *view, None),
@@ -528,11 +578,12 @@ impl Windows {
                 return Err("The reserved native window no longer matches its view".into());
             }
         }
+        let (mut browser_creation, window_creation) = match reserved {
+            Some(entry) => (Some(entry.submission), Some(entry.window_submission)),
+            None => (None, None),
+        };
         let label = format!("view-{}", view.0);
-        let frames = label.clone();
         let generation = Arc::new(OnceLock::new());
-        let event_generation = generation.clone();
-        let event_views = self.views.clone();
         let mut builder = WebviewWindowBuilder::new(&self.app, &label, url)
             .title(spec.title)
             .inner_size(spec.size.0, spec.size.1)
@@ -544,35 +595,9 @@ impl Windows {
             .always_on_top(options.always_on_top)
             .minimizable(options.minimizable)
             .maximizable(options.maximizable)
-            .shadow(options.shadow)
-            .on_frame_event(move |e| {
-                frame_event(view, &frames, &e);
-                native_context_event(&event_views, view, &event_generation, &e);
-                if let Some(callback) = &options.on_frame {
-                    callback(view, &e);
-                }
-            })
-            .on_view_event(move |browser, event| {
-                view_event(view, &event);
-                if matches!(event, ViewEvent::Focus | ViewEvent::Blur) {
-                    if let Some(callback) = &options.on_view {
-                        callback(view, &browser, event);
-                    }
-                }
-            });
-        if let Some(reserved) = reserved {
-            builder = builder
-                .native_browser_submission(reserved.submission)
-                .native_window_submission(reserved.window_submission);
-        }
+            .shadow(options.shadow);
         if let Some(policy) = options.background_throttling {
             builder = builder.background_throttling(policy);
-        }
-        if let Some(handler) = options.on_browser_resource_request {
-            builder = builder.on_browser_resource_request(move |request| handler(request));
-        }
-        if let Some(session) = options.network_session {
-            builder = builder.network_session(session);
         }
         if options.center {
             builder = builder.center();
@@ -590,10 +615,6 @@ impl Windows {
                 .parent(&parent)
                 .map_err(|e| format!("parenting a window: {e}"))?;
         }
-        if trace::enabled() {
-            let console = label.clone();
-            builder = builder.on_console_message(move |m| console_line(&console, &m));
-        }
         trace!(
             "window",
             "open window {} view {} '{label}' {} (bridge {:?}, script {} bytes)",
@@ -603,29 +624,22 @@ impl Windows {
             spec.view.bridge,
             spec.view.bridge.script().map_or(0, |s| s.len())
         );
-        builder = builder.trusted_init_mode(spec.view.bridge.trusted_init_mode());
-        if explicit_navigation {
-            builder = builder.protected_navigation_start(tauri_runtime_cef::ProtectedNavigationStart::Explicit);
-        }
         if let Some(script) = spec.view.bridge.script() {
-            let navigation = options.on_navigation.clone();
-            builder = builder
-                .initialization_script(script)
-                // a page with a bridge stays on the shell's own pages
-                .on_navigation(move |url| app_scheme::is_own_page(url)
-                    && navigation.as_ref().is_none_or(|policy| policy(url)));
+            builder = builder.initialization_script(script);
         }
-        // CEF opens no window; what the page asked for goes to the OS as its app's policy allows
+        // The page asks for a popup; the OS opens nothing, the app's policy decides
         let asked_by = spec.view.bridge.surface();
         let popup_views = self.views.clone();
         let popup_generation = generation.clone();
+        let popup_native = native.clone();
+        let popup_label = label.clone();
         let on_open = options.on_open.clone();
-        builder = builder.on_new_window(move |url, features| {
-            if let Some(origin) = features.opener().as_cef_window_opener().and_then(|opener| opener.native_origin()) {
+        builder = builder.on_new_window(move |url, _features| {
+            if let Some(origin) = popup_native.current_context(&popup_label) {
                 if let Some(callback) = &on_open {
-                    callback(view, origin, url.as_str());
+                    callback(view, &origin, url.as_str());
                 } else if let Some(created) = popup_generation.get() {
-                    let _ = window_open::requested(asked_by, &popup_views, view, created, origin, url.as_str());
+                    let _ = window_open::requested(asked_by, &popup_views, view, created, &origin, url.as_str());
                 }
             }
             NewWindowResponse::Deny
@@ -639,15 +653,25 @@ impl Windows {
         } else {
             self.views.add_window(window, label.clone())
         };
-        if reserved_identity.is_none() {
-            let submission = tauri_runtime_cef::NativeWindowSubmissionGuard::new();
-            if let Err(error) = window_lifecycle.bind_terminal(submission.receipt()) {
-                CLOSED_CALLBACKS.lock().unwrap().remove(&window);
-                self.views.remove_window(window);
-                return Err(error);
+        let window_creation = match window_creation {
+            Some(creation) => creation,
+            None => {
+                let creation = match WindowCreation::new() {
+                    Some(creation) => creation,
+                    None => {
+                        CLOSED_CALLBACKS.lock().unwrap().remove(&window);
+                        self.views.remove_window(window);
+                        return Err("Native creation ids are exhausted.".into());
+                    }
+                };
+                if let Err(error) = window_lifecycle.bind_terminal(creation.receipt()) {
+                    CLOSED_CALLBACKS.lock().unwrap().remove(&window);
+                    self.views.remove_window(window);
+                    return Err(error);
+                }
+                creation
             }
-            builder = builder.native_window_submission(submission);
-        }
+        };
         if let Some(surface) = spec.view.bridge.surface() {
             let captured = if let Some(registration) = registration.take() {
                 match self.views.register_view(registration, window, surface) {
@@ -664,8 +688,12 @@ impl Windows {
                 return Err("The native view registration is unavailable".into());
             };
             if reserved_identity.is_none() {
-                let submission = tauri_runtime_cef::NativeBrowserSubmissionGuard::new();
-                let proof = NativeClosureProof::new(submission.receipt(), view, captured.clone());
+                let Some(creation) = BrowserCreation::new() else {
+                    CLOSED_CALLBACKS.lock().unwrap().remove(&window);
+                    self.views.remove_window(window);
+                    return Err("Native creation ids are exhausted.".into());
+                };
+                let proof = NativeClosureProof::new(creation.receipt(), view, captured.clone());
                 let admitted = (|| {
                     self.views.set_closure_proof(view, &captured, proof.clone())?;
                     let prepared = self.views.prepare_browser_owner(view, &captured, proof.owner())?;
@@ -679,20 +707,49 @@ impl Windows {
                     self.views.remove_window(window);
                     return Err(error);
                 }
-                builder = builder.native_browser_submission(submission);
+                browser_creation = Some(creation);
             }
             let _ = generation.set(captured);
             if spec.main && surface == Surface::Shell {
                 self.views.mark_main(view);
             }
         }
+        let mut native_spec = NativeSpec::new()
+            .bridge(spec.view.bridge.bridge_mode())
+            .native_events(event_sink(view, label.clone(), options.on_frame));
+        if explicit_navigation {
+            native_spec = native_spec.navigation_start(NavigationStart::Explicit);
+        }
+        if let Some(creation) = browser_creation {
+            native_spec = native_spec.native_creation(creation);
+        }
+        if let Some(policy) = view_policy(spec.view.bridge, options.request_policy, options.on_navigation) {
+            native_spec = native_spec.request_policy(policy);
+        }
+        let abandon = |error: String| -> Result<(WindowId, ViewId), String> {
+            CLOSED_CALLBACKS.lock().unwrap().remove(&window);
+            if reserved_identity.is_none() { self.views.remove_window(window); }
+            Err(error)
+        };
+        if let Err(error) = native.reserve_window(&label, window_creation) {
+            return abandon(error);
+        }
+        let (builder, browser) = match builder.native(&native, &label, native_spec) {
+            Ok(native_builder) => native_builder,
+            Err(error) => {
+                native.window_failed(&label);
+                return abandon(error);
+            }
+        };
         match builder.build() {
             Ok(built) => {
                 let configured = (|| {
+                    native.window_created(&built.as_ref().window())?;
                     window_lifecycle.attach(built.as_ref().window())?;
                     if let Some(created) = generation.get() {
                         crate::ipc::bind_native_webview(built.as_ref(), view, created.clone())?;
                     }
+                    attach_native(&self.app, &native, built.as_ref(), &browser)?;
                     if !options.fullscreenable {
                         disable_native_fullscreen(&self.app, &built)?;
                         if cfg!(target_os = "macos") && spec.visible {
@@ -714,9 +771,8 @@ impl Windows {
                 Ok((window, view))
             }
             Err(error) => {
-                CLOSED_CALLBACKS.lock().unwrap().remove(&window);
-                if reserved_identity.is_none() { self.views.remove_window(window); }
-                Err(format!("opening a window: {error}"))
+                native.window_failed(&label);
+                abandon(format!("opening a window: {error}"))
             }
         }
     }
@@ -732,9 +788,8 @@ impl Windows {
         bounds: Bounds,
         options: WindowOptions,
         prepared_proof: Option<NativeClosureProof>,
-        submission: Option<tauri_runtime_cef::NativeBrowserSubmissionGuard>,
-        on_frame: Option<Arc<dyn Fn(ViewId, &FrameEvent) + Send + Sync>>,
-        on_view: Option<Arc<dyn Fn(ViewId, &tauri_runtime_cef::FrameNavigationState, ViewEvent) + Send + Sync>>,
+        submission: Option<BrowserCreation>,
+        on_frame: Option<FrameCallback>,
     ) -> Result<CreatedChild, ChildCreationError> {
         let url = Self::url_of(&spec.url)?;
         if !window_lifecycle.belongs_to(window) {
@@ -742,57 +797,28 @@ impl Windows {
         }
         let surface = spec.bridge.surface().ok_or_else(|| "A reserved child must have a bridge".to_owned())?;
         self.views.validate_reserved_view(view, created, window, surface, window_lifecycle)?;
+        let native = self.native()?;
         let parent = window_lifecycle.window_handle()?;
         let view_label = format!("view-{}", view.0);
-        let frames = view_label.clone();
         let generation = Arc::new(OnceLock::new());
-        let event_generation = generation.clone();
-        let event_views = self.views.clone();
         let mut builder = WebviewBuilder::new(&view_label, url)
             .position(LogicalPosition::new(bounds.x, bounds.y))
-            .size(LogicalSize::new(bounds.width, bounds.height))
-            .on_frame_event(move |event| {
-                frame_event(view, &frames, &event);
-                native_context_event(&event_views, view, &event_generation, &event);
-                if let Some(callback) = &on_frame {
-                    callback(view, &event);
-                }
-            })
-            .on_view_event(move |browser, event| {
-                view_event(view, &event);
-                if matches!(event, ViewEvent::Focus | ViewEvent::Blur) {
-                    if let Some(callback) = &on_view {
-                        callback(view, &browser, event);
-                    }
-                }
-            });
-        if trace::enabled() {
-            let console = view_label.clone();
-            builder = builder.on_console_message(move |m| console_line(&console, &m));
-        }
+            .size(LogicalSize::new(bounds.width, bounds.height));
         trace!(
             "window",
             "add view {} '{view_label}' to window {} {}", view.0, window.0, spec.url
         );
-        builder = builder.trusted_init_mode(spec.bridge.trusted_init_mode());
-        if let Some(session) = options.network_session {
-            builder = builder.network_session(session);
-        }
         if let Some(script) = spec.bridge.script() {
-            let navigation = options.on_navigation.clone();
-            builder = builder
-                .initialization_script(script)
-                .on_navigation(move |url| app_scheme::is_own_page(url)
-                    && navigation.as_ref().is_none_or(|policy| policy(url)));
+            builder = builder.initialization_script(script);
         }
         let asked_by = spec.bridge.surface();
         let popup_views = self.views.clone();
         let popup_generation = generation.clone();
-        builder = builder.on_new_window(move |url, features| {
-            if let (Some(origin), Some(created)) = (
-                features.opener().as_cef_window_opener().and_then(|opener| opener.native_origin()), popup_generation.get(),
-            ) {
-                let _ = window_open::requested(asked_by, &popup_views, view, created, origin, url.as_str());
+        let popup_native = native.clone();
+        let popup_label = view_label.clone();
+        builder = builder.on_new_window(move |url, _features| {
+            if let (Some(origin), Some(created)) = (popup_native.current_context(&popup_label), popup_generation.get()) {
+                let _ = window_open::requested(asked_by, &popup_views, view, created, &origin, url.as_str());
             }
             NewWindowResponse::Deny
         });
@@ -802,7 +828,20 @@ impl Windows {
                 return Err("The native closure reservation does not match the view".to_owned().into());
             }
         }
-        let close = prepared_proof.as_ref().map(NativeClosureProof::close).unwrap_or_default();
+        let creation = match (submission, &prepared_proof) {
+            (Some(creation), Some(proof)) => {
+                if !proof.close().same_reservation(&creation.receipt()) {
+                    return Err("The native closure proof belongs to another creation".to_owned().into());
+                }
+                creation
+            }
+            (Some(creation), None) => creation,
+            (None, None) => BrowserCreation::new().ok_or_else(|| "Native creation ids are exhausted.".to_owned())?,
+            (None, Some(_)) => {
+                return Err("A prepared native closure proof needs its creation reservation".to_owned().into());
+            }
+        };
+        let close = creation.receipt();
         let proof = match prepared_proof {
             Some(proof) => Some(proof),
             None => {
@@ -811,9 +850,16 @@ impl Windows {
                 Some(proof)
             }
         };
-        builder = match submission {
-            Some(submission) => builder.native_browser_submission(submission),
-            None => builder.native_browser_close_reservation(close.clone()),
+        let mut native_spec = NativeSpec::new()
+            .bridge(spec.bridge.bridge_mode())
+            .native_creation(creation)
+            .native_events(event_sink(view, view_label.clone(), on_frame));
+        if let Some(policy) = view_policy(spec.bridge, options.request_policy, options.on_navigation) {
+            native_spec = native_spec.request_policy(policy);
+        }
+        let (builder, browser) = match builder.native(&native, &view_label, native_spec) {
+            Ok(native_builder) => native_builder,
+            Err(error) => return Err(ChildCreationError { message: error, close: Some(close), proof }),
         };
         match parent.add_child(builder) {
             Ok(built) => {
@@ -821,6 +867,9 @@ impl Windows {
                     if let Err(error) = crate::ipc::bind_native_webview(&built, view, created.clone()) {
                         return Err(ChildCreationError { message: error, close: Some(close), proof });
                     }
+                }
+                if let Err(error) = attach_native(&self.app, &native, &built, &browser) {
+                    return Err(ChildCreationError { message: error, close: Some(close), proof });
                 }
                 Ok(CreatedChild { view, webview: built, close, proof })
             }
@@ -831,12 +880,13 @@ impl Windows {
     }
 
     pub(crate) fn reserve_deferred_window(&self, surface: Surface) -> Result<PreparedDeferredWindow, String> {
+        let window_submission = WindowCreation::new().ok_or("Native creation ids are exhausted.")?;
+        let submission = BrowserCreation::new().ok_or("Native creation ids are exhausted.")?;
         let window = self.views.new_window_id();
         let registration = self.views.allocate_view()?;
         let view = registration.view();
         let label = format!("view-{}", view.0);
         let window_lifecycle = self.views.add_window(window, label.clone());
-        let window_submission = tauri_runtime_cef::NativeWindowSubmissionGuard::new();
         if let Err(error) = window_lifecycle.bind_terminal(window_submission.receipt()) {
             self.views.remove_window(window);
             return Err(error);
@@ -848,7 +898,6 @@ impl Windows {
                 return Err(error);
             }
         };
-        let submission = tauri_runtime_cef::NativeBrowserSubmissionGuard::new();
         let proof = NativeClosureProof::new(submission.receipt(), view, created.clone());
         if let Err(error) = self.views.set_closure_proof(view, &created, proof.clone()) {
             self.views.remove_view_if_generation(view, &created);

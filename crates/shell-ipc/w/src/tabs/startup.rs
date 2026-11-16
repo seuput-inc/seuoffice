@@ -43,6 +43,7 @@ impl TabsState {
             done,
         );
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn startup_hydrate(
         &self,
         specs: Vec<UnloadedTabSpec>,
@@ -67,6 +68,7 @@ impl TabsState {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn startup_add_unloaded(
         &self,
         spec: UnloadedTabSpec,
@@ -88,6 +90,7 @@ impl TabsState {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn startup_reorder(
         &self,
         id: String,
@@ -176,8 +179,10 @@ fn run(
         let (_, detached) = state.session_snapshot()?;
         let mut views = views;
         for row in detached {
-            if let Some(id) = row.get("id").and_then(serde_json::Value::as_str) {
-                if let Some(view) = state.tab_contents(id) { views.push(view); }
+            if let Some(id) = row.get("id").and_then(serde_json::Value::as_str)
+                && let Some(view) = state.tab_contents(id)
+            {
+                views.push(view);
             }
         }
         for view in views {
@@ -257,6 +262,7 @@ fn run(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_hydration(
     state: Rc<TabsState>,
     specs: Vec<UnloadedTabSpec>,
@@ -299,10 +305,10 @@ fn run_hydration(
         let mut participants = vec![native.shell];
         let (_, detached) = state.session_snapshot()?;
         for row in detached {
-            if let Some(id) = row.get("id").and_then(serde_json::Value::as_str) {
-                if let Some(view) = state.tab_contents(id) {
-                    views.push(view);
-                }
+            if let Some(id) = row.get("id").and_then(serde_json::Value::as_str)
+                && let Some(view) = state.tab_contents(id)
+            {
+                views.push(view);
             }
         }
         for view in views {

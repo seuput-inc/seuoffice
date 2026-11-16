@@ -79,7 +79,7 @@ enum Row {
     Item {
         label: String,
         enabled: bool,
-        action: Option<MenuAction>,
+        action: Option<Box<MenuAction>>,
     },
 }
 
@@ -285,7 +285,7 @@ impl TabsState {
                         Row::Item {
                             label: item.label.unwrap_or_default(),
                             enabled: item.enabled.unwrap_or(true),
-                            action: item.click.map(MenuAction::Tab),
+                            action: item.click.map(|click| Box::new(MenuAction::Tab(click))),
                         }
                     }
                 })
@@ -295,7 +295,7 @@ impl TabsState {
                 let split = |label: &str, action: MenuAction| Row::Item {
                     label: tm(label),
                     enabled: true,
-                    action: Some(action),
+                    action: Some(Box::new(action)),
                 };
                 let to = |dropped| MenuAction::Split {
                     tab_id: tab.id.clone(),
@@ -323,7 +323,14 @@ impl TabsState {
                     label,
                     enabled,
                     action,
-                } => menu.push(MenuEntryKind::Normal, label, enabled, false, None, action),
+                } => menu.push(
+                    MenuEntryKind::Normal,
+                    label,
+                    enabled,
+                    false,
+                    None,
+                    action.map(|action| *action),
+                ),
             }
         }
         self.popup(menu.entries, menu.actions, at, reply);
@@ -396,7 +403,7 @@ impl TabsState {
                     },
                 );
                 if let Some(target) = target {
-                    self.open_document_path(&target);
+                    self.open_document_path(&target, self.report_open(&target));
                 }
             }
             MenuClick::CopyText(text) => {
@@ -428,22 +435,33 @@ impl TabsState {
         }
     }
 
-    /// `recentlyClosed.reopenNext(openDocumentPath, existsSync)`
+    /// `recentlyClosed.reopenNext(openDocumentPath, existsSync)`: the newest closed file that
+    /// still exists reopens; one that does not open hands the turn to the next
     fn reopen_closed(&self) {
-        let mut tracker = {
-            let mut g = self.inner.borrow_mut();
-            std::mem::replace(
-                &mut g.bridge.recently_closed,
-                main_core::shell::tab_lifecycle::create_recently_closed_tracker(
-                    main_core::shell::tab_lifecycle::MAX_RECENTLY_CLOSED,
-                ),
-            )
-        };
-        tracker.reopen_next(
-            &mut |path| self.open_document_path(path),
+        let mut picked = None;
+        self.inner.borrow_mut().bridge.recently_closed.reopen_next(
+            &mut |path| {
+                picked = Some(path.to_owned());
+                true
+            },
             Some(&mut |path| Path::new(path).exists()),
         );
-        self.inner.borrow_mut().bridge.recently_closed = tracker;
+        let Some(path) = picked else { return };
+        let state = self.rc();
+        self.open_document_path(
+            &path.clone(),
+            Box::new(move |result| match result {
+                Ok(true) => {}
+                Ok(false) => state.reopen_closed(),
+                Err(error) => {
+                    state.hooks.warn(
+                        "[shell] reopening a closed tab failed:",
+                        &format!("{path}: {error}"),
+                    );
+                    state.reopen_closed();
+                }
+            }),
+        );
     }
 
     /// `runTabDocumentAction`

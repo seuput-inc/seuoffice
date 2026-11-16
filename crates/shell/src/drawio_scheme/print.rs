@@ -4,17 +4,18 @@ use std::sync::{Arc, Mutex, OnceLock};
 use shell_contract::runtime::RendererGeneration;
 use tauri::http;
 use tauri::UriSchemeResponder;
-use tauri_runtime_cef::{FrameNavigationState, NativeSchemeResponseTarget, SchemeRequestProvenance};
+
+use crate::native::{BrowserState, NavigationIdentity, SchemeRequestContext};
 
 pub(crate) type Admission = Arc<dyn Fn(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String> + Send + Sync>;
 
 struct Entry {
-    browser: FrameNavigationState,
+    browser: BrowserState,
     body: Vec<u8>,
     authority: Admission,
     lifetime: RendererGeneration,
     claimed: bool,
-    navigation: Option<tauri_runtime_cef::NativeNavigationToken>,
+    navigation: Option<NavigationIdentity>,
 }
 
 static PRINTS: OnceLock<Mutex<HashMap<String, Entry>>> = OnceLock::new();
@@ -44,7 +45,11 @@ impl PrintGrant {
             && entry.browser.is_same_browser(&target.frame)
             && entry.browser.document().as_ref() == Some(&target.document)))
     }
-    pub(crate) fn url(&self) -> String { format!("drawio-app://editor/__ieum/print/{}", self.token) }
+    /// The URL to navigate the print browser to, in the shape the platform serves
+    /// (`crate::native::url`); the registry and the scheme handler speak the logical one.
+    pub(crate) fn url(&self) -> String {
+        crate::native::url::platform_url_text(&format!("drawio-app://editor/__ieum/print/{}", self.token))
+    }
 }
 
 impl Drop for PrintGrant {
@@ -58,7 +63,7 @@ impl Drop for PrintGrant {
     }
 }
 
-pub(crate) fn reserve(browser: FrameNavigationState, body: Vec<u8>, authority: Admission) -> Result<PrintGrant, String> {
+pub(crate) fn reserve(browser: BrowserState, body: Vec<u8>, authority: Admission) -> Result<PrintGrant, String> {
     let mut random = [0u8; 16];
     getrandom::fill(&mut random).map_err(|error| error.to_string())?;
     let token: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -73,15 +78,15 @@ pub(crate) fn reserve(browser: FrameNavigationState, body: Vec<u8>, authority: A
     Ok(PrintGrant { token, lifetime })
 }
 
-fn matches(entry: &Entry, origin: &SchemeRequestProvenance) -> bool {
+fn matches(entry: &Entry, origin: &SchemeRequestContext) -> bool {
     let (Some(browser), Some(navigation)) = (origin.browser_state(), origin.navigation()) else { return false; };
-    origin.browser_id().is_some() && origin.frame_id().is_some() && origin.frame_is_main() == Some(true)
-        && entry.browser.is_same_browser(browser) && entry.browser.navigation().as_ref() == Some(navigation)
+    entry.browser.is_same_browser(browser) && entry.browser.navigation().as_ref() == Some(navigation)
         && origin.document().is_none_or(|document| entry.browser.document().as_ref() == Some(document))
         && entry.lifetime.is_active() && !entry.claimed
 }
 
-pub(crate) fn serve(token: &str, origin: &SchemeRequestProvenance, target: &NativeSchemeResponseTarget, responder: UriSchemeResponder) {
+/// The root request must be the browser's single admitted navigation; no frame is consulted.
+pub(crate) fn serve(token: &str, origin: &SchemeRequestContext, responder: UriSchemeResponder) {
     let captured = prints().lock().ok().and_then(|entries| entries.get(token).filter(|entry| matches(entry, origin))
         .map(|entry| (entry.body.clone(), entry.authority.clone(), entry.lifetime.clone())));
     let Some((body, authority, lifetime)) = captured else { return denied(responder); };
@@ -91,7 +96,7 @@ pub(crate) fn serve(token: &str, origin: &SchemeRequestProvenance, target: &Nati
         builder = builder.header(name, value);
     }
     let Ok(response) = builder.body(std::borrow::Cow::Owned(body)) else { return denied(responder); };
-    let Ok(prepared) = target.prepare(response) else { return denied(responder); };
+    let Ok(prepared) = origin.response_gate().prepare(response) else { return denied(responder); };
     let mut pending = Some((prepared, responder));
     let mut accepted = None;
     let _ = authority(&mut || lifetime.with_active(|| {
@@ -110,7 +115,7 @@ pub(crate) fn serve(token: &str, origin: &SchemeRequestProvenance, target: &Nati
         Ok(())
     }).ok_or_else(|| "The diagram print grant was released".to_owned())?);
     match accepted {
-        Some(Ok(answer)) => { let _ = answer.finish(); }
+        Some(Ok(answer)) => { let _ = answer.submit(); }
         Some(Err(rejected)) => denied(rejected.into_responder()),
         None => if let Some((_, responder)) = pending { denied(responder); },
     }

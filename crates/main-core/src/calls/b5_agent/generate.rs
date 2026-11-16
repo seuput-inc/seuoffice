@@ -2592,7 +2592,9 @@ mod continuation_regressions {
         let _ = finish_inspections(&mut window, &mut host, &snap, opened.background);
         let effects = host.log.borrow().len();
         let sends = host.sends.len();
-        let committed = window.complete_committed_open(run, token.commit()).unwrap();
+        let committed = window
+            .complete_committed_open(*run, token.commit())
+            .unwrap();
         assert_eq!(committed.cleanup_window, 1);
         assert_eq!(committed.outcome, WindowOutcome::Made(true));
         assert_eq!(window.generate_window_contents(&host).unwrap(), Some(202.0));

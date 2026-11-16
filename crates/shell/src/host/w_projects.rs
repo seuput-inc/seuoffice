@@ -1,6 +1,9 @@
 pub(crate) mod platform;
 mod new_document;
-pub(crate) use new_document::write_new_document_owned;
+pub(crate) use new_document::{
+    write_new_document_existing_document, write_new_document_owned,
+    write_new_document_publication_owned,
+};
 
 use std::sync::{Arc, LazyLock, Mutex};
 

@@ -4,9 +4,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
-use cef::{ImplBrowser, ImplFrame};
-#[cfg(not(any(target_os = "macos", windows)))]
-use cef::ImplDisplay;
 use clipboard_rs::{Clipboard as _, ClipboardContent, ClipboardContext, RustImageData};
 use clipboard_rs::common::RustImage;
 use main_core::packages::electron_utils::generate_handoff::GenerateHandoffTarget;
@@ -22,14 +19,11 @@ use shell_ipc_w::tabs::TabsState;
 use tauri::Manager;
 #[cfg(not(windows))]
 use tauri::{LogicalPosition, LogicalSize};
-use tauri_runtime_cef::{FrameEventKind, WebviewCefExt};
-#[cfg(any(target_os = "macos", windows))]
-use tauri_runtime_cef::WindowCefExt;
+use crate::native::{DocumentContext, EditCommand, NativeEventKind, WebviewExt, WindowExt};
 
 use crate::host::{HostContext, on_ui, w::{on_core, post_core}};
 use crate::host::window::{Bridge, ViewSpec, WindowOptions, WindowSpec};
 
-#[cfg(any(target_os = "macos", windows))]
 mod display;
 #[cfg(target_os = "macos")]
 mod fullscreen_move;
@@ -41,7 +35,7 @@ struct Headless {
     target: Option<String>,
     generation: RendererGeneration,
     invocation: shell_contract::ipc::NativeInvocationTarget,
-    origin: Option<tauri_runtime_cef::NativeContextToken>,
+    origin: Option<DocumentContext>,
     window: tauri::Window,
     done: HeadlessDone,
     timer: mpsc::Sender<()>,
@@ -102,21 +96,16 @@ fn finish_headless_job(cx: &HostContext, job: Option<Headless>, result: Result<(
     }
 }
 
-fn terminate_headless(
-    shell: &Shell, view: ViewId, generation: &RendererGeneration,
-    origin: &tauri_runtime_cef::NativeContextToken, process: &tauri_runtime_cef::NativeRendererProcessIdentity,
-) {
+fn terminate_headless(shell: &Shell, view: ViewId, generation: &RendererGeneration) {
     let job = {
         let mut jobs = shell.headless.lock().unwrap_or_else(|error| error.into_inner());
-        if !jobs.get(&view).is_some_and(|job| job.generation.same_generation(generation)
-            && job.origin.as_ref() == Some(origin)
-            && origin.renderer_process_identity().as_ref() == Some(process)) { return; }
+        if !jobs.get(&view).is_some_and(|job| job.generation.same_generation(generation)) { return; }
         jobs.remove(&view)
     };
     finish_headless_job(&shell.cx, job, Err("The Slides renderer stopped".into()));
 }
 
-fn register_headless(shell: &Shell, view: ViewId, expected: &RendererGeneration, origin: &tauri_runtime_cef::NativeContextToken) {
+fn register_headless(shell: &Shell, view: ViewId, expected: &RendererGeneration, origin: &DocumentContext) {
     let (generation, invocation) = {
         let jobs = shell.headless.lock().unwrap_or_else(|error| error.into_inner());
         let Some(job) = jobs.get(&view) else { return };
@@ -185,20 +174,18 @@ fn export_headless_pdf(cx: &HostContext, input: String, output: String, timeout:
         let options = WindowOptions {
             background_throttling: Some(tauri::utils::config::BackgroundThrottlingPolicy::Disabled),
             on_frame: Some(Arc::new(move |view, event| {
-                if !event.is_main { return; }
                 let Some((created_view, generation)) = frames_identity.get() else { return; };
                 if *created_view != view { return; }
                 match &event.kind {
-                    FrameEventKind::NativeContextRegistered { origin }
-                        if origin.browser_id() == event.browser_id && origin.frame_id() == event.frame_id => register_headless(&frames, view, generation, origin),
-                    FrameEventKind::NativeContextRevoked { origin } => {
+                    NativeEventKind::DocumentRegistered { context: origin }
+                        if origin.browser().is_same_browser(&event.browser) => register_headless(&frames, view, generation, origin),
+                    NativeEventKind::DocumentRevoked { document, .. } => {
                         let matches = frames.headless.lock().unwrap_or_else(|error| error.into_inner()).get(&view)
-                            .is_some_and(|job| job.origin.as_ref() == Some(origin));
+                            .is_some_and(|job| job.origin.as_ref().is_some_and(|origin| origin.identity() == document));
                         if matches { finish_headless(&frames.cx, &frames.headless, view, generation, Err("The hidden Slides renderer context was revoked".into())); }
                     }
-                    FrameEventKind::NativeRendererTerminated { origin, process } =>
-                        terminate_headless(&frames, view, generation, origin, process),
-                    FrameEventKind::NavigationFailed { .. } => finish_headless(&frames.cx, &frames.headless, view, generation, Err("The hidden Slides document could not load".into())),
+                    NativeEventKind::WebviewProcessFailed { .. } => terminate_headless(&frames, view, generation),
+                    NativeEventKind::NavigationFailed { .. } => finish_headless(&frames.cx, &frames.headless, view, generation, Err("The hidden Slides document could not load".into())),
                     _ => {}
                 }
             })),
@@ -312,25 +299,8 @@ fn clipboard<T: Send + 'static>(cx: &HostContext, work: impl FnOnce(&ClipboardCo
     })
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
-fn display(native: &cef::Display, work_area: bool) -> Display {
-    let bounds = if work_area { native.work_area() } else { native.bounds() };
-    Display { id: native.id(), x: f64::from(bounds.x), y: f64::from(bounds.y),
-        width: f64::from(bounds.width), height: f64::from(bounds.height) }
-}
-
-#[cfg(not(any(target_os = "macos", windows)))]
-fn display_by_id(id: i64) -> Result<cef::Display, String> {
-    let mut displays = vec![None; cef::display_get_count()];
-    cef::display_get_alls(Some(&mut displays));
-    displays.into_iter().flatten().find(|display| display.id() == id)
-        .ok_or_else(|| "The presentation display was disconnected".into())
-}
-
-#[cfg(any(target_os = "macos", windows))]
 fn display_by_id(id: i64) -> Result<display::NativeDisplay, String> { display::by_id(id) }
 
-#[cfg(any(target_os = "macos", windows))]
 fn display(native: &display::NativeDisplay, work_area: bool) -> Display {
     if work_area { native.work } else { native.bounds }
 }
@@ -375,24 +345,37 @@ fn move_presenter_native(native: &tauri::Window, target: Display) -> Result<(), 
     let bounds = display(&display_by_id(target.id)?, true);
     let fullscreen = native.is_fullscreen().map_err(|error| error.to_string())?;
     #[cfg(target_os = "macos")]
-    let simple = native.is_simple_fullscreen().map_err(|error| error.to_string())?;
+    let simple = !fullscreen && is_simple_fullscreen(native)?;
     if fullscreen { native.set_fullscreen(false).map_err(|error| error.to_string())?; }
     #[cfg(target_os = "macos")]
     if simple { native.set_simple_fullscreen(false).map_err(|error| error.to_string())?; }
     set_bounds(native, bounds)?;
     if fullscreen {
-        #[cfg(not(windows))]
-        {
-            let point = cef::Point { x: (bounds.x + bounds.width / 2.0) as i32, y: (bounds.y + bounds.height / 2.0) as i32 };
-            let physical = cef::display_convert_screen_point_to_pixels(Some(&point));
-            native.set_fullscreen_on_monitor(tauri::PhysicalPosition::new(f64::from(physical.x), f64::from(physical.y))).map_err(|error| error.to_string())?;
-        }
+        // `set_bounds` already moved the window onto the target display.
+        #[cfg(target_os = "macos")]
+        native.set_fullscreen(true).map_err(|error| error.to_string())?;
         #[cfg(windows)]
         native.set_fullscreen_on_monitor(tauri::PhysicalPosition::new(bounds.x + bounds.width / 2.0, bounds.y + bounds.height / 2.0)).map_err(|error| error.to_string())?;
     }
     #[cfg(target_os = "macos")]
     if simple { native.set_simple_fullscreen(true).map_err(|error| error.to_string())?; }
     Ok(())
+}
+
+/// Tauri has no getter for simple fullscreen. Tao's mode hides the title bar and pins the
+/// window (not movable); nothing else in the shell does both.
+#[cfg(target_os = "macos")]
+fn is_simple_fullscreen(window: &tauri::Window) -> Result<bool, String> {
+    use objc2::rc::Retained;
+    use objc2_app_kit::{NSWindow, NSWindowStyleMask};
+    let handle = window.native_window_handle().map_err(|error| error.to_string())?;
+    handle.with_window(|_| -> Result<bool, String> {
+        let pointer = window.ns_window().map_err(|error| error.to_string())?;
+        // SAFETY: the original window's native effect guard is held on the UI thread.
+        let native = unsafe { Retained::retain(pointer.cast::<NSWindow>()) }
+            .ok_or("The native presentation window is unavailable")?;
+        Ok(!native.isMovable() && !native.styleMask().contains(NSWindowStyleMask::Titled))
+    }).map_err(|error| error.to_string())?
 }
 
 fn prepare_presenter_window(cx: &HostContext, owner: &RenderOwner, expected: WindowId) -> Result<tauri::Window, String> {
@@ -1062,7 +1045,7 @@ impl AudienceStart {
         }
     }
 
-    fn registered(self: &Arc<Self>, view: ViewId, origin: &tauri_runtime_cef::NativeContextToken) {
+    fn registered(self: &Arc<Self>, view: ViewId, origin: &DocumentContext) {
         let Some(created) = self.created.get() else { return };
         if created.view != view { return; }
         let target = match native_owner::capture_owner(&self.cx.views, view, &created.generation) {
@@ -1108,7 +1091,7 @@ impl AudienceStart {
         }
     }
 
-    fn ready(self: &Arc<Self>, origin: &tauri_runtime_cef::NativeContextToken, display: Display) {
+    fn ready(self: &Arc<Self>, origin: &DocumentContext, display: Display) {
         let owner = {
             let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
             let Some(owner) = state.owner.clone() else { return };
@@ -1145,25 +1128,22 @@ fn open_audience(cx: &HostContext, display: Display, source: RenderOwner, cancel
             let closed = start.clone();
             let options = WindowOptions {
                 on_frame: Some(Arc::new(move |view, event| {
-                    if !event.is_main { return; }
                     match &event.kind {
-                        FrameEventKind::NativeContextRegistered { origin }
-                            if origin.browser_id() == event.browser_id && origin.frame_id() == event.frame_id => frames.registered(view, origin),
-                        FrameEventKind::FirstVisuallyNonEmptyLayout { origin }
-                            if origin.browser_id() == event.browser_id && origin.frame_id() == event.frame_id => frames.ready(origin, display),
-                        FrameEventKind::NativeContextRevoked { origin } => {
+                        NativeEventKind::DocumentRegistered { context: origin }
+                            if origin.browser().is_same_browser(&event.browser) => frames.registered(view, origin),
+                        NativeEventKind::DocumentReady { context: origin }
+                            if origin.browser().is_same_browser(&event.browser) => frames.ready(origin, display),
+                        NativeEventKind::DocumentRevoked { document, .. } => {
                             let matches = frames.state.lock().unwrap_or_else(|error| error.into_inner()).owner.as_ref()
-                                .is_some_and(|owner| owner.context.authority_ref::<native_owner::NativeOwnerAuthority>().is_some_and(|proof| proof.origin == *origin));
+                                .is_some_and(|owner| owner.context.authority_ref::<native_owner::NativeOwnerAuthority>().is_some_and(|proof| proof.origin.identity() == document));
                             if matches { frames.fail("The audience renderer context was revoked".into()); }
                         }
-                        FrameEventKind::NativeRendererTerminated { origin, process } => {
-                            let matches = frames.created.get().is_some_and(|created| created.view == view)
-                                && origin.renderer_process_identity().as_ref() == Some(process)
-                                && frames.state.lock().unwrap_or_else(|error| error.into_inner()).owner.as_ref()
-                                    .is_some_and(|owner| owner.context.authority_ref::<native_owner::NativeOwnerAuthority>().is_some_and(|proof| proof.origin == *origin));
-                            if matches { frames.fail("The audience renderer stopped".into()); }
+                        NativeEventKind::WebviewProcessFailed { .. } => {
+                            if frames.created.get().is_some_and(|created| created.view == view) {
+                                frames.fail("The audience renderer stopped".into());
+                            }
                         }
-                        FrameEventKind::NavigationFailed { .. } => frames.fail("The audience document could not load".into()),
+                        NativeEventKind::NavigationFailed { .. } => frames.fail("The audience document could not load".into()),
                         _ => {}
                     }
                 })),
@@ -1393,13 +1373,20 @@ impl SlidesShell for Shell {
     }
 
     fn native_clipboard(&self, view: ViewId, op: &str) {
-        let op = op.to_owned();
+        let command = match op {
+            "cut" => EditCommand::Cut,
+            "copy" => EditCommand::Copy,
+            "paste" => EditCommand::Paste,
+            _ => return eprintln!("[slides] unknown native clipboard command: {op}"),
+        };
         let Some(webview) = self.cx.windows.webview(view) else { return eprintln!("[slides] clipboard target is gone"); };
-        log_error("dispatching native clipboard command", webview.with_cef_webview(move |native| {
-            if let Some(frame) = native.browser().focused_frame().or_else(|| native.browser().main_frame()) {
-                match op.as_str() { "cut" => frame.cut(), "copy" => frame.copy(), "paste" => frame.paste(), _ => eprintln!("[slides] unknown native clipboard command: {op}") }
-            }
-        }).map_err(|error| error.to_string()));
+        let page = match webview.page() {
+            Ok(page) => page,
+            Err(error) => return log_error("dispatching native clipboard command", Err(error)),
+        };
+        page.edit(command, Box::new(|result| {
+            log_error("dispatching native clipboard command", result.map_err(|error| error.to_string()));
+        }));
     }
 
     fn prepare_for_open_owned(&self, parent: Option<WindowId>, path: &str, source: RenderOwner, destination: RenderOwner, cancel: CancelToken, pending: CancelToken, done: Box<dyn FnOnce(Result<PreparedOpen, String>) + Send>) {
@@ -1445,45 +1432,21 @@ impl SlidesShell for Shell {
 
     fn displays(&self) -> Result<Vec<Display>, EngineError> {
         on_ui(&self.cx.ui, || {
-            #[cfg(any(target_os = "macos", windows))]
-            { display::all().map(|displays| displays.into_iter().map(|display| display.bounds).collect()) }
-            #[cfg(not(any(target_os = "macos", windows)))]
-            {
-                let mut displays = vec![None; cef::display_get_count()];
-                cef::display_get_alls(Some(&mut displays));
-                Ok(displays.into_iter().flatten().map(|native| display(&native, false)).collect())
-            }
+            display::all().map(|displays| displays.into_iter().map(|display| display.bounds).collect())
         }).map_err(EngineError)
     }
 
     fn display_of(&self, window: Option<WindowId>) -> Result<Display, EngineError> {
-        #[cfg(any(target_os = "macos", windows))]
         let window = window.map(|id| {
             self.cx.views.window_lifecycle(id).ok_or("The presentation window is gone".to_owned())?.window_handle()
         }).transpose().map_err(EngineError)?;
-        #[cfg(not(any(target_os = "macos", windows)))]
-        let cx = self.cx.clone();
         on_ui(&self.cx.ui, move || {
-            #[cfg(any(target_os = "macos", windows))]
-            {
-                match window {
-                    Some(window) => {
-                        let handle = window.native_window_handle().map_err(|error| error.to_string())?;
-                        handle.with_window(|_| display::for_window(&window)).map_err(|error| error.to_string())?
-                    }
-                    None => display::primary(),
+            match window {
+                Some(window) => {
+                    let handle = window.native_window_handle().map_err(|error| error.to_string())?;
+                    handle.with_window(|_| display::for_window(&window)).map_err(|error| error.to_string())?
                 }
-            }
-            #[cfg(not(any(target_os = "macos", windows)))]
-            {
-            let native = if let Some(window) = window {
-                let window = native_window(&cx, window)?;
-                let position = window.outer_position().map_err(|error| error.to_string())?;
-                let size = window.outer_size().map_err(|error| error.to_string())?;
-                let bounds = cef::Rect { x: position.x, y: position.y, width: i32::try_from(size.width).map_err(|error| error.to_string())?, height: i32::try_from(size.height).map_err(|error| error.to_string())? };
-                cef::display_get_matching_bounds(Some(&bounds), 1)
-            } else { cef::display_get_primary() };
-            native.map(|native| display(&native, false)).ok_or_else(|| "The native display is unavailable".to_owned())
+                None => display::primary(),
             }
         }).map_err(EngineError)
     }

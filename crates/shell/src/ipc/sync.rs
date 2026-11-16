@@ -1,14 +1,21 @@
-//! `ipcRenderer.sendSync` (the stage 3 shell contract, section 2): a
-//! synchronous XHR of the bridge to the scheme `seuoffice-ipc`. The CEF
-//! runtime serves a custom scheme at `http://<scheme>.localhost/`, so the
-//! request is `POST http://seuoffice-ipc.localhost/<channel>` (the bridge
-//! builds the URL with Tauri's `convertFileSrc`); the body is the frame
-//! `{args}`, the answer the frame `{value}` or `{error}`.
+//! The scheme `seuoffice-ipc` (the stage 3 shell contract, section 2). It serves three things
+//! to the document bridge, each authenticated by the document nonce in the `x-seuoffice-doc`
+//! header (never by the webview label alone):
 //!
-//! Besides the table's one `sendSync` channel the scheme answers three
-//! reserved channels that are not in the table, on any thread, from the
-//! sender's view record: the drop paths of `webUtils.getPathForFile` and the
-//! zoom factor of `webFrame`.
+//! - `ipcRenderer.sendSync`: a synchronous XHR `POST <scheme>/<channel>`, body the frame
+//!   `{args}`, answer the frame `{value}` or `{error}`. Only documents whose browser was built
+//!   with the preload bridge may call it. The scheme is `seuoffice-ipc://localhost/` on macOS
+//!   and `http://seuoffice-ipc.localhost/` on Windows; the bridge builds the URL with Tauri's
+//!   `convertFileSrc`.
+//! - `GET outbox/<documentId>`: the frames queued in the document's reply sink since the last
+//!   pull (see [`encode_frames`]). The sink wakes the bridge with `__seuofficeWake`; replies
+//!   never travel through `evaluateJavaScript`.
+//! - `POST seuoffice:register`: registers the nonce synchronously, for a `sendSync` that runs
+//!   before the bridge's own asynchronous `ipc_register` completed.
+//!
+//! Besides the table's one `sendSync` channel the scheme answers three reserved channels that
+//! are not in the table, from the sender's view record: the drop paths of
+//! `webUtils.getPathForFile` and the zoom factor of `webFrame`.
 
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
@@ -16,16 +23,17 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Value, json};
 use shell_contract::error::IpcError;
 use shell_contract::ipc::{ChannelKind, NativeRequestOwner, Reply, Sender};
-use shell_contract::value::IpcValue;
 use shell_contract::runtime::{CancelSubscription, CancelToken};
+use shell_contract::value::IpcValue;
 use shell_core::wire::{Encoder, decode_list, frame, unframe};
-use tauri::http::{self, Method, StatusCode};
-use tauri::{AppHandle, Manager, Runtime, UriSchemeContext, UriSchemeResponder};
-use tauri_runtime_cef::WebviewCefExt;
+use tauri::http::{self, HeaderMap, Method, StatusCode};
+use tauri::{Manager, UriSchemeContext, UriSchemeResponder, Wry};
 
-use super::{Ipc, dispatch};
+use super::{Ipc, NOT_READY, dispatch, register_document, verified_sender};
+use crate::ipc::native_owner::NativeOwnerAuthority;
+use crate::native::{self, BridgeMode, Native, ReplyFrame, WebviewExt};
 use crate::trace::trace;
-use crate::{ipc::native_owner::NativeOwnerAuthority, views::NativeReservedViewState};
+use crate::views::NativeReservedViewState;
 
 pub const SCHEME: &str = "seuoffice-ipc";
 
@@ -33,6 +41,8 @@ pub const SCHEME: &str = "seuoffice-ipc";
 const DROPPED_PATHS: &str = "webutils:dropped-paths";
 const SET_ZOOM_FACTOR: &str = "webframe:set-zoom-factor";
 const GET_ZOOM_FACTOR: &str = "webframe:get-zoom-factor";
+const REGISTER: &str = "seuoffice:register";
+const OUTBOX: &str = "outbox/";
 
 fn response(
     status: StatusCode,
@@ -44,6 +54,7 @@ fn response(
         // the page's origin is another host of `.localhost`: a cross-origin XHR
         .header(http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
         .header(http::header::ACCESS_CONTROL_ALLOW_HEADERS, "*")
+        .header(http::header::ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, OPTIONS")
         .body(body.into())
         .expect("a response of fixed parts")
 }
@@ -93,6 +104,7 @@ fn revoked() -> IpcError {
 }
 
 /// The caller supplies one already authenticated owner and its captured view objects.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_verified(
     ipc: &Ipc,
     sender: Sender,
@@ -117,33 +129,37 @@ pub(crate) fn handle_verified(
     };
     ipc.note_call();
     if matches!(channel.as_str(), DROPPED_PATHS | SET_ZOOM_FACTOR | GET_ZOOM_FACTOR) {
-        let callback = completion.clone();
-        let queued = webview.with_cef_webview_async(move |result| {
-            use cef::{ImplBrowser, ImplBrowserHost};
-            let reply = result.ok().and_then(|view| {
-                if view.snapshot().browser_id != origin.browser_id()
-                    || !view.frame_navigation_state().is_same_browser(origin.browser_state()) { return None; }
-                origin.with_live(|| renderer.with_active(|| loss.with_active(|| {
-                    match channel.as_str() {
-                        DROPPED_PATHS => Ok(IpcValue::Array(reserved_state.dropped().into_iter()
-                            .map(|path| IpcValue::String(path.to_string_lossy().into_owned())).collect())),
-                        GET_ZOOM_FACTOR => Ok(IpcValue::Number(reserved_state.zoom())),
-                        SET_ZOOM_FACTOR => {
-                            if let Some(IpcValue::Number(factor)) = args.first()
-                                && factor.is_finite() && *factor > 0.0 {
-                                let Some(host) = view.browser().host() else { return Err(revoked()) };
-                                host.set_zoom_level(factor.ln() / 1.2_f64.ln());
-                                reserved_state.set_zoom(*factor);
-                            }
-                            Ok(IpcValue::Undefined)
+        // the webview must still be the browser this document was registered on
+        let current = webview.native_browser()
+            .is_ok_and(|browser| origin.browser().is_same_browser(&browser));
+        let mut zoom = None;
+        let reply = if current {
+            origin.with_live(|| renderer.with_active(|| loss.with_active(|| {
+                match channel.as_str() {
+                    DROPPED_PATHS => Ok(IpcValue::Array(reserved_state.dropped().into_iter()
+                        .map(|path| IpcValue::String(path.to_string_lossy().into_owned())).collect())),
+                    GET_ZOOM_FACTOR => Ok(IpcValue::Number(reserved_state.zoom())),
+                    SET_ZOOM_FACTOR => {
+                        if let Some(IpcValue::Number(factor)) = args.first()
+                            && factor.is_finite() && *factor > 0.0 {
+                            reserved_state.set_zoom(*factor);
+                            zoom = Some(*factor);
                         }
-                        _ => Err(revoked()),
+                        Ok(IpcValue::Undefined)
                     }
-                }))).flatten().flatten()
-            }).unwrap_or_else(|| Err(revoked()));
-            callback.finish(reply);
-        });
-        if queued.is_err() { completion.finish(Err(revoked())); }
+                    _ => Err(revoked()),
+                }
+            }))).flatten().flatten().unwrap_or_else(|| Err(revoked()))
+        } else {
+            Err(revoked())
+        };
+        // the page zoom is applied after every authority gate ended
+        let reply = match (zoom, reply) {
+            (Some(factor), Ok(value)) => webview.set_zoom(factor).map(|()| value)
+                .map_err(|error| IpcError { name: None, message: error.to_string() }),
+            (_, reply) => reply,
+        };
+        completion.finish(reply);
         return;
     }
     ipc.core.post(Box::new(move || {
@@ -167,8 +183,66 @@ fn text_error(status: StatusCode, text: &str) -> http::Response<Cow<'static, [u8
     )
 }
 
-pub fn handle<R: Runtime>(
-    ctx: UriSchemeContext<'_, R>,
+const FRAME_HEADER: usize = 17;
+
+/// The outbox wire format the bridge parses (`invoke-system.js`, `deliverFrames`), per frame,
+/// little endian: `u32 callback`, `u8 flags` (1 channel message, 2 raw body, 4 channel end),
+/// `u64 index`, `u32 length`, then `length` body bytes. A plain reply has no channel flag and
+/// index 0.
+pub(crate) fn encode_frames(frames: &[ReplyFrame]) -> Vec<u8> {
+    let total = frames.iter().map(|frame| FRAME_HEADER + frame.body.len()).sum();
+    let mut out = Vec::with_capacity(total);
+    for frame in frames {
+        let (mut flags, index) = match frame.channel {
+            None => (0u8, 0u64),
+            Some((index, end)) => (1 | if end { 4 } else { 0 }, index),
+        };
+        if frame.raw {
+            flags |= 2;
+        }
+        let length = u32::try_from(frame.body.len()).expect("a queued frame is far below 4 GiB");
+        out.extend_from_slice(&frame.callback.to_le_bytes());
+        out.push(flags);
+        out.extend_from_slice(&index.to_le_bytes());
+        out.extend_from_slice(&length.to_le_bytes());
+        out.extend_from_slice(&frame.body);
+    }
+    out
+}
+
+/// `seuoffice:register`: the nonce of a document whose asynchronous registration is in flight.
+fn register_sync(native: &Native, label: &str, headers: &HeaderMap) -> http::Response<Cow<'static, [u8]>> {
+    let Some(nonce) = native::ingress::nonce_of(headers) else {
+        return text_error(StatusCode::FORBIDDEN, NOT_READY);
+    };
+    let Some(browser) = native.browser(label) else {
+        return text_error(StatusCode::FORBIDDEN, NOT_READY);
+    };
+    if browser.bridge_mode() != BridgeMode::Preload {
+        return text_error(StatusCode::FORBIDDEN, "this webview has no synchronous bridge");
+    }
+    match register_document(&browser, nonce) {
+        Ok(registered) => response(StatusCode::OK, registered.to_string().into_bytes()),
+        Err(error) => text_error(StatusCode::CONFLICT, &error),
+    }
+}
+
+/// `outbox/<documentId>`: take the frames queued for the document the nonce names.
+fn outbox(native: &Native, label: &str, headers: &HeaderMap, id: &str) -> http::Response<Cow<'static, [u8]>> {
+    let Some(context) = native::ingress::redeem(native, label, headers) else {
+        return text_error(StatusCode::FORBIDDEN, NOT_READY);
+    };
+    if id.parse::<u64>().ok() != Some(context.identity().id().get()) {
+        return text_error(StatusCode::CONFLICT, "Renderer document is no longer available.");
+    }
+    let Some(sink) = context.reply_sink() else {
+        return text_error(StatusCode::FORBIDDEN, "Renderer document is no longer available.");
+    };
+    response(StatusCode::OK, encode_frames(&sink.drain()))
+}
+
+pub fn handle(
+    ctx: UriSchemeContext<'_, Wry>,
     request: http::Request<Vec<u8>>,
     responder: UriSchemeResponder,
 ) {
@@ -176,88 +250,51 @@ pub fn handle<R: Runtime>(
         responder.respond(response(StatusCode::NO_CONTENT, Vec::new()));
         return;
     }
-    let ipc = ctx.app_handle().state::<Ipc>();
-    let Ok((sender, native)) = ipc.call_sender_label(ctx.webview_label()) else {
-        trace!("sync", "refused: '{}' has no bridge", ctx.webview_label());
-        responder.respond(text_error(
-            StatusCode::FORBIDDEN,
-            "this webview has no bridge to the shell",
-        ));
+    let app = ctx.app_handle();
+    let label = ctx.webview_label();
+    let Some(natives) = app.try_state::<Native>() else {
+        responder.respond(text_error(StatusCode::FORBIDDEN, "the native module is not installed"));
         return;
     };
     let channel =
         percent_encoding::percent_decode_str(request.uri().path().trim_start_matches('/'))
             .decode_utf8_lossy()
             .into_owned();
-    trace!(
-        "sync",
-        "view {}: '{channel}' ({} bytes)",
-        sender.view.0,
-        request.body().len()
-    );
-    ipc.note_call();
-    let args = match decode_args(request.body()) {
-        Ok(args) => args,
-        Err(error) => {
-            responder.respond(text_error(StatusCode::BAD_REQUEST, &error.to_string()));
-            return;
-        }
-    };
-
-    if let Some(value) = reserved(ctx.app_handle(), &ipc, sender, &channel, &args) {
-        responder.respond(response(StatusCode::OK, answer_frame(&Ok(value))));
+    if channel == REGISTER {
+        responder.respond(register_sync(&natives, label, request.headers()));
         return;
     }
-
-    ipc.core.post(Box::new(move || {
-        dispatch(
-            sender,
-            ChannelKind::SendSync,
-            None,
-            native,
-            channel,
-            args,
-            Box::new(move |reply| {
-                responder.respond(response(StatusCode::OK, answer_frame(&reply)))
-            }),
-        );
-    }));
-}
-
-/// The reserved channels, or none when `channel` is a table channel
-fn reserved<R: Runtime>(
-    app: &AppHandle<R>,
-    ipc: &Ipc,
-    sender: Sender,
-    channel: &str,
-    args: &[IpcValue],
-) -> Option<IpcValue> {
-    match channel {
-        DROPPED_PATHS => Some(IpcValue::Array(
-            ipc.views
-                .dropped(sender.view)
-                .into_iter()
-                .map(|p| IpcValue::String(p.to_string_lossy().into_owned()))
-                .collect(),
-        )),
-        SET_ZOOM_FACTOR => {
-            if let Some(IpcValue::Number(factor)) = args.first()
-                && factor.is_finite()
-                && *factor > 0.0
-            {
-                ipc.views.set_zoom(sender.view, *factor);
-                if let Some(label) = ipc.views.label_of_view(sender.view)
-                    && let Some(webview) = app.get_webview(&label)
-                    && let Err(error) = webview.set_zoom(*factor)
-                {
-                    eprintln!("shell: webFrame.setZoomFactor on '{label}': {error}");
-                }
-            }
-            Some(IpcValue::Undefined)
-        }
-        GET_ZOOM_FACTOR => Some(IpcValue::Number(ipc.views.zoom(sender.view))),
-        _ => None,
+    if let Some(id) = channel.strip_prefix(OUTBOX) {
+        responder.respond(outbox(&natives, label, request.headers(), id));
+        return;
     }
+    // Everything else needs the registered document and the preload bridge, and is refused
+    // before any state is read.
+    let refuse = |text: &str| {
+        trace!("sync", "refused: '{label}': {text}");
+        text_error(StatusCode::FORBIDDEN, text)
+    };
+    let Some(context) = native::ingress::redeem(&natives, label, request.headers()) else {
+        responder.respond(refuse(NOT_READY));
+        return;
+    };
+    if context.browser().bridge_mode() != BridgeMode::Preload {
+        responder.respond(refuse("this webview has no synchronous bridge"));
+        return;
+    }
+    let (Some(ipc), Some(webview)) = (app.try_state::<Ipc>(), app.get_webview(label)) else {
+        responder.respond(refuse(NOT_READY));
+        return;
+    };
+    let Ok((sender, owner, reserved)) = verified_sender(&ipc, label, &context) else {
+        responder.respond(refuse(NOT_READY));
+        return;
+    };
+    trace!("sync", "view {}: '{channel}' ({} bytes)", sender.view.0, request.body().len());
+    handle_verified(
+        &ipc, sender, owner, reserved, webview, channel, request.body(),
+        Box::new(move |bytes| responder.respond(response(StatusCode::OK, bytes))),
+    );
 }
 
 #[cfg(test)]
@@ -287,5 +324,28 @@ mod tests {
         let (header, _) = unframe(&rx.recv().unwrap()).unwrap();
         assert_eq!(header["value"], 5.0);
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn outbox_frames_carry_callback_flags_index_and_length() {
+        let frames = [
+            ReplyFrame { callback: 7, channel: Some((3, false)), raw: true, body: vec![9, 8] },
+            ReplyFrame { callback: 8, channel: Some((4, true)), raw: false, body: Vec::new() },
+            ReplyFrame { callback: 9, channel: None, raw: false, body: b"{}".to_vec() },
+        ];
+        let bytes = encode_frames(&frames);
+        assert_eq!(bytes.len(), 3 * FRAME_HEADER + 4);
+        assert_eq!(&bytes[..4], &7u32.to_le_bytes());
+        assert_eq!(bytes[4], 1 | 2);
+        assert_eq!(&bytes[5..13], &3u64.to_le_bytes());
+        assert_eq!(&bytes[13..17], &2u32.to_le_bytes());
+        assert_eq!(&bytes[17..19], &[9, 8]);
+        let second = 19;
+        assert_eq!(bytes[second + 4], 1 | 4);
+        assert_eq!(&bytes[second + 5..second + 13], &4u64.to_le_bytes());
+        let third = second + FRAME_HEADER;
+        assert_eq!(bytes[third + 4], 0);
+        assert_eq!(&bytes[third + 5..third + 13], &0u64.to_le_bytes());
+        assert_eq!(&bytes[third + FRAME_HEADER..], b"{}");
     }
 }

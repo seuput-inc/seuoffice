@@ -92,13 +92,16 @@ impl Drop for DocumentEvaluation {
     }
 }
 
-/// The script the webview runs: the bridge check first, then the source as a global script
-/// whose completion value (awaited when it is a promise) is the result.
+/// The script the webview runs: the bridge check first, then the source as an expression
+/// whose value (awaited when it is a promise) is the result.
+///
+/// The source is embedded, never passed through `eval` or `Function`: the shell's pages carry
+/// a CSP without `unsafe-eval`, which an `eval` in the page's world would hit. It is therefore
+/// one expression; several statements go in an IIFE.
 pub(crate) fn wrap_script(document: DocumentId, source: &str) -> String {
-    let literal = serde_json::to_string(source).unwrap_or_else(|_| "\"\"".to_owned());
     format!(
         "(async()=>{{if(!window.__seuofficeCheck?.({}))throw new Error(\"{STALE_MARKER}\");\
-         return await (0,eval)({literal});}})()",
+         return await (\n{source}\n);}})()",
         document.get()
     )
 }
@@ -147,11 +150,12 @@ mod tests {
     use crate::native::events::RevokeReason;
 
     #[test]
-    fn the_script_checks_the_public_document_id_and_embeds_the_source_as_a_literal() {
+    fn the_script_checks_the_public_document_id_and_embeds_the_source_without_eval() {
         let id = DocumentId::mint().unwrap();
-        let script = wrap_script(id, "window.x = \"a\"; 1");
+        let script = wrap_script(id, "window.x = \"a\"");
         assert!(script.contains(&format!("__seuofficeCheck?.({})", id.get())));
-        assert!(script.contains(r#"(0,eval)("window.x = \"a\"; 1")"#));
+        assert!(script.contains("return await (\nwindow.x = \"a\"\n);"));
+        assert!(!script.contains("eval(") && !script.contains("Function("));
     }
 
     #[test]

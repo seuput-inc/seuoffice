@@ -102,6 +102,14 @@ impl Scope {
             .chain(self.1.iter().cloned())
             .collect()
     }
+    /// The owners besides the destination that a staged publication admits.
+    pub(super) fn publication_participants(&self) -> Vec<NativeRequestOwner> {
+        self.additional_participants()
+            .iter()
+            .cloned()
+            .chain(self.1.iter().cloned())
+            .collect()
+    }
     pub(super) fn destination(&self) -> &NativeRequestOwner {
         &self.0.destination
     }
@@ -334,6 +342,33 @@ impl Scope {
         })?
     }
 
+    /// A native save whose first file the project writer placed at `path`
+    /// selects exactly that file, while the document still has none.
+    pub(super) fn capture_project_destination(
+        &self,
+        docs: &Docs,
+        path: &str,
+    ) -> Result<(), String> {
+        let Some(binding) = self.native_binding() else {
+            return Ok(());
+        };
+        self.effect(|| {
+            if docs.open_doc.contains(self.destination().view) {
+                return Err("the Word document already has a saved file".to_owned());
+            }
+            let selected = shell_contract::ipc::NativeSaveDestination::from_project_document(
+                binding.clone(),
+                PathBuf::from(path),
+            )?;
+            *self
+                .0
+                .selected
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = Some(selected);
+            Ok(())
+        })?
+    }
+
     pub(super) fn selected_destination(
         &self,
         path: &str,
@@ -346,6 +381,53 @@ impl Scope {
             .filter(|destination| destination.path() == std::path::Path::new(path))
             .cloned()
             .ok_or_else(|| "the native save destination does not match the selected path".into())
+    }
+
+    /// Publishes a staged output on this core turn under the save's authority.
+    /// A native save publishes against the destination it selected for `path`;
+    /// a renderer save has no validating variant, so the authority is checked
+    /// immediately before the admitted publication with nothing able to run
+    /// in between.
+    pub(super) fn publish_staged(
+        &self,
+        path: &str,
+        mut staged: crate::staged::StagedOutput,
+    ) -> Result<crate::staged::Published, String> {
+        self.check()?;
+        let commit = staged.take()?;
+        let result = match &self.0.authority {
+            SaveAuthority::Renderer(origin) => {
+                self.0.effects.publish_owned_staged_write(
+                    origin,
+                    &self.0.destination,
+                    &self.publication_participants(),
+                    &self.0.cancel,
+                    &self.0.pending,
+                    &self.2,
+                    std::path::Path::new(path),
+                    commit,
+                )
+            }
+            SaveAuthority::Native(_) => {
+                let selection = match self.selected_destination(path) {
+                    Ok(selection) => selection,
+                    Err(error) => {
+                        staged.restore(commit);
+                        return Err(error);
+                    }
+                };
+                self.0.effects.publish_native_staged_write_validated(
+                    &selection,
+                    &self.all_participants(),
+                    &self.0.cancel,
+                    &self.0.pending,
+                    &self.2,
+                    commit,
+                    &mut || Ok(()),
+                )
+            }
+        };
+        staged.conclude(result)
     }
 
     pub(super) fn effect_path<T>(
@@ -1419,7 +1501,7 @@ pub(super) fn after_write(
                     let effects = scope.effects().clone();
                     let target = scope.destination().clone();
                     let selected_path = PathBuf::from(&path);
-                    let done = Box::new(
+                    let done: Box<dyn FnOnce(_)> = Box::new(
                         move |result: Result<shell_contract::hosts::SavedFile<PathBuf>, String>| {
                             let saved = match result {
                                 Ok(saved) => saved,

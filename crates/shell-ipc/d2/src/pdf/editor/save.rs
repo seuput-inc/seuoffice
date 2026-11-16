@@ -411,10 +411,11 @@ impl Editor {
                 if redacting {
                     editor.advance_document_revision(view);
                 }
-                let done = Box::new(move |result: Result<(), String>| match result {
-                    Ok(()) => reply.reply(Ok(saved(skips))),
-                    Err(message) => reply.reply(Ok(failed(message))),
-                });
+                let done: Box<dyn FnOnce(_)> =
+                    Box::new(move |result: Result<(), String>| match result {
+                        Ok(()) => reply.reply(Ok(saved(skips))),
+                        Err(message) => reply.reply(Ok(failed(message))),
+                    });
                 match session {
                     Some(session) => session.finalize(done),
                     None => done(Ok(())),
@@ -827,8 +828,8 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
             &e,
             cx.sender.view,
             args.take(0),
-            cx.native,
-            cx.cancel,
+            cx.native.clone(),
+            cx.cancel.clone(),
             reply,
             false,
             direct,

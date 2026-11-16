@@ -11,9 +11,9 @@
 //! sender's webContents. The answer is the value the handler returns.
 
 use jscompat::{JsObject, JsonValue};
-
 use super::template_tabs::{
-    PreviewEnded, PreviewInput, TemplateOpenInput, TemplateTabs, TemplateTabsHost,
+    Opened, OpenedCopyTab, PendingCopy, PreviewEnded, PreviewInput, TemplateOpenInput,
+    TemplateTabs, TemplateTabsHost,
 };
 use super::user_skills_service::{Failure, UserSkillsFail};
 use crate::packages::electron_utils::generate_handoff::{
@@ -65,51 +65,78 @@ fn short_text(value: Option<&JsonValue>, max: usize) -> Option<&str> {
     }
 }
 
-/// the handler of `C.openTemplate`: the asking panel's window is `sender_id`,
-/// the copy's tab follows its project (spec 6); `open_files` is the shell's
-/// filled snapshot of the open documents
-pub fn handle_open_template(
+/// the handler of `C.openTemplate`, first half: the asking panel's window is `sender_id`, the
+/// copy's tab follows its project (spec 6); `open_files` is the shell's filled snapshot of the
+/// open documents. `Err` is the answer; `Ok` is the copy the shell now opens.
+pub fn begin_open_template(
     tabs: &mut TemplateTabs,
     host: &mut dyn TemplateTabsHost,
-    store: &mut HandoffStore,
     open_files: &OpenFilesHolder,
     raw: Option<&JsonValue>,
     sender_id: f64,
-) -> JsonValue {
+) -> Result<PendingCopy, JsonValue> {
     let Some(input) =
         template_open_input_of(raw).and_then(|input| TemplateOpenInput::from_json(&input))
     else {
-        return invalid();
+        return Err(invalid());
     };
-    match tabs.open_template(host, store, open_files, &input, Some(sender_id)) {
-        Ok((tab_id, attached)) => ok_with(&[
-            ("tabId", JsonValue::String(tab_id)),
-            ("attached", JsonValue::Bool(attached)),
+    tabs.begin_template(host, open_files, &input, Some(sender_id))
+        .map_err(failure_json)
+}
+
+/// the handler of `C.openTemplate`, second half: the answer once the copy's tab opened
+pub fn finish_open_template(
+    tabs: &mut TemplateTabs,
+    host: &mut dyn TemplateTabsHost,
+    store: &mut HandoffStore,
+    pending: PendingCopy,
+    opened: Result<Option<OpenedCopyTab>, String>,
+) -> JsonValue {
+    match tabs.finish_open(host, store, pending, opened) {
+        Ok(opened) => ok_with(&[
+            ("tabId", JsonValue::String(opened.tab_id)),
+            ("attached", JsonValue::Bool(opened.attached)),
         ]),
         Err(failure) => failure_json(failure),
     }
 }
 
-/// the handler of `C.openPreview`; `bytes` are the bytes the renderer's
-/// `bytes` field stands for
-pub fn handle_open_preview(
+/// the handler of `C.openPreview`, first half; `bytes` are the bytes the renderer's `bytes`
+/// field stands for
+pub fn begin_open_preview(
     tabs: &mut TemplateTabs,
     host: &mut dyn TemplateTabsHost,
-    store: &mut HandoffStore,
     raw: Option<&JsonValue>,
     bytes: Vec<u8>,
     sender_id: f64,
-) -> JsonValue {
+) -> Result<PendingCopy, JsonValue> {
     let Some(input) =
         preview_input_of(raw).and_then(|input| PreviewInput::from_json(&input, bytes))
     else {
-        return invalid();
+        return Err(invalid());
     };
-    match tabs.open_preview(host, store, sender_id, &input) {
-        Ok((tab_id, preview_id)) => ok_with(&[
+    tabs.begin_preview(host, sender_id, &input)
+        .map_err(failure_json)
+}
+
+/// the handler of `C.openPreview`, second half: the answer once the preview tab opened
+pub fn finish_open_preview(
+    tabs: &mut TemplateTabs,
+    host: &mut dyn TemplateTabsHost,
+    store: &mut HandoffStore,
+    pending: PendingCopy,
+    opened: Result<Option<OpenedCopyTab>, String>,
+) -> JsonValue {
+    match tabs.finish_open(host, store, pending, opened) {
+        Ok(Opened {
+            tab_id,
+            preview_id: Some(preview_id),
+            ..
+        }) => ok_with(&[
             ("tabId", JsonValue::String(tab_id)),
             ("previewId", JsonValue::String(preview_id)),
         ]),
+        Ok(_) => failed(),
         Err(failure) => failure_json(failure),
     }
 }

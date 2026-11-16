@@ -1,12 +1,8 @@
 use super::super::owned_save::{SaveRevision, SaveScope};
 use super::*;
-use main_core::packages::electron_utils::atomic_write::owned::{Admission, admitted};
+use crate::staged::StagedOutput;
+use file_commit::PublicationMode;
 use std::path::{Path, PathBuf};
-
-type Written = (
-    shell_contract::ipc::SavedPublication,
-    Option<shell_contract::ipc::NativeSavedInput>,
-);
 
 struct Staging(PathBuf);
 impl Staging {
@@ -43,7 +39,6 @@ pub(in crate::slides) fn export_pdf(app: &App, cx: &CallContext, args: Args, res
         Ok(revision) => revision,
         Err(error) => return responder.reply(Err(error)),
     };
-    let admission = scope.revision_destination_admission(app, revision.clone(), path.clone());
     let id = app.shell.random_uuid();
     let shell = app.shell.clone();
     let request = scope.request.clone();
@@ -60,7 +55,6 @@ pub(in crate::slides) fn export_pdf(app: &App, cx: &CallContext, args: Args, res
             &request,
             invocation,
             destination,
-            admission,
         );
         super::super::post_to(&services, index, move |app| {
             app.pdf_export_written(scope, revision, save_id, path, result, responder)
@@ -68,7 +62,6 @@ pub(in crate::slides) fn export_pdf(app: &App, cx: &CallContext, args: Args, res
     }));
 }
 
-#[allow(clippy::too_many_arguments)]
 fn stage_and_write(
     shell: &dyn super::super::engine::SlidesShell,
     op: &mut IpcValue,
@@ -77,8 +70,7 @@ fn stage_and_write(
     request: &crate::owned_save::OwnedSave,
     invocation: Option<shell_contract::ipc::NativeInvocationDocument>,
     destination: Option<shell_contract::ipc::NativeSaveDestination>,
-    admission: Admission,
-) -> Result<Written, String> {
+) -> Result<StagedOutput, String> {
     let staging = Staging::create(id)?;
     let staged = staging.0.join("presentation.pdf");
     let staged = staged
@@ -93,7 +85,7 @@ fn stage_and_write(
         .ok_or("The PDF destination is required")?;
     entry.1 = string(staged);
     let participants = request.participants(&[]);
-    let result = match (&request.authority, invocation, destination) {
+    let result = match (&request.authority, invocation, destination.as_ref()) {
         (crate::owned_save::SaveAuthority::Renderer(origin), Some(document), None) => shell
             .export_pdf_native_invocation(
                 op,
@@ -119,7 +111,7 @@ fn stage_and_write(
         (crate::owned_save::SaveAuthority::Native(_), None, Some(destination)) => shell
             .export_pdf_existing_document(
                 op,
-                &destination,
+                destination,
                 &participants,
                 &request.cancel,
                 &request.pending,
@@ -137,11 +129,8 @@ fn stage_and_write(
         return Err("The PDF renderer returned another staging path".into());
     }
     let bytes = std::fs::read(staged).map_err(|error| error.to_string())?;
-    admitted(&admission, || ()).map_err(|error| error.message)?;
-    let (output, input) = request
-        .write_published(destination.as_ref(), Path::new(path), bytes)
-        .map_err(|error| error.message)?;
-    Ok((output, Some(input)))
+    StagedOutput::prepare(Path::new(path), bytes, PublicationMode::Replace)
+        .map_err(|error| error.message)
 }
 
 type GeneratedResult = Result<shell_contract::hosts::GeneratedPathOutcome, String>;
@@ -447,13 +436,28 @@ impl App {
         revision: SaveRevision,
         save_id: Option<String>,
         path: String,
-        result: Result<Written, String>,
+        result: Result<StagedOutput, String>,
         responder: Responder,
     ) {
-        let (output, input) = match result
-            .map_err(thrown)
-            .and_then(|value| scope.effect_at_revision(self, &revision, || value))
-        {
+        let published = match result.map_err(thrown).and_then(|mut staged| {
+            if scope.invocation.is_some() {
+                // the headless invocation has no staged-publication service, so
+                // the rename itself runs inside the invocation's own admission
+                return scope
+                    .effect_at_revision(self, &revision, || staged.publish_in_gate())
+                    .and_then(|published| published)
+                    .map(|()| None);
+            }
+            let mut validate = || {
+                scope
+                    .check_revision_state(self, &revision)
+                    .map_err(|error| error.message)
+            };
+            scope
+                .request
+                .publish_staged(scope.native_destination.as_ref(), staged, &mut validate)
+                .map(Some)
+        }) {
             Ok(value) => value,
             Err(error) => return responder.reply(Err(error)),
         };
@@ -463,6 +467,9 @@ impl App {
                 ("path", string(path)),
             ])));
         }
+        let Some((output, input)) = published else {
+            return responder.reply(Err(thrown("The PDF output was not published")));
+        };
         let request = scope.request.clone();
         let reply_path = path.clone();
         let accepted = scope.reload_losses.clone().unwrap_or_else(|| {
@@ -606,7 +613,7 @@ impl App {
         };
         match self.shell.prepare_reveal_export(
             output,
-            input,
+            Some(input),
             request.participants(&[]),
             request.cancel.clone(),
             request.pending.clone(),

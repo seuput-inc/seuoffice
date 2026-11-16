@@ -122,6 +122,10 @@ impl MarkdownShell for Shell {
     fn write_new_document_owned(&self, origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, effects: &shell_contract::hosts::OwnedEffectsHost, admission: main_core::packages::electron_utils::atomic_write::owned::Admission, file_name: &str, bytes: &[u8]) -> Result<Option<std::path::PathBuf>, String> {
         crate::host::w_projects::write_new_document_owned(origin,destination,cancel,pending,effects,admission,file_name,bytes).map(|path|path.map(Into::into))
     }
+    #[allow(clippy::too_many_arguments)]
+    fn write_new_document_existing_document(&self, binding: &shell_contract::ipc::NativeExistingDocumentBinding, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost, admission: main_core::packages::electron_utils::atomic_write::owned::Admission, file_name: &str, bytes: &[u8]) -> Result<Option<std::path::PathBuf>, String> {
+        crate::host::w_projects::write_new_document_existing_document(binding, participants, cancel, pending, additional, effects, admission, file_name, bytes).map(|path| path.map(Into::into))
+    }
     fn asset_paths_changed(&self, view: ViewId, tracked: bool, open: Option<&str>, save: Option<&str>) -> Result<(), String> {
         use crate::host::document_assets::{self, AssetKind};
         if tracked { document_assets::set_paths(view, AssetKind::Markdown, open, save) }

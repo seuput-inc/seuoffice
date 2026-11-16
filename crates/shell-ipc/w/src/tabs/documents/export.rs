@@ -12,6 +12,7 @@ struct CapturedDocsClose {
 }
 
 impl TabsState {
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare_html_docx_export_owned(
         &self,
         path: &std::path::Path,
@@ -132,6 +133,7 @@ impl TabsState {
     /// Close one captured Docs tab: the dirty query and the close request run
     /// under the captured origin, destination and document owner, and the
     /// manager removes the tab only on the editor's confirmation.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn close_docs_owned_many(
         &self,
         id: &str,

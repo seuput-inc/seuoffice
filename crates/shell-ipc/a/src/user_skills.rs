@@ -65,12 +65,13 @@ use main_core::shell::agent::agent_skills::{ManageWindows, user_skills_manage_ga
 use main_core::shell::app_settings::{agent_skill_notice_due, mark_agent_skill_notice_seen};
 use main_core::shell::atomic_write::atomic_write_file;
 use main_core::shell::user_skills::template_tabs::{
-    OpenedCopyTab, PREVIEW_ENDED_CHANNEL, PreviewInput, TemplateCopy, TemplateOpenInput,
-    TemplateTabs as Tabs, TemplateTabsHost,
+    OpenedCopyTab, PREVIEW_ENDED_CHANNEL, PendingCopy, PreviewInput, TemplateCopy,
+    TemplateOpenInput, TemplateTabs as Tabs, TemplateTabsHost,
 };
 use main_core::shell::user_skills::template_tabs_ipc::{
-    PreviewOriginalAnswer, handle_finish_preview, handle_focus_tab, handle_open_preview,
-    handle_open_template, handle_preview_original, handle_take_handoff,
+    PreviewOriginalAnswer, begin_open_preview, begin_open_template, finish_open_preview,
+    finish_open_template, handle_finish_preview, handle_focus_tab, handle_preview_original,
+    handle_take_handoff,
 };
 use main_core::shell::user_skills::user_skills_ipc::{
     DroppedSkillEntry, Run, UserSkillsIpc, UserSkillsIpcHost,
@@ -153,13 +154,20 @@ pub trait SkillsShell: Send + Sync {
 pub type SkillsShellHost = Arc<dyn SkillsShell>;
 
 /// The tab side of the template flow: the tab manager of the shell window (W)
-/// and the shell entry's functions over it. Every method answers at once.
+/// and the shell entry's functions over it. Every method but `open_template_copy` answers at once.
 pub trait TemplateCopyTabs: Send + Sync {
     /// `openTemplateCopyTab(copy)` of the shell entry: a new untitled tab of
     /// the copy's editor on the copy (sheets through its backing workbook,
     /// the others `tabManager.openTemplateCopy(copy)`); `Ok(None)` when it
-    /// could not. `Err` is a rejection.
-    fn open_template_copy(&self, copy: &TemplateCopy) -> Result<Option<OpenedCopy>, String>;
+    /// could not. `Err` is a rejection. `requester` is the panel whose request opens the tab
+    /// (none: the shell window). `done` runs once, on the core thread, when the tab exists or
+    /// the open failed; it is dropped unanswered only when the host is torn down.
+    fn open_template_copy(
+        &self,
+        copy: &TemplateCopy,
+        requester: Option<ViewId>,
+        done: Box<dyn FnOnce(Result<Option<OpenedCopy>, String>)>,
+    );
     /// `tabManager?.describeWebContents(openerId)?.filePath ??
     /// detachedDocumentFor(openerId)?.filePath`: the file of the document the
     /// asking panel belongs to; `None` for a document never saved
@@ -1430,20 +1438,6 @@ impl TemplateTabsHost for TabsHost {
             .unwrap_or_else(|| lock(&self.skills).service.template_file(skill_id))
     }
 
-    fn open_copy(&mut self, copy: &TemplateCopy) -> Result<Option<OpenedCopyTab>, String> {
-        Ok(self
-            .tabs
-            .open_template_copy(copy)?
-            .map(|opened| OpenedCopyTab {
-                tab_id: opened.tab_id,
-                contents: Box::new(CopyContents {
-                    id: id_of(opened.view),
-                    views: self.env.services.views.clone(),
-                }),
-                owns_copy: opened.owns_copy,
-            }))
-    }
-
     fn opener_file_path(&mut self, opener_id: f64) -> Option<String> {
         self.opener
             .take()
@@ -1492,6 +1486,25 @@ pub struct TemplateTabsCore {
     env: Env,
     copies: TemplateCopyTabsHost,
     skills: Arc<Mutex<SkillsIpc>>,
+}
+
+type PendingFinish =
+    Box<dyn FnOnce(&TemplateTabsCore, PendingCopy, Result<Option<OpenedCopyTab>, String>)>;
+
+/// A begun copy whose open answer was dropped: its folder is removed (exactly once; an answered
+/// open takes the copy out first).
+struct AbandonGuard {
+    core: Rc<TemplateTabsCore>,
+    pending: Option<PendingCopy>,
+}
+
+impl Drop for AbandonGuard {
+    fn drop(&mut self) {
+        if let Some(pending) = self.pending.take() {
+            let mut host = self.core.host();
+            Tabs::abandon(&mut host, pending);
+        }
+    }
 }
 
 impl TemplateTabsCore {
@@ -1549,35 +1562,101 @@ impl TemplateTabsCore {
         }
     }
 
+    /// Opens the begun copy's tab through the shell; `finish` runs on the core thread when the
+    /// open answers. When the answer is dropped unanswered the copy's folder is removed once.
+    fn open_pending(self: &Rc<Self>, pending: PendingCopy, finish: PendingFinish) {
+        let copy = pending.copy().clone();
+        let requester = pending.opener_id().map(view_of);
+        let mut guard = AbandonGuard {
+            core: self.clone(),
+            pending: Some(pending),
+        };
+        self.copies.open_template_copy(
+            &copy,
+            requester,
+            Box::new(move |opened| {
+                let Some(pending) = guard.pending.take() else {
+                    return;
+                };
+                let core = guard.core.clone();
+                let tab = opened.map(|opened| {
+                    opened.map(|opened| OpenedCopyTab {
+                        tab_id: opened.tab_id,
+                        contents: Box::new(CopyContents {
+                            id: id_of(opened.view),
+                            views: core.env.services.views.clone(),
+                        }),
+                        owns_copy: opened.owns_copy,
+                    })
+                });
+                core.forget_gone();
+                finish(&core, pending, tab);
+            }),
+        );
+    }
+
     /// `templateTabs.openPreview(owner, input)`: spec 5.6 "make a blank
-    /// template". Returns `(tabId, previewId)`.
-    pub fn open_preview(&self, owner: ViewId, input: &PreviewInput) -> Svc<(String, String)> {
+    /// template". `done` gets `(tabId, previewId)` once the preview tab is open.
+    pub fn open_preview(
+        self: &Rc<Self>,
+        owner: ViewId,
+        input: &PreviewInput,
+        done: Box<dyn FnOnce(Svc<(String, String)>)>,
+    ) {
         self.forget_gone();
         let mut host = self.host();
-        lock(&self.tabs).open_preview(&mut host, &mut self.store.borrow_mut(), id_of(owner), input)
+        let begun = lock(&self.tabs).begin_preview(&mut host, id_of(owner), input);
+        match begun {
+            Err(failure) => done(Err(failure)),
+            Ok(pending) => self.open_pending(
+                pending,
+                Box::new(move |core, pending, opened| {
+                    let mut host = core.host();
+                    let result = lock(&core.tabs).finish_open(
+                        &mut host,
+                        &mut core.store.borrow_mut(),
+                        pending,
+                        opened,
+                    );
+                    done(result.map(|opened| {
+                        (opened.tab_id, opened.preview_id.unwrap_or_default())
+                    }));
+                }),
+            ),
+        }
     }
 
     /// `templateTabs.openCopy(input)`: any document's byte copy as a new
-    /// untitled tab, with a request handed to its AI panel. Returns the tab id.
+    /// untitled tab, with a request handed to its AI panel. `done` gets the tab id.
     pub fn open_copy(
-        &self,
+        self: &Rc<Self>,
         bytes: &[u8],
         file_name: &str,
         title: &str,
         request: &str,
         chips: &[HandoffSkillChip],
-    ) -> Svc<String> {
+        done: Box<dyn FnOnce(Svc<String>)>,
+    ) {
         self.forget_gone();
         let mut host = self.host();
-        lock(&self.tabs).open_copy(
-            &mut host,
-            &mut self.store.borrow_mut(),
-            bytes,
-            file_name,
-            title,
-            request,
-            chips,
-        )
+        let begun =
+            lock(&self.tabs).begin_open_copy(&mut host, bytes, file_name, title, request, chips);
+        match begun {
+            Err(failure) => done(Err(failure)),
+            Ok(pending) => self.open_pending(
+                pending,
+                Box::new(move |core, pending, opened| {
+                    let mut host = core.host();
+                    let result = lock(&core.tabs).finish_open(
+                        &mut host,
+                        &mut core.store.borrow_mut(),
+                        pending,
+                        opened,
+                    );
+                    done(result.map(|opened| opened.tab_id));
+                }),
+            ),
+        }
     }
 }
 
@@ -1630,15 +1709,30 @@ impl crate::ports::TemplateTabs for TemplateTabsPort {
         let (raw, bytes) = marked_arg(args, &["bytes"]);
         self.core.forget_gone();
         let mut host = self.core.host();
-        let done = handle_open_preview(
+        let begun = begin_open_preview(
             &mut lock(&self.core.tabs),
             &mut host,
-            &mut self.core.store.borrow_mut(),
             raw.as_ref(),
             bytes.unwrap_or_default(),
             id_of(cx.sender.view),
         );
-        answer(reply, done)
+        match begun {
+            Err(refused) => answer(reply, refused),
+            Ok(pending) => self.core.open_pending(
+                pending,
+                Box::new(move |core, pending, opened| {
+                    let mut host = core.host();
+                    let done = finish_open_preview(
+                        &mut lock(&core.tabs),
+                        &mut host,
+                        &mut core.store.borrow_mut(),
+                        pending,
+                        opened,
+                    );
+                    answer(reply, done);
+                }),
+            ),
+        }
     }
 
     fn skills_open_template(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
@@ -1669,15 +1763,30 @@ impl crate::ports::TemplateTabs for TemplateTabsPort {
             host.opener = opener;
             let mut holder = OpenFilesHolder::new();
             holder.set_open_files_source(Some(Box::new(move || files.clone())));
-            let done = handle_open_template(
+            let begun = begin_open_template(
                 &mut lock(&core.tabs),
                 &mut host,
-                &mut core.store.borrow_mut(),
                 &holder,
                 raw.as_ref(),
                 sender,
             );
-            answer(reply, done);
+            match begun {
+                Err(refused) => answer(reply, refused),
+                Ok(pending) => core.open_pending(
+                    pending,
+                    Box::new(move |core, pending, opened| {
+                        let mut host = core.host();
+                        let done = finish_open_template(
+                            &mut lock(&core.tabs),
+                            &mut host,
+                            &mut core.store.borrow_mut(),
+                            pending,
+                            opened,
+                        );
+                        answer(reply, done);
+                    }),
+                ),
+            }
         };
         if with_current {
             self.core.copies.open_files(Box::new(finish));
@@ -2424,9 +2533,14 @@ mod tests {
         focusable: Mutex<Vec<String>>,
     }
     impl TemplateCopyTabs for Copies {
-        fn open_template_copy(&self, copy: &TemplateCopy) -> Result<Option<OpenedCopy>, String> {
+        fn open_template_copy(
+            &self,
+            copy: &TemplateCopy,
+            _requester: Option<ViewId>,
+            done: Box<dyn FnOnce(Result<Option<OpenedCopy>, String>)>,
+        ) {
             lock(&self.seen).push(copy.clone());
-            Ok(lock(&self.opened).clone())
+            done(Ok(lock(&self.opened).clone()));
         }
         fn opener_file_path(&self, opener: ViewId) -> Option<String> {
             lock(&self.files).get(&opener.0).cloned()

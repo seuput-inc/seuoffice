@@ -8,7 +8,7 @@ use main_core::shell::headless_export::HeadlessExportProduct;
 use shell_contract::{Surface, ViewId, WindowId, runtime::{RendererGeneration, Views}};
 use shell_contract::ipc::{NativeInvocationOperation, NativeInvocationSelection, NativeInvocationTarget};
 use shell_ipc_d2::docs::editors::DocsEditors;
-use tauri_runtime_cef::{FrameEventKind, NativeBrowserCloseSubscription, NativeContextToken, WebviewCefExt};
+use crate::native::{BrowserCloseSubscription, BrowserId, DocumentContext, NativeEvent, NativeEventKind, WebviewExt};
 
 use crate::host::{HostContext, window::{Bridge, ViewSpec, WindowOptions, WindowSpec}};
 
@@ -141,8 +141,8 @@ struct Export {
     reserved: OnceLock<ReservedCreation>,
     creation_finished: AtomicBool,
     committed: AtomicBool,
-    registered: OnceLock<NativeContextToken>,
-    browser: OnceLock<i32>,
+    registered: OnceLock<DocumentContext>,
+    browser: OnceLock<BrowserId>,
     cleanup: OnceLock<shell_contract::ipc::NativeHeadlessCleanup>,
     watch_ready: AtomicBool,
     watch_installing: AtomicBool,
@@ -155,7 +155,7 @@ struct Export {
     close_action: Mutex<Option<shell_ipc_d2::docs::editors::CoreReplay>>,
     retry_permit: Mutex<Option<(shell_contract::ipc::NativeBrowserClosePermit, String)>>,
     actor_error: Mutex<Option<String>>,
-    closing: Mutex<Option<NativeBrowserCloseSubscription>>,
+    closing: Mutex<Option<BrowserCloseSubscription>>,
     cancellation: Mutex<Vec<shell_contract::runtime::CancelSubscription>>,
     closed: AtomicBool,
     terminal_receipt: Mutex<Option<shell_contract::ipc::NativeClosureReceipt>>,
@@ -185,8 +185,8 @@ impl Export {
             result = match self.created.get() {
                 Some(created) if created.generation.is_active() && self.cx.views.renderer_generation(created.view)
                     .is_some_and(|current| current.same_generation(&created.generation)) => {
-                    if self.registered.get().is_some_and(|origin| origin.is_verified()
-                        && self.browser.get() == Some(&origin.browser_id())) { Ok(()) }
+                    if self.registered.get().is_some_and(|origin| origin.is_registered()
+                        && self.browser.get() == Some(&origin.browser().id())) { Ok(()) }
                     else { Err("the Docs exporter has no matching registered native document".into()) }
                 }
                 _ => Err("the Docs export renderer was replaced".into()),
@@ -698,55 +698,57 @@ pub(crate) fn export_headless(
             let Some(created) = prepared_job.created.get() else { return prepared_job.finish(Err("the hidden Docs construction was released".into())); };
             editor.begin_headless_export_native(view, input, out, &format, TIMEOUT, &created.target, Box::new(move |result| finished.finish(result)));
             let Some(webview) = created.webview.clone() else { return prepared_job.finish(Err("the hidden Docs webview is unavailable".into())); };
-            let ready_view = webview.clone();
             let navigation_job = prepared_job.clone();
-            if let Err(error) = webview.when_navigation_ready(move |result| {
-                if let Err(error) = result { navigation_job.fail(error.to_string()); return; }
+            let browser = match webview.native_browser() {
+                Ok(browser) => browser,
+                Err(error) => return prepared_job.fail(error),
+            };
+            let ready_browser = browser.clone();
+            browser.navigator().when_ready(move |result| {
+                if let Err(error) = result { navigation_job.fail(error); return; }
                 let bind_job = navigation_job.clone();
-                if let Err(error) = ready_view.with_cef_webview(move |native| {
-                    if bind_job.settled.load(Ordering::Acquire) { return; }
-                    let bound = bind_job.cx.views.bind_docs_media_browser(
-                        view, &lease, native.snapshot().browser_id, native.frame_navigation_state().clone(),
-                    );
-                    if let Err(error) = bound { bind_job.fail(error); return; }
-                    if bind_job.browser.set(native.snapshot().browser_id).is_err() {
-                        bind_job.fail("the hidden Docs browser identity was bound twice".into()); return;
-                    }
-                    let load_job = bind_job.clone();
-                    bind_job.cx.ui.post(Box::new(move || {
-                        let Some(created) = load_job.created.get() else { return; };
-                        let result = crate::ipc::native_owner::run_native_invocation_created_ui(
-                            load_job.cx.ui.as_ref(), &created.target,
-                            || load_job.cx.windows.load_view(view, URL),
-                        ).and_then(|result| result);
-                        if let Err(error) = result { load_job.fail(error); }
-                    }));
-                }) { navigation_job.fail(error.to_string()); }
-            }) { prepared_job.fail(error.to_string()); }
+                if bind_job.settled.load(Ordering::Acquire) { return; }
+                let bound = bind_job.cx.views.bind_docs_media_browser(
+                    view, &lease, ready_browser.id(), ready_browser.clone(),
+                );
+                if let Err(error) = bound { bind_job.fail(error); return; }
+                if bind_job.browser.set(ready_browser.id()).is_err() {
+                    bind_job.fail("the hidden Docs browser identity was bound twice".into()); return;
+                }
+                let load_job = bind_job.clone();
+                bind_job.cx.ui.post(Box::new(move || {
+                    let Some(created) = load_job.created.get() else { return; };
+                    let result = crate::ipc::native_owner::run_native_invocation_created_ui(
+                        load_job.cx.ui.as_ref(), &created.target,
+                        || load_job.cx.windows.load_view(view, URL),
+                    ).and_then(|result| result);
+                    if let Err(error) = result { load_job.fail(error); }
+                }));
+            });
         });
         let ui = cx.ui.clone();
         let mut construction = ConstructionDispatch { job: job.clone(), ready: Some(ready) };
         ui.post(Box::new(move || {
             let job = construction.job.clone();
             let frame_job = job.clone();
-            let on_frame = Arc::new(move |_: ViewId, event: &tauri_runtime_cef::FrameEvent| {
+            let on_frame = Arc::new(move |_: ViewId, event: &NativeEvent| {
                 match &event.kind {
-                    FrameEventKind::DocumentCommitted { url } if event.is_main => {
+                    NativeEventKind::DocumentCommitted { url, .. } => {
                         if frame_job.committed.load(Ordering::Acquire) {
                             frame_job.fail("the hidden Docs document was replaced".into());
                         } else if url == &expected_url {
                             frame_job.committed.store(true, Ordering::Release);
                         }
                     }
-                    FrameEventKind::NativeContextRegistered { origin } if event.is_main
-                        && frame_job.committed.load(Ordering::Acquire)
-                        && event.browser_id == origin.browser_id() && event.frame_id == origin.frame_id() => {
+                    NativeEventKind::DocumentRegistered { context: origin }
+                        if frame_job.committed.load(Ordering::Acquire)
+                        && event.browser.is_same_browser(origin.browser()) => {
                         if let Some(original) = frame_job.registered.get() {
                             if original != origin { frame_job.fail("the hidden Docs native document was replaced".into()); }
                         } else {
                             let registered = (|| {
                                 let created = frame_job.created.get().ok_or("the hidden Docs reservation is unavailable")?;
-                                if frame_job.browser.get() != Some(&origin.browser_id()) {
+                                if frame_job.browser.get() != Some(&origin.browser().id()) {
                                     return Err("the registered Docs browser does not match its reservation".to_owned());
                                 }
                                 let owner = crate::ipc::native_owner::owner_with_browser(
@@ -760,11 +762,11 @@ pub(crate) fn export_headless(
                             if let Err(error) = registered { frame_job.fail(error); }
                         }
                     }
-                    FrameEventKind::NativeContextRevoked { origin }
-                        if frame_job.registered.get().is_some_and(|original| original == origin) => {
+                    NativeEventKind::DocumentRevoked { document, .. }
+                        if frame_job.registered.get().is_some_and(|original| original.identity() == document) => {
                         frame_job.fail("docs renderer stopped (document revoked)".into());
                     }
-                    FrameEventKind::RendererTerminated => frame_job.fail("docs renderer stopped (terminated)".into()),
+                    NativeEventKind::WebviewProcessFailed { .. } => frame_job.fail("docs renderer stopped (terminated)".into()),
                     _ => {}
                 }
             });

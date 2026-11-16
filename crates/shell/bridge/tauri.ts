@@ -1,5 +1,5 @@
 /**
- * The shell's {@link Transport} over Tauri 3's webview IPC (the stage 3 shell
+ * The shell's {@link Transport} over Tauri 2's webview IPC (the stage 3 shell
  * contract, section 2):
  *
  * - `invoke` and `send` are the commands `ipc_invoke` and `ipc_send`, with the
@@ -7,8 +7,9 @@
  * - `listen` hands the view's output stream, a Tauri `Channel`, to the command
  *   `ipc_listen`; replies and events arrive on it in the order the shell sent
  *   them, as `ArrayBuffer` frames;
- * - `sendSync` and the drop paths use the document-start native transport,
- *   whose native entry validates the exact browser, frame and V8 context.
+ * - `sendSync` and the drop paths use the document-start native transport of
+ *   invoke-system.js: a synchronous XHR to the `seuoffice-ipc` scheme that carries the
+ *   document nonce Rust registered for this exact document.
  *
  * Tauri and the native transport are captured before page scripts run.
  */

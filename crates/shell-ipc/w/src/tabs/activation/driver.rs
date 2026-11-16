@@ -211,18 +211,16 @@ fn validate_native_batch(
         if native != step.is_some() {
             return Err("The captured activation step is unavailable".into());
         }
-        if let TabActivationEffect::RemoveChild(view, binding) = effect {
-            if !matches!(effects.get(index + 1), Some(TabActivationEffect::Close(next, captured)) if next == view && captured == binding)
-            {
-                return Err("The spare removal does not match its close".into());
-            }
+        if let TabActivationEffect::RemoveChild(view, binding) = effect
+            && !matches!(effects.get(index + 1), Some(TabActivationEffect::Close(next, captured)) if next == view && captured == binding)
+        {
+            return Err("The spare removal does not match its close".into());
         }
-        if let TabActivationEffect::Close(view, binding) = effect {
-            if index == 0
-                || !matches!(effects.get(index - 1), Some(TabActivationEffect::RemoveChild(previous, captured)) if previous == view && captured == binding)
-            {
-                return Err("The spare close does not match its removal".into());
-            }
+        if let TabActivationEffect::Close(view, binding) = effect
+            && (index == 0
+                || !matches!(effects.get(index - 1), Some(TabActivationEffect::RemoveChild(previous, captured)) if previous == view && captured == binding))
+        {
+            return Err("The spare close does not match its removal".into());
         }
     }
     Ok(())
@@ -231,7 +229,6 @@ fn validate_native_batch(
 pub(crate) enum CommittedSpareClose {
     None,
     Won(shell_contract::ipc::NativeBrowserClosePermit),
-    Restored(RetainedSpareBinding),
     Superseded(
         RetainedSpareBinding,
         shell_contract::ipc::NativeBrowserSuperseded,
@@ -266,6 +263,7 @@ pub(in super::super) enum ActivationParticipants {
     CapturedOnly(Vec<NativeRequestOwner>),
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in super::super) fn prepare_activation_presentation(
     state: &TabsState,
     effects_host: OwnedEffectsHost,
@@ -345,10 +343,10 @@ pub(in super::super) fn prepare_activation_presentation(
             }
         }
         for row in &session_detached {
-            if let Some(id) = row.get("id").and_then(serde_json::Value::as_str) {
-                if let Some(view) = state.tab_contents(id) {
-                    tab_views.push((id.to_owned(), view));
-                }
+            if let Some(id) = row.get("id").and_then(serde_json::Value::as_str)
+                && let Some(view) = state.tab_contents(id)
+            {
+                tab_views.push((id.to_owned(), view));
             }
         }
         for (_, view) in &tab_views {
@@ -499,6 +497,7 @@ struct Run {
     persist_split: Option<Box<dyn FnOnce(TabUiStepDone)>>,
     done: Option<TabUiDone>,
     settled: Option<TabUiDone>,
+    #[allow(clippy::type_complexity)]
     pending_failure: Option<Rc<dyn Fn(&str)>>,
     had_pending: bool,
     revision: super::SplitMemoryRevision,
@@ -577,18 +576,17 @@ impl Run {
                     return run
                         .finish(Err("The native move did not return its close permit".into()));
                 }
-                if let Some(view) = closed {
-                    if !run
+                if let Some(view) = closed
+                    && !run
                         .steps
                         .iter()
                         .any(|(effect, _)| effect.view() == Some(&view))
-                    {
-                        let mut index = run.participants.len();
-                        while index > run.base_count {
-                            index -= 1;
-                            if run.participants[index].view == view {
-                                run.participants.remove(index);
-                            }
+                {
+                    let mut index = run.participants.len();
+                    while index > run.base_count {
+                        index -= 1;
+                        if run.participants[index].view == view {
+                            run.participants.remove(index);
                         }
                     }
                 }
@@ -612,17 +610,16 @@ impl Run {
             }
             if let super::super::host::NativeBrowserRegistration::Registered(owner) =
                 &binding.browser.registration
+                && let Some(loss) = owner.loss_token()
             {
-                if let Some(loss) = owner.loss_token() {
-                    let mut index = self.participants.len();
-                    while index > self.base_count {
-                        index -= 1;
-                        if self.participants[index]
-                            .loss_token()
-                            .is_some_and(|candidate| candidate.same_token(&loss))
-                        {
-                            self.participants.remove(index);
-                        }
+                let mut index = self.participants.len();
+                while index > self.base_count {
+                    index -= 1;
+                    if self.participants[index]
+                        .loss_token()
+                        .is_some_and(|candidate| candidate.same_token(&loss))
+                    {
+                        self.participants.remove(index);
                     }
                 }
             }
@@ -810,6 +807,8 @@ enum Plan {
     },
 }
 
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 fn start(
     state: Rc<TabsState>,
     plan: Plan,
@@ -972,7 +971,6 @@ fn start(
         let (close, superseded, restored) = match close {
             CommittedSpareClose::None => (None, None, None),
             CommittedSpareClose::Won(permit) => (Some(permit), None, None),
-            CommittedSpareClose::Restored(binding) => (None, None, Some(binding)),
             CommittedSpareClose::Superseded(binding, proof) => (None, Some((binding, proof)), None),
         };
         let (changed, split, persist_split) = match publication {
@@ -1046,6 +1044,7 @@ fn start(
 }
 
 impl TabsState {
+    #[allow(clippy::type_complexity)]
     pub(crate) fn enqueue_prepared_activation(
         &self,
         batch: PreparedCommittedActivationBatch,
@@ -1089,7 +1088,6 @@ impl TabsState {
             let (close, superseded, restored) = match close {
                 CommittedSpareClose::None => (None, None, None),
                 CommittedSpareClose::Won(permit) => (Some(permit), None, None),
-                CommittedSpareClose::Restored(binding) => (None, None, Some(binding)),
                 CommittedSpareClose::Superseded(binding, proof) => {
                     (None, Some((binding, proof)), None)
                 }
@@ -1173,6 +1171,8 @@ impl TabsState {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::type_complexity)]
     fn queue_activation(
         &self,
         plan: Plan,
@@ -1214,6 +1214,8 @@ impl TabsState {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::type_complexity)]
     pub(crate) fn activate_loaded_authorized(
         &self,
         id: &str,
@@ -1239,35 +1241,7 @@ impl TabsState {
         );
     }
 
-    pub(crate) fn activate_loaded_existing_document(
-        &self,
-        id: &str,
-        path: shell_contract::ipc::NativeSavedPath,
-        target: NativeRequestOwner,
-        participants: Vec<NativeRequestOwner>,
-        cancel: CancelToken,
-        pending: CancelToken,
-        additional: Vec<CancelToken>,
-        done: TabUiDone,
-    ) {
-        let authority = TabActivationAuthority::ExistingDocumentSave {
-            path,
-            owner: target.clone(),
-            additional,
-        };
-        self.queue_activation(
-            Plan::Activate(id.to_owned()),
-            authority,
-            target,
-            participants,
-            cancel,
-            pending,
-            done,
-            None,
-            None,
-        );
-    }
-
+    #[allow(clippy::too_many_arguments)]
     pub fn activate_loaded_owned_many(
         &self,
         id: &str,
@@ -1291,6 +1265,7 @@ impl TabsState {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn activate_loaded_native_many(
         &self,
         id: &str,
@@ -1315,6 +1290,7 @@ impl TabsState {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn activate_loaded_native_operation_many(
         &self,
         id: &str,
@@ -1339,6 +1315,7 @@ impl TabsState {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn activate_loaded_startup_recovery_many(
         &self,
         id: &str,
@@ -1370,6 +1347,7 @@ impl TabsState {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn begin_loaded_split_startup(
         &self,
         startup: shell_contract::ipc::NativeInvocationOperation,
@@ -1412,6 +1390,7 @@ impl TabsState {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn begin_loaded_split_startup_command(
         &self,
         startup: shell_contract::ipc::NativeInvocationOperation,
@@ -1504,6 +1483,7 @@ impl TabsState {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn set_content_bleed_owned(
         &self,
         origin: NativeRequestOwner,
@@ -1538,6 +1518,7 @@ impl TabsState {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn reveal_loaded_owned_many(
         &self,
         id: &str,
@@ -1561,31 +1542,6 @@ impl TabsState {
             pending,
             done,
         );
-    }
-
-    pub(crate) fn reveal_loaded_existing_document(
-        &self,
-        id: &str,
-        path: shell_contract::ipc::NativeSavedPath,
-        target: NativeRequestOwner,
-        participants: Vec<NativeRequestOwner>,
-        cancel: CancelToken,
-        pending: CancelToken,
-        additional: Vec<CancelToken>,
-        done: TabUiDone,
-    ) {
-        if !self.is_detached_tab(id) || self.tab_contents(id) != Some(target.view) {
-            return done(Err(
-                "The captured detached tab no longer matches its document".into(),
-            ));
-        }
-        let authority = TabActivationAuthority::ExistingDocumentSave {
-            path,
-            owner: target.clone(),
-            additional,
-        };
-        self.hooks
-            .reveal_captured_many(authority, target, participants, cancel, pending, done);
     }
 }
 
@@ -1642,10 +1598,10 @@ pub(crate) fn publish_startup_changed(
             }
         }
         for row in &session_detached {
-            if let Some(id) = row.get("id").and_then(serde_json::Value::as_str) {
-                if let Some(view) = state.tab_contents(id) {
-                    tab_views.push((id.to_owned(), view));
-                }
+            if let Some(id) = row.get("id").and_then(serde_json::Value::as_str)
+                && let Some(view) = state.tab_contents(id)
+            {
+                tab_views.push((id.to_owned(), view));
             }
         }
         for (_, view) in &tab_views {

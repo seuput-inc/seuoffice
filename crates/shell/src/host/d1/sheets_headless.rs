@@ -8,7 +8,7 @@ use std::time::Duration;
 use main_core::packages::electron_utils::headless_export::HeadlessExportRequest;
 use main_core::shell::headless_export::HeadlessExportProduct;
 use shell_contract::{Surface, ViewId, WindowId, ipc::{NativeInvocationOperation, NativeInvocationTarget}, runtime::{CancelSubscription, RendererGeneration, Views}};
-use tauri_runtime_cef::{FrameEventKind, NativeBrowserCloseSubscription, NativeContextToken, WebviewCefExt};
+use crate::native::{BrowserCloseSubscription, BrowserId, DocumentContext, NativeEventKind, WebviewExt};
 
 use crate::host::{HostContext, window::{Bridge, ViewSpec, WindowOptions, WindowSpec}};
 
@@ -65,9 +65,9 @@ struct Export {
     creation_finished: AtomicBool,
     actor_started: AtomicBool,
     committed: AtomicBool,
-    registered: OnceLock<NativeContextToken>,
-    browser: OnceLock<i32>,
-    closing: Mutex<Option<NativeBrowserCloseSubscription>>,
+    registered: OnceLock<DocumentContext>,
+    browser: OnceLock<BrowserId>,
+    closing: Mutex<Option<BrowserCloseSubscription>>,
     closed: AtomicBool,
     settled: AtomicBool,
     cleanup_started: AtomicBool,
@@ -107,8 +107,8 @@ impl Export {
             result = match self.created.get() {
                 Some(created) if created.generation.is_active() && self.cx.views.renderer_generation(created.view)
                     .is_some_and(|current| current.same_generation(&created.generation)) => {
-                    if self.registered.get().is_some_and(|origin| origin.is_verified()
-                        && self.browser.get() == Some(&origin.browser_id())) {
+                    if self.registered.get().is_some_and(|origin| origin.is_registered()
+                        && self.browser.get() == Some(&origin.browser().id())) {
                         created.target.registered_document().and_then(|document| {
                             crate::ipc::native_owner::with_native_invocation_effect(&created.target,
                                 document.owner(), self.operation.cancel(), self.operation.shutdown(), || ())
@@ -428,14 +428,14 @@ pub(crate) fn export_headless(
                         on_open: Some(Arc::new(|_, _, _| {})),
                         on_frame: Some(Arc::new(move |_, event| {
                             match &event.kind {
-                                FrameEventKind::DocumentCommitted { url } if event.is_main => {
+                                NativeEventKind::DocumentCommitted { url, .. } => {
                                     if frame_job.committed.load(Ordering::Acquire) {
                                         frame_job.finish(Err("The hidden Sheets document was replaced".into()));
                                     } else if url == &expected_url { frame_job.committed.store(true, Ordering::Release); }
                                 }
-                                FrameEventKind::NativeContextRegistered { origin } if event.is_main
-                                    && frame_job.committed.load(Ordering::Acquire)
-                                    && event.browser_id == origin.browser_id() && event.frame_id == origin.frame_id() => {
+                                NativeEventKind::DocumentRegistered { context: origin }
+                                    if frame_job.committed.load(Ordering::Acquire)
+                                    && event.browser.is_same_browser(origin.browser()) => {
                                     if let Some(first) = frame_job.registered.get() {
                                         if first != origin { frame_job.finish(Err("The hidden Sheets native document was replaced".into())); }
                                     } else if let Some(created) = frame_job.created.get() {
@@ -456,16 +456,14 @@ pub(crate) fn export_headless(
                                         let _ = frame_job.registered.set(origin.clone());
                                     }
                                 }
-                                FrameEventKind::NativeContextRevoked { origin }
-                                    if frame_job.registered.get().is_some_and(|first| first == origin) => {
+                                NativeEventKind::DocumentRevoked { document, .. }
+                                    if frame_job.registered.get().is_some_and(|first| first.identity() == document) => {
                                     frame_job.finish(Err("sheets renderer stopped (document revoked)".into()));
                                 }
-                                FrameEventKind::NativeRendererTerminated { origin, process }
-                                    if frame_job.registered.get().is_some_and(|first| first == origin
-                                        && first.renderer_process_identity().as_ref() == Some(process)) => {
+                                NativeEventKind::WebviewProcessFailed { .. } => {
                                     frame_job.finish(Err("sheets renderer stopped (terminated)".into()));
                                 }
-                                FrameEventKind::NavigationFailed { .. } if event.is_main => frame_job.finish(Err("The Sheets renderer did not load".into())),
+                                NativeEventKind::NavigationFailed { .. } => frame_job.finish(Err("The Sheets renderer did not load".into())),
                                 _ => {}
                             }
                         })),
@@ -501,27 +499,30 @@ pub(crate) fn export_headless(
                         drop(creation_guard.0.take());
                         return;
                     }
-                    let ready_view = webview.clone();
                     let navigation = core_job.clone();
-                    if let Err(error) = webview.when_navigation_ready(move |result| {
-                        if let Err(error) = result { navigation.finish(Err(error.to_string())); return; }
-                        let bound = navigation.clone();
-                        if let Err(error) = ready_view.with_cef_webview(move |native| {
-                            if bound.settled.load(Ordering::Acquire) { return; }
-                            if bound.browser.set(native.snapshot().browser_id).is_err() {
-                                bound.finish(Err("The hidden Sheets browser identity was bound twice".into())); return;
-                            }
-                            let ui = bound.cx.ui.clone();
-                            ui.post(Box::new(move || {
-                                let Some(created) = bound.created.get() else { return; };
-                                if bound.settled.load(Ordering::Acquire) { return; }
-                                let result = crate::ipc::native_owner::run_native_invocation_created_ui(
-                                    bound.cx.ui.as_ref(), &created.target, || bound.cx.windows.load_view(view, URL),
-                                ).and_then(|result| result);
-                                if let Err(error) = result { bound.finish(Err(error)); }
-                            }));
-                        }) { navigation.finish(Err(error.to_string())); }
-                    }) { core_job.finish(Err(error.to_string())); }
+                    match webview.native_browser() {
+                        Ok(browser) => {
+                            let browser_id = browser.id();
+                            browser.navigator().when_ready(move |result| {
+                                if let Err(error) = result { navigation.finish(Err(error)); return; }
+                                if navigation.settled.load(Ordering::Acquire) { return; }
+                                if navigation.browser.set(browser_id).is_err() {
+                                    navigation.finish(Err("The hidden Sheets browser identity was bound twice".into())); return;
+                                }
+                                let bound = navigation.clone();
+                                let ui = bound.cx.ui.clone();
+                                ui.post(Box::new(move || {
+                                    let Some(created) = bound.created.get() else { return; };
+                                    if bound.settled.load(Ordering::Acquire) { return; }
+                                    let result = crate::ipc::native_owner::run_native_invocation_created_ui(
+                                        bound.cx.ui.as_ref(), &created.target, || bound.cx.windows.load_view(view, URL),
+                                    ).and_then(|result| result);
+                                    if let Err(error) = result { bound.finish(Err(error)); }
+                                }));
+                            });
+                        }
+                        Err(error) => core_job.finish(Err(error)),
+                    }
                     drop(creation_guard.0.take());
                 }));
             }, move || unavailable.finish(Err("The Sheets core services are unavailable".into())));

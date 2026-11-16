@@ -8,7 +8,7 @@ use main_core::shell::tab_manager::TabError;
 use shell_contract::ipc::{NativeRequestOwner, NativeSavedDocument, NativeSavedTarget};
 use shell_contract::runtime::{CancelSubscription, CancelToken, Thread};
 use shell_ipc_w::tabs::host::{NativeBrowserRegistration, ViewCreationCleanupState, ViewCreationFailure, ViewCreationReady, ViewCreationResult};
-use tauri_runtime_cef::{FrameEventKind, NativeContextToken};
+use crate::native::{DocumentContext, DocumentReady, NativeEventKind};
 
 use super::accepted::{self, PreparedEditorView};
 use crate::ipc::native_owner::{self, NativeOwnerAuthority};
@@ -34,7 +34,7 @@ struct Pending {
     registration: Option<shell_ipc_w::tabs::host::SavedManagerRegistration>,
     seed: Option<Seed>,
     outcome: Option<shell_contract::editors::SavedDocumentLoadOutcome>,
-    loaded: Option<tauri_runtime_cef::NativeDocumentReady>,
+    loaded: Option<DocumentReady>,
     failure: Option<String>,
     cleaning: bool,
     done: Done,
@@ -151,11 +151,11 @@ pub(super) fn start(
     let views = prepared.cx.views.clone();
     let frame_target = target.clone();
     let frame_core = core.clone();
-    let first = Arc::new(OnceLock::<NativeContextToken>::new());
+    let first = Arc::new(OnceLock::<DocumentContext>::new());
     prepared.invocation_on_frame = Some(Arc::new(move |view, event| {
-        if !event.is_main || view != frame_target.view() { return; }
+        if view != frame_target.view() { return; }
         match &event.kind {
-            FrameEventKind::NativeContextRegistered { origin } if event.browser_id == origin.browser_id() && event.frame_id == origin.frame_id() => {
+            NativeEventKind::DocumentRegistered { context: origin } if origin.browser().is_same_browser(&event.browser) => {
                 if let Some(original) = first.get() {
                     if original != origin { frame_core.post(Box::new(move || fail(id, "The saved editor document was replaced".into()))); }
                     return;
@@ -170,16 +170,16 @@ pub(super) fn start(
                 if result.is_ok() { let _ = first.set(origin.clone()); }
                 frame_core.post(Box::new(move || registered(id, result)));
             }
-            FrameEventKind::NativeDocumentReady { origin } if first.get() == Some(origin)
-                && event.browser_id == origin.browser_id() && event.frame_id == origin.frame_id() => {
+            NativeEventKind::DocumentReady { context: origin } if first.get() == Some(origin)
+                && origin.browser().is_same_browser(&event.browser) => {
                 let ready = origin.document_ready().ok_or_else(|| "The saved editor ready evidence is unavailable".to_owned());
                 frame_core.post(Box::new(move || loaded(id, ready)));
             }
-            FrameEventKind::NativeContextRevoked { origin } if first.get() == Some(origin) =>
+            NativeEventKind::DocumentRevoked { document, .. } if first.get().is_some_and(|origin| origin.identity() == document) =>
                 frame_core.post(Box::new(move || fail(id, "The saved editor document was revoked".into()))),
-            FrameEventKind::NativeRendererTerminated { origin, .. } if first.get() == Some(origin) =>
+            NativeEventKind::WebviewProcessFailed { .. } =>
                 frame_core.post(Box::new(move || fail(id, "The saved editor renderer terminated".into()))),
-            FrameEventKind::NavigationFailed { .. } =>
+            NativeEventKind::NavigationFailed { .. } =>
                 frame_core.post(Box::new(move || fail(id, "The saved editor navigation failed".into()))),
             _ => {}
         }
@@ -346,7 +346,7 @@ fn seed_finished(id: u64, result: Result<shell_contract::editors::SavedDocumentL
     }
     advance(id);
 }
-fn loaded(id: u64, result: Result<tauri_runtime_cef::NativeDocumentReady, String>) {
+fn loaded(id: u64, result: Result<DocumentReady, String>) {
     let ready = match result { Ok(ready) => ready, Err(error) => return fail(id, error) };
     PENDING.with(|entries| { if let Some(state) = entries.borrow_mut().get_mut(&id) { state.loaded = Some(ready); } });
     advance(id);

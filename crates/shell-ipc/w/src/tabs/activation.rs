@@ -369,7 +369,6 @@ pub trait DocsDisposalOperation {
 }
 /// Native producer acknowledgement of the exact captured document's completed
 /// disposal. It retains identity only; it cannot authorize a different operation.
-
 pub struct DocsDisposal {
     owner: NativeRequestOwner,
     generation: shell_contract::runtime::RendererGeneration,

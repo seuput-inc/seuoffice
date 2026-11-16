@@ -62,9 +62,9 @@ impl PdfToolsShell for Shell {
         crate::host::document_password::open_password_window_prepared(&self.cx, parent, title, target, snapshot, cancel, pending, done)
     }
     fn open_result(&self, path: &str) -> bool { tabs::open_result(path, true) }
-    fn open_for_editing(&self, path: &str) -> bool { tabs::open_for_editing(path) }
+    fn open_for_editing(&self, path: &str) { tabs::open_for_editing(path); }
     fn file_has_unsaved_changes(&self, path: &str, then: Box<dyn FnOnce(bool)>) { tabs::file_has_unsaved_changes(path, then); }
-    fn open_document_path(&self, path: &str) -> bool { tabs::open_document_path(path) }
+    fn open_document_path(&self, path: &str, then: Box<dyn FnOnce(bool) + Send>) { tabs::open_document_path(path, then); }
     fn active_pdf_tab(&self) -> Option<PdfTab> { tabs::active_pdf_tab() }
     fn flush_pdf_save(&self, view: ViewId, then: Box<dyn FnOnce(bool)>) { tabs::flush_pdf_save(view, then); }
     fn find_tab(&self, kind: TabKind, path: &str) -> Option<String> { tabs::find_tab(kind, path) }
@@ -85,5 +85,5 @@ impl PdfToolsShell for Shell {
         });
     }
     fn has_tab_manager(&self) -> bool { tabs::has_tab_manager() }
-    fn open_hwp_copy(&self, copy: &str, title: &str) -> Result<Option<ViewId>, String> { tabs::open_hwp_copy(copy, title) }
+    fn open_hwp_copy(&self, copy: &str, title: &str, then: Box<dyn FnOnce(Result<Option<ViewId>, String>)>) { tabs::open_hwp_copy(copy, title, then); }
 }

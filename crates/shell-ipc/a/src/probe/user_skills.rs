@@ -443,8 +443,8 @@ struct FakeTabs {
     log: Option<Log>,
 }
 
-impl TemplateCopyTabs for FakeTabs {
-    fn open_template_copy(&self, copy: &TemplateCopy) -> Result<Option<OpenedCopy>, String> {
+impl FakeTabs {
+    fn open_sync(&self, copy: &TemplateCopy) -> Result<Option<OpenedCopy>, String> {
         push(
             &self.log,
             json!([
@@ -471,6 +471,17 @@ impl TemplateCopyTabs for FakeTabs {
             view: ViewId(open["view"].as_u64().unwrap_or(4) as u32),
             owns_copy: open["ownsCopy"].as_bool().unwrap_or(false),
         }))
+    }
+}
+
+impl TemplateCopyTabs for FakeTabs {
+    fn open_template_copy(
+        &self,
+        copy: &TemplateCopy,
+        _requester: Option<ViewId>,
+        done: Box<dyn FnOnce(Result<Option<OpenedCopy>, String>)>,
+    ) {
+        done(self.open_sync(copy));
     }
 
     fn opener_file_path(&self, opener: ViewId) -> Option<String> {

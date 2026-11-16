@@ -115,7 +115,7 @@ pub enum Failure {
 
 #[derive(Clone)]
 enum MetadataAuthority {
-    Saved(SavedAuthority),
+    Saved(Box<SavedAuthority>),
     SavedDocument {
         document: shell_contract::ipc::NativeSavedDocument,
         participants: Vec<shell_contract::ipc::NativeRequestOwner>,
@@ -192,7 +192,7 @@ impl MetadataAuthority {
 }
 impl From<SavedAuthority> for MetadataAuthority {
     fn from(authority: SavedAuthority) -> Self {
-        Self::Saved(authority)
+        Self::Saved(Box::new(authority))
     }
 }
 
@@ -353,6 +353,7 @@ impl Home {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare_record_recent_file_many_owned_extra(
         &self,
         origin: &shell_contract::ipc::NativeRequestOwner,
@@ -606,6 +607,7 @@ impl Home {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare_moved_metadata_many_owned_extra(
         &self,
         origin: &shell_contract::ipc::NativeRequestOwner,

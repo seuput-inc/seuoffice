@@ -8,6 +8,7 @@ struct Candidate {
     path: String,
     view: Option<ViewId>,
     detached: bool,
+    #[allow(clippy::type_complexity)]
     owner: Option<Result<(NativeRequestOwner, Rc<dyn DocumentEditors>), String>>,
 }
 
@@ -21,6 +22,7 @@ pub struct PendingDirSave {
 
 pub struct MovedTabs {
     pub ack: SavedTabAck,
+    #[allow(clippy::type_complexity)]
     pub notify: Box<
         dyn FnOnce(
             Rc<dyn Fn(&shell_contract::ipc::NativeSaveRevisionReceipt) -> Result<(), String>>,
@@ -262,6 +264,7 @@ impl PendingDirSave {
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn notify(
     mut pending: std::vec::IntoIter<(ViewId, NativeRequestOwner, Rc<dyn DocumentEditors>)>,
     old: String,

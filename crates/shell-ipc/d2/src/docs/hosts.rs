@@ -281,12 +281,34 @@ pub trait DocsShell: Send + Sync {
         file_name: &str,
         bytes: Vec<u8>,
     ) -> Option<Result<Option<String>, String>>;
+    /// The project folder write of a new document: the real publication and
+    /// its written bytes, or `None` when the panel has no project. Runs on a
+    /// worker; the namespace publication is admitted under the save's owners.
+    #[allow(clippy::too_many_arguments)]
     fn write_new_document_owned(
         &self,
         origin: &shell_contract::ipc::NativeRequestOwner,
         destination: &shell_contract::ipc::NativeRequestOwner,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
         cancel: &CancelToken,
         pending: &CancelToken,
+        additional: &[CancelToken],
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+        admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
+        file_name: &str,
+        bytes: &[u8],
+    ) -> Result<Option<crate::staged::Published>, String>;
+    /// [`Self::write_new_document_owned`] for a save a native operation owns:
+    /// the project namespace write is admitted under the operation's binding
+    /// and its path is returned. Runs on a worker.
+    #[allow(clippy::too_many_arguments)]
+    fn write_new_document_existing_document(
+        &self,
+        binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &CancelToken,
+        pending: &CancelToken,
+        additional: &[CancelToken],
         effects: &shell_contract::hosts::OwnedEffectsHost,
         admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
         file_name: &str,
@@ -1265,15 +1287,17 @@ mod fake {
         }
         fn write_new_document_owned(
             &self,
-            _origin: &shell_contract::ipc::NativeRequestOwner,
+            origin: &shell_contract::ipc::NativeRequestOwner,
             destination: &shell_contract::ipc::NativeRequestOwner,
-            _cancel: &CancelToken,
-            _pending: &CancelToken,
-            _effects: &shell_contract::hosts::OwnedEffectsHost,
-            admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
+            participants: &[shell_contract::ipc::NativeRequestOwner],
+            cancel: &CancelToken,
+            pending: &CancelToken,
+            additional: &[CancelToken],
+            effects: &shell_contract::hosts::OwnedEffectsHost,
+            _admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
             file_name: &str,
             bytes: &[u8],
-        ) -> Result<Option<String>, String> {
+        ) -> Result<Option<crate::staged::Published>, String> {
             if !self.writes_new_documents() {
                 return Ok(None);
             }
@@ -1285,6 +1309,60 @@ mod fake {
             ]));
             match self.answer("write_new_document") {
                 Some(Value::String(path)) => {
+                    let path = std::path::PathBuf::from(path);
+                    let mut staged = crate::staged::StagedOutput::prepare(
+                        &path,
+                        bytes.to_vec(),
+                        file_commit::PublicationMode::Exclusive,
+                    )?;
+                    let commit = staged.take()?;
+                    let result = effects.publish_owned_staged_write(
+                        origin,
+                        destination,
+                        participants,
+                        cancel,
+                        pending,
+                        additional,
+                        &path,
+                        commit,
+                    );
+                    staged.conclude(result).map(Some)
+                }
+                Some(value) if error_of(&value).is_some() => Err(error_of(&value).unwrap()),
+                _ => Ok(None),
+            }
+        }
+        fn write_new_document_existing_document(
+            &self,
+            binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+            participants: &[shell_contract::ipc::NativeRequestOwner],
+            cancel: &CancelToken,
+            pending: &CancelToken,
+            additional: &[CancelToken],
+            effects: &shell_contract::hosts::OwnedEffectsHost,
+            admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
+            file_name: &str,
+            bytes: &[u8],
+        ) -> Result<Option<String>, String> {
+            if !self.writes_new_documents() {
+                return Ok(None);
+            }
+            self.log(json!([
+                "writeNewDocument",
+                binding.owner().view.0,
+                file_name,
+                hex(bytes)
+            ]));
+            match self.answer("write_new_document") {
+                Some(Value::String(path)) => {
+                    effects.with_existing_document_save_effect_extra(
+                        binding,
+                        participants,
+                        cancel,
+                        pending,
+                        &additional.iter().collect::<Vec<_>>(),
+                        &mut || Ok(()),
+                    )?;
                     main_core::packages::electron_utils::atomic_write::owned::write_file(
                         &path, bytes, admission,
                     )

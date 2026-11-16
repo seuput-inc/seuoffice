@@ -417,14 +417,13 @@ impl DriveShell for FakeShell {
         *self.lang.lock().unwrap()
     }
 
-    fn open_path(&self, path: &str) -> bool {
-        if self.can_open.load(Ordering::SeqCst) {
+    fn open_path(&self, path: &str, done: Box<dyn FnOnce(bool) + Send>) {
+        let opened = self.can_open.load(Ordering::SeqCst);
+        if opened {
             self.opened.lock().unwrap().push(path.to_owned());
             self.tabs.lock().unwrap().insert(path.to_owned());
-            true
-        } else {
-            false
         }
+        done(opened);
     }
 
     fn is_open(&self, path: &str) -> bool {

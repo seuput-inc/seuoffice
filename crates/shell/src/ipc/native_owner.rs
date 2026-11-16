@@ -26,7 +26,7 @@ pub(crate) use effects::register_startup_command_target;
 pub(crate) use effects::with_native_save_revision_snapshot;
 
 use shell_contract::{ipc::{NativeContext, NativeRequestOwner}, runtime::{CancelSubscription, CancelToken, RendererGeneration, Thread}, ViewId};
-use tauri_runtime_cef::{NativeContextRevocation, NativeContextToken};
+use crate::native::{DocumentContext, DocumentRevocation};
 
 use crate::views::{DocsMediaAuthorization, NativeAssetAuthorization, SlidesViewLease};
 use main_core::docs::byte_handoff::{MediaLossSubscription, MediaPermit, MediaViewLease};
@@ -35,10 +35,10 @@ struct SuccessorMediaPermit(MediaPermit);
 
 /// The captured native origin and subscriptions live as long as the owner.
 pub(crate) struct NativeOwnerAuthority {
-    pub(crate) origin: NativeContextToken,
+    pub(crate) origin: DocumentContext,
     view: ViewId,
     browser_owner: Option<shell_contract::ipc::NativeBrowserOwner>,
-    _origin_loss: NativeContextRevocation,
+    _origin_loss: DocumentRevocation,
     _renderer_loss: CancelSubscription,
     _asset_loss: Option<CancelSubscription>,
     docs_bound: bool,
@@ -193,7 +193,7 @@ pub(crate) fn authenticated_browser_owner(context: &NativeContext) -> Option<&sh
 /// Assemble only after ingress has authenticated and bound all three identities.
 pub(crate) fn pdf_owner(
     view: ViewId,
-    origin: NativeContextToken,
+    origin: DocumentContext,
     asset: NativeAssetAuthorization,
     renderer: RendererGeneration,
 ) -> Option<NativeRequestOwner> {
@@ -202,14 +202,14 @@ pub(crate) fn pdf_owner(
 }
 
 pub(crate) fn asset_owner(
-    view: ViewId, origin: NativeContextToken,
+    view: ViewId, origin: DocumentContext,
     asset: NativeAssetAuthorization, renderer: RendererGeneration,
 ) -> Option<NativeRequestOwner> {
     asset_owner_with_browser(view, origin, asset, renderer, None)
 }
 
 pub(crate) fn asset_owner_with_browser(
-    view: ViewId, origin: NativeContextToken, asset: NativeAssetAuthorization,
+    view: ViewId, origin: DocumentContext, asset: NativeAssetAuthorization,
     renderer: RendererGeneration, browser_owner: Option<shell_contract::ipc::NativeBrowserOwner>,
 ) -> Option<NativeRequestOwner> {
     if asset.view != view || !asset.matches_native_context(&origin) { return None; }
@@ -232,7 +232,7 @@ pub(crate) fn asset_owner_with_browser(
 /// The caller must bind the exact origin, view and renderer before construction.
 pub(crate) fn owner<T: std::any::Any + Send + Sync>(
     view: ViewId,
-    origin: NativeContextToken,
+    origin: DocumentContext,
     renderer: RendererGeneration,
     payload: T,
 ) -> Option<NativeRequestOwner> {
@@ -240,7 +240,7 @@ pub(crate) fn owner<T: std::any::Any + Send + Sync>(
 }
 
 pub(crate) fn owner_with_browser<T: std::any::Any + Send + Sync>(
-    view: ViewId, origin: NativeContextToken, renderer: RendererGeneration, payload: T,
+    view: ViewId, origin: DocumentContext, renderer: RendererGeneration, payload: T,
     browser_owner: Option<shell_contract::ipc::NativeBrowserOwner>,
 ) -> Option<NativeRequestOwner> {
     let loss = CancelToken::default();
@@ -306,7 +306,7 @@ pub(crate) fn with_created_effect<R>(
 }
 
 pub(crate) fn with_service_effect<R>(
-    source: &NativeRequestOwner, service: &NativeContextToken, service_generation: &RendererGeneration,
+    source: &NativeRequestOwner, service: &DocumentContext, service_generation: &RendererGeneration,
     cancel: &CancelToken, pending: &CancelToken, action: impl FnOnce() -> R,
 ) -> Option<R> {
     with_source_effect(source, Some(service), Some(service_generation), cancel, pending, action)
@@ -321,7 +321,7 @@ pub(crate) fn run_accepted_created_ui<R>(
 }
 
 fn with_source_effect<R>(
-    owner: &NativeRequestOwner, service: Option<&NativeContextToken>, created: Option<&RendererGeneration>,
+    owner: &NativeRequestOwner, service: Option<&DocumentContext>, created: Option<&RendererGeneration>,
     cancel: &CancelToken, pending: &CancelToken, action: impl FnOnce() -> R,
 ) -> Option<R> {
     let authority = owner.context.authority_ref::<NativeOwnerAuthority>()

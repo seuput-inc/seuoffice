@@ -54,8 +54,8 @@ impl PdfShell for Shell {
     }
     fn open_pdf_tools(&self, path: &str, tool: &str) -> Option<bool> { tabs::open_tools(path, tool) }
     fn has_note_hooks(&self) -> bool { true }
-    fn open_note(&self, path: &str) -> Result<bool, String> { Ok(tabs::note(path, None)) }
-    fn insert_into_note(&self, path: &str, text: &str) -> Result<bool, String> { Ok(tabs::note(path, Some(text))) }
+    fn open_note(&self, path: &str, done: Box<dyn FnOnce(Result<bool, String>)>) { tabs::note(path, None, done); }
+    fn insert_into_note(&self, path: &str, text: &str, done: Box<dyn FnOnce(Result<bool, String>)>) { tabs::note(path, Some(text), done); }
     fn new_document_dir(&self, view: ViewId) -> Option<String> { crate::host::d1::shells::new_document_dir(view) }
     fn redaction_saved_owned(&self, _view: ViewId, path: &str, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, additional: Vec<shell_contract::runtime::CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost, done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>) {
         crate::host::d1::shells::file_saved_many_owned_extra(origin, destination, participants, cancel, pending, additional, effects, path.into(), false, Box::new(move |result| done(result.map(|saved| saved.map_path(|path| path.to_string_lossy().into_owned())))));

@@ -169,29 +169,6 @@ impl SavedAuthority {
             expected_path: Some(expected_path),
         })
     }
-    pub(crate) fn saved_document(
-        document: shell_contract::ipc::NativeSavedDocument,
-        participants: Vec<NativeRequestOwner>,
-        cancel: CancelToken,
-        pending: CancelToken,
-        additional: Vec<CancelToken>,
-        effects: OwnedEffectsHost,
-    ) -> Self {
-        let owner = document.owner().clone();
-        Self {
-            origin: owner.clone(),
-            destination: owner,
-            participants,
-            cancel,
-            pending,
-            additional,
-            effects,
-            recovery: None,
-            existing: None,
-            saved_document: Some(document),
-            expected_path: None,
-        }
-    }
     pub(crate) fn with<T>(
         &self,
         operation: impl FnOnce() -> Result<T, String>,
@@ -282,6 +259,7 @@ pub struct SavedTabAck {
 }
 
 pub struct SavedPublication {
+    #[allow(clippy::type_complexity)]
     pub publish: std::rc::Rc<dyn Fn(SavedTabAck, Box<dyn FnOnce(Result<(), String>)>)>,
     pub session:
         Box<dyn FnOnce(SavedTabAck) -> Result<shell_contract::hosts::SavedSessionReceipt, String>>,
@@ -323,6 +301,7 @@ impl super::state::TabsState {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn file_saved_owned(
         &self,
         path: String,
@@ -345,6 +324,7 @@ impl super::state::TabsState {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn file_saved_many_owned(
         &self,
         path: String,
@@ -369,6 +349,7 @@ impl super::state::TabsState {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn file_saved_many_owned_extra(
         &self,
         path: String,
@@ -445,6 +426,7 @@ impl super::state::TabsState {
             }),
         );
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn file_saved_existing_document(
         &self,
         revision: shell_contract::ipc::NativeSaveRevisionAuthority,
@@ -525,6 +507,7 @@ impl super::state::TabsState {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn docs_file_saved_owned(
         &self,
         path: String,
@@ -538,6 +521,7 @@ impl super::state::TabsState {
         self.file_saved_owned(path, origin, destination, cancel, pending, effects, done);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare_docs_file_opened_recovery(
         &self,
         path: String,
@@ -595,86 +579,6 @@ impl super::state::TabsState {
                 Ok(()) => recent.record(
                     path,
                     Box::new(move |result| done(result.map(|()| prepared))),
-                ),
-            }),
-        );
-    }
-
-    pub(super) fn publish_opened_saved_document(
-        &self,
-        document: shell_contract::ipc::NativeSavedDocument,
-        participants: Vec<NativeRequestOwner>,
-        cancel: CancelToken,
-        pending: CancelToken,
-        additional: Vec<CancelToken>,
-        effects: OwnedEffectsHost,
-        done: Box<dyn FnOnce(Result<(), String>)>,
-    ) {
-        let prepared = (|| {
-            let path = document
-                .target()
-                .path()
-                .path()
-                .to_str()
-                .ok_or("the saved document path is not Unicode")?
-                .to_owned();
-            let details = self
-                .details_of(document.owner().view)
-                .ok_or("the loaded document is no longer open")?;
-            if details.tab_id.is_none() {
-                return Err("the loaded document has no tab".to_owned());
-            }
-            let authority = SavedAuthority::saved_document(
-                document.clone(),
-                participants.clone(),
-                cancel.clone(),
-                pending.clone(),
-                additional.clone(),
-                effects.clone(),
-            );
-            let ack = self.acknowledge_opened_file(&path, &authority)?;
-            let publication = self.hooks.prepare_saved_publication_saved_document(
-                document.clone(),
-                participants.clone(),
-                cancel.clone(),
-                pending.clone(),
-                additional.clone(),
-                effects.clone(),
-            )?;
-            let home = self
-                .provided
-                .all::<crate::home_files::Home>()
-                .into_iter()
-                .next()
-                .ok_or("home services unavailable")?;
-            let recent = home.prepare_record_recent_file_saved_document(
-                &document,
-                &participants,
-                &cancel,
-                &pending,
-                &additional,
-                &effects,
-            )?;
-            Ok::<_, String>((path, ack, publication, recent))
-        })();
-        let (path, ack, publication, recent) = match prepared {
-            Ok(value) => value,
-            Err(error) => return done(Err(error)),
-        };
-        let publish = publication.publish.clone();
-        publish(
-            ack.clone(),
-            Box::new(move |result| match result {
-                Err(error) => done(Err(error)),
-                Ok(()) => recent.record(
-                    path,
-                    Box::new(move |result| match result {
-                        Err(error) => done(Err(error)),
-                        Ok(()) => match (publication.session)(ack) {
-                            Ok(receipt) => receipt.finalize(done),
-                            Err(error) => done(Err(error)),
-                        },
-                    }),
                 ),
             }),
         );
@@ -826,6 +730,7 @@ impl super::state::TabsState {
 }
 
 impl super::state::TabsState {
+    #[allow(clippy::too_many_arguments)]
     pub fn set_document_title_owned(
         &self,
         title: String,
@@ -850,6 +755,7 @@ impl super::state::TabsState {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn set_slides_document_title_owned(
         &self,
         title: String,
@@ -873,6 +779,7 @@ impl super::state::TabsState {
             done,
         );
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn set_slides_document_title_owned_extra(
         &self,
         title: String,
@@ -899,6 +806,7 @@ impl super::state::TabsState {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn set_slides_document_title_existing_document(
         &self,
         title: String,
@@ -983,6 +891,7 @@ impl super::state::TabsState {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn set_document_title_with_policy(
         &self,
         title: String,

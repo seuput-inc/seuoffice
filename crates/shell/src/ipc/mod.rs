@@ -10,9 +10,10 @@
 //!   `ipc::Channel`) when a page starts.
 //! - `seuoffice-ipc` (see [`sync`]): `sendSync`, answered on the core thread.
 //!
-//! Each command redeems a one-use native attestation and retains the exact
-//! browser/document and creation-bound renderer. Labels select a registered
-//! view; they never authenticate a caller or rebind a replaced document.
+//! Each command redeems the document nonce its bridge registered (`ipc_register`, header
+//! `x-seuoffice-doc`) and retains the exact browser/document and creation-bound renderer.
+//! Labels select a registered view; they never authenticate a caller or rebind a replaced
+//! document.
 
 pub(crate) mod native_owner;
 pub mod outlet;
@@ -32,7 +33,7 @@ use shell_core::outlet::reply_frame;
 use shell_core::wire::{decode_list, unframe};
 use tauri::ipc::{Channel, InvokeBody, InvokeResponseBody, Request};
 use tauri::{Manager, State, Webview};
-use tauri_runtime_cef::WebviewCefExt;
+use crate::native::{self, BridgeMode, BrowserIdentity, DocumentContext, WebviewExt};
 
 use crate::measure::Measure;
 use crate::trace::trace;
@@ -109,12 +110,6 @@ impl Ipc {
         if let Some(measure) = &self.measure {
             measure.note_call();
         }
-    }
-
-    pub(crate) fn call_sender_label(&self, label: &str) -> Result<(Sender, Option<NativeContext>), String> {
-        self.views.sender_of_label(label)
-            .ok_or_else(|| format!("the webview '{label}' has no bridge to the shell"))?;
-        Err("Renderer document authentication is not ready.".into())
     }
 }
 
@@ -303,16 +298,16 @@ pub(crate) fn listen_verified(ipc: &Ipc, sender: Sender, owner: NativeRequestOwn
     Ok(())
 }
 
-fn verified_sender(
+pub(super) fn verified_sender(
     ipc: &Ipc,
     label: &str,
-    origin: &tauri_runtime_cef::NativeContextToken,
+    origin: &DocumentContext,
 ) -> Result<(Sender, NativeRequestOwner, crate::views::NativeReservedViewState), String> {
     let (sender, renderer, reserved) = ipc.views.authorize_verified_native_origin(label, origin)
-        .ok_or("Renderer document authentication is not ready.")?;
+        .ok_or(NOT_READY)?;
     let owner = native_owner::capture_owner(&ipc.views, sender.view, &renderer)?;
     let authority = owner.context.authority_ref::<native_owner::NativeOwnerAuthority>()
-        .ok_or("Renderer document authentication is not ready.")?;
+        .ok_or(NOT_READY)?;
     if authority.origin != *origin {
         return Err("Renderer document is no longer available.".into());
     }
@@ -322,42 +317,73 @@ fn verified_sender(
 fn attested_sender(
     ipc: &Ipc, webview: &Webview, request: &Request<'_>,
 ) -> Result<(Sender, NativeRequestOwner), String> {
-    let origin = tauri_runtime_cef::redeem_native_context(request.headers())
-        .ok_or("Renderer document authentication is not ready.")?;
+    let origin = native::redeem(webview, request.headers()).ok_or(NOT_READY)?;
     let (sender, owner, _) = verified_sender(ipc, webview.label(), &origin)?;
     Ok((sender, owner))
 }
 
-/// Called once on the actual constructed webview, before its document loads.
-/// The native producer proves each context against this captured creation epoch.
+/// Refusal text of every call whose document is not (yet) bound to its view. The bridge
+/// retries a call refused with exactly this text, which Rust answers before reading any state.
+pub(crate) const NOT_READY: &str = "Renderer document authentication is not ready.";
+/// `ipc_register` before the document was committed; the bridge retries the registration.
+pub(crate) const NOT_COMMITTED: &str = "Renderer document is not committed yet.";
+
+fn register_refusal(error: native::RegisterError) -> String {
+    match error {
+        native::RegisterError::NoDocument => NOT_COMMITTED.to_owned(),
+        native::RegisterError::BridgeDisabled => "Renderer document has no bridge.".to_owned(),
+        native::RegisterError::Revoked | native::RegisterError::Conflict => {
+            "Renderer document is no longer available.".to_owned()
+        }
+    }
+}
+
+pub(crate) fn bridge_name(mode: BridgeMode) -> &'static str {
+    match mode {
+        BridgeMode::None => "none",
+        BridgeMode::Invoke => "invoke",
+        BridgeMode::Preload => "preload",
+    }
+}
+
+/// The browser a request arrived on and the nonce it carries.
+fn nonce_browser(
+    webview: &Webview, request: &Request<'_>,
+) -> Result<(BrowserIdentity, [u8; native::ingress::NONCE_LEN]), String> {
+    let nonce = native::ingress::nonce_of(request.headers()).ok_or(NOT_READY)?;
+    let browser = webview.native_browser().map_err(|_| NOT_READY.to_owned())?;
+    Ok((browser, nonce))
+}
+
+/// Bind the nonce to the browser's committed document, once (the bridge's first call). The
+/// answer is the public id of the document (the argument of `__seuofficeCheck`) and what its
+/// bridge may do.
+pub(crate) fn register_document(
+    browser: &BrowserIdentity, nonce: [u8; native::ingress::NONCE_LEN],
+) -> Result<Value, String> {
+    let context = browser.register_document(nonce).map_err(register_refusal)?;
+    Ok(serde_json::json!({
+        "document": context.identity().id().get(),
+        "bridge": bridge_name(browser.bridge_mode()),
+    }))
+}
+
+/// Called once on the actual constructed webview, before its document loads. Every document
+/// the browser registers is bound against this captured creation epoch.
 pub(crate) fn bind_native_webview(
     webview: &Webview, view: ViewId, creation: shell_contract::runtime::RendererGeneration,
 ) -> Result<(), String> {
     let ipc = webview.app_handle().try_state::<Ipc>()
         .ok_or("The shell IPC service is not installed.")?;
     let views = ipc.views.clone();
-    let app = webview.app_handle().clone();
-    let label = webview.label().to_owned();
-    let captured_webview = webview.clone();
-    webview.bind_native_context_ipc(
-        move |origin| views.bind_verified_native_origin(view, &creation, origin),
-        move |mut request| {
-            let Some(ipc) = app.try_state::<Ipc>() else { request.respond(None); return };
-            let Ok((sender, owner, reserved)) = verified_sender(&ipc, &label, &request.origin) else {
-                request.respond(None);
-                return;
-            };
-            if sender.view != view { request.respond(None); return; }
-            let channel = std::mem::take(&mut request.channel);
-            let bytes = std::mem::take(&mut request.body);
-            sync::handle_verified(&ipc, sender, owner, reserved, captured_webview.clone(), channel, &bytes,
-                Box::new(move |bytes| request.respond(Some(bytes))));
-        },
-    ).map_err(|error| error.to_string())
+    webview.native_browser()?.bind_registration(move |origin| {
+        // A refused binding leaves the document without an owner: its calls stay refused.
+        views.bind_verified_native_origin(view, &creation, origin);
+    })
 }
 
 struct ExactNativeChannel {
-    sink: tauri_runtime_cef::NativeChannelQueue,
+    sink: native::ChannelQueue,
     callback: u32,
     index: std::sync::Mutex<u64>,
 }
@@ -398,6 +424,22 @@ fn native_channel(owner: &NativeRequestOwner, id: &str) -> Result<Channel<Invoke
     Ok(Channel::new(move |body| {
         channel.send(body).map_err(|error| std::io::Error::other(error).into())
     }))
+}
+
+/// The bridge's first call: bind its nonce to the committed document of this webview's browser.
+#[tauri::command]
+pub async fn ipc_register(webview: Webview, request: Request<'_>) -> Result<Value, String> {
+    let (browser, nonce) = nonce_browser(&webview, &request)
+        .inspect_err(|e| trace!("ipc", "register refused: {e}"))?;
+    register_document(&browser, nonce).inspect_err(|e| trace!("ipc", "register refused: {e}"))
+}
+
+/// The bridge's second call: the registered document has loaded and its fonts are ready.
+#[tauri::command]
+pub async fn ipc_render_ready(webview: Webview, request: Request<'_>) -> Result<(), String> {
+    let (browser, nonce) = nonce_browser(&webview, &request)
+        .inspect_err(|e| trace!("ipc", "render-ready refused: {e}"))?;
+    browser.render_ready(&nonce).map(|_| ()).map_err(register_refusal)
 }
 
 #[tauri::command]

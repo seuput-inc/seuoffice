@@ -63,10 +63,13 @@ fn node_error(e: main_core::node_fs::NodeError) -> IpcError {
     error(e.message)
 }
 
+type SettingsBegin = Box<dyn FnOnce(main_core::shell::app_settings::queue::Completion)>;
+type SettingsDone = Box<dyn FnOnce(Reply)>;
+
 thread_local! {
     static SETTINGS_NEXT: Cell<u64> = const { Cell::new(0) };
-    static SETTINGS_BEGIN: RefCell<HashMap<u64, Box<dyn FnOnce(main_core::shell::app_settings::queue::Completion)>>> = RefCell::new(HashMap::new());
-    static SETTINGS_DONE: RefCell<HashMap<u64, Box<dyn FnOnce(Reply)>>> = RefCell::new(HashMap::new());
+    static SETTINGS_BEGIN: RefCell<HashMap<u64, SettingsBegin>> = RefCell::new(HashMap::new());
+    static SETTINGS_DONE: RefCell<HashMap<u64, SettingsDone>> = RefCell::new(HashMap::new());
 }
 
 fn settings_token() -> u64 {
@@ -174,7 +177,7 @@ fn set_language(cx: Rc<Ctx>, raw: &IpcValue, reply: Responder, completion: Compl
             .map(|()| IpcValue::Undefined)
         },
         move |result| {
-            reply.reply(result.map(|value| {
+            reply.reply(result.inspect(|_| {
                 completed.state.set_language(lang);
                 completed.host.rebuild_menus_for_language();
                 notify_quick_look(&completed);
@@ -183,7 +186,6 @@ fn set_language(cx: Rc<Ctx>, raw: &IpcValue, reply: Responder, completion: Compl
                     "app:language-changed",
                     vec![string(lang.as_str())],
                 );
-                value
             }))
         },
     );
@@ -211,12 +213,11 @@ fn set_theme(cx: Rc<Ctx>, raw: &IpcValue, reply: Responder, completion: Completi
                 .map(|()| IpcValue::Undefined)
         },
         move |result| {
-            reply.reply(result.map(|value| {
+            reply.reply(result.inspect(|_| {
                 completed.host.set_native_theme(&theme);
                 completed.host.refresh_title_bar_overlay();
                 notify_quick_look(&completed);
                 completed.emit(Target::All, "app:theme-changed", vec![string(theme)]);
-                value
             }))
         },
     );
@@ -244,13 +245,12 @@ fn set_document_theme(cx: Rc<Ctx>, raw: &IpcValue, reply: Responder, completion:
                 .map(|()| IpcValue::Undefined)
         },
         move |result| {
-            reply.reply(result.map(|value| {
+            reply.reply(result.inspect(|_| {
                 completed.emit(
                     Target::All,
                     "app:document-theme-changed",
                     vec![string(theme)],
                 );
-                value
             }))
         },
     );

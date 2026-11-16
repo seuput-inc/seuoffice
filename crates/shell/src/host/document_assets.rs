@@ -665,15 +665,15 @@ enum TargetAuthority {
 
 struct Target {
     label: String,
-    browser: tauri_runtime_cef::FrameNavigationState,
+    browser: crate::native::BrowserState,
     permit: AssetPermit,
     document: TargetDocument,
     root_path: String,
     generated: bool,
-    root_navigation: Option<tauri_runtime_cef::NativeNavigationToken>,
+    root_navigation: Option<crate::native::NavigationIdentity>,
     claimed: bool,
     root_served: bool,
-    ready: Option<tauri_runtime_cef::NativeDocumentToken>,
+    ready: Option<crate::native::DocumentIdentity>,
     cancel: Option<shell_contract::runtime::CancelToken>,
     delivery: shell_contract::runtime::RendererGeneration,
     authority: Option<TargetAuthority>,
@@ -686,8 +686,14 @@ fn targets() -> &'static Mutex<HashMap<String, Target>> { TARGETS.get_or_init(||
 pub(crate) struct TargetGuard { token: String, root_path: String }
 
 impl TargetGuard {
+    /// The logical prefix of this target's URLs: the grant, tokens and the scheme handler
+    /// speak it. The webview is given [`Self::document_url`], the platform shape of it.
     pub(crate) fn url_prefix(&self) -> String { format!("html-asset://{}", self.token) }
-    pub(crate) fn document_url(&self) -> String { format!("{}{}", self.url_prefix(), self.root_path) }
+    /// The URL to navigate the hidden browser to, in the shape the platform serves and its
+    /// navigation hooks and events report (`crate::native::url`).
+    pub(crate) fn document_url(&self) -> String {
+        crate::native::url::platform_url_text(&format!("{}{}", self.url_prefix(), self.root_path))
+    }
 
     /// Whether an authenticated root response was prepared.
     pub(crate) fn root_served(&self) -> Result<bool, String> {
@@ -815,7 +821,7 @@ pub(crate) fn grant_target(
     label: &str,
     origin: ViewId,
     kind: AssetKind,
-    native: tauri_runtime_cef::FrameNavigationState,
+    native: crate::native::BrowserState,
     document: TargetDocument,
 ) -> Result<TargetGuard, String> {
     if label.is_empty() { return Err("empty document target label".into()); }
@@ -856,8 +862,8 @@ pub(crate) fn grant_target(
 #[derive(Clone)]
 pub(crate) struct TargetPermit {
     token: String,
-    navigation: tauri_runtime_cef::NativeNavigationToken,
-    document: Option<tauri_runtime_cef::NativeDocumentToken>,
+    navigation: crate::native::NavigationIdentity,
+    document: Option<crate::native::DocumentIdentity>,
     permit: AssetPermit,
     cancel: Option<shell_contract::runtime::CancelToken>,
     uri: String,
@@ -920,23 +926,20 @@ impl TargetPermit {
 }
 
 /// Classify by the native browser lifetime, never by label or request headers.
-/// Missing browser/frame identity is an error so browserless requests fail closed.
-pub(crate) fn is_target_browser(provenance: &tauri_runtime_cef::SchemeRequestProvenance) -> Result<bool, String> {
-    if provenance.browser_id().is_none() || provenance.frame_id().is_none() {
-        return Err("document request has no native browser/frame".into());
-    }
-    let browser = provenance.browser_state().ok_or("document request has no native browser lifetime")?;
+/// A request from no registered browser is an error so browserless requests fail closed.
+pub(crate) fn is_target_browser(context: &crate::native::SchemeRequestContext) -> Result<bool, String> {
+    let browser = context.browser_state().ok_or("document request has no native browser lifetime")?;
     let targets = targets().lock().map_err(|_| "document target registry is poisoned")?;
     Ok(targets.values().any(|target| target.browser.is_same_browser(browser)))
 }
 
 /// Authenticate hidden requests by the exact native browser lifetime and
-/// controlled root navigation. Only the initial root uses the secret URL.
-pub(crate) fn authorize_target(uri: &str, provenance: &tauri_runtime_cef::SchemeRequestProvenance) -> Result<Option<TargetPermit>, String> {
-    let url = match tauri::Url::parse(uri) { Ok(url) => url, Err(_) => return Ok(None) };
+/// controlled root navigation. Only the initial root uses the secret URL. Such a browser
+/// admits one controlled navigation, so its navigation at intake is the root binding.
+pub(crate) fn authorize_target(uri: &str, context: &crate::native::SchemeRequestContext) -> Result<Option<TargetPermit>, String> {
+    let url = match tauri::Url::parse(uri) { Ok(url) => crate::native::url::into_logical(url), Err(_) => return Ok(None) };
     let Some(authority) = url.host_str() else { return Ok(None) };
-    let (Some(_), Some(_), Some(browser), Some(navigation)) =
-        (provenance.browser_id(), provenance.frame_id(), provenance.browser_state(), provenance.navigation())
+    let (Some(browser), Some(navigation)) = (context.browser_state(), context.navigation())
         else { return Ok(None) };
     let mut targets = targets().lock().map_err(|_| "document target registry is poisoned")?;
     let mut matches = targets.iter().filter(|(_, target)| target.browser.is_same_browser(browser)).map(|(token, _)| token.clone());
@@ -946,9 +949,7 @@ pub(crate) fn authorize_target(uri: &str, provenance: &tauri_runtime_cef::Scheme
     let root = url.scheme() == "html-asset" && authority == token && url.path() == target.root_path;
     if !root && !target_asset_url(target.permit.kind, &url, &token) { return Ok(None); }
     if root {
-        if provenance.frame_is_main() != Some(true)
-            || target.root_navigation.as_ref().is_some_and(|bound| bound != navigation)
-        { return Ok(None); }
+        if target.root_navigation.as_ref().is_some_and(|bound| bound != navigation) { return Ok(None); }
         if target.browser.navigation().as_ref() != Some(navigation) { return Ok(None); }
         target.root_navigation = Some(navigation.clone());
     } else if target.root_navigation.as_ref() != Some(navigation) {
@@ -958,7 +959,7 @@ pub(crate) fn authorize_target(uri: &str, provenance: &tauri_runtime_cef::Scheme
         || !target.browser.is_same_browser(browser) || target.browser.navigation().as_ref() != Some(navigation) {
         return Ok(None);
     }
-    let document = provenance.document().cloned();
+    let document = context.document().cloned();
     if let Some(document) = &document {
         if target.browser.document().as_ref() != Some(document) { return Ok(None); }
         if target.ready.as_ref().is_some_and(|ready| ready != document) { return Ok(None); }
@@ -971,7 +972,7 @@ pub(crate) fn authorize_target(uri: &str, provenance: &tauri_runtime_cef::Scheme
 
 /// Serve only this request's root or the originating view's scoped assets.
 pub(crate) fn handle_target(request: TargetPermit, uri: &str, accept: Option<&str>, range_header: Option<&str>) -> Result<MediaAnswer, String> {
-    let url = match tauri::Url::parse(uri) { Ok(url) => url, Err(_) => return Ok(status(400)) };
+    let url = match tauri::Url::parse(uri) { Ok(url) => crate::native::url::into_logical(url), Err(_) => return Ok(status(400)) };
     if uri != request.uri { return Ok(status(403)); }
     let root = request.root;
     let document = {
@@ -1018,7 +1019,7 @@ pub(crate) fn handle_target(request: TargetPermit, uri: &str, accept: Option<&st
     Ok(answer)
 }
 
-/// Convert a CEF media URL back to the original authority-based DOCX URL.
+/// Convert the Windows `http://<scheme>.localhost` media URL back to the original authority-based DOCX URL.
 pub(crate) fn docx_original_uri(uri: &str) -> Option<String> {
     let url = tauri::Url::parse(uri).ok()?;
     if url.scheme() == "seuoffice-docx-media" { return Some(uri.to_owned()); }

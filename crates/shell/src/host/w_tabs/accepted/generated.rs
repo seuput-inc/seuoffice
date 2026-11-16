@@ -156,7 +156,7 @@ struct Pending {
     loading: bool,
     done: Done,
     failure: Option<TabError>,
-    close: Option<tauri_runtime_cef::NativeBrowserClose>,
+    close: Option<crate::native::BrowserClose>,
     binding: shell_ipc_w::tabs::host::NativeBrowserBinding,
     register: Option<shell_ipc_w::tabs::host::GeneratedManagerRegistration>,
     cleanup: ViewCreationCleanup,
@@ -166,8 +166,8 @@ struct Pending {
     request_pending: CancelToken,
     closing: bool,
     native: Option<tauri::Webview>,
-    registered: Option<(tauri_runtime_cef::NativeContextToken,NativeRequestOwner)>,
-    ready: Option<tauri_runtime_cef::NativeContextToken>,
+    registered: Option<(crate::native::DocumentContext,NativeRequestOwner)>,
+    ready: Option<crate::native::DocumentContext>,
     attached: bool,
     navigation: Option<Result<(), String>>,
     installation_settled: bool,
@@ -228,7 +228,7 @@ pub(crate) fn schedule_generated(prepared: PreparedEditorView, owner: NativeRequ
     }));
 }
 
-pub(super) fn constructed(core: Arc<dyn shell_contract::runtime::Thread>, id: u64, native:tauri::Webview, close: tauri_runtime_cef::NativeBrowserClose) {
+pub(super) fn constructed(core: Arc<dyn shell_contract::runtime::Thread>, id: u64, native:tauri::Webview, close: crate::native::BrowserClose) {
     core.post(Box::new(move || {
         PENDING.with(|entries| {
             if let Some(pending) = entries.borrow_mut().get_mut(&id) {
@@ -333,7 +333,7 @@ pub(crate) fn generated_load_failed(view:ViewId) {
     });
 }
 
-pub(crate) fn generated_native_registered(view:ViewId,origin:tauri_runtime_cef::NativeContextToken) {
+pub(crate) fn generated_native_registered(view:ViewId,origin:crate::native::DocumentContext) {
     post_pending(move || {
         let Some(id)=pending_for_view(view) else { return; };
         let pending=PENDING.with(|entries|entries.borrow_mut().remove(&id));
@@ -378,7 +378,7 @@ pub(crate) fn generated_native_registered(view:ViewId,origin:tauri_runtime_cef::
     });
 }
 
-pub(crate) fn generated_document_ready(view:ViewId,origin:tauri_runtime_cef::NativeContextToken) {
+pub(crate) fn generated_document_ready(view:ViewId,origin:crate::native::DocumentContext) {
     post_pending(move || {
         let Some(id)=pending_for_view(view) else { return; };
         let pending=PENDING.with(|entries|entries.borrow_mut().remove(&id));
@@ -388,11 +388,11 @@ pub(crate) fn generated_document_ready(view:ViewId,origin:tauri_runtime_cef::Nat
     });
 }
 
-pub(crate) fn generated_native_revoked(view:ViewId,origin:tauri_runtime_cef::NativeContextToken) {
+pub(crate) fn generated_native_revoked(view:ViewId,document:crate::native::DocumentIdentity) {
     post_pending(move || {
         let Some(id)=pending_for_view(view) else { return; };
         let revoked=PENDING.with(|entries|entries.borrow().get(&id)
-            .is_some_and(|pending|pending.registered.as_ref().is_some_and(|(registered,_)|registered==&origin)));
+            .is_some_and(|pending|pending.registered.as_ref().is_some_and(|(registered,_)|registered.identity()==&document)));
         if revoked { fail(id,TabError("The initial native document was revoked before completion".into())); }
     });
 }

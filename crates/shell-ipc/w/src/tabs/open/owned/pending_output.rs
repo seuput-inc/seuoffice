@@ -254,6 +254,7 @@ impl PendingOutput {
         state.phase = Phase::Pending(receipt);
         Ok(state.shutting_down)
     }
+    #[cfg(test)]
     pub(super) fn finish_initial(
         self: &Arc<Self>,
         result: Result<GeneratedPathOutcome, String>,

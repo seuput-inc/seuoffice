@@ -89,26 +89,30 @@ pub(super) fn admission(
             let docs = actor
                 .upgrade()
                 .ok_or_else(|| error("the Word editor was released before the file operation"))?;
-            scope
-                .effect_path(&path, || {
-                    let view = scope.destination().view;
-                    if docs.is_torn_down(view) {
-                        return Err(error("the target Word document is no longer open"));
-                    }
-                    if matches!(permission, Permission::ExistingDocument)
-                        && !docs.can_doc_write(view, &path)
-                    {
-                        return Err(error("save target is not an opened document"));
-                    }
-                    if matches!(permission, Permission::ProjectDocument)
-                        && docs.open_doc.contains(view)
-                    {
-                        return Err(error("the Word document already has a saved file"));
-                    }
-                    Ok(effect())
-                })
-                .map_err(error)
-                .and_then(|result| result)
+            let body = || {
+                let view = scope.destination().view;
+                if docs.is_torn_down(view) {
+                    return Err(error("the target Word document is no longer open"));
+                }
+                if matches!(permission, Permission::ExistingDocument)
+                    && !docs.can_doc_write(view, &path)
+                {
+                    return Err(error("save target is not an opened document"));
+                }
+                if matches!(permission, Permission::ProjectDocument)
+                    && docs.open_doc.contains(view)
+                {
+                    return Err(error("the Word document already has a saved file"));
+                }
+                Ok(effect())
+            };
+            // a project file's path is the shell's to choose, so no
+            // destination is selected yet: the binding admits the write
+            let admitted = match permission {
+                Permission::ProjectDocument => scope.effect(body),
+                _ => scope.effect_path(&path, body),
+            };
+            admitted.map_err(error).and_then(|result| result)
         }),
     )
 }
@@ -201,11 +205,7 @@ impl Docs {
                 let mut output = None;
                 effects
                     .with_owned_effect(&origin, &destination, &cancel, &pending, &mut || {
-                        if docs.is_torn_down(view)
-                            || docs
-                                .open_doc
-                                .with(view, |current| current != expected_path.as_ref())
-                        {
+                        if docs.is_torn_down(view) || docs.open_doc.get(view) != expected_path {
                             return Err("the captured Word creation source changed".into());
                         }
                         let effect = operation

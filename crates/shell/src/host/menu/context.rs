@@ -1,15 +1,16 @@
 //! The page context menu (`installContextMenu` of
-//! packages/electron-utils/src/context-menu.ts). The vendored CEF runtime
-//! hands every right-click on one of our views here instead of showing
-//! Chrome's menu (crates/vendor/tauri-runtime-cef/VENDORED.md). On the core
-//! thread the docs editor's interceptor gets the click first (its renderer
-//! draws its own menu); otherwise the app's native menu pops up, built from
+//! packages/electron-utils/src/context-menu.ts). The bridge cancels every
+//! right-click on one of our pages and posts it to `native::menu`'s ingress,
+//! with the spelling already looked up. On the core thread the docs editor's
+//! interceptor gets the click first (its renderer draws its own menu);
+//! otherwise the app's native menu pops up, built from
 //! `context_menu_template` in the app's language.
 //!
-//! A page that is not ours (no bridge) keeps the runtime's filtered Chrome menu.
+//! A frame that is not ours (no bridge) keeps the webview's own menu.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use jscompat::{JsObject, JsonValue};
 use main_core::packages::electron_utils::context_menu::{
@@ -21,7 +22,7 @@ use main_core::packages::electron_utils::safe_remote_url::{FetchError, Response}
 use main_core::packages::electron_utils::save_image::{
     DecodedImage, SaveImageOptions, SaveImageResult, fetch_image_for_save, save_fetched_image,
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 use shell_contract::hosts::{ClipboardHost, DialogsHost, FileDialog, FileFilter};
 use shell_contract::ids::{ViewId, WindowId};
 use shell_contract::provided::Provided;
@@ -33,11 +34,11 @@ use shell_ipc_w::SharedDialogMemory;
 use shell_ipc_w::shared_dialog::with_shared_memory;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::{AppHandle, LogicalPosition, Manager};
-use tauri_runtime_cef::WebviewCefExt;
 
-use super::super::contents::cdp;
 use super::super::w::post_core;
 use super::super::window::Windows;
+use crate::native::menu::ContextMenuRequest;
+use crate::native::{self, EditCommand, WebviewExt};
 use crate::views::ViewTable;
 
 /// Menu ids of this module start with this; the app menu's with `m-app-`
@@ -54,20 +55,26 @@ struct OpenMenu {
 
 pub(crate) fn install(app: &AppHandle, views: Arc<ViewTable>, windows: Arc<Windows>) {
     let handle = app.clone();
-    tauri_runtime_cef::set_context_menu_handler(move |label, raw, done| {
-        let Some(sender) = views.sender_of_label(label) else {
-            return false;
+    let installed = native::menu::install(move |request| {
+        let ContextMenuRequest {
+            label,
+            origin,
+            params,
+        } = request;
+        // only the document its view is bound to may pop a menu up on it
+        let Some((sender, _, _)) = views.authorize_verified_native_origin(&label, &origin) else {
+            return eprintln!("shell: a context menu of '{label}' was refused");
         };
-        let params = params_of(&raw);
+        let (view, zoom) = (sender.view, views.zoom(sender.view));
+        let params = params_of(&params);
         let app = handle.clone();
-        let label = label.to_owned();
         post_core(move |provided, services| {
-            // Chrome's menu goes away first: our menu may run a modal loop
-            done.cancel();
-            pop_up(&app, provided, services, sender.view, &label, params);
+            pop_up(&app, provided, services, view, &label, params, zoom);
         });
-        true
     });
+    if let Err(error) = installed {
+        eprintln!("shell: context menu: {error}");
+    }
     let windows_for_clicks = windows;
     app.on_menu_event(move |_app, event| {
         let id = event.id().as_ref();
@@ -82,8 +89,20 @@ pub(crate) fn install(app: &AppHandle, views: Arc<ViewTable>, windows: Arc<Windo
     });
 }
 
-/// The runtime's params as the menu template reads them
-fn params_of(raw: &tauri_runtime_cef::ContextMenuParams) -> ContextMenuParams {
+/// The misspelled word of the last right click, and where it was: what a replacement
+/// from the menu (or from the docs editor's own menu) acts on, as Chromium kept it
+static MISSPELLING: Mutex<Option<(ViewId, String, f64, f64)>> = Mutex::new(None);
+
+/// The misspelled word the last right click of `view` was on, with the click
+pub(super) fn last_misspelling(view: ViewId) -> Option<(String, f64, f64)> {
+    let last = MISSPELLING.lock().unwrap_or_else(|error| error.into_inner());
+    last.as_ref()
+        .filter(|(clicked, ..)| *clicked == view)
+        .map(|(_, word, x, y)| (word.clone(), *x, *y))
+}
+
+/// The page's click as the menu template reads it
+fn params_of(raw: &native::menu::ContextMenuParams) -> ContextMenuParams {
     ContextMenuParams {
         is_editable: raw.is_editable,
         selection_text: raw.selection_text.clone(),
@@ -97,8 +116,8 @@ fn params_of(raw: &tauri_runtime_cef::ContextMenuParams) -> ContextMenuParams {
         },
         media_type: raw.media_type.clone(),
         src_url: raw.src_url.clone(),
-        x: f64::from(raw.x),
-        y: f64::from(raw.y),
+        x: raw.x,
+        y: raw.y,
     }
 }
 
@@ -128,7 +147,11 @@ fn pop_up(
     view: ViewId,
     label: &str,
     params: ContextMenuParams,
+    zoom: f64,
 ) {
+    *MISSPELLING.lock().unwrap_or_else(|error| error.into_inner()) =
+        (!params.misspelled_word.is_empty())
+            .then(|| (view, params.misspelled_word.clone(), params.x, params.y));
     if intercept_context_menu(services, provided, view, &params) {
         return;
     }
@@ -153,7 +176,8 @@ fn pop_up(
             }
         }
     }
-    let (x, y) = (params.x, params.y);
+    // the click is in the page's CSS pixels; the view shows them at its zoom
+    let (x, y) = (params.x * zoom, params.y * zoom);
     *OPEN.lock().unwrap() = Some(OpenMenu {
         view,
         params,
@@ -215,9 +239,7 @@ fn run(
         return;
     };
     match rest {
-        MenuCommand::Edit(action) => {
-            let _ = webview.with_cef_webview(move |cef_view| edit(cef_view, action));
-        }
+        MenuCommand::Edit(action) => native::menu::edit(&webview, edit_command(action)),
         MenuCommand::CopyImageAt { x, y } => {
             let clipboard = services.hosts.get::<ClipboardHost>().cloned();
             services.workers.spawn(Box::new(move || {
@@ -258,22 +280,18 @@ fn run(
     }
 }
 
-/// `contents.cut()` and its siblings: the main frame's editing commands
-fn edit(cef_view: &tauri_runtime_cef::Webview, action: EditAction) {
-    use cef::{ImplBrowser, ImplFrame};
-    let Some(frame) = cef_view.browser().main_frame() else {
-        return;
-    };
+/// `contents.cut()` and its siblings: the editing commands of the focused frame
+fn edit_command(action: EditAction) -> EditCommand {
     match action {
-        EditAction::Cut => frame.cut(),
-        EditAction::Copy => frame.copy(),
-        EditAction::Paste => frame.paste(),
-        EditAction::SelectAll => frame.select_all(),
+        EditAction::Cut => EditCommand::Cut,
+        EditAction::Copy => EditCommand::Copy,
+        EditAction::Paste => EditCommand::Paste,
+        EditAction::SelectAll => EditCommand::SelectAll,
     }
 }
 
 /// `contents.copyImageAt(x, y)`: the image under the click, drawn into a
-/// canvas by the page and read back as PNG (CEF has no copy-image command)
+/// canvas by the page and read back as PNG (a page has no copy-image command)
 fn image_png_at(webview: &tauri::Webview, x: f64, y: f64) -> Result<Vec<u8>, String> {
     let script = format!(
         "(async () => {{
@@ -287,19 +305,20 @@ fn image_png_at(webview: &tauri::Webview, x: f64, y: f64) -> Result<Vec<u8>, Str
             return canvas.toDataURL('image/png').slice('data:image/png;base64,'.length);
         }})()"
     );
-    let answer = cdp(
-        webview,
-        "Runtime.evaluate",
-        json!({ "expression": script, "awaitPromise": true, "returnByValue": true }),
-    )?;
-    if let Some(details) = answer.get("exceptionDetails") {
-        return Err(details["exception"]["description"]
-            .as_str()
-            .unwrap_or("the page could not draw the image")
-            .to_owned());
-    }
-    let base64 = answer["result"]["value"].as_str().ok_or("no image data")?;
+    let answer = evaluate(webview, &script)?;
+    let base64 = answer.as_str().ok_or("no image data")?;
     Ok(jscompat::buffer_from_base64(base64))
+}
+
+/// How long the page may take to answer a script of a menu action
+const PAGE_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// Runs `script` in the page, awaiting its promise, and waits for the answer. On a worker:
+/// the UI thread serves the answer.
+fn evaluate(webview: &tauri::Webview, script: &str) -> Result<Value, String> {
+    let page = webview.page()?;
+    page.blocking(PAGE_TIMEOUT, |done| page.evaluate(script, true, None, done))
+        .map_err(|error| error.to_string())
 }
 
 /// `net.fetch(url)` from the view itself, so the app schemes keep their own
@@ -315,18 +334,7 @@ fn page_fetch(webview: &tauri::Webview, url: &str) -> Result<Box<dyn Response>, 
         }})()",
         url = Value::String(url.to_owned())
     );
-    let answer = cdp(
-        webview,
-        "Runtime.evaluate",
-        json!({ "expression": script, "awaitPromise": true, "returnByValue": true }),
-    )?;
-    if let Some(details) = answer.get("exceptionDetails") {
-        return Err(details["exception"]["description"]
-            .as_str()
-            .unwrap_or("TypeError: fetch failed")
-            .to_owned());
-    }
-    let value = &answer["result"]["value"];
+    let value = evaluate(webview, &script)?;
     Ok(Box::new(Fetched {
         status: value["status"].as_u64().unwrap_or(0) as u16,
         content_type: value["type"].as_str().map(str::to_owned),

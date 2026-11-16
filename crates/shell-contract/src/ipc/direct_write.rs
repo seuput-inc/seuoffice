@@ -149,6 +149,45 @@ pub enum SavedPublication {
     Renderer(RendererCommittedOutput),
 }
 impl SavedPublication {
+    /// Wraps an already completed commit (a project new-document write) as a renderer
+    /// publication. The same scope checks as a direct write run now: every owner, `cancel`,
+    /// `pending` and each `additional` token must be live under the canonical admission, and the
+    /// receipt must be the commit of exactly `destination_path`. A receipt can only come from an
+    /// actual commit, so nothing is minted for a path that was not published.
+    #[allow(clippy::too_many_arguments)]
+    pub fn renderer_commit<E: OwnedEffects + ?Sized>(
+        effects: &E,
+        origin: &NativeRequestOwner,
+        destination: &NativeRequestOwner,
+        participants: &[NativeRequestOwner],
+        cancel: &CancelToken,
+        pending: &CancelToken,
+        additional: &[CancelToken],
+        destination_path: &Path,
+        commit: file_commit::FileCommitReceipt,
+    ) -> Result<Self, String> {
+        if commit.path() != destination_path {
+            return Err(
+                "The committed project output does not match its captured destination.".into(),
+            );
+        }
+        let scope = DirectWriteScope {
+            origin: DirectWriteOrigin::Renderer {
+                origin: origin.clone(),
+                destination: destination.clone(),
+            },
+            path: destination_path.to_owned(),
+            participants: participants.to_vec(),
+            cancel: cancel.clone(),
+            pending: pending.clone(),
+            additional: additional.to_vec(),
+        };
+        let output = RendererCommittedOutput::prepare(scope.clone())?;
+        scope.admit(effects, &mut || output.commit_admitted(commit.clone()))?;
+        Ok(Self::Renderer(output))
+    }
+}
+impl SavedPublication {
     pub fn path(&self) -> &Path {
         match self {
             Self::Native(value) => value.selection().path(),

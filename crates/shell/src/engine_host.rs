@@ -10,7 +10,10 @@ use serde_json::Value;
 use shell_contract::runtime::{CancelToken, Thread};
 use shell_contract::ipc::NativeRequestOwner;
 use seu_host::HostError;
-use tauri_runtime_cef::{FrameEventKind, NativeEvaluation, TrustedInitMode, WebviewCefExt, WebviewWindowBuilderCefExt};
+use crate::native::{
+    BridgeMode, DocumentContext, DocumentEvaluation, Native, NativeEvent, NativeEventKind, NativeSpec,
+    RequestPolicy, WebviewWindowBuilderExt,
+};
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 mod html;
@@ -67,7 +70,7 @@ struct PendingRequest {
     slides_owner: Option<shell_ipc_d1::slides::engine::RenderOwner>,
     origin: Option<OwnedRequest>,
     service_owner: Option<ServiceProof>,
-    evaluation: Option<NativeEvaluation>,
+    evaluation: Option<DocumentEvaluation>,
     cancel: CancelToken,
     callbacks: HashSet<u64>,
     callback_drain: Arc<CallbackDrain>,
@@ -274,33 +277,32 @@ impl EngineHost {
         let allowed = url.clone();
         let bootstrap = format!("window.__SEUOFFICE_ENGINE_TOKEN__={};", serde_json::to_string(&host.token).map_err(|e| e.to_string())?);
         let crashed = host.clone();
-        let view = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::External(url))
-            .trusted_init_mode(TrustedInitMode::ProtectedInvoke)
+        // The service page navigates exactly once: top-level navigations other than its own
+        // URL are refused; its sub-resources are not the policy's business.
+        let policy = RequestPolicy::new(move |request| !request.main_frame || request.url == allowed.as_str());
+        let spec = NativeSpec::new()
+            .bridge(BridgeMode::Invoke)
+            .request_policy(policy)
+            .native_events(Arc::new(move |event: &NativeEvent| {
+                if matches!(event.kind, NativeEventKind::WebviewProcessFailed { .. }) {
+                    let host = crashed.clone();
+                    std::thread::spawn(move || host.close());
+                }
+            }));
+        let native = app.try_state::<Native>().ok_or("the native module is not installed")?;
+        let (builder, browser) = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::External(url))
+            .native(&native, LABEL, spec)?;
+        let view = builder
             .title("SeuOffice engine service")
             .visible(false)
             .focused(false)
             .skip_taskbar(true)
             .initialization_script(bootstrap)
-            .on_navigation(move |url| url == &allowed)
             .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
-            .on_frame_event(move |event| {
-                if let FrameEventKind::NativeRendererTerminated { origin, process } = event.kind {
-                    let host = crashed.clone();
-                    std::thread::spawn(move || host.close_for_context(&origin, &process));
-                }
-            })
             .build()
             .map_err(|e| format!("opening the engine service: {e}"))?;
-        let bound = host.clone();
-        view.bind_native_context_ipc(move |origin| {
-            let Some(process) = origin.renderer_process_identity() else { return false };
-            let captured = origin.clone();
-            let loss = Arc::downgrade(&bound);
-            bound.service.bind(origin, move || {
-                if let Some(host) = loss.upgrade() { host.close_for_context(&captured, &process); }
-            })
-        }, |request| request.respond(None))
-            .map_err(|error| format!("binding the engine's native owner: {error}"))?;
+        native.attach(AsRef::<tauri::Webview>::as_ref(&view), &browser)
+            .map_err(|error| format!("attaching the engine service: {error}"))?;
         let native = host.clone();
         seu_host::register_native_host(move |name, input| native.call(name, input))
             .map_err(|e| e.to_string())?;
@@ -440,7 +442,7 @@ impl EngineHost {
             let request = host.state.0.lock().ok().and_then(|state| state.pending.get(&id).map(|request| (request_may_start(&state, id), request.origin.clone(), request.cancel.clone(), request.service_owner.clone())));
             let Some((true, origin, pending_cancel, Some(proof))) = request else { return; };
             // Admit this exact request/service pair, then release all gates
-            // before asking the captured native evaluator to enter CEF.
+            // before asking the captured native evaluator to enter the webview.
             let action = || {
                 let completion = host.clone();
                 let evaluation = proof.origin.evaluate(script, move |result| {
@@ -518,10 +520,20 @@ impl EngineHost {
         }
     }
 
-    fn authorized(&self, request: &tauri::ipc::Request<'_>, token: &str) -> Result<ServiceProof, String> {
-        if token != self.token { return Err("untrusted engine service sender".into()); }
-        let origin = tauri_runtime_cef::redeem_native_context(request.headers())
+    /// The request must carry the service token and the nonce of the engine page's registered
+    /// document. The first such document is bound as the service owner; a second one never is.
+    fn authorized(self: &Arc<Self>, webview: &tauri::Webview, request: &tauri::ipc::Request<'_>, token: &str) -> Result<ServiceProof, String> {
+        if token != self.token || webview.label() != LABEL { return Err("untrusted engine service sender".into()); }
+        let origin = crate::native::redeem(webview, request.headers())
             .ok_or("engine service native attestation is unavailable")?;
+        if let Some(proof) = self.service.authenticate(origin.clone()) { return Ok(proof); }
+        let captured = origin.clone();
+        let loss = Arc::downgrade(self);
+        if !self.service.bind(&origin, move || {
+            if let Some(host) = loss.upgrade() { host.close_for_context(&captured); }
+        }) {
+            return Err("engine service native owner is no longer current".into());
+        }
         self.service.authenticate(origin).ok_or_else(|| "engine service native owner is no longer current".into())
     }
 
@@ -571,8 +583,8 @@ impl EngineHost {
         }.flatten().ok_or("engine request or service owner is no longer current")?
     }
 
-    fn close_for_context(&self, origin: &tauri_runtime_cef::NativeContextToken, process: &tauri_runtime_cef::NativeRendererProcessIdentity) {
-        if self.service.close_if_matches(origin, process) { self.close(); }
+    fn close_for_context(&self, origin: &DocumentContext) {
+        if self.service.close_if_matches(origin) { self.close(); }
     }
 
     fn close(&self) {
@@ -650,8 +662,8 @@ fn target_crashed(id: u64) {
 }
 
 #[tauri::command]
-pub fn engine_host_ready(request: tauri::ipc::Request<'_>, state: State<'_, Arc<EngineHost>>, token: String) -> Result<(), String> {
-    let proof = state.authorized(&request, &token)?;
+pub fn engine_host_ready(webview: tauri::Webview, request: tauri::ipc::Request<'_>, state: State<'_, Arc<EngineHost>>, token: String) -> Result<(), String> {
+    let proof = state.authorized(&webview, &request, &token)?;
     proof.with_active(|| {
         let mut ready = state.state.0.lock().map_err(|_| "engine service state was poisoned")?;
         if matches!(&ready.ready, Err(_)) { return Err("engine service is closed".to_owned()); }
@@ -662,8 +674,8 @@ pub fn engine_host_ready(request: tauri::ipc::Request<'_>, state: State<'_, Arc<
 }
 
 #[tauri::command]
-pub fn engine_host_reply(request: tauri::ipc::Request<'_>, state: State<'_, Arc<EngineHost>>, token: String, id: u64, name: String, nonce: String, reply: Value) -> Result<(), String> {
-    let proof = state.authorized(&request, &token)?;
+pub fn engine_host_reply(webview: tauri::Webview, request: tauri::ipc::Request<'_>, state: State<'_, Arc<EngineHost>>, token: String, id: u64, name: String, nonce: String, reply: Value) -> Result<(), String> {
+    let proof = state.authorized(&webview, &request, &token)?;
     let result = decode_reply(reply)?;
     let pending = state.request_effect(&proof, id, |state| {
         let request = state.pending.get(&id).ok_or("engine request is no longer pending")?;
@@ -702,6 +714,7 @@ fn deliver_engine_reply(pending: PendingRequest, proof: &ServiceProof, result: R
 
 #[tauri::command]
 pub async fn engine_host_callback(
+    webview: tauri::Webview,
     request: tauri::ipc::Request<'_>,
     state: State<'_, Arc<EngineHost>>,
     token: String,
@@ -712,7 +725,7 @@ pub async fn engine_host_callback(
     operation: String,
     input: Value,
 ) -> Result<Value, String> {
-    let proof = state.authorized(&request, &token)?;
+    let proof = state.authorized(&webview, &request, &token)?;
     drop(request);
     if name == "pdf.structureOperation" && operation == "progress" {
         let done = input.get("done").and_then(Value::as_f64).filter(|n| n.is_finite()).ok_or("invalid progress done")?;

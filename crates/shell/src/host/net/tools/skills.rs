@@ -499,39 +499,29 @@ impl SkillImporter for ShellSkillImporter {
 }
 
 impl TemplateCopyTabs for ShellTemplateCopyTabs {
-    fn open_template_copy(&self, copy: &TemplateCopy) -> Result<Option<OpenedCopy>, String> {
-        if copy.editor.as_str() == "sheets" {
-            let copy = copy.clone();
-            return crate::host::w::on_core(move |provided| {
-                let Some(tabs) = provided.all::<shell_ipc_w::tabs::TabsState>().into_iter().next() else {
-                    return Ok(None);
-                };
-                tabs.open_sheets_template_copy(&copy).map(|opened| opened.map(|(tab_id, view)| OpenedCopy {
-                    tab_id, view, owns_copy: false,
-                }))
-            }).unwrap_or_else(|| Err("Core thread is unavailable".into()));
-        }
-        let copy = main_core::shell::tab_manager::TemplateCopy {
-            editor: copy.editor.as_str().to_owned(),
-            path: copy.path.clone(),
-            bytes: copy.bytes.clone(),
-            file_name: copy.file_name.clone(),
-            title: copy.title.clone(),
-        };
-        crate::host::w::on_core(move |provided| {
+    fn open_template_copy(
+        &self,
+        copy: &TemplateCopy,
+        requester: Option<ViewId>,
+        done: Box<dyn FnOnce(Result<Option<OpenedCopy>, String>)>,
+    ) {
+        let pending = std::rc::Rc::new(std::cell::RefCell::new(Some(done)));
+        let local = pending.clone();
+        let copy = copy.clone();
+        let started = crate::host::w::on_core_local(move |provided| {
+            let Some(done) = local.borrow_mut().take() else { return };
             let Some(tabs) = provided.all::<shell_ipc_w::tabs::TabsState>().into_iter().next() else {
-                return Ok(None);
+                return done(Ok(None));
             };
-            tabs.with_manager(|manager, host| manager.open_template_copy(host, &copy))
-                .unwrap_or(Ok(None))
-                .map(|opened| opened.map(|(tab_id, view)| OpenedCopy {
-                    tab_id,
-                    view,
-                    owns_copy: false,
-                }))
-                .map_err(|error| error.0)
-        })
-        .unwrap_or_else(|| Err("Core thread is unavailable".into()))
+            tabs.open_template_copy_owned(&copy, requester, Box::new(move |result| {
+                done(result.map(|opened| opened.map(|(tab_id, view)| OpenedCopy {
+                    tab_id, view, owns_copy: false,
+                })));
+            }));
+        });
+        if !started && let Some(done) = pending.borrow_mut().take() {
+            done(Err("Core thread is unavailable".into()));
+        }
     }
 
     fn opener_file_path(&self, opener: ViewId) -> Option<String> {

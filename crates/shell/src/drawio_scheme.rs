@@ -5,6 +5,8 @@ use std::path::PathBuf;
 
 use main_core::diagram::drawio_protocol::{self, DrawioTarget};
 
+use crate::native::SchemeRequestContext;
+
 pub(crate) struct DrawioAssets {
     root: PathBuf,
     bridge: PathBuf,
@@ -66,13 +68,14 @@ fn empty(status: u16) -> DrawioResponse {
 
 pub(crate) fn handle(
     assets: Arc<DrawioAssets>,
+    origin: SchemeRequestContext,
     request: tauri::http::Request<Vec<u8>>,
     responder: tauri::UriSchemeResponder,
 ) {
     let method = request.method().as_str().to_owned();
-    let uri = request.uri().to_string();
-    let provenance = request.extensions().get::<tauri_runtime_cef::SchemeRequestProvenance>().cloned();
-    let target = request.extensions().get::<tauri_runtime_cef::NativeSchemeResponseTarget>().cloned();
+    // The platform shape (`http://drawio-app.localhost/editor/...` on Windows) is translated
+    // back: the resolver and the print registry speak `drawio-app://editor/...`.
+    let uri = crate::native::url::logical_url_text(&request.uri().to_string());
     tauri::async_runtime::spawn_blocking(move || match assets.resolve(&method, &uri) {
         DrawioResponse::Asset { status, headers, body } => {
             let mut builder = tauri::http::Response::builder().status(status);
@@ -86,14 +89,7 @@ pub(crate) fn handle(
                 }
             }
         }
-        DrawioResponse::Print { token } => match (provenance, target) {
-            (Some(origin), Some(target)) => print::serve(&token, &origin, &target, responder),
-            _ => {
-                let mut response = tauri::http::Response::new(Vec::new());
-                *response.status_mut() = tauri::http::StatusCode::NOT_FOUND;
-                responder.respond(response);
-            }
-        },
+        DrawioResponse::Print { token } => print::serve(&token, &origin, responder),
     });
 }
 

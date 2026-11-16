@@ -6,7 +6,7 @@
 
 use shell_contract::Surface;
 use shell_contract::{ViewId, runtime::{RendererGeneration, Views}};
-use tauri_runtime_cef::NativeContextToken;
+use crate::native::DocumentContext;
 
 use crate::ipc::native_owner::{self, NativeOwnerAuthority};
 use crate::views::ViewTable;
@@ -72,7 +72,7 @@ pub fn external_target(policy: OpenPolicy, url: &str) -> Option<String> {
 /// a current-view lookup alone never authorizes the effect.
 pub fn requested(
     surface: Option<Surface>, views: &ViewTable, view: ViewId,
-    generation: &RendererGeneration, origin: &NativeContextToken, url: &str,
+    generation: &RendererGeneration, origin: &DocumentContext, url: &str,
 ) -> Result<(), String> {
     let Some(target) = external_target(policy_of(surface), url) else {
         crate::trace::trace!("window", "window.open of {surface:?} refused: {url}");

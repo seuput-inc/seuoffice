@@ -49,7 +49,7 @@ pub struct AdoptedLifetimeHandle {
 }
 
 pub enum AdoptedLifetimeFailure {
-    CallerOwned(CallerOwnedAdoptedLifetime),
+    CallerOwned(Box<CallerOwnedAdoptedLifetime>),
     Retained(RetainedAdoptedLifetime),
 }
 
@@ -141,7 +141,7 @@ impl CallerOwnedAdoptedLifetime {
     pub fn retry(mut self) -> Result<AdoptedLifetimeHandle, AdoptedLifetimeFailure> {
         let Some(state) = self.state.upgrade() else {
             self.error = "The adopted editor manager is unavailable".into();
-            return Err(AdoptedLifetimeFailure::CallerOwned(self));
+            return Err(AdoptedLifetimeFailure::CallerOwned(Box::new(self)));
         };
         state.register_adopted_lifetime(self.lifetime)
     }
@@ -211,24 +211,24 @@ impl TabsState {
                 .reservation()
                 .same_reservation(&lifetime.reservation)
         {
-            return Err(AdoptedLifetimeFailure::CallerOwned(
+            return Err(AdoptedLifetimeFailure::CallerOwned(Box::new(
                 CallerOwnedAdoptedLifetime {
                     error: "The adopted editor reservation does not match its view".into(),
                     state: self.this.clone(),
                     lifetime,
                 },
-            ));
+            )));
         }
         let id = match self.owned_id() {
             Ok(id) => id,
             Err(error) => {
-                return Err(AdoptedLifetimeFailure::CallerOwned(
+                return Err(AdoptedLifetimeFailure::CallerOwned(Box::new(
                     CallerOwnedAdoptedLifetime {
                         error,
                         state: self.this.clone(),
                         lifetime,
                     },
-                ));
+                )));
             }
         };
         let terminal = lifetime.terminal.clone();

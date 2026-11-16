@@ -37,9 +37,6 @@ impl CommittedGeneratedTab {
     pub fn created(&self) -> &RendererGeneration {
         &self.created
     }
-    pub(super) fn into_target(self) -> NativeRequestOwner {
-        self.target
-    }
     pub fn validate_target(&self) -> Result<(), String> {
         if self.created.is_active()
             && self
@@ -116,6 +113,7 @@ impl TabsState {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn open_initialized_editor_owned(
         &self,
         request: EditorOpen,
@@ -137,6 +135,7 @@ impl TabsState {
         self.begin_initialized_open(request, source, participants, cancel, pending, opener, done);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn begin_initialized_open(
         &self,
         request: EditorOpen,
@@ -226,6 +225,7 @@ impl TabsState {
         });
     }
 
+    #[allow(clippy::type_complexity)]
     fn prepare_generated_manager_adoption(
         &self,
         operation_id: u64,
@@ -249,10 +249,10 @@ impl TabsState {
                 >,
             >,
         ),
-        (
+        Box<(
             PreparedTabOpen<ViewId, super::super::super::host::RetainedSpareBinding>,
             String,
-        ),
+        )>,
     > {
         if !retained.browser.reservation.matches(view, created)
             || !retained
@@ -268,10 +268,10 @@ impl TabsState {
                     || original.browser.owner.same_owner(&retained.browser.owner)
             })
         {
-            return Err((
+            return Err(Box::new((
                 plan,
                 "The generated browser binding does not match its reservation".into(),
-            ));
+            )));
         }
         let original = plan
             .reserved_binding()
@@ -282,13 +282,15 @@ impl TabsState {
                 manager, bridge, ..
             } = &mut *inner;
             match manager.as_ref() {
-                Some(manager) => manager
-                    .prepare_editor_adoption(bridge, plan, view)
-                    .map_err(|failure| {
-                        let (plan, error) = *failure;
-                        (plan, error.0)
-                    }),
-                None => Err((plan, "The shell window is unavailable".into())),
+                Some(manager) => {
+                    manager
+                        .prepare_editor_adoption(bridge, plan, view)
+                        .map_err(|failure| {
+                            let (plan, error) = *failure;
+                            Box::new((plan, error.0))
+                        })
+                }
+                None => Err(Box::new((plan, "The shell window is unavailable".into()))),
             }
         }?;
         let commit = {
@@ -300,7 +302,7 @@ impl TabsState {
         };
         let commit = match commit {
             Ok(commit) => commit,
-            Err(error) => return Err((prepared.into_plan(), error)),
+            Err(error) => return Err(Box::new((prepared.into_plan(), error))),
         };
         let preview = {
             let inner = self.inner.borrow();
@@ -313,7 +315,7 @@ impl TabsState {
         };
         let preview = match preview {
             Ok(preview) => preview,
-            Err(error) => return Err((prepared.into_plan(), error)),
+            Err(error) => return Err(Box::new((prepared.into_plan(), error))),
         };
         let mut loaded_id = Some(commit.tab_id().to_owned());
         let prepared = std::rc::Rc::new(RefCell::new(Some(prepared)));
@@ -445,8 +447,9 @@ impl TabsState {
         Ok((adopt, register, preview, tab_id, recover))
     }
 
-    /// The shell, survivors and participants a generated-style cleanup must
+    /// The shell and participants a generated-style cleanup must
     /// capture before the new editor exists.
+    #[allow(clippy::type_complexity)]
     pub(super) fn capture_generated_cleanup_context(
         &self,
         source: &NativeRequestOwner,
@@ -454,7 +457,6 @@ impl TabsState {
     ) -> Result<
         (
             (super::super::super::host::ShellWindow, NativeRequestOwner),
-            Vec<GeneratedCapturedTab>,
             Vec<NativeRequestOwner>,
         ),
         String,
@@ -478,8 +480,8 @@ impl TabsState {
                 .map(|owner| (shell, owner))
         })();
         let cleanup_shell = cleanup_shell?;
-        let captured_tabs = (|| -> Result<Vec<GeneratedCapturedTab>, String> {
-            let tabs = {
+        let loaded_owners = (|| -> Result<Vec<NativeRequestOwner>, String> {
+            let views = {
                 let inner = self.inner.borrow();
                 let manager = inner
                     .manager
@@ -488,11 +490,7 @@ impl TabsState {
                 manager
                     .list()
                     .into_iter()
-                    .map(|tab| {
-                        let view = manager.web_contents_for_tab(&tab.id);
-                        let unloaded = manager.is_tab_unloaded(&tab.id);
-                        (tab.id, view, unloaded)
-                    })
+                    .filter_map(|tab| manager.web_contents_for_tab(&tab.id))
                     .collect::<Vec<_>>()
             };
             let effects = self
@@ -500,25 +498,19 @@ impl TabsState {
                 .hosts
                 .get::<OwnedEffectsHost>()
                 .ok_or("Owned cleanup is unavailable")?;
-            tabs.into_iter()
-                .map(|(id, view, unloaded)| match view {
-                    Some(view) => {
-                        let generation = self
-                            .services
-                            .views
-                            .renderer_generation(view)
-                            .ok_or("A surviving tab renderer is unavailable")?;
-                        Ok(GeneratedCapturedTab::Loaded {
-                            id,
-                            owner: effects.capture_owner(view, &generation)?,
-                        })
-                    }
-                    None if unloaded => Ok(GeneratedCapturedTab::Unloaded { id }),
-                    None => Ok(GeneratedCapturedTab::Viewless { id }),
+            views
+                .into_iter()
+                .map(|view| -> Result<NativeRequestOwner, String> {
+                    let generation = self
+                        .services
+                        .views
+                        .renderer_generation(view)
+                        .ok_or("A surviving tab renderer is unavailable")?;
+                    effects.capture_owner(view, &generation)
                 })
                 .collect()
         })();
-        let tabs = captured_tabs?;
+        let loaded_owners = loaded_owners?;
         let cleanup_participants = (|| -> Result<Vec<NativeRequestOwner>, String> {
             let effects = self
                 .services
@@ -526,13 +518,11 @@ impl TabsState {
                 .get::<OwnedEffectsHost>()
                 .ok_or("Owned cleanup is unavailable")?;
             let mut captured = participants.to_vec();
-            for tab in &tabs {
-                if let GeneratedCapturedTab::Loaded { owner, .. } = tab {
-                    if owner.view != source.view
-                        && !captured.iter().any(|entry| entry.view == owner.view)
-                    {
-                        captured.push(owner.clone());
-                    }
+            for owner in &loaded_owners {
+                if owner.view != source.view
+                    && !captured.iter().any(|entry| entry.view == owner.view)
+                {
+                    captured.push(owner.clone());
                 }
             }
             let (_, detached) = self.session_snapshot()?;
@@ -556,9 +546,10 @@ impl TabsState {
             Ok(captured)
         })();
         let cleanup_participants = cleanup_participants?;
-        Ok((cleanup_shell, tabs, cleanup_participants))
+        Ok((cleanup_shell, cleanup_participants))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn start_generated_open(
         &self,
         request: EditorOpen,
@@ -622,7 +613,7 @@ impl TabsState {
             None
         };
         let reserved_spare = spare.is_some();
-        let (cleanup_shell, tabs, cleanup_participants) =
+        let (cleanup_shell, cleanup_participants) =
             match self.capture_generated_cleanup_context(&source, &participants) {
                 Ok(captured) => captured,
                 Err(error) => {
@@ -729,7 +720,8 @@ impl TabsState {
             .prepare_generated_manager_adoption(id, plan, view, &created, retained, epoch)
         {
             Ok(prepared) => prepared,
-            Err((plan, error)) => {
+            Err(failure) => {
+                let (plan, error) = *failure;
                 drop(start);
                 drop(installer);
                 let state = self.rc();
@@ -765,7 +757,6 @@ impl TabsState {
             manager_epoch: epoch,
             cleanup: self.hooks.cleanup_lifetime(),
             participants: cleanup_participants,
-            survivors: tabs,
             preview,
             reservation: binding.reservation.clone(),
             browser: binding.owner.clone(),
@@ -911,6 +902,7 @@ impl TabsState {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn finish_generated_open(
         &self,
         operation: u64,
@@ -1139,6 +1131,7 @@ impl TabsState {
         );
     }
 
+    #[allow(clippy::type_complexity)]
     pub(super) fn fail_generated_completion_parts<T: 'static>(
         &self,
         operation: u64,

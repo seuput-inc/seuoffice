@@ -74,7 +74,7 @@ pub use probe::{probe_hosts, probe_trigger};
 use self::services::{GuidePending, Services, Shell};
 
 enum AdoptWork {
-    Plan(AdoptPlan),
+    Plan(Box<AdoptPlan>),
     Answer(
         main_core::shell::projects::project_guide::PendingAdopt,
         ProjectTrustAnswer,
@@ -289,7 +289,9 @@ thread_local! {
     /// The state of this core thread: the host reports its page events to it
     static CURRENT: RefCell<Option<Rc<Projects>>> = const { RefCell::new(None) };
     static PENDING_SETTINGS: RefCell<HashMap<u64, (Weak<Projects>, Responder)>> = RefCell::new(HashMap::new());
+    #[allow(clippy::type_complexity)]
     static PENDING_TOUCHES: RefCell<HashMap<u64, (Weak<Projects>, Option<Box<dyn FnOnce(Result<(), String>)>>)>> = RefCell::new(HashMap::new());
+    #[allow(clippy::type_complexity)]
     static PENDING_OUTSIDE: RefCell<HashMap<u64, (Weak<Projects>, Responder, Result<IpcStep<GuidePending>, Thrown>, Vec<OutsideChatAssociation>)>> = RefCell::new(HashMap::new());
     static NEXT_SETTINGS: Cell<u64> = const { Cell::new(1) };
 }
@@ -310,10 +312,10 @@ impl PageEvents for Reporter {
     }
     fn send_if(&self, event: PageEvent, guard: Box<dyn FnOnce() -> bool + Send>) {
         self.core.post(Box::new(move || {
-            if guard() {
-                if let Some(projects) = CURRENT.with(|current| current.borrow().clone()) {
-                    projects.page_event(event);
-                }
+            if guard()
+                && let Some(projects) = CURRENT.with(|current| current.borrow().clone())
+            {
+                projects.page_event(event);
             }
         }));
     }
@@ -1131,6 +1133,7 @@ impl Projects {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn queue_creation(
         &self,
         owner: i64,
@@ -1313,7 +1316,7 @@ impl Projects {
                 self.advance(Ok(step), reply);
             }
             Ok(AdoptStart::Ready(plan)) => {
-                self.queue_adoption(owner, AdoptWork::Plan(plan), destination, reply)
+                self.queue_adoption(owner, AdoptWork::Plan(Box::new(plan)), destination, reply)
             }
             Ok(AdoptStart::NeedInstallId(scan)) => {
                 self.adoption_install_id(owner, destination, scan, reply)
@@ -1503,7 +1506,7 @@ impl Projects {
                 let preparation = match work {
                     AdoptWork::Plan(plan) => projects
                         .guide()
-                        .prepare_adopt_write(plan)
+                        .prepare_adopt_write(*plan)
                         .map(|write| AdoptPreparation::Write(Box::new(write))),
                     AdoptWork::Answer(pending, answer) => {
                         projects.guide().prepare_adopt_answer(pending, answer)
@@ -2197,6 +2200,7 @@ impl Projects {
         }));
     }
 
+    #[allow(clippy::type_complexity)]
     fn queue_touch_flush(&self, done: Option<Box<dyn FnOnce(Result<(), String>)>>) {
         let guide = self
             .inner

@@ -128,10 +128,10 @@ impl DocPickerWindow for Window {
         self.view
     }
     fn renderer_ready(&self, view: ViewId) {
-        if view == self.view {
-            if let Some(control) = self.control.lock().expect("the control").as_ref() {
-                control.window_ready(view);
-            }
+        if view == self.view
+            && let Some(control) = self.control.lock().expect("the control").as_ref()
+        {
+            control.window_ready(view);
         }
     }
 

@@ -5,7 +5,7 @@ use objc2::runtime::{AnyClass, AnyObject};
 use objc2::msg_send;
 use objc2_app_kit::{NSWindow, NSWindowStyleMask};
 use objc2_foundation::NSString;
-use tauri_runtime_cef::WindowCefExt;
+use crate::native::WindowExt;
 
 pub(super) fn is_native_fullscreen(window: &tauri::Window) -> Result<bool, String> {
     let handle = window.native_window_handle().map_err(|error| error.to_string())?;

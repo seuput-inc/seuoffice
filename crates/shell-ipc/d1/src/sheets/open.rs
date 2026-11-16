@@ -238,9 +238,13 @@ pub fn open_workbook_session_with_owner(
     open_workbook_session_captured(env, view, path, options, owned, None, None)
 }
 
-/// Worker side of a saved workbook opening: the engine snapshots the committed
-/// saved input under the renderer's select call, and the session registers only
-/// while that exact saved barrier is still the tab's current one.
+/// Worker side of a saved workbook opening. The engine snapshots the committed
+/// saved input under the renderer's select call; the logical path names the
+/// document while every read goes through that authorized snapshot, never the
+/// original path. A converted, unlocked or recovered result is re-wrapped with
+/// `snapshot_saved_bytes`. The session registers only while this exact saved
+/// barrier is still the tab's current one. The flag is whether a recovery copy
+/// was applied instead of the saved bytes.
 pub(super) fn open_saved_workbook(
     env: &Env,
     view: ViewId,
@@ -248,7 +252,7 @@ pub(super) fn open_saved_workbook(
     actual: shell_contract::ipc::NativeRequestOwner,
     actual_cancel: shell_contract::runtime::CancelToken,
     load_id: String,
-) -> Result<IpcValue, IpcError> {
+) -> Result<(IpcValue, bool), IpcError> {
     let logical_path = document
         .target()
         .path()
@@ -260,11 +264,48 @@ pub(super) fn open_saved_workbook(
         .engine
         .snapshot_saved_document(&document, &actual, &actual_cancel)?;
     let original_sha = sha256_file(snapshot.path()).map_err(super::recovery::node_err)?;
+    let authority = OpenAuthority {
+        owner: Some(actual.clone()),
+        headless: None,
+        cancel: actual_cancel.clone(),
+        pending: document.target().pending().clone(),
+    };
+    let prepared = prepare_workbook_for_open(
+        env,
+        &WorkbookInput {
+            logical: &logical_path,
+            physical: snapshot.path(),
+        },
+        Some(view),
+        dialog_parent(env, view),
+        &PrepareOptions {
+            skip_recovery_prompt: false,
+            import: None,
+        },
+        &authority,
+    )?
+    .ok_or_else(|| thrown("The saved workbook was not opened"))?;
+    let mut snapshot = snapshot;
+    if prepared.open_path != logical_path {
+        let restaged = read_file(&prepared.open_path).and_then(|bytes| {
+            env.engine
+                .snapshot_saved_bytes(&bytes, &document, &actual, &actual_cancel)
+        });
+        snapshot = match restaged {
+            Ok(restaged) => restaged,
+            Err(error) => {
+                discard_prepared_open(env, &prepared);
+                return Err(error);
+            }
+        };
+    }
+    let recovered =
+        prepared.options.restore_target.is_some() && prepared.options.password.is_none();
     let opened = open_workbook_session_captured(
         env,
         view,
-        &logical_path,
-        OpenOptions::default(),
+        &prepared.open_path,
+        prepared.options.clone(),
         None,
         None,
         Some(SavedOpen {
@@ -272,12 +313,12 @@ pub(super) fn open_saved_workbook(
             actual,
             actual_cancel,
             snapshot,
-            logical_path: logical_path.clone(),
+            logical_path,
             original_sha,
             load_id,
         }),
     )?;
-    Ok(opened.value)
+    Ok((opened.value, recovered))
 }
 
 fn open_workbook_session_captured(

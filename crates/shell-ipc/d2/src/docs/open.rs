@@ -150,6 +150,17 @@ impl RecoveryLoadScope {
                 message,
             })
     }
+
+    fn asset_effect(
+        &self,
+        effect: &mut dyn FnMut() -> Result<(), main_core::node_fs::NodeError>,
+    ) -> Result<(), main_core::node_fs::NodeError> {
+        self.effect(effect)
+            .map_err(|message| main_core::node_fs::NodeError {
+                code: None,
+                message,
+            })?
+    }
 }
 
 /// The first part of `loadDocx`, on a worker
@@ -247,11 +258,11 @@ fn archive_original_recovery(
             .effect(|| main_core::html::asset_lifecycle::CapturedAssetOutput::capture(&target))?
             .map_err(|error| error.message)?;
         let mut payload = output
-            .create_payload(&mut |effect| scope.file_effect(effect))
+            .create_payload(&mut |effect| scope.asset_effect(effect))
             .map_err(|error| error.message)?;
         payload.write(bytes).map_err(|error| error.message)?;
         payload
-            .publish(&output, true, &mut |effect| scope.file_effect(effect))
+            .publish(&output, true, &mut |effect| scope.asset_effect(effect))
             .map_err(|error| error.message)?;
     }
     prune_originals_using(&dir, Some(scope))
@@ -406,11 +417,11 @@ impl Docs {
                     })?
                     .map_err(|error| error.message)?;
                 let mut payload = output
-                    .create_payload(&mut |effect| scope.file_effect(effect))
+                    .create_payload(&mut |effect| scope.asset_effect(effect))
                     .map_err(|error| error.message)?;
                 payload.write(&bytes).map_err(|error| error.message)?;
                 let file = payload
-                    .publish_with_file(&output, true, &mut |effect| scope.file_effect(effect))
+                    .publish_with_file(&output, true, &mut |effect| scope.asset_effect(effect))
                     .map_err(|error| error.message)?;
                 Ok((path, std::sync::Arc::new(file)))
             },
@@ -2338,6 +2349,15 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
         "docs:consume-pending-open",
         move |cx, _args, responder| {
             let view = cx.sender.view;
+            let responder = match super::saved_load::queue_consumer(&d, cx, responder) {
+                Ok(ready) => {
+                    if ready {
+                        super::saved_load::start(&d, view);
+                    }
+                    return;
+                }
+                Err(responder) => responder,
+            };
             let authority = match d.capture_load_authority(cx) {
                 Ok(authority) => authority,
                 Err(error) => return responder.reply(Err(error)),

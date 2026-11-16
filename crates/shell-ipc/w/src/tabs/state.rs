@@ -66,8 +66,7 @@ pub(super) struct PendingMenu {
 #[derive(Clone)]
 pub(super) enum McpBlank {
     Docs,
-    Sheets(String),
-    Slides,
+    Sheets,
 }
 
 pub(super) struct Inner {
@@ -108,6 +107,7 @@ pub struct TabsState {
     pub(super) services: Services,
     pub(super) menus: RefCell<HashMap<u64, PendingMenu>>,
     pub(super) next_menu: Cell<u64>,
+    #[allow(clippy::type_complexity)]
     ensure_waits: RefCell<
         HashMap<
             u64,
@@ -123,6 +123,7 @@ pub struct TabsState {
     pub(super) retained_recovery_cleanups: RefCell<Vec<Rc<dyn super::activation::RecoveryAttempt>>>,
     pub(super) spare_creator_authority:
         RefCell<Option<shell_contract::ipc::NativeInvocationOperation>>,
+    #[allow(clippy::type_complexity)]
     pub(super) creation_cleanup_waiters: RefCell<Vec<Box<dyn FnOnce(Result<(), String>)>>>,
     pub(super) creation_shutdown: Cell<bool>,
     pub(super) creations_inflight: RefCell<std::collections::HashSet<u64>>,
@@ -220,7 +221,7 @@ impl Inner {
             match effect {
                 Effect::Changed => self.on_changed(),
                 Effect::SplitChanged(state) => self.on_split_changed(state),
-                Effect::Dock(tab) => self.dock(tab),
+                Effect::Dock(tab) => self.dock(*tab),
             }
         }
     }
@@ -945,7 +946,6 @@ impl TabsState {
             TimerKey::SpareSheets => {
                 drop(g);
                 self.start_spare_sheets();
-                return;
             }
             TimerKey::Tab(step) => {
                 g.manager_call(|m, b| m.run_deferred(b, step));

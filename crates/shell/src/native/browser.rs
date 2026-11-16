@@ -82,6 +82,17 @@ impl fmt::Display for RegisterError {
     }
 }
 
+/// What the navigation hook does with a navigation, by whether the policy is enforced yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BeforePolicy {
+    /// The policy is enforced (or there is none): judge the navigation normally.
+    Judge,
+    /// `about:blank` fetches nothing: allow it without a verdict.
+    Blank,
+    /// Cancel it; it replays once the policy is enforced.
+    Hold,
+}
+
 pub(crate) type RegistrationHook = Arc<dyn Fn(&DocumentContext) + Send + Sync>;
 type ReadyWaiter = Box<dyn FnOnce(Result<(), String>) + Send>;
 
@@ -103,6 +114,10 @@ struct BrowserLive {
     observation: u64,
     attached: bool,
     initial_loaded: bool,
+    /// The request policy is enforced by the OS webview (true from the start without one).
+    policy_ready: bool,
+    /// The first navigation to a real URL, cancelled until the policy was enforced.
+    held_navigation: Option<Url>,
     ready: Option<Result<(), String>>,
     ready_waiters: Vec<ReadyWaiter>,
     /// The navigation whose load outcome was already reported.
@@ -309,6 +324,17 @@ impl BrowserIdentity {
         self.core.view_event(event);
     }
 
+    /// The OS webview enforces the browser's request policy (see `PolicyOps::apply_policy`).
+    pub(crate) fn observe_policy_installed(&self) {
+        self.core.policy_installed();
+    }
+
+    /// The policy could not be enforced after `apply_policy` returned (macOS compiles its
+    /// rules asynchronously): the held navigation never replays and readiness fails.
+    pub(crate) fn observe_policy_failed(&self, reason: &str) {
+        self.core.attach_failed(reason);
+    }
+
     /// The webview left Tauri's registry.
     pub(crate) fn observe_retired(&self) {
         self.core.retire();
@@ -344,6 +370,7 @@ impl BrowserCore {
     pub(crate) fn new(
         label: &str, creation: CreationId, close: BrowserClose, config: Config,
     ) -> Option<Arc<Self>> {
+        let config_without_policy = config.policy.is_none();
         Some(Arc::new(Self {
             id: BrowserId::mint()?,
             label: label.into(),
@@ -362,6 +389,8 @@ impl BrowserCore {
                 observation: 0,
                 attached: false,
                 initial_loaded: false,
+                policy_ready: config_without_policy,
+                held_navigation: None,
                 ready: None,
                 ready_waiters: Vec::new(),
                 finished: None,
@@ -435,6 +464,59 @@ impl BrowserCore {
         let _ = self.window_label.set(window_label.into());
         self.lock().attached = true;
         self.ready_check();
+        self.replay_held_navigation();
+    }
+
+    /// The OS webview enforces the request policy. Releases `Navigator::when_ready` and
+    /// replays the navigation that was held for it.
+    pub(crate) fn policy_installed(self: &Arc<Self>) {
+        self.lock().policy_ready = true;
+        self.ready_check();
+        self.replay_held_navigation();
+    }
+
+    /// What the navigation hook does with a navigation before the policy is enforced.
+    pub(crate) fn before_policy(&self, url: &Url) -> BeforePolicy {
+        let mut state = self.lock();
+        if state.policy_ready || state.closed {
+            return BeforePolicy::Judge;
+        }
+        if url.as_str() == "about:blank" {
+            return BeforePolicy::Blank;
+        }
+        if state.held_navigation.is_none() {
+            state.held_navigation = Some(url.clone());
+        }
+        BeforePolicy::Hold
+    }
+
+    /// Navigate to the held URL once the webview is attached and the policy is enforced. The
+    /// navigation goes through the hook like any other, now under the policy.
+    fn replay_held_navigation(self: &Arc<Self>) {
+        let url = {
+            let mut state = self.lock();
+            if !(state.attached && state.policy_ready) || state.closed {
+                return;
+            }
+            state.held_navigation.take()
+        };
+        let Some(url) = url else { return };
+        let outcome = match self.control() {
+            Some(control) => control.navigate(&url),
+            None => Err("The webview is not attached.".to_owned()),
+        };
+        if let Err(error) = outcome {
+            eprintln!("shell: the held navigation to {url} could not start: {error}");
+            if let Some(navigation) = self.mint_navigation() {
+                {
+                    let mut state = self.lock();
+                    state.nav = Some(navigation);
+                    state.nav_url = Some(url);
+                    state.finished = None;
+                }
+                self.finish_load(Err(LoadError { code: None, description: error }));
+            }
+        }
     }
 
     /// The OS observers could not be attached: nothing waits for readiness forever.
@@ -458,6 +540,7 @@ impl BrowserCore {
             let mut state = self.lock();
             if state.ready.is_some()
                 || !state.attached
+                || !state.policy_ready
                 || (self.config.start == NavigationStart::Explicit && !state.initial_loaded)
             {
                 return;

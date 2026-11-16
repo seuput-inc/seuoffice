@@ -10,8 +10,8 @@ use jscompat::{is_js_space, trim};
 use main_core::packages::electron_utils::author_name::configured_author_name;
 use main_core::packages::electron_utils::save_conflict::record_disk_state;
 use main_core::pdf::note_link::{
-    FoundNoteLink, NoteHost, NoteLink, NoteLinkDeps, NoteLinkStore, NoteLinks, NoteResult, Thrown,
-    note_dialog_text, parse_note_insert_request, parse_note_open_request,
+    FoundNoteLink, NoteHost, NoteLink, NoteLinkDeps, NoteLinkStore, NoteLinks, NoteResult,
+    PreparedNote, Thrown, note_dialog_text, parse_note_insert_request, parse_note_open_request,
 };
 use shell_contract::hosts::{FileDialog, FileFilter};
 use shell_contract::runtime::PathName;
@@ -262,11 +262,11 @@ impl NoteHost for Hooks<'_> {
     fn has_insert_into_note(&self) -> bool {
         self.0.shell.has_note_hooks()
     }
-    fn open_note(&self, path: &str) -> Result<bool, Thrown> {
-        self.0.shell.open_note(path).map_err(thrown)
+    fn open_note(&self, _path: &str) -> Result<bool, Thrown> {
+        Err(Thrown("The note tab opens through the asynchronous note hooks".into()))
     }
-    fn insert_into_note(&self, path: &str, text: &str) -> Result<bool, Thrown> {
-        self.0.shell.insert_into_note(path, text).map_err(thrown)
+    fn insert_into_note(&self, _path: &str, _text: &str) -> Result<bool, Thrown> {
+        Err(Thrown("The note tab opens through the asynchronous note hooks".into()))
     }
 }
 
@@ -505,6 +505,10 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
     all.push(kit::invoke_later(
         "pdf:consume-recovery-pending",
         move |cx, _, reply| {
+            let reply = match crate::saved_slots::dispatch(&e, cx, (), reply) {
+                Ok(()) => return,
+                Err(reply) => reply,
+            };
             if super::reload::has_saved_reload(&e, cx.sender.view) {
                 super::reload::consume_saved(&e, cx, reply);
             } else {
@@ -523,6 +527,10 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
             Some(false) => Err(args.str(2).unwrap_or("PDF recovery failed").to_owned()),
             None => return Err(kit::error("PDF recovery result is required")),
         };
+        let failure = result.as_ref().err().map_or("", String::as_str);
+        if crate::saved_slots::initialized(&e, cx, token, result.is_ok(), failure)? {
+            return Ok(IpcValue::Null);
+        }
         if super::reload::has_saved_reload(&e, cx.sender.view) {
             super::reload::settle_saved(&e, cx, token, result).map_err(kit::error)?;
         } else {
@@ -545,6 +553,34 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
             let Some(path) = e.granted(view, args.get(0)) else {
                 return reply.reply(Err(error(NOT_GRANTED)));
             };
+            match crate::saved_slots::read_scope(&*e, cx, &path) {
+                Err(message) => return reply.reply(Err(error(message))),
+                Ok(Some(scope)) => {
+                    let input = scope.input().clone();
+                    return kit::on_worker(
+                        &e.services,
+                        move || input.bytes().to_vec(),
+                        move |bytes| {
+                            let mut bytes = Some(bytes);
+                            let mut answer = None;
+                            let admitted = scope.admit(&mut || {
+                                answer = Some(IpcValue::Bytes(
+                                    BytesKind::ArrayBuffer,
+                                    bytes.take().ok_or("PDF saved read was already admitted")?,
+                                ));
+                                Ok(())
+                            });
+                            match admitted {
+                                Ok(()) => reply.reply(
+                                    answer.ok_or_else(|| error("PDF saved read was not admitted")),
+                                ),
+                                Err(message) => reply.reply(Err(error(message))),
+                            }
+                        },
+                    );
+                }
+                Ok(None) => {}
+            }
             let saved = match super::reload::saved_read_scope(&e, cx, &path) {
                 Ok(scope) => scope,
                 Err(message) => return reply.reply(Err(error(message))),
@@ -969,20 +1005,39 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
 
     // the request carries text parts, never a path (reading-assist 4.9)
     let e = ed.clone();
-    all.push(kit::invoke("pdf:note-open", move |cx, args| {
+    all.push(kit::invoke_later("pdf:note-open", move |cx, args, reply| {
         let view = cx.sender.view;
         if !e.registered(view) {
-            return Ok(obj([
+            return reply.reply(Ok(obj([
                 ("ok", false.into_ipc()),
                 ("reason", "failed".into_ipc()),
-            ]));
+            ])));
         }
         let request = parse_note_open_request(kit::to_js_json(args.get(0)).as_ref());
         let path = e.open_path(view);
-        note_result(
-            e.notes
-                .open(&NoteDeps::new(&e), view.0 as f64, path.as_deref(), &request),
-        )
+        let prepared = e.notes.prepare_async(
+            &NoteDeps::new(&e),
+            view.0 as f64,
+            path.as_deref(),
+            request.title.as_deref(),
+            None,
+        );
+        match prepared {
+            Ok((PreparedNote::Ready { path: note, .. }, Some(pending))) => {
+                e.shell.open_note(
+                    &note,
+                    Box::new(move |opened| {
+                        let result = pending.finish(opened.map_err(thrown));
+                        reply.reply(note_result(Ok(result)));
+                    }),
+                );
+            }
+            Ok((PreparedNote::Finished(result), _)) => reply.reply(note_result(Ok(result))),
+            Ok((PreparedNote::Ready { .. }, None)) => reply.reply(note_result(Err(Thrown(
+                "The note request lost its busy guard".into(),
+            )))),
+            Err(thrown) => reply.reply(note_result(Err(thrown))),
+        }
     }));
 
     let e = ed.clone();
@@ -995,26 +1050,46 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
     }));
 
     let e = ed.clone();
-    all.push(kit::invoke("pdf:note-insert", move |cx, args| {
+    all.push(kit::invoke_later("pdf:note-insert", move |cx, args, reply| {
         let view = cx.sender.view;
         if !e.registered(view) {
-            return Ok(obj([
+            return reply.reply(Ok(obj([
                 ("ok", false.into_ipc()),
                 ("reason", "failed".into_ipc()),
-            ]));
+            ])));
         }
         let Some(request) = parse_note_insert_request(kit::to_js_json(args.get(0)).as_ref()) else {
-            return Ok(obj([
+            return reply.reply(Ok(obj([
                 ("ok", false.into_ipc()),
                 ("reason", "failed".into_ipc()),
                 ("message", "invalid request".into_ipc()),
-            ]));
+            ])));
         };
         let path = e.open_path(view);
-        note_result(
-            e.notes
-                .insert(&NoteDeps::new(&e), view.0 as f64, path.as_deref(), &request),
-        )
+        let prepared = e.notes.prepare_async(
+            &NoteDeps::new(&e),
+            view.0 as f64,
+            path.as_deref(),
+            request.title(),
+            Some(&request),
+        );
+        match prepared {
+            Ok((PreparedNote::Ready { path: note, text }, Some(pending))) => {
+                e.shell.insert_into_note(
+                    &note,
+                    text.as_deref().unwrap_or(""),
+                    Box::new(move |inserted| {
+                        let result = pending.finish(inserted.map_err(thrown));
+                        reply.reply(note_result(Ok(result)));
+                    }),
+                );
+            }
+            Ok((PreparedNote::Finished(result), _)) => reply.reply(note_result(Ok(result))),
+            Ok((PreparedNote::Ready { .. }, None)) => reply.reply(note_result(Err(Thrown(
+                "The note request lost its busy guard".into(),
+            )))),
+            Err(thrown) => reply.reply(note_result(Err(thrown))),
+        }
     }));
 
     let e = ed.clone();

@@ -1,18 +1,25 @@
 //! Per-webview request policy.
 //!
 //! Replaces the CEF network session handler. The decision function is pure; how it is
-//! enforced is per OS in `platform/*` (`PolicyOps::apply`):
+//! enforced is per OS in `platform/*` (`PolicyOps::apply_policy`):
 //!
 //! - Windows: a `WebResourceRequested` filter answers allow or block per request, with the
-//!   exact decision.
-//! - macOS has no public per-request interception for http(s). The adapter combines a
-//!   `WKContentRuleList` built from the policy (all `http(s)`/`ws(s)` blocked except what the
-//!   policy names), the shell's own scheme handlers adding a CSP to target documents, and
-//!   `allowsContentJavaScript = false`. Requests the shell's handlers never see cannot be
-//!   logged there.
+//!   exact decision, by calling [`RequestPolicy::allows`].
+//! - macOS has no public per-request interception for http(s). The adapter compiles the
+//!   policy's [`Blocks`] declaration into a `WKContentRuleList`, applies
+//!   `allowsContentJavaScript = false`, and leaves per-request decisions to the navigation
+//!   hook. The policy therefore *declares* what it refuses wholesale; it is never probed.
 //!
-//! The top-level navigation allow check also runs inside the `on_navigation` hook on both
-//! OSes, so a top-level navigation refused by the policy never starts.
+//! The navigation allow check runs inside the `on_navigation` hook on both OSes, so a
+//! navigation refused by the policy never starts.
+//!
+//! Request classes the policy sees:
+//!
+//! - `main_frame`: the navigation of the main frame, judged by the navigation hook. True on
+//!   both OSes only there.
+//! - `top_level`: a document-class request. The navigation hook's main-frame navigations, and
+//!   on Windows every document request including subframe documents (WebView2 cannot say
+//!   which frame asked). A rule that means "the page's one navigation" uses `main_frame`.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -25,9 +32,27 @@ pub struct PolicyRequest<'a> {
     pub url: &'a str,
     /// The shell scheme the request was served through (`genoffice-app-diagram`), if any.
     pub bound_scheme: Option<&'a str>,
-    /// True for the top-level navigation check. The navigation hook cannot tell frames apart
-    /// on macOS, so frame navigations are checked as top-level there too.
+    /// A document-class request; see the module docs.
     pub top_level: bool,
+    /// The navigation of the main frame; see the module docs.
+    pub main_frame: bool,
+}
+
+/// What a policy refuses as a class, for platforms that can only block by class (macOS). A
+/// policy that allows a web scheme gets no blanket rule for it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Blocks {
+    /// http, https, ws and wss are all refused.
+    pub web: bool,
+    /// Loopback hosts stay open when `web` is set (dev servers).
+    pub loopback_open: bool,
+    /// `file:` is refused.
+    pub files: bool,
+}
+
+impl Blocks {
+    pub const NOTHING: Self = Self { web: false, loopback_open: false, files: false };
+    pub const EVERYTHING: Self = Self { web: true, loopback_open: false, files: true };
 }
 
 /// Where the webview keeps its cookies, storage and cache.
@@ -110,6 +135,7 @@ pub struct RequestPolicy {
     allow: Allow,
     javascript: bool,
     storage: Storage,
+    blocks: Blocks,
 }
 
 impl fmt::Debug for RequestPolicy {
@@ -117,13 +143,19 @@ impl fmt::Debug for RequestPolicy {
         f.debug_struct("RequestPolicy")
             .field("javascript", &self.javascript)
             .field("storage", &self.storage)
+            .field("blocks", &self.blocks)
             .finish_non_exhaustive()
     }
 }
 
 impl RequestPolicy {
     pub fn new(allow: impl Fn(&PolicyRequest<'_>) -> bool + Send + Sync + 'static) -> Self {
-        Self { allow: Arc::new(allow), javascript: true, storage: Storage::Default }
+        Self {
+            allow: Arc::new(allow),
+            javascript: true,
+            storage: Storage::Default,
+            blocks: Blocks::NOTHING,
+        }
     }
 
     pub fn allow_all() -> Self {
@@ -131,7 +163,7 @@ impl RequestPolicy {
     }
 
     pub fn deny_all() -> Self {
-        Self::new(|_| false)
+        Self::new(|_| false).with_blocks(Blocks::EVERYTHING)
     }
 
     /// Print and target windows that must not run page scripts.
@@ -145,6 +177,12 @@ impl RequestPolicy {
         self
     }
 
+    /// Declare what is refused wholesale; the macOS adapter turns it into content rules.
+    pub fn with_blocks(mut self, blocks: Blocks) -> Self {
+        self.blocks = blocks;
+        self
+    }
+
     pub fn allows(&self, request: &PolicyRequest<'_>) -> bool {
         (self.allow)(request)
     }
@@ -155,6 +193,10 @@ impl RequestPolicy {
 
     pub fn storage(&self) -> Storage {
         self.storage
+    }
+
+    pub fn blocks(&self) -> Blocks {
+        self.blocks
     }
 }
 
@@ -171,8 +213,10 @@ mod tests {
             url: "genoffice-app-shell://localhost/",
             bound_scheme: None,
             top_level: true,
+            main_frame: true,
         };
-        let frame = PolicyRequest { url: page.url, bound_scheme: None, top_level: false };
+        let frame =
+            PolicyRequest { url: page.url, bound_scheme: None, top_level: false, main_frame: false };
         assert!(policy.allows(&page));
         assert!(!policy.allows(&frame));
         assert!(policy.javascript());
@@ -189,7 +233,12 @@ mod tests {
 
     #[test]
     fn allow_all_and_deny_all_are_total() {
-        let request = PolicyRequest { url: "https://example.org/", bound_scheme: None, top_level: false };
+        let request = PolicyRequest {
+            url: "https://example.org/",
+            bound_scheme: None,
+            top_level: false,
+            main_frame: false,
+        };
         assert!(RequestPolicy::allow_all().allows(&request));
         assert!(!RequestPolicy::deny_all().allows(&request));
     }

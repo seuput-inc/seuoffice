@@ -58,8 +58,9 @@ use main_core::shell::agent::agent_window::{
     agent_event_view, agent_get_init, agent_get_project_prefs, agent_get_theme,
     agent_home_may_open, agent_live_owner, agent_open_file, agent_owner_of, agent_pick_folder,
     agent_send, agent_set_prefs, agent_set_project_prefs, agent_stop, agent_template_as_is,
-    agent_template_blank, agent_template_check, agent_window_load, agent_window_options,
-    agent_window_reuse, invalid_agent_start, plan_agent_start, start_agent_with_plan,
+    agent_template_blank_begin, agent_template_blank_finish, agent_template_check,
+    agent_window_load, agent_window_options, agent_window_reuse, invalid_agent_start,
+    plan_agent_start, start_agent_with_plan,
 };
 use main_core::shell::agent::project_skills::{
     ProjectSkillLike, approved_fingerprint_from_settings, project_skills_fingerprint,
@@ -875,11 +876,13 @@ impl AgentWindowHost for Host {
         &mut self,
         owner_id: i64,
         input: &TemplatePreviewInput,
-    ) -> Result<TemplatePreviewOutcome, Failure> {
-        self.sh
-            .svc
-            .open_template_preview(ViewId(owner_id as u32), input)
-            .map_err(Failure)
+        done: Box<dyn FnOnce(Result<TemplatePreviewOutcome, Failure>)>,
+    ) {
+        self.sh.svc.open_template_preview(
+            ViewId(owner_id as u32),
+            input,
+            Box::new(move |outcome| done(outcome.map_err(Failure))),
+        );
     }
 
     fn show_open_dialog(&mut self, options: &JsObject<JsonValue>) -> JsonValue {
@@ -1452,6 +1455,26 @@ impl Inner {
                     }
                 };
             }
+            Op::TemplateBlank => {
+                let begun = {
+                    let w = &mut *self.world.borrow_mut();
+                    agent_template_blank_begin(&mut w.host, &w.shown, sender, a(0), a(1), a(2))
+                };
+                match begun {
+                    Err(blank) => reply.reply(Ok(blank_answer(blank))),
+                    Ok(input) => {
+                        let w = &mut *self.world.borrow_mut();
+                        w.host.open_template_preview(
+                            sender,
+                            &input,
+                            Box::new(move |outcome| {
+                                reply.reply(Ok(blank_answer(agent_template_blank_finish(outcome))))
+                            }),
+                        );
+                    }
+                }
+                return;
+            }
             _ => {}
         }
         let answer = {
@@ -1502,16 +1525,7 @@ impl Inner {
                         }
                     }
                 }
-                Op::TemplateBlank => {
-                    match agent_template_blank(host, &w.shown, sender, a(0), a(1), a(2)) {
-                        TemplateBlank::Ok { tab_id, preview_id } => json(
-                            serde_json::json!({ "ok": true, "tabId": tab_id, "previewId": preview_id }),
-                        ),
-                        TemplateBlank::Refused(reason) => {
-                            json(serde_json::json!({ "ok": false, "reason": reason.as_str() }))
-                        }
-                    }
-                }
+                Op::TemplateBlank => unreachable!("handled above"),
                 Op::Start | Op::Send => unreachable!("handled above"),
             }
         };
@@ -2041,4 +2055,17 @@ impl Inner {
             w.manager.relay_ask_aborted(&mut w.host.io, session_id, &id);
         }
     }
+}
+
+/// the `templateBlank` answer: `{ ok, tabId, previewId }` or `{ ok: false, reason }`
+fn blank_answer(blank: TemplateBlank) -> IpcValue {
+    let value = match blank {
+        TemplateBlank::Ok { tab_id, preview_id } => {
+            serde_json::json!({ "ok": true, "tabId": tab_id, "previewId": preview_id })
+        }
+        TemplateBlank::Refused(reason) => {
+            serde_json::json!({ "ok": false, "reason": reason.as_str() })
+        }
+    };
+    from_json(&json_value_from_serde(&value))
 }

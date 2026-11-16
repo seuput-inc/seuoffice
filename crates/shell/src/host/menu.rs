@@ -13,7 +13,6 @@
 //! the submodules.
 
 mod app;
-mod cef_ops;
 mod context;
 pub(crate) mod doc_links;
 mod dock;
@@ -36,11 +35,9 @@ pub(crate) use app::{
     SavedDocumentMenu, prepare_docs_menu_refresh_saved_document,
 };
 
-pub(crate) use cef_ops::{host_of, print_preview};
-
 use std::path::Path;
-use std::sync::{Arc, OnceLock, mpsc};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use main_core::packages::electron_utils::default_save_dir::{
     PathProvider, Thrown, configured_default_save_dir,
@@ -61,79 +58,14 @@ use shell_ipc_m::{MenuDict, menu_label};
 use shell_ipc_w::SharedSaveDirState;
 use shell_ipc_w::quick_look::QuickLookHost;
 use tauri::{AppHandle, Theme};
-use tauri_runtime_cef::WebviewCefExt;
 
 use super::shell_tabs::shell_tabs;
 use super::w::{on_core, post_core};
 use super::window::Windows;
 use super::{HostContext, on_ui, print};
+use crate::native::{self, KeyChord, Modifiers, WebviewExt};
 use crate::paths::ShellPaths;
 use crate::views::ViewTable;
-
-/// How long a call into a view's browser may take before it counts as lost
-const BROWSER_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// The hunspell languages Chromium ships dictionaries for
-/// (`kSupportedSpellCheckerLanguages`, components/spellcheck/common/
-/// spellcheck_common.cc), which is what Electron's
-/// `session.availableSpellCheckerLanguages` lists where the OS checker is not used
-const HUNSPELL_LANGUAGES: &[&str] = &[
-    "af",
-    "bg",
-    "ca",
-    "cs",
-    "cy",
-    "da",
-    "de",
-    "de-DE",
-    "el",
-    "en-AU",
-    "en-CA",
-    "en-GB",
-    "en-GB-oxendict",
-    "en-US",
-    "es",
-    "es-419",
-    "es-AR",
-    "es-ES",
-    "es-MX",
-    "es-US",
-    "et",
-    "fa",
-    "fo",
-    "fr",
-    "fr-FR",
-    "he",
-    "hi",
-    "hr",
-    "hu",
-    "hy",
-    "id",
-    "it",
-    "it-IT",
-    "ko",
-    "lt",
-    "lv",
-    "nb",
-    "nl",
-    "pl",
-    "pt",
-    "pt-BR",
-    "pt-PT",
-    "ro",
-    "ru",
-    "sh",
-    "sk",
-    "sl",
-    "sq",
-    "sr",
-    "sv",
-    "ta",
-    "tg",
-    "tr",
-    "uk",
-    "vi",
-];
 
 struct ShellM {
     app: AppHandle,
@@ -270,34 +202,10 @@ pub(crate) fn install_dock_menu(app: &AppHandle) {
     });
 }
 
-/// The first language of the profile's accept languages: the locale Chromium
-/// runs the app in, which is what Electron's `app.getLocale()` reported
-pub(super) fn first_accept_language(ui: &Arc<dyn Thread>) -> Option<String> {
-    on_ui(ui, || {
-        cef_ops::string_list_preference("intl.accept_languages")
-    })
-    .into_iter()
-    .next()
-}
-
-impl ShellM {
-    /// Runs `job` with a view's browser on the UI thread and waits for it
-    fn with_browser<R: Send + 'static>(
-        &self,
-        view: ViewId,
-        job: impl FnOnce(&cef::BrowserHost) -> R + Send + 'static,
-    ) -> Option<R> {
-        let webview = self.windows.webview(view)?;
-        let (tx, rx) = mpsc::sync_channel(1);
-        webview
-            .with_cef_webview(move |cef_view| {
-                if let Some(host) = cef_ops::host_of(cef_view) {
-                    let _ = tx.send(job(&host));
-                }
-            })
-            .ok()?;
-        rx.recv_timeout(BROWSER_TIMEOUT).ok()
-    }
+/// The first of the operating system's preferred languages: the locale the app runs in,
+/// which is what Electron's `app.getLocale()` reported
+pub(super) fn first_accept_language(_ui: &Arc<dyn Thread>) -> Option<String> {
+    native::locale::first_language()
 }
 
 impl PathProvider for ShellPaths {
@@ -414,9 +322,7 @@ impl MHost for ShellM {
     }
 
     fn open_generated_path(&self, path: &str) -> bool {
-        let path = path.to_owned();
-        on_core(move |provided| shell_tabs(provided).is_some_and(|tabs| tabs.open_path(&path)))
-            .unwrap_or(false)
+        crate::host::d2::docs_tabs::open_generated(path).unwrap_or(false)
     }
 
     fn export_written_owned(
@@ -480,60 +386,80 @@ impl MHost for ShellM {
     }
 
     fn spell_add_word(&self, view: ViewId, word: &str) -> bool {
-        let word = word.to_owned();
-        self.with_browser(view, move |host| {
-            cef_ops::add_word(host, &word);
-            true
-        })
-        .unwrap_or(false)
-    }
-
-    /// CEF has no call that takes a word out of the profile's custom
-    /// dictionary (Electron's `removeWordFromSpellCheckerDictionary`): an
-    /// ignored word stays known after its last tab closes. Listed among the
-    /// stage 3 differences of the shell contract.
-    fn spell_remove_word(&self, word: &str) {
-        eprintln!("shell: the spellchecker keeps '{word}': CEF cannot remove a dictionary word");
-    }
-
-    fn spell_languages(&self, _view: ViewId) -> Vec<String> {
-        on_ui(&self.ui, || {
-            cef_ops::string_list_preference("spellcheck.dictionaries")
-        })
-    }
-
-    /// macOS checks with the system's own spellchecker, which picks the
-    /// language itself: Electron listed nothing there, and so does this
-    fn spell_available_languages(&self, _view: ViewId) -> Vec<String> {
-        if cfg!(target_os = "macos") {
-            Vec::new()
-        } else {
-            HUNSPELL_LANGUAGES.iter().map(|l| (*l).to_owned()).collect()
+        if self.windows.webview(view).is_none() {
+            return false;
         }
+        let word = word.to_owned();
+        match on_ui(&self.ui, move || native::menu::learn_word(&word)) {
+            Ok(added) => added,
+            Err(error) => {
+                eprintln!("shell: the spellchecker did not learn the word: {error}");
+                false
+            }
+        }
+    }
+
+    /// The system's user dictionary, shared by every app: Windows has none to take a word
+    /// out of
+    fn spell_remove_word(&self, word: &str) {
+        let word = word.to_owned();
+        match on_ui(&self.ui, move || native::menu::unlearn_word(&word)) {
+            Ok(true) => {}
+            Ok(false) => eprintln!("shell: the spellchecker keeps the word: no dictionary to edit"),
+            Err(error) => eprintln!("shell: the spellchecker did not drop the word: {error}"),
+        }
+    }
+
+    /// The system checks spelling in the languages it picks itself, on both systems:
+    /// Electron listed none on macOS, and the system webviews have no call to choose them
+    /// on Windows either
+    fn spell_languages(&self, _view: ViewId) -> Vec<String> {
+        Vec::new()
+    }
+
+    fn spell_available_languages(&self, _view: ViewId) -> Vec<String> {
+        Vec::new()
     }
 
     fn spell_set_languages(&self, _view: ViewId, languages: &[String]) {
-        let languages = languages.to_vec();
-        let set = on_ui(&self.ui, move || {
-            cef_ops::set_string_list_preference("spellcheck.dictionaries", &languages)
-        });
-        if let Err(error) = set {
-            eprintln!("shell: spellcheck languages not set: {error}");
-        }
+        eprintln!("shell: the spellchecker languages {languages:?} are chosen by the system");
     }
 
     fn replace_misspelling(&self, view: ViewId, word: &str) {
-        let word = word.to_owned();
-        self.with_browser(view, move |host| cef_ops::replace_misspelling(host, &word));
+        let Some(webview) = self.windows.webview(view) else {
+            return;
+        };
+        let Some((misspelled, x, y)) = context::last_misspelling(view) else {
+            return eprintln!("shell: there is no misspelled word to replace");
+        };
+        native::menu::replace_misspelling(&webview, &misspelled, word, x, y);
     }
 
+    /// A key press of the page command is whole (down, character, up), so the first stage
+    /// of the old three-event sequence sends it and the others have nothing left to send
     fn send_space(&self, view: ViewId, input: KeyInput) {
-        let kind = match input {
-            KeyInput::KeyDown => cef::KeyEventType::RAWKEYDOWN,
-            KeyInput::Char => cef::KeyEventType::CHAR,
-            KeyInput::KeyUp => cef::KeyEventType::KEYUP,
+        if !matches!(input, KeyInput::KeyDown) {
+            return;
+        }
+        let Some(webview) = self.windows.webview(view) else {
+            return;
         };
-        self.with_browser(view, move |host| cef_ops::send_space(host, kind));
+        let chord = KeyChord {
+            key: " ".to_owned(),
+            code: "Space".to_owned(),
+            modifiers: Modifiers::default(),
+        };
+        match webview.page() {
+            Ok(page) => page.key(
+                chord,
+                Box::new(|result| {
+                    if let Err(error) = result {
+                        eprintln!("shell: the Space key was not delivered: {error}");
+                    }
+                }),
+            ),
+            Err(error) => eprintln!("shell: the Space key was not delivered: {error}"),
+        }
     }
 
     fn printers(&self, _view: ViewId) -> Vec<Printer> {

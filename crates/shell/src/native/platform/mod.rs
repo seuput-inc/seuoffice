@@ -20,6 +20,8 @@
 //!
 //! Every call that touches a webview is made on the UI thread unless a doc says otherwise.
 
+use std::cell::Cell;
+
 use serde_json::Value;
 use tauri::webview::PlatformWebview;
 use tauri::{AppHandle, Webview, Window};
@@ -70,17 +72,19 @@ pub(crate) trait Observe {
     /// macOS chains wry's own `WKNavigationDelegate`: it forwards every selector and adds
     /// `didCommitNavigation`-independent failure and termination callbacks. Windows registers
     /// `NavigationCompleted`, `ProcessFailed`, `SourceChanged` and the controller focus events.
-    fn attach(platform: PlatformWebview, browser: BrowserIdentity) -> Result<(), String>;
+    fn attach(platform: &PlatformWebview, browser: BrowserIdentity) -> Result<(), String>;
 }
 
 /// The typed replacement of the CDP surface. Every operation completes `done` exactly once, on
 /// any thread. [`PageOps`](super::page::PageOps) validates specs and applies the fence before
 /// calling these.
 pub(crate) trait PageDriver {
-    /// Run `script` in the page's main frame. With `await_promise` a returned promise is
-    /// awaited and the answer is the JSON value of its result.
-    /// macOS: `callAsyncJavaScript` in the page content world. Windows: `ExecuteScript` for
-    /// plain values, CDP `Runtime.evaluate { awaitPromise, returnByValue }` for promises.
+    /// Evaluate `script` in the page's main frame. The script is ONE EXPRESSION (several
+    /// statements go in an IIFE), embedded as it is and never passed through `eval` or
+    /// `Function`: the shell's pages carry a CSP without `unsafe-eval`. The answer is the JSON
+    /// value of the expression; with `await_promise` a promise is awaited first.
+    /// macOS: `callAsyncJavaScript` with `return await (<script>)` in the page content world.
+    /// Windows: CDP `Runtime.evaluate { expression, awaitPromise, returnByValue }`.
     fn evaluate(webview: &Webview, script: String, await_promise: bool, done: Done<Value>);
 
     /// PNG bytes. macOS: `takeSnapshot` (clip, full page by resizing an offscreen window to
@@ -152,14 +156,21 @@ pub(crate) trait WindowOps {
 }
 
 pub(crate) trait PolicyOps {
-    /// Enforce `policy` on `webview`, after creation, on the UI thread.
+    /// Enforce `policy` on the webview behind `platform`, after creation, on the UI thread,
+    /// from the same `with_webview` job that attached the observers.
     /// Windows: a `WebResourceRequested` filter answering allow or block with the exact
     /// decision, and `SetIsScriptEnabled(policy.javascript())`.
-    /// macOS (no per-request interception for http(s)): a `WKContentRuleList` blocking every
-    /// http(s) and ws(s) request except what the policy names, plus
-    /// `allowsContentJavaScript = policy.javascript()` through the chained navigation delegate.
+    /// macOS (no per-request interception for http(s)): a `WKContentRuleList` compiled from
+    /// `policy.blocks()`, plus `allowsContentJavaScript = policy.javascript()` through the
+    /// chained navigation delegate.
+    ///
+    /// Contract: call `BrowserIdentity::observe_policy_installed` exactly once, as soon as
+    /// the policy is enforced (Windows: before returning; macOS: when the rules compiled,
+    /// before releasing the held navigations). Until then the browser cancels and remembers
+    /// its first navigation to a real URL and replays it afterwards, so no initial request
+    /// escapes the policy, and `Navigator::when_ready` waits.
     fn apply_policy(
-        webview: &Webview, browser: &BrowserIdentity, policy: &RequestPolicy,
+        platform: &PlatformWebview, browser: &BrowserIdentity, policy: &RequestPolicy,
     ) -> Result<(), String>;
 }
 
@@ -184,12 +195,31 @@ const _: fn() = || {
 };
 
 /// Attach the OS observers, then enforce the browser's request policy.
-pub(crate) fn attach(
-    platform: PlatformWebview, webview: &Webview, browser: &BrowserIdentity,
-) -> Result<(), String> {
+pub(crate) fn attach(platform: &PlatformWebview, browser: &BrowserIdentity) -> Result<(), String> {
     Current::attach(platform, browser.clone())?;
     match browser.policy() {
-        Some(policy) => Current::apply_policy(webview, browser, policy),
+        Some(policy) => Current::apply_policy(platform, browser, policy),
         None => Ok(()),
     }
+}
+
+thread_local! {
+    static NAVIGATION_FRAME: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+/// Adapters that learn the frame of a navigation before Tauri's URL-only `on_navigation`
+/// hook runs (macOS: the chained delegate calls wry's synchronously) wrap that call in this,
+/// so the hook can tell the main frame from a subframe.
+pub(crate) fn with_navigation_frame<T>(main_frame: bool, call: impl FnOnce() -> T) -> T {
+    let previous = NAVIGATION_FRAME.with(|frame| frame.replace(Some(main_frame)));
+    let result = call();
+    NAVIGATION_FRAME.with(|frame| frame.set(previous));
+    result
+}
+
+/// Whether the navigation the hook is judging is the main frame's. Without an adapter's word
+/// it is what the platform's hook reports: main-frame only on Windows, unknown on macOS (a
+/// subframe is then not mistaken for the main frame).
+pub(crate) fn navigation_is_main_frame() -> bool {
+    NAVIGATION_FRAME.with(Cell::get).unwrap_or(Current::NAVIGATION_HOOK_IS_MAIN_FRAME)
 }

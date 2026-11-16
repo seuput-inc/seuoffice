@@ -68,6 +68,25 @@ impl CreateScope {
             *reload.lock().unwrap_or_else(|error| error.into_inner()) = Some(accepted)
         })
     }
+    fn publish(
+        &self,
+        mut staged: crate::staged::StagedOutput,
+    ) -> Result<crate::staged::Published, String> {
+        self.check()?;
+        let commit = staged.take()?;
+        let path = commit.path().to_owned();
+        let result = self.effects.publish_owned_staged_write(
+            &self.origin,
+            &self.destination,
+            &[],
+            &self.cancel,
+            &self.pending,
+            &[],
+            &path,
+            commit,
+        );
+        staged.conclude(result)
+    }
     fn complete_open(
         receipt: &shell_contract::hosts::CommittedGeneratedPath,
         path: String,
@@ -84,6 +103,13 @@ impl CreateScope {
         })?;
         published.ok_or_else(|| "The document creation result was not committed".into())
     }
+}
+
+/// What a new document's worker left: a project write the shell already
+/// published, or a stage the core turn still has to publish.
+enum Written {
+    Published(crate::staged::Published),
+    Staged(crate::staged::StagedOutput),
 }
 
 /// `ALT_CHUNK_HTML_MAX_CHARS`
@@ -661,7 +687,7 @@ impl Docs {
         let name = format!("{title}.{ext}");
         kit::on_worker(
             &self.services,
-            move || -> Result<String, String> {
+            move || -> Result<Written, String> {
                 work_scope.check()?;
                 let bytes = if ext == "pdf" {
                     shell.print_html_to_pdf_owned(
@@ -675,17 +701,19 @@ impl Docs {
                     content.into_bytes()
                 };
                 work_scope.check()?;
-                if let Some(path) = shell.write_new_document_owned(
+                if let Some(published) = shell.write_new_document_owned(
                     &work_scope.origin,
                     &work_scope.destination,
+                    &[],
                     &work_scope.cancel,
                     &work_scope.pending,
+                    &[],
                     &work_scope.effects,
                     work_scope.admission.clone(),
                     &name,
                     &bytes,
                 )? {
-                    return Ok(path);
+                    return Ok(Written::Published(published));
                 }
                 let before = save_dir
                     .lock()
@@ -712,29 +740,32 @@ impl Docs {
                 )
                 .map_err(|error| error.message)??;
                 let path = unique_path_in(&directory, &name);
-                main_core::packages::electron_utils::atomic_write::owned::write_file(
-                    &path,
-                    &bytes,
-                    work_scope.admission.clone(),
+                crate::staged::StagedOutput::prepare(
+                    std::path::Path::new(&path),
+                    bytes,
+                    file_commit::PublicationMode::Exclusive,
                 )
-                .map_err(|error| error.message)?;
-                Ok(path)
+                .map(Written::Staged)
             },
             move |written| {
-                let path = match written {
-                    Ok(path) => path,
+                let published = match written.and_then(|written| match written {
+                    Written::Published(published) => Ok(published),
+                    Written::Staged(staged) => scope.publish(staged),
+                }) {
+                    Ok(published) => published,
                     Err(error) => return then(Ok(super::failed(error))),
                 };
                 if let Err(error) = scope.check() {
                     return then(Err(error));
                 }
+                let path = published.0.path().to_string_lossy().into_owned();
                 if docs.shell.is_headless() {
                     return then(Ok(Obj::new().set("ok", true).set("path", path).done()));
                 }
                 let opened_path = path.clone();
                 let completed = scope.clone();
                 let docs_done = docs.clone();
-                let Some((wake, done)) = super::cleanup_mailbox::begin(
+                let Some(ticket) = super::cleanup_mailbox::begin(
                     &docs,
                     Box::new(move |opened, settled| match opened {
                         Err(error) => {
@@ -785,17 +816,21 @@ impl Docs {
                 ) else {
                     return;
                 };
-                let accepted = scope.reload_observer();
-                docs.shell.open_generated_path_owned(
-                    path,
-                    scope.origin,
-                    scope.destination,
-                    scope.cancel,
-                    scope.pending,
-                    scope.effects,
-                    accepted,
-                    done,
-                );
+                let (output, input) = published;
+                match docs.shell.prepare_generated_output(
+                    output,
+                    Some(input),
+                    Vec::new(),
+                    scope.cancel.clone(),
+                    scope.pending.clone(),
+                    Vec::new(),
+                    scope.effects.clone(),
+                    scope.reload_observer(),
+                    ticket.wake(),
+                ) {
+                    Ok(prepared) => ticket.attach(&docs, prepared),
+                    Err(error) => ticket.fail(&docs, error),
+                }
             },
         );
     }

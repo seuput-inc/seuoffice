@@ -64,12 +64,12 @@ use tauri::menu::{
     CheckMenuItem, IsMenuItem, Menu, MenuItem as TauriItem, PredefinedMenuItem, Submenu,
 };
 use tauri::{AppHandle, DynRuntime, Manager};
-use tauri_runtime_cef::WebviewCefExt;
 
 use super::super::HostContext;
 use super::super::shell_tabs::shell_tabs;
 use super::super::w::post_core;
 use super::super::window::Windows;
+use crate::native::{self, EditCommand};
 
 use std::sync::Arc;
 
@@ -101,6 +101,21 @@ enum FrameEdit {
     Copy,
     Paste,
     SelectAll,
+}
+
+impl FrameEdit {
+    fn command(self) -> EditCommand {
+        match self {
+            Self::Delete => EditCommand::Delete,
+            Self::PasteAndMatchStyle => EditCommand::PasteAndMatchStyle,
+            Self::Undo => EditCommand::Undo,
+            Self::Redo => EditCommand::Redo,
+            Self::Cut => EditCommand::Cut,
+            Self::Copy => EditCommand::Copy,
+            Self::Paste => EditCommand::Paste,
+            Self::SelectAll => EditCommand::SelectAll,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2592,8 +2607,8 @@ fn dispatch(app: &AppHandle, id: &str) {
     if matches!(&act, Act::DocLink(DocLinkClick::Make, _)) {
         let captured = (|| {
             let shell = SHELL.get().ok_or("The native menu host is unavailable.")?;
-            let activation = tauri_runtime_cef::capture_native_menu_activation()?;
-            let (view, generation) = shell.views.capture_native_menu_target(&activation)
+            let activation = native::menu::FocusCapture::capture(app)?;
+            let (view, generation) = shell.views.capture_native_menu_target(activation.origin())
                 .ok_or("The native menu document is no longer available.")?;
             let owner = shell.effects.capture_owner(view, &generation)?;
             let proof = owner.context.authority_ref::<crate::ipc::native_owner::NativeOwnerAuthority>()
@@ -2809,7 +2824,7 @@ fn run(act: Act, kind: TabKind, provided: &Provided, services: &Services) {
         }
         Act::Open => tabs.open_file_via_dialog(),
         Act::OpenRecent(path) => {
-            tabs.open_path(&path);
+            tabs.open_path_reported(&path);
         }
         Act::BackToHome => tabs.open_home_tab(),
         Act::Close => tabs.close_focused_editor(),
@@ -2910,39 +2925,13 @@ fn run(act: Act, kind: TabKind, provided: &Provided, services: &Services) {
             let _ = webview;
         }),
         Act::Reload { ignore_cache } => on_webview(provided, services, kind, move |webview| {
-            let reloaded = webview.with_cef_webview(move |cef| {
-                use cef::ImplBrowser;
-                let browser = cef.browser();
-                if ignore_cache {
-                    browser.reload_ignore_cache();
-                } else {
-                    browser.reload();
-                }
-            });
-            if let Err(error) = reloaded {
+            if let Err(error) = native::menu::reload(webview, ignore_cache) {
                 eprintln!("shell: reload: {error}");
             }
         }),
         Act::DocLink(click, view) => super::doc_links::run_click(&click, view, None),
         Act::Frame(edit) => on_webview(provided, services, kind, move |webview| {
-            let edited = webview.with_cef_webview(move |cef| {
-                use cef::{ImplBrowser, ImplFrame};
-                if let Some(frame) = cef.browser().focused_frame() {
-                    match edit {
-                        FrameEdit::Delete => frame.del(),
-                        FrameEdit::PasteAndMatchStyle => frame.paste_and_match_style(),
-                        FrameEdit::Undo => frame.undo(),
-                        FrameEdit::Redo => frame.redo(),
-                        FrameEdit::Cut => frame.cut(),
-                        FrameEdit::Copy => frame.copy(),
-                        FrameEdit::Paste => frame.paste(),
-                        FrameEdit::SelectAll => frame.select_all(),
-                    }
-                }
-            });
-            if let Err(error) = edited {
-                eprintln!("shell: {edit:?}: {error}");
-            }
+            native::menu::edit(webview, edit.command());
         }),
     }
 }

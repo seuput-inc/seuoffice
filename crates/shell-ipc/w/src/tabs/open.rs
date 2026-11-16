@@ -20,7 +20,7 @@ use main_core::shell::app_routing::{
 };
 use main_core::shell::app_settings::read_app_settings;
 use main_core::shell::folder_roots::read_extra_roots;
-use main_core::shell::tab_manager::{OpenDocsOptions, TabHost, TabKind};
+use main_core::shell::tab_manager::{TabHost, TabKind};
 use shell_contract::ids::ViewId;
 use shell_contract::value::IpcValue;
 
@@ -129,126 +129,32 @@ impl TabsState {
         self.windows.window_focus(shell.window);
     }
 
-    /// `openDocumentPath`: a copy of a Drive file reopens through Drive, else
-    /// the extension decides which module owns the file
-    pub fn open_document_path(&self, path: &str) -> bool {
+    /// `openDocumentPath`: a copy of a Drive file reopens through Drive, else the extension
+    /// decides which module owns the file. `done` runs once: `Ok(false)` when nothing opened.
+    pub fn open_document_path(&self, path: &str, done: Box<dyn FnOnce(Result<bool, String>)>) {
         if self.hooks.drive_reopen(path) {
-            return true;
+            return done(Ok(true));
         }
-        self.route_document_path(path)
+        self.route_document_path(path, done);
     }
 
-    /// `routeDocumentPath`: `false` means nothing opened
-    pub fn route_document_path(&self, path: &str) -> bool {
-        if !Path::new(path).exists() {
-            return false;
-        }
-        let hooks = &self.hooks;
-        let mut g = self.inner.borrow_mut();
-        // a detached editor window already shows this file: focus it, never a second copy
-        {
-            let super::state::Inner {
-                detached, bridge, ..
-            } = &mut *g;
-            if detached.focus_detached_by_path(bridge, path) {
-                g.drain();
-                return true;
+    /// `routeDocumentPath` through the native `OpenFile` command: a detached window showing the
+    /// file is focused, else the extension picks the editor. `done` runs once.
+    pub fn route_document_path(&self, path: &str, done: Box<dyn FnOnce(Result<bool, String>)>) {
+        self.hooks.route_path_native(path.to_owned(), done);
+    }
+
+    /// The completion of an open nobody waits for: a failure is logged, never dropped.
+    pub fn report_open(&self, path: &str) -> Box<dyn FnOnce(Result<bool, String>)> {
+        let state = self.rc();
+        let shown = path.to_owned();
+        Box::new(move |result| {
+            if let Err(error) = result {
+                state
+                    .hooks
+                    .warn("[shell] opening a document failed:", &format!("{shown}: {error}"));
             }
-        }
-        if g.manager.is_none() {
-            return false;
-        }
-        let kind = document_kind(path);
-        let Some(kind) = kind else {
-            drop(g);
-            hooks.notify_unsupported_file(path);
-            return false;
-        };
-        if kind == TabKind::Diagram {
-            // a Visio drawing opens as a new diagram made from it; opening it
-            // again comes back to that tab. A file that does not open gets no
-            // tab, only the reason.
-            let existing = g
-                .manager_call(|m, b| m.find_diagram_tab_by_path(b, Some(path)))
-                .flatten();
-            if let Some(existing) = existing {
-                hooks.record_recent_file(path);
-                g.manager_call(|m, b| m.activate_tab(b, &existing));
-                return true;
-            }
-            let key = resolve(&[path]);
-            let key = if cfg!(target_os = "linux") {
-                key
-            } else {
-                key.to_lowercase()
-            };
-            if !DIAGRAM_CHECKING.with(|checking| checking.borrow_mut().insert(key.clone())) {
-                return true;
-            }
-            let state = self.this.clone();
-            let path = path.to_owned();
-            let accepted = std::rc::Rc::new(std::cell::Cell::new(true));
-            let answer = accepted.clone();
-            drop(g);
-            hooks.diagram_open_refusal(
-                &path.clone(),
-                Box::new(move |reason| {
-                    let _checking = owned::DiagramCheckGuard::new(key);
-                    let Some(state) = state.upgrade() else { return };
-                    if let Some(reason) = reason {
-                        answer.set(false);
-                        state
-                            .hooks
-                            .show_app_warning(&reason, Some(&basename(&path, None)));
-                        return;
-                    }
-                    let mut g = state.inner.borrow_mut();
-                    let existing = g
-                        .manager_call(|m, b| m.find_diagram_tab_by_path(b, Some(&path)))
-                        .flatten();
-                    if g.manager.is_none() {
-                        return;
-                    }
-                    state.hooks.record_recent_file(&path);
-                    g.manager_call(|m, b| {
-                        if let Some(existing) = existing {
-                            m.activate_tab(b, &existing);
-                        } else if let Err(e) = m.open_diagram_tab(b, Some(&path)) {
-                            b.warn("[shell] open failed:", &e.0);
-                        }
-                    });
-                }),
-            );
-            return accepted.get();
-        }
-        hooks.record_recent_file(path);
-        let opened = g.manager_call(|m, b| {
-            if let Some(existing) = m.find_tab_of_kind_by_path(kind, Some(path)) {
-                m.activate_tab(b, &existing);
-                return false;
-            }
-            let result = match kind {
-                TabKind::Docs => m.open_docs_tab(b, Some(path), None),
-                TabKind::Sheets => m.open_sheets_tab(b, Some(path), false),
-                TabKind::Slides => m.open_slides_tab(b, Some(path)),
-                TabKind::Pdf => m.open_pdf_tab(b, path),
-                TabKind::Markdown => m.open_markdown_tab(b, Some(path)),
-                TabKind::Html => m.open_html_tab(b, Some(path)),
-                TabKind::Mindmap => m.open_mindmap_tab(b, Some(path)),
-                TabKind::Hwp => m.open_hwp_tab(b, Some(path), None),
-                _ => m.open_epub_tab(b, path),
-            };
-            if let Err(e) = result {
-                b.warn("[shell] open failed:", &e.0);
-                return false;
-            }
-            true
-        });
-        drop(g);
-        if opened == Some(true) && kind == TabKind::Sheets {
-            hooks.start_queued_workbook_nudge();
-        }
-        true
+        })
     }
 
     // ---- new documents ----
@@ -259,29 +165,7 @@ impl TabsState {
         match kind {
             NewKind::Sheet => self.new_sheet_tab(),
             NewKind::Pdf => self.new_pdf_tab(),
-            _ => {
-                let opened = self.inner.borrow_mut().manager_call(|m, b| match kind {
-                    NewKind::Doc => m.open_docs_tab(
-                        b,
-                        None,
-                        Some(&OpenDocsOptions {
-                            new_blank: true,
-                            ai_content: None,
-                        }),
-                    ),
-                    NewKind::Slide => m.open_slides_tab(b, None),
-                    NewKind::Markdown => m.open_markdown_tab(b, None),
-                    NewKind::Html => m.open_html_tab(b, None),
-                    NewKind::Mindmap => m.open_mindmap_tab(b, None),
-                    NewKind::Diagram => m.open_diagram_tab(b, None),
-                    _ => m.open_hwp_tab(b, None, None),
-                });
-                match opened {
-                    Some(Err(e)) => self.surface_new_tab_error(&e.0),
-                    Some(Ok(id)) => self.bind_pending_dir(kind.key(), Some(&id)),
-                    None => self.bind_pending_dir(kind.key(), None),
-                }
-            }
+            _ => self.open_new_native(kind),
         }
     }
 
@@ -311,7 +195,7 @@ impl TabsState {
             "seuoffice-imports",
             &hooks.random_uuid(),
         ]);
-        let attempt = (|| -> Result<(), String> {
+        let attempt = (|| -> Result<String, String> {
             std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
             let backing = join(&[&temp_dir, &basename(&suggested, None)]);
             hooks.mark_sheets_unsaved_new(&backing, &suggested, &temp_dir);
@@ -326,42 +210,46 @@ impl TabsState {
             }
             // eligible for content-derived auto-rename after the first AI generation
             hooks.mark_sheets_untitled_path(&backing);
-            self.inner
-                .borrow_mut()
-                .manager_call(|m, b| m.open_sheets_tab(b, Some(&backing), false))
-                .transpose()
-                .map_err(|e| e.0)?;
-            hooks.start_queued_workbook_nudge();
-            Ok(())
+            Ok(backing)
         })();
-        let Err(error) = attempt else {
-            return;
+        let backing = match attempt {
+            Ok(backing) => backing,
+            Err(error) => return self.new_sheet_fallback(&suggested, &error),
         };
+        let state = self.rc();
+        self.route_document_path(
+            &backing,
+            Box::new(move |result| match result {
+                Ok(true) => state.hooks.start_queued_workbook_nudge(),
+                Ok(false) => state.new_sheet_fallback(&suggested, "the workbook did not open"),
+                Err(error) => state.new_sheet_fallback(&suggested, &error),
+            }),
+        );
+    }
+
+    /// The temp workbook could not be made or opened: write the blank into the default folder,
+    /// else open an in-memory blank tab
+    fn new_sheet_fallback(&self, suggested: &str, error: &str) {
+        let hooks = &self.hooks;
         hooks.warn(
             "[shell] temp workbook create failed, writing to the default folder:",
-            &error,
+            error,
         );
         let fallback = hooks.blank_xlsx().and_then(|bytes| {
-            main_core::packages::electron_utils::atomic_write::atomic_write_file(&suggested, &bytes)
+            main_core::packages::electron_utils::atomic_write::atomic_write_file(suggested, &bytes)
                 .map_err(|error| error.message)
         });
         match fallback {
             Ok(()) => {
-                hooks.mark_sheets_untitled_path(&suggested);
-                self.route_document_path(&suggested);
+                hooks.mark_sheets_untitled_path(suggested);
+                self.route_document_path(suggested, self.report_open(suggested));
             }
             Err(e) => {
                 hooks.warn(
                     "[shell] blank workbook create failed, opening in-memory blank tab:",
                     &e,
                 );
-                let opened = self
-                    .inner
-                    .borrow_mut()
-                    .manager_call(|m, b| m.open_sheets_tab(b, None, true));
-                if let Some(Err(e)) = opened {
-                    self.surface_new_tab_error(&e.0);
-                }
+                self.open_new_native(NewKind::Sheet);
             }
         }
     }
@@ -379,7 +267,7 @@ impl TabsState {
             Ok(()) => {
                 // opt the file into content-derived auto-naming on its first save
                 hooks.mark_pdf_untitled_path(&path);
-                self.route_document_path(&path);
+                self.route_document_path(&path, self.report_open(&path));
             }
             Err(e) => self.surface_new_tab_error(&e.message),
         }
@@ -522,24 +410,54 @@ impl TabsState {
     /// one notice, and only when the drop gave the app nothing else to do.
     pub fn handle_dropped_files(&self, raw: Option<&IpcValue>) {
         let (supported, skill_files, unsupported) = partition_drop_payload(raw);
-        let mut opened = false;
+        let state = self.rc();
+        let rest = std::rc::Rc::new(RefCell::new(Some((skill_files, unsupported))));
+        let finish: std::rc::Rc<dyn Fn(bool)> = std::rc::Rc::new(move |opened: bool| {
+            let Some((skill_files, unsupported)) = rest.borrow_mut().take() else {
+                return;
+            };
+            if opened {
+                state.reveal_shell_window();
+            }
+            if !unsupported.is_empty() {
+                let message = state
+                    .hooks
+                    .tm_params("errUnsupportedExt", &[("ext", &unsupported.join(", "))]);
+                state.hooks.show_app_warning(&message, None);
+            }
+            state.drop_skill_files(
+                skill_files.into_iter(),
+                opened || !unsupported.is_empty(),
+                false,
+            );
+        });
+        if supported.is_empty() {
+            return finish(false);
+        }
+        let remaining = std::rc::Rc::new(std::cell::Cell::new(supported.len()));
+        let opened = std::rc::Rc::new(std::cell::Cell::new(false));
         for path in &supported {
-            opened = self.open_document_path(path) || opened;
+            let (finish, remaining, opened) = (finish.clone(), remaining.clone(), opened.clone());
+            let shown = path.clone();
+            let state = self.rc();
+            self.open_document_path(
+                path,
+                Box::new(move |result| {
+                    match result {
+                        Ok(true) => opened.set(true),
+                        Ok(false) => {}
+                        Err(error) => state.hooks.warn(
+                            "[shell] opening a dropped file failed:",
+                            &format!("{shown}: {error}"),
+                        ),
+                    }
+                    remaining.set(remaining.get() - 1);
+                    if remaining.get() == 0 {
+                        finish(opened.get());
+                    }
+                }),
+            );
         }
-        if opened {
-            self.reveal_shell_window();
-        }
-        if !unsupported.is_empty() {
-            let message = self
-                .hooks
-                .tm_params("errUnsupportedExt", &[("ext", &unsupported.join(", "))]);
-            self.hooks.show_app_warning(&message, None);
-        }
-        self.drop_skill_files(
-            skill_files.into_iter(),
-            opened || !unsupported.is_empty(),
-            false,
-        );
     }
 
     fn drop_skill_files(&self, mut paths: std::vec::IntoIter<String>, acted: bool, missed: bool) {
@@ -582,10 +500,12 @@ impl TabsState {
         Ok(())
     }
 
-    pub fn open_sheets_template_copy(
+    /// Writes a Sheets template copy as the backing workbook of a new unsaved workbook and
+    /// returns `(backing path, temp folder)`; `Ok(None)` when there is no shell window.
+    fn prepare_sheets_template(
         &self,
         copy: &main_core::shell::user_skills::template_tabs::TemplateCopy,
-    ) -> Result<Option<(String, ViewId)>, String> {
+    ) -> Result<Option<(String, String)>, String> {
         if self.shell_window().is_none() {
             return Ok(None);
         }
@@ -625,179 +545,191 @@ impl TabsState {
         let backing = join(&[&temp_dir, &copy.file_name]);
         self.hooks
             .mark_sheets_unsaved_new(&backing, &suggested, &temp_dir);
-        let result = (|| {
-            main_core::packages::electron_utils::atomic_write::atomic_write_file(
-                &backing,
-                &copy.bytes,
-            )
-            .map_err(|error| error.message)?;
-            self.with_manager(|manager, host| {
-                let id = manager
-                    .open_sheets_tab(host, Some(&backing), false)
-                    .map_err(|error| error.0)?;
-                let view = manager
-                    .web_contents_for_tab(&id)
-                    .ok_or_else(|| "the template spreadsheet tab could not be opened".to_owned())?;
-                Ok((id, view))
-            })
-            .ok_or_else(|| "SeuOffice is not ready".to_owned())?
-        })();
-        match result {
-            Ok(opened) => {
-                self.hooks.start_queued_workbook_nudge();
-                Ok(Some(opened))
-            }
-            Err(error) => {
-                self.hooks.unmark_sheets_unsaved_new(&backing);
-                if let Err(cleanup) = std::fs::remove_dir_all(&temp_dir) {
-                    self.hooks.warn(
-                        "[shell] could not remove the unused template workbook:",
-                        &cleanup.to_string(),
-                    );
-                }
-                Err(error)
-            }
-        }
-    }
-
-    pub fn open_ai_doc_tab(
-        &self,
-        content: serde_json::Value,
-        owner: Option<ViewId>,
-    ) -> Result<ViewId, String> {
-        let view = self
-            .with_manager(|manager, host| {
-                let id = manager
-                    .open_docs_tab(
-                        host,
-                        None,
-                        Some(&OpenDocsOptions {
-                            new_blank: true,
-                            ai_content: Some(content),
-                        }),
-                    )
-                    .map_err(|error| error.0)?;
-                manager
-                    .web_contents_for_tab(&id)
-                    .ok_or_else(|| "the new document tab could not be opened".to_owned())
-            })
-            .ok_or_else(|| "SeuOffice is not ready".to_owned())??;
-        if let Some(owner) = owner {
-            self.follow_opener_project(
-                view,
-                &main_core::shell::projects::new_documents::NewDocumentOpener::Window {
-                    web_contents_id: i64::from(owner.0),
-                },
-            )?;
-        }
-        Ok(view)
-    }
-
-    pub fn open_mcp_blank_docs(&self) -> Result<ViewId, String> {
-        let view = self
-            .with_manager(|manager, host| {
-                let id = manager
-                    .open_docs_tab(
-                        host,
-                        None,
-                        Some(&OpenDocsOptions {
-                            new_blank: true,
-                            ai_content: None,
-                        }),
-                    )
-                    .map_err(|error| error.0)?;
-                manager
-                    .web_contents_for_tab(&id)
-                    .ok_or_else(|| "the new document tab could not be opened".to_owned())
-            })
-            .ok_or_else(|| "SeuOffice is not ready".to_owned())??;
-        self.inner
-            .borrow_mut()
-            .mcp_blank
-            .insert(view, McpBlank::Docs);
-        Ok(view)
-    }
-
-    pub fn open_mcp_blank_sheets(&self) -> Result<ViewId, String> {
-        if self.shell_window().is_none() {
-            return Err("SeuOffice is not ready".to_owned());
-        }
-        let path = self.hooks.unique_path_in(
-            &self.hooks.default_save_dir(),
-            &format!("{}.xlsx", self.hooks.tm("untitledSheet")),
-        );
-        let bytes = self.hooks.blank_xlsx()?;
-        main_core::packages::electron_utils::atomic_write::atomic_write_file(&path, &bytes)
-            .map_err(|error| error.message)?;
-        let result = self
-            .with_manager(|manager, host| {
-                let id = manager
-                    .open_sheets_tab(host, Some(&path), false)
-                    .map_err(|error| error.0)?;
-                manager
-                    .web_contents_for_tab(&id)
-                    .ok_or_else(|| "the new spreadsheet tab could not be opened".to_owned())
-            })
-            .ok_or_else(|| "SeuOffice is not ready".to_owned())
-            .and_then(|result| result);
-        match result {
-            Ok(view) => {
-                self.inner
-                    .borrow_mut()
-                    .mcp_blank
-                    .insert(view, McpBlank::Sheets(path));
-                self.hooks.start_queued_workbook_nudge();
-                Ok(view)
-            }
-            Err(error) => {
-                if let Err(cleanup) = std::fs::remove_file(&path) {
-                    self.hooks.warn(
-                        "[mcp] could not remove the unused blank workbook:",
-                        &cleanup.to_string(),
-                    );
-                }
-                Err(error)
-            }
-        }
-    }
-
-    pub fn open_mcp_blank_slides(&self) -> Result<ViewId, String> {
-        let view = self
-            .with_manager(|manager, host| {
-                let id = manager
-                    .open_slides_tab(host, None)
-                    .map_err(|error| error.0)?;
-                manager
-                    .web_contents_for_tab(&id)
-                    .ok_or_else(|| "the new presentation tab could not be opened".to_owned())
-            })
-            .ok_or_else(|| "SeuOffice is not ready".to_owned())??;
-        self.inner
-            .borrow_mut()
-            .mcp_blank
-            .insert(view, McpBlank::Slides);
-        Ok(view)
-    }
-
-    pub fn abandon_mcp_blank_slides(&self, view: ViewId) -> Result<(), String> {
-        if !matches!(
-            self.inner.borrow().mcp_blank.get(&view),
-            Some(McpBlank::Slides)
+        if let Err(error) = main_core::packages::electron_utils::atomic_write::atomic_write_file(
+            &backing,
+            &copy.bytes,
         ) {
-            return Ok(());
+            self.abort_sheets_template(&backing, &temp_dir);
+            return Err(error.message);
         }
-        let dirty = self
-            .with_manager(|manager, host| {
-                manager
-                    .dirty_tabs(host, TabKind::Slides)
-                    .map(|tabs| tabs.iter().any(|(_, candidate)| *candidate == view))
-                    .map_err(|error| error.0)
-            })
-            .ok_or_else(|| "SeuOffice is not ready".to_owned())??;
-        if !dirty && self.close_mcp_blank(view, TabKind::Slides) {
-            self.inner.borrow_mut().mcp_blank.remove(&view);
+        Ok(Some((backing, temp_dir)))
+    }
+
+    fn abort_sheets_template(&self, backing: &str, temp_dir: &str) {
+        self.hooks.unmark_sheets_unsaved_new(backing);
+        if let Err(cleanup) = std::fs::remove_dir_all(temp_dir) {
+            self.hooks.warn(
+                "[shell] could not remove the unused template workbook:",
+                &cleanup.to_string(),
+            );
         }
-        Ok(())
+    }
+
+    /// `openTemplateCopy`: a skill template's copy as a new untitled document of its editor,
+    /// opened through the owned creation path for `requester`'s captured owner (none: the shell
+    /// window). `Ok(None)` for EPUB and when there is no shell window. `done` runs once, after
+    /// the tab exists or the open failed and its creation cleanup settled.
+    pub fn open_template_copy_owned(
+        &self,
+        copy: &main_core::shell::user_skills::template_tabs::TemplateCopy,
+        requester: Option<ViewId>,
+        done: Box<dyn FnOnce(Result<Option<(String, ViewId)>, String>)>,
+    ) {
+        use main_core::shell::tab_manager::{EditorOpen, TabManager, TemplateCopy as TabCopy};
+        fn editor_open<V, B>(_: &TabManager<V, B>, copy: &TabCopy) -> Option<EditorOpen> {
+            TabManager::<V, B>::template_editor_open(copy)
+        }
+        let Some(shell) = self.shell_window() else {
+            return done(Ok(None));
+        };
+        let view = requester.unwrap_or(shell.view);
+        let Some(effects) = self
+            .services
+            .hosts
+            .get::<shell_contract::hosts::OwnedEffectsHost>()
+            .cloned()
+        else {
+            return done(Err("Owned creation effects are unavailable".into()));
+        };
+        let captured = self
+            .services
+            .views
+            .renderer_generation(view)
+            .ok_or("The requesting renderer is unavailable")
+            .and_then(|generation| {
+                effects
+                    .capture_owner(view, &generation)
+                    .map_err(|_| "The requesting owner is unavailable")
+            });
+        let owner = match captured {
+            Ok(owner) => owner,
+            Err(error) => return done(Err(error.into())),
+        };
+        let Some(cancel) = owner.loss_token() else {
+            return done(Err("The requesting owner has no lifetime".into()));
+        };
+        let tab_copy = TabCopy {
+            editor: copy.editor.as_str().to_owned(),
+            path: copy.path.clone(),
+            bytes: copy.bytes.clone(),
+            file_name: copy.file_name.clone(),
+            title: copy.title.clone(),
+        };
+        let sheets = copy.editor.as_str() == "sheets";
+        let (request, backing) = if sheets {
+            match self.prepare_sheets_template(copy) {
+                Ok(Some((backing, temp_dir))) => (
+                    Some(EditorOpen::Sheets {
+                        path: Some(backing.clone()),
+                        new_blank: false,
+                    }),
+                    Some((backing, temp_dir)),
+                ),
+                Ok(None) => return done(Ok(None)),
+                Err(error) => return done(Err(error)),
+            }
+        } else {
+            let request = self
+                .with_manager(|manager, _| editor_open(manager, &tab_copy))
+                .flatten();
+            (request, None)
+        };
+        let Some(request) = request else {
+            return done(Ok(None));
+        };
+        if tab_copy.editor == "pdf" {
+            self.hooks.mark_pdf_untitled_copy(&tab_copy.path);
+        }
+        let state = self.rc();
+        self.open_editor_owned(
+            request,
+            owner,
+            cancel,
+            Box::new(move |result| match result {
+                Ok((id, view, _)) if sheets => {
+                    state.hooks.start_queued_workbook_nudge();
+                    done(Ok(Some((id, view))));
+                }
+                Ok((id, _, _)) => {
+                    let tab = state
+                        .with_manager(|manager, host| {
+                            manager.finish_template_copy(host, &tab_copy, id)
+                        })
+                        .flatten();
+                    done(Ok(tab));
+                }
+                Err(error) => {
+                    if let Some((backing, temp_dir)) = backing {
+                        state.abort_sheets_template(&backing, &temp_dir);
+                    }
+                    done(Err(error));
+                }
+            }),
+        );
+    }
+
+    /// `openHtmlPresentTab`: a chrome-free html tab showing `owner`'s live preview. The view is
+    /// created through the host's asynchronous creation hook; `done` runs once the tab exists,
+    /// or with the failure after any creation cleanup settled. It never runs twice.
+    pub fn open_html_present_owned(
+        &self,
+        owner: ViewId,
+        title: String,
+        done: Box<dyn FnOnce(Result<ViewId, String>)>,
+    ) {
+        use main_core::shell::tab_manager::{
+            ViewCreationCleanupState, ViewCreationFailure, ViewSpec,
+        };
+        let state = self.rc();
+        let epoch = self.manager_epoch.get();
+        let spec_title = title.clone();
+        let spec = ViewSpec::HtmlPresent {
+            owner: i64::from(owner.0),
+            title: &title,
+        };
+        self.hooks.create_view(
+            &spec,
+            Box::new(move |result| match result {
+                Ok(view) => {
+                    let tab = if epoch == state.manager_epoch.get() {
+                        state.with_manager(|manager, host| {
+                            manager.resume_html_present_tab(host, view, &spec_title)
+                        })
+                    } else {
+                        None
+                    };
+                    match tab {
+                        Some(_) => done(Ok(view)),
+                        None => {
+                            state.hooks.view_close(view);
+                            done(Err("The shell window is no longer available".into()));
+                        }
+                    }
+                }
+                Err(ViewCreationFailure { error, cleanup }) => {
+                    let (cleanup, proof) = match cleanup {
+                        ViewCreationCleanupState::Complete => (None, None),
+                        ViewCreationCleanupState::Acknowledged(proof) => (None, Some(proof)),
+                        ViewCreationCleanupState::Pending(cleanup) => (Some(cleanup), None),
+                    };
+                    let original = error.0.clone();
+                    let failed = state.clone();
+                    state.retain_editor_cleanup(
+                        cleanup,
+                        proof,
+                        std::rc::Rc::default(),
+                        true,
+                        Box::new(move |failure| {
+                            failed.hooks.warn(
+                                "[shell] html present view cleanup failed:",
+                                &format!("{original}; {failure}"),
+                            );
+                        }),
+                        Box::new(move || done(Err(error.0))),
+                    );
+                }
+            }),
+        );
     }
 
     pub fn abandon_mcp_blank_docs(&self, view: ViewId) {
@@ -811,15 +743,15 @@ impl TabsState {
         self.hooks.docs_query_dirty(
             view,
             Box::new(move |dirty| {
-                if matches!(dirty, Ok(false)) {
-                    if let Some(state) = state.upgrade() {
-                        let owned = matches!(
-                            state.inner.borrow().mcp_blank.get(&view),
-                            Some(McpBlank::Docs)
-                        );
-                        if owned && state.close_mcp_blank(view, TabKind::Docs) {
-                            state.inner.borrow_mut().mcp_blank.remove(&view);
-                        }
+                if matches!(dirty, Ok(false))
+                    && let Some(state) = state.upgrade()
+                {
+                    let owned = matches!(
+                        state.inner.borrow().mcp_blank.get(&view),
+                        Some(McpBlank::Docs)
+                    );
+                    if owned && state.close_mcp_blank(view, TabKind::Docs) {
+                        state.inner.borrow_mut().mcp_blank.remove(&view);
                     }
                 }
             }),
@@ -827,9 +759,9 @@ impl TabsState {
     }
 
     pub fn abandon_mcp_blank_sheets(&self, view: ViewId) {
-        let Some(McpBlank::Sheets(path)) = self.inner.borrow().mcp_blank.get(&view).cloned() else {
+        if !matches!(self.inner.borrow().mcp_blank.get(&view), Some(McpBlank::Sheets)) {
             return;
-        };
+        }
         let dirty = match self.with_manager(|manager, host| {
             manager
                 .dirty_tabs(host, TabKind::Sheets)
@@ -851,14 +783,6 @@ impl TabsState {
         };
         if !dirty && self.close_mcp_blank(view, TabKind::Sheets) {
             self.inner.borrow_mut().mcp_blank.remove(&view);
-            if let Err(error) = std::fs::remove_file(&path) {
-                if error.kind() != std::io::ErrorKind::NotFound {
-                    self.hooks.warn(
-                        "[mcp] could not remove the unused blank workbook:",
-                        &error.to_string(),
-                    );
-                }
-            }
         }
     }
 

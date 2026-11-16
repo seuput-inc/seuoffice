@@ -83,12 +83,15 @@ impl DriveShell for ShellDrive {
         current_lang()
     }
 
-    fn open_path(&self, path: &str) -> bool {
-        let path = path.to_owned();
-        on_core(move |provided| {
-            provided.all::<TabsState>().into_iter().next()
-                .is_some_and(|tabs| tabs.route_document_path(&path))
-        }).unwrap_or(false)
+    fn open_path(&self, path: &str, done: Box<dyn FnOnce(bool) + Send>) {
+        let shown = path.to_owned();
+        crate::host::d2::docs_tabs::route_path_native(path.to_owned(), Box::new(move |result| match result {
+            Ok(opened) => done(opened),
+            Err(error) => {
+                eprintln!("shell: opening Drive copy {shown}: {error}");
+                done(false);
+            }
+        }));
     }
 
     fn is_open(&self, path: &str) -> bool {

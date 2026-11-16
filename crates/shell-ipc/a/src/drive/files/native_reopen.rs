@@ -51,7 +51,7 @@ fn fingerprint(file: &mut fs::File) -> Result<Fingerprint, String> {
     }
     file.seek(SeekFrom::Start(0))
         .map_err(|error| error.to_string())?;
-    let (device, id) = file_id(&file)?;
+    let (device, id) = file_id(file)?;
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
     loop {
@@ -61,7 +61,7 @@ fn fingerprint(file: &mut fs::File) -> Result<Fingerprint, String> {
         }
         hasher.update(&buffer[..count]);
     }
-    if file_id(&file)? != (device, id) {
+    if file_id(file)? != (device, id) {
         return Err("A Drive transaction file changed while reading".into());
     }
     let digest = hasher.finalize();
@@ -361,11 +361,11 @@ impl Transaction {
             let path = self.old.clone();
             self.backup(&path, &expected)?;
         }
-        if self.old != self.destination {
-            if let Some(expected) = self.destination_digest.clone() {
-                let path = self.destination.clone();
-                self.backup(&path, &expected)?;
-            }
+        if self.old != self.destination
+            && let Some(expected) = self.destination_digest.clone()
+        {
+            let path = self.destination.clone();
+            self.backup(&path, &expected)?;
         }
         let publication = self
             .content_publication

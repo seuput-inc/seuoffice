@@ -588,6 +588,23 @@ impl HtmlShell for FakeHtml {
         .map_err(|error| error.message)?;
         Ok(Some(path))
     }
+    fn write_new_document_existing_document(
+        &self,
+        binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+        _participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        _additional: &[shell_contract::runtime::CancelToken],
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+        admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
+        file_name: &str,
+        bytes: &[u8],
+    ) -> Result<Option<PathBuf>, String> {
+        let owner = binding.owner();
+        self.write_new_document_owned(
+            owner, owner, cancel, pending, effects, admission, file_name, bytes,
+        )
+    }
     fn asset_paths_changed(
         &self,
         view: ViewId,
@@ -967,14 +984,15 @@ impl HtmlShell for FakeHtml {
             false,
         ))
     }
-    fn present_open_tab(&self, owner: ViewId, title: &str) -> bool {
+    fn present_open_tab(&self, owner: ViewId, title: &str, then: Box<dyn FnOnce(bool)>) {
         if !self.answers.has("present_open_tab") {
-            return false;
+            return then(false);
         }
         self.answers
             .log(json!(["presentHooks.openTab", owner.0, title]));
-        self.answers
-            .bool("present_open_tab", format!("{} {title}", owner.0), false)
+        then(self
+            .answers
+            .bool("present_open_tab", format!("{} {title}", owner.0), false))
     }
     fn present_host_window(&self, view: ViewId) -> Option<WindowId> {
         self.answers

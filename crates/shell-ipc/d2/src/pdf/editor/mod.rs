@@ -22,6 +22,7 @@ mod recovery_open;
 pub mod reload;
 mod rename;
 mod save;
+mod saved_open;
 mod sign;
 #[cfg(test)]
 mod tests;
@@ -212,6 +213,8 @@ pub(super) struct Editor {
     notes: NoteLinkService,
     /// ocr.ts `engine`, found once; used on workers
     ocr: Arc<Mutex<OcrBridge>>,
+    /// the committed outputs opened as these views' first documents
+    saved: crate::saved_slots::SavedSlots<Editor>,
     /// keeps the `destroyed` listener alive
     _destroyed: RefCell<Option<DestroyedHook>>,
 }
@@ -302,6 +305,7 @@ impl Editor {
             rec: RefCell::new(Recovery::new(store, work_dir)),
             notes: NoteLinkService::new(platform),
             ocr: Arc::new(Mutex::new(OcrBridge::new())),
+            saved: crate::saved_slots::SavedSlots::default(),
             _destroyed: RefCell::new(None),
         });
         let me = Rc::downgrade(&editor);
@@ -713,6 +717,7 @@ impl Editor {
 
     /// The view is gone: the TypeScript's `destroyed` listener of `grantAndTrack`
     fn destroyed(&self, view: ViewId) {
+        self.saved.release_view(view);
         if self
             .st
             .borrow()

@@ -13,7 +13,7 @@ use shell_contract::runtime::{CancelToken, RendererGeneration, Views};
 use shell_ipc_a::generate::{BoundGenerateWindowEvents, GenerateWindowEvents};
 use shell_ipc_a::generate::host::{GenerateAuthority, GenerateOrigin, GenerateWindowEvent};
 use tauri::Manager;
-use tauri_runtime_cef::{FrameEventKind, ViewEvent, WindowCefExt};
+use crate::native::{NativeEventKind, ViewEvent, WindowExt};
 
 use crate::host::window::{Bridge, ViewSpec, WindowOptions, WindowSpec};
 use crate::host::{HostContext, on_ui};
@@ -28,7 +28,7 @@ struct Created {
     generation: RendererGeneration,
     lifecycle: Arc<crate::views::NativeWindowLifecycle>,
     native: tauri::Window,
-    handle: tauri_runtime_cef::NativeWindowHandle,
+    handle: crate::native::WindowHandle,
 }
 
 struct Identity {
@@ -256,14 +256,12 @@ fn discard_failed_window(
                     center: options.center, minimizable: options.minimizable,
                     maximizable: options.maximizable, fullscreenable: options.fullscreenable,
                     on_frame: Some(Arc::new(move |view, event| {
-                        if !event.is_main { return; }
                         let Some(created) = frame_entry.identity.created.get() else { return };
                         if created.view != view { return; }
                         match &event.kind {
-                            FrameEventKind::NativeContextRegistered { origin } => {
-                                if event.browser_id != origin.browser_id() || event.frame_id != origin.frame_id() { return; }
+                            NativeEventKind::DocumentRegistered { context } => {
                                 let captured = frame_views.capture_native_owner(view, &created.generation);
-                                let Some(captured) = captured.filter(|captured| captured.origin == *origin) else { return };
+                                let Some(captured) = captured.filter(|captured| captured.origin == *context) else { return };
                                 let mut binding = frame_entry.binding.lock().unwrap_or_else(|error| error.into_inner());
                                 match &*binding {
                                     Binding::Waiting => {
@@ -281,7 +279,7 @@ fn discard_failed_window(
                                             }
                                         }
                                     }
-                                    Binding::Bound { owner, .. } if owner.context.authority_ref::<NativeOwnerAuthority>().is_some_and(|proof| proof.origin == *origin) => {}
+                                    Binding::Bound { owner, .. } if owner.context.authority_ref::<NativeOwnerAuthority>().is_some_and(|proof| proof.origin == *context) => {}
                                     Binding::Bound { .. } => {
                                         drop(binding);
                                         frame_entry.revoke();
@@ -289,29 +287,26 @@ fn discard_failed_window(
                                     Binding::Revoked => {}
                                 }
                             }
-                            FrameEventKind::NativeContextRevoked { origin } => {
+                            NativeEventKind::DocumentRevoked { document, .. } => {
                                 let matches = frame_entry.bound().ok().is_some_and(|owner|
-                                    owner.context.authority_ref::<NativeOwnerAuthority>().is_some_and(|proof| proof.origin == *origin));
+                                    owner.context.authority_ref::<NativeOwnerAuthority>().is_some_and(|proof| proof.origin.identity() == document));
                                 if matches { frame_entry.revoke(); }
                             }
-                            FrameEventKind::RendererTerminated => frame_entry.revoke(),
-                            FrameEventKind::FirstVisuallyNonEmptyLayout { origin } => {
+                            NativeEventKind::WebviewProcessFailed { .. } => frame_entry.revoke(),
+                            NativeEventKind::DocumentReady { context } => {
                                 let binding = frame_entry.binding.lock().unwrap_or_else(|error| error.into_inner()).clone();
                                 if let Binding::Bound { owner, events } = binding {
-                                    if event.browser_id == origin.browser_id() && event.frame_id == origin.frame_id()
-                                        && owner.context.authority_ref::<NativeOwnerAuthority>().is_some_and(|proof| proof.origin == *origin)
+                                    if owner.context.authority_ref::<NativeOwnerAuthority>().is_some_and(|proof| proof.origin == *context)
                                         && !frame_entry.identity.pending.is_cancelled()
                                         && !frame_entry.identity.ready.swap(true, Ordering::AcqRel) {
                                         events.ready_to_show(owner.context);
                                     }
                                 }
                             }
+                            NativeEventKind::View(ViewEvent::Focus) => {
+                                if let Some(events) = focus_entry.bound_events() { events.focus(); }
+                            }
                             _ => {}
-                        }
-                    })),
-                    on_view: Some(Arc::new(move |_, _, event| {
-                        if matches!(event, ViewEvent::Focus) {
-                            if let Some(events) = focus_entry.bound_events() { events.focus(); }
                         }
                     })),
                     on_open: Some(Arc::new(move |view, origin, url| {

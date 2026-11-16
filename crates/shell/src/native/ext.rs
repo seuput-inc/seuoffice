@@ -198,11 +198,10 @@ pub(crate) fn attach(webview: &Webview, browser: &BrowserIdentity) -> Result<(),
         Ok(())
     }))?;
     let window_label = webview.window().label().to_owned();
-    let handle = webview.clone();
     let identity = browser.clone();
     webview
         .with_webview(move |platform_webview| {
-            match platform::attach(platform_webview, &handle, &identity) {
+            match platform::attach(&platform_webview, &identity) {
                 Ok(()) => identity.core.mark_attached(control, &window_label),
                 Err(error) => {
                     eprintln!("shell: native observers could not be attached: {error}");

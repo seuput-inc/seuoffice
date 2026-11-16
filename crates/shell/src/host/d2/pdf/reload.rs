@@ -1,12 +1,12 @@
 use std::sync::{Arc, Mutex};
 use shell_contract::{Hosts, Provided, hosts::{AcceptedPdfReload, OwnedEffectsHost, PdfReload, PdfReloadAccepted, PdfReloadHost}, ipc::NativeRequestOwner, runtime::{CancelToken, RendererGeneration, Services}};
 use shell_ipc_d2::pdf::editor::{editors::PdfEditors, reload::back_on_core};
-use tauri_runtime_cef::{NativeContextToken, NativeReloadReservation, WebviewCefExt};
+use crate::native::{DocumentContext, ReloadReservation, WebviewExt};
 use crate::{host::HostContext, ipc::native_owner::{NativeOwnerAuthority, capture_owner}, views::ViewTable};
 
 struct NativeReload { cx: HostContext }
 struct Reservation {
-    native: NativeReloadReservation,
+    native: ReloadReservation,
     views: Arc<ViewTable>,
     view: shell_contract::ViewId,
     renderer: RendererGeneration,
@@ -83,7 +83,9 @@ impl PdfReload for NativeReload {
             if !staged.matches_actor() { return done.finish(Err("The captured PDF file slot changed before reload.".into())); }
             let browser_loss = CancelToken::default();
             let on_close = browser_loss.clone();
-            let browser_subscription = match reservation.native.browser_close().when_closed(move |_| on_close.cancel()) {
+            let browser_subscription = match reservation.native.browser_close()
+                .ok_or_else(|| "The PDF browser is already gone.".to_owned())
+                .and_then(|close| close.when_closed(move |_| on_close.cancel())) {
                 Ok(subscription) => subscription, Err(error) => return done.finish(Err(error)),
             };
             let reservation_loss = CancelToken::default();
@@ -184,7 +186,7 @@ impl PdfReload for NativeReload {
                 accepted(marker);
                 Ok(())
             });
-            let queued = webview.reload_native_reserved(dispatch_reservation, admission, move |result: Result<NativeContextToken, String>| {
+            let queued = webview.reload_reserved(&dispatch_reservation, admission, move |result: Result<DocumentContext, String>| {
                 let result = result.and_then(|token| {
                     let owner = capture_owner(&views, view, &next)?;
                     let authority = owner.context.authority_ref::<NativeOwnerAuthority>().ok_or("The reloaded PDF native owner is unavailable.")?;
@@ -194,19 +196,19 @@ impl PdfReload for NativeReload {
                 });
                 loaded_reply(&actual_completed, result);
             });
-            if let Err(error) = queued { loaded_reply(&completion, Err(error.to_string())); }
+            if let Err(error) = queued { loaded_reply(&completion, Err(error)); }
         });
         let reply: PreparedReply = Arc::new(Mutex::new(Some(on_prepared)));
         let prepared = reply.clone();
         let captured_webview = webview.clone();
         let views = self.cx.views.clone();
-        let queued = webview.with_cef_webview(move |native| {
-            let result = prepare_original.prepare_reload(&native).and_then(|reservation| {
+        let queued = webview.with_native_async(move |native| {
+            let result = native.and_then(|_| ReloadReservation::prepare(&prepare_original)).and_then(|reservation| {
                 let next = views.reserve_native_reload(view, &renderer, &prepare_original, &reservation)?;
                 Ok(Prepared { reservation: Reservation { native: reservation, views, view, renderer: next }, webview: captured_webview })
             });
             prepared_reply(&prepared, result);
         });
-        if let Err(error) = queued { prepared_reply(&reply, Err(error.to_string())); }
+        if let Err(error) = queued { prepared_reply(&reply, Err(error)); }
     }
 }

@@ -32,7 +32,7 @@ struct OwnedScope {
     key: String,
     authority: Option<PromptScope>,
     losses: Vec<CancelSubscription>,
-    closing: Option<tauri_runtime_cef::NativeWindowClosingSubscription>,
+    closing: Option<crate::native::WindowClosingSubscription>,
 }
 
 #[derive(Default)]

@@ -405,7 +405,7 @@ impl SlidesAiSessions for World {
         let Some(entry) = entries.get_mut(&owner.view.0) else {
             return Ok(None);
         };
-        Ok(if replace {
+        let finished = if replace {
             replace_picture_finish(
                 &mut entry.session,
                 &entry.review,
@@ -423,10 +423,10 @@ impl SlidesAiSessions for World {
                 ticket,
                 downloaded,
             )
-        }
-        .map_err(|error| shell_contract::IpcError {
+        };
+        finished.map_err(|error| shell_contract::IpcError {
             name: Some("Error".into()),
             message: error.message,
-        })?)
+        })
     }
 }

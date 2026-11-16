@@ -166,8 +166,7 @@ impl SheetsShell for Shell {
     }
 
     fn open_generated_path(&self, path: &str) -> bool {
-        let path = path.to_owned();
-        on_core(move |provided| provided.all::<TabsState>().into_iter().next().is_some_and(|tabs| tabs.open_document_path(&path))).unwrap_or(false)
+        crate::host::d2::docs_tabs::open_generated(path).unwrap_or(false)
     }
 
     fn open_generated_path_owned(&self, output: shell_contract::ipc::SavedPublication,

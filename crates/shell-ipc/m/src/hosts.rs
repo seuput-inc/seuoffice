@@ -123,6 +123,7 @@ pub trait MHost: Send + Sync {
     /// or did not open it
     fn open_generated_path(&self, path: &str) -> bool;
     /// Complete the actual owned generated-path open or folder reveal asynchronously.
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn export_written_owned(
         &self,
         path: std::path::PathBuf,
@@ -138,6 +139,7 @@ pub trait MHost: Send + Sync {
                 + Send,
         >,
     );
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn export_written_existing_document(
         &self,
         selection: shell_contract::ipc::NativeSaveDestination,

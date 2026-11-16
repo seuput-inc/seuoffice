@@ -4,7 +4,7 @@ use objc2::{MainThreadMarker, rc::Retained};
 use objc2_app_kit::{NSAlert, NSApplication, NSApplicationActivationPolicy, NSOpenPanel, NSSavePanel, NSWindow};
 use objc2_foundation::{NSArray, NSString, NSURL};
 use super::{FileSpec, NativeSessions, Session};
-use tauri_runtime_cef::WindowCefExt;
+use crate::native::{WindowExt, WindowHandle};
 
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
@@ -80,16 +80,25 @@ pub(crate) fn alert_is_registered(id: u64, window: &NSWindow) -> bool {
     }
 }
 
+/// Run `job` with the NSWindow of `window` as one admitted effect on the exact window.
+pub(crate) fn with_ns_window<R>(handle: &WindowHandle, window: &tauri::Window, job: impl FnOnce(&NSWindow) -> R) -> Result<R, String> {
+    handle.with_window(|_| {
+        let pointer = window.ns_window().map_err(|error| error.to_string())?.cast::<NSWindow>();
+        // SAFETY: the window stays admitted for this effect and the call is on the UI thread.
+        let native = unsafe { pointer.as_ref() }.ok_or("The window has no native NSWindow.")?;
+        Ok(job(native))
+    }).map_err(|error| error.to_string())?
+}
+
 pub(super) fn files(app: &tauri::AppHandle, spec: &FileSpec, parent: Option<&tauri::Window>, save: bool, session: &Arc<Session>) -> Result<Option<Vec<PathBuf>>, String> {
-    let previous = tauri_runtime_cef::native_app_key_window_handle(app).map_err(|error| error.to_string())?;
+    let previous = crate::native::native_app_key_window_handle(app)?;
     let result = match parent {
-        Some(parent) => parent.native_window_handle().map_err(|error| error.to_string())?
-            .with_ns_window(|window| files_with_parent(spec, Some(window), save, session))
-            .map_err(|error| error.to_string())?,
-        None => files_with_parent(spec, None, save, session),
-    }?;
-    if !session.cancelled() && let Some(window) = previous {
-        window.with_ns_window(|native| native.makeKeyAndOrderFront(None)).map_err(|error| error.to_string())?;
+        Some(parent) => with_ns_window(&parent.native_window_handle()?, parent, |window| files_with_parent(spec, Some(window), save, session))??,
+        None => files_with_parent(spec, None, save, session)?,
+    };
+    if !session.cancelled() && let Some(handle) = previous {
+        let window = tauri::Manager::get_window(app, handle.label()).ok_or("The previous key window is gone.")?;
+        with_ns_window(&handle, &window, |native| native.makeKeyAndOrderFront(None))?;
     }
     Ok(result)
 }

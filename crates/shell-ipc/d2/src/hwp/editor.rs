@@ -88,6 +88,7 @@ use crate::kit::{
 
 mod owned_save;
 mod recovery_open;
+mod saved_open;
 
 /// How long a save or a close waits for the renderer
 const SAVE_WAIT: Duration = Duration::from_millis(120_000);
@@ -233,6 +234,7 @@ pub(crate) struct Hwp {
     /// the shell's one folder memory of Electron's `dialog`
     dialog_memory: Arc<Mutex<DialogMemory>>,
     save_dir: Arc<Mutex<SaveDirState>>,
+    pub(super) saved: crate::saved_slots::SavedSlots<Hwp>,
     _destroyed: Rc<dyn Fn(ViewId)>,
     _replaced: Rc<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration)>,
 }
@@ -376,6 +378,7 @@ impl Hwp {
                 recovery_send_error: RefCell::default(),
                 dialog_memory,
                 save_dir,
+                saved: crate::saved_slots::SavedSlots::default(),
                 _destroyed: destroyed,
                 _replaced: replaced,
             }
@@ -1107,6 +1110,7 @@ impl Hwp {
 
     /// the `destroyed` hooks of `trackHwpRecovery` and `grantAndTrack`, in that order
     fn destroyed(self: &Rc<Self>, view: ViewId) {
+        self.saved.release_view(view);
         self.cancel_owned(view, "hwp: document destroyed");
         self.cancel_recovery_flushes(Some(view), "HWP recovery view destroyed");
         if self.get(view, |v| v.granted && !v.native_headless) {
@@ -1744,6 +1748,11 @@ impl Hwp {
             Some(path) if self.get(view, |v| v.allowed.contains(path)) => path.to_owned(),
             _ => return reply.reply(Err(error("hwp: path not granted to this view"))),
         };
+        match crate::saved_slots::read_scope(&**self, cx, &path) {
+            Err(message) => return reply.reply(Err(error(message))),
+            Ok(Some(scope)) => return self.read_saved_file(view, path, scope, reply),
+            Ok(None) => {}
+        }
         if self.get(view, |state| state.recovery_open.is_some()) {
             return self.read_recovery_file(cx, path, reply);
         }
@@ -1885,11 +1894,25 @@ pub(super) fn entries(hwp: &Rc<Hwp>) -> Vec<Entry> {
     let h = Rc::clone;
     let mut all = Vec::new();
     let hwp1 = h(hwp);
-    all.push(kit::invoke("hwp:consume-recovery", move |cx, _| {
-        hwp1.consume_recovery(cx)
-    }));
+    all.push(kit::invoke_later(
+        "hwp:consume-recovery",
+        move |cx, _, reply| {
+            let reply = match crate::saved_slots::dispatch(&hwp1, cx, (), reply) {
+                Ok(()) => return,
+                Err(reply) => reply,
+            };
+            reply.reply(hwp1.consume_recovery(cx))
+        },
+    ));
     let hwp1 = h(hwp);
     all.push(kit::invoke("hwp:recovery-initialized", move |cx, args| {
+        if let Some(token) = args.str(0) {
+            let ok = matches!(field(args.get(1), "ok"), IpcValue::Bool(true));
+            let failure = as_str(field(args.get(1), "error")).unwrap_or("HWP recovery failed");
+            if crate::saved_slots::initialized(&hwp1, cx, token, ok, failure)? {
+                return Ok(IpcValue::Null);
+            }
+        }
         hwp1.finish_recovery(cx, &args)
     }));
 
@@ -2177,6 +2200,34 @@ impl DocumentEditors for HwpEditors {
         native: shell_contract::ipc::NativeRequestOwner,
     ) -> Result<shell_contract::ipc::NativeRequestOwner, IpcError> {
         self.0.capture_hwp_owner(view, native)
+    }
+
+    fn prepare_saved_document(
+        &self,
+        target: shell_contract::ipc::NativeSavedTarget,
+    ) -> Result<Box<dyn shell_contract::editors::PreparedSavedDocument>, IpcError> {
+        crate::saved_slots::prepare(&self.0, target)
+    }
+
+    fn load_saved_document(
+        &self,
+        document: shell_contract::ipc::NativeSavedDocument,
+        then: Then<shell_contract::editors::SavedDocumentLoadOutcome>,
+    ) {
+        crate::saved_slots::load(&self.0, document, then, saved_open::install);
+    }
+
+    fn request_save_native(
+        &self,
+        view: ViewId,
+        mode: SaveMode,
+        binding: shell_contract::ipc::NativeExistingDocumentBinding,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        then: Then<bool>,
+    ) {
+        self.0
+            .request_save_native(view, mode, binding, cancel, pending, then)
     }
 
     fn owns(&self, view: ViewId) -> bool {

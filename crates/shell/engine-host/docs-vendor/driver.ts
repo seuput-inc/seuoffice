@@ -4,10 +4,10 @@ import type {
   Viewport,
 } from '../../../../packages/html2docx/src/driver'
 
-/** Each callback is scoped to one request and one dedicated CEF page. */
+/** Each callback is scoped to one request and one dedicated hidden page. */
 export type PageCall = (operation: string, input: unknown) => Promise<unknown>
 
-export class CefHtmlDriver implements BrowserDriver {
+export class HtmlPageDriver implements BrowserDriver {
   constructor(private readonly call: PageCall) {}
 
   async setViewport(viewport: Viewport): Promise<void> {

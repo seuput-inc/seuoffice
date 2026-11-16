@@ -17,7 +17,7 @@ use shell_contract::hosts::MessageBoxAnswer;
 use tauri::Window;
 use std::sync::Arc;
 use crate::host::dialog::owned::{Session, macos::register_alert};
-use tauri_runtime_cef::WindowCefExt;
+use crate::host::dialog::owned::macos::with_ns_window;
 
 use super::{Kind, Spec};
 
@@ -48,9 +48,9 @@ pub(super) fn show_owned(spec: &Spec, parent: Option<&Window>, session: &Arc<Ses
 
 fn show_impl(spec: &Spec, parent: Option<&Window>, session: Option<&Arc<Session>>) -> Result<MessageBoxAnswer, String> {
     match parent {
-        Some(parent) => parent.native_window_handle().map_err(|error| error.to_string())?
-            .with_ns_window(|window| show_with_parent(spec, Some(window), session))
-            .map_err(|error| error.to_string())?,
+        Some(parent) => with_ns_window(&crate::native::WindowExt::native_window_handle(parent)?, parent, |window| {
+            show_with_parent(spec, Some(window), session)
+        })?,
         None => show_with_parent(spec, None, session),
     }
 }

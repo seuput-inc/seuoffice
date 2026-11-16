@@ -1015,6 +1015,7 @@ fn pdf_grant_effect(
 }
 
 /// The body of `hwp:print-pages` once the view is marked printing
+#[allow(clippy::too_many_arguments)]
 fn hwp_print(
     env: &Env,
     view: ViewId,
@@ -1454,7 +1455,6 @@ struct PreparedHwpStart {
     prepared: Box<dyn shell_contract::hosts::PreparedGeneratedPath>,
     state: MStateRef,
     view: ViewId,
-    terminal: Arc<Mutex<Option<Result<shell_contract::hosts::GeneratedTerminalDelivery, String>>>>,
     wake: shell_contract::hosts::GeneratedPathWake,
     observer_failed: bool,
 }
@@ -1508,6 +1508,7 @@ pub fn cancel_prepared_hwp_publications() {
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn prepare_hwp_publication(
     state: &MStateRef,
     view: ViewId,
@@ -1574,7 +1575,6 @@ fn prepare_hwp_publication(
                                 prepared,
                                 state,
                                 view,
-                                terminal: terminal.clone(),
                                 wake: notify.clone(),
                                 observer_failed,
                             },
@@ -1633,15 +1633,14 @@ pub(crate) fn wake_hwp_publication(
                 return;
             }
         };
-        if let Some(payload) = payload {
-            if let Some((payload, pending)) =
+        if let Some(payload) = payload
+            && let Some((payload, pending)) =
                 finish_hwp_publication_on_core(&state, view, payload, delivery.result())
-            {
-                hold_hwp_cleanup_pending(
-                    &state, view, &terminal, hold_core, payload, delivery, pending,
-                );
-                return;
-            }
+        {
+            hold_hwp_cleanup_pending(
+                &state, view, &terminal, hold_core, payload, delivery, pending,
+            );
+            return;
         }
         let retry = loop {
             if let Err(error) = delivery.acknowledge() {

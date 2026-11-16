@@ -71,7 +71,7 @@ pub struct PendingAiDocs {
 
 enum PendingAiDoc {
     Synthetic(serde_json::Value),
-    Accepted(AcceptedAiDoc),
+    Accepted(Box<AcceptedAiDoc>),
 }
 
 pub struct AcceptedAiDoc {
@@ -87,6 +87,7 @@ pub struct AcceptedAiDoc {
 }
 
 impl AcceptedAiDoc {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         created: shell_contract::runtime::RendererGeneration,
         content: serde_json::Value,
@@ -200,7 +201,7 @@ impl AiSeedRollback {
     }
     pub fn rollback(&self) -> Result<(), String> {
         match self.identity.load(Ordering::Acquire) {
-            1 | 2 | 3 => return Ok(()),
+            1..=3 => return Ok(()),
             _ => {}
         }
         if !self.created.is_active() && !self.closed.load(Ordering::Acquire) {
@@ -210,7 +211,7 @@ impl AiSeedRollback {
             .contents
             .lock()
             .map_err(|_| "The pending document state is poisoned")?;
-        if matches!(self.identity.load(Ordering::Acquire), 1 | 2 | 3) {
+        if matches!(self.identity.load(Ordering::Acquire), 1..=3) {
             return Ok(());
         }
         if !contents.get(&self.key).is_some_and(|entry| matches!(entry, PendingAiDoc::Accepted(seed) if Arc::ptr_eq(&seed.identity, &self.identity))) {
@@ -221,11 +222,10 @@ impl AiSeedRollback {
             .lock()
             .map_err(|_| "The AI seed receipt is poisoned")?;
         let removed = contents.remove(&self.key);
-        if let Some(previous) = displaced.take() {
-            if !matches!(&previous, PendingAiDoc::Accepted(seed) if seed.identity.load(Ordering::Acquire)!=0)
-            {
-                contents.insert(self.key, previous);
-            }
+        if let Some(previous) = displaced.take()
+            && !matches!(&previous, PendingAiDoc::Accepted(seed) if seed.identity.load(Ordering::Acquire)!=0)
+        {
+            contents.insert(self.key, previous);
         }
         self.identity.store(2, Ordering::Release);
         drop(contents);
@@ -275,7 +275,10 @@ impl PreparedAiSeed {
             .lock()
             .map_err(|_| "The AI seed receipt is poisoned")?;
         initialize()?;
-        *displaced = contents.insert(self.receipt.key, PendingAiDoc::Accepted(self.seed));
+        *displaced = contents.insert(
+            self.receipt.key,
+            PendingAiDoc::Accepted(Box::new(self.seed)),
+        );
         drop(displaced);
         drop(contents);
         Ok(self.receipt)
@@ -396,7 +399,7 @@ impl PendingAiDocs {
             return Err("The initialized document already has pending AI content".into());
         }
         initialize()?;
-        let displaced = contents.insert(i64::from(view.0), PendingAiDoc::Accepted(seed));
+        let displaced = contents.insert(i64::from(view.0), PendingAiDoc::Accepted(Box::new(seed)));
         Ok(AiSeedRollback {
             contents: self.contents.clone(),
             key: i64::from(view.0),

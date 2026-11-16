@@ -561,6 +561,96 @@ fn selected_save_normalization_is_one_hop_and_surface_bound() {
         std::path::Path::new("slides-100.PNG")
     );
     assert!(slides.numbered_png_page(2, 2).is_err());
+    let sheets = |name: &str, macro_enabled, offer_copies| {
+        make(Surface::Sheets, name)
+            .normalize_dialog_format(NativeSaveFormat::Sheets {
+                macro_enabled,
+                offer_copies,
+            })
+            .unwrap()
+            .path()
+            .to_owned()
+    };
+    let path = std::path::PathBuf::from;
+    assert_eq!(sheets("dir/report.v2", false, true), path("dir/report.v2.xlsx"));
+    assert_eq!(sheets("dir/book", false, false), path("dir/book.xlsx"));
+    assert_eq!(sheets("dir/book", false, true), path("dir/book"));
+    assert_eq!(sheets("book.XLSX", false, true), path("book.XLSX"));
+    assert_eq!(sheets("book.xlsx", true, true), path("book.xlsx.xlsm"));
+    assert_eq!(sheets("book.csv", false, false), path("book.csv"));
+    assert_eq!(sheets("book.csv", true, false), path("book.csv.xlsm"));
+    assert_eq!(sheets("book.PDF", false, true), path("book.PDF"));
+    assert_eq!(sheets("book.pdf", false, false), path("book.pdf.xlsx"));
+    assert!(
+        make(Surface::Docs, "book")
+            .normalize_dialog_format(NativeSaveFormat::Sheets {
+                macro_enabled: false,
+                offer_copies: false,
+            })
+            .is_err()
+    );
+    let hwp = |name: &str, fallback_hwpx, offer_pdf| {
+        make(Surface::Hwp, name)
+            .normalize_dialog_format(NativeSaveFormat::Hwp {
+                fallback_hwpx,
+                offer_pdf,
+            })
+            .unwrap()
+            .path()
+            .to_owned()
+    };
+    assert_eq!(hwp("dir/letter", false, true), path("dir/letter.hwp"));
+    assert_eq!(hwp("dir/letter", true, false), path("dir/letter.hwpx"));
+    assert_eq!(hwp("letter.HWPX", false, true), path("letter.HWPX"));
+    assert_eq!(hwp("letter.pdf", false, true), path("letter.pdf"));
+    assert_eq!(hwp("letter.pdf", false, false), path("letter.pdf.hwp"));
+    assert!(
+        make(Surface::Docs, "letter")
+            .normalize_dialog_format(NativeSaveFormat::Hwp {
+                fallback_hwpx: false,
+                offer_pdf: false,
+            })
+            .is_err()
+    );
+}
+
+#[test]
+fn project_document_destination_names_only_a_plain_save() {
+    let issuer = NativeInvocationIssuer::new(CancelToken::default());
+    let binding = |mode| {
+        let generation = RendererGeneration::new();
+        let mut owner = synthetic_owner(ViewId(32), &generation);
+        owner.context = owner.context.with_document_lease(RendererGeneration::new());
+        issuer
+            .issue_existing_document_save(
+                Surface::Docs,
+                ViewId(32),
+                NativeSaveSelection::Mode(mode),
+                owner,
+                CancelToken::default(),
+            )
+            .unwrap()
+    };
+    let saved = NativeSaveDestination::from_project_document(
+        binding(crate::editors::SaveMode::Save),
+        "project/new.docx".into(),
+    )
+    .unwrap();
+    assert_eq!(saved.path(), std::path::Path::new("project/new.docx"));
+    assert!(
+        NativeSaveDestination::from_project_document(
+            binding(crate::editors::SaveMode::SaveAs),
+            "project/new.docx".into(),
+        )
+        .is_err()
+    );
+    assert!(
+        NativeSaveDestination::from_project_document(
+            binding(crate::editors::SaveMode::Save),
+            "".into(),
+        )
+        .is_err()
+    );
 }
 
 #[test]

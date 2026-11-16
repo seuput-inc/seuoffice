@@ -8,14 +8,11 @@ use std::collections::HashMap;
 pub(crate) mod macos;
 #[cfg(windows)]
 pub(crate) mod windows;
-#[cfg(target_os = "linux")]
-pub(crate) mod linux;
+
 #[cfg(target_os = "macos")]
 use macos as platform;
 #[cfg(windows)]
 use windows as platform;
-#[cfg(target_os = "linux")]
-use linux as platform;
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
 const EXPIRED: &str = "Renderer document is no longer available.";

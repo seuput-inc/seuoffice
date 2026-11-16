@@ -368,7 +368,7 @@ impl DocumentLinksShellHost for Host {
         let tabs = self.tabs.clone();
         let path = path.to_owned();
         defer(move || {
-            tabs.open_path(&path);
+            tabs.open_path_reported(&path);
         });
     }
 

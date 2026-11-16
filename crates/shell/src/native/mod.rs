@@ -8,12 +8,9 @@
 //! starts. WK and WebView2 objects are never identity.
 //!
 //! The pure core (`ids`, `browser`, `document`, `navigation`, `events`, `lifecycle`, `eval`,
-//! `scheme`, `page`, `policy`, `ingress`, `defer`) has no `cfg` and no OS types. Only
-//! `platform/*`, `ext` and `window` touch Tauri webview and OS APIs.
-//!
-//! Slice ownership: F0 owns every file here except `platform/{macos,windows}/*` other than
-//! their `mod.rs` (S1m / S1w), and `menu.rs` / `locale.rs` (S7). S7 adds the two lines
-//! `pub mod locale;` and `pub mod menu;` below when it lands those files.
+//! `scheme`, `page`, `policy`, `ingress`, `defer`, `url`) has no `cfg` and no OS types. Only
+//! `platform/*`, `ext` and `window` touch Tauri webview and OS APIs; `menu` and `locale`
+//! (S7) sit on top of them.
 //!
 //! Do not call `on_navigation` or `on_page_load` on a builder that went through
 //! `.native(...)`: both are single-slot in Tauri, and the native hooks own them. The shell's
@@ -33,11 +30,14 @@ pub mod ext;
 pub mod ids;
 pub mod ingress;
 pub mod lifecycle;
+pub mod locale;
+pub mod menu;
 pub mod navigation;
 pub mod page;
 pub mod platform;
 pub mod policy;
 pub mod scheme;
+pub mod url;
 pub mod window;
 
 pub use browser::{BridgeMode, BrowserIdentity, BrowserState, RegisterError, WebviewControl};
@@ -68,7 +68,7 @@ pub use page::{
     CaptureSpec, Done, EditCommand, Fence, HeaderFooter, KeyChord, Modifiers, PageError, PageOps,
     PdfSpec, QuietSpec, Rect, Viewport,
 };
-pub use policy::{PolicyRequest, RequestPolicy, Storage};
+pub use policy::{Blocks, PolicyRequest, RequestPolicy, Storage};
 pub use scheme::{
     Accepted, Prepared, Rejected, RequestCancelSubscription, ResponseGate, SchemeRequestContext,
     Submitted,

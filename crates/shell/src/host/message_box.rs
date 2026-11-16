@@ -6,7 +6,7 @@
 //!
 //! - macOS: `NSAlert` ([`mac`]).
 //! - Windows: `TaskDialogIndirect`, as Electron's ([`win`]).
-//! - Linux: a cancellable GTK dialog with custom buttons and checkbox.
+//! - Linux is not a shell target; its dialog was removed with its WebView runtime.
 //!
 //! What is the same on every OS is here and tested: the buttons of a box when
 //! it names none, which button is the default, which one Escape chooses.
@@ -18,8 +18,6 @@ use tauri::Window;
 mod mac;
 #[cfg(windows)]
 mod win;
-#[cfg(target_os = "linux")]
-pub(crate) mod cancellable;
 
 /// `type` of the options: the icon
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,8 +108,6 @@ pub(crate) fn show_owned(options: &MessageBox, parent: Option<&Window>, session:
     { mac::show_owned(&spec, parent, session) }
     #[cfg(windows)]
     { win::show_owned(&spec, parent, session) }
-    #[cfg(target_os = "linux")]
-    { crate::host::dialog::owned::linux::message(&spec, parent, session) }
 }
 
 #[cfg(test)]

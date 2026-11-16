@@ -25,8 +25,9 @@ pub trait DriveShell: Send + Sync {
     /// `deps.lang()`. Runs on the core thread.
     fn lang(&self) -> Lang;
     /// `deps.openPath(path)`: a Drive copy opens like any local file
-    /// (`routeDocumentPath`). Runs on the core thread.
-    fn open_path(&self, path: &str) -> bool;
+    /// (`routeDocumentPath`). Called on the core thread; `done(opened)` runs on the
+    /// core thread once the open settles (it may be dropped when the host is torn down).
+    fn open_path(&self, path: &str, done: Box<dyn FnOnce(bool) + Send>);
     /// `deps.isOpen(path)`: a tab shows this file. Runs on the core thread.
     fn is_open(&self, path: &str) -> bool;
     /// `readStoredAiSettings()`, from which `deps.freeAi()` is decided.

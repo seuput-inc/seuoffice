@@ -32,7 +32,7 @@ use main_core::shell::detached_windows::WindowOptions as DetachedOptions;
 use main_core::shell::split_layout::Rect;
 use main_core::shell::tab_manager::{HwpUntitledCopy, TabError, TabResult, ViewSpec as EditorViewSpec};
 use tauri::Manager;
-use tauri_runtime_cef::WebviewCefExt;
+use crate::native::{BrowserCreation, BrowserState, NativeEvent, NativeEventKind, ViewEvent, WebviewExt};
 
 use super::{HostContext, on_ui};
 use super::window::{Bounds, Bridge, ViewSpec, WindowOptions, WindowSpec};
@@ -177,12 +177,13 @@ impl Hooks {
                 (shell.window, lifecycle)
             }
         };
-        let network_session = if surface == Surface::Diagram {
-            Some(super::d1::diagram_headless::network::session().map_err(TabError)?)
-        } else { None };
+        let request_policy = (surface == Surface::Diagram).then(super::d1::diagram_headless::network::request_policy);
         let registration = self.cx.views.allocate_view().map_err(TabError)?;
         let (view, created) = self.cx.views.register_view(registration, window, surface).map_err(TabError)?;
-        let submission = tauri_runtime_cef::NativeBrowserSubmissionGuard::new();
+        let Some(submission) = BrowserCreation::new() else {
+            self.cx.views.remove_view_if_generation(view, &created);
+            return Err(TabError("Native creation ids are exhausted.".into()));
+        };
         let proof = super::window::NativeClosureProof::new(submission.receipt(), view, created.clone());
         if let Err(error) = self.cx.views.set_closure_proof(view, &created, proof.clone()) {
             self.cx.views.remove_view_if_generation(view, &created);
@@ -283,7 +284,7 @@ impl Hooks {
             generation: created, proof, submission,
             window, window_lifecycle, surface, url, deferred,
             docs_lease, slides_lease, asset_lease,
-            network_session,
+            request_policy,
             invocation_on_frame: None,
             invocation_navigate: None,
         })
@@ -347,7 +348,7 @@ pub(crate) fn open_html_present_window(
                 focus: true, main: false,
                 view: ViewSpec { url: String::new(), bridge: Bridge::Surface(Surface::Html) },
             },
-            WindowOptions { on_frame: Some(Arc::new(frame_event)), on_view: Some(Arc::new(view_event)), ..Default::default() },
+            WindowOptions { on_frame: Some(Arc::new(frame_event)), ..Default::default() },
         )
     })?;
     editor.bind_present(view, owner);
@@ -360,17 +361,18 @@ pub(crate) fn open_html_present_window(
             .ok_or("the tab core is unavailable")?;
         let platform = cx.clone();
         let ready_view = webview.clone();
-        webview.when_navigation_ready(move |ready| {
+        let browser = webview.native_browser()?;
+        browser.navigator().when_ready(move |ready| {
             if let Err(error) = ready {
                 post_present_failure(core, platform, window, error.to_string());
                 return;
             }
             let failed_core = core.clone();
             let failed_platform = platform.clone();
-            if let Err(error) = ready_view.with_cef_webview(move |native| {
-                let bound = platform.views.bind_native_assets_browser(
-                    view, &lease, native.snapshot().browser_id, native.frame_navigation_state().clone(),
-                );
+            if let Err(error) = ready_view.with_native_async(move |native| {
+                let bound = native.and_then(|native| platform.views.bind_native_assets_browser(
+                    view, &lease, native.identity.id(), native.identity.clone(),
+                ));
                 core.post(Box::new(move || {
                     let result = bound.and_then(|()| {
                         let on_platform = platform.clone();
@@ -388,7 +390,8 @@ pub(crate) fn open_html_present_window(
             }) {
                 post_present_failure(failed_core, failed_platform, window, error.to_string());
             }
-        }).map_err(|error| error.to_string())
+        });
+        Ok(())
     })();
     if let Err(error) = result {
         let platform = cx.clone();
@@ -460,7 +463,7 @@ pub(crate) fn set_html_simple_fullscreen_window(cx: &HostContext, window: &tauri
         on_ui(&cx.ui, move || {
             use objc2::rc::Retained;
             use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
-            use tauri_runtime_cef::WindowCefExt;
+            use crate::native::WindowExt;
             let handle = window.native_window_handle().map_err(|error| error.to_string())?;
             handle.with_window(|_| {
                 let _main = objc2::MainThreadMarker::new().ok_or_else(|| "not on the main thread".to_owned())?;
@@ -565,10 +568,9 @@ struct NativeWindows {
     cx: HostContext,
     core: OnceLock<Arc<dyn shell_contract::runtime::Thread>>,
     events: Mutex<Option<Arc<dyn HostEvents>>>,
-    listeners: Mutex<Vec<(ViewId, ViewListen, shell_contract::runtime::RendererGeneration, Option<tauri_runtime_cef::FrameNavigationState>)>>,
+    listeners: Mutex<Vec<(ViewId, ViewListen, shell_contract::runtime::RendererGeneration, Option<BrowserState>)>>,
     page_waiters: Mutex<HashMap<ViewId, Vec<u64>>>,
     finished_loads: Mutex<HashMap<ViewId, bool>>,
-    failed_loads: Mutex<HashSet<ViewId>>,
     deferred_views: Mutex<HashSet<ViewId>>,
     timers: Mutex<Vec<(TimerKey, u64)>>,
     next_timer: AtomicU64,
@@ -590,7 +592,6 @@ pub(super) fn install(hosts: &mut Hosts, cx: &HostContext) {
         listeners: Mutex::new(Vec::new()),
         page_waiters: Mutex::new(HashMap::new()),
         finished_loads: Mutex::new(HashMap::new()),
-        failed_loads: Mutex::new(HashSet::new()),
         deferred_views: Mutex::new(HashSet::new()),
         timers: Mutex::new(Vec::new()),
         next_timer: AtomicU64::new(1),
@@ -602,7 +603,6 @@ pub(super) fn install(hosts: &mut Hosts, cx: &HostContext) {
         accepted::generated_load_failed(view);
         if let Some(host) = NATIVE_WINDOWS.get() {
             host.listeners.lock().unwrap().retain(|(id, _, generation, _)| *id != view || generation.is_active());
-            host.failed_loads.lock().unwrap().remove(&view);
             host.deferred_views.lock().unwrap().remove(&view);
             let mut finished = host.finished_loads.lock().unwrap();
             finished.remove(&view);
@@ -626,7 +626,7 @@ pub(super) fn install(hosts: &mut Hosts, cx: &HostContext) {
 }
 
 impl NativeWindows {
-    fn register_listener_captured(&self, view: ViewId, listen: ViewListen, generation: &shell_contract::runtime::RendererGeneration, browser: Option<tauri_runtime_cef::FrameNavigationState>) -> Result<(), String> {
+    fn register_listener_captured(&self, view: ViewId, listen: ViewListen, generation: &shell_contract::runtime::RendererGeneration, browser: Option<BrowserState>) -> Result<(), String> {
         if listen == ViewListen::PaneFocus && browser.is_none() { return Err("The captured focus browser is unavailable.".into()); }
         let mut listeners = self.listeners.lock().map_err(|_| "Tab listener state is unavailable.")?;
         if !listeners.iter().any(|(id, kind, existing, _)| *id == view && *kind == listen && existing.same_generation(generation)) {
@@ -671,33 +671,28 @@ impl NativeWindows {
         }
     }
 
-    fn frame_event(&self, view: ViewId, event: &tauri_runtime_cef::FrameEvent) {
-        use tauri_runtime_cef::FrameEventKind;
+    fn frame_event(&self, view: ViewId, event: &NativeEvent) {
         match &event.kind {
-            FrameEventKind::NativeContextRegistered { origin } if event.is_main && event.browser_id==origin.browser_id() && event.frame_id==origin.frame_id() => {
-                accepted::generated_native_registered(view,origin.clone());
+            NativeEventKind::DocumentRegistered { context } if context.browser().is_same_browser(&event.browser) => {
+                accepted::generated_native_registered(view, context.clone());
             }
-            FrameEventKind::NativeDocumentReady { origin } if event.is_main && event.browser_id==origin.browser_id() && event.frame_id==origin.frame_id() => {
-                accepted::generated_document_ready(view,origin.clone());
+            NativeEventKind::DocumentReady { context } if context.browser().is_same_browser(&event.browser) => {
+                accepted::generated_document_ready(view, context.clone());
             }
-            FrameEventKind::NativeContextRevoked { origin } if event.is_main && event.browser_id==origin.browser_id() && event.frame_id==origin.frame_id() => {
-                accepted::generated_native_revoked(view,origin.clone());
+            NativeEventKind::DocumentRevoked { document, .. } => {
+                accepted::generated_native_revoked(view, document.clone());
             }
-            FrameEventKind::NavigationStarted { url } if event.is_main => {
+            NativeEventKind::NavigationStarted { url, same_document: false, .. } => {
                 if url.as_str() != "about:blank" {
                     self.deferred_views.lock().unwrap().remove(&view);
                 }
-                self.failed_loads.lock().unwrap().remove(&view);
                 self.finished_loads.lock().unwrap().remove(&view);
             }
-            FrameEventKind::NavigationFailed { .. } if event.is_main => {
-                self.failed_loads.lock().unwrap().insert(view);
-            }
-            FrameEventKind::LoadingStateChanged { is_loading: false } => {
+            NativeEventKind::LoadFinished { ok, .. } => {
                 if self.deferred_views.lock().unwrap().contains(&view) {
                     return;
                 }
-                let loaded = !self.failed_loads.lock().unwrap().remove(&view);
+                let loaded = *ok;
                 if !loaded { accepted::generated_load_failed(view); }
                 let mut finished = self.finished_loads.lock().unwrap();
                 finished.insert(view, loaded);
@@ -709,15 +704,16 @@ impl NativeWindows {
                     }
                 }
             }
-            FrameEventKind::RendererTerminated => {
+            NativeEventKind::WebviewProcessFailed { .. } => {
                 self.fail_page_waiters(view);
                 // Generation-bound notification is delivered by window's native callback.
             }
+            NativeEventKind::View(ViewEvent::Focus) => self.focus_event(view, &event.browser),
             _ => {}
         }
     }
 
-    fn focus_event(&self, view: ViewId, browser: &tauri_runtime_cef::FrameNavigationState) {
+    fn focus_event(&self, view: ViewId, browser: &BrowserState) {
         let subscribed = self.listeners.lock().unwrap().iter().any(|(id, kind, _, captured)| {
             *id == view && *kind == ViewListen::PaneFocus
                 && captured.as_ref().is_some_and(|captured| captured.is_same_browser(browser))
@@ -791,7 +787,7 @@ impl WindowsHost for NativeWindows {
                     main: true,
                     view: ViewSpec { url: "genoffice-app://shell/index.html".into(), bridge: Bridge::Surface(Surface::Shell) },
                 },
-                WindowOptions { on_frame: Some(Arc::new(frame_event)), on_view: Some(Arc::new(view_event)), ..Default::default() },
+                WindowOptions { on_frame: Some(Arc::new(frame_event)), ..Default::default() },
             ).unwrap_or_else(|error| panic!("creating shell window: {error}"));
             ShellWindow { window, view }
         })
@@ -846,7 +842,7 @@ impl WindowsHost for NativeWindows {
     fn window_restore(&self, id: WindowId) { window_action(self, id, |window| window.unminimize()); }
     fn window_show(&self, id: WindowId) { window_action(self, id, |window| window.show()); }
     fn window_show_inactive(&self, id: WindowId) {
-        use tauri_runtime_cef::WindowCefExt;
+        use crate::native::WindowExt;
         assert!(!self.cx.ui.is_current(), "show_inactive must not block the UI thread");
         let window = native_window(&self.cx, id).unwrap_or_else(|| panic!("window {} is gone", id.0));
         window.show_inactive().unwrap_or_else(|error| panic!("showing window without activation: {error}"));
@@ -944,10 +940,10 @@ impl WindowsHost for NativeWindows {
         }
         let Some(webview) = self.cx.windows.webview(view) else { return };
         let Some(host) = NATIVE_WINDOWS.get().cloned() else { return };
-        if let Err(error) = webview.with_cef_webview_async(move |result| {
+        if let Err(error) = webview.with_native_async(move |result| {
             match result {
                 Ok(native) => {
-                    let browser = native.frame_navigation_state().clone();
+                    let browser = native.identity.clone();
                     let _ = generation.with_active(|| host.register_listener_captured(view, listen, &generation, Some(browser)));
                 }
                 Err(error) => eprintln!("shell: capturing focus listener browser: {error}"),
@@ -988,7 +984,7 @@ impl WindowsHost for NativeWindows {
                 ViewSpec { url: "genoffice-app://help/index.html?mode=help".into(), bridge: Bridge::Surface(Surface::Shell) },
                 Bounds { x: 0.0, y: 0.0, width: 1.0, height: 1.0 }, WindowOptions::default(),
                 None, None,
-                Some(Arc::new(frame_event)), Some(Arc::new(view_event)),
+                Some(Arc::new(frame_event)),
             ).map_err(|error| accepted::InstallError { error: TabError(error.message), close: error.close, proof: error.proof })
         }), done);
     }
@@ -1041,7 +1037,6 @@ impl WindowsHost for NativeWindows {
                     Bounds { x: 0.0, y: 0.0, width: 1.0, height: 1.0 }, WindowOptions::default(),
                     None, None,
                     Some(Arc::new(move |view, event| { frame_event(view, event); frame(view, event); })),
-                    Some(Arc::new(view_event)),
                 ).map_err(|error| accepted::InstallError { error: TabError(error.message), close: error.close, proof: error.proof })
             }), done);
     }
@@ -1105,20 +1100,13 @@ impl WindowsHost for NativeWindows {
     }
 }
 
-fn frame_event(view: ViewId, event: &tauri_runtime_cef::FrameEvent) {
+fn frame_event(view: ViewId, event: &NativeEvent) {
     super::renderer_disposal::on_frame(view, event);
-    if matches!(event.kind, tauri_runtime_cef::FrameEventKind::RendererTerminated) {
+    if matches!(event.kind, NativeEventKind::WebviewProcessFailed { .. }) {
         hwp_lifecycle(view, true);
     }
     if let Some(host) = NATIVE_WINDOWS.get() {
         host.frame_event(view, event);
-    }
-}
-
-
-fn view_event(view: ViewId, browser: &tauri_runtime_cef::FrameNavigationState, event: tauri_runtime_cef::ViewEvent) {
-    if matches!(event, tauri_runtime_cef::ViewEvent::Focus) {
-        if let Some(host) = NATIVE_WINDOWS.get() { host.focus_event(view, browser); }
     }
 }
 fn hwp_lifecycle(view: ViewId, crashed: bool) {

@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use shell_contract::{WindowId, ipc::{NativeInvocationOperation, NativeRequestOwner}, runtime::{Services, Views}};
 use tauri::Manager;
-use tauri_runtime_cef::WebviewCefExt;
+use crate::native::{BrowserState, WebviewExt};
 
 use crate::host::HostContext;
 use crate::ipc::native_owner::NativeOwnerAuthority;
@@ -11,7 +11,7 @@ use crate::ipc::native_owner::NativeOwnerAuthority;
 pub(super) struct CapturedReveal {
     window: tauri::Window,
     webview: tauri::Webview,
-    browser: tauri_runtime_cef::FrameNavigationState,
+    browser: BrowserState,
     owner: NativeRequestOwner,
 }
 
@@ -26,7 +26,7 @@ pub(super) fn capture(cx: &HostContext, shell_window: WindowId, owner: &NativeRe
     if !current.same_generation(generation) || !generation.is_active() {
         return Err("The selected shell owner was replaced".into());
     }
-    let browser = proof.origin.browser_state().clone();
+    let browser = proof.origin.browser().clone();
     let label = cx.views.label_of_window(shell_window).ok_or("The selected shell window is unavailable")?;
     let window = cx.app.get_window(&label).ok_or("The selected shell window is unavailable")?;
     let webview = cx.windows.webview(owner.view).ok_or("The selected shell view is unavailable")?;
@@ -49,9 +49,9 @@ impl CapturedReveal {
         let captured_owner = self.owner.clone();
         let captured_browser = self.browser.clone();
         let ui = services.ui.clone();
-        let result = self.webview.with_cef_webview_async(move |native| {
+        let result = self.webview.with_native_async(move |native| {
             let browser = match native {
-                Ok(native) => native.frame_navigation_state().clone(),
+                Ok(native) => native.identity.clone(),
                 Err(error) => {
                     if let Some(done) = callback.lock().unwrap_or_else(|error| error.into_inner()).take() { done(Err(error.to_string())); }
                     return;
@@ -61,7 +61,7 @@ impl CapturedReveal {
             ui.post(Box::new(move || {
                 let result = if !browser.is_same_browser(&captured_browser)
                     || !captured_owner.context.authority_ref::<NativeOwnerAuthority>()
-                        .is_some_and(|proof| captured_browser.is_same_browser(proof.origin.browser_state())) {
+                        .is_some_and(|proof| captured_browser.is_same_browser(proof.origin.browser())) {
                     Err("The selected shell browser was replaced".into())
                 } else if captured_browser.with_live_browser(|| ()).is_none() {
                     Err("The selected shell browser is closed".into())

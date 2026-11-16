@@ -44,15 +44,22 @@ impl RecoveryRenameScope {
 
     pub(crate) fn admit_file(
         &self,
-        effect: &mut dyn FnMut(),
+        effect: &mut dyn FnMut() -> Result<(), main_core::node_fs::NodeError>,
     ) -> Result<(), main_core::node_fs::NodeError> {
+        let mut result = None;
         self.effect(|| {
-            effect();
+            result = Some(effect());
             Ok(())
         })
         .map_err(|message| main_core::node_fs::NodeError {
             code: None,
             message,
+        })?;
+        result.unwrap_or_else(|| {
+            Err(main_core::node_fs::NodeError {
+                code: None,
+                message: "recovery rename effect was not admitted".into(),
+            })
         })
     }
 }
@@ -126,6 +133,9 @@ impl OwnedSave {
     }
     pub(crate) fn pending(&self) -> CancelToken {
         self.0.pending.clone()
+    }
+    pub(crate) fn additional(&self) -> &[CancelToken] {
+        &self.0.additional
     }
     pub(crate) fn authority(&self) -> &SaveAuthority {
         &self.0.authority
@@ -315,6 +325,19 @@ impl OwnedSave {
                 .map_err(|_| "the save destination was already selected".into())
         })
     }
+    /// A native save whose first file the project writer placed at `path`
+    /// selects exactly that file; a renderer save has no selection to make.
+    pub(crate) fn select_project_destination(&self, path: &Path) -> Result<(), String> {
+        let SaveAuthority::Native(binding) = self.authority() else {
+            return Ok(());
+        };
+        self.select_native_destination(
+            shell_contract::ipc::NativeSaveDestination::from_project_document(
+                binding.clone(),
+                path.to_owned(),
+            )?,
+        )
+    }
     pub(crate) fn check_target(&self, path: &Path) -> Result<(), String> {
         if matches!(self.authority(), SaveAuthority::Native(_)) {
             let selected = self
@@ -347,6 +370,20 @@ impl OwnedSave {
             .and_then(NativeContext::renderer)
             .zip(self.0.destination.context.renderer())
             .is_some_and(|(a, b)| a.same_generation(b))
+    }
+    /// Follow-up of a written export (open or reveal it). A renderer-owned save
+    /// asks the shell under its origin; a native save runs `native` inside its
+    /// own admission, which has no renderer origin to hand over.
+    pub(crate) fn export_written(
+        &self,
+        renderer: impl FnOnce(NativeRequestOwner, Box<dyn FnOnce(Result<(), String>)>),
+        native: &mut dyn FnMut() -> Result<(), String>,
+        then: Box<dyn FnOnce(Result<(), String>)>,
+    ) {
+        match self.origin() {
+            Some(origin) => renderer(origin.clone(), then),
+            None => then(self.admit(native)),
+        }
     }
 }
 impl TextDocs {
@@ -1217,7 +1254,7 @@ impl TextDocs {
                 let state_docs = Rc::clone(&docs);
                 let state_request = request.clone();
                 let state_target = target.clone();
-                let continuation = Box::new(move |saved| {
+                let continuation: Box<dyn FnOnce(Result<(), String>)> = Box::new(move |saved| {
                     if let Err(error) = saved {
                         return then(Err(error));
                     }

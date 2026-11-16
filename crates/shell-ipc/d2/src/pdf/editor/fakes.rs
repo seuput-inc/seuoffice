@@ -768,16 +768,21 @@ impl PdfShell for FakeShell {
     fn has_note_hooks(&self) -> bool {
         self.flag("noteHooks")
     }
-    fn open_note(&self, path: &str) -> Result<bool, String> {
+    fn open_note(&self, path: &str, done: Box<dyn FnOnce(Result<bool, String>)>) {
         self.log(format!("openNote {path}"), json!(["openNote", path]));
-        Ok(true)
+        done(Ok(true));
     }
-    fn insert_into_note(&self, path: &str, text: &str) -> Result<bool, String> {
+    fn insert_into_note(
+        &self,
+        path: &str,
+        text: &str,
+        done: Box<dyn FnOnce(Result<bool, String>)>,
+    ) {
         self.log(
             format!("insertIntoNote {path}"),
             json!(["insertIntoNote", path, text]),
         );
-        Ok(true)
+        done(Ok(true));
     }
     fn new_document_dir(&self, _view: ViewId) -> Option<String> {
         self.answers

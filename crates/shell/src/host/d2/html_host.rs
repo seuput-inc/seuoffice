@@ -126,6 +126,10 @@ impl HtmlShell for Shell {
     fn write_new_document_owned(&self, origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, effects: &shell_contract::hosts::OwnedEffectsHost, admission: main_core::packages::electron_utils::atomic_write::owned::Admission, file_name: &str, bytes: &[u8]) -> Result<Option<PathBuf>, String> {
         crate::host::w_projects::write_new_document_owned(origin,destination,cancel,pending,effects,admission,file_name,bytes).map(|path|path.map(Into::into))
     }
+    #[allow(clippy::too_many_arguments)]
+    fn write_new_document_existing_document(&self, binding: &shell_contract::ipc::NativeExistingDocumentBinding, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost, admission: main_core::packages::electron_utils::atomic_write::owned::Admission, file_name: &str, bytes: &[u8]) -> Result<Option<PathBuf>, String> {
+        crate::host::w_projects::write_new_document_existing_document(binding, participants, cancel, pending, additional, effects, admission, file_name, bytes).map(|path| path.map(Into::into))
+    }
     fn asset_paths_changed(&self, view: ViewId, tracked: bool, open: Option<&str>, save: Option<&str>) -> Result<(), String> {
         use crate::host::document_assets::{self, AssetKind};
         if tracked { document_assets::set_paths(view, AssetKind::Html, open, save) }
@@ -196,7 +200,7 @@ impl HtmlShell for Shell {
     }
     fn take_generate_handoff_owned(&self, consumer:&shell_contract::ipc::NativeRequestOwner, cancel:&shell_contract::runtime::CancelToken)->Result<Option<Handoff>,String>{take_handoff(consumer,cancel)}
     fn report_generate_run_started_owned(&self, consumer:&shell_contract::ipc::NativeRequestOwner, cancel:&shell_contract::runtime::CancelToken, paths:&[String])->Result<bool,String>{report_handoff(consumer,cancel,paths)}
-    fn present_open_tab(&self, owner: ViewId, title: &str) -> bool { open_present_tab(owner, title) }
+    fn present_open_tab(&self, owner: ViewId, title: &str, then: Box<dyn FnOnce(bool)>) { open_present_tab(owner, title, then) }
     fn present_host_window(&self, view: ViewId) -> Option<WindowId> {
         self.0.views.sender_of(view).map(|sender| sender.window)
     }
@@ -272,15 +276,21 @@ fn prepare_docx(path: &Path, then: Box<dyn FnOnce(bool)>) {
     }
 }
 
-fn open_present_tab(owner: ViewId, title: &str) -> bool {
+fn open_present_tab(owner: ViewId, title: &str, then: Box<dyn FnOnce(bool)>) {
+    let pending = std::rc::Rc::new(std::cell::RefCell::new(Some(then)));
+    let local = pending.clone();
     let title = title.to_owned();
-    crate::host::w::on_core(move |provided| {
-        provided.all::<TabsState>().into_iter().next()
-            .and_then(|tabs| tabs.with_manager(|manager, host| {
-                manager.open_html_present_tab(host, i64::from(owner.0), &title)
-            }))
-            .is_some_and(|result| result.is_ok())
-    }).unwrap_or(false)
+    let started = crate::host::w::on_core_local(move |provided| {
+        let Some(then) = local.borrow_mut().take() else { return };
+        let Some(tabs) = provided.all::<TabsState>().into_iter().next() else { return then(false) };
+        tabs.open_html_present_owned(owner, title, Box::new(move |result| {
+            if let Err(error) = &result {
+                eprintln!("shell: opening the present tab: {error}");
+            }
+            then(result.is_ok());
+        }));
+    });
+    if !started && let Some(then) = pending.borrow_mut().take() { then(false); }
 }
 
 fn set_present_bleed(view: ViewId, on: bool) {

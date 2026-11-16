@@ -444,6 +444,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             ipc::ipc_register,
             ipc::ipc_render_ready,
+            native::menu::ipc_context_menu,
             ipc::ipc_invoke,
             ipc::ipc_send,
             ipc::ipc_listen,

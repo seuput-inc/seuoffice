@@ -309,13 +309,15 @@ pub trait PdfToolsShell: Send + Sync {
     /// `deps.openResult(path)` (index.ts: reload an open text tab, else
     /// `openGeneratedDocument`)
     fn open_result(&self, path: &str) -> bool;
-    /// `deps.openForEditing(path)`: `revealShellWindow()` + `openDocumentPath`
-    fn open_for_editing(&self, path: &str) -> bool;
+    /// `deps.openForEditing(path)`: `revealShellWindow()` + `openDocumentPath`; a
+    /// failed open is reported by the host
+    fn open_for_editing(&self, path: &str);
     /// `fileHasUnsavedChanges(path)`: the open documents' dirty state is
     /// gathered from their renderers, so `then` answers later, on the core thread
     fn file_has_unsaved_changes(&self, path: &str, then: Box<dyn FnOnce(bool)>);
-    /// `openDocumentPath(path)`
-    fn open_document_path(&self, path: &str) -> bool;
+    /// `openDocumentPath(path)`: `then(opened)` runs on the core thread once the
+    /// open settles; it is never called when the host is torn down first
+    fn open_document_path(&self, path: &str, then: Box<dyn FnOnce(bool) + Send>);
 
     /// `activePdfTarget()`
     fn active_pdf_tab(&self) -> Option<PdfTab>;
@@ -336,8 +338,14 @@ pub trait PdfToolsShell: Send + Sync {
     /// before the app is ready)
     fn has_tab_manager(&self) -> bool;
     /// `tabManager.openHwpTab(copy, { untitledCopy: { title, importedPdf: true } })`
-    /// and `webContentsForTab` of it: the new tab's view, if it has one
-    fn open_hwp_copy(&self, copy: &str, title: &str) -> Result<Option<ViewId>, String>;
+    /// and `webContentsForTab` of it: the new tab's view, if it has one. `then` runs on the
+    /// core thread once the tab is open (or the open failed); never twice.
+    fn open_hwp_copy(
+        &self,
+        copy: &str,
+        title: &str,
+        then: Box<dyn FnOnce(Result<Option<ViewId>, String>)>,
+    );
 }
 
 pub type PdfToolsShellHost = Arc<dyn PdfToolsShell>;
@@ -852,11 +860,9 @@ pub(crate) mod fake {
                 .and_then(|a| a.as_bool())
                 .unwrap_or(true)
         }
-        fn open_for_editing(&self, path: &str) -> bool {
+        fn open_for_editing(&self, path: &str) {
             self.log(json!(["openForEditing", path]));
-            self.answer("open_for_editing", json!(path))
-                .and_then(|a| a.as_bool())
-                .unwrap_or(true)
+            self.answer("open_for_editing", json!(path));
         }
         /// the answer `"hold"` keeps the question open until [`resume_unsaved`] (tests)
         fn file_has_unsaved_changes(&self, path: &str, then: Box<dyn FnOnce(bool)>) {
@@ -876,14 +882,15 @@ pub(crate) mod fake {
         }
         /// with `tabManager: false` (the shell entry before it is ready) a
         /// file opens nowhere: false, without a line
-        fn open_document_path(&self, path: &str) -> bool {
+        fn open_document_path(&self, path: &str, then: Box<dyn FnOnce(bool) + Send>) {
             if !self.has_tab_manager() {
-                return false;
+                return then(false);
             }
             self.log(json!(["openDocumentPath", path]));
-            self.answer("open_document_path", json!(path))
+            then(self
+                .answer("open_document_path", json!(path))
                 .and_then(|a| a.as_bool())
-                .unwrap_or(true)
+                .unwrap_or(true))
         }
         /// `{"id", "view", "filePath", "window"}`; none unless the case says
         fn active_pdf_tab(&self) -> Option<PdfTab> {
@@ -936,13 +943,18 @@ pub(crate) mod fake {
             self.log(json!(["setProgressBar", window.0, progress]));
             self.answer("set_progress_bar", json!([window.0, progress]));
         }
-        fn open_hwp_copy(&self, copy: &str, title: &str) -> Result<Option<ViewId>, String> {
+        fn open_hwp_copy(
+            &self,
+            copy: &str,
+            title: &str,
+            then: Box<dyn FnOnce(Result<Option<ViewId>, String>)>,
+        ) {
             self.log(json!(["tabManager.openHwpTab", copy, title]));
-            match self.answer("open_hwp_copy", json!([copy, title])) {
+            then(match self.answer("open_hwp_copy", json!([copy, title])) {
                 Some(Value::String(e)) => Err(e),
                 Some(a) => Ok(a.as_u64().map(|v| ViewId(v as u32))),
                 None => Ok(None),
-            }
+            })
         }
     }
 

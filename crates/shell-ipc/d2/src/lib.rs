@@ -17,6 +17,8 @@ pub mod hwp;
 mod kit;
 pub mod markdown;
 pub mod pdf;
+mod saved_slots;
+mod staged;
 #[cfg(test)]
 mod testing;
 mod text_recovery;

@@ -13,8 +13,8 @@
 use tauri::Url;
 use tauri::webview::PageLoadEvent;
 
-use super::{Current, Observe};
-use crate::native::browser::BrowserIdentity;
+use super::{Current, Observe, navigation_is_main_frame};
+use crate::native::browser::{BeforePolicy, BrowserIdentity};
 use crate::native::policy::PolicyRequest;
 
 /// The shell scheme a URL was served through: `genoffice-app-diagram://x` on macOS,
@@ -29,11 +29,25 @@ pub(crate) fn bound_scheme(url: &Url) -> Option<&str> {
 
 /// The `on_navigation` hook. Returns whether the navigation may start.
 ///
+/// Before the OS webview enforces the browser's policy, a navigation to a real URL is
+/// cancelled and remembered; it replays once the policy is in force (see
+/// `PolicyOps::apply_policy`), so the initial request never escapes it. `about:blank` passes.
+///
 /// The policy sees every navigation the hook reports as `top_level`: on macOS that includes
-/// subframe navigations, which are therefore held to the same allow list.
+/// subframe navigations (with `main_frame` false), which are held to the same allow list.
 pub(crate) fn on_navigation(browser: &BrowserIdentity, url: &Url) -> bool {
+    match browser.core.before_policy(url) {
+        BeforePolicy::Blank => return true,
+        BeforePolicy::Hold => return false,
+        BeforePolicy::Judge => {}
+    }
     if let Some(policy) = browser.policy() {
-        let request = PolicyRequest { url: url.as_str(), bound_scheme: bound_scheme(url), top_level: true };
+        let request = PolicyRequest {
+            url: url.as_str(),
+            bound_scheme: bound_scheme(url),
+            top_level: true,
+            main_frame: navigation_is_main_frame(),
+        };
         if !policy.allows(&request) {
             if Current::NAVIGATION_HOOK_IS_MAIN_FRAME {
                 browser.observe_navigation_refused(url);
@@ -74,23 +88,79 @@ mod tests {
         assert_eq!(bound_scheme(&url("about:blank")), None);
     }
 
-    #[test]
-    fn a_refused_navigation_never_starts_and_leaves_the_document_alone() {
-        use crate::native::browser::{BridgeMode, Config};
+    fn policy_browser(
+        label: &str, allow: fn(&PolicyRequest<'_>) -> bool, control: std::sync::Arc<FakeControl>,
+    ) -> BrowserIdentity {
+        use crate::native::browser::{BridgeMode, BrowserCore, Config};
         use crate::native::lifecycle::BrowserCreation;
         let creation = BrowserCreation::new().unwrap();
         let receipt = creation.receipt();
         let submission = creation.into_submission();
         receipt.claim().unwrap();
-        let policy = RequestPolicy::new(|request| request.url.starts_with("https://example.test/"));
-        let config = Config { bridge: BridgeMode::Invoke, policy: Some(policy), ..Config::default() };
-        let core = crate::native::browser::BrowserCore::new("policy", submission.creation(), receipt, config).unwrap();
-        let browser = core.identity();
+        let config = Config {
+            bridge: BridgeMode::Invoke,
+            policy: Some(RequestPolicy::new(allow)),
+            ..Config::default()
+        };
+        let core = BrowserCore::new(label, submission.creation(), receipt, config).unwrap();
+        core.mark_attached(control, label);
+        core.identity()
+    }
+
+    #[test]
+    fn a_refused_navigation_never_starts_and_leaves_the_document_alone() {
+        let browser = policy_browser(
+            "policy",
+            |request| request.url.starts_with("https://example.test/"),
+            FakeControl::new(),
+        );
+        browser.observe_policy_installed();
 
         assert!(!on_navigation(&browser, &url("https://evil.test/")));
         assert!(browser.navigation().is_none(), "a refused navigation is not admitted");
         assert!(on_navigation(&browser, &url("https://example.test/a")));
         assert_eq!(browser.navigation().is_some(), Current::NAVIGATION_HOOK_IS_MAIN_FRAME);
+    }
+
+    #[test]
+    fn the_first_real_navigation_is_held_until_the_policy_is_enforced_and_then_replayed() {
+        let control = FakeControl::new();
+        let browser = policy_browser("policy-hold", |_| true, control.clone());
+        let ready = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = ready.clone();
+        browser.navigator().when_ready(move |result| sink.lock().unwrap().push(result));
+
+        assert!(on_navigation(&browser, &url("about:blank")), "a blank page fetches nothing");
+        assert!(!on_navigation(&browser, &url("https://example.test/a")), "held, not started");
+        assert!(!on_navigation(&browser, &url("https://example.test/b")), "only the first is kept");
+        assert!(browser.navigation().is_none());
+        assert!(ready.lock().unwrap().is_empty(), "not ready before the policy is enforced");
+        assert!(control.navigations.lock().unwrap().is_empty());
+
+        browser.observe_policy_installed();
+        assert_eq!(*control.navigations.lock().unwrap(), ["https://example.test/a"]);
+        assert_eq!(*ready.lock().unwrap(), [Ok(())]);
+        assert!(on_navigation(&browser, &url("https://example.test/a")), "judged normally now");
+    }
+
+    #[test]
+    fn a_main_frame_flag_set_by_an_adapter_reaches_the_policy() {
+        use crate::native::platform::with_navigation_frame;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static SAW_MAIN_FRAME: AtomicBool = AtomicBool::new(false);
+        let browser = policy_browser(
+            "policy-frame",
+            |request| {
+                SAW_MAIN_FRAME.store(request.main_frame, Ordering::SeqCst);
+                true
+            },
+            FakeControl::new(),
+        );
+        browser.observe_policy_installed();
+        with_navigation_frame(false, || on_navigation(&browser, &url("https://example.test/f")));
+        assert!(!SAW_MAIN_FRAME.load(Ordering::SeqCst));
+        with_navigation_frame(true, || on_navigation(&browser, &url("https://example.test/m")));
+        assert!(SAW_MAIN_FRAME.load(Ordering::SeqCst));
     }
 
     #[test]

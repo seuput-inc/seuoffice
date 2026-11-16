@@ -7,7 +7,7 @@ use windows::{core::{HRESULT, Interface, PCWSTR, w}, Win32::{
         WindowsAndMessaging::{CreateWindowExW, DefWindowProcW, PostMessageW, RegisterClassW, SendMessageW, HWND_MESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WNDCLASSW}},
 }};
 use super::{FileSpec, NativeSessions, Session};
-use tauri_runtime_cef::WindowCefExt;
+use crate::native::WindowExt;
 
 const CANCEL: u32 = WM_APP + 0x6d;
 static CLASS: OnceLock<Result<(), String>> = OnceLock::new();
@@ -95,11 +95,20 @@ pub(crate) fn task_registration(session: &Arc<Session>) -> Result<Registration, 
 
 fn wide(text: &str) -> Vec<u16> { text.encode_utf16().chain(Some(0)).collect() }
 
+/// Run `job` with the HWND of `window` as one admitted effect on the exact window.
+pub(crate) fn with_hwnd<R>(window: &tauri::Window, job: impl FnOnce(HWND) -> R) -> Result<R, String> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    window.native_window_handle()?.with_window(|handle| {
+        match handle.window_handle().map_err(|error| error.to_string())?.as_raw() {
+            RawWindowHandle::Win32(win32) => Ok(job(HWND(win32.hwnd.get() as *mut std::ffi::c_void))),
+            _ => Err("The window has no Win32 handle.".to_owned()),
+        }
+    }).map_err(|error| error.to_string())?
+}
+
 pub(super) fn files(_app: &tauri::AppHandle, spec: &FileSpec, parent: Option<&tauri::Window>, save: bool, session: &Arc<Session>) -> Result<Option<Vec<PathBuf>>, String> {
     match parent {
-        Some(parent) => parent.native_window_handle().map_err(|error| error.to_string())?
-            .with_hwnd(|window| files_with_parent(spec, Some(window), save, session))
-            .map_err(|error| error.to_string())?,
+        Some(parent) => with_hwnd(parent, |window| files_with_parent(spec, Some(window), save, session))?,
         None => files_with_parent(spec, None, save, session),
     }
 }

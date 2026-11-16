@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use shell_contract::ipc::{NativeInvocationOperation, NativeInvocationSelection, NativeInvocationTarget, NativeRequestOwner};
 use shell_contract::runtime::{CancelSubscription, RendererGeneration};
 use shell_contract::{Surface, ViewId};
-use tauri_runtime_cef::FrameEventKind;
+use crate::native::NativeEventKind;
 
 use crate::host::{HostContext, window::{Bridge, ViewSpec, WindowOptions, WindowSpec}};
 use crate::ipc::native_owner::NativeOwnerAuthority;
@@ -44,7 +44,7 @@ pub(crate) fn export_headless(cx: &HostContext, input: &str, out: &str, format: 
     }
     let services = captured.ok_or("Core services are not available")?;
     if shell_ipc_d1::diagram::views().is_none() { return Err("The diagram editor is not registered".into()); }
-    let session = network::session()?;
+    let policy = network::request_policy();
     let input = input.to_owned();
     let out = out.to_owned();
     let format = format.to_owned();
@@ -83,12 +83,11 @@ pub(crate) fn export_headless(cx: &HostContext, input: &str, out: &str, format: 
                 view: ViewSpec { url: PAGE.into(), bridge: Bridge::Surface(Surface::Diagram) },
             }, WindowOptions {
                 background_throttling: Some(tauri::utils::config::BackgroundThrottlingPolicy::Disabled),
-                network_session: Some(session),
+                request_policy: Some(policy),
                 on_frame: Some(Arc::new(move |view, event| {
-                    if !event.is_main { return; }
                     let mut state = event_binding.lock().unwrap_or_else(|error| error.into_inner());
                     match &event.kind {
-                        FrameEventKind::NavigationStarted { .. } => {
+                        NativeEventKind::NavigationStarted { .. } => {
                             state.committed = false;
                             if state.bound {
                                 if let Some(generation) = state.generation.clone() {
@@ -98,11 +97,11 @@ pub(crate) fn export_headless(cx: &HostContext, input: &str, out: &str, format: 
                                 }
                             }
                         }
-                        FrameEventKind::DocumentCommitted { url } => {
+                        NativeEventKind::DocumentCommitted { url, .. } => {
                             state.committed = crate::app_scheme::electron_url(url).as_deref() == Some(PAGE);
                         }
-                        FrameEventKind::NativeContextRegistered { origin } if state.committed && !state.bound
-                            && origin.browser_id() == event.browser_id && origin.frame_id() == event.frame_id.as_str() => {
+                        NativeEventKind::DocumentRegistered { context: origin } if state.committed && !state.bound
+                            && origin.browser().is_same_browser(&event.browser) => {
                             state.bound = true;
                             let generation = state.generation.clone();
                             let target = state.target.clone();
@@ -123,26 +122,23 @@ pub(crate) fn export_headless(cx: &HostContext, input: &str, out: &str, format: 
                                 },
                             }
                         }
-                        FrameEventKind::NativeContextRevoked { origin } if state.owner.as_ref()
+                        NativeEventKind::DocumentRevoked { document, .. } if state.owner.as_ref()
                             .and_then(|owner| owner.context.authority_ref::<NativeOwnerAuthority>())
-                            .is_some_and(|owner| owner.origin == *origin) => {
+                            .is_some_and(|owner| owner.origin.identity() == document) => {
                             if let Some(generation) = state.generation.clone() {
                                 event_core.post(Box::new(move || {
                                     if let Some(views) = shell_ipc_d1::diagram::views() { views.fail_headless_job_generation(view, &generation, "the diagram page stopped"); }
                                 }));
                             }
                         }
-                        FrameEventKind::NativeRendererTerminated { origin, process } if state.owner.as_ref()
-                            .and_then(|owner| owner.context.authority_ref::<NativeOwnerAuthority>())
-                            .is_some_and(|owner| owner.origin == *origin
-                                && owner.origin.renderer_process_identity().as_ref() == Some(process)) => {
+                        NativeEventKind::WebviewProcessFailed { .. } if state.started => {
                             if let Some(generation) = state.generation.clone() {
                                 event_core.post(Box::new(move || {
                                     if let Some(views) = shell_ipc_d1::diagram::views() { views.fail_headless_job_generation(view, &generation, "the diagram page stopped"); }
                                 }));
                             }
                         }
-                        FrameEventKind::NavigationFailed { .. } if state.started && !state.bound => {
+                        NativeEventKind::NavigationFailed { .. } if state.started && !state.bound => {
                             if let Some(generation) = state.generation.clone() {
                                 event_core.post(Box::new(move || {
                                     if let Some(views) = shell_ipc_d1::diagram::views() { views.fail_headless_job_generation(view, &generation, "the diagram page did not load"); }
@@ -223,7 +219,7 @@ pub(crate) fn export_headless(cx: &HostContext, input: &str, out: &str, format: 
                     let Some(owner) = &binding.owner else { return false; };
                     let Some(expected) = owner.context.authority_ref::<NativeOwnerAuthority>() else { return false; };
                     let Some(actual) = cx.native.as_ref().and_then(|context| context.authority_ref::<NativeOwnerAuthority>()) else { return false; };
-                    expected.origin == actual.origin && expected.origin.is_verified() && !cx.cancel.is_cancelled()
+                    expected.origin == actual.origin && expected.origin.is_registered() && !cx.cancel.is_cancelled()
                 }), Box::new(move |report| {
                     let owner = finish_binding.lock().unwrap_or_else(|error| error.into_inner()).owner.clone();
                     finish_workers.spawn(Box::new(move || {

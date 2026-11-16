@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU64, Ordering}};
 
 use shell_contract::{ViewId, ipc::NativeRequestOwner, runtime::CancelToken};
 use shell_ipc_w::tabs::{DocsDisposal, DocsDisposalOperation};
-use tauri_runtime_cef::{NativeBrowserClose, NativeBrowserCloseOutcome, NativeBrowserCloseSubscription, NativeContextToken, NativeEvaluation, WebviewCefExt, allocate_devtools_message_id};
+use crate::native::{BrowserClose, BrowserCloseOutcome, BrowserCloseSubscription, DocumentContext, DocumentEvaluation, WebviewExt};
 
 use crate::host::{HostContext, renderer_disposal::{self, CapturedRenderer}};
 use crate::ipc::native_owner::{self, NativeOwnerAuthority};
@@ -31,10 +31,10 @@ pub(super) fn prepare(
     native_owner::with_many_owner_transition(&origin, &participants, &cancel, &pending, |_| ())
         .ok_or("The document disposal request is no longer authorized")?;
     let native_disposal = Arc::new(Disposal {
-        cx: hooks.cx.clone(), target: target.clone(), native, webview, renderer, closed,
+        cx: hooks.cx.clone(), target: target.clone(), native, renderer, closed,
         actor_error: Mutex::new(None), done: Mutex::new(None),
         evaluation: Mutex::new(None), closing: Mutex::new(None),
-        crash_started: AtomicBool::new(false), renderer_gone: AtomicBool::new(false),
+        unloaded: AtomicBool::new(false),
         close_started: AtomicBool::new(false), browser_closed: AtomicBool::new(false),
         teardown_done: AtomicBool::new(false),
         teardown_uncertain: AtomicBool::new(false), attempt: AtomicU64::new(0),
@@ -113,16 +113,14 @@ impl PreparedDisposal {
 struct Disposal {
     cx: HostContext,
     target: NativeRequestOwner,
-    native: NativeContextToken,
-    webview: tauri::Webview,
+    native: DocumentContext,
     renderer: CapturedRenderer,
-    closed: NativeBrowserClose,
+    closed: BrowserClose,
     actor_error: Mutex<Option<String>>,
     done: Mutex<Option<SendDone>>,
-    evaluation: Mutex<Option<NativeEvaluation>>,
-    closing: Mutex<Option<NativeBrowserCloseSubscription>>,
-    crash_started: AtomicBool,
-    renderer_gone: AtomicBool,
+    evaluation: Mutex<Option<DocumentEvaluation>>,
+    closing: Mutex<Option<BrowserCloseSubscription>>,
+    unloaded: AtomicBool,
     close_started: AtomicBool,
     browser_closed: AtomicBool,
     teardown_done: AtomicBool,
@@ -133,8 +131,8 @@ struct Disposal {
 #[derive(Debug, PartialEq, Eq)]
 enum NativePhase { Teardown, Renderer, Browser, Uncertain }
 
-fn native_phase(renderer_gone: bool, teardown_done: bool, teardown_uncertain: bool) -> NativePhase {
-    if renderer_gone { NativePhase::Browser }
+fn native_phase(unloaded: bool, teardown_done: bool, teardown_uncertain: bool) -> NativePhase {
+    if unloaded { NativePhase::Browser }
     else if teardown_done { NativePhase::Renderer }
     else if teardown_uncertain { NativePhase::Uncertain }
     else { NativePhase::Teardown }
@@ -160,11 +158,11 @@ impl Disposal {
         let subscription = self.closed.when_closed(move |outcome| {
             if !closed.active(attempt) { return; }
             match outcome {
-                NativeBrowserCloseOutcome::Closed => {
+                BrowserCloseOutcome::Retired => {
                     closed.browser_closed.store(true, Ordering::Release);
                     closed.complete_if_closed(attempt);
                 }
-                NativeBrowserCloseOutcome::NotCreated => closed.finish(attempt, Err("An existing Docs browser cannot be acknowledged as never created".into())),
+                BrowserCloseOutcome::NotCreated => closed.finish(attempt, Err("An existing Docs browser cannot be acknowledged as never created".into())),
             }
         });
         match subscription {
@@ -172,7 +170,7 @@ impl Disposal {
             Err(error) => return self.finish(attempt, Err(error)),
         }
         match native_phase(
-            self.renderer_gone.load(Ordering::Acquire),
+            self.unloaded.load(Ordering::Acquire),
             self.teardown_done.load(Ordering::Acquire),
             self.teardown_uncertain.load(Ordering::Acquire),
         ) {
@@ -218,60 +216,15 @@ impl Disposal {
 
     fn release_renderer(self: Arc<Self>, attempt: u64) {
         if !self.active(attempt) { return; }
-        self.crash_started.store(false, Ordering::Release);
         let ready = self.clone();
-        let progress = Arc::downgrade(&self);
         let released = renderer_disposal::release_owned(&self.renderer, Box::new(move |result| {
             if !ready.active(attempt) { return; }
             match result {
-                Ok(()) => { ready.renderer_gone.store(true, Ordering::Release); ready.close_browser(attempt); }
+                Ok(()) => { ready.unloaded.store(true, Ordering::Release); ready.close_browser(attempt); }
                 Err(error) => ready.finish(attempt, Err(error)),
             }
-        }), Arc::new(move || { if let Some(state) = progress.upgrade() { state.maybe_crash(attempt); } }));
-        if let Err(error) = released { return self.finish(attempt, Err(error)); }
-        self.maybe_crash(attempt);
-    }
-
-    fn maybe_crash(self: Arc<Self>, attempt: u64) {
-        if !self.active(attempt) || self.renderer_gone.load(Ordering::Acquire) { return; }
-        let ui = self.cx.ui.clone();
-        ui.post(Box::new(move || {
-            if !self.active(attempt) || self.renderer_gone.load(Ordering::Acquire)
-                || !renderer_disposal::can_end_owned(&self.renderer) || self.crash_started.swap(true, Ordering::AcqRel) { return; }
-            let retired = match renderer_disposal::retired_native_documents(&self.renderer) {
-                Ok(retired) => retired,
-                Err(error) => return self.finish(attempt, Err(error)),
-            };
-            let id = match allocate_devtools_message_id() {
-                Ok(id) => id,
-                Err(error) => return self.finish(attempt, Err(error.to_string())),
-            };
-            let message = serde_json::to_vec(&serde_json::json!({ "id": id, "method": "Page.crash" })).expect("static crash protocol");
-            let original = self.native.clone();
-            let renderer = self.renderer.clone();
-            let shared_again = Arc::new(AtomicBool::new(false));
-            let not_admitted = shared_again.clone();
-            let completed = self.clone();
-            let admission = self.clone();
-            let submitted = self.webview.send_dev_tools_message_authorized(&message, Box::new(move |effect| {
-                if !admission.active(attempt) { return Err("The document disposal attempt expired".into()); }
-                original.with_live(|| {
-                    if !renderer_disposal::can_end_owned(&renderer)
-                        || !renderer_disposal::permits_native_termination(&renderer, &retired)? {
-                        not_admitted.store(true, Ordering::Release);
-                        return Err("The renderer is still shared with a live view".into());
-                    }
-                    effect()
-                }).ok_or_else(|| "The captured renderer realm was replaced before retirement".to_owned())?
-            }), move |result| {
-                if !completed.active(attempt) { return; }
-                if let Err(error) = result {
-                    if shared_again.load(Ordering::Acquire) { completed.crash_started.store(false, Ordering::Release); }
-                    else if !completed.renderer_gone.load(Ordering::Acquire) { completed.finish(attempt, Err(error)); }
-                }
-            });
-            if let Err(error) = submitted { self.finish(attempt, Err(error.to_string())); }
         }));
+        if let Err(error) = released { self.finish(attempt, Err(error)); }
     }
 
     fn close_browser(self: Arc<Self>, attempt: u64) {
@@ -284,8 +237,7 @@ impl Disposal {
             if !renderer_disposal::can_close_owned(&self.renderer) {
                 return self.close_failed("The captured renderer changed before its browser could close".into());
             }
-            crate::host::contents::forget_webview(self.webview.label());
-            if let Err(error) = self.webview.close() { self.close_failed(error.to_string()); }
+            if let Err(error) = self.closed.request_close() { self.close_failed(error); }
         }));
     }
 
@@ -296,7 +248,7 @@ impl Disposal {
     }
 
     fn complete_if_closed(self: Arc<Self>, attempt: u64) {
-        if self.renderer_gone.load(Ordering::Acquire) && self.browser_closed.load(Ordering::Acquire) { self.finish(attempt, Ok(())); }
+        if self.unloaded.load(Ordering::Acquire) && self.browser_closed.load(Ordering::Acquire) { self.finish(attempt, Ok(())); }
     }
 
     fn finish(self: Arc<Self>, attempt: u64, result: Result<(), String>) {
@@ -305,7 +257,7 @@ impl Disposal {
         let evaluation = self.evaluation.lock().unwrap_or_else(|error| error.into_inner()).take();
         let closing = self.closing.lock().unwrap_or_else(|error| error.into_inner()).take();
         drop((evaluation, closing));
-        if self.renderer_gone.load(Ordering::Acquire) && self.browser_closed.load(Ordering::Acquire)
+        if self.unloaded.load(Ordering::Acquire) && self.browser_closed.load(Ordering::Acquire)
             && let Some(generation) = self.target.context.renderer() {
             self.cx.views.remove_view_if_generation(self.target.view, generation);
         }

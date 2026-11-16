@@ -149,6 +149,7 @@ pub trait AgentServices: Send + Sync {
     /// lists them (`id`, `name`, `title`, `description`, `dir`, `source`, ...)
     fn enabled_for_agent(&self, folder: &str) -> Result<Vec<JsonValue>, String>;
     /// Capture on core; execute the returned settings-reading task on a worker.
+    #[allow(clippy::type_complexity)]
     fn enabled_for_agent_task(
         &self,
         folder: &str,
@@ -159,12 +160,14 @@ pub trait AgentServices: Send + Sync {
         skills: &[JsonValue],
         dir: &str,
     ) -> Result<Option<AgentSkillBundle>, Fault>;
-    /// core: `templateTabs.openPreview(owner, input)`; `owner` is the agent window's page
+    /// core: `templateTabs.openPreview(owner, input)`; `owner` is the agent window's page.
+    /// `done` runs once, on the core thread, when the preview tab is open or the open failed.
     fn open_template_preview(
         &self,
         owner: ViewId,
         input: &TemplatePreviewInput,
-    ) -> Result<TemplatePreviewOutcome, String>;
+        done: Box<dyn FnOnce(Result<TemplatePreviewOutcome, String>)>,
+    );
     /// core: `startAgentMcpServer({ ...mcp, skillTools }, projectRoot)` is given: whether the app has editors to offer
     fn has_app_mcp(&self) -> bool;
     /// worker: `startAgentMcpServer(...)`; `hooks` are the `skillTools` of the session

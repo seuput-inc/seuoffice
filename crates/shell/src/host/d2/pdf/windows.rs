@@ -3,18 +3,22 @@
 use std::sync::Arc;
 use shell_contract::{Surface, ViewId, WindowId, runtime::Views};
 use tauri::Manager;
-use tauri_runtime_cef::FrameEventKind;
+use crate::native::{NativeEvent, NativeEventKind};
 use crate::host::{HostContext, window::{Bridge, ViewSpec, WindowOptions, WindowSpec}};
 
 pub(super) fn open_tools_window(cx: &HostContext, parent: Option<WindowId>, title: &str) -> Option<ViewId> {
     let app = cx.app.clone();
     let views = cx.views.clone();
     let shown = std::sync::atomic::AtomicBool::new(false);
-    let on_frame = Arc::new(move |view: ViewId, event: &tauri_runtime_cef::FrameEvent| {
-        if event.is_main && matches!(event.kind, FrameEventKind::LoadingStateChanged { is_loading: false }) && !shown.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            if let Some(window) = views.sender_of(view).and_then(|sender| views.label_of_window(sender.window)).and_then(|label| app.get_window(&label)) {
-                let _ = window.show();
-            }
+    let on_frame = Arc::new(move |view: ViewId, event: &NativeEvent| {
+        let NativeEventKind::LoadFinished { ok, .. } = &event.kind else { return };
+        if shown.swap(true, std::sync::atomic::Ordering::AcqRel) { return; }
+        let Some(window) = views.sender_of(view).and_then(|sender| views.label_of_window(sender.window)).and_then(|label| app.get_window(&label)) else { return };
+        if *ok {
+            let _ = window.show();
+        } else {
+            eprintln!("[pdf] the tools window did not load; closing it");
+            if let Err(error) = window.destroy() { eprintln!("[pdf] could not close the tools window: {error}"); }
         }
     });
     let spec = WindowSpec {

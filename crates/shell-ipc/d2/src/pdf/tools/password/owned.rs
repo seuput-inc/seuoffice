@@ -216,17 +216,16 @@ impl Authority {
             }
             Self::Saved { document, .. } => {
                 let target = document.target();
-                let operation = target.output().selection().binding().operation();
                 let mut tokens = vec![
                     target.cancel().clone(),
                     target.pending().clone(),
-                    operation.cancel().clone(),
-                    operation.shutdown().clone(),
                     target.created().loss_token(),
                 ];
+                tokens.extend(target.output().loss_tokens()?);
                 tokens.extend_from_slice(target.additional());
-                for owner in std::iter::once(target.output().selection().binding().owner())
-                    .chain(target.participants().iter())
+                for owner in target
+                    .participants()
+                    .iter()
                     .chain(std::iter::once(document.owner()))
                 {
                     tokens.push(owner.loss_token().ok_or(LOST)?);

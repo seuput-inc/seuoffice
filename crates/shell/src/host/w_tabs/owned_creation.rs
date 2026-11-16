@@ -5,7 +5,7 @@ use std::sync::{Arc, OnceLock, atomic::{AtomicU64, Ordering}};
 use main_core::shell::tab_manager::TabError;
 use shell_ipc_w::tabs::host::{ViewCreationCleanupState, ViewCreationFailure, ViewCreationReady, ViewCreationResult};
 use shell_contract::{ViewId, ipc::NativeRequestOwner, runtime::{CancelSubscription, CancelToken, RendererGeneration, Thread}};
-use tauri_runtime_cef::{FrameEventKind, NativeContextToken};
+use crate::native::{DocumentContext, NativeEventKind};
 
 use super::accepted::{self, PreparedEditorView};
 use crate::ipc::native_owner::{self, NativeOwnerAuthority};
@@ -74,13 +74,13 @@ pub(super) fn start(
         source: source.clone(), cancel: cancel.clone(), pending: pending.clone(), created: created.clone(), core: core.clone(),
         owner: None, ready: None, failure: None, cleaning: false, done, _losses: losses,
     }); });
-    let first = Arc::new(OnceLock::<NativeContextToken>::new());
+    let first = Arc::new(OnceLock::<DocumentContext>::new());
     let frame_core = core.clone();
     let frame_created = created.clone();
     prepared.invocation_on_frame = Some(Arc::new(move |event_view, event| {
-        if event_view != view || !event.is_main { return; }
+        if event_view != view { return; }
         match &event.kind {
-            FrameEventKind::NativeContextRegistered { origin } if event.browser_id == origin.browser_id() && event.frame_id == origin.frame_id() => {
+            NativeEventKind::DocumentRegistered { context: origin } if origin.browser().is_same_browser(&event.browser) => {
                 if let Some(old) = first.get() {
                     if old != origin { frame_core.post(Box::new(move || fail(id, "The editor document was replaced".into()))); }
                     return;
@@ -95,9 +95,9 @@ pub(super) fn start(
                 if result.is_ok() { let _ = first.set(origin.clone()); }
                 frame_core.post(Box::new(move || registered(id, result)));
             }
-            FrameEventKind::NativeContextRevoked { origin } if first.get() == Some(origin) =>
+            NativeEventKind::DocumentRevoked { document, .. } if first.get().is_some_and(|origin| origin.identity() == document) =>
                 frame_core.post(Box::new(move || fail(id, "The editor document was revoked".into()))),
-            FrameEventKind::NavigationFailed { .. } =>
+            NativeEventKind::NavigationFailed { .. } =>
                 frame_core.post(Box::new(move || fail(id, "The editor navigation failed".into()))),
             _ => {}
         }

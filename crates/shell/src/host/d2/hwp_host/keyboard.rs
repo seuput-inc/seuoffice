@@ -1,91 +1,57 @@
-use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::Value;
 use tauri::Webview;
-use tauri_runtime_cef::{DevToolsProtocol, WebviewCefExt};
 
-use crate::host::contents::cdp;
+use crate::native::WebviewExt;
 
-#[derive(Default)]
-struct Contexts {
-    by_frame: HashMap<String, (i64, String)>,
+/// How long the studio frame may take to say whether it takes a key
+const ANSWER_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The script that asks the HWP studio frame whether it takes `key`
+/// (`window.__ieumHancomKey(key) === true`, `apps/hwp/studio-plugin/hancom-keys.mjs`).
+/// The studio is the frame whose address holds `/studio/`: the page itself or a same-origin
+/// descendant of it. A frame of another origin is never reached, and no studio frame means
+/// the page takes nothing.
+fn takes_expression(key: &str) -> String {
+    format!(
+        "(() => {{
+  const isStudio = (frame) => {{
+    try {{ return frame.location.href.includes('/studio/'); }} catch {{ return false; }}
+  }};
+  const find = (frame) => {{
+    for (let i = 0; i < frame.frames.length; i += 1) {{
+      const child = frame.frames[i];
+      if (isStudio(child)) return child;
+      const deeper = find(child);
+      if (deeper) return deeper;
+    }}
+    return null;
+  }};
+  const studio = isStudio(window) ? window : find(window);
+  return !!studio && typeof studio.__ieumHancomKey === 'function'
+    && studio.__ieumHancomKey({key}) === true;
+}})()",
+        key = Value::String(key.to_owned()),
+    )
 }
 
-impl Contexts {
-    fn event(&mut self, method: &str, params: &[u8]) {
-        let Ok(value) = serde_json::from_slice::<Value>(params) else { return };
-        match method {
-            "Runtime.executionContextCreated" => {
-                let Some(context) = value.get("context") else { return };
-                let Some(aux) = context.get("auxData") else { return };
-                if aux.get("isDefault").and_then(Value::as_bool) != Some(true) { return; }
-                let (Some(frame), Some(id), Some(unique)) = (
-                    aux.get("frameId").and_then(Value::as_str),
-                    context.get("id").and_then(Value::as_i64),
-                    context.get("uniqueId").and_then(Value::as_str),
-                ) else { return };
-                self.by_frame.insert(frame.to_owned(), (id, unique.to_owned()));
-            }
-            "Runtime.executionContextDestroyed" => {
-                if let Some(id) = value.get("executionContextId").and_then(Value::as_i64) {
-                    self.by_frame.retain(|_, (context_id, _)| *context_id != id);
-                }
-            }
-            "Runtime.executionContextsCleared" => self.by_frame.clear(),
-            _ => {}
-        }
-    }
-}
-
-static CONTEXTS: LazyLock<Mutex<HashMap<String, Arc<Mutex<Contexts>>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
-
-pub(crate) fn forget(label: &str) {
-    if let Ok(mut contexts) = CONTEXTS.lock() { contexts.remove(label); }
-}
-
-fn observer(webview: &Webview) -> Result<Arc<Mutex<Contexts>>, String> {
-    let mut all = CONTEXTS.lock().map_err(|_| "HWP context registry unavailable")?;
-    if let Some(contexts) = all.get(webview.label()) { return Ok(contexts.clone()); }
-    let contexts = Arc::new(Mutex::new(Contexts::default()));
-    let listener = contexts.clone();
-    webview.on_dev_tools_protocol(move |event| {
-        if let DevToolsProtocol::Event { method, params } = event
-            && let Ok(mut contexts) = listener.lock()
-        {
-            contexts.event(&method, &params);
-        }
-    }).map_err(|error| error.to_string())?;
-    cdp(webview, "Runtime.enable", json!({}))?;
-    all.insert(webview.label().to_owned(), contexts.clone());
-    Ok(contexts)
-}
-
-fn studio_frame(tree: &Value) -> Option<&str> {
-    let frame = tree.get("frame")?;
-    if frame.get("url").and_then(Value::as_str).is_some_and(|url| url.contains("/studio/")) {
-        return frame.get("id").and_then(Value::as_str);
-    }
-    tree.get("childFrames").and_then(Value::as_array)
-        .and_then(|children| children.iter().find_map(studio_frame))
-}
-
+/// Whether the studio frame took `key`. Blocks for the answer: call it off the UI thread.
+/// A frame that cannot answer in time leaves the key to the shell, and says so.
 pub(super) fn editor_takes(webview: &Webview, key: &str) -> bool {
-    let result = (|| -> Result<bool, String> {
-        let contexts = observer(webview)?;
-        let tree = cdp(webview, "Page.getFrameTree", json!({}))?;
-        let frame = studio_frame(&tree["frameTree"]).ok_or("HWP studio frame not found")?;
-        let unique = contexts.lock().map_err(|_| "HWP contexts unavailable")?
-            .by_frame.get(frame).map(|(_, unique)| unique.clone())
-            .ok_or("HWP studio execution context not found")?;
-        let encoded = serde_json::to_string(key).map_err(|error| error.to_string())?;
-        let expression = format!("typeof window.__ieumHancomKey === 'function' && window.__ieumHancomKey({encoded}) === true");
-        let answer = cdp(webview, "Runtime.evaluate", json!({
-            "expression": expression, "uniqueContextId": unique, "returnByValue": true,
-        }))?;
-        Ok(answer.get("exceptionDetails").is_none() && answer["result"]["value"] == true)
-    })();
-    result.unwrap_or(false)
+    let answer = webview.page().and_then(|page| {
+        page.blocking(ANSWER_TIMEOUT, |done| {
+            page.evaluate(&takes_expression(key), true, None, done)
+        })
+        .map_err(|error| error.to_string())
+    });
+    match answer {
+        Ok(value) => value == Value::Bool(true),
+        Err(error) => {
+            eprintln!("shell: the HWP editor could not say whether it takes {key}: {error}");
+            false
+        }
+    }
 }
 
 #[cfg(test)]
@@ -93,23 +59,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn selects_studio_child_and_forgets_destroyed_contexts() {
-        let tree = json!({"frame":{"id":"root","url":"app://hwp/"},"childFrames":[{"frame":{"id":"studio","url":"app://hwp/studio/index.html"}}]});
-        assert_eq!(studio_frame(&tree), Some("studio"));
-        let mut contexts = Contexts::default();
-        contexts.event("Runtime.executionContextCreated", br#"{"context":{"id":7,"uniqueId":"unique","auxData":{"isDefault":true,"frameId":"studio"}}}"#);
-        assert_eq!(contexts.by_frame.get("studio").map(|value| value.1.as_str()), Some("unique"));
-        contexts.event("Runtime.executionContextDestroyed", br#"{"executionContextId":7}"#);
-        assert!(!contexts.by_frame.contains_key("studio"));
+    fn the_expression_quotes_the_key_and_asks_the_studio_frame() {
+        let expression = takes_expression("ctrl-shift-s");
+        assert!(expression.contains("__ieumHancomKey(\"ctrl-shift-s\") === true"));
+        assert!(expression.contains("includes('/studio/')"));
+        assert!(expression.starts_with("(() => {"));
+        assert!(expression.ends_with("})()"));
     }
 
     #[test]
-    fn ignores_non_default_context_and_clears_on_navigation() {
-        let mut contexts = Contexts::default();
-        contexts.event("Runtime.executionContextCreated", br#"{"context":{"id":3,"uniqueId":"isolated","auxData":{"isDefault":false,"frameId":"studio"}}}"#);
-        assert!(contexts.by_frame.is_empty());
-        contexts.event("Runtime.executionContextCreated", br#"{"context":{"id":4,"uniqueId":"main","auxData":{"isDefault":true,"frameId":"studio"}}}"#);
-        contexts.event("Runtime.executionContextsCleared", b"{}");
-        assert!(contexts.by_frame.is_empty());
+    fn a_key_with_quotes_cannot_leave_its_string() {
+        let expression = takes_expression("\") || window.x || (\"");
+        assert!(expression.contains("__ieumHancomKey(\"\\\") || window.x || (\\\"\") === true"));
     }
 }

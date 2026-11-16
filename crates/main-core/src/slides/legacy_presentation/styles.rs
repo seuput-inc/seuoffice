@@ -123,8 +123,7 @@ impl Styles {
                 if let (Some(name), Some(family)) = (
                     xml::attr(node, "style:name").filter(|value| !value.is_empty()),
                     xml::attr(node, "style:family").filter(|value| !value.is_empty()),
-                )
-                    && !matches!(family, "table-column" | "table-cell")
+                ) && !matches!(family, "table-column" | "table-cell")
                 {
                     let (text, para) = self.props(node);
                     if !self.defs.contains_key(family) {

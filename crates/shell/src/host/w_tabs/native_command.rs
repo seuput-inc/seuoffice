@@ -5,13 +5,13 @@ use std::sync::{Arc, OnceLock, atomic::{AtomicU64, Ordering}};
 use main_core::shell::tab_manager::TabError;
 use shell_ipc_w::tabs::host::{ViewCreationCleanupState, ViewCreationFailure, ViewCreationReady, ViewCreationResult};
 use shell_contract::{ViewId, ipc::{NativeEditorCommand, NativeInvocationDocument, NativeInvocationOperation, NativeInvocationTarget, NativeRequestOwner}, runtime::{CancelSubscription, CancelToken, RendererGeneration, Thread}};
-use tauri_runtime_cef::{FrameEvent, FrameEventKind, NativeContextToken};
+use crate::native::{DocumentContext, NativeEvent, NativeEventKind};
 
 use super::{HostContext, accepted};
 use crate::ipc::native_owner::{self, NativeOwnerAuthority};
 
 pub(super) type Done = Box<dyn FnOnce(ViewCreationResult<NativeInvocationDocument>)>;
-pub(super) type FrameCallback = Arc<dyn Fn(ViewId, &FrameEvent) + Send + Sync>;
+pub(super) type FrameCallback = Arc<dyn Fn(ViewId, &NativeEvent) + Send + Sync>;
 pub(super) type Create = Box<dyn FnOnce(FrameCallback) -> Result<crate::host::window::CreatedChild, accepted::InstallError> + Send>;
 struct Pending {
     operation: NativeInvocationOperation,
@@ -60,6 +60,9 @@ pub(super) fn matches_spec(spec: &main_core::shell::tab_manager::ViewSpec<'_>, c
         ViewSpec::Epub { path } => (Surface::Epub, Some(*path)),
         ViewSpec::Diagram { path } => (Surface::Diagram, *path),
         ViewSpec::Hwp { path, untitled_copy: HwpUntitledCopy::Flag(false) } => (Surface::Hwp, *path),
+        ViewSpec::Hwp { path, untitled_copy: HwpUntitledCopy::BaseName(title) } => return matches!(command,
+            NativeEditorCommand::HwpCopy { path: selected, title: expected }
+                if title == expected && path.is_some_and(|path| std::path::Path::new(path) == selected)),
         ViewSpec::Hwp { .. } | ViewSpec::HtmlPresent { .. } => return false,
     };
     match command {
@@ -107,7 +110,7 @@ pub(super) fn start(
     let views = cx.views.clone();
     let frame_target = target.clone();
     let frame_core = core.clone();
-    let first = Arc::new(OnceLock::<NativeContextToken>::new());
+    let first = Arc::new(OnceLock::<DocumentContext>::new());
     let registered_owner = Arc::new(OnceLock::<NativeRequestOwner>::new());
     let frame_startup = startup.clone();
     let frame_command = command.clone();
@@ -115,9 +118,9 @@ pub(super) fn start(
     let frame_cancel = cancel.clone();
     let frame_pending = pending.clone();
     let frame: FrameCallback = Arc::new(move |view, event| {
-        if !event.is_main || view != frame_target.view() { return; }
+        if view != frame_target.view() { return; }
         match &event.kind {
-            FrameEventKind::NativeContextRegistered { origin } if event.browser_id == origin.browser_id() && event.frame_id == origin.frame_id() => {
+            NativeEventKind::DocumentRegistered { context: origin } if origin.browser().is_same_browser(&event.browser) => {
                 if let Some(old) = first.get() {
                     if old != origin { frame_core.post(Box::new(move || fail(id, "The native command document was replaced".into()))); }
                     return;
@@ -141,9 +144,9 @@ pub(super) fn start(
                 }
                 frame_core.post(Box::new(move || registered(id, result)));
             }
-            FrameEventKind::NativeContextRevoked { origin } if first.get() == Some(origin) =>
+            NativeEventKind::DocumentRevoked { document, .. } if first.get().is_some_and(|origin| origin.identity() == document) =>
                 frame_core.post(Box::new(move || fail(id, "The native command document was revoked".into()))),
-            FrameEventKind::NavigationFailed { .. } =>
+            NativeEventKind::NavigationFailed { .. } =>
                 frame_core.post(Box::new(move || fail(id, "The native command renderer failed".into()))),
             _ => {}
         }

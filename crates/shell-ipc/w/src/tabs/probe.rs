@@ -226,6 +226,7 @@ impl FixturePreclose {
         Ok(Arc::new(move || gate.clone().start(close.clone(), None)))
     }
 
+    #[cfg(test)]
     fn cleanup(self: Arc<Self>, close: ViewCreationCleanup, done: FixtureCloseDone) {
         self.start(close, Some(done));
     }
@@ -286,6 +287,7 @@ impl FixturePreclose {
     }
 }
 
+#[cfg(test)]
 fn fixture_preclose_cleanup(
     fake: &Fake,
     view: ViewId,
@@ -813,6 +815,7 @@ fn fixture_register_owner(
     owners.capture_owner(view, generation)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fixture_native_command(
     fake: &Fake,
     operation: &shell_contract::ipc::NativeInvocationOperation,
@@ -1899,6 +1902,7 @@ struct ProbePlacementRollback {
     reservation: shell_contract::ipc::NativeClosureReservation,
     owner: shell_contract::ipc::NativeBrowserOwner,
     token: Arc<()>,
+    #[allow(clippy::type_complexity)]
     displaced: std::cell::RefCell<
         Option<(
             Option<main_core::shell::projects::new_documents::NewDocumentPlacement>,
@@ -2042,6 +2046,7 @@ fn probe_token_matches(current: Option<&Arc<()>>, expected: &Option<Arc<()>>) ->
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn prepare_probe_seed(
     fake: &Fake,
     view: ViewId,
@@ -2888,6 +2893,7 @@ fn probe_activation_effect(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn probe_activation_emit(
     events: &shell_contract::hosts::synthetic::SyntheticOwnedEffects,
     revision: &super::activation::SplitMemoryRevision,
@@ -3895,7 +3901,7 @@ impl TabHooks for Hooks {
                         .and_then(|target| {
                             shell_contract::hosts::synthetic::admit_many(
                                 &owner,
-                                &[target.clone()],
+                                std::slice::from_ref(&target),
                                 &cancel,
                                 &pending,
                                 || target,
@@ -4089,7 +4095,7 @@ impl TabHooks for Hooks {
                     .and_then(|target| {
                         shell_contract::hosts::synthetic::admit_many(
                             &source,
-                            &[target.clone()],
+                            std::slice::from_ref(&target),
                             &cancel,
                             &pending,
                             || target,
@@ -4106,7 +4112,7 @@ impl TabHooks for Hooks {
                     let mut published = None;
                     let registered = synthetic_created_effect(
                         &source,
-                        &[target.clone()],
+                        std::slice::from_ref(&target),
                         &generation,
                         &cancel,
                         &pending,
@@ -4975,7 +4981,7 @@ impl TabHooks for Hooks {
         let shell_owner = match shell_owner {
             Ok(owner) => owner,
             Err(error) => {
-                done(Err(error.into()));
+                done(Err(error));
                 return;
             }
         };
@@ -5918,6 +5924,17 @@ impl TabHooks for Hooks {
     fn drive_reopen(&self, _path: &str) -> bool {
         false
     }
+    fn route_path_native(&self, path: String, done: Box<dyn FnOnce(Result<bool, String>)>) {
+        self.log("routeDocumentPath", vec![json!(path)]);
+        done(Ok(true));
+    }
+    fn issue_native_command(
+        &self,
+        _: shell_contract::ipc::NativeEditorCommand,
+        _: shell_contract::runtime::CancelToken,
+    ) -> Result<shell_contract::ipc::NativeInvocationOperation, String> {
+        Err("Native commands are unavailable in the probe host".into())
+    }
     fn record_recent_file(&self, path: &str) {
         self.log("recordRecentFile", vec![json!(path)]);
     }
@@ -6083,16 +6100,6 @@ impl TabHooks for Hooks {
             },
         );
         done(result);
-    }
-    fn diagram_open_refusal(&self, path: &str, then: Box<dyn FnOnce(Option<String>)>) {
-        let reason = {
-            let w = self.0.w();
-            w.case["refuse"]
-                .as_array()
-                .and_then(|refused| refused.iter().find(|r| r["path"].as_str() == Some(path)))
-                .and_then(|hit| hit["reason"].as_str().map(str::to_owned))
-        };
-        then(reason);
     }
     fn diagram_open_refusal_owned(
         &self,

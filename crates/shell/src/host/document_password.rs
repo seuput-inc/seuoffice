@@ -12,7 +12,7 @@ pub(crate) fn install(hosts: &mut shell_contract::Hosts, cx: &HostContext) {
 use shell_contract::ids::{ViewId, WindowId};
 use shell_contract::Surface;
 use tauri::Manager;
-use tauri_runtime_cef::WindowCefExt;
+use crate::native::WindowExt;
 
 use super::window::{Bridge, ViewSpec, WindowOptions, WindowSpec};
 use super::{on_ui, HostContext};

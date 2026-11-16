@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use cef::{ImplBrowser, ImplBrowserHost, ImplFrame};
 use main_core::packages::pdf_structure::files::system_now_ms;
 use main_core::shell::tab_manager::TabKind;
 use shell_contract::runtime::Views;
@@ -11,11 +10,11 @@ use shell_ipc_w::editor_files::UiLanguage;
 use shell_ipc_w::projects::Projects;
 use shell_ipc_w::tabs::TabsState;
 use tauri::Manager;
-use tauri_runtime_cef::{FrameEventKind, WebviewCefExt};
 
 use crate::host::w::{on_core, post_core};
 use crate::host::window::{Bridge, ViewSpec, WindowOptions, WindowSpec};
 use crate::host::{on_ui, HostContext};
+use crate::native::{EditCommand, KeyChord, Modifiers, NativeEventKind, WebviewExt};
 
 pub(super) struct Shell {
     cx: HostContext,
@@ -27,11 +26,8 @@ impl Shell {
 
     fn edit(&self, view: ViewId, cut: bool) {
         let Some(webview) = self.cx.windows.webview(view) else { return };
-        let _ = webview.with_cef_webview(move |native| {
-            if let Some(frame) = native.browser().focused_frame().or_else(|| native.browser().main_frame()) {
-                if cut { frame.cut() } else { frame.copy() }
-            }
-        });
+        let command = if cut { EditCommand::Cut } else { EditCommand::Copy };
+        crate::native::menu::edit(&webview, command);
     }
 }
 
@@ -146,32 +142,13 @@ impl HwpShell for Shell {
     fn cut(&self, view: ViewId) { self.edit(view, true); }
     fn send_key(&self, view: ViewId, key_code: &str, modifiers: &[&str]) {
         let Some(webview) = self.cx.windows.webview(view) else { return };
-        let Some(character) = key_code.chars().next().filter(|character| character.is_ascii_alphabetic()) else { return };
-        let upper = character.to_ascii_uppercase();
-        let scan = match upper { 'C' => 0x2e, 'X' => 0x2d, 'E' => 0x12, _ => return };
-        let native = if cfg!(windows) { scan } else { scan + 8 };
-        let mut flags = 0;
-        for modifier in modifiers {
-            flags |= match *modifier {
-                "control" => cef::sys::cef_event_flags_t::EVENTFLAG_CONTROL_DOWN.0,
-                "shift" => cef::sys::cef_event_flags_t::EVENTFLAG_SHIFT_DOWN.0,
-                "alt" => cef::sys::cef_event_flags_t::EVENTFLAG_ALT_DOWN.0,
-                "meta" => cef::sys::cef_event_flags_t::EVENTFLAG_COMMAND_DOWN.0,
-                _ => 0,
-            };
+        let Some(chord) = resend_chord(key_code, modifiers) else { return };
+        match webview.page() {
+            Ok(page) => page.key(chord, Box::new(|result| {
+                if let Err(error) = result { eprintln!("shell: the HWP key was not resent: {error}"); }
+            })),
+            Err(error) => eprintln!("shell: the HWP key was not resent: {error}"),
         }
-        let _ = webview.with_cef_webview(move |native_view| {
-            let Some(host) = native_view.browser().host() else { return };
-            for kind in [cef::KeyEventType::RAWKEYDOWN, cef::KeyEventType::KEYUP] {
-                let event = cef::KeyEvent {
-                    size: std::mem::size_of::<cef::sys::_cef_key_event_t>(), type_: kind,
-                    modifiers: flags as _, windows_key_code: upper as i32, native_key_code: native,
-                    is_system_key: 0, character: character as u16, unmodified_character: character as u16,
-                    focus_on_editable_field: 1,
-                };
-                host.send_key_event(Some(&event));
-            }
-        });
     }
     fn create_headless_view(&self) -> Result<ViewId, String> {
         let cx = self.cx.clone();
@@ -180,10 +157,9 @@ impl HwpShell for Shell {
             decorations: true, transparent: false, resizable: true, parent: None, focus: false, main: false,
             view: ViewSpec { url: "genoffice-app://hwp/index.html".into(), bridge: Bridge::Surface(Surface::Hwp) },
         }, WindowOptions { on_frame: Some(std::sync::Arc::new(|view, event| {
-            if !event.is_main { return; }
             let kind = match &event.kind {
-                FrameEventKind::RendererTerminated => 1,
-                FrameEventKind::NavigationStarted { url } if url.as_str() != "about:blank" => 2,
+                NativeEventKind::WebviewProcessFailed { .. } => 1,
+                NativeEventKind::NavigationStarted { url, .. } if url.as_str() != "about:blank" => 2,
                 _ => return,
             };
             post_core(move |provided, _| if let Some(editors) = provided.all::<HwpEditors>().first() {
@@ -207,28 +183,26 @@ impl HwpShell for Shell {
             let options = WindowOptions {
                 background_throttling: Some(tauri::utils::config::BackgroundThrottlingPolicy::Disabled),
                 on_frame: Some(std::sync::Arc::new(move |view, event| {
-                    if !event.is_main { return; }
                     let Some(target) = frames.get().filter(|target| target.view() == view) else { return; };
                     match &event.kind {
-                        FrameEventKind::NativeContextRegistered { origin }
-                            if origin.browser_id() == event.browser_id && origin.frame_id() == event.frame_id => {
+                        NativeEventKind::DocumentRegistered { context } => {
                             let Some(captured) = views.capture_native_owner(view, target.created())
-                                .filter(|captured| captured.origin == *origin) else { return; };
+                                .filter(|captured| captured.origin == *context) else { return; };
                             let Some(owner) = crate::ipc::native_owner::owner_with_browser(view, captured.origin, captured.renderer, (), captured.browser_owner) else { return; };
                             if let Err(error) = crate::ipc::native_owner::register_native_invocation_target(target, owner) {
                                 post_core(move |provided, _| if let Some(editors) = provided.all::<HwpEditors>().first() {
                                     editors.render_process_gone(view, &error);
                                 });
                             } else {
-                                let _ = frame_origin.set(origin.clone());
+                                let _ = frame_origin.set(context.identity().clone());
                             }
                         }
-                        FrameEventKind::NativeContextRevoked { origin } if frame_origin.get() == Some(origin) => {
+                        NativeEventKind::DocumentRevoked { document, .. } if frame_origin.get() == Some(document) => {
                             post_core(move |provided, _| if let Some(editors) = provided.all::<HwpEditors>().first() {
                                 editors.render_process_gone(view, "hidden renderer context was revoked");
                             });
                         }
-                        FrameEventKind::RendererTerminated | FrameEventKind::NavigationFailed { .. } => {
+                        NativeEventKind::WebviewProcessFailed { .. } | NativeEventKind::NavigationFailed { .. } => {
                             post_core(move |provided, _| if let Some(editors) = provided.all::<HwpEditors>().first() {
                                 editors.render_process_gone(view, "hidden renderer stopped or failed to load");
                             });
@@ -281,5 +255,48 @@ impl HwpShell for Shell {
         let Some(window) = self.headless.lock().ok().and_then(|mut windows| windows.remove(&view)) else { return };
         let cx = self.cx.clone();
         on_ui(&self.cx.ui, move || { let _ = cx.windows.close_window(window); });
+    }
+}
+
+/// The key the studio gets again when it did not take a shortcut itself: the clipboard keys
+/// and Ctrl+E, with the modifiers the shortcut had (`control`, `shift`, `alt`, `meta`)
+fn resend_chord(key_code: &str, modifiers: &[&str]) -> Option<KeyChord> {
+    let letter = key_code.chars().next().filter(char::is_ascii_alphabetic)?.to_ascii_uppercase();
+    if !matches!(letter, 'C' | 'X' | 'E') {
+        return None;
+    }
+    let mut held = Modifiers::default();
+    for modifier in modifiers {
+        match *modifier {
+            "control" => held.ctrl = true,
+            "shift" => held.shift = true,
+            "alt" => held.alt = true,
+            "meta" => held.meta = true,
+            _ => {}
+        }
+    }
+    let key = if held.shift { letter } else { letter.to_ascii_lowercase() };
+    Some(KeyChord { key: key.to_string(), code: format!("Key{letter}"), modifiers: held })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_clipboard_keys_and_ctrl_e_are_resent_with_their_modifiers() {
+        let chord = resend_chord("c", &["control"]).unwrap();
+        assert_eq!((chord.key.as_str(), chord.code.as_str()), ("c", "KeyC"));
+        assert_eq!(chord.modifiers, Modifiers { ctrl: true, ..Modifiers::default() });
+        let chord = resend_chord("E", &["meta", "shift"]).unwrap();
+        assert_eq!((chord.key.as_str(), chord.code.as_str()), ("E", "KeyE"));
+        assert_eq!(chord.modifiers, Modifiers { meta: true, shift: true, ..Modifiers::default() });
+    }
+
+    #[test]
+    fn other_keys_are_not_resent() {
+        assert_eq!(resend_chord("v", &["control"]), None);
+        assert_eq!(resend_chord("1", &["control"]), None);
+        assert_eq!(resend_chord("", &[]), None);
     }
 }

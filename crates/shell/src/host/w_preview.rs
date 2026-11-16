@@ -16,7 +16,7 @@ use shell_ipc_w::editor_files::{FileParseHost, UiLanguage};
 use shell_ipc_w::quick_look::{QuickLookControl, QuickLookEnginesHost, QuickLookHost, QuickLookWindow, QuickLookWindowHost, QuickLookWindowOptions};
 use shell_ipc_w::tabs::TabsState;
 use tauri::Manager;
-use tauri_runtime_cef::WindowCefExt;
+use crate::native::{NativeEventKind, WindowExt};
 
 use super::window::{Bridge, ViewSpec, WindowOptions, WindowSpec};
 use super::{HostContext, on_ui, w::post_core, w_files::ShellLanguage};
@@ -187,6 +187,7 @@ impl QuickLookWindow for QuickWindow {
         let ready = control.clone();
         let views = self.state.cx.views.clone();
         let slot = self.state.window.clone();
+        let app = self.state.cx.app.clone();
         let spec = WindowSpec {
             title: options.title.clone(), size: (options.width as f64, options.height as f64),
             min_size: Some((options.min_width as f64, options.min_height as f64)),
@@ -199,14 +200,17 @@ impl QuickLookWindow for QuickWindow {
             minimizable: options.minimizable, maximizable: options.maximizable,
             fullscreenable: options.fullscreenable, shadow: options.has_shadow,
             background_throttling: None,
-            on_browser_resource_request: None,
-            network_session: None,
-            on_view: None,
+            request_policy: None,
             on_open: None,
-            on_frame: Some(Arc::new(move |view, event| {
-                if event.is_main && matches!(&event.kind, FrameEventKind::LoadingStateChanged { is_loading: false }) {
-                    ready.window_ready(view);
+            on_frame: Some(Arc::new(move |view, event| match &event.kind {
+                NativeEventKind::LoadFinished { ok: true, .. } => ready.window_ready(view),
+                NativeEventKind::LoadFinished { ok: false, .. } => {
+                    eprintln!("quick look page failed to load; closing the preview window");
+                    if let Some(window) = app.get_window(&format!("view-{}", view.0)) {
+                        if let Err(error) = window.close() { eprintln!("closing the failed preview window: {error}"); }
+                    }
                 }
+                _ => {}
             })),
             on_closed: Some(Box::new(move |window| {
                 let view = views.views_of_window(window).into_iter().next();
@@ -268,7 +272,7 @@ impl QuickLookWindow for QuickWindow {
         post_core(move |provided, _| {
             if let Some(tabs) = provided.all::<TabsState>().into_iter().next() {
                 tabs.reveal_shell_window();
-                tabs.open_document_path(&path);
+                tabs.open_document_path(&path, tabs.report_open(&path));
             }
         });
     }

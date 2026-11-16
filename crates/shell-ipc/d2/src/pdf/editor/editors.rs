@@ -869,54 +869,23 @@ impl DocumentEditors for PdfEditors {
         view: ViewId,
         native: shell_contract::ipc::NativeRequestOwner,
     ) -> Result<shell_contract::ipc::NativeRequestOwner, shell_contract::IpcError> {
-        if native.view != view {
-            return Err(error("pdf: document owner mismatch"));
-        }
-        let expected = self
-            .0
-            .services
-            .views
-            .renderer_generation(view)
-            .ok_or_else(|| error("pdf: renderer unavailable"))?;
-        if !native
-            .context
-            .renderer()
-            .is_some_and(|renderer| renderer.is_active() && renderer.same_generation(&expected))
-        {
-            return Err(error("pdf: renderer expired"));
-        }
-        let state = self.0.st.borrow();
-        let slot = state
-            .views
-            .get(&view)
-            .ok_or_else(|| error("pdf: document unavailable"))?;
-        let lease = slot
-            .document_lease
-            .as_ref()
-            .filter(|lease| lease.is_live())
-            .ok_or_else(|| error("pdf: document unavailable"))?;
-        let revision = slot
-            .document_revision
-            .as_ref()
-            .filter(|revision| revision.is_live())
-            .ok_or_else(|| error("pdf: document unavailable"))?;
-        if native
-            .pdf_document()
-            .is_some_and(|captured| !captured.same_document(lease))
-            || native
-                .pdf_revision()
-                .is_some_and(|captured| !captured.same_document(revision))
-        {
-            return Err(error("pdf: document changed"));
-        }
-        if native.pdf_document().is_some() && native.pdf_revision().is_some() {
-            return Ok(native);
-        }
-        let context = native
-            .context
-            .with_pdf_document(lease.clone())
-            .with_pdf_revision(revision.clone());
-        Ok(shell_contract::ipc::NativeRequestOwner { view, context })
+        self.0.capture_document_owner(view, native)
+    }
+
+    fn prepare_saved_document(
+        &self,
+        target: shell_contract::ipc::NativeSavedTarget,
+    ) -> Result<Box<dyn shell_contract::editors::PreparedSavedDocument>, shell_contract::IpcError>
+    {
+        crate::saved_slots::prepare(&self.0, target)
+    }
+
+    fn load_saved_document(
+        &self,
+        document: shell_contract::ipc::NativeSavedDocument,
+        then: Then<shell_contract::editors::SavedDocumentLoadOutcome>,
+    ) {
+        crate::saved_slots::load(&self.0, document, then, super::saved_open::install);
     }
 
     fn owns(&self, view: ViewId) -> bool {

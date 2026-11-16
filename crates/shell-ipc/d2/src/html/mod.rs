@@ -197,6 +197,20 @@ pub trait HtmlShell: Send + Sync {
         file_name: &str,
         bytes: &[u8],
     ) -> Result<Option<PathBuf>, String>;
+    /// [`Self::write_new_document_owned`] for a save a native operation owns.
+    #[allow(clippy::too_many_arguments)]
+    fn write_new_document_existing_document(
+        &self,
+        binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+        admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
+        file_name: &str,
+        bytes: &[u8],
+    ) -> Result<Option<PathBuf>, String>;
     /// Replace this view's document-scoped asset roots; both None revoke them.
     fn asset_paths_changed(
         &self,
@@ -326,7 +340,7 @@ pub trait HtmlShell: Send + Sync {
         paths: &[String],
     ) -> Result<bool, String>;
     /// `presentHooks.openTab(owner, title)`: false opens a window instead
-    fn present_open_tab(&self, owner: ViewId, title: &str) -> bool;
+    fn present_open_tab(&self, owner: ViewId, title: &str, then: Box<dyn FnOnce(bool)>);
     /// `presentHooks.hostWindow(contents)`
     fn present_host_window(&self, view: ViewId) -> Option<WindowId>;
     /// `presentHooks.setBleed(contents, on)`
@@ -600,8 +614,19 @@ pub(crate) fn entries(
 
     let mut out = docs.entries();
     let e = Rc::clone(&editors);
-    out.push(kit::invoke("html:consume-pending", move |cx, _| {
-        Ok(e.docs.open_path(cx.sender.view).into_ipc())
+    out.push(kit::invoke_later("html:consume-pending", move |cx, _, responder| {
+        let responder = match e.docs.consume_saved(cx, responder) {
+            Ok(()) => return,
+            Err(responder) => responder,
+        };
+        responder.reply(Ok(e.docs.open_path(cx.sender.view).into_ipc()))
+    }));
+    let e = Rc::clone(&editors);
+    out.push(kit::invoke("html:saved-input-applied", move |cx, args| {
+        let result = args.get(0);
+        let text = |key: &str| kit::as_str(kit::field(result, key)).unwrap_or_default().to_owned();
+        e.docs.saved_input_applied(cx, &text("token"), &text("outcome"), &text("error"))?;
+        Ok(IpcValue::Undefined)
     }));
     // a view opened on a file never takes a seed or a hand-off
     let e = Rc::clone(&editors);
@@ -696,20 +721,28 @@ pub(crate) fn entries(
     out.push(present_full_screen(services, &editors, contents.clone()));
     let e = Rc::clone(&editors);
     let c = contents.clone();
-    out.push(kit::invoke("html:present-new-tab", move |cx, args| {
+    out.push(kit::invoke_later("html:present-new-tab", move |cx, args, r| {
         let owner = cx.sender.view;
         let label = args.str(0).unwrap_or("").to_owned();
-        if e.shell.present_open_tab(owner, &label) {
-            return Ok(true.into_ipc());
-        }
-        let parent = c
-            .window_of(owner)
-            .or_else(|| e.shell.present_host_window(owner))
-            .filter(|w| !e.shell.is_window_destroyed(*w));
-        if let Some(view) = e.shell.open_present_window(owner, &label, parent) {
-            e.bind_present(view, owner);
-        }
-        Ok(true.into_ipc())
+        let e = Rc::clone(&e);
+        let c = c.clone();
+        let window_label = label.clone();
+        e.shell.present_open_tab(
+            owner,
+            &label,
+            Box::new(move |opened| {
+                if !opened {
+                    let parent = c
+                        .window_of(owner)
+                        .or_else(|| e.shell.present_host_window(owner))
+                        .filter(|w| !e.shell.is_window_destroyed(*w));
+                    if let Some(view) = e.shell.open_present_window(owner, &window_label, parent) {
+                        e.bind_present(view, owner);
+                    }
+                }
+                r.reply(Ok(true.into_ipc()))
+            }),
+        )
     }));
     let e = Rc::clone(&editors);
     out.push(kit::send("html:provisional-title", move |cx, args| {

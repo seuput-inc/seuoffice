@@ -26,13 +26,59 @@ pub(super) fn file_opened(view: ViewId, path: &str) {
     });
 }
 
-pub(super) fn open_generated(path: &str) -> Result<bool, String> {
-    let path = path.to_owned();
-    on_core(move |provided| {
-        let tabs = provided.all::<TabsState>().into_iter().next()
-            .ok_or_else(|| "The tab manager is not available".to_owned())?;
-        Ok(tabs.open_document_path(&path))
-    }).ok_or_else(|| "Core services are not available".to_owned())?
+type OpenDone = Box<dyn FnOnce(Result<bool, String>) + Send>;
+
+/// `openDocumentPath` (Drive copies reopen through Drive, else the native `OpenFile` route);
+/// `then` runs on the core thread once the open settles: `Ok(true)` opened or focused,
+/// `Ok(false)` nothing opened, `Err` refused or failed.
+pub(crate) fn open_path_native(path: String, then: OpenDone) {
+    open_with(path, true, then);
+}
+
+/// `routeDocumentPath`: the native `OpenFile` route without the Drive check, for Drive's own
+/// reopen of its local copy.
+pub(crate) fn route_path_native(path: String, then: OpenDone) {
+    open_with(path, false, then);
+}
+
+fn open_with(path: String, drive: bool, then: OpenDone) {
+    let slot = std::sync::Arc::new(std::sync::Mutex::new(Some(then)));
+    let unavailable = slot.clone();
+    let take = |slot: &std::sync::Mutex<Option<OpenDone>>| {
+        slot.lock().unwrap_or_else(|error| error.into_inner()).take()
+    };
+    crate::host::w::post_core_checked(move |provided, _| {
+        let Some(then) = take(&slot) else { return };
+        let Some(tabs) = provided.all::<TabsState>().into_iter().next() else {
+            return then(Err("The tab manager is not available".into()));
+        };
+        if drive {
+            tabs.open_document_path(&path, then);
+        } else {
+            tabs.route_document_path(&path, then);
+        }
+    }, move || {
+        if let Some(then) = take(&unavailable) {
+            then(Err("Core services are not available".into()));
+        }
+    });
+}
+
+/// `openGeneratedFile`: opened in a tab, else (or on failure) revealed in its folder. The
+/// caller's fallback is already handled here, so `Ok(true)` means the host took over.
+pub(crate) fn open_generated(path: &str) -> Result<bool, String> {
+    let reveal = std::path::PathBuf::from(path);
+    open_path_native(path.to_owned(), Box::new(move |result| {
+        match result {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(error) => eprintln!("shell: opening generated file {}: {error}", reveal.display()),
+        }
+        if let Err(error) = crate::host::os_shell::show_item_in_folder(&reveal) {
+            eprintln!("shell: revealing generated file {}: {error}", reveal.display());
+        }
+    }));
+    Ok(true)
 }
 
 

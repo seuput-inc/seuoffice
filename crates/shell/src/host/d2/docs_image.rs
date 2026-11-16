@@ -1,17 +1,22 @@
 //! The Word editor's captured and copied images.
 
 use std::sync::Arc;
-use clipboard_rs::{Clipboard as _, ClipboardContent, ClipboardContext, RustImageData};
-use clipboard_rs::common::RustImage;
-use shell_contract::runtime::Thread;
-use shell_contract::ViewId;
-use crate::host::{contents::cdp_bytes, on_ui, window::Windows};
 
-pub(super) fn capture(windows: &Windows, view: ViewId, x: f64, y: f64, width: f64, height: f64) -> Result<Option<Vec<u8>>, String> {
+use clipboard_rs::common::RustImage;
+use clipboard_rs::{Clipboard as _, ClipboardContent, ClipboardContext, RustImageData};
+use shell_contract::ViewId;
+use shell_contract::runtime::Thread;
+
+use crate::host::contents::capture_png;
+use crate::host::{on_ui, window::Windows};
+use crate::native::{CaptureSpec, Rect};
+
+pub(super) fn capture(
+    windows: &Windows, view: ViewId, x: f64, y: f64, width: f64, height: f64,
+) -> Result<Option<Vec<u8>>, String> {
     let webview = windows.webview(view).ok_or_else(|| format!("no view {}", view.0))?;
-    let bytes = cdp_bytes(&webview, "Page.captureScreenshot", serde_json::json!({
-        "format": "png", "clip": { "x": x, "y": y, "width": width, "height": height, "scale": 1 }
-    }))?;
+    let spec = CaptureSpec { clip: Some(Rect { x, y, width, height }), ..CaptureSpec::default() };
+    let bytes = capture_png(&webview, spec)?;
     if bytes.is_empty() { Ok(None) } else { Ok(Some(bytes)) }
 }
 

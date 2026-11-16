@@ -14,6 +14,7 @@
 mod headless;
 mod owned;
 mod recovery_open;
+mod saved;
 pub(crate) use headless::HeadlessPublication;
 pub(crate) use owned::{NativeRenameScope, OwnedSave, RecoveryRenameScope, SaveAuthority};
 pub(crate) mod owned_write;
@@ -188,6 +189,8 @@ pub(crate) struct TextDocs {
     close_waiters: RefCell<HashMap<ViewId, Waiter>>,
     save_waiters: RefCell<HashMap<ViewId, Waiter>>,
     owned_saves: RefCell<HashMap<ViewId, OwnedSave>>,
+    saved: RefCell<HashMap<ViewId, saved::SavedOpen>>,
+    saved_reservations: std::cell::Cell<usize>,
     reads: RefCell<HashMap<ViewId, Reading>>,
     headless_targets: RefCell<HashMap<ViewId, IpcValue>>,
     headless_waiters: RefCell<HashMap<ViewId, (HeadlessSettle, Timer)>>,
@@ -325,6 +328,8 @@ impl TextDocs {
                 close_waiters: RefCell::default(),
                 save_waiters: RefCell::default(),
                 owned_saves: RefCell::default(),
+                saved: RefCell::default(),
+                saved_reservations: std::cell::Cell::new(0),
                 reads: RefCell::default(),
                 headless_targets: RefCell::default(),
                 headless_waiters: RefCell::default(),
@@ -541,6 +546,7 @@ impl TextDocs {
         }
         // before the dirty flag goes: a clean close drops the copy, an unsaved or crashed one keeps it
         self.recovery.forget(view);
+        saved::release_view(self, view);
         let gone = self.views.borrow_mut().remove(&view);
         if let Some(state) = &gone {
             state.lease.revoke();
@@ -998,6 +1004,15 @@ impl TextDocs {
         })
     }
 
+    /// A headless export waiting on `view` fails with `error`; false when none waits.
+    pub(crate) fn fail_headless(&self, view: ViewId, error: String) -> bool {
+        if !self.headless_waiters.borrow().contains_key(&view) {
+            return false;
+        }
+        self.settle_headless(view, false, Some(error));
+        true
+    }
+
     /// The view's renderer process died (`render-process-gone`): its copy
     /// outlives it, and a headless export waiting on it fails
     pub(crate) fn renderer_gone(&self, view: ViewId, reason: &str) {
@@ -1176,6 +1191,12 @@ macro_rules! text_document_editors {
             fn saved_surface(&self) -> shell_contract::Surface {
                 $surface
             }
+            fn prepare_saved_document(&self,target:shell_contract::ipc::NativeSavedTarget)->Result<Box<dyn shell_contract::editors::PreparedSavedDocument>,shell_contract::IpcError>{
+                self.docs.prepare_saved($surface,target)
+            }
+            fn load_saved_document(&self,document:shell_contract::ipc::NativeSavedDocument,then:shell_contract::editors::Then<shell_contract::editors::SavedDocumentLoadOutcome>){
+                self.docs.load_saved(document,then)
+            }
             fn owns(&self, view: shell_contract::ViewId) -> bool {
                 self.docs.owns(view)
             }
@@ -1312,9 +1333,7 @@ macro_rules! text_document_editors {
             }
 
             pub fn fail_headless_export(&self, view: shell_contract::ViewId, error: String) -> bool {
-                if !self.docs.headless_waiters.borrow().contains_key(&view) { return false; }
-                self.docs.settle_headless(view, false, Some(error));
-                true
+                self.docs.fail_headless(view, error)
             }
 
             /// `<app>RecoveryIdentity(webContentsId)`

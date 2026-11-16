@@ -5,9 +5,9 @@ use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 use main_core::docs::byte_handoff::MediaViewLease;
 use main_core::shell::tab_manager::{TabError, TabResult};
 use shell_contract::{Surface, ViewId, WindowId, ipc::NativeRequestOwner, runtime::CancelToken};
-use tauri_runtime_cef::WebviewCefExt;
+use crate::native::{BrowserClose, BrowserCreation, BrowserCreationOutcome, NativeEvent, RequestPolicy, WebviewExt};
 
-use super::{HostContext, NATIVE_WINDOWS, ViewSpec, Bridge, Bounds, WindowOptions, frame_event, view_event, navigate_deferred, fail_editor_view};
+use super::{HostContext, NATIVE_WINDOWS, ViewSpec, Bridge, Bounds, WindowOptions, frame_event, navigate_deferred, fail_editor_view};
 use crate::views::{AssetViewLease, SlidesViewLease};
 mod generated;
 pub(super) use generated::{schedule_generated,generated_load_failed,generated_native_registered,generated_document_ready,generated_native_revoked};
@@ -19,7 +19,7 @@ pub(super) struct PreparedEditorView {
     pub(super) view: ViewId,
     pub(super) generation: shell_contract::runtime::RendererGeneration,
     pub(super) proof: crate::host::window::NativeClosureProof,
-    pub(super) submission: tauri_runtime_cef::NativeBrowserSubmissionGuard,
+    pub(super) submission: BrowserCreation,
     pub(super) window: WindowId,
     pub(super) window_lifecycle: Arc<crate::views::NativeWindowLifecycle>,
     pub(super) surface: Surface,
@@ -28,14 +28,14 @@ pub(super) struct PreparedEditorView {
     pub(super) docs_lease: Option<MediaViewLease>,
     pub(super) slides_lease: Option<SlidesViewLease>,
     pub(super) asset_lease: Option<AssetViewLease>,
-    pub(super) network_session: Option<tauri_runtime_cef::NativeNetworkSession>,
-    pub(super) invocation_on_frame: Option<Arc<dyn Fn(ViewId, &tauri_runtime_cef::FrameEvent) + Send + Sync>>,
+    pub(super) request_policy: Option<RequestPolicy>,
+    pub(super) invocation_on_frame: Option<Arc<dyn Fn(ViewId, &NativeEvent) + Send + Sync>>,
     pub(super) invocation_navigate: Option<Arc<dyn Fn(Result<(), String>) + Send + Sync>>,
 }
 
 pub(super) fn cleanup_creation(
     cx: HostContext, view: ViewId, generation: shell_contract::runtime::RendererGeneration,
-    close: Option<tauri_runtime_cef::NativeBrowserClose>,
+    close: Option<BrowserClose>,
     done: Box<dyn FnOnce(Result<(), String>) + Send>,
 ) {
     let Some(close) = close else {
@@ -68,12 +68,12 @@ pub(super) fn cleanup_creation(
 
 pub(super) struct InstallError {
     pub(super) error: TabError,
-    pub(super) close: Option<tauri_runtime_cef::NativeBrowserClose>,
+    pub(super) close: Option<BrowserClose>,
     pub(super) proof: Option<crate::host::window::NativeClosureProof>,
 }
 
 impl InstallError {
-    fn after_creation(error: TabError, close: tauri_runtime_cef::NativeBrowserClose, proof: Option<crate::host::window::NativeClosureProof>) -> Self {
+    fn after_creation(error: TabError, close: BrowserClose, proof: Option<crate::host::window::NativeClosureProof>) -> Self {
         Self { error, close: Some(close), proof }
     }
 }
@@ -94,8 +94,8 @@ pub(super) fn await_creation(
         callback_retained.lock().unwrap_or_else(|error| error.into_inner()).take();
         if let (Some(child), Some(done)) = (child, callback_done.lock().unwrap_or_else(|error| error.into_inner()).take()) {
             match outcome {
-                tauri_runtime_cef::NativeBrowserCreationOutcome::Attached => done(Ok(child)),
-                tauri_runtime_cef::NativeBrowserCreationOutcome::Failed =>
+                BrowserCreationOutcome::Attached => done(Ok(child)),
+                BrowserCreationOutcome::Failed =>
                     done(Err(InstallError::after_creation(TabError("The native browser could not be created".into()), child.close, child.proof))),
             }
         }
@@ -118,18 +118,18 @@ impl PreparedEditorView {
     }
 
     fn install_mode(self, generated: Option<u64>) -> Result<crate::host::window::CreatedChild, InstallError> {
-        let Self { cx, core, view, generation, proof, submission, window, window_lifecycle, surface, url, deferred, docs_lease, slides_lease, asset_lease, network_session, invocation_on_frame, invocation_navigate } = self;
+        let Self { cx, core, view, generation, proof, submission, window, window_lifecycle, surface, url, deferred, docs_lease, slides_lease, asset_lease, request_policy, invocation_on_frame, invocation_navigate } = self;
         let initial_url = if deferred { "about:blank".to_owned() } else { url.clone() };
         let child = cx.windows.add_reserved_view(
             view, &generation, window, &window_lifecycle, ViewSpec { url: initial_url, bridge: Bridge::Surface(surface) },
             Bounds { x: 0.0, y: 0.0, width: 1.0, height: 1.0 },
-            WindowOptions { network_session, ..Default::default() },
+            WindowOptions { request_policy, ..Default::default() },
             Some(proof),
             Some(submission),
             Some(Arc::new(move |view, event| {
                 frame_event(view, event);
                 if let Some(callback) = &invocation_on_frame { callback(view, event); }
-            })), Some(Arc::new(view_event)),
+            })),
         ).map_err(|error| InstallError { error: TabError(error.message), close: error.close, proof: error.proof })?;
         let webview = child.webview.clone();
         let close = child.close.clone();
@@ -137,44 +137,41 @@ impl PreparedEditorView {
             generated::constructed(core.clone(), id, webview.clone(), close.clone());
         }
         if docs_lease.is_some() || slides_lease.is_some() || asset_lease.is_some() {
-            let webview = webview.clone();
             let ready_view = webview.clone();
-            
-            let sent = webview.when_navigation_ready(move |ready| {
+            let browser = webview.native_browser().map_err(|error|
+                InstallError::after_creation(TabError(error), close.clone(), child.proof.clone()))?;
+            browser.navigator().when_ready(move |ready| {
                 if let Err(error) = ready {
-                    post_navigation_result(core, cx, view, url, generated, Err(error.to_string()), invocation_navigate);
+                    post_navigation_result(core, cx, view, url, generated, Err(error), invocation_navigate);
                     return;
                 }
                 let failed_cx = cx.clone();
                 let failed_core = core.clone();
                 let failed_navigation = invocation_navigate.clone();
-                if let Err(error) = ready_view.with_cef_webview(move |native| {
-                    let bound = if let Some(lease) = docs_lease {
-                        cx.views.bind_docs_media_browser(view, &lease, native.snapshot().browser_id, native.frame_navigation_state().clone())
-                    } else if let Some(lease) = slides_lease {
-                        cx.views.bind_slides_media_browser(view, &lease, native.snapshot().browser_id, native.frame_navigation_state().clone())
-                    } else if let Some(lease) = asset_lease {
-                        cx.views.bind_native_assets_browser(view, &lease, native.snapshot().browser_id, native.frame_navigation_state().clone())
-                    } else {
-                        Err("native browser binding requires an editor lease".into())
-                    };
+                if let Err(error) = ready_view.with_native_async(move |native| {
+                    let bound = native.and_then(|native| {
+                        let (id, state) = (native.identity.id(), native.identity.clone());
+                        if let Some(lease) = docs_lease {
+                            cx.views.bind_docs_media_browser(view, &lease, id, state)
+                        } else if let Some(lease) = slides_lease {
+                            cx.views.bind_slides_media_browser(view, &lease, id, state)
+                        } else if let Some(lease) = asset_lease {
+                            cx.views.bind_native_assets_browser(view, &lease, id, state)
+                        } else {
+                            Err("native browser binding requires an editor lease".into())
+                        }
+                    });
                     post_navigation_result(core, cx, view, url, generated, bound, invocation_navigate);
                 }) {
-                    post_navigation_result(failed_core, failed_cx, view, String::new(), generated, Err(error.to_string()), failed_navigation);
+                    post_navigation_result(failed_core, failed_cx, view, String::new(), generated, Err(error), failed_navigation);
                 }
             });
-            if let Err(error) = sent {
-                return Err(InstallError::after_creation(TabError(error.to_string()), close, child.proof.clone()));
-            }
         } else if deferred {
-            let webview = webview.clone();
-            
-            if let Err(error) = webview.when_navigation_ready(move |ready| {
-                let ready = ready.map_err(|error| error.to_string());
+            let browser = webview.native_browser().map_err(|error|
+                InstallError::after_creation(TabError(error), close.clone(), child.proof.clone()))?;
+            browser.navigator().when_ready(move |ready| {
                 post_navigation_result(core, cx, view, url, generated, ready, invocation_navigate);
-            }) {
-                return Err(InstallError::after_creation(TabError(error.to_string()), close, child.proof.clone()));
-            }
+            });
         }
         Ok(child)
     }

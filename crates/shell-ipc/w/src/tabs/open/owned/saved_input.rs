@@ -151,6 +151,7 @@ impl TabsState {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn reload_saved_pdf(
         &self,
         id: String,
@@ -252,7 +253,7 @@ impl TabsState {
             self.cancel_owned_step(Step::New(plan));
             return finish(Ok(GeneratedPathOutcome::NotOpened));
         }
-        let (cleanup_shell, tabs, cleanup_participants) =
+        let (cleanup_shell, cleanup_participants) =
             match self.capture_generated_cleanup_context(&open.source, &open.participants) {
                 Ok(captured) => captured,
                 Err(error) => {
@@ -295,7 +296,8 @@ impl TabsState {
         let adoption =
             match self.prepare_saved_manager_adoption(plan, &target, retained, open.epoch) {
                 Ok(adoption) => adoption,
-                Err((plan, error)) => {
+                Err(failure) => {
+                    let (plan, error) = *failure;
                     drop(start);
                     return self.abandon_saved_open(plan, open, error, finish);
                 }
@@ -317,7 +319,6 @@ impl TabsState {
             manager_epoch: open.epoch,
             cleanup: self.hooks.cleanup_lifetime(),
             participants: cleanup_participants,
-            survivors: tabs,
             preview,
             reservation: ready_binding.reservation.clone(),
             browser: ready_binding.owner.clone(),

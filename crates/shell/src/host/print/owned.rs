@@ -1,4 +1,6 @@
 use super::*;
+use crate::host::contents::owned as page;
+use crate::native::WebviewExt;
 use shell_contract::ipc::NativeRequestOwner;
 use shell_contract::ipc::NativeInvocationTarget;
 
@@ -137,7 +139,7 @@ impl Owner {
             if let Ok(mut loaded) = loaded.lock() { if let Some(signal) = loaded.take() { let _ = signal.try_send(()); } }
             let window = closing.lock().ok().and_then(|mut window| window.take());
             if let Some(window) = window {
-                ui.post(Box::new(move || { forget_webview(window.label()); let _ = window.destroy(); }));
+                ui.post(Box::new(move || { let _ = window.destroy(); }));
             }
         });
         let owner = Self { origin, destination, cancel, pending, authority, ui: cx.ui.clone(), lifetime: Arc::new(Lifetime { stop, _losses: losses, _closed: closed, window, target: Mutex::new(None) }) };
@@ -192,7 +194,8 @@ impl Owner {
     pub fn retain_window(&self, window: &WebviewWindow) -> Result<(), String> {
         *self.lifetime.window.lock().map_err(|_| "Print window lifetime poisoned.")? = Some(window.clone());
         if self.lifetime.stop.is_cancelled() || self.check().is_err() {
-            let window = window.clone(); self.ui.post(Box::new(move || { forget_webview(window.label()); let _ = window.destroy(); }));
+            let window = window.clone();
+            self.ui.post(Box::new(move || { let _ = window.destroy(); }));
             return Err("Print request expired.".into());
         }
         Ok(())
@@ -204,17 +207,11 @@ impl Owner {
 
     pub fn bind_target(&self, webview: &tauri::Webview) -> Result<(), String> {
         self.worker()?;
-        let (tx, rx) = mpsc::sync_channel(1);
-        let cancel = tx.clone();
-        let _cancel = self.lifetime.stop.on_cancel(move || { let _ = cancel.try_send(Err("Print request expired.".to_owned())); });
-        webview.with_cef_webview(move |native| {
-            let frame = native.frame_navigation_state().clone();
-            let target = frame.document().map(|document| crate::host::contents::OwnedPrintTarget {
-                frame, document, generation: shell_contract::runtime::RendererGeneration::new(),
-            }).ok_or_else(|| "The print document is not ready.".to_owned());
-            let _ = tx.try_send(target);
-        }).map_err(|error| error.to_string())?;
-        let target = rx.recv_timeout(LOAD_TIMEOUT).map_err(|_| "Print document identity timed out.".to_owned())??;
+        let frame = webview.native_browser()?;
+        let document = frame.document().ok_or_else(|| "The print document is not ready.".to_owned())?;
+        let target = crate::host::contents::OwnedPrintTarget {
+            frame, document, generation: shell_contract::runtime::RendererGeneration::new(),
+        };
         self.check()?;
         let old = self.lifetime.target.lock().map_err(|_| "Print document identity poisoned.")?.replace(target);
         if let Some(old) = old { old.generation.revoke(); }
@@ -232,42 +229,73 @@ impl Owner {
     pub fn stop(&self) { self.lifetime.stop.cancel(); }
     pub fn loss_token(&self) -> CancelToken { self.lifetime.stop.clone() }
     pub fn is_stopped(&self) -> bool { self.lifetime.stop.is_cancelled() }
+    /// Navigates the one print browser. A navigation the browser refuses, fails or loses
+    /// before it commits ends the print.
     pub fn navigate(&self, webview: &tauri::Webview, url: Url) -> Result<(), String> {
         self.worker()?;
         let (tx, rx) = mpsc::sync_channel(1);
         let owner = self.clone();
-        webview.with_cef_webview(move |native| {
+        webview.with_native(move |native| {
             let result = owner.effect(|| {
-                use cef::{ImplBrowser, ImplFrame};
-                native.browser().main_frame().ok_or_else(|| "The print browser is gone.".to_owned()).map(|frame| frame.load_url(Some(&cef::CefString::from(url.as_str()))))
+                let ended = owner.clone();
+                native.identity.navigator().navigate_observed(url, move |outcome| {
+                    if outcome.is_err() { ended.stop(); }
+                }).map(drop)
             }).and_then(|result| result);
             let _ = tx.try_send(result);
-        }).map_err(|error| error.to_string())?;
+        })?;
         rx.recv_timeout(LOAD_TIMEOUT).map_err(|_| "Print navigation was not admitted.".to_owned())??;
         self.check()
     }
-    pub fn cdp(&self, webview: &tauri::Webview, method: &str, params: Value) -> Result<Value, String> {
-        self.worker()?;
-        match &self.authority {
-            Authority::Interactive => super::super::contents::cdp_owned(webview, method, params, &self.origin, &self.destination, &self.cancel, &self.pending, &self.lifetime.stop, &self.target()?),
-            Authority::NativeInvocation { target, participants, actor } => super::super::contents::cdp_native_invocation_many(webview, method, params, target, &self.origin, participants, &self.cancel, &self.pending, actor, &self.lifetime.stop, &self.target()?),
-            Authority::ExistingDocument { binding, participants, additional } => super::super::contents::cdp_existing_document(webview, method, params, binding, participants, &self.cancel, &self.pending, &self.lifetime.stop, &self.target()?, additional),
-            Authority::ManyExtra { participants, additional, invocation } => match invocation {
-                Some(target) => super::super::contents::cdp_native_many_extra(webview, method, params, target, &self.origin, participants, &self.cancel, &self.pending, &self.lifetime.stop, &self.target()?, additional),
-                None => super::super::contents::cdp_owned_many_extra(webview, method, params, &self.origin, participants, &self.cancel, &self.pending, &self.lifetime.stop, &self.target()?, additional),
-            },
-        }
+
+    /// The page operations' authority: what `effect` admits, as the contents host builds it.
+    fn page_owner(&self) -> Result<page::Owner, String> {
+        let stop = self.lifetime.stop.clone();
+        let (authority, actor) = match &self.authority {
+            Authority::Interactive => (
+                page::Authority::Pair { origin: self.origin.clone(), destination: self.destination.clone() },
+                stop,
+            ),
+            Authority::NativeInvocation { target, participants, actor } => (
+                page::Authority::Native {
+                    invocation: target.clone(), owner: self.origin.clone(), participants: participants.clone(), stop,
+                },
+                actor.clone(),
+            ),
+            Authority::ExistingDocument { binding, participants, additional } => (
+                page::Authority::ExistingDocument {
+                    binding: binding.clone(), participants: participants.clone(), additional: additional.clone(),
+                    stop: stop.clone(),
+                },
+                stop,
+            ),
+            Authority::ManyExtra { participants, additional, invocation } => (
+                match invocation {
+                    Some(target) => page::Authority::NativeManyExtra {
+                        invocation: target.clone(), owner: self.origin.clone(), participants: participants.clone(),
+                        additional: additional.clone(), stop: stop.clone(),
+                    },
+                    None => page::Authority::OwnedMany {
+                        origin: self.origin.clone(), participants: participants.clone(), additional: additional.clone(),
+                        stop: stop.clone(),
+                    },
+                },
+                stop,
+            ),
+        };
+        Ok(page::Owner {
+            authority, cancel: self.cancel.clone(), pending: self.pending.clone(), actor, target: self.target()?,
+        })
     }
-    pub fn bytes(&self, webview: &tauri::Webview, method: &str, params: Value) -> Result<Vec<u8>, String> {
+    pub fn evaluate(
+        &self, webview: &tauri::Webview, js: &str, await_promise: bool,
+    ) -> Result<Value, crate::native::PageError> {
+        use crate::native::PageError;
+        self.worker().map_err(PageError::Platform)?;
+        self.page_owner().map_err(PageError::Platform)?.evaluate(webview, js, await_promise)
+    }
+    pub fn print_pdf(&self, webview: &tauri::Webview, spec: crate::native::PdfSpec) -> Result<Vec<u8>, String> {
         self.worker()?;
-        match &self.authority {
-            Authority::Interactive => super::super::contents::cdp_bytes_owned(webview, method, params, &self.origin, &self.destination, &self.cancel, &self.pending, &self.lifetime.stop, &self.target()?),
-            Authority::NativeInvocation { target, participants, actor } => super::super::contents::cdp_bytes_native_invocation_many(webview, method, params, target, &self.origin, participants, &self.cancel, &self.pending, actor, &self.lifetime.stop, &self.target()?),
-            Authority::ExistingDocument { binding, participants, additional } => super::super::contents::cdp_bytes_existing_document(webview, method, params, binding, participants, &self.cancel, &self.pending, &self.lifetime.stop, &self.target()?, additional),
-            Authority::ManyExtra { participants, additional, invocation } => match invocation {
-                Some(target) => super::super::contents::cdp_bytes_native_many_extra(webview, method, params, target, &self.origin, participants, &self.cancel, &self.pending, &self.lifetime.stop, &self.target()?, additional),
-                None => super::super::contents::cdp_bytes_owned_many_extra(webview, method, params, &self.origin, participants, &self.cancel, &self.pending, &self.lifetime.stop, &self.target()?, additional),
-            },
-        }
+        self.page_owner()?.print_pdf(webview, spec)
     }
 }

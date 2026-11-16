@@ -279,8 +279,7 @@ impl SubscriptionShared {
     /// The same process connection used by subscription status and sign-in.
     pub fn chatgpt_connection(&self) -> Option<ChatGptConnection> {
         let module = self.status.borrow().chat_gpt.clone();
-        let connection = module.borrow().chatgpt_connection();
-        connection
+        module.borrow().chatgpt_connection()
     }
 
     /// `ensureSubscriptionIpc(ipcMain, setup)` of `registerAiIpc`, and the

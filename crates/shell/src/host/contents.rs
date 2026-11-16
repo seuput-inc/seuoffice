@@ -1,341 +1,77 @@
-//! `webContents` of a view (the shared host `Contents`): capture, printToPDF,
-//! zoom, focus and closing the window. Capture and PDF go through the Chrome
-//! DevTools protocol of the view's browser (`Page.captureScreenshot`,
-//! `Page.printToPDF`), as the prototype's PDF did.
+//! `webContents` of a view (the shared host `Contents`): capture, printToPDF, zoom, focus
+//! and closing the window. Capture and PDF are the typed page operations of
+//! [`crate::native::PageOps`]; an owned print runs them under one [`Fence`] built from its
+//! authority.
 //!
-//! A CDP call blocks its caller until the browser answers; the browser
-//! answers on the UI thread, which a core-thread caller does not hold.
+//! A page operation blocks its caller until the page answers; the answer needs the UI
+//! thread, which a core-thread caller does not hold.
 
-mod owned;
+pub(crate) mod owned;
 pub(crate) use owned::Target as OwnedPrintTarget;
 
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, LazyLock, Mutex, mpsc};
+use std::sync::Arc;
 use std::time::Duration;
 
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD;
-use serde_json::{Map, Value, json};
+use serde_json::Value;
 use shell_contract::hosts::Contents;
 use shell_contract::ids::{ViewId, WindowId};
-use shell_contract::runtime::Views;
+use shell_contract::ipc::NativeRequestOwner;
+use shell_contract::runtime::{CancelToken, RendererGeneration, Views};
 use shell_contract::value::IpcValue;
 use shell_contract::{ContentsHost, Hosts};
 use tauri::Webview;
-use tauri_runtime_cef::{DevToolsProtocol, WebviewCefExt, allocate_devtools_message_id};
 
+use self::owned::{ActorLifetime, Authority, Owner};
 use super::HostContext;
 use super::window::Windows;
+use crate::native::page::blocking;
+use crate::native::platform::{Current, PrintOps, PrintOutcome};
+use crate::native::{
+    CaptureSpec, DocumentContext, HeaderFooter, PageError, PdfSpec, WebviewExt,
+};
 use crate::views::ViewTable;
 
 /// a print of a large document can take a while
-const CDP_TIMEOUT: Duration = Duration::from_secs(90);
+pub(crate) const PAGE_TIMEOUT: Duration = Duration::from_secs(90);
 
-type Answer = Result<(bool, Vec<u8>), String>;
+/// the longest a system print dialog may stay open before its caller gives up
+const DIALOG_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
-/// CDP results waiting for their caller, by request id. The ids come from one
-/// process-wide allocator, so one table serves every webview.
-#[derive(Default)]
-struct Pending(Mutex<HashMap<i32, PendingCall>>);
-
-struct PendingCall {
-    sender: mpsc::SyncSender<Answer>,
-    owner: Option<owned::Owner>,
-}
-
-impl Pending {
-    fn complete(&self, protocol: DevToolsProtocol) {
-        if let DevToolsProtocol::MethodResult {
-            message_id,
-            success,
-            result,
-        } = protocol {
-            let call = { self.0.lock().unwrap().remove(&message_id) };
-            if let Some(call) = call {
-                if let Some(owner) = call.owner {
-                    let sent = owner.effect(|| call.sender.try_send(Ok((success, result))));
-                    if let Err(error) = sent { let _ = call.sender.try_send(Err(error)); }
-                } else { let _ = call.sender.try_send(Ok((success, result))); }
-            }
+/// A page operation's error as a caller shows it.
+pub(crate) fn page_error_text(error: PageError) -> String {
+    match error {
+        PageError::Unsupported("headerTemplate") => {
+            "Headers and footers are not available when printing on this Mac.".to_owned()
         }
+        other => other.to_string(),
     }
 }
 
-static PENDING: LazyLock<Arc<Pending>> = LazyLock::new(Arc::default);
-
-/// Labels of the webviews whose browser already hands its results to [`PENDING`]
-static OBSERVED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default);
-
-/// A webview that had CDP calls is gone: a later webview of the same label
-/// is observed afresh. Labels of the shell's views are never reused; a
-/// window made outside the view table (a print window) calls this when it closes.
-#[allow(dead_code)] // called by batch M's print host
-pub(crate) fn forget_webview(label: &str) {
-    super::d2::hwp_host::keyboard::forget(label);
-    OBSERVED.lock().unwrap().remove(label);
+/// `webContents.capturePage` of `webview`, blocking. Not from the UI thread.
+pub(crate) fn capture_png(webview: &Webview, spec: CaptureSpec) -> Result<Vec<u8>, String> {
+    let page = webview.page()?;
+    page.blocking(PAGE_TIMEOUT, |done| page.capture_png(spec, None, done))
+        .map_err(page_error_text)
 }
 
-/// One Chrome DevTools protocol call on `webview`'s browser, answered with
-/// the parsed `result`. Blocks until the browser answers, so not from the UI
-/// thread. The webview's label must be unique among the webviews that use it.
-pub(crate) fn cdp(webview: &Webview, method: &str, params: Value) -> Result<Value, String> {
-    cdp_inner(webview, method, params, None)
+/// `webContents.printToPDF` of `webview`, blocking. Not from the UI thread.
+pub(crate) fn print_pdf(webview: &Webview, spec: PdfSpec) -> Result<Vec<u8>, String> {
+    let page = webview.page()?;
+    page.blocking(PAGE_TIMEOUT, |done| page.print_pdf(spec, None, done)).map_err(page_error_text)
 }
 
-pub(crate) fn cdp_owned(
-    webview: &Webview, method: &str, params: Value,
-    origin: &shell_contract::ipc::NativeRequestOwner,
-    destination: &shell_contract::ipc::NativeRequestOwner,
-    cancel: &shell_contract::runtime::CancelToken,
-    pending: &shell_contract::runtime::CancelToken,
-    actor: &shell_contract::runtime::CancelToken,
-    target: &OwnedPrintTarget,
-) -> Result<Value, String> {
-    let owner = owned::Owner { authority: owned::Authority::Pair { origin: origin.clone(), destination: destination.clone() }, cancel: cancel.clone(), pending: pending.clone(), actor: actor.clone(), target: target.clone() };
-    owner.effect(|| ())?;
-    cdp_inner(webview, method, params, Some(owner))
+/// Script evaluation in `webview`'s page, blocking. Not from the UI thread.
+pub(crate) fn evaluate(
+    webview: &Webview, js: &str, await_promise: bool,
+) -> Result<Value, PageError> {
+    let page = webview.page().map_err(PageError::Platform)?;
+    page.blocking(PAGE_TIMEOUT, |done| page.evaluate(js, await_promise, None, done))
 }
 
-pub(crate) fn cdp_native_invocation(
-    webview: &Webview, method: &str, params: Value,
-    invocation: &shell_contract::ipc::NativeInvocationTarget,
-    owner: &shell_contract::ipc::NativeRequestOwner,
-    cancel: &shell_contract::runtime::CancelToken,
-    pending: &shell_contract::runtime::CancelToken,
-    actor: &shell_contract::runtime::CancelToken,
-    target: &OwnedPrintTarget,
-) -> Result<Value, String> {
-    cdp_native_invocation_many(webview, method, params, invocation, owner, &[], cancel, pending, actor, actor, target)
-}
-
-pub(crate) fn cdp_native_invocation_many(
-    webview: &Webview, method: &str, params: Value,
-    invocation: &shell_contract::ipc::NativeInvocationTarget,
-    owner: &shell_contract::ipc::NativeRequestOwner,
-    participants: &[shell_contract::ipc::NativeRequestOwner],
-    cancel: &shell_contract::runtime::CancelToken,
-    pending: &shell_contract::runtime::CancelToken,
-    actor: &shell_contract::runtime::CancelToken,
-    stop: &shell_contract::runtime::CancelToken,
-    target: &OwnedPrintTarget,
-) -> Result<Value, String> {
-    let owner = owned::Owner {
-        authority: owned::Authority::Native { invocation: invocation.clone(), owner: owner.clone(), participants: participants.to_vec(), stop: stop.clone() },
-        cancel: cancel.clone(), pending: pending.clone(), actor: actor.clone(), target: target.clone(),
-    };
-    owner.effect(|| ())?;
-    cdp_inner(webview, method, params, Some(owner))
-}
-
-pub(crate) fn cdp_existing_document(
-    webview: &Webview, method: &str, params: Value,
-    binding: &shell_contract::ipc::NativeExistingDocumentBinding,
-    participants: &[shell_contract::ipc::NativeRequestOwner],
-    cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
-    stop: &shell_contract::runtime::CancelToken, target: &OwnedPrintTarget,
-    additional: &[shell_contract::runtime::CancelToken],
-) -> Result<Value, String> {
-    let owner = owned::Owner {
-        authority: owned::Authority::ExistingDocument { binding: binding.clone(), participants: participants.to_vec(), additional: additional.to_vec(), stop: stop.clone() },
-        cancel: cancel.clone(), pending: pending.clone(), actor: stop.clone(), target: target.clone(),
-    };
-    owner.effect(|| ())?;
-    cdp_inner(webview, method, params, Some(owner))
-}
-
-pub(crate) fn cdp_bytes_existing_document(
-    webview: &Webview, method: &str, params: Value,
-    binding: &shell_contract::ipc::NativeExistingDocumentBinding,
-    participants: &[shell_contract::ipc::NativeRequestOwner],
-    cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
-    stop: &shell_contract::runtime::CancelToken, target: &OwnedPrintTarget,
-    additional: &[shell_contract::runtime::CancelToken],
-) -> Result<Vec<u8>, String> {
-    let owner = owned::Owner {
-        authority: owned::Authority::ExistingDocument { binding: binding.clone(), participants: participants.to_vec(), additional: additional.to_vec(), stop: stop.clone() },
-        cancel: cancel.clone(), pending: pending.clone(), actor: stop.clone(), target: target.clone(),
-    };
-    owner.effect(|| ())?;
-    let result = cdp_inner(webview, method, params, Some(owner.clone()))?;
-    let data = result["data"].as_str().ok_or_else(|| format!("{method} returned no data"))?;
-    let bytes = STANDARD.decode(data).map_err(|error| error.to_string())?;
-    owner.effect(|| bytes)
-}
-
-pub(crate) fn cdp_owned_many_extra(
-    webview: &Webview, method: &str, params: Value, origin: &shell_contract::ipc::NativeRequestOwner,
-    participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken,
-    pending: &shell_contract::runtime::CancelToken, stop: &shell_contract::runtime::CancelToken,
-    target: &OwnedPrintTarget, additional: &[shell_contract::runtime::CancelToken],
-) -> Result<Value, String> {
-    let authority = owned::Authority::OwnedMany { origin: origin.clone(), participants: participants.to_vec(), additional: additional.to_vec(), stop: stop.clone() };
-    cdp_extra(webview, method, params, authority, cancel, pending, stop, target)
-}
-
-pub(crate) fn cdp_native_many_extra(
-    webview: &Webview, method: &str, params: Value, invocation: &shell_contract::ipc::NativeInvocationTarget,
-    owner: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner],
-    cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
-    stop: &shell_contract::runtime::CancelToken, target: &OwnedPrintTarget, additional: &[shell_contract::runtime::CancelToken],
-) -> Result<Value, String> {
-    let authority = owned::Authority::NativeManyExtra { invocation: invocation.clone(), owner: owner.clone(), participants: participants.to_vec(), additional: additional.to_vec(), stop: stop.clone() };
-    cdp_extra(webview, method, params, authority, cancel, pending, stop, target)
-}
-
-fn cdp_extra(webview: &Webview, method: &str, params: Value, authority: owned::Authority,
-    cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
-    stop: &shell_contract::runtime::CancelToken, target: &OwnedPrintTarget) -> Result<Value, String> {
-    let owner = owned::Owner { authority, cancel: cancel.clone(), pending: pending.clone(), actor: stop.clone(), target: target.clone() };
-    owner.effect(|| ())?;
-    cdp_inner(webview, method, params, Some(owner))
-}
-
-pub(crate) fn cdp_bytes_owned_many_extra(
-    webview: &Webview, method: &str, params: Value, origin: &shell_contract::ipc::NativeRequestOwner,
-    participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken,
-    pending: &shell_contract::runtime::CancelToken, stop: &shell_contract::runtime::CancelToken,
-    target: &OwnedPrintTarget, additional: &[shell_contract::runtime::CancelToken],
-) -> Result<Vec<u8>, String> {
-    let authority = owned::Authority::OwnedMany { origin: origin.clone(), participants: participants.to_vec(), additional: additional.to_vec(), stop: stop.clone() };
-    cdp_bytes_extra(webview, method, params, authority, cancel, pending, stop, target)
-}
-
-pub(crate) fn cdp_bytes_native_many_extra(
-    webview: &Webview, method: &str, params: Value, invocation: &shell_contract::ipc::NativeInvocationTarget,
-    owner: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner],
-    cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
-    stop: &shell_contract::runtime::CancelToken, target: &OwnedPrintTarget, additional: &[shell_contract::runtime::CancelToken],
-) -> Result<Vec<u8>, String> {
-    let authority = owned::Authority::NativeManyExtra { invocation: invocation.clone(), owner: owner.clone(), participants: participants.to_vec(), additional: additional.to_vec(), stop: stop.clone() };
-    cdp_bytes_extra(webview, method, params, authority, cancel, pending, stop, target)
-}
-
-fn cdp_bytes_extra(webview: &Webview, method: &str, params: Value, authority: owned::Authority,
-    cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
-    stop: &shell_contract::runtime::CancelToken, target: &OwnedPrintTarget) -> Result<Vec<u8>, String> {
-    let owner = owned::Owner { authority, cancel: cancel.clone(), pending: pending.clone(), actor: stop.clone(), target: target.clone() };
-    owner.effect(|| ())?;
-    let result = cdp_inner(webview, method, params, Some(owner.clone()))?;
-    let data = result["data"].as_str().ok_or_else(|| format!("{method} returned no data"))?;
-    let bytes = STANDARD.decode(data).map_err(|error| error.to_string())?;
-    owner.effect(|| bytes)
-}
-
-fn cdp_inner(webview: &Webview, method: &str, params: Value, owner: Option<owned::Owner>) -> Result<Value, String> {
-    let needs_observer = !OBSERVED.lock().map_err(|_| "CDP observer state poisoned")?.contains(webview.label());
-    if needs_observer {
-        let pending = PENDING.clone();
-        let (registered, registration) = mpsc::sync_channel(1);
-        let _registration_losses = if let Some(owner) = &owner {
-            owner.losses()?.into_iter().map(|loss| {
-                let registered = registered.clone();
-                loss.on_cancel(move || { let _ = registered.try_send(Err("Print request expired.".to_owned())); })
-            }).collect::<Vec<_>>()
-        } else { Vec::new() };
-        webview.on_dev_tools_protocol_async(
-            move |protocol| pending.complete(protocol),
-            move |result| { let _ = registered.try_send(result.map_err(|error| error.to_string())); },
-        ).map_err(|error| error.to_string())?;
-        registration.recv_timeout(CDP_TIMEOUT).map_err(|_| "CDP observer registration timed out".to_owned())??;
-        if let Some(owner) = &owner { owner.effect(|| ())?; }
-        OBSERVED.lock().map_err(|_| "CDP observer state poisoned")?.insert(webview.label().to_owned());
-    }
-    let id = allocate_devtools_message_id().map_err(|e| e.to_string())?;
-    let (tx, rx) = mpsc::sync_channel(1);
-    PENDING.0.lock().unwrap().insert(id, PendingCall { sender: tx, owner: owner.clone() });
-    let _subscriptions = match &owner {
-        Some(owner) => match owner.subscribe(id) {
-            Ok(subscriptions) => subscriptions,
-            Err(error) => { PENDING.0.lock().unwrap().remove(&id); return Err(error); }
-        },
-        None => Vec::new(),
-    };
-    let message = json!({ "id": id, "method": method, "params": params }).to_string();
-    let failed = PENDING.clone();
-    let completion = move |result: Result<(), String>| {
-        if let Err(error) = result
-            && let Some(call) = failed.0.lock().unwrap().remove(&id)
-        {
-            let _ = call.sender.try_send(Err(error));
-        }
-    };
-    let sent = if let Some(owner) = owner.clone() {
-        webview.send_dev_tools_message_authorized(message.as_bytes(), Box::new(move |send| owner.effect(send)?), completion)
-    } else {
-        webview.send_dev_tools_message_async(message.as_bytes(), move |result| completion(result.map_err(|error| error.to_string())))
-    };
-    if let Err(error) = sent {
-        PENDING.0.lock().unwrap().remove(&id);
-        return Err(error.to_string());
-    }
-    let (success, result) = rx.recv_timeout(CDP_TIMEOUT).map_err(|_| {
-        PENDING.0.lock().unwrap().remove(&id);
-        format!("{method}: no answer in {}s", CDP_TIMEOUT.as_secs())
-    })??;
-    if let Some(owner) = &owner { owner.effect(|| ())?; }
-    if !success {
-        return Err(String::from_utf8_lossy(&result).into_owned());
-    }
-    serde_json::from_slice(&result).map_err(|e| e.to_string())
-}
-
-/// A CDP result's base64 `data` field (`Page.printToPDF`, `Page.captureScreenshot`)
-pub(crate) fn cdp_bytes(webview: &Webview, method: &str, params: Value) -> Result<Vec<u8>, String> {
-    let result = cdp(webview, method, params)?;
-    let data = result["data"]
-        .as_str()
-        .ok_or_else(|| format!("{method} returned no data"))?;
-    STANDARD.decode(data).map_err(|e| e.to_string())
-}
-
-pub(crate) fn cdp_bytes_owned(
-    webview: &Webview, method: &str, params: Value,
-    origin: &shell_contract::ipc::NativeRequestOwner,
-    destination: &shell_contract::ipc::NativeRequestOwner,
-    cancel: &shell_contract::runtime::CancelToken,
-    pending: &shell_contract::runtime::CancelToken,
-    actor: &shell_contract::runtime::CancelToken,
-    target: &OwnedPrintTarget,
-) -> Result<Vec<u8>, String> {
-    let result = cdp_owned(webview, method, params, origin, destination, cancel, pending, actor, target)?;
-    let data = result["data"].as_str().ok_or_else(|| format!("{method} returned no data"))?;
-    let bytes = STANDARD.decode(data).map_err(|error| error.to_string())?;
-    let owner = owned::Owner { authority: owned::Authority::Pair { origin: origin.clone(), destination: destination.clone() }, cancel: cancel.clone(), pending: pending.clone(), actor: actor.clone(), target: target.clone() };
-    owner.effect(|| bytes)
-}
-
-pub(crate) fn cdp_bytes_native_invocation(
-    webview: &Webview, method: &str, params: Value,
-    invocation: &shell_contract::ipc::NativeInvocationTarget,
-    registered: &shell_contract::ipc::NativeRequestOwner,
-    cancel: &shell_contract::runtime::CancelToken,
-    pending: &shell_contract::runtime::CancelToken,
-    actor: &shell_contract::runtime::CancelToken,
-    target: &OwnedPrintTarget,
-) -> Result<Vec<u8>, String> {
-    cdp_bytes_native_invocation_many(webview, method, params, invocation, registered, &[], cancel, pending, actor, actor, target)
-}
-
-pub(crate) fn cdp_bytes_native_invocation_many(
-    webview: &Webview, method: &str, params: Value,
-    invocation: &shell_contract::ipc::NativeInvocationTarget,
-    owner: &shell_contract::ipc::NativeRequestOwner,
-    participants: &[shell_contract::ipc::NativeRequestOwner],
-    cancel: &shell_contract::runtime::CancelToken,
-    pending: &shell_contract::runtime::CancelToken,
-    actor: &shell_contract::runtime::CancelToken,
-    stop: &shell_contract::runtime::CancelToken,
-    target: &OwnedPrintTarget,
-) -> Result<Vec<u8>, String> {
-    let owner = owned::Owner {
-        authority: owned::Authority::Native { invocation: invocation.clone(), owner: owner.clone(), participants: participants.to_vec(), stop: stop.clone() },
-        cancel: cancel.clone(), pending: pending.clone(), actor: actor.clone(), target: target.clone(),
-    };
-    owner.effect(|| ())?;
-    let result = cdp_inner(webview, method, params, Some(owner.clone()))?;
-    let data = result["data"].as_str().ok_or_else(|| format!("{method} returned no data"))?;
-    let bytes = STANDARD.decode(data).map_err(|error| error.to_string())?;
-    owner.effect(|| bytes)
+/// The system print dialog of `webview`; returns when the platform says how it ended
+/// (WebView2 does not say: [`PrintOutcome::Unreported`]). Not from the UI thread.
+pub(crate) fn print_dialog(webview: &Webview) -> Result<PrintOutcome, String> {
+    blocking(DIALOG_TIMEOUT, |done| Current::print_dialog(webview, done)).map_err(page_error_text)
 }
 
 struct ShellContents {
@@ -344,10 +80,8 @@ struct ShellContents {
 }
 
 pub fn install(hosts: &mut Hosts, cx: &HostContext) {
-    let contents: ContentsHost = Arc::new(ShellContents {
-        table: cx.views.clone(),
-        windows: cx.windows.clone(),
-    });
+    let contents: ContentsHost =
+        Arc::new(ShellContents { table: cx.views.clone(), windows: cx.windows.clone() });
     hosts.insert(contents);
 }
 
@@ -382,69 +116,114 @@ fn paper(name: &str) -> Option<(f64, f64)> {
     })
 }
 
-/// `webContents.printToPDF(options)` as the parameters of `Page.printToPDF`. A
-/// key Electron has and CDP names alike goes across; the page size and the
-/// margins (inches in both) are spelled out. What `options` leaves out stays
-/// at the browser's default.
-pub(crate) fn pdf_params(options: &IpcValue) -> Value {
-    let mut params = Map::new();
-    for key in [
-        "landscape",
-        "displayHeaderFooter",
-        "printBackground",
-        "preferCSSPageSize",
-        "generateTaggedPDF",
-        "generateDocumentOutline",
-    ] {
-        if let Some(IpcValue::Bool(b)) = field(options, key) {
-            params.insert(key.into(), json!(b));
-        }
+/// The template a header or footer shows when `displayHeaderFooter` names none.
+const EMPTY_TEMPLATE: &str = "<span></span>";
+
+/// `webContents.printToPDF(options)` as a [`PdfSpec`]. A key Electron has and `PdfSpec` names
+/// alike goes across; the page size and the margins (inches in both) are spelled out. What
+/// `options` leaves out stays at the spec's default, which is the browser's default.
+pub(crate) fn pdf_spec(options: &IpcValue) -> PdfSpec {
+    let mut spec = PdfSpec::default();
+    let flag = |key: &str| match field(options, key) {
+        Some(IpcValue::Bool(value)) => Some(*value),
+        _ => None,
+    };
+    if let Some(landscape) = flag("landscape") {
+        spec.landscape = landscape;
+    }
+    if let Some(background) = flag("printBackground") {
+        spec.print_background = background;
+    }
+    if let Some(css_size) = flag("preferCSSPageSize") {
+        spec.prefer_css_page_size = css_size;
+    }
+    if let Some(tagged) = flag("generateTaggedPDF") {
+        spec.tagged = tagged;
+    }
+    if let Some(outline) = flag("generateDocumentOutline") {
+        spec.outline = outline;
     }
     if let Some(scale) = number(field(options, "scale")) {
-        params.insert("scale".into(), json!(scale));
+        spec.scale = scale;
     }
-    for key in ["pageRanges", "headerTemplate", "footerTemplate"] {
-        if let Some(IpcValue::String(s)) = field(options, key) {
-            params.insert(key.into(), json!(s));
-        }
+    if let Some(IpcValue::String(ranges)) = field(options, "pageRanges") {
+        spec.page_ranges = Some(ranges.clone());
     }
     match field(options, "pageSize") {
         Some(IpcValue::String(name)) => {
-            if let Some((w, h)) = paper(name) {
-                params.insert("paperWidth".into(), json!(w));
-                params.insert("paperHeight".into(), json!(h));
+            if let Some(size) = paper(name) {
+                spec.paper_in = Some(size);
             }
         }
         Some(size @ IpcValue::Object(_)) => {
-            if let (Some(w), Some(h)) =
+            if let (Some(width), Some(height)) =
                 (number(field(size, "width")), number(field(size, "height")))
             {
-                params.insert("paperWidth".into(), json!(w));
-                params.insert("paperHeight".into(), json!(h));
+                spec.paper_in = Some((width, height));
             }
         }
         _ => {}
     }
     if let Some(margins) = field(options, "margins") {
-        for (key, cdp) in [
-            ("top", "marginTop"),
-            ("bottom", "marginBottom"),
-            ("left", "marginLeft"),
-            ("right", "marginRight"),
-        ] {
-            if let Some(m) = number(field(margins, key)) {
-                params.insert(cdp.into(), json!(m));
+        for (slot, key) in spec.margins_in.iter_mut().zip(["top", "right", "bottom", "left"]) {
+            if let Some(margin) = number(field(margins, key)) {
+                *slot = margin;
             }
         }
     }
-    Value::Object(params)
+    if flag("displayHeaderFooter") == Some(true) {
+        let template = |key: &str| match field(options, key) {
+            Some(IpcValue::String(text)) => text.clone(),
+            _ => EMPTY_TEMPLATE.to_owned(),
+        };
+        spec.header_footer = Some(HeaderFooter {
+            header_template: template("headerTemplate"),
+            footer_template: template("footerTemplate"),
+        });
+    }
+    spec
+}
+
+/// The browser and committed document an owned print is bound to. `origin` must be the
+/// registered document of the very browser behind `webview`.
+fn capture_target(
+    webview: &Webview, origin: &DocumentContext, generation: RendererGeneration,
+) -> Result<OwnedPrintTarget, String> {
+    let frame = webview.native_browser()?;
+    if !frame.is_same_browser(origin.browser()) {
+        return Err("The captured print document is not in this view.".to_owned());
+    }
+    let document = origin
+        .current_document()
+        .ok_or_else(|| "The captured print document is no longer current.".to_owned())?;
+    Ok(OwnedPrintTarget { frame, document, generation })
 }
 
 impl ShellContents {
     fn webview_of(&self, view: ViewId) -> Result<Webview, String> {
-        self.windows
-            .webview(view)
-            .ok_or_else(|| format!("no view {}", view.0))
+        self.windows.webview(view).ok_or_else(|| format!("no view {}", view.0))
+    }
+
+    /// One print of `view` under `authority`. `proof` is the owner whose native origin must
+    /// independently prove it is the captured browser and document.
+    #[allow(clippy::too_many_arguments)]
+    fn print_owned(
+        &self, view: ViewId, proof: &NativeRequestOwner, authority: Authority, actor: CancelToken,
+        generation: RendererGeneration, cancel: &CancelToken, pending: &CancelToken,
+        options: &IpcValue,
+    ) -> Result<Vec<u8>, String> {
+        let _actor_lifetime = ActorLifetime(actor.clone());
+        let origin = &proof
+            .context
+            .authority_ref::<crate::ipc::native_owner::NativeOwnerAuthority>()
+            .ok_or("Print destination is not authenticated.")?
+            .origin;
+        // The view lookup obtains only a transport conduit.
+        let webview = self.webview_of(view)?;
+        let target = capture_target(&webview, origin, generation)?;
+        let owner =
+            Owner { authority, cancel: cancel.clone(), pending: pending.clone(), actor, target };
+        owner.print_pdf(&webview, pdf_spec(options))
     }
 }
 
@@ -454,260 +233,118 @@ impl Contents for ShellContents {
     }
 
     fn capture_png(&self, view: ViewId) -> Result<Vec<u8>, String> {
-        cdp_bytes(
-            &self.webview_of(view)?,
-            "Page.captureScreenshot",
-            json!({ "format": "png" }),
+        capture_png(&self.webview_of(view)?, CaptureSpec::default())
+    }
+
+    fn print_to_pdf_owned(
+        &self, origin: &NativeRequestOwner, destination: &NativeRequestOwner, cancel: &CancelToken,
+        pending: &CancelToken, options: IpcValue,
+    ) -> Result<Vec<u8>, String> {
+        let generation =
+            destination.context.renderer().cloned().ok_or("Print renderer is unavailable.")?;
+        let authority =
+            Authority::Pair { origin: origin.clone(), destination: destination.clone() };
+        self.print_owned(
+            destination.view,
+            destination,
+            authority,
+            CancelToken::default(),
+            generation,
+            cancel,
+            pending,
+            &options,
         )
     }
 
-    fn print_to_pdf_owned(&self, origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, options: IpcValue) -> Result<Vec<u8>, String> {
-        use shell_contract::runtime::CancelToken;
-        let authority = destination.context.authority_ref::<crate::ipc::native_owner::NativeOwnerAuthority>().ok_or("Print destination is not authenticated.")?;
-        let native_origin = authority.origin.clone();
-        let generation = destination.context.renderer().cloned().ok_or("Print renderer is unavailable.")?;
-        let origin_loss = origin.loss_token().ok_or("Print origin lifetime is unavailable.")?;
-        let destination_loss = destination.loss_token().ok_or("Print destination lifetime is unavailable.")?;
-        let actor = CancelToken::default();
-        struct ActorLifetime(CancelToken);
-        impl Drop for ActorLifetime { fn drop(&mut self) { self.0.cancel(); } }
-        let _actor_lifetime = ActorLifetime(actor.clone());
-        let (send, receive) = std::sync::mpsc::sync_channel::<Result<OwnedPrintTarget, String>>(1);
-        let subscriptions = [cancel.clone(), pending.clone(), origin_loss, destination_loss, generation.loss_token()].into_iter().map(|loss| {
-            let actor = actor.clone(); let send = send.clone();
-            loss.on_cancel(move || { actor.cancel(); let _ = send.try_send(Err("Print request expired.".into())); })
-        }).collect::<Vec<_>>();
-        // The view lookup obtains only a transport conduit. Native origin must
-        // independently prove this is the captured browser/frame/document.
-        let webview = self.webview_of(destination.view)?;
-        let capture_actor = actor.clone();
-        webview.with_cef_webview(move |native| {
-            let target = if capture_actor.is_cancelled() {
-                Err("Print request expired.".to_owned())
-            } else {
-                native_origin.capture_current_document(&native).map(|document| OwnedPrintTarget {
-                    frame: native.frame_navigation_state().clone(), document, generation,
-                }).ok_or_else(|| "The captured print document is no longer current.".to_owned())
-            };
-            let _ = send.try_send(target);
-        }).map_err(|error| error.to_string())?;
-        let target = receive.recv_timeout(CDP_TIMEOUT).map_err(|_| "Print document identity timed out.".to_owned())??;
-        let result = cdp_bytes_owned(&webview, "Page.printToPDF", pdf_params(&options), origin, destination, cancel, pending, &actor, &target);
-        actor.cancel();
-        drop(subscriptions);
-        result
-    }
-
     fn print_to_pdf_owned_many_extra(
-        &self, origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner,
-        participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken,
-        pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken],
-        options: IpcValue,
+        &self, origin: &NativeRequestOwner, destination: &NativeRequestOwner,
+        participants: &[NativeRequestOwner], cancel: &CancelToken, pending: &CancelToken,
+        additional: &[CancelToken], options: IpcValue,
     ) -> Result<Vec<u8>, String> {
-        use shell_contract::runtime::{CancelToken, RendererGeneration};
-        let proof = destination.context.authority_ref::<crate::ipc::native_owner::NativeOwnerAuthority>()
-            .ok_or("Print destination is not authenticated.")?;
-        let native_origin = proof.origin.clone();
         let actor = CancelToken::default();
-        struct ActorLifetime(CancelToken);
-        impl Drop for ActorLifetime { fn drop(&mut self) { self.0.cancel(); } }
-        let _actor_lifetime = ActorLifetime(actor.clone());
         let mut captured = Vec::with_capacity(participants.len() + 1);
         captured.push(destination.clone());
         captured.extend_from_slice(participants);
-        let authority = owned::Authority::OwnedMany {
-            origin: origin.clone(), participants: captured.clone(), additional: additional.to_vec(), stop: actor.clone(),
+        let authority = Authority::OwnedMany {
+            origin: origin.clone(),
+            participants: captured,
+            additional: additional.to_vec(),
+            stop: actor.clone(),
         };
-        let generation = RendererGeneration::new();
-        let (send, receive) = mpsc::sync_channel::<Result<OwnedPrintTarget, String>>(1);
-        let subscriptions = authority.losses(cancel, pending, &actor, &generation)?.into_iter().map(|loss| {
-            let actor = actor.clone(); let send = send.clone();
-            loss.on_cancel(move || {
-                actor.cancel();
-                let _ = send.try_send(Err("Print request expired.".into()));
-            })
-        }).collect::<Vec<_>>();
-        let webview = self.webview_of(destination.view)?;
-        let captured_origin = origin.clone();
-        let captured_cancel = cancel.clone();
-        let captured_pending = pending.clone();
-        let captured_additional = additional.to_vec();
-        let captured_actor = actor.clone();
-        let captured_generation = generation.clone();
-        webview.with_cef_webview(move |native| {
-            let target = native_origin.capture_current_document(&native).map(|document| OwnedPrintTarget {
-                frame: native.frame_navigation_state().clone(), document, generation: captured_generation.clone(),
-            });
-            let result = target.and_then(|target| {
-                crate::ipc::native_owner::with_owned_print_many_extra_effect(
-                    &captured_origin, &captured, &captured_cancel, &captured_pending, &captured_actor,
-                    &captured_generation, &captured_additional.iter().collect::<Vec<_>>(), || {
-                        (target.frame.document().as_ref() == Some(&target.document)).then_some(target)
-                    },
-                ).flatten()
-            }).ok_or_else(|| "The captured print document is no longer current.".to_owned());
-            let _ = send.try_send(result);
-        }).map_err(|error| error.to_string())?;
-        let target = receive.recv_timeout(CDP_TIMEOUT).map_err(|_| "Print document identity timed out.".to_owned())??;
-        let owner = owned::Owner { authority, cancel: cancel.clone(), pending: pending.clone(), actor: actor.clone(), target };
-        owner.effect(|| ())?;
-        let result = cdp_inner(&webview, "Page.printToPDF", pdf_params(&options), Some(owner.clone()))?;
-        let data = result["data"].as_str().ok_or("Page.printToPDF returned no data")?;
-        let bytes = STANDARD.decode(data).map_err(|error| error.to_string())?;
-        let result = owner.effect(|| bytes);
-        actor.cancel();
-        drop(subscriptions);
-        result
+        self.print_owned(
+            destination.view,
+            destination,
+            authority,
+            actor,
+            RendererGeneration::new(),
+            cancel,
+            pending,
+            &options,
+        )
     }
 
     fn print_to_pdf_native_invocation(
         &self, document: &shell_contract::ipc::NativeInvocationDocument,
-        owner: &shell_contract::ipc::NativeRequestOwner,
-        participants: &[shell_contract::ipc::NativeRequestOwner],
-        cancel: &shell_contract::runtime::CancelToken,
-        pending: &shell_contract::runtime::CancelToken,
-        options: IpcValue,
+        owner: &NativeRequestOwner, participants: &[NativeRequestOwner], cancel: &CancelToken,
+        pending: &CancelToken, options: IpcValue,
     ) -> Result<Vec<u8>, String> {
-        use shell_contract::runtime::{CancelToken, RendererGeneration};
-        let proof = owner.context.authority_ref::<crate::ipc::native_owner::NativeOwnerAuthority>()
-            .ok_or("Print destination is not authenticated.")?;
-        let native_origin = proof.origin.clone();
         let actor = CancelToken::default();
-        struct ActorLifetime(CancelToken);
-        impl Drop for ActorLifetime { fn drop(&mut self) { self.0.cancel(); } }
-        let _actor_lifetime = ActorLifetime(actor.clone());
-        let authority = owned::Authority::Native {
-            invocation: document.target().clone(), owner: owner.clone(), participants: participants.to_vec(), stop: actor.clone(),
+        let authority = Authority::Native {
+            invocation: document.target().clone(),
+            owner: owner.clone(),
+            participants: participants.to_vec(),
+            stop: actor.clone(),
         };
-        let generation = RendererGeneration::new();
-        let (send, receive) = mpsc::sync_channel::<Result<OwnedPrintTarget, String>>(1);
-        let subscriptions = authority.losses(cancel, pending, &actor, &generation)?.into_iter().map(|loss| {
-            let actor = actor.clone(); let send = send.clone();
-            loss.on_cancel(move || {
-                actor.cancel();
-                let _ = send.try_send(Err("Print request expired.".into()));
-            })
-        }).collect::<Vec<_>>();
-        let webview = self.webview_of(owner.view)?;
-        let invocation = document.target().clone();
-        let sender = owner.clone();
-        let capture_participants = match &authority {
-            owned::Authority::Native { participants, .. } => participants.clone(),
-            owned::Authority::Pair { .. } | owned::Authority::ExistingDocument { .. } | owned::Authority::OwnedMany { .. } | owned::Authority::NativeManyExtra { .. } => unreachable!(),
-        };
-        let capture_cancel = cancel.clone();
-        let capture_pending = pending.clone();
-        let capture_actor = actor.clone();
-        let capture_generation = generation.clone();
-        webview.with_cef_webview(move |native| {
-            let captured = native_origin.capture_current_document(&native).map(|document| OwnedPrintTarget {
-                frame: native.frame_navigation_state().clone(), document, generation: capture_generation.clone(),
-            });
-            let result = captured.and_then(|target| {
-                crate::ipc::native_owner::with_native_invocation_print_many_effect(
-                    &invocation, &sender, &capture_participants, &capture_cancel, &capture_pending,
-                    &capture_actor, &capture_actor, &capture_generation, || {
-                        (target.frame.document().as_ref() == Some(&target.document)).then_some(target)
-                    },
-                ).flatten()
-            }).ok_or_else(|| "The captured print document is no longer current.".to_owned());
-            let _ = send.try_send(result);
-        }).map_err(|error| error.to_string())?;
-        let target = receive.recv_timeout(CDP_TIMEOUT).map_err(|_| "Print document identity timed out.".to_owned())??;
-        let owner = owned::Owner { authority, cancel: cancel.clone(), pending: pending.clone(), actor: actor.clone(), target };
-        owner.effect(|| ())?;
-        let result = cdp_inner(&webview, "Page.printToPDF", pdf_params(&options), Some(owner.clone()))?;
-        let data = result["data"].as_str().ok_or("Page.printToPDF returned no data")?;
-        let bytes = STANDARD.decode(data).map_err(|error| error.to_string())?;
-        let result = owner.effect(|| bytes);
-        actor.cancel();
-        drop(subscriptions);
-        result
+        self.print_owned(
+            owner.view,
+            owner,
+            authority,
+            actor,
+            RendererGeneration::new(),
+            cancel,
+            pending,
+            &options,
+        )
     }
 
     fn print_to_pdf_existing_document(
         &self, binding: &shell_contract::ipc::NativeExistingDocumentBinding,
-        participants: &[shell_contract::ipc::NativeRequestOwner],
-        cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
-        additional: &[shell_contract::runtime::CancelToken], options: IpcValue,
+        participants: &[NativeRequestOwner], cancel: &CancelToken, pending: &CancelToken,
+        additional: &[CancelToken], options: IpcValue,
     ) -> Result<Vec<u8>, String> {
-        use shell_contract::runtime::{CancelToken, RendererGeneration};
-        let captured_owner = binding.owner();
-        let proof = captured_owner.context.authority_ref::<crate::ipc::native_owner::NativeOwnerAuthority>()
-            .ok_or("Print destination is not authenticated.")?;
-        let native_origin = proof.origin.clone();
         let actor = CancelToken::default();
-        struct ActorLifetime(CancelToken);
-        impl Drop for ActorLifetime { fn drop(&mut self) { self.0.cancel(); } }
-        let _actor_lifetime = ActorLifetime(actor.clone());
-        let authority = owned::Authority::ExistingDocument {
-            binding: binding.clone(), participants: participants.to_vec(), additional: additional.to_vec(), stop: actor.clone(),
+        let authority = Authority::ExistingDocument {
+            binding: binding.clone(),
+            participants: participants.to_vec(),
+            additional: additional.to_vec(),
+            stop: actor.clone(),
         };
-        let generation = RendererGeneration::new();
-        let (send, receive) = mpsc::sync_channel::<Result<OwnedPrintTarget, String>>(1);
-        let subscriptions = authority.losses(cancel, pending, &actor, &generation)?.into_iter().map(|loss| {
-            let actor = actor.clone(); let send = send.clone();
-            loss.on_cancel(move || {
-                actor.cancel();
-                let _ = send.try_send(Err("Print request expired.".into()));
-            })
-        }).collect::<Vec<_>>();
-        let webview = self.webview_of(captured_owner.view)?;
-        let captured_binding = binding.clone();
-        let captured_participants = participants.to_vec();
-        let captured_cancel = cancel.clone();
-        let captured_pending = pending.clone();
-        let captured_additional = additional.to_vec();
-        let captured_actor = actor.clone();
-        let captured_generation = generation.clone();
-        webview.with_cef_webview(move |native| {
-            let captured = native_origin.capture_current_document(&native).map(|document| OwnedPrintTarget {
-                frame: native.frame_navigation_state().clone(), document, generation: captured_generation.clone(),
-            });
-            let result = captured.and_then(|target| {
-                crate::ipc::native_owner::with_existing_document_print_effect(
-                    &captured_binding, &captured_participants, &captured_cancel, &captured_pending, &captured_actor,
-                    &captured_generation, &captured_additional.iter().collect::<Vec<_>>(), || {
-                        (target.frame.document().as_ref() == Some(&target.document)).then_some(target)
-                    },
-                ).flatten()
-            }).ok_or_else(|| "The captured print document is no longer current.".to_owned());
-            let _ = send.try_send(result);
-        }).map_err(|error| error.to_string())?;
-        let target = receive.recv_timeout(CDP_TIMEOUT).map_err(|_| "Print document identity timed out.".to_owned())??;
-        let owner = owned::Owner { authority, cancel: cancel.clone(), pending: pending.clone(), actor: actor.clone(), target };
-        owner.effect(|| ())?;
-        let result = cdp_inner(&webview, "Page.printToPDF", pdf_params(&options), Some(owner.clone()))?;
-        let data = result["data"].as_str().ok_or("Page.printToPDF returned no data")?;
-        let bytes = STANDARD.decode(data).map_err(|error| error.to_string())?;
-        let result = owner.effect(|| bytes);
-        actor.cancel();
-        drop(subscriptions);
-        result
-    }
-
-    fn print_to_pdf(&self, view: ViewId, options: IpcValue) -> Result<Vec<u8>, String> {
-        cdp_bytes(
-            &self.webview_of(view)?,
-            "Page.printToPDF",
-            pdf_params(&options),
+        let owner = binding.owner();
+        self.print_owned(
+            owner.view,
+            owner,
+            authority,
+            actor,
+            RendererGeneration::new(),
+            cancel,
+            pending,
+            &options,
         )
     }
 
-    /// `webContents.print` opens the system's print dialog. Tauri's `print`
-    /// shows it and does not report how it ended, so a shown dialog is
-    /// `true`; batch M's print host (`host/print.rs`) owns anything finer.
+    fn print_to_pdf(&self, view: ViewId, options: IpcValue) -> Result<Vec<u8>, String> {
+        print_pdf(&self.webview_of(view)?, pdf_spec(&options))
+    }
+
+    /// `webContents.print`: a named printer prints silently through the spooler
+    /// (`host/print.rs`); otherwise the system print dialog opens and the answer is how it
+    /// ended. WebView2 does not say, so a shown dialog is `true` there.
     fn print(&self, view: ViewId, options: IpcValue) -> Result<bool, String> {
-        let webview = self
-            .windows
-            .webview(view)
-            .ok_or_else(|| format!("no view {}", view.0))?;
-        // a named printer, no dialog: batch M's spooler (host/print.rs)
+        let webview = self.webview_of(view)?;
         if let Some(IpcValue::Bool(true)) = field(&options, "silent") {
             return super::print::print_silently_ipc(&webview, &options).map(|()| true);
         }
-        webview.print().map_err(|e| e.to_string())?;
-        Ok(true)
+        Ok(print_dialog(&webview)? != PrintOutcome::Cancelled)
     }
 
     fn zoom_factor(&self, view: ViewId) -> f64 {
@@ -743,54 +380,67 @@ mod tests {
     use super::*;
 
     fn object(entries: Vec<(&str, IpcValue)>) -> IpcValue {
-        IpcValue::Object(
-            entries
-                .into_iter()
-                .map(|(k, v)| (k.to_owned(), v))
-                .collect(),
-        )
+        IpcValue::Object(entries.into_iter().map(|(k, v)| (k.to_owned(), v)).collect())
     }
 
     #[test]
-    fn electron_options_become_cdp_parameters() {
+    fn electron_options_become_a_pdf_spec() {
         let options = object(vec![
             ("landscape", IpcValue::Bool(true)),
             ("printBackground", IpcValue::Bool(true)),
             ("pageSize", IpcValue::String("A4".into())),
             (
                 "margins",
-                object(vec![
-                    ("top", IpcValue::Number(0.0)),
-                    ("left", IpcValue::Number(0.5)),
-                ]),
+                object(vec![("top", IpcValue::Number(0.0)), ("left", IpcValue::Number(0.5))]),
             ),
             ("pageRanges", IpcValue::String("1-2".into())),
             ("scale", IpcValue::Number(0.9)),
         ]);
+        let spec = pdf_spec(&options);
         assert_eq!(
-            pdf_params(&options),
-            json!({
-                "landscape": true,
-                "printBackground": true,
-                "scale": 0.9,
-                "pageRanges": "1-2",
-                "paperWidth": 8.27,
-                "paperHeight": 11.69,
-                "marginTop": 0.0,
-                "marginLeft": 0.5,
-            })
+            spec,
+            PdfSpec {
+                landscape: true,
+                print_background: true,
+                scale: 0.9,
+                page_ranges: Some("1-2".into()),
+                paper_in: Some((8.27, 11.69)),
+                margins_in: [0.0, 0.4, 0.4, 0.5],
+                ..PdfSpec::default()
+            }
         );
         let custom = object(vec![(
             "pageSize",
-            object(vec![
-                ("width", IpcValue::Number(5.0)),
-                ("height", IpcValue::Number(7.0)),
-            ]),
+            object(vec![("width", IpcValue::Number(5.0)), ("height", IpcValue::Number(7.0))]),
         )]);
+        assert_eq!(pdf_spec(&custom).paper_in, Some((5.0, 7.0)));
+        assert_eq!(pdf_spec(&IpcValue::Undefined), PdfSpec::default());
+    }
+
+    #[test]
+    fn header_and_footer_templates_travel_only_when_they_are_displayed() {
+        let templates = |display: bool| {
+            object(vec![
+                ("displayHeaderFooter", IpcValue::Bool(display)),
+                ("headerTemplate", IpcValue::String("<h>".into())),
+            ])
+        };
+        assert_eq!(pdf_spec(&templates(false)).header_footer, None);
         assert_eq!(
-            pdf_params(&custom),
-            json!({ "paperWidth": 5.0, "paperHeight": 7.0 })
+            pdf_spec(&templates(true)).header_footer,
+            Some(HeaderFooter {
+                header_template: "<h>".into(),
+                footer_template: EMPTY_TEMPLATE.into(),
+            })
         );
-        assert_eq!(pdf_params(&IpcValue::Undefined), json!({}));
+    }
+
+    #[test]
+    fn a_header_template_refusal_reads_as_the_sheets_error_text() {
+        assert_eq!(
+            page_error_text(PageError::Unsupported("headerTemplate")),
+            "Headers and footers are not available when printing on this Mac."
+        );
+        assert_eq!(page_error_text(PageError::Timeout), PageError::Timeout.to_string());
     }
 }

@@ -600,10 +600,11 @@ impl AgentServices for Svc {
         &self,
         _: ViewId,
         _: &TemplatePreviewInput,
-    ) -> Result<TemplatePreviewOutcome, String> {
-        Ok(TemplatePreviewOutcome::Refused {
+        done: Box<dyn FnOnce(Result<TemplatePreviewOutcome, String>)>,
+    ) {
+        done(Ok(TemplatePreviewOutcome::Refused {
             reason: "none".into(),
-        })
+        }));
     }
     fn has_app_mcp(&self) -> bool {
         self.app_mcp.load(Ordering::SeqCst)

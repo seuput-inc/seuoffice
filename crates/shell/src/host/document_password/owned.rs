@@ -6,7 +6,7 @@ use shell_contract::runtime::{CancelSubscription, CancelToken, RendererGeneratio
 use shell_contract::{Surface, ViewId, WindowId};
 use shell_ipc_d2::pdf::tools::OwnedPasswordWindowActions;
 use tauri::Manager;
-use tauri_runtime_cef::{FrameEventKind, NativeContextToken, WindowCefExt};
+use crate::native::{DocumentContext, NativeEventKind, WindowExt};
 
 use crate::host::HostContext;
 use crate::host::window::{Bridge, ViewSpec, WindowOptions, WindowSpec};
@@ -137,7 +137,7 @@ impl Opening {
         }
     }
 
-    fn registered(self: &Arc<Self>, view: ViewId, origin: &NativeContextToken) {
+    fn registered(self: &Arc<Self>, view: ViewId, origin: &DocumentContext) {
         let Some(created) = self.created.get() else { return };
         if created.view != view { return; }
         let first = self.owner.lock().unwrap_or_else(|error| error.into_inner()).as_ref()
@@ -167,7 +167,7 @@ impl Opening {
         self.finish(Ok((view, owner)));
     }
 
-    fn ready(self: &Arc<Self>, origin: &NativeContextToken) {
+    fn ready(self: &Arc<Self>, origin: &DocumentContext) {
         let Some(created) = self.created.get() else { return };
         let owner = self.owner.lock().unwrap_or_else(|error| error.into_inner()).clone();
         let Some(owner) = owner.filter(|owner| owner.context.authority_ref::<native_owner::NativeOwnerAuthority>().is_some_and(|proof| proof.origin == *origin)) else { return };
@@ -259,19 +259,16 @@ fn open_password_window(
                 center: true, minimizable: false, maximizable: false, fullscreenable: false,
                 on_frame: Some(Arc::new(move |view, event| {
                     let Some(opening) = frames.upgrade() else { return };
-                    if !event.is_main { return; }
                     match &event.kind {
-                        FrameEventKind::NativeContextRegistered { origin }
-                            if origin.browser_id() == event.browser_id && origin.frame_id() == event.frame_id => opening.registered(view, origin),
-                        FrameEventKind::FirstVisuallyNonEmptyLayout { origin }
-                            if origin.browser_id() == event.browser_id && origin.frame_id() == event.frame_id => opening.ready(origin),
-                        FrameEventKind::NativeContextRevoked { origin } => {
+                        NativeEventKind::DocumentRegistered { context } => opening.registered(view, context),
+                        NativeEventKind::DocumentReady { context } => opening.ready(context),
+                        NativeEventKind::DocumentRevoked { document, .. } => {
                             let matches = opening.owner.lock().unwrap_or_else(|error| error.into_inner()).as_ref()
-                                .is_some_and(|owner| owner.context.authority_ref::<native_owner::NativeOwnerAuthority>().is_some_and(|proof| proof.origin == *origin));
+                                .is_some_and(|owner| owner.context.authority_ref::<native_owner::NativeOwnerAuthority>().is_some_and(|proof| proof.origin.identity() == document));
                             if matches { opening.close("The password renderer context was revoked".into()); }
                         }
-                        FrameEventKind::RendererTerminated => opening.close("The password renderer stopped".into()),
-                        FrameEventKind::NavigationFailed { .. } => opening.close("The password document could not load".into()),
+                        NativeEventKind::WebviewProcessFailed { .. } => opening.close("The password renderer stopped".into()),
+                        NativeEventKind::NavigationFailed { .. } => opening.close("The password document could not load".into()),
                         _ => {}
                     }
                 })),

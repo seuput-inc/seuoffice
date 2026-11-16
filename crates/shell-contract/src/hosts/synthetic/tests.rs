@@ -4571,3 +4571,104 @@ fn prepared_docs_publication_is_invisible_until_exact_adoption() {
         None
     );
 }
+
+#[cfg(unix)]
+fn committed_receipt_fixture(
+    effects: &SyntheticOwnedEffects,
+    owner: &NativeRequestOwner,
+) -> (std::path::PathBuf, file_commit::FileCommitReceipt) {
+    use std::fs::{self, File};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let dir = std::env::temp_dir().join(format!(
+        "renderer-commit-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).unwrap();
+    let path = dir.join("project.xlsx");
+    let cancel = CancelToken::default();
+    let write = effects
+        .begin_owned_direct_write(
+            owner,
+            owner,
+            &[],
+            &cancel,
+            &cancel,
+            &[],
+            &path,
+            file_commit::prepare_direct(&File::open(&dir).unwrap(), &path).unwrap(),
+        )
+        .unwrap();
+    let written = match write.write_owned(b"project bytes".to_vec()) {
+        Ok(written) => written,
+        Err(_) => panic!("fixture write failed"),
+    };
+    match written.finish(effects) {
+        crate::ipc::DirectWriteCompletion::Committed { publication, .. } => {
+            (path, publication.commit().clone())
+        }
+        _ => panic!("fixture publication failed"),
+    }
+}
+
+#[cfg(unix)]
+fn leased_owner(owner: &mut NativeRequestOwner) {
+    let renderer = owner.context.renderer().unwrap().clone();
+    owner.context = owner.context.clone().with_document_lease(renderer);
+}
+
+#[cfg(unix)]
+#[test]
+fn renderer_commit_wraps_a_real_commit_of_the_destination_path() {
+    let (effects, _, _, _, mut owner) = model();
+    leased_owner(&mut owner);
+    let (path, receipt) = committed_receipt_fixture(&effects, &owner);
+    let cancel = CancelToken::default();
+    let publication = crate::ipc::SavedPublication::renderer_commit(
+        &effects, &owner, &owner, &[], &cancel, &cancel, &[], &path, receipt,
+    )
+    .unwrap();
+    assert_eq!(publication.path(), path.as_path());
+    assert!(matches!(publication, crate::ipc::SavedPublication::Renderer(_)));
+}
+
+#[cfg(unix)]
+#[test]
+fn renderer_commit_refuses_a_cancelled_token_and_a_different_destination_path() {
+    let (effects, _, _, _, mut owner) = model();
+    leased_owner(&mut owner);
+    let (path, receipt) = committed_receipt_fixture(&effects, &owner);
+    let live = CancelToken::default();
+    let cancelled = CancelToken::default();
+    cancelled.cancel();
+    for (cancel, pending, additional) in [
+        (&cancelled, &live, Vec::new()),
+        (&live, &cancelled, Vec::new()),
+        (&live, &live, vec![cancelled.clone()]),
+    ] {
+        assert!(
+            crate::ipc::SavedPublication::renderer_commit(
+                &effects,
+                &owner,
+                &owner,
+                &[],
+                cancel,
+                pending,
+                &additional,
+                &path,
+                receipt.clone(),
+            )
+            .is_err()
+        );
+    }
+    let elsewhere = path.with_file_name("other.xlsx");
+    assert!(
+        crate::ipc::SavedPublication::renderer_commit(
+            &effects, &owner, &owner, &[], &live, &live, &[], &elsewhere, receipt,
+        )
+        .is_err()
+    );
+}

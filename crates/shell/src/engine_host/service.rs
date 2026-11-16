@@ -1,15 +1,15 @@
 //! The engine page is a private native service, never an editor ViewId.
 use std::sync::{Arc, Mutex};
 use shell_contract::runtime::RendererGeneration;
-use tauri_runtime_cef::{NativeContextRevocation, NativeContextToken, NativeEvaluation};
+use crate::native::{DocumentContext, DocumentEvaluation, DocumentRevocation};
 
 struct Incarnation { generation: RendererGeneration }
 #[derive(Clone)]
 pub(super) struct ServiceProof {
     incarnation: Arc<Incarnation>,
-    pub origin: NativeContextToken,
+    pub origin: DocumentContext,
 }
-struct Binding { proof: ServiceProof, _loss: NativeContextRevocation }
+struct Binding { proof: ServiceProof, _loss: DocumentRevocation }
 pub(super) struct NativeService {
     incarnation: Arc<Incarnation>,
     binding: Mutex<Option<Binding>>,
@@ -21,8 +21,8 @@ impl NativeService {
     }
 
     /// Called only by the private dispatcher bound to the actual built Webview.
-    pub fn bind(&self, origin: &NativeContextToken, on_loss: impl FnOnce() + Send + 'static) -> bool {
-        if !origin.is_verified() || !self.incarnation.generation.is_active() { return false }
+    pub fn bind(&self, origin: &DocumentContext, on_loss: impl FnOnce() + Send + 'static) -> bool {
+        if !origin.is_registered() || !self.incarnation.generation.is_active() { return false }
         let Some(loss) = origin.on_revoke(on_loss) else { return false };
         let proof = ServiceProof { incarnation: self.incarnation.clone(), origin: origin.clone() };
         proof.with_active(|| {
@@ -43,19 +43,18 @@ impl NativeService {
         Some(proof)
     }
 
-    pub fn authenticate(&self, origin: NativeContextToken) -> Option<ServiceProof> {
+    pub fn authenticate(&self, origin: DocumentContext) -> Option<ServiceProof> {
         let proof = self.capture()?;
         if proof.origin != origin || !Arc::ptr_eq(&proof.incarnation, &self.incarnation) { return None }
         proof.with_active(|| ())?;
         Some(proof)
     }
 
-    /// Claim loss only for the registered document and its process incarnation.
-    pub fn close_if_matches(&self, origin: &NativeContextToken, process: &tauri_runtime_cef::NativeRendererProcessIdentity) -> bool {
+    /// Claim loss only for the registered document the service is bound to.
+    pub fn close_if_matches(&self, origin: &DocumentContext) -> bool {
         let (binding, loss) = {
             let mut binding = self.binding.lock().unwrap_or_else(|error| error.into_inner());
-            if !binding.as_ref().is_some_and(|bound| bound.proof.origin == *origin
-                && bound.proof.origin.renderer_process_identity().as_ref() == Some(process)) {
+            if !binding.as_ref().is_some_and(|bound| bound.proof.origin == *origin) {
                 return false;
             }
             (binding.take(), self.incarnation.generation.revoke_deferred())
@@ -85,7 +84,7 @@ impl ServiceProof {
 type CancelDone = Box<dyn FnOnce(Result<(), String>) + Send>;
 struct Cancellation {
     completed: bool,
-    evaluation: Option<NativeEvaluation>,
+    evaluation: Option<DocumentEvaluation>,
     loss: Option<shell_contract::runtime::CancelSubscription>,
     done: Option<CancelDone>,
 }
@@ -120,7 +119,7 @@ pub(super) fn cancel_complete(proof: &ServiceProof, id: u64, done: impl FnOnce(R
         state.loss = Some(loss);
     }
     let completed = state.clone();
-    let evaluation = proof.origin.evaluate(format!("window.__seuofficeEngineCancel({id}); null"), move |result| {
+    let evaluation = proof.origin.evaluate(format!("(window.__seuofficeEngineCancel({id}), null)"), move |result| {
         finish_cancellation(&completed, result.map(|_| ()).map_err(|error| format!("engine cancellation failed: {error:?}")));
     });
     match evaluation {

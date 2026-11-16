@@ -435,10 +435,15 @@ pub trait PdfShell: Send + Sync {
     fn open_pdf_tools(&self, path: &str, tool: &str) -> Option<bool>;
     /// whether both `runtime.openNote` and `runtime.insertIntoNote` are configured
     fn has_note_hooks(&self) -> bool;
-    /// `runtime.openNote(path)`; `Err` is what it threw
-    fn open_note(&self, path: &str) -> Result<bool, String>;
-    /// `runtime.insertIntoNote(path, text)`; `Err` is what it threw
-    fn insert_into_note(&self, path: &str, text: &str) -> Result<bool, String>;
+    /// `runtime.openNote(path)`; `done` runs once on the core thread, `Err` is what it threw
+    fn open_note(&self, path: &str, done: Box<dyn FnOnce(Result<bool, String>)>);
+    /// `runtime.insertIntoNote(path, text)`; `done` runs once on the core thread
+    fn insert_into_note(
+        &self,
+        path: &str,
+        text: &str,
+        done: Box<dyn FnOnce(Result<bool, String>)>,
+    );
     /// `runtime.newDocumentDir(webContentsId)`: the view's project folder
     fn new_document_dir(&self, view: ViewId) -> Option<String>;
     /// `pdfRedactionSavedHook(wc, path)`: a derived copy became the tab's document

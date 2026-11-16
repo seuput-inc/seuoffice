@@ -38,8 +38,10 @@ pub(crate) trait ShellTabs {
     /// through `open_path`
     fn open_file_via_dialog(&self);
     /// `openDocumentPath(path)`: Drive copies reopen through Drive, else the
-    /// extension routes the file; `false` when nothing opened
-    fn open_path(&self, path: &str) -> bool;
+    /// extension routes the file; `done` runs once, `Ok(false)` when nothing opened
+    fn open_path(&self, path: &str, done: Box<dyn FnOnce(Result<bool, String>)>);
+    /// `open_path` for a caller that does not wait: a failure is logged
+    fn open_path_reported(&self, path: &str);
     /// `closeFocusedEditor`: a focused detached editor window closes (its
     /// unsaved-changes guard runs), otherwise the active tab does
     fn close_focused_editor(&self);
@@ -97,8 +99,12 @@ impl ShellTabs for OverTabs {
         self.0.open_file_via_dialog();
     }
 
-    fn open_path(&self, path: &str) -> bool {
-        self.0.open_document_path(path)
+    fn open_path(&self, path: &str, done: Box<dyn FnOnce(Result<bool, String>)>) {
+        self.0.open_document_path(path, done)
+    }
+
+    fn open_path_reported(&self, path: &str) {
+        self.0.open_document_path(path, self.0.report_open(path))
     }
 
     fn close_focused_editor(&self) {

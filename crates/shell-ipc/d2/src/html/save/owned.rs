@@ -359,14 +359,41 @@ impl Exporter {
                     return done(saved_at(&output));
                 }
                 let path = output.clone();
-                me.e.shell.export_written_owned(
-                    retained.origin().clone(),
+                let file = PathBuf::from(output);
+                let reveal = file.clone();
+                let shell = me.e.shell.clone();
+                let hook = me.e.shell.clone();
+                let os = me.os.clone();
+                let (destination, cancel, pending, effects) = (
                     retained.destination().clone(),
                     retained.cancel(),
                     retained.pending(),
                     retained.effects().clone(),
-                    output.into(),
-                    format,
+                );
+                retained.export_written(
+                    move |origin, then| {
+                        shell.export_written_owned(
+                            origin,
+                            destination,
+                            cancel,
+                            pending,
+                            effects,
+                            file,
+                            format,
+                            then,
+                        )
+                    },
+                    &mut || {
+                        let opened = match format {
+                            "pdf" => hook.open_generated_path(&reveal),
+                            "docx" | "odt" => hook.docx_exported(&reveal),
+                            _ => false,
+                        };
+                        if !opened {
+                            os.show_item_in_folder(&reveal);
+                        }
+                        Ok(())
+                    },
                     Box::new(move |opened| match opened {
                         Err(error) => done(failure(error)),
                         Ok(()) => done(saved_at(&path)),

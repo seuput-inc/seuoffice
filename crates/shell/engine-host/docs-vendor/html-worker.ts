@@ -1,4 +1,4 @@
-import { CefHtmlDriver } from './driver'
+import { HtmlPageDriver } from './driver'
 import { convertHtml } from './html'
 
 const worker = self as unknown as {
@@ -19,7 +19,7 @@ worker.onmessage = async (event) => {
   }
   if (message.type !== 'start') return
   try {
-    const driver = new CefHtmlDriver((operation, input) => {
+    const driver = new HtmlPageDriver((operation, input) => {
       const id = ++next
       const { promise, resolve, reject } = Promise.withResolvers<unknown>()
       pending.set(id, { resolve, reject })

@@ -120,6 +120,7 @@ pub trait HomeFiles: Send + Sync {
         pending: &shell_contract::runtime::CancelToken,
         effects: &shell_contract::hosts::OwnedEffectsHost,
     ) -> Result<Option<OwnedHomeRefresh>, String>;
+    #[allow(clippy::too_many_arguments)]
     fn prepare_recents_changed_many_owned_extra(
         &self,
         origin: &shell_contract::ipc::NativeRequestOwner,

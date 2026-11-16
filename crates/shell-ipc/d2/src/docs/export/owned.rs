@@ -1,6 +1,7 @@
 //! The existing export algorithms with the retained close-save authority.
 use super::*;
 use crate::docs::owned_save::{self, Scope};
+use crate::staged::{Published, StagedOutput};
 use main_core::packages::electron_utils::atomic_write::atomic_write_file_authorized;
 
 type Pick = Box<dyn FnOnce(Result<Option<String>, Reply>)>;
@@ -76,12 +77,20 @@ fn write(scope: &Scope, path: &str, bytes: &[u8]) -> Result<(), String> {
     })
     .map_err(|error| node_text(&error))
 }
+fn stage(path: &str, bytes: Vec<u8>) -> Result<StagedOutput, String> {
+    StagedOutput::prepare(
+        std::path::Path::new(path),
+        bytes,
+        file_commit::PublicationMode::Replace,
+    )
+}
 fn finish(
     d: &Rc<Docs>,
     scope: Scope,
     path: String,
     dropped: Option<usize>,
     reveal: bool,
+    published: Published,
     responder: Responder,
 ) {
     let view = scope.destination().view;
@@ -102,11 +111,10 @@ fn finish(
     if !reveal || temporary || d.shell.is_headless() {
         return responder.reply(Ok(answer));
     }
-    let open_path = path.clone();
     let os = d.os.clone();
     let completed = scope.clone();
     let mailbox_docs = d.clone();
-    let Some((wake, done)) = crate::docs::cleanup_mailbox::begin(
+    let Some(ticket) = crate::docs::cleanup_mailbox::begin(
         d,
         Box::new(move |opened, settled| match opened {
             Ok(shell_contract::hosts::GeneratedPathOutcome::Opened(receipt)) => {
@@ -187,31 +195,20 @@ fn finish(
     ) else {
         return;
     };
-    match (scope.origin(), scope.native_binding()) {
-        (Some(origin), _) => d.shell.open_generated_path_owned(
-            open_path,
-            origin.clone(),
-            scope.destination().clone(),
-            scope.cancel().clone(),
-            scope.pending().clone(),
-            scope.effects().clone(),
-            scope.reload_accepted(),
-            done,
-        ),
-        (_, Some(_)) => match scope.selected_destination(&open_path) {
-            Ok(selection) => d.shell.open_generated_path_existing_document(
-                selection,
-                scope.all_participants(),
-                scope.cancel().clone(),
-                scope.pending().clone(),
-                scope.additional_cancellation().to_vec(),
-                scope.effects().clone(),
-                scope.reload_accepted(),
-                done,
-            ),
-            Err(error) => done(Err(error)),
-        },
-        _ => done(Err("the export authority is unavailable".into())),
+    let (output, input) = published;
+    match d.shell.prepare_generated_output(
+        output,
+        Some(input),
+        scope.publication_participants(),
+        scope.cancel().clone(),
+        scope.pending().clone(),
+        scope.additional_cancellation().to_vec(),
+        scope.effects().clone(),
+        scope.reload_accepted(),
+        ticket.wake(),
+    ) {
+        Ok(prepared) => ticket.attach(d, prepared),
+        Err(error) => ticket.fail(d, error),
     }
 }
 
@@ -333,11 +330,23 @@ pub(super) fn pdf(d: &Rc<Docs>, scope: Scope, args: kit::Args, responder: Respon
                             .map_err(|error| error_text(&error))?,
                         None => printed,
                     };
-                    write(&worker, &target, &bytes)
+                    stage(&target, bytes)
                 },
-                move |result| match result {
-                    Ok(()) => finish(&completed, picked_scope, path, None, true, responder),
-                    Err(error) => responder.reply(Ok(failed_at(error, &path))),
+                move |result| {
+                    let published =
+                        result.and_then(|staged| picked_scope.publish_staged(&path, staged));
+                    match published {
+                        Ok(published) => finish(
+                            &completed,
+                            picked_scope,
+                            path,
+                            None,
+                            true,
+                            published,
+                            responder,
+                        ),
+                        Err(error) => responder.reply(Ok(failed_at(error, &path))),
+                    }
                 },
             );
         }),
@@ -385,11 +394,23 @@ pub(super) fn merged(d: &Rc<Docs>, scope: Scope, args: kit::Args, responder: Res
                     let bytes = engine
                         .merge_pdfs(parts, links)
                         .map_err(|error| error_text(&error))?;
-                    write(&worker, &target, &bytes)
+                    stage(&target, bytes)
                 },
-                move |result| match result {
-                    Ok(()) => finish(&completed, picked_scope, path, None, true, responder),
-                    Err(error) => responder.reply(Ok(failed(error))),
+                move |result| {
+                    let published =
+                        result.and_then(|staged| picked_scope.publish_staged(&path, staged));
+                    match published {
+                        Ok(published) => finish(
+                            &completed,
+                            picked_scope,
+                            path,
+                            None,
+                            true,
+                            published,
+                            responder,
+                        ),
+                        Err(error) => responder.reply(Ok(failed(error))),
+                    }
                 },
             );
         }),
@@ -438,11 +459,23 @@ pub(super) fn html(d: &Rc<Docs>, scope: Scope, args: kit::Args, responder: Respo
                         &mut lazy_reader(&engine, &permit, worker.cancel()),
                     )
                     .map_err(|error| error_text(&error))?;
-                    write(&worker, &target, inlined.as_bytes())
+                    stage(&target, inlined.into_bytes())
                 },
-                move |result| match result {
-                    Ok(()) => finish(&completed, picked_scope, path, None, true, responder),
-                    Err(error) => responder.reply(Ok(failed_at(error, &path))),
+                move |result| {
+                    let published =
+                        result.and_then(|staged| picked_scope.publish_staged(&path, staged));
+                    match published {
+                        Ok(published) => finish(
+                            &completed,
+                            picked_scope,
+                            path,
+                            None,
+                            true,
+                            published,
+                            responder,
+                        ),
+                        Err(error) => responder.reply(Ok(failed_at(error, &path))),
+                    }
                 },
             );
         }),
@@ -544,19 +577,27 @@ pub(super) fn markdown(d: &Rc<Docs>, scope: Scope, args: kit::Args, responder: R
                         .split(&format!("{MARKDOWN_MEDIA_DIR_TOKEN}/"))
                         .collect::<Vec<_>>()
                         .join(&format!("{media_directory}/"));
-                    write(&worker, &target, text.as_bytes())?;
-                    Ok(images.len() - written)
+                    let staged = stage(&target, text.into_bytes())?;
+                    Ok((images.len() - written, staged))
                 },
-                move |result| match result {
-                    Ok(dropped) => finish(
-                        &completed,
-                        picked_scope,
-                        path,
-                        Some(dropped),
-                        true,
-                        responder,
-                    ),
-                    Err(error) => responder.reply(Ok(failed_at(error, &path))),
+                move |result| {
+                    let landed = result.and_then(|(dropped, staged)| {
+                        picked_scope
+                            .publish_staged(&path, staged)
+                            .map(|published| (dropped, published))
+                    });
+                    match landed {
+                        Ok((dropped, published)) => finish(
+                            &completed,
+                            picked_scope,
+                            path,
+                            Some(dropped),
+                            true,
+                            published,
+                            responder,
+                        ),
+                        Err(error) => responder.reply(Ok(failed_at(error, &path))),
+                    }
                 },
             );
         }),
@@ -721,15 +762,17 @@ fn convert_hwp(
     );
 }
 fn land_hwp(d: &Rc<Docs>, scope: Scope, path: String, bytes: Vec<u8>, responder: Responder) {
-    let worker = scope.clone();
     let target = path.clone();
     let completed = d.clone();
     kit::on_worker(
         &d.services,
-        move || write(&worker, &target, &bytes),
-        move |written| match written {
-            Ok(()) => finish(&completed, scope, path, None, true, responder),
-            Err(error) => responder.reply(Ok(hwp_failed(&path, &HwpError::Error(error)))),
+        move || stage(&target, bytes),
+        move |staged| {
+            let published = staged.and_then(|staged| scope.publish_staged(&path, staged));
+            match published {
+                Ok(published) => finish(&completed, scope, path, None, true, published, responder),
+                Err(error) => responder.reply(Ok(hwp_failed(&path, &HwpError::Error(error)))),
+            }
         },
     );
 }
@@ -753,6 +796,16 @@ pub(super) fn pick_images(d: &Rc<Docs>, scope: Scope, responder: Responder) {
     };
     if let Some(directory) = &d.test_export_dir {
         return images_target(d, scope, directory.clone(), responder);
+    }
+    // A native save has no renderer origin: the document's own renderer
+    // shows the dialog, and the operation's binding admits before it opens
+    // and again before its answer is used.
+    let origin = scope
+        .origin()
+        .cloned()
+        .unwrap_or_else(|| scope.destination().clone());
+    if let Err(error) = scope.effect(|| ()) {
+        return responder.reply(Err(kit::error(error)));
     }
     let options = js_obj(vec![
         ("title", js_str(d.tm("dlgPickExportDir"))),
@@ -803,7 +856,7 @@ pub(super) fn pick_images(d: &Rc<Docs>, scope: Scope, responder: Responder) {
     d.dialogs.open_owned(
         scope.parent(),
         super::super::adapters::file_dialog(&prepared),
-        scope.origin().clone(),
+        origin,
         scope.destination().clone(),
         scope.cancel().clone(),
         scope.pending().clone(),

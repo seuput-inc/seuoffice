@@ -15,7 +15,6 @@
 
 mod activation;
 mod bridge;
-mod detached_snapshot;
 mod documents;
 pub mod host;
 mod menus;

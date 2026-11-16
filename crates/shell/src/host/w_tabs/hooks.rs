@@ -1,4 +1,4 @@
-use tauri_runtime_cef::WebviewCefExt;
+use crate::native::WebviewExt;
 use main_core::shell::tab_manager::{DiagramIdentity, TabError, TabKind, TabResult};
 use shell_contract::{IpcError, ViewId};
 use shell_contract::editors::Then;
@@ -744,7 +744,7 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
                 let completed = reply.clone();
                 let dispatch = crate::ipc::native_owner::with_startup_command_target_effect(
                     &gate_root, &gate_shell, &gate_child, &gate_command, &gate_document, gate_document.owner(),
-                    &[], &gate_cancel, &gate_cleanup, || move || webview.set_native_visible_checked(false, move |result| {
+                    &[], &gate_cancel, &gate_cleanup, || move || webview.set_visible_checked(false, move |result| {
                         let callback = completed.lock().unwrap_or_else(|error| error.into_inner()).take();
                         if let Some(reply) = callback { reply(result); }
                     }),
@@ -1379,6 +1379,7 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
                 if docs_open_path.is_none() && workbook.is_none() => (false, true),
             (NativeEditorCommand::NewDocument { surface, .. }, None)
                 if *surface != Surface::Docs && *surface != Surface::Sheets && docs_open_path.is_none() && workbook.is_none() => (false, false),
+            (NativeEditorCommand::HwpCopy { .. }, None) if docs_open_path.is_none() && workbook.is_none() => (false, false),
             _ => return Err(TabError("The selected native editor seed does not match the command".into())),
         };
         let nudge = workbook.is_some() && reused_target.is_some();
@@ -1794,9 +1795,9 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
         let async_reply = reply.clone();
         let ui = self.services.ui.clone();
         let captured_webview = webview.clone();
-        let scheduled = webview.with_cef_webview_async(move |native| {
+        let scheduled = webview.with_native_async(move |native| {
             let browser = match native {
-                Ok(native) => native.frame_navigation_state().clone(),
+                Ok(native) => native.identity.clone(),
                 Err(error) => {
                     let reply = async_reply.lock().unwrap_or_else(|error| error.into_inner()).take();
                     if let Some(reply) = reply { reply(Err(error.to_string())); }
@@ -2135,6 +2136,29 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
         self.provided.all::<dyn shell_ipc_a::drive::DriveService>().into_iter().next()
             .is_some_and(|service| service.reopen(path, Box::new(|_| {})))
     }
+    fn route_path_native(&self, path: String, done: Box<dyn FnOnce(Result<bool, String>)>) {
+        let Some(tabs) = self.provided.all::<shell_ipc_w::tabs::TabsState>().into_iter().next() else {
+            return done(Err("The tab manager is not available".into()));
+        };
+        let cancel = shell_contract::runtime::CancelToken::default();
+        let command = shell_contract::ipc::NativeEditorCommand::OpenFile {
+            surface: shell_ipc_w::tabs::native_open_surface(&path),
+            path: std::path::PathBuf::from(&path),
+        };
+        let operation = match crate::host::native_commands::issue(command, cancel.clone()) {
+            Ok(operation) => operation,
+            Err(error) => return done(Err(error)),
+        };
+        tabs.route_document_path_native(path, operation, Box::new(move |result| {
+            drop(cancel);
+            done(result);
+        }));
+    }
+    fn issue_native_command(
+        &self, command: shell_contract::ipc::NativeEditorCommand, cancel: shell_contract::runtime::CancelToken,
+    ) -> Result<shell_contract::ipc::NativeInvocationOperation, String> {
+        crate::host::native_commands::issue(command, cancel)
+    }
     fn default_save_dir(&self) -> String { default_save_dir(&self.services) }
     fn open_agent_window(&self) {
         self.provided.all::<dyn shell_ipc_a::agent::AgentWindowControl>().into_iter().next()
@@ -2185,7 +2209,7 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
             };
             crate::host::w::post_core(move |provided, _| {
                 if let Some(tabs) = provided.all::<shell_ipc_w::tabs::TabsState>().into_iter().next() {
-                    for path in paths { tabs.open_document_path(&path); }
+                    for path in paths { tabs.open_document_path(&path, tabs.report_open(&path)); }
                 }
             });
         }));
