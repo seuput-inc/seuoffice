@@ -191,41 +191,6 @@ pub(super) fn reload_view(view: ViewId) {
     });
 }
 
-struct WorkbookPasswordPrompt(crate::host::document_password::PasswordPrompt);
-
-impl shell_ipc_d1::sheets::engine::PasswordPrompt for WorkbookPasswordPrompt {
-    fn ask(
-        &self,
-        retry: bool,
-    ) -> Result<Option<String>, shell_ipc_d1::sheets::engine::UnlockFailure> {
-        let (send, receive) = std::sync::mpsc::sync_channel(1);
-        self.0.ask(
-            retry,
-            Box::new(move |answer| {
-                let _ = send.send(answer);
-            }),
-        );
-        receive
-            .recv()
-            .map_err(|error| {
-                shell_ipc_d1::sheets::engine::UnlockFailure::Other(shell_contract::IpcError {
-                    name: Some("Error".into()),
-                    message: error.to_string(),
-                })
-            })?
-            .map_err(|message| {
-                shell_ipc_d1::sheets::engine::UnlockFailure::Other(shell_contract::IpcError {
-                    name: Some("Error".into()),
-                    message,
-                })
-            })
-    }
-
-    fn close(&self) {
-        self.0.close();
-    }
-}
-
 struct Mindmap;
 
 impl MindmapShell for Mindmap {

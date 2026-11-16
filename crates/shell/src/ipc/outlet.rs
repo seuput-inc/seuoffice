@@ -236,6 +236,7 @@ impl TauriOutlet {
         })
     }
 
+    #[cfg(test)]
     pub fn attach(
         &self,
         view: ViewId,

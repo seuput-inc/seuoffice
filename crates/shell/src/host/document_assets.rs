@@ -540,31 +540,6 @@ fn prepare_existing_asset_paths(
     Ok(shell_ipc_d2::html::RecoveryAssetStage { commit, subscribe })
 }
 
-pub(crate) fn set_paths_owned(
-    origin: &shell_contract::ipc::NativeRequestOwner,
-    destination: &shell_contract::ipc::NativeRequestOwner,
-    cancel: &shell_contract::runtime::CancelToken,
-    pending: &shell_contract::runtime::CancelToken,
-    effects: &shell_contract::OwnedEffectsHost,
-    kind: AssetKind,
-    tracked: bool,
-    open: Option<&str>,
-    save: Option<&str>,
-) -> Result<(), String> {
-    set_paths_many_owned(
-        origin,
-        std::slice::from_ref(destination),
-        cancel,
-        pending,
-        &[],
-        effects,
-        kind,
-        tracked,
-        open,
-        save,
-    )
-}
-
 pub(crate) fn set_paths_many_owned(
     origin: &shell_contract::ipc::NativeRequestOwner,
     captured: &[shell_contract::ipc::NativeRequestOwner],
@@ -720,12 +695,15 @@ pub(crate) fn set_present_owner(view: ViewId, owner: Option<ViewId>) -> Result<(
     Ok(())
 }
 
-/// Destroying a view revokes both editor families, including outstanding reads.
+/// Destroying a view revokes its HTML and Markdown grants and every presentation alias
+/// to or from it, including outstanding reads. Docs sessions are revoked by exact session.
 pub(crate) fn revoke(view: ViewId) -> Result<(), String> {
     let mut state = registry()
         .lock()
         .map_err(|_| "document asset registry is poisoned")?;
-    state.grants.retain(|(owner, _), _| *owner != view);
+    state
+        .grants
+        .retain(|(owner, kind), _| *owner != view || *kind == AssetKind::Docs);
     state
         .present
         .retain(|present, (owner, _)| *present != view && *owner != view);
@@ -1087,20 +1065,6 @@ fn handle_permit_inner(
         headers,
         body,
     })
-}
-
-/// Internal fetch for a ViewId already authenticated by the IPC dispatcher.
-pub(crate) fn handle(
-    view: ViewId,
-    kind: AssetKind,
-    uri: &str,
-    accept: Option<&str>,
-    range_header: Option<&str>,
-) -> Result<MediaAnswer, String> {
-    match authorize(view, kind)? {
-        Some(permit) => handle_permit(permit, uri, accept, range_header),
-        None => Ok(status(403)),
-    }
 }
 
 pub(crate) fn handle_cancellable(
@@ -1942,6 +1906,19 @@ pub(crate) fn docx_original_uri(uri: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn handle(
+        view: ViewId,
+        kind: AssetKind,
+        uri: &str,
+        accept: Option<&str>,
+        range_header: Option<&str>,
+    ) -> Result<MediaAnswer, String> {
+        match authorize(view, kind)? {
+            Some(permit) => handle_permit(permit, uri, accept, range_header),
+            None => Ok(status(403)),
+        }
+    }
 
     #[test]
     fn registry_wait_ticket_observes_release_before_wait_and_cancellation() {

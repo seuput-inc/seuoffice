@@ -30,12 +30,6 @@ fn captured(
 }
 
 impl super::crypto::SigningAuthority for NativeSigningAuthority {
-    fn owner_loss(&self, owner: &NativeRequestOwner) -> Option<CancelToken> {
-        captured(owner)?;
-        owner.pdf_document()?;
-        owner.loss_token()
-    }
-
     fn same_document(&self, opened: &NativeRequestOwner, current: &NativeRequestOwner) -> bool {
         let (Some((opened_origin, opened_asset)), Some((current_origin, current_asset))) =
             (captured(opened), captured(current))

@@ -78,8 +78,6 @@ fn capture_launch_inputs(
     let editors = Rc::new(Editors {
         services: services.clone(),
         provided,
-        views: cx.views.clone(),
-        store: Rc::new(store.clone()),
         issuer,
         owner,
         startup: Some(startup),
@@ -3176,8 +3174,6 @@ mod flush_tests {
         let editors = Rc::new(Editors {
             services: services.clone(),
             provided,
-            views,
-            store: Rc::new(store.clone()),
             issuer: factory,
             owner: WindowId(1),
             startup: None,

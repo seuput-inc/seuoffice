@@ -57,11 +57,6 @@ id!(
     DocumentId,
     NEXT_DOCUMENT
 );
-id!(
-    /// Pairs a browser or window with the shell creation reservation that made it.
-    CreationId,
-    NEXT_CREATION
-);
 
 #[cfg(test)]
 mod tests {

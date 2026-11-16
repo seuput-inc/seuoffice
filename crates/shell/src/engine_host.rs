@@ -1895,13 +1895,6 @@ fn require_owned_worker(ui: &dyn Thread, core: Option<&dyn Thread>) -> Result<()
     Ok(())
 }
 
-pub fn call_with_timeout(name: &str, input: &Value, timeout: Duration) -> Reply {
-    let host = HOST_INSTANCE
-        .get()
-        .ok_or_else(|| error("HostUnavailable", "engine service is not installed"))?;
-    host.call_with_options(name, input, Some(timeout), None)
-}
-
 pub fn call_with_timeout_cancellable(
     name: &str,
     input: &Value,

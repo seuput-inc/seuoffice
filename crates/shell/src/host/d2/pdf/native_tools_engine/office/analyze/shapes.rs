@@ -7,7 +7,9 @@ use super::super::{
 pub(super) fn rect_of_subpath(sub: &RawSubpath) -> Option<Rect> {
     let mut p: Vec<(f64, f64)> = Vec::new();
     for &v in &sub.points {
-        if p.last().is_none_or(|q| !approx_eq(v.0, q.0, 0.5) || !approx_eq(v.1, q.1, 0.5)) {
+        if p.last()
+            .is_none_or(|q| !approx_eq(v.0, q.0, 0.5) || !approx_eq(v.1, q.1, 0.5))
+        {
             p.push(v);
         }
     }

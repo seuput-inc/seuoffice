@@ -298,10 +298,7 @@ impl Hooks {
             .views
             .register_view(registration, window, surface)
             .map_err(TabError)?;
-        let Some(submission) = BrowserCreation::new() else {
-            self.cx.views.remove_view_if_generation(view, &created);
-            return Err(TabError("Native creation ids are exhausted.".into()));
-        };
+        let submission = BrowserCreation::default();
         let proof =
             super::window::NativeClosureProof::new(submission.receipt(), view, created.clone());
         if let Err(error) = self
@@ -492,15 +489,6 @@ impl Hooks {
         })
     }
 }
-fn post_editor_failure(
-    core: Arc<dyn shell_contract::runtime::Thread>,
-    cx: HostContext,
-    view: ViewId,
-    error: String,
-) {
-    core.post(Box::new(move || fail_editor_view(cx, view, error)));
-}
-
 fn fail_editor_view(cx: HostContext, view: ViewId, error: String) {
     if let Some(host) = NATIVE_WINDOWS.get() {
         host.deferred_views.lock().unwrap().remove(&view);
@@ -898,9 +886,6 @@ struct NativeWindows {
 }
 
 static NATIVE_WINDOWS: OnceLock<Arc<NativeWindows>> = OnceLock::new();
-pub(crate) fn host_context() -> Option<HostContext> {
-    NATIVE_WINDOWS.get().map(|host| host.cx.clone())
-}
 
 pub(super) fn install(hosts: &mut Hosts, cx: &HostContext) {
     let host = Arc::new(NativeWindows {
@@ -1287,6 +1272,9 @@ impl WindowsHost for NativeWindows {
         window_action(self, id, |window| window.set_focus());
     }
     fn window_destroy(&self, id: WindowId) {
+        if let Some(lifecycle) = self.cx.views.window_lifecycle(id) {
+            lifecycle.begin_close();
+        }
         window_action(self, id, |window| window.destroy());
     }
     fn window_set_title(

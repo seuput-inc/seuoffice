@@ -313,8 +313,8 @@ fn open(app: &AppHandle, id: u64, request: &Value, cancel: &CancelToken) -> Resu
         .and_then(|value| u32::try_from(value).ok())
         .ok_or("HTML conversion needs an originating view")?;
     let label = format!("seuoffice-html-convert-{id}");
-    let browser_creation = BrowserCreation::new().ok_or("Native creation ids are exhausted.")?;
-    let window_creation = WindowCreation::new().ok_or("Native creation ids are exhausted.")?;
+    let browser_creation = BrowserCreation::default();
+    let window_creation = WindowCreation::default();
     let page = Arc::new(Page {
         id,
         app: app.clone(),

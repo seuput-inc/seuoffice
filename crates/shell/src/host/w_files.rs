@@ -17,7 +17,6 @@ use shell_ipc_w::tabs::TabsState;
 use super::{HostContext, w::on_core};
 use crate::paths::ShellPaths;
 
-pub(super) mod markup;
 mod readers;
 mod zip;
 

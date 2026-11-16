@@ -111,20 +111,16 @@ pub(super) struct CardRegion {
     pub bounds: Rect,
     pub color: String,
     pub rounded: bool,
-    pub z: Option<i64>,
 }
 #[derive(Debug, Clone)]
 pub(super) struct FloatPlacement {
     pub wrap: String,
-    pub x_offset_pt: f64,
 }
 #[derive(Debug, Clone)]
 pub(super) struct ImageBlock {
     pub bounds: Rect,
     pub data: Vec<u8>,
     pub mime: String,
-    pub pixel_width: u32,
-    pub pixel_height: u32,
     pub float: Option<FloatPlacement>,
     pub spacing_before_pt: Option<f64>,
     pub z: Option<i64>,
@@ -220,8 +216,6 @@ pub(super) struct Footnote {
 pub(super) struct PageRender {
     pub data: Vec<u8>,
     pub mime: String,
-    pub pixel_width: u32,
-    pub pixel_height: u32,
 }
 #[derive(Debug, Clone)]
 pub(super) struct PageColumn {
@@ -242,12 +236,10 @@ pub(super) struct IrPage {
     pub flows_from_previous: bool,
     pub width_pt: f64,
     pub height_pt: f64,
-    pub rotation: i32,
     pub blocks: Vec<PageBlock>,
     pub degraded: bool,
     pub scanned: bool,
     pub ocr_recovered: bool,
-    pub has_struct_tree: bool,
     pub degraded_reason: Option<String>,
     pub render: Option<PageRender>,
     pub background_color: Option<String>,
@@ -268,14 +260,12 @@ pub(super) struct ExtractedPage {
     pub index: usize,
     pub width_pt: f64,
     pub height_pt: f64,
-    pub rotation: i32,
     pub chars: Vec<PdfChar>,
     pub images: Vec<ImageBlock>,
     pub paths: Vec<RawPath>,
     pub degraded: bool,
     pub degraded_reason: Option<String>,
     pub scanned: bool,
-    pub has_struct_tree: bool,
     pub render: Option<PageRender>,
     pub ocr_text_recovered: bool,
     pub text_lost: bool,

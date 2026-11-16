@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use main_core::packages::i18n::Lang;
 use shell_contract::Hosts;
+use shell_contract::runtime::Views;
 use shell_ipc_d1::host::{Locale, LocaleHost};
 use shell_ipc_w::editor_files::UiLanguage;
 use tauri::Manager;
@@ -115,7 +116,7 @@ pub fn install(hosts: &mut Hosts, cx: &HostContext) -> Result<(), String> {
     hosts.insert(renderer);
     shells::install_mindmap(hosts);
     shells::install_diagram(hosts, cx);
-    let engine: shell_ipc_d1::slides::engine::SlidesEngineHost = Arc::new(
+    let native = Arc::new(
         slides_engine::NativeSlidesEngine::new(
             cx.ui.clone(),
             slides_fonts::FontEnvironment::native(template_fonts_dir(&cx.app)?.into()),
@@ -123,6 +124,10 @@ pub fn install(hosts: &mut Hosts, cx: &HostContext) -> Result<(), String> {
         )
         .map_err(|error| error.0)?,
     );
+    let retiring = native.clone();
+    cx.views
+        .on_destroyed(Box::new(move |view| retiring.view_destroyed(view)));
+    let engine: shell_ipc_d1::slides::engine::SlidesEngineHost = native;
     hosts.insert(engine);
     slides_shell::install(hosts, cx)?;
     Ok(())

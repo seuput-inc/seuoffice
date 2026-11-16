@@ -1089,21 +1089,17 @@ impl NativeSlidesEngine {
         })
     }
 
-    pub(crate) fn revoke_view(
-        &self,
-        view: shell_contract::ViewId,
-        lease: crate::views::SlidesViewLease,
-    ) {
+    /// The view is gone and its lease already revoked: drop what only that lifetime bound.
+    /// A replacement view with the same id holds a fresh, active lease and is left alone.
+    pub(crate) fn view_destroyed(&self, view: shell_contract::ViewId) {
         let _ = self.actor.sender.send(Box::new(move |state| {
-            super::slides_media::revoke_view(view, &lease);
-            super::slides_fonts::revoke_view(view, &lease);
             let affected: Vec<_> = state
                 .decks
                 .iter()
                 .filter_map(|(id, deck)| {
                     deck.views
                         .get(&view)
-                        .is_some_and(|bound| bound.lease.same_lifetime(&lease))
+                        .is_some_and(|bound| !bound.lease.is_active())
                         .then_some(*id)
                 })
                 .collect();
@@ -1120,7 +1116,7 @@ impl NativeSlidesEngine {
             }
             let mut retained = Vec::new();
             for cover in std::mem::take(&mut state.covers) {
-                if cover.view == view && cover.lease.same_lifetime(&lease) {
+                if cover.view == view && !cover.lease.is_active() {
                     state.decks.remove(&cover.deck);
                     super::slides_media::release(cover.deck);
                     super::slides_fonts::release(cover.deck);
@@ -1918,40 +1914,6 @@ impl NativeSlidesEngine {
                     name: shell_contract::IpcValue::String(part.name),
                 })
                 .collect())
-        })
-    }
-
-    fn master_model(
-        &self,
-        deck: DeckId,
-        path: &str,
-        parse: bool,
-    ) -> Result<Option<serde_json::Value>, EngineError> {
-        let path = path.to_owned();
-        self.call(move |state| {
-            let deck = state.deck(deck)?;
-            if parse {
-                let slide = pptx_engine::master_edit::parse_master_part(
-                    &deck.opened.archive,
-                    &path,
-                    &deck.opened.uids,
-                )
-                .map_err(EngineError)?;
-                match slide {
-                    Some(slide) => {
-                        deck.masters.insert(path.clone(), slide);
-                    }
-                    None => {
-                        deck.masters.remove(&path);
-                        return Ok(None);
-                    }
-                }
-            }
-            deck.masters
-                .get(&path)
-                .map(serde_json::to_value)
-                .transpose()
-                .map_err(|error| EngineError(error.to_string()))
         })
     }
 
@@ -2910,15 +2872,42 @@ mod tests {
             .find(|part| part.kind == shell_contract::IpcValue::String("master".into()))
             .unwrap()
             .part_path;
-        let original = engine.master_model(deck, &path, true).unwrap().unwrap();
+        let parsed = path.clone();
+        let original = engine
+            .call(move |state| {
+                let deck = state.deck(deck)?;
+                let slide = pptx_engine::master_edit::parse_master_part(
+                    &deck.opened.archive,
+                    &parsed,
+                    &deck.opened.uids,
+                )
+                .map_err(EngineError)?
+                .unwrap();
+                let value = serde_json::to_value(&slide)
+                    .map_err(|error| EngineError(error.to_string()))?;
+                deck.masters.insert(parsed, slide);
+                Ok(value)
+            })
+            .unwrap();
+        let cached = |engine: &NativeSlidesEngine| {
+            let path = path.clone();
+            engine
+                .call(move |state| {
+                    state
+                        .deck(deck)?
+                        .masters
+                        .get(&path)
+                        .map(serde_json::to_value)
+                        .transpose()
+                        .map_err(|error| EngineError(error.to_string()))
+                })
+                .unwrap()
+        };
         let snapshot = engine.snapshot(deck, false).unwrap();
         engine.reparse_deck(deck).unwrap();
-        assert!(engine.master_model(deck, &path, false).unwrap().is_none());
+        assert!(cached(&engine).is_none());
         engine.restore(deck, &snapshot).unwrap();
-        assert_eq!(
-            engine.master_model(deck, &path, false).unwrap(),
-            Some(original)
-        );
+        assert_eq!(cached(&engine), Some(original));
     }
 
     #[test]

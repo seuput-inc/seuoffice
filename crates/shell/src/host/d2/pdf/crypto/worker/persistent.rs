@@ -332,9 +332,6 @@ impl Persistent {
     pub(super) fn nonce(&self) -> [u8; 32] {
         self.nonce
     }
-    pub(super) fn revoke_token(&self) -> CancelToken {
-        self.entry_cancel.clone()
-    }
     pub(super) fn sign(
         &mut self,
         frames: Frames,

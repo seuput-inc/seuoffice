@@ -73,11 +73,8 @@ mod tests {
             },
             data: vec![],
             mime: "image/png".into(),
-            pixel_width: 1,
-            pixel_height: 1,
             float: float.then(|| FloatPlacement {
                 wrap: "behind".into(),
-                x_offset_pt: 0.0,
             }),
             spacing_before_pt: None,
             z: None,

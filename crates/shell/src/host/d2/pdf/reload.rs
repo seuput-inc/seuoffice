@@ -241,7 +241,6 @@ impl PdfReload for NativeReload {
                             Ok(())
                         },
                     )?;
-                    drop(before_notify);
                     let completed = committed
                         .into_inner()
                         .ok_or("The PDF reload completion was not admitted.")?;

@@ -94,8 +94,8 @@ pub(super) fn verify_first_retry(
     cms::verify(&evidence.cms_der, chain, &attributes, &evidence.signature)
 }
 
-/// Not registered with IPC: hosted differential proof is required before a
-/// caller exposes this request-bound capability to any renderer or service.
+/// Request-bound signing capability. It is only constructed inside the owned
+/// signing worker, after the parent has authorized the captured request.
 pub(super) struct Session {
     request: Option<Request>,
     state: State,
@@ -138,37 +138,6 @@ impl Session {
             }),
             state: State::ReadyFirst,
         })
-    }
-
-    pub(super) fn from_p12(
-        original: Vec<u8>,
-        options: SignOptions,
-        signing_time: DateTime<Utc>,
-        bytes: &[u8],
-        password: &str,
-        wanted_sha1: Option<&str>,
-        timeout: Option<Duration>,
-        guard: Box<dyn Fn() -> Result<(), String> + Send>,
-        admit: Box<dyn for<'a> Fn(Admission<'a>) -> Result<(), String> + Send>,
-    ) -> Result<Self, String> {
-        guard()?;
-        let identity = super::pkcs12::open(bytes, password, wanted_sha1)?;
-        let chain = identity.chain_der.clone();
-        Self::new(
-            original,
-            options,
-            signing_time,
-            chain,
-            timeout,
-            guard,
-            admit,
-            Box::new(move |digest| identity.sign_digest(digest)),
-        )
-    }
-
-    pub(super) fn revoke(&mut self) {
-        self.state = State::Terminal;
-        self.request = None;
     }
 
     /// Assemble and sign only the immutable native request. No revision,
@@ -294,7 +263,7 @@ mod tests {
     }
 
     #[test]
-    fn expired_and_revoked_requests_never_reach_signer() {
+    fn expired_requests_never_reach_signer() {
         let count = Arc::new(AtomicUsize::new(0));
         let signer = |count: Arc<AtomicUsize>| {
             Box::new(move |_: &[u8; 32]| {
@@ -315,19 +284,6 @@ mod tests {
         )
         .unwrap();
         assert!(expired.sign().is_err());
-        let mut revoked = Session::new(
-            Vec::new(),
-            SignOptions::default(),
-            time,
-            vec![certificate()],
-            None,
-            Box::new(|| Ok(())),
-            Box::new(|_| Ok(())),
-            signer(count.clone()),
-        )
-        .unwrap();
-        revoked.revoke();
-        assert!(revoked.sign().is_err());
         assert_eq!(count.load(Ordering::SeqCst), 0);
     }
 

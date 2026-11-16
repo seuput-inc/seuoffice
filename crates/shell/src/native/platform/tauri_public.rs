@@ -111,16 +111,16 @@ mod tests {
     ) -> BrowserIdentity {
         use crate::native::browser::{BridgeMode, BrowserCore, Config};
         use crate::native::lifecycle::BrowserCreation;
-        let creation = BrowserCreation::new().unwrap();
+        let creation = BrowserCreation::default();
         let receipt = creation.receipt();
-        let submission = creation.into_submission();
+        let _submission = creation.into_submission();
         receipt.claim().unwrap();
         let config = Config {
             bridge: BridgeMode::Invoke,
             policy: Some(RequestPolicy::new(allow)),
             ..Config::default()
         };
-        let core = BrowserCore::new(label, submission.creation(), receipt, config).unwrap();
+        let core = BrowserCore::new(label, receipt, config).unwrap();
         core.mark_attached(control, label);
         core.identity()
     }
@@ -188,6 +188,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn a_main_frame_flag_set_by_an_adapter_reaches_the_policy() {
         use crate::native::platform::with_navigation_frame;
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -213,7 +214,7 @@ mod tests {
 
     #[test]
     fn started_commits_and_finished_confirms_only_without_an_adapter() {
-        let (browser, _events) = browser_with_events(
+        let (browser, events) = browser_with_events(
             "public-load",
             FakeControl::new(),
             NavigationStart::Automatic,
@@ -221,11 +222,12 @@ mod tests {
         let address = url("https://example.test/a");
         on_page_load(&browser, PageLoadEvent::Started, &address);
         assert!(browser.document().is_some());
-        let before = browser.observation();
         on_page_load(&browser, PageLoadEvent::Finished, &address);
-        assert_eq!(
-            browser.observation() != before,
-            !Current::CONFIRMS_LOAD_OUTCOME
-        );
+        let finished = events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|kind| matches!(kind, crate::native::NativeEventKind::LoadFinished { .. }));
+        assert_eq!(finished, !Current::CONFIRMS_LOAD_OUTCOME);
     }
 }

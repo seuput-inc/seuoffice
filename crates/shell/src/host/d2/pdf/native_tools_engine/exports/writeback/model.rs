@@ -146,7 +146,6 @@ pub(super) struct PageInfo {
     pub status: String,
     pub reason: Option<String>,
     pub width: f64,
-    pub height: f64,
 }
 pub(super) struct Model {
     pub units: Vec<UnitRec>,
@@ -182,7 +181,6 @@ pub(super) fn build(tree: &V, translated: &V, lang: &str) -> Result<Model, Strin
                     _ => None,
                 },
                 width: number(field(p, "widthPt")).unwrap_or(612.0),
-                height: number(field(p, "heightPt")).unwrap_or(0.0),
             })
         })
         .collect::<Result<Vec<_>, String>>()?;

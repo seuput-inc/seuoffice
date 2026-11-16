@@ -56,11 +56,6 @@ impl Blocks {
         loopback_open: false,
         files: false,
     };
-    pub const EVERYTHING: Self = Self {
-        web: true,
-        loopback_open: false,
-        files: true,
-    };
 }
 
 /// Where the webview keeps its cookies, storage and cache.
@@ -172,10 +167,6 @@ impl RequestPolicy {
         Self::new(|_| true)
     }
 
-    pub fn deny_all() -> Self {
-        Self::new(|_| false).with_blocks(Blocks::EVERYTHING)
-    }
-
     /// Print and target windows that must not run page scripts.
     pub fn with_javascript(mut self, enabled: bool) -> Self {
         self.javascript = enabled;
@@ -249,7 +240,7 @@ mod tests {
     }
 
     #[test]
-    fn allow_all_and_deny_all_are_total() {
+    fn allow_all_is_total() {
         let request = PolicyRequest {
             url: "https://example.org/",
             bound_scheme: None,
@@ -257,6 +248,5 @@ mod tests {
             main_frame: false,
         };
         assert!(RequestPolicy::allow_all().allows(&request));
-        assert!(!RequestPolicy::deny_all().allows(&request));
     }
 }

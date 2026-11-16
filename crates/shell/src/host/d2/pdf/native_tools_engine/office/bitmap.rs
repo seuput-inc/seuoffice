@@ -43,7 +43,9 @@ pub(super) fn bitmap_to_rgba(
         || stride.fract() != 0.0
         || stride < 0.0
     {
-        return Err(PdfiumError::from("invalid PDFium bitmap dimensions".to_owned()));
+        return Err(PdfiumError::from(
+            "invalid PDFium bitmap dimensions".to_owned(),
+        ));
     }
     let (width, height, stride) = (w as usize, h as usize, stride as usize);
     let channels = match format as i32 {
@@ -56,7 +58,9 @@ pub(super) fn bitmap_to_rgba(
         .checked_mul(channels)
         .ok_or_else(|| PdfiumError::from("PDF bitmap row overflow".to_owned()))?;
     if stride < row {
-        return Err(PdfiumError::from("PDF bitmap stride is shorter than a row".to_owned()));
+        return Err(PdfiumError::from(
+            "PDF bitmap stride is shorter than a row".to_owned(),
+        ));
     }
     let source_len = stride
         .checked_mul(height)
@@ -68,7 +72,9 @@ pub(super) fn bitmap_to_rgba(
     let source = s.read(buffer.unwrap(), 0, source_len)?;
     let mut pixels = vec![0; out_len];
     if source.len() != source_len {
-        return Err(PdfiumError::from("PDFium returned a short bitmap buffer".to_owned()));
+        return Err(PdfiumError::from(
+            "PDFium returned a short bitmap buffer".to_owned(),
+        ));
     }
     for y in 0..height {
         for x in 0..width {

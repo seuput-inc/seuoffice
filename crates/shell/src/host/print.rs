@@ -48,6 +48,7 @@ const PREVIEW_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const PREVIEW_POLL: Duration = Duration::from_millis(300);
 
 /// The flag a page's `afterprint` sets: the print preview closed
+#[cfg(windows)]
 const AFTERPRINT_FLAG: &str = "__seuofficeAfterPrint";
 
 pub fn install(_hosts: &mut shell_contract::Hosts, _cx: &HostContext) {
@@ -112,6 +113,7 @@ fn cups_printers() -> Vec<Printer> {
 
 /// `printer-info` of `lpoptions -p <name>`: `key=value` pairs, a value with
 /// spaces quoted with `'`
+#[cfg(not(windows))]
 fn printer_info(options: &str) -> Option<String> {
     let start = options.find("printer-info=")? + "printer-info=".len();
     let rest = &options[start..];
@@ -232,30 +234,6 @@ pub(crate) fn window_native_invocation(
         owner.clone(),
         cancel.clone(),
         pending.clone(),
-        window.loaded.clone(),
-    )?);
-    Ok(Box::new(window))
-}
-
-pub(crate) fn window_native_invocation_many(
-    cx: &HostContext,
-    spec: PrintWindowSpec,
-    document: &shell_contract::ipc::NativeInvocationDocument,
-    origin: &shell_contract::ipc::NativeRequestOwner,
-    participants: &[shell_contract::ipc::NativeRequestOwner],
-    cancel: &CancelToken,
-    pending: &CancelToken,
-    actor: &CancelToken,
-) -> Result<Box<dyn PrintSurface>, String> {
-    let mut window = new_window(cx.app.clone(), cx.ui.clone(), cx.views.clone(), spec);
-    window.owner = Some(owned::Owner::new_invocation_many(
-        cx,
-        document,
-        origin,
-        participants,
-        cancel.clone(),
-        pending.clone(),
-        actor.clone(),
         window.loaded.clone(),
     )?);
     Ok(Box::new(window))
@@ -1267,8 +1245,11 @@ impl PrintWindow {
         if let Some(owner) = &self.owner {
             owner.bind_target(&self.webview()?)?;
         }
-        if self.scripts_on() {
-            self.watch_afterprint();
+        #[cfg(windows)]
+        {
+            if self.scripts_on() {
+                self.watch_afterprint();
+            }
         }
         if let Some(owner) = &self.owner {
             owner.check()?;
@@ -1420,6 +1401,7 @@ impl PrintWindow {
             .ok_or_else(|| "the print window has no page".to_owned())
     }
 
+    #[cfg(windows)]
     fn evaluate(
         &self,
         webview: &tauri::Webview,
@@ -1442,6 +1424,7 @@ impl PrintWindow {
     }
 
     /// Remembers in the page when its print preview closed (`afterprint`)
+    #[cfg(windows)]
     fn watch_afterprint(&self) {
         let Ok(webview) = self.webview() else { return };
         // One expression (`evaluate` takes no statement list): the comma operator sequences
@@ -1506,14 +1489,19 @@ impl PrintWindow {
         }
         match outcome {
             Some(PrintOutcome::Cancelled) => return Ok(false),
+            #[cfg(windows)]
             Some(PrintOutcome::Unreported) => {
                 self.wait_for_afterprint(&window, &webview, started)?
             }
+            #[cfg(target_os = "macos")]
             Some(PrintOutcome::Printed) | None => {}
+            #[cfg(windows)]
+            None => {}
         }
         Ok(true)
     }
 
+    #[cfg(windows)]
     fn wait_for_afterprint(
         &self,
         window: &WebviewWindow,
@@ -1983,6 +1971,7 @@ mod tests {
         assert!(!policy.allow(&Url::parse("about:blank").unwrap()));
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn printer_info_reads_a_quoted_or_bare_value() {
         assert_eq!(

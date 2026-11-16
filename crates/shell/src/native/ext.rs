@@ -274,7 +274,6 @@ fn run_on_ui(webview: &Webview, job: impl FnOnce() + Send + 'static) -> Result<(
 /// A webview together with its native browser, for work that must run on the UI thread.
 pub struct NativeWebview {
     pub identity: BrowserState,
-    pub webview: Webview,
 }
 
 /// Native operations on an existing webview.
@@ -301,10 +300,8 @@ pub trait WebviewExt {
 
     /// Typed page operations (replaces the CDP surface).
     fn page(&self) -> Result<PageOps, String> {
-        Ok(PageOps::new(
-            self.as_webview().clone(),
-            self.native_browser()?,
-        ))
+        self.native_browser()?;
+        Ok(PageOps::new(self.as_webview().clone()))
     }
 
     /// Run `job` on the UI thread with the webview and its browser. Replaces
@@ -325,10 +322,9 @@ pub trait WebviewExt {
         &self,
         job: F,
     ) -> Result<(), String> {
-        let webview = self.as_webview().clone();
         let identity = self.native_browser();
         run_on_ui(self.as_webview(), move || match identity {
-            Ok(identity) => job(Ok(&NativeWebview { identity, webview })),
+            Ok(identity) => job(Ok(&NativeWebview { identity })),
             Err(error) => job(Err(error)),
         })
     }
@@ -393,7 +389,7 @@ mod tests {
         let (config, creation) = NativeSpec::new()
             .bridge(BridgeMode::Preload)
             .navigation_start(NavigationStart::Explicit)
-            .request_policy(RequestPolicy::deny_all().with_javascript(false))
+            .request_policy(RequestPolicy::allow_all().with_javascript(false))
             .into_parts();
         assert_eq!(config.bridge, BridgeMode::Preload);
         assert_eq!(config.start, NavigationStart::Explicit);

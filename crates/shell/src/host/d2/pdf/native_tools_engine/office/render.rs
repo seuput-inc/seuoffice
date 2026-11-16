@@ -57,8 +57,6 @@ pub(super) fn page(
         Ok(Some(PageRender {
             data,
             mime: "image/png".into(),
-            pixel_width: rgba.width as u32,
-            pixel_height: rgba.height as u32,
         }))
     })();
     let close = s.call("FPDFBitmap_Destroy", &[ptr(bitmap_id, 0)]);

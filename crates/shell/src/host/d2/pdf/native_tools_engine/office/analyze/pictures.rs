@@ -27,11 +27,8 @@ fn image(
         bounds,
         data,
         mime: "image/png".into(),
-        pixel_width: width as u32,
-        pixel_height: height as u32,
         float: Some(FloatPlacement {
             wrap: "behind".into(),
-            x_offset_pt: bounds.x0,
         }),
         spacing_before_pt: None,
         z,

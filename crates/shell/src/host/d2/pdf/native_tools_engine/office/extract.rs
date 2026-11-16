@@ -15,17 +15,6 @@ fn on_page(r: Rect, w: f64, h: f64) -> bool {
 fn norm(a: f64) -> f64 {
     a - 2.0 * PI * jscompat::math_round(a / (2.0 * PI))
 }
-fn struct_tree(s: &mut PdfiumSession, page: u64) -> Result<bool, PdfiumError> {
-    let Some(tree) = object(s, "FPDF_StructTree_GetForPage", &[ptr(page, 0)])? else {
-        return Ok(false);
-    };
-    let result = number(s, "FPDF_StructTree_CountChildren", &[ptr(tree, 0)]).map(|v| v > 0.0);
-    let close = s.call("FPDF_StructTree_Close", &[ptr(tree, 0)]);
-    match (result, close) {
-        (Err(e), _) | (Ok(_), Err(e)) => Err(e),
-        (Ok(v), Ok(_)) => Ok(v),
-    }
-}
 pub(super) fn page(
     s: &mut PdfiumSession,
     doc: u64,
@@ -246,8 +235,6 @@ pub(super) fn page(
                         bounds: r,
                         data: image.data,
                         mime: image.mime,
-                        pixel_width: image.pixel_width,
-                        pixel_height: image.pixel_height,
                         float: None,
                         spacing_before_pt: None,
                         z: None,
@@ -303,14 +290,12 @@ pub(super) fn page(
             index,
             width_pt: width,
             height_pt: height,
-            rotation,
             chars,
             images: pictures,
             paths: vectors,
             degraded: verdict.degraded,
             degraded_reason: verdict.reason.map(str::to_owned),
             scanned: verdict.scanned,
-            has_struct_tree: struct_tree(s, page)?,
             render: rendered,
             ocr_text_recovered: recovered,
             text_lost,

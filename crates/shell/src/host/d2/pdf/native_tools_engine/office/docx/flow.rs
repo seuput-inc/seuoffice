@@ -55,8 +55,7 @@ fn brittle(line: &Line) -> bool {
         if !c.is_whitespace() {
             count += 1;
         }
-        if matches!(c as u32, 0x2e80..=0x9fff | 0xf900..=0xfaff | 0xff00..=0xffef | 0x3000..=0x303f)
-        {
+        if matches!(c as u32, 0x2e80..=0x9fff | 0xf900..=0xfaff | 0xff00..=0xffef) {
             cjk += 1;
         }
     }

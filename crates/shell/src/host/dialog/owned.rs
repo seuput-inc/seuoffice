@@ -516,60 +516,6 @@ pub(crate) fn run_many_extra<T: Send + 'static>(
     }));
 }
 
-pub(crate) fn run_many_extra_finish<T: Send + 'static, U: Send + 'static>(
-    ui: Arc<dyn Thread>,
-    origin: NativeRequestOwner,
-    destinations: Vec<NativeRequestOwner>,
-    cancel: CancelToken,
-    pending: CancelToken,
-    additional: Vec<CancelToken>,
-    effect: impl FnOnce(Arc<Session>) -> Result<T, String> + Send + 'static,
-    finish: impl FnOnce(T) -> Result<U, String> + Send + 'static,
-    done: Box<dyn FnOnce(Result<U, String>) + Send>,
-) {
-    let session =
-        match Session::new_many_extra(&origin, &destinations, &cancel, &pending, &additional) {
-            Ok(session) => session,
-            Err(error) => return done(Err(error)),
-        };
-    let current_ui = ui.clone();
-    ui.post(Box::new(move || {
-        let extra: Vec<_> = additional.iter().collect();
-        let result = if !current_ui.is_current() {
-            Err("Native dialog requires the UI thread.".to_owned())
-        } else {
-            crate::ipc::native_owner::with_many_owner_effect_extra(
-                &origin,
-                &destinations,
-                &cancel,
-                &pending,
-                &extra,
-                || effect,
-            )
-            .ok_or_else(|| EXPIRED.to_owned())
-            .and_then(|effect| {
-                session.check()?;
-                platform::prepare(&session)?;
-                effect(session.clone())
-            })
-            .and_then(|value| {
-                session.check()?;
-                crate::ipc::native_owner::with_many_owner_effect_extra(
-                    &origin,
-                    &destinations,
-                    &cancel,
-                    &pending,
-                    &extra,
-                    || finish(value),
-                )
-                .ok_or_else(|| EXPIRED.to_owned())?
-            })
-        };
-        drop(session);
-        done(result);
-    }));
-}
-
 pub(crate) fn run_native_command<T: Send + 'static>(
     ui: Arc<dyn Thread>,
     effects: shell_contract::hosts::OwnedEffectsHost,
@@ -890,6 +836,7 @@ pub(super) struct FileSpec {
     pub name: Option<String>,
     pub folders: bool,
     pub multiple: bool,
+    #[cfg(target_os = "macos")]
     pub create_directories: Option<bool>,
 }
 
@@ -924,6 +871,7 @@ impl FileSpec {
             name,
             folders: super::has(&options.properties, "openDirectory"),
             multiple: super::has(&options.properties, "multiSelections"),
+            #[cfg(target_os = "macos")]
             create_directories: super::has(&options.properties, "createDirectory").then_some(true),
         }
     }

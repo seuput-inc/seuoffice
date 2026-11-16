@@ -335,7 +335,6 @@ mod tests {
             chars: vec![char_],
             bounds,
             baseline: y,
-            line_index: id,
             word_count: 1,
             font_size: 10.0,
         }

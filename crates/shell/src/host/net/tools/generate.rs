@@ -204,14 +204,6 @@ pub(crate) fn drop_generate_handoff(provided: &shell_contract::Provided, view_id
         .drop_legacy_handoff(view_id as f64);
 }
 
-pub(crate) fn drop_generate_handoff_owned(
-    provided: &shell_contract::Provided,
-    view: ViewId,
-    created: &RendererGeneration,
-) {
-    shell_ipc_a::user_skills::drop_generate_handoff_owned(provided, view, created);
-}
-
 enum ConversionSeed {
     MindmapToMarkdown(String),
     MindmapToSlides(Vec<u8>),

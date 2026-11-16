@@ -18,9 +18,11 @@ use super::document::{DocumentContext, DocumentCore, DocumentIdentity, RegisterO
 use super::events::{
     EventSink, LoadError, NativeEvent, NativeEventKind, ProcessFailure, RevokeReason, ViewEvent,
 };
-use super::ids::{BrowserId, CreationId, DocumentId, NavigationId};
+use super::ids::{BrowserId, DocumentId, NavigationId};
 use super::ingress::NONCE_LEN;
-use super::lifecycle::{BrowserClose, BrowserCloseOutcome, BrowserCloseSubscription};
+use super::lifecycle::{
+    BrowserClose, BrowserCloseOutcome, BrowserCloseSubscription, BrowserCreationOutcome,
+};
 use super::navigation::{NavigationIdentity, NavigationStart, Navigator, Observed, Reload};
 use super::policy::RequestPolicy;
 
@@ -113,7 +115,6 @@ struct BrowserLive {
     /// Address of the committed document.
     url: Option<Url>,
     doc: DocSlot,
-    observation: u64,
     attached: bool,
     initial_loaded: bool,
     /// The request policy is enforced by the OS webview (true from the start without one).
@@ -131,7 +132,6 @@ struct BrowserLive {
 pub(crate) struct BrowserCore {
     pub(crate) id: BrowserId,
     label: Box<str>,
-    creation: CreationId,
     close: BrowserClose,
     config: Config,
     /// Dropped at retirement: the webview and its hooks hold this core, so the control must
@@ -177,10 +177,6 @@ impl BrowserIdentity {
     /// Routing only, never identity: a label can be reused by a later browser.
     pub fn label(&self) -> &str {
         &self.core.label
-    }
-
-    pub fn creation_id(&self) -> CreationId {
-        self.core.creation
     }
 
     /// A replacement browser never matches, even under a reused label.
@@ -238,12 +234,6 @@ impl BrowserIdentity {
         self.core.lock().url.clone()
     }
 
-    /// Advances on navigation, commit, address and load changes. Compared only for
-    /// staleness, never for authority.
-    pub fn observation(&self) -> u64 {
-        self.core.lock().observation
-    }
-
     pub fn when_closed(
         &self,
         callback: impl FnOnce(BrowserCloseOutcome) + Send + 'static,
@@ -291,12 +281,6 @@ impl BrowserIdentity {
             _ => None,
         }
     }
-
-    /// The shell's own scheme handler reports a main document answered with an error status
-    /// (WKWebView reports such loads as successful).
-    pub fn report_navigation_failure(&self, error: LoadError) {
-        self.core.finish_load(Err(error));
-    }
 }
 
 /// What the OS adapters (and `tauri_public`) report into the browser. Each call is one
@@ -342,6 +326,7 @@ impl BrowserIdentity {
 
     /// The policy could not be enforced after `apply_policy` returned (macOS compiles its
     /// rules asynchronously): the held navigation never replays and readiness fails.
+    #[cfg(target_os = "macos")]
     pub(crate) fn observe_policy_failed(&self, reason: &str) {
         self.core.attach_failed(reason);
     }
@@ -363,11 +348,6 @@ impl BrowserIdentity {
     pub fn render_ready(&self, nonce: &[u8; NONCE_LEN]) -> Result<DocumentContext, RegisterError> {
         self.core.render_ready(nonce)
     }
-
-    /// The registered, live document whose nonce is `nonce`.
-    pub fn redeem(&self, nonce: &[u8; NONCE_LEN]) -> Option<DocumentContext> {
-        self.core.redeem(nonce)
-    }
 }
 
 /// A fragment-only navigation inside the current document keeps its JS realm.
@@ -381,17 +361,11 @@ pub(crate) fn is_same_document_navigation(current: &Url, next: &Url) -> bool {
 }
 
 impl BrowserCore {
-    pub(crate) fn new(
-        label: &str,
-        creation: CreationId,
-        close: BrowserClose,
-        config: Config,
-    ) -> Option<Arc<Self>> {
+    pub(crate) fn new(label: &str, close: BrowserClose, config: Config) -> Option<Arc<Self>> {
         let config_without_policy = config.policy.is_none();
         Some(Arc::new(Self {
             id: BrowserId::mint()?,
             label: label.into(),
-            creation,
             close,
             config,
             control: Mutex::new(None),
@@ -403,7 +377,6 @@ impl BrowserCore {
                 nav_url: None,
                 url: None,
                 doc: DocSlot::None,
-                observation: 0,
                 attached: false,
                 initial_loaded: false,
                 policy_ready: config_without_policy,
@@ -430,10 +403,6 @@ impl BrowserCore {
 
     pub(crate) fn window_label(&self) -> Option<&str> {
         self.window_label.get().map(|label| &**label)
-    }
-
-    pub(crate) fn label(&self) -> &str {
-        &self.label
     }
 
     pub(crate) fn close_receipt(&self) -> &BrowserClose {
@@ -502,6 +471,7 @@ impl BrowserCore {
             .unwrap_or_else(|error| error.into_inner()) = Some(control);
         let _ = self.window_label.set(window_label.into());
         self.lock().attached = true;
+        self.close.complete_creation(BrowserCreationOutcome::Attached);
         self.ready_check();
         self.replay_held_navigation();
     }
@@ -563,6 +533,7 @@ impl BrowserCore {
 
     /// The OS observers could not be attached: nothing waits for readiness forever.
     pub(crate) fn attach_failed(self: &Arc<Self>, error: &str) {
+        self.close.complete_creation(BrowserCreationOutcome::Failed);
         let waiters = {
             let mut state = self.lock();
             if state.ready.is_some() {
@@ -667,7 +638,6 @@ impl BrowserCore {
                     .url
                     .as_ref()
                     .is_some_and(|current| is_same_document_navigation(current, url));
-            state.observation = state.observation.saturating_add(1);
             if same_document {
                 state.url = Some(url.clone());
             } else {
@@ -753,7 +723,6 @@ impl BrowserCore {
             state.doc = DocSlot::Committed(document.clone());
             state.url = Some(url.clone());
             state.initial_loaded = true;
-            state.observation = state.observation.saturating_add(1);
             (
                 navigation,
                 document,
@@ -790,7 +759,6 @@ impl BrowserCore {
                 return;
             }
             state.url = Some(url.clone());
-            state.observation = state.observation.saturating_add(1);
         }
         self.emit(NativeEventKind::AddressChanged { url: url.clone() });
     }
@@ -810,7 +778,6 @@ impl BrowserCore {
                 return;
             }
             state.finished = Some(navigation.id);
-            state.observation = state.observation.saturating_add(1);
             (
                 navigation,
                 url,
@@ -845,12 +812,8 @@ impl BrowserCore {
     }
 
     pub(crate) fn view_event(self: &Arc<Self>, event: ViewEvent) {
-        {
-            let mut state = self.lock();
-            if state.closed {
-                return;
-            }
-            state.observation = state.observation.saturating_add(1);
+        if self.lock().closed {
+            return;
         }
         self.emit(NativeEventKind::View(event));
     }
@@ -949,7 +912,6 @@ impl BrowserCore {
                 revoked = old.revoke(RevokeReason::ProcessFailed);
             }
             state.nav = None;
-            state.observation = state.observation.saturating_add(1);
             (state.reload.clone(), state.observed.clone())
         };
         if let Some(revoked) = revoked {
@@ -984,7 +946,6 @@ impl BrowserCore {
                 revoked = old.revoke(RevokeReason::Close);
             }
             state.nav = None;
-            state.observation = state.observation.saturating_add(1);
             if state.ready.is_none() {
                 state.ready = Some(Err("The browser closed before it was ready.".into()));
             }
@@ -1063,10 +1024,6 @@ impl BrowserCore {
         {
             state.observed = None;
         }
-    }
-
-    pub(crate) fn is_attached(&self) -> bool {
-        self.lock().attached
     }
 }
 
@@ -1160,9 +1117,9 @@ pub(crate) mod testing {
         let recorded = events.clone();
         let sink: EventSink =
             Arc::new(move |event| recorded.lock().unwrap().push(event.kind.clone()));
-        let creation = BrowserCreation::new().unwrap();
+        let creation = BrowserCreation::default();
         let receipt = creation.receipt();
-        let submission = creation.into_submission();
+        let _submission = creation.into_submission();
         receipt.claim().unwrap();
         let config = Config {
             sink: Some(sink),
@@ -1170,7 +1127,7 @@ pub(crate) mod testing {
             bridge: BridgeMode::Invoke,
             policy: None,
         };
-        let core = BrowserCore::new(label, submission.creation(), receipt, config).unwrap();
+        let core = BrowserCore::new(label, receipt, config).unwrap();
         core.mark_attached(control, label);
         (core.identity(), events)
     }
@@ -1350,9 +1307,7 @@ mod tests {
     #[test]
     fn a_process_failure_revokes_the_document_but_keeps_the_browser_open() {
         let (browser, context) = registered_context("process");
-        browser
-            .core
-            .process_failed(ProcessFailure::ContentProcessTerminated);
+        browser.core.process_failed(ProcessFailure::Unknown);
         assert!(context.is_revoked());
         assert!(browser.is_open());
         assert!(browser.document().is_none());
@@ -1384,16 +1339,16 @@ mod tests {
 
     #[test]
     fn an_explicit_start_is_ready_only_after_attachment_and_the_blank_commit() {
-        let creation = crate::native::lifecycle::BrowserCreation::new().unwrap();
+        let creation = crate::native::lifecycle::BrowserCreation::default();
         let receipt = creation.receipt();
-        let submission = creation.into_submission();
+        let _submission = creation.into_submission();
         receipt.claim().unwrap();
         let config = Config {
             start: NavigationStart::Explicit,
             bridge: BridgeMode::Invoke,
             ..Config::default()
         };
-        let core = BrowserCore::new("explicit", submission.creation(), receipt, config).unwrap();
+        let core = BrowserCore::new("explicit", receipt, config).unwrap();
         let ready = Arc::new(Mutex::new(Vec::new()));
         let sink = ready.clone();
         core.when_ready(Box::new(move |result| sink.lock().unwrap().push(result)));

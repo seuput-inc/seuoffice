@@ -20,8 +20,6 @@ const VERIFY_RESPONSE_BOUND: usize = 32 + b"sign-failed".len();
 /// captured native document and request. Never hold this gate over a provider,
 /// child process, verifier, dialog, or other blocking operation.
 pub(crate) trait Authority: Send + Sync {
-    /// Exact event-driven captured document/context loss, never a snapshot.
-    fn owner_loss(&self, owner: &NativeRequestOwner) -> Option<CancelToken>;
     /// Compare immutable authenticated origin and actual document lease identity,
     /// never view/renderer alone; false if proof is absent. Must not lock gates:
     /// this is also called inside `with_admission`.

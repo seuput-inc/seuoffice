@@ -38,9 +38,8 @@ pub(super) fn image_stats(
                 continue;
             }
             let b = s.read(buf, 0, 16)?;
-            let f = |i: usize| {
-                f32::from_le_bytes(b[i..i + 4].try_into().expect("image bounds")) as f64
-            };
+            let f =
+                |i: usize| f32::from_le_bytes(b[i..i + 4].try_into().expect("image bounds")) as f64;
             let w = f(8).min(width) - f(0).max(0.0);
             let h = f(12).min(height) - f(4).max(0.0);
             if w > 0.0 && h > 0.0 && w * h / area >= 0.8 {

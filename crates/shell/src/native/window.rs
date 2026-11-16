@@ -13,7 +13,6 @@ use tauri::{AppHandle, Manager, Window};
 
 use super::Native;
 use super::defer::is_ui_thread;
-use super::ids::CreationId;
 use super::lifecycle::WindowClose;
 use super::platform::{Current, WindowOps};
 
@@ -23,7 +22,6 @@ pub enum WindowError {
     NotUiThread,
     /// The window began closing or was replaced.
     Closed,
-    Platform(String),
 }
 
 impl fmt::Display for WindowError {
@@ -31,7 +29,6 @@ impl fmt::Display for WindowError {
         match self {
             Self::NotUiThread => f.write_str("the native window can only be used on the UI thread"),
             Self::Closed => f.write_str("the original native window was closed or replaced"),
-            Self::Platform(message) => f.write_str(message),
         }
     }
 }
@@ -43,7 +40,6 @@ pub struct WindowHandle {
     window: Window,
     /// `None` for a window created without a reservation.
     close: Option<WindowClose>,
-    creation: Option<CreationId>,
 }
 
 impl fmt::Debug for WindowHandle {
@@ -55,38 +51,12 @@ impl fmt::Debug for WindowHandle {
 }
 
 impl WindowHandle {
-    pub(crate) fn new(
-        window: Window,
-        close: Option<WindowClose>,
-        creation: Option<CreationId>,
-    ) -> Self {
-        Self {
-            window,
-            close,
-            creation,
-        }
+    pub(crate) fn new(window: Window, close: Option<WindowClose>) -> Self {
+        Self { window, close }
     }
 
     pub fn label(&self) -> &str {
         self.window.label()
-    }
-
-    pub fn creation_id(&self) -> Option<CreationId> {
-        self.creation
-    }
-
-    /// The window began closing, was destroyed or never finished being created.
-    pub fn is_retired(&self) -> bool {
-        self.close.as_ref().is_some_and(|close| !close.is_open())
-    }
-
-    /// Same reservation, not just the same label.
-    pub fn is_same(&self, other: &Self) -> bool {
-        match (&self.close, &other.close) {
-            (Some(left), Some(right)) => left.same(right),
-            (None, None) => self.window.label() == other.window.label(),
-            _ => false,
-        }
     }
 
     /// Run `effect` on the UI thread with the raw window handle, as one admitted effect.
@@ -142,11 +112,6 @@ pub trait WindowExt {
     fn end_modal(&self) -> Result<(), String>;
     /// Non-owning access to this exact window; use `with_window` for each use.
     fn native_window_handle(&self) -> Result<WindowHandle, String>;
-    /// Capture on the UI thread without blocking the caller.
-    fn native_window_handle_async<F: FnOnce(Result<WindowHandle, String>) + Send + 'static>(
-        &self,
-        done: F,
-    ) -> Result<(), String>;
 }
 
 impl WindowExt for Window {
@@ -170,15 +135,6 @@ impl WindowExt for Window {
             .try_state::<Native>()
             .ok_or("The native module is not installed.")?;
         Ok(native.window_handle(self))
-    }
-
-    fn native_window_handle_async<F: FnOnce(Result<WindowHandle, String>) + Send + 'static>(
-        &self,
-        done: F,
-    ) -> Result<(), String> {
-        let window = self.clone();
-        self.run_on_main_thread(move || done(window.native_window_handle()))
-            .map_err(|error| error.to_string())
     }
 }
 

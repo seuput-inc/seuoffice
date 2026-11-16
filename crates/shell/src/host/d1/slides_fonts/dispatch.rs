@@ -470,7 +470,7 @@ pub(in crate::host::d1) fn transfer_history_with(
     Ok(())
 }
 
-pub(in crate::host::d1) fn revoke_view(view: ViewId, lease: &SlidesViewLease) {
+pub(crate) fn revoke_view(view: ViewId, lease: &SlidesViewLease) {
     if let Ok(mut registry) = REGISTRY.lock() {
         registry.fonts.retain(|(_, _, owner), state| {
             if *owner == view && state.authorization.lease().same_lifetime(lease) {

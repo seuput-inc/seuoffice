@@ -99,10 +99,8 @@ fn one_page(
         index: extracted.index,
         width_pt: extracted.width_pt,
         height_pt: extracted.height_pt,
-        rotation: extracted.rotation,
         degraded: extracted.degraded,
         scanned: extracted.scanned,
-        has_struct_tree: extracted.has_struct_tree,
         degraded_reason: extracted.degraded_reason.clone(),
         render: extracted.render.clone(),
         ..Default::default()
@@ -153,7 +151,6 @@ fn one_page(
     for image in &mut page.decor_images {
         image.float = Some(super::ir::FloatPlacement {
             wrap: "behind".into(),
-            x_offset_pt: image.bounds.x0,
         });
     }
     let noted = footnotes::detect_footnotes(
@@ -192,7 +189,6 @@ fn one_page(
                 bounds: fill.bounds,
                 color: fill.color.clone(),
                 rounded,
-                z: fill.z,
             });
         }
     }
@@ -294,7 +290,6 @@ fn one_page(
         for mut img in inline.drain(..) {
             img.float = Some(super::ir::FloatPlacement {
                 wrap: "behind".into(),
-                x_offset_pt: img.bounds.x0,
             });
             floats.push(img);
         }
@@ -310,7 +305,6 @@ fn one_page(
         if inside_lattice(&img, &tables) {
             img.float = Some(super::ir::FloatPlacement {
                 wrap: "behind".into(),
-                x_offset_pt: img.bounds.x0,
             });
             floats.push(img);
         } else {
@@ -647,14 +641,12 @@ mod tests {
             index: 0,
             width_pt: 612.0,
             height_pt: 792.0,
-            rotation: 0,
             chars,
             images: vec![],
             paths: vec![],
             degraded: false,
             degraded_reason: None,
             scanned: false,
-            has_struct_tree: false,
             render: None,
             ocr_text_recovered: false,
             text_lost: false,

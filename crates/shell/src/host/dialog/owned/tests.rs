@@ -162,6 +162,7 @@ fn shared_file_options_keep_default_directory_name_and_wildcard_semantics() {
         vec![("Document".into(), vec!["docx".into(), "odt".into()])]
     );
     assert!(spec.folders && spec.multiple);
+    #[cfg(target_os = "macos")]
     assert_eq!(spec.create_directories, Some(true));
 }
 

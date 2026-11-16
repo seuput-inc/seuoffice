@@ -154,8 +154,6 @@ pub(super) fn read(
                     bounds: r,
                     data,
                     mime: "image/png".into(),
-                    pixel_width: cw as u32,
-                    pixel_height: ch as u32,
                     float: None,
                     spacing_before_pt: None,
                     z: Some(z as i64),

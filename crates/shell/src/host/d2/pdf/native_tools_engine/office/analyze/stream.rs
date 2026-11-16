@@ -831,7 +831,6 @@ mod tests {
                             y1: y + 8.0,
                         },
                         baseline: y,
-                        line_index: row,
                         word_count: 1,
                         font_size: 10.0,
                     }

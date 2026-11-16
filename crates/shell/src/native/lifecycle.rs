@@ -18,7 +18,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::defer::defer;
-use super::ids::CreationId;
 
 // ---------------------------------------------------------------------------------------
 // Browser
@@ -135,11 +134,10 @@ pub(crate) struct BrowserSubmission(Arc<Submission>);
 
 struct Submission {
     close: BrowserClose,
-    creation: CreationId,
 }
 
 impl BrowserSubmission {
-    fn new(close: BrowserClose, creation: CreationId) -> Self {
+    fn new(close: BrowserClose) -> Self {
         {
             let mut state = close
                 .state
@@ -150,15 +148,11 @@ impl BrowserSubmission {
                 .checked_add(1)
                 .expect("native submission count exhausted");
         }
-        Self(Arc::new(Submission { close, creation }))
+        Self(Arc::new(Submission { close }))
     }
 
     pub(crate) fn close(&self) -> BrowserClose {
         self.0.close.clone()
-    }
-
-    pub(crate) fn creation(&self) -> CreationId {
-        self.0.creation
     }
 }
 
@@ -174,15 +168,13 @@ impl Drop for Submission {
 /// [`NativeSpec`]: super::ext::NativeSpec
 pub struct BrowserCreation(BrowserSubmission);
 
-impl BrowserCreation {
-    /// `None` only when the creation counter is exhausted.
-    pub fn new() -> Option<Self> {
-        Some(Self(BrowserSubmission::new(
-            BrowserClose::default(),
-            CreationId::mint()?,
-        )))
+impl Default for BrowserCreation {
+    fn default() -> Self {
+        Self(BrowserSubmission::new(BrowserClose::default()))
     }
+}
 
+impl BrowserCreation {
     pub fn receipt(&self) -> BrowserClose {
         self.0.close()
     }
@@ -435,7 +427,6 @@ pub(crate) struct WindowSubmission(Arc<WindowSubmissionInner>);
 
 struct WindowSubmissionInner {
     close: WindowClose,
-    creation: CreationId,
 }
 
 /// One admitted operation on an exact window. Hold it until the operation completes;
@@ -502,36 +493,24 @@ impl WindowSubmission {
     pub(crate) fn close(&self) -> WindowClose {
         self.0.close.clone()
     }
+}
 
-    pub(crate) fn creation(&self) -> CreationId {
-        self.0.creation
+impl Default for WindowCreation {
+    fn default() -> Self {
+        Self {
+            submission: Some(WindowSubmission(Arc::new(WindowSubmissionInner {
+                close: WindowClose::default(),
+            }))),
+        }
     }
 }
 
 impl WindowCreation {
-    /// `None` only when the creation counter is exhausted.
-    pub fn new() -> Option<Self> {
-        let inner = WindowSubmissionInner {
-            close: WindowClose::default(),
-            creation: CreationId::mint()?,
-        };
-        Some(Self {
-            submission: Some(WindowSubmission(Arc::new(inner))),
-        })
-    }
-
     pub fn receipt(&self) -> WindowClose {
         self.submission
             .as_ref()
             .expect("window reservation consumed")
             .close()
-    }
-
-    pub fn creation_id(&self) -> CreationId {
-        self.submission
-            .as_ref()
-            .expect("window reservation consumed")
-            .creation()
     }
 
     pub(crate) fn submit(mut self) -> WindowSubmission {
@@ -592,10 +571,6 @@ impl WindowClose {
             deliver_window(listener.clone(), outcome);
         }
         Ok(WindowCloseSubscription { listener })
-    }
-
-    pub fn same(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.state, &other.state)
     }
 
     pub fn is_open(&self) -> bool {
@@ -782,7 +757,7 @@ mod tests {
 
     #[test]
     fn an_abandoned_unclaimed_reservation_fails_creation_and_close() {
-        let creation = BrowserCreation::new().unwrap();
+        let creation = BrowserCreation::default();
         let receipt = creation.receipt();
         let hook = creation.into_submission();
         let other_hook = hook.clone();
@@ -800,7 +775,7 @@ mod tests {
 
     #[test]
     fn a_claimed_reservation_is_never_reported_not_created() {
-        let creation = BrowserCreation::new().unwrap();
+        let creation = BrowserCreation::default();
         let receipt = creation.receipt();
         let hook = creation.into_submission();
         receipt.claim().unwrap();
@@ -828,12 +803,12 @@ mod tests {
 
     #[test]
     fn an_unsubmitted_window_is_not_created_but_an_allocated_one_is_not() {
-        let creation = WindowCreation::new().unwrap();
+        let creation = WindowCreation::default();
         let close = creation.receipt();
         drop(creation);
         assert_eq!(close.outcome(), Some(WindowCloseOutcome::NotCreated));
 
-        let creation = WindowCreation::new().unwrap();
+        let creation = WindowCreation::default();
         let close = creation.receipt();
         let submission = creation.submit();
         assert!(close.claim());
@@ -845,7 +820,7 @@ mod tests {
 
     #[test]
     fn destroy_waits_for_the_last_admitted_effect() {
-        let creation = WindowCreation::new().unwrap();
+        let creation = WindowCreation::default();
         let close = creation.receipt();
         let _submission = creation.submit();
         assert!(close.claim());
@@ -865,7 +840,7 @@ mod tests {
 
     #[test]
     fn unallocated_failure_waits_for_previously_admitted_work() {
-        let creation = WindowCreation::new().unwrap();
+        let creation = WindowCreation::default();
         let close = creation.receipt();
         let effect = close.admit_effect().unwrap();
         drop(creation);
@@ -877,7 +852,7 @@ mod tests {
 
     #[test]
     fn closing_subscribers_hear_a_close_that_already_began() {
-        let creation = WindowCreation::new().unwrap();
+        let creation = WindowCreation::default();
         let close = creation.receipt();
         let _submission = creation.submit();
         assert!(close.claim() && close.allocated());
@@ -889,13 +864,5 @@ mod tests {
             .unwrap();
         assert!(*heard.lock().unwrap());
         assert!(!close.is_open());
-    }
-
-    #[test]
-    fn unrelated_reservations_never_compare_equal() {
-        let first = WindowCreation::new().unwrap();
-        let second = WindowCreation::new().unwrap();
-        assert!(first.receipt().same(&first.receipt()));
-        assert!(!first.receipt().same(&second.receipt()));
     }
 }

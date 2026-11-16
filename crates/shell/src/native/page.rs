@@ -14,7 +14,6 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use super::browser::BrowserIdentity;
 use super::defer::is_ui_thread;
 use super::platform::{Current, PageDriver};
 
@@ -338,16 +337,11 @@ fn blocking_unchecked<T: Send + 'static>(
 #[derive(Clone)]
 pub struct PageOps {
     webview: tauri::Webview,
-    browser: BrowserIdentity,
 }
 
 impl PageOps {
-    pub(crate) fn new(webview: tauri::Webview, browser: BrowserIdentity) -> Self {
-        Self { webview, browser }
-    }
-
-    pub fn browser(&self) -> &BrowserIdentity {
-        &self.browser
+    pub(crate) fn new(webview: tauri::Webview) -> Self {
+        Self { webview }
     }
 
     /// Evaluate ONE EXPRESSION in the page (several statements go in an IIFE; a trailing `;`

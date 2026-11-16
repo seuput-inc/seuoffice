@@ -273,38 +273,43 @@ fn identifier<'a>(source: &'a str, at: &mut usize) -> Result<&'a str, ()> {
     Ok(value)
 }
 fn unsafe_entity(value: &str) -> bool {
-    macro_rules! any { ($($pattern:literal),+ $(,)?) => { false $(|| js_regex!($pattern, "i").test(value))+ }; }
-    any!(
-        r"<script[\s>/]",
-        r"</script[\s>]",
-        r"j[\t\n\r ]*a[\t\n\r ]*v[\t\n\r ]*a[\t\n\r ]*s[\t\n\r ]*c[\t\n\r ]*r[\t\n\r ]*i[\t\n\r ]*p[\t\n\r ]*t[\t\n\r ]*:",
-        r"vbscript[\t\n\r ]*:",
-        r"data[\t\n\r ]*:[\t\n\r ]*text/html",
-        r"data[\t\n\r ]*:[\t\n\r ]*application/xhtml",
-        r"data[\t\n\r ]*:[\t\n\r ]*image/svg\+xml",
-        r"\bon\w{1,30}\s*=",
-        r"(?:&#x0*3[Cc];?|&#0*60;?|&lt;)\s*script",
-        r"(?:&#x0*6[Aa];?|&#0*106;?)\s*(?:&#x0*61;?|a)[\s\S]{0,80}script\s*:",
-        r"style[\s\S]{0,20}expression\s*\(",
-        r"<(?:object|embed)[\s>/]",
-        r"<base[\s>]",
-        r"<meta[\s\S]{0,40}http-equiv[\s\S]{0,20}refresh",
-        r"srcdoc\s*=",
-        r"<iframe[\s>/]",
-        r"<form[\s>/]",
-        r"<!\[CDATA\[",
-        r"\]\]>",
-        r"<\?(?:xml[\- ]|php|asp)",
-        r"<!DOCTYPE(?:[\s[]|$)",
-        r#"\bSYSTEM\s+["']"#,
-        r#"\bPUBLIC\s+["']"#,
-        r"<!ENTITY[\s%]",
-        r"(?:&\w{1,20};){3,}",
-        r"\bxmlns\s*(?::\w{1,40})?\s*=",
-        r"<!--",
-        r"-->",
-        r"\?>"
-    )
+    js_regex!(r"<script[\s>/]", "i").test(value)
+        || js_regex!(r"</script[\s>]", "i").test(value)
+        || js_regex!(
+            r"j[\t\n\r ]*a[\t\n\r ]*v[\t\n\r ]*a[\t\n\r ]*s[\t\n\r ]*c[\t\n\r ]*r[\t\n\r ]*i[\t\n\r ]*p[\t\n\r ]*t[\t\n\r ]*:",
+            "i"
+        )
+        .test(value)
+        || js_regex!(r"vbscript[\t\n\r ]*:", "i").test(value)
+        || js_regex!(r"data[\t\n\r ]*:[\t\n\r ]*text/html", "i").test(value)
+        || js_regex!(r"data[\t\n\r ]*:[\t\n\r ]*application/xhtml", "i").test(value)
+        || js_regex!(r"data[\t\n\r ]*:[\t\n\r ]*image/svg\+xml", "i").test(value)
+        || js_regex!(r"\bon\w{1,30}\s*=", "i").test(value)
+        || js_regex!(r"(?:&#x0*3[Cc];?|&#0*60;?|&lt;)\s*script", "i").test(value)
+        || js_regex!(
+            r"(?:&#x0*6[Aa];?|&#0*106;?)\s*(?:&#x0*61;?|a)[\s\S]{0,80}script\s*:",
+            "i"
+        )
+        .test(value)
+        || js_regex!(r"style[\s\S]{0,20}expression\s*\(", "i").test(value)
+        || js_regex!(r"<(?:object|embed)[\s>/]", "i").test(value)
+        || js_regex!(r"<base[\s>]", "i").test(value)
+        || js_regex!(r"<meta[\s\S]{0,40}http-equiv[\s\S]{0,20}refresh", "i").test(value)
+        || js_regex!(r"srcdoc\s*=", "i").test(value)
+        || js_regex!(r"<iframe[\s>/]", "i").test(value)
+        || js_regex!(r"<form[\s>/]", "i").test(value)
+        || js_regex!(r"<!\[CDATA\[", "i").test(value)
+        || js_regex!(r"\]\]>", "i").test(value)
+        || js_regex!(r"<\?(?:xml[\- ]|php|asp)", "i").test(value)
+        || js_regex!(r"<!DOCTYPE(?:[\s[]|$)", "i").test(value)
+        || js_regex!(r#"\bSYSTEM\s+["']"#, "i").test(value)
+        || js_regex!(r#"\bPUBLIC\s+["']"#, "i").test(value)
+        || js_regex!(r"<!ENTITY[\s%]", "i").test(value)
+        || js_regex!(r"(?:&\w{1,20};){3,}", "i").test(value)
+        || js_regex!(r"\bxmlns\s*(?::\w{1,40})?\s*=", "i").test(value)
+        || js_regex!(r"<!--", "i").test(value)
+        || js_regex!(r"-->", "i").test(value)
+        || js_regex!(r"\?>", "i").test(value)
 }
 fn doctype(source: &str, begin: usize, entities: &mut Entities) -> Result<usize, ()> {
     if !source[begin..].starts_with("<!DOCTYPE") {

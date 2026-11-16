@@ -2143,35 +2143,6 @@ pub(crate) struct SavedMenu {
 }
 
 impl SavedMenu {
-    pub(crate) fn capture(
-        origin: &shell_contract::ipc::NativeRequestOwner,
-        destination: &shell_contract::ipc::NativeRequestOwner,
-        cancel: &shell_contract::runtime::CancelToken,
-        pending: &shell_contract::runtime::CancelToken,
-        effects: &shell_contract::hosts::OwnedEffectsHost,
-    ) -> Result<Option<Self>, String> {
-        Self::capture_many(origin, destination, &[], cancel, pending, effects)
-    }
-
-    pub(crate) fn capture_many(
-        origin: &shell_contract::ipc::NativeRequestOwner,
-        destination: &shell_contract::ipc::NativeRequestOwner,
-        participants: &[shell_contract::ipc::NativeRequestOwner],
-        cancel: &shell_contract::runtime::CancelToken,
-        pending: &shell_contract::runtime::CancelToken,
-        effects: &shell_contract::hosts::OwnedEffectsHost,
-    ) -> Result<Option<Self>, String> {
-        Self::capture_many_extra(
-            origin,
-            destination,
-            participants,
-            cancel,
-            pending,
-            &[],
-            effects,
-        )
-    }
-
     pub(crate) fn capture_many_extra(
         origin: &shell_contract::ipc::NativeRequestOwner,
         destination: &shell_contract::ipc::NativeRequestOwner,

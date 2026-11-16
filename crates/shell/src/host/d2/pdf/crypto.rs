@@ -23,7 +23,7 @@ use openssl::rsa::Padding;
 use openssl::sign::Verifier;
 use openssl::x509::{X509, X509NameRef};
 use shell_contract::IpcValue;
-use shell_ipc_d2::pdf::editor::hosts::{CertMaterial, SignFailure};
+use shell_ipc_d2::pdf::editor::hosts::SignFailure;
 
 fn certificate(input: &[u8]) -> Result<X509, String> {
     X509::from_der(input)
@@ -137,33 +137,6 @@ pub(super) fn describe_certificate(input: &[u8]) -> Option<CertSummary> {
 
 pub(super) fn certificate_info(input: &[u8]) -> Result<IpcValue, String> {
     describe(&certificate(input)?)
-}
-
-pub(super) fn open_certificate(material: &CertMaterial) -> Result<Vec<IpcValue>, String> {
-    match material {
-        CertMaterial::P12 { p12, password } => {
-            let identity = pkcs12::open(p12, password, None)?;
-            identity
-                .chain_der
-                .iter()
-                .map(|der| certificate_info(der).map_err(|_| "cert-invalid".into()))
-                .collect()
-        }
-        CertMaterial::InPlace(signer) => {
-            let first = signer.chain_der.first().ok_or("cert-invalid")?;
-            let key = certificate(first)
-                .and_then(|cert| cert.public_key().map_err(|e| e.to_string()))
-                .map_err(|_| "cert-invalid")?;
-            if key.id() != Id::RSA {
-                return Err("cert-unsupported-key".into());
-            }
-            signer
-                .chain_der
-                .iter()
-                .map(|der| certificate_info(der).map_err(|_| "cert-invalid".into()))
-                .collect()
-        }
-    }
 }
 
 fn signature_failure(error: String) -> SignFailure {
@@ -293,8 +266,9 @@ pub(super) fn verified_chain_and_trust(
     verified_chain_and_trust_with_roots(signer, pool, roots)
 }
 
-/// Checks the byte range and signed attributes. This alone does not authorize
-/// signing: the caller must also validate the incremental object changes.
+/// Checks the byte range and signed attributes. The callers rebuild the whole
+/// revision natively with `pdf_lib::assemble`, so the object changes are never
+/// taken from the signer's input.
 pub(super) fn signing_revision_digest(
     original: &[u8],
     revision: &[u8],

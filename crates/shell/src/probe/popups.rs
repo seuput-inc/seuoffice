@@ -109,10 +109,10 @@ fn new_window(ctx: &Ctx) -> Result<(), String> {
 /// A bare window with one child webview, built on the UI thread as the shell builds its tabs.
 fn build_child(
     app: &AppHandle,
+    native: &Native,
     timeline: &Arc<Timeline>,
     url: &str,
 ) -> Result<BrowserIdentity, String> {
-    let native = app.state::<Native>().inner().clone();
     let window = tauri::window::WindowBuilder::new(app, HOST)
         .title(HOST)
         .inner_size(520.0, 420.0)
@@ -127,7 +127,7 @@ fn build_child(
     let url = tauri::Url::parse(url).map_err(|error| error.to_string())?;
     let builder =
         tauri::webview::WebviewBuilder::<tauri::Wry>::new(CHILD, WebviewUrl::External(url));
-    let (builder, browser) = builder.native(&native, CHILD, spec)?;
+    let (builder, browser) = builder.native(native, CHILD, spec)?;
     let webview = window
         .add_child(
             builder,
@@ -143,6 +143,7 @@ fn child_close(ctx: &Ctx) -> Result<(), String> {
     let timeline = Arc::new(Timeline::default());
     let (send, receive) = mpsc::sync_channel(1);
     let app = ctx.app.clone();
+    let native = ctx.native();
     let build_timeline = timeline.clone();
     let url = app_url("shell", "blank.html");
     record(
@@ -152,7 +153,7 @@ fn child_close(ctx: &Ctx) -> Result<(), String> {
     );
     ctx.app
         .run_on_main_thread(move || {
-            let _ = send.send(build_child(&app, &build_timeline, &url));
+            let _ = send.send(build_child(&app, &native, &build_timeline, &url));
         })
         .map_err(|error| error.to_string())?;
     let browser = receive

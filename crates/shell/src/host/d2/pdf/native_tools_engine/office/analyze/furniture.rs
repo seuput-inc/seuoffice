@@ -60,7 +60,17 @@ fn page_number(s: &str) -> bool {
 // when the string can be cut into them. A reachability pass over the word boundaries decides it.
 fn is_page_words(s: &str) -> bool {
     const WORDS: [&str; 11] = [
-        "page", "of", "pg", "p", "第", "页", "頁", "共", "ページ", "стр", "из",
+        "page",
+        "of",
+        "pg",
+        "p",
+        "第",
+        "页",
+        "頁",
+        "共",
+        "ページ",
+        "стр",
+        "из",
     ];
     let mut reach = vec![false; s.len() + 1];
     reach[0] = true;
@@ -449,14 +459,12 @@ mod tests {
             index: number,
             width_pt: 400.,
             height_pt: 600.,
-            rotation: 0,
             chars: vec![c],
             images: vec![],
             paths: vec![],
             degraded: false,
             degraded_reason: None,
             scanned: false,
-            has_struct_tree: false,
             render: None,
             ocr_text_recovered: false,
             text_lost: false,

@@ -39,10 +39,6 @@ impl DocumentIdentity {
     pub fn browser_id(&self) -> BrowserId {
         self.browser
     }
-
-    pub fn navigation_id(&self) -> NavigationId {
-        self.navigation
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -165,7 +161,7 @@ impl DocumentCore {
         wake: Box<dyn Fn() -> Result<(), String> + Send + Sync>,
     ) -> Arc<Self> {
         let revoked = Arc::new(AtomicBool::new(false));
-        let reply = ReplySink::new(identity.id, revoked.clone(), wake);
+        let reply = ReplySink::new(revoked.clone(), wake);
         Arc::new(Self {
             identity,
             browser,
@@ -403,21 +399,6 @@ pub struct DocumentReady {
 impl DocumentReady {
     pub fn origin(&self) -> &DocumentContext {
         &self.origin
-    }
-
-    pub fn is_live(&self) -> bool {
-        self.origin.is_live()
-    }
-
-    pub fn on_revoke(
-        &self,
-        callback: impl FnOnce() + Send + 'static,
-    ) -> Option<DocumentRevocation> {
-        self.origin.on_revoke(callback)
-    }
-
-    pub fn with_live<T>(&self, operation: impl FnOnce() -> T) -> Option<T> {
-        self.origin.with_live(operation)
     }
 }
 

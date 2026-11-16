@@ -150,10 +150,7 @@ pub(super) fn classify(
         };
         let mut img = img.clone();
         if let Some(wrap) = wrap {
-            img.float = Some(FloatPlacement {
-                wrap: wrap.into(),
-                x_offset_pt: (img.bounds.x0 - left).max(0.0),
-            });
+            img.float = Some(FloatPlacement { wrap: wrap.into() });
             floats.push(img);
         } else {
             inline.push(img);
@@ -175,7 +172,6 @@ pub(super) fn classify(
         if is_gallery {
             img.float = Some(FloatPlacement {
                 wrap: "behind".into(),
-                x_offset_pt: (img.bounds.x0 - left).max(0.0),
             });
             floats.push(img);
         } else {

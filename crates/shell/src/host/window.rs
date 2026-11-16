@@ -542,18 +542,6 @@ impl Windows {
             .ok_or_else(|| format!("'{url}' is not a renderer page"))
     }
 
-    pub fn open_empty_window(
-        &self,
-        title: &str,
-        size: (f64, f64),
-        min_size: (f64, f64),
-        origin: Option<(f64, f64)>,
-        visible: bool,
-    ) -> Result<WindowId, String> {
-        self.open_empty_window_handle(title, size, min_size, origin, visible)
-            .map(|(id, _, _)| id)
-    }
-
     pub(crate) fn open_empty_window_handle(
         &self,
         title: &str,
@@ -570,7 +558,7 @@ impl Windows {
         String,
     > {
         let native = self.native()?;
-        let creation = WindowCreation::new().ok_or("Native creation ids are exhausted.")?;
+        let creation = WindowCreation::default();
         let id = self.views.new_window_id();
         let label = format!("window-{}", id.0);
         let mut builder = WindowBuilder::new(&self.app, &label)
@@ -789,14 +777,7 @@ impl Windows {
         let window_creation = match window_creation {
             Some(creation) => creation,
             None => {
-                let creation = match WindowCreation::new() {
-                    Some(creation) => creation,
-                    None => {
-                        CLOSED_CALLBACKS.lock().unwrap().remove(&window);
-                        self.views.remove_window(window);
-                        return Err("Native creation ids are exhausted.".into());
-                    }
-                };
+                let creation = WindowCreation::default();
                 if let Err(error) = window_lifecycle.bind_terminal(creation.receipt()) {
                     CLOSED_CALLBACKS.lock().unwrap().remove(&window);
                     self.views.remove_window(window);
@@ -821,11 +802,7 @@ impl Windows {
                 return Err("The native view registration is unavailable".into());
             };
             if reserved_identity.is_none() {
-                let Some(creation) = BrowserCreation::new() else {
-                    CLOSED_CALLBACKS.lock().unwrap().remove(&window);
-                    self.views.remove_window(window);
-                    return Err("Native creation ids are exhausted.".into());
-                };
+                let creation = BrowserCreation::default();
                 let proof = NativeClosureProof::new(creation.receipt(), view, captured.clone());
                 let admitted = (|| {
                     self.views
@@ -1002,8 +979,7 @@ impl Windows {
                 creation
             }
             (Some(creation), None) => creation,
-            (None, None) => BrowserCreation::new()
-                .ok_or_else(|| "Native creation ids are exhausted.".to_owned())?,
+            (None, None) => BrowserCreation::default(),
             (None, Some(_)) => {
                 return Err(
                     "A prepared native closure proof needs its creation reservation"
@@ -1085,9 +1061,8 @@ impl Windows {
         &self,
         surface: Surface,
     ) -> Result<PreparedDeferredWindow, String> {
-        let window_submission =
-            WindowCreation::new().ok_or("Native creation ids are exhausted.")?;
-        let submission = BrowserCreation::new().ok_or("Native creation ids are exhausted.")?;
+        let window_submission = WindowCreation::default();
+        let submission = BrowserCreation::default();
         let window = self.views.new_window_id();
         let registration = self.views.allocate_view()?;
         let view = registration.view();

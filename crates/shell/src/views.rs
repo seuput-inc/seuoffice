@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use crate::native::{
     BrowserId, BrowserState, DocumentContext, DocumentIdentity, DocumentRevocation, ReloadIdentity,
     ReloadReservation, SchemeRequestContext, WindowClose, WindowCloseOutcome,
-    WindowCloseSubscription, WindowClosingSubscription, WindowEffect, WindowHandle,
+    WindowCloseSubscription, WindowClosingSubscription, WindowEffect,
 };
 use main_core::docs::byte_handoff::{MediaPermit, MediaViewLease};
 use shell_contract::Surface;
@@ -170,7 +170,6 @@ impl NativeReservedViewState {
 pub struct DocsMediaAuthorization {
     pub view: ViewId,
     pub permit: MediaPermit,
-    browser_id: BrowserId,
     browser: BrowserState,
     document: DocumentIdentity,
 }
@@ -178,19 +177,6 @@ pub struct DocsMediaAuthorization {
 impl DocsMediaAuthorization {
     pub fn is_current(&self) -> bool {
         self.permit.is_active() && self.browser.document().as_ref() == Some(&self.document)
-    }
-
-    /// Call on the native UI thread with the browser and document it currently reports.
-    pub fn matches_native_snapshot(
-        &self,
-        browser_id: Option<BrowserId>,
-        browser: &BrowserState,
-        document: Option<&DocumentIdentity>,
-    ) -> bool {
-        self.is_current()
-            && browser_id == Some(self.browser_id)
-            && self.browser.is_same_browser(browser)
-            && document == Some(&self.document)
     }
 }
 
@@ -316,12 +302,6 @@ impl AssetViewLease {
     }
 }
 
-#[derive(Clone)]
-enum AssetDocument {
-    Observed(DocumentIdentity),
-    Authenticated(DocumentContext),
-}
-
 struct BoundNativeOrigin {
     context: DocumentContext,
     renderer: RendererGeneration,
@@ -336,7 +316,7 @@ pub struct NativeAssetAuthorization {
     lease: AssetViewLease,
     browser_id: BrowserId,
     browser: BrowserState,
-    document: AssetDocument,
+    document: DocumentContext,
 }
 
 pub(crate) struct CapturedNativeOwner {
@@ -366,18 +346,12 @@ pub(crate) struct AssetLeaseGatePlan<'a> {
 }
 
 impl<'a> AssetLeaseGatePlan<'a> {
-    pub(crate) fn new(assets: &[&'a NativeAssetAuthorization]) -> Option<Self> {
-        if assets
-            .iter()
-            .any(|asset| !matches!(&asset.document, AssetDocument::Authenticated(_)))
-        {
-            return None;
-        }
+    pub(crate) fn new(assets: &[&'a NativeAssetAuthorization]) -> Self {
         let mut leases: Vec<_> = assets.iter().map(|asset| &asset.lease).collect();
         leases.sort_unstable_by_key(|lease| Arc::as_ptr(&lease.0));
         leases.dedup_by(|left, right| Arc::ptr_eq(&left.0, &right.0));
         let guards = Vec::with_capacity(leases.len());
-        Some(Self { leases, guards })
+        Self { leases, guards }
     }
 
     pub(crate) fn with_lease_live_fenced<T>(self, action: impl FnOnce() -> T) -> Option<T> {
@@ -410,13 +384,7 @@ impl<'a> SlidesViewLeaseGatePlan<'a> {
 
 impl NativeAssetAuthorization {
     pub fn is_current(&self) -> bool {
-        self.lease.is_live()
-            && match &self.document {
-                AssetDocument::Observed(document) => {
-                    self.browser.document().as_ref() == Some(document)
-                }
-                AssetDocument::Authenticated(context) => context.is_registered(),
-            }
+        self.lease.is_live() && self.document.is_registered()
     }
 
     /// Fires when the captured view lifetime is revoked; subscribe atomically via `on_cancel`.
@@ -431,31 +399,19 @@ impl NativeAssetAuthorization {
 
     /// Hold the view lifetime through a short admission or final commit.
     pub fn with_live<T>(&self, action: impl FnOnce() -> T) -> Option<T> {
-        match &self.document {
-            AssetDocument::Observed(document) => {
+        self.document
+            .with_live(|| {
                 let live = self.lease.0.live.lock().ok()?;
-                if !*live || self.browser.document().as_ref() != Some(document) {
+                if !*live {
                     return None;
                 }
                 Some(action())
-            }
-            AssetDocument::Authenticated(context) => context
-                .with_live(|| {
-                    let live = self.lease.0.live.lock().ok()?;
-                    if !*live {
-                        return None;
-                    }
-                    Some(action())
-                })
-                .flatten(),
-        }
+            })
+            .flatten()
     }
 
     /// Caller holds the exact matching native-context fence. Never reacquires it.
     pub fn with_lease_live_fenced<T>(&self, action: impl FnOnce() -> T) -> Option<T> {
-        if !matches!(&self.document, AssetDocument::Authenticated(_)) {
-            return None;
-        }
         let live = self.lease.0.live.lock().ok()?;
         if !*live {
             return None;
@@ -469,29 +425,12 @@ impl NativeAssetAuthorization {
         other: &Self,
         action: impl FnOnce() -> T,
     ) -> Option<T> {
-        if !matches!(&self.document, AssetDocument::Authenticated(_))
-            || !matches!(&other.document, AssetDocument::Authenticated(_))
-        {
-            return None;
-        }
         self.lease.with_live_pair(&other.lease, action)
-    }
-
-    pub fn matches_native_snapshot(
-        &self,
-        browser_id: Option<BrowserId>,
-        browser: &BrowserState,
-        document: Option<&DocumentIdentity>,
-    ) -> bool {
-        self.is_current()
-            && browser_id == Some(self.browser_id)
-            && self.browser.is_same_browser(browser)
-            && matches!(&self.document, AssetDocument::Observed(expected) if document == Some(expected))
     }
 
     /// Compares the captured request origin, not the browser's current frame.
     pub fn matches_native_context(&self, context: &DocumentContext) -> bool {
-        matches!(&self.document, AssetDocument::Authenticated(expected) if expected == context)
+        self.document == *context
             && self.browser_id == context.identity().browser_id()
             && self.browser.is_same_browser(context.browser())
     }
@@ -638,6 +577,15 @@ impl NativeWindowLifecycle {
             .ok_or_else(|| "The original native window is closing".into())
     }
 
+    /// The shell accepted a close of this window: admit no further native effect and cancel
+    /// the work parented to it. `CloseRequested` is cancellable, so only an accepted destroy
+    /// reaches this.
+    pub(crate) fn begin_close(&self) {
+        if let Some(receipt) = self.terminal_receipt.get() {
+            receipt.begin_close();
+        }
+    }
+
     pub(crate) fn when_closing(
         &self,
         callback: impl FnOnce() + Send + 'static,
@@ -677,18 +625,6 @@ impl NativeWindowLifecycle {
             .get()
             .cloned()
             .ok_or_else(|| "The original native window is unavailable".into())
-    }
-
-    pub(crate) fn capture_native_window(
-        &self,
-        done: impl FnOnce(Result<WindowHandle, String>) + Send + 'static,
-    ) -> Result<(), String> {
-        use crate::native::WindowExt;
-        self.window
-            .get()
-            .ok_or("The original native window is unavailable")?
-            .native_window_handle_async(done)
-            .map_err(|error| error.to_string())
     }
 
     pub(crate) fn set_title(&self, title: &str) -> Result<(), String> {
@@ -1334,58 +1270,8 @@ impl ViewTable {
             .map(|r| r.sender)
     }
 
-    /// Who sent from the webview with this label; none for a webview without a bridge
-    pub fn sender_of_label(&self, label: &str) -> Option<Sender> {
-        let inner = self.inner.lock().unwrap();
-        let view = inner.by_label.get(label)?;
-        inner.views.get(view).map(|r| r.sender)
-    }
-
-    pub fn sender_with_slides_lease_of_label(
-        &self,
-        label: &str,
-    ) -> Option<(Sender, Option<SlidesViewLease>)> {
-        let inner = self.inner.lock().ok()?;
-        let record = inner.views.get(inner.by_label.get(label)?)?;
-        if record.label != label {
-            return None;
-        }
-        let lease = if record.sender.surface == Surface::Slides {
-            let lease = record.slides_media.as_ref()?;
-            if !lease.is_active() {
-                return None;
-            }
-            Some(lease.clone())
-        } else {
-            None
-        };
-        Some((record.sender, lease))
-    }
-
-    /// This is a table lookup, not proof of the requesting native document.
-    /// IPC ingress must match independently captured native-origin evidence.
-    pub fn sender_with_renderer_of_label(
-        &self,
-        label: &str,
-    ) -> Option<(Sender, Option<SlidesViewLease>, RendererGeneration)> {
-        let inner = self.inner.lock().ok()?;
-        let record = inner.views.get(inner.by_label.get(label)?)?;
-        if record.label != label || !record.renderer.is_active() {
-            return None;
-        }
-        let lease = if record.sender.surface == Surface::Slides {
-            let lease = record.slides_media.as_ref()?;
-            if !lease.is_active() {
-                return None;
-            }
-            Some(lease.clone())
-        } else {
-            None
-        };
-        Some((record.sender, lease, record.renderer.clone()))
-    }
-
     /// Replaces only the captured renderer; stale notifications cannot retire a successor.
+    #[cfg(test)]
     pub fn replace_renderer(
         &self,
         view: ViewId,
@@ -1539,13 +1425,6 @@ impl ViewTable {
         let lease = SlidesViewLease::new();
         record.slides_media = Some(lease.clone());
         Ok(lease)
-    }
-
-    pub fn slides_media_lease(&self, view: ViewId) -> Option<SlidesViewLease> {
-        let inner = self.inner.lock().ok()?;
-        let record = inner.views.get(&view)?;
-        let lease = record.slides_media.as_ref()?;
-        (record.sender.surface == Surface::Slides && lease.is_active()).then(|| lease.clone())
     }
 
     pub fn prepare_native_assets(&self, view: ViewId) -> Result<AssetViewLease, String> {
@@ -1807,55 +1686,6 @@ impl ViewTable {
         accepted
     }
 
-    /// Capture the generation bound to this exact native registration, never
-    /// the generation currently associated with a view label or numeric ID.
-    pub(crate) fn generation_for_native_origin(
-        &self,
-        origin: &DocumentContext,
-    ) -> Option<(ViewId, RendererGeneration)> {
-        origin
-            .with_live(|| {
-                let inner = self.inner.lock().ok()?;
-                let mut records = inner.views.values().filter(|record| {
-                    record.native_origin.as_ref().is_some_and(|bound| {
-                        bound.context == *origin && !bound.lost.load(Ordering::Acquire)
-                    })
-                });
-                let record = records.next()?;
-                if records.next().is_some() {
-                    return None;
-                }
-                let renderer = record.native_origin.as_ref()?.renderer.clone();
-                renderer
-                    .is_active()
-                    .then_some((record.sender.view, renderer))
-            })
-            .flatten()
-    }
-
-    /// Remove only the binding for the exact context and captured generation.
-    pub(crate) fn unbind_verified_native_origin(
-        &self,
-        view: ViewId,
-        renderer: &RendererGeneration,
-        origin: &DocumentContext,
-    ) {
-        let Ok(mut inner) = self.inner.lock() else {
-            return;
-        };
-        let Some(record) = inner.views.get_mut(&view) else {
-            return;
-        };
-        if record.creation.same_generation(renderer)
-            && record
-                .native_origin
-                .as_ref()
-                .is_some_and(|bound| bound.context == *origin)
-        {
-            record.native_origin = None;
-        }
-    }
-
     /// Resolve only the context captured by the focused native menu target.
     pub(crate) fn capture_native_menu_target(
         &self,
@@ -1905,34 +1735,6 @@ impl ViewTable {
             )
         };
         (renderer.is_active() && origin.is_registered()).then_some((sender, renderer, reserved))
-    }
-
-    /// Capture an explicitly selected native Docs target. This is not ingress
-    /// authentication: the caller separately retains its source request owner.
-    pub(crate) fn capture_docs_native_owner(
-        &self,
-        view: ViewId,
-        expected: &RendererGeneration,
-    ) -> Option<(DocumentContext, RendererGeneration, MediaViewLease)> {
-        let (origin, renderer, lease) = {
-            let inner = self.inner.lock().ok()?;
-            let record = inner.views.get(&view)?;
-            let bound = record.native_origin.as_ref()?;
-            if record.sender.surface != Surface::Docs
-                || bound.lost.load(Ordering::Acquire)
-                || !bound.renderer.same_generation(expected)
-                || !record.renderer.same_generation(expected)
-            {
-                return None;
-            }
-            (
-                bound.context.clone(),
-                bound.renderer.clone(),
-                record.docs_media.as_ref()?.clone(),
-            )
-        };
-        (origin.is_registered() && renderer.is_active() && lease.current().is_some())
-            .then_some((origin, renderer, lease))
     }
 
     /// The caller must admit `created` in the same plan as the actual transition.
@@ -2026,7 +1828,7 @@ impl ViewTable {
                     lease: record.asset_view.as_ref()?.clone(),
                     browser_id: *browser_id,
                     browser: browser.clone(),
-                    document: AssetDocument::Authenticated(bound.context.clone()),
+                    document: bound.context.clone(),
                 })
             } else {
                 None
@@ -2095,50 +1897,11 @@ impl ViewTable {
                 lease,
                 browser_id: *browser_id,
                 browser: browser.clone(),
-                document: AssetDocument::Authenticated(origin.clone()),
+                document: origin.clone(),
             };
             (record.sender, asset, bound.renderer.clone())
         };
         (renderer.is_active() && asset.is_current()).then_some((sender, asset, renderer))
-    }
-
-    pub fn authorize_native_assets(
-        &self,
-        label: &str,
-        context: &SchemeRequestContext,
-    ) -> Option<NativeAssetAuthorization> {
-        let browser_id = context.browser_id()?;
-        let browser = context.browser_state()?;
-        let document = context.document()?;
-        let inner = self.inner.lock().ok()?;
-        let view = *inner.by_label.get(label)?;
-        let record = inner.views.get(&view)?;
-        if !matches!(
-            record.sender.surface,
-            Surface::Html | Surface::Markdown | Surface::Pdf
-        ) || record.label != label
-        {
-            return None;
-        }
-        let (expected_id, expected_browser) = record.asset_browser.as_ref()?;
-        if *expected_id != browser_id
-            || !expected_browser.is_same_browser(browser)
-            || expected_browser.document().as_ref() != Some(document)
-        {
-            return None;
-        }
-        let lease = record.asset_view.as_ref()?.clone();
-        if !lease.is_live() {
-            return None;
-        }
-        Some(NativeAssetAuthorization {
-            view,
-            surface: record.sender.surface,
-            lease,
-            browser_id,
-            browser: expected_browser.clone(),
-            document: AssetDocument::Observed(document.clone()),
-        })
     }
 
     pub fn bind_slides_media_browser(
@@ -2234,7 +1997,6 @@ impl ViewTable {
         Some(DocsMediaAuthorization {
             view,
             permit,
-            browser_id,
             browser: expected_browser.clone(),
             document: document.clone(),
         })
@@ -2297,46 +2059,6 @@ impl ViewTable {
             || record.sender.window != source
         {
             return Err("The captured view or parent changed".into());
-        }
-        record.sender.window = target;
-        Ok(())
-    }
-
-    pub(crate) fn move_view_between_admitted(
-        &self,
-        view: ViewId,
-        expected: &RendererGeneration,
-        source: WindowId,
-        source_lifecycle: &Arc<NativeWindowLifecycle>,
-        target: WindowId,
-        target_lifecycle: &Arc<NativeWindowLifecycle>,
-        transition: &shell_contract::ipc::NativeBrowserTransition<'_>,
-    ) -> Result<(), String> {
-        let mut inner = self.inner.lock().map_err(|_| "view table is unavailable")?;
-        if !inner
-            .windows
-            .get(&source)
-            .is_some_and(|record| Arc::ptr_eq(&record.lifecycle, source_lifecycle))
-            || !inner
-                .windows
-                .get(&target)
-                .is_some_and(|record| Arc::ptr_eq(&record.lifecycle, target_lifecycle))
-        {
-            return Err("A captured window was replaced".into());
-        }
-        let record = inner
-            .views
-            .get_mut(&view)
-            .ok_or_else(|| format!("no view {}", view.0))?;
-        if !record.renderer.same_generation(expected)
-            || !expected.is_active()
-            || record.sender.window != source
-            || !record
-                .closure_proof
-                .as_ref()
-                .is_some_and(|proof| transition.matches(proof.reservation()))
-        {
-            return Err("The captured view, browser or parent changed".into());
         }
         record.sender.window = target;
         Ok(())
@@ -2435,45 +2157,6 @@ impl ViewTable {
                 .map_err(|_| "browser owner is unavailable")?
                 .as_ref()
                 .is_some_and(|bound| bound.same_owner(owner))
-        {
-            return Err("The captured view, browser or parent changed".into());
-        }
-        record.sender.window = target;
-        Ok(())
-    }
-
-    pub(crate) fn restore_view_between_admitted(
-        &self,
-        view: ViewId,
-        expected: &RendererGeneration,
-        source: WindowId,
-        source_lifecycle: &Arc<NativeWindowLifecycle>,
-        target: WindowId,
-        target_lifecycle: &Arc<NativeWindowLifecycle>,
-        transition: &shell_contract::ipc::NativeBrowserCompensationTransition<'_>,
-    ) -> Result<(), String> {
-        let mut inner = self.inner.lock().map_err(|_| "view table is unavailable")?;
-        if !inner
-            .windows
-            .get(&source)
-            .is_some_and(|record| Arc::ptr_eq(&record.lifecycle, source_lifecycle))
-            || !inner
-                .windows
-                .get(&target)
-                .is_some_and(|record| Arc::ptr_eq(&record.lifecycle, target_lifecycle))
-        {
-            return Err("A captured window was replaced".into());
-        }
-        let record = inner
-            .views
-            .get_mut(&view)
-            .ok_or_else(|| format!("no view {}", view.0))?;
-        if !record.renderer.same_generation(expected)
-            || record.sender.window != source
-            || !record
-                .closure_proof
-                .as_ref()
-                .is_some_and(|proof| transition.matches(proof.reservation()))
         {
             return Err("The captured view, browser or parent changed".into());
         }
@@ -2678,6 +2361,7 @@ impl ViewTable {
         if let Some(lease) = &removed.slides_media {
             lease.revoke();
             crate::host::d1::slides_media::revoke_view(view, lease);
+            crate::host::d1::slides_fonts::revoke_view(view, lease);
         }
         if let Some(lease) = &removed.asset_view {
             lease.revoke();
@@ -2686,6 +2370,9 @@ impl ViewTable {
             if let Err(error) = crate::host::document_assets::revoke_session(session) {
                 eprintln!("[docs] could not revoke document asset session: {error}");
             }
+        }
+        if let Err(error) = crate::host::document_assets::revoke(view) {
+            eprintln!("[assets] could not revoke document asset grants: {error}");
         }
         crate::engine_host::owner_destroyed(view);
         crate::host::renderer_disposal::forget(view);
@@ -2858,7 +2545,7 @@ mod tests {
     #[test]
     fn unsubmitted_window_terminal_replays_without_locking_callback() {
         let lifecycle = NativeWindowLifecycle::new(WindowId(8));
-        let submission = crate::native::WindowCreation::new().unwrap();
+        let submission = crate::native::WindowCreation::default();
         lifecycle.bind_terminal(submission.receipt()).unwrap();
         drop(submission);
         let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -3092,35 +2779,15 @@ mod tests {
         let old_lifecycle = table.add_window(old, "old".into());
         let new_lifecycle = table.add_window(new, "new".into());
         let (view, generation) = register(&table, old);
-        let submission = crate::native::BrowserCreation::new().unwrap();
-        let proof = crate::host::window::NativeClosureProof::new(
-            submission.receipt(),
-            view,
-            generation.clone(),
-        );
         table
-            .set_closure_proof(view, &generation, proof.clone())
-            .unwrap();
-        proof
-            .reservation()
-            .with_initial_owner(proof.owner(), |_| Ok(()))
-            .unwrap();
-        let (mut placement, ()) = proof
-            .reservation()
-            .begin_move(proof.owner(), |_| Ok(()))
-            .unwrap();
-        placement
-            .commit(|transition| {
-                table.move_view_between_admitted(
-                    view,
-                    &generation,
-                    old,
-                    &old_lifecycle,
-                    new,
-                    &new_lifecycle,
-                    transition,
-                )
-            })
+            .move_view_between_captured(
+                view,
+                &generation,
+                old,
+                &old_lifecycle,
+                new,
+                &new_lifecycle,
+            )
             .unwrap();
         table.remove_window(old);
         assert_eq!(table.sender_of(view).map(|sender| sender.window), Some(new));
@@ -3133,7 +2800,7 @@ mod tests {
         let window = WindowId(91);
         table.add_window(window, "owner-window".into());
         let (view, created) = register(&table, window);
-        let submission = crate::native::BrowserCreation::new().unwrap();
+        let submission = crate::native::BrowserCreation::default();
         let proof = crate::host::window::NativeClosureProof::new(
             submission.receipt(),
             view,
@@ -3255,7 +2922,7 @@ mod tests {
         let source_lifecycle = table.add_window(source, "source".into());
         let target_lifecycle = table.add_window(target, "target".into());
         let (view, creation) = register(&table, source);
-        let submission = crate::native::BrowserCreation::new().unwrap();
+        let submission = crate::native::BrowserCreation::default();
         let proof = crate::host::window::NativeClosureProof::new(
             submission.receipt(),
             view,
@@ -3324,103 +2991,30 @@ mod tests {
         let new_lifecycle = table.add_window(new_window, "new".into());
         let (view, old) = register(&table, old_window);
         let current = table.replace_renderer(view, &old).unwrap();
-        let submission = crate::native::BrowserCreation::new().unwrap();
-        let proof = crate::host::window::NativeClosureProof::new(
-            submission.receipt(),
-            view,
-            current.clone(),
-        );
-        table
-            .set_closure_proof(view, &current, proof.clone())
-            .unwrap();
-        proof
-            .reservation()
-            .with_initial_owner(proof.owner(), |_| Ok(()))
-            .unwrap();
-        let (mut placement, ()) = proof
-            .reservation()
-            .begin_move(proof.owner(), |_| Ok(()))
-            .unwrap();
         assert!(
-            placement
-                .commit(|transition| table.move_view_between_admitted(
+            table
+                .move_view_between_captured(
                     view,
                     &old,
                     old_window,
                     &old_lifecycle,
                     new_window,
                     &new_lifecycle,
-                    transition
-                ))
+                )
                 .is_err()
         );
         assert_eq!(table.sender_of(view).unwrap().window, old_window);
-        placement
-            .commit(|transition| {
-                table.move_view_between_admitted(
-                    view,
-                    &current,
-                    old_window,
-                    &old_lifecycle,
-                    new_window,
-                    &new_lifecycle,
-                    transition,
-                )
-            })
+        table
+            .move_view_between_captured(
+                view,
+                &current,
+                old_window,
+                &old_lifecycle,
+                new_window,
+                &new_lifecycle,
+            )
             .unwrap();
         assert_eq!(table.sender_of(view).unwrap().window, new_window);
-    }
-
-    #[test]
-    fn compensation_restores_captured_parent_after_generation_revocation() {
-        let table = ViewTable::new(Arc::new(TauriOutlet::default()), Arc::new(Inline));
-        let original = WindowId(1);
-        let destination = WindowId(2);
-        let original_lifecycle = table.add_window(original, "old".into());
-        let destination_lifecycle = table.add_window(destination, "new".into());
-        let (view, generation) = register(&table, original);
-        let submission = crate::native::BrowserCreation::new().unwrap();
-        let proof = crate::host::window::NativeClosureProof::new(
-            submission.receipt(),
-            view,
-            generation.clone(),
-        );
-        table
-            .set_closure_proof(view, &generation, proof.clone())
-            .unwrap();
-        proof
-            .reservation()
-            .with_initial_owner(proof.owner(), |_| Ok(()))
-            .unwrap();
-        let (mut placement, ()) = proof
-            .reservation()
-            .begin_move(proof.owner(), |transition| {
-                table.move_view_between_admitted(
-                    view,
-                    &generation,
-                    original,
-                    &original_lifecycle,
-                    destination,
-                    &destination_lifecycle,
-                    transition,
-                )
-            })
-            .unwrap();
-        generation.revoke();
-        placement
-            .compensated(|transition| {
-                table.restore_view_between_admitted(
-                    view,
-                    &generation,
-                    destination,
-                    &destination_lifecycle,
-                    original,
-                    &original_lifecycle,
-                    transition,
-                )
-            })
-            .unwrap();
-        assert_eq!(table.sender_of(view).unwrap().window, original);
     }
 
     #[test]

@@ -49,11 +49,15 @@ impl fmt::Display for LoadError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessFailure {
     /// WKWebView `webViewWebContentProcessDidTerminate`.
+    #[cfg(target_os = "macos")]
     ContentProcessTerminated,
     /// WebView2 `ProcessFailed` with a render process kind.
+    #[cfg(windows)]
     RenderProcessExited,
     /// WebView2 browser process exit.
+    #[cfg(windows)]
     BrowserProcessExited,
+    #[cfg(windows)]
     Unresponsive,
     Unknown,
 }

@@ -13,8 +13,8 @@ use main_core::shell::tab_manager::{TabError, TabResult};
 use shell_contract::{Surface, ViewId, WindowId, ipc::NativeRequestOwner, runtime::CancelToken};
 
 use super::{
-    Bounds, Bridge, HostContext, NATIVE_WINDOWS, ViewSpec, WindowOptions, fail_editor_view,
-    frame_event, navigate_deferred,
+    Bounds, Bridge, HostContext, ViewSpec, WindowOptions, fail_editor_view, frame_event,
+    navigate_deferred,
 };
 use crate::views::{AssetViewLease, SlidesViewLease};
 mod generated;
@@ -42,65 +42,6 @@ pub(super) struct PreparedEditorView {
     pub(super) request_policy: Option<RequestPolicy>,
     pub(super) invocation_on_frame: Option<Arc<dyn Fn(ViewId, &NativeEvent) + Send + Sync>>,
     pub(super) invocation_navigate: Option<Arc<dyn Fn(Result<(), String>) + Send + Sync>>,
-}
-
-pub(super) fn cleanup_creation(
-    cx: HostContext,
-    view: ViewId,
-    generation: shell_contract::runtime::RendererGeneration,
-    close: Option<BrowserClose>,
-    done: Box<dyn FnOnce(Result<(), String>) + Send>,
-) {
-    let Some(close) = close else {
-        cx.views.remove_view_if_generation(view, &generation);
-        return done(Ok(()));
-    };
-    let retained = Arc::new(std::sync::Mutex::new(None));
-    let callback_retained = retained.clone();
-    let done = Arc::new(std::sync::Mutex::new(Some(done)));
-    let callback_done = done.clone();
-    let subscription = close.when_closed(move |_| {
-        cx.views.remove_view_if_generation(view, &generation);
-        callback_retained
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .take();
-        if let Some(done) = callback_done
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .take()
-        {
-            done(Ok(()));
-        }
-    });
-    match subscription {
-        Ok(subscription) => {
-            *retained.lock().unwrap_or_else(|error| error.into_inner()) = Some(subscription)
-        }
-        Err(error) => {
-            if let Some(done) = done
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .take()
-            {
-                done(Err(error));
-            }
-            return;
-        }
-    }
-    if let Err(error) = close.request_close() {
-        retained
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .take();
-        if let Some(done) = done
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .take()
-        {
-            done(Err(error));
-        }
-    }
 }
 
 pub(super) struct InstallError {
@@ -352,17 +293,6 @@ fn post_navigation_result(
             }
         }
     }));
-}
-
-fn rollback(cx: &HostContext, view: ViewId) {
-    cx.views.remove_view(view);
-    if let Some(host) = NATIVE_WINDOWS.get() {
-        host.deferred_views
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .remove(&view);
-        host.fail_page_waiters(view);
-    }
 }
 
 type Completion = Box<dyn FnOnce(shell_ipc_w::tabs::host::ViewCreationResult<ViewId>)>;

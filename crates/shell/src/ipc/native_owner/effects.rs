@@ -396,7 +396,7 @@ pub(super) fn prepare_many_owner_generations_transition<'a>(
     let generations = RendererGenerationGatePlan::from_generations(generations);
     let retirement = generations.prepare_retirement(&documents).ok()?;
     let native = crate::native::DocumentGatePlan::new(&native_tokens)?;
-    let assets = AssetLeaseGatePlan::new(&assets)?;
+    let assets = AssetLeaseGatePlan::new(&assets);
     let slides = SlidesViewLeaseGatePlan::new(&slides);
     let media = MediaPermitGatePlan::new(&media);
     let pdf = PdfDocumentGatePlan::new(&pdf);
@@ -2944,7 +2944,7 @@ fn with_recovery_pdf_revision_transition(
     let mut retirement = generations.prepare_retirement(&documents)?;
     let native = crate::native::DocumentGatePlan::new(&native_tokens)
         .ok_or("The native owner is unavailable.")?;
-    let assets = AssetLeaseGatePlan::new(&assets).ok_or("The asset owner is unavailable.")?;
+    let assets = AssetLeaseGatePlan::new(&assets);
     let mut slides = SlidesViewLeaseGatePlan::new(&slides);
     let mut media = MediaPermitGatePlan::new(&media);
     let mut pdf = PdfDocumentGatePlan::new(&pdf);
@@ -3067,7 +3067,7 @@ fn with_native_save_revision_transition(
     let mut document_retirement = generations.prepare_retirement(&documents)?;
     let native = crate::native::DocumentGatePlan::new(&native_tokens)
         .ok_or("The native owner is unavailable.")?;
-    let assets = AssetLeaseGatePlan::new(&assets).ok_or("The asset owner is unavailable.")?;
+    let assets = AssetLeaseGatePlan::new(&assets);
     let mut slides = SlidesViewLeaseGatePlan::new(&slides);
     let mut media = MediaPermitGatePlan::new(&media);
     let mut pdf = PdfDocumentGatePlan::new(&pdf);
@@ -4907,7 +4907,7 @@ impl OwnedEffects for NativeOwnedEffects {
         let mut document_retirement = generations.prepare_retirement(&documents)?;
         let native = crate::native::DocumentGatePlan::new(&native_tokens)
             .ok_or("The native owner is unavailable.")?;
-        let assets = AssetLeaseGatePlan::new(&assets).ok_or("The asset owner is unavailable.")?;
+        let assets = AssetLeaseGatePlan::new(&assets);
         let mut slides = SlidesViewLeaseGatePlan::new(&slides);
         let mut media = MediaPermitGatePlan::new(&media);
         let mut pdf = PdfDocumentGatePlan::new(&pdf);

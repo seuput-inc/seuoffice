@@ -42,19 +42,6 @@ pub(crate) struct OwnedDialogParent {
     _closing_subscription: crate::native::WindowClosingSubscription,
 }
 
-impl OwnedDialogParent {
-    pub(crate) fn window(&self) -> Result<&Window, String> {
-        if self.permit.is_current() && !self.closing.is_cancelled() {
-            Ok(&self.window)
-        } else {
-            Err("The original dialog parent is closing.".into())
-        }
-    }
-    pub(crate) fn closing(&self) -> &CancelToken {
-        &self.closing
-    }
-}
-
 fn capture_owned_parent(
     views: &ViewTable,
     parent: Option<WindowId>,

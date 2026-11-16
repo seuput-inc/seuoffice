@@ -151,7 +151,12 @@ mod tests {
 
     #[test]
     fn a_policy_that_declares_everything_blocks_the_web_and_files() {
-        let rules: Value = serde_json::from_str(&rules(Blocks::EVERYTHING).unwrap()).unwrap();
+        let everything = Blocks {
+            web: true,
+            loopback_open: false,
+            files: true,
+        };
+        let rules: Value = serde_json::from_str(&rules(everything).unwrap()).unwrap();
         let filters: Vec<&str> = rules
             .as_array()
             .unwrap()

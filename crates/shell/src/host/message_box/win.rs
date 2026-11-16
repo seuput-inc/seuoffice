@@ -30,8 +30,6 @@ use std::sync::Arc;
 
 /// the id of button `i`
 const FIRST_BUTTON: i32 = 1000;
-/// what Escape and the close box answer when no button has this id
-const IDCANCEL: i32 = 2;
 
 /// The button a result id stands for: ids from 1000 are the buttons in order;
 /// `IDCANCEL` and anything else is the cancel button
@@ -145,6 +143,9 @@ fn show_with_parent(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// what Escape and the close box answer when no button has this id
+    const IDCANCEL: i32 = 2;
 
     #[test]
     fn the_ids_start_at_1000_and_cancel_is_the_rest() {

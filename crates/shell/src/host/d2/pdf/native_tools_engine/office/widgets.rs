@@ -212,9 +212,8 @@ fn one(
         .read(scratch, 0, 16)?
         .try_into()
         .map_err(|_| PdfiumError::from("invalid widget rectangle".to_owned()))?;
-    let f = |i: usize| {
-        f32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]) as f64
-    };
+    let f =
+        |i: usize| f32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]) as f64;
     let bounds = Rect {
         x0: f(0).min(f(8)),
         x1: f(0).max(f(8)),

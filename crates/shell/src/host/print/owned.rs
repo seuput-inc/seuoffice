@@ -82,34 +82,6 @@ impl Owner {
             },
         )
     }
-    pub fn new_invocation_many(
-        cx: &HostContext,
-        document: &shell_contract::ipc::NativeInvocationDocument,
-        origin: &NativeRequestOwner,
-        participants: &[NativeRequestOwner],
-        cancel: CancelToken,
-        pending: CancelToken,
-        actor: CancelToken,
-        loaded: LoadSignal,
-    ) -> Result<Self, String> {
-        let mut all = Vec::with_capacity(participants.len() + 1);
-        all.push(origin.clone());
-        all.extend_from_slice(participants);
-        let owner = document.owner().clone();
-        Self::build(
-            cx,
-            owner.clone(),
-            owner,
-            cancel,
-            pending,
-            loaded,
-            Authority::NativeInvocation {
-                target: document.target().clone(),
-                participants: all,
-                actor,
-            },
-        )
-    }
     pub fn new_existing_document(
         cx: &HostContext,
         binding: &shell_contract::ipc::NativeExistingDocumentBinding,

@@ -10,7 +10,6 @@ pub(super) struct LineUnit {
     pub chars: Vec<PdfChar>,
     pub bounds: Rect,
     pub baseline: f64,
-    pub line_index: usize,
     pub word_count: usize,
     pub font_size: f64,
 }
@@ -23,7 +22,7 @@ pub(super) struct UnitRow {
 fn visible(c: &PdfChar) -> bool {
     !space(c.code) && c.code > 0x1f
 }
-fn unit(chars: Vec<PdfChar>, line_index: usize, id: usize) -> LineUnit {
+fn unit(chars: Vec<PdfChar>, id: usize) -> LineUnit {
     let visible: Vec<_> = chars.iter().filter(|c| visible(c)).collect();
     let bounds = visible
         .iter()
@@ -38,7 +37,6 @@ fn unit(chars: Vec<PdfChar>, line_index: usize, id: usize) -> LineUnit {
         chars,
         bounds,
         baseline,
-        line_index,
         word_count,
         font_size: if size == 0.0 { 12.0 } else { size },
     }
@@ -48,7 +46,7 @@ pub(super) fn column_gap_threshold(size: f64, gap: f64) -> f64 {
 }
 pub(super) fn split_into_units(lines: &[RawLine]) -> Vec<LineUnit> {
     let mut units = Vec::new();
-    for (line_index, raw) in lines.iter().enumerate() {
+    for raw in lines {
         let mut sorted = raw.chars.clone();
         sorted.sort_by(|a, b| a.loose_box.x0.total_cmp(&b.loose_box.x0));
         let visible_chars: Vec<_> = sorted.iter().filter(|c| visible(c)).cloned().collect();
@@ -85,14 +83,14 @@ pub(super) fn split_into_units(lines: &[RawLine]) -> Vec<LineUnit> {
                 .is_some_and(|p| c.loose_box.x0 - p.loose_box.x1 > threshold)
             {
                 let id = units.len();
-                units.push(unit(std::mem::take(&mut current), line_index, id));
+                units.push(unit(std::mem::take(&mut current), id));
             }
             last = Some(c.clone());
             current.push(c);
         }
         if !current.is_empty() {
             let id = units.len();
-            units.push(unit(current, line_index, id));
+            units.push(unit(current, id));
         }
     }
     units

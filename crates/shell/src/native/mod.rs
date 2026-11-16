@@ -49,7 +49,7 @@ pub use events::{EventSink, NativeEvent, NativeEventKind, ViewEvent};
 pub use ext::{
     NativeSpec, WebviewBuilderExt, WebviewExt, WebviewWindowBuilderExt, WindowBuilderExt,
 };
-pub use ids::{BrowserId, CreationId};
+pub use ids::BrowserId;
 pub use ingress::{ChannelQueue, ReplyFrame};
 pub use lifecycle::{
     BrowserClose, BrowserCloseOutcome, BrowserCloseSubscription, BrowserCreation,
@@ -78,7 +78,6 @@ struct BrowserEntry {
 
 struct WindowEntry {
     close: WindowClose,
-    creation: CreationId,
     /// Holds the reservation: dropping it unclaimed would report `NotCreated`.
     _submission: WindowSubmission,
     _closed: WindowCloseSubscription,
@@ -156,13 +155,10 @@ impl Native {
         spec: NativeSpec,
     ) -> Result<(BrowserIdentity, lifecycle::BrowserSubmission), String> {
         let (config, creation) = spec.into_parts();
-        let creation = match creation {
-            Some(creation) => creation,
-            None => BrowserCreation::new().ok_or("Native creation ids are exhausted.")?,
-        };
+        let creation = creation.unwrap_or_default();
         let receipt = creation.receipt();
         let submission = creation.into_submission();
-        let core = browser::BrowserCore::new(label, submission.creation(), receipt, config)
+        let core = browser::BrowserCore::new(label, receipt, config)
             .ok_or("Native browser ids are exhausted.")?;
         let identity = core.identity();
         let native = self.clone();
@@ -225,7 +221,6 @@ impl Native {
         creation: WindowCreation,
     ) -> Result<WindowClose, String> {
         let receipt = creation.receipt();
-        let creation_id = creation.creation_id();
         let submission = creation.submit();
         let native = self.clone();
         let key: Box<str> = label.into();
@@ -245,7 +240,6 @@ impl Native {
             label.into(),
             WindowEntry {
                 close: receipt.clone(),
-                creation: creation_id,
                 _submission: submission,
                 _closed: closed,
             },
@@ -295,8 +289,8 @@ impl Native {
         windows.get(label).map(|entry| entry.close.clone())
     }
 
-    /// Non-owning access to `window`; a window without a reservation gets a handle that is
-    /// never retired.
+    /// Non-owning access to `window`; a window without a reservation gets a handle whose
+    /// effects are not admitted against a close receipt.
     pub fn window_handle(&self, window: &tauri::Window) -> WindowHandle {
         let windows = self
             .0
@@ -304,12 +298,8 @@ impl Native {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         match windows.get(window.label()) {
-            Some(entry) => WindowHandle::new(
-                window.clone(),
-                Some(entry.close.clone()),
-                Some(entry.creation),
-            ),
-            None => WindowHandle::new(window.clone(), None, None),
+            Some(entry) => WindowHandle::new(window.clone(), Some(entry.close.clone())),
+            None => WindowHandle::new(window.clone(), None),
         }
     }
 

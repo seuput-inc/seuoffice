@@ -1,7 +1,6 @@
 //! Recovery's core-thread access to the installed document editors.
 
 use std::rc::Rc;
-use std::sync::Arc;
 
 use main_core::packages::electron_utils::recovery_contract::{
     RecoveryEditorContract, RecoveryOpenUntitledRequest,
@@ -13,14 +12,11 @@ use main_core::shell::tab_manager::TabKind;
 use shell_contract::runtime::Services;
 use shell_contract::{Provided, ViewId};
 
-use super::recovery_manager::{Contents, SharedStore};
-use crate::views::ViewTable;
+use super::recovery_manager::Contents;
 
 pub(crate) struct Editors {
     pub services: Services,
     pub provided: Rc<Provided>,
-    pub views: Arc<ViewTable>,
-    pub store: Rc<SharedStore>,
     pub issuer: super::recovery_launch::RecoveryIssuer,
     pub owner: shell_contract::WindowId,
     pub startup: Option<shell_contract::ipc::StartupRecoveryConstraint>,

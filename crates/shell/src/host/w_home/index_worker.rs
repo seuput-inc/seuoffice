@@ -7,7 +7,6 @@ use main_core::shell::file_index::scan::ScannedFile;
 use serde_json::{Value, json};
 use shell_ipc_w::editor_files::{FileParseHost, ParsedKind};
 
-pub(crate) const FLAG: &str = "--internal-file-index-worker";
 const MAX_LINE: u64 = 64 * 1024 * 1024;
 
 struct Parser(FileParseHost);

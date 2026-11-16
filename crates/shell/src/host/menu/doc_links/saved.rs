@@ -102,26 +102,6 @@ struct Plan {
 }
 
 impl SavedLinks {
-    pub(crate) fn capture_many(
-        origin: NativeRequestOwner,
-        destination: NativeRequestOwner,
-        participants: Vec<NativeRequestOwner>,
-        cancel: CancelToken,
-        pending: CancelToken,
-        effects: OwnedEffectsHost,
-        services: Services,
-    ) -> Result<Self, String> {
-        Self::capture_many_extra(
-            origin,
-            destination,
-            participants,
-            cancel,
-            pending,
-            Vec::new(),
-            effects,
-            services,
-        )
-    }
     pub(crate) fn capture_many_extra(
         origin: NativeRequestOwner,
         destination: NativeRequestOwner,

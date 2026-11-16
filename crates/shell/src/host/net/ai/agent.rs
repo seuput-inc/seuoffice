@@ -460,6 +460,7 @@ pub fn install(hosts: &mut Hosts, lang: &UiLang, cx: &HostContext) {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     fn request(file: &str, args: &[&str], timeout_ms: u32, max_buffer: u32) -> ExecRequest {
         ExecRequest {
             file: file.to_owned(),

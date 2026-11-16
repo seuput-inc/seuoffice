@@ -294,15 +294,10 @@ pub struct Accepted {
 }
 
 pub struct Rejected {
-    reason: &'static str,
     responder: UriSchemeResponder,
 }
 
 impl Rejected {
-    pub fn reason(&self) -> &'static str {
-        self.reason
-    }
-
     pub fn into_responder(self) -> UriSchemeResponder {
         self.responder
     }
@@ -327,7 +322,7 @@ impl Prepared {
                 response: self.response,
                 responder,
             }),
-            Err(reason) => Err(Rejected { reason, responder }),
+            Err(_) => Err(Rejected { responder }),
         }
     }
 }

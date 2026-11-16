@@ -22,7 +22,6 @@ pub enum EvalError {
     StaleDocument,
     /// The webview could not take the script.
     Transport(String),
-    Serialization(String),
     /// The script threw.
     Script(String),
 }
@@ -33,7 +32,6 @@ impl fmt::Display for EvalError {
             Self::Cancelled => f.write_str("evaluation was cancelled"),
             Self::StaleDocument => f.write_str("document is no longer current"),
             Self::Transport(message) => write!(f, "evaluation transport failed: {message}"),
-            Self::Serialization(message) => write!(f, "evaluation result is not JSON: {message}"),
             Self::Script(message) => write!(f, "script failed: {message}"),
         }
     }

@@ -37,10 +37,6 @@ impl NavigationIdentity {
     pub fn id(&self) -> NavigationId {
         self.id
     }
-
-    pub fn browser_id(&self) -> BrowserId {
-        self.browser
-    }
 }
 
 /// How the first navigation of a browser starts.
@@ -118,10 +114,6 @@ impl std::fmt::Debug for ObservedDocument {
 impl ObservedDocument {
     pub fn browser_state(&self) -> &BrowserIdentity {
         &self.document.browser
-    }
-
-    pub fn identity(&self) -> &DocumentIdentity {
-        &self.document.identity
     }
 
     pub fn url(&self) -> &Url {
@@ -631,10 +623,6 @@ impl ReloadReservation {
             .core
             .upgrade()
             .map(|core| core.close_receipt().clone())
-    }
-
-    pub fn matches_registered(&self, context: &DocumentContext) -> bool {
-        self.0.matches(context)
     }
 
     pub fn on_failure(

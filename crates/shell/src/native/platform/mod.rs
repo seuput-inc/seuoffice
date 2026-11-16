@@ -130,10 +130,12 @@ pub(crate) trait PageDriver {
 /// How a print dialog ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrintOutcome {
+    #[cfg(target_os = "macos")]
     Printed,
     Cancelled,
     /// The platform cannot say (WebView2 `ShowPrintUI`); the caller answers success as the
     /// CEF build did.
+    #[cfg(windows)]
     Unreported,
 }
 
@@ -221,6 +223,7 @@ thread_local! {
 /// Adapters that learn the frame of a navigation before Tauri's URL-only `on_navigation`
 /// hook runs (macOS: the chained delegate calls wry's synchronously) wrap that call in this,
 /// so the hook can tell the main frame from a subframe.
+#[cfg(target_os = "macos")]
 pub(crate) fn with_navigation_frame<T>(main_frame: bool, call: impl FnOnce() -> T) -> T {
     let previous = NAVIGATION_FRAME.with(|frame| frame.replace(Some(main_frame)));
     let result = call();

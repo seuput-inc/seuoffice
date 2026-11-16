@@ -107,9 +107,8 @@ fn visit(
             return Ok(());
         }
         let b = s.read(f, 0, 16)?;
-        let n = |i: usize| {
-            f32::from_le_bytes(b[i..i + 4].try_into().expect("object bounds")) as f64
-        };
+        let n =
+            |i: usize| f32::from_le_bytes(b[i..i + 4].try_into().expect("object bounds")) as f64;
         Rect {
             x0: n(0),
             y0: n(4),

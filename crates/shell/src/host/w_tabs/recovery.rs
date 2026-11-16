@@ -77,9 +77,6 @@ impl RecoveryReady {
             .ok_or_else(|| "The recovery target is not a native invocation".to_owned())?
             .registered_document()
     }
-    pub(crate) fn into_owner(self) -> shell_contract::ipc::NativeRequestOwner {
-        self.owner
-    }
     pub(crate) fn into_parts(
         self,
     ) -> (

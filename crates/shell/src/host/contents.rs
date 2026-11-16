@@ -67,7 +67,7 @@ pub(crate) fn evaluate(
 }
 
 /// The system print dialog of `webview`; returns when the platform says how it ended
-/// (WebView2 does not say: [`PrintOutcome::Unreported`]). Not from the UI thread.
+/// (WebView2 does not say: `PrintOutcome::Unreported`). Not from the UI thread.
 pub(crate) fn print_dialog(webview: &Webview) -> Result<PrintOutcome, String> {
     blocking(DIALOG_TIMEOUT, |done| Current::print_dialog(webview, done)).map_err(page_error_text)
 }

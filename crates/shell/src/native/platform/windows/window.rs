@@ -5,7 +5,7 @@ use std::ffi::c_void;
 use tauri::{AppHandle, Manager, Window};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Threading::GetCurrentProcessId;
-use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, IsWindowEnabled};
+use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowThreadProcessId, IsWindow, SW_SHOWNOACTIVATE, ShowWindow,
 };
@@ -49,9 +49,12 @@ fn exists(hwnd: HWND) -> bool {
     unsafe { IsWindow(Some(hwnd)) }.as_bool()
 }
 
-fn set_enabled(hwnd: HWND, enabled: bool) {
+/// `EnableWindow` answers whether the window was disabled before the call; this returns
+/// whether it was enabled.
+fn set_enabled(hwnd: HWND, enabled: bool) -> bool {
     // SAFETY: UI thread of the window; the call only changes its enabled state.
-    unsafe { EnableWindow(hwnd, enabled) };
+    let was_disabled = unsafe { EnableWindow(hwnd, enabled) }.as_bool();
+    !was_disabled
 }
 
 impl WindowOps for Platform {
@@ -80,9 +83,7 @@ impl WindowOps for Platform {
                 return Err("The window is already modal.".to_owned());
             }
             let entry = modals.owners.entry(key(owner)).or_insert_with(|| {
-                // SAFETY: a live window of this thread.
-                let was_enabled = unsafe { IsWindowEnabled(owner) }.as_bool();
-                set_enabled(owner, false);
+                let was_enabled = set_enabled(owner, false);
                 Owner {
                     was_enabled,
                     children: Vec::new(),

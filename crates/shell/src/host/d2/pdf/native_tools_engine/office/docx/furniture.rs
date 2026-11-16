@@ -22,7 +22,7 @@ fn paragraph(slot: &FurnitureHf, width: f64, left: f64, right: f64) -> Value {
         let cjk = slot
             .text
             .chars()
-            .any(|c| matches!(c as u32, 0x2e80..=0x9fff | 0xf900..=0xfaff | 0x3040..=0x30ff));
+            .any(|c| matches!(c as u32, 0x2e80..=0x9fff | 0xf900..=0xfaff));
         run.insert(
             if cjk { "font" } else { "fontAscii" }.into(),
             json!(slot.font_family),

@@ -226,7 +226,9 @@ pub(super) fn read_chars(
             ];
             let values = s.batch(&requests)?;
             if values.len() != requests.len() {
-                return Err(PdfiumError::from("PDFium glyph result count mismatch".to_owned()));
+                return Err(PdfiumError::from(
+                    "PDFium glyph result count mismatch".to_owned(),
+                ));
             }
             let code = number(&values[0])? as u32;
             if number(&values[1])? == 0.0 {

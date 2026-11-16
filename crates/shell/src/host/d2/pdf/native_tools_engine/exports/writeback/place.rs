@@ -24,7 +24,6 @@ pub(super) struct PageSpace {
 #[derive(Clone)]
 pub(super) struct Placement {
     pub layout: Layout,
-    pub boxes: Vec<Rect>,
 }
 struct Surroundings {
     obstacles: Vec<Rect>,
@@ -220,23 +219,11 @@ fn first_fit(
     let mut grown = None;
     for (k, scale) in steps.iter().copied().enumerate().skip(from) {
         if let Some(layout) = try_at(block, around, &block.boxes, scale)? {
-            return Ok(Some((
-                k,
-                Placement {
-                    layout,
-                    boxes: block.boxes.clone(),
-                },
-            )));
+            return Ok(Some((k, Placement { layout })));
         }
         for boxes in &block.alternatives {
             if let Some(layout) = try_at(block, around, boxes, scale)? {
-                return Ok(Some((
-                    k,
-                    Placement {
-                        layout,
-                        boxes: boxes.clone(),
-                    },
-                )));
+                return Ok(Some((k, Placement { layout })));
             }
         }
         if !block.expandable || content.is_none() || scale >= 0.9 {
@@ -261,13 +248,7 @@ fn first_fit(
         if let Some(boxes) = &grown {
             for b in boxes {
                 if let Some(layout) = try_at(block, around, &[*b], scale)? {
-                    return Ok(Some((
-                        k,
-                        Placement {
-                            layout,
-                            boxes: vec![*b],
-                        },
-                    )));
+                    return Ok(Some((k, Placement { layout })));
                 }
             }
         }

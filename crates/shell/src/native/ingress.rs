@@ -12,7 +12,6 @@ use std::sync::{Arc, Mutex};
 use tauri::http::HeaderMap;
 
 use super::document::DocumentContext;
-use super::ids::DocumentId;
 
 /// Header the bridge attaches to every authenticated IPC request.
 pub const DOCUMENT_HEADER: &str = "x-seuoffice-doc";
@@ -75,7 +74,6 @@ struct Queue {
 }
 
 struct Outbox {
-    document: DocumentId,
     revoked: Arc<AtomicBool>,
     queue: Mutex<Queue>,
     wake: Box<dyn Fn() -> Result<(), String> + Send + Sync>,
@@ -89,26 +87,21 @@ pub struct ReplySink(Arc<Outbox>);
 
 impl ReplySink {
     pub(crate) fn new(
-        document: DocumentId,
         revoked: Arc<AtomicBool>,
         wake: Box<dyn Fn() -> Result<(), String> + Send + Sync>,
     ) -> Self {
         Self(Arc::new(Outbox {
-            document,
             revoked,
             queue: Mutex::default(),
             wake,
         }))
     }
 
-    pub fn document_id(&self) -> DocumentId {
-        self.0.document
-    }
-
     pub fn channel_queue(&self) -> Option<ChannelQueue> {
         (!self.0.revoked.load(Ordering::Acquire)).then(|| ChannelQueue { sink: self.clone() })
     }
 
+    #[cfg(test)]
     pub fn send(&self, callback: u32, raw: bool, body: Vec<u8>) -> Result<(), String> {
         self.push(ReplyFrame {
             callback,
@@ -236,7 +229,6 @@ mod tests {
         let wakes = Arc::new(Mutex::new(0u32));
         let counted = wakes.clone();
         let sink = ReplySink::new(
-            DocumentId::mint().unwrap(),
             revoked.clone(),
             Box::new(move || {
                 *counted.lock().unwrap() += 1;

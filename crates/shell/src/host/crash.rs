@@ -102,11 +102,6 @@ fn beat(services: &Services) {
     });
 }
 
-/// The quit path: the run ends on purpose, so the next start reports nothing
-pub fn mark_ended() {
-    post_core(|_, _| mark_ended_on_core());
-}
-
 pub(crate) fn mark_ended_on_core() {
     HEARTBEAT.with(|h| {
         if let Some(handle) = h.borrow_mut().as_mut() {

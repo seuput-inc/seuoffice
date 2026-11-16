@@ -222,9 +222,9 @@ pub(crate) fn close_request(id: u64) {
     dispatch::close_request(id)
 }
 
+pub(crate) use dispatch::revoke_view;
 pub(super) use dispatch::{
-    private_faces, private_font_data, prune, release, reset_font_metrics, revoke_view,
-    transfer_history_with,
+    private_faces, private_font_data, prune, release, reset_font_metrics, transfer_history_with,
 };
 
 #[derive(Clone)]
@@ -377,7 +377,7 @@ pub(super) struct FontSession {
     mac: bool,
 }
 impl FontSession {
-    pub(super) fn new(
+    fn new(
         sources: FontSources,
         embedded: Vec<pptx_engine::embedded_fonts::EmbeddedFontFace>,
         mac: bool,

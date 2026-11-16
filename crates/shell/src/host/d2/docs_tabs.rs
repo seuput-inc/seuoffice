@@ -167,16 +167,6 @@ impl DocsAiSeedRollback {
             ai.and(blank)
         })
     }
-    pub(crate) fn was_consumed(&self) -> bool {
-        match self.0.try_borrow().as_deref() {
-            Ok(DocsAiSeedState::Committed { ai, blank }) => {
-                ai.as_ref().is_some_and(|seed| seed.was_consumed())
-                    || blank.as_ref().is_some_and(|seed| seed.was_consumed())
-            }
-            Ok(_) => false,
-            Err(_) => true,
-        }
-    }
     pub(crate) fn rollback(&self) -> Result<(), String> {
         let mut state = self
             .0

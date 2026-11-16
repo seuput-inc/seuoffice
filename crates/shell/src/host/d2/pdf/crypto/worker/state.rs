@@ -66,34 +66,11 @@ impl State {
         self.phase = Phase::Closed;
         Ok(())
     }
-    pub(super) fn revoke(&mut self) {
-        self.phase = Phase::Closed;
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn revoke_before_admission_denies_provider_and_result() {
-        let mut state = State::new();
-        state.opened().unwrap();
-        state.begin().unwrap();
-        state.revoke();
-        assert!(state.admit(false).is_err());
-        assert!(state.signed().is_err());
-        assert!(state.finish().is_err());
-    }
-    #[test]
-    fn admission_before_revoke_does_not_authorize_completion() {
-        let mut state = State::new();
-        state.opened().unwrap();
-        state.begin().unwrap();
-        state.admit(false).unwrap();
-        state.revoke();
-        assert!(state.signed().is_err());
-        assert!(state.admit(true).is_err());
-    }
     #[test]
     fn retry_is_single_use_and_requires_verified_evidence() {
         let mut state = State::new();

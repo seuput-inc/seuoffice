@@ -212,27 +212,6 @@ pub fn prune(deck: DeckId, retained_generations: &[u64]) {
     }
 }
 
-/// Transfer retained undo capabilities before releasing a replaced deck.
-/// Generation numbers in the destination must be distinct and unused.
-pub fn transfer_history(
-    old: DeckId,
-    new: DeckId,
-    generations: &[(u64, u64)],
-) -> Result<(), String> {
-    if old == new {
-        return Err("cannot transfer slide history to the same deck".into());
-    }
-    let mut state = registry()
-        .lock()
-        .map_err(|_| "slide media registry poisoned")?;
-    let current = state
-        .decks
-        .get(&new)
-        .ok_or("destination slide deck unavailable")?
-        .generation;
-    transfer_locked(&mut state, old, new, current, generations)
-}
-
 fn transfer_locked(
     state: &mut Registry,
     old: DeckId,
@@ -316,41 +295,6 @@ pub fn install_and_transfer(
     transfer_locked(&mut state, old, new, generation, generations)?;
     state.decks.insert(new, snapshot);
     Ok(())
-}
-
-/// Extract embedded SFNT faces exclusively from an authorized actor snapshot.
-pub fn embedded_fonts(
-    deck: DeckId,
-    generation: u64,
-    view: ViewId,
-    lease: &SlidesViewLease,
-) -> Result<Vec<pptx_engine::embedded_fonts::EmbeddedFontFace>, String> {
-    let snapshot = {
-        let state = registry()
-            .lock()
-            .map_err(|_| "slide media registry poisoned")?;
-        let snapshot = state
-            .decks
-            .get(&deck)
-            .cloned()
-            .ok_or("slide media deck unavailable")?;
-        if snapshot.generation != generation || !authorized(&snapshot, view, lease) {
-            return Err("slide media grant is not active".into());
-        }
-        snapshot
-    };
-    let faces = pptx_engine::embedded_fonts::list_embedded_fonts(&snapshot.archive)?;
-    let state = registry()
-        .lock()
-        .map_err(|_| "slide media registry poisoned")?;
-    let current = state
-        .decks
-        .get(&deck)
-        .ok_or("slide media deck unavailable")?;
-    if !Arc::ptr_eq(current, &snapshot) || !authorized(current, view, lease) {
-        return Err("slide media grant is not active".into());
-    }
-    Ok(faces)
 }
 
 fn mime_text(mime: DisplayMime) -> &'static str {
@@ -601,32 +545,6 @@ mod tests {
             image::ImageFormat::Png
         );
         release(deck);
-    }
-
-    #[test]
-    fn embedded_font_bytes_are_scoped_to_the_live_snapshot() {
-        let deck = DeckId(0xfedc_0156);
-        let owner = ViewId(417);
-        let lease = SlidesViewLease::new();
-        let font = vec![0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-        let entries = vec![
-            ("ppt/presentation.xml".into(), br#"<p:presentation><p:embeddedFontLst><p:embeddedFont><p:font typeface="Synthetic"/><p:bold r:id="r1"/></p:embeddedFont></p:embeddedFontLst></p:presentation>"#.to_vec()),
-            ("ppt/_rels/presentation.xml.rels".into(), br#"<Relationships><Relationship Id="r1" Type="font" Target="fonts/font1.fntdata"/></Relationships>"#.to_vec()),
-            ("ppt/fonts/font1.fntdata".into(), font.clone()),
-        ];
-        install(deck, 3, [(owner, lease.clone())], entries, None).unwrap();
-        let faces = embedded_fonts(deck, 3, owner, &lease).unwrap();
-        assert_eq!(faces.len(), 1);
-        assert_eq!(faces[0].typeface, "Synthetic");
-        assert_eq!(
-            faces[0].style,
-            pptx_engine::embedded_fonts::EmbeddedFontStyle::Bold
-        );
-        assert_eq!(faces[0].sfnt, font);
-        assert!(embedded_fonts(deck, 3, ViewId(418), &lease).is_err());
-        assert!(embedded_fonts(deck, 2, owner, &lease).is_err());
-        release(deck);
-        assert!(embedded_fonts(deck, 3, owner, &lease).is_err());
     }
 }
 

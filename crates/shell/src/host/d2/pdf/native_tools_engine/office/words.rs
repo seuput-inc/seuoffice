@@ -1,5 +1,5 @@
 //! Reconstruct word boundaries without injecting spaces into CJK or Thai text.
-use super::geometry::{Rect, median};
+use super::geometry::median;
 use super::ir::PdfChar;
 use super::lines::space;
 use super::script::no_space;
@@ -7,8 +7,6 @@ use super::script::no_space;
 #[derive(Debug, Clone)]
 pub(super) struct Word {
     pub chars: Vec<PdfChar>,
-    pub text: String,
-    pub bounds: Rect,
     pub space_before: bool,
     pub space_advance_pt: Option<f64>,
 }
@@ -149,12 +147,8 @@ fn flush(
         return;
     }
     let chars = std::mem::take(current);
-    let text = chars.iter().map(|c| c.text.as_str()).collect();
-    let bounds = chars.iter().map(|c| c.bounds).reduce(Rect::union).unwrap();
     words.push(Word {
         chars,
-        text,
-        bounds,
         space_before,
         space_advance_pt: advance,
     });

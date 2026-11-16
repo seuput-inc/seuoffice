@@ -8,7 +8,6 @@ pub(super) struct Candidate {
     pub bounds: Rect,
     pub color: String,
     pub rounded: bool,
-    pub z: Option<i64>,
 }
 pub(super) fn detect(page: &mut IrPage, candidates: &[Candidate]) {
     let mut candidates = candidates.to_vec();
@@ -78,7 +77,6 @@ pub(super) fn detect(page: &mut IrPage, candidates: &[Candidate]) {
             bounds: c.bounds,
             color: c.color,
             rounded: c.rounded,
-            z: c.z,
         });
         if let Some(panel) = page.background_panels.get_mut(c.panel_index) {
             panel.card_id = Some(id);

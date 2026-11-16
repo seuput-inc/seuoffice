@@ -22,9 +22,8 @@ pub(super) fn origin(s: &mut PdfiumSession, page: u64) -> Result<(f64, f64), Pdf
             )? != 0.0
             {
                 let b = s.read(scratch, 0, 16)?;
-                let n = |i: usize| {
-                    f32::from_le_bytes(b[i..i + 4].try_into().expect("page box")) as f64
-                };
+                let n =
+                    |i: usize| f32::from_le_bytes(b[i..i + 4].try_into().expect("page box")) as f64;
                 return Ok((-n(0).min(n(8)), -n(4).min(n(12))));
             }
         }
