@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <title>System webview diagnostic</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+      }
+      iframe {
+        border: 0;
+        width: 100%;
+        height: 100%;
+      }
+      #raw {
+        position: fixed;
+        left: -10000px;
+        top: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <iframe id="editor" title="Document editor"></iframe>
+    <div id="raw"></div>
+    <script src="/probe/probe.js"></script>
+  </body>
+</html>

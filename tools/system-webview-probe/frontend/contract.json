@@ -1,0 +1,25 @@
+{
+  "kind": "throwaway-system-webview-diagnostic",
+  "fixtureGenerator": "python3 frontend/make_fixture.py <http-root>/probe/fixture.docx",
+  "copy": {
+    "frontend/probe/index.html": "<http-root>/probe/index.html",
+    "frontend/probe/probe.js": "<http-root>/probe/probe.js"
+  },
+  "editor": "/docs/index.html?mode=edit&lang=ko",
+  "engines": ["electron", "wkwebview"],
+  "viewportCssPixels": [1280, 900],
+  "deadlineSeconds": 180,
+  "outcome": "window.__probeOutcome: running, complete, or failed; complete includes input, layout, cases, editSave",
+  "editMarker": "SYSTEM-WEBVIEW-EDIT-20261116",
+  "fixtureMarkers": [
+    "SYSTEM-WEBVIEW-FIRST",
+    "SYSTEM-WEBVIEW-GO",
+    "SYSTEM-WEBVIEW-KR",
+    "SYSTEM-WEBVIEW-FALLBACK",
+    "SYSTEM-WEBVIEW-TABLE",
+    "SYSTEM-WEBVIEW-LAST"
+  ],
+  "print": "await window.__prepareProbePrint() returns JSON string; diagnostic-cloned-dom, A4, zero margins, not the product PDF consumer",
+  "fontEvidence": "font check/load and requested resource URLs; family names do not identify the actual glyph face; provide build manifest hashes externally",
+  "limits": "No actual native production behavior, PDF consumer parity, platform font identity, security proof, or performance claim. A timeout is a failure or blocked result, never a fallback."
+}

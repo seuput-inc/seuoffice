@@ -1,1138 +1,561 @@
-name: seuoffice rust
-
-# The Rust document engines (crates/) and their parity gates against the
-# TypeScript engines (tools/docx-diff, tools/pptx-diff, tools/odt-diff), on a GitHub runner.
-# Decision 0025.
-#
-# It runs on its own for a push to main that touches the crates or the gates,
-# and by hand on a branch:
-#   gh workflow run "seuoffice rust" --ref <branch>
-# The workstation that develops the port is shared and slow, which is why the
-# full gate runs here.
-#
-# The `quick` job runs first and every other job needs it: a tree that fails
-# rustfmt, clippy, the unit tests or the gate harness's own tests takes one
-# runner for minutes instead of the gate's and the faults' runners for an hour.
-# A job added here (a gate, a fault matrix) takes `needs: quick` as well.
-
+name: seuoffice current renderer native system-webview diagnostic
 on:
-  push:
-    branches: [main]
-    paths:
-      [
-        'crates/**',
-        'tools/docx-diff/**',
-        'tools/pptx-diff/**',
-        'tools/odt-diff/**',
-        'tools/fileparse-diff/**',
-        'tools/epub-diff/**',
-        'tools/ipc-diff/**',
-        'packages/docx-engine/src/**',
-        'packages/pptx-engine/src/**',
-        'packages/odt-engine/src/**',
-        'packages/file-parse/**',
-        'packages/epub-engine/src/**',
-      ]
   workflow_dispatch:
     inputs:
-      main_faults:
-        description: A faults file for tools/main-diff/faults.mjs (the central process), run beside the gates
-        required: false
-        default: ''
-      faults:
-        description: A faults file for tools/docx-diff/faults.py, run instead of the gate (on a rust-faults/* branch)
-        required: false
-        default: ''
-      odt_faults:
-        description: Odt fault ids, comma-separated, probed alone (the other jobs are skipped)
-        required: false
-        default: ''
-      # 1 while the organisation has few runners; more shards end a long faults
-      # file sooner but hold that many runners at once
-      fault_shards:
-        description: Runners the faults file is split over (FAULT_SHARD of faults.py)
-        type: choice
-        options: ['1', '2', '4', '8']
-        default: '1'
-      rhwp_core:
-        description: Rebuild vendor/rhwp-core (wasm-pack, tag + patches) and upload it, instead of the gates
-        type: boolean
-        required: false
-        default: false
-      # a branch run skips fault probes no changed file reaches; main runs all
-      all_faults:
-        description: Run every engine's fault probes, as before a merge
-        type: boolean
-        default: false
-      ipc_faults:
-        description: A faults file for tools/ipc-diff/faults.mjs (the stage 3 IPC handlers), run beside the gates
-        required: false
-        default: ''
-
-concurrency:
-  group: seuoffice-rust-${{ github.ref }}
-  cancel-in-progress: true
-
+      source_sha:
+        description: Exact S7 source, corrected native renderer diagnostic only
+        required: true
+        type: string
 permissions:
   contents: read
-
+concurrency:
+  group: system-webview-diagnostic-${{ inputs.source_sha }}
+  cancel-in-progress: false
+env:
+  SOURCE_SHA: ff12e95b7398ce1d09bca6f6bd95d44dd68cc2cf
+  SOURCE_PARENT: 1e9d0ec1ad96c7862dec0ee1b3ec7d47f3148483
+  SOURCE_ACTUAL_PARENT: 7f7ba6a62dfc2cfa4f52cdaa6d39ee02bddedbd4
+  SOURCE_MANIFEST_SHA256: 7da6732dae83996db09fd0d00da5bc50a3f41f7a2885f39ca83016a51918b19c
+  PROBE_MANIFEST_SHA256: 7eb6d5604d8e17ec4259287ace4c3c0dbd32985cf310d1df6fad817a2192881a
+  RHWP_TOOL_SHA256: f3a8f06da1371947aaef149e73d0810dd69fca94b760d3d8cca33d711e5c46f1
+  PREPUSH_SHA256: 64c82ffe03995e6a518998c90ae354920473d48e0f35caaa01afadd5b938c4d6
+  ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
 jobs:
-  quick:
-    if: ${{ !inputs.rhwp_core }}
+  input-audit:
+    name: Exact S7 and separate diagnostic definition audit
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    outputs:
-      docx_files: ${{ steps.reach.outputs.docx_files }}
-      pptx_faults: ${{ steps.reach.outputs.pptx }}
-      odt_faults: ${{ steps.reach.outputs.odt }}
-      fileparse_faults: ${{ steps.reach.outputs.fileparse }}
-      epub_faults: ${{ steps.reach.outputs.epub }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
     steps:
-      # the gate harness's typecheck reads the declarations at MODEL_SOURCE's commit
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      # the hwp reader compiles rhwp from upstream v0.9.0 with vendor/rhwp-core's
-      # patches; cargo resolves that path dependency on every call, so it is
-      # prepared before any of them
-      - uses: actions/cache@v4
-        id: rhwp-source
-        with:
-          path: crates/.rhwp-source
-          key: rhwp-source-${{ hashFiles('vendor/rhwp-core/**', 'tools/build-rhwp-core.mjs') }}
-      - name: rhwp source
-        if: steps.rhwp-source.outputs.cache-hit != 'true'
-        run: node tools/build-rhwp-core.mjs --source-only
-
-      - name: Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
-          rustup default stable
-          rustc --version
-
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            crates/target
-          key: seuoffice-rust-${{ runner.os }}-${{ hashFiles('crates/Cargo.lock') }}
-          restore-keys: seuoffice-rust-${{ runner.os }}-
-
-      - name: Format
-        # the workspace's members only: --all would walk the rhwp source too
-        run: cargo fmt --manifest-path crates/Cargo.toml -- --check
-
-      # every check below runs whether or not an earlier one failed, so that one
-      # run says everything: the job is red when any of them is
-      - name: Clippy
-        if: ${{ !cancelled() }}
-        run: cargo clippy --manifest-path crates/Cargo.toml --workspace --all-targets -- -D warnings
-
-      - name: Unit tests
-        if: ${{ !cancelled() }}
-        run: cargo test --manifest-path crates/Cargo.toml --workspace
-
-      # the vendored regex engine carries patches of its own: its suite runs as published
-      - name: Vendored regress tests
-        if: ${{ !cancelled() }}
-        run: cargo test --manifest-path crates/vendor/regress/Cargo.toml --features utf16
-
-      - uses: actions/setup-node@v4
-        if: ${{ !cancelled() }}
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install
-        if: ${{ !cancelled() }}
-        run: npm ci
-
-      - name: Gate harness typecheck and tests
-        if: ${{ !cancelled() }}
-        run: |
-          npm --prefix tools/docx-diff run typecheck
-          npm --prefix tools/docx-diff run test
-
-      # the unused import that failed ci.yml's Lint for tools/pptx-diff stops here too
-      - name: Gate harness lint
-        if: ${{ !cancelled() }}
-        run: npx eslint tools/docx-diff tools/pptx-diff tools/odt-diff tools/fileparse-diff tools/epub-diff
-      - name: IPC harness typecheck and tests
-        if: ${{ !cancelled() }}
-        run: |
-          npm --prefix tools/ipc-diff run typecheck
-          npm --prefix tools/ipc-diff run test
-
-      - name: Fault planning regressions
-        if: ${{ !cancelled() }}
-        run: |
-          node --test tools/fault-planning.test.mjs
-          python3 -m unittest discover -s tools/docx-diff -p test_faults.py
-
-      - name: Fault probes this run reaches
-        id: reach
-        if: ${{ !cancelled() }}
+      - name: Bind one exact diagnostic input
         env:
-          ALL_FAULTS: ${{ inputs.all_faults }}
-          DOCX_FAULTS: ${{ inputs.faults }}
-          ODT_FAULTS: ${{ inputs.odt_faults }}
+          REQUESTED_SOURCE: ${{ inputs.source_sha }}
+        run: test "$REQUESTED_SOURCE" = "$SOURCE_SHA"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          path: definition
+          fetch-depth: 8
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: source
+          fetch-depth: 7
+          persist-credentials: false
+      - name: Audit full source map, exact parent and actual definition delta
         run: |
-          MODE="$(node tools/fault-reach.mjs --mode)"
-          if [ "$MODE" = all ]; then
-            node tools/fault-reach.mjs --all --github-output
-          else
-            node tools/fault-reach.mjs "$(git merge-base origin/main HEAD)" --github-output
-          fi
-
-  crates:
-    needs: quick
-    if: ${{ !inputs.faults && !inputs.odt_faults && !inputs.rhwp_core }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 150
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      # the hwp reader compiles rhwp from upstream v0.9.0 with vendor/rhwp-core's
-      # patches; cargo resolves that path dependency on every call, so it is
-      # prepared before any of them
-      - uses: actions/cache@v4
-        id: rhwp-source
-        with:
-          path: crates/.rhwp-source
-          key: rhwp-source-${{ hashFiles('vendor/rhwp-core/**', 'tools/build-rhwp-core.mjs') }}
-      - name: rhwp source
-        if: steps.rhwp-source.outputs.cache-hit != 'true'
-        run: node tools/build-rhwp-core.mjs --source-only
-
-      - name: Rust toolchain with the WASI target
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustup target add wasm32-wasip1
-          rustc --version
-
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            crates/target
-          key: seuoffice-rust-${{ runner.os }}-${{ hashFiles('crates/Cargo.lock') }}
-          restore-keys: seuoffice-rust-${{ runner.os }}-
-
-      # every check below runs whether or not an earlier one failed, so that one
-      # run says everything: the job is red when any of them is
-      - name: Licences of the dependencies
-        run: |
-          cargo install cargo-deny --locked
-          cd crates && cargo deny check licenses
-
-      - uses: actions/setup-node@v4
-        if: ${{ !cancelled() }}
-        with:
-          node-version: 22
-          cache: npm
-
-      # a search past the backtrack bound refuses on wasm32 too, where an
-      # unbounded stack traps the module
-      - name: Regex bound on wasm32
-        if: ${{ !cancelled() }}
-        run: |
-          cargo build --manifest-path crates/Cargo.toml -p jscompat --example limit_wasm --target wasm32-wasip1 --release
-          node --no-warnings crates/jscompat/examples/limit_wasm.mjs crates/target/wasm32-wasip1/release/examples/limit_wasm.wasm 25000000
-
-      - name: Install
-        if: ${{ !cancelled() }}
-        run: npm ci
-
-      # the whole output is kept as an artifact: the first comparison of a newly
-      # ported group is read from there, not from a run on somebody's machine
-      - name: Parity gate
-        if: ${{ !cancelled() }}
-        shell: bash
-        run: |
-          mkdir -p tools/docx-diff/out
-          npm --prefix tools/docx-diff run gate -- --by-function --show 20 2>&1 | tee tools/docx-diff/out/gate.txt
-
-      - name: Keep the gate output
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: docx-diff-out
-          path: tools/docx-diff/out
-          if-no-files-found: ignore
-
-      # the central process (decision 0030): crates/main-core through its
-      # Node-API addon against the TypeScript main process
-      - name: Central process comparison
-        if: ${{ !cancelled() }}
-        # a full run takes minutes; a case that never returns fails the step
-        # (its log and trace are kept) instead of holding the job for hours
-        timeout-minutes: 30
-        shell: bash
-        env:
-          MAIN_DIFF_TRACE: ${{ github.workspace }}/tools/main-diff/out/trace.txt
-        run: |
-          npm --prefix tools/main-diff run typecheck
-          mkdir -p tools/main-diff/out
-          npm --prefix tools/main-diff run gate -- --show 40 2>&1 | tee tools/main-diff/out/gate.txt
-
-      - name: Keep the central process comparison
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: main-diff-out
-          path: tools/main-diff/out
-          if-no-files-found: ignore
-
-      # All six batches must cover their handlers and emitted events.
-      - name: IPC comparison
-        if: ${{ !cancelled() }}
-        timeout-minutes: 30
-        shell: bash
-        run: |
-          npm --prefix tools/ipc-diff run typecheck
-          npm --prefix tools/ipc-diff run test
-          mkdir -p tools/ipc-diff/out
-          npm --prefix tools/ipc-diff run gate -- --show 40 --require W --require U --require A --require M --require D1 --require D2 2>&1 | tee tools/ipc-diff/out/gate.txt
-
-      - name: Keep the IPC comparison
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ipc-diff-out
-          path: tools/ipc-diff/out
-          if-no-files-found: ignore
-
-  # Fault injection for the stage 3 IPC handlers: each fault rebuilds
-  # ipc-probe and runs its groups, which must then differ.
-  ipc-faults:
-    needs: quick
-    if: ${{ inputs.ipc_faults }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/cache@v4
-        id: rhwp-source
-        with:
-          path: crates/.rhwp-source
-          key: rhwp-source-${{ hashFiles('vendor/rhwp-core/**', 'tools/build-rhwp-core.mjs') }}
-      - name: rhwp source
-        if: steps.rhwp-source.outputs.cache-hit != 'true'
-        run: node tools/build-rhwp-core.mjs --source-only
-
-      - name: Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustup target add wasm32-wasip1
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install
-        run: npm ci
-
-      - name: Build the document engine for IPC consumers
-        run: npm run build:wasm
-
-      - name: Faults
-        shell: bash
-        env:
-          FAULTS: ${{ inputs.ipc_faults }}
-          FAULT_SHARD: ${{ matrix.shard }}/4
-        run: |
-          mkdir -p tools/ipc-diff/out
-          node tools/ipc-diff/faults.mjs "$FAULTS" 2>&1 | tee tools/ipc-diff/out/faults.txt
-          exit "${PIPESTATUS[0]}"
-
-      - name: Keep the result
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ipc-diff-faults-${{ matrix.shard }}
-          path: tools/ipc-diff/out
-          if-no-files-found: ignore
-
-  # Fault injection: each fault of the file through comparison (f), one at a
-  # time. It rebuilds the wasm once per fault, which is why it runs here.
-  faults:
-    needs: quick
-    if: ${{ !inputs.odt_faults && needs.quick.outputs.docx_files != '' && needs.quick.outputs.docx_files != '[]' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 240
-    strategy:
-      fail-fast: false
-      matrix:
-        catalog: ${{ fromJSON(needs.quick.outputs.docx_files) }}
-        # the shard indices of the fault_shards choice; a matrix cannot count to n itself
-        shard: ${{ fromJSON('{"1":[0],"2":[0,1],"4":[0,1,2,3],"8":[0,1,2,3,4,5,6,7]}')[inputs.fault_shards || '1'] }}
-    steps:
-      # the model group reads the declarations at MODEL_SOURCE's commit
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      # the hwp reader compiles rhwp from upstream v0.9.0 with vendor/rhwp-core's
-      # patches; cargo resolves that path dependency on every call, so it is
-      # prepared before any of them
-      - uses: actions/cache@v4
-        id: rhwp-source
-        with:
-          path: crates/.rhwp-source
-          key: rhwp-source-${{ hashFiles('vendor/rhwp-core/**', 'tools/build-rhwp-core.mjs') }}
-      - name: rhwp source
-        if: steps.rhwp-source.outputs.cache-hit != 'true'
-        run: node tools/build-rhwp-core.mjs --source-only
-
-      - name: Rust toolchain with the WASI target
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustup target add wasm32-wasip1
-
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            crates/target
-          key: seuoffice-rust-faults-${{ runner.os }}-${{ hashFiles('crates/Cargo.lock') }}
-          restore-keys: seuoffice-rust-${{ runner.os }}-
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install
-        run: npm ci
-
-      - name: Faults
-        env:
-          FAULTS: ${{ matrix.catalog }}
-          FAULT_SHARD: ${{ matrix.shard }}/${{ inputs.fault_shards || '1' }}
-        run: python3 tools/docx-diff/faults.py "$FAULTS"
-
-      - name: Keep the result
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          # a targeted single-catalog, single-shard run keeps its historical artifact name
-          name: ${{ inputs.faults && (inputs.fault_shards == '1' || !inputs.fault_shards) && 'docx-diff-faults' || format('docx-diff-faults-{0}', strategy.job-index) }}
-          path: tools/docx-diff/out
-          if-no-files-found: ignore
-
-  pptx:
-    needs: quick
-    if: ${{ !inputs.faults && !inputs.odt_faults && !inputs.rhwp_core }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 75
-    steps:
-      - uses: actions/checkout@v4
-
-      # the hwp reader compiles rhwp from upstream v0.9.0 with vendor/rhwp-core's
-      # patches; cargo resolves that path dependency on every call, so it is
-      # prepared before any of them
-      - uses: actions/cache@v4
-        id: rhwp-source
-        with:
-          path: crates/.rhwp-source
-          key: rhwp-source-${{ hashFiles('vendor/rhwp-core/**', 'tools/build-rhwp-core.mjs') }}
-      - name: rhwp source
-        if: steps.rhwp-source.outputs.cache-hit != 'true'
-        run: node tools/build-rhwp-core.mjs --source-only
-
-      - name: Is the slides gate in this tree
-        id: has
-        run: |
-          if [ -f tools/pptx-diff/package.json ]; then echo "pptx=true" >> "$GITHUB_OUTPUT"; else echo "pptx=false" >> "$GITHUB_OUTPUT"; fi
-
-      - name: Rust toolchain with the WASI target
-        if: steps.has.outputs.pptx == 'true'
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustup target add wasm32-wasip1
-
-      - uses: actions/cache@v4
-        if: steps.has.outputs.pptx == 'true'
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            crates/target
-          key: seuoffice-rust-pptx-${{ runner.os }}-${{ hashFiles('crates/Cargo.lock') }}
-          restore-keys: seuoffice-rust-${{ runner.os }}-
-
-      - uses: actions/setup-node@v4
-        if: steps.has.outputs.pptx == 'true'
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install
-        if: steps.has.outputs.pptx == 'true'
-        run: npm ci
-
-      - name: Slides gate typecheck
-        if: steps.has.outputs.pptx == 'true'
-        run: npm --prefix tools/pptx-diff run typecheck
-
-      - name: Slides parity gate
-        if: steps.has.outputs.pptx == 'true'
-        run: npm --prefix tools/pptx-diff run gate
-
-      - name: Slides fault anchors
-        if: steps.has.outputs.pptx == 'true'
-        run: npm --prefix tools/pptx-diff run faults -- --inventory
-
-      - name: Keep the slides gate output
-        if: always() && steps.has.outputs.pptx == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: pptx-diff-out
-          path: tools/pptx-diff/out
-          if-no-files-found: ignore
-
-  # One Rust fault at a time through the slides gate: each must be caught.
-  pptx-faults:
-    needs: quick
-    if: ${{ !inputs.faults && !inputs.odt_faults && !inputs.rhwp_core && needs.quick.outputs.pptx_faults == 'true' }}
-    runs-on: ubuntu-latest
-    # a shard runs 40 probes of about two minutes each; a slow runner needs past 90
-    timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
-    steps:
-      - uses: actions/checkout@v4
-
-      # the hwp reader compiles rhwp from upstream v0.9.0 with vendor/rhwp-core's
-      # patches; cargo resolves that path dependency on every call, so it is
-      # prepared before any of them
-      - uses: actions/cache@v4
-        id: rhwp-source
-        with:
-          path: crates/.rhwp-source
-          key: rhwp-source-${{ hashFiles('vendor/rhwp-core/**', 'tools/build-rhwp-core.mjs') }}
-      - name: rhwp source
-        if: steps.rhwp-source.outputs.cache-hit != 'true'
-        run: node tools/build-rhwp-core.mjs --source-only
-
-      - name: Is the slides gate in this tree
-        id: has
-        run: |
-          if [ -f tools/pptx-diff/package.json ]; then echo "pptx=true" >> "$GITHUB_OUTPUT"; else echo "pptx=false" >> "$GITHUB_OUTPUT"; fi
-
-      - name: Rust toolchain with the WASI target
-        if: steps.has.outputs.pptx == 'true'
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustup target add wasm32-wasip1
-
-      - uses: actions/cache@v4
-        if: steps.has.outputs.pptx == 'true'
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: seuoffice-rust-pptx-faults-${{ runner.os }}-${{ hashFiles('crates/Cargo.lock') }}
-          restore-keys: seuoffice-rust-${{ runner.os }}-
-
-      - uses: actions/setup-node@v4
-        if: steps.has.outputs.pptx == 'true'
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install
-        if: steps.has.outputs.pptx == 'true'
-        run: npm ci
-
-      - name: Slides fault probes
-        if: steps.has.outputs.pptx == 'true'
-        run: npm --prefix tools/pptx-diff run faults -- --shard ${{ matrix.shard }}/8
-
-      - name: Keep the fault probe output
-        if: always() && steps.has.outputs.pptx == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: pptx-faults-out-${{ matrix.shard }}
-          path: tools/pptx-diff/out/faults
-          if-no-files-found: ignore
-
-  odt:
-    needs: quick
-    if: ${{ !inputs.faults && !inputs.odt_faults && !inputs.rhwp_core }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 75
-    steps:
-      - uses: actions/checkout@v4
-
-      # the hwp reader compiles rhwp from upstream v0.9.0 with vendor/rhwp-core's
-      # patches; cargo resolves that path dependency on every call, so it is
-      # prepared before any of them
-      - uses: actions/cache@v4
-        id: rhwp-source
-        with:
-          path: crates/.rhwp-source
-          key: rhwp-source-${{ hashFiles('vendor/rhwp-core/**', 'tools/build-rhwp-core.mjs') }}
-      - name: rhwp source
-        if: steps.rhwp-source.outputs.cache-hit != 'true'
-        run: node tools/build-rhwp-core.mjs --source-only
-
-      - name: Is the odt gate in this tree
-        id: has
-        run: |
-          if [ -f tools/odt-diff/package.json ]; then echo "odt=true" >> "$GITHUB_OUTPUT"; else echo "odt=false" >> "$GITHUB_OUTPUT"; fi
-
-      - name: Rust toolchain with the WASI target
-        if: steps.has.outputs.odt == 'true'
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustup target add wasm32-wasip1
-
-      - uses: actions/cache@v4
-        if: steps.has.outputs.odt == 'true'
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            crates/target
-          key: seuoffice-rust-odt-${{ runner.os }}-${{ hashFiles('crates/Cargo.lock') }}
-          restore-keys: seuoffice-rust-${{ runner.os }}-
-
-      - uses: actions/setup-node@v4
-        if: steps.has.outputs.odt == 'true'
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install
-        if: steps.has.outputs.odt == 'true'
-        run: npm ci
-
-      - name: Odt gate typecheck
-        if: steps.has.outputs.odt == 'true'
-        run: npm --prefix tools/odt-diff run typecheck
-
-      - name: Odt parity gate
-        if: ${{ !cancelled() && steps.has.outputs.odt == 'true' }}
-        shell: bash
-        run: |
-          mkdir -p tools/odt-diff/out
-          npm --prefix tools/odt-diff run gate 2>&1 | tee tools/odt-diff/out/gate.txt
-
-      - name: Keep the odt gate output
-        if: always() && steps.has.outputs.odt == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: odt-diff-out
-          path: tools/odt-diff/out
-          if-no-files-found: ignore
-
-  # One Rust fault at a time through the odt gate: each must be caught.
-  odt-faults:
-    needs: [quick, odt]
-    if: ${{ !cancelled() && !inputs.faults && !inputs.rhwp_core && needs.quick.result == 'success' && (inputs.odt_faults || (needs.odt.result == 'success' && needs.quick.outputs.odt_faults == 'true')) }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 150
-    strategy:
-      fail-fast: false
-      matrix:
-        # eight runners: with the probe-dev build (tools/odt-diff/faults.mjs) a
-        # wire-command fault takes minutes, and 26 runners, one fault each,
-        # spent more on setup and the baseline build than on faults
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
-    steps:
-      - uses: actions/checkout@v4
-
-      # the hwp reader compiles rhwp from upstream v0.9.0 with vendor/rhwp-core's
-      # patches; cargo resolves that path dependency on every call, so it is
-      # prepared before any of them
-      - uses: actions/cache@v4
-        id: rhwp-source
-        with:
-          path: crates/.rhwp-source
-          key: rhwp-source-${{ hashFiles('vendor/rhwp-core/**', 'tools/build-rhwp-core.mjs') }}
-      - name: rhwp source
-        if: steps.rhwp-source.outputs.cache-hit != 'true'
-        run: node tools/build-rhwp-core.mjs --source-only
-
-      - name: Is the odt gate in this tree
-        id: has
-        run: |
-          if [ -f tools/odt-diff/package.json ]; then echo "odt=true" >> "$GITHUB_OUTPUT"; else echo "odt=false" >> "$GITHUB_OUTPUT"; fi
-
-      - name: Rust toolchain with the WASI target
-        if: steps.has.outputs.odt == 'true'
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustup target add wasm32-wasip1
-
-      - uses: actions/cache@v4
-        if: steps.has.outputs.odt == 'true'
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: seuoffice-rust-odt-faults-${{ runner.os }}-${{ hashFiles('crates/Cargo.lock') }}
-          restore-keys: seuoffice-rust-${{ runner.os }}-
-
-      - uses: actions/setup-node@v4
-        if: steps.has.outputs.odt == 'true'
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install
-        if: steps.has.outputs.odt == 'true'
-        run: npm ci
-
-      - name: Odt fault probes
-        if: steps.has.outputs.odt == 'true'
-        env:
-          ONLY: ${{ inputs.odt_faults }}
-        # the positive control proves the harness once per run, on shard 0
-        run: npm --prefix tools/odt-diff run faults -- ${ONLY:+--only "$ONLY"} --shard ${{ matrix.shard }}/8 ${{ matrix.shard != 0 && '--no-control' || '' }}
-
-      - name: Keep the fault probe output
-        if: always() && steps.has.outputs.odt == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: odt-faults-out-${{ matrix.shard }}
-          path: tools/odt-diff/out/faults
-          if-no-files-found: ignore
-
-  # The attachment gate over four shards of its specs: one job ran 46-58 of its
-  # 60 minutes and reached the limit
-  fileparse:
-    needs: quick
-    if: ${{ !inputs.faults && !inputs.odt_faults && !inputs.rhwp_core }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3]
-    steps:
-      - uses: actions/checkout@v4
-
-      # the hwp reader compiles rhwp from upstream v0.9.0 with vendor/rhwp-core's
-      # patches; cargo resolves that path dependency on every call, so it is
-      # prepared before any of them
-      - uses: actions/cache@v4
-        id: rhwp-source
-        with:
-          path: crates/.rhwp-source
-          key: rhwp-source-${{ hashFiles('vendor/rhwp-core/**', 'tools/build-rhwp-core.mjs') }}
-      - name: rhwp source
-        if: steps.rhwp-source.outputs.cache-hit != 'true'
-        run: node tools/build-rhwp-core.mjs --source-only
-      - name: Is the attachment gate in this tree
-        id: has
-        run: |
-          if [ -f tools/fileparse-diff/package.json ]; then echo "gate=true" >> "$GITHUB_OUTPUT"; else echo "gate=false" >> "$GITHUB_OUTPUT"; fi
-      - name: Rust toolchain with the WASI target
-        if: steps.has.outputs.gate == 'true'
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustup target add wasm32-wasip1
-      - uses: actions/cache@v4
-        if: steps.has.outputs.gate == 'true'
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            crates/target
-          key: seuoffice-fileparse-${{ runner.os }}-${{ hashFiles('crates/Cargo.lock') }}
-          restore-keys: seuoffice-fileparse-${{ runner.os }}-
-      - uses: actions/setup-node@v4
-        if: steps.has.outputs.gate == 'true'
-        with:
-          node-version: 22
-          cache: npm
-      - name: Install
-        if: steps.has.outputs.gate == 'true'
-        run: npm ci
-      - name: Attachment gate typecheck
-        if: steps.has.outputs.gate == 'true'
-        run: npm --prefix tools/fileparse-diff run typecheck
-      - name: Attachment parity gate
-        if: steps.has.outputs.gate == 'true'
-        # a zone with daylight saving time: the HWP memo dates are the host's local
-        # time, and hwp-cases.ts holds memos on both sides of its changes
-        env:
-          TZ: America/New_York
-        run: npm --prefix tools/fileparse-diff run gate -- --shard ${{ matrix.shard }}/4 --save out/ci-${{ matrix.shard }}.json
-      - name: Keep the attachment gate output
-        if: always() && steps.has.outputs.gate == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: fileparse-diff-out-${{ matrix.shard }}
-          path: tools/fileparse-diff/out
-          if-no-files-found: error
-
-  fileparse_faults:
-    needs: [quick, fileparse]
-    if: ${{ !inputs.faults && !inputs.odt_faults && !inputs.rhwp_core && needs.fileparse.result == 'success' && needs.quick.outputs.fileparse_faults == 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
-    steps:
-      - uses: actions/checkout@v4
-
-      # the hwp reader compiles rhwp from upstream v0.9.0 with vendor/rhwp-core's
-      # patches; cargo resolves that path dependency on every call, so it is
-      # prepared before any of them
-      - uses: actions/cache@v4
-        id: rhwp-source
-        with:
-          path: crates/.rhwp-source
-          key: rhwp-source-${{ hashFiles('vendor/rhwp-core/**', 'tools/build-rhwp-core.mjs') }}
-      - name: rhwp source
-        if: steps.rhwp-source.outputs.cache-hit != 'true'
-        run: node tools/build-rhwp-core.mjs --source-only
-      - name: Is the attachment fault gate in this tree
-        id: has
-        run: |
-          if [ -f tools/fileparse-diff/faults.json ]; then echo "gate=true" >> "$GITHUB_OUTPUT"; else echo "gate=false" >> "$GITHUB_OUTPUT"; fi
-      - name: Rust toolchain with the WASI target
-        if: steps.has.outputs.gate == 'true'
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustup target add wasm32-wasip1
-      - uses: actions/cache@v4
-        if: steps.has.outputs.gate == 'true'
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            crates/target
-          key: seuoffice-fileparse-faults-${{ runner.os }}-${{ hashFiles('crates/Cargo.lock') }}
-          restore-keys: seuoffice-fileparse-${{ runner.os }}-
-      - uses: actions/setup-node@v4
-        if: steps.has.outputs.gate == 'true'
-        with:
-          node-version: 22
-          cache: npm
-      - name: Install
-        if: steps.has.outputs.gate == 'true'
-        run: npm ci
-      - name: Attachment seeded faults
-        if: steps.has.outputs.gate == 'true'
-        run: npm --prefix tools/fileparse-diff run faults -- --shard ${{ matrix.shard }}/8
-      - name: Keep the fault evidence
-        if: always() && steps.has.outputs.gate == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: fileparse-faults-out-${{ matrix.shard }}
-          path: |
-            tools/fileparse-diff/out/faults-*/summary.json
-            tools/fileparse-diff/out/faults-*/*.json
-          if-no-files-found: error
-
-  epub:
-    needs: quick
-    if: ${{ !inputs.faults && !inputs.odt_faults && !inputs.rhwp_core }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-
-      # the hwp reader compiles rhwp from upstream v0.9.0 with vendor/rhwp-core's
-      # patches; cargo resolves that path dependency on every call, so it is
-      # prepared before any of them
-      - uses: actions/cache@v4
-        id: rhwp-source
-        with:
-          path: crates/.rhwp-source
-          key: rhwp-source-${{ hashFiles('vendor/rhwp-core/**', 'tools/build-rhwp-core.mjs') }}
-      - name: rhwp source
-        if: steps.rhwp-source.outputs.cache-hit != 'true'
-        run: node tools/build-rhwp-core.mjs --source-only
-      - name: Is the EPUB gate in this tree
-        id: has
-        run: |
-          if [ -f tools/epub-diff/package.json ]; then echo "gate=true" >> "$GITHUB_OUTPUT"; else echo "gate=false" >> "$GITHUB_OUTPUT"; fi
-      - name: Rust toolchain with the WASI target
-        if: steps.has.outputs.gate == 'true'
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustup target add wasm32-wasip1
-      - uses: actions/cache@v4
-        if: steps.has.outputs.gate == 'true'
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            crates/target
-          key: seuoffice-epub-${{ runner.os }}-${{ hashFiles('crates/Cargo.lock') }}
-          restore-keys: seuoffice-fileparse-${{ runner.os }}-
-      - uses: actions/setup-node@v4
-        if: steps.has.outputs.gate == 'true'
-        with:
-          node-version: 22
-          cache: npm
-      - name: Install
-        if: steps.has.outputs.gate == 'true'
-        run: npm ci
-      - name: EPUB gate typecheck
-        if: steps.has.outputs.gate == 'true'
-        run: npm --prefix tools/epub-diff run typecheck
-      - name: EPUB parity gate
-        if: steps.has.outputs.gate == 'true'
-        run: npm --prefix tools/epub-diff run gate -- --save out/ci.json
-      - name: Keep the EPUB gate output
-        if: always() && steps.has.outputs.gate == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: epub-diff-out
-          path: tools/epub-diff/out/ci.json
-          if-no-files-found: error
-
-  # One Rust fault at a time through the EPUB gate, each rebuilding the wasm:
-  # eight shards keep every one well inside its limit
-  epub_faults:
-    needs: [quick, epub]
-    if: ${{ !inputs.faults && !inputs.odt_faults && !inputs.rhwp_core && needs.epub.result == 'success' && needs.quick.outputs.epub_faults == 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
-    steps:
-      - uses: actions/checkout@v4
-
-      # the hwp reader compiles rhwp from upstream v0.9.0 with vendor/rhwp-core's
-      # patches; cargo resolves that path dependency on every call, so it is
-      # prepared before any of them
-      - uses: actions/cache@v4
-        id: rhwp-source
-        with:
-          path: crates/.rhwp-source
-          key: rhwp-source-${{ hashFiles('vendor/rhwp-core/**', 'tools/build-rhwp-core.mjs') }}
-      - name: rhwp source
-        if: steps.rhwp-source.outputs.cache-hit != 'true'
-        run: node tools/build-rhwp-core.mjs --source-only
-      - name: Is the EPUB gate in this tree
-        id: has
-        run: |
-          if [ -f tools/epub-diff/package.json ]; then echo "gate=true" >> "$GITHUB_OUTPUT"; else echo "gate=false" >> "$GITHUB_OUTPUT"; fi
-      - name: Rust toolchain with the WASI target
-        if: steps.has.outputs.gate == 'true'
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustup target add wasm32-wasip1
-      - uses: actions/cache@v4
-        if: steps.has.outputs.gate == 'true'
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            crates/target
-          key: seuoffice-epub-${{ runner.os }}-${{ hashFiles('crates/Cargo.lock') }}
-          restore-keys: seuoffice-fileparse-${{ runner.os }}-
-      - uses: actions/setup-node@v4
-        if: steps.has.outputs.gate == 'true'
-        with:
-          node-version: 22
-          cache: npm
-      - name: Install
-        if: steps.has.outputs.gate == 'true'
-        run: npm ci
-      - name: EPUB seeded faults
-        if: steps.has.outputs.gate == 'true'
-        run: npm --prefix tools/epub-diff run faults -- --shard ${{ matrix.shard }}/8
-      - name: Keep the EPUB fault evidence
-        if: always() && steps.has.outputs.gate == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: epub-faults-out-${{ matrix.shard }}
-          path: tools/epub-diff/out/faults-*/*.json
-          if-no-files-found: error
-
-  # vendor/rhwp-core is the wasm-bindgen build the desktop ships. A patch added
-  # to vendor/rhwp-core/patches changes it only once it is rebuilt: dispatch
-  # with rhwp_core, then commit the files of the artifact over vendor/rhwp-core.
-  rhwp_core:
-    if: ${{ inputs.rhwp_core }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      # the tag's rust-toolchain.toml picks the toolchain and wasm32-unknown-unknown
-      - name: wasm-pack 0.15.0
-        run: cargo install --locked wasm-pack --version 0.15.0
-      - name: Build vendor/rhwp-core
-        run: node tools/build-rhwp-core.mjs
-      - name: What was built
-        run: |
-          sha256sum vendor/rhwp-core/rhwp_bg.wasm
-          git diff --stat -- vendor/rhwp-core
-      - name: Keep the build
-        uses: actions/upload-artifact@v4
-        with:
-          name: rhwp-core
-          path: |
-            vendor/rhwp-core/rhwp.js
-            vendor/rhwp-core/rhwp.d.ts
-            vendor/rhwp-core/rhwp_bg.wasm
-            vendor/rhwp-core/rhwp_bg.wasm.d.ts
-            vendor/rhwp-core/LICENSE
-            vendor/rhwp-core/THIRD_PARTY_LICENSES.md
-            vendor/rhwp-core/package.json
-          if-no-files-found: error
-
-  # The central process on Windows (decision 0030): the functions whose Rust
-  # reads the platform (the file identity of fs.statSync, the file error
-  # table of node-fs) against the TypeScript on the same machine. The Linux job compares everything else.
-  main-windows:
-    needs: quick
-    if: ${{ !inputs.faults && !inputs.odt_faults && !inputs.rhwp_core }}
-    runs-on: windows-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Is the central process in this tree
-        id: has
-        shell: bash
-        run: |
-          if [ -f crates/main-core/Cargo.toml ]; then echo "main=true" >> "$GITHUB_OUTPUT"; else echo "main=false" >> "$GITHUB_OUTPUT"; fi
-
-      - uses: actions/setup-node@v4
-        if: steps.has.outputs.main == 'true'
-        with:
-          node-version: 22
-          cache: npm
-
-      - uses: actions/cache@v4
-        if: steps.has.outputs.main == 'true'
-        id: rhwp-source
-        with:
-          path: crates/.rhwp-source
-          key: rhwp-source-${{ hashFiles('vendor/rhwp-core/**', 'tools/build-rhwp-core.mjs') }}
-      - name: rhwp source
-        if: steps.has.outputs.main == 'true' && steps.rhwp-source.outputs.cache-hit != 'true'
-        run: node tools/build-rhwp-core.mjs --source-only
-
-      - name: Rust toolchain
-        if: steps.has.outputs.main == 'true'
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-
-      # node_fs's Windows error table against libuv's own switch, every case
-      - name: Error table against libuv
-        if: steps.has.outputs.main == 'true'
-        working-directory: crates
-        run: cargo test -p main-core --lib libuv_table
-
-      - name: Install
-        if: steps.has.outputs.main == 'true'
-        run: npm ci
-
-      - name: Central process comparison on Windows
-        if: steps.has.outputs.main == 'true'
-        shell: bash
-        run: |
-          mkdir -p tools/main-diff/out
-          # two runs, each its own filter; the second must not hide the first's failure
-          set +e
+          set -euo pipefail
+          out="$RUNNER_TEMP/system-webview-input"
+          mkdir -p "$out"
           status=0
-          npm --prefix tools/main-diff run gate -- --fn rename-validation.isSameFile --fn rename-validation.pdfSaveAsTarget --fn folder-files.plainFileIn.hardLinks --fn write-guard.appendData.hardLinks --show 40 2>&1 | tee tools/main-diff/out/gate.txt
-          [ "${PIPESTATUS[0]}" -eq 0 ] || status=1
-          npm --prefix tools/main-diff run gate -- --group node-fs --show 40 2>&1 | tee tools/main-diff/out/gate-node-fs.txt
-          [ "${PIPESTATUS[0]}" -eq 0 ] || status=1
-          exit $status
-
-      - name: Keep the Windows comparison
-        if: ${{ always() && steps.has.outputs.main == 'true' }}
-        uses: actions/upload-artifact@v4
+          python3 - <<'PY' > "$out/stdout.log" 2> "$out/stderr.log" || status=$?
+          import hashlib, json, os, pathlib, subprocess
+          source = pathlib.Path('source')
+          definition = pathlib.Path('definition')
+          out = pathlib.Path(os.environ['RUNNER_TEMP']) / 'system-webview-input'
+          def git(root, *args):
+              return subprocess.check_output(['git', '-C', str(root), *args])
+          def tree(root):
+              result = {}
+              for row in git(root, 'ls-tree', '-rz', 'HEAD').split(b'\0'):
+                  if row:
+                      left, path = row.split(b'\t')
+                      mode, kind, oid = left.decode().split()
+                      result[path.decode()] = (mode, kind, oid)
+              return result
+          sha = os.environ['SOURCE_SHA']
+          base = os.environ['SOURCE_PARENT']
+          assert git(source, 'rev-parse', 'HEAD').decode().strip() == sha
+          assert git(source, 'rev-parse', 'HEAD^').decode().strip() == os.environ['SOURCE_ACTUAL_PARENT']
+          assert git(source, 'merge-base', 'HEAD', base).decode().strip() == base
+          assert git(definition, 'rev-parse', 'HEAD').decode().strip() == os.environ['GITHUB_SHA']
+          assert git(definition, 'rev-parse', 'HEAD^').decode().strip() == sha
+          assert git(definition, 'merge-base', 'HEAD', base).decode().strip() == base
+          probe_path = pathlib.Path('crates/shell/ci/system-webview-probe-input.json')
+          probe_bytes = (definition / probe_path).read_bytes()
+          (out / probe_path.name).write_bytes(probe_bytes)
+          assert hashlib.sha256(probe_bytes).hexdigest() == os.environ['PROBE_MANIFEST_SHA256']
+          probe = json.loads(probe_bytes)
+          assert probe['sourceSha'] == probe['definitionParent'] == sha
+          assert probe['sourceActualParent'] == os.environ['SOURCE_ACTUAL_PARENT']
+          assert probe['frozenPolicyBase'] == probe['frozenPrepush']['base'] == base
+          assert probe['frozenPrepush']['sha256'] == os.environ['PREPUSH_SHA256']
+          source_map_path = pathlib.Path('crates/shell/ci/system-webview-source-manifest.json')
+          assert probe['sourceManifest']['path'] == source_map_path.as_posix()
+          source_map_bytes = (definition / source_map_path).read_bytes()
+          (out / source_map_path.name).write_bytes(source_map_bytes)
+          assert hashlib.sha256(source_map_bytes).hexdigest() == os.environ['SOURCE_MANIFEST_SHA256'] == probe['sourceManifest']['sha256']
+          manifest = json.loads(source_map_bytes)
+          assert manifest['head'] == base and manifest['sourceParent'] == os.environ['SOURCE_ACTUAL_PARENT']
+          assert manifest['entryCount'] == probe['sourceManifest']['entries'] == 1557
+          assert manifest['composedFrom']['source'] == os.environ['SOURCE_ACTUAL_PARENT']
+          assert manifest['composedFrom']['manifestSha256'] == 'e37abf24b42084508ecaca527e37fd9b23f9c2e4663e6eea053b59a4653e8244'
+          assert manifest['oldFailureRun'] == 43772616016
+          entries = {entry['path']: entry for entry in manifest['entries']}
+          changed_source = git(source, 'diff', '--name-only', '-z', base, 'HEAD').decode().split('\0')[:-1]
+          assert len(manifest['entries']) == len(entries) == len(changed_source) == 1557
+          assert set(changed_source) == set(entries)
+          source_delta = git(source, 'diff', '--name-only', '-z', os.environ['SOURCE_ACTUAL_PARENT'], 'HEAD').decode().split('\0')[:-1]
+          assert len(source_delta) == 4 and set(source_delta) == set(manifest['composedFrom']['deltaPaths'])
+          source_tree, definition_tree = tree(source), tree(definition)
+          blobs = deleted = 0
+          for path, entry in entries.items():
+              if entry['kind'] == 'delete':
+                  assert path not in source_tree and not (source / path).exists(), path
+                  deleted += 1
+                  continue
+              assert entry['kind'] == 'file', path
+              mode, kind, oid = source_tree[path]
+              assert kind == 'blob' and mode == ('100755' if int(entry['mode'], 8) & 0o111 else '100644'), path
+              data = git(source, 'cat-file', 'blob', oid)
+              assert len(data) == entry['size'] and hashlib.sha256(data).hexdigest() == entry['sha256'], path
+              assert (source / path).read_bytes() == data, path
+              blobs += 1
+          assert blobs + deleted == 1557
+          assert len(probe['scripts']) == len({entry['path'] for entry in probe['scripts']}) == 8
+          expected = {'.github/workflows/seuoffice-rust.yml', probe_path.as_posix(), source_map_path.as_posix()}
+          for entry in probe['scripts']:
+              path = entry['path']
+              assert path == 'tools/system-webview-probe/' + entry['packetPath'] and '..' not in pathlib.PurePosixPath(path).parts
+              assert entry['mode'] == '100644'
+              data = (definition / path).read_bytes()
+              assert len(data) == entry['bytes'] and hashlib.sha256(data).hexdigest() == entry['sha256'], path
+              expected.add(path)
+          assert len(expected) == 11
+          records = []
+          expected_changes = set()
+          for path in sorted(expected):
+              mode, kind, oid = definition_tree[path]
+              assert mode == '100644' and kind == 'blob', path
+              data = git(definition, 'cat-file', 'blob', oid)
+              assert (definition / path).read_bytes() == data, path
+              before = source_tree.get(path)
+              preimage = None
+              if before is not None:
+                  old = git(source, 'cat-file', 'blob', before[2])
+                  preimage = {'mode': before[0], 'gitBlob': before[2], 'bytes': len(old), 'sha256': hashlib.sha256(old).hexdigest()}
+              if before != definition_tree[path]:
+                  expected_changes.add(path)
+              records.append({'path': path, 'mode': mode, 'gitBlob': oid, 'bytes': len(data),
+                              'sha256': hashlib.sha256(data).hexdigest(), 'preimage': preimage,
+                              'changedFromExactSource': path in expected_changes})
+          changed_definition = git(definition, 'diff', '--name-only', '-z', sha, 'HEAD').decode().split('\0')[:-1]
+          assert len(changed_definition) == len(expected_changes) and set(changed_definition) == expected_changes
+          for root in (source, definition):
+              for path, expected_sha in ((probe['inheritedCanonicalRhwp']['path'], os.environ['RHWP_TOOL_SHA256']),
+                                         (probe['frozenPrepush']['path'], os.environ['PREPUSH_SHA256'])):
+                  assert hashlib.sha256((root / path).read_bytes()).hexdigest() == expected_sha, (str(root), path)
+          assert probe['inheritedCanonicalRhwp']['sha256'] == os.environ['RHWP_TOOL_SHA256']
+          assert source_tree['tools/build-rhwp-core.mjs'] == definition_tree['tools/build-rhwp-core.mjs']
+          receipt = {'inputAudit': 'PASS', 'source': sha, 'sourceActualParent': os.environ['SOURCE_ACTUAL_PARENT'],
+                     'definition': os.environ['GITHUB_SHA'], 'definitionParent': sha, 'frozenPolicyBase': base,
+                     'sourceManifestSha256': os.environ['SOURCE_MANIFEST_SHA256'], 'sourceEntries': 1557,
+                     'sourceBlobs': blobs, 'sourceDeletes': deleted, 'sourceDeltaPaths': source_delta,
+                     'probeManifestSha256': os.environ['PROBE_MANIFEST_SHA256'],
+                     'declaredPostimagePaths': 11, 'actualChangedPathCount': len(changed_definition),
+                     'actualChangedPaths': changed_definition, 'definitionInputs': records,
+                     'rhwpInheritedUnchanged': True, 'wholeCrate': 'NOT_CHECKED', 'app': 'NOT_CHECKED',
+                     'candidate': 'NOT_CHECKED', 'package': 'NOT_CHECKED', 'nativeAuthority': 'NOT_CHECKED',
+                     'uiRelease': 'NOT_CHECKED', 'productGreen': False}
+          (out / 'input-binding.json').write_text(json.dumps(receipt, indent=2) + '\n')
+          print(json.dumps(receipt, indent=2))
+          PY
+          cat "$out/stdout.log" "$out/stderr.log"
+          printf '%s\n' "$status" > "$out/status.txt"
+          exit "$status"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
         with:
-          name: main-diff-windows-out
-          path: tools/main-diff/out
-          if-no-files-found: ignore
-
-  # Fault injection for the central process (decision 0030): each fault of
-  # the file rebuilds the Node-API addon and runs the comparison of its
-  # functions, which must then differ.
-  main-faults:
-    needs: quick
-    if: ${{ inputs.main_faults && !inputs.rhwp_core }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
+          name: system-webview-input-${{ github.run_id }}
+          path: ${{ runner.temp }}/system-webview-input
+          if-no-files-found: error
+  native-diagnostic:
+    name: Actual macOS WKWebView and locked Electron diagnostic, not app verification
+    needs: input-audit
+    runs-on: macos-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Initialize diagnostic-only execution state
+        run: |
+          mkdir -p "$RUNNER_TEMP/system-webview-diagnostic"
+          printf '%s\n' '{"preparation":"NOT_RUN","nativeProbe":"NOT_RUN","wholeCrate":"NOT_CHECKED","app":"NOT_CHECKED","package":"NOT_CHECKED","nativeAuthority":"NOT_CHECKED","uiRelease":"NOT_CHECKED","productGreen":false}' > "$RUNNER_TEMP/system-webview-diagnostic/state.json"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        id: source-checkout
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: source
+          fetch-depth: 7
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        id: definition-checkout
+        with:
+          ref: ${{ github.sha }}
+          path: definition
+          fetch-depth: 8
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        id: python
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        id: node
+        with:
+          node-version-file: source/.nvmrc
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        id: wasm-toolchain
+        with:
+          toolchain: 1.95.0
+          targets: wasm32-wasip1
+      - name: Bind exact native inputs and actual tool identities
+        id: identity
+        working-directory: source
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/system-webview-diagnostic/preparation/identity"
+          mkdir -p "$log"
+          status=0
+          bash -e -o pipefail <<'PREPARATION_COMMAND' > "$log/stdout.log" 2> "$log/stderr.log" || status=$?
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE/definition" rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE/definition" rev-parse HEAD^)" = "$SOURCE_SHA"
+          mkdir -p "$RUNNER_TEMP/system-webview-diagnostic/inputs"
+          cp "$GITHUB_WORKSPACE/definition/crates/shell/ci/system-webview-source-manifest.json" "$RUNNER_TEMP/system-webview-diagnostic/inputs/"
+          cp "$GITHUB_WORKSPACE/definition/crates/shell/ci/system-webview-probe-input.json" "$RUNNER_TEMP/system-webview-diagnostic/inputs/"
+          printf 'source=%s\ndefinition=%s\n' "$SOURCE_SHA" "$GITHUB_SHA"
+          printf '%s  %s\n' "$RHWP_TOOL_SHA256" tools/build-rhwp-core.mjs | shasum -a 256 -c -
+          python3 -c 'import sys; assert sys.version_info[:2] == (3, 12); print(sys.version); print(sys.executable)'
+          node --version
+          PREPARATION_COMMAND
+          cat "$log/stdout.log" "$log/stderr.log"
+          printf '%s\n' "$status" > "$log/status.txt"
+          exit "$status"
+      - name: Install only fully hashed binary probe dependencies
+        id: binary-requirements
+        working-directory: source
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/system-webview-diagnostic/preparation/binary-requirements"
+          mkdir -p "$log"
+          status=0
+          bash -e -o pipefail <<'PREPARATION_COMMAND' > "$log/stdout.log" 2> "$log/stderr.log" || status=$?
+          set -euo pipefail
+          python3 -m pip install --require-hashes --only-binary=:all: -r "$GITHUB_WORKSPACE/definition/tools/system-webview-probe/requirements.txt"
+          python3 -m pip list --format=json
+          PREPARATION_COMMAND
+          cat "$log/stdout.log" "$log/stderr.log"
+          printf '%s\n' "$status" > "$log/status.txt"
+          exit "$status"
+      - name: Install actual locked workspace dependencies without lifecycle scripts
+        id: npm-ci
+        working-directory: source
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/system-webview-diagnostic/preparation/npm-ci"
+          mkdir -p "$log"
+          status=0
+          bash -e -o pipefail <<'PREPARATION_COMMAND' > "$log/stdout.log" 2> "$log/stderr.log" || status=$?
+          set -euo pipefail
+          npm ci --ignore-scripts
+          PREPARATION_COMMAND
+          cat "$log/stdout.log" "$log/stderr.log"
+          printf '%s\n' "$status" > "$log/status.txt"
+          exit "$status"
+      - name: Prepare official inherited RHWP source and actual locked office WASM
+        id: wasm
+        working-directory: source
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/system-webview-diagnostic/preparation/wasm"
+          mkdir -p "$log"
+          status=0
+          bash -e -o pipefail <<'PREPARATION_COMMAND' > "$log/stdout.log" 2> "$log/stderr.log" || status=$?
+          set -euo pipefail
+          node tools/build-rhwp-core.mjs --source-only
+          node crates/office-wasm/build.mjs
+          test -s crates/target/wasm32-wasip1/release/office_wasm.wasm
+          PREPARATION_COMMAND
+          cat "$log/stdout.log" "$log/stderr.log"
+          printf '%s\n' "$status" > "$log/status.txt"
+          exit "$status"
+      - name: Build only the current docs renderer with its canonical Vite config
+        id: docs-renderer
+        working-directory: source
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/system-webview-diagnostic/preparation/docs-renderer"
+          mkdir -p "$log"
+          status=0
+          bash -e -o pipefail <<'PREPARATION_COMMAND' > "$log/stdout.log" 2> "$log/stderr.log" || status=$?
+          set -euo pipefail
+          node node_modules/vite/bin/vite.js build --config apps/docs/vite.web.config.ts
+          test -s apps/web/dist/docs/index.html
+          PREPARATION_COMMAND
+          cat "$log/stdout.log" "$log/stderr.log"
+          printf '%s\n' "$status" > "$log/status.txt"
+          exit "$status"
+      - name: Download the exact locked Electron only for this owned install
+        id: electron-install
+        working-directory: source
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/system-webview-diagnostic/preparation/electron-install"
+          mkdir -p "$log"
+          status=0
+          bash -e -o pipefail <<'PREPARATION_COMMAND' > "$log/stdout.log" 2> "$log/stderr.log" || status=$?
+          set -euo pipefail
+          node - <<'JS'
+          const lock = require('./package-lock.json').packages['node_modules/electron']
+          const installed = require('./node_modules/electron/package.json')
+          if (lock.version !== '43.8.3' || installed.version !== lock.version || !lock.integrity) {
+            throw new Error('Exact locked Electron 43.8.3 input is required')
+          }
+          console.log(JSON.stringify({ version: lock.version, integrity: lock.integrity, resolved: lock.resolved }))
+          JS
+          env -u ELECTRON_SKIP_BINARY_DOWNLOAD node node_modules/electron/install.js
+          test -x node_modules/electron/dist/Electron.app/Contents/MacOS/Electron
+          PREPARATION_COMMAND
+          cat "$log/stdout.log" "$log/stderr.log"
+          printf '%s\n' "$status" > "$log/status.txt"
+          exit "$status"
+      - name: Observe each actual native engine once with owned synthetic inputs
+        id: native-probe
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess, sys
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'system-webview-diagnostic'
+          workspace = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+          repo = (workspace / 'source').resolve()
+          probe = (workspace / 'definition/tools/system-webview-probe').resolve()
+          output = root / 'probe-output'
+          if output.exists():
+              raise FileExistsError('The probe output must be new; no deletion or reuse')
+          command = [sys.executable, str(probe / 'run_probe.py'), '--repo', str(repo), '--probe', str(probe),
+                     '--electron', str(repo / 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'),
+                     '--output', str(output)]
+          record = {'state': 'RUNNING', 'command': command, 'returncode': None, 'productGreen': False}
+          record_path = root / 'probe-invocation.json'
+          record_path.write_text(json.dumps(record, indent=2) + '\n')
+          try:
+              with (root / 'probe.stdout').open('wb') as stdout, (root / 'probe.stderr').open('wb') as stderr:
+                  result = subprocess.run(command, cwd=repo, stdout=stdout, stderr=stderr)
+          except OSError as error:
+              record.update(state='LAUNCH_FAILED', launchError=str(error))
+              record_path.write_text(json.dumps(record, indent=2) + '\n')
+              raise
+          record.update(state='COMPLETED' if result.returncode == 0 else 'FAILED', returncode=result.returncode)
+          record_path.write_text(json.dumps(record, indent=2) + '\n')
+          print((root / 'probe.stdout').read_text(errors='replace'))
+          print((root / 'probe.stderr').read_text(errors='replace'), file=sys.stderr)
+          sys.exit(result.returncode)
+          PY
+      - name: Preserve actual partial observation and never infer product success
+        if: always()
+        env:
+          PROBE_OUTCOME: ${{ steps.native-probe.outcome }}
+          STEP_OUTCOMES: ${{ toJSON(steps) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, sys
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'system-webview-diagnostic'
+          root.mkdir(parents=True, exist_ok=True)
+          path = root / 'probe-invocation.json'
+          invocation = json.loads(path.read_text()) if path.exists() else {'state': 'NOT_RUN', 'returncode': None}
+          comparison_path = root / 'probe-output/comparison.json'
+          comparison = json.loads(comparison_path.read_text()) if comparison_path.exists() else None
+          electron_result_path = root / 'probe-output/electron/result.json'
+          electron_result = json.loads(electron_result_path.read_text()) if electron_result_path.exists() else {}
+          observed_electron = electron_result.get('screenshot', {}).get('electron')
+          preparation = {path.parent.name: path.read_text().strip() for path in sorted((root / 'preparation').glob('*/status.txt'))}
+          complete = (os.environ['PROBE_OUTCOME'] == 'success' and invocation.get('returncode') == 0
+                      and comparison is not None and comparison['state'] == 'MATCH'
+                      and comparison['productGreen'] is False and observed_electron == '43.8.3')
+          state = {'kind': 'throwaway-current-renderer-native-engine-diagnostic',
+                   'source': os.environ['SOURCE_SHA'], 'definition': os.environ['GITHUB_SHA'],
+                   'preparation': preparation, 'stepOutcomes': json.loads(os.environ['STEP_OUTCOMES']),
+                   'nativeProbe': invocation, 'comparison': comparison,
+                   'observedElectronVersion': observed_electron,
+                   'state': 'DIAGNOSTIC_MATCH' if complete else 'PREPARATION_BLOCKED_NATIVE_NOT_RUN' if invocation['state'] == 'NOT_RUN' else 'DIAGNOSTIC_NON_SUCCESS_SEE_RAW_EVIDENCE',
+                   'printMode': 'diagnostic-cloned-dom', 'wholeCrate': 'NOT_CHECKED', 'app': 'NOT_CHECKED',
+                   'candidate': 'NOT_CHECKED', 'package': 'NOT_CHECKED', 'nativeAuthority': 'NOT_CHECKED',
+                   'uiRelease': 'NOT_CHECKED', 'privateCefAbi': 'NOT_CHECKED', 'productGreen': False,
+                   'limits': 'One synthetic current-renderer document per real engine; no full-web, native product, platform selection or release acceptance claim.'}
+          (root / 'state.json').write_text(json.dumps(state, indent=2) + '\n')
+          print(json.dumps(state, indent=2))
+          sys.exit(0 if complete else 1)
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: system-webview-native-${{ github.run_id }}
+          include-hidden-files: true
+          path: |
+            ${{ runner.temp }}/system-webview-diagnostic
+            !${{ runner.temp }}/system-webview-diagnostic/probe-output/site/**
+            !${{ runner.temp }}/system-webview-diagnostic/probe-output/*/electron-user-data/**
+          if-no-files-found: error
+  genuine-policy:
+    name: Required unchanged prepush, original full scope
+    needs: input-audit
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON('{"1":[0],"2":[0,1],"4":[0,1,2,3],"8":[0,1,2,3,4,5,6,7]}')[inputs.fault_shards || '1'] }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - uses: actions/cache@v4
-        id: rhwp-source
-        with:
-          path: crates/.rhwp-source
-          key: rhwp-source-${{ hashFiles('vendor/rhwp-core/**', 'tools/build-rhwp-core.mjs') }}
-      - name: rhwp source
-        if: steps.rhwp-source.outputs.cache-hit != 'true'
-        run: node tools/build-rhwp-core.mjs --source-only
-
-      - name: Install
-        run: npm ci
-
-      - name: Faults
+        scope: [source, definition]
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    defaults:
+      run:
         shell: bash
-        env:
-          FAULTS: ${{ inputs.main_faults }}
-          FAULT_SHARD: ${{ matrix.shard }}/${{ inputs.fault_shards || '1' }}
-        run: |
-          mkdir -p tools/main-diff/out
-          node tools/main-diff/faults.mjs "$FAULTS" 2>&1 | tee tools/main-diff/out/faults.txt
-
-      - name: Keep the result
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        working-directory: ${{ matrix.scope }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          name: main-diff-faults-${{ matrix.shard }}
-          path: tools/main-diff/out
-          if-no-files-found: ignore
+          ref: ${{ inputs.source_sha }}
+          path: source
+          fetch-depth: 7
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          path: definition
+          fetch-depth: 8
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: source/.nvmrc
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+          targets: wasm32-wasip1
+      - name: Bind original criterion and initialize policy receipt
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/whole-app-policy"
+          printf 'PREPARATION/INPUT/BLOCKED\nprepush=NOT_RUN\nproductGreen=false\n' > "$RUNNER_TEMP/whole-app-policy/status.txt"
+          test "$(git merge-base HEAD "$SOURCE_PARENT")" = "$SOURCE_PARENT"
+          printf '%s  %s\n' 64c82ffe03995e6a518998c90ae354920473d48e0f35caaa01afadd5b938c4d6 tools/prepush.mjs | sha256sum -c -
+          printf '%s  %s\n' f3a8f06da1371947aaef149e73d0810dd69fca94b760d3d8cca33d711e5c46f1 tools/build-rhwp-core.mjs | sha256sum -c -
+          printf 'scope=%s\nhead=%s\npolicy_base=%s\n' '${{ matrix.scope }}' "$(git rev-parse HEAD)" "$SOURCE_PARENT" > "$RUNNER_TEMP/whole-app-policy/identity.txt"
+      - name: Install exact actionlint for the canonical workflow check
+        run: |
+          set -euo pipefail
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Preserve actual Cargo locks, input
+        env:
+          LOCK_STAGE: input
+          LOCK_OUTPUT: ${{ runner.temp }}/whole-app-policy/locks
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
+          out = pathlib.Path(os.environ['LOCK_OUTPUT']) / os.environ['LOCK_STAGE']
+          out.mkdir(parents=True, exist_ok=True)
+          records = []
+          for relative in ('crates/Cargo.lock', 'crates/shell/Cargo.lock'):
+              source = pathlib.Path(relative)
+              record = {'path': relative, 'exists': source.is_file()}
+              if source.is_file():
+                  data = source.read_bytes()
+                  target = out / relative
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  target.write_bytes(data)
+                  record.update(size=len(data), sha256=hashlib.sha256(data).hexdigest())
+              records.append(record)
+          (out / 'lock-receipt.json').write_text(json.dumps(records, indent=2) + '\n')
+          expected = {
+              'crates/Cargo.lock': '416faccdcdba0612e2b1b6833b09871fdc10102d4b0a35ec33bb12c87069bb04',
+              'crates/shell/Cargo.lock': 'ce74057ae77a5f395fde10eeb21e99da434c3947282e67457634022e0b8db9b3'}
+          mismatches = [record for record in records
+                        if not record['exists'] or record.get('sha256') != expected[record['path']]]
+          guard = {'state': 'INPUT/FAIL' if mismatches else 'FROZEN_INPUT_UNCHANGED',
+                   'stage': os.environ['LOCK_STAGE'], 'expected': expected, 'observed': records}
+          (out / 'input-admission.json').write_text(json.dumps(guard, indent=2) + '\n')
+          if mismatches:
+              raise RuntimeError('frozen S5 lock input changed; raw bytes retained: ' + json.dumps(mismatches))
+          PY
+      - name: Canonical full-scope prepush prerequisites
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/whole-app-policy/preparation/policy-prerequisites"
+          mkdir -p "$log"
+          status=0
+          bash -e -o pipefail <<'PREPARATION_COMMAND' > "$log/stdout.log" 2> "$log/stderr.log" || status=$?
+          set -euo pipefail
+          npm ci --ignore-scripts 2>&1 | tee "$RUNNER_TEMP/whole-app-policy/npm-ci.log"
+          node tools/build-rhwp-core.mjs --source-only 2>&1 | tee "$RUNNER_TEMP/whole-app-policy/rhwp-source.log"
+          test -f crates/.rhwp-source/v0.9.0/Cargo.toml
+          test "$(git -C crates/.rhwp-source/v0.9.0 rev-parse HEAD)" = c9095c5f67632e6721e800ccc7fb43ea49d26682
+          actionlint -version
+          PREPARATION_COMMAND
+          cat "$log/stdout.log" "$log/stderr.log"
+          printf '%s\n' "$status" > "$log/status.txt"
+          exit "$status"
+      - name: Build the actual canonical WASM prerequisite for genuine prepush
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/whole-app-policy"
+          status=0
+          npm run build:wasm > "$out/build-wasm.stdout" 2> "$out/build-wasm.stderr" || status=$?
+          cat "$out/build-wasm.stdout" "$out/build-wasm.stderr"
+          printf '%s\n' "$status" > "$out/build-wasm-status.txt"
+          exit "$status"
+      - name: Run unchanged genuine prepush on the entire original delta
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/whole-app-policy"
+          status=0
+          node tools/prepush.mjs --base "$SOURCE_PARENT" > "$out/prepush.stdout" 2> "$out/prepush.stderr" || status=$?
+          cat "$out/prepush.stdout" "$out/prepush.stderr"
+          printf '%s\n' "$status" > "$out/prepush-status.txt"
+          if [ "$status" -eq 0 ]; then
+            printf 'POLICY/PASS\nproductGreen=false\nconsumer=NOT_RUN\n' > "$out/status.txt"
+          else
+            printf 'POLICY/FAIL\nproductGreen=false\nconsumer=NOT_RUN\n' > "$out/status.txt"
+          fi
+          exit "$status"
+      - name: Preserve actual Cargo locks, after
+        if: always()
+        env:
+          LOCK_STAGE: after
+          LOCK_OUTPUT: ${{ runner.temp }}/whole-app-policy/locks
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
+          out = pathlib.Path(os.environ['LOCK_OUTPUT']) / os.environ['LOCK_STAGE']
+          out.mkdir(parents=True, exist_ok=True)
+          records = []
+          for relative in ('crates/Cargo.lock', 'crates/shell/Cargo.lock'):
+              source = pathlib.Path(relative)
+              record = {'path': relative, 'exists': source.is_file()}
+              if source.is_file():
+                  data = source.read_bytes()
+                  target = out / relative
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  target.write_bytes(data)
+                  record.update(size=len(data), sha256=hashlib.sha256(data).hexdigest())
+              records.append(record)
+          (out / 'lock-receipt.json').write_text(json.dumps(records, indent=2) + '\n')
+          expected = {
+              'crates/Cargo.lock': '416faccdcdba0612e2b1b6833b09871fdc10102d4b0a35ec33bb12c87069bb04',
+              'crates/shell/Cargo.lock': 'ce74057ae77a5f395fde10eeb21e99da434c3947282e67457634022e0b8db9b3'}
+          mismatches = [record for record in records
+                        if not record['exists'] or record.get('sha256') != expected[record['path']]]
+          guard = {'state': 'INPUT/FAIL' if mismatches else 'FROZEN_INPUT_UNCHANGED',
+                   'stage': os.environ['LOCK_STAGE'], 'expected': expected, 'observed': records}
+          (out / 'input-admission.json').write_text(json.dumps(guard, indent=2) + '\n')
+          if mismatches:
+              raise RuntimeError('frozen S5 lock input changed; raw bytes retained: ' + json.dumps(mismatches))
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: whole-app-policy-${{ matrix.scope }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/whole-app-policy
+          if-no-files-found: error
