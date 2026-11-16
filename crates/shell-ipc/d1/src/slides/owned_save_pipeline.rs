@@ -798,8 +798,15 @@ impl App {
                 let s = state
                     .slot_mut(write.scope.slot)
                     .ok_or_else(|| thrown("no file open"))?;
-                self.follow_template(s, &write.previous, &write.path);
-                s.core.path = write.path.clone();
+                // first save: the session already has its path when the hook runs; a
+                // Save As hands over the old one (slides-main.ts: pick, then follow)
+                if write.previous.is_empty() {
+                    s.core.path = write.path.clone();
+                    self.follow_template(s, &write.previous, &write.path);
+                } else {
+                    self.follow_template(s, &write.previous, &write.path);
+                    s.core.path = write.path.clone();
+                }
                 s.disk_state = disk;
                 s.ask_path_on_first_save = false;
                 if s.core.meta_rev == write.meta_rev {

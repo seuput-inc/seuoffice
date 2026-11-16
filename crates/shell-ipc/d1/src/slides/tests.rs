@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use shell_contract::editors::{DocumentEditors, SaveMode};
 use shell_contract::ipc::Target;
-use shell_contract::runtime::{Thread, Workers};
+use shell_contract::runtime::Thread;
 use shell_contract::{IpcValue, Surface, ViewId};
 
 use crate::testkit::{Kit, TestRegistry, registered, temp_dir};
@@ -74,11 +74,8 @@ impl CoreThread {
             let _finish = finish;
             job()
         });
-        loop {
-            match receive.recv().expect("the worker keeps its pump open") {
-                CoreMessage::Run(job) => job(),
-                CoreMessage::Done => break,
-            }
+        while let CoreMessage::Run(job) = receive.recv().expect("the worker keeps its pump open") {
+            job()
         }
         *self.pump.lock().unwrap() = previous;
         while let Ok(CoreMessage::Run(job)) = receive.try_recv() {
