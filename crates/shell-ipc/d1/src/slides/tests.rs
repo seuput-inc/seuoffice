@@ -9,8 +9,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use shell_contract::editors::{DocumentEditors, SaveMode};
-use shell_contract::runtime::{Thread, Workers};
 use shell_contract::ipc::Target;
+use shell_contract::runtime::{Thread, Workers};
 use shell_contract::{IpcValue, Surface, ViewId};
 
 use crate::testkit::{Kit, TestRegistry, registered, temp_dir};
@@ -98,8 +98,7 @@ struct WorkerThreads {
 impl shell_contract::runtime::Workers for WorkerThreads {
     fn spawn(&self, job: Job) {
         let core = self.core.clone();
-        self.held
-            .spawn(Box::new(move || core.run_as_worker(job)));
+        self.held.spawn(Box::new(move || core.run_as_worker(job)));
     }
 }
 
