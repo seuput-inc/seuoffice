@@ -65,11 +65,11 @@ impl OrdinaryActorStages {
         &self,
         view: ViewId,
     ) -> Option<Rc<dyn shell_ipc_w::tabs::host::EditorSeedRollback>> {
-        self.slides.as_ref().map(
-            |_| -> Rc<dyn shell_ipc_w::tabs::host::EditorSeedRollback> {
+        self.slides
+            .as_ref()
+            .map(|_| -> Rc<dyn shell_ipc_w::tabs::host::EditorSeedRollback> {
                 Rc::new(hooks::SlidesActorRollback(view))
-            },
-        )
+            })
     }
     fn with_validated(
         &mut self,
@@ -180,16 +180,6 @@ impl Hooks {
                 cleanup: main_core::shell::tab_manager::ViewCreationCleanupState::Complete,
             })),
         }
-    }
-
-    fn prepare_editor_view(
-        &self,
-        spec: &EditorViewSpec<'_>,
-        deferred: bool,
-        prepare: impl FnOnce(ViewId) -> Result<(), String>,
-        actors: &mut OrdinaryActorStages,
-    ) -> TabResult<accepted::PreparedEditorView> {
-        self.prepare_editor_view_impl(spec, deferred, prepare, None, None, false, None, actors)
     }
 
     fn prepare_editor_view_impl(
@@ -323,7 +313,7 @@ impl Hooks {
             return Err(TabError(error));
         }
         let prepare_docs_later = docs_prepared.is_some();
-        let mut docs_lease = None;
+        let docs_lease = None;
         let mut slides_lease = None;
         let mut asset_lease = None;
         let tracked = (|| -> TabResult<()> {
@@ -346,7 +336,7 @@ impl Hooks {
                 return Ok(());
             }
             match spec {
-                EditorViewSpec::Docs { path } => {
+                EditorViewSpec::Docs { .. } => {
                     let editor = self.editor::<shell_ipc_d2::docs::editors::DocsEditors>("Docs")?;
                     if let Some(slot) = docs_prepared.as_deref_mut() {
                         *slot = Some(
@@ -361,26 +351,11 @@ impl Hooks {
                                 .map_err(TabError)?,
                         );
                     } else {
-                        let lease = editor.register_view(view).map_err(TabError)?;
-                        self.cx
-                            .views
-                            .set_docs_media_lease(view, lease.clone())
-                            .map_err(TabError)?;
-                        let session = crate::host::document_assets::register_session(
-                            view,
-                            crate::host::document_assets::AssetKind::Docs,
-                        )
-                        .map_err(TabError)?;
-                        self.cx
-                            .views
-                            .set_docs_asset_session(view, session)
-                            .map_err(TabError)?;
-                        docs_lease = Some(lease);
-                        if let Some(path) =
-                            path.filter(|path| saved_input.is_none() && !path.is_empty())
-                        {
-                            editor.queue_open(view, path.to_owned());
-                        }
+                        // every Docs view is created through an owned path, which stages its
+                        // registration with the browser owner
+                        return Err(TabError(
+                            "A Docs view needs a prepared registration".into(),
+                        ));
                     }
                 }
                 EditorViewSpec::Sheets { .. } => {
@@ -1671,6 +1646,7 @@ impl WindowsHost for NativeWindows {
             participants,
             cancel,
             pending,
+            None,
             Box::new(move |frame: native_command::FrameCallback| {
                 create_cx
                     .windows

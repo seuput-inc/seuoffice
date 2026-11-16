@@ -4759,7 +4759,7 @@ fn generated_cleanup_ack_waits_for_original_completion() {
     let docs = t.editor().0.clone();
     let pending = Arc::new(Pending::default());
     let acked = Arc::new(AtomicUsize::new(0));
-    let completed: Rc<RefCell<Option<super::cleanup_mailbox::Finished>>> =
+    let completed: Rc<RefCell<Option<crate::generated_mailbox::Finished>>> =
         Rc::new(RefCell::new(None));
     let captured = completed.clone();
     let ticket = super::cleanup_mailbox::begin(

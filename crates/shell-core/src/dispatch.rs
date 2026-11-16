@@ -118,6 +118,7 @@ impl Dispatcher {
     /// whichever thread the handler answers on: for `invoke` the shell puts
     /// it on the view's stream, for `send` it logs an error, for `sendSync`
     /// it unblocks the renderer.
+    #[allow(clippy::too_many_arguments)]
     pub fn dispatch(
         &self,
         sender: Sender,

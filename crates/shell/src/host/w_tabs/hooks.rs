@@ -820,11 +820,12 @@ impl Hooks {
                 }
                 match result {
                     Err(error) => {
-                        let completion: Box<dyn FnOnce(Result<(), String>)> = Box::new(move |result: Result<(), String>| {
-                            done(Err(result.err().unwrap_or_else(|| {
-                                "Recovery failure unexpectedly succeeded".into()
-                            })));
-                        });
+                        let completion: Box<dyn FnOnce(Result<(), String>)> =
+                            Box::new(move |result: Result<(), String>| {
+                                done(Err(result.err().unwrap_or_else(|| {
+                                    "Recovery failure unexpectedly succeeded".into()
+                                })));
+                            });
                         match error.cleanup {
                             shell_ipc_w::tabs::host::ViewCreationCleanupState::Complete => {
                                 completed_attempt.fail_before_creation(error.message, completion)
@@ -3344,11 +3345,12 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
                 }
                 match result {
                     Err(error) => {
-                        let completion: Box<dyn FnOnce(Result<(), String>)> = Box::new(move |result: Result<(), String>| {
-                            done(Err(result.err().unwrap_or_else(|| {
-                                "Recovery failure unexpectedly succeeded".into()
-                            })));
-                        });
+                        let completion: Box<dyn FnOnce(Result<(), String>)> =
+                            Box::new(move |result: Result<(), String>| {
+                                done(Err(result.err().unwrap_or_else(|| {
+                                    "Recovery failure unexpectedly succeeded".into()
+                                })));
+                            });
                         match error.cleanup {
                             shell_ipc_w::tabs::host::ViewCreationCleanupState::Complete => {
                                 completed_attempt.fail_before_creation(error.message, completion)
@@ -3518,11 +3520,12 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
                 }
                 match result {
                     Err(error) => {
-                        let completion: Box<dyn FnOnce(Result<(), String>)> = Box::new(move |result: Result<(), String>| {
-                            done(Err(result.err().unwrap_or_else(|| {
-                                "Recovery failure unexpectedly succeeded".into()
-                            })));
-                        });
+                        let completion: Box<dyn FnOnce(Result<(), String>)> =
+                            Box::new(move |result: Result<(), String>| {
+                                done(Err(result.err().unwrap_or_else(|| {
+                                    "Recovery failure unexpectedly succeeded".into()
+                                })));
+                            });
                         match error.cleanup {
                             shell_ipc_w::tabs::host::ViewCreationCleanupState::Complete => {
                                 completed_attempt.fail_before_creation(error.message, completion)

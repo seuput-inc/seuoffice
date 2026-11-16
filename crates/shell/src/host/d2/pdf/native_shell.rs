@@ -204,7 +204,7 @@ impl PdfShell for Shell {
                 .ok_or("The tab manager is not available")?;
             tabs.set_document_file(view, &new);
             let home = provided
-                .all::<dyn shell_ipc_w::home_files::HomeFiles>()
+                .all::<shell_ipc_w::home_files::Home>()
                 .into_iter()
                 .next()
                 .ok_or("Home services are not available")?;

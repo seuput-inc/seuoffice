@@ -404,8 +404,9 @@ fn closed_native_actor_leaves_no_session_and_no_seed() {
             .is_err()
     );
     assert!(slides.has_session(target.view));
+    let receipt = close.closed();
     slides
-        .retire_native_closed(target.view, &close.closed())
+        .retire_native_closed(target.view, &receipt)
         .unwrap();
     assert!(!slides.has_session(target.view));
     assert!(
@@ -418,7 +419,7 @@ fn closed_native_actor_leaves_no_session_and_no_seed() {
     );
     assert!(
         slides
-            .retire_native_closed(target.view, &close.closed())
+            .retire_native_closed(target.view, &receipt)
             .is_err()
     );
 }
