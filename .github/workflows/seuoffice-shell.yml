@@ -363,6 +363,13 @@ jobs:
           esac
           test "${#SOURCE_SHA}" -eq 40 || { echo "source_sha must be 40 hex digits" >&2; exit 1; }
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      # crates/file-parse names rhwp by a path into crates/.rhwp-source, which cargo
+      # reads while it resolves
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      - name: rhwp source
+        run: node tools/build-rhwp-core.mjs --source-only
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: 1.95.0
