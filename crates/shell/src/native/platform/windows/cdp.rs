@@ -323,6 +323,21 @@ impl Cdp {
         );
     }
 
+    /// A classic script run for its effect: its completion value is not requested, so a value
+    /// that cannot be serialized (a DOM node) is no failure; a thrown exception is.
+    pub(super) fn run_script(&self, source: String, done: Reply<()>) {
+        let params = json!({
+            "expression": source,
+            "awaitPromise": false,
+            "returnByValue": false,
+        });
+        self.call(
+            "Runtime.evaluate",
+            &params,
+            Box::new(move |result| done(result.and_then(evaluated).map(|_| ()))),
+        );
+    }
+
     pub(super) fn print_pdf(&self, spec: &PdfSpec, done: Reply<Vec<u8>>) {
         self.call(
             "Page.printToPDF",

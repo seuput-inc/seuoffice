@@ -113,6 +113,17 @@ function main() {
     console.error(`cargo exited ${options.cargoStatus} without compiler errors: check the lock, the manifest and build scripts (see check.stderr).`);
     process.exit(2);
   }
+  // An error in a crate the shell depends on stops cargo before it compiles the shell, so
+  // no owned file was checked at all: that is not a pass.
+  const upstream = diagnostics.filter(
+    (entry) => entry.level === 'error' && !entry.file.startsWith(`${SHELL_DIR}/`),
+  );
+  if (options.cargoStatus !== null && options.cargoStatus !== 0 && upstream.length > 0) {
+    console.error(
+      `the shell was not compiled: ${upstream.length} error(s) in its dependencies, first ${upstream[0].file}:${upstream[0].line}`,
+    );
+    process.exit(3);
+  }
   if (owned.length > 0) process.exit(1);
 }
 

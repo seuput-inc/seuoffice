@@ -67,6 +67,10 @@ impl PageDriver for Platform {
         });
     }
 
+    fn run_script(webview: &Webview, source: String, done: Done<()>) {
+        on_core(webview, done, move |core, done| Cdp::new(core).run_script(source, done));
+    }
+
     fn capture_png(webview: &Webview, spec: CaptureSpec, done: Done<Vec<u8>>) {
         on_core(webview, done, move |core, done| Cdp::new(core).capture(spec, done));
     }

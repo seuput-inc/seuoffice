@@ -1,6 +1,7 @@
 //! `PrintOps` over `NSPrintOperation`: the system print dialog, and the file print job behind
 //! `print_pdf`. WebKit's `createPDF` only renders one page, so PDFs come from a print job
-//! that saves to a file, with the page ranges applied to the finished document.
+//! that saves to a file. A header and footer, which WebKit cannot print, are stamped onto the
+//! finished document (`header_footer.rs`); the page ranges are applied last.
 
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -19,9 +20,11 @@ use objc2_foundation::{NSCopying, NSObject, NSPoint, NSRect, NSSize, NSURL};
 use objc2_web_kit::{WKPreferences, WKWebView};
 use tauri::Webview;
 
+use super::header_footer::{self, Plan};
+use super::header_footer_view;
 use super::page::{Surface, object, run};
 use super::Platform;
-use crate::native::page::{Done, PageError, PdfSpec, parse_page_ranges};
+use crate::native::page::{Done, HeaderFooter, PageError, PdfSpec, parse_page_ranges};
 use crate::native::platform::{PrintOps, PrintOutcome};
 
 /// Points per inch: `NSPrintInfo` measures paper and margins in points.
@@ -171,12 +174,48 @@ fn slice_pages(bytes: Vec<u8>, ranges: &[RangeInclusive<u32>]) -> Result<Vec<u8>
     Ok(sliced)
 }
 
-/// The PDF of a print job to a scratch file, read back and removed. `header_footer` has no
-/// WebKit equivalent and is refused rather than dropped; so are tagged output and outlines.
+/// Stamp the templates onto the printed PDF `bytes` and keep the pages `ranges` names. The
+/// strips come from a hidden web view, so the answer arrives later on the UI thread.
+fn with_templates(
+    surface: &Surface<'_>,
+    spec: &PdfSpec,
+    templates: &HeaderFooter,
+    bytes: Vec<u8>,
+    ranges: Vec<RangeInclusive<u32>>,
+    done: Done<Vec<u8>>,
+) {
+    let mut document = match lopdf::Document::load_mem(&bytes) {
+        Ok(document) => document,
+        Err(error) => return done(Err(header_footer::failure(error))),
+    };
+    let context = header_footer_view::context(surface);
+    let planned = header_footer::plan(&document, spec.margins_in, templates, &ranges, &context);
+    let Plan { jobs, stamps } = match planned {
+        Ok(plan) => plan,
+        Err(error) => return done(Err(error)),
+    };
+    if jobs.is_empty() {
+        return done(slice_pages(bytes, &ranges));
+    }
+    header_footer_view::render(
+        surface.mtm,
+        jobs,
+        Box::new(move |rendered| {
+            let stamped = rendered.and_then(|strips| {
+                header_footer::apply(&mut document, &stamps, &strips)?;
+                let mut out = Vec::new();
+                document.save_to(&mut out).map_err(header_footer::failure)?;
+                Ok(out)
+            });
+            done(stamped.and_then(|out| slice_pages(out, &ranges)));
+        }),
+    );
+}
+
+/// The PDF of a print job to a scratch file, read back and removed. Tagged output and
+/// outlines have no WebKit equivalent and are refused rather than dropped.
 pub(super) fn save_pdf(surface: &Surface<'_>, spec: PdfSpec, done: Done<Vec<u8>>) {
-    let refused = if spec.header_footer.is_some() {
-        Some("headerTemplate")
-    } else if spec.tagged {
+    let refused = if spec.tagged {
         Some("generateTaggedPDF")
     } else if spec.outline {
         Some("generateDocumentOutline")
@@ -191,15 +230,20 @@ pub(super) fn save_pdf(surface: &Surface<'_>, spec: PdfSpec, done: Done<Vec<u8>>
         Err(error) => return done(Err(error)),
     };
     let target = scratch_file();
-    let outcome = print_to(surface, &spec, &target).and_then(|()| {
-        std::fs::read(&target)
-            .map_err(|error| {
-                PageError::Platform(format!("The printed PDF could not be read: {error}"))
-            })
-            .and_then(|bytes| slice_pages(bytes, &ranges))
+    let printed = print_to(surface, &spec, &target).and_then(|()| {
+        std::fs::read(&target).map_err(|error| {
+            PageError::Platform(format!("The printed PDF could not be read: {error}"))
+        })
     });
     let _ = std::fs::remove_file(&target);
-    done(outcome);
+    let bytes = match printed {
+        Ok(bytes) => bytes,
+        Err(error) => return done(Err(error)),
+    };
+    match &spec.header_footer {
+        Some(templates) => with_templates(surface, &spec, templates, bytes, ranges, done),
+        None => done(slice_pages(bytes, &ranges)),
+    }
 }
 
 struct Answer {

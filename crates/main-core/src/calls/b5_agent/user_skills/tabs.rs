@@ -66,6 +66,43 @@ fn fail(reason: &str) -> Failure {
     })
 }
 
+impl TabsHost {
+    /// the scenario's tab opening, answered at once
+    fn open_copy(&mut self, copy: &TemplateCopy) -> Result<Option<OpenedCopyTab>, String> {
+        log_line(
+            &self.log,
+            vec![
+                Value::from("openCopy"),
+                json!({
+                    "editor": copy.editor.as_str(),
+                    "path": copy.path,
+                    "dir": copy.dir,
+                    "bytes": hex_of(&copy.bytes),
+                    "fileName": copy.file_name,
+                    "title": copy.title,
+                }),
+            ],
+        );
+        let open = self.opts.get("open");
+        if bool_of(open.and_then(|o| o.get("throw"))) {
+            return Err("window failed".to_owned());
+        }
+        if bool_of(open.and_then(|o| o.get("none"))) {
+            return Ok(None);
+        }
+        Ok(Some(OpenedCopyTab {
+            tab_id: str_of(open.and_then(|o| o.get("tabId")))
+                .unwrap_or("")
+                .to_owned(),
+            contents: Box::new(FakeContents {
+                id: number_of(open.and_then(|o| o.get("contentsId"))),
+                destroyed: self.destroyed.clone(),
+            }),
+            owns_copy: bool_of(open.and_then(|o| o.get("ownsCopy"))),
+        }))
+    }
+}
+
 impl TemplateTabsHost for TabsHost {
     fn make_copy_dir(&mut self) -> Result<String, String> {
         self.dirs += 1;
@@ -132,46 +169,7 @@ impl TemplateTabsHost for TabsHost {
             title: text("title"),
         })
     }
-}
 
-impl TabsHost {
-    /// the scenario's tab opening, answered at once
-    fn open_copy(&mut self, copy: &TemplateCopy) -> Result<Option<OpenedCopyTab>, String> {
-        log_line(
-            &self.log,
-            vec![
-                Value::from("openCopy"),
-                json!({
-                    "editor": copy.editor.as_str(),
-                    "path": copy.path,
-                    "dir": copy.dir,
-                    "bytes": hex_of(&copy.bytes),
-                    "fileName": copy.file_name,
-                    "title": copy.title,
-                }),
-            ],
-        );
-        let open = self.opts.get("open");
-        if bool_of(open.and_then(|o| o.get("throw"))) {
-            return Err("window failed".to_owned());
-        }
-        if bool_of(open.and_then(|o| o.get("none"))) {
-            return Ok(None);
-        }
-        Ok(Some(OpenedCopyTab {
-            tab_id: str_of(open.and_then(|o| o.get("tabId")))
-                .unwrap_or("")
-                .to_owned(),
-            contents: Box::new(FakeContents {
-                id: number_of(open.and_then(|o| o.get("contentsId"))),
-                destroyed: self.destroyed.clone(),
-            }),
-            owns_copy: bool_of(open.and_then(|o| o.get("ownsCopy"))),
-        }))
-    }
-}
-
-impl TemplateTabsHost for TabsHost {
     fn opener_file_path(&mut self, opener_id: f64) -> Option<String> {
         let current = self.opts.get("current")?;
         log_line(

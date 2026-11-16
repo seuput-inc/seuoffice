@@ -595,6 +595,15 @@ pub(super) fn dispatch(
             })
             .map_err(|error| describe("JavaScript evaluation", error))?
         }
+        // A classic script (the converter's helper scripts are IIFEs with a trailing `;`),
+        // run for its effect; `html.evaluate` takes one expression and answers with its value.
+        "html.script" => {
+            let source =
+                input.get("source").and_then(Value::as_str).ok_or("script source is missing")?;
+            page_call(cancel, PAGE_CALL_TIMEOUT, |done| ops.run_script(source, None, done))
+                .map_err(|error| describe("JavaScript script", error))?;
+            Value::Null
+        }
         "html.initScript" => {
             let source = input
                 .get("source")

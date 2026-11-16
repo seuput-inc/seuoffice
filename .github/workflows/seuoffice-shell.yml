@@ -23,15 +23,15 @@ on:
   workflow_dispatch:
     inputs:
       gate:
-        description: "full (build, clippy, tests, measurement), check (cargo check and per-file diagnostics) or lock (regenerate Cargo.lock on Ubuntu)"
+        description: "full (build, clippy, tests, measurement), check (cargo check and per-file diagnostics), lock (regenerate Cargo.lock on Ubuntu) or fmt (rustfmt patch of both Rust workspaces)"
         type: choice
-        options: [full, check, lock]
+        options: [full, check, lock, fmt]
         default: full
       owned:
         description: "gate=check: comma-separated path prefixes whose diagnostics must be zero"
         default: crates/shell/src/native/,crates/shell/src/main.rs
       source_sha:
-        description: "gate=lock: the exact commit to generate the lock from (40 hex digits)"
+        description: "gate=lock or fmt: the exact commit to work on (40 hex digits)"
         default: ''
       regenerate:
         description: "gate=lock: use `cargo generate-lockfile` (newest of everything) instead of `cargo update --workspace`"
@@ -414,5 +414,56 @@ jobs:
         with:
           name: shell-cargo-lock
           path: ${{ runner.temp }}/lock/
+          retention-days: 7
+          if-no-files-found: error
+
+  # rustfmt of the exact commit, handed over as a patch for machines without a Rust
+  # toolchain (`git apply`). Stable rustfmt, as the `seuoffice rust` quick gate runs it.
+  fmt:
+    if: github.event_name == 'workflow_dispatch' && inputs.gate == 'fmt'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - name: the checkout is the exact commit asked for
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          case "$SOURCE_SHA" in
+            *[!0-9a-f]*|'') echo "source_sha must be 40 lowercase hex digits" >&2; exit 1 ;;
+          esac
+          test "${#SOURCE_SHA}" -eq 40
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      # cargo resolves crates/file-parse's path into crates/.rhwp-source
+      - name: rhwp source
+        run: node tools/build-rhwp-core.mjs --source-only
+      - name: rustfmt
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup default stable
+          rustfmt --version
+          # a file rustfmt cannot parse is reported and left as it is; the rest is formatted
+          cargo fmt --manifest-path crates/Cargo.toml || echo "::warning::rustfmt failed on crates/"
+          cargo fmt --manifest-path crates/shell/Cargo.toml || echo "::warning::rustfmt failed on crates/shell"
+      - name: patch
+        run: |
+          mkdir -p "$RUNNER_TEMP/fmt"
+          git diff --binary -- crates > "$RUNNER_TEMP/fmt/rustfmt.patch"
+          git diff --stat -- crates | tail -n 1
+          {
+            echo "source_sha $(git rev-parse HEAD)"
+            sha256sum "$RUNNER_TEMP/fmt/rustfmt.patch"
+          } > "$RUNNER_TEMP/fmt/source.txt"
+      - name: upload the patch
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rustfmt-patch
+          path: ${{ runner.temp }}/fmt/
           retention-days: 7
           if-no-files-found: error

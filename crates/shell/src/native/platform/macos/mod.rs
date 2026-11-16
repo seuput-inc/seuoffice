@@ -13,6 +13,8 @@
 //! Each file starts with `use super::Platform;` and `impl <Trait> for Platform`.
 
 mod edit;
+mod header_footer;
+mod header_footer_view;
 mod observer;
 mod page;
 mod policy;

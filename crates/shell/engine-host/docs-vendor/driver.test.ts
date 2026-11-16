@@ -21,3 +21,13 @@ it('forwards viewport, serialized evaluation, and screenshot options to its own 
     { clip: { x: 1, y: 2, width: 3, height: 4 }, omitBackground: true },
   ])
 })
+
+it('sends helper scripts as classic scripts, not as expressions', async () => {
+  const call = vi.fn(async (_operation: string, _input: unknown) => null)
+  const driver = new HtmlPageDriver(call)
+  await driver.addScript('(function install(g) { g.x = 1 })(globalThis);')
+  expect(call.mock.calls[0]).toEqual([
+    'html.script',
+    { source: '(function install(g) { g.x = 1 })(globalThis);' },
+  ])
+})

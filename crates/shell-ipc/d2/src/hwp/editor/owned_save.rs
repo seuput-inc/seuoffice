@@ -466,7 +466,9 @@ impl Hwp {
             if let Some(timer) = operation.timer {
                 kit::clear(timer);
             }
-            operation.scope.pending.cancel();
+            if operation.scope.origin().is_some() {
+                operation.scope.pending.cancel();
+            }
             self.change(view, |state| state.pending_save = None);
             (operation.then)(result);
         }
@@ -544,35 +546,89 @@ impl Hwp {
         if let Err(error) = self.capture_hwp_owner(view, destination.clone()) {
             return then(Err(error));
         }
+        let scope = Scope {
+            authority: SaveAuthority::Renderer(origin),
+            participants: vec![destination.clone()],
+            destination,
+            cancel,
+            pending: CancelToken::default(),
+            additional: Vec::new(),
+            effects: self.owned_effects.clone(),
+            recovery: None,
+            native_destination: None,
+        };
+        self.request_save_scope(view, mode, scope, then);
+    }
+
+    /// A save a native operation owns, bound to the exact document it named.
+    pub(super) fn request_save_native(
+        self: &Rc<Self>,
+        view: ViewId,
+        mode: SaveMode,
+        binding: shell_contract::ipc::NativeExistingDocumentBinding,
+        cancel: CancelToken,
+        pending: CancelToken,
+        then: Then<bool>,
+    ) {
+        use shell_contract::ipc::{
+            NativeEditorCommand, NativeInvocationSelection, NativeSaveSelection,
+        };
+        let valid = matches!(
+            binding.operation().selection(),
+            NativeInvocationSelection::NativeCommand(NativeEditorCommand::SaveDocument {
+                surface: shell_contract::Surface::Hwp,
+                view: selected,
+                selection: NativeSaveSelection::Mode(selected_mode),
+            }) if *selected == view && *selected_mode == mode
+        );
+        if !valid || binding.owner().view != view {
+            return then(Err(error(
+                "hwp: the native save selection does not match the document",
+            )));
+        }
+        if self.is_destroyed(view) || !self.get(view, |state| state.granted) {
+            return then(Err(error("hwp: document is no longer open")));
+        }
+        let destination = binding.owner().clone();
+        if destination.context.document_lease().is_none() {
+            return then(Err(error("hwp: captured document owner is required")));
+        }
+        if let Err(error) = self.capture_hwp_owner(view, destination.clone()) {
+            return then(Err(error));
+        }
+        let scope = Scope {
+            authority: SaveAuthority::Native(binding),
+            participants: vec![destination.clone()],
+            destination,
+            cancel,
+            pending,
+            additional: Vec::new(),
+            effects: self.owned_effects.clone(),
+            recovery: None,
+            native_destination: None,
+        };
+        self.request_save_scope(view, mode, scope, then);
+    }
+
+    fn request_save_scope(
+        self: &Rc<Self>,
+        view: ViewId,
+        mode: SaveMode,
+        scope: Scope,
+        then: Then<bool>,
+    ) {
         if self.save_waiters.borrow().contains_key(&view)
             || self.owned_saves.borrow().contains_key(&view)
             || self.get(view, |state| state.pending_save.is_some())
         {
             return then(Ok(false));
         }
-        let Some(generation) = destination.context.renderer().cloned() else {
+        let Some(generation) = scope.destination.context.renderer().cloned() else {
             return then(Err(error("hwp: renderer is unavailable")));
         };
-        let pending = CancelToken::default();
-        let scope = Scope {
-            origin,
-            participants: vec![destination.clone()],
-            destination,
-            cancel,
-            pending: pending.clone(),
-            additional: Vec::new(),
-            effects: self.owned_effects.clone(),
-            recovery: None,
-        };
+        let pending = scope.pending.clone();
         if self.get(view, |state| state.memo_modal) {
-            let result = scope.effects.emit_owned(
-                &scope.origin,
-                &scope.destination,
-                &scope.cancel,
-                &scope.pending,
-                "hwp:memo-blocked",
-                vec![],
-            );
+            let result = scope.emit("hwp:memo-blocked", vec![]);
             return then(result.map(|()| false).map_err(error));
         }
         if let Err(message) = scope.effect(&mut || Ok(())) {
@@ -586,23 +642,37 @@ impl Hwp {
         });
         let reload_watch = ReloadWatch::new();
         let mut subscriptions = Vec::new();
-        if let Some(loss) = scope.origin.context.owner_loss() {
-            let pending = pending.clone();
-            let watch = reload_watch.clone();
-            subscriptions.push(loss.on_cancel(move || {
-                if !watch.origin_transferred.load(Ordering::Acquire) {
-                    pending.cancel();
+        let released = |loss: CancelToken| {
+            let hwp = self.clone();
+            let lost = token.clone();
+            let notify = kit::back_on_core(&self.services, move |()| {
+                hwp.finish_owned(view, &lost, Err(error("hwp: save owner released")))
+            });
+            loss.on_cancel(move || notify(()))
+        };
+        match &scope.authority {
+            SaveAuthority::Renderer(origin) => {
+                if let Some(loss) = origin.context.owner_loss() {
+                    let pending = pending.clone();
+                    let watch = reload_watch.clone();
+                    subscriptions.push(loss.on_cancel(move || {
+                        if !watch.origin_transferred.load(Ordering::Acquire) {
+                            pending.cancel();
+                        }
+                    }));
                 }
-            }));
-        }
-        {
-            let pending = pending.clone();
-            let watch = reload_watch.clone();
-            subscriptions.push(scope.cancel.on_cancel(move || {
-                if !watch.cancel_transferred.load(Ordering::Acquire) {
-                    pending.cancel();
-                }
-            }));
+                let pending = pending.clone();
+                let watch = reload_watch.clone();
+                subscriptions.push(scope.cancel.on_cancel(move || {
+                    if !watch.cancel_transferred.load(Ordering::Acquire) {
+                        pending.cancel();
+                    }
+                }));
+            }
+            SaveAuthority::Native(binding) => {
+                subscriptions.push(released(binding.operation().loss_token()));
+                subscriptions.push(released(scope.cancel.clone()));
+            }
         }
         for loss in [
             scope.destination.context.owner_loss(),
@@ -611,8 +681,12 @@ impl Hwp {
         .into_iter()
         .flatten()
         {
-            let pending = pending.clone();
-            subscriptions.push(loss.on_cancel(move || pending.cancel()));
+            if scope.origin().is_some() {
+                let pending = pending.clone();
+                subscriptions.push(loss.on_cancel(move || pending.cancel()));
+            } else {
+                subscriptions.push(released(loss));
+            }
         }
         let hwp = self.clone();
         let cancelled_token = token.clone();
@@ -638,11 +712,7 @@ impl Hwp {
                 reload_watch,
             },
         );
-        let result = scope.effects.emit_owned(
-            &scope.origin,
-            &scope.destination,
-            &scope.cancel,
-            &scope.pending,
+        let result = scope.emit(
             "hwp:save-request",
             vec![
                 match mode {
@@ -674,14 +744,7 @@ impl Hwp {
         let tracked = self.get(view, |state| state.tracked);
         if memo || tracked {
             let notice = if memo {
-                scope.effects.emit_owned(
-                    &scope.origin,
-                    &scope.destination,
-                    &scope.cancel,
-                    &scope.pending,
-                    "hwp:memo-blocked",
-                    vec![],
-                )
+                scope.emit("hwp:memo-blocked", vec![])
             } else {
                 Ok(())
             };
@@ -733,6 +796,25 @@ impl Hwp {
             .as_ref()
             .filter(|_| current_format.is_some() && !save_as)
         {
+            if let SaveAuthority::Native(binding) = &scope.authority {
+                let selected = scope.effect(&mut || {
+                    let destination = shell_contract::ipc::NativeSaveDestination::from_current_document(
+                        binding.clone(),
+                        PathBuf::from(path),
+                    )?;
+                    self.owned_saves
+                        .borrow_mut()
+                        .get_mut(&view)
+                        .ok_or("hwp: save expired")?
+                        .scope
+                        .native_destination = Some(destination);
+                    Ok(())
+                });
+                if let Err(message) = selected {
+                    self.finish_owned(view, &token, Err(error(message.clone())));
+                    return reply.reply(Ok(failed(message)));
+                }
+            }
             return self.owned_target_ready(view, &token, &scope, path.clone(), reply);
         }
         let (parent, options, fallback) =
@@ -756,9 +838,23 @@ impl Hwp {
         let callback_scope = scope.clone();
         let done = kit::back_on_core(
             &self.services,
-            move |picked: Result<Option<PathBuf>, String>| {
-                let picked = match picked {
-                    Ok(Some(path)) => path.to_string_lossy().into_owned(),
+            move |picked: Result<Option<Picked>, String>| {
+                let (picked, destination) = match picked {
+                    Ok(Some(Picked::Path(path))) => (path.to_string_lossy().into_owned(), None),
+                    Ok(Some(Picked::Destination(destination))) => match destination
+                        .normalize_dialog_format(shell_contract::ipc::NativeSaveFormat::Hwp {
+                            fallback_hwpx: fallback == HwpFormat::Hwpx,
+                            offer_pdf: save_as,
+                        }) {
+                        Ok(destination) => (
+                            destination.path().to_string_lossy().into_owned(),
+                            Some(destination),
+                        ),
+                        Err(message) => {
+                            hwp.finish_owned(view, &token, Err(error(message.clone())));
+                            return reply.reply(Ok(failed(message)));
+                        }
+                    },
                     Ok(None) => {
                         hwp.finish_owned(view, &token, Ok(false));
                         return reply.reply(Ok(obj([
@@ -780,6 +876,14 @@ impl Hwp {
                             .unwrap_or_else(|poison| poison.into_inner()),
                         &picked,
                     );
+                    if let Some(destination) = &destination {
+                        hwp.owned_saves
+                            .borrow_mut()
+                            .get_mut(&view)
+                            .ok_or("hwp: save expired")?
+                            .scope
+                            .native_destination = Some(destination.clone());
+                    }
                     Ok(())
                 });
                 if let Err(message) = accepted {
@@ -792,15 +896,7 @@ impl Hwp {
                 hwp.owned_target_ready(view, &token, &callback_scope, path, reply);
             },
         );
-        self.dialogs.save_owned(
-            parent,
-            options,
-            scope.origin,
-            scope.destination,
-            scope.cancel,
-            scope.pending,
-            done,
-        );
+        scope.save(&self.dialogs, parent, options, Box::new(done));
     }
 
     fn owned_target_ready(
@@ -897,31 +993,45 @@ impl Hwp {
         };
         let actual = actual?;
         let mut participants = scope.participants.clone();
-        participants.push(scope.origin.clone());
         let mut path = None;
         let mut renderer_timer = None;
-        scope
-            .effects
-            .with_same_native_origin_effect(
-                &scope.destination,
-                actual,
-                &participants,
-                &scope.cancel,
-                &scope.pending,
-                &[caller_cancel],
-                &mut || {
-                    let mut saves = self.owned_saves.borrow_mut();
-                    let save = saves
-                        .get_mut(&view)
-                        .filter(|save| save.token == token && save.phase == Phase::Pdf)
-                        .ok_or("hwp: stale PDF grant")?;
-                    path = save.pdf_target.take();
-                    save.phase = Phase::ClaimedPdfExport;
-                    renderer_timer = save.timer.take();
-                    Ok(())
-                },
-            )
-            .ok()?;
+        let mut claim = || -> Result<(), String> {
+            let mut saves = self.owned_saves.borrow_mut();
+            let save = saves
+                .get_mut(&view)
+                .filter(|save| save.token == token && save.phase == Phase::Pdf)
+                .ok_or("hwp: stale PDF grant")?;
+            path = save.pdf_target.take();
+            save.phase = Phase::ClaimedPdfExport;
+            renderer_timer = save.timer.take();
+            Ok(())
+        };
+        match &scope.authority {
+            SaveAuthority::Renderer(origin) => {
+                participants.push(origin.clone());
+                scope.effects.with_same_native_origin_effect(
+                    &scope.destination,
+                    actual,
+                    &participants,
+                    &scope.cancel,
+                    &scope.pending,
+                    &[caller_cancel],
+                    &mut claim,
+                )
+            }
+            SaveAuthority::Native(binding) => {
+                scope.effects.with_existing_document_same_origin_effect(
+                    binding,
+                    actual,
+                    &participants,
+                    &scope.cancel,
+                    &scope.pending,
+                    &[caller_cancel],
+                    &mut claim,
+                )
+            }
+        }
+        .ok()?;
         if let Some(timer) = renderer_timer {
             kit::clear(timer);
         }
@@ -938,10 +1048,23 @@ impl Hwp {
         let accepted_scope = scope.clone();
         let accepted_losses = reload_watch.losses.clone();
         let accepted = Box::new(move |marker| reload_watch.accept(&accepted_scope, marker));
+        let authority = match scope.authority {
+            SaveAuthority::Renderer(origin) => {
+                shell_contract::editors::OwnedPdfGrantAuthority::Renderer(origin)
+            }
+            SaveAuthority::Native(_) => {
+                shell_contract::editors::OwnedPdfGrantAuthority::ExistingDocument {
+                    selection: scope
+                        .native_destination
+                        .filter(|selected| selected.path() == path.as_path())?,
+                    participants: scope.participants.clone(),
+                }
+            }
+        };
         Some(shell_contract::editors::OwnedPdfGrant {
             path,
             request_token: token.to_owned(),
-            authority: shell_contract::editors::OwnedPdfGrantAuthority::Renderer(scope.origin),
+            authority,
             destination: scope.destination,
             cancel: scope.cancel,
             pending: scope.pending,
@@ -975,7 +1098,7 @@ impl Hwp {
         destinations.push(destination.clone());
         destinations.extend_from_slice(participants);
         let scope = Scope {
-            origin: origin.clone(),
+            authority: SaveAuthority::Renderer(origin.clone()),
             destination: destination.clone(),
             participants: destinations,
             cancel: cancel.clone(),
@@ -983,6 +1106,7 @@ impl Hwp {
             additional: additional.to_vec(),
             effects: self.owned_effects.clone(),
             recovery: None,
+            native_destination: None,
         };
         self.file_renamed_scoped(view, old_path, new_path, RenameScope::Renderer(scope), then);
     }
@@ -1014,7 +1138,7 @@ impl Hwp {
         destinations.push(destination.clone());
         destinations.extend_from_slice(participants);
         let scope = Scope {
-            origin: receiver.clone(),
+            authority: SaveAuthority::Renderer(receiver.clone()),
             destination: destination.clone(),
             participants: destinations,
             cancel: cancel.clone(),
@@ -1022,6 +1146,7 @@ impl Hwp {
             additional: Vec::new(),
             effects: self.owned_effects.clone(),
             recovery: Some((receipt.clone(), snapshot)),
+            native_destination: None,
         };
         self.file_renamed_scoped(view, old_path, new_path, RenameScope::Renderer(scope), then);
     }
@@ -1216,16 +1341,7 @@ impl Hwp {
                 );
             },
         );
-        self.shell.file_saved_owned(
-            view,
-            notified_target,
-            scope.origin,
-            scope.destination,
-            scope.cancel,
-            scope.pending,
-            scope.effects,
-            callback,
-        );
+        scope.file_saved(&self.shell, view, notified_target, callback);
     }
 }
 
@@ -1308,7 +1424,9 @@ impl Hwp {
                         if let Some(timer) = operation.timer {
                             kit::clear(timer);
                         }
-                        operation.scope.pending.cancel();
+                        if operation.scope.origin().is_some() {
+                            operation.scope.pending.cancel();
+                        }
                         (operation.then)(Ok(ok));
                     }
                 }
@@ -1409,14 +1527,11 @@ impl Hwp {
                         }
                     },
                 );
-                hwp.dialogs.message_owned(
+                scope.message(
+                    &hwp.dialogs,
                     hwp.window_of(view),
                     options,
-                    scope.origin,
-                    scope.destination,
-                    scope.cancel,
-                    scope.pending,
-                    callback,
+                    Box::new(callback),
                 );
             },
         );

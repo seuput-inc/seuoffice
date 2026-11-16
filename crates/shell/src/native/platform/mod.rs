@@ -87,13 +87,19 @@ pub(crate) trait PageDriver {
     /// Windows: CDP `Runtime.evaluate { expression, awaitPromise, returnByValue }`.
     fn evaluate(webview: &Webview, script: String, await_promise: bool, done: Done<Value>);
 
+    /// Run `source` as a classic script of the main frame, for its effect: statements,
+    /// declarations and a trailing `;` are fine, and no value comes back. Like `evaluate`, it
+    /// never goes through `eval`. macOS: `evaluateJavaScript` (a script the page's CSP does not
+    /// govern). Windows: CDP `Runtime.evaluate` without `returnByValue`.
+    fn run_script(webview: &Webview, source: String, done: Done<()>);
+
     /// PNG bytes. macOS: `takeSnapshot` (clip, full page by resizing an offscreen window to
     /// `scrollHeight`, transparent background). Windows: CDP `Page.captureScreenshot`.
     fn capture_png(webview: &Webview, spec: CaptureSpec, done: Done<Vec<u8>>);
 
     /// PDF bytes. Windows: CDP `Page.printToPDF` with the spec's fields. macOS: a file print
-    /// operation of the page, `page_ranges` applied to the full output; `header_footer` is
-    /// refused with `PageError::Unsupported("headerTemplate")`.
+    /// operation of the page; the `header_footer` templates are rendered by a hidden web view
+    /// and stamped onto the pages, then `page_ranges` is applied to the result.
     fn print_pdf(webview: &Webview, spec: PdfSpec, done: Done<Vec<u8>>);
 
     /// macOS: send the matching selector to the web view after making it first responder.

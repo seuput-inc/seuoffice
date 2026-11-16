@@ -27,7 +27,7 @@ export class HtmlPageDriver implements BrowserDriver {
   }
 
   async addScript(source: string): Promise<void> {
-    await this.call('html.evaluate', { expression: source })
+    await this.call('html.script', { source })
   }
 
   async addInitScript(source: string): Promise<void> {

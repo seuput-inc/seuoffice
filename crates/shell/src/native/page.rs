@@ -92,8 +92,8 @@ impl CaptureSpec {
     }
 }
 
-/// Header and footer HTML templates (Chromium syntax). Windows only; macOS answers
-/// `PageError::Unsupported("headerTemplate")` and the caller shows its error dialog.
+/// Header and footer HTML templates (Chromium syntax). Windows hands them to Chromium; macOS
+/// renders them with WebKit and stamps them onto the printed PDF.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HeaderFooter {
     pub header_template: String,
@@ -318,14 +318,25 @@ impl PageOps {
         &self.browser
     }
 
-    /// Evaluate in the page. With `await_promise` a returned promise is awaited and the
-    /// answer is the JSON value of its result.
+    /// Evaluate ONE EXPRESSION in the page (several statements go in an IIFE; a trailing `;`
+    /// or a statement list is a syntax error on macOS). With `await_promise` a returned
+    /// promise is awaited and the answer is the JSON value of its result. The expression is
+    /// never passed through `eval`: the shell's pages have no `unsafe-eval`. A classic script
+    /// is [`PageOps::run_script`].
     pub fn evaluate(&self, js: &str, await_promise: bool, fence: Option<Fence>, done: Done<Value>) {
         let webview = self.webview.clone();
         let script = js.to_owned();
         run_fenced(fence.as_ref(), done, move |done| {
             Current::evaluate(&webview, script, await_promise, done);
         });
+    }
+
+    /// Run a classic script (statements, declarations, a trailing `;`) for its effect; no
+    /// value comes back. For page helpers a caller installs (`addScript`), not for answers.
+    pub fn run_script(&self, source: &str, fence: Option<Fence>, done: Done<()>) {
+        let webview = self.webview.clone();
+        let source = source.to_owned();
+        run_fenced(fence.as_ref(), done, move |done| Current::run_script(&webview, source, done));
     }
 
     pub fn capture_png(&self, spec: CaptureSpec, fence: Option<Fence>, done: Done<Vec<u8>>) {

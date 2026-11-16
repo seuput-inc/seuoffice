@@ -1395,7 +1395,7 @@ fn commit(engine: &HwpEngineHost, job: Commit) -> Result<Landed, String> {
         main_core::packages::electron_utils::atomic_write::atomic_write_file_authorized(
             &job.target,
             &bytes,
-            &mut |effect| scope.admit(effect),
+            &mut |effect| scope.admit_write(&job.target, effect),
         )
         .map_err(|error| error.message)?;
     } else {

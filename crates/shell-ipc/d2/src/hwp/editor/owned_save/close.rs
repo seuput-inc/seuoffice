@@ -58,7 +58,7 @@ impl Hwp {
             Err(message) => return then(Err(error(message))),
         };
         let scope = Scope {
-            origin,
+            authority: SaveAuthority::Renderer(origin),
             participants: vec![destination.clone()],
             destination,
             cancel,
@@ -66,6 +66,7 @@ impl Hwp {
             additional: Vec::new(),
             effects: self.owned_effects.clone(),
             recovery: None,
+            native_destination: None,
         };
         let mut snapshot = None;
         if let Err(message) = scope.effect(&mut || {
@@ -90,7 +91,7 @@ impl Hwp {
             .insert(view, operation.clone());
         for loss in [
             Some(scope.cancel.clone()),
-            scope.origin.loss_token(),
+            scope.authority_loss(),
             scope.destination.loss_token(),
         ]
         .into_iter()
@@ -181,24 +182,22 @@ impl Hwp {
                     );
                 }
                 let completed = hwp.clone();
+                let origin = match dialog_scope.renderer_origin() {
+                    Ok(origin) => origin.clone(),
+                    Err(message) => {
+                        return hwp.finish_close_owned(view, id, Err(error(message)));
+                    }
+                };
                 hwp.request_save_captured(
                     view,
                     SaveMode::Save,
-                    dialog_scope.origin,
+                    origin,
                     dialog_scope.destination,
                     dialog_scope.pending,
                     Box::new(move |result| completed.finish_close_owned(view, id, result)),
                 );
             },
         );
-        self.dialogs.message_owned(
-            parent,
-            options,
-            scope.origin,
-            scope.destination,
-            scope.cancel,
-            scope.pending,
-            done,
-        );
+        scope.message(&self.dialogs, parent, options, Box::new(done));
     }
 }

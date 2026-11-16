@@ -199,8 +199,4 @@ fn multi_owner_print_callback_cancel_wakes_the_waiting_call() {
 fn a_print_caller_reads_cancel_and_stale_as_its_own_messages() {
     assert_eq!(owned_error(PageError::Cancelled), "Print request expired.");
     assert_eq!(owned_error(PageError::Stale), "Print request is no longer available.");
-    assert_eq!(
-        owned_error(PageError::Unsupported("headerTemplate")),
-        "Headers and footers are not available when printing on this Mac."
-    );
 }

@@ -1206,7 +1206,7 @@ pub(super) fn start(docs: &Rc<Docs>, view: ViewId) {
     }
 }
 
-type Admit = std::sync::Arc<
+pub(super) type Admit = std::sync::Arc<
     dyn Fn(&mut dyn FnMut()) -> Result<(), main_core::node_fs::NodeError> + Send + Sync,
 >;
 type CopySnapshot = (
@@ -1281,13 +1281,15 @@ fn plan_recovery(root: &str, path: &str) -> RecoveryPlan {
     }
 }
 
-/// The copy is loaded into this document: its metadata says so.
-fn mark_restored(
+/// The copy's metadata says what became of it: `Undecided` once it is loaded
+/// into this document, `Later` when it could not be used (`restoreFailed`),
+/// so it waits for the next open instead of judging every quit abnormal.
+pub(super) fn write_copy_state(
     snapshot: &main_core::packages::electron_utils::recovery_store::RecoveryPinnedSnapshot,
+    state: main_core::packages::electron_utils::recovery_store::RecoveryCopyState,
     admit: &Admit,
 ) -> Result<(), String> {
-    use main_core::packages::electron_utils::recovery_store::RecoveryCopyState;
-    let Some(plan) = snapshot.prepare_copy_state(RecoveryCopyState::Undecided) else {
+    let Some(plan) = snapshot.prepare_copy_state(state) else {
         return Ok(());
     };
     let mut denied = None;
@@ -1330,6 +1332,9 @@ fn resolve_recovery(docs: &Rc<Docs>, loading: Loading, decoded: DecodedSaved) {
     let root = docs.user_data(&[]);
     let continued = docs.clone();
     let worker_admit = admit.clone();
+    let shared = docs.recovery_shared.clone();
+    let shell = docs.shell.clone();
+    let store_root = root.clone();
     let worker_path = path.clone();
     let deliver = match worker_callback(
         docs,
@@ -1363,9 +1368,26 @@ fn resolve_recovery(docs: &Rc<Docs>, loading: Loading, decoded: DecodedSaved) {
     };
     docs.services.workers.spawn(Box::new(move || {
         deliver((|| {
+            let identity = super::recovery::file_identity(&worker_path);
+            let mut cleared = Ok(());
+            // the file is being opened: what it shows from now on was not
+            // thrown away by an earlier "Don't Save"
+            worker_admit(&mut || {
+                cleared = super::recovery::with_store(&shared, &store_root, &shell, |store| {
+                    store
+                        .clear_discarded(&identity)
+                        .map_err(|error| error.message)
+                });
+            })
+            .map_err(|error| error.message)?;
+            cleared?;
             let plan = plan_recovery(&root, &worker_path);
             if let RecoveryPlan::Restore((snapshot, _)) = &plan {
-                mark_restored(snapshot, &worker_admit)?;
+                write_copy_state(
+                    snapshot,
+                    main_core::packages::electron_utils::recovery_store::RecoveryCopyState::Undecided,
+                    &worker_admit,
+                )?;
             }
             Ok(plan)
         })());
@@ -1464,7 +1486,11 @@ fn ask_recovery(
                         Ok::<(), String>(())
                     })
                 } else {
-                    mark_restored(&snapshot, &admit)
+                    write_copy_state(
+                        &snapshot,
+                        main_core::packages::electron_utils::recovery_store::RecoveryCopyState::Undecided,
+                        &admit,
+                    )
                 });
             }));
         },
@@ -1494,6 +1520,10 @@ fn prepare_on_worker(
     let permit = loading.permit.clone();
     let cancel = loading.request_cancel.clone();
     let continued = docs.clone();
+    let admit = match saved_admit(docs, &loading) {
+        Ok(admit) => admit,
+        Err(error) => return loading.abort(docs, &error),
+    };
     let deliver = match worker_callback(
         docs,
         &target,
@@ -1525,6 +1555,15 @@ fn prepare_on_worker(
                 permit.clone(),
                 cancel,
             )?;
+            if content.recovery_failed {
+                if let Some((snapshot, _)) = &content.recovery {
+                    write_copy_state(
+                        snapshot,
+                        main_core::packages::electron_utils::recovery_store::RecoveryCopyState::Later,
+                        &admit,
+                    )?;
+                }
+            }
             let data_url = engine.hand_off_bytes(content.bytes.clone(), permit)?;
             let disk = document
                 .target()

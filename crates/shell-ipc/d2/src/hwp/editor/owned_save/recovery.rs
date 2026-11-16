@@ -270,17 +270,11 @@ impl Hwp {
                 }
                 if deleted {
                     for recipient in resets {
-                        if let Err(message) = scope.effects.emit_owned(
-                            &scope.origin,
-                            &recipient,
-                            &scope.cancel,
-                            &scope.pending,
-                            "hwp:recovery-reset",
-                            vec![],
-                        ) {
+                        if let Err(message) =
+                            scope.emit_to(&recipient, "hwp:recovery-reset", vec![])
+                        {
                             if !scope
-                                .origin
-                                .loss_token()
+                                .authority_loss()
                                 .is_some_and(|loss| !loss.is_cancelled())
                                 || scope.cancel.is_cancelled()
                                 || scope.pending.is_cancelled()
@@ -382,20 +376,24 @@ impl Hwp {
                     return done(Err(error(message)));
                 }
                 let emitted = match &scope {
-                    RenameScope::Renderer(scope) => match &scope.recovery {
-                        Some((receipt, snapshot)) => scope.effects.emit_recovery_open_snapshot(
-                            receipt,
-                            snapshot,
-                            &scope.origin,
-                            &scope.participants,
-                            0,
-                            &scope.cancel,
-                            &scope.pending,
-                            "hwp:recovery-reset",
-                            vec![],
-                        ),
-                        None => scope.effects.emit_owned_many_extra(
-                            &scope.origin,
+                    RenameScope::Renderer(scope) => match (scope.renderer_origin(), &scope.recovery)
+                    {
+                        (Err(message), _) => Err(message),
+                        (Ok(origin), Some((receipt, snapshot))) => {
+                            scope.effects.emit_recovery_open_snapshot(
+                                receipt,
+                                snapshot,
+                                origin,
+                                &scope.participants,
+                                0,
+                                &scope.cancel,
+                                &scope.pending,
+                                "hwp:recovery-reset",
+                                vec![],
+                            )
+                        }
+                        (Ok(origin), None) => scope.effects.emit_owned_many_extra(
+                            origin,
                             &scope.participants,
                             0,
                             &scope.cancel,

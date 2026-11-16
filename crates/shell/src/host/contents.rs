@@ -39,12 +39,7 @@ const DIALOG_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// A page operation's error as a caller shows it.
 pub(crate) fn page_error_text(error: PageError) -> String {
-    match error {
-        PageError::Unsupported("headerTemplate") => {
-            "Headers and footers are not available when printing on this Mac.".to_owned()
-        }
-        other => other.to_string(),
-    }
+    error.to_string()
 }
 
 /// `webContents.capturePage` of `webview`, blocking. Not from the UI thread.
@@ -436,11 +431,11 @@ mod tests {
     }
 
     #[test]
-    fn a_header_template_refusal_reads_as_the_sheets_error_text() {
-        assert_eq!(
-            page_error_text(PageError::Unsupported("headerTemplate")),
-            "Headers and footers are not available when printing on this Mac."
-        );
+    fn a_page_error_reads_as_its_own_message() {
         assert_eq!(page_error_text(PageError::Timeout), PageError::Timeout.to_string());
+        assert_eq!(
+            page_error_text(PageError::Unsupported("transparent")),
+            "transparent is not supported on this platform"
+        );
     }
 }

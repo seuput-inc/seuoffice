@@ -4176,6 +4176,42 @@ fn recovery_file_uses_the_copy_pinned_before_navigation() {
 }
 
 #[test]
+fn an_unusable_recovery_copy_is_left_for_a_later_open() {
+    use main_core::packages::electron_utils::recovery_store::{
+        RecoveryCopyState, RecoveryPinnedRead,
+    };
+    let mut t = T::with_workers(json!({}), Some(Arc::new(BackgroundWorkers)));
+    let path = t.file("unusable-recovery.docx", b"original");
+    let opened = t.rt.invoke("docs:open-path", t.a, vec![s(&path)]);
+    assert!(await_owned_reply(&mut t, &opened).is_ok());
+    let write = t.rt.invoke(
+        "docs:write-recovery",
+        t.a,
+        vec![s(&path), ab(b"captured draft")],
+    );
+    assert_eq!(
+        get(&await_owned_reply(&mut t, &write).unwrap(), "ok"),
+        &IpcValue::Bool(true)
+    );
+    let root = t.editor().0.user_data(&[]);
+    let identity = super::recovery::file_identity(&path);
+    let snapshot = || {
+        RecoveryPinnedRead::open_saved(&root, &identity)
+            .unwrap()
+            .read()
+            .unwrap()
+    };
+    let admit: super::saved_load::Admit = Arc::new(|effect| {
+        effect();
+        Ok(())
+    });
+    super::saved_load::write_copy_state(&snapshot(), RecoveryCopyState::Undecided, &admit).unwrap();
+    assert!(snapshot().copy_info(None).unwrap().state == RecoveryCopyState::Undecided);
+    super::saved_load::write_copy_state(&snapshot(), RecoveryCopyState::Later, &admit).unwrap();
+    assert!(snapshot().copy_info(None).unwrap().state == RecoveryCopyState::Later);
+}
+
+#[test]
 fn synthetic_media_transition_rejects_cancellation_and_retains_the_exact_successor() {
     let mut t = T::new(json!({}));
     let editor = t.editor();

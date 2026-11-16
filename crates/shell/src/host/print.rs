@@ -986,8 +986,10 @@ impl PrintWindow {
     /// Remembers in the page when its print preview closed (`afterprint`)
     fn watch_afterprint(&self) {
         let Ok(webview) = self.webview() else { return };
+        // One expression (`evaluate` takes no statement list): the comma operator sequences
+        // the flag reset and the listener, and `undefined` is the answer.
         let script = format!(
-            "window.{AFTERPRINT_FLAG} = false; addEventListener('afterprint', () => {{ window.{AFTERPRINT_FLAG} = true }})"
+            "(window.{AFTERPRINT_FLAG} = false, addEventListener('afterprint', () => {{ window.{AFTERPRINT_FLAG} = true }}), undefined)"
         );
         let _ = self.evaluate(&webview, &script, false);
     }
