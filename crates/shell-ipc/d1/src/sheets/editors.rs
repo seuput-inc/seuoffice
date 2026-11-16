@@ -635,6 +635,9 @@ impl RegisteredTab {
                 state.active_view = None;
             }
             state.save_as_export_targets.forget(f64::from(self.view.0));
+            state
+                .native_export_destinations
+                .retain(|(view, _), _| *view != self.view);
             state.decided_opens.remove(&self.view);
             let recovery = state.tab_recovery.remove(&self.view);
             let reported = state.pending_edit_counts.remove(&self.view).unwrap_or(0.0);
@@ -994,9 +997,14 @@ impl Core {
         });
     }
 
-    fn finish_saved_selection(&self, view: ViewId, id: &str, result: Result<IpcValue, IpcError>) {
-        let value = match result {
-            Ok(value) => value,
+    fn finish_saved_selection(
+        &self,
+        view: ViewId,
+        id: &str,
+        result: Result<(IpcValue, bool), IpcError>,
+    ) {
+        let (value, recovered) = match result {
+            Ok(opened) => opened,
             Err(error) => return self.cancel_saved_open(view, id, &error.message),
         };
         let selection = {
@@ -1008,7 +1016,10 @@ impl Core {
             saved
                 .as_mut()
                 .filter(|saved| saved.id == id && saved.failure.is_none())
-                .and_then(|saved| saved.selection.take())
+                .and_then(|saved| {
+                    saved.recovery_applied = recovered;
+                    saved.selection.take()
+                })
         };
         if let Some(selection) = selection {
             selection.reply.reply(Ok(value));
@@ -1251,10 +1262,12 @@ impl Core {
     ) {
         waiter.scope.pending.cancel();
         if let Some((_, path)) = &waiter.export_target {
-            self.state
-                .borrow_mut()
-                .save_as_export_targets
-                .take(f64::from(waiter.scope.destination.view.0), path);
+            let view = waiter.scope.destination.view;
+            let mut state = self.state.borrow_mut();
+            state
+                .native_export_destinations
+                .remove(&(view, path.clone()));
+            state.save_as_export_targets.take(f64::from(view.0), path);
         }
         drop(waiter.subscriptions);
         (waiter.then)(result);
@@ -1343,7 +1356,8 @@ impl Core {
         ),
         IpcError,
     > {
-        let mut state = self.state.borrow_mut();
+        let mut guard = self.state.borrow_mut();
+        let state = &mut *guard;
         let waiter = state
             .owned_saves
             .get_mut(token)
@@ -1361,9 +1375,19 @@ impl Core {
                 "The workbook copy does not match the selected Save As target",
             ));
         }
+        let mut scope = waiter.scope.clone();
+        if matches!(scope.authority, crate::owned_save::SaveAuthority::Native(_)) {
+            let destination = state
+                .native_export_destinations
+                .remove(&(scope.destination.view, path.to_owned()))
+                .ok_or_else(|| {
+                    thrown("The native workbook copy has no selected Save As destination")
+                })?;
+            scope.retain_native_selection(&destination)?;
+        }
         waiter.export_target = None;
         waiter.in_flight = true;
-        Ok((waiter.scope.clone(), waiter.transition.clone()))
+        Ok((scope, waiter.transition.clone()))
     }
 
     pub(super) fn request_owned_save(

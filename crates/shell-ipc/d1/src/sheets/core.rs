@@ -462,6 +462,10 @@ pub struct AppState {
     /// running delimited imports by token: the controller the registry holds
     pub import_controllers: HashMap<u64, main_core::sheets::import_registry::AbortController>,
     pub save_as_export_targets: SaveAsExportTargets,
+    /// the native destination a Save As dialog picked for a copy format, by the
+    /// view and the path the renderer will export to
+    pub native_export_destinations:
+        HashMap<(ViewId, String), shell_contract::ipc::NativeSaveDestination>,
     pub untitled_workbook_paths: HashSet<String>,
     pub unsaved_new_workbooks: HashMap<String, UnsavedNew>,
     pub mcp_writable: HashMap<ViewId, HashSet<String>>,
@@ -507,6 +511,7 @@ impl AppState {
             pending_pick: None,
             import_controllers: HashMap::new(),
             save_as_export_targets: SaveAsExportTargets::new(),
+            native_export_destinations: HashMap::new(),
             untitled_workbook_paths: HashSet::new(),
             unsaved_new_workbooks: HashMap::new(),
             mcp_writable: HashMap::new(),

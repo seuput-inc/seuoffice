@@ -7,9 +7,10 @@ use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use file_commit::PublicationMode;
 use jscompat::node_path::host::basename;
 use serde_json::Value;
-use shell_contract::ipc::{DirectWriteCompletion, NativeSavedInput};
+use shell_contract::ipc::NativeSavedInput;
 use shell_contract::{Hosts, IpcError, IpcValue, ViewId, WindowId};
 
 use super::conv::serde_to_ipc;
@@ -1052,9 +1053,10 @@ impl FakeShell {
 
 fn log_open_generated(log: &Option<Log>, path: &str) {
     if let Some(log) = log {
-        log.lock()
-            .unwrap()
-            .push(Value::Array(vec!["shell.openGeneratedPath".into(), path.into()]));
+        log.lock().unwrap().push(Value::Array(vec![
+            "shell.openGeneratedPath".into(),
+            path.into(),
+        ]));
     }
 }
 
@@ -1347,7 +1349,7 @@ impl SheetsShell for FakeShell {
         pending: &shell_contract::runtime::CancelToken,
         additional: &[shell_contract::runtime::CancelToken],
         effects: &shell_contract::hosts::OwnedEffectsHost,
-        admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
+        _admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
         file_name: &str,
         bytes: &[u8],
     ) -> Result<Option<(shell_contract::ipc::SavedPublication, NativeSavedInput)>, String> {
@@ -1373,41 +1375,21 @@ impl SheetsShell for FakeShell {
         else {
             return Ok(None);
         };
-        main_core::packages::electron_utils::atomic_write::owned::admitted(&admission, || ())
-            .map_err(|error| error.message)?;
-        let parent = path
-            .parent()
-            .ok_or("The scripted document path has no parent directory")?;
-        let parent = fs::File::open(parent).map_err(|error| error.to_string())?;
-        let prepared = file_commit::prepare_direct(&parent, &path)
-            .map_err(|error| error.to_string())?;
-        let admitted = effects
-            .begin_owned_direct_write(
-                origin,
-                destination,
-                participants,
-                cancel,
-                pending,
-                additional,
-                &path,
-                prepared,
-            )
-            .map_err(|error| format!("{error:?}"))?;
-        let completed = admitted
-            .write_owned(bytes.to_vec())
-            .map_err(|(error, _)| error.to_string())?;
-        match completed.finish(effects.as_ref()) {
-            DirectWriteCompletion::Committed {
-                publication,
-                snapshot,
-            } => {
-                let input =
-                    NativeSavedInput::from_written_snapshot(publication.clone(), snapshot)?;
-                Ok(Some((publication, input)))
-            }
-            DirectWriteCompletion::WrittenWithoutReceipt { error, .. } => Err(error.to_string()),
-            DirectWriteCompletion::WrittenButNotAdmitted { error, .. } => Err(error),
-        }
+        let mut staged =
+            crate::staged::StagedOutput::prepare(&path, bytes.to_vec(), PublicationMode::Exclusive)
+                .map_err(|error| error.message)?;
+        let commit = staged.take().map_err(|error| error.message)?;
+        let result = effects.publish_owned_staged_write(
+            origin,
+            destination,
+            participants,
+            cancel,
+            pending,
+            additional,
+            &path,
+            commit,
+        );
+        staged.conclude(result).map(Some).map_err(|error| error.message)
     }
 
     fn create_document_owned(

@@ -1,12 +1,11 @@
 use super::super::owned_save::{SaveRevision, SaveScope};
 use super::*;
-use main_core::packages::electron_utils::atomic_write::owned::{Admission, admitted};
+use crate::staged::StagedOutput;
+use file_commit::PublicationMode;
+use main_core::packages::electron_utils::atomic_write::owned::{Admission, write_file};
 use std::path::{Path, PathBuf};
 
-type Written = (
-    shell_contract::ipc::SavedPublication,
-    Option<shell_contract::ipc::NativeSavedInput>,
-);
+type Written = Option<StagedOutput>;
 
 struct Staging(PathBuf);
 impl Staging {
@@ -93,7 +92,8 @@ fn stage_and_write(
         .ok_or("The PDF destination is required")?;
     entry.1 = string(staged);
     let participants = request.participants(&[]);
-    let result = match (&request.authority, invocation, destination) {
+    let invocation_run = invocation.is_some();
+    let result = match (&request.authority, invocation, destination.as_ref()) {
         (crate::owned_save::SaveAuthority::Renderer(origin), Some(document), None) => shell
             .export_pdf_native_invocation(
                 op,
@@ -119,7 +119,7 @@ fn stage_and_write(
         (crate::owned_save::SaveAuthority::Native(_), None, Some(destination)) => shell
             .export_pdf_existing_document(
                 op,
-                &destination,
+                destination,
                 &participants,
                 &request.cancel,
                 &request.pending,
@@ -137,11 +137,13 @@ fn stage_and_write(
         return Err("The PDF renderer returned another staging path".into());
     }
     let bytes = std::fs::read(staged).map_err(|error| error.to_string())?;
-    admitted(&admission, || ()).map_err(|error| error.message)?;
-    let (output, input) = request
-        .write_published(destination.as_ref(), Path::new(path), bytes)
-        .map_err(|error| error.message)?;
-    Ok((output, Some(input)))
+    if invocation_run {
+        write_file(path, &bytes, admission).map_err(|error| error.message)?;
+        return Ok(None);
+    }
+    StagedOutput::prepare(Path::new(path), bytes, PublicationMode::Replace)
+        .map(Some)
+        .map_err(|error| error.message)
 }
 
 type GeneratedResult = Result<shell_contract::hosts::GeneratedPathOutcome, String>;
@@ -450,10 +452,20 @@ impl App {
         result: Result<Written, String>,
         responder: Responder,
     ) {
-        let (output, input) = match result
-            .map_err(thrown)
-            .and_then(|value| scope.effect_at_revision(self, &revision, || value))
-        {
+        let published = match result.map_err(thrown).and_then(|staged| match staged {
+            Some(staged) => {
+                let mut validate = || {
+                    scope
+                        .check_revision_state(self, &revision)
+                        .map_err(|error| error.message)
+                };
+                scope
+                    .request
+                    .publish_staged(scope.native_destination.as_ref(), staged, &mut validate)
+                    .map(Some)
+            }
+            None => scope.effect_at_revision(self, &revision, || None),
+        }) {
             Ok(value) => value,
             Err(error) => return responder.reply(Err(error)),
         };
@@ -463,6 +475,9 @@ impl App {
                 ("path", string(path)),
             ])));
         }
+        let Some((output, input)) = published else {
+            return responder.reply(Err(thrown("The PDF output was not published")));
+        };
         let request = scope.request.clone();
         let reply_path = path.clone();
         let accepted = scope.reload_losses.clone().unwrap_or_else(|| {
@@ -606,7 +621,7 @@ impl App {
         };
         match self.shell.prepare_reveal_export(
             output,
-            input,
+            Some(input),
             request.participants(&[]),
             request.cancel.clone(),
             request.pending.clone(),

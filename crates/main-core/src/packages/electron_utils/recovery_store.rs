@@ -280,6 +280,7 @@ pub struct OwnedPreparedRecoveryWrite {
 }
 
 impl OwnedPreparedRecoveryWrite {
+    #[allow(clippy::type_complexity)]
     pub fn new(
         plan: RecoveryWritePlan,
         bytes: Vec<u8>,

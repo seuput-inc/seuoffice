@@ -267,9 +267,7 @@ impl AdoptWrite {
         });
         let mut copy_failure = None;
         let mut retained_private_dir = None;
-        if !occupied
-            && let Some(file) = &self.copy_file
-        {
+        if !occupied && let Some(file) = &self.copy_file {
             let mut denied = None;
             let result = ProjectWriteGuard::new(&self.platform).write_data_authorized(
                 &self.adoption.root,
@@ -2163,13 +2161,15 @@ impl ProjectGuide {
                 stage: AddFolderStage::Trust,
             }));
         };
-        Ok(AdoptPreparation::Write(Box::new(self.prepare_finish_adopt(
-            *adoption,
-            Some(StoredTrustRecord {
-                decision: decision.as_str().to_owned(),
-                hashes,
-            }),
-        )?)))
+        Ok(AdoptPreparation::Write(Box::new(
+            self.prepare_finish_adopt(
+                *adoption,
+                Some(StoredTrustRecord {
+                    decision: decision.as_str().to_owned(),
+                    hashes,
+                }),
+            )?,
+        )))
     }
 
     pub fn finish_adoption(
@@ -2328,7 +2328,9 @@ impl ProjectGuide {
                 .iter()
                 .any(|item| same_path(&item.path, &target, &self.platform));
             return if args.use_existing == Some(true) || listed {
-                Ok(CreatePreparation::Adopt(Box::new(self.prepare_adopt(&target, None)?)))
+                Ok(CreatePreparation::Adopt(Box::new(
+                    self.prepare_adopt(&target, None)?,
+                )))
             } else {
                 Ok(CreatePreparation::Done(CreateProjectResult::Exists {
                     folder_path: target,

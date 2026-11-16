@@ -140,7 +140,11 @@ impl SavedActorRegistration for Registration {
                 "The saved map supersession proof does not match",
             )));
         }
-        release(&self.app, &self.target, "The saved map browser was replaced");
+        release(
+            &self.app,
+            &self.target,
+            "The saved map browser was replaced",
+        );
         self.phase.set(Phase::Superseded);
         then(Ok(()));
     }

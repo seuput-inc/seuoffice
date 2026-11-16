@@ -7,6 +7,7 @@
 use std::fs;
 use std::path::Path;
 
+use file_commit::PublicationMode;
 use jscompat::node_path::host::{basename, dirname, is_absolute, join, resolve};
 use jscompat::{JsMap, JsonValue, trim};
 use main_core::markdown::fs_util::sha256_file;
@@ -43,6 +44,7 @@ use super::recovery::{io_err, node_err, ok_answer, write_session_copy};
 use super::recovery_policy::session_recovery_identity;
 use super::schema;
 use super::session::{OpenOptions, SessionInfo, Staged, file_identity};
+use crate::staged::StagedOutput;
 use crate::value::{as_str, field, obj, string, thrown};
 
 type GeneratedCompletion = Box<
@@ -528,7 +530,7 @@ fn open_generated_file_owned(
             let prepared = if pdf {
                 shell.export_pdf_written_owned(
                     publication,
-                    written,
+                    Some(written),
                     participants,
                     cancel,
                     pending,
@@ -540,7 +542,7 @@ fn open_generated_file_owned(
             } else {
                 shell.open_generated_path_owned(
                     publication,
-                    written,
+                    Some(written),
                     participants,
                     cancel,
                     pending,
@@ -621,6 +623,164 @@ fn open_generated_file_owned(
     };
     acknowledge();
     outcome
+}
+
+/// Stages `bytes` beside `path` on this worker, then publishes them on the core
+/// turn under the save's authority. `metadata` also requires the tab's document
+/// and metadata revision to be unchanged when the publication is admitted.
+fn publish_generated(
+    env: &Env,
+    scope: &crate::owned_save::OwnedSave,
+    selection: Option<shell_contract::ipc::NativeSaveDestination>,
+    path: &str,
+    bytes: Vec<u8>,
+    mode: PublicationMode,
+    metadata: Option<(ViewId, u64)>,
+) -> Result<crate::owned_save::PublishedOutput, IpcError> {
+    let staged = StagedOutput::prepare(Path::new(path), bytes, mode)?;
+    let scope = scope.clone();
+    env.core(move |core| {
+        let mut validate = || match metadata {
+            Some((view, revision)) => {
+                let current = core.state.borrow().tab(view).is_some_and(|tab| {
+                    tab.document.same_generation(&scope.document)
+                        && tab.metadata_revision == Some(revision)
+                });
+                if current {
+                    Ok(())
+                } else {
+                    Err("The workbook metadata changed during document creation".to_owned())
+                }
+            }
+            None => scope.check().map_err(|error| error.message),
+        };
+        scope.publish_staged(selection.as_ref(), staged, &mut validate)
+    })
+}
+
+/// A native workbook save publishes against the exact destination it selected:
+/// the dialog's destination, the exact-path selection, or the document's own
+/// current path. The scope keeps that selection as its save revision, here and
+/// in the pending request that later phases reuse.
+fn retain_native_workbook_target(
+    env: &Env,
+    view: ViewId,
+    scope: &mut crate::owned_save::OwnedSave,
+    binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+    target: &str,
+    dialog: Option<shell_contract::ipc::NativeSaveDestination>,
+) -> Result<(), IpcError> {
+    use shell_contract::editors::SaveMode;
+    use shell_contract::ipc::{
+        NativeEditorCommand, NativeInvocationSelection, NativeSaveDestination, NativeSaveSelection,
+    };
+    if let Some(selected) = scope.native_selection() {
+        return if selected.path() == Path::new(target) {
+            Ok(())
+        } else {
+            Err(thrown("The native workbook save destination changed"))
+        };
+    }
+    let destination = match dialog {
+        Some(destination) => destination,
+        None => match binding.operation().selection() {
+            NativeInvocationSelection::NativeCommand(NativeEditorCommand::SaveDocument {
+                selection: NativeSaveSelection::ExactPath(_),
+                ..
+            }) => NativeSaveDestination::from_exact_selection(binding.clone()).map_err(thrown)?,
+            NativeInvocationSelection::NativeCommand(NativeEditorCommand::SaveDocument {
+                selection: NativeSaveSelection::Mode(SaveMode::Save),
+                ..
+            }) => {
+                let expected = target.to_owned();
+                let unchanged = env.core(move |core| {
+                    core.state
+                        .borrow()
+                        .tab(view)
+                        .and_then(|tab| tab.current_path.as_deref())
+                        == Some(expected.as_str())
+                });
+                if !unchanged {
+                    return Err(thrown("The workbook save path was replaced"));
+                }
+                NativeSaveDestination::from_current_document(
+                    binding.clone(),
+                    std::path::PathBuf::from(target),
+                )
+                .map_err(thrown)?
+            }
+            _ => {
+                return Err(thrown(
+                    "The native workbook save has no selected destination",
+                ));
+            }
+        },
+    };
+    if destination.path() != Path::new(target) {
+        return Err(thrown("The selected workbook save path changed"));
+    }
+    scope.retain_native_selection(&destination)?;
+    let retained = scope.clone();
+    env.core(move |core| {
+        for waiter in core.state.borrow_mut().owned_saves.values_mut() {
+            if waiter.scope.pending.same_token(&retained.pending) {
+                waiter.scope = retained.clone();
+            }
+        }
+    });
+    Ok(())
+}
+
+/// The tab's session follows the path the shell actually published, then the
+/// shell's own session publication is finalized before the save answers.
+#[allow(clippy::too_many_arguments)]
+fn acknowledge_published(
+    core: &Core,
+    scope: &crate::owned_save::OwnedSave,
+    view: ViewId,
+    id: &str,
+    requested: &str,
+    actual: String,
+    session: shell_contract::hosts::SavedSessionReceipt,
+    tx: std::sync::mpsc::SyncSender<Result<String, String>>,
+) {
+    let acknowledged = scope.effect(|| {
+        let mut state = core.state.borrow_mut();
+        let tab = state
+            .tab_mut(view)
+            .ok_or_else(|| thrown("The workbook tab was closed while saving"))?;
+        let mut current = tab
+            .session(id)
+            .cloned()
+            .ok_or_else(|| thrown("The workbook session was replaced while saving"))?;
+        if current.path == requested {
+            current.path = actual.clone();
+        }
+        if current.restore_target.as_deref() == Some(requested) {
+            current.restore_target = Some(actual.clone());
+        }
+        if current.csv_source_path.as_deref() == Some(requested) {
+            current.csv_source_path = Some(actual.clone());
+        }
+        if let Some((path, _)) = current.disk_state.as_mut() {
+            if *path == requested {
+                *path = actual.clone();
+            }
+        }
+        if current.recovery_identity.as_ref() == Some(&file_identity(requested)) {
+            current.recovery_identity = Some(file_identity(&actual));
+        }
+        tab.set_session(id, current);
+        tab.set_current_path(Some(actual.clone()));
+        Ok(())
+    });
+    if let Err(error) = acknowledged {
+        let _ = tx.send(Err(error.message));
+        return;
+    }
+    session.finalize(Box::new(move |result| {
+        let _ = tx.send(result.map(|()| actual));
+    }));
 }
 
 /// the first `JSON.stringify`-able request of the save pipeline: the engine's
@@ -878,7 +1038,7 @@ pub fn save_workbook_with_owner(
     env: &Env,
     view: ViewId,
     input: IpcValue,
-    owned: Option<crate::owned_save::OwnedSave>,
+    mut owned: Option<crate::owned_save::OwnedSave>,
 ) -> Result<IpcValue, IpcError> {
     if let Some(owned) = &owned {
         owned.check()?;
@@ -893,6 +1053,7 @@ pub fn save_workbook_with_owner(
     // A CSV session's plain Save keeps the CSV identity
     let csv_in_place = mode == "save" && session.csv_source_path.is_some();
     let mut target_path = session.path.clone();
+    let mut dialog_destination = None;
     if let Some(requested) = text(&request, "targetPath") {
         // MCP explicit-path save: dialog-free Save As to an exact path with a clobber guard
         if mode != "save-as" {
@@ -1008,6 +1169,7 @@ pub fn save_workbook_with_owner(
             }
             None => save_dialog(env, parent, &dialog_options(&entries)),
         };
+        dialog_destination = selection.destination;
         let Some(file_path) = selection
             .path
             .filter(|p| !p.is_empty() && !selection.canceled)
@@ -1042,12 +1204,23 @@ pub fn save_workbook_with_owner(
             SaveAsKind::Ods | SaveAsKind::Pdf => {
                 let key = pick.path.clone();
                 let scope = owned.clone();
+                let native = dialog_destination.take();
                 env.core(move |core| {
                     save_effect(scope.as_ref(), || {
-                        core.state
-                            .borrow_mut()
+                        if let Some(destination) = &native
+                            && destination.path() != Path::new(&key)
+                        {
+                            return Err(thrown("The selected export destination changed"));
+                        }
+                        let mut state = core.state.borrow_mut();
+                        state
                             .save_as_export_targets
                             .authorize(f64::from(view.0), &key);
+                        if let Some(destination) = native {
+                            state
+                                .native_export_destinations
+                                .insert((view, key.clone()), destination);
+                        }
                         Ok(())
                     })
                 })?;
@@ -1122,6 +1295,20 @@ pub fn save_workbook_with_owner(
         {
             return Err(disk_changed(env));
         }
+    }
+    let native_binding = match owned.as_ref().map(|scope| &scope.authority) {
+        Some(crate::owned_save::SaveAuthority::Native(binding)) => Some(binding.clone()),
+        _ => None,
+    };
+    if let (Some(binding), Some(scope)) = (native_binding, owned.as_mut()) {
+        retain_native_workbook_target(
+            env,
+            view,
+            scope,
+            &binding,
+            &target_path,
+            dialog_destination,
+        )?;
     }
     let short_date_pattern = env.shell.short_date_pattern().map_err(thrown)?;
     // An encrypted workbook's save lands as plaintext only inside its own temp dir
@@ -1375,7 +1562,6 @@ pub fn save_workbook_with_owner(
     };
     let expected_path = published_path.clone();
     let published_path = if let Some(scope) = &owned {
-        let origin = scope.authority.renderer()?.clone();
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let scope = scope.clone();
         let requested = published_path.clone();
@@ -1383,60 +1569,107 @@ pub fn save_workbook_with_owner(
         env.post(move |core| {
             let shell = core.env.shell.clone();
             let core = core.clone();
-            shell.workbook_opened_owned(
-                view,
-                requested.clone(),
-                origin,
-                scope.destination.clone(),
-                scope.cancel.clone(),
-                scope.pending.clone(),
-                Box::new(move |result| {
-                    let saved = match result {
-                        Ok(saved) => saved,
+            match scope.authority.clone() {
+                crate::owned_save::SaveAuthority::Renderer(origin) => shell.workbook_opened_owned(
+                    view,
+                    requested.clone(),
+                    origin,
+                    scope.destination.clone(),
+                    scope.cancel.clone(),
+                    scope.pending.clone(),
+                    Box::new(move |result| match result {
+                        Ok(saved) => acknowledge_published(
+                            &core,
+                            &scope,
+                            view,
+                            &id,
+                            &requested,
+                            saved.path,
+                            saved.session,
+                            tx,
+                        ),
                         Err(error) => {
                             let _ = tx.send(Err(error));
-                            return;
                         }
-                    };
-                    let actual = saved.path;
-                    let acknowledged = scope.effect(|| {
-                        let mut state = core.state.borrow_mut();
-                        let tab = state
-                            .tab_mut(view)
-                            .ok_or_else(|| thrown("The workbook tab was closed while saving"))?;
-                        let mut current = tab.session(&id).cloned().ok_or_else(|| {
-                            thrown("The workbook session was replaced while saving")
-                        })?;
-                        if current.path == requested {
-                            current.path = actual.clone();
-                        }
-                        if current.restore_target.as_deref() == Some(requested.as_str()) {
-                            current.restore_target = Some(actual.clone());
-                        }
-                        if current.csv_source_path.as_deref() == Some(requested.as_str()) {
-                            current.csv_source_path = Some(actual.clone());
-                        }
-                        if let Some((path, _)) = current.disk_state.as_mut() {
-                            if *path == requested {
-                                *path = actual.clone();
-                            }
-                        }
-                        if current.recovery_identity.as_ref() == Some(&file_identity(&requested)) {
-                            current.recovery_identity = Some(file_identity(&actual));
-                        }
-                        tab.set_session(&id, current);
-                        tab.set_current_path(Some(actual.clone()));
-                        Ok(())
-                    });
-                    if let Err(error) = acknowledged {
-                        let _ = tx.send(Err(error.message));
+                    }),
+                ),
+                crate::owned_save::SaveAuthority::Native(_) => {
+                    let Some(revision) = scope.revision.clone() else {
+                        let _ = tx.send(Err(
+                            "The native workbook save revision was released".into()
+                        ));
                         return;
-                    }
-                    saved.session.finalize(Box::new(move |result| {
-                        let _ = tx.send(result.map(|()| actual));
-                    }));
-                }),
-            );
+                    };
+                    let current = std::rc::Rc::new(std::cell::RefCell::new(scope.clone()));
+                    let on_current = current.clone();
+                    let on_core = core.clone();
+                    let on_revision = std::rc::Rc::new(
+                        move |receipt: &shell_contract::ipc::NativeSaveRevisionReceipt| {
+                            let mut updated = on_current.borrow().clone();
+                            updated
+                                .apply_revision_receipt(receipt)
+                                .map_err(|error| error.message)?;
+                            for (key, waiter) in on_core.state.borrow_mut().owned_saves.iter_mut() {
+                                if !waiter.scope.pending.same_token(&updated.pending) {
+                                    continue;
+                                }
+                                waiter.scope = updated.clone();
+                                if let Some(loss) = updated.destination.loss_token() {
+                                    let env = on_core.env.clone();
+                                    let key = key.clone();
+                                    let pending = updated.pending.clone();
+                                    waiter.subscriptions.push(loss.on_cancel(move || {
+                                        pending.cancel();
+                                        env.post(move |core| {
+                                            core.finish_owned_save(
+                                                &key,
+                                                Err(thrown("The workbook save owner was released")),
+                                            )
+                                        });
+                                    }));
+                                }
+                            }
+                            *on_current.borrow_mut() = updated;
+                            Ok::<(), String>(())
+                        },
+                    );
+                    shell.workbook_opened_existing_document(
+                        revision,
+                        std::path::PathBuf::from(&requested),
+                        scope.participants(&[]),
+                        scope.cancel.clone(),
+                        scope.pending.clone(),
+                        scope.additional.clone(),
+                        scope.effects.clone(),
+                        on_revision,
+                        Box::new(move |result| match result {
+                            Ok(saved) => match saved.path.into_os_string().into_string() {
+                                Ok(actual) => {
+                                    let scope = current.borrow().clone();
+                                    acknowledge_published(
+                                        &core,
+                                        &scope,
+                                        view,
+                                        &id,
+                                        &requested,
+                                        actual,
+                                        saved.session,
+                                        tx,
+                                    )
+                                }
+                                Err(_) => {
+                                    let _ = tx.send(Err(
+                                        "The saved workbook path is not Unicode".into()
+                                    ));
+                                }
+                            },
+                            Err(error) => {
+                                let _ = tx.send(Err(error));
+                            }
+                        }),
+                    )
+                }
+            }
         });
         rx.recv()
             .map_err(|_| thrown("The saved workbook publication did not complete"))?
@@ -2316,7 +2549,16 @@ pub(super) fn export_pdf(
         )
         .map_err(node_err)?;
     } else if let Some(scope) = owned.as_ref().filter(|_| !env.shell.is_headless()) {
-        published = Some(scope.write_published(destination.as_ref(), Path::new(&path), pdf)?);
+        let selection = destination.or_else(|| scope.native_selection().cloned());
+        published = Some(publish_generated(
+            env,
+            scope,
+            selection,
+            &path,
+            pdf,
+            PublicationMode::Replace,
+            None,
+        )?);
     } else {
         write_bytes(&path, &pdf, owned.as_ref())?;
     }
@@ -2434,12 +2676,15 @@ pub fn create_document(
                 Some(published) => published,
                 None => {
                     let path = unique_path_in(&default_save_dir(env)?, &file_name);
-                    main_core::packages::electron_utils::atomic_write::owned::admitted(
-                        &admission,
-                        || (),
-                    )
-                    .map_err(node_err)?;
-                    scope.write_published(None, Path::new(&path), bytes)?
+                    publish_generated(
+                        env,
+                        &scope,
+                        None,
+                        &path,
+                        bytes,
+                        PublicationMode::Exclusive,
+                        Some((view, revision)),
+                    )?
                 }
             };
             let path = published

@@ -73,9 +73,7 @@ impl<'a, 'f> Effects<'a, 'f> {
                 (Ok(()), None) => Err(refused("asset admission did not execute its effect")),
             }
         };
-        if required
-            && let Err(error) = &outcome
-        {
+        if required && let Err(error) = &outcome {
             self.denied = Some(error.clone());
         }
         outcome

@@ -129,9 +129,7 @@ impl ImageExportSessions {
             );
             Ok(())
         }) {
-            if !native
-                && let Err(cleanup) = rm_recursive_force(&dir)
-            {
+            if !native && let Err(cleanup) = rm_recursive_force(&dir) {
                 eprintln!(
                     "[markdown] image export staging cleanup incomplete at {dir}: {}",
                     cleanup.message

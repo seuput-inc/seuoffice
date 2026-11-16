@@ -282,12 +282,14 @@ impl TabsState {
                 manager, bridge, ..
             } = &mut *inner;
             match manager.as_ref() {
-                Some(manager) => manager
-                    .prepare_editor_adoption(bridge, plan, view)
-                    .map_err(|failure| {
-                        let (plan, error) = *failure;
-                        (plan, error.0)
-                    }),
+                Some(manager) => {
+                    manager
+                        .prepare_editor_adoption(bridge, plan, view)
+                        .map_err(|failure| {
+                            let (plan, error) = *failure;
+                            (plan, error.0)
+                        })
+                }
                 None => Err((plan, "The shell window is unavailable".into())),
             }
         }?;

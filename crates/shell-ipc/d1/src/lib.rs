@@ -17,6 +17,7 @@ mod owned_seed;
 pub mod route;
 pub mod sheets;
 pub mod slides;
+mod staged;
 #[cfg(any(test, feature = "probe"))]
 pub mod testkit;
 pub mod value;

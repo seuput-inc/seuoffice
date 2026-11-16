@@ -1539,6 +1539,7 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
         }
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn prepare_editor_adoption(
         &self,
         host: &mut dyn TabHost<V, B>,
@@ -1634,7 +1635,10 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
                 )
             }
             EditorOpen::Generate { .. } | EditorOpen::Conversion { .. } => {
-                return Err(Box::new((plan, TabError("editor request was not normalized".into()))));
+                return Err(Box::new((
+                    plan,
+                    TabError("editor request was not normalized".into()),
+                )));
             }
         };
         Ok(PreparedEditorAdoption {
