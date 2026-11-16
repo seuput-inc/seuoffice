@@ -2504,11 +2504,35 @@ mod deferred_outside_tests {
         assert_eq!(first.appended.len(), 1);
     }
 
+    /// Issues the id of an already stored chat first, then a fresh one, so
+    /// `new_chat` must skip the collision instead of retrying one fixed id.
+    #[derive(Default)]
+    struct CollidingThenFreshHost {
+        issued: usize,
+    }
+    impl ChatStoreHost for CollidingThenFreshHost {
+        fn trash(&mut self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn now_iso(&mut self) -> Result<String, ChatStoreError> {
+            Ok("2025-01-01T00:00:00.000Z".into())
+        }
+        fn new_id(&mut self) -> String {
+            self.issued += 1;
+            if self.issued == 1 {
+                "chat".into()
+            } else {
+                format!("fresh-{}", self.issued)
+            }
+        }
+        fn warn(&mut self, _: &str, _: Option<&str>) {}
+    }
+
     #[test]
     fn abandoned_ack_restores_store_without_forwarding_new_settings_effects() {
         let mut core = ProjectChatStore::new(
             IdentityGuide::default(),
-            IdentityHost,
+            CollidingThenFreshHost::default(),
             ChatStoreOptions::default(),
         );
         let args = jscompat::json_parse(
@@ -2534,7 +2558,7 @@ mod deferred_outside_tests {
         assert_eq!(ack.state.pending_outside.len(), 1);
         core.abandon_io(ack).unwrap();
         assert!(core.take_outside_writes().is_empty());
-        assert!(core.new_chat("project").is_ok());
+        assert_eq!(core.new_chat("project").unwrap(), "fresh-2");
     }
 
     struct InvalidClock;
