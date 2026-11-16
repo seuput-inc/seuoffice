@@ -4036,7 +4036,7 @@ impl OwnedEffects for NativeOwnedEffects {
                     let mut staged = Some(staged);
                     let mut committed = false;
                     let mut commit = || {
-                        let apply_transition = || -> Result<(), String> {
+                        let mut apply_transition = || -> Result<(), String> {
                             let staged = staged
                                 .take()
                                 .ok_or("The Docs media transition was already consumed")?;
@@ -4053,8 +4053,7 @@ impl OwnedEffects for NativeOwnedEffects {
                                     Some(invocation) => invocation
                                         .with_registered_state(registered, apply)
                                         .ok_or_else(|| {
-                                            "The registered recovery target was replaced"
-                                                .to_owned()
+                                            "The registered recovery target was replaced".to_owned()
                                         })?,
                                     None => apply(),
                                 },

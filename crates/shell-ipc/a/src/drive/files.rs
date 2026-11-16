@@ -1475,9 +1475,7 @@ mod tests {
             finished.send(()).unwrap();
         });
         assert!(
-            revocation
-                .recv_timeout(Duration::from_millis(100))
-                .is_err(),
+            revocation.recv_timeout(Duration::from_millis(100)).is_err(),
             "cancellation is excluded while the admitted effect runs"
         );
         assert!(finishing.try_recv().is_err());

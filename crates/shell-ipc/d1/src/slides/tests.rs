@@ -6,21 +6,122 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use std::sync::Arc;
+
 use shell_contract::editors::{DocumentEditors, SaveMode};
+use shell_contract::runtime::{Thread, Workers};
 use shell_contract::ipc::Target;
 use shell_contract::{IpcValue, Surface, ViewId};
 
 use crate::testkit::{Kit, TestRegistry, registered, temp_dir};
 use crate::value::{field, num, obj, string};
 
+type Job = Box<dyn FnOnce() + Send>;
+
+enum CoreMessage {
+    Run(Job),
+    Done,
+}
+
+/// The test's own thread is the core thread, the only one that can see the
+/// slides app. A job posted from any other thread (a worker, the recent-list
+/// queue) is handed to the core thread while it waits for that worker.
+struct CoreThread {
+    owner: std::thread::ThreadId,
+    pump: std::sync::Mutex<Option<std::sync::mpsc::Sender<CoreMessage>>>,
+}
+
+impl shell_contract::runtime::Thread for CoreThread {
+    fn post(&self, job: Job) {
+        if self.is_current() {
+            return job();
+        }
+        let pump = self.pump.lock().unwrap().clone();
+        match pump {
+            Some(pump) => {
+                if let Err(rejected) = pump.send(CoreMessage::Run(job))
+                    && let CoreMessage::Run(job) = rejected.0
+                {
+                    job()
+                }
+            }
+            None => job(),
+        }
+    }
+
+    fn is_current(&self) -> bool {
+        std::thread::current().id() == self.owner
+    }
+}
+
+impl CoreThread {
+    /// Runs `job` as a worker thread would run it, and serves the core jobs it
+    /// causes until it finishes, so the caller still sees it done on return.
+    fn run_as_worker(&self, job: Job) {
+        if !self.is_current() {
+            return job();
+        }
+        struct Finish(std::sync::mpsc::Sender<CoreMessage>);
+        impl Drop for Finish {
+            fn drop(&mut self) {
+                let _ = self.0.send(CoreMessage::Done);
+            }
+        }
+        let (send, receive) = std::sync::mpsc::channel();
+        let previous = self.pump.lock().unwrap().replace(send.clone());
+        let finish = Finish(send);
+        let worker = std::thread::spawn(move || {
+            let _finish = finish;
+            job()
+        });
+        loop {
+            match receive.recv().expect("the worker keeps its pump open") {
+                CoreMessage::Run(job) => job(),
+                CoreMessage::Done => break,
+            }
+        }
+        *self.pump.lock().unwrap() = previous;
+        while let Ok(CoreMessage::Run(job)) = receive.try_recv() {
+            job()
+        }
+        if let Err(panic) = worker.join() {
+            std::panic::resume_unwind(panic)
+        }
+    }
+}
+
+struct WorkerThreads {
+    core: Arc<CoreThread>,
+    held: Arc<crate::testkit::HeldWorkers>,
+}
+
+impl shell_contract::runtime::Workers for WorkerThreads {
+    fn spawn(&self, job: Job) {
+        let core = self.core.clone();
+        self.held
+            .spawn(Box::new(move || core.run_as_worker(job)));
+    }
+}
+
 fn setup(name: &str) -> (Kit, TestRegistry, shell_contract::ipc::Sender, PathBuf) {
     let dir = temp_dir(name);
     // userData exists in a running app: the recent list and the recovery store write there
     std::fs::create_dir_all(dir.join("userdata")).unwrap();
-    let kit = Kit::new(&dir, crate::insert_fakes);
+    let mut kit = Kit::new(&dir, crate::insert_fakes);
+    // production runs workers off the core thread; the recent-list queue and the
+    // save publication reach the app only through core posts
+    let core = Arc::new(CoreThread {
+        owner: std::thread::current().id(),
+        pump: std::sync::Mutex::new(None),
+    });
+    kit.services.core = core.clone();
+    kit.services.workers = Arc::new(WorkerThreads {
+        core,
+        held: kit.workers.clone(),
+    });
     let registry = registered(&kit);
     // the native host gives every capture of one renderer the same origin
-    kit.host::<std::sync::Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>()
+    kit.host::<Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>()
         .share_capture_origins();
     let sender = kit.view(1, Surface::Slides);
     (kit, registry, sender, dir)

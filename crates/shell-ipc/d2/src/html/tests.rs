@@ -1585,7 +1585,10 @@ fn owned_save_as_cancellation_cannot_publish_the_rendered_copy() {
     );
     let output = rt.dir.join("owned-cancelled.pdf");
     rt.script().save.push_back(Some(output.clone()));
-    let destination = html(&rt).docs.pending_save_destination(target.view).unwrap();
+    let destination = html(&rt)
+        .docs
+        .pending_save_destination(target.view)
+        .unwrap();
     let reply = invoke_native_as(
         &mut rt,
         "html:save",
@@ -1670,7 +1673,10 @@ fn owned_close_waits_for_the_native_save_and_keeps_the_requested_mode() {
         rt.events().last().unwrap().channel,
         "html:close-save-request"
     );
-    let destination = html(&rt).docs.pending_save_destination(target.view).unwrap();
+    let destination = html(&rt)
+        .docs
+        .pending_save_destination(target.view)
+        .unwrap();
     let result = invoke_native_as(
         &mut rt,
         "html:save",
