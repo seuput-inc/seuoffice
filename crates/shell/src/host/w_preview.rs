@@ -218,14 +218,6 @@ impl WindowState {
         })
     }
 
-    fn show(&self, focus: bool) {
-        if let Some(window) = self.window() {
-            let windows = self.cx.windows.clone();
-            on_ui(&self.cx.ui, move || windows.show(window, focus))
-                .unwrap_or_else(|error| eprintln!("showing preview window: {error}"));
-        }
-    }
-
     fn close(&self) {
         if let Some(window) = self.window() {
             let windows = self.cx.windows.clone();

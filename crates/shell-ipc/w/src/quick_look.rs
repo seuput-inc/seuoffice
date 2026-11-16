@@ -47,6 +47,10 @@ pub trait QuickLookRuntime: Send + Sync {
     fn sync(&self, settings: &QuickLookSettings);
     /// The tray's menu follows the language (`syncTrayMenu`)
     fn refresh_tray(&self);
+    /// `shouldKeepQuickLookInTray()`: the last window closing leaves the app
+    /// running in the tray (Explorer preview and "keep in tray" both on; never
+    /// on macOS)
+    fn keeps_in_tray(&self) -> bool;
     /// `explorerHook.stop()` and the tray's `destroy()`
     fn stop(&self);
 }

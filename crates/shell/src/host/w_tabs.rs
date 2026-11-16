@@ -1955,9 +1955,15 @@ pub(crate) fn window_event(window: WindowId, event: &tauri::WindowEvent) {
         tauri::WindowEvent::Destroyed => {
             host.detached.lock().unwrap().remove(&window);
             events.send(HostEvent::Window(window, WindowEvent::Closed));
+            // Electron's `closed` handler checks `appQuitting` once, as the
+            // window goes; a quit that starts later must not be judged by it
+            let closed_into_session = shell && !crate::host::quit::is_quitting();
             if let Some(core) = host.core.get() {
                 core.post(Box::new(move || {
-                    super::recovery_openers::close_owner(window)
+                    super::recovery_openers::close_owner(window);
+                    if closed_into_session {
+                        super::recovery_launch::note_shell_window_closed();
+                    }
                 }));
             }
         }

@@ -40,22 +40,6 @@ pub fn list_slide_templates() -> Result<Vec<Value>, String> {
     Ok(templates)
 }
 
-/// `findSlideTemplate`: case-insensitive id or English name, after trimming.
-pub fn find_slide_template(id_or_name: &str) -> Result<Option<Value>, String> {
-    let key = jscompat::trim(id_or_name).to_lowercase();
-    if key.is_empty() {
-        return Ok(None);
-    }
-    Ok(list_slide_templates()?.into_iter().find(|template| {
-        ["id", "name"].into_iter().any(|field| {
-            template
-                .get(field)
-                .and_then(Value::as_str)
-                .is_some_and(|s| s.to_lowercase() == key)
-        })
-    }))
-}
-
 fn select_cover(templates: &[Value], id: &str, lang: &str) -> Result<Option<String>, String> {
     if lang != "ko" && lang != "en" {
         return Ok(None);

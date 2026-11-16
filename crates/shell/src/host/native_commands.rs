@@ -71,20 +71,6 @@ impl Factory {
         self.issuer
             .issue_command_recovery_child(command, selection, cancel)
     }
-
-    fn issue_startup_recovery_child(
-        &self,
-        startup: &NativeInvocationOperation,
-        command: &NativeInvocationOperation,
-        selection: shell_contract::ipc::NativeInvocationSelection,
-        cancel: CancelToken,
-    ) -> Result<NativeInvocationOperation, String> {
-        if self.shutdown.is_cancelled() || cancel.is_cancelled() {
-            return Err("The native recovery command is no longer available.".into());
-        }
-        self.issuer
-            .issue_startup_command_recovery_child(startup, command, selection, cancel)
-    }
 }
 
 static FACTORY: OnceLock<Factory> = OnceLock::new();
@@ -142,18 +128,6 @@ pub(super) fn issue_recovery_child(
         .get()
         .ok_or("The native command factory is not installed.")?
         .issue_recovery_child(command, selection, cancel)
-}
-
-pub(super) fn issue_startup_recovery_child(
-    startup: &NativeInvocationOperation,
-    command: &NativeInvocationOperation,
-    selection: shell_contract::ipc::NativeInvocationSelection,
-    cancel: CancelToken,
-) -> Result<NativeInvocationOperation, String> {
-    FACTORY
-        .get()
-        .ok_or("The native command factory is not installed.")?
-        .issue_startup_recovery_child(startup, command, selection, cancel)
 }
 
 #[cfg(test)]

@@ -155,21 +155,6 @@ impl Session {
         Self::with_tokens(tokens)
     }
 
-    fn new_saved(document: &shell_contract::ipc::NativeSavedDocument) -> Result<Arc<Self>, String> {
-        let target = document.target();
-        let output = target.output();
-        let mut tokens = vec![
-            target.cancel().clone(),
-            target.pending().clone(),
-            target.created().loss_token(),
-        ];
-        tokens.extend(output.loss_tokens()?);
-        tokens.extend_from_slice(target.additional());
-        Self::append_recovery_owners(&mut tokens, output.source_owner(), target.participants())?;
-        Self::append_recovery_owners(&mut tokens, document.owner(), &[])?;
-        Self::with_tokens(tokens)
-    }
-
     fn new_recovery(
         target: &shell_contract::ipc::RecoveryOpenTarget,
         snapshot: &shell_contract::ipc::RecoveryAuthoritySnapshot,
@@ -347,69 +332,6 @@ impl Session {
             Ok(())
         }
     }
-}
-
-pub(crate) fn message_saved(
-    ui: Arc<dyn Thread>,
-    lifecycle: Arc<crate::views::NativeWindowLifecycle>,
-    document: shell_contract::ipc::NativeSavedDocument,
-    options: shell_contract::hosts::MessageBox,
-    done: Box<dyn FnOnce(Result<shell_contract::hosts::MessageBoxAnswer, String>) + Send>,
-) {
-    let parent = match super::capture_owned_lifecycle(lifecycle) {
-        Ok(parent) => Some(parent),
-        Err(error) => return done(Err(error)),
-    };
-    let session = match Session::new_saved(&document) {
-        Ok(session) => session,
-        Err(error) => return done(Err(error)),
-    };
-    ui.post(Box::new(move || {
-        let target = document.target();
-        let mut accepted = false;
-        let result = crate::ipc::native_owner::with_saved_document_dialog_effect(
-            &document,
-            None,
-            None,
-            target.cancel(),
-            target.pending(),
-            &mut || {
-                accepted = true;
-                Ok(())
-            },
-        )
-        .and_then(|()| {
-            if !accepted {
-                return Err("The saved dialog was not admitted.".into());
-            }
-            session.check()?;
-            platform::prepare(&session)?;
-            message(
-                &options,
-                super::checked_owned_parent(&parent, &session)?,
-                &session,
-            )
-        })
-        .and_then(|answer| {
-            session.check()?;
-            let mut answer = Some(answer);
-            let mut admitted = None;
-            crate::ipc::native_owner::with_saved_document_dialog_effect(
-                &document,
-                None,
-                None,
-                target.cancel(),
-                target.pending(),
-                &mut || {
-                    admitted = answer.take();
-                    Ok(())
-                },
-            )?;
-            admitted.ok_or_else(|| "The saved dialog result was not admitted.".into())
-        });
-        drop(session);
-        done(result);
-    }));
 }
 
 pub(crate) fn run_saved_publication<T: Send + 'static>(

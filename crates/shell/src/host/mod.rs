@@ -39,7 +39,6 @@ pub(crate) mod recovery_launch;
 pub(crate) mod recovery_manager;
 pub(crate) mod recovery_openers;
 pub(crate) mod renderer_disposal;
-pub(crate) mod saved_recovery;
 pub(crate) mod shell_tabs;
 pub(crate) mod system_info;
 pub(crate) mod vault_watch;

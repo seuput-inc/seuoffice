@@ -6,13 +6,14 @@
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+#[cfg(any(test, feature = "probe"))]
+use main_core::packages::electron_utils::recovery_contract::RecoveryOpenDecision;
 use main_core::packages::electron_utils::recovery_contract::{
-    RecoveryEditorContract, RecoveryOpenDecision, RecoveryOpenFileRequest,
-    RecoveryOpenUntitledRequest,
+    RecoveryEditorContract, RecoveryOpenFileRequest, RecoveryOpenUntitledRequest,
 };
-use main_core::packages::electron_utils::recovery_store::{
-    RecoveryIdentity, RecoveryUntitledIdentity,
-};
+#[cfg(any(test, feature = "probe"))]
+use main_core::packages::electron_utils::recovery_store::RecoveryIdentity;
+use main_core::packages::electron_utils::recovery_store::RecoveryUntitledIdentity;
 use shell_contract::editors::{DocumentEditors, SaveMode, Then};
 use shell_contract::ipc::Target;
 use shell_contract::{IpcValue, Surface, ViewId, WindowId};

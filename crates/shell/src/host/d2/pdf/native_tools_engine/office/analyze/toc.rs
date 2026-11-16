@@ -7,9 +7,31 @@ use super::units::{cluster_unit_rows,LineUnit};
 pub(super) const LEADER_PAGE_MIN_LINES:usize=10;
 pub(super) const LEADER_PAGE_MIN_SHARE:f64=0.3;
 fn page_number(s:&str)->bool {jscompat::js_regex!(r"^(?:[0-9]{1,4}|[ivxlcdm]{1,6})$","i").test(s)}
-// The roman digits list both cases instead of `i`: the classes hold dashes above U+007F,
-// which `i` without `u` does not fold, so the match is the same.
-fn leader_match(s:&str)->Option<(String,String)>{let re=jscompat::js_regex!(r"^(.*?[^\s._\-–—])\s*([.·_\-–—]\s*){4,}\s*([0-9]{1,4}|[ivxlcdmIVXLCDM]{1,6})\s*$");let m=re.exec(s)?;Some((m.get(1)?.into(),m.get(3)?.into()))}
+/// `/^(.*?[^\s._\-–—])\s*([.·_\-–—]\s*){4,}\s*([0-9]{1,4}|[ivxlcdm]{1,6})\s*$/i.exec(s)`, groups 1
+/// and 3, read as a scan. The number is the whole run of its class before the trailing spaces
+/// (a longer run leaves a digit, not a leader, before the last four). Everything between the
+/// title and the number is spaces and leader marks, and the lazy title ends where that run
+/// starts, or after its first middle dot when the run starts the line (the middle dot is the one
+/// leader mark a title may end with). `.` stops at line terminators, so the title holds none.
+fn leader_match(s:&str)->Option<(String,String)>{
+    let body=s.trim_end_matches(jscompat::is_js_space);
+    let roman=|c:char|"ivxlcdmIVXLCDM".contains(c);
+    let last=body.chars().next_back()?;
+    let digits=last.is_ascii_digit();
+    if !digits&&!roman(last){return None}
+    let class=|c:char|if digits{c.is_ascii_digit()}else{roman(c)};
+    let number_start=body.char_indices().rev().take_while(|&(_,c)|class(c)).last()?.0;
+    let number=&body[number_start..];
+    if number.chars().count()>if digits{4}else{6}{return None}
+    let mark=|c:char|matches!(c,'.'|'·'|'_'|'-'|'–'|'—');
+    let before=&body[..number_start];
+    let leader_start=before.char_indices().rev().take_while(|&(_,c)|mark(c)||jscompat::is_js_space(c)).last().map_or(number_start,|(i,_)|i);
+    let title_end=if leader_start>0{leader_start}else{before.char_indices().find(|&(_,c)|c=='·').map(|(i,c)|i+c.len_utf8())?};
+    let title=&body[..title_end];
+    let marks=body[title_end..number_start].chars().filter(|&c|mark(c)).count();
+    if marks<4||title.chars().any(|c|matches!(c,'\n'|'\r'|'\u{2028}'|'\u{2029}')){return None}
+    Some((title.into(),number.into()))
+}
 pub(super) fn has_dot_leader_run(chars:&[PdfChar])->bool {
     let(mut count,mut armed,mut i)=(0,false,0);while i<chars.len(){let c=&chars[i];if [".","·","_","-","–","—"].contains(&c.text.as_str()){count+=1;if count>=4{armed=true;}i+=1;}else if c.text==" "||c.code==0x20{i+=1;}else if armed && c.text.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric){let mut j=i;while j<chars.len()&&chars[j].text.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric){j+=1;}let token:String=chars[i..j].iter().map(|c|c.text.as_str()).collect();if chars[j..].iter().all(|c|c.text==" "||c.code==0x20)&&page_number(&token){return true;}count=0;armed=false;i=j;}else{count=0;armed=false;i+=1;}}false
 }
@@ -26,4 +48,33 @@ pub(super) fn detect_toc_rows(units:&[LineUnit])->(Vec<TextBlock>,Vec<LineUnit>)
     let(mut out,mut consumed)=(Vec::new(),HashSet::new());let accept=|run:&mut Vec<Cand>,out:&mut Vec<TextBlock>,consumed:&mut HashSet<usize>|{if run.len()<3{run.clear();return;}let em=if run[0].num.font_size==0.0{12.0}else{run[0].num.font_size};let left=run.iter().map(|c|c.num.bounds.x1).fold(f64::INFINITY,f64::min);let right=run.iter().map(|c|c.num.bounds.x1).fold(f64::NEG_INFINITY,f64::max);if right-left>1.5*em{run.clear();return;}let(mut arabic,mut prev,mut invalid)=(false,-1,false);for c in run.iter(){if c.roman&&arabic{invalid=true;break;}if !c.roman&&!arabic{arabic=true;prev=-1;}if c.value<prev{invalid=true;break;}prev=c.value;}if invalid{run.clear();return;}
         let min_x=run.iter().map(|c|c.bounds.x0).fold(f64::INFINITY,f64::min);for c in run.iter(){let glyphs:Vec<_>=c.units[..c.units.len()-1].iter().flat_map(|u|u.chars.iter().cloned()).collect();let lines=chars::analyze_chars(&glyphs);if lines.is_empty(){continue;}let number=c.num.chars.iter().map(|c|c.text.as_str()).collect::<String>().trim().to_owned();let level=(1+((c.bounds.x0-min_x)/14.0).floor().max(0.0) as usize).min(9);out.push(make_block(lines,c.bounds,level,number));for u in &c.units{consumed.insert(u.id);}}run.clear();};
     let mut run:Vec<Cand>=Vec::new();for cand in cands{if let Some(c)=cand{if run.last().is_some_and(|p|p.bounds.y0-c.bounds.y1>2.5*p.bounds.height().max(1.0)){accept(&mut run,&mut out,&mut consumed);}run.push(c);}else{accept(&mut run,&mut out,&mut consumed);}}accept(&mut run,&mut out,&mut consumed);(out,units.iter().filter(|u|!consumed.contains(&u.id)).cloned().collect())
+}
+
+#[cfg(test)]
+mod tests {
+    // Each expectation is what JavaScript's exec of the regex in leader_match's doc returns.
+    #[test]
+    fn leader_match_returns_the_title_and_number_javascript_returns() {
+        let cases: [(&str, Option<(&str, &str)>); 14] = [
+            ("Introduction ........ 12", Some(("Introduction", "12"))),
+            ("Intro....12345", None),
+            ("Intro.... 2345", Some(("Intro", "2345"))),
+            ("Preface . . . . iv  ", Some(("Preface", "iv"))),
+            ("Preface ...iv", None),
+            ("·Title....7", Some(("·Title", "7"))),
+            ("··· ....7", Some(("·", "7"))),
+            (" ....7", None),
+            ("Chapter·....xii", Some(("Chapter", "xii"))),
+            ("A\nB.....3", None),
+            ("Index — — — — 120", Some(("Index", "120"))),
+            ("Part ____ VII", Some(("Part", "VII"))),
+            ("Part ____ MMMMMMM", None),
+            ("Sum.... 1v", None),
+        ];
+        for (line, expected) in cases {
+            let found = super::leader_match(line);
+            let found = found.as_ref().map(|(title, number)| (title.as_str(), number.as_str()));
+            assert_eq!(found, expected, "{line:?}");
+        }
+    }
 }

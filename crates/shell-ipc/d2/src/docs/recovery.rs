@@ -12,11 +12,13 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use main_core::node_fs::NodeError;
+#[cfg(any(test, feature = "probe"))]
+use main_core::packages::electron_utils::recovery_store::RecoveryAdoptOptions;
 use main_core::packages::electron_utils::recovery_store::{
-    RecoveryAdoptOptions, RecoveryCopyState, RecoveryDeleteReason, RecoveryDeleteResult,
-    RecoveryFileIdentity, RecoveryIdentity, RecoveryStore, RecoveryStoreOptions,
-    RecoveryUntitledIdentity, RecoveryWriteOptions, RecoveryWriteResult, RecoveryWriteTicket,
-    SharedRecoveryState, create_recovery_store, new_untitled_recovery_id,
+    RecoveryCopyState, RecoveryDeleteReason, RecoveryDeleteResult, RecoveryFileIdentity,
+    RecoveryIdentity, RecoveryStore, RecoveryStoreOptions, RecoveryUntitledIdentity,
+    RecoveryWriteOptions, RecoveryWriteResult, RecoveryWriteTicket, SharedRecoveryState,
+    create_recovery_store, new_untitled_recovery_id,
 };
 use shell_contract::ViewId;
 

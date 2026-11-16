@@ -46,6 +46,7 @@ pub(super) struct Runtime {
 struct State {
     control: Option<QuickLookControl>,
     enabled: bool,
+    keep_in_tray: bool,
     generation: u64,
     child: Option<std::process::Child>,
 }
@@ -100,12 +101,27 @@ impl QuickLookRuntime for Runtime {
         self.refresh_tray_menu();
     }
 
+    fn keeps_in_tray(&self) -> bool {
+        #[cfg(windows)]
+        {
+            self.state.lock().expect("quick look runtime").keep_in_tray
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    }
+
     fn stop(&self) {
         #[cfg(windows)]
         {
             self.set_enabled(false);
             self.remove_tray();
-            self.state.lock().expect("quick look runtime").control = None;
+            {
+                let mut state = self.state.lock().expect("quick look runtime");
+                state.control = None;
+                state.keep_in_tray = false;
+            }
         }
         #[cfg(not(windows))]
         {
@@ -215,12 +231,11 @@ impl Runtime {
     fn set_tray(&self, visible: bool) {
         let app = self.cx.app.clone();
         let lang = super::ShellLanguage(self.cx.ui.clone()).lang();
-        let control = self
-            .state
-            .lock()
-            .expect("quick look runtime")
-            .control
-            .clone();
+        let control = {
+            let mut state = self.state.lock().expect("quick look runtime");
+            state.keep_in_tray = visible;
+            state.control.clone()
+        };
         super::on_ui(&self.cx.ui, move || {
             if visible {
                 if app.tray_by_id("quick-look").is_none() {

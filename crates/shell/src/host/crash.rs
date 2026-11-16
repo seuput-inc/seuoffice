@@ -115,8 +115,8 @@ pub(crate) fn mark_ended_on_core() {
     });
 }
 
-/// Windows ended the session: the run ended on purpose, by the OS
-#[cfg(windows)]
+/// The OS ended the session: the run ended on purpose, by the OS
+#[cfg(any(target_os = "macos", windows))]
 pub(crate) fn mark_os_ended_on_core() {
     HEARTBEAT.with(|h| {
         if let Some(handle) = h.borrow_mut().as_mut() {

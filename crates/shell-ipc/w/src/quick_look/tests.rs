@@ -44,6 +44,9 @@ impl QuickLookRuntime for Runtime {
     }
     fn sync(&self, _: &QuickLookSettings) {}
     fn refresh_tray(&self) {}
+    fn keeps_in_tray(&self) -> bool {
+        false
+    }
     fn stop(&self) {}
 }
 

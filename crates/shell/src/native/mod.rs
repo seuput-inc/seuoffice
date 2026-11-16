@@ -47,15 +47,14 @@ pub use document::{
 pub use eval::DocumentEvaluation;
 pub use events::{EventSink, NativeEvent, NativeEventKind, ViewEvent};
 pub use ext::{
-    NativeSpec, WebviewBuilderExt, WebviewExt, WebviewWindowBuilderExt,
-    WindowBuilderExt,
+    NativeSpec, WebviewBuilderExt, WebviewExt, WebviewWindowBuilderExt, WindowBuilderExt,
 };
 pub use ids::{BrowserId, CreationId};
 pub use ingress::{ChannelQueue, ReplyFrame};
 pub use lifecycle::{
     BrowserClose, BrowserCloseOutcome, BrowserCloseSubscription, BrowserCreation,
-    BrowserCreationOutcome, WindowClose, WindowCloseOutcome,
-    WindowCloseSubscription, WindowClosingSubscription, WindowCreation, WindowEffect,
+    BrowserCreationOutcome, WindowClose, WindowCloseOutcome, WindowCloseSubscription,
+    WindowClosingSubscription, WindowCreation, WindowEffect,
 };
 pub use navigation::{
     NavigationIdentity, NavigationStart, ObservedDocument, ObservedDocumentSubscription,

@@ -907,14 +907,6 @@ pub(crate) fn with_recovery_seed_snapshot<R>(
     with_recovery_pre_navigation_snapshot(target, snapshot, None, None, None, effect)
 }
 
-/// Original typed recovery preparation, not a renderer engine-service grant.
-pub(crate) fn with_recovery_prepare_effect<R>(
-    target: &shell_contract::ipc::RecoveryOpenTarget,
-    effect: impl FnOnce() -> R,
-) -> Option<R> {
-    with_recovery_pre_navigation_effect(target, None, None, None, effect)
-}
-
 pub(crate) fn commit_recovery_seed(
     target: &shell_contract::ipc::RecoveryOpenTarget,
     enqueue: impl FnOnce() -> Result<(), String>,
@@ -2009,14 +2001,6 @@ pub(crate) fn with_startup_recovery_effect<R>(
         },
     )
     .flatten()
-}
-
-pub(super) fn with_recovery_created_effect<R>(
-    target: &shell_contract::ipc::RecoveryOpenTarget,
-    created: &RendererGeneration,
-    effect: impl FnOnce() -> R,
-) -> Option<R> {
-    with_recovery_pre_navigation_effect(target, Some(created), None, None, effect)
 }
 
 pub(crate) fn with_recovery_dialog_effect<R>(

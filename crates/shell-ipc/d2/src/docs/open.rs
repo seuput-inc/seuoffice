@@ -24,18 +24,23 @@ use main_core::packages::electron_utils::recovery_contract::RecoveryOpenDecision
 use main_core::packages::electron_utils::recovery_prompt::{
     RecoveryOpenResult, ResolveRecoveryOnOpenOptions, resolve_recovery_on_open,
 };
-use main_core::packages::electron_utils::recovery_store::{RecoveryCopyState, RecoveryIdentity};
+use main_core::packages::electron_utils::recovery_store::RecoveryCopyState;
+#[cfg(any(test, feature = "probe"))]
+use main_core::packages::electron_utils::recovery_store::RecoveryIdentity;
 use shell_contract::hosts::MessageBox;
-use shell_contract::ipc::{Reply, Responder, Target};
+#[cfg(any(test, feature = "probe"))]
+use shell_contract::ipc::Target;
+use shell_contract::ipc::{Reply, Responder};
 use shell_contract::{IpcValue, ViewId, WindowId};
 
 use super::adapters::{HostMessageBox, Parent, picked_path};
 use super::hosts::{DecryptError, basename};
 use super::passwords::{OpenKind, docx_open_kind};
 use super::recovery::file_identity;
+#[cfg(any(test, feature = "probe"))]
+use super::UntitledOpen;
 use super::{
-    Docs, MAX_OPEN_BYTES, Obj, UntitledOpen, js_filters, js_obj, js_str, read_json, sha256_hex,
-    stat,
+    Docs, MAX_OPEN_BYTES, Obj, js_filters, js_obj, js_str, read_json, sha256_hex, stat,
 };
 use crate::kit::{self, Entry, IntoIpc};
 
@@ -2535,6 +2540,8 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                                 &transition, Some(&scope.receipt), &mut retain)?;
                             #[cfg(any(test, feature = "probe"))]
                             docs.retain_synthetic_successor(view, &successor);
+                            #[cfg(not(any(test, feature = "probe")))]
+                            let _ = successor;
                             let _ = docs.engine.forget_lazy_media_owner(scope.original_permit.clone());
                         } else {
                             docs.commit_media_document(view, &permit)?;

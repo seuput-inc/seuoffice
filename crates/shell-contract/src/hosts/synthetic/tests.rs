@@ -4713,7 +4713,10 @@ fn staged_replacement(
     name: &str,
     bytes: &[u8],
     mode: file_commit::PublicationMode,
-) -> (file_commit::PrivateDirectory, file_commit::OwnedWrittenCommit) {
+) -> (
+    file_commit::PrivateDirectory,
+    file_commit::OwnedWrittenCommit,
+) {
     let parent = std::fs::File::open(dir).unwrap();
     let directory = file_commit::PrivateDirectory::create(&parent).unwrap();
     let pending = directory.create_stage(0o600).unwrap();
@@ -4811,7 +4814,10 @@ fn unwritable_destination_parks_the_bytes_in_one_stable_rescue_file() {
             _ => panic!("the bytes were not parked in the rescue file"),
         }
         private.remove().unwrap();
-        assert_eq!(fs::read(dir.join("report.xlsx.unsaved.tmp")).unwrap(), bytes);
+        assert_eq!(
+            fs::read(dir.join("report.xlsx.unsaved.tmp")).unwrap(),
+            bytes
+        );
     }
     assert!(path.is_dir());
     let mut names: Vec<_> = fs::read_dir(&dir)

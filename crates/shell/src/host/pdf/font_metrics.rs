@@ -66,24 +66,6 @@ impl FontMetrics {
         self.face(family, bold, italic)?.width_pt(text, size_pt)
     }
 
-    /// Per-codepoint widths in twips. An unmapped codepoint is NaN.
-    pub(crate) fn advance_widths_twips(
-        &self,
-        family: &str,
-        text: &str,
-        size_pt: f64,
-        bold: bool,
-        italic: bool,
-    ) -> Option<Vec<f64>> {
-        let face = self.face(family, bold, italic)?;
-        let scale = size_pt * 20.0 / f64::from(face.units);
-        Some(
-            text.chars()
-                .map(|ch| face.advance(ch as u32, scale))
-                .collect(),
-        )
-    }
-
     fn face(&self, family: &str, bold: bool, italic: bool) -> Option<Arc<ParsedFace>> {
         let mut state = self.0.lock().expect("font metrics");
         let mut want = Vec::new();

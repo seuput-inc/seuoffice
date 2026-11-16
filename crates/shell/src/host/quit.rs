@@ -7,7 +7,7 @@ use shell_ipc_w::projects::Projects;
 use tauri::{AppHandle, Manager, RunEvent};
 
 mod completion;
-#[cfg(windows)]
+#[cfg(any(target_os = "macos", windows))]
 mod session_end;
 #[cfg(target_os = "macos")]
 mod terminate;
@@ -96,7 +96,7 @@ fn install_os_hooks() {
     };
     #[cfg(target_os = "macos")]
     terminate::install(&app);
-    #[cfg(windows)]
+    #[cfg(any(target_os = "macos", windows))]
     session_end::install(&app);
     #[cfg(not(any(target_os = "macos", windows)))]
     let _ = app;
@@ -131,6 +131,7 @@ pub(crate) fn on_run_event(app: &AppHandle, event: &RunEvent) {
             state.explicit,
             cfg!(target_os = "macos"),
             crate::headless::is_headless(),
+            keeps_quick_look_in_tray(),
         )
     {
         api.prevent_exit();
@@ -172,10 +173,28 @@ pub(crate) fn on_run_event(app: &AppHandle, event: &RunEvent) {
     start_if_possible();
 }
 
-/// `window-all-closed`: the last window ends the app, except on macOS and in a
-/// headless run, which ends itself, unless a quit was asked for.
-fn last_window_quits(explicit: bool, macos: bool, headless: bool) -> bool {
-    explicit || !(macos || headless)
+/// `window-all-closed`: the last window ends the app, except on macOS, in a
+/// headless run (which ends itself) and while Quick Look stays in the tray,
+/// unless a quit was asked for.
+fn last_window_quits(explicit: bool, macos: bool, headless: bool, in_tray: bool) -> bool {
+    explicit || !(macos || headless || in_tray)
+}
+
+/// `shouldKeepQuickLookInTray()`: Windows with Quick Look's Explorer preview
+/// and "keep in tray" both on. False before the Quick Look host exists.
+pub(crate) fn keeps_quick_look_in_tray() -> bool {
+    SERVICES.get().is_some_and(|services| {
+        services
+            .hosts
+            .get::<shell_ipc_w::quick_look::QuickLookHost>()
+            .is_some_and(|runtime| runtime.keeps_in_tray())
+    })
+}
+
+/// `appQuitting`: a quit was asked for or is already past `Running`.
+pub(crate) fn is_quitting() -> bool {
+    let state = STATE.lock().unwrap_or_else(|error| error.into_inner());
+    state.explicit || state.phase != Phase::Running
 }
 
 /// A person's quit (menu Quit, Cmd+Q, the Dock, the updater's restart):
@@ -204,9 +223,30 @@ pub(crate) fn request_quit(app: &AppHandle) {
         move |_, _| {
             mark_editors_shutting_down();
             let closing = ui.clone();
-            if let Err(error) = ui.run_on_main_thread(move || close_every_window(&closing)) {
-                quit_not_started(&format!("the UI thread is unreachable: {error}"));
-            }
+            let close = move || {
+                let app = closing.clone();
+                if let Err(error) = closing.run_on_main_thread(move || close_every_window(&app)) {
+                    quit_not_started(&format!("the UI thread is unreachable: {error}"));
+                }
+            };
+            // `before-quit`: "Restart & Install" holds the tabs as they are now,
+            // whatever the closing windows report on the way out
+            super::update::with_update_restart_requested(move |restart| {
+                if !restart {
+                    return close();
+                }
+                super::recovery_launch::finalize_session_lifecycle(
+                    super::recovery_launch::SessionLifecycle::HoldForUpdate,
+                    Box::new(move |result| {
+                        if let Err(error) = result {
+                            eprintln!(
+                                "[quit] the tabs were not held for the update restart: {error}"
+                            );
+                        }
+                        close();
+                    }),
+                )
+            });
         },
         || quit_not_started("the core thread refused the quit"),
     );
@@ -387,10 +427,19 @@ fn start_session_flush(startup: Startup) {
     completion::post_with_completion(
         |job| services.core.post(job),
         |done| {
-            super::recovery_launch::finalize_session_lifecycle(
-                super::recovery_launch::SessionLifecycle::CleanExit,
-                Box::new(move |result| done.finish(result)),
-            )
+            // "Restart & Install" brings the tabs back after the update; any other
+            // quit is a clean exit (`will-quit` of the Electron app)
+            super::update::with_update_restart_requested(move |restart| {
+                let event = if restart {
+                    super::recovery_launch::SessionLifecycle::UpdateRestart
+                } else {
+                    super::recovery_launch::SessionLifecycle::CleanExit
+                };
+                super::recovery_launch::finalize_session_lifecycle(
+                    event,
+                    Box::new(move |result| done.finish(result)),
+                )
+            })
         },
         move |result| session_flushed(startup, result),
     );
@@ -600,11 +649,17 @@ mod tests {
 
     #[test]
     fn the_last_window_quits_except_on_macos_and_headless_until_a_quit_is_asked() {
-        assert!(last_window_quits(false, false, false));
-        assert!(!last_window_quits(false, true, false));
-        assert!(!last_window_quits(false, false, true));
-        assert!(last_window_quits(true, true, false));
-        assert!(last_window_quits(true, false, true));
+        assert!(last_window_quits(false, false, false, false));
+        assert!(!last_window_quits(false, true, false, false));
+        assert!(!last_window_quits(false, false, true, false));
+        assert!(last_window_quits(true, true, false, false));
+        assert!(last_window_quits(true, false, true, false));
+    }
+
+    #[test]
+    fn a_quick_look_tray_keeps_the_app_after_the_last_window_until_a_quit_is_asked() {
+        assert!(!last_window_quits(false, false, false, true));
+        assert!(last_window_quits(true, false, false, true));
     }
 
     // Frozen policy and the event-to-code mapping are in quit/Properties.md.

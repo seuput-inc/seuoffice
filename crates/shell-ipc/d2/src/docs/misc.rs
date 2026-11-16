@@ -918,6 +918,7 @@ impl Docs {
     }
 
     /// `openGeneratedFile(filePath)` and the answer of `createAiDocument`
+    #[cfg(any(test, feature = "probe"))]
     fn ai_document_written(
         &self,
         written: Result<String, String>,

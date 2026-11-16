@@ -249,6 +249,7 @@ impl MindmapApp {
 
     /// `setViewOpenDecision`: the shell decided the recovery question for the
     /// file this view opens next
+    #[cfg(any(test, feature = "probe"))]
     pub(super) fn set_view_open_decision(&self, view: ViewId, decision: RecoveryOpenDecision) {
         self.recovery_of(view).decision = Some(decision);
     }

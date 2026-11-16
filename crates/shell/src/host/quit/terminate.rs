@@ -24,6 +24,9 @@ type ShouldTerminateImp = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut 
 /// `NSTerminateCancel`
 const TERMINATE_CANCEL: usize = 0;
 
+/// `NSTerminateNow`
+const TERMINATE_NOW: usize = 1;
+
 static APP: OnceLock<AppHandle> = OnceLock::new();
 
 /// Adds the method to the delegate's class. May be called from any thread: the
@@ -75,6 +78,11 @@ unsafe extern "C-unwind" fn should_terminate(
     _cmd: Sel,
     _sender: *mut AnyObject,
 ) -> usize {
+    // the OS is powering off or logging out: the recovery copies are being
+    // written without a prompt, and the process ends through tao's own exit
+    if super::session_end::started() {
+        return TERMINATE_NOW;
+    }
     if let Some(app) = APP.get() {
         super::request_quit(app);
     }

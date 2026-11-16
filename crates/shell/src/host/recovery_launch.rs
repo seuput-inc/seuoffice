@@ -390,6 +390,27 @@ pub(crate) fn note_live_session() -> Result<(), String> {
     Ok(())
 }
 
+/// The shell window finished closing and no quit is under way, on core. With
+/// Quick Look kept in the tray the session is marked closed-to-tray, so a
+/// later power loss does not bring back the tabs just closed; on macOS, which
+/// keeps running without a window, the empty strip is recorded.
+pub(crate) fn note_shell_window_closed() {
+    if super::quit::keeps_quick_look_in_tray() {
+        finalize_session_lifecycle(
+            SessionLifecycle::ClosedToTray,
+            Box::new(|result| {
+                if let Err(error) = result {
+                    eprintln!("shell: marking the session closed to the tray: {error}");
+                }
+            }),
+        );
+    } else if cfg!(target_os = "macos") {
+        if let Err(error) = note_live_session() {
+            eprintln!("shell: recording live session: {error}");
+        }
+    }
+}
+
 fn reserve_session_revision<E: RecoveryEditors<Contents = Contents> + 'static>(
     runtime: &Rc<RefCell<Runtime<E>>>,
 ) -> Result<(u64, Rc<Cell<u64>>), String> {

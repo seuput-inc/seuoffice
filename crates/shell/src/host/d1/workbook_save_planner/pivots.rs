@@ -321,43 +321,6 @@ pub(super) fn build_cache_definition(
     )
 }
 
-pub(super) enum CacheRecordCell<'a> {
-    Missing,
-    Shared(usize),
-    Number(f64),
-    Text(&'a str),
-}
-
-pub(super) fn build_cache_records(rows: &[Vec<CacheRecordCell<'_>>]) -> String {
-    let prefix = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<pivotCacheRecords xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"{OFFICE_REL}\" count=\"{}\"",
-        rows.len()
-    );
-    if rows.is_empty() {
-        return format!("{prefix}/>");
-    }
-    let mut output = format!("{prefix}>");
-    for row in rows {
-        output.push_str("<r>");
-        for cell in row {
-            match cell {
-                CacheRecordCell::Missing => output.push_str("<m/>"),
-                CacheRecordCell::Shared(index) => output.push_str(&format!("<x v=\"{index}\"/>")),
-                CacheRecordCell::Number(value) => output.push_str(&format!(
-                    "<n v=\"{}\"/>",
-                    jscompat::number_to_string(*value)
-                )),
-                CacheRecordCell::Text(value) => {
-                    output.push_str(&format!("<s v=\"{}\"/>", escape_attribute(value)))
-                }
-            }
-        }
-        output.push_str("</r>");
-    }
-    output.push_str("</pivotCacheRecords>");
-    output
-}
-
 pub(super) enum PivotFilter<'a> {
     Label {
         field: f64,
@@ -766,57 +729,6 @@ fn pivot_table_for_cache(
         }
     }
     Ok(None)
-}
-
-/// Applies a refresh without a layout edit after resolving the sheet path.
-pub(super) fn expand_pivot(
-    pkg: &mut PackageEditor<'_>,
-    cache_path: &str,
-    worksheet_path: Option<&str>,
-    new_ref: &str,
-    touched: &mut HashSet<String>,
-) -> Result<(), String> {
-    let Some(path) = pivot_table_for_cache(pkg, cache_path)? else {
-        return Ok(());
-    };
-    let xml = pkg.read_text(&path)?;
-    let location = regex(r#"<location\b[^>]*\bref="([^"]+)""#)?;
-    let Some(found) = location
-        .try_find_iter(&xml)
-        .next()
-        .transpose()
-        .map_err(|e| e.to_string())?
-    else {
-        return Ok(());
-    };
-    let Some(current_ref) = found.get(1) else {
-        return Ok(());
-    };
-    let old = parse_area(current_ref)?;
-    let new = parse_area(new_ref)?;
-    if old == new {
-        return Ok(());
-    }
-    if old.start != new.start {
-        return Err(format!(
-            "Pivot \"{new_ref}\" cannot change its top-left cell during refresh."
-        ));
-    }
-    let worksheet = if new.end.row > old.end.row || new.end.col > old.end.col {
-        let sheet = worksheet_path
-            .ok_or_else(|| "Pivot expansion needs a resolved worksheet path.".to_owned())?;
-        Some(pkg.read_text(sheet)?)
-    } else {
-        None
-    };
-    validate_pivot_growth(
-        current_ref,
-        new_ref,
-        worksheet.as_deref().map(String::as_str),
-    )?;
-    pkg.write(&path, update_pivot_location(&xml, new_ref)?)?;
-    touched.insert(path);
-    Ok(())
 }
 
 pub(super) fn apply_refresh_phase(
@@ -1237,15 +1149,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_records_and_filters_keep_values_and_escape_labels() {
-        let rows = vec![vec![
-            super::CacheRecordCell::Shared(2),
-            super::CacheRecordCell::Number(1.5),
-            super::CacheRecordCell::Text("A&B"),
-            super::CacheRecordCell::Missing,
-        ]];
-        let xml = super::build_cache_records(&rows);
-        assert!(xml.contains(r#"<r><x v="2"/><n v="1.5"/><s v="A&amp;B"/><m/></r>"#));
+    fn pivot_filters_escape_labels() {
         let filters = [super::PivotFilter::Label {
             field: 0.0,
             op: super::LabelOp::Contains,
@@ -1254,34 +1158,6 @@ mod tests {
         let xml = super::build_pivot_filters(&filters);
         assert!(xml.contains(r#"type="captionContains""#));
         assert!(xml.contains(r#"<customFilter val="*A&amp;B*"/>"#));
-    }
-
-    #[test]
-    fn expansion_updates_linked_part_without_touching_other_parts() {
-        let mut source = Source(vec![
-            ("xl/pivotTables/_rels/pivotTable1.xml.rels".into(), r#"<Relationships><Relationship Target="../pivotCache/pivotCacheDefinition1.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition"/></Relationships>"#.into()),
-            ("xl/pivotTables/pivotTable1.xml".into(), r#"<pivotTableDefinition><location ref="A1:B2"/></pivotTableDefinition>"#.into()),
-            ("xl/worksheets/sheet1.xml".into(), r#"<worksheet><sheetData><row r="2"><c r="C2"/></row></sheetData></worksheet>"#.into()),
-        ]);
-        let mut pkg = PackageEditor::new(&mut source);
-        let mut touched = HashSet::new();
-        super::expand_pivot(
-            &mut pkg,
-            "xl/pivotCache/pivotCacheDefinition1.xml",
-            Some("xl/worksheets/sheet1.xml"),
-            "A1:C2",
-            &mut touched,
-        )
-        .unwrap();
-        let plan = pkg.to_plan(touched);
-        assert_eq!(
-            plan.replaced,
-            vec![(
-                "xl/pivotTables/pivotTable1.xml".into(),
-                r#"<pivotTableDefinition><location ref="A1:C2"/></pivotTableDefinition>"#.into()
-            )]
-        );
-        assert_eq!(plan.touched_entries, vec!["xl/pivotTables/pivotTable1.xml"]);
     }
 
     #[test]

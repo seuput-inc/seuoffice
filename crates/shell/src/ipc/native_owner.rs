@@ -16,17 +16,14 @@ pub(crate) use effects::with_service_many_effect;
 pub(crate) use effects::with_service_recovery_open_effect;
 pub(crate) use effects::with_startup_command_recovery_preparation_effect;
 pub(crate) use effects::with_startup_operation_effect;
+pub(crate) use effects::with_startup_recovery_preparation_effect;
 pub(crate) use effects::{
     capture_owner, host as effects_host, run_accepted_created_ui_many, run_accepted_ui_many,
     run_accepted_ui_pair, with_created_many_effect, with_many_owner_transition,
     with_native_invocation_effect, with_native_invocation_many_effect,
     with_native_invocation_print_many_effect, with_paired_effect, with_print_pair_effect,
-    with_recovery_dialog_effect, with_recovery_open_effect, with_recovery_prepare_effect,
-    with_recovery_seed_effect, with_service_native_invocation_effect, with_service_pair_effect,
-};
-pub(crate) use effects::{
-    with_recovery_open_service_snapshot, with_recovery_pre_navigation_snapshot,
-    with_recovery_seed_snapshot,
+    with_recovery_dialog_effect, with_recovery_open_effect, with_recovery_seed_effect,
+    with_service_native_invocation_effect, with_service_pair_effect,
 };
 pub(crate) use effects::{
     with_native_command_creation_effect, with_native_command_preparation_effect,
@@ -36,10 +33,13 @@ pub(crate) use effects::{
     with_native_invocation_print_many_extra_effect, with_owned_print_many_extra_effect,
 };
 pub(crate) use effects::{
+    with_recovery_open_service_snapshot, with_recovery_pre_navigation_snapshot,
+    with_recovery_seed_snapshot,
+};
+pub(crate) use effects::{
     with_startup_command_creation_effect, with_startup_command_preparation_effect,
     with_startup_command_target_effect,
 };
-pub(crate) use effects::with_startup_recovery_preparation_effect;
 pub(crate) use saved_target::with_native_saved_document_same_origin;
 pub(crate) use saved_target::{
     prepare_saved_spare_replacement, read_saved_input, with_saved_document_dialog_effect,
@@ -204,62 +204,6 @@ pub(crate) fn run_recovery_prepare_action_snapshot<R>(
     action: impl FnOnce() -> R,
 ) -> Result<R, String> {
     execute_accepted(with_recovery_seed_snapshot(target, snapshot, || action))
-}
-
-pub(crate) fn run_recovery_seed_ui<R>(
-    ui: &dyn Thread,
-    target: &shell_contract::ipc::RecoveryOpenTarget,
-    action: impl FnOnce() -> R,
-) -> Result<R, String> {
-    if !ui.is_current() {
-        return Err("Native UI admission requires the UI thread.".into());
-    }
-    execute_accepted(with_recovery_seed_effect(target, || action))
-}
-
-pub(crate) fn run_recovery_created_ui<R>(
-    ui: &dyn Thread,
-    target: &shell_contract::ipc::RecoveryOpenTarget,
-    created: &RendererGeneration,
-    action: impl FnOnce() -> R,
-) -> Result<R, String> {
-    if !ui.is_current() {
-        return Err("Native UI admission requires the UI thread.".into());
-    }
-    execute_accepted(effects::with_recovery_created_effect(
-        target,
-        created,
-        || action,
-    ))
-}
-
-pub(crate) fn run_recovery_dialog_ui<R>(
-    ui: &dyn Thread,
-    target: &shell_contract::ipc::RecoveryOpenTarget,
-    dialog: &NativeRequestOwner,
-    created: &RendererGeneration,
-    cancel: &CancelToken,
-    pending: &CancelToken,
-    action: impl FnOnce() -> R,
-) -> Result<R, String> {
-    if !ui.is_current() {
-        return Err("Native UI admission requires the UI thread.".into());
-    }
-    execute_accepted(with_recovery_dialog_effect(
-        target,
-        dialog,
-        created,
-        cancel,
-        pending,
-        || action,
-    ))
-}
-
-pub(crate) fn run_recovery_prepare_action<R>(
-    target: &shell_contract::ipc::RecoveryOpenTarget,
-    action: impl FnOnce() -> R,
-) -> Result<R, String> {
-    execute_accepted(with_recovery_prepare_effect(target, || action))
 }
 
 pub(crate) fn run_recovery_seeded_ui<R>(
@@ -479,7 +423,7 @@ pub(crate) fn with_owner_effect<R>(
     cancel: &CancelToken,
     action: impl FnOnce() -> R,
 ) -> Option<R> {
-    with_source_effect(owner, None, None, cancel, cancel, action)
+    with_source_effect(owner, None, cancel, cancel, action)
 }
 
 pub(crate) fn with_created_effect<R>(
@@ -489,25 +433,7 @@ pub(crate) fn with_created_effect<R>(
     pending: &CancelToken,
     action: impl FnOnce() -> R,
 ) -> Option<R> {
-    with_source_effect(source, None, Some(created), cancel, pending, action)
-}
-
-pub(crate) fn with_service_effect<R>(
-    source: &NativeRequestOwner,
-    service: &DocumentContext,
-    service_generation: &RendererGeneration,
-    cancel: &CancelToken,
-    pending: &CancelToken,
-    action: impl FnOnce() -> R,
-) -> Option<R> {
-    with_source_effect(
-        source,
-        Some(service),
-        Some(service_generation),
-        cancel,
-        pending,
-        action,
-    )
+    with_source_effect(source, Some(created), cancel, pending, action)
 }
 
 pub(crate) fn run_accepted_created_ui<R>(
@@ -532,7 +458,6 @@ pub(crate) fn run_accepted_created_ui<R>(
 
 fn with_source_effect<R>(
     owner: &NativeRequestOwner,
-    service: Option<&DocumentContext>,
     created: Option<&RendererGeneration>,
     cancel: &CancelToken,
     pending: &CancelToken,
@@ -581,14 +506,7 @@ fn with_source_effect<R>(
         Some(asset) => asset.with_lease_live_fenced(effect),
         None => Some(effect()),
     };
-    match service {
-        Some(service) => authority
-            .origin
-            .with_live_pair(service, apply)
-            .flatten()
-            .flatten(),
-        None => authority.origin.with_live(apply).flatten().flatten(),
-    }
+    authority.origin.with_live(apply).flatten().flatten()
 }
 
 fn with_pdf_lifetimes<T>(owner: &NativeRequestOwner, action: impl FnOnce() -> T) -> Option<T> {

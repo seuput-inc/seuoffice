@@ -15,7 +15,7 @@ fn number(v:&IpcValue,key:&str)->f64 {match field(v,key){Some(IpcValue::Number(n
 fn array<'a>(v:&'a IpcValue,key:&str)->&'a [IpcValue]{match field(v,key){Some(IpcValue::Array(a))=>a,_=>&[]}}
 fn flag(v:&IpcValue,key:&str)->bool{matches!(field(v,key),Some(IpcValue::Bool(true)))}
 fn failure(s:&str)->JobFailure{JobFailure::new("failed",Some(s))}
-fn warning(kind:&str,page:Option<f64>,id:Option<&str>,message:String)->IpcValue{let mut f=vec![("kind".into(),IpcValue::String(kind.into()))];if let Some(page)=page{f.push(("page".into(),IpcValue::Number(page)));}if let Some(id)=id{f.push(("footnoteId".into(),IpcValue::String(id.into()));}f.push(("message".into(),IpcValue::String(message)));IpcValue::Object(f)}
+fn warning(kind:&str,page:Option<f64>,id:Option<&str>,message:String)->IpcValue{let mut f=vec![("kind".into(),IpcValue::String(kind.into()))];if let Some(page)=page{f.push(("page".into(),IpcValue::Number(page)));}if let Some(id)=id{f.push(("footnoteId".into(),IpcValue::String(id.into())));}f.push(("message".into(),IpcValue::String(message)));IpcValue::Object(f)}
 fn lines(s:&str)->String{s.split('\n').enumerate().map(|(i,line)|inline::escape_line_start(line,i)).collect::<Vec<_>>().join("\n")}
 fn indent(s:&str,n:usize)->String{s.replace('\n',&format!("\n{}"," ".repeat(n)))}
 #[derive(Default)] struct Lists{cols:Vec<usize>,counters:Vec<usize>,ordered:Vec<bool>}

@@ -354,10 +354,6 @@ impl DocumentContext {
         Self::with_live_all([Some(self)], operation)
     }
 
-    pub fn with_live_pair<T>(&self, other: &Self, operation: impl FnOnce() -> T) -> Option<T> {
-        Self::with_live_all([Some(self), Some(other)], operation)
-    }
-
     /// Fence every given owner in canonical order. Aliases share one lock.
     pub fn with_live_all<T, const N: usize>(
         contexts: [Option<&Self>; N],
@@ -502,7 +498,6 @@ pub(crate) mod tests {
         };
         assert_eq!(order(&forward), order(&backward));
         assert_eq!(forward.with_live(|| "both"), Some("both"));
-        assert_eq!(DocumentContext::with_live_pair(&a, &a, || 1), Some(1));
     }
 
     #[test]
@@ -511,7 +506,10 @@ pub(crate) mod tests {
         let (_b_browser, b) = registered_context("gate-revoked-b");
         b.0.revoke(RevokeReason::Navigation).unwrap().deliver();
         let mut ran = false;
-        assert_eq!(a.with_live_pair(&b, || ran = true), None);
+        assert_eq!(
+            DocumentContext::with_live_all([Some(&a), Some(&b)], || ran = true),
+            None
+        );
         assert!(!ran);
         assert!(DocumentGatePlan::new(&[]).is_none());
         assert_eq!(
@@ -525,7 +523,7 @@ pub(crate) mod tests {
         let (_a_browser, a) = registered_context("gate-panic-a");
         let (_b_browser, b) = registered_context("gate-panic-b");
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            a.with_live_pair(&b, || panic!("effect failed"))
+            DocumentContext::with_live_all([Some(&a), Some(&b)], || panic!("effect failed"))
         }));
         assert!(result.is_err());
         assert!(a.is_revoked() && b.is_revoked());

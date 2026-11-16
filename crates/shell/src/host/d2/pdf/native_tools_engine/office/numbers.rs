@@ -9,9 +9,28 @@ pub(super) enum ParsedCell<'a> {
 
 fn decimal_digits(text: &str) -> usize { text.find('.').map_or(0, |dot| text.len() - dot - 1) }
 fn significant_digits(text: &str) -> usize { text.bytes().filter(|b| !matches!(b, b'-' | b',' | b'.')).skip_while(|b| *b == b'0').count() }
+/// `/^-?[1-9][0-9]{0,2}(,[0-9]{3})+(\.[0-9]+)?$/.test(text)`, as a scan.
+fn grouped_number(text: &str) -> bool {
+    let digits = |part: &str| part.bytes().all(|b| b.is_ascii_digit());
+    let body = text.strip_prefix('-').unwrap_or(text);
+    let (int, fraction) = match body.split_once('.') {
+        Some((int, fraction)) => (int, Some(fraction)),
+        None => (body, None),
+    };
+    if fraction.is_some_and(|fraction| fraction.is_empty() || !digits(fraction)) {
+        return false;
+    }
+    let groups: Vec<&str> = int.split(',').collect();
+    let (head, rest) = (groups[0], &groups[1..]);
+    (1..=3).contains(&head.len())
+        && digits(head)
+        && !head.starts_with('0')
+        && !rest.is_empty()
+        && rest.iter().all(|&group| group.len() == 3 && digits(group))
+}
 fn bare(text: &str) -> Option<(f64, bool)> {
     let plain = js_regex!(r"^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$").test(text);
-    let grouped = !plain && js_regex!(r"^-?[1-9][0-9]{0,2}(,[0-9]{3})+(\.[0-9]+)?$").test(text);
+    let grouped = !plain && grouped_number(text);
     if !plain && !grouped { return None; }
     if !text.contains('.') && !text.contains('e') && !text.contains('E') && significant_digits(text) > 15 { return None; }
     let value = if grouped { text.replace(',', "").parse::<f64>().ok()? } else { text.parse::<f64>().ok()? };

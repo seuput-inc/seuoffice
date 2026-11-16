@@ -34,24 +34,6 @@ struct Entry {
     text: String,
 }
 
-pub(super) fn person_id_for(display_name: &str) -> String {
-    let mut hex = String::with_capacity(32);
-    for seed in 0u32..4 {
-        let mut hash = 0x811c9dc5u32 ^ seed.wrapping_mul(0x9e3779b9);
-        for ch in format!("{seed}:{display_name}").chars() {
-            hash = (hash ^ ch as u32).wrapping_mul(0x01000193);
-        }
-        hex.push_str(&format!("{hash:08X}"));
-    }
-    format!(
-        "{{{}-{}-{}-{}-{}}}",
-        &hex[..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..]
-    )
-}
 struct Persons {
     path: String,
     exists: bool,
