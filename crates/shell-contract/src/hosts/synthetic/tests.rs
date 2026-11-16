@@ -1637,7 +1637,13 @@ fn command_recovery_registration_rejects_root_revoked_after_seed() {
     let (effects, _, _, _, owner) = model();
     let generation = owner.context.renderer().unwrap().clone();
     let issuer = NativeInvocationIssuer::new(CancelToken::default());
-    let root = issuer.issue_command(NativeEditorCommand::OpenHome, CancelToken::default());
+    let root = issuer.issue_command(
+        NativeEditorCommand::OpenFile {
+            surface: Surface::Docs,
+            path: "recovery.docx".into(),
+        },
+        CancelToken::default(),
+    );
     let child = issuer
         .issue_command_recovery_child(
             &root,
@@ -3940,7 +3946,10 @@ fn saved_document_admits_retained_bytes_only_for_exact_live_origin() {
     fs::create_dir(&dir).unwrap();
     let path = dir.join("saved.pdf");
     let parent = File::open(&dir).unwrap();
-    let (effects, _, views, _, source) = model();
+    let (effects, _, views, _, mut source) = model();
+    source.context = source
+        .context
+        .with_document_lease(RendererGeneration::new());
     let issuer = NativeInvocationIssuer::new(CancelToken::default());
     let binding = issuer
         .issue_existing_document_save(

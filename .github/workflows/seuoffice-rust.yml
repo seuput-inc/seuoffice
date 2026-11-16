@@ -138,7 +138,8 @@ jobs:
           SEUOFFICE_NATIVE_TEST_SCRATCH: ${{ runner.temp }}/native-test-scratch
         run: |
           mkdir -p "$SEUOFFICE_TEST_SCRATCH" "$SEUOFFICE_NATIVE_TEST_SCRATCH"
-          cargo test --manifest-path crates/Cargo.toml --workspace
+          # every failing test binary in one run, not only the first
+          cargo test --manifest-path crates/Cargo.toml --workspace --no-fail-fast
 
       # the vendored regex engine carries patches of its own: its suite runs as published
       - name: Vendored regress tests
