@@ -205,11 +205,20 @@ impl Fetcher for NoNetwork {
     fn global_dispatcher(&mut self) -> GlobalDispatcher {
         GlobalDispatcher::NotAnObject
     }
-    fn fetch<'signal>(&mut self, url: &str, _init: &FetchInit<'_, 'signal>) -> Result<Box<dyn Response + 'signal>, FetchError> {
+    fn fetch<'signal>(
+        &mut self,
+        url: &str,
+        _init: &FetchInit<'_, 'signal>,
+    ) -> Result<Box<dyn Response + 'signal>, FetchError> {
         Err(FetchError(format!("fetch failed: {url}")))
     }
     fn close_dispatcher(&mut self) {}
-    fn sleep(&mut self, _ms: f64, _: Option<&dyn main_core::packages::electron_utils::safe_remote_url::AbortSignal>) {}
+    fn sleep(
+        &mut self,
+        _ms: f64,
+        _: Option<&dyn main_core::packages::electron_utils::safe_remote_url::AbortSignal>,
+    ) {
+    }
 }
 
 /// The HTML editor's engine and shell hooks in one fake. Case keys, the
@@ -246,11 +255,15 @@ pub(crate) struct FakeHtml {
     pub answers: Arc<Answers>,
     taken: Mutex<Vec<u32>>,
     pub(crate) export_views: Mutex<Vec<ViewId>>,
-    os:shell_contract::hosts::OsShellHost,
+    os: shell_contract::hosts::OsShellHost,
 }
 
 impl FakeHtml {
-    pub(crate) fn new(case: &Value, probe: Option<ProbeLog>,os:shell_contract::hosts::OsShellHost) -> Self {
+    pub(crate) fn new(
+        case: &Value,
+        probe: Option<ProbeLog>,
+        os: shell_contract::hosts::OsShellHost,
+    ) -> Self {
         FakeHtml {
             answers: Arc::new(Answers::new(case, probe)),
             taken: Mutex::default(),
@@ -261,7 +274,13 @@ impl FakeHtml {
 }
 
 impl HtmlEngine for FakeHtml {
-    fn print_pdf(&self, view: ViewId, html: &str, doc_path: Option<&str>, cancel: &shell_contract::runtime::CancelToken) -> Result<Vec<u8>, String> {
+    fn print_pdf(
+        &self,
+        view: ViewId,
+        html: &str,
+        doc_path: Option<&str>,
+        cancel: &shell_contract::runtime::CancelToken,
+    ) -> Result<Vec<u8>, String> {
         self.export_views.lock().unwrap().push(view);
         #[cfg(test)]
         if self.answers.raw("cancel_print").and_then(Value::as_bool) == Some(true) {
@@ -269,24 +288,73 @@ impl HtmlEngine for FakeHtml {
         }
         #[cfg(not(test))]
         let _ = cancel;
-        let base = doc_path.map(|path| main_core::html::preview_document::asset_base_href(&jscompat::node_path::host::dirname(path)));
+        let base = doc_path.map(|path| {
+            main_core::html::preview_document::asset_base_href(&jscompat::node_path::host::dirname(
+                path,
+            ))
+        });
         let page = main_core::html::preview_document::build_preview_document(html, base.as_deref());
         self.answers.log(json!(["printToPDF", page]));
         self.answers.bytes("print_pdf", "print.html", b"%PDF")
     }
-    fn print_pdf_owned(&self,_origin:&shell_contract::ipc::NativeRequestOwner,destination:&shell_contract::ipc::NativeRequestOwner,html:&str,doc_path:Option<&str>,cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken)->Result<Vec<u8>,String>{
-        if cancel.is_cancelled()||pending.is_cancelled(){return Err("The export was cancelled".into())}
-        self.print_pdf(destination.view,html,doc_path,cancel)
+    fn print_pdf_owned(
+        &self,
+        _origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        html: &str,
+        doc_path: Option<&str>,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+    ) -> Result<Vec<u8>, String> {
+        if cancel.is_cancelled() || pending.is_cancelled() {
+            return Err("The export was cancelled".into());
+        }
+        self.print_pdf(destination.view, html, doc_path, cancel)
     }
-    fn print_pdf_native(&self,binding:&shell_contract::ipc::NativeExistingDocumentBinding,_participants:&[shell_contract::ipc::NativeRequestOwner],html:&str,doc_path:Option<&str>,cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,additional:&[shell_contract::runtime::CancelToken])->Result<Vec<u8>,String>{
-        if cancel.is_cancelled()||pending.is_cancelled()||additional.iter().any(|token|token.is_cancelled())||binding.operation().cancel().is_cancelled()||binding.operation().shutdown().is_cancelled(){return Err("The export was cancelled".into())}
-        self.print_pdf(binding.owner().view,html,doc_path,cancel)
+    fn print_pdf_native(
+        &self,
+        binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+        _participants: &[shell_contract::ipc::NativeRequestOwner],
+        html: &str,
+        doc_path: Option<&str>,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+    ) -> Result<Vec<u8>, String> {
+        if cancel.is_cancelled()
+            || pending.is_cancelled()
+            || additional.iter().any(|token| token.is_cancelled())
+            || binding.operation().cancel().is_cancelled()
+            || binding.operation().shutdown().is_cancelled()
+        {
+            return Err("The export was cancelled".into());
+        }
+        self.print_pdf(binding.owner().view, html, doc_path, cancel)
     }
-    fn print_pdf_invocation(&self,document:&shell_contract::ipc::NativeInvocationDocument,owner:&shell_contract::ipc::NativeRequestOwner,html:&str,doc_path:Option<&str>,cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken)->Result<Vec<u8>,String>{
-        if cancel.is_cancelled()||pending.is_cancelled()||document.operation().cancel().is_cancelled()||document.operation().shutdown().is_cancelled(){return Err("The export was cancelled".into())}
-        self.print_pdf(owner.view,html,doc_path,cancel)
+    fn print_pdf_invocation(
+        &self,
+        document: &shell_contract::ipc::NativeInvocationDocument,
+        owner: &shell_contract::ipc::NativeRequestOwner,
+        html: &str,
+        doc_path: Option<&str>,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+    ) -> Result<Vec<u8>, String> {
+        if cancel.is_cancelled()
+            || pending.is_cancelled()
+            || document.operation().cancel().is_cancelled()
+            || document.operation().shutdown().is_cancelled()
+        {
+            return Err("The export was cancelled".into());
+        }
+        self.print_pdf(owner.view, html, doc_path, cancel)
     }
-    fn html_to_docx(&self, view: ViewId, html_file: &Path, cancel: &shell_contract::runtime::CancelToken) -> Result<Vec<u8>, String> {
+    fn html_to_docx(
+        &self,
+        view: ViewId,
+        html_file: &Path,
+        cancel: &shell_contract::runtime::CancelToken,
+    ) -> Result<Vec<u8>, String> {
         self.export_views.lock().unwrap().push(view);
         #[cfg(test)]
         if self.answers.raw("cancel_docx").and_then(Value::as_bool) == Some(true) {
@@ -299,22 +367,67 @@ impl HtmlEngine for FakeHtml {
         self.answers
             .bytes("html_to_docx", html_file.display(), b"DOCX")
     }
-    fn html_to_docx_owned(&self,_origin:&shell_contract::ipc::NativeRequestOwner,destination:&shell_contract::ipc::NativeRequestOwner,path:&Path,cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken)->Result<Vec<u8>,String>{
-        if cancel.is_cancelled()||pending.is_cancelled(){return Err("The export was cancelled".into())}
-        self.html_to_docx(destination.view,path,cancel)
+    fn html_to_docx_owned(
+        &self,
+        _origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        path: &Path,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+    ) -> Result<Vec<u8>, String> {
+        if cancel.is_cancelled() || pending.is_cancelled() {
+            return Err("The export was cancelled".into());
+        }
+        self.html_to_docx(destination.view, path, cancel)
     }
-    fn html_to_docx_native(&self,binding:&shell_contract::ipc::NativeExistingDocumentBinding,_participants:&[shell_contract::ipc::NativeRequestOwner],path:&Path,cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,additional:&[shell_contract::runtime::CancelToken])->Result<Vec<u8>,String>{
-        if cancel.is_cancelled()||pending.is_cancelled()||additional.iter().any(|token|token.is_cancelled())||binding.operation().cancel().is_cancelled()||binding.operation().shutdown().is_cancelled(){return Err("The export was cancelled".into())}
-        self.html_to_docx(binding.owner().view,path,cancel)
+    fn html_to_docx_native(
+        &self,
+        binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+        _participants: &[shell_contract::ipc::NativeRequestOwner],
+        path: &Path,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+    ) -> Result<Vec<u8>, String> {
+        if cancel.is_cancelled()
+            || pending.is_cancelled()
+            || additional.iter().any(|token| token.is_cancelled())
+            || binding.operation().cancel().is_cancelled()
+            || binding.operation().shutdown().is_cancelled()
+        {
+            return Err("The export was cancelled".into());
+        }
+        self.html_to_docx(binding.owner().view, path, cancel)
     }
-    fn html_to_docx_invocation(&self,document:&shell_contract::ipc::NativeInvocationDocument,owner:&shell_contract::ipc::NativeRequestOwner,path:&Path,cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken)->Result<Vec<u8>,String>{
-        if cancel.is_cancelled()||pending.is_cancelled()||document.operation().cancel().is_cancelled()||document.operation().shutdown().is_cancelled(){return Err("The export was cancelled".into())}
-        self.html_to_docx(owner.view,path,cancel)
+    fn html_to_docx_invocation(
+        &self,
+        document: &shell_contract::ipc::NativeInvocationDocument,
+        owner: &shell_contract::ipc::NativeRequestOwner,
+        path: &Path,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+    ) -> Result<Vec<u8>, String> {
+        if cancel.is_cancelled()
+            || pending.is_cancelled()
+            || document.operation().cancel().is_cancelled()
+            || document.operation().shutdown().is_cancelled()
+        {
+            return Err("The export was cancelled".into());
+        }
+        self.html_to_docx(owner.view, path, cancel)
     }
-    fn docx_to_odt_cancellable(&self,docx:Vec<u8>,cancel:&shell_contract::runtime::CancelToken)->Result<OdtConversion,String>{
-        if cancel.is_cancelled(){return Err("The export was cancelled".into())}
-        let converted=self.docx_to_odt(docx);
-        if cancel.is_cancelled(){return Err("The export was cancelled".into())}
+    fn docx_to_odt_cancellable(
+        &self,
+        docx: Vec<u8>,
+        cancel: &shell_contract::runtime::CancelToken,
+    ) -> Result<OdtConversion, String> {
+        if cancel.is_cancelled() {
+            return Err("The export was cancelled".into());
+        }
+        let converted = self.docx_to_odt(docx);
+        if cancel.is_cancelled() {
+            return Err("The export was cancelled".into());
+        }
         converted
     }
     fn docx_to_odt(&self, docx: Vec<u8>) -> Result<OdtConversion, String> {
@@ -406,65 +519,218 @@ impl HtmlShell for FakeHtml {
             .string("new_document_dir", view.0)
             .map(Into::into)
     }
-    fn write_new_document(&self, view: ViewId, file_name: &str, bytes: &[u8]) -> Result<Option<PathBuf>, String> {
+    fn write_new_document(
+        &self,
+        view: ViewId,
+        file_name: &str,
+        bytes: &[u8],
+    ) -> Result<Option<PathBuf>, String> {
         if !self.answers.has("write_new_document") {
             return Ok(None);
         }
-        self.answers.log(json!(["writeNewDocument", view.0, file_name]));
-        let answer = self.answers.answer("write_new_document", format!("{} {file_name}", view.0));
+        self.answers
+            .log(json!(["writeNewDocument", view.0, file_name]));
+        let answer = self
+            .answers
+            .answer("write_new_document", format!("{} {file_name}", view.0));
         let dir: PathBuf = match answer {
             Some(Value::String(path)) => path.into(),
-            Some(Value::Object(error)) => return Err(error.get("error").and_then(Value::as_str).unwrap_or("failed").to_owned()),
+            Some(Value::Object(error)) => {
+                return Err(error
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("failed")
+                    .to_owned());
+            }
             _ => return Ok(None),
         };
         let path = dir.join(file_name);
         std::fs::write(&path, bytes).map_err(|error| error.to_string())?;
         Ok(Some(path))
     }
-    fn write_new_document_owned(&self, _origin:&shell_contract::ipc::NativeRequestOwner,destination:&shell_contract::ipc::NativeRequestOwner,_cancel:&shell_contract::runtime::CancelToken,_pending:&shell_contract::runtime::CancelToken,_effects:&shell_contract::hosts::OwnedEffectsHost,admission:main_core::packages::electron_utils::atomic_write::owned::Admission,file_name:&str,bytes:&[u8])->Result<Option<PathBuf>,String>{
-        if !self.answers.has("write_new_document") { return Ok(None); }
-        self.answers.log(json!(["writeNewDocument", destination.view.0, file_name]));
-        let answer=self.answers.answer("write_new_document",format!("{} {file_name}",destination.view.0));
-        let dir:PathBuf=match answer{
-            Some(Value::String(path))=>path.into(),
-            Some(Value::Object(error))=>return Err(error.get("error").and_then(Value::as_str).unwrap_or("failed").to_owned()),
-            _=>return Ok(None),
+    fn write_new_document_owned(
+        &self,
+        _origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        _cancel: &shell_contract::runtime::CancelToken,
+        _pending: &shell_contract::runtime::CancelToken,
+        _effects: &shell_contract::hosts::OwnedEffectsHost,
+        admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
+        file_name: &str,
+        bytes: &[u8],
+    ) -> Result<Option<PathBuf>, String> {
+        if !self.answers.has("write_new_document") {
+            return Ok(None);
+        }
+        self.answers
+            .log(json!(["writeNewDocument", destination.view.0, file_name]));
+        let answer = self.answers.answer(
+            "write_new_document",
+            format!("{} {file_name}", destination.view.0),
+        );
+        let dir: PathBuf = match answer {
+            Some(Value::String(path)) => path.into(),
+            Some(Value::Object(error)) => {
+                return Err(error
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("failed")
+                    .to_owned());
+            }
+            _ => return Ok(None),
         };
-        let path=dir.join(file_name);
-        main_core::packages::electron_utils::atomic_write::owned::write_file(&path.to_string_lossy(),bytes,admission).map_err(|error|error.message)?;
+        let path = dir.join(file_name);
+        main_core::packages::electron_utils::atomic_write::owned::write_file(
+            &path.to_string_lossy(),
+            bytes,
+            admission,
+        )
+        .map_err(|error| error.message)?;
         Ok(Some(path))
     }
-    fn asset_paths_changed(&self, view: ViewId, tracked: bool, open: Option<&str>, save: Option<&str>) -> Result<(), String> {
-        self.answers.answer("asset_paths_changed", format!("{} {tracked} {:?} {:?}", view.0, open, save));
+    fn asset_paths_changed(
+        &self,
+        view: ViewId,
+        tracked: bool,
+        open: Option<&str>,
+        save: Option<&str>,
+    ) -> Result<(), String> {
+        self.answers.answer(
+            "asset_paths_changed",
+            format!("{} {tracked} {:?} {:?}", view.0, open, save),
+        );
         Ok(())
     }
-    fn asset_paths_changed_owned(&self,origin:&shell_contract::ipc::NativeRequestOwner,captured:&[shell_contract::ipc::NativeRequestOwner],cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,additional:&[shell_contract::runtime::CancelToken],effects:&shell_contract::hosts::OwnedEffectsHost,tracked:bool,open:Option<&str>,save:Option<&str>)->Result<(),String>{
-        let destination=captured.first().ok_or("the asset destination was not captured")?;let extra=additional.iter().collect::<Vec<_>>();
-        effects.with_owned_effect_many_extra(origin,captured,cancel,pending,&extra,&mut||self.asset_paths_changed(destination.view,tracked,open,save))
+    fn asset_paths_changed_owned(
+        &self,
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        captured: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+        tracked: bool,
+        open: Option<&str>,
+        save: Option<&str>,
+    ) -> Result<(), String> {
+        let destination = captured
+            .first()
+            .ok_or("the asset destination was not captured")?;
+        let extra = additional.iter().collect::<Vec<_>>();
+        effects.with_owned_effect_many_extra(origin, captured, cancel, pending, &extra, &mut || {
+            self.asset_paths_changed(destination.view, tracked, open, save)
+        })
     }
-    fn prepare_native_save_asset_paths(&self,destination:&shell_contract::ipc::NativeRequestOwner,tracked:bool,open:Option<&str>,save:Option<&str>)->Result<super::RecoveryAssetStage,String>{
-        let answers=self.answers.clone();let view=destination.view;let open=open.map(str::to_owned);let save=save.map(str::to_owned);let mut once=Some(());
-        Ok(super::RecoveryAssetStage{commit:Box::new(move||{once.take().ok_or("fake native save grant was already published")?;answers.answer("asset_paths_changed",format!("{} {tracked} {:?} {:?}",view.0,open,save));Ok(true)}),subscribe:Box::new(||Box::new(|_|Ok(())))})
+    fn prepare_native_save_asset_paths(
+        &self,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        tracked: bool,
+        open: Option<&str>,
+        save: Option<&str>,
+    ) -> Result<super::RecoveryAssetStage, String> {
+        let answers = self.answers.clone();
+        let view = destination.view;
+        let open = open.map(str::to_owned);
+        let save = save.map(str::to_owned);
+        let mut once = Some(());
+        Ok(super::RecoveryAssetStage {
+            commit: Box::new(move || {
+                once.take()
+                    .ok_or("fake native save grant was already published")?;
+                answers.answer(
+                    "asset_paths_changed",
+                    format!("{} {tracked} {:?} {:?}", view.0, open, save),
+                );
+                Ok(true)
+            }),
+            subscribe: Box::new(|| Box::new(|_| Ok(()))),
+        })
     }
-    fn prepare_saved_document_asset_paths(&self,destination:&shell_contract::ipc::NativeRequestOwner,open:Option<&str>,save:Option<&str>)->Result<super::SavedAssetStage,String>{
-        let mut stage=self.prepare_native_save_asset_paths(destination,true,open,save)?;
-        let published=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let committed=published.clone();let mut commit=stage.commit;
-        stage.commit=Box::new(move||{let done=commit()?;if done{committed.store(true,std::sync::atomic::Ordering::SeqCst)}Ok(done)});
-        let answers=self.answers.clone();let view=destination.view;
-        let revoke=Box::new(move||{if !published.load(std::sync::atomic::Ordering::SeqCst){return Err("fake saved asset grant was not published".into())}answers.answer("saved_asset_revoke",view.0.to_string());Ok(())});
-        Ok(super::SavedAssetStage{stage,revoke})
+    fn prepare_saved_document_asset_paths(
+        &self,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        open: Option<&str>,
+        save: Option<&str>,
+    ) -> Result<super::SavedAssetStage, String> {
+        let mut stage = self.prepare_native_save_asset_paths(destination, true, open, save)?;
+        let published = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let committed = published.clone();
+        let mut commit = stage.commit;
+        stage.commit = Box::new(move || {
+            let done = commit()?;
+            if done {
+                committed.store(true, std::sync::atomic::Ordering::SeqCst)
+            }
+            Ok(done)
+        });
+        let answers = self.answers.clone();
+        let view = destination.view;
+        let revoke = Box::new(move || {
+            if !published.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err("fake saved asset grant was not published".into());
+            }
+            answers.answer("saved_asset_revoke", view.0.to_string());
+            Ok(())
+        });
+        Ok(super::SavedAssetStage { stage, revoke })
     }
-    fn prepare_recovery_asset_paths(&self,target:&shell_contract::ipc::RecoveryOpenTarget,tracked:bool,open:Option<&str>,save:Option<&str>)->Result<Box<dyn FnMut()->Result<(),String>+Send>,String>{
-        let answers=self.answers.clone();let view=target.view();let open=open.map(str::to_owned);let save=save.map(str::to_owned);let mut once=Some(());
-        Ok(Box::new(move||{once.take().ok_or("fake recovery asset grant was already published")?;answers.answer("asset_paths_changed",format!("{} {tracked} {:?} {:?}",view.0,open,save));Ok(())}))
+    fn prepare_recovery_asset_paths(
+        &self,
+        target: &shell_contract::ipc::RecoveryOpenTarget,
+        tracked: bool,
+        open: Option<&str>,
+        save: Option<&str>,
+    ) -> Result<Box<dyn FnMut() -> Result<(), String> + Send>, String> {
+        let answers = self.answers.clone();
+        let view = target.view();
+        let open = open.map(str::to_owned);
+        let save = save.map(str::to_owned);
+        let mut once = Some(());
+        Ok(Box::new(move || {
+            once.take()
+                .ok_or("fake recovery asset grant was already published")?;
+            answers.answer(
+                "asset_paths_changed",
+                format!("{} {tracked} {:?} {:?}", view.0, open, save),
+            );
+            Ok(())
+        }))
     }
-    fn prepare_rename_asset_paths_recovery(&self,_receipt:&shell_contract::ipc::RecoverySeedReceipt,_receiver:&shell_contract::ipc::NativeRequestOwner,destination:&shell_contract::ipc::NativeRequestOwner,_participants:&[shell_contract::ipc::NativeRequestOwner],_cancel:&shell_contract::runtime::CancelToken,_pending:&shell_contract::runtime::CancelToken,tracked:bool,open:Option<&str>,save:Option<&str>)->Result<super::RecoveryAssetStage,String>{
-        let answers=self.answers.clone();let view=destination.view;let open=open.map(str::to_owned);let save=save.map(str::to_owned);let mut once=Some(());
-        Ok(super::RecoveryAssetStage{commit:Box::new(move||{once.take().ok_or("fake recovery rename grant was already published")?;answers.answer("asset_paths_changed",format!("{} {tracked} {:?} {:?}",view.0,open,save));Ok(true)}),subscribe:Box::new(||Box::new(|_|Ok(())))})
+    fn prepare_rename_asset_paths_recovery(
+        &self,
+        _receipt: &shell_contract::ipc::RecoverySeedReceipt,
+        _receiver: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        _participants: &[shell_contract::ipc::NativeRequestOwner],
+        _cancel: &shell_contract::runtime::CancelToken,
+        _pending: &shell_contract::runtime::CancelToken,
+        tracked: bool,
+        open: Option<&str>,
+        save: Option<&str>,
+    ) -> Result<super::RecoveryAssetStage, String> {
+        let answers = self.answers.clone();
+        let view = destination.view;
+        let open = open.map(str::to_owned);
+        let save = save.map(str::to_owned);
+        let mut once = Some(());
+        Ok(super::RecoveryAssetStage {
+            commit: Box::new(move || {
+                once.take()
+                    .ok_or("fake recovery rename grant was already published")?;
+                answers.answer(
+                    "asset_paths_changed",
+                    format!("{} {tracked} {:?} {:?}", view.0, open, save),
+                );
+                Ok(true)
+            }),
+            subscribe: Box::new(|| Box::new(|_| Ok(()))),
+        })
     }
     fn asset_present_owner(&self, view: ViewId, owner: Option<ViewId>) -> Result<(), String> {
-        self.answers.answer("asset_present_owner", format!("{} {:?}", view.0, owner.map(|v| v.0)));
+        self.answers.answer(
+            "asset_present_owner",
+            format!("{} {:?}", view.0, owner.map(|v| v.0)),
+        );
         Ok(())
     }
     fn file_saved(&self, view: ViewId, path: &Path) {
@@ -473,12 +739,64 @@ impl HtmlShell for FakeHtml {
         self.answers
             .log(json!(["fileSavedHook", view.0, path.to_string_lossy()]));
     }
-    fn file_saved_owned(&self,origin:shell_contract::ipc::NativeRequestOwner,destination:shell_contract::ipc::NativeRequestOwner,participants:Vec<shell_contract::ipc::NativeRequestOwner>,cancel:shell_contract::runtime::CancelToken,pending:shell_contract::runtime::CancelToken,additional:Vec<shell_contract::runtime::CancelToken>,effects:shell_contract::hosts::OwnedEffectsHost,path:PathBuf,then:Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<PathBuf>,String>)>){
-        let extra=additional.iter().collect::<Vec<_>>();let result=effects.with_owned_effect_many_extra(&origin,&participants,&cancel,&pending,&extra,&mut||{self.file_saved(destination.view,&path);Ok(())});then(result.map(|()|shell_contract::hosts::SavedFile{path,session:shell_contract::hosts::SavedSessionReceipt::NoPublication}));
+    fn file_saved_owned(
+        &self,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        destination: shell_contract::ipc::NativeRequestOwner,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        path: PathBuf,
+        then: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<PathBuf>, String>)>,
+    ) {
+        let extra = additional.iter().collect::<Vec<_>>();
+        let result = effects.with_owned_effect_many_extra(
+            &origin,
+            &participants,
+            &cancel,
+            &pending,
+            &extra,
+            &mut || {
+                self.file_saved(destination.view, &path);
+                Ok(())
+            },
+        );
+        then(result.map(|()| shell_contract::hosts::SavedFile {
+            path,
+            session: shell_contract::hosts::SavedSessionReceipt::NoPublication,
+        }));
     }
-    fn file_saved_native(&self,destination:shell_contract::ipc::NativeSaveDestination,participants:Vec<shell_contract::ipc::NativeRequestOwner>,cancel:shell_contract::runtime::CancelToken,pending:shell_contract::runtime::CancelToken,additional:Vec<shell_contract::runtime::CancelToken>,effects:shell_contract::hosts::OwnedEffectsHost,then:Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<PathBuf>,String>)>){
-        let path=destination.path().to_path_buf();let view=destination.binding().owner().view;let extra=additional.iter().collect::<Vec<_>>();
-        let result=effects.with_existing_document_destination_effect(&destination,&path,&participants,&cancel,&pending,&extra,&mut||{self.file_saved(view,&path);Ok(())});then(result.map(|()|shell_contract::hosts::SavedFile{path,session:shell_contract::hosts::SavedSessionReceipt::NoPublication}));
+    fn file_saved_native(
+        &self,
+        destination: shell_contract::ipc::NativeSaveDestination,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        then: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<PathBuf>, String>)>,
+    ) {
+        let path = destination.path().to_path_buf();
+        let view = destination.binding().owner().view;
+        let extra = additional.iter().collect::<Vec<_>>();
+        let result = effects.with_existing_document_destination_effect(
+            &destination,
+            &path,
+            &participants,
+            &cancel,
+            &pending,
+            &extra,
+            &mut || {
+                self.file_saved(view, &path);
+                Ok(())
+            },
+        );
+        then(result.map(|()| shell_contract::hosts::SavedFile {
+            path,
+            session: shell_contract::hosts::SavedSessionReceipt::NoPublication,
+        }));
     }
     fn provisional_title(&self, view: ViewId, title: &str) {
         self.answers
@@ -505,64 +823,142 @@ impl HtmlShell for FakeHtml {
                 .bool("docx_export_prepare", path.display(), true),
         )
     }
-    fn docx_export_prepare_owned(&self,origin:shell_contract::ipc::NativeRequestOwner,destination:shell_contract::ipc::NativeRequestOwner,cancel:shell_contract::runtime::CancelToken,pending:shell_contract::runtime::CancelToken,effects:shell_contract::hosts::OwnedEffectsHost,path:PathBuf,then:Box<dyn FnOnce(Result<bool,String>)>){
-        let mut go=true;
-        let result=effects.with_owned_effect(&origin,&destination,&cancel,&pending,&mut||{
-            if self.answers.has("docx_export_prepare"){self.answers.log(json!(["docxExportPrepareHook",path.to_string_lossy()]));go=self.answers.bool("docx_export_prepare",path.display(),true);}Ok(())
-        });then(result.map(|()|go));
+    fn docx_export_prepare_owned(
+        &self,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        destination: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        path: PathBuf,
+        then: Box<dyn FnOnce(Result<bool, String>)>,
+    ) {
+        let mut go = true;
+        let result =
+            effects.with_owned_effect(&origin, &destination, &cancel, &pending, &mut || {
+                if self.answers.has("docx_export_prepare") {
+                    self.answers
+                        .log(json!(["docxExportPrepareHook", path.to_string_lossy()]));
+                    go = self
+                        .answers
+                        .bool("docx_export_prepare", path.display(), true);
+                }
+                Ok(())
+            });
+        then(result.map(|()| go));
     }
-    fn docx_export_prepare_native(&self,selection:shell_contract::ipc::NativeSaveDestination,participants:Vec<shell_contract::ipc::NativeRequestOwner>,cancel:shell_contract::runtime::CancelToken,pending:shell_contract::runtime::CancelToken,additional:Vec<shell_contract::runtime::CancelToken>,effects:shell_contract::hosts::OwnedEffectsHost,then:Box<dyn FnOnce(Result<bool,String>)>){
-        let path=selection.path().to_path_buf();let extra=additional.iter().collect::<Vec<_>>();let mut go=true;
-        let result=effects.with_existing_document_destination_effect(&selection,&path,&participants,&cancel,&pending,&extra,&mut||{if self.answers.has("docx_export_prepare"){self.answers.log(json!(["docxExportPrepareHook",path.to_string_lossy()]));go=self.answers.bool("docx_export_prepare",path.display(),true);}Ok(())});
-        then(result.map(|()|go));
+    fn docx_export_prepare_native(
+        &self,
+        selection: shell_contract::ipc::NativeSaveDestination,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        then: Box<dyn FnOnce(Result<bool, String>)>,
+    ) {
+        let path = selection.path().to_path_buf();
+        let extra = additional.iter().collect::<Vec<_>>();
+        let mut go = true;
+        let result = effects.with_existing_document_destination_effect(
+            &selection,
+            &path,
+            &participants,
+            &cancel,
+            &pending,
+            &extra,
+            &mut || {
+                if self.answers.has("docx_export_prepare") {
+                    self.answers
+                        .log(json!(["docxExportPrepareHook", path.to_string_lossy()]));
+                    go = self
+                        .answers
+                        .bool("docx_export_prepare", path.display(), true);
+                }
+                Ok(())
+            },
+        );
+        then(result.map(|()| go));
     }
-    fn export_written_owned(&self,origin:shell_contract::ipc::NativeRequestOwner,destination:shell_contract::ipc::NativeRequestOwner,cancel:shell_contract::runtime::CancelToken,pending:shell_contract::runtime::CancelToken,effects:shell_contract::hosts::OwnedEffectsHost,path:PathBuf,kind:&'static str,then:Box<dyn FnOnce(Result<(),String>)>){
-        let result=effects.with_owned_effect(&origin,&destination,&cancel,&pending,&mut||{
-            if !self.is_headless(){
-                let opened=match kind{"pdf"=>self.open_generated_path(&path),"docx"|"odt"=>self.docx_exported(&path),_=>false};
-                if !opened{self.os.show_item_in_folder(&path);}
-            }Ok(())
-        });then(result);
+    fn export_written_owned(
+        &self,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        destination: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        path: PathBuf,
+        kind: &'static str,
+        then: Box<dyn FnOnce(Result<(), String>)>,
+    ) {
+        let result =
+            effects.with_owned_effect(&origin, &destination, &cancel, &pending, &mut || {
+                if !self.is_headless() {
+                    let opened = match kind {
+                        "pdf" => self.open_generated_path(&path),
+                        "docx" | "odt" => self.docx_exported(&path),
+                        _ => false,
+                    };
+                    if !opened {
+                        self.os.show_item_in_folder(&path);
+                    }
+                }
+                Ok(())
+            });
+        then(result);
     }
-    fn take_generate_handoff_owned(&self, consumer:&shell_contract::ipc::NativeRequestOwner, cancel:&shell_contract::runtime::CancelToken)->Result<Option<Handoff>,String>{
-        if cancel.is_cancelled(){return Err("the handoff request was cancelled".into())}
-        let view=consumer.view;
-        Ok((||{
-        let o = self
-            .answers
-            .raw("take_generate_handoff")?
-            .get(view.0.to_string())?
-            .as_object()?
-            .clone();
-        let mut taken = self.taken.lock().unwrap();
-        if taken.contains(&view.0) {
-            return None;
+    fn take_generate_handoff_owned(
+        &self,
+        consumer: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+    ) -> Result<Option<Handoff>, String> {
+        if cancel.is_cancelled() {
+            return Err("the handoff request was cancelled".into());
         }
-        taken.push(view.0);
-        Some(Handoff {
-            id: o.get("id")?.as_str()?.to_owned(),
-            text: o.get("text")?.as_str()?.to_owned(),
-            materials: o
-                .get("materials")
-                .and_then(Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .map(|m| {
-                            (
-                                m["path"].as_str().unwrap_or_default().to_owned(),
-                                m["name"].as_str().unwrap_or_default().to_owned(),
-                            )
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
-        })
+        let view = consumer.view;
+        Ok((|| {
+            let o = self
+                .answers
+                .raw("take_generate_handoff")?
+                .get(view.0.to_string())?
+                .as_object()?
+                .clone();
+            let mut taken = self.taken.lock().unwrap();
+            if taken.contains(&view.0) {
+                return None;
+            }
+            taken.push(view.0);
+            Some(Handoff {
+                id: o.get("id")?.as_str()?.to_owned(),
+                text: o.get("text")?.as_str()?.to_owned(),
+                materials: o
+                    .get("materials")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .map(|m| {
+                                (
+                                    m["path"].as_str().unwrap_or_default().to_owned(),
+                                    m["name"].as_str().unwrap_or_default().to_owned(),
+                                )
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            })
         })())
     }
-    fn report_generate_run_started_owned(&self, consumer:&shell_contract::ipc::NativeRequestOwner, cancel:&shell_contract::runtime::CancelToken, paths:&[String])->Result<bool,String>{
-        if cancel.is_cancelled(){return Err("the handoff request was cancelled".into())}
-        let view=consumer.view;
+    fn report_generate_run_started_owned(
+        &self,
+        consumer: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        paths: &[String],
+    ) -> Result<bool, String> {
+        if cancel.is_cancelled() {
+            return Err("the handoff request was cancelled".into());
+        }
+        let view = consumer.view;
         self.answers
             .log(json!(["reportGenerateRunStarted", view.0, paths]));
         Ok(self.answers.bool(

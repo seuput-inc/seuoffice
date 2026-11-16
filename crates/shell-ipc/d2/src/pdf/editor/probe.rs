@@ -120,7 +120,13 @@ pub(crate) fn probe_trigger(
             then(done())
         }
         "write-pdf-copies-now" => {
-            let settled = wait(|result: Result<(), main_core::shell::renderer_disposal::Failure>| result.map(|()| IpcValue::Undefined).map_err(|error| crate::kit::error(error.0)));
+            let settled = wait(
+                |result: Result<(), main_core::shell::renderer_disposal::Failure>| {
+                    result
+                        .map(|()| IpcValue::Undefined)
+                        .map_err(|error| crate::kit::error(error.0))
+                },
+            );
             ed.write_copies_now(settled);
             then(done())
         }

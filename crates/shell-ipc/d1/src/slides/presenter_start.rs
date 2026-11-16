@@ -69,7 +69,9 @@ pub(in crate::slides) fn presenter_start(
         Ok(displays) => displays,
         Err(error) => return responder.reply(Err(thrown(error.0))),
     };
-    let external = displays.into_iter().find(|candidate| candidate.id != display.id);
+    let external = displays
+        .into_iter()
+        .find(|candidate| candidate.id != display.id);
     let ticket = {
         let mut state = app.state.borrow_mut();
         state.next_ticket += 1;

@@ -102,15 +102,19 @@ impl Docs {
 
 /// `readLazyMedia` as `inlineLazyMediaInHtml` reads it
 fn lazy_reader<'a>(
-    engine: &'a DocsEngineHost, permit: &'a MediaPermit, cancel: &'a shell_contract::runtime::CancelToken,
+    engine: &'a DocsEngineHost,
+    permit: &'a MediaPermit,
+    cancel: &'a shell_contract::runtime::CancelToken,
 ) -> impl FnMut(&str) -> Result<Option<LazyMedia>, String> + 'a {
     move |url| {
-        engine.read_lazy_media(url, permit.clone(), cancel.clone()).map(|m| {
-            m.map(|m| LazyMedia {
-                body: m.body,
-                mime: m.mime,
+        engine
+            .read_lazy_media(url, permit.clone(), cancel.clone())
+            .map(|m| {
+                m.map(|m| LazyMedia {
+                    body: m.body,
+                    mime: m.mime,
+                })
             })
-        })
     }
 }
 
@@ -153,12 +157,21 @@ fn write_markdown_media(
         let path = join(&[&dir, name]);
         if let Some(admission) = admission {
             if written == 0 {
-                main_core::packages::electron_utils::atomic_write::owned::create_parent(&path, admission).map_err(|e| node_text(&e))?;
+                main_core::packages::electron_utils::atomic_write::owned::create_parent(
+                    &path, admission,
+                )
+                .map_err(|e| node_text(&e))?;
             }
-            main_core::packages::electron_utils::atomic_write::owned::write_file(&path, &body, admission.clone()).map_err(|e| node_text(&e))?;
+            main_core::packages::electron_utils::atomic_write::owned::write_file(
+                &path,
+                &body,
+                admission.clone(),
+            )
+            .map_err(|e| node_text(&e))?;
         } else {
             if written == 0 {
-                std::fs::create_dir_all(&dir).map_err(|e| node_text(&super::fs_error(&e, "mkdir", &dir)))?;
+                std::fs::create_dir_all(&dir)
+                    .map_err(|e| node_text(&super::fs_error(&e, "mkdir", &dir)))?;
             }
             atomic_write_file(&path, &body).map_err(|e| node_text(&e))?;
         }
@@ -167,23 +180,58 @@ fn write_markdown_media(
     Ok(written)
 }
 
-fn reply_export(docs: &Docs, publication: Option<super::open::HeadlessPublication>, responder: Responder, answer: IpcValue) {
-    let Some(publication) = publication else { return responder.reply(Ok(answer)); };
+fn reply_export(
+    docs: &Docs,
+    publication: Option<super::open::HeadlessPublication>,
+    responder: Responder,
+    answer: IpcValue,
+) {
+    let Some(publication) = publication else {
+        return responder.reply(Ok(answer));
+    };
     let mut pending = Some((responder, answer));
     let mut admitted = None;
     let checked = publication.effects.with_native_invocation_effect(
-        &publication.document, &publication.owner, &[], &publication.cancel, &publication.pending, &mut || {
-            let matches = docs.headless_waiters.borrow().get(&publication.owner.view).and_then(|(target, _)| target.as_ref())
-                .is_some_and(|(target, _)| target.created().same_generation(publication.document.created())
-                    && target.operation().authority_generation().same_generation(publication.document.operation().authority_generation()));
-            if docs.is_torn_down(publication.owner.view) || !matches { return Err("the Docs export is no longer pending".into()); }
+        &publication.document,
+        &publication.owner,
+        &[],
+        &publication.cancel,
+        &publication.pending,
+        &mut || {
+            let matches = docs
+                .headless_waiters
+                .borrow()
+                .get(&publication.owner.view)
+                .and_then(|(target, _)| target.as_ref())
+                .is_some_and(|(target, _)| {
+                    target
+                        .created()
+                        .same_generation(publication.document.created())
+                        && target.operation().authority_generation().same_generation(
+                            publication.document.operation().authority_generation(),
+                        )
+                });
+            if docs.is_torn_down(publication.owner.view) || !matches {
+                return Err("the Docs export is no longer pending".into());
+            }
             admitted = pending.take();
-            if admitted.is_none() { return Err("the Docs export answer was already admitted".into()); }
+            if admitted.is_none() {
+                return Err("the Docs export answer was already admitted".into());
+            }
             Ok(())
-        });
+        },
+    );
     match checked {
-        Ok(()) => { if let Some((responder, answer)) = admitted { responder.reply(Ok(answer)); } }
-        Err(error) => { if let Some((responder, _)) = pending { responder.reply(Err(kit::error(error))); } }
+        Ok(()) => {
+            if let Some((responder, answer)) = admitted {
+                responder.reply(Ok(answer));
+            }
+        }
+        Err(error) => {
+            if let Some((responder, _)) = pending {
+                responder.reply(Err(kit::error(error)));
+            }
+        }
     }
 }
 
@@ -223,12 +271,17 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
             let view = cx.sender.view;
             match d.owned_save_scope(&cx, args.get(6)) {
                 Ok(Some(scope)) => return owned::pdf(&d, scope, args, responder),
-                Ok(None) => {}, Err(error) => return responder.reply(Err(error)),
+                Ok(None) => {}
+                Err(error) => return responder.reply(Err(error)),
             }
-            let publication = match d.capture_headless_publication(&cx, args.str(3).unwrap_or(""), "pdf") {
-                Ok(publication) => publication, Err(error) => return responder.reply(Err(kit::error(error))),
-            };
-            let admission = publication.as_ref().map(|publication| super::owned_write::headless_admission(&d, publication.clone()));
+            let publication =
+                match d.capture_headless_publication(&cx, args.str(3).unwrap_or(""), "pdf") {
+                    Ok(publication) => publication,
+                    Err(error) => return responder.reply(Err(kit::error(error))),
+                };
+            let admission = publication
+                .as_ref()
+                .map(|publication| super::owned_write::headless_admission(&d, publication.clone()));
             let completion = publication.clone();
             let (w, h, scale) = (
                 kit::to_js_json(args.get(1)),
@@ -289,9 +342,17 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                 &d.services,
                 move || -> Result<(), String> {
                     let printed = match publication {
-                        Some(publication) => contents.print_to_pdf_native_invocation(&publication.document, &publication.owner, &[], &publication.cancel, &publication.pending, IpcValue::Object(options)),
+                        Some(publication) => contents.print_to_pdf_native_invocation(
+                            &publication.document,
+                            &publication.owner,
+                            &[],
+                            &publication.cancel,
+                            &publication.pending,
+                            IpcValue::Object(options),
+                        ),
                         None => contents.print_to_pdf(view, IpcValue::Object(options)),
-                    }.map_err(|e| error_text(&e))?;
+                    }
+                    .map_err(|e| error_text(&e))?;
                     let data = match links {
                         Some(links) => engine
                             .add_pdf_internal_links(printed, links)
@@ -299,7 +360,12 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                         None => printed,
                     };
                     match admission {
-                        Some(admission) => main_core::packages::electron_utils::atomic_write::owned::write_file(&target, &data, admission).map_err(|e| node_text(&e)),
+                        Some(admission) => {
+                            main_core::packages::electron_utils::atomic_write::owned::write_file(
+                                &target, &data, admission,
+                            )
+                            .map_err(|e| node_text(&e))
+                        }
                         None => atomic_write_file(&target, &data).map_err(|e| node_text(&e)),
                     }
                 },
@@ -327,12 +393,17 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
             let view = cx.sender.view;
             match d.owned_save_scope(&cx, args.get(3)) {
                 Ok(Some(scope)) => return owned::html(&d, scope, args, responder),
-                Ok(None) => {}, Err(error) => return responder.reply(Err(error)),
+                Ok(None) => {}
+                Err(error) => return responder.reply(Err(error)),
             }
-            let publication = match d.capture_headless_publication(&cx, args.str(2).unwrap_or(""), "html") {
-                Ok(publication) => publication, Err(error) => return responder.reply(Err(kit::error(error))),
-            };
-            let admission = publication.as_ref().map(|publication| super::owned_write::headless_admission(&d, publication.clone()));
+            let publication =
+                match d.capture_headless_publication(&cx, args.str(2).unwrap_or(""), "html") {
+                    Ok(publication) => publication,
+                    Err(error) => return responder.reply(Err(kit::error(error))),
+                };
+            let admission = publication
+                .as_ref()
+                .map(|publication| super::owned_write::headless_admission(&d, publication.clone()));
             let Some(html) = args.str(1).filter(|h| !h.is_empty()).map(str::to_owned) else {
                 return responder.reply(Ok(failed("empty document")));
             };
@@ -355,18 +426,33 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                     }
                 }
             };
-            let Some(permit) = d.media_permit(view) else { return responder.reply(Err(kit::error("The document media session is unavailable."))); };
+            let Some(permit) = d.media_permit(view) else {
+                return responder.reply(Err(kit::error(
+                    "The document media session is unavailable.",
+                )));
+            };
             let (engine, target) = (d.engine.clone(), path.clone());
             let d2 = d.clone();
             let cancel = cx.cancel.clone();
             kit::on_worker(
                 &d.services,
                 move || -> Result<(), String> {
-                    let inlined = inline_lazy_media_in_html(&html, &mut lazy_reader(&engine, &permit, &cancel))
-                        .map_err(|e| error_text(&e))?;
+                    let inlined = inline_lazy_media_in_html(
+                        &html,
+                        &mut lazy_reader(&engine, &permit, &cancel),
+                    )
+                    .map_err(|e| error_text(&e))?;
                     match admission {
-                        Some(admission) => main_core::packages::electron_utils::atomic_write::owned::write_file(&target, inlined.as_bytes(), admission).map_err(|e| node_text(&e)),
-                        None => atomic_write_file(&target, inlined.as_bytes()).map_err(|e| node_text(&e)),
+                        Some(admission) => {
+                            main_core::packages::electron_utils::atomic_write::owned::write_file(
+                                &target,
+                                inlined.as_bytes(),
+                                admission,
+                            )
+                            .map_err(|e| node_text(&e))
+                        }
+                        None => atomic_write_file(&target, inlined.as_bytes())
+                            .map_err(|e| node_text(&e)),
                     }
                 },
                 move |result| {
@@ -390,12 +476,17 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
             let view = cx.sender.view;
             match d.owned_save_scope(&cx, args.get(4)) {
                 Ok(Some(scope)) => return owned::markdown(&d, scope, args, responder),
-                Ok(None) => {}, Err(error) => return responder.reply(Err(error)),
+                Ok(None) => {}
+                Err(error) => return responder.reply(Err(error)),
             }
-            let publication = match d.capture_headless_publication(&cx, args.str(3).unwrap_or(""), "md") {
-                Ok(publication) => publication, Err(error) => return responder.reply(Err(kit::error(error))),
-            };
-            let admission = publication.as_ref().map(|publication| super::owned_write::headless_admission(&d, publication.clone()));
+            let publication =
+                match d.capture_headless_publication(&cx, args.str(3).unwrap_or(""), "md") {
+                    Ok(publication) => publication,
+                    Err(error) => return responder.reply(Err(kit::error(error))),
+                };
+            let admission = publication
+                .as_ref()
+                .map(|publication| super::owned_write::headless_admission(&d, publication.clone()));
             let Some(markdown) = args.str(1).filter(|m| !m.is_empty()).map(str::to_owned) else {
                 return responder.reply(Ok(failed("empty document")));
             };
@@ -430,14 +521,25 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                     }
                 }
             };
-            let Some(permit) = d.media_permit(view) else { return responder.reply(Err(kit::error("The document media session is unavailable."))); };
+            let Some(permit) = d.media_permit(view) else {
+                return responder.reply(Err(kit::error(
+                    "The document media session is unavailable.",
+                )));
+            };
             let (engine, target) = (d.engine.clone(), path.clone());
             let d2 = d.clone();
             let cancel = cx.cancel.clone();
             kit::on_worker(
                 &d.services,
                 move || -> Result<usize, String> {
-                    let written = write_markdown_media(&engine, &target, &images, &permit, &cancel, admission.as_ref())?;
+                    let written = write_markdown_media(
+                        &engine,
+                        &target,
+                        &images,
+                        &permit,
+                        &cancel,
+                        admission.as_ref(),
+                    )?;
                     // the destination was escaped before the swap: parentheses must not survive it
                     let stem =
                         js_regex!(r"\.md$", "i").replace_all(&basename(&target), |_| String::new());
@@ -449,8 +551,16 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                         .collect::<Vec<_>>()
                         .join(&format!("{media_dir}/"));
                     match admission {
-                        Some(admission) => main_core::packages::electron_utils::atomic_write::owned::write_file(&target, text.as_bytes(), admission).map_err(|e| node_text(&e))?,
-                        None => atomic_write_file(&target, text.as_bytes()).map_err(|e| node_text(&e))?,
+                        Some(admission) => {
+                            main_core::packages::electron_utils::atomic_write::owned::write_file(
+                                &target,
+                                text.as_bytes(),
+                                admission,
+                            )
+                            .map_err(|e| node_text(&e))?
+                        }
+                        None => atomic_write_file(&target, text.as_bytes())
+                            .map_err(|e| node_text(&e))?,
                     }
                     Ok(images.len() - written)
                 },
@@ -479,12 +589,17 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
             let view = cx.sender.view;
             match d.owned_save_scope(&cx, args.get(4)) {
                 Ok(Some(scope)) => return owned::hwp(&d, scope, args, responder),
-                Ok(None) => {}, Err(error) => return responder.reply(Err(error)),
+                Ok(None) => {}
+                Err(error) => return responder.reply(Err(error)),
             }
             if d.is_torn_down(view) {
                 return responder.reply(Ok(not_ok()));
             }
-            let Some(permit) = d.media_permit(view) else { return responder.reply(Err(kit::error("The document media session is unavailable."))); };
+            let Some(permit) = d.media_permit(view) else {
+                return responder.reply(Err(kit::error(
+                    "The document media session is unavailable.",
+                )));
+            };
             let out = args.get(2).clone();
             let (Some(name), Some(_)) = (
                 args.str(0).map(str::to_owned),
@@ -588,12 +703,17 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
             let view = cx.sender.view;
             match d.owned_save_scope(&cx, args.get(4)) {
                 Ok(Some(scope)) => return owned::merged(&d, scope, args, responder),
-                Ok(None) => {}, Err(error) => return responder.reply(Err(error)),
+                Ok(None) => {}
+                Err(error) => return responder.reply(Err(error)),
             }
-            let publication = match d.capture_headless_publication(&cx, args.str(2).unwrap_or(""), "pdf") {
-                Ok(publication) => publication, Err(error) => return responder.reply(Err(kit::error(error))),
-            };
-            let admission = publication.as_ref().map(|publication| super::owned_write::headless_admission(&d, publication.clone()));
+            let publication =
+                match d.capture_headless_publication(&cx, args.str(2).unwrap_or(""), "pdf") {
+                    Ok(publication) => publication,
+                    Err(error) => return responder.reply(Err(kit::error(error))),
+                };
+            let admission = publication
+                .as_ref()
+                .map(|publication| super::owned_write::headless_admission(&d, publication.clone()));
             let path = match named_target(&d, view, args.get(2)) {
                 Err(reply) => return responder.reply(Ok(reply)),
                 Ok(Some(p)) => p,
@@ -633,7 +753,12 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                         .merge_pdfs(parts, links)
                         .map_err(|e| error_text(&e))?;
                     match admission {
-                        Some(admission) => main_core::packages::electron_utils::atomic_write::owned::write_file(&target, &merged, admission).map_err(|e| node_text(&e)),
+                        Some(admission) => {
+                            main_core::packages::electron_utils::atomic_write::owned::write_file(
+                                &target, &merged, admission,
+                            )
+                            .map_err(|e| node_text(&e))
+                        }
                         None => atomic_write_file(&target, &merged).map_err(|e| node_text(&e)),
                     }
                 },
@@ -660,37 +785,38 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
             let view = cx.sender.view;
             match d.owned_save_scope(&cx, args.get(0)) {
                 Ok(Some(scope)) => return owned::pick_images(&d, scope, responder),
-                Ok(None) => {}, Err(error) => return responder.reply(Err(error)),
+                Ok(None) => {}
+                Err(error) => return responder.reply(Err(error)),
             }
             let legacy = (|| {
-            let dir = match &d.test_export_dir {
-                Some(dir) => Some(dir.clone()),
-                None => {
-                    let result = d.open_dialog(
-                        view,
-                        js_obj(vec![
-                            ("title", js_str(d.tm("dlgPickExportDir"))),
-                            (
-                                "properties",
-                                JsonValue::Array(vec![
-                                    js_str("openDirectory"),
-                                    js_str("createDirectory"),
-                                ]),
-                            ),
-                        ]),
-                    );
-                    picked_path(&result, "filePaths")
-                }
-            };
-            let Some(dir) = dir else {
-                return Ok(IpcValue::Null);
-            };
-            let pdf_path = join(&[
-                &d.temp_dir(),
-                &format!("seuoffice-docs-images-{}.pdf", d.shell.random_uuid()),
-            ]);
-            d.add_image_export(view, &pdf_path, &dir);
-            Ok(Obj::new().set("dir", dir).set("pdfPath", pdf_path).done())
+                let dir = match &d.test_export_dir {
+                    Some(dir) => Some(dir.clone()),
+                    None => {
+                        let result = d.open_dialog(
+                            view,
+                            js_obj(vec![
+                                ("title", js_str(d.tm("dlgPickExportDir"))),
+                                (
+                                    "properties",
+                                    JsonValue::Array(vec![
+                                        js_str("openDirectory"),
+                                        js_str("createDirectory"),
+                                    ]),
+                                ),
+                            ]),
+                        );
+                        picked_path(&result, "filePaths")
+                    }
+                };
+                let Some(dir) = dir else {
+                    return Ok(IpcValue::Null);
+                };
+                let pdf_path = join(&[
+                    &d.temp_dir(),
+                    &format!("seuoffice-docs-images-{}.pdf", d.shell.random_uuid()),
+                ]);
+                d.add_image_export(view, &pdf_path, &dir);
+                Ok(Obj::new().set("dir", dir).set("pdfPath", pdf_path).done())
             })();
             responder.reply(legacy);
         },
@@ -703,7 +829,8 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
             let view = cx.sender.view;
             match d.owned_save_scope(&cx, args.get(1)) {
                 Ok(Some(scope)) => return owned::take_pdf(&d, scope, args, responder),
-                Ok(None) => {}, Err(error) => return responder.reply(Err(error)),
+                Ok(None) => {}
+                Err(error) => return responder.reply(Err(error)),
             }
             let taken = args.str(0).filter(|p| {
                 d.image_temps
@@ -742,7 +869,8 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
             let view = cx.sender.view;
             match d.owned_save_scope(&cx, args.get(3)) {
                 Ok(Some(scope)) => return owned::image(&d, scope, args, responder),
-                Ok(None) => {}, Err(error) => return responder.reply(Err(error)),
+                Ok(None) => {}
+                Err(error) => return responder.reply(Err(error)),
             }
             let Some(dir) = args
                 .str(0)
@@ -797,13 +925,16 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
     ));
 
     let d = docs.clone();
-    all.push(kit::invoke_later("docs:owned-print-pdf-buffer", move |cx, args, responder| {
-        match d.owned_save_scope(&cx, args.get(3)) {
+    all.push(kit::invoke_later(
+        "docs:owned-print-pdf-buffer",
+        move |cx, args, responder| match d.owned_save_scope(&cx, args.get(3)) {
             Ok(Some(scope)) => owned::print_buffer(&d, scope, args, responder),
-            Ok(None) => responder.reply(Err(kit::error("owned PDF printing requires its pending save token"))),
+            Ok(None) => responder.reply(Err(kit::error(
+                "owned PDF printing requires its pending save token",
+            ))),
             Err(error) => responder.reply(Err(error)),
-        }
-    }));
+        },
+    ));
 
     all
 }
@@ -852,7 +983,13 @@ impl Docs {
 /// `saveImageFromUrl(dialogParent(event), src, { title, fallbackDir })`: the
 /// fetch runs on a worker; the dialog and the write run back on the core
 /// thread, so the process-wide dialog memory is held only for the dialog
-fn save_image_as(d: &Rc<Docs>, view: ViewId, url: String, cancel: shell_contract::runtime::CancelToken, responder: Responder) {
+fn save_image_as(
+    d: &Rc<Docs>,
+    view: ViewId,
+    url: String,
+    cancel: shell_contract::runtime::CancelToken,
+    responder: Responder,
+) {
     let Some(permit) = d.media_permit(view) else {
         return responder.reply(Ok(not_ok()));
     };
@@ -867,12 +1004,18 @@ fn save_image_as(d: &Rc<Docs>, view: ViewId, url: String, cancel: shell_contract
     kit::on_worker(
         &d.services.clone(),
         move || {
-            let mut fetch = |u: &str| shell.net_fetch(u, &fetch_permit, &fetch_cancel).map(|r| r as Box<dyn Response>);
+            let mut fetch = |u: &str| {
+                shell
+                    .net_fetch(u, &fetch_permit, &fetch_cancel)
+                    .map(|r| r as Box<dyn Response>)
+            };
             fetch_image_for_save(&fetched_url, &mut fetch)
         },
         move |image| {
             if cancel.is_cancelled()
-                || !d.media_permit(view).is_some_and(|current| current.same_session(&permit))
+                || !d
+                    .media_permit(view)
+                    .is_some_and(|current| current.same_session(&permit))
             {
                 return responder.reply(Ok(not_ok()));
             }

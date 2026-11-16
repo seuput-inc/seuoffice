@@ -10,8 +10,8 @@
 
 use std::rc::Rc;
 
-use jscompat::node_path::host::{dirname, is_absolute, join};
 use jscompat::JsonValue;
+use jscompat::node_path::host::{dirname, is_absolute, join};
 use main_core::docs::atomic_write::atomic_write_file;
 use main_core::docs::byte_handoff::MediaPermit;
 use main_core::docs::doc_format::{
@@ -32,6 +32,8 @@ use shell_contract::{IpcValue, ViewId};
 
 use super::adapters::picked_path;
 use super::hosts::{DocsEngineHost, basename};
+use super::owned_save::{self, Scope};
+use super::owned_write::{self, Permission};
 use super::passwords::Snapshot;
 use super::recovery::{CopyResult, CopyTarget, write_copy};
 use super::{
@@ -39,8 +41,6 @@ use super::{
     sha256_hex, stat,
 };
 use crate::kit::{self, Entry, IntoIpc};
-use super::owned_save::{self, Scope};
-use super::owned_write::{self, Permission};
 use main_core::packages::electron_utils::atomic_write::owned::{self, Admission};
 
 enum SaveKind {
@@ -51,14 +51,30 @@ enum SaveKind {
 }
 
 fn save_effect<T>(scope: &Option<Scope>, effect: impl FnOnce() -> T) -> Result<T, String> {
-    match scope { Some(scope) => scope.effect(effect), None => Ok(effect()) }
+    match scope {
+        Some(scope) => scope.effect(effect),
+        None => Ok(effect()),
+    }
 }
 
-fn save_pick(docs: &Docs, view: ViewId, current: DocFormat, exports: bool, result: JsonValue, scope: Option<Scope>) -> shell_contract::ipc::Reply {
-    let Some(file_path) = picked_path(&result, "filePath") else { return Ok(IpcValue::Null); };
-    if docs.is_torn_down(view) { return Ok(IpcValue::Null); }
+fn save_pick(
+    docs: &Docs,
+    view: ViewId,
+    current: DocFormat,
+    exports: bool,
+    result: JsonValue,
+    scope: Option<Scope>,
+) -> shell_contract::ipc::Reply {
+    let Some(file_path) = picked_path(&result, "filePath") else {
+        return Ok(IpcValue::Null);
+    };
+    if docs.is_torn_down(view) {
+        return Ok(IpcValue::Null);
+    }
     let (path, kind) = save_as_target(&file_path, current, exports);
-    let picked = Obj::new().set("path", path.clone()).set("kind", kind.as_str());
+    let picked = Obj::new()
+        .set("path", path.clone())
+        .set("kind", kind.as_str());
     match kind {
         SaveAsKind::Docx | SaveAsKind::Odt => {
             match scope {
@@ -69,8 +85,12 @@ fn save_pick(docs: &Docs, view: ViewId, current: DocFormat, exports: bool, resul
         }
         SaveAsKind::Png => {
             let dir = dirname(&path);
-            let pdf_path = join(&[&docs.temp_dir(), &format!("seuoffice-docs-images-{}.pdf", docs.shell.random_uuid())]);
-            save_effect(&scope, || docs.add_image_export(view, &pdf_path, &dir)).map_err(kit::error)?;
+            let pdf_path = join(&[
+                &docs.temp_dir(),
+                &format!("seuoffice-docs-images-{}.pdf", docs.shell.random_uuid()),
+            ]);
+            save_effect(&scope, || docs.add_image_export(view, &pdf_path, &dir))
+                .map_err(kit::error)?;
             Ok(picked.set("dir", dir).set("pdfPath", pdf_path).done())
         }
         _ => {
@@ -123,7 +143,9 @@ fn prepare(
         format,
         data,
         &mut SaveBytesDeps {
-            materialize: &mut |b| engine.materialize_lazy_docx(b.to_vec(), permit.clone(), cancel.clone()),
+            materialize: &mut |b| {
+                engine.materialize_lazy_docx(b.to_vec(), permit.clone(), cancel.clone())
+            },
             encrypt: &mut |b, p| engine.encrypt_docx(b, p),
             password,
         },
@@ -131,13 +153,21 @@ fn prepare(
 }
 
 /// `atomicWriteFile` and the stat `rememberDiskState` takes after it
-fn write(path: &str, prepared: PreparedSave, scope: Option<&Scope>, admission: Option<Admission>) -> Result<Written, String> {
+fn write(
+    path: &str,
+    prepared: PreparedSave,
+    scope: Option<&Scope>,
+    admission: Option<Admission>,
+) -> Result<Written, String> {
     if scope.is_some_and(|scope| scope.target().is_some_and(|target| target != path)) {
         return Err("owned save target does not match the request".into());
     }
     match admission {
-        Some(admission) => owned::write_file(path, &prepared.bytes, admission).map_err(|error| node_text(&error))?,
-        None if scope.is_some() => return Err("owned save publication was not prepared on the document actor".into()),
+        Some(admission) => owned::write_file(path, &prepared.bytes, admission)
+            .map_err(|error| node_text(&error))?,
+        None if scope.is_some() => {
+            return Err("owned save publication was not prepared on the document actor".into());
+        }
         None => atomic_write_file(path, &prepared.bytes).map_err(|error| node_text(&error))?,
     }
     Ok(written(path, prepared))
@@ -238,45 +268,86 @@ impl Docs {
     }
 
     /// `{ ok: true, path?, passwordIntentPending, ...reissuedDoc(...) }`
-    fn saved_reply(self: &Rc<Self>, path: Option<String>, pending: bool, w: Written, permit: MediaPermit, scope: Option<Scope>, responder: Responder) {
+    fn saved_reply(
+        self: &Rc<Self>,
+        path: Option<String>,
+        pending: bool,
+        w: Written,
+        permit: MediaPermit,
+        scope: Option<Scope>,
+        responder: Responder,
+    ) {
         let mut reply = Obj::new().set("ok", true);
-        if let Some(path) = path { reply = reply.set("path", path); }
+        if let Some(path) = path {
+            reply = reply.set("path", path);
+        }
         reply = reply.set("passwordIntentPending", pending);
         if let Some(scope) = &scope {
-            if let Err(error) = scope.check() { return responder.reply(Err(kit::error(error))); }
+            if let Err(error) = scope.check() {
+                return responder.reply(Err(kit::error(error)));
+            }
         }
         if !w.encrypted || w.hashes.is_empty() {
-            return responder.reply(if permit.is_active() { Ok(reply.done()) } else { Err(kit::error("The document media session is closed.")) });
+            return responder.reply(if permit.is_active() {
+                Ok(reply.done())
+            } else {
+                Err(kit::error("The document media session is closed."))
+            });
         }
         let engine = self.engine.clone();
         let worker_permit = permit.clone();
-        kit::on_worker(&self.services, move || engine.hand_off_bytes(w.plain, worker_permit), move |result| {
-            if !permit.is_active() { return responder.reply(Err(kit::error("The document media session is closed."))); }
-            if let Some(scope) = &scope {
-                if let Err(error) = scope.check() { return responder.reply(Err(kit::error(error))); }
-            }
-            responder.reply(result.map(|url| reply.set("dataUrl", url).done()).map_err(kit::error));
-        });
+        kit::on_worker(
+            &self.services,
+            move || engine.hand_off_bytes(w.plain, worker_permit),
+            move |result| {
+                if !permit.is_active() {
+                    return responder
+                        .reply(Err(kit::error("The document media session is closed.")));
+                }
+                if let Some(scope) = &scope {
+                    if let Err(error) = scope.check() {
+                        return responder.reply(Err(kit::error(error)));
+                    }
+                }
+                responder.reply(
+                    result
+                        .map(|url| reply.set("dataUrl", url).done())
+                        .map_err(kit::error),
+                );
+            },
+        );
     }
 
     fn note_saved(&self, view: ViewId, paths: &[&str]) {
         self.with_store(|store| self.book.borrow_mut().note_saved(store, view, paths));
     }
 
-
     fn complete_save(
-        self: &Rc<Self>, view: ViewId, path: String, result: Result<Written, String>,
-        snapshot: Option<Snapshot>, permit: MediaPermit, scope: Option<Scope>, kind: SaveKind, responder: Responder,
+        self: &Rc<Self>,
+        view: ViewId,
+        path: String,
+        result: Result<Written, String>,
+        snapshot: Option<Snapshot>,
+        permit: MediaPermit,
+        scope: Option<Scope>,
+        kind: SaveKind,
+        responder: Responder,
     ) {
         let w = match result {
             Ok(written) => written,
             Err(error) => return responder.reply(Ok(failed(error))),
         };
         if self.is_torn_down(view) || !permit.is_active() {
-            if scope.is_none() && matches!(kind, SaveKind::New | SaveKind::Explicit { existed: false }) {
+            if scope.is_none()
+                && matches!(kind, SaveKind::New | SaveKind::Explicit { existed: false })
+            {
                 let _ = std::fs::remove_file(&path);
             }
-            return responder.reply(Ok(if matches!(kind, SaveKind::InPlace) { failed(NOT_OPENED) } else { not_ok() }));
+            return responder.reply(Ok(if matches!(kind, SaveKind::InPlace) {
+                failed(NOT_OPENED)
+            } else {
+                not_ok()
+            }));
         }
         let pending = match save_effect(&scope, || {
             if matches!(kind, SaveKind::SaveAs { .. } | SaveKind::New) {
@@ -284,15 +355,22 @@ impl Docs {
                 self.remember_open_doc(view, &path);
             }
             self.after_write(view, &path, &w, &snapshot, permit.clone())
-        }).and_then(|result| result) {
+        })
+        .and_then(|result| result)
+        {
             Ok(pending) => pending,
             Err(error) => return responder.reply(Err(kit::error(error))),
         };
         let mut stale_paths = vec![path.clone()];
         match &kind {
-            SaveKind::SaveAs { source: Some(source) } => stale_paths.push(source.clone()),
+            SaveKind::SaveAs {
+                source: Some(source),
+            } => stale_paths.push(source.clone()),
             SaveKind::Explicit { .. } => {
-                if let Some(previous) = self.open_doc.get(view).filter(|previous| *previous != path) { stale_paths.push(previous); }
+                if let Some(previous) = self.open_doc.get(view).filter(|previous| *previous != path)
+                {
+                    stale_paths.push(previous);
+                }
             }
             _ => {}
         }
@@ -301,17 +379,37 @@ impl Docs {
             let reply_path = path.clone();
             let in_place = matches!(kind, SaveKind::InPlace);
             let explicit = matches!(kind, SaveKind::Explicit { .. });
-            return owned_save::after_write(self, view, path, stale_paths, owned, !in_place, explicit, Box::new(move |result| {
-                match result {
+            return owned_save::after_write(
+                self,
+                view,
+                path,
+                stale_paths,
+                owned,
+                !in_place,
+                explicit,
+                Box::new(move |result| match result {
                     Err(error) => responder.reply(Err(kit::error(error))),
                     Ok(saved) => docs.saved_reply(
-                        if in_place { None } else if explicit { Some(reply_path) } else { Some(saved) },
-                        pending, w, permit, scope, responder,
+                        if in_place {
+                            None
+                        } else if explicit {
+                            Some(reply_path)
+                        } else {
+                            Some(saved)
+                        },
+                        pending,
+                        w,
+                        permit,
+                        scope,
+                        responder,
                     ),
-                }
-            }));
+                }),
+            );
         }
-        self.note_saved(view, &stale_paths.iter().map(String::as_str).collect::<Vec<_>>());
+        self.note_saved(
+            view,
+            &stale_paths.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
         self.push_recent(&path);
         let reply_path = match kind {
             SaveKind::InPlace => None,
@@ -325,7 +423,15 @@ impl Docs {
         self.saved_reply(reply_path, pending, w, permit, None, responder);
     }
     /// `docs:save` past the external-modification check
-    fn save_now(self: &Rc<Self>, view: ViewId, path: String, data: IpcValue, scope: Option<Scope>, cancel: shell_contract::runtime::CancelToken, responder: Responder) {
+    fn save_now(
+        self: &Rc<Self>,
+        view: ViewId,
+        path: String,
+        data: IpcValue,
+        scope: Option<Scope>,
+        cancel: shell_contract::runtime::CancelToken,
+        responder: Responder,
+    ) {
         if self.is_torn_down(view) || !self.can_doc_write(view, &path) {
             return responder.reply(Ok(failed(NOT_OPENED)));
         }
@@ -334,7 +440,11 @@ impl Docs {
                 return responder.reply(Err(kit::error(error)));
             }
         }
-        let Some(permit) = self.media_permit(view) else { return responder.reply(Err(kit::error("The document media session is unavailable."))); };
+        let Some(permit) = self.media_permit(view) else {
+            return responder.reply(Err(kit::error(
+                "The document media session is unavailable.",
+            )));
+        };
         let worker_permit = permit.clone();
         let snapshot = self.snapshot_for(view, &path, Some(&path));
         let password = snapshot.as_ref().and_then(|s| s.password.clone());
@@ -342,18 +452,36 @@ impl Docs {
         let target = path.clone();
         let docs = Rc::clone(self);
         let worker_scope = scope.clone();
-        let admission = scope.as_ref().map(|scope| owned_write::admission(self, scope.clone(), &path, Permission::ExistingDocument));
+        let admission = scope.as_ref().map(|scope| {
+            owned_write::admission(self, scope.clone(), &path, Permission::ExistingDocument)
+        });
         kit::on_worker(
             &self.services,
             move || {
                 let bytes = kit::as_bytes(&data).ok_or_else(|| bad_data(&data))?;
                 let format = doc_format_of_path(&target).unwrap_or(DocFormat::Docx);
-                let prepared = prepare(&engine, format, bytes, password.as_deref(), worker_permit, cancel)
-                    .map_err(|m| error_text(&m))?;
+                let prepared = prepare(
+                    &engine,
+                    format,
+                    bytes,
+                    password.as_deref(),
+                    worker_permit,
+                    cancel,
+                )
+                .map_err(|m| error_text(&m))?;
                 write(&target, prepared, worker_scope.as_ref(), admission)
             },
             move |result| {
-                docs.complete_save(view, path, result, snapshot, permit, scope, SaveKind::InPlace, responder);
+                docs.complete_save(
+                    view,
+                    path,
+                    result,
+                    snapshot,
+                    permit,
+                    scope,
+                    SaveKind::InPlace,
+                    responder,
+                );
             },
         );
     }
@@ -406,23 +534,28 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                             return responder.reply(Ok(external));
                         }
                         let options = MessageBox {
-                                kind: Some("warning".into()),
-                                message: d2.tm("extModifiedMsg"),
-                                detail: Some(d2.tm("extModifiedDetail")),
-                                buttons: vec![d2.tm("btnOverwrite"), d2.tm("btnCancel")],
-                                default_id: Some(0),
-                                cancel_id: Some(1),
-                                ..Default::default()
+                            kind: Some("warning".into()),
+                            message: d2.tm("extModifiedMsg"),
+                            detail: Some(d2.tm("extModifiedDetail")),
+                            buttons: vec![d2.tm("btnOverwrite"), d2.tm("btnCancel")],
+                            default_id: Some(0),
+                            cancel_id: Some(1),
+                            ..Default::default()
                         };
                         if let Some(owned) = scope.clone() {
                             let resumed = d2.clone();
-                            return owned_save::message(&d2, owned, options, Box::new(move |answer| {
-                                match answer {
+                            return owned_save::message(
+                                &d2,
+                                owned,
+                                options,
+                                Box::new(move |answer| match answer {
                                     Err(error) => responder.reply(Err(kit::error(error))),
-                                    Ok(0) => resumed.save_now(view, path, data, scope, cancel, responder),
+                                    Ok(0) => {
+                                        resumed.save_now(view, path, data, scope, cancel, responder)
+                                    }
                                     Ok(_) => responder.reply(Ok(external)),
-                                }
-                            }));
+                                }),
+                            );
                         }
                         let response = d2.message(d2.parent(view), options);
                         if response != 0 {
@@ -436,44 +569,74 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
     ));
 
     let d = docs.clone();
-    all.push(kit::invoke_later("docs:save-as-pick", move |cx, args, responder| {
-        let view = cx.sender.view;
-        let scope = match d.owned_save_scope(cx, args.get(4)) {
-            Ok(scope) => scope,
-            Err(error) => return responder.reply(Err(error)),
-        };
-        if scope.as_ref().is_some_and(|scope| scope.target().is_some()) {
-            return responder.reply(Err(kit::error("an explicit save cannot choose another destination")));
-        }
-        if d.is_torn_down(view) { return responder.reply(Ok(IpcValue::Null)); }
-        let Some(default_name) = args.str(0) else { return responder.reply(Ok(IpcValue::Null)); };
-        let current = if args.str(2) == Some("odt") { DocFormat::Odt } else { DocFormat::Docx };
-        let exports = args.get(3) == &IpcValue::Bool(true);
-        let source = args.str(1);
-        let project_dir = if source.is_some_and(|source| !source.is_empty()) || d.open_doc.contains(view) {
-            None
-        } else { d.shell.new_document_dir(view) };
-        let suggestion = match project_dir.filter(|dir| !dir.is_empty()) {
-            Some(dir) if basename(default_name) == default_name => join(&[&dir, default_name]),
-            _ => save_as_suggestion(source, default_name),
-        };
-        let filters: Vec<(String, Vec<&str>)> = save_as_filters(current, exports, &mut |key| d.tm(key))
-            .into_iter().map(|filter| (filter.name, filter.extensions)).collect();
-        let options = js_obj(vec![
-            ("title", js_str(d.tm("dlgSaveAs"))),
-            ("defaultPath", js_str(save_as_default_path(&suggestion, exports))),
-            ("filters", js_filters(&filters)),
-        ]);
-        if let Some(owned) = scope.clone() {
-            let docs = d.clone();
-            owned_save::save_dialog(&d, owned, options, Some((current, exports)), Box::new(move |result| {
-                responder.reply(result.and_then(|result| save_pick(&docs, view, current, exports, result, scope)));
-            }));
-        } else {
-            let result = d.save_dialog(view, options);
-            responder.reply(save_pick(&d, view, current, exports, result, None));
-        }
-    }));
+    all.push(kit::invoke_later(
+        "docs:save-as-pick",
+        move |cx, args, responder| {
+            let view = cx.sender.view;
+            let scope = match d.owned_save_scope(cx, args.get(4)) {
+                Ok(scope) => scope,
+                Err(error) => return responder.reply(Err(error)),
+            };
+            if scope.as_ref().is_some_and(|scope| scope.target().is_some()) {
+                return responder.reply(Err(kit::error(
+                    "an explicit save cannot choose another destination",
+                )));
+            }
+            if d.is_torn_down(view) {
+                return responder.reply(Ok(IpcValue::Null));
+            }
+            let Some(default_name) = args.str(0) else {
+                return responder.reply(Ok(IpcValue::Null));
+            };
+            let current = if args.str(2) == Some("odt") {
+                DocFormat::Odt
+            } else {
+                DocFormat::Docx
+            };
+            let exports = args.get(3) == &IpcValue::Bool(true);
+            let source = args.str(1);
+            let project_dir =
+                if source.is_some_and(|source| !source.is_empty()) || d.open_doc.contains(view) {
+                    None
+                } else {
+                    d.shell.new_document_dir(view)
+                };
+            let suggestion = match project_dir.filter(|dir| !dir.is_empty()) {
+                Some(dir) if basename(default_name) == default_name => join(&[&dir, default_name]),
+                _ => save_as_suggestion(source, default_name),
+            };
+            let filters: Vec<(String, Vec<&str>)> =
+                save_as_filters(current, exports, &mut |key| d.tm(key))
+                    .into_iter()
+                    .map(|filter| (filter.name, filter.extensions))
+                    .collect();
+            let options = js_obj(vec![
+                ("title", js_str(d.tm("dlgSaveAs"))),
+                (
+                    "defaultPath",
+                    js_str(save_as_default_path(&suggestion, exports)),
+                ),
+                ("filters", js_filters(&filters)),
+            ]);
+            if let Some(owned) = scope.clone() {
+                let docs = d.clone();
+                owned_save::save_dialog(
+                    &d,
+                    owned,
+                    options,
+                    Some((current, exports)),
+                    Box::new(move |result| {
+                        responder.reply(result.and_then(|result| {
+                            save_pick(&docs, view, current, exports, result, scope)
+                        }));
+                    }),
+                );
+            } else {
+                let result = d.save_dialog(view, options);
+                responder.reply(save_pick(&d, view, current, exports, result, None));
+            }
+        },
+    ));
 
     let d = docs.clone();
     all.push(kit::invoke_later(
@@ -487,12 +650,13 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
             if d.is_torn_down(view) {
                 return responder.reply(Ok(not_ok()));
             }
-            let Some(permit) = d.media_permit(view) else { return responder.reply(Err(kit::error("The document media session is unavailable."))); };
+            let Some(permit) = d.media_permit(view) else {
+                return responder.reply(Err(kit::error(
+                    "The document media session is unavailable.",
+                )));
+            };
             let worker_permit = permit.clone();
-            let Some(path) = args
-                .str(0)
-                .map(str::to_owned)
-            else {
+            let Some(path) = args.str(0).map(str::to_owned) else {
                 return responder.reply(Ok(failed("save target was not picked")));
             };
             let picked = match &scope {
@@ -502,11 +666,15 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                 },
                 None => {
                     let picked = d.save_as_picks.get(view).as_ref() == Some(&path);
-                    if picked { d.save_as_picks.remove(view); }
+                    if picked {
+                        d.save_as_picks.remove(view);
+                    }
                     picked
                 }
             };
-            if !picked { return responder.reply(Ok(failed("save target was not picked"))); }
+            if !picked {
+                return responder.reply(Ok(failed("save target was not picked")));
+            }
             let source = args.str(2).filter(|s| !s.is_empty()).map(str::to_owned);
             let snapshot = d.snapshot_for(view, &path, source.as_deref());
             let password = snapshot.as_ref().and_then(|s| s.password.clone());
@@ -520,7 +688,15 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                 move || {
                     let bytes = kit::as_bytes(&data).ok_or_else(|| bad_data(&data))?;
                     let format = doc_format_of_path(&target).unwrap_or(DocFormat::Docx);
-                    prepare(&engine, format, bytes, password.as_deref(), worker_permit, cancel).map_err(|m| error_text(&m))
+                    prepare(
+                        &engine,
+                        format,
+                        bytes,
+                        password.as_deref(),
+                        worker_permit,
+                        cancel,
+                    )
+                    .map_err(|m| error_text(&m))
                 },
                 move |prepared| {
                     let prepared = match prepared {
@@ -534,12 +710,23 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                     let target = path.clone();
                     let d3 = d2.clone();
                     let worker_scope = scope.clone();
-                    let admission = scope.as_ref().map(|scope| owned_write::admission(&d2, scope.clone(), &path, Permission::RequestTarget));
+                    let admission = scope.as_ref().map(|scope| {
+                        owned_write::admission(&d2, scope.clone(), &path, Permission::RequestTarget)
+                    });
                     kit::on_worker(
                         &d2.services,
                         move || write(&target, prepared, worker_scope.as_ref(), admission),
                         move |result| {
-                            d3.complete_save(view, path, result, snapshot, permit, scope, SaveKind::SaveAs { source }, responder);
+                            d3.complete_save(
+                                view,
+                                path,
+                                result,
+                                snapshot,
+                                permit,
+                                scope,
+                                SaveKind::SaveAs { source },
+                                responder,
+                            );
                         },
                     );
                 },
@@ -559,7 +746,11 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
             if d.is_torn_down(view) {
                 return responder.reply(Ok(not_ok()));
             }
-            let Some(permit) = d.media_permit(view) else { return responder.reply(Err(kit::error("The document media session is unavailable."))); };
+            let Some(permit) = d.media_permit(view) else {
+                return responder.reply(Err(kit::error(
+                    "The document media session is unavailable.",
+                )));
+            };
             let worker_permit = permit.clone();
             let Some(name) = args.str(0).map(str::to_owned) else {
                 return responder.reply(Ok(failed(
@@ -578,19 +769,37 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
             let target = path.clone();
             let d2 = d.clone();
             let worker_scope = scope.clone();
-            let admission = scope.as_ref().map(|scope| owned_write::admission(&d, scope.clone(), &path, Permission::RequestTarget));
+            let admission = scope.as_ref().map(|scope| {
+                owned_write::admission(&d, scope.clone(), &path, Permission::RequestTarget)
+            });
             let cancel = cx.cancel.clone();
             kit::on_worker(
                 &d.services,
                 move || {
                     let bytes = kit::as_bytes(&data).ok_or_else(|| bad_data(&data))?;
                     let format = doc_format_of_path(&target).unwrap_or(DocFormat::Docx);
-                    let prepared = prepare(&engine, format, bytes, password.as_deref(), worker_permit, cancel)
-                        .map_err(|m| error_text(&m))?;
+                    let prepared = prepare(
+                        &engine,
+                        format,
+                        bytes,
+                        password.as_deref(),
+                        worker_permit,
+                        cancel,
+                    )
+                    .map_err(|m| error_text(&m))?;
                     write(&target, prepared, worker_scope.as_ref(), admission)
                 },
                 move |result| {
-                    d2.complete_save(view, path, result, snapshot, permit, scope, SaveKind::New, responder);
+                    d2.complete_save(
+                        view,
+                        path,
+                        result,
+                        snapshot,
+                        permit,
+                        scope,
+                        SaveKind::New,
+                        responder,
+                    );
                 },
             );
         },
@@ -606,7 +815,9 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                 Err(error) => return responder.reply(Err(error)),
             };
             if scope.as_ref().is_some_and(|scope| scope.target().is_some()) {
-                return responder.reply(Err(kit::error("an explicit save cannot choose a project destination")));
+                return responder.reply(Err(kit::error(
+                    "an explicit save cannot choose a project destination",
+                )));
             }
             let skipped = || Obj::new().set("ok", false).set("skipped", true).done();
             // an orphaned renderer, or a document that has its file already
@@ -614,7 +825,11 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
             {
                 return responder.reply(Ok(skipped()));
             }
-            let Some(permit) = d.media_permit(view) else { return responder.reply(Err(kit::error("The document media session is unavailable."))); };
+            let Some(permit) = d.media_permit(view) else {
+                return responder.reply(Err(kit::error(
+                    "The document media session is unavailable.",
+                )));
+            };
             let worker_permit = permit.clone();
             let (Some(default_name), Some(_)) =
                 (args.str(0).map(str::to_owned), array_buffer(args.get(2)))
@@ -662,18 +877,40 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                     let shell = d2.shell.clone();
                     let d3 = d2.clone();
                     let worker_scope = scope.clone();
-                    let publication = scope.as_ref().map(|scope| owned_write::admission(&d2, scope.clone(), &file_name, Permission::ProjectDocument));
+                    let publication = scope.as_ref().map(|scope| {
+                        owned_write::admission(
+                            &d2,
+                            scope.clone(),
+                            &file_name,
+                            Permission::ProjectDocument,
+                        )
+                    });
                     kit::on_worker(
                         &d2.services,
                         move || {
                             let placed = match &worker_scope {
                                 Some(scope) => {
-                                    let publication = publication.ok_or_else(|| "the project save publication was not captured".to_owned());
-                                    publication.and_then(|publication| shell.write_new_document_owned(
-                                        scope.origin(), scope.destination(), scope.cancel(), scope.pending(), scope.effects(), publication, &file_name, &prepared.bytes,
-                                    ))
+                                    let publication = publication.ok_or_else(|| {
+                                        "the project save publication was not captured".to_owned()
+                                    });
+                                    publication.and_then(|publication| {
+                                        shell.write_new_document_owned(
+                                            scope.origin(),
+                                            scope.destination(),
+                                            scope.cancel(),
+                                            scope.pending(),
+                                            scope.effects(),
+                                            publication,
+                                            &file_name,
+                                            &prepared.bytes,
+                                        )
+                                    })
                                 }
-                                None => shell.write_new_document(view, &file_name, prepared.bytes.clone())?,
+                                None => shell.write_new_document(
+                                    view,
+                                    &file_name,
+                                    prepared.bytes.clone(),
+                                )?,
                             };
                             Some(placed.map(|p| p.map(|path| (written(&path, prepared), path))))
                         },
@@ -683,7 +920,16 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                                 Some(Err(e)) => return responder.reply(Ok(failed(e))),
                                 Some(Ok(Some(p))) => p,
                             };
-                            d3.complete_save(view, path, Ok(w), snapshot, permit, scope, SaveKind::New, responder);
+                            d3.complete_save(
+                                view,
+                                path,
+                                Ok(w),
+                                snapshot,
+                                permit,
+                                scope,
+                                SaveKind::New,
+                                responder,
+                            );
                         },
                     );
                 },
@@ -703,7 +949,11 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
             if d.is_torn_down(view) {
                 return responder.reply(Ok(not_ok()));
             }
-            let Some(permit) = d.media_permit(view) else { return responder.reply(Err(kit::error("The document media session is unavailable."))); };
+            let Some(permit) = d.media_permit(view) else {
+                return responder.reply(Err(kit::error(
+                    "The document media session is unavailable.",
+                )));
+            };
             let worker_permit = permit.clone();
             let Some(path) = args.str(0).filter(|p| is_absolute(p)).map(str::to_owned) else {
                 return responder.reply(Ok(failed("path must be absolute")));
@@ -739,7 +989,11 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
             let d2 = d.clone();
             let worker_scope = scope.clone();
             let admission = scope.as_ref().map(|scope| {
-                let permission = if scope.target().is_some() { Permission::RequestTarget } else { Permission::ExistingDocument };
+                let permission = if scope.target().is_some() {
+                    Permission::RequestTarget
+                } else {
+                    Permission::ExistingDocument
+                };
                 owned_write::admission(&d, scope.clone(), &path, permission)
             });
             let cancel = cx.cancel.clone();
@@ -748,17 +1002,35 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                 move || {
                     let dir = dirname(&target);
                     match &admission {
-                        Some(admission) => owned::create_parent(&target, admission).map_err(|error| node_text(&error))?,
-                        None => std::fs::create_dir_all(&dir).map_err(|e| node_text(&super::fs_error(&e, "mkdir", &dir)))?,
+                        Some(admission) => owned::create_parent(&target, admission)
+                            .map_err(|error| node_text(&error))?,
+                        None => std::fs::create_dir_all(&dir)
+                            .map_err(|e| node_text(&super::fs_error(&e, "mkdir", &dir)))?,
                     }
                     let bytes = kit::as_bytes(&data).ok_or_else(|| bad_data(&data))?;
                     let format = doc_format_of_path(&target).unwrap_or(DocFormat::Docx);
-                    let prepared = prepare(&engine, format, bytes, password.as_deref(), worker_permit, cancel)
-                        .map_err(|m| error_text(&m))?;
+                    let prepared = prepare(
+                        &engine,
+                        format,
+                        bytes,
+                        password.as_deref(),
+                        worker_permit,
+                        cancel,
+                    )
+                    .map_err(|m| error_text(&m))?;
                     write(&target, prepared, worker_scope.as_ref(), admission)
                 },
                 move |result| {
-                    d2.complete_save(view, path, result, snapshot, permit, scope, SaveKind::Explicit { existed }, responder);
+                    d2.complete_save(
+                        view,
+                        path,
+                        result,
+                        snapshot,
+                        permit,
+                        scope,
+                        SaveKind::Explicit { existed },
+                        responder,
+                    );
                 },
             );
         },
@@ -850,7 +1122,11 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
             let user_data = d.user_data(&[]);
             let original = original_path.clone();
             let d2 = d.clone();
-            let Some(permit) = d.media_permit(view) else { return responder.reply(Err(kit::error("The document media session is unavailable."))); };
+            let Some(permit) = d.media_permit(view) else {
+                return responder.reply(Err(kit::error(
+                    "The document media session is unavailable.",
+                )));
+            };
             let cancel = cx.cancel.clone();
             kit::on_worker(
                 &d.services,
@@ -859,7 +1135,13 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                         format,
                         kit::as_bytes(&data).unwrap_or_default(),
                         &mut RecoveryBytesDeps {
-                            materialize: &mut |b| engine.materialize_lazy_docx(b.to_vec(), permit.clone(), cancel.clone()),
+                            materialize: &mut |b| {
+                                engine.materialize_lazy_docx(
+                                    b.to_vec(),
+                                    permit.clone(),
+                                    cancel.clone(),
+                                )
+                            },
                             protect: &mut |plain| match &protect {
                                 Err(()) => Ok(None),
                                 Ok(None) => Ok(Some(plain.to_vec())),
@@ -899,9 +1181,17 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
     all.push(kit::send(
         "docs:write-recovery-now-done",
         move |cx, args| {
-            if let (Some(token), Some(generation)) = (args.str(0), cx.native.as_ref().and_then(|native| native.renderer())) {
-                let result = args.str(1).map_or(Ok(()), |message| Err(main_core::shell::renderer_disposal::Failure(message.to_owned())));
-                d.close.recovery_now_done(cx.sender.view, generation, token, result);
+            if let (Some(token), Some(generation)) = (
+                args.str(0),
+                cx.native.as_ref().and_then(|native| native.renderer()),
+            ) {
+                let result = args.str(1).map_or(Ok(()), |message| {
+                    Err(main_core::shell::renderer_disposal::Failure(
+                        message.to_owned(),
+                    ))
+                });
+                d.close
+                    .recovery_now_done(cx.sender.view, generation, token, result);
             }
             Ok(())
         },
@@ -1033,7 +1323,11 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
             if d.is_torn_down(cx.sender.view) || array_buffer(args.get(0)).is_none() {
                 return responder.reply(Ok(IpcValue::Null));
             }
-            let Some(permit) = d.media_permit(cx.sender.view) else { return responder.reply(Err(kit::error("The document media session is unavailable."))); };
+            let Some(permit) = d.media_permit(cx.sender.view) else {
+                return responder.reply(Err(kit::error(
+                    "The document media session is unavailable.",
+                )));
+            };
             let worker_permit = permit.clone();
             let data = args.take(0);
             let engine = d.engine.clone();
@@ -1042,14 +1336,20 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                 &d.services,
                 move || {
                     let bytes = kit::as_bytes(&data).unwrap_or_default().to_vec();
-                    match engine.materialize_lazy_docx(bytes, worker_permit.clone(), cancel.clone()) {
-                        Ok(materialized) => engine.hand_off_bytes(materialized.bytes, worker_permit).map(Some),
+                    match engine.materialize_lazy_docx(bytes, worker_permit.clone(), cancel.clone())
+                    {
+                        Ok(materialized) => engine
+                            .hand_off_bytes(materialized.bytes, worker_permit)
+                            .map(Some),
                         Err(error) if cancel.is_cancelled() => Err(error),
                         Err(_) => Ok(None),
                     }
                 },
                 move |url| {
-                    if !permit.is_active() { return responder.reply(Err(kit::error("The document media session is closed."))); }
+                    if !permit.is_active() {
+                        return responder
+                            .reply(Err(kit::error("The document media session is closed.")));
+                    }
                     responder.reply(match url {
                         Ok(Some(url)) => Ok(Obj::new().set("dataUrl", url).done()),
                         Ok(None) => Ok(IpcValue::Null),

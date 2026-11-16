@@ -8,8 +8,8 @@
 //! worker. The TypeScript around each call (argument checks, state, the reply
 //! shape) stays in the handlers.
 
-use std::sync::Arc;
 use jscompat::JsonValue;
+use std::sync::Arc;
 
 use main_core::pdf::font_locate::Platform;
 use main_core::pdf::note_link::{FoundNoteLink, NoteLink, NoteLinks};
@@ -75,13 +75,26 @@ pub enum CertMaterial {
 /// The selected certificate, resolved from the editor's native certificate entry.
 #[derive(Clone)]
 pub enum CertificateSource {
-    P12 { p12: Vec<u8>, password: String },
-    System { reference: main_core::pdf::system_certificates::SystemCertificateRef, store_password: Option<String> },
+    P12 {
+        p12: Vec<u8>,
+        password: String,
+    },
+    System {
+        reference: main_core::pdf::system_certificates::SystemCertificateRef,
+        store_password: Option<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CertificateOpenCode {
-    Invalid, Password, NoKey, UnsupportedKey, NotExportable, StoreToolMissing, StoreLocked, StoreUnsupported,
+    Invalid,
+    Password,
+    NoKey,
+    UnsupportedKey,
+    NotExportable,
+    StoreToolMissing,
+    StoreLocked,
+    StoreUnsupported,
 }
 
 impl CertificateOpenCode {
@@ -100,17 +113,26 @@ impl CertificateOpenCode {
     }
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Invalid => "cert-invalid", Self::Password => "cert-password",
-            Self::NoKey => "cert-no-key", Self::UnsupportedKey => "cert-unsupported-key",
-            Self::NotExportable => "cert-not-exportable", Self::StoreToolMissing => "cert-store-tool-missing",
-            Self::StoreLocked => "cert-store-locked", Self::StoreUnsupported => "cert-store-unsupported",
+            Self::Invalid => "cert-invalid",
+            Self::Password => "cert-password",
+            Self::NoKey => "cert-no-key",
+            Self::UnsupportedKey => "cert-unsupported-key",
+            Self::NotExportable => "cert-not-exportable",
+            Self::StoreToolMissing => "cert-store-tool-missing",
+            Self::StoreLocked => "cert-store-locked",
+            Self::StoreUnsupported => "cert-store-unsupported",
         }
     }
 }
 
 /// Only bounded, native-defined messages may cross the certificate-worker boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CertificateOpenMessage { RegexLimit, WorkerUnavailable, ResourceExhausted, Revoked }
+pub enum CertificateOpenMessage {
+    RegexLimit,
+    WorkerUnavailable,
+    ResourceExhausted,
+    Revoked,
+}
 
 impl CertificateOpenMessage {
     pub fn as_str(self) -> &'static str {
@@ -140,9 +162,20 @@ pub enum SignFailure {
 
 /// A request-owned signer. Dropping it terminates and reaps its isolated worker.
 pub trait SigningSession: Send {
-    fn is_current(&self, owner: &shell_contract::ipc::NativeRequestOwner, cancel: &CancelToken) -> bool;
+    fn is_current(
+        &self,
+        owner: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &CancelToken,
+    ) -> bool;
     fn revoke_token(&self) -> CancelToken;
-    fn sign(&mut self, bytes: &[u8], options: &SignOptions, chain: &[Vec<u8>], owner: &shell_contract::ipc::NativeRequestOwner, cancel: &CancelToken) -> Result<Vec<u8>, SignFailure>;
+    fn sign(
+        &mut self,
+        bytes: &[u8],
+        options: &SignOptions,
+        chain: &[Vec<u8>],
+        owner: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &CancelToken,
+    ) -> Result<Vec<u8>, SignFailure>;
 }
 
 /// The libraries the editor calls that Rust does not have yet. `Err(String)`
@@ -151,7 +184,13 @@ pub trait PdfEngine: Send + Sync {
     /// Installed only by synthetic test/probe hosts, never the native installer.
     fn synthetic_save_capability(&self) -> bool;
     /// Prepare the exact normal save output before a request-owned atomic commit.
-    fn prepare_pdf_save(&self, source: &[u8], request: &IpcValue, preserve_unchanged: bool, cancel: &shell_contract::runtime::CancelToken) -> Result<(Vec<u8>, SaveSkips), String>;
+    fn prepare_pdf_save(
+        &self,
+        source: &[u8],
+        request: &IpcValue,
+        preserve_unchanged: bool,
+        cancel: &shell_contract::runtime::CancelToken,
+    ) -> Result<(Vec<u8>, SaveSkips), String>;
     /// `savePdfToPath(sourcePath, targetPath, request)` (save-pdf.ts)
     fn save_pdf_to_path(
         &self,
@@ -169,11 +208,26 @@ pub trait PdfEngine: Send + Sync {
         cancel: &CancelToken,
     ) -> Result<SaveSkips, String>;
     /// `copyPdfToPath(sourcePath, targetPath)`
-    fn copy_pdf_to_path(&self, source: &str, target: &str, cancel: &CancelToken) -> Result<(), String>;
+    fn copy_pdf_to_path(
+        &self,
+        source: &str,
+        target: &str,
+        cancel: &CancelToken,
+    ) -> Result<(), String>;
     /// `pdfBytesWithEdits(sourcePath, request)`
-    fn pdf_bytes_with_edits(&self, source: &str, request: &IpcValue, cancel: &CancelToken) -> Result<Vec<u8>, String>;
+    fn pdf_bytes_with_edits(
+        &self,
+        source: &str,
+        request: &IpcValue,
+        cancel: &CancelToken,
+    ) -> Result<Vec<u8>, String>;
     /// `pdfBytesWithEditsOf(fileBytes, request)`
-    fn pdf_bytes_with_edits_of(&self, file: &[u8], request: &IpcValue, cancel: &CancelToken) -> Result<Vec<u8>, String>;
+    fn pdf_bytes_with_edits_of(
+        &self,
+        file: &[u8],
+        request: &IpcValue,
+        cancel: &CancelToken,
+    ) -> Result<Vec<u8>, String>;
     /// `pdfBytesWithEditsFrom(source, request)`
     fn pdf_bytes_with_edits_from(
         &self,
@@ -247,10 +301,19 @@ pub trait PdfEngine: Send + Sync {
         cancel: &CancelToken,
     ) -> Result<IpcValue, String>;
     /// `renderPagePreviewPng(bytes, request)`: `PagePreviewResult | null`
-    fn render_page_preview_png(&self, bytes: &[u8], request: &IpcValue, cancel: &CancelToken)
-    -> Result<IpcValue, String>;
+    fn render_page_preview_png(
+        &self,
+        bytes: &[u8],
+        request: &IpcValue,
+        cancel: &CancelToken,
+    ) -> Result<IpcValue, String>;
     /// `validateTextEdits(bytes, edits)` (text-edit.ts): `TextEditValidation[]`
-    fn validate_text_edits(&self, bytes: &[u8], edits: &IpcValue, cancel: &CancelToken) -> Result<IpcValue, String>;
+    fn validate_text_edits(
+        &self,
+        bytes: &[u8],
+        edits: &IpcValue,
+        cancel: &CancelToken,
+    ) -> Result<IpcValue, String>;
     /// `canDrawText(text, font, bold, italic)` (text-edit.ts)
     fn can_draw_text(
         &self,
@@ -267,11 +330,27 @@ pub trait PdfEngine: Send + Sync {
     /// the reader `listSystemCertificates` and `openSystemSigner` take
     fn describe_certificate(&self, input: &[u8]) -> Option<CertSummary>;
     /// Open and retain the selected identity only in a cancellable isolated worker.
-    fn open_signing_session(&self, source: &CertificateSource, owner: &shell_contract::ipc::NativeRequestOwner, cancel: &CancelToken, entry_cancel: &CancelToken) -> Result<(Box<dyn SigningSession>, Vec<IpcValue>, Vec<Vec<u8>>), CertificateOpenError>;
+    fn open_signing_session(
+        &self,
+        source: &CertificateSource,
+        owner: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &CancelToken,
+        entry_cancel: &CancelToken,
+    ) -> Result<(Box<dyn SigningSession>, Vec<IpcValue>, Vec<Vec<u8>>), CertificateOpenError>;
     /// Check the authenticated document lifetime before provider use and commit.
-    fn sign_owner_current(&self, owner: &shell_contract::ipc::NativeRequestOwner, cancel: &CancelToken) -> bool;
+    fn sign_owner_current(
+        &self,
+        owner: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &CancelToken,
+    ) -> bool;
     /// Commit a signed copy only while the exact authenticated document remains live.
-    fn write_signed_pdf(&self, target: &str, bytes: &[u8], owner: &shell_contract::ipc::NativeRequestOwner, cancel: &CancelToken) -> Result<(), String>;
+    fn write_signed_pdf(
+        &self,
+        target: &str,
+        bytes: &[u8],
+        owner: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &CancelToken,
+    ) -> Result<(), String>;
     fn image_subscription_statuses(&self) -> JsonValue;
     /// `generateImageTool(settingsPath, { prompt, aspectRatio }, { mediaRoots:
     /// documentMediaRoots(openPath, pastedDir), context: { path: 'screen',
@@ -301,7 +380,13 @@ pub trait PdfEngine: Send + Sync {
     fn set_note_link(&self, user_data: &str, pdf_path: &str, link: &NoteLink)
     -> Result<(), String>;
     /// `ResultStore.updateNoteLinkDocHash(pdfPath, docHash)`
-    fn update_note_link_doc_hash_guarded(&self, user_data: &str, path: &str, hash: &str, admit: &mut main_core::packages::pdf_structure::files::StoreAdmission<'_>) -> Result<bool, String>;
+    fn update_note_link_doc_hash_guarded(
+        &self,
+        user_data: &str,
+        path: &str,
+        hash: &str,
+        admit: &mut main_core::packages::pdf_structure::files::StoreAdmission<'_>,
+    ) -> Result<bool, String>;
     fn update_note_link_doc_hash(
         &self,
         user_data: &str,
@@ -330,8 +415,22 @@ pub trait PdfShell: Send + Sync {
     /// `Err` is what the hook threw
     fn open_generated_path(&self, path: &str) -> Result<bool, String>;
     /// Explicit synthetic probe hook; native requests use the owned asynchronous creator.
-    fn create_document_synthetic(&self, request: &IpcValue, owner: ViewId) -> Option<Result<IpcValue, String>>;
-    fn create_document_owned(&self, request: IpcValue, owner: ViewId, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: CancelToken, pending: CancelToken, admission: main_core::packages::electron_utils::atomic_write::owned::Admission, done: Box<dyn FnOnce(Result<IpcValue, String>) + Send>);
+    fn create_document_synthetic(
+        &self,
+        request: &IpcValue,
+        owner: ViewId,
+    ) -> Option<Result<IpcValue, String>>;
+    fn create_document_owned(
+        &self,
+        request: IpcValue,
+        owner: ViewId,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        destination: shell_contract::ipc::NativeRequestOwner,
+        cancel: CancelToken,
+        pending: CancelToken,
+        admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
+        done: Box<dyn FnOnce(Result<IpcValue, String>) + Send>,
+    );
     /// `runtime.openPdfTools(path, tool)`; `None` when not configured
     fn open_pdf_tools(&self, path: &str, tool: &str) -> Option<bool>;
     /// whether both `runtime.openNote` and `runtime.insertIntoNote` are configured
@@ -344,8 +443,34 @@ pub trait PdfShell: Send + Sync {
     fn new_document_dir(&self, view: ViewId) -> Option<String>;
     /// `pdfRedactionSavedHook(wc, path)`: a derived copy became the tab's document
     fn redaction_saved(&self, view: ViewId, path: &str) -> Result<(), String>;
-    fn redaction_saved_owned(&self, view: ViewId, path: &str, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: CancelToken, pending: CancelToken, additional: Vec<CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost, done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>);
-    fn redaction_saved_existing_document(&self, view: ViewId, revision: shell_contract::ipc::NativeSaveRevisionAuthority, path: &str, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: CancelToken, pending: CancelToken, additional: Vec<CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost, on_revision: std::rc::Rc<dyn Fn(&shell_contract::ipc::NativeSaveRevisionReceipt) -> Result<(), String>>, done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>);
+    fn redaction_saved_owned(
+        &self,
+        view: ViewId,
+        path: &str,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        destination: shell_contract::ipc::NativeRequestOwner,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: CancelToken,
+        pending: CancelToken,
+        additional: Vec<CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>,
+    );
+    fn redaction_saved_existing_document(
+        &self,
+        view: ViewId,
+        revision: shell_contract::ipc::NativeSaveRevisionAuthority,
+        path: &str,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: CancelToken,
+        pending: CancelToken,
+        additional: Vec<CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        on_revision: std::rc::Rc<
+            dyn Fn(&shell_contract::ipc::NativeSaveRevisionReceipt) -> Result<(), String>,
+        >,
+        done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>,
+    );
     /// `pdfRenamedHook(wc, oldPath, newPath)`: tab title, recents, projects follow
     fn renamed(&self, view: ViewId, old_path: &str, new_path: &str) -> Result<(), String>;
     /// `contents.reload()`
@@ -375,14 +500,21 @@ mod certificate_error_tests {
     #[test]
     fn certificate_codes_are_closed_and_round_trip() {
         for code in [
-            CertificateOpenCode::Invalid, CertificateOpenCode::Password, CertificateOpenCode::NoKey,
-            CertificateOpenCode::UnsupportedKey, CertificateOpenCode::NotExportable,
-            CertificateOpenCode::StoreToolMissing, CertificateOpenCode::StoreLocked,
+            CertificateOpenCode::Invalid,
+            CertificateOpenCode::Password,
+            CertificateOpenCode::NoKey,
+            CertificateOpenCode::UnsupportedKey,
+            CertificateOpenCode::NotExportable,
+            CertificateOpenCode::StoreToolMissing,
+            CertificateOpenCode::StoreLocked,
             CertificateOpenCode::StoreUnsupported,
         ] {
             assert_eq!(CertificateOpenCode::parse(code.as_str()), Some(code));
         }
         assert_eq!(CertificateOpenCode::parse("cert-invalid: secret"), None);
-        assert_eq!(CertificateOpenMessage::RegexLimit.as_str(), "Maximum call stack size exceeded");
+        assert_eq!(
+            CertificateOpenMessage::RegexLimit.as_str(),
+            "Maximum call stack size exceeded"
+        );
     }
 }

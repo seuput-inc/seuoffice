@@ -323,28 +323,51 @@ impl PdfTools {
     /// One attempt under the original captured owners. The key identifies the
     /// retained prompt across retries; it does not grant authority to a new caller.
     pub fn prompt_password_owned(
-        &self, parent: Option<WindowId>, state: IpcValue, prompt_key: String,
+        &self,
+        parent: Option<WindowId>,
+        state: IpcValue,
+        prompt_key: String,
         source: shell_contract::ipc::NativeRequestOwner,
         destination: shell_contract::ipc::NativeRequestOwner,
-        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
         then: Box<dyn FnOnce(Result<Option<String>, String>)>,
     ) {
-        self.password.prompt_owned(parent, state, prompt_key, source, destination, cancel, pending, then)
+        self.password.prompt_owned(
+            parent,
+            state,
+            prompt_key,
+            source,
+            destination,
+            cancel,
+            pending,
+            then,
+        )
     }
 
     pub fn prompt_password_prepared(
-        &self, parent: Option<WindowId>, state: IpcValue, prompt_key: String,
-        target: shell_contract::ipc::RecoveryOpenTarget, snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
+        &self,
+        parent: Option<WindowId>,
+        state: IpcValue,
+        prompt_key: String,
+        target: shell_contract::ipc::RecoveryOpenTarget,
+        snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
         then: Box<dyn FnOnce(Result<Option<String>, String>)>,
     ) {
-        self.password.prompt_prepared(parent, state, prompt_key, target, snapshot, then)
+        self.password
+            .prompt_prepared(parent, state, prompt_key, target, snapshot, then)
     }
 
     pub fn prompt_password_saved(
-        &self, state: IpcValue, prompt_key: String, document: shell_contract::ipc::NativeSavedDocument,
-        factory: SavedPasswordWindowFactory, then: Box<dyn FnOnce(Result<Option<String>, String>)>,
+        &self,
+        state: IpcValue,
+        prompt_key: String,
+        document: shell_contract::ipc::NativeSavedDocument,
+        factory: SavedPasswordWindowFactory,
+        then: Box<dyn FnOnce(Result<Option<String>, String>)>,
     ) {
-        self.password.prompt_saved(state, prompt_key, document, factory, then)
+        self.password
+            .prompt_saved(state, prompt_key, document, factory, then)
     }
 
     /// Close only the retained native prompt belonging to this exact key.
@@ -491,9 +514,10 @@ pub(crate) fn probe_trigger(
                 Box::new(move |password| {
                     if let Some(log) = log {
                         core.post(Box::new(move || {
-                            log.lock()
-                                .unwrap()
-                                .push(serde_json::json!(["promptPdfPassword.settled", password.ok().flatten()]))
+                            log.lock().unwrap().push(serde_json::json!([
+                                "promptPdfPassword.settled",
+                                password.ok().flatten()
+                            ]))
                         }));
                     }
                 }),

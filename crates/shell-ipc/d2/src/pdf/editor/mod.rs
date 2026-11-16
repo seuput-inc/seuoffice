@@ -19,8 +19,8 @@ mod pages;
 pub(crate) mod probe;
 mod recovery;
 mod recovery_open;
-mod rename;
 pub mod reload;
+mod rename;
 mod save;
 mod sign;
 #[cfg(test)]
@@ -28,10 +28,10 @@ mod tests;
 mod watch;
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 use std::sync::{Arc, Mutex};
-use std::collections::VecDeque;
 
 use jscompat::node_path::host;
 use main_core::packages::electron_utils::default_save_dir::{
@@ -86,7 +86,13 @@ struct CertificateCache {
 }
 
 impl Default for CertificateCache {
-    fn default() -> Self { Self { state: CertificateState::Empty, epoch: 0, waiting: VecDeque::new() } }
+    fn default() -> Self {
+        Self {
+            state: CertificateState::Empty,
+            epoch: 0,
+            waiting: VecDeque::new(),
+        }
+    }
 }
 
 impl Drop for CertificateCache {
@@ -152,9 +158,19 @@ struct View {
     /// `certEntriesByWc`
     certs: HashMap<String, CertEntry>,
     /// `untitledCopyTargetByWc`: the copy and where it goes
-    untitled_copy_target: Option<(String, String, Option<shell_contract::ipc::NativeRequestOwner>)>,
+    untitled_copy_target: Option<(
+        String,
+        String,
+        Option<shell_contract::ipc::NativeRequestOwner>,
+    )>,
     /// `copyFlushWaiters`
-    copy_flush: HashMap<String, (Waiting<Result<(), main_core::shell::renderer_disposal::Failure>>, Timer)>,
+    copy_flush: HashMap<
+        String,
+        (
+            Waiting<Result<(), main_core::shell::renderer_disposal::Failure>>,
+            Timer,
+        ),
+    >,
 }
 
 /// The process-wide part
@@ -340,29 +356,67 @@ impl Editor {
         self.replace_document_for(view, path, None);
     }
 
-    fn replace_recovery_document(&self, view: ViewId, path: Option<String>, target: &shell_contract::ipc::RecoveryOpenTarget) -> Result<(), String> {
+    fn replace_recovery_document(
+        &self,
+        view: ViewId,
+        path: Option<String>,
+        target: &shell_contract::ipc::RecoveryOpenTarget,
+    ) -> Result<(), String> {
         let mut state = self.st.borrow_mut();
-        let slot = state.views.get_mut(&view).ok_or("PDF recovery slot is unavailable")?;
-        if slot.recovery_closing || !slot.browser_owner.as_ref().is_some_and(|owner| owner.same_owner(target.browser_owner()))
-            || !slot.recovery_preparing.as_ref().is_some_and(|current| current.same_binding(target))
-            || !slot.document_lease.as_ref().is_some_and(|lease| lease.is_live())
-            || !slot.document_revision.as_ref().is_some_and(|lease| lease.is_live()) {
+        let slot = state
+            .views
+            .get_mut(&view)
+            .ok_or("PDF recovery slot is unavailable")?;
+        if slot.recovery_closing
+            || !slot
+                .browser_owner
+                .as_ref()
+                .is_some_and(|owner| owner.same_owner(target.browser_owner()))
+            || !slot
+                .recovery_preparing
+                .as_ref()
+                .is_some_and(|current| current.same_binding(target))
+            || !slot
+                .document_lease
+                .as_ref()
+                .is_some_and(|lease| lease.is_live())
+            || !slot
+                .document_revision
+                .as_ref()
+                .is_some_and(|lease| lease.is_live())
+        {
             return Err("PDF recovery slot changed".into());
         }
         slot.open_path = path;
         Ok(())
     }
 
-    fn replace_document_for(&self, view: ViewId, path: Option<String>, current_recovery: Option<&shell_contract::ipc::RecoveryOpenTarget>) {
+    fn replace_document_for(
+        &self,
+        view: ViewId,
+        path: Option<String>,
+        current_recovery: Option<&shell_contract::ipc::RecoveryOpenTarget>,
+    ) {
         let displaced = {
             let state = self.st.borrow();
-            state.views.get(&view).and_then(|slot| slot.recovery_seed.as_ref().and_then(recovery_open::PendingSeed::unclosed_target)
-                .or_else(|| slot.recovery_preparing.clone()))
-                .filter(|target| current_recovery.is_none_or(|current| !target.same_binding(current)))
+            state
+                .views
+                .get(&view)
+                .and_then(|slot| {
+                    slot.recovery_seed
+                        .as_ref()
+                        .and_then(recovery_open::PendingSeed::unclosed_target)
+                        .or_else(|| slot.recovery_preparing.clone())
+                })
+                .filter(|target| {
+                    current_recovery.is_none_or(|current| !target.same_binding(current))
+                })
         };
         if let Some(target) = &displaced {
             let dirty = self.is_dirty(view);
-            self.rec.borrow_mut().retain_unclosed(view, target.clone(), dirty);
+            self.rec
+                .borrow_mut()
+                .retain_unclosed(view, target.clone(), dirty);
         }
         let mut displaced_seed = None;
         let mut displaced_saved = None;
@@ -377,42 +431,84 @@ impl Editor {
                 displaced_seed = slot.recovery_seed.take();
                 slot.recovery_preparing = None;
             }
-            let loss = slot.document_lease.take().map(|lease| lease.revoke_deferred());
-            let revision_loss = slot.document_revision.take().map(|lease| lease.revoke_deferred());
+            let loss = slot
+                .document_lease
+                .take()
+                .map(|lease| lease.revoke_deferred());
+            let revision_loss = slot
+                .document_revision
+                .take()
+                .map(|lease| lease.revoke_deferred());
             slot.document_lease = Some(shell_contract::ipc::PdfDocumentLease::new());
             slot.document_revision = Some(shell_contract::ipc::PdfDocumentLease::new());
             slot.open_path = path;
             (loss, revision_loss)
         };
-        if let Some(token) = loss.0 { token.cancel(); }
-        if let Some(token) = loss.1 { token.cancel(); }
+        if let Some(token) = loss.0 {
+            token.cancel();
+        }
+        if let Some(token) = loss.1 {
+            token.cancel();
+        }
         drop(displaced_seed);
-        if let Some(pending) = displaced_saved { reload::fail_pending(pending, "PDF document was replaced"); }
+        if let Some(pending) = displaced_saved {
+            reload::fail_pending(pending, "PDF document was replaced");
+        }
         drop(previous_saved_document);
     }
 
-    fn bind_pdf_owner(&self, view: ViewId, context: shell_contract::ipc::NativeContext) -> Option<shell_contract::ipc::NativeRequestOwner> {
+    fn bind_pdf_owner(
+        &self,
+        view: ViewId,
+        context: shell_contract::ipc::NativeContext,
+    ) -> Option<shell_contract::ipc::NativeRequestOwner> {
         let lease = self.st.borrow().views.get(&view)?.document_lease.clone()?;
-        if !lease.is_live() { return None; }
-        Some(shell_contract::ipc::NativeRequestOwner { view, context: context.with_pdf_document(lease) })
+        if !lease.is_live() {
+            return None;
+        }
+        Some(shell_contract::ipc::NativeRequestOwner {
+            view,
+            context: context.with_pdf_document(lease),
+        })
     }
 
-    fn bind_sign_owner(&self, view: ViewId, context: shell_contract::ipc::NativeContext) -> Option<shell_contract::ipc::NativeRequestOwner> {
-        let revision = self.st.borrow().views.get(&view)?.document_revision.clone()?;
-        if !revision.is_live() { return None; }
+    fn bind_sign_owner(
+        &self,
+        view: ViewId,
+        context: shell_contract::ipc::NativeContext,
+    ) -> Option<shell_contract::ipc::NativeRequestOwner> {
+        let revision = self
+            .st
+            .borrow()
+            .views
+            .get(&view)?
+            .document_revision
+            .clone()?;
+        if !revision.is_live() {
+            return None;
+        }
         self.bind_pdf_owner(view, context.with_pdf_revision(revision))
     }
 
     fn advance_document_revision(&self, view: ViewId) {
         let (loss, saved) = {
             let mut state = self.st.borrow_mut();
-            let Some(slot) = state.views.get_mut(&view) else { return };
-            if slot.document_lease.is_none() { return; }
-            let loss = slot.document_revision.take().map(|revision| revision.revoke_deferred());
+            let Some(slot) = state.views.get_mut(&view) else {
+                return;
+            };
+            if slot.document_lease.is_none() {
+                return;
+            }
+            let loss = slot
+                .document_revision
+                .take()
+                .map(|revision| revision.revoke_deferred());
             slot.document_revision = Some(shell_contract::ipc::PdfDocumentLease::new());
             (loss, slot.saved_document.take())
         };
-        if let Some(loss) = loss { loss.cancel(); }
+        if let Some(loss) = loss {
+            loss.cancel();
+        }
         drop(saved);
     }
 
@@ -519,20 +615,33 @@ impl Editor {
     }
 
     fn write_own_file_owned<T: Send + 'static>(
-        &self, view: ViewId, path: &str, authority: Option<owned_save::SaveAuthority>,
+        &self,
+        view: ViewId,
+        path: &str,
+        authority: Option<owned_save::SaveAuthority>,
         write: impl FnOnce() -> Result<T, String> + Send + 'static,
         then: impl FnOnce(Result<T, String>) + 'static,
     ) {
-        let native_advanced = match authority.as_ref().map(|owned| owned.advance_native_write_revisions(self, view, path)).transpose() {
+        let native_advanced = match authority
+            .as_ref()
+            .map(|owned| owned.advance_native_write_revisions(self, view, path))
+            .transpose()
+        {
             Ok(Some(advanced)) => advanced,
             Ok(None) => false,
             Err(error) => return then(Err(error)),
         };
         if !native_advanced {
-            let affected: Vec<ViewId> = self.st.borrow().views.iter()
+            let affected: Vec<ViewId> = self
+                .st
+                .borrow()
+                .views
+                .iter()
                 .filter_map(|(id, slot)| (slot.open_path.as_deref() == Some(path)).then_some(*id))
                 .collect();
-            for id in affected { self.advance_document_revision(id); }
+            for id in affected {
+                self.advance_document_revision(id);
+            }
         }
         *self
             .st
@@ -559,25 +668,30 @@ impl Editor {
             },
             move |(mut result, written)| {
                 let mut effects = || {
-                if result.is_ok() {
-                    {
-                        let mut st = ed.st.borrow_mut();
-                        // a write into an untitled copy is not a save of the document
-                        if st.untitled_copy.contains(&target) {
-                            st.unsaved_untitled_copy.insert(target.clone());
+                    if result.is_ok() {
+                        {
+                            let mut st = ed.st.borrow_mut();
+                            // a write into an untitled copy is not a save of the document
+                            if st.untitled_copy.contains(&target) {
+                                st.unsaved_untitled_copy.insert(target.clone());
+                            }
                         }
+                        ed.remember_disk_state(view, &target, written.clone());
+                        ed.with_view(view, |v| match written.clone() {
+                            Some(w) => v.own_writes.insert(target.clone(), w),
+                            None => v.own_writes.remove(&target),
+                        });
+                        ed.rebase_watch(view, &target);
                     }
-                    ed.remember_disk_state(view, &target, written.clone());
-                    ed.with_view(view, |v| match written.clone() {
-                        Some(w) => v.own_writes.insert(target.clone(), w),
-                        None => v.own_writes.remove(&target),
-                    });
-                    ed.rebase_watch(view, &target);
-                }
-                Ok(())
+                    Ok(())
                 };
-                let admitted = match &authority { Some(owned) => owned.commit(&mut effects), None => effects() };
-                if let Err(message) = admitted { result = Err(message); }
+                let admitted = match &authority {
+                    Some(owned) => owned.commit(&mut effects),
+                    None => effects(),
+                };
+                if let Err(message) = admitted {
+                    result = Err(message);
+                }
                 {
                     let mut st = ed.st.borrow_mut();
                     let left = st
@@ -599,7 +713,13 @@ impl Editor {
 
     /// The view is gone: the TypeScript's `destroyed` listener of `grantAndTrack`
     fn destroyed(&self, view: ViewId) {
-        if self.st.borrow().views.get(&view).is_some_and(|slot| slot.recovery_preparing.is_some() || slot.recovery_seed.is_some()) {
+        if self
+            .st
+            .borrow()
+            .views
+            .get(&view)
+            .is_some_and(|slot| slot.recovery_preparing.is_some() || slot.recovery_seed.is_some())
+        {
             return;
         }
         self.destroyed_after_recovery_closed(view);
@@ -608,7 +728,9 @@ impl Editor {
     fn destroyed_after_recovery_closed(&self, view: ViewId) {
         // before the dirty flag goes: a tab closed clean drops its copy
         let recovery_target = self.st.borrow().views.get(&view).and_then(|slot| {
-            slot.recovery_seed.as_ref().and_then(recovery_open::PendingSeed::unclosed_target)
+            slot.recovery_seed
+                .as_ref()
+                .and_then(recovery_open::PendingSeed::unclosed_target)
                 .or_else(|| slot.recovery_preparing.clone())
         });
         let dirty = self.is_dirty(view);
@@ -619,9 +741,15 @@ impl Editor {
         }
         let (gone, loss, revision_loss) = {
             let mut st = self.st.borrow_mut();
-            let loss = st.views.get(&view).and_then(|v| v.document_lease.as_ref())
+            let loss = st
+                .views
+                .get(&view)
+                .and_then(|v| v.document_lease.as_ref())
                 .map(|lease| lease.revoke_deferred());
-            let revision_loss = st.views.get(&view).and_then(|v| v.document_revision.as_ref())
+            let revision_loss = st
+                .views
+                .get(&view)
+                .and_then(|v| v.document_revision.as_ref())
                 .map(|revision| revision.revoke_deferred());
             let gone = st.views.remove(&view);
             if let Some(open) = gone.as_ref().and_then(|v| v.open_path.as_ref()) {
@@ -629,13 +757,24 @@ impl Editor {
             }
             (gone, loss, revision_loss)
         };
-        if let Some(loss) = loss { loss.cancel(); }
-        if let Some(loss) = revision_loss { loss.cancel(); }
+        if let Some(loss) = loss {
+            loss.cancel();
+        }
+        if let Some(loss) = revision_loss {
+            loss.cancel();
+        }
         let Some(mut gone) = gone else { return };
-        if let Some(pending) = gone.saved_reload.take() { reload::fail_pending(pending, "PDF reload view was destroyed"); }
+        if let Some(pending) = gone.saved_reload.take() {
+            reload::fail_pending(pending, "PDF reload view was destroyed");
+        }
         for (_, (waiting, timer)) in gone.copy_flush.drain() {
             kit::clear(timer);
-            resolve(&waiting, Err(main_core::shell::renderer_disposal::Failure("PDF recovery view destroyed".into())));
+            resolve(
+                &waiting,
+                Err(main_core::shell::renderer_disposal::Failure(
+                    "PDF recovery view destroyed".into(),
+                )),
+            );
         }
         if let Some(watch) = gone.watch.take() {
             watch.close(self, view);
@@ -665,8 +804,16 @@ pub(crate) fn entries(
     let editors = Rc::new(PdfEditors(ed.clone()));
     provided.add::<dyn shell_contract::editors::DocumentEditors>(editors.clone());
     #[cfg(any(test, feature = "probe"))]
-    provided.add::<dyn main_core::packages::electron_utils::recovery_contract::RecoveryEditorContract<ViewId, ()>>(editors.clone());
-    provided.add::<dyn main_core::packages::electron_utils::recovery_contract::RecoveryEditorContract<ViewId, shell_contract::ipc::RecoveryOpenTarget>>(editors.clone());
+    provided
+        .add::<dyn main_core::packages::electron_utils::recovery_contract::RecoveryEditorContract<
+                ViewId,
+                (),
+            >>(editors.clone());
+    provided
+        .add::<dyn main_core::packages::electron_utils::recovery_contract::RecoveryEditorContract<
+                ViewId,
+                shell_contract::ipc::RecoveryOpenTarget,
+            >>(editors.clone());
     // the PDF-only calls (flushPdfSave, requestPdfSaveAs, ...) by their own type
     provided.add::<PdfEditors>(editors);
     let mut all = open::entries(&ed);

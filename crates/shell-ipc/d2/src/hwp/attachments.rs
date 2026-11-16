@@ -367,7 +367,12 @@ fn stamp_of(stat: &fs::Metadata) -> String {
 
 /// `assertFileSaved(filePath)` over the host's open documents
 fn assert_saved(
-    files: Option<Result<Vec<main_core::packages::electron_utils::unsaved_files::OpenFileState>, main_core::packages::electron_utils::unsaved_files::OpenFilesSourceFailed>>,
+    files: Option<
+        Result<
+            Vec<main_core::packages::electron_utils::unsaved_files::OpenFileState>,
+            main_core::packages::electron_utils::unsaved_files::OpenFilesSourceFailed,
+        >,
+    >,
     path: &str,
 ) -> Result<(), String> {
     let Some(files) = files else {
@@ -386,7 +391,12 @@ enum TextSource {
 
 /// `extractAttachmentText` up to the parse: unsaved check, stat, cache, size cap
 fn text_source(
-    files: Option<Result<Vec<main_core::packages::electron_utils::unsaved_files::OpenFileState>, main_core::packages::electron_utils::unsaved_files::OpenFilesSourceFailed>>,
+    files: Option<
+        Result<
+            Vec<main_core::packages::electron_utils::unsaved_files::OpenFileState>,
+            main_core::packages::electron_utils::unsaved_files::OpenFilesSourceFailed,
+        >,
+    >,
     lang: Lang,
     cache: &RefCell<TextCache>,
     path: &str,
@@ -678,7 +688,9 @@ pub(super) fn entries(services: &Services) -> Result<Vec<Entry>, RegisterError> 
             let cache = Rc::clone(&cache);
             let parser = Arc::clone(&engine);
             engine.open_files(Box::new(move |files| {
-                if services.views.sender_of(view).is_none() { return; }
+                if services.views.sender_of(view).is_none() {
+                    return;
+                }
                 match text_source(files, lang, &cache, &path) {
                     Err(error) => responder.reply(Ok(fail(error))),
                     Ok(TextSource::Cached(text)) => {
@@ -691,7 +703,9 @@ pub(super) fn entries(services: &Services) -> Result<Vec<Entry>, RegisterError> 
                             &services,
                             move || parser.parse_file_to_text(parse_path),
                             move |parsed| {
-                                if views.sender_of(view).is_none() { return; }
+                                if views.sender_of(view).is_none() {
+                                    return;
+                                }
                                 responder.reply(Ok(match parsed_text(parsed, lang) {
                                     Err(error) => fail(error),
                                     Ok(text) => {
@@ -1402,7 +1416,10 @@ mod tests {
         let pending = rt.invoke("hwp:files-read", from, vec![s(&path), num(0.0), num(9.0)]);
         assert!(pending.take().is_none());
         super::super::fake::answer_open_files();
-        assert_eq!(pending.take().unwrap().unwrap(), read_err("This file is open with unsaved changes. Save it, then try again."));
+        assert_eq!(
+            pending.take().unwrap().unwrap(),
+            read_err("This file is open with unsaved changes. Save it, then try again.")
+        );
 
         let other = rt.view(2, Surface::Hwp);
         let pending = rt.invoke("hwp:files-read", other, vec![s(&path), num(0.0), num(9.0)]);

@@ -141,9 +141,13 @@ pub(crate) fn probe_trigger(
             .recovery_identity(view)
             .map_or(IpcValue::Null, untitled_json))),
         // docsRecoveryEditor.writeCopiesNow()
-        "write-copies-now" => {
-            editor.write_copies_now(Box::new(move |result| then(result.map(|()| IpcValue::Undefined).map_err(|error| crate::kit::error(error.0)))))
-        }
+        "write-copies-now" => editor.write_copies_now(Box::new(move |result| {
+            then(
+                result
+                    .map(|()| IpcValue::Undefined)
+                    .map_err(|error| crate::kit::error(error.0)),
+            )
+        })),
         // docsRecoveryEditor.openFileWithDecision(contents, { filePath, decision })
         "open-file-with-decision" => {
             let decision = if args[0]["decision"] == "restore" {
@@ -151,12 +155,20 @@ pub(crate) fn probe_trigger(
             } else {
                 RecoveryOpenDecision::Original
             };
-            let owner = services.hosts.get::<std::sync::Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>()
+            let owner = services
+                .hosts
+                .get::<std::sync::Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>()
                 .and_then(|_| services.views.renderer_generation(view))
-                .and_then(|generation| services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>()
-                    .and_then(|effects| effects.capture_owner(view, &generation).ok()));
+                .and_then(|generation| {
+                    services
+                        .hosts
+                        .get::<shell_contract::hosts::OwnedEffectsHost>()
+                        .and_then(|effects| effects.capture_owner(view, &generation).ok())
+                });
             let Some(owner) = owner else {
-                then(Err(crate::kit::error("the synthetic Docs owner is unavailable")));
+                then(Err(crate::kit::error(
+                    "the synthetic Docs owner is unavailable",
+                )));
                 return true;
             };
             editor.open_file_with_decision(
@@ -225,7 +237,11 @@ mod tests {
         });
         rt.register(super::super::entries).unwrap();
         let a = rt.view(1, Surface::Docs);
-        rt.provided().all::<DocsEditors>().pop().unwrap().register_view(a.view);
+        rt.provided()
+            .all::<DocsEditors>()
+            .pop()
+            .unwrap()
+            .register_view(a.view);
         (rt, a)
     }
 

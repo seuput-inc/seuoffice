@@ -33,28 +33,53 @@ impl CreateScope {
     fn effect<T>(&self, action: impl FnOnce() -> T) -> Result<T, String> {
         let mut action = Some(action);
         let mut output = None;
-        self.effects.with_owned_effect(&self.origin, &self.destination, &self.cancel, &self.pending, &mut || {
-            output = Some(action.take().ok_or("The document creation effect was already consumed")?());
-            Ok(())
-        })?;
+        self.effects.with_owned_effect(
+            &self.origin,
+            &self.destination,
+            &self.cancel,
+            &self.pending,
+            &mut || {
+                output = Some(action
+                    .take()
+                    .ok_or("The document creation effect was already consumed")?(
+                ));
+                Ok(())
+            },
+        )?;
         output.ok_or_else(|| "The document creation effect was not admitted".into())
     }
     fn check(&self) -> Result<(), String> {
-        if self.reload.lock().map_err(|_| "The creation reload state is poisoned")?.as_ref()
-            .is_some_and(|reload| reload.retires(&self.origin) || reload.retires(&self.destination)) {
-            return Err("The accepted PDF replacement requires its completed target receipt".into());
+        if self
+            .reload
+            .lock()
+            .map_err(|_| "The creation reload state is poisoned")?
+            .as_ref()
+            .is_some_and(|reload| reload.retires(&self.origin) || reload.retires(&self.destination))
+        {
+            return Err(
+                "The accepted PDF replacement requires its completed target receipt".into(),
+            );
         }
         self.effect(|| ())
     }
     fn reload_observer(&self) -> shell_contract::hosts::PdfReloadAccepted {
         let reload = self.reload.clone();
-        Box::new(move |accepted| *reload.lock().unwrap_or_else(|error| error.into_inner()) = Some(accepted))
+        Box::new(move |accepted| {
+            *reload.lock().unwrap_or_else(|error| error.into_inner()) = Some(accepted)
+        })
     }
-    fn complete_open(receipt: &shell_contract::hosts::CommittedGeneratedPath, path: String) -> Result<IpcValue, String> {
+    fn complete_open(
+        receipt: &shell_contract::hosts::CommittedGeneratedPath,
+        path: String,
+    ) -> Result<IpcValue, String> {
         let mut answer = Some(Obj::new().set("ok", true).set("path", path).done());
         let mut published = None;
         receipt.with_terminal_commit(&mut || {
-            published = Some(answer.take().ok_or("The document creation result was already committed")?);
+            published = Some(
+                answer
+                    .take()
+                    .ok_or("The document creation result was already committed")?,
+            );
             Ok(())
         })?;
         published.ok_or_else(|| "The document creation result was not committed".into())
@@ -128,8 +153,15 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                 &d.services,
                 move || {
                     // The BOM outranks a stale charset declaration in the markup.
-                    engine.html_to_docx(format!("\u{feff}{html}").into_bytes(), ALT_CHUNK_TIMEOUT, view, cancel)
-                        .ok().flatten()
+                    engine
+                        .html_to_docx(
+                            format!("\u{feff}{html}").into_bytes(),
+                            ALT_CHUNK_TIMEOUT,
+                            view,
+                            cancel,
+                        )
+                        .ok()
+                        .flatten()
                 },
                 move |docx| responder.reply(Ok(docx.map_or(IpcValue::Null, kit::u8_array))),
             );
@@ -173,7 +205,11 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                 open_doc: d.open_doc.get(cx.sender.view),
                 pasted_dir: join(&[&d.temp_dir(), "seuoffice-pasted"]),
             };
-            let Some(permit) = d.media_permit(cx.sender.view) else { return responder.reply(Err(kit::error("The document media session is unavailable."))); };
+            let Some(permit) = d.media_permit(cx.sender.view) else {
+                return responder.reply(Err(kit::error(
+                    "The document media session is unavailable.",
+                )));
+            };
             let engine = d.engine.clone();
             let cancel = cx.cancel.clone();
             kit::on_worker(
@@ -183,13 +219,21 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                     let mut resolved = Vec::with_capacity(request.media_urls.len());
                     for url in &request.media_urls {
                         match engine.read_lazy_media(url, permit.clone(), cancel.clone()) {
-                            Ok(Some(media)) => resolved.push(format!("data:{};base64,{}", media.mime, base64(&media.body))),
+                            Ok(Some(media)) => resolved.push(format!(
+                                "data:{};base64,{}",
+                                media.mime,
+                                base64(&media.body)
+                            )),
                             Ok(None) => resolved.push(url.clone()),
-                            Err(error) if cancel.is_cancelled() || !permit.is_active() => return Err(error),
+                            Err(error) if cancel.is_cancelled() || !permit.is_active() => {
+                                return Err(error);
+                            }
                             Err(_) => resolved.push(url.clone()),
                         }
                     }
-                    if !permit.is_active() { return Err("The document media session is closed.".to_owned()); }
+                    if !permit.is_active() {
+                        return Err("The document media session is closed.".to_owned());
+                    }
                     engine.analyze_media(
                         AnalyzeMediaRequest {
                             media_urls: resolved,
@@ -382,7 +426,11 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
             let Some(place) = place else {
                 return responder.reply(Ok(canceled()));
             };
-            let Some(permit) = d.media_permit(view) else { return responder.reply(Err(kit::error("The document media session is unavailable."))); };
+            let Some(permit) = d.media_permit(view) else {
+                return responder.reply(Err(kit::error(
+                    "The document media session is unavailable.",
+                )));
+            };
             let engine = d.engine.clone();
             let cancel = cx.cancel.clone();
             kit::on_worker(
@@ -391,7 +439,11 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                     // the merged file is a document of its own: its lazy pictures go in
                     let write = |path: &str, data: Option<Vec<u8>>| -> Result<(), String> {
                         let bytes = engine
-                            .materialize_lazy_docx(data.ok_or(NOT_A_BUFFER)?, permit.clone(), cancel.clone())?
+                            .materialize_lazy_docx(
+                                data.ok_or(NOT_A_BUFFER)?,
+                                permit.clone(),
+                                cancel.clone(),
+                            )?
                             .bytes;
                         std::fs::write(path, bytes)
                             .map_err(|e| super::fs_error(&e, "open", path).message)
@@ -430,7 +482,11 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
             }
             let url = args.str(0).unwrap_or("").to_owned();
             let meta = args.str(1).map(str::to_owned);
-            let Some(permit) = d.media_permit(cx.sender.view) else { return responder.reply(Err(kit::error("The document media session is unavailable."))); };
+            let Some(permit) = d.media_permit(cx.sender.view) else {
+                return responder.reply(Err(kit::error(
+                    "The document media session is unavailable.",
+                )));
+            };
             let (engine, shell) = (d.engine.clone(), d.shell.clone());
             let cancel = cx.cancel.clone();
             kit::on_worker(
@@ -440,11 +496,14 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                         let comma = url.find(',').map_or(0, |c| c + 1);
                         (buffer_from_base64(&url[comma..]), url.clone())
                     } else {
-                        let media = match engine.read_lazy_media(&url, permit.clone(), cancel.clone()) {
-                            Ok(Some(media)) => media,
-                            Err(error) if cancel.is_cancelled() || !permit.is_active() => return Err(error),
-                            _ => return Ok(false),
-                        };
+                        let media =
+                            match engine.read_lazy_media(&url, permit.clone(), cancel.clone()) {
+                                Ok(Some(media)) => media,
+                                Err(error) if cancel.is_cancelled() || !permit.is_active() => {
+                                    return Err(error);
+                                }
+                                _ => return Ok(false),
+                            };
                         // another document cannot resolve this document's lazy URL: inline the bytes
                         let src = format!("data:{};base64,{}", media.mime, base64(&media.body));
                         (media.body, src)
@@ -464,7 +523,9 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                         number_to_string(width),
                         number_to_string(height)
                     );
-                    if cancel.is_cancelled() || !permit.is_active() { return Err("Document operation cancelled".into()); }
+                    if cancel.is_cancelled() || !permit.is_active() {
+                        return Err("Document operation cancelled".into());
+                    }
                     shell.write_clipboard_image(&bytes, &html);
                     Ok(true)
                 },
@@ -479,19 +540,39 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
         move |cx, args, responder| {
             #[cfg(any(test, feature = "probe"))]
             if d.shell.permits_synthetic_create() {
-                return d.create_ai_document(args.get(0), cx.sender.view, Box::new(move |value| responder.reply(Ok(value))));
+                return d.create_ai_document(
+                    args.get(0),
+                    cx.sender.view,
+                    Box::new(move |value| responder.reply(Ok(value))),
+                );
             }
             let Some(native) = cx.native.clone() else {
-                return responder.reply(Err(kit::error("The document creation request has no native owner")));
+                return responder.reply(Err(kit::error(
+                    "The document creation request has no native owner",
+                )));
             };
-            let owner = shell_contract::ipc::NativeRequestOwner { view: cx.sender.view, context: native };
-            let admission = match d.capture_create_admission(cx.sender.view, &owner, &owner, &cx.cancel, &cx.cancel) {
+            let owner = shell_contract::ipc::NativeRequestOwner {
+                view: cx.sender.view,
+                context: native,
+            };
+            let admission = match d.capture_create_admission(
+                cx.sender.view,
+                &owner,
+                &owner,
+                &cx.cancel,
+                &cx.cancel,
+            ) {
                 Ok(admission) => admission,
                 Err(error) => return responder.reply(Err(kit::error(error))),
             };
             d.create_ai_document_owned(
-                args.get(0).clone(), cx.sender.view, owner.clone(), owner,
-                cx.cancel.clone(), cx.cancel.clone(), admission,
+                args.get(0).clone(),
+                cx.sender.view,
+                owner.clone(),
+                owner,
+                cx.cancel.clone(),
+                cx.cancel.clone(),
+                admission,
                 Box::new(move |result| responder.reply(result.map_err(kit::error))),
             );
         },
@@ -502,35 +583,74 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
 
 impl Docs {
     pub(crate) fn create_ai_document_owned(
-        self: &Rc<Self>, request: IpcValue, owner: ViewId,
+        self: &Rc<Self>,
+        request: IpcValue,
+        owner: ViewId,
         origin: shell_contract::ipc::NativeRequestOwner,
         destination: shell_contract::ipc::NativeRequestOwner,
-        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
         admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
         then: Box<dyn FnOnce(Result<IpcValue, String>) + Send>,
     ) {
-        if owner != destination.view { return then(Err("The document creator does not match its destination owner".into())); }
-        let Some(effects) = self.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().cloned() else {
-            return then(Err("Native document creation effects are unavailable".into()));
+        if owner != destination.view {
+            return then(Err(
+                "The document creator does not match its destination owner".into(),
+            ));
+        }
+        let Some(effects) = self
+            .services
+            .hosts
+            .get::<shell_contract::hosts::OwnedEffectsHost>()
+            .cloned()
+        else {
+            return then(Err(
+                "Native document creation effects are unavailable".into()
+            ));
         };
-        let scope = CreateScope { origin, destination, cancel, pending, effects, admission, reload: Default::default() };
-        if let Err(error) = scope.check() { return then(Err(error)); }
+        let scope = CreateScope {
+            origin,
+            destination,
+            cancel,
+            pending,
+            effects,
+            admission,
+            reload: Default::default(),
+        };
+        if let Err(error) = scope.check() {
+            return then(Err(error));
+        }
         let kind = kit::field(&request, "type").clone();
         let title = sanitize_file_base(&js_string_or(kit::field(&request, "title"), ""));
         let content = js_string_or(kit::field(&request, "content"), "");
-        if jscompat::trim(&content).is_empty() { return then(Ok(super::failed("content must not be empty"))); }
+        if jscompat::trim(&content).is_empty() {
+            return then(Ok(super::failed("content must not be empty")));
+        }
         let ext = match kit::as_str(&kind) {
             Some("docx") => {
                 let done = kit::back_on_core(&self.services, move |result: Result<(), String>| {
-                    then(Ok(match result { Ok(()) => Obj::new().set("ok", true).done(), Err(error) => super::failed(error) }));
+                    then(Ok(match result {
+                        Ok(()) => Obj::new().set("ok", true).done(),
+                        Err(error) => super::failed(error),
+                    }));
                 });
                 return self.shell.open_ai_doc_tab_owned(
-                    serde_json::json!({ "title": title, "html": content }), scope.origin, scope.destination,
-                    scope.cancel, scope.pending, scope.effects, done,
+                    serde_json::json!({ "title": title, "html": content }),
+                    scope.origin,
+                    scope.destination,
+                    scope.cancel,
+                    scope.pending,
+                    scope.effects,
+                    done,
                 );
             }
             Some(ext @ ("pdf" | "md" | "html")) => ext.to_owned(),
-            _ => return then(Ok(super::failed(format!("unsupported document type: {}", js_string(&kind))))),
+            _ => {
+                return then(Ok(super::failed(format!(
+                    "unsupported document type: {}",
+                    js_string(&kind)
+                ))));
+            }
         };
         let shell = self.shell.clone();
         let paths = self.services.paths.clone();
@@ -539,75 +659,145 @@ impl Docs {
         let work_scope = scope.clone();
         let docs = self.clone();
         let name = format!("{title}.{ext}");
-        kit::on_worker(&self.services, move || -> Result<String, String> {
-            work_scope.check()?;
-            let bytes = if ext == "pdf" {
-                shell.print_html_to_pdf_owned(build_printable_html(&title, &content), &work_scope.origin, &work_scope.destination, &work_scope.cancel, &work_scope.pending)?
-            } else { content.into_bytes() };
-            work_scope.check()?;
-            if let Some(path) = shell.write_new_document_owned(&work_scope.origin, &work_scope.destination, &work_scope.cancel, &work_scope.pending, &work_scope.effects, work_scope.admission.clone(), &name, &bytes)? {
-                return Ok(path);
-            }
-            let before = save_dir.lock().map_err(|_| "The default-save folder state is poisoned")?.clone();
-            let mut resolved = before.clone();
-            let directory = main_core::packages::electron_utils::default_save_dir::configured_default_save_dir_owned(
+        kit::on_worker(
+            &self.services,
+            move || -> Result<String, String> {
+                work_scope.check()?;
+                let bytes = if ext == "pdf" {
+                    shell.print_html_to_pdf_owned(
+                        build_printable_html(&title, &content),
+                        &work_scope.origin,
+                        &work_scope.destination,
+                        &work_scope.cancel,
+                        &work_scope.pending,
+                    )?
+                } else {
+                    content.into_bytes()
+                };
+                work_scope.check()?;
+                if let Some(path) = shell.write_new_document_owned(
+                    &work_scope.origin,
+                    &work_scope.destination,
+                    &work_scope.cancel,
+                    &work_scope.pending,
+                    &work_scope.effects,
+                    work_scope.admission.clone(),
+                    &name,
+                    &bytes,
+                )? {
+                    return Ok(path);
+                }
+                let before = save_dir
+                    .lock()
+                    .map_err(|_| "The default-save folder state is poisoned")?
+                    .clone();
+                let mut resolved = before.clone();
+                let directory = main_core::packages::electron_utils::default_save_dir::configured_default_save_dir_owned(
                 &super::adapters::Paths(paths.as_ref()), &mut resolved, now, work_scope.admission.clone(),
             ).map_err(|error| error.0)?;
-            main_core::packages::electron_utils::atomic_write::owned::admitted(&work_scope.admission, move || -> Result<(), String> {
-                match save_dir.try_lock() {
-                    Ok(mut state) => { state.publish_resolution(&before, resolved); Ok(()) }
-                    Err(std::sync::TryLockError::WouldBlock) => Ok(()),
-                    Err(std::sync::TryLockError::Poisoned(_)) => Err("The default-save folder state is poisoned".into()),
-                }
-            }).map_err(|error| error.message)??;
-            let path = unique_path_in(&directory, &name);
-            main_core::packages::electron_utils::atomic_write::owned::write_file(&path, &bytes, work_scope.admission.clone())
+                main_core::packages::electron_utils::atomic_write::owned::admitted(
+                    &work_scope.admission,
+                    move || -> Result<(), String> {
+                        match save_dir.try_lock() {
+                            Ok(mut state) => {
+                                state.publish_resolution(&before, resolved);
+                                Ok(())
+                            }
+                            Err(std::sync::TryLockError::WouldBlock) => Ok(()),
+                            Err(std::sync::TryLockError::Poisoned(_)) => {
+                                Err("The default-save folder state is poisoned".into())
+                            }
+                        }
+                    },
+                )
+                .map_err(|error| error.message)??;
+                let path = unique_path_in(&directory, &name);
+                main_core::packages::electron_utils::atomic_write::owned::write_file(
+                    &path,
+                    &bytes,
+                    work_scope.admission.clone(),
+                )
                 .map_err(|error| error.message)?;
-            Ok(path)
-        }, move |written| {
-            let path = match written { Ok(path) => path, Err(error) => return then(Ok(super::failed(error))) };
-            if let Err(error) = scope.check() { return then(Err(error)); }
-            if docs.shell.is_headless() { return then(Ok(Obj::new().set("ok", true).set("path", path).done())); }
-            let opened_path = path.clone();
-            let completed = scope.clone();
-            let docs_done = docs.clone();
-            let Some((wake, done)) = super::cleanup_mailbox::begin(&docs, Box::new(move |opened, settled| {
-                match opened {
-                    Err(error) => { then(Ok(super::failed(error))); settled.complete(); }
-                    Ok(shell_contract::hosts::GeneratedPathOutcome::Opened(receipt)) => {
-                        then(CreateScope::complete_open(&receipt, opened_path));
-                        settled.complete();
-                    }
-                    Ok(shell_contract::hosts::GeneratedPathOutcome::CleanupPending(_)) => {
-                        then(Ok(super::failed("The generated document has an invalid nested cleanup")));
-                        settled.complete();
-                    }
-                    Ok(shell_contract::hosts::GeneratedPathOutcome::NotOpened) => {
-                        let os = docs_done.os.clone();
-                        let revealed = std::path::PathBuf::from(&opened_path);
-                        let check = completed.clone();
-                        let done = super::cleanup_mailbox::callback(&docs_done, settled.id(), move |result: Result<(), String>| {
-                            let result = result.and_then(|()| check.check()).and_then(|()| {
+                Ok(path)
+            },
+            move |written| {
+                let path = match written {
+                    Ok(path) => path,
+                    Err(error) => return then(Ok(super::failed(error))),
+                };
+                if let Err(error) = scope.check() {
+                    return then(Err(error));
+                }
+                if docs.shell.is_headless() {
+                    return then(Ok(Obj::new().set("ok", true).set("path", path).done()));
+                }
+                let opened_path = path.clone();
+                let completed = scope.clone();
+                let docs_done = docs.clone();
+                let Some((wake, done)) = super::cleanup_mailbox::begin(
+                    &docs,
+                    Box::new(move |opened, settled| match opened {
+                        Err(error) => {
+                            then(Ok(super::failed(error)));
+                            settled.complete();
+                        }
+                        Ok(shell_contract::hosts::GeneratedPathOutcome::Opened(receipt)) => {
+                            then(CreateScope::complete_open(&receipt, opened_path));
+                            settled.complete();
+                        }
+                        Ok(shell_contract::hosts::GeneratedPathOutcome::CleanupPending(_)) => {
+                            then(Ok(super::failed(
+                                "The generated document has an invalid nested cleanup",
+                            )));
+                            settled.complete();
+                        }
+                        Ok(shell_contract::hosts::GeneratedPathOutcome::NotOpened) => {
+                            let os = docs_done.os.clone();
+                            let revealed = std::path::PathBuf::from(&opened_path);
+                            let check = completed.clone();
+                            let done = super::cleanup_mailbox::callback(
+                                &docs_done,
+                                settled.id(),
+                                move |result: Result<(), String>| {
+                                    let result = result.and_then(|()| check.check()).and_then(|()| {
                                 shell_contract::hosts::CommittedGeneratedPath::from_loaded_target(
                                     check.origin.clone(), check.destination.clone(), check.destination.clone(),
                                     check.cancel.clone(), check.pending.clone(), check.effects.clone(),
                                 )
                             }).and_then(|receipt| CreateScope::complete_open(&receipt, opened_path));
-                            then(result);
-                            settled.complete();
-                        });
-                        completed.effects.post_ui_owned(
-                            completed.origin.clone(), completed.destination.clone(), completed.cancel.clone(), completed.pending.clone(),
-                            Box::new(move || { os.show_item_in_folder(&revealed); Ok(()) }), done,
-                        );
-                    }
-                }
-            })) else { return; };
-            let accepted = scope.reload_observer();
-            docs.shell.open_generated_path_owned(
-                path, scope.origin, scope.destination, scope.cancel, scope.pending, scope.effects, accepted, done,
-            );
-        });
+                                    then(result);
+                                    settled.complete();
+                                },
+                            );
+                            completed.effects.post_ui_owned(
+                                completed.origin.clone(),
+                                completed.destination.clone(),
+                                completed.cancel.clone(),
+                                completed.pending.clone(),
+                                Box::new(move || {
+                                    os.show_item_in_folder(&revealed);
+                                    Ok(())
+                                }),
+                                done,
+                            );
+                        }
+                    }),
+                ) else {
+                    return;
+                };
+                let accepted = scope.reload_observer();
+                docs.shell.open_generated_path_owned(
+                    path,
+                    scope.origin,
+                    scope.destination,
+                    scope.cancel,
+                    scope.pending,
+                    scope.effects,
+                    accepted,
+                    done,
+                );
+            },
+        );
     }
 
     /// `createAiDocument(request, ownerWebContentsId)`: a docx goes to a new
@@ -621,7 +811,9 @@ impl Docs {
         then: Box<dyn FnOnce(IpcValue)>,
     ) {
         if !self.shell.permits_synthetic_create() {
-            return then(super::failed("Unowned AI document creation requires a synthetic host"));
+            return then(super::failed(
+                "Unowned AI document creation requires a synthetic host",
+            ));
         }
         let kind = kit::field(request, "type").clone();
         let title = sanitize_file_base(&js_string_or(kit::field(request, "title"), ""));

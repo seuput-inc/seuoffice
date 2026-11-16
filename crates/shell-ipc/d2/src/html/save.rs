@@ -5,8 +5,8 @@
 //! Request-owned saves and exports stage filesystem work off core and retain
 //! separate initiating-request and destination-document authority through completion.
 
-mod owned;
 mod headless;
+mod owned;
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -39,9 +39,8 @@ use super::odt_export::{
     odt_filter_name, odt_report_box,
 };
 use super::text_doc::{
-    canceled, dialog_options, export_name, failure, file_name_base, js_string, saved_at, saved_ok,
-    tr,
-    OwnedSave,
+    OwnedSave, canceled, dialog_options, export_name, failure, file_name_base, js_string, saved_at,
+    saved_ok, tr,
 };
 use super::{HtmlEditors, HtmlEngineHost};
 use crate::kit::{self, Entry, IntoIpc, field, obj};
@@ -139,7 +138,9 @@ impl Exporter {
             &self.services,
             move || -> Result<(), String> {
                 let pdf = engine.print_pdf(view, &html, doc_path.as_deref(), &cancel)?;
-                if cancel.is_cancelled() { return Err("The export was cancelled".into()); }
+                if cancel.is_cancelled() {
+                    return Err("The export was cancelled".into());
+                }
                 std::fs::write(&to, pdf).map_err(message)
             },
             move |written| match written {
@@ -267,7 +268,9 @@ impl Exporter {
                             kit::on_worker(
                                 &me2.services.clone(),
                                 move || {
-                                    if finish_cancel.is_cancelled() { return Err("The export was cancelled".into()); }
+                                    if finish_cancel.is_cancelled() {
+                                        return Err("The export was cancelled".into());
+                                    }
                                     std::fs::write(&to, docx).map_err(message)
                                 },
                                 move |written| match written {
@@ -321,7 +324,9 @@ impl Exporter {
             html,
             doc_path,
             Box::new(move |docx| {
-                if finish_cancel.is_cancelled() { return then(canceled()); }
+                if finish_cancel.is_cancelled() {
+                    return then(canceled());
+                }
                 let docx = match docx {
                     Ok(docx) => docx,
                     Err(error) => return then(failure(error)),
@@ -332,7 +337,9 @@ impl Exporter {
                     &me.services,
                     move || engine.docx_to_odt(docx),
                     move |converted| {
-                        if finish_cancel.is_cancelled() { return then(canceled()); }
+                        if finish_cancel.is_cancelled() {
+                            return then(canceled());
+                        }
                         let OdtConversion { odt, report } = match converted {
                             Ok(c) => c,
                             Err(error) => return then(failure(error)),
@@ -355,7 +362,9 @@ impl Exporter {
                                 kit::on_worker(
                                     &me3.services.clone(),
                                     move || {
-                                        if finish_cancel.is_cancelled() { return Err("The export was cancelled".into()); }
+                                        if finish_cancel.is_cancelled() {
+                                            return Err("The export was cancelled".into());
+                                        }
                                         std::fs::write(&to, odt).map_err(message)
                                     },
                                     move |written| match written {
@@ -459,7 +468,13 @@ impl Exporter {
         {
             let base = file_name_base(suggested);
             if !base.is_empty() {
-                let dir=match owned{Some(owner)=>match owner.default_directory(){Some(path)=>path.to_owned(),None=>return Ok(SaveTarget::DefaultDirectory)},None=>docs.default_save_dir()?};
+                let dir = match owned {
+                    Some(owner) => match owner.default_directory() {
+                        Some(path) => path.to_owned(),
+                        None => return Ok(SaveTarget::DefaultDirectory),
+                    },
+                    None => docs.default_save_dir()?,
+                };
                 let mut target = join(&[&dir, &format!("{base}.html")]);
                 let mut n = 1;
                 while Path::new(&target).exists() {
@@ -483,7 +498,13 @@ impl Exporter {
             (None, Some(recovered)) => dirname(recovered),
             (None, None) => match self.e.shell.new_document_dir(view) {
                 Some(dir) => dir.to_string_lossy().into_owned(),
-                None => match owned{Some(owner)=>match owner.default_directory(){Some(path)=>path.to_owned(),None=>return Ok(SaveTarget::DefaultDirectory)},None=>docs.default_save_dir()?},
+                None => match owned {
+                    Some(owner) => match owner.default_directory() {
+                        Some(path) => path.to_owned(),
+                        None => return Ok(SaveTarget::DefaultDirectory),
+                    },
+                    None => docs.default_save_dir()?,
+                },
             },
         };
         let proposed = default_name.map(file_name_base).unwrap_or_default();
@@ -513,11 +534,17 @@ impl Exporter {
         }
         let options = dialog_options(
             Some(tr(&lang, "Save HTML Document", "HTML 문서 저장")),
-            Some(if offer_exports { strip_html_ext(&default_path) } else { default_path }),
+            Some(if offer_exports {
+                strip_html_ext(&default_path)
+            } else {
+                default_path
+            }),
             &filters,
             &[],
         );
-        if owned.is_some() { return Ok(SaveTarget::Dialog(options)); }
+        if owned.is_some() {
+            return Ok(SaveTarget::Dialog(options));
+        }
         let picked = docs.save_dialog(view, options, None);
         let Some(picked) = picked else {
             return Ok(SaveTarget::Canceled);
@@ -534,8 +561,22 @@ impl Exporter {
     }
 
     /// `html:save`
-    fn save(self: &Rc<Self>, view: ViewId, cancel: CancelToken, request: &IpcValue, mut owned: Option<OwnedSave>, resolved: Option<(String, bool)>, project_checked: bool, conflict_checked:bool, done: Reply) {
-        if let Some(owner)=&owned {if let Err(error)=owner.check_document(&self.e.docs,view){return done(failure(error))}}
+    fn save(
+        self: &Rc<Self>,
+        view: ViewId,
+        cancel: CancelToken,
+        request: &IpcValue,
+        mut owned: Option<OwnedSave>,
+        resolved: Option<(String, bool)>,
+        project_checked: bool,
+        conflict_checked: bool,
+        done: Reply,
+    ) {
+        if let Some(owner) = &owned {
+            if let Err(error) = owner.check_document(&self.e.docs, view) {
+                return done(failure(error));
+            }
+        }
         let docs = &self.e.docs;
         let IpcValue::String(text) = field(request, "text") else {
             return done(failure("html: bad save request"));
@@ -548,8 +589,15 @@ impl Exporter {
                 .collect(),
             _ => return done(failure("html: bad image references")),
         };
-        let forced = owned.as_ref().and_then(|owner|owner.target()).map(|path|path.to_string_lossy().into_owned());
-        let save_as=forced.is_none()&&owned.as_ref().map_or_else(||kit::as_str(field(request,"mode"))==Some("saveAs"),OwnedSave::is_save_as);
+        let forced = owned
+            .as_ref()
+            .and_then(|owner| owner.target())
+            .map(|path| path.to_string_lossy().into_owned());
+        let save_as = forced.is_none()
+            && owned.as_ref().map_or_else(
+                || kit::as_str(field(request, "mode")) == Some("saveAs"),
+                OwnedSave::is_save_as,
+            );
         // request input is untrusted: only an explicit automatic-save flag counts
         let auto = matches!(field(request, "auto"), IpcValue::Bool(true));
         let path_at_request = docs.save_path(view);
@@ -557,15 +605,33 @@ impl Exporter {
         // a copy pair saving onto the document's own path settles the
         // conflict before anything is prepared or written
         if !conflict_checked && !save_as {
-            if let (Some(owner),Some(path))=(&owned,&path_at_request){
-                let me=Rc::clone(self);let input=request.clone();
-                return docs.conflict_stops_save_owned(view,path.clone(),auto,owner.clone(),move|stops|match stops{
-                    Err(error)=>done(failure(error)),Ok(true)=>done(failure("external-modified")),
-                    Ok(false)=>me.save(view,cancel,&input,owned,resolved,project_checked,true,done),
-                });
+            if let (Some(owner), Some(path)) = (&owned, &path_at_request) {
+                let me = Rc::clone(self);
+                let input = request.clone();
+                return docs.conflict_stops_save_owned(
+                    view,
+                    path.clone(),
+                    auto,
+                    owner.clone(),
+                    move |stops| match stops {
+                        Err(error) => done(failure(error)),
+                        Ok(true) => done(failure("external-modified")),
+                        Ok(false) => me.save(
+                            view,
+                            cancel,
+                            &input,
+                            owned,
+                            resolved,
+                            project_checked,
+                            true,
+                            done,
+                        ),
+                    },
+                );
             }
         }
-        if owned.is_none() && !save_as
+        if owned.is_none()
+            && !save_as
             && let Some(path) = &path_at_request
             && docs.conflict_stops_save(view, path, auto)
         {
@@ -578,17 +644,50 @@ impl Exporter {
         let suggested = kit::as_str(field(request, "suggestedName")).map(str::to_owned);
         let default_name = kit::as_str(field(request, "defaultName")).map(str::to_owned);
         // the AI's silent first save lands in the panel's project when it has one
-        if !project_checked && resolved.is_none() && forced.is_none() && path_at_request.is_none() && !save_as {
-            if let (Some(owner),Some(suggested))=(&owned,&suggested) {
-                let base=file_name_base(suggested);
+        if !project_checked
+            && resolved.is_none()
+            && forced.is_none()
+            && path_at_request.is_none()
+            && !save_as
+        {
+            if let (Some(owner), Some(suggested)) = (&owned, &suggested) {
+                let base = file_name_base(suggested);
                 if !base.is_empty() {
-                    let shell=self.e.shell.clone();let owner=owner.clone();let file_name=format!("{base}.html");let bytes=text.as_bytes().to_vec();
-                    let me=Rc::clone(self);let input=request.clone();
-                    let admission=owner.publication_admission(&self.services);
-                    return kit::on_worker(&self.services,move||shell.write_new_document_owned(owner.origin(),owner.destination(),&owner.cancel(),&owner.pending(),owner.effects(),admission,&file_name,&bytes),move|placed|match placed{
-                        Err(error)=>done(failure(error)),
-                        Ok(path)=>me.save(view,cancel,&input,owned,path.map(|path|(path.to_string_lossy().into_owned(),true)),true,true,done),
-                    });
+                    let shell = self.e.shell.clone();
+                    let owner = owner.clone();
+                    let file_name = format!("{base}.html");
+                    let bytes = text.as_bytes().to_vec();
+                    let me = Rc::clone(self);
+                    let input = request.clone();
+                    let admission = owner.publication_admission(&self.services);
+                    return kit::on_worker(
+                        &self.services,
+                        move || {
+                            shell.write_new_document_owned(
+                                owner.origin(),
+                                owner.destination(),
+                                &owner.cancel(),
+                                &owner.pending(),
+                                owner.effects(),
+                                admission,
+                                &file_name,
+                                &bytes,
+                            )
+                        },
+                        move |placed| match placed {
+                            Err(error) => done(failure(error)),
+                            Ok(path) => me.save(
+                                view,
+                                cancel,
+                                &input,
+                                owned,
+                                path.map(|path| (path.to_string_lossy().into_owned(), true)),
+                                true,
+                                true,
+                                done,
+                            ),
+                        },
+                    );
                 }
             }
         }
@@ -599,7 +698,11 @@ impl Exporter {
                 if base.is_empty() {
                     None
                 } else {
-                    match self.e.shell.write_new_document(view, &format!("{base}.html"), text.as_bytes()) {
+                    match self.e.shell.write_new_document(
+                        view,
+                        &format!("{base}.html"),
+                        text.as_bytes(),
+                    ) {
                         Ok(path) => path.map(|p| p.to_string_lossy().into_owned()),
                         Err(error) => return done(failure(error)),
                     }
@@ -607,36 +710,75 @@ impl Exporter {
             }
             _ => None,
         };
-        let target = match (&resolved, &forced, &placed) {
-            (Some((path,_)),_,_) => path.clone(),
-            (_,Some(path),_) => path.clone(),
-            (_,_,Some(placed)) => placed.clone(),
-            _ => match self.resolve_save_target(
-                view,
-                save_as,
-                suggested.as_deref(),
-                default_name.as_deref(),
-                owned.as_ref(),
-            ) {
-                Err(error) => return done(failure(error.message)),
-                Ok(SaveTarget::Canceled) => return done(canceled()),
-                Ok(SaveTarget::DefaultDirectory)=>{
-                    let owner=owned.clone().expect("owned default directory");let me=Rc::clone(self);let input=request.clone();
-                    return docs.prepare_default_directory_owned(owner,move|prepared|match prepared{Err(error)=>done(failure(error)),Ok(())=>me.save(view,cancel,&input,owned,resolved,project_checked,conflict_checked,done)});
-                }
-                Ok(SaveTarget::Dialog(options)) => {
-                    let me=Rc::clone(self);let input=request.clone();let cancel=cancel.clone();let owner=owned.clone().expect("owned save dialog");
-                    return docs.save_dialog_owned(view,options,owner,move|picked|match picked{
-                        Err(error)=>done(failure(error)),Ok(None)=>done(canceled()),
-                        Ok(Some(path))=>{let path=if save_as && extname(&path).is_empty(){format!("{path}.html")}else{path};me.save(view,cancel,&input,owned,Some((path,false)),true,true,done)}
-                    });
-                }
-                Ok(SaveTarget::Path(p)) if p.is_empty() => {
-                    return done(failure("html: no save target"));
-                }
-                Ok(SaveTarget::Path(p)) => p,
-            },
-        };
+        let target =
+            match (&resolved, &forced, &placed) {
+                (Some((path, _)), _, _) => path.clone(),
+                (_, Some(path), _) => path.clone(),
+                (_, _, Some(placed)) => placed.clone(),
+                _ => match self.resolve_save_target(
+                    view,
+                    save_as,
+                    suggested.as_deref(),
+                    default_name.as_deref(),
+                    owned.as_ref(),
+                ) {
+                    Err(error) => return done(failure(error.message)),
+                    Ok(SaveTarget::Canceled) => return done(canceled()),
+                    Ok(SaveTarget::DefaultDirectory) => {
+                        let owner = owned.clone().expect("owned default directory");
+                        let me = Rc::clone(self);
+                        let input = request.clone();
+                        return docs.prepare_default_directory_owned(owner, move |prepared| {
+                            match prepared {
+                                Err(error) => done(failure(error)),
+                                Ok(()) => me.save(
+                                    view,
+                                    cancel,
+                                    &input,
+                                    owned,
+                                    resolved,
+                                    project_checked,
+                                    conflict_checked,
+                                    done,
+                                ),
+                            }
+                        });
+                    }
+                    Ok(SaveTarget::Dialog(options)) => {
+                        let me = Rc::clone(self);
+                        let input = request.clone();
+                        let cancel = cancel.clone();
+                        let owner = owned.clone().expect("owned save dialog");
+                        return docs.save_dialog_owned(view, options, owner, move |picked| {
+                            match picked {
+                                Err(error) => done(failure(error)),
+                                Ok(None) => done(canceled()),
+                                Ok(Some(path)) => {
+                                    let path = if save_as && extname(&path).is_empty() {
+                                        format!("{path}.html")
+                                    } else {
+                                        path
+                                    };
+                                    me.save(
+                                        view,
+                                        cancel,
+                                        &input,
+                                        owned,
+                                        Some((path, false)),
+                                        true,
+                                        true,
+                                        done,
+                                    )
+                                }
+                            }
+                        });
+                    }
+                    Ok(SaveTarget::Path(p)) if p.is_empty() => {
+                        return done(failure("html: no save target"));
+                    }
+                    Ok(SaveTarget::Path(p)) => p,
+                },
+            };
         let export_as = if save_as {
             match extname(&target).to_ascii_lowercase().as_str() {
                 ".pdf" => Some("pdf"),
@@ -662,43 +804,123 @@ impl Exporter {
                     _ => done(exported),
                 }
             });
-            if let Some(owner)=owned.take(){return self.export_owned(view,format,html,path_at_request,target,owner,finish)}
+            if let Some(owner) = owned.take() {
+                return self.export_owned(
+                    view,
+                    format,
+                    html,
+                    path_at_request,
+                    target,
+                    owner,
+                    finish,
+                );
+            }
             return match format {
                 "pdf" => self.write_pdf(view, cancel, html, path_at_request, target, finish),
                 "docx" => self.write_docx(view, cancel, html, path_at_request, target, finish),
-                _ => self.write_odt(view, cancel, html, Box::new(move || Some(target)), false, finish),
+                _ => self.write_odt(
+                    view,
+                    cancel,
+                    html,
+                    Box::new(move || Some(target)),
+                    false,
+                    finish,
+                ),
             };
         }
-        if let Some(owner)=owned.take(){
-            let input=super::text_doc::owned_write::Input{html:true,view,text:text.clone(),image_sources,current:path_at_request.clone(),target:target.clone(),placed:resolved.as_ref().is_some_and(|(_,placed)|*placed)||placed.is_some(),save_as,pending:pending_at_request};
-            let shell=self.e.shell.clone();let changed=path_at_request.as_deref()!=Some(target.as_str());let finish=owner.clone();
-            let acknowledged=Rc::clone(docs);
-            return docs.write_owned(input,recovery_at_request,owner,move|result|{
-                let result=match result{Ok(result)=>result,Err(error)=>return done(failure(error))};
-                if changed{
-                    let authority=finish.authority().clone();let selected=match finish.native_destination(){Ok(selected)=>selected,Err(error)=>return done(failure(error))};
-                    let participants=finish.captured_participants();let additional=finish.callback_cancels();let cancel=finish.cancel();let pending=finish.pending();let effects=finish.effects().clone();let destination=finish.destination().clone();
-                    let callback=Box::new(move|saved|match saved{
-                        Err(error)=>done(failure(error)),
-                        Ok(saved)=>acknowledged.finish_saved_owned(view,saved,&finish,move|published|match published{
-                            Err(error)=>done(failure(error)),Ok(path)=>{let mut result=result;if let IpcValue::Object(entries)=&mut result{if let Some((_,value))=entries.iter_mut().find(|(key,_)|key=="path"){*value=path.to_string_lossy().into_owned().into_ipc();}}done(result)}
-                        }),
+        if let Some(owner) = owned.take() {
+            let input = super::text_doc::owned_write::Input {
+                html: true,
+                view,
+                text: text.clone(),
+                image_sources,
+                current: path_at_request.clone(),
+                target: target.clone(),
+                placed: resolved.as_ref().is_some_and(|(_, placed)| *placed) || placed.is_some(),
+                save_as,
+                pending: pending_at_request,
+            };
+            let shell = self.e.shell.clone();
+            let changed = path_at_request.as_deref() != Some(target.as_str());
+            let finish = owner.clone();
+            let acknowledged = Rc::clone(docs);
+            return docs.write_owned(input, recovery_at_request, owner, move |result| {
+                let result = match result {
+                    Ok(result) => result,
+                    Err(error) => return done(failure(error)),
+                };
+                if changed {
+                    let authority = finish.authority().clone();
+                    let selected = match finish.native_destination() {
+                        Ok(selected) => selected,
+                        Err(error) => return done(failure(error)),
+                    };
+                    let participants = finish.captured_participants();
+                    let additional = finish.callback_cancels();
+                    let cancel = finish.cancel();
+                    let pending = finish.pending();
+                    let effects = finish.effects().clone();
+                    let destination = finish.destination().clone();
+                    let callback = Box::new(move |saved| match saved {
+                        Err(error) => done(failure(error)),
+                        Ok(saved) => acknowledged.finish_saved_owned(
+                            view,
+                            saved,
+                            &finish,
+                            move |published| match published {
+                                Err(error) => done(failure(error)),
+                                Ok(path) => {
+                                    let mut result = result;
+                                    if let IpcValue::Object(entries) = &mut result {
+                                        if let Some((_, value)) =
+                                            entries.iter_mut().find(|(key, _)| key == "path")
+                                        {
+                                            *value = path.to_string_lossy().into_owned().into_ipc();
+                                        }
+                                    }
+                                    done(result)
+                                }
+                            },
+                        ),
                     });
-                    return match authority{
-                        super::text_doc::SaveAuthority::Renderer(origin)=>shell.file_saved_owned(origin,destination,participants,cancel,pending,additional,effects,target.into(),callback),
-                        super::text_doc::SaveAuthority::Native(_)=>match selected{Some(selected)=>shell.file_saved_native(selected,participants,cancel,pending,additional,effects,callback),None=>callback(Err("native save destination was not selected".into()))},
+                    return match authority {
+                        super::text_doc::SaveAuthority::Renderer(origin) => shell.file_saved_owned(
+                            origin,
+                            destination,
+                            participants,
+                            cancel,
+                            pending,
+                            additional,
+                            effects,
+                            target.into(),
+                            callback,
+                        ),
+                        super::text_doc::SaveAuthority::Native(_) => match selected {
+                            Some(selected) => shell.file_saved_native(
+                                selected,
+                                participants,
+                                cancel,
+                                pending,
+                                additional,
+                                effects,
+                                callback,
+                            ),
+                            None => {
+                                callback(Err("native save destination was not selected".into()))
+                            }
+                        },
                     };
                 }
                 done(result)
             });
         }
-        let result=self.write_save(
+        let result = self.write_save(
             view,
             text,
             image_sources,
             &path_at_request,
             &target,
-            resolved.as_ref().is_some_and(|(_,placed)|*placed) || placed.is_some(),
+            resolved.as_ref().is_some_and(|(_, placed)| *placed) || placed.is_some(),
             save_as,
             &pending_at_request,
             recovery_at_request.as_ref(),
@@ -736,7 +958,7 @@ impl Exporter {
         }
         let prepared = match current {
             Some(current) if resolve(&[&dirname(current)]) != resolve(&[&dirname(target)]) => {
-                match prepare_assets_for_save_as(current,target,text,&image_sources) {
+                match prepare_assets_for_save_as(current, target, text, &image_sources) {
                     Ok(p) => Some(p),
                     Err(e) => return failure(e.message),
                 }
@@ -748,11 +970,13 @@ impl Exporter {
             .as_ref()
             .map_or_else(|| image_sources.clone(), |p| p.image_sources.clone());
         // a page placed in the project was written by the project's write guard
-        if !placed && let Err(error)=atomic_write_file(target,text_to_write.as_bytes()) {
-            if let Some(plan)=&prepared {let _=rollback_prepared_save_as_assets(plan);}
+        if !placed && let Err(error) = atomic_write_file(target, text_to_write.as_bytes()) {
+            if let Some(plan) = &prepared {
+                let _ = rollback_prepared_save_as_assets(plan);
+            }
             return failure(error.message);
         }
-        docs.saved_to(view,current.as_deref(),target,recovery_before);
+        docs.saved_to(view, current.as_deref(), target, recovery_before);
         let pending_names: Vec<String> = match (&prepared, current) {
             (Some(p), _) => p.created.iter().map(|r| r.name.clone()).collect(),
             (None, Some(current)) if resolve(&[current]) == resolve(&[target]) => {
@@ -760,7 +984,7 @@ impl Exporter {
             }
             _ => Vec::new(),
         };
-        let reconciled=reconcile_owned_assets(target,&saved_sources,Some(&pending_names));
+        let reconciled = reconcile_owned_assets(target, &saved_sources, Some(&pending_names));
         if !reconciled.errors.is_empty() {
             eprintln!(
                 "[html] asset reconciliation incomplete: {:?}",
@@ -771,7 +995,7 @@ impl Exporter {
             && let Some(current) = current
             && resolve(&[current]) != resolve(&[target])
         {
-            let resolved=resolve_source_pending_after_save_as(current,pending_at_request);
+            let resolved = resolve_source_pending_after_save_as(current, pending_at_request);
             if !resolved.errors.is_empty() {
                 eprintln!(
                     "[html] source asset reconciliation incomplete: {:?}",
@@ -829,7 +1053,10 @@ pub(super) fn entries(
         "html:save",
         move |cx, args, responder| {
             let view = cx.sender.view;
-            let owned = match ex.e.docs.take_owned_save_from_call(cx) {Ok(owner)=>owner,Err(error)=>return responder.reply(Ok(failure(error)))};
+            let owned = match ex.e.docs.take_owned_save_from_call(cx) {
+                Ok(owner) => owner,
+                Err(error) => return responder.reply(Ok(failure(error))),
+            };
             let waiter = ex.e.docs.take_save_waiter(view);
             let done: Reply = Box::new(move |result| {
                 if let Some(waiter) = waiter {
@@ -837,7 +1064,7 @@ pub(super) fn entries(
                 }
                 responder.reply(Ok(result))
             });
-            let cancel=owned.as_ref().map_or(cx.cancel,OwnedSave::cancel);
+            let cancel = owned.as_ref().map_or(cx.cancel, OwnedSave::cancel);
             ex.save(view, cancel, args.get(0), owned, None, false, false, done)
         },
     ));
@@ -976,10 +1203,25 @@ pub(super) fn entries(
                 Ok(Some(t)) => t,
             };
             let doc = ex.e.docs.save_path(view);
-            match ex.e.docs.capture_headless_publication(cx,&target,"docx") {
-                Err(error)=>responder.reply(Err(error)),
-                Ok(Some(publication))=>ex.export_invocation(view,"docx",html.clone(),doc,target,publication,reply_with(responder)),
-                Ok(None)=>ex.write_docx(view,cx.cancel.clone(),html.clone(),doc,target,reply_with(responder)),
+            match ex.e.docs.capture_headless_publication(cx, &target, "docx") {
+                Err(error) => responder.reply(Err(error)),
+                Ok(Some(publication)) => ex.export_invocation(
+                    view,
+                    "docx",
+                    html.clone(),
+                    doc,
+                    target,
+                    publication,
+                    reply_with(responder),
+                ),
+                Ok(None) => ex.write_docx(
+                    view,
+                    cx.cancel.clone(),
+                    html.clone(),
+                    doc,
+                    target,
+                    reply_with(responder),
+                ),
             }
         },
     ));
@@ -1043,10 +1285,25 @@ pub(super) fn entries(
                 Ok(Some(t)) => t,
             };
             let doc = ex.e.docs.save_path(view);
-            match ex.e.docs.capture_headless_publication(cx,&target,"pdf") {
-                Err(error)=>responder.reply(Err(error)),
-                Ok(Some(publication))=>ex.export_invocation(view,"pdf",html.clone(),doc,target,publication,reply_with(responder)),
-                Ok(None)=>ex.write_pdf(view,cx.cancel.clone(),html.clone(),doc,target,reply_with(responder)),
+            match ex.e.docs.capture_headless_publication(cx, &target, "pdf") {
+                Err(error) => responder.reply(Err(error)),
+                Ok(Some(publication)) => ex.export_invocation(
+                    view,
+                    "pdf",
+                    html.clone(),
+                    doc,
+                    target,
+                    publication,
+                    reply_with(responder),
+                ),
+                Ok(None) => ex.write_pdf(
+                    view,
+                    cx.cancel.clone(),
+                    html.clone(),
+                    doc,
+                    target,
+                    reply_with(responder),
+                ),
             }
         },
     ));

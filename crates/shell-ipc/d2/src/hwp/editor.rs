@@ -167,7 +167,6 @@ struct RecoveryLoad {
     read_completed: bool,
 }
 
-
 /// `exportHwpPdfHeadless`'s promise
 struct Headless {
     timer: Timer,
@@ -199,8 +198,11 @@ struct RecoveryBatch {
     failure: Option<main_core::shell::renderer_disposal::Failure>,
     done: Option<Box<dyn FnOnce(Result<(), main_core::shell::renderer_disposal::Failure>)>>,
 }
-type RecoveryPending = (ViewId, shell_contract::runtime::RendererGeneration, Rc<RefCell<RecoveryBatch>>);
-
+type RecoveryPending = (
+    ViewId,
+    shell_contract::runtime::RendererGeneration,
+    Rc<RefCell<RecoveryBatch>>,
+);
 
 /// hwp-main.ts's module state and the hosts its handlers use
 pub(crate) struct Hwp {
@@ -224,7 +226,8 @@ pub(crate) struct Hwp {
     pub(super) recovery: RefCell<HwpRecovery>,
     pub(super) recovery_state: Arc<Mutex<SharedRecoveryState>>,
     pub(super) recovery_timers: RefCell<HashMap<RecoveryTimer, Timer>>,
-    pub(super) recovery_targets: RefCell<HashMap<u64, (ViewId, shell_contract::runtime::RendererGeneration)>>,
+    pub(super) recovery_targets:
+        RefCell<HashMap<u64, (ViewId, shell_contract::runtime::RendererGeneration)>>,
     recovery_pending: RefCell<HashMap<u64, RecoveryPending>>,
     pub(super) recovery_send_error: RefCell<Option<String>>,
     /// the shell's one folder memory of Electron's `dialog`
@@ -297,7 +300,9 @@ impl HwpRecoveryHost for RecoveryHost {
         self.change(wc_id, |v| v.dirty = true)
     }
     fn queue_file(&self, wc_id: i64, path: &str) {
-        if let Some(hwp) = self.0.upgrade() { hwp.rotate_document_epoch(view_of(wc_id)); }
+        if let Some(hwp) = self.0.upgrade() {
+            hwp.rotate_document_epoch(view_of(wc_id));
+        }
         self.change(wc_id, |v| {
             v.open_path = Some(path.to_owned());
             v.allowed.insert(path.to_owned());
@@ -306,7 +311,9 @@ impl HwpRecoveryHost for RecoveryHost {
         })
     }
     fn queue_untitled_copy(&self, wc_id: i64, path: &str, copy: UntitledCopy) {
-        if let Some(hwp) = self.0.upgrade() { hwp.rotate_document_epoch(view_of(wc_id)); }
+        if let Some(hwp) = self.0.upgrade() {
+            hwp.rotate_document_epoch(view_of(wc_id));
+        }
         self.change(wc_id, |v| {
             v.open_path = Some(path.to_owned());
             v.allowed.insert(path.to_owned());
@@ -447,50 +454,97 @@ impl Hwp {
             }
             batch.remaining -= 1;
             if batch.remaining == 0 {
-                let result = match batch.failure.take() { Some(error) => Err(error), None => Ok(()) };
+                let result = match batch.failure.take() {
+                    Some(error) => Err(error),
+                    None => Ok(()),
+                };
                 batch.done.take().map(|done| (done, result))
-            } else { None }
+            } else {
+                None
+            }
         };
-        if let Some((done, result)) = completion { done(result); }
+        if let Some((done, result)) = completion {
+            done(result);
+        }
     }
 
     fn cancel_recovery_flushes(&self, view: Option<ViewId>, reason: &str) {
-        let tokens: Vec<u64> = self.recovery_pending.borrow().iter()
-            .filter_map(|(token, (owner, _, _))| (view.is_none() || view == Some(*owner)).then_some(*token))
+        let tokens: Vec<u64> = self
+            .recovery_pending
+            .borrow()
+            .iter()
+            .filter_map(|(token, (owner, _, _))| {
+                (view.is_none() || view == Some(*owner)).then_some(*token)
+            })
             .collect();
         for token in tokens {
             self.recovery.borrow_mut().flush_timed_out(token);
-            if let Some(timer) = self.recovery_timers.borrow_mut().remove(&RecoveryTimer::Flush(token)) {
+            if let Some(timer) = self
+                .recovery_timers
+                .borrow_mut()
+                .remove(&RecoveryTimer::Flush(token))
+            {
                 kit::clear(timer);
             }
             self.finish_recovery_flush(token, Err(reason.to_owned()));
         }
     }
 
-    fn recovery_renderer_replaced(&self, view: ViewId, generation: &shell_contract::runtime::RendererGeneration) {
-        let tokens: Vec<u64> = self.recovery_pending.borrow().iter()
-            .filter_map(|(token, (owner, old, _))| (*owner == view && old.same_generation(generation)).then_some(*token))
+    fn recovery_renderer_replaced(
+        &self,
+        view: ViewId,
+        generation: &shell_contract::runtime::RendererGeneration,
+    ) {
+        let tokens: Vec<u64> = self
+            .recovery_pending
+            .borrow()
+            .iter()
+            .filter_map(|(token, (owner, old, _))| {
+                (*owner == view && old.same_generation(generation)).then_some(*token)
+            })
             .collect();
         for token in tokens {
             self.recovery.borrow_mut().flush_timed_out(token);
-            if let Some(timer) = self.recovery_timers.borrow_mut().remove(&RecoveryTimer::Flush(token)) { kit::clear(timer); }
+            if let Some(timer) = self
+                .recovery_timers
+                .borrow_mut()
+                .remove(&RecoveryTimer::Flush(token))
+            {
+                kit::clear(timer);
+            }
             self.finish_recovery_flush(token, Err("HWP recovery renderer was replaced".into()));
         }
     }
 
-    fn write_recovery_now(self: &Rc<Self>, done: Box<dyn FnOnce(Result<(), main_core::shell::renderer_disposal::Failure>)>) {
+    fn write_recovery_now(
+        self: &Rc<Self>,
+        done: Box<dyn FnOnce(Result<(), main_core::shell::renderer_disposal::Failure>)>,
+    ) {
         self.cancel_recovery_flushes(None, "HWP recovery request was replaced");
         self.recovery_send_error.borrow_mut().take();
         let tokens = self.with_recovery(|r, e, _| r.write_copies_now(e));
-        let failure = self.recovery_send_error.borrow_mut().take().map(main_core::shell::renderer_disposal::Failure);
+        let failure = self
+            .recovery_send_error
+            .borrow_mut()
+            .take()
+            .map(main_core::shell::renderer_disposal::Failure);
         if tokens.is_empty() {
-            done(match failure { Some(error) => Err(error), None => Ok(()) });
+            done(match failure {
+                Some(error) => Err(error),
+                None => Ok(()),
+            });
             return;
         }
-        let batch = Rc::new(RefCell::new(RecoveryBatch { remaining: tokens.len(), failure, done: Some(done) }));
+        let batch = Rc::new(RefCell::new(RecoveryBatch {
+            remaining: tokens.len(),
+            failure,
+            done: Some(done),
+        }));
         for token in tokens {
             if let Some((owner, generation)) = self.recovery_targets.borrow().get(&token).cloned() {
-                self.recovery_pending.borrow_mut().insert(token, (owner, generation, Rc::clone(&batch)));
+                self.recovery_pending
+                    .borrow_mut()
+                    .insert(token, (owner, generation, Rc::clone(&batch)));
             }
         }
     }
@@ -563,7 +617,9 @@ impl Hwp {
             return then(false);
         }
         // one save at a time per view
-        if self.save_waiters.borrow().contains_key(&view) || self.owned_saves.borrow().contains_key(&view) {
+        if self.save_waiters.borrow().contains_key(&view)
+            || self.owned_saves.borrow().contains_key(&view)
+        {
             return then(false);
         }
         self.wait(|h| &h.save_waiters, view, then);
@@ -891,17 +947,26 @@ impl Hwp {
                 }
             },
         );
-        self.headless
-            .borrow_mut()
-            .insert(view, Headless { timer, then, native: None });
+        self.headless.borrow_mut().insert(
+            view,
+            Headless {
+                timer,
+                then,
+                native: None,
+            },
+        );
         if let Err(error) = self.shell.load_headless_view(view) {
             self.settle_headless(view, Err(error));
         }
     }
 
     pub(crate) fn export_hwp_pdf_headless_native(
-        self: &Rc<Self>, input: &str, out_path: &str, timeout_ms: u64,
-        operation: shell_contract::ipc::NativeInvocationOperation, then: Then<()>,
+        self: &Rc<Self>,
+        input: &str,
+        out_path: &str,
+        timeout_ms: u64,
+        operation: shell_contract::ipc::NativeInvocationOperation,
+        then: Then<()>,
     ) {
         let target = match self.shell.create_native_headless_view(&operation) {
             Ok(target) => target,
@@ -910,35 +975,53 @@ impl Hwp {
         let view = target.view();
         let input_exists = !input.is_empty() && Path::new(input).exists();
         self.rotate_document_epoch(view);
-        if target.with_active(|| {
-            self.change(view, |state| {
-                state.granted = true;
-                state.native_headless = true;
-                state.headless_target = Some(out_path.to_owned());
-                if input_exists {
-                    state.open_path = Some(input.to_owned());
-                    state.save_path = Some(input.to_owned());
-                    state.allowed = HashSet::from([input.to_owned()]);
-                }
-            });
-        }).is_none() {
+        if target
+            .with_active(|| {
+                self.change(view, |state| {
+                    state.granted = true;
+                    state.native_headless = true;
+                    state.headless_target = Some(out_path.to_owned());
+                    if input_exists {
+                        state.open_path = Some(input.to_owned());
+                        state.save_path = Some(input.to_owned());
+                        state.allowed = HashSet::from([input.to_owned()]);
+                    }
+                });
+            })
+            .is_none()
+        {
             self.shell.destroy_headless_view(view);
             return then(Err(error("HWP headless invocation expired before opening")));
         }
         let weak = Rc::downgrade(self);
-        let timer = kit::after(&self.services, Duration::from_millis(timeout_ms), move || {
-            if let Some(hwp) = weak.upgrade() {
-                hwp.settle_headless(view, Err(format!("hwp export timed out after {timeout_ms}ms (a password-protected document cannot be exported this way)")));
-            }
-        });
-        self.headless.borrow_mut().insert(view, Headless {
-            timer, then,
-            native: Some(NativeHeadless {
-                target: target.clone(), pdf: Some(PathBuf::from(out_path)),
-                committed: Arc::new(std::sync::atomic::AtomicBool::new(false)), subscriptions: Vec::new(),
-            }),
-        });
-        for loss in [operation.cancel().clone(), operation.shutdown().clone(), operation.loss_token(), target.created().loss_token()] {
+        let timer = kit::after(
+            &self.services,
+            Duration::from_millis(timeout_ms),
+            move || {
+                if let Some(hwp) = weak.upgrade() {
+                    hwp.settle_headless(view, Err(format!("hwp export timed out after {timeout_ms}ms (a password-protected document cannot be exported this way)")));
+                }
+            },
+        );
+        self.headless.borrow_mut().insert(
+            view,
+            Headless {
+                timer,
+                then,
+                native: Some(NativeHeadless {
+                    target: target.clone(),
+                    pdf: Some(PathBuf::from(out_path)),
+                    committed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    subscriptions: Vec::new(),
+                }),
+            },
+        );
+        for loss in [
+            operation.cancel().clone(),
+            operation.shutdown().clone(),
+            operation.loss_token(),
+            target.created().loss_token(),
+        ] {
             let weak = Rc::downgrade(self);
             let back = kit::back_on_core(&self.services, move |()| {
                 if let Some(hwp) = weak.upgrade() {
@@ -946,7 +1029,12 @@ impl Hwp {
                 }
             });
             let subscription = loss.on_cancel(move || back(()));
-            if let Some(native) = self.headless.borrow_mut().get_mut(&view).and_then(|entry| entry.native.as_mut()) {
+            if let Some(native) = self
+                .headless
+                .borrow_mut()
+                .get_mut(&view)
+                .and_then(|entry| entry.native.as_mut())
+            {
                 native.subscriptions.push(subscription);
             }
         }
@@ -956,10 +1044,15 @@ impl Hwp {
     }
 
     fn native_headless_effect(
-        &self, view: ViewId, native: Option<&shell_contract::ipc::NativeContext>,
+        &self,
+        view: ViewId,
+        native: Option<&shell_contract::ipc::NativeContext>,
         effect: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<bool, String> {
-        let target = self.headless.borrow().get(&view)
+        let target = self
+            .headless
+            .borrow()
+            .get(&view)
             .and_then(|entry| entry.native.as_ref().map(|native| native.target.clone()));
         let Some(target) = target else {
             return if self.get(view, |state| state.native_headless) {
@@ -970,10 +1063,18 @@ impl Hwp {
         };
         let native = native.ok_or("HWP native headless renderer context is missing")?;
         let document = target.registered_document()?;
-        let sender = shell_contract::ipc::NativeRequestOwner { view, context: native.clone() };
+        let sender = shell_contract::ipc::NativeRequestOwner {
+            view,
+            context: native.clone(),
+        };
         let operation = document.operation();
         self.owned_effects.with_native_invocation_effect(
-            &document, &sender, &[], operation.cancel(), operation.shutdown(), effect,
+            &document,
+            &sender,
+            &[],
+            operation.cancel(),
+            operation.shutdown(),
+            effect,
         )?;
         Ok(true)
     }
@@ -1012,7 +1113,9 @@ impl Hwp {
             self.with_recovery(|r, e, s| r.destroyed(e, s, wc(view)));
         }
         let gone = self.views.borrow_mut().remove(&view);
-        if let Some(epoch) = gone.as_ref().and_then(|view| view.document_epoch.as_ref()) { epoch.revoke(); }
+        if let Some(epoch) = gone.as_ref().and_then(|view| view.document_epoch.as_ref()) {
+            epoch.revoke();
+        }
         drop(gone);
         self.resending.borrow_mut().remove(&view);
         let close = self.close_waiters.borrow_mut().remove(&view);
@@ -1192,7 +1295,11 @@ fn read_hwp(engine: &HwpEngineHost, path: &str) -> Result<Read, IpcError> {
     read_hwp_bytes(engine, bytes, record_disk_state(path))
 }
 
-fn read_hwp_bytes(engine: &HwpEngineHost, mut bytes: Vec<u8>, disk: Option<SaveDiskState>) -> Result<Read, IpcError> {
+fn read_hwp_bytes(
+    engine: &HwpEngineHost,
+    mut bytes: Vec<u8>,
+    disk: Option<SaveDiskState>,
+) -> Result<Read, IpcError> {
     let tracking = if bytes_match_format(&bytes, HwpFormat::Hwp) {
         engine.tracked_changes_of(&bytes)
     } else {
@@ -1269,17 +1376,24 @@ fn commit(engine: &HwpEngineHost, job: Commit) -> Result<Landed, String> {
     if needs_backup(&job.target, Path::new(&job.target).exists(), &job.written) {
         let backup = backup_path_for(&job.target);
         if let Some(scope) = &job.owned {
-            main_core::node_fs::copy_file_authorized(&job.target, &backup, false, &mut |effect| scope.admit(effect))
-                .map_err(|error| error.message)?.map_err(|error| error.message)?;
+            main_core::node_fs::copy_file_authorized(&job.target, &backup, false, &mut |effect| {
+                scope.admit(effect)
+            })
+            .map_err(|error| error.message)?
+            .map_err(|error| error.message)?;
         } else {
-            main_core::node_fs::copy_file(&job.target, &backup, false).map_err(|error| error.message)?;
+            main_core::node_fs::copy_file(&job.target, &backup, false)
+                .map_err(|error| error.message)?;
         }
         backup_path = Some(backup);
     }
     if let Some(scope) = &job.owned {
         main_core::packages::electron_utils::atomic_write::atomic_write_file_authorized(
-            &job.target, &bytes, &mut |effect| scope.admit(effect),
-        ).map_err(|error| error.message)?;
+            &job.target,
+            &bytes,
+            &mut |effect| scope.admit(effect),
+        )
+        .map_err(|error| error.message)?;
     } else {
         atomic_write_file(&job.target, &bytes).map_err(|error| error.message)?;
     }
@@ -1338,15 +1452,27 @@ impl Hwp {
     }
 
     fn save_dialog_options(
-        &self, view: ViewId, current: Option<&str>, current_format: Option<HwpFormat>, save_as: bool,
+        &self,
+        view: ViewId,
+        current: Option<&str>,
+        current_format: Option<HwpFormat>,
+        save_as: bool,
     ) -> Result<(Option<WindowId>, JsObject<JsonValue>, HwpFormat), String> {
         let win = self.window_of(view);
         let copy = self.get(view, |v| v.untitled_copy.clone());
         let preferred = self.default_format();
-        let new_dir = if current.is_some() { None } else { self.shell.new_document_dir(view) };
+        let new_dir = if current.is_some() {
+            None
+        } else {
+            self.shell.new_document_dir(view)
+        };
         let offered = match current {
             Some(current) => join(&[&dirname(current), &basename(current, None)]),
-            None => match self.recovery.borrow().hwp_recovery_save_as_default(wc(view)) {
+            None => match self
+                .recovery
+                .borrow()
+                .hwp_recovery_save_as_default(wc(view))
+            {
                 Some(path) => path,
                 None => {
                     let dir = match new_dir {
@@ -1355,28 +1481,52 @@ impl Hwp {
                             &AppPaths(self.services.paths.clone()),
                             &mut self.save_dir.lock().unwrap_or_else(|e| e.into_inner()),
                             self.shell.now_ms(),
-                        ).map_err(|e| e.0)?,
+                        )
+                        .map_err(|e| e.0)?,
                     };
-                    let name = copy.as_ref().map(|copy| copy.name.clone())
-                        .unwrap_or_else(|| format!("{}.{}", self.tm("untitledFile"), preferred.as_str()));
+                    let name = copy
+                        .as_ref()
+                        .map(|copy| copy.name.clone())
+                        .unwrap_or_else(|| {
+                            format!("{}.{}", self.tm("untitledFile"), preferred.as_str())
+                        });
                     join(&[&dir, &name])
                 }
             },
         };
-        let fallback = current_format.or(copy.map(|c| c.format)).or(hwp_format_of_path(&offered)).unwrap_or(preferred);
+        let fallback = current_format
+            .or(copy.map(|c| c.format))
+            .or(hwp_format_of_path(&offered))
+            .unwrap_or(preferred);
         let lang = self.lang();
         let filters = save_as_filters(fallback, save_as, &mut |key| {
             main_core::hwp::dialog_strings::tm(lang, key.as_str(), None)
         });
         let mut options = JsObject::new();
         options.set("title", JsonValue::String(self.tm("dlgSaveTitle")));
-        options.set("defaultPath", JsonValue::String(save_as_default_path(&offered, save_as)));
-        options.set("filters", JsonValue::Array(filters.into_iter().map(|f| {
-            let mut o = JsObject::new();
-            o.set("name", JsonValue::String(f.name));
-            o.set("extensions", JsonValue::Array(f.extensions.into_iter().map(JsonValue::String).collect()));
-            JsonValue::Object(o)
-        }).collect()));
+        options.set(
+            "defaultPath",
+            JsonValue::String(save_as_default_path(&offered, save_as)),
+        );
+        options.set(
+            "filters",
+            JsonValue::Array(
+                filters
+                    .into_iter()
+                    .map(|f| {
+                        let mut o = JsObject::new();
+                        o.set("name", JsonValue::String(f.name));
+                        o.set(
+                            "extensions",
+                            JsonValue::Array(
+                                f.extensions.into_iter().map(JsonValue::String).collect(),
+                            ),
+                        );
+                        JsonValue::Object(o)
+                    })
+                    .collect(),
+            ),
+        );
         Ok((win, options, fallback))
     }
 
@@ -1392,7 +1542,8 @@ impl Hwp {
         let target = match (&current, current_format) {
             (Some(current), Some(_)) if !save_as => current.clone(),
             _ => {
-                let (win, options, fallback) = self.save_dialog_options(view, current.as_deref(), current_format, save_as)?;
+                let (win, options, fallback) =
+                    self.save_dialog_options(view, current.as_deref(), current_format, save_as)?;
                 let offer_exports = save_as;
                 let picked = show_save_dialog_with_memory(
                     &mut self.dialog_memory.lock().unwrap_or_else(|e| e.into_inner()),
@@ -1433,7 +1584,11 @@ impl Hwp {
         self.set_pending_target(view, target)
     }
 
-    fn set_pending_target(&self, view: ViewId, target: String) -> Result<Result<IpcValue, IpcValue>, String> {
+    fn set_pending_target(
+        &self,
+        view: ViewId,
+        target: String,
+    ) -> Result<Result<IpcValue, IpcValue>, String> {
         let Some(format) = hwp_format_of_path(&target) else {
             return Err("hwp: no save format for this file name".into());
         };
@@ -1510,13 +1665,28 @@ impl Hwp {
                 return done(failed(EXTERNAL_MODIFIED));
             }
         }
-        self.commit_ready(view, target, format, data.to_vec(), args.get(1).clone(), memos, None, Box::new(done))
+        self.commit_ready(
+            view,
+            target,
+            format,
+            data.to_vec(),
+            args.get(1).clone(),
+            memos,
+            None,
+            Box::new(done),
+        )
     }
 
     fn commit_ready(
-        self: &Rc<Self>, view: ViewId, target: String, format: HwpFormat,
-        data: Vec<u8>, tab_data: IpcValue, memos: Memos,
-        owned: Option<owned_save::Scope>, done: Box<dyn FnOnce(IpcValue)>,
+        self: &Rc<Self>,
+        view: ViewId,
+        target: String,
+        format: HwpFormat,
+        data: Vec<u8>,
+        tab_data: IpcValue,
+        memos: Memos,
+        owned: Option<owned_save::Scope>,
+        done: Box<dyn FnOnce(IpcValue)>,
     ) {
         let tabs = match &tab_data {
             IpcValue::Array(items) => Some(
@@ -1577,7 +1747,10 @@ impl Hwp {
         if self.get(view, |state| state.recovery_open.is_some()) {
             return self.read_recovery_file(cx, path, reply);
         }
-        let target = self.headless.borrow().get(&view)
+        let target = self
+            .headless
+            .borrow()
+            .get(&view)
             .and_then(|entry| entry.native.as_ref().map(|native| native.target.clone()));
         if target.is_none() && self.get(view, |state| state.native_headless) {
             return reply.reply(Err(error("HWP native headless invocation has ended")));
@@ -1585,63 +1758,96 @@ impl Hwp {
         if let Some(target) = target {
             let native = match cx.native.as_ref() {
                 Some(native) => native.clone(),
-                None => return reply.reply(Err(error("HWP native headless renderer context is missing"))),
+                None => {
+                    return reply.reply(Err(error(
+                        "HWP native headless renderer context is missing",
+                    )));
+                }
             };
             let document = match target.registered_document() {
                 Ok(document) => document,
                 Err(message) => return reply.reply(Err(error(message))),
             };
-            let sender = shell_contract::ipc::NativeRequestOwner { view, context: native };
+            let sender = shell_contract::ipc::NativeRequestOwner {
+                view,
+                context: native,
+            };
             let mut opened = None;
             let operation = document.operation();
             let result = self.owned_effects.with_native_invocation_effect(
-                &document, &sender, &[], operation.cancel(), operation.shutdown(), &mut || {
+                &document,
+                &sender,
+                &[],
+                operation.cancel(),
+                operation.shutdown(),
+                &mut || {
                     opened = Some(std::fs::File::open(&path));
                     Ok(())
                 },
             );
-            if let Err(message) = result { return reply.reply(Err(error(message))); }
+            if let Err(message) = result {
+                return reply.reply(Err(error(message)));
+            }
             let file = match opened {
                 Some(Ok(file)) => file,
-                Some(Err(e)) => return reply.reply(Err(error(main_core::node_fs::node_error(&e, "open", &path).message))),
+                Some(Err(e)) => {
+                    return reply.reply(Err(error(
+                        main_core::node_fs::node_error(&e, "open", &path).message,
+                    )));
+                }
                 None => return reply.reply(Err(error("HWP input open was not admitted"))),
             };
             let engine = Arc::clone(&self.engine);
             let hwp = Rc::clone(self);
-            on_worker(&self.services, move || {
-                use std::io::Read as _;
-                let info = file.metadata().map_err(|e| error(e.to_string()))?;
-                if info.len() > MAX_HWP_SAVE_BYTES as u64 { return Err(error("hwp: file is too large to open")); }
-                let mut bytes = Vec::new();
-                file.take(MAX_HWP_SAVE_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|e| error(e.to_string()))?;
-                if bytes.len() > MAX_HWP_SAVE_BYTES { return Err(error("hwp: file is too large to open")); }
-                read_hwp_bytes(&engine, bytes, None)
-            }, move |read| {
-                let mut read = match read {
-                    Ok(read) => Some(read),
-                    Err(e) => return reply.reply(Err(e)),
-                };
-                let mut bytes = None;
-                let operation = document.operation();
-                let result = hwp.owned_effects.with_native_invocation_effect(
-                    &document, &sender, &[], operation.cancel(), operation.shutdown(), &mut || {
-                        let read = read.take().ok_or("HWP input was already delivered")?;
-                        bytes = Some(read.bytes);
-                        hwp.change(view, |v| {
-                            v.tracked = read.tracked;
-                            v.tracking_dropped = read.dropped;
-                            v.unverified = read.unverified.then(|| path.clone());
-                            v.base = read.base;
-                        });
-                        Ok(())
-                    },
-                );
-                match (result, bytes) {
-                    (Ok(()), Some(bytes)) => reply.reply(Ok(u8_array(bytes))),
-                    (Err(message), _) => reply.reply(Err(error(message))),
-                    _ => reply.reply(Err(error("HWP input delivery was not admitted"))),
-                }
-            });
+            on_worker(
+                &self.services,
+                move || {
+                    use std::io::Read as _;
+                    let info = file.metadata().map_err(|e| error(e.to_string()))?;
+                    if info.len() > MAX_HWP_SAVE_BYTES as u64 {
+                        return Err(error("hwp: file is too large to open"));
+                    }
+                    let mut bytes = Vec::new();
+                    file.take(MAX_HWP_SAVE_BYTES as u64 + 1)
+                        .read_to_end(&mut bytes)
+                        .map_err(|e| error(e.to_string()))?;
+                    if bytes.len() > MAX_HWP_SAVE_BYTES {
+                        return Err(error("hwp: file is too large to open"));
+                    }
+                    read_hwp_bytes(&engine, bytes, None)
+                },
+                move |read| {
+                    let mut read = match read {
+                        Ok(read) => Some(read),
+                        Err(e) => return reply.reply(Err(e)),
+                    };
+                    let mut bytes = None;
+                    let operation = document.operation();
+                    let result = hwp.owned_effects.with_native_invocation_effect(
+                        &document,
+                        &sender,
+                        &[],
+                        operation.cancel(),
+                        operation.shutdown(),
+                        &mut || {
+                            let read = read.take().ok_or("HWP input was already delivered")?;
+                            bytes = Some(read.bytes);
+                            hwp.change(view, |v| {
+                                v.tracked = read.tracked;
+                                v.tracking_dropped = read.dropped;
+                                v.unverified = read.unverified.then(|| path.clone());
+                                v.base = read.base;
+                            });
+                            Ok(())
+                        },
+                    );
+                    match (result, bytes) {
+                        (Ok(()), Some(bytes)) => reply.reply(Ok(u8_array(bytes))),
+                        (Err(message), _) => reply.reply(Err(error(message))),
+                        _ => reply.reply(Err(error("HWP input delivery was not admitted"))),
+                    }
+                },
+            );
             return;
         }
         // a recovery copy left for this file is settled before any content reaches the editor
@@ -1679,19 +1885,27 @@ pub(super) fn entries(hwp: &Rc<Hwp>) -> Vec<Entry> {
     let h = Rc::clone;
     let mut all = Vec::new();
     let hwp1 = h(hwp);
-    all.push(kit::invoke("hwp:consume-recovery", move |cx, _| hwp1.consume_recovery(cx)));
+    all.push(kit::invoke("hwp:consume-recovery", move |cx, _| {
+        hwp1.consume_recovery(cx)
+    }));
     let hwp1 = h(hwp);
-    all.push(kit::invoke("hwp:recovery-initialized", move |cx, args| hwp1.finish_recovery(cx, &args)));
+    all.push(kit::invoke("hwp:recovery-initialized", move |cx, args| {
+        hwp1.finish_recovery(cx, &args)
+    }));
 
     // ---- headless export mode (--headless-export) ----
     let hwp1 = h(hwp);
     all.push(kit::invoke("hwp:consume-headless-export", move |cx, _| {
         let mut target = None;
-        let native = hwp1.native_headless_effect(cx.sender.view, cx.native.as_ref(), &mut || {
+        let native = hwp1
+            .native_headless_effect(cx.sender.view, cx.native.as_ref(), &mut || {
+                target = hwp1.change(cx.sender.view, |v| v.headless_target.take());
+                Ok(())
+            })
+            .map_err(error)?;
+        if !native {
             target = hwp1.change(cx.sender.view, |v| v.headless_target.take());
-            Ok(())
-        }).map_err(error)?;
-        if !native { target = hwp1.change(cx.sender.view, |v| v.headless_target.take()); }
+        }
         Ok(target.into_ipc())
     }));
     let hwp1 = h(hwp);
@@ -1705,17 +1919,29 @@ pub(super) fn entries(hwp: &Rc<Hwp>) -> Vec<Entry> {
                 .to_owned())
         };
         let mut waiter = None;
-        let native = hwp1.native_headless_effect(cx.sender.view, cx.native.as_ref(), &mut || {
-            if report.is_ok() && !hwp1.headless.borrow().get(&cx.sender.view)
-                .and_then(|entry| entry.native.as_ref())
-                .is_some_and(|native| native.committed.load(std::sync::atomic::Ordering::Acquire)) {
-                return Err("HWP PDF export has not committed its output".into());
-            }
-            waiter = hwp1.headless.borrow_mut().remove(&cx.sender.view);
-            Ok(())
-        }).map_err(error)?;
-        if native { hwp1.finish_headless(cx.sender.view, waiter, report); }
-        else { hwp1.settle_headless(cx.sender.view, report); }
+        let native = hwp1
+            .native_headless_effect(cx.sender.view, cx.native.as_ref(), &mut || {
+                if report.is_ok()
+                    && !hwp1
+                        .headless
+                        .borrow()
+                        .get(&cx.sender.view)
+                        .and_then(|entry| entry.native.as_ref())
+                        .is_some_and(|native| {
+                            native.committed.load(std::sync::atomic::Ordering::Acquire)
+                        })
+                {
+                    return Err("HWP PDF export has not committed its output".into());
+                }
+                waiter = hwp1.headless.borrow_mut().remove(&cx.sender.view);
+                Ok(())
+            })
+            .map_err(error)?;
+        if native {
+            hwp1.finish_headless(cx.sender.view, waiter, report);
+        } else {
+            hwp1.settle_headless(cx.sender.view, report);
+        }
         Ok(())
     }));
 
@@ -1747,10 +1973,12 @@ pub(super) fn entries(hwp: &Rc<Hwp>) -> Vec<Entry> {
             return Err(error("HWP recovery must use its captured seed"));
         }
         let mut path = None;
-        let native = hwp1.native_headless_effect(view, cx.native.as_ref(), &mut || {
-            path = hwp1.get(view, |v| v.open_path.clone());
-            Ok(())
-        }).map_err(error)?;
+        let native = hwp1
+            .native_headless_effect(view, cx.native.as_ref(), &mut || {
+                path = hwp1.get(view, |v| v.open_path.clone());
+                Ok(())
+            })
+            .map_err(error)?;
         if !native {
             hwp1.recovery.borrow_mut().note_hwp_path_consumed(wc(view));
             path = hwp1.get(view, |v| v.open_path.clone());
@@ -1783,15 +2011,18 @@ pub(super) fn entries(hwp: &Rc<Hwp>) -> Vec<Entry> {
     }));
 
     let hwp1 = h(hwp);
-    all.push(kit::invoke_later("hwp:begin-save", move |cx, args, reply| {
-        if let Some(token) = args.str(1) {
-            hwp1.begin_owned(cx, args.get(0), token, reply);
-        } else if hwp1.owned_save_pending(cx.sender.view) {
-            reply.reply(Ok(failed("hwp: owned save request requires its token")));
-        } else {
-            reply.reply(Ok(hwp1.begin_save(cx.sender.view, args.get(0))));
-        }
-    }));
+    all.push(kit::invoke_later(
+        "hwp:begin-save",
+        move |cx, args, reply| {
+            if let Some(token) = args.str(1) {
+                hwp1.begin_owned(cx, args.get(0), token, reply);
+            } else if hwp1.owned_save_pending(cx.sender.view) {
+                reply.reply(Ok(failed("hwp: owned save request requires its token")));
+            } else {
+                reply.reply(Ok(hwp1.begin_save(cx.sender.view, args.get(0))));
+            }
+        },
+    ));
 
     let hwp1 = h(hwp);
     all.push(kit::invoke_later("hwp:new-tabs", move |cx, args, reply| {
@@ -1801,7 +2032,9 @@ pub(super) fn entries(hwp: &Rc<Hwp>) -> Vec<Entry> {
                 Ok(scope) => Some(scope),
                 Err(message) => return reply.reply(Err(error(message))),
             },
-            None if hwp1.owned_save_pending(cx.sender.view) => return reply.reply(Err(error("hwp: owned save request requires its token"))),
+            None if hwp1.owned_save_pending(cx.sender.view) => {
+                return reply.reply(Err(error("hwp: owned save request requires its token")));
+            }
             None => None,
         };
         if hwp1.get(cx.sender.view, |v| v.pending_save.is_none()) {
@@ -1825,13 +2058,26 @@ pub(super) fn entries(hwp: &Rc<Hwp>) -> Vec<Entry> {
                     let mut spots = Some(spots);
                     let mut delivery = None;
                     match scope.effect(&mut || {
-                        delivery = Some((reply.take().ok_or("hwp: duplicate reply")?, spots.take().ok_or("hwp: missing tab result")?));
+                        delivery = Some((
+                            reply.take().ok_or("hwp: duplicate reply")?,
+                            spots.take().ok_or("hwp: missing tab result")?,
+                        ));
                         Ok(())
                     }) {
-                        Ok(()) => if let Some((reply, spots)) = delivery { reply.reply(Ok(spots)); },
-                        Err(message) => if let Some(reply) = reply { reply.reply(Err(error(message))); },
+                        Ok(()) => {
+                            if let Some((reply, spots)) = delivery {
+                                reply.reply(Ok(spots));
+                            }
+                        }
+                        Err(message) => {
+                            if let Some(reply) = reply {
+                                reply.reply(Err(error(message)));
+                            }
+                        }
                     }
-                } else { reply.reply(Ok(spots)); }
+                } else {
+                    reply.reply(Ok(spots));
+                }
             },
         );
     }));
@@ -1868,8 +2114,13 @@ pub(super) fn entries(hwp: &Rc<Hwp>) -> Vec<Entry> {
     let hwp1 = h(hwp);
     all.push(kit::send("hwp:abort-save", move |cx, args| {
         let view = cx.sender.view;
-        if let Some(token) = args.str(0) { hwp1.abort_owned(cx, token); return Ok(()); }
-        if hwp1.owned_save_pending(view) { return Ok(()); }
+        if let Some(token) = args.str(0) {
+            hwp1.abort_owned(cx, token);
+            return Ok(());
+        }
+        if hwp1.owned_save_pending(view) {
+            return Ok(());
+        }
         hwp1.change(view, |v| v.pending_save = None);
         hwp1.settle_save(view, false);
         Ok(())
@@ -1916,10 +2167,14 @@ pub(super) fn tab_spots(spots: &[main_core::hwp::tab_widths::TabSpot]) -> IpcVal
 pub struct HwpEditors(pub(super) Rc<Hwp>);
 
 impl DocumentEditors for HwpEditors {
-    fn saved_surface(&self) -> shell_contract::Surface { shell_contract::Surface::Hwp }
+    fn saved_surface(&self) -> shell_contract::Surface {
+        shell_contract::Surface::Hwp
+    }
 
     fn capture_document_owner(
-        &self, view: ViewId, native: shell_contract::ipc::NativeRequestOwner,
+        &self,
+        view: ViewId,
+        native: shell_contract::ipc::NativeRequestOwner,
     ) -> Result<shell_contract::ipc::NativeRequestOwner, IpcError> {
         self.0.capture_hwp_owner(view, native)
     }
@@ -1938,8 +2193,12 @@ impl DocumentEditors for HwpEditors {
     }
 
     fn request_save_owned(
-        &self, view: ViewId, mode: SaveMode, origin: shell_contract::ipc::NativeRequestOwner,
-        cancel: shell_contract::runtime::CancelToken, then: Then<bool>,
+        &self,
+        view: ViewId,
+        mode: SaveMode,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        then: Then<bool>,
     ) {
         self.0.request_save_owned(view, mode, origin, cancel, then)
     }
@@ -1950,11 +2209,15 @@ impl DocumentEditors for HwpEditors {
     }
 
     fn request_close_owned(
-        &self, view: ViewId, parent: Option<WindowId>,
+        &self,
+        view: ViewId,
+        parent: Option<WindowId>,
         origin: shell_contract::ipc::NativeRequestOwner,
-        cancel: shell_contract::runtime::CancelToken, then: Then<bool>,
+        cancel: shell_contract::runtime::CancelToken,
+        then: Then<bool>,
     ) {
-        self.0.request_close_owned(view, parent, origin, cancel, then)
+        self.0
+            .request_close_owned(view, parent, origin, cancel, then)
     }
 
     fn read_text(&self, view: ViewId, then: Then<String>) {
@@ -1968,15 +2231,24 @@ impl DocumentEditors for HwpEditors {
     }
 
     fn save_to_path_owned(
-        &self, _view: ViewId, _path: PathBuf, _origin: shell_contract::ipc::NativeRequestOwner,
-        _cancel: shell_contract::runtime::CancelToken, then: Then<()>,
+        &self,
+        _view: ViewId,
+        _path: PathBuf,
+        _origin: shell_contract::ipc::NativeRequestOwner,
+        _cancel: shell_contract::runtime::CancelToken,
+        then: Then<()>,
     ) {
         then(Err(error("hwp: saving to a given path is not supported")))
     }
 
     fn save_to_path_native(
-        &self, _view: ViewId, _path: PathBuf, _binding: shell_contract::ipc::NativeExistingDocumentBinding,
-        _cancel: shell_contract::runtime::CancelToken, _pending: shell_contract::runtime::CancelToken, then: Then<()>,
+        &self,
+        _view: ViewId,
+        _path: PathBuf,
+        _binding: shell_contract::ipc::NativeExistingDocumentBinding,
+        _cancel: shell_contract::runtime::CancelToken,
+        _pending: shell_contract::runtime::CancelToken,
+        then: Then<()>,
     ) {
         then(Err(error("hwp: saving to a given path is not supported")))
     }
@@ -1990,44 +2262,110 @@ impl DocumentEditors for HwpEditors {
     }
 
     fn file_renamed_owned(
-        &self, view: ViewId, old_path: &Path, new_path: &Path,
+        &self,
+        view: ViewId,
+        old_path: &Path,
+        new_path: &Path,
         origin: &shell_contract::ipc::NativeRequestOwner,
         destination: &shell_contract::ipc::NativeRequestOwner,
         cancel: &shell_contract::runtime::CancelToken,
-        pending: &shell_contract::runtime::CancelToken, then: Then<()>,
+        pending: &shell_contract::runtime::CancelToken,
+        then: Then<()>,
     ) {
-        self.0.file_renamed_owned(view, old_path, new_path, origin, destination, &[], cancel, pending, &[], then)
+        self.0.file_renamed_owned(
+            view,
+            old_path,
+            new_path,
+            origin,
+            destination,
+            &[],
+            cancel,
+            pending,
+            &[],
+            then,
+        )
     }
 
     fn file_renamed_many_owned_extra(
-        &self, view: ViewId, old_path: &Path, new_path: &Path,
+        &self,
+        view: ViewId,
+        old_path: &Path,
+        new_path: &Path,
         origin: &shell_contract::ipc::NativeRequestOwner,
         destination: &shell_contract::ipc::NativeRequestOwner,
         participants: &[shell_contract::ipc::NativeRequestOwner],
         cancel: &shell_contract::runtime::CancelToken,
-        pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], then: Then<()>,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+        then: Then<()>,
     ) {
-        self.0.file_renamed_owned(view, old_path, new_path, origin, destination, participants, cancel, pending, additional, then)
+        self.0.file_renamed_owned(
+            view,
+            old_path,
+            new_path,
+            origin,
+            destination,
+            participants,
+            cancel,
+            pending,
+            additional,
+            then,
+        )
     }
     fn file_renamed_existing_document(
-        &self, view: ViewId, old_path: &Path, new_path: &Path,
-        authority: &shell_contract::ipc::NativeSaveRevisionAuthority, expected_path: &Path,
-        destination: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner],
-        cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
-        additional: &[shell_contract::runtime::CancelToken], then: Then<Option<shell_contract::ipc::NativeSaveRevisionReceipt>>,
+        &self,
+        view: ViewId,
+        old_path: &Path,
+        new_path: &Path,
+        authority: &shell_contract::ipc::NativeSaveRevisionAuthority,
+        expected_path: &Path,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+        then: Then<Option<shell_contract::ipc::NativeSaveRevisionReceipt>>,
     ) {
-        self.0.file_renamed_existing_document(view, old_path, new_path, authority, expected_path, destination, participants, cancel, pending, additional,
-            Box::new(move |result| then(result.map(|()| None))))
+        self.0.file_renamed_existing_document(
+            view,
+            old_path,
+            new_path,
+            authority,
+            expected_path,
+            destination,
+            participants,
+            cancel,
+            pending,
+            additional,
+            Box::new(move |result| then(result.map(|()| None))),
+        )
     }
     fn file_renamed_recovery(
-        &self, view: ViewId, old_path: &Path, new_path: &Path,
-        receipt: &shell_contract::ipc::RecoverySeedReceipt, receiver: &shell_contract::ipc::NativeRequestOwner,
-        destination: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner],
-        cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, then: Then<()>,
+        &self,
+        view: ViewId,
+        old_path: &Path,
+        new_path: &Path,
+        receipt: &shell_contract::ipc::RecoverySeedReceipt,
+        receiver: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        then: Then<()>,
     ) {
-        self.0.file_renamed_recovery(view, old_path, new_path, receipt, receiver, destination, participants, cancel, pending, then)
+        self.0.file_renamed_recovery(
+            view,
+            old_path,
+            new_path,
+            receipt,
+            receiver,
+            destination,
+            participants,
+            cancel,
+            pending,
+            then,
+        )
     }
-
 
     /// the File menu's export: `requestHwpPrint(contents, 'pdf')`
     fn export_request(&self, view: ViewId, format: &str) {
@@ -2043,7 +2381,9 @@ impl DocumentEditors for HwpEditors {
     /// `pdfSaveAsByWc.get(wcId) ?? headlessPdfByWc.get(wcId)`, both taken:
     /// what `hwp:print-pages` lets a PDF write once
     fn take_pdf_grant(&self, view: ViewId) -> Option<PathBuf> {
-        if self.0.get(view, |state| state.native_headless) { return None; }
+        if self.0.get(view, |state| state.native_headless) {
+            return None;
+        }
         self.0.change(view, |v| {
             let save_as = v.pdf_save_as.take();
             let headless = v.headless_pdf.take();
@@ -2051,9 +2391,15 @@ impl DocumentEditors for HwpEditors {
         })
     }
     fn take_native_headless_pdf_grant(
-        &self, view: ViewId, native: Option<&shell_contract::ipc::NativeContext>,
+        &self,
+        view: ViewId,
+        native: Option<&shell_contract::ipc::NativeContext>,
     ) -> Result<Option<shell_contract::editors::NativeHeadlessPdfGrant>, String> {
-        let target = self.0.headless.borrow().get(&view)
+        let target = self
+            .0
+            .headless
+            .borrow()
+            .get(&view)
             .and_then(|entry| entry.native.as_ref().map(|state| state.target.clone()));
         let Some(target) = target else {
             return if self.0.get(view, |state| state.native_headless) {
@@ -2067,16 +2413,29 @@ impl DocumentEditors for HwpEditors {
         let mut committed = None;
         self.0.native_headless_effect(view, native, &mut || {
             let mut headless = self.0.headless.borrow_mut();
-            if let Some(state) = headless.get_mut(&view).and_then(|entry| entry.native.as_mut()) {
+            if let Some(state) = headless
+                .get_mut(&view)
+                .and_then(|entry| entry.native.as_mut())
+            {
                 path = state.pdf.take();
-                if path.is_some() { committed = Some(state.committed.clone()); }
+                if path.is_some() {
+                    committed = Some(state.committed.clone());
+                }
             }
-            if path.is_some() { Ok(()) } else { Err("HWP native PDF grant was already consumed".into()) }
+            if path.is_some() {
+                Ok(())
+            } else {
+                Err("HWP native PDF grant was already consumed".into())
+            }
         })?;
         Ok(Some(shell_contract::editors::NativeHeadlessPdfGrant {
-            path: path.ok_or("HWP native PDF grant is unavailable")?, document,
+            path: path.ok_or("HWP native PDF grant is unavailable")?,
+            document,
             sender: shell_contract::ipc::NativeRequestOwner {
-                view, context: native.ok_or("HWP native headless renderer context is missing")?.clone(),
+                view,
+                context: native
+                    .ok_or("HWP native headless renderer context is missing")?
+                    .clone(),
             },
             commit: {
                 let committed = committed.ok_or("HWP native PDF receipt is unavailable")?;
@@ -2085,12 +2444,16 @@ impl DocumentEditors for HwpEditors {
         }))
     }
 
-
     fn take_owned_pdf_grant(
-        &self, view: ViewId, token: &str, generation: &shell_contract::runtime::RendererGeneration,
-        actual: Option<&shell_contract::ipc::NativeRequestOwner>, caller_cancel: &shell_contract::runtime::CancelToken,
+        &self,
+        view: ViewId,
+        token: &str,
+        generation: &shell_contract::runtime::RendererGeneration,
+        actual: Option<&shell_contract::ipc::NativeRequestOwner>,
+        caller_cancel: &shell_contract::runtime::CancelToken,
     ) -> Option<shell_contract::editors::OwnedPdfGrant> {
-        self.0.take_owned_pdf_grant(view, token, generation, actual, caller_cancel)
+        self.0
+            .take_owned_pdf_grant(view, token, generation, actual, caller_cancel)
     }
 }
 
@@ -2099,19 +2462,30 @@ impl RecoveryEditorContract<ViewId, shell_contract::ipc::RecoveryOpenTarget> for
         "hwp"
     }
 
-    fn write_copies_now(&self, done: Box<dyn FnOnce(Result<(), main_core::shell::renderer_disposal::Failure>)>) {
+    fn write_copies_now(
+        &self,
+        done: Box<dyn FnOnce(Result<(), main_core::shell::renderer_disposal::Failure>)>,
+    ) {
         self.0.write_recovery_now(done);
     }
 
-    fn open_file_with_decision(&self, contents: &ViewId, request: &RecoveryOpenFileRequest,
+    fn open_file_with_decision(
+        &self,
+        contents: &ViewId,
+        request: &RecoveryOpenFileRequest,
         authority: &shell_contract::ipc::RecoveryOpenTarget,
-        done: main_core::packages::electron_utils::recovery_contract::RecoveryOpenDone) {
+        done: main_core::packages::electron_utils::recovery_contract::RecoveryOpenDone,
+    ) {
         self.recover_file_seed(*contents, request, authority, done);
     }
 
-    fn open_untitled_copy(&self, contents: &ViewId, request: &RecoveryOpenUntitledRequest,
+    fn open_untitled_copy(
+        &self,
+        contents: &ViewId,
+        request: &RecoveryOpenUntitledRequest,
         authority: &shell_contract::ipc::RecoveryOpenTarget,
-        done: main_core::packages::electron_utils::recovery_contract::RecoveryOpenDone) {
+        done: main_core::packages::electron_utils::recovery_contract::RecoveryOpenDone,
+    ) {
         self.recover_untitled_seed(*contents, request, authority, done);
     }
 
@@ -2151,10 +2525,15 @@ impl HwpEditors {
             .export_hwp_pdf_headless(input, out_path, timeout_ms, then)
     }
     pub fn export_hwp_pdf_headless_native(
-        &self, input: &str, out_path: &str, timeout_ms: u64,
-        operation: shell_contract::ipc::NativeInvocationOperation, then: Then<()>,
+        &self,
+        input: &str,
+        out_path: &str,
+        timeout_ms: u64,
+        operation: shell_contract::ipc::NativeInvocationOperation,
+        then: Then<()>,
     ) {
-        self.0.export_hwp_pdf_headless_native(input, out_path, timeout_ms, operation, then)
+        self.0
+            .export_hwp_pdf_headless_native(input, out_path, timeout_ms, operation, then)
     }
     /// the view's `render-process-gone`
     pub fn render_process_gone(&self, view: ViewId, reason: &str) {

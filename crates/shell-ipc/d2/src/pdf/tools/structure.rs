@@ -1740,7 +1740,9 @@ fn epub_options_of(v: &IpcValue) -> Result<Option<IpcValue>, jscompat::RegexLimi
     for k in ["language", "uiLanguage"] {
         let tag = field(v, k);
         if tag != &IpcValue::Undefined {
-            let Some(lang) = as_str(tag) else { return Ok(None); };
+            let Some(lang) = as_str(tag) else {
+                return Ok(None);
+            };
             if !is_language_tag(lang)? {
                 return Ok(None);
             }

@@ -95,7 +95,12 @@ fn num(v: Option<&Value>, default: f64) -> f64 {
 /// `PdfEngine` answering from the case
 pub struct FakeEngine(Arc<Answers>, bool);
 
-struct FakeSigningSession(Arc<Answers>, CancelToken, shell_contract::runtime::RendererGeneration, Vec<Vec<u8>>);
+struct FakeSigningSession(
+    Arc<Answers>,
+    CancelToken,
+    shell_contract::runtime::RendererGeneration,
+    Vec<Vec<u8>>,
+);
 
 impl SigningSession for FakeSigningSession {
     fn revoke_token(&self) -> CancelToken {
@@ -107,9 +112,14 @@ impl SigningSession for FakeSigningSession {
         owner: &shell_contract::ipc::NativeRequestOwner,
         cancel: &CancelToken,
     ) -> bool {
-        owner.context.renderer().is_some_and(|generation| generation.is_active() && self.2.same_generation(generation))
+        owner
+            .context
+            .renderer()
+            .is_some_and(|generation| generation.is_active() && self.2.same_generation(generation))
             && owner.pdf_document().is_none_or(|lease| lease.is_live())
-            && owner.pdf_revision().is_none_or(|revision| revision.is_live())
+            && owner
+                .pdf_revision()
+                .is_none_or(|revision| revision.is_live())
             && !cancel.is_cancelled()
             && !self.1.is_cancelled()
     }
@@ -126,9 +136,12 @@ impl SigningSession for FakeSigningSession {
             return Err(SignFailure::Message("PDF signing cancelled".into()));
         }
         if chain != self.3 {
-            return Err(SignFailure::Message("PDF signing certificate chain changed".into()));
+            return Err(SignFailure::Message(
+                "PDF signing certificate chain changed".into(),
+            ));
         }
-        self.0.line(json!(["signPdf", options.reason, options.certify_level]));
+        self.0
+            .line(json!(["signPdf", options.reason, options.certify_level]));
         match self.0.take("signPdf") {
             Some(v) if v.get("code").is_some() => Err(SignFailure::Code(
                 v["code"].as_str().unwrap_or_default().into(),
@@ -182,10 +195,24 @@ fn read(path: &str) -> Result<Vec<u8>, String> {
 }
 
 impl PdfEngine for FakeEngine {
-    fn synthetic_save_capability(&self) -> bool { self.1 }
-    fn prepare_pdf_save(&self, source: &[u8], _request: &IpcValue, preserve_unchanged: bool, cancel: &CancelToken) -> Result<(Vec<u8>, SaveSkips), String> {
-        if cancel.is_cancelled() { return Err("PDF save cancelled".into()); }
-        let name = if preserve_unchanged { "savePdfBytesToPath" } else { "savePdfToPath" };
+    fn synthetic_save_capability(&self) -> bool {
+        self.1
+    }
+    fn prepare_pdf_save(
+        &self,
+        source: &[u8],
+        _request: &IpcValue,
+        preserve_unchanged: bool,
+        cancel: &CancelToken,
+    ) -> Result<(Vec<u8>, SaveSkips), String> {
+        if cancel.is_cancelled() {
+            return Err("PDF save cancelled".into());
+        }
+        let name = if preserve_unchanged {
+            "savePdfBytesToPath"
+        } else {
+            "savePdfToPath"
+        };
         Ok((source.to_vec(), self.skips(name)?))
     }
     fn save_pdf_to_path(
@@ -212,21 +239,41 @@ impl PdfEngine for FakeEngine {
         write(target, source)?;
         Ok(skips)
     }
-    fn copy_pdf_to_path(&self, source: &str, target: &str, _cancel: &CancelToken) -> Result<(), String> {
+    fn copy_pdf_to_path(
+        &self,
+        source: &str,
+        target: &str,
+        _cancel: &CancelToken,
+    ) -> Result<(), String> {
         self.line(json!(["copyPdfToPath", source, target]));
         self.0.get("copyPdfToPath")?;
         write(target, &read(source)?)
     }
-    fn pdf_bytes_with_edits(&self, source: &str, _r: &IpcValue, _cancel: &CancelToken) -> Result<Vec<u8>, String> {
+    fn pdf_bytes_with_edits(
+        &self,
+        source: &str,
+        _r: &IpcValue,
+        _cancel: &CancelToken,
+    ) -> Result<Vec<u8>, String> {
         self.line(json!(["pdfBytesWithEdits", source]));
         let input = read(source)?;
         self.bytes_or("pdfBytesWithEdits", &input)
     }
-    fn pdf_bytes_with_edits_of(&self, file: &[u8], _r: &IpcValue, _cancel: &CancelToken) -> Result<Vec<u8>, String> {
+    fn pdf_bytes_with_edits_of(
+        &self,
+        file: &[u8],
+        _r: &IpcValue,
+        _cancel: &CancelToken,
+    ) -> Result<Vec<u8>, String> {
         self.line(json!(["pdfBytesWithEditsOf"]));
         self.bytes_or("pdfBytesWithEditsOf", file)
     }
-    fn pdf_bytes_with_edits_from(&self, source: &[u8], _r: &IpcValue, _cancel: &CancelToken) -> Result<Vec<u8>, String> {
+    fn pdf_bytes_with_edits_from(
+        &self,
+        source: &[u8],
+        _r: &IpcValue,
+        _cancel: &CancelToken,
+    ) -> Result<Vec<u8>, String> {
         self.line(json!(["pdfBytesWithEditsFrom"]));
         self.bytes_or("pdfBytesWithEditsFrom", source)
     }
@@ -366,11 +413,21 @@ impl PdfEngine for FakeEngine {
         self.line(json!(["renderImagePng", page_index, js(rect), scale]));
         self.ipc("renderImagePng", IpcValue::Null)
     }
-    fn render_page_preview_png(&self, _b: &[u8], request: &IpcValue, _cancel: &CancelToken) -> Result<IpcValue, String> {
+    fn render_page_preview_png(
+        &self,
+        _b: &[u8],
+        request: &IpcValue,
+        _cancel: &CancelToken,
+    ) -> Result<IpcValue, String> {
         self.line(json!(["renderPagePreviewPng", js(request)]));
         self.ipc("renderPagePreviewPng", IpcValue::Null)
     }
-    fn validate_text_edits(&self, _b: &[u8], edits: &IpcValue, _cancel: &CancelToken) -> Result<IpcValue, String> {
+    fn validate_text_edits(
+        &self,
+        _b: &[u8],
+        edits: &IpcValue,
+        _cancel: &CancelToken,
+    ) -> Result<IpcValue, String> {
         self.line(json!(["validateTextEdits", js(edits)]));
         self.ipc("validateTextEdits", IpcValue::Array(Vec::new()))
     }
@@ -418,15 +475,29 @@ impl PdfEngine for FakeEngine {
         entry_cancel: &CancelToken,
     ) -> Result<(Box<dyn SigningSession>, Vec<IpcValue>, Vec<Vec<u8>>), CertificateOpenError> {
         if !self.sign_owner_current(owner, cancel) || entry_cancel.is_cancelled() {
-            return Err(CertificateOpenError::Message(CertificateOpenMessage::Revoked));
+            return Err(CertificateOpenError::Message(
+                CertificateOpenMessage::Revoked,
+            ));
         }
-        let generation = owner.context.renderer().cloned()
-            .ok_or(CertificateOpenError::Message(CertificateOpenMessage::Revoked))?;
+        let generation = owner
+            .context
+            .renderer()
+            .cloned()
+            .ok_or(CertificateOpenError::Message(
+                CertificateOpenMessage::Revoked,
+            ))?;
         match source {
-            CertificateSource::P12 { password, .. } => self.line(json!(["openCertificate", password])),
+            CertificateSource::P12 { password, .. } => {
+                self.line(json!(["openCertificate", password]))
+            }
             CertificateSource::System { .. } => self.line(json!(["openExternalCertificate"])),
         }
-        let message = match self.0.case.get("openCertificateMessage").and_then(Value::as_str) {
+        let message = match self
+            .0
+            .case
+            .get("openCertificateMessage")
+            .and_then(Value::as_str)
+        {
             Some("worker-unavailable") => Some(CertificateOpenMessage::WorkerUnavailable),
             Some("revoked") => Some(CertificateOpenMessage::Revoked),
             Some("regex-limit") => Some(CertificateOpenMessage::RegexLimit),
@@ -435,23 +506,42 @@ impl PdfEngine for FakeEngine {
         if let Some(message) = message {
             return Err(CertificateOpenError::Message(message));
         }
-        let summaries = match self.0.get("openCertificate").map_err(|error|
-            CertificateOpenError::Code(CertificateOpenCode::parse(&error).unwrap_or(CertificateOpenCode::Invalid))
-        )? {
+        let summaries = match self.0.get("openCertificate").map_err(|error| {
+            CertificateOpenError::Code(
+                CertificateOpenCode::parse(&error).unwrap_or(CertificateOpenCode::Invalid),
+            )
+        })? {
             Some(Value::Array(info)) => info.iter().map(from_json).collect(),
-            _ => vec![crate::kit::obj([("commonName", IpcValue::String("Fake".into()))])],
+            _ => vec![crate::kit::obj([(
+                "commonName",
+                IpcValue::String("Fake".into()),
+            )])],
         };
         let chain = vec![vec![0x30, 0x00]];
-        Ok((Box::new(FakeSigningSession(self.0.clone(), entry_cancel.clone(), generation, chain.clone())), summaries, chain))
+        Ok((
+            Box::new(FakeSigningSession(
+                self.0.clone(),
+                entry_cancel.clone(),
+                generation,
+                chain.clone(),
+            )),
+            summaries,
+            chain,
+        ))
     }
     fn sign_owner_current(
         &self,
         owner: &shell_contract::ipc::NativeRequestOwner,
         cancel: &CancelToken,
     ) -> bool {
-        owner.context.renderer().is_some_and(|generation| generation.is_active())
+        owner
+            .context
+            .renderer()
+            .is_some_and(|generation| generation.is_active())
             && owner.pdf_document().is_none_or(|lease| lease.is_live())
-            && owner.pdf_revision().is_none_or(|revision| revision.is_live())
+            && owner
+                .pdf_revision()
+                .is_none_or(|revision| revision.is_live())
             && !cancel.is_cancelled()
     }
     fn write_signed_pdf(
@@ -468,7 +558,12 @@ impl PdfEngine for FakeEngine {
             .map_err(|error| error.message)
     }
     fn image_subscription_statuses(&self) -> jscompat::JsonValue {
-        jscompat::json_value_from_serde(&self.0.take("imageSubscriptionStatuses").unwrap_or_else(|| json!({})))
+        jscompat::json_value_from_serde(
+            &self
+                .0
+                .take("imageSubscriptionStatuses")
+                .unwrap_or_else(|| json!({})),
+        )
     }
     fn generate_image(
         &self,
@@ -512,12 +607,24 @@ impl PdfEngine for FakeEngine {
         ]));
         self.0.get("setNoteLink").map(|_| ())
     }
-    fn update_note_link_doc_hash_guarded(&self, user_data: &str, path: &str, hash: &str, admit: &mut main_core::packages::pdf_structure::files::StoreAdmission<'_>) -> Result<bool, String> {
+    fn update_note_link_doc_hash_guarded(
+        &self,
+        user_data: &str,
+        path: &str,
+        hash: &str,
+        admit: &mut main_core::packages::pdf_structure::files::StoreAdmission<'_>,
+    ) -> Result<bool, String> {
         let mut result = false;
         admit(&mut || {
-            result = self.update_note_link_doc_hash(user_data, path, hash).map_err(|message| main_core::node_fs::NodeError { code: None, message })?;
+            result = self
+                .update_note_link_doc_hash(user_data, path, hash)
+                .map_err(|message| main_core::node_fs::NodeError {
+                    code: None,
+                    message,
+                })?;
             Ok(())
-        }).map_err(|error| error.message)?;
+        })
+        .map_err(|error| error.message)?;
         Ok(result)
     }
     fn update_note_link_doc_hash(
@@ -561,11 +668,24 @@ impl FakeShell {
     fn configured(&self, name: &str) -> bool {
         self.answers.case.get(name).is_some()
     }
-    fn create_document_fixture(answers: &Answers, calls: &Mutex<Vec<String>>, request: &IpcValue, owner: ViewId) -> Option<Result<IpcValue, String>> {
-        if answers.case.get("createDocument").is_none() { return None; }
-        calls.lock().unwrap().push(format!("createDocument {} {request:?}", owner.0));
+    fn create_document_fixture(
+        answers: &Answers,
+        calls: &Mutex<Vec<String>>,
+        request: &IpcValue,
+        owner: ViewId,
+    ) -> Option<Result<IpcValue, String>> {
+        if answers.case.get("createDocument").is_none() {
+            return None;
+        }
+        calls
+            .lock()
+            .unwrap()
+            .push(format!("createDocument {} {request:?}", owner.0));
         answers.line(json!(["createDocument", js(request), owner.0]));
-        answers.get("createDocument").map(|value| value.map(|value| from_json(&value))).transpose()
+        answers
+            .get("createDocument")
+            .map(|value| value.map(|value| from_json(&value)))
+            .transpose()
     }
 }
 
@@ -601,13 +721,31 @@ impl PdfShell for FakeShell {
         );
         Ok(self.flag("openGeneratedPath"))
     }
-    fn create_document_owned(&self, request: IpcValue, owner: ViewId, _origin: shell_contract::ipc::NativeRequestOwner, _destination: shell_contract::ipc::NativeRequestOwner, cancel: CancelToken, pending: CancelToken, admission: main_core::packages::electron_utils::atomic_write::owned::Admission, done: Box<dyn FnOnce(Result<IpcValue, String>) + Send>) {
-        if cancel.is_cancelled() || pending.is_cancelled() { return done(Err("Document creation request expired".into())); }
+    fn create_document_owned(
+        &self,
+        request: IpcValue,
+        owner: ViewId,
+        _origin: shell_contract::ipc::NativeRequestOwner,
+        _destination: shell_contract::ipc::NativeRequestOwner,
+        cancel: CancelToken,
+        pending: CancelToken,
+        admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
+        done: Box<dyn FnOnce(Result<IpcValue, String>) + Send>,
+    ) {
+        if cancel.is_cancelled() || pending.is_cancelled() {
+            return done(Err("Document creation request expired".into()));
+        }
         let answers = self.answers.clone();
         let calls = self.calls.clone();
-        let result = main_core::packages::electron_utils::atomic_write::owned::admitted(&admission, move || Self::create_document_fixture(&answers, &calls, &request, owner))
-            .map_err(|error| error.message)
-            .and_then(|result| result.unwrap_or_else(|| Err("pdf: document creation is unavailable in this host".into())));
+        let result = main_core::packages::electron_utils::atomic_write::owned::admitted(
+            &admission,
+            move || Self::create_document_fixture(&answers, &calls, &request, owner),
+        )
+        .map_err(|error| error.message)
+        .and_then(|result| {
+            result
+                .unwrap_or_else(|| Err("pdf: document creation is unavailable in this host".into()))
+        });
         done(result);
     }
     fn create_document_synthetic(
@@ -646,19 +784,70 @@ impl PdfShell for FakeShell {
             .take("newDocumentDir")
             .and_then(|v| v.as_str().map(str::to_owned))
     }
-    fn redaction_saved_owned(&self, view: ViewId, path: &str, origin: shell_contract::ipc::NativeRequestOwner, _destination: shell_contract::ipc::NativeRequestOwner, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: CancelToken, pending: CancelToken, additional: Vec<CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost, done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>) {
+    fn redaction_saved_owned(
+        &self,
+        view: ViewId,
+        path: &str,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        _destination: shell_contract::ipc::NativeRequestOwner,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: CancelToken,
+        pending: CancelToken,
+        additional: Vec<CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>,
+    ) {
         let extra: Vec<_> = additional.iter().collect();
-        let result = effects.with_owned_effect_many_extra(&origin, &participants, &cancel, &pending, &extra, &mut || self.redaction_saved(view, path));
-        done(result.map(|()| shell_contract::hosts::SavedFile { path: path.to_owned(), session: shell_contract::hosts::SavedSessionReceipt::NoPublication }));
+        let result = effects.with_owned_effect_many_extra(
+            &origin,
+            &participants,
+            &cancel,
+            &pending,
+            &extra,
+            &mut || self.redaction_saved(view, path),
+        );
+        done(result.map(|()| shell_contract::hosts::SavedFile {
+            path: path.to_owned(),
+            session: shell_contract::hosts::SavedSessionReceipt::NoPublication,
+        }));
     }
-    fn redaction_saved_existing_document(&self, view: ViewId, revision: shell_contract::ipc::NativeSaveRevisionAuthority, path: &str, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: CancelToken, pending: CancelToken, additional: Vec<CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost, _on_revision: std::rc::Rc<dyn Fn(&shell_contract::ipc::NativeSaveRevisionReceipt) -> Result<(), String>>, done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>) {
-        let snapshot = match revision.snapshot() { Ok(snapshot) => snapshot, Err(error) => return done(Err(error)) };
+    fn redaction_saved_existing_document(
+        &self,
+        view: ViewId,
+        revision: shell_contract::ipc::NativeSaveRevisionAuthority,
+        path: &str,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: CancelToken,
+        pending: CancelToken,
+        additional: Vec<CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        _on_revision: std::rc::Rc<
+            dyn Fn(&shell_contract::ipc::NativeSaveRevisionReceipt) -> Result<(), String>,
+        >,
+        done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>,
+    ) {
+        let snapshot = match revision.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(error) => return done(Err(error)),
+        };
         let additional: Vec<_> = additional.iter().collect();
-        let result = effects.with_native_save_revision_snapshot_effect(&snapshot, &participants, &cancel, &pending, &additional, &mut || {
-            if snapshot.selection().path() != std::path::Path::new(path) { return Err("PDF save target does not match its selected destination".into()); }
-            self.redaction_saved(view, path)
-        });
-        done(result.map(|()| shell_contract::hosts::SavedFile { path: path.to_owned(), session: shell_contract::hosts::SavedSessionReceipt::NoPublication }));
+        let result = effects.with_native_save_revision_snapshot_effect(
+            &snapshot,
+            &participants,
+            &cancel,
+            &pending,
+            &additional,
+            &mut || {
+                if snapshot.selection().path() != std::path::Path::new(path) {
+                    return Err("PDF save target does not match its selected destination".into());
+                }
+                self.redaction_saved(view, path)
+            },
+        );
+        done(result.map(|()| shell_contract::hosts::SavedFile {
+            path: path.to_owned(),
+            session: shell_contract::hosts::SavedSessionReceipt::NoPublication,
+        }));
     }
     fn redaction_saved(&self, view: ViewId, path: &str) -> Result<(), String> {
         self.log(
@@ -741,7 +930,10 @@ pub fn shell(case: &Value) -> Arc<FakeShell> {
 /// log to the case's host log when there is one
 pub(super) fn insert(hosts: &mut shell_contract::Hosts, case: &Value) {
     let log = hosts.get::<Log>().cloned();
-    hosts.insert::<PdfEngineHost>(Arc::new(FakeEngine(Arc::new(answers(case, "engine", log.clone())), true)));
+    hosts.insert::<PdfEngineHost>(Arc::new(FakeEngine(
+        Arc::new(answers(case, "engine", log.clone())),
+        true,
+    )));
     hosts.insert::<PdfShellHost>(Arc::new(FakeShell {
         answers: Arc::new(answers(case, "shell", log)),
         ..Default::default()
@@ -758,14 +950,31 @@ mod signing_session_tests {
     fn signing_session_is_bound_to_opened_chain_and_renderer() {
         let engine = engine(&Value::Null);
         let generation = RendererGeneration::new();
-        let owner = NativeRequestOwner { view: ViewId(1), context: NativeContext::with_renderer((), generation) };
+        let owner = NativeRequestOwner {
+            view: ViewId(1),
+            context: NativeContext::with_renderer((), generation),
+        };
         let cancel = CancelToken::default();
         let entry_cancel = CancelToken::default();
-        let source = CertificateSource::P12 { p12: vec![1], password: String::new() };
-        let (mut session, _, chain) = engine.open_signing_session(&source, &owner, &cancel, &entry_cancel).unwrap();
+        let source = CertificateSource::P12 {
+            p12: vec![1],
+            password: String::new(),
+        };
+        let (mut session, _, chain) = engine
+            .open_signing_session(&source, &owner, &cancel, &entry_cancel)
+            .unwrap();
         let options = SignOptions::default();
-        assert!(session.sign(b"pdf", &options, &[vec![1]], &owner, &cancel).is_err());
-        assert_eq!(session.sign(b"pdf", &options, &chain, &owner, &cancel).unwrap(), b"pdf%signed");
+        assert!(
+            session
+                .sign(b"pdf", &options, &[vec![1]], &owner, &cancel)
+                .is_err()
+        );
+        assert_eq!(
+            session
+                .sign(b"pdf", &options, &chain, &owner, &cancel)
+                .unwrap(),
+            b"pdf%signed"
+        );
         let replacement = NativeRequestOwner {
             view: ViewId(1),
             context: NativeContext::with_renderer((), RendererGeneration::new()),

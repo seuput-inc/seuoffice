@@ -148,7 +148,9 @@ impl TabsState {
         done: GeneratedDone,
     ) {
         if cancel.is_cancelled() || pending.is_cancelled() {
-            return done(Err("The initialized tab operation is no longer active".into()));
+            return done(Err(
+                "The initialized tab operation is no longer active".into()
+            ));
         }
         let epoch = self.manager_epoch.get();
         let has_opener = opener.is_some();
@@ -440,6 +442,120 @@ impl TabsState {
         Ok((adopt, register, preview, tab_id, recover))
     }
 
+    /// The shell, survivors and participants a generated-style cleanup must
+    /// capture before the new editor exists.
+    pub(super) fn capture_generated_cleanup_context(
+        &self,
+        source: &NativeRequestOwner,
+        participants: &[NativeRequestOwner],
+    ) -> Result<
+        (
+            (super::super::super::host::ShellWindow, NativeRequestOwner),
+            Vec<GeneratedCapturedTab>,
+            Vec<NativeRequestOwner>,
+        ),
+        String,
+    > {
+        let cleanup_shell = (|| -> Result<_, String> {
+            let shell = self
+                .shell_window()
+                .ok_or("The shell window is unavailable")?;
+            let generation = self
+                .services
+                .views
+                .renderer_generation(shell.view)
+                .ok_or("The shell renderer is unavailable")?;
+            let effects = self
+                .services
+                .hosts
+                .get::<OwnedEffectsHost>()
+                .ok_or("Owned cleanup is unavailable")?;
+            effects
+                .capture_owner(shell.view, &generation)
+                .map(|owner| (shell, owner))
+        })();
+        let cleanup_shell = cleanup_shell?;
+        let captured_tabs = (|| -> Result<Vec<GeneratedCapturedTab>, String> {
+            let tabs = {
+                let inner = self.inner.borrow();
+                let manager = inner
+                    .manager
+                    .as_ref()
+                    .ok_or("The shell window is unavailable")?;
+                manager
+                    .list()
+                    .into_iter()
+                    .map(|tab| {
+                        let view = manager.web_contents_for_tab(&tab.id);
+                        let unloaded = manager.is_tab_unloaded(&tab.id);
+                        (tab.id, view, unloaded)
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let effects = self
+                .services
+                .hosts
+                .get::<OwnedEffectsHost>()
+                .ok_or("Owned cleanup is unavailable")?;
+            tabs.into_iter()
+                .map(|(id, view, unloaded)| match view {
+                    Some(view) => {
+                        let generation = self
+                            .services
+                            .views
+                            .renderer_generation(view)
+                            .ok_or("A surviving tab renderer is unavailable")?;
+                        Ok(GeneratedCapturedTab::Loaded {
+                            id,
+                            owner: effects.capture_owner(view, &generation)?,
+                        })
+                    }
+                    None if unloaded => Ok(GeneratedCapturedTab::Unloaded { id }),
+                    None => Ok(GeneratedCapturedTab::Viewless { id }),
+                })
+                .collect()
+        })();
+        let tabs = captured_tabs?;
+        let cleanup_participants = (|| -> Result<Vec<NativeRequestOwner>, String> {
+            let effects = self
+                .services
+                .hosts
+                .get::<OwnedEffectsHost>()
+                .ok_or("Owned cleanup is unavailable")?;
+            let mut captured = participants.to_vec();
+            for tab in &tabs {
+                if let GeneratedCapturedTab::Loaded { owner, .. } = tab {
+                    if owner.view != source.view
+                        && !captured.iter().any(|entry| entry.view == owner.view)
+                    {
+                        captured.push(owner.clone());
+                    }
+                }
+            }
+            let (_, detached) = self.session_snapshot()?;
+            for row in detached {
+                let Some(id) = row.get("id").and_then(serde_json::Value::as_str) else {
+                    continue;
+                };
+                let Some(view) = self.tab_contents(id) else {
+                    continue;
+                };
+                if view == source.view || captured.iter().any(|entry| entry.view == view) {
+                    continue;
+                }
+                let generation = self
+                    .services
+                    .views
+                    .renderer_generation(view)
+                    .ok_or("A detached tab renderer is unavailable")?;
+                captured.push(effects.capture_owner(view, &generation)?);
+            }
+            Ok(captured)
+        })();
+        let cleanup_participants = cleanup_participants?;
+        Ok((cleanup_shell, tabs, cleanup_participants))
+    }
+
     fn start_generated_open(
         &self,
         request: EditorOpen,
@@ -503,121 +619,14 @@ impl TabsState {
             None
         };
         let reserved_spare = spare.is_some();
-        let cleanup_shell = (|| {
-            let shell = self
-                .shell_window()
-                .ok_or("The shell window is unavailable")?;
-            let generation = self
-                .services
-                .views
-                .renderer_generation(shell.view)
-                .ok_or("The shell renderer is unavailable")?;
-            let effects = self
-                .services
-                .hosts
-                .get::<OwnedEffectsHost>()
-                .ok_or("Owned cleanup is unavailable")?;
-            effects
-                .capture_owner(shell.view, &generation)
-                .map(|owner| (shell, owner))
-        })();
-        let cleanup_shell = match cleanup_shell {
-            Ok(captured) => captured,
-            Err(error) => {
-                self.cancel_owned_step(Step::New(plan));
-                return done(Err(error));
-            }
-        };
-        let captured_tabs = (|| -> Result<Vec<GeneratedCapturedTab>, String> {
-            let tabs = {
-                let inner = self.inner.borrow();
-                let manager = inner
-                    .manager
-                    .as_ref()
-                    .ok_or("The shell window is unavailable")?;
-                manager
-                    .list()
-                    .into_iter()
-                    .map(|tab| {
-                        let view = manager.web_contents_for_tab(&tab.id);
-                        let unloaded = manager.is_tab_unloaded(&tab.id);
-                        (tab.id, view, unloaded)
-                    })
-                    .collect::<Vec<_>>()
+        let (cleanup_shell, tabs, cleanup_participants) =
+            match self.capture_generated_cleanup_context(&source, &participants) {
+                Ok(captured) => captured,
+                Err(error) => {
+                    self.cancel_owned_step(Step::New(plan));
+                    return done(Err(error));
+                }
             };
-            let effects = self
-                .services
-                .hosts
-                .get::<OwnedEffectsHost>()
-                .ok_or("Owned cleanup is unavailable")?;
-            tabs.into_iter()
-                .map(|(id, view, unloaded)| match view {
-                    Some(view) => {
-                        let generation = self
-                            .services
-                            .views
-                            .renderer_generation(view)
-                            .ok_or("A surviving tab renderer is unavailable")?;
-                        Ok(GeneratedCapturedTab::Loaded {
-                            id,
-                            owner: effects.capture_owner(view, &generation)?,
-                        })
-                    }
-                    None if unloaded => Ok(GeneratedCapturedTab::Unloaded { id }),
-                    None => Ok(GeneratedCapturedTab::Viewless { id }),
-                })
-                .collect()
-        })();
-        let tabs = match captured_tabs {
-            Ok(tabs) => tabs,
-            Err(error) => {
-                self.cancel_owned_step(Step::New(plan));
-                return done(Err(error));
-            }
-        };
-        let cleanup_participants = (|| -> Result<Vec<NativeRequestOwner>, String> {
-            let effects = self
-                .services
-                .hosts
-                .get::<OwnedEffectsHost>()
-                .ok_or("Owned cleanup is unavailable")?;
-            let mut captured = participants.clone();
-            for tab in &tabs {
-                if let GeneratedCapturedTab::Loaded { owner, .. } = tab {
-                    if owner.view != source.view
-                        && !captured.iter().any(|entry| entry.view == owner.view)
-                    {
-                        captured.push(owner.clone());
-                    }
-                }
-            }
-            let (_, detached) = self.session_snapshot()?;
-            for row in detached {
-                let Some(id) = row.get("id").and_then(serde_json::Value::as_str) else {
-                    continue;
-                };
-                let Some(view) = self.tab_contents(id) else {
-                    continue;
-                };
-                if view == source.view || captured.iter().any(|entry| entry.view == view) {
-                    continue;
-                }
-                let generation = self
-                    .services
-                    .views
-                    .renderer_generation(view)
-                    .ok_or("A detached tab renderer is unavailable")?;
-                captured.push(effects.capture_owner(view, &generation)?);
-            }
-            Ok(captured)
-        })();
-        let cleanup_participants = match cleanup_participants {
-            Ok(captured) => captured,
-            Err(error) => {
-                self.cancel_owned_step(Step::New(plan));
-                return done(Err(error));
-            }
-        };
         let rollback: super::super::super::host::EditorSeedRollbackStore = std::rc::Rc::default();
         if let Err(error) = self.begin_creation(id) {
             let state = self.rc();
@@ -1127,14 +1136,14 @@ impl TabsState {
         );
     }
 
-    fn fail_generated_completion_parts(
+    pub(super) fn fail_generated_completion_parts<T: 'static>(
         &self,
         operation: u64,
         cleanup: super::super::super::host::ViewCreationCleanup,
         coordinator: std::rc::Rc<super::generated_cleanup::GeneratedCleanupCoordinator>,
         lifetime: Option<AdoptedLifetimeFailure>,
         error: String,
-        done: Option<GeneratedDone>,
+        done: Option<Box<dyn FnOnce(Result<T, String>)>>,
     ) {
         let rollback = coordinator.failed_lifetime_rollback(lifetime);
         let reply = std::rc::Rc::new(RefCell::new(done));

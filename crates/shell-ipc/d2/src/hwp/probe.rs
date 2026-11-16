@@ -133,7 +133,11 @@ pub(crate) fn probe_trigger(
         }
         "write-copies-now" => {
             editors.write_copies_now(Box::new(move |result| {
-                then(result.map(|()| IpcValue::Undefined).map_err(|error| crate::kit::error(error.0)))
+                then(
+                    result
+                        .map(|()| IpcValue::Undefined)
+                        .map_err(|error| crate::kit::error(error.0)),
+                )
             }));
         }
         "open-file-with-decision" => {

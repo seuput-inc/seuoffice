@@ -210,7 +210,11 @@ pub(crate) fn move_pdf_file_no_clobber(source: &str, target: &str) -> NoClobber 
 }
 
 /// The result store the note links live in (`ResultStore` under userData)
-struct Store(super::hosts::PdfEngineHost, String, Option<super::owned_save::SaveAuthority>);
+struct Store(
+    super::hosts::PdfEngineHost,
+    String,
+    Option<super::owned_save::SaveAuthority>,
+);
 
 fn thrown(e: String) -> Thrown {
     Thrown(e)
@@ -236,7 +240,12 @@ impl NoteLinkStore for Store {
     }
     fn update_note_link_doc_hash(&self, pdf_path: &str, doc_hash: &str) -> Result<bool, Thrown> {
         if let Some(authority) = &self.2 {
-            return self.0.update_note_link_doc_hash_guarded(&self.1, pdf_path, doc_hash, &mut |effect| authority.admit_node(effect)).map_err(thrown);
+            return self
+                .0
+                .update_note_link_doc_hash_guarded(&self.1, pdf_path, doc_hash, &mut |effect| {
+                    authority.admit_node(effect)
+                })
+                .map_err(thrown);
         }
         self.0
             .update_note_link_doc_hash(&self.1, pdf_path, doc_hash)
@@ -329,7 +338,11 @@ impl AfterSaveDeps {
     }
 
     pub fn owned(ed: &Editor, authority: super::owned_save::SaveAuthority) -> Self {
-        AfterSaveDeps(Store(ed.engine.clone(), ed.path(PathName::UserData), Some(authority)))
+        AfterSaveDeps(Store(
+            ed.engine.clone(),
+            ed.path(PathName::UserData),
+            Some(authority),
+        ))
     }
 }
 
@@ -394,7 +407,9 @@ impl Editor {
     /// `pdfFileRenamed(contents, oldPath, newPath)`: the shell moved the
     /// view's file; every record follows and the renderer hears of it
     pub(super) fn file_renamed(&self, view: ViewId, old: &str, new: &str) {
-        if self.open_path(view).as_deref() == Some(old) { self.advance_document_revision(view); }
+        if self.open_path(view).as_deref() == Some(old) {
+            self.advance_document_revision(view);
+        }
         self.file_renamed_without_revision(view, old, new)
     }
 
@@ -409,22 +424,39 @@ impl Editor {
             self.stop_view_watch(view);
             self.watch_view_file(view, new);
         }
-        if notify { self.emit(view, "pdf:file-renamed", vec![new.into_ipc()]); }
+        if notify {
+            self.emit(view, "pdf:file-renamed", vec![new.into_ipc()]);
+        }
     }
 
     pub(super) fn file_renamed_records(&self, view: ViewId, old: &str, new: &str) -> bool {
         let watched = {
             let mut st = self.st.borrow_mut();
             let v = st.views.entry(view).or_default();
-            if v.open_path.as_deref() == Some(old) { v.open_path = Some(new.to_owned()); }
-            if v.redaction_path.as_deref() == Some(old) { v.redaction_path = Some(new.to_owned()); }
-            if v.save_as_target.as_deref() == Some(old) { v.save_as_target = Some(new.to_owned()); }
-            if st.untitled.remove(old) { st.untitled.insert(new.to_owned()); }
-            if st.unsaved_blank.remove(old) { st.unsaved_blank.insert(new.to_owned()); }
-            st.views.get(&view).and_then(|v| v.watch.as_ref()).is_some_and(|watch| watch.path() == old)
+            if v.open_path.as_deref() == Some(old) {
+                v.open_path = Some(new.to_owned());
+            }
+            if v.redaction_path.as_deref() == Some(old) {
+                v.redaction_path = Some(new.to_owned());
+            }
+            if v.save_as_target.as_deref() == Some(old) {
+                v.save_as_target = Some(new.to_owned());
+            }
+            if st.untitled.remove(old) {
+                st.untitled.insert(new.to_owned());
+            }
+            if st.unsaved_blank.remove(old) {
+                st.unsaved_blank.insert(new.to_owned());
+            }
+            st.views
+                .get(&view)
+                .and_then(|v| v.watch.as_ref())
+                .is_some_and(|watch| watch.path() == old)
         };
         self.grants.0.with(view, |set| {
-            if let Some(set) = set.filter(|set| set.contains(old)) { set.insert(new.to_owned()); }
+            if let Some(set) = set.filter(|set| set.contains(old)) {
+                set.insert(new.to_owned());
+            }
         });
         self.move_disk_state(view, old, new);
         watched
@@ -438,7 +470,13 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
     let e = ed.clone();
     all.push(kit::invoke("pdf:consume-pending", move |cx, _| {
         let view = cx.sender.view;
-        if e.st.borrow().views.get(&view).is_some_and(|slot| slot.recovery_preparing.is_some() || slot.recovery_seed.as_ref().is_some_and(|seed| !seed.completed())) {
+        if e.st.borrow().views.get(&view).is_some_and(|slot| {
+            slot.recovery_preparing.is_some()
+                || slot
+                    .recovery_seed
+                    .as_ref()
+                    .is_some_and(|seed| !seed.completed())
+        }) {
             return Err(kit::error("PDF recovery must use its captured seed"));
         }
         let path = e.open_path(view);
@@ -464,17 +502,22 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
     }));
 
     let e = ed.clone();
-    all.push(kit::invoke_later("pdf:consume-recovery-pending", move |cx, _, reply| {
-        if super::reload::has_saved_reload(&e, cx.sender.view) {
-            super::reload::consume_saved(&e, cx, reply);
-        } else {
-            reply.reply(super::recovery_open::consume(&e, cx).map_err(kit::error));
-        }
-    }));
+    all.push(kit::invoke_later(
+        "pdf:consume-recovery-pending",
+        move |cx, _, reply| {
+            if super::reload::has_saved_reload(&e, cx.sender.view) {
+                super::reload::consume_saved(&e, cx, reply);
+            } else {
+                reply.reply(super::recovery_open::consume(&e, cx).map_err(kit::error));
+            }
+        },
+    ));
 
     let e = ed.clone();
     all.push(kit::invoke("pdf:recovery-initialized", move |cx, args| {
-        let token = args.str(0).ok_or_else(|| kit::error("PDF recovery token is required"))?;
+        let token = args
+            .str(0)
+            .ok_or_else(|| kit::error("PDF recovery token is required"))?;
         let result = match args.bool(1) {
             Some(true) => Ok(()),
             Some(false) => Err(args.str(2).unwrap_or("PDF recovery failed").to_owned()),
@@ -508,18 +551,27 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
             };
             if let Some(scope) = saved {
                 let worker = scope.clone();
-                return kit::on_worker(&e.services, move || worker.bytes().to_vec(), move |bytes| {
-                    let mut bytes = Some(bytes);
-                    let mut answer = None;
-                    let admitted = scope.admit(&mut || {
-                        answer = Some(IpcValue::Bytes(BytesKind::ArrayBuffer, bytes.take().ok_or("PDF saved read was already admitted")?));
-                        Ok(())
-                    });
-                    match admitted {
-                        Ok(()) => reply.reply(answer.ok_or_else(|| error("PDF saved read was not admitted"))),
-                        Err(message) => reply.reply(Err(error(message))),
-                    }
-                });
+                return kit::on_worker(
+                    &e.services,
+                    move || worker.bytes().to_vec(),
+                    move |bytes| {
+                        let mut bytes = Some(bytes);
+                        let mut answer = None;
+                        let admitted = scope.admit(&mut || {
+                            answer = Some(IpcValue::Bytes(
+                                BytesKind::ArrayBuffer,
+                                bytes.take().ok_or("PDF saved read was already admitted")?,
+                            ));
+                            Ok(())
+                        });
+                        match admitted {
+                            Ok(()) => reply.reply(
+                                answer.ok_or_else(|| error("PDF saved read was not admitted")),
+                            ),
+                            Err(message) => reply.reply(Err(error(message))),
+                        }
+                    },
+                );
             }
             let recovery = match super::recovery_open::read_scope(&e, &cx, &path) {
                 Ok(scope) => scope,
@@ -533,7 +585,9 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
                 {
                     let path = path.clone();
                     move || {
-                        if let Some(scope) = worker_recovery { scope.admit(&mut || Ok(()))?; }
+                        if let Some(scope) = worker_recovery {
+                            scope.admit(&mut || Ok(()))?;
+                        }
                         read().map(|bytes| (bytes, record_disk_state(&path)))
                     }
                 },
@@ -541,21 +595,30 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
                     let mut result = Some(result);
                     let mut answer = None;
                     let mut accept = || {
-                        answer = Some(match result.take().ok_or("PDF read was admitted twice")? {
-                            Ok((bytes, state)) => {
-                                ed.remember_disk_state(view, &path, state);
-                                Ok(bytes)
-                            }
-                            Err(message) => Err(error(message)),
-                        });
+                        answer =
+                            Some(match result.take().ok_or("PDF read was admitted twice")? {
+                                Ok((bytes, state)) => {
+                                    ed.remember_disk_state(view, &path, state);
+                                    Ok(bytes)
+                                }
+                                Err(message) => Err(error(message)),
+                            });
                         Ok(())
                     };
-                    let admitted = match recovery.as_ref() { Some(scope) => scope.admit(&mut accept), None => accept() };
+                    let admitted = match recovery.as_ref() {
+                        Some(scope) => scope.admit(&mut accept),
+                        None => accept(),
+                    };
                     match admitted {
-                        Ok(()) => reply.reply(answer.unwrap_or_else(|| Err(error("PDF read was not admitted"))).map(|bytes| {
-                            let bytes = Arc::try_unwrap(bytes).unwrap_or_else(|b| (*b).clone());
-                            IpcValue::Bytes(BytesKind::ArrayBuffer, bytes)
-                        })),
+                        Ok(()) => reply.reply(
+                            answer
+                                .unwrap_or_else(|| Err(error("PDF read was not admitted")))
+                                .map(|bytes| {
+                                    let bytes =
+                                        Arc::try_unwrap(bytes).unwrap_or_else(|b| (*b).clone());
+                                    IpcValue::Bytes(BytesKind::ArrayBuffer, bytes)
+                                }),
+                        ),
                         Err(message) => reply.reply(Err(error(message))),
                     }
                 },
@@ -587,23 +650,39 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
             };
             if let Some(scope) = saved {
                 let worker = scope.clone();
-                return kit::on_worker(&e.services, move || {
-                    let bytes = worker.bytes();
-                    let start = (from as usize).min(bytes.len());
-                    let end = (to as usize).min(bytes.len()).max(start);
-                    (bytes[start..end].to_vec(), bytes.len() as f64)
-                }, move |(bytes, size)| {
-                    let mut bytes = Some(bytes);
-                    let mut answer = None;
-                    let admitted = scope.admit(&mut || {
-                        answer = Some(obj([("data", u8_array(bytes.take().ok_or("PDF saved chunk was already admitted")?)), ("fileSize", size.into_ipc())]));
-                        Ok(())
-                    });
-                    match admitted {
-                        Ok(()) => reply.reply(answer.ok_or_else(|| error("PDF saved chunk was not admitted"))),
-                        Err(message) => reply.reply(Err(error(message))),
-                    }
-                });
+                return kit::on_worker(
+                    &e.services,
+                    move || {
+                        let bytes = worker.bytes();
+                        let start = (from as usize).min(bytes.len());
+                        let end = (to as usize).min(bytes.len()).max(start);
+                        (bytes[start..end].to_vec(), bytes.len() as f64)
+                    },
+                    move |(bytes, size)| {
+                        let mut bytes = Some(bytes);
+                        let mut answer = None;
+                        let admitted = scope.admit(&mut || {
+                            answer = Some(obj([
+                                (
+                                    "data",
+                                    u8_array(
+                                        bytes
+                                            .take()
+                                            .ok_or("PDF saved chunk was already admitted")?,
+                                    ),
+                                ),
+                                ("fileSize", size.into_ipc()),
+                            ]));
+                            Ok(())
+                        });
+                        match admitted {
+                            Ok(()) => reply.reply(
+                                answer.ok_or_else(|| error("PDF saved chunk was not admitted")),
+                            ),
+                            Err(message) => reply.reply(Err(error(message))),
+                        }
+                    },
+                );
             }
             let restored = e.view_bytes(view, &path);
             let ed = e.clone();
@@ -611,7 +690,9 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
             kit::on_worker(
                 &e.services,
                 move || -> Result<(Vec<u8>, f64, Option<_>), String> {
-                    if let Some(scope) = worker_recovery { scope.admit(&mut || Ok(()))?; }
+                    if let Some(scope) = worker_recovery {
+                        scope.admit(&mut || Ok(()))?;
+                    }
                     let state = (from == 0.0).then(|| record_disk_state(&p)).flatten();
                     if let Some(bytes) = restored {
                         let len = bytes.len();
@@ -637,18 +718,27 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
                     let mut result = Some(result);
                     let mut answer = None;
                     let mut accept = || {
-                        answer = Some(match result.take().ok_or("PDF chunk was admitted twice")? {
-                            Ok((data, size, state)) => {
-                                ed.remember_disk_state(view, &path, state);
-                                Ok(obj([("data", u8_array(data)), ("fileSize", size.into_ipc())]))
-                            }
-                            Err(message) => Err(error(message)),
-                        });
+                        answer =
+                            Some(match result.take().ok_or("PDF chunk was admitted twice")? {
+                                Ok((data, size, state)) => {
+                                    ed.remember_disk_state(view, &path, state);
+                                    Ok(obj([
+                                        ("data", u8_array(data)),
+                                        ("fileSize", size.into_ipc()),
+                                    ]))
+                                }
+                                Err(message) => Err(error(message)),
+                            });
                         Ok(())
                     };
-                    let admitted = match recovery.as_ref() { Some(scope) => scope.admit(&mut accept), None => accept() };
+                    let admitted = match recovery.as_ref() {
+                        Some(scope) => scope.admit(&mut accept),
+                        None => accept(),
+                    };
                     match admitted {
-                        Ok(()) => reply.reply(answer.unwrap_or_else(|| Err(error("PDF chunk was not admitted")))),
+                        Ok(()) => reply.reply(
+                            answer.unwrap_or_else(|| Err(error("PDF chunk was not admitted"))),
+                        ),
                         Err(message) => reply.reply(Err(error(message))),
                     }
                 },
@@ -713,7 +803,9 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
         let Some(base) = args.str(1).and_then(sanitize_auto_rename_base) else {
             return not();
         };
-        if e.open_path(view).as_deref() == Some(path.as_str()) { e.advance_document_revision(view); }
+        if e.open_path(view).as_deref() == Some(path.as_str()) {
+            e.advance_document_revision(view);
+        }
         let dir = dirname(&path);
         let mut target = None;
         for suffix in 1..=10_000 {
@@ -792,45 +884,84 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
             let Some(parsed) = parse_create_document_request(args.get(0)) else {
                 return reply.reply(Ok(super::failed("pdf: invalid create-document request")));
             };
-            let authority = match e.direct_save_authority(view, cx.native.clone(), cx.cancel.clone()) {
-                Ok(authority) => authority,
-                Err(message) => return reply.reply(Ok(super::failed(message))),
-            };
+            let authority =
+                match e.direct_save_authority(view, cx.native.clone(), cx.cancel.clone()) {
+                    Ok(authority) => authority,
+                    Err(message) => return reply.reply(Ok(super::failed(message))),
+                };
             if let Some(authority) = authority {
-                let captured = match e.bind_sign_owner(view, authority.destination.context.clone()) {
-                    Some(captured) => captured, None => return reply.reply(Ok(super::failed("pdf: document revision unavailable"))),
+                let captured = match e.bind_sign_owner(view, authority.destination.context.clone())
+                {
+                    Some(captured) => captured,
+                    None => {
+                        return reply.reply(Ok(super::failed("pdf: document revision unavailable")));
+                    }
                 };
                 let authority = match authority.with_destination_receipt(captured) {
-                    Ok(authority) => authority, Err(message) => return reply.reply(Ok(super::failed(message))),
+                    Ok(authority) => authority,
+                    Err(message) => return reply.reply(Ok(super::failed(message))),
                 };
                 let origin = match &authority.origin {
                     super::owned_save::SaveOrigin::Renderer(origin) => origin.clone(),
-                    super::owned_save::SaveOrigin::Native(_) => return reply.reply(Ok(super::failed("pdf: document creation requires its renderer request"))),
+                    super::owned_save::SaveOrigin::Native(_) => {
+                        return reply.reply(Ok(super::failed(
+                            "pdf: document creation requires its renderer request",
+                        )));
+                    }
                 };
                 let admission_authority = authority.clone();
-                let admission: main_core::packages::electron_utils::atomic_write::owned::Admission = Arc::new(move |effect| {
-                    let mut effect = Some(effect);
-                    let mut value = None;
-                    admission_authority.commit(&mut || {
-                        value = Some(effect.take().ok_or("PDF publication effect was invoked more than once")?());
-                        Ok(())
-                    }).map_err(|message| main_core::node_fs::NodeError { code: Some("ECANCELED"), message })?;
-                    value.ok_or_else(|| main_core::node_fs::NodeError { code: Some("ECANCELED"), message: "PDF publication effect was not admitted".into() })
-                });
+                let admission: main_core::packages::electron_utils::atomic_write::owned::Admission =
+                    Arc::new(move |effect| {
+                        let mut effect = Some(effect);
+                        let mut value = None;
+                        admission_authority
+                            .commit(&mut || {
+                                value = Some(effect
+                                    .take()
+                                    .ok_or("PDF publication effect was invoked more than once")?(
+                                ));
+                                Ok(())
+                            })
+                            .map_err(|message| main_core::node_fs::NodeError {
+                                code: Some("ECANCELED"),
+                                message,
+                            })?;
+                        value.ok_or_else(|| main_core::node_fs::NodeError {
+                            code: Some("ECANCELED"),
+                            message: "PDF publication effect was not admitted".into(),
+                        })
+                    });
                 let checked = authority.clone();
-                let done = kit::back_on_core(&e.services, move |created: Result<IpcValue, String>| {
-                    let created = checked.current().and(created);
-                    reply.reply(Ok(created.unwrap_or_else(super::failed)));
-                });
-                e.shell.create_document_owned(parsed, view, origin, authority.destination, authority.cancel, authority.pending, admission, done);
+                let done =
+                    kit::back_on_core(&e.services, move |created: Result<IpcValue, String>| {
+                        let created = checked.current().and(created);
+                        reply.reply(Ok(created.unwrap_or_else(super::failed)));
+                    });
+                e.shell.create_document_owned(
+                    parsed,
+                    view,
+                    origin,
+                    authority.destination,
+                    authority.cancel,
+                    authority.pending,
+                    admission,
+                    done,
+                );
             } else {
                 let shell = e.shell.clone();
-                kit::on_worker(&e.services, move || shell.create_document_synthetic(&parsed, view), move |created| {
-                    reply.reply(Ok(match created {
-                        None => super::failed("pdf: document creation is unavailable in this host"),
-                        Some(Ok(result)) => result, Some(Err(message)) => super::failed(message),
-                    }));
-                });
+                kit::on_worker(
+                    &e.services,
+                    move || shell.create_document_synthetic(&parsed, view),
+                    move |created| {
+                        reply.reply(Ok(match created {
+                            None => {
+                                super::failed("pdf: document creation is unavailable in this host")
+                            }
+                            Some(Ok(result)) => result,
+                            Some(Err(message)) => super::failed(message),
+                        }));
+                    },
+                );
             }
         },
     ));
@@ -888,7 +1019,9 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
     let e = ed.clone();
     all.push(kit::send("pdf:dirty-changed", move |cx, args| {
         let dirty = args.bool(0) == Some(true);
-        if dirty { e.advance_document_revision(cx.sender.view); }
+        if dirty {
+            e.advance_document_revision(cx.sender.view);
+        }
         e.with_view(cx.sender.view, |v| v.dirty = dirty);
         Ok(())
     }));

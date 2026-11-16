@@ -118,31 +118,49 @@ impl RecoveryBook {
         let _ = self.drop_untitled_result(store, tab, reason);
     }
 
-    fn drop_untitled_result(&mut self, store: &RecoveryStore, tab: ViewId, reason: RecoveryDeleteReason) -> Result<(), NodeError> {
-        let Some(untitled) = self.untitled_by_tab.get(&tab).cloned() else { return Ok(()); };
+    fn drop_untitled_result(
+        &mut self,
+        store: &RecoveryStore,
+        tab: ViewId,
+        reason: RecoveryDeleteReason,
+    ) -> Result<(), NodeError> {
+        let Some(untitled) = self.untitled_by_tab.get(&tab).cloned() else {
+            return Ok(());
+        };
         let result = store.delete_copy(&RecoveryIdentity::Untitled(untitled), reason);
-        if matches!(&result, Ok(RecoveryDeleteResult::Deleted)) && reason != RecoveryDeleteReason::DontSave {
+        if matches!(&result, Ok(RecoveryDeleteResult::Deleted))
+            && reason != RecoveryDeleteReason::DontSave
+        {
             self.untitled_by_tab.remove(&tab);
         }
         result.map(|_| ())
     }
 
     fn drop_tab_copies_result(
-        &mut self, store: &RecoveryStore, tab: ViewId, reason: RecoveryDeleteReason,
+        &mut self,
+        store: &RecoveryStore,
+        tab: ViewId,
+        reason: RecoveryDeleteReason,
     ) -> Result<(), NodeError> {
         let mut failure = None;
         if let Some(paths) = self.paths_by_tab.get_mut(&tab) {
-            paths.retain(|path| match store.delete_copy(&file_identity(path), reason) {
-                Ok(RecoveryDeleteResult::Deleted) => false,
-                Ok(_) => true,
-                Err(error) => {
-                    if failure.is_none() { failure = Some(error); }
-                    true
-                }
-            });
+            paths.retain(
+                |path| match store.delete_copy(&file_identity(path), reason) {
+                    Ok(RecoveryDeleteResult::Deleted) => false,
+                    Ok(_) => true,
+                    Err(error) => {
+                        if failure.is_none() {
+                            failure = Some(error);
+                        }
+                        true
+                    }
+                },
+            );
         }
         if let Err(error) = self.drop_untitled_result(store, tab, reason) {
-            if failure.is_none() { failure = Some(error); }
+            if failure.is_none() {
+                failure = Some(error);
+            }
         }
         failure.map_or(Ok(()), Err)
     }
@@ -218,9 +236,15 @@ impl RecoveryBook {
         self.drop_untitled(store, tab, RecoveryDeleteReason::Saved);
     }
 
-    pub(super) fn finish_saved_untitled(&mut self, tab: ViewId, expected: &RecoveryUntitledIdentity) {
+    pub(super) fn finish_saved_untitled(
+        &mut self,
+        tab: ViewId,
+        expected: &RecoveryUntitledIdentity,
+    ) {
         if self.untitled_by_tab.get(&tab).is_some_and(|current| {
-            current.kind == expected.kind && current.untitled_id == expected.untitled_id && current.ext == expected.ext
+            current.kind == expected.kind
+                && current.untitled_id == expected.untitled_id
+                && current.ext == expected.ext
         }) {
             self.untitled_by_tab.remove(&tab);
         }
@@ -236,20 +260,32 @@ impl RecoveryBook {
     }
 
     pub(super) fn begin_owned_close(
-        &mut self, tab: ViewId, path: Option<&str>, abandon: bool,
+        &mut self,
+        tab: ViewId,
+        path: Option<&str>,
+        abandon: bool,
     ) -> Vec<RecoveryIdentity> {
         let mut paths: Vec<String> = if abandon {
             self.outcomes.remove(&tab);
-            self.paths_by_tab.get(&tab).into_iter().flatten().cloned().collect()
+            self.paths_by_tab
+                .get(&tab)
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect()
         } else {
             self.outcomes.insert(tab, Outcome::DontSave);
             Vec::new()
         };
         if let Some(path) = path.filter(|path| !path.is_empty())
-            && !paths.iter().any(|existing| existing == path) {
+            && !paths.iter().any(|existing| existing == path)
+        {
             paths.push(path.to_owned());
         }
-        let mut identities = paths.iter().map(|path| file_identity(path)).collect::<Vec<_>>();
+        let mut identities = paths
+            .iter()
+            .map(|path| file_identity(path))
+            .collect::<Vec<_>>();
         if let Some(untitled) = self.untitled_by_tab.get(&tab) {
             identities.push(RecoveryIdentity::Untitled(untitled.clone()));
         }
@@ -308,7 +344,12 @@ impl RecoveryBook {
         let _ = self.settle_closed_result(store, tab, crashed);
     }
 
-    pub(super) fn settle_closed_result(&mut self, store: &RecoveryStore, tab: ViewId, crashed: bool) -> Result<(), NodeError> {
+    pub(super) fn settle_closed_result(
+        &mut self,
+        store: &RecoveryStore,
+        tab: ViewId,
+        crashed: bool,
+    ) -> Result<(), NodeError> {
         let result = if !crashed && let Some(outcome) = self.outcomes.get(&tab).copied() {
             let reason = match outcome {
                 Outcome::Clean => RecoveryDeleteReason::ClosedClean,
@@ -316,7 +357,9 @@ impl RecoveryBook {
                 Outcome::DontSave => RecoveryDeleteReason::DontSave,
             };
             self.drop_tab_copies_result(store, tab, reason)
-        } else { Ok(()) };
+        } else {
+            Ok(())
+        };
         self.paths_by_tab.remove(&tab);
         self.untitled_by_tab.remove(&tab);
         self.outcomes.remove(&tab);
@@ -325,9 +368,15 @@ impl RecoveryBook {
 
     pub(super) fn take_disposal(&mut self, tab: ViewId) -> Self {
         let mut detached = Self::default();
-        if let Some(paths) = self.paths_by_tab.remove(&tab) { detached.paths_by_tab.insert(tab, paths); }
-        if let Some(untitled) = self.untitled_by_tab.remove(&tab) { detached.untitled_by_tab.insert(tab, untitled); }
-        if let Some(outcome) = self.outcomes.remove(&tab) { detached.outcomes.insert(tab, outcome); }
+        if let Some(paths) = self.paths_by_tab.remove(&tab) {
+            detached.paths_by_tab.insert(tab, paths);
+        }
+        if let Some(untitled) = self.untitled_by_tab.remove(&tab) {
+            detached.untitled_by_tab.insert(tab, untitled);
+        }
+        if let Some(outcome) = self.outcomes.remove(&tab) {
+            detached.outcomes.insert(tab, outcome);
+        }
         detached
     }
 
@@ -375,15 +424,24 @@ impl RecoveryBook {
         Some((bytes, identity))
     }
 
-    pub(super) fn matches_untitled(&self, tab: ViewId, expected: Option<&RecoveryUntitledIdentity>) -> bool {
+    pub(super) fn matches_untitled(
+        &self,
+        tab: ViewId,
+        expected: Option<&RecoveryUntitledIdentity>,
+    ) -> bool {
         self.untitled_by_tab.get(&tab) == expected
     }
 
     pub(super) fn replace_untitled_if_current(
-        &mut self, tab: ViewId, expected: Option<&RecoveryUntitledIdentity>, identity: RecoveryUntitledIdentity,
+        &mut self,
+        tab: ViewId,
+        expected: Option<&RecoveryUntitledIdentity>,
+        identity: RecoveryUntitledIdentity,
     ) -> bool {
         let same = self.matches_untitled(tab, expected);
-        if same { self.untitled_by_tab.insert(tab, identity); }
+        if same {
+            self.untitled_by_tab.insert(tab, identity);
+        }
         same
     }
 

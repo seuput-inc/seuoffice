@@ -326,7 +326,9 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
             e.engine_read(
                 view,
                 &path,
-                move |engine, bytes| engine.render_image_png(bytes, page_index, &rect, scale, &cancel),
+                move |engine, bytes| {
+                    engine.render_image_png(bytes, page_index, &rect, scale, &cancel)
+                },
                 reply,
             );
         },

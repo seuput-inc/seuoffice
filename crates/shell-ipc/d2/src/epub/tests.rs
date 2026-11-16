@@ -20,10 +20,22 @@ const CHAPTER: &str = "<p>OEBPS/c1.xhtml</p>";
 
 #[test]
 fn book_dialog_keeps_existing_extension_and_appends_missing_extension() {
-    assert_eq!(super::with_book_extension("/books/Novel.EPUB"), "/books/Novel.EPUB");
-    assert_eq!(super::with_book_extension("/books/Novel.txt"), "/books/Novel.txt.epub");
-    assert_eq!(super::with_book_extension("/books/Novel"), "/books/Novel.epub");
-    assert_eq!(super::with_book_extension("/books/.epub"), "/books/.epub.epub");
+    assert_eq!(
+        super::with_book_extension("/books/Novel.EPUB"),
+        "/books/Novel.EPUB"
+    );
+    assert_eq!(
+        super::with_book_extension("/books/Novel.txt"),
+        "/books/Novel.txt.epub"
+    );
+    assert_eq!(
+        super::with_book_extension("/books/Novel"),
+        "/books/Novel.epub"
+    );
+    assert_eq!(
+        super::with_book_extension("/books/.epub"),
+        "/books/.epub.epub"
+    );
 }
 
 /// A shell with the EPUB editor's fakes; the log is what they were asked
@@ -121,9 +133,13 @@ fn chapter_engine_failure_rejects_and_does_not_cache_a_failed_load() {
         "openChapter": [{"throw": "chapter engine failed"}]
     } }));
     let (sender, _) = opened(&mut rt, 1);
-    let error = rt.invoke_now("epub:read-chapter", sender, vec![n(0.0)]).unwrap_err();
+    let error = rt
+        .invoke_now("epub:read-chapter", sender, vec![n(0.0)])
+        .unwrap_err();
     assert_eq!(error.message, "chapter engine failed");
-    let chapter = rt.invoke_now("epub:read-chapter", sender, vec![n(0.0)]).unwrap();
+    let chapter = rt
+        .invoke_now("epub:read-chapter", sender, vec![n(0.0)])
+        .unwrap();
     assert_eq!(field(&chapter, "source"), &s(CHAPTER));
 }
 
@@ -131,20 +147,25 @@ fn chapter_engine_failure_rejects_and_does_not_cache_a_failed_load() {
 fn replacement_engine_failures_reject_without_mutating_the_chapter() {
     for operation in ["applyReplacements", "remapChapter"] {
         let mut engine = serde_json::Map::new();
-        engine.insert(operation.into(), json!([{"throw": "replacement engine failed"}]));
+        engine.insert(
+            operation.into(),
+            json!([{"throw": "replacement engine failed"}]),
+        );
         let (mut rt, _) = rt(json!({"engine": engine}));
         let (sender, _) = opened(&mut rt, 1);
-        let replacement = obj([
-            ("start", n(3.0)), ("end", n(4.0)), ("text", s("X")),
-        ]);
+        let replacement = obj([("start", n(3.0)), ("end", n(4.0)), ("text", s("X"))]);
         let request = obj([
             ("spineIndex", n(0.0)),
             ("version", n(0.0)),
             ("replacements", vec![replacement].into_ipc()),
         ]);
-        let error = rt.invoke_now("epub:replace-ranges", sender, vec![request]).unwrap_err();
+        let error = rt
+            .invoke_now("epub:replace-ranges", sender, vec![request])
+            .unwrap_err();
         assert_eq!(error.message, "replacement engine failed");
-        let chapter = rt.invoke_now("epub:read-chapter", sender, vec![n(0.0)]).unwrap();
+        let chapter = rt
+            .invoke_now("epub:read-chapter", sender, vec![n(0.0)])
+            .unwrap();
         assert_eq!(field(&chapter, "source"), &s(CHAPTER));
         assert_eq!(field(&chapter, "version"), &n(0.0));
     }
@@ -161,7 +182,11 @@ fn text_extraction_failure_reaches_the_editor_caller() {
     editor.read_text(sender.view, then);
     let (_, channel, args) = events(&rt).pop().unwrap();
     assert_eq!(channel, "epub:flush-request");
-    rt.send("epub:flush-result", sender, vec![args[0].clone(), true.into_ipc()]);
+    rt.send(
+        "epub:flush-result",
+        sender,
+        vec![args[0].clone(), true.into_ipc()],
+    );
     assert_eq!(message(answer.take()), "text engine failed");
 }
 
@@ -1079,11 +1104,13 @@ fn a_failed_open_files_probe_does_not_read_an_attachment() {
     let sender = rt.view(1, Surface::Epub);
     let text = rt.dir.join("draft.txt");
     std::fs::write(&text, "secret").unwrap();
-    let refused = rt.invoke_now(
-        "epub:files-read",
-        sender,
-        vec![s(&path_str(&text)), n(0.0), n(10.0)],
-    ).unwrap();
+    let refused = rt
+        .invoke_now(
+            "epub:files-read",
+            sender,
+            vec![s(&path_str(&text)), n(0.0), n(10.0)],
+        )
+        .unwrap();
     assert_eq!(
         field(&refused, "error"),
         &s("This file is open with unsaved changes. Save it, then try again.")
@@ -1099,7 +1126,8 @@ fn delayed_open_files_probe_preserves_guard_and_ignores_destroyed_view() {
     std::fs::write(&text, "secret").unwrap();
     let sender = rt.view(1, Surface::Epub);
     let pending = rt.invoke(
-        "epub:files-read", sender,
+        "epub:files-read",
+        sender,
         vec![s(&path_str(&text)), n(0.0), n(10.0)],
     );
     assert!(pending.take().is_none());
@@ -1111,7 +1139,8 @@ fn delayed_open_files_probe_preserves_guard_and_ignores_destroyed_view() {
 
     let sender = rt.view(2, Surface::Epub);
     let pending = rt.invoke(
-        "epub:files-read", sender,
+        "epub:files-read",
+        sender,
         vec![s(&path_str(&text)), n(0.0), n(10.0)],
     );
     rt.destroy(sender.view);
@@ -1166,12 +1195,20 @@ fn owned_document_capture_rejects_old_lease_without_relabeling_it() {
     let (sender, path) = opened(&mut rt, 91);
     let editor = editors(&rt);
     let generation = rt.services.views.renderer_generation(sender.view).unwrap();
-    let native = NativeRequestOwner { view: sender.view,
-        context: NativeContext::with_owner_loss((), generation, CancelToken::default()) };
-    let captured = editor.capture_document_owner(sender.view, native.clone()).unwrap();
+    let native = NativeRequestOwner {
+        view: sender.view,
+        context: NativeContext::with_owner_loss((), generation, CancelToken::default()),
+    };
+    let captured = editor
+        .capture_document_owner(sender.view, native.clone())
+        .unwrap();
     editor.open_view(sender.view, Some(Path::new(&path)));
     assert!(!captured.context.document_lease().unwrap().is_active());
-    assert!(editor.capture_document_owner(sender.view, captured).is_err());
+    assert!(
+        editor
+            .capture_document_owner(sender.view, captured)
+            .is_err()
+    );
     assert!(editor.capture_document_owner(sender.view, native).is_ok());
 }
 
@@ -1181,10 +1218,23 @@ fn owned_document_capture_does_not_accept_a_foreign_renderer() {
     use shell_contract::runtime::{CancelToken, RendererGeneration};
     let (mut rt, _) = rt(Value::Null);
     let (sender, path) = opened(&mut rt, 92);
-    let native = NativeRequestOwner { view: sender.view,
-        context: NativeContext::with_owner_loss((), RendererGeneration::new(), CancelToken::default()) };
-    assert!(editors(&rt).capture_document_owner(sender.view, native).is_err());
-    assert_eq!(editors(&rt).document_path(sender.view), Some(PathBuf::from(path)));
+    let native = NativeRequestOwner {
+        view: sender.view,
+        context: NativeContext::with_owner_loss(
+            (),
+            RendererGeneration::new(),
+            CancelToken::default(),
+        ),
+    };
+    assert!(
+        editors(&rt)
+            .capture_document_owner(sender.view, native)
+            .is_err()
+    );
+    assert_eq!(
+        editors(&rt).document_path(sender.view),
+        Some(PathBuf::from(path))
+    );
 }
 
 #[test]
@@ -1192,31 +1242,59 @@ fn a_foreign_owned_save_id_cannot_retarget_or_write_the_book() {
     let (mut rt, _) = rt(Value::Null);
     let (sender, path) = opened(&mut rt, 93);
     let before = std::fs::read(&path).unwrap();
-    let result = rt.invoke_now("epub:save", sender, vec![obj([
-        ("mode", s("save")), ("requestId", s("another-request"))
-    ])]);
+    let result = rt.invoke_now(
+        "epub:save",
+        sender,
+        vec![obj([
+            ("mode", s("save")),
+            ("requestId", s("another-request")),
+        ])],
+    );
     assert!(result.is_err());
     assert_eq!(std::fs::read(&path).unwrap(), before);
-    assert_eq!(editors(&rt).document_path(sender.view), Some(PathBuf::from(path)));
+    assert_eq!(
+        editors(&rt).document_path(sender.view),
+        Some(PathBuf::from(path))
+    );
 }
 
 #[test]
 fn a_foreign_owned_flush_cannot_apply_edits_to_the_current_book() {
     let (mut rt, _) = rt(Value::Null);
     let (sender, _) = opened(&mut rt, 95);
-    let before = rt.invoke_now("epub:read-chapter", sender, vec![n(0.0)]).unwrap();
-    let result = rt.invoke_now("epub:apply-edits", sender, vec![obj([
-        ("requestId", s("another-request")), ("spineIndex", n(0.0)),
-        ("edits", vec![obj([("op", s("replace")), ("blockId", s("b1")), ("text", s("foreign"))])].into_ipc())
-    ])]);
+    let before = rt
+        .invoke_now("epub:read-chapter", sender, vec![n(0.0)])
+        .unwrap();
+    let result = rt.invoke_now(
+        "epub:apply-edits",
+        sender,
+        vec![obj([
+            ("requestId", s("another-request")),
+            ("spineIndex", n(0.0)),
+            (
+                "edits",
+                vec![obj([
+                    ("op", s("replace")),
+                    ("blockId", s("b1")),
+                    ("text", s("foreign")),
+                ])]
+                .into_ipc(),
+            ),
+        ])],
+    );
     assert!(result.is_err());
-    let after = rt.invoke_now("epub:read-chapter", sender, vec![n(0.0)]).unwrap();
+    let after = rt
+        .invoke_now("epub:read-chapter", sender, vec![n(0.0)])
+        .unwrap();
     assert_eq!(after, before);
 }
 
 #[test]
 fn native_recovery_requires_the_registered_renderer_and_real_book_before_ack() {
-    use shell_contract::ipc::{NativeInvocationIssuer, NativeInvocationSelection, NativeRecoveryDecision, RecoveryOpenContext, RecoveryOpenTarget};
+    use shell_contract::ipc::{
+        NativeInvocationIssuer, NativeInvocationSelection, NativeRecoveryDecision,
+        RecoveryOpenContext, RecoveryOpenTarget,
+    };
     use shell_contract::runtime::CancelToken;
     let (mut rt, _) = rt(Value::Null);
     let path = rt.dir.join("recovered.epub");
@@ -1224,83 +1302,275 @@ fn native_recovery_requires_the_registered_renderer_and_real_book_before_ack() {
     let sender = rt.view(201, Surface::Epub);
     let other = rt.view(202, Surface::Epub);
     let generation = rt.services.views.renderer_generation(sender.view).unwrap();
-    let effects = rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap();
+    let effects = rt
+        .services
+        .hosts
+        .get::<shell_contract::hosts::OwnedEffectsHost>()
+        .unwrap();
     let owner = effects.capture_owner(sender.view, &generation).unwrap();
     let other_generation = rt.services.views.renderer_generation(other.view).unwrap();
-    let foreign = effects.capture_owner(other.view, &other_generation).unwrap();
+    let foreign = effects
+        .capture_owner(other.view, &other_generation)
+        .unwrap();
     let operation = NativeInvocationIssuer::new(CancelToken::default()).issue(
-        NativeInvocationSelection::RecoveryFile { surface: Surface::Epub, path: path.clone(), decision: NativeRecoveryDecision::Original },
-        CancelToken::default());
-    let (_issuer, closure, browser_owner) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(sender.view, generation.clone());
-    let target = RecoveryOpenTarget::bind(RecoveryOpenContext::NativeStartup(operation), sender.view, generation, closure, browser_owner).unwrap();
+        NativeInvocationSelection::RecoveryFile {
+            surface: Surface::Epub,
+            path: path.clone(),
+            decision: NativeRecoveryDecision::Original,
+        },
+        CancelToken::default(),
+    );
+    let (_issuer, closure, browser_owner) =
+        shell_contract::ipc::NativeClosureIssuer::new_with_owner(sender.view, generation.clone());
+    let target = RecoveryOpenTarget::bind(
+        RecoveryOpenContext::NativeStartup(operation),
+        sender.view,
+        generation,
+        closure,
+        browser_owner,
+    )
+    .unwrap();
     let completion = Rc::new(RefCell::new(None));
     let answer = completion.clone();
-    editors(&rt).queue_recovery_direct(sender.view, &target, path_str(&path), Box::new(move |result| *answer.borrow_mut() = Some(result)));
+    editors(&rt).queue_recovery_direct(
+        sender.view,
+        &target,
+        path_str(&path),
+        Box::new(move |result| *answer.borrow_mut() = Some(result)),
+    );
     assert!(matches!(&*completion.borrow(), Some(Ok(()))));
     let receipt = target.committed_seed().unwrap();
-    target.invocation_target().unwrap().register_from_native_admitted(owner.clone()).unwrap();
+    target
+        .invocation_target()
+        .unwrap()
+        .register_from_native_admitted(owner.clone())
+        .unwrap();
     target.retain_native_registration(owner.clone()).unwrap();
-    assert!(rt.invoke_native("epub:consume-pending", sender, vec![], foreign.context, CancelToken::default()).take().unwrap().is_err());
-    let seed = rt.invoke_native("epub:consume-pending", sender, vec![], owner.context.clone(), CancelToken::default()).take().unwrap().unwrap();
+    assert!(
+        rt.invoke_native(
+            "epub:consume-pending",
+            sender,
+            vec![],
+            foreign.context,
+            CancelToken::default()
+        )
+        .take()
+        .unwrap()
+        .is_err()
+    );
+    let seed = rt
+        .invoke_native(
+            "epub:consume-pending",
+            sender,
+            vec![],
+            owner.context.clone(),
+            CancelToken::default(),
+        )
+        .take()
+        .unwrap()
+        .unwrap();
     assert_eq!(field(&seed, "path"), &s(&path_str(&path)));
     let token = field(&seed, "receipt").clone();
-    assert!(rt.invoke_native("epub:recovery-initialized", sender, vec![token.clone(), true.into_ipc()], owner.context.clone(), CancelToken::default()).take().unwrap().is_err());
+    assert!(
+        rt.invoke_native(
+            "epub:recovery-initialized",
+            sender,
+            vec![token.clone(), true.into_ipc()],
+            owner.context.clone(),
+            CancelToken::default()
+        )
+        .take()
+        .unwrap()
+        .is_err()
+    );
     assert!(receipt.settlement().is_none());
-    assert!(rt.invoke_native("epub:open-file", sender, vec![s("other.epub")], owner.context.clone(), CancelToken::default()).take().unwrap().is_err());
-    let book = rt.invoke_native("epub:open-file", sender, vec![s(&path_str(&path))], owner.context.clone(), CancelToken::default()).take().unwrap().unwrap();
+    assert!(
+        rt.invoke_native(
+            "epub:open-file",
+            sender,
+            vec![s("other.epub")],
+            owner.context.clone(),
+            CancelToken::default()
+        )
+        .take()
+        .unwrap()
+        .is_err()
+    );
+    let book = rt
+        .invoke_native(
+            "epub:open-file",
+            sender,
+            vec![s(&path_str(&path))],
+            owner.context.clone(),
+            CancelToken::default(),
+        )
+        .take()
+        .unwrap()
+        .unwrap();
     assert_eq!(field(&book, "status"), &s("ok"));
     assert!(receipt.settlement().is_none());
-    assert!(rt.invoke_native("epub:recovery-initialized", sender, vec![token.clone(), true.into_ipc()], owner.context.clone(), CancelToken::default()).take().unwrap().is_ok());
+    assert!(
+        rt.invoke_native(
+            "epub:recovery-initialized",
+            sender,
+            vec![token.clone(), true.into_ipc()],
+            owner.context.clone(),
+            CancelToken::default()
+        )
+        .take()
+        .unwrap()
+        .is_ok()
+    );
     assert!(matches!(receipt.settlement(), Some(Ok(()))));
-    assert!(rt.invoke_native("epub:recovery-initialized", sender, vec![token, true.into_ipc()], owner.context, CancelToken::default()).take().unwrap().is_err());
+    assert!(
+        rt.invoke_native(
+            "epub:recovery-initialized",
+            sender,
+            vec![token, true.into_ipc()],
+            owner.context,
+            CancelToken::default()
+        )
+        .take()
+        .unwrap()
+        .is_err()
+    );
 }
 
 #[test]
 fn native_recovery_refusal_settles_failure_without_a_book() {
-    use shell_contract::ipc::{NativeInvocationIssuer, NativeInvocationSelection, NativeRecoveryDecision, RecoveryOpenContext, RecoveryOpenTarget};
+    use shell_contract::ipc::{
+        NativeInvocationIssuer, NativeInvocationSelection, NativeRecoveryDecision,
+        RecoveryOpenContext, RecoveryOpenTarget,
+    };
     use shell_contract::runtime::CancelToken;
     let (mut rt, _) = rt(json!({ "engine": { "open": [{ "refused": "drm" }] } }));
     let path = rt.dir.join("protected.epub");
     std::fs::write(&path, b"BOOK").unwrap();
     let sender = rt.view(203, Surface::Epub);
     let generation = rt.services.views.renderer_generation(sender.view).unwrap();
-    let effects = rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap();
+    let effects = rt
+        .services
+        .hosts
+        .get::<shell_contract::hosts::OwnedEffectsHost>()
+        .unwrap();
     let owner = effects.capture_owner(sender.view, &generation).unwrap();
     let operation = NativeInvocationIssuer::new(CancelToken::default()).issue(
-        NativeInvocationSelection::RecoveryFile { surface: Surface::Epub, path: path.clone(), decision: NativeRecoveryDecision::Original },
-        CancelToken::default());
-    let (_issuer, closure, browser_owner) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(sender.view, generation.clone());
-    let target = RecoveryOpenTarget::bind(RecoveryOpenContext::NativeStartup(operation), sender.view, generation, closure, browser_owner).unwrap();
-    editors(&rt).queue_recovery_direct(sender.view, &target, path_str(&path), Box::new(|result| assert!(result.is_ok())));
+        NativeInvocationSelection::RecoveryFile {
+            surface: Surface::Epub,
+            path: path.clone(),
+            decision: NativeRecoveryDecision::Original,
+        },
+        CancelToken::default(),
+    );
+    let (_issuer, closure, browser_owner) =
+        shell_contract::ipc::NativeClosureIssuer::new_with_owner(sender.view, generation.clone());
+    let target = RecoveryOpenTarget::bind(
+        RecoveryOpenContext::NativeStartup(operation),
+        sender.view,
+        generation,
+        closure,
+        browser_owner,
+    )
+    .unwrap();
+    editors(&rt).queue_recovery_direct(
+        sender.view,
+        &target,
+        path_str(&path),
+        Box::new(|result| assert!(result.is_ok())),
+    );
     let receipt = target.committed_seed().unwrap();
-    target.invocation_target().unwrap().register_from_native_admitted(owner.clone()).unwrap();
+    target
+        .invocation_target()
+        .unwrap()
+        .register_from_native_admitted(owner.clone())
+        .unwrap();
     target.retain_native_registration(owner.clone()).unwrap();
-    let seed = rt.invoke_native("epub:consume-pending", sender, vec![], owner.context.clone(), CancelToken::default()).take().unwrap().unwrap();
+    let seed = rt
+        .invoke_native(
+            "epub:consume-pending",
+            sender,
+            vec![],
+            owner.context.clone(),
+            CancelToken::default(),
+        )
+        .take()
+        .unwrap()
+        .unwrap();
     let token = field(&seed, "receipt").clone();
-    let result = rt.invoke_native("epub:open-file", sender, vec![s(&path_str(&path))], owner.context.clone(), CancelToken::default()).take().unwrap().unwrap();
+    let result = rt
+        .invoke_native(
+            "epub:open-file",
+            sender,
+            vec![s(&path_str(&path))],
+            owner.context.clone(),
+            CancelToken::default(),
+        )
+        .take()
+        .unwrap()
+        .unwrap();
     assert_eq!(field(&result, "reason"), &s("drm"));
-    assert!(rt.invoke_native("epub:recovery-initialized", sender, vec![token, false.into_ipc(), s("drm")], owner.context, CancelToken::default()).take().unwrap().is_ok());
+    assert!(
+        rt.invoke_native(
+            "epub:recovery-initialized",
+            sender,
+            vec![token, false.into_ipc(), s("drm")],
+            owner.context,
+            CancelToken::default()
+        )
+        .take()
+        .unwrap()
+        .is_ok()
+    );
     assert!(matches!(receipt.settlement(), Some(Err(reason)) if reason == "drm"));
 }
 
 #[test]
 fn native_recovery_never_queues_into_another_created_view() {
-    use shell_contract::ipc::{NativeInvocationIssuer, NativeInvocationSelection, NativeRecoveryDecision, RecoveryOpenContext, RecoveryOpenTarget};
+    use shell_contract::ipc::{
+        NativeInvocationIssuer, NativeInvocationSelection, NativeRecoveryDecision,
+        RecoveryOpenContext, RecoveryOpenTarget,
+    };
     use shell_contract::runtime::CancelToken;
     let (mut rt, _) = rt(Value::Null);
     let path = rt.dir.join("selected.epub");
     let selected = rt.view(204, Surface::Epub);
     let other = rt.view(205, Surface::Epub);
-    let generation = rt.services.views.renderer_generation(selected.view).unwrap();
+    let generation = rt
+        .services
+        .views
+        .renderer_generation(selected.view)
+        .unwrap();
     let operation = NativeInvocationIssuer::new(CancelToken::default()).issue(
-        NativeInvocationSelection::RecoveryFile { surface: Surface::Epub, path: path.clone(), decision: NativeRecoveryDecision::Original },
-        CancelToken::default());
-    let (_issuer, closure, browser_owner) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(selected.view, generation.clone());
-    let target = RecoveryOpenTarget::bind(RecoveryOpenContext::NativeStartup(operation), selected.view, generation, closure, browser_owner).unwrap();
+        NativeInvocationSelection::RecoveryFile {
+            surface: Surface::Epub,
+            path: path.clone(),
+            decision: NativeRecoveryDecision::Original,
+        },
+        CancelToken::default(),
+    );
+    let (_issuer, closure, browser_owner) =
+        shell_contract::ipc::NativeClosureIssuer::new_with_owner(selected.view, generation.clone());
+    let target = RecoveryOpenTarget::bind(
+        RecoveryOpenContext::NativeStartup(operation),
+        selected.view,
+        generation,
+        closure,
+        browser_owner,
+    )
+    .unwrap();
     let answer = Rc::new(RefCell::new(None));
     let result = answer.clone();
-    editors(&rt).queue_recovery_direct(other.view, &target, path_str(&path), Box::new(move |value| *result.borrow_mut() = Some(value)));
+    editors(&rt).queue_recovery_direct(
+        other.view,
+        &target,
+        path_str(&path),
+        Box::new(move |value| *result.borrow_mut() = Some(value)),
+    );
     assert!(matches!(&*answer.borrow(), Some(Err(_))));
     assert!(target.committed_seed().is_none());
-    assert_eq!(rt.invoke_now("epub:consume-pending", other, vec![]).unwrap(), IpcValue::Null);
+    assert_eq!(
+        rt.invoke_now("epub:consume-pending", other, vec![])
+            .unwrap(),
+        IpcValue::Null
+    );
 }

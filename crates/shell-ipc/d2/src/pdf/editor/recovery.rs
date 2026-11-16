@@ -88,14 +88,29 @@ pub(super) fn matches_native_copy_selection(
     request: &main_core::packages::electron_utils::recovery_contract::RecoveryOpenUntitledRequest,
 ) -> bool {
     use shell_contract::ipc::{NativeInvocationSelection, NativeRecoveryCopy};
-    let NativeInvocationSelection::RecoveryCopy { surface, copy, title, save_as_default } = selection else { return false; };
-    if *surface != shell_contract::Surface::Pdf || request.copy.kind() != "pdf" || title != &request.title
-        || save_as_default.as_deref() != request.save_as_default_path.as_deref().map(Path::new) {
+    let NativeInvocationSelection::RecoveryCopy {
+        surface,
+        copy,
+        title,
+        save_as_default,
+    } = selection
+    else {
+        return false;
+    };
+    if *surface != shell_contract::Surface::Pdf
+        || request.copy.kind() != "pdf"
+        || title != &request.title
+        || save_as_default.as_deref() != request.save_as_default_path.as_deref().map(Path::new)
+    {
         return false;
     }
     match (copy, &request.copy) {
-        (NativeRecoveryCopy::File { path }, RecoveryIdentity::File(identity)) => path == Path::new(&identity.file_path),
-        (NativeRecoveryCopy::Untitled { id, ext }, RecoveryIdentity::Untitled(identity)) => id == &identity.untitled_id && ext == &identity.ext,
+        (NativeRecoveryCopy::File { path }, RecoveryIdentity::File(identity)) => {
+            path == Path::new(&identity.file_path)
+        }
+        (NativeRecoveryCopy::Untitled { id, ext }, RecoveryIdentity::Untitled(identity)) => {
+            id == &identity.untitled_id && ext == &identity.ext
+        }
         _ => false,
     }
 }
@@ -128,16 +143,27 @@ pub(super) enum RecoveryCleanup {
 }
 
 impl RecoveryCleanup {
-    pub fn run(self, store: &Store, authority: &super::owned_save::SaveAuthority) -> Result<(), String> {
+    pub fn run(
+        self,
+        store: &Store,
+        authority: &super::owned_save::SaveAuthority,
+    ) -> Result<(), String> {
         match self {
-            Self::Copy(identity, reason) => store.with(|store| store.delete_copy_authorized(&identity, reason, &mut |effect| authority.admit_file(effect))).map(|_| ()).map_err(|error| error.message),
-            Self::WorkFile(path) => authority.admit_node(&mut || {
-                match std::fs::remove_file(&path) {
+            Self::Copy(identity, reason) => store
+                .with(|store| {
+                    store.delete_copy_authorized(&identity, reason, &mut |effect| {
+                        authority.admit_file(effect)
+                    })
+                })
+                .map(|_| ())
+                .map_err(|error| error.message),
+            Self::WorkFile(path) => authority
+                .admit_node(&mut || match std::fs::remove_file(&path) {
                     Ok(()) => Ok(()),
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
                     Err(error) => Err(main_core::node_fs::node_error(&error, "unlink", &path)),
-                }
-            }).map_err(|error| error.message),
+                })
+                .map_err(|error| error.message),
         }
     }
 }
@@ -159,12 +185,20 @@ impl Store {
     }
 
     pub(super) fn try_with<R>(&self, f: impl FnOnce(&RecoveryStore<'_>) -> R) -> Result<R, String> {
-        let shared = self.shared.try_lock().map_err(|_| "Recovery state is busy".to_owned())?;
+        let shared = self
+            .shared
+            .try_lock()
+            .map_err(|_| "Recovery state is busy".to_owned())?;
         let dir = self.user_data.to_string_lossy().into_owned();
         let user_data = move || dir.clone();
-        let store = create_recovery_store(RecoveryStoreOptions {
-            user_data_dir: &user_data, now_ms: &now_ms, random_uuid: &random_uuid,
-        }, &shared);
+        let store = create_recovery_store(
+            RecoveryStoreOptions {
+                user_data_dir: &user_data,
+                now_ms: &now_ms,
+                random_uuid: &random_uuid,
+            },
+            &shared,
+        );
         Ok(f(&store))
     }
 
@@ -196,8 +230,27 @@ impl Store {
         .map_err(|e| e.message)
     }
 
-    pub fn write_owned(&self, identity: &RecoveryIdentity, bytes: &[u8], title: String, ticket: RecoveryWriteTicket, authority: &super::owned_save::SaveAuthority) -> Result<RecoveryWriteResult, String> {
-        self.with(|store| store.write_copy_authorized(identity, bytes, &RecoveryWriteOptions { title: Some(title.clone()), ticket: Some(ticket.clone()), ..Default::default() }, &mut |effect| authority.admit_file(effect))).map_err(|error| error.message)
+    pub fn write_owned(
+        &self,
+        identity: &RecoveryIdentity,
+        bytes: &[u8],
+        title: String,
+        ticket: RecoveryWriteTicket,
+        authority: &super::owned_save::SaveAuthority,
+    ) -> Result<RecoveryWriteResult, String> {
+        self.with(|store| {
+            store.write_copy_authorized(
+                identity,
+                bytes,
+                &RecoveryWriteOptions {
+                    title: Some(title.clone()),
+                    ticket: Some(ticket.clone()),
+                    ..Default::default()
+                },
+                &mut |effect| authority.admit_file(effect),
+            )
+        })
+        .map_err(|error| error.message)
     }
 }
 
@@ -208,17 +261,36 @@ pub(super) struct RecoveryRename {
 }
 
 impl RecoveryRename {
-    pub(super) fn run(&self, store: &Store, authority: Option<&super::rename::RenameAuthority>) -> Result<bool, main_core::node_fs::NodeError> {
+    pub(super) fn run(
+        &self,
+        store: &Store,
+        authority: Option<&super::rename::RenameAuthority>,
+    ) -> Result<bool, main_core::node_fs::NodeError> {
         store.with(|store| {
-            let Some(bytes) = store.read_copy(&self.owned) else { return Ok(false); };
-            let options = RecoveryWriteOptions { title: Some(self.title.clone()), ..Default::default() };
+            let Some(bytes) = store.read_copy(&self.owned) else {
+                return Ok(false);
+            };
+            let options = RecoveryWriteOptions {
+                title: Some(self.title.clone()),
+                ..Default::default()
+            };
             let written = match authority {
-                Some(authority) => store.write_copy_authorized(&self.next, &bytes, &options, &mut |effect| authority.admit_file(effect)),
+                Some(authority) => {
+                    store.write_copy_authorized(&self.next, &bytes, &options, &mut |effect| {
+                        authority.admit_file(effect)
+                    })
+                }
                 None => store.write_copy(&self.next, &bytes, &options),
             }?;
-            if written != RecoveryWriteResult::Written { return Ok(false); }
+            if written != RecoveryWriteResult::Written {
+                return Ok(false);
+            }
             match authority {
-                Some(authority) => store.delete_copy_authorized(&self.owned, RecoveryDeleteReason::Discarded, &mut |effect| authority.admit_file(effect)),
+                Some(authority) => store.delete_copy_authorized(
+                    &self.owned,
+                    RecoveryDeleteReason::Discarded,
+                    &mut |effect| authority.admit_file(effect),
+                ),
                 None => store.delete_copy(&self.owned, RecoveryDeleteReason::Discarded),
             }?;
             Ok(true)
@@ -281,7 +353,11 @@ pub(super) struct PendingCopy {
 pub(super) struct Recovery {
     views: HashMap<ViewId, ViewRecovery>,
     retired: Vec<RetiredRecovery>,
-    staged_work: Vec<(shell_contract::ipc::RecoveryOpenTarget, String, Arc<std::sync::atomic::AtomicBool>)>,
+    staged_work: Vec<(
+        shell_contract::ipc::RecoveryOpenTarget,
+        String,
+        Arc<std::sync::atomic::AtomicBool>,
+    )>,
     pub store: Store,
     /// `deps.workDir()`
     work_dir: PathBuf,
@@ -299,23 +375,46 @@ impl Recovery {
     }
 
     pub(super) fn next_work_path(&self) -> String {
-        join(&[&self.work_dir.to_string_lossy(), &format!("{}.pdf", random_uuid())])
+        join(&[
+            &self.work_dir.to_string_lossy(),
+            &format!("{}.pdf", random_uuid()),
+        ])
     }
 
-    pub(super) fn has_view_state(&self, id: ViewId) -> bool { self.views.contains_key(&id) }
+    pub(super) fn has_view_state(&self, id: ViewId) -> bool {
+        self.views.contains_key(&id)
+    }
 
-    pub(super) fn stage_work(&mut self, target: &shell_contract::ipc::RecoveryOpenTarget, path: String) -> Arc<std::sync::atomic::AtomicBool> {
+    pub(super) fn stage_work(
+        &mut self,
+        target: &shell_contract::ipc::RecoveryOpenTarget,
+        path: String,
+    ) -> Arc<std::sync::atomic::AtomicBool> {
         let created = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        self.staged_work.push((target.clone(), path, created.clone()));
+        self.staged_work
+            .push((target.clone(), path, created.clone()));
         created
     }
 
-    pub(super) fn stage_existing_work(&mut self, target: &shell_contract::ipc::RecoveryOpenTarget, path: String) {
-        self.staged_work.push((target.clone(), path, Arc::new(std::sync::atomic::AtomicBool::new(true))));
+    pub(super) fn stage_existing_work(
+        &mut self,
+        target: &shell_contract::ipc::RecoveryOpenTarget,
+        path: String,
+    ) {
+        self.staged_work.push((
+            target.clone(),
+            path,
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        ));
     }
 
-    pub(super) fn adopt_work(&mut self, target: &shell_contract::ipc::RecoveryOpenTarget, path: &str) {
-        self.staged_work.retain(|(entry, staged, _)| !entry.same_binding(target) || staged != path);
+    pub(super) fn adopt_work(
+        &mut self,
+        target: &shell_contract::ipc::RecoveryOpenTarget,
+        path: &str,
+    ) {
+        self.staged_work
+            .retain(|(entry, staged, _)| !entry.same_binding(target) || staged != path);
     }
 
     fn view(&mut self, id: ViewId) -> &mut ViewRecovery {
@@ -351,7 +450,11 @@ impl Recovery {
         Self::drop_work_file_with_cleanup(state, path, &mut None)
     }
 
-    fn drop_work_file_with_cleanup(state: &mut ViewRecovery, path: Option<&str>, cleanup: &mut Option<&mut Vec<RecoveryCleanup>>) {
+    fn drop_work_file_with_cleanup(
+        state: &mut ViewRecovery,
+        path: Option<&str>,
+        cleanup: &mut Option<&mut Vec<RecoveryCleanup>>,
+    ) {
         let Some(file) = state.work_file.as_deref() else {
             return;
         };
@@ -359,7 +462,10 @@ impl Recovery {
             return;
         }
         let file = state.work_file.take().unwrap_or_default();
-        if let Some(cleanup) = cleanup { cleanup.push(RecoveryCleanup::WorkFile(file)); return; }
+        if let Some(cleanup) = cleanup {
+            cleanup.push(RecoveryCleanup::WorkFile(file));
+            return;
+        }
         if let Err(err) = std::fs::remove_file(&file)
             && err.kind() != std::io::ErrorKind::NotFound
         {
@@ -486,7 +592,12 @@ impl Recovery {
         state.unsaved_from_copy = false;
     }
 
-    pub(super) fn accept_prepared_file(&mut self, id: ViewId, path: &str, restored: Option<Vec<u8>>) {
+    pub(super) fn accept_prepared_file(
+        &mut self,
+        id: ViewId,
+        path: &str,
+        restored: Option<Vec<u8>>,
+    ) {
         let state = self.view(id);
         Self::clear_dropped(state);
         state.source_encrypted = false;
@@ -595,11 +706,21 @@ impl Recovery {
         self.saved_in_place_with_cleanup(id, path, None)
     }
 
-    pub fn saved_in_place_owned(&mut self, id: ViewId, path: &str, cleanup: &mut Vec<RecoveryCleanup>) -> Option<PendingCopy> {
+    pub fn saved_in_place_owned(
+        &mut self,
+        id: ViewId,
+        path: &str,
+        cleanup: &mut Vec<RecoveryCleanup>,
+    ) -> Option<PendingCopy> {
         self.saved_in_place_with_cleanup(id, path, Some(cleanup))
     }
 
-    fn saved_in_place_with_cleanup(&mut self, id: ViewId, path: &str, mut cleanup: Option<&mut Vec<RecoveryCleanup>>) -> Option<PendingCopy> {
+    fn saved_in_place_with_cleanup(
+        &mut self,
+        id: ViewId,
+        path: &str,
+        mut cleanup: Option<&mut Vec<RecoveryCleanup>>,
+    ) -> Option<PendingCopy> {
         let store = self.store.clone();
         let state = self.view(id);
         if state.restored.as_ref().is_some_and(|(p, _)| p == path) {
@@ -625,7 +746,13 @@ impl Recovery {
             };
         }
         let identity = file_identity(path);
-        match &mut cleanup { Some(cleanup) => cleanup.push(RecoveryCleanup::Copy(identity.clone(), RecoveryDeleteReason::Saved)), None => store.delete(&identity, RecoveryDeleteReason::Saved) }
+        match &mut cleanup {
+            Some(cleanup) => cleanup.push(RecoveryCleanup::Copy(
+                identity.clone(),
+                RecoveryDeleteReason::Saved,
+            )),
+            None => store.delete(&identity, RecoveryDeleteReason::Saved),
+        }
         if state
             .owned_copy
             .as_ref()
@@ -641,15 +768,33 @@ impl Recovery {
         self.adopted_with_cleanup(id, old_path, target, None)
     }
 
-    pub fn adopted_owned(&mut self, id: ViewId, old_path: &str, target: &str, cleanup: &mut Vec<RecoveryCleanup>) {
+    pub fn adopted_owned(
+        &mut self,
+        id: ViewId,
+        old_path: &str,
+        target: &str,
+        cleanup: &mut Vec<RecoveryCleanup>,
+    ) {
         self.adopted_with_cleanup(id, old_path, target, Some(cleanup))
     }
 
-    fn adopted_with_cleanup(&mut self, id: ViewId, old_path: &str, target: &str, mut cleanup: Option<&mut Vec<RecoveryCleanup>>) {
+    fn adopted_with_cleanup(
+        &mut self,
+        id: ViewId,
+        old_path: &str,
+        target: &str,
+        mut cleanup: Option<&mut Vec<RecoveryCleanup>>,
+    ) {
         let store = self.store.clone();
         let state = self.view(id);
         if let Some(u) = state.untitled.take_if(|u| u.path == old_path) {
-            match &mut cleanup { Some(cleanup) => cleanup.push(RecoveryCleanup::Copy(u.identity.clone(), RecoveryDeleteReason::Saved)), None => store.delete(&u.identity, RecoveryDeleteReason::Saved) }
+            match &mut cleanup {
+                Some(cleanup) => cleanup.push(RecoveryCleanup::Copy(
+                    u.identity.clone(),
+                    RecoveryDeleteReason::Saved,
+                )),
+                None => store.delete(&u.identity, RecoveryDeleteReason::Saved),
+            }
             if state
                 .owned_copy
                 .as_ref()
@@ -669,11 +814,23 @@ impl Recovery {
         self.moved_with_cleanup(id, old_path, target, None)
     }
 
-    pub fn moved_to_new_file_owned(&mut self, id: ViewId, old_path: &str, target: &str, cleanup: &mut Vec<RecoveryCleanup>) {
+    pub fn moved_to_new_file_owned(
+        &mut self,
+        id: ViewId,
+        old_path: &str,
+        target: &str,
+        cleanup: &mut Vec<RecoveryCleanup>,
+    ) {
         self.moved_with_cleanup(id, old_path, target, Some(cleanup))
     }
 
-    fn moved_with_cleanup(&mut self, id: ViewId, old_path: &str, target: &str, mut cleanup: Option<&mut Vec<RecoveryCleanup>>) {
+    fn moved_with_cleanup(
+        &mut self,
+        id: ViewId,
+        old_path: &str,
+        target: &str,
+        mut cleanup: Option<&mut Vec<RecoveryCleanup>>,
+    ) {
         let store = self.store.clone();
         let Some(state) = self.views.get_mut(&id) else {
             return;
@@ -688,10 +845,22 @@ impl Recovery {
                 .as_ref()
                 .is_some_and(|u| same_identity(&owned, u))
             {
-                match &mut cleanup { Some(cleanup) => cleanup.push(RecoveryCleanup::Copy(owned.clone(), RecoveryDeleteReason::Saved)), None => store.delete(&owned, RecoveryDeleteReason::Saved) }
+                match &mut cleanup {
+                    Some(cleanup) => cleanup.push(RecoveryCleanup::Copy(
+                        owned.clone(),
+                        RecoveryDeleteReason::Saved,
+                    )),
+                    None => store.delete(&owned, RecoveryDeleteReason::Saved),
+                }
                 state.owned_copy = None;
             } else if is_file_of(&owned, old_path) {
-                match &mut cleanup { Some(cleanup) => cleanup.push(RecoveryCleanup::Copy(owned.clone(), RecoveryDeleteReason::ClosedClean)), None => store.delete(&owned, RecoveryDeleteReason::ClosedClean) }
+                match &mut cleanup {
+                    Some(cleanup) => cleanup.push(RecoveryCleanup::Copy(
+                        owned.clone(),
+                        RecoveryDeleteReason::ClosedClean,
+                    )),
+                    None => store.delete(&owned, RecoveryDeleteReason::ClosedClean),
+                }
                 state.owned_copy = None;
             }
         }
@@ -739,18 +908,36 @@ impl Recovery {
         self.dont_save_with_cleanup(id, path, untitled_copy, None)
     }
 
-    pub fn dont_save_owned(&mut self, id: ViewId, path: Option<&str>, untitled_copy: bool, cleanup: &mut Vec<RecoveryCleanup>) {
+    pub fn dont_save_owned(
+        &mut self,
+        id: ViewId,
+        path: Option<&str>,
+        untitled_copy: bool,
+        cleanup: &mut Vec<RecoveryCleanup>,
+    ) {
         self.dont_save_with_cleanup(id, path, untitled_copy, Some(cleanup))
     }
 
-    fn dont_save_with_cleanup(&mut self, id: ViewId, path: Option<&str>, untitled_copy: bool, mut cleanup: Option<&mut Vec<RecoveryCleanup>>) {
+    fn dont_save_with_cleanup(
+        &mut self,
+        id: ViewId,
+        path: Option<&str>,
+        untitled_copy: bool,
+        mut cleanup: Option<&mut Vec<RecoveryCleanup>>,
+    ) {
         let identity = path.map(|p| self.identity_for(id, p, untitled_copy));
         let store = self.store.clone();
         let state = self.view(id);
         state.dropped = true;
         state.dropped_copy = identity.or_else(|| state.owned_copy.clone());
         if let Some(copy) = &state.dropped_copy {
-            match &mut cleanup { Some(cleanup) => cleanup.push(RecoveryCleanup::Copy(copy.clone(), RecoveryDeleteReason::DontSave)), None => store.delete(copy, RecoveryDeleteReason::DontSave) }
+            match &mut cleanup {
+                Some(cleanup) => cleanup.push(RecoveryCleanup::Copy(
+                    copy.clone(),
+                    RecoveryDeleteReason::DontSave,
+                )),
+                None => store.delete(copy, RecoveryDeleteReason::DontSave),
+            }
         }
         state.owned_copy = None;
     }
@@ -770,7 +957,9 @@ impl Recovery {
 
     /// `renamed(id, oldPath, newPath)`: the copy and the restore follow
     pub fn renamed(&mut self, id: ViewId, old_path: &str, new_path: &str) {
-        let Some(rename) = self.prepare_renamed(id, old_path, new_path) else { return; };
+        let Some(rename) = self.prepare_renamed(id, old_path, new_path) else {
+            return;
+        };
         match rename.run(&self.store, None) {
             Ok(true) => self.finish_renamed(id, &rename),
             Ok(false) => {}
@@ -778,17 +967,37 @@ impl Recovery {
         }
     }
 
-    pub(super) fn prepare_renamed(&mut self, id: ViewId, old_path: &str, new_path: &str) -> Option<RecoveryRename> {
+    pub(super) fn prepare_renamed(
+        &mut self,
+        id: ViewId,
+        old_path: &str,
+        new_path: &str,
+    ) -> Option<RecoveryRename> {
         let state = self.views.get_mut(&id)?;
-        if state.resolved_path.as_deref() == Some(old_path) { state.resolved_path = Some(new_path.to_owned()); }
-        if let Some((path, _)) = state.restored.as_mut().filter(|(path, _)| path == old_path) { *path = new_path.to_owned(); }
-        let owned = state.owned_copy.clone().filter(|owned| is_file_of(owned, old_path))?;
-        Some(RecoveryRename { owned, next: file_identity(new_path), title: basename(new_path, None) })
+        if state.resolved_path.as_deref() == Some(old_path) {
+            state.resolved_path = Some(new_path.to_owned());
+        }
+        if let Some((path, _)) = state.restored.as_mut().filter(|(path, _)| path == old_path) {
+            *path = new_path.to_owned();
+        }
+        let owned = state
+            .owned_copy
+            .clone()
+            .filter(|owned| is_file_of(owned, old_path))?;
+        Some(RecoveryRename {
+            owned,
+            next: file_identity(new_path),
+            title: basename(new_path, None),
+        })
     }
 
     pub(super) fn finish_renamed(&mut self, id: ViewId, rename: &RecoveryRename) {
         if let Some(state) = self.views.get_mut(&id) {
-            if state.owned_copy.as_ref().is_some_and(|owned| same_identity(owned, &rename.owned)) {
+            if state
+                .owned_copy
+                .as_ref()
+                .is_some_and(|owned| same_identity(owned, &rename.owned))
+            {
                 state.owned_copy = Some(rename.next.clone());
             }
         }
@@ -820,13 +1029,35 @@ impl Recovery {
         Ok(Some(path))
     }
 
-    pub(super) fn acknowledge_untitled_owned(&mut self, id: ViewId, copy: &RecoveryIdentity, title: &str, save_as_default_path: Option<&str>, path: &str) -> Vec<RecoveryCleanup> {
+    pub(super) fn acknowledge_untitled_owned(
+        &mut self,
+        id: ViewId,
+        copy: &RecoveryIdentity,
+        title: &str,
+        save_as_default_path: Option<&str>,
+        path: &str,
+    ) -> Vec<RecoveryCleanup> {
         let mut cleanup = Vec::new();
-        self.acknowledge_untitled(id, copy, title, save_as_default_path, path, Some(&mut cleanup));
+        self.acknowledge_untitled(
+            id,
+            copy,
+            title,
+            save_as_default_path,
+            path,
+            Some(&mut cleanup),
+        );
         cleanup
     }
 
-    fn acknowledge_untitled(&mut self, id: ViewId, copy: &RecoveryIdentity, title: &str, save_as_default_path: Option<&str>, path: &str, mut cleanup: Option<&mut Vec<RecoveryCleanup>>) {
+    fn acknowledge_untitled(
+        &mut self,
+        id: ViewId,
+        copy: &RecoveryIdentity,
+        title: &str,
+        save_as_default_path: Option<&str>,
+        path: &str,
+        mut cleanup: Option<&mut Vec<RecoveryCleanup>>,
+    ) {
         let state = self.view(id);
         Self::clear_dropped(state);
         state.source_encrypted = false;
@@ -877,47 +1108,125 @@ impl Recovery {
     }
 
     /// `destroyed(id, dirty)`: the view is gone
-    pub(super) fn retain_unclosed(&mut self, id: ViewId, target: shell_contract::ipc::RecoveryOpenTarget, dirty: bool) {
+    pub(super) fn retain_unclosed(
+        &mut self,
+        id: ViewId,
+        target: shell_contract::ipc::RecoveryOpenTarget,
+        dirty: bool,
+    ) {
         if let Some(state) = self.views.remove(&id) {
-            self.retired.push(RetiredRecovery { target, state, dirty });
+            self.retired.push(RetiredRecovery {
+                target,
+                state,
+                dirty,
+            });
         }
     }
 
-    pub(super) fn closed_cleanup(&self, target: &shell_contract::ipc::RecoveryOpenTarget, proof: &shell_contract::ipc::NativeClosureReceipt, adopted: bool) -> Result<(Vec<String>, Option<(RecoveryIdentity, RecoveryDeleteReason)>), String> {
-        if !proof.matches(target.closure_reservation(), target.view(), target.created())
-            || (adopted && proof.outcome() != shell_contract::ipc::NativeClosureOutcome::Closed) {
+    pub(super) fn closed_cleanup(
+        &self,
+        target: &shell_contract::ipc::RecoveryOpenTarget,
+        proof: &shell_contract::ipc::NativeClosureReceipt,
+        adopted: bool,
+    ) -> Result<
+        (
+            Vec<String>,
+            Option<(RecoveryIdentity, RecoveryDeleteReason)>,
+        ),
+        String,
+    > {
+        if !proof.matches(
+            target.closure_reservation(),
+            target.view(),
+            target.created(),
+        ) || (adopted && proof.outcome() != shell_contract::ipc::NativeClosureOutcome::Closed)
+        {
             return Err("PDF recovery close receipt does not match its reservation".into());
         }
-        let mut work: Vec<_> = self.staged_work.iter().filter(|(entry, _, created)| entry.same_binding(target) && created.load(std::sync::atomic::Ordering::Acquire)).map(|(_, path, _)| path.clone()).collect();
-        let Some(retired) = self.retired.iter().find(|entry| entry.target.same_binding(target)) else {
-            if target.is_seed_committed() { return Err("PDF recovery state was replaced before closed cleanup".into()); }
+        let mut work: Vec<_> = self
+            .staged_work
+            .iter()
+            .filter(|(entry, _, created)| {
+                entry.same_binding(target) && created.load(std::sync::atomic::Ordering::Acquire)
+            })
+            .map(|(_, path, _)| path.clone())
+            .collect();
+        let Some(retired) = self
+            .retired
+            .iter()
+            .find(|entry| entry.target.same_binding(target))
+        else {
+            if target.is_seed_committed() {
+                return Err("PDF recovery state was replaced before closed cleanup".into());
+            }
             return Ok((work, None));
         };
         let state = &retired.state;
-        if let Some(path) = &state.work_file { if !work.contains(path) { work.push(path.clone()); } }
-        let deletion = if !adopted { None }
-            else if state.dropped { state.dropped_copy.clone().map(|identity| (identity, RecoveryDeleteReason::DontSave)) }
-            else if !retired.dirty && !state.crashed { state.owned_copy.clone().map(|identity| (identity, RecoveryDeleteReason::ClosedClean)) }
-            else { None };
+        if let Some(path) = &state.work_file {
+            if !work.contains(path) {
+                work.push(path.clone());
+            }
+        }
+        let deletion = if !adopted {
+            None
+        } else if state.dropped {
+            state
+                .dropped_copy
+                .clone()
+                .map(|identity| (identity, RecoveryDeleteReason::DontSave))
+        } else if !retired.dirty && !state.crashed {
+            state
+                .owned_copy
+                .clone()
+                .map(|identity| (identity, RecoveryDeleteReason::ClosedClean))
+        } else {
+            None
+        };
         Ok((work, deletion))
     }
 
-    pub(super) fn superseded_cleanup(&self, target: &shell_contract::ipc::RecoveryOpenTarget, proof: &shell_contract::ipc::NativeBrowserSuperseded) -> Result<Vec<String>, String> {
+    pub(super) fn superseded_cleanup(
+        &self,
+        target: &shell_contract::ipc::RecoveryOpenTarget,
+        proof: &shell_contract::ipc::NativeBrowserSuperseded,
+    ) -> Result<Vec<String>, String> {
         if !proof.matches(target.closure_reservation(), target.browser_owner()) {
-            return Err("PDF recovery supersession does not match its original browser owner".into());
+            return Err(
+                "PDF recovery supersession does not match its original browser owner".into(),
+            );
         }
-        let mut work: Vec<_> = self.staged_work.iter().filter(|(entry, _, created)| entry.same_binding(target) && created.load(std::sync::atomic::Ordering::Acquire)).map(|(_, path, _)| path.clone()).collect();
-        if let Some(retired) = self.retired.iter().find(|entry| entry.target.same_binding(target)) {
-            if let Some(path) = &retired.state.work_file { if !work.contains(path) { work.push(path.clone()); } }
+        let mut work: Vec<_> = self
+            .staged_work
+            .iter()
+            .filter(|(entry, _, created)| {
+                entry.same_binding(target) && created.load(std::sync::atomic::Ordering::Acquire)
+            })
+            .map(|(_, path, _)| path.clone())
+            .collect();
+        if let Some(retired) = self
+            .retired
+            .iter()
+            .find(|entry| entry.target.same_binding(target))
+        {
+            if let Some(path) = &retired.state.work_file {
+                if !work.contains(path) {
+                    work.push(path.clone());
+                }
+            }
         } else if target.is_seed_committed() {
             return Err("PDF recovery state was not retained for supersession".into());
         }
         Ok(work)
     }
 
-    pub(super) fn finish_closed_cleanup(&mut self, target: &shell_contract::ipc::RecoveryOpenTarget) {
-        self.retired.retain(|entry| !entry.target.same_binding(target));
-        self.staged_work.retain(|(entry, _, _)| !entry.same_binding(target));
+    pub(super) fn finish_closed_cleanup(
+        &mut self,
+        target: &shell_contract::ipc::RecoveryOpenTarget,
+    ) {
+        self.retired
+            .retain(|entry| !entry.target.same_binding(target));
+        self.staged_work
+            .retain(|(entry, _, _)| !entry.same_binding(target));
     }
 
     pub fn destroyed(&mut self, id: ViewId, dirty: bool) {
@@ -946,8 +1255,13 @@ impl Recovery {
         let Ok(entries) = std::fs::read_dir(&self.work_dir) else {
             return;
         };
-        let in_use: Vec<&str> = self.views.values().chain(self.retired.iter().map(|entry| &entry.state))
-            .filter_map(|s| s.work_file.as_deref()).chain(self.staged_work.iter().map(|(_, path, _)| path.as_str())).collect();
+        let in_use: Vec<&str> = self
+            .views
+            .values()
+            .chain(self.retired.iter().map(|entry| &entry.state))
+            .filter_map(|s| s.work_file.as_deref())
+            .chain(self.staged_work.iter().map(|(_, path, _)| path.as_str()))
+            .collect();
         let cutoff = SystemTime::now().checked_sub(max_age).unwrap_or(UNIX_EPOCH);
         for entry in entries.flatten() {
             let file = entry.path();
@@ -982,19 +1296,32 @@ mod tests {
     fn startup_selection_binds_copy_identity_title_and_suggested_path() {
         use super::{file_identity, matches_native_copy_selection};
         use main_core::packages::electron_utils::recovery_contract::RecoveryOpenUntitledRequest;
-        use shell_contract::{Surface, ipc::{NativeInvocationSelection, NativeRecoveryCopy}};
-        let request = RecoveryOpenUntitledRequest { copy: file_identity("/original.pdf"), title: "Recovered".into(), save_as_default_path: Some("/saved.pdf".into()) };
+        use shell_contract::{
+            Surface,
+            ipc::{NativeInvocationSelection, NativeRecoveryCopy},
+        };
+        let request = RecoveryOpenUntitledRequest {
+            copy: file_identity("/original.pdf"),
+            title: "Recovered".into(),
+            save_as_default_path: Some("/saved.pdf".into()),
+        };
         let selection = NativeInvocationSelection::RecoveryCopy {
-            surface: Surface::Pdf, copy: NativeRecoveryCopy::File { path: "/original.pdf".into() },
-            title: "Recovered".into(), save_as_default: Some("/saved.pdf".into()),
+            surface: Surface::Pdf,
+            copy: NativeRecoveryCopy::File {
+                path: "/original.pdf".into(),
+            },
+            title: "Recovered".into(),
+            save_as_default: Some("/saved.pdf".into()),
         };
         assert!(matches_native_copy_selection(&selection, &request));
         let mut changed = request.clone();
         changed.copy = file_identity("/other.pdf");
         assert!(!matches_native_copy_selection(&selection, &changed));
-        changed = request.clone(); changed.title = "Different".into();
+        changed = request.clone();
+        changed.title = "Different".into();
         assert!(!matches_native_copy_selection(&selection, &changed));
-        changed = request.clone(); changed.save_as_default_path = None;
+        changed = request.clone();
+        changed.save_as_default_path = None;
         assert!(!matches_native_copy_selection(&selection, &changed));
     }
 
@@ -1007,19 +1334,42 @@ mod tests {
         let previous = dir.join("previous.pdf").to_string_lossy().into_owned();
         let restored = dir.join("restored.pdf").to_string_lossy().into_owned();
         std::fs::write(&previous, b"%PDF previous").unwrap();
-        let shared = Arc::new(Mutex::new(main_core::packages::electron_utils::recovery_store::SharedRecoveryState::new("test")));
-        let mut recovery = Recovery::new(Store { shared, user_data: dir.clone() }, dir.clone());
+        let shared = Arc::new(Mutex::new(
+            main_core::packages::electron_utils::recovery_store::SharedRecoveryState::new("test"),
+        ));
+        let mut recovery = Recovery::new(
+            Store {
+                shared,
+                user_data: dir.clone(),
+            },
+            dir.clone(),
+        );
         let view = shell_contract::ViewId(1);
         let identity = file_identity("/original.pdf");
-        assert!(recovery.acknowledge_untitled_owned(view, &identity, "old", None, &previous).is_empty());
-        let cleanup = recovery.acknowledge_untitled_owned(view, &identity, "restored title", Some("/chosen.pdf"), &restored);
+        assert!(
+            recovery
+                .acknowledge_untitled_owned(view, &identity, "old", None, &previous)
+                .is_empty()
+        );
+        let cleanup = recovery.acknowledge_untitled_owned(
+            view,
+            &identity,
+            "restored title",
+            Some("/chosen.pdf"),
+            &restored,
+        );
         assert!(std::path::Path::new(&previous).exists());
-        assert!(matches!(cleanup.as_slice(), [RecoveryCleanup::WorkFile(path)] if path == &previous));
+        assert!(
+            matches!(cleanup.as_slice(), [RecoveryCleanup::WorkFile(path)] if path == &previous)
+        );
         let state = recovery.views.get(&view).unwrap();
         let untitled = state.untitled.as_ref().unwrap();
         assert_eq!(untitled.path, restored);
         assert_eq!(untitled.title, "restored title");
-        assert_eq!(untitled.save_as_default_path.as_deref(), Some("/chosen.pdf"));
+        assert_eq!(
+            untitled.save_as_default_path.as_deref(),
+            Some("/chosen.pdf")
+        );
         assert!(same_identity(&untitled.identity, &identity));
         assert!(state.unsaved_from_copy);
         std::fs::remove_dir_all(&dir).unwrap();

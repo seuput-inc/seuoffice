@@ -102,28 +102,27 @@ impl TabsState {
             return;
         };
         let state = self.rc();
-        let callback =
-            crate::home_files::back_to_core(
-                self.services.core.clone(),
-                move |result: Result<NativeBrowserRetirement, String>| match result {
-                    Ok(receipt) => {
-                        let mut pending = state.owned_creation_cleanup.borrow_mut();
-                        let Some(entry) = pending
-                            .get_mut(&id)
-                            .filter(|entry| Arc::ptr_eq(&entry.identity, &identity))
-                        else {
-                            return;
-                        };
-                        entry.cleanup = None;
-                        entry.receipt = Some(receipt);
-                        drop(pending);
-                        state.finish_creation_rollback(id, &identity);
-                    }
-                    Err(error) => {
-                        state.report_creation_cleanup_error(id, &identity, &error);
-                    }
-                },
-            );
+        let callback = crate::home_files::back_to_core(
+            self.services.core.clone(),
+            move |result: Result<NativeBrowserRetirement, String>| match result {
+                Ok(receipt) => {
+                    let mut pending = state.owned_creation_cleanup.borrow_mut();
+                    let Some(entry) = pending
+                        .get_mut(&id)
+                        .filter(|entry| Arc::ptr_eq(&entry.identity, &identity))
+                    else {
+                        return;
+                    };
+                    entry.cleanup = None;
+                    entry.receipt = Some(receipt);
+                    drop(pending);
+                    state.finish_creation_rollback(id, &identity);
+                }
+                Err(error) => {
+                    state.report_creation_cleanup_error(id, &identity, &error);
+                }
+            },
+        );
         cleanup(callback);
     }
 

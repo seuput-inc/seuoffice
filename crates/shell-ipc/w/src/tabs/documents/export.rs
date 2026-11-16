@@ -155,7 +155,7 @@ impl TabsState {
         }
         if self.tab_contents(id) != Some(target.view) {
             return done(Err(
-                "The captured Docs tab no longer matches its document".into(),
+                "The captured Docs tab no longer matches its document".into()
             ));
         }
         let captured = CapturedDocsClose {
@@ -205,8 +205,8 @@ impl TabsState {
                 self.hooks.docs_query_dirty_captured_many(
                     view,
                     origin,
-                    vec![target],
-                    destination,
+                    vec![destination],
+                    target,
                     cancel,
                     pending,
                     Box::new(move |answer| {
@@ -230,8 +230,8 @@ impl TabsState {
                     view,
                     parent,
                     origin,
-                    vec![target],
-                    destination,
+                    vec![destination],
+                    target,
                     cancel,
                     pending,
                     Box::new(move |answer| {

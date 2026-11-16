@@ -639,7 +639,9 @@ impl RecoveryAdoptPlan {
                         }
                     })?;
                     if repeated {
-                        return Err(plain("recovery adoption effect was admitted more than once"));
+                        return Err(plain(
+                            "recovery adoption effect was admitted more than once",
+                        ));
                     }
                     result.ok_or_else(|| plain("recovery adoption effect was not admitted"))
                 })

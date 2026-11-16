@@ -18,10 +18,12 @@ use shell_contract::hosts::{
     MainWindowHost, MessageBox, MessageBoxAnswer, OsShell, OsShellHost,
 };
 use shell_contract::ipc::{
-    CallContext, ChannelKind, EventSink, Handler, NativeContext, RegisterError, Registry, Reply, Responder,
-    Sender, Target,
+    CallContext, ChannelKind, EventSink, Handler, NativeContext, RegisterError, Registry, Reply,
+    Responder, Sender, Target,
 };
-use shell_contract::runtime::{AppPaths, CancelToken, PathName, RendererGeneration, Services, Thread, Views, Workers};
+use shell_contract::runtime::{
+    AppPaths, CancelToken, PathName, RendererGeneration, Services, Thread, Views, Workers,
+};
 use shell_contract::{
     Batch, CHANNELS, Hosts, IpcValue, Provided, RequestId, Surface, ViewId, WindowId,
 };
@@ -86,14 +88,28 @@ impl EventSink for Recorder {
         })
     }
 
-    fn emit_to_owner_checked(&self, owner: &shell_contract::ipc::NativeRequestOwner, channel: &'static str, args: Vec<IpcValue>) -> Result<(), String> {
-        let generation = owner.context.renderer().filter(|generation| generation.is_active())
+    fn emit_to_owner_checked(
+        &self,
+        owner: &shell_contract::ipc::NativeRequestOwner,
+        channel: &'static str,
+        args: Vec<IpcValue>,
+    ) -> Result<(), String> {
+        let generation = owner
+            .context
+            .renderer()
+            .filter(|generation| generation.is_active())
             .ok_or_else(|| "renderer generation unavailable".to_owned())?;
-        if self.2.sender_of(owner.view).is_none() || !self.2.renderer_generation(owner.view)
-            .is_some_and(|current| current.is_active() && current.same_generation(generation)) {
+        if self.2.sender_of(owner.view).is_none()
+            || !self
+                .2
+                .renderer_generation(owner.view)
+                .is_some_and(|current| current.is_active() && current.same_generation(generation))
+        {
             return Err("renderer generation does not own the view".into());
         }
-        if let Some(error) = self.1.lock().unwrap().take() { return Err(error); }
+        if let Some(error) = self.1.lock().unwrap().take() {
+            return Err(error);
+        }
         self.emit(Target::View(owner.view), channel, args);
         Ok(())
     }
@@ -128,7 +144,10 @@ impl Views for FakeViews {
     fn renderer_generation(&self, view: ViewId) -> Option<RendererGeneration> {
         self.generations.lock().unwrap().get(&view).cloned()
     }
-    fn on_renderer_replaced(&self, listener: Box<dyn Fn(ViewId, RendererGeneration) + Send + Sync>) {
+    fn on_renderer_replaced(
+        &self,
+        listener: Box<dyn Fn(ViewId, RendererGeneration) + Send + Sync>,
+    ) {
         self.replacements.lock().unwrap().push(Arc::from(listener));
     }
 }
@@ -202,33 +221,151 @@ impl Shared {
     }
 }
 
-fn synthetic_owned_dialog_admit(origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken) -> Result<(), String> {
-    let source = origin.context.renderer().ok_or("synthetic dialog source is unbound")?;
-    let target = destination.context.renderer().ok_or("synthetic dialog destination is unbound")?;
+fn synthetic_owned_dialog_admit(
+    origin: &shell_contract::ipc::NativeRequestOwner,
+    destination: &shell_contract::ipc::NativeRequestOwner,
+    cancel: &shell_contract::runtime::CancelToken,
+    pending: &shell_contract::runtime::CancelToken,
+) -> Result<(), String> {
+    let source = origin
+        .context
+        .renderer()
+        .ok_or("synthetic dialog source is unbound")?;
+    let target = destination
+        .context
+        .renderer()
+        .ok_or("synthetic dialog destination is unbound")?;
     let source_loss = origin.loss_token();
     let target_loss = destination.loss_token();
-    source.with_active_pair(target, || shell_contract::runtime::CancelToken::with_active_all([Some(cancel), Some(pending), source_loss.as_ref(), target_loss.as_ref()], || ()))
-        .flatten().ok_or_else(|| "Renderer document is no longer available.".into())
+    source
+        .with_active_pair(target, || {
+            shell_contract::runtime::CancelToken::with_active_all(
+                [
+                    Some(cancel),
+                    Some(pending),
+                    source_loss.as_ref(),
+                    target_loss.as_ref(),
+                ],
+                || (),
+            )
+        })
+        .flatten()
+        .ok_or_else(|| "Renderer document is no longer available.".into())
 }
 
 impl Dialogs for Shared {
     shell_contract::synthetic_recovery_dialog_methods!();
-    fn message_prepared(&self, parent: Option<shell_contract::WindowId>, options: shell_contract::hosts::MessageBox, target: shell_contract::ipc::RecoveryOpenTarget, snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot, done: Box<dyn FnOnce(Result<shell_contract::hosts::MessageBoxAnswer, String>) + Send>) { done(shell_contract::hosts::synthetic::recovery_dialog(&target, &snapshot, || self.message(parent, &options))); }
-    fn save_prepared(&self, parent: Option<shell_contract::WindowId>, options: shell_contract::hosts::FileDialog, target: shell_contract::ipc::RecoveryOpenTarget, snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot, done: Box<dyn FnOnce(Result<Option<shell_contract::ipc::RecoveryPreparedDestination>, String>) + Send>) { done(shell_contract::hosts::synthetic::recovery_save(&target, &snapshot, || self.save(parent, &options))); }
-    fn open_owned(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<Vec<std::path::PathBuf>>, String>) + Send>) {
-        done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.open(parent, &options)));
+    fn message_prepared(
+        &self,
+        parent: Option<shell_contract::WindowId>,
+        options: shell_contract::hosts::MessageBox,
+        target: shell_contract::ipc::RecoveryOpenTarget,
+        snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
+        done: Box<dyn FnOnce(Result<shell_contract::hosts::MessageBoxAnswer, String>) + Send>,
+    ) {
+        done(shell_contract::hosts::synthetic::recovery_dialog(
+            &target,
+            &snapshot,
+            || self.message(parent, &options),
+        ));
     }
-    fn save_owned(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>) {
-        done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.save(parent, &options)));
+    fn save_prepared(
+        &self,
+        parent: Option<shell_contract::WindowId>,
+        options: shell_contract::hosts::FileDialog,
+        target: shell_contract::ipc::RecoveryOpenTarget,
+        snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
+        done: Box<
+            dyn FnOnce(Result<Option<shell_contract::ipc::RecoveryPreparedDestination>, String>)
+                + Send,
+        >,
+    ) {
+        done(shell_contract::hosts::synthetic::recovery_save(
+            &target,
+            &snapshot,
+            || self.save(parent, &options),
+        ));
     }
-    fn message_owned(&self, parent: Option<WindowId>, options: MessageBox, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>) {
-        done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.message(parent, &options)));
+    fn open_owned(
+        &self,
+        parent: Option<WindowId>,
+        options: FileDialog,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        destination: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<Option<Vec<std::path::PathBuf>>, String>) + Send>,
+    ) {
+        done(
+            synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending)
+                .map(|()| self.open(parent, &options)),
+        );
     }
-    fn save_owned_many(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>) {
-        done(shell_contract::hosts::synthetic::admit_many(&origin, &participants, &cancel, &pending, || self.save(parent, &options)));
+    fn save_owned(
+        &self,
+        parent: Option<WindowId>,
+        options: FileDialog,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        destination: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>,
+    ) {
+        done(
+            synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending)
+                .map(|()| self.save(parent, &options)),
+        );
     }
-    fn message_owned_many(&self, parent: Option<WindowId>, options: MessageBox, origin: shell_contract::ipc::NativeRequestOwner, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>) {
-        done(shell_contract::hosts::synthetic::admit_many(&origin, &participants, &cancel, &pending, || self.message(parent, &options)));
+    fn message_owned(
+        &self,
+        parent: Option<WindowId>,
+        options: MessageBox,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        destination: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>,
+    ) {
+        done(
+            synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending)
+                .map(|()| self.message(parent, &options)),
+        );
+    }
+    fn save_owned_many(
+        &self,
+        parent: Option<WindowId>,
+        options: FileDialog,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>,
+    ) {
+        done(shell_contract::hosts::synthetic::admit_many(
+            &origin,
+            &participants,
+            &cancel,
+            &pending,
+            || self.save(parent, &options),
+        ));
+    }
+    fn message_owned_many(
+        &self,
+        parent: Option<WindowId>,
+        options: MessageBox,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>,
+    ) {
+        done(shell_contract::hosts::synthetic::admit_many(
+            &origin,
+            &participants,
+            &cancel,
+            &pending,
+            || self.message(parent, &options),
+        ));
     }
     fn open(&self, parent: Option<WindowId>, options: &FileDialog) -> Option<Vec<PathBuf>> {
         self.log(HostCall::Open(parent, options.clone()));
@@ -267,7 +404,11 @@ impl OsShell for Shared {
         self.log(HostCall::Trash(path.into()));
         Ok(())
     }
-    fn trash_item_authorized(&self, path: &std::path::Path, admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>) -> Result<(), String> {
+    fn trash_item_authorized(
+        &self,
+        path: &std::path::Path,
+        admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>,
+    ) -> Result<(), String> {
         admit(&mut || self.trash_item(path))
     }
 }
@@ -312,27 +453,91 @@ impl Contents for Shared {
             .clone()
             .ok_or_else(|| "capture failed".into())
     }
-    fn print_to_pdf_owned(&self, _: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, options: IpcValue) -> Result<Vec<u8>, String> {
-        if cancel.is_cancelled() || pending.is_cancelled() { return Err("Print request expired.".into()); }
+    fn print_to_pdf_owned(
+        &self,
+        _: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        options: IpcValue,
+    ) -> Result<Vec<u8>, String> {
+        if cancel.is_cancelled() || pending.is_cancelled() {
+            return Err("Print request expired.".into());
+        }
         self.print_to_pdf(destination.view, options)
     }
-    fn print_to_pdf_existing_document(&self, binding: &shell_contract::ipc::NativeExistingDocumentBinding, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], options: IpcValue) -> Result<Vec<u8>, String> {
+    fn print_to_pdf_existing_document(
+        &self,
+        binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+        options: IpcValue,
+    ) -> Result<Vec<u8>, String> {
         let extra = additional.iter().collect::<Vec<_>>();
         let mut admitted = false;
-        shell_contract::hosts::synthetic::with_existing_document_save_extra(binding, participants, cancel, pending, &extra, &mut || { admitted = true; Ok(()) })?;
-        if !admitted { return Err("Print request expired.".into()); }
+        shell_contract::hosts::synthetic::with_existing_document_save_extra(
+            binding,
+            participants,
+            cancel,
+            pending,
+            &extra,
+            &mut || {
+                admitted = true;
+                Ok(())
+            },
+        )?;
+        if !admitted {
+            return Err("Print request expired.".into());
+        }
         self.print_to_pdf(binding.owner().view, options)
     }
-    fn print_to_pdf_owned_many_extra(&self, origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], options: IpcValue) -> Result<Vec<u8>, String> {
-        let mut owners = participants.to_vec(); owners.push(destination.clone());
+    fn print_to_pdf_owned_many_extra(
+        &self,
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+        options: IpcValue,
+    ) -> Result<Vec<u8>, String> {
+        let mut owners = participants.to_vec();
+        owners.push(destination.clone());
         let extra = additional.iter().collect::<Vec<_>>();
-        shell_contract::hosts::synthetic::with_owned_effect_many_extra(origin, &owners, cancel, pending, &extra, &mut || Ok(()))?;
+        shell_contract::hosts::synthetic::with_owned_effect_many_extra(
+            origin,
+            &owners,
+            cancel,
+            pending,
+            &extra,
+            &mut || Ok(()),
+        )?;
         self.print_to_pdf(destination.view, options)
     }
-    fn print_to_pdf_native_invocation(&self, document: &shell_contract::ipc::NativeInvocationDocument, owner: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, options: IpcValue) -> Result<Vec<u8>, String> {
+    fn print_to_pdf_native_invocation(
+        &self,
+        document: &shell_contract::ipc::NativeInvocationDocument,
+        owner: &shell_contract::ipc::NativeRequestOwner,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        options: IpcValue,
+    ) -> Result<Vec<u8>, String> {
         let mut options = Some(options);
         let mut admitted = None;
-        shell_contract::hosts::synthetic::with_native_invocation(document, owner, participants, cancel, pending, &mut || { admitted = options.take(); Ok(()) })?;
+        shell_contract::hosts::synthetic::with_native_invocation(
+            document,
+            owner,
+            participants,
+            cancel,
+            pending,
+            &mut || {
+                admitted = options.take();
+                Ok(())
+            },
+        )?;
         self.print_to_pdf(owner.view, admitted.ok_or("Print request expired.")?)
     }
     fn print_to_pdf(&self, view: ViewId, _options: IpcValue) -> Result<Vec<u8>, String> {
@@ -483,10 +688,20 @@ impl Rt {
             paths: Arc::new(Paths(dir.clone())),
             hosts: Arc::new(map),
         };
-        let mut services = if install { shell_contract::hosts::synthetic::SyntheticOwnedEffects::install(services) } else { services };
+        let mut services = if install {
+            shell_contract::hosts::synthetic::SyntheticOwnedEffects::install(services)
+        } else {
+            services
+        };
         if install {
-            let reload: shell_contract::hosts::PdfReloadHost = Arc::new(pdf_reload::SyntheticPdfReload { views: views.clone(), shared: shared.clone() });
-            Arc::get_mut(&mut services.hosts).expect("install synthetic PDF reload before sharing services").insert(reload);
+            let reload: shell_contract::hosts::PdfReloadHost =
+                Arc::new(pdf_reload::SyntheticPdfReload {
+                    views: views.clone(),
+                    shared: shared.clone(),
+                });
+            Arc::get_mut(&mut services.hosts)
+                .expect("install synthetic PDF reload before sharing services")
+                .insert(reload);
         }
         Rt {
             services,
@@ -538,15 +753,27 @@ impl Rt {
             surface,
         };
         self.views.views.lock().unwrap().push(sender);
-        self.views.generations.lock().unwrap().insert(sender.view, RendererGeneration::new());
-        self.views.browser_lifetimes.lock().unwrap().insert(sender.view, CancelToken::default());
+        self.views
+            .generations
+            .lock()
+            .unwrap()
+            .insert(sender.view, RendererGeneration::new());
+        self.views
+            .browser_lifetimes
+            .lock()
+            .unwrap()
+            .insert(sender.view, CancelToken::default());
         sender
     }
 
     /// Destroys a view: its listeners run on the core thread
     pub fn destroy(&mut self, view: ViewId) {
-        if let Some(browser) = self.views.browser_lifetimes.lock().unwrap().remove(&view) { browser.cancel(); }
-        if let Some(generation) = self.views.generations.lock().unwrap().remove(&view) { generation.revoke(); }
+        if let Some(browser) = self.views.browser_lifetimes.lock().unwrap().remove(&view) {
+            browser.cancel();
+        }
+        if let Some(generation) = self.views.generations.lock().unwrap().remove(&view) {
+            generation.revoke();
+        }
         self.views.views.lock().unwrap().retain(|s| s.view != view);
         let listeners: Vec<_> = self.views.listeners.lock().unwrap().clone();
         for l in listeners {
@@ -556,11 +783,18 @@ impl Rt {
     }
 
     pub fn replace_renderer(&mut self, view: ViewId) {
-        let old = self.views.generations.lock().unwrap().insert(view, RendererGeneration::new());
+        let old = self
+            .views
+            .generations
+            .lock()
+            .unwrap()
+            .insert(view, RendererGeneration::new());
         if let Some(old) = old {
             old.revoke();
             let listeners = self.views.replacements.lock().unwrap().clone();
-            for listener in listeners { listener(view, old.clone()); }
+            for listener in listeners {
+                listener(view, old.clone());
+            }
         }
         self.drain();
     }
@@ -626,23 +860,55 @@ impl Rt {
             request,
             cancel: CancelToken::default(),
             native: if from.surface == Surface::Docs || channel.starts_with("pdf:") {
-                self.views.renderer_generation(from.view).and_then(|generation| {
-                    self.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>()
-                        .and_then(|effects| effects.capture_owner(from.view, &generation).ok()
-                            .filter(|owner| from.surface != Surface::Docs || effects.docs_document_identity(owner).is_some()))
-                        .map(|owner| owner.context)
-                })
-            } else if matches!(channel, "docs:write-recovery-now-done" | "hwp:recovery-flushed")
-                || (channel == "docs:close-check-result" && args.get(1).is_some_and(|value| matches!(value, IpcValue::String(_)))) {
-                self.views.renderer_generation(from.view).map(|generation| NativeContext::with_renderer((), generation))
-            } else { None },
+                self.views
+                    .renderer_generation(from.view)
+                    .and_then(|generation| {
+                        self.services
+                            .hosts
+                            .get::<shell_contract::hosts::OwnedEffectsHost>()
+                            .and_then(|effects| {
+                                effects
+                                    .capture_owner(from.view, &generation)
+                                    .ok()
+                                    .filter(|owner| {
+                                        from.surface != Surface::Docs
+                                            || effects.docs_document_identity(owner).is_some()
+                                    })
+                            })
+                            .map(|owner| owner.context)
+                    })
+            } else if matches!(
+                channel,
+                "docs:write-recovery-now-done" | "hwp:recovery-flushed"
+            ) || (channel == "docs:close-check-result"
+                && args
+                    .get(1)
+                    .is_some_and(|value| matches!(value, IpcValue::String(_))))
+            {
+                self.views
+                    .renderer_generation(from.view)
+                    .map(|generation| NativeContext::with_renderer((), generation))
+            } else {
+                None
+            },
         };
         let mut reply_authority = None;
         if channel == "docs:consume-pending-open" && kind == ChannelKind::Invoke {
-            if let Some(effects) = self.services.hosts.get::<Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>().cloned() {
+            if let Some(effects) = self
+                .services
+                .hosts
+                .get::<Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>()
+                .cloned()
+            {
                 if let Some(native) = cx.native.take() {
-                    let (owner, authority) = shell_contract::hosts::synthetic::SyntheticReplyAuthority::attach(
-                        shell_contract::ipc::NativeRequestOwner { view: from.view, context: native }, &cx.cancel);
+                    let (owner, authority) =
+                        shell_contract::hosts::synthetic::SyntheticReplyAuthority::attach(
+                            shell_contract::ipc::NativeRequestOwner {
+                                view: from.view,
+                                context: native,
+                            },
+                            &cx.cancel,
+                        );
                     cx.native = Some(owner.context);
                     reply_authority = Some((effects, authority));
                 }
@@ -656,7 +922,9 @@ impl Rt {
             Responder::new(move |reply| {
                 if let Some((effects, authority)) = reply_authority {
                     let _ = authority.deliver(&effects, || *answer.lock().unwrap() = Some(reply));
-                } else { *answer.lock().unwrap() = Some(reply); }
+                } else {
+                    *answer.lock().unwrap() = Some(reply);
+                }
             }),
         );
         self.drain();
@@ -668,37 +936,99 @@ impl Rt {
         self.call(ChannelKind::Invoke, channel, from, args)
     }
 
-    pub fn invoke_native(&mut self,channel:&str,from:Sender,args:Vec<IpcValue>,native:NativeContext,cancel:CancelToken)->Pending{
-        let (kind,handler)=self.table.handlers.get(channel).map(|(kind,handler)|(*kind,Rc::clone(handler))).unwrap_or_else(||panic!("no handler for {channel}"));
-        assert_eq!(kind,ChannelKind::Invoke);
-        self.next_request+=1;
+    pub fn invoke_native(
+        &mut self,
+        channel: &str,
+        from: Sender,
+        args: Vec<IpcValue>,
+        native: NativeContext,
+        cancel: CancelToken,
+    ) -> Pending {
+        let (kind, handler) = self
+            .table
+            .handlers
+            .get(channel)
+            .map(|(kind, handler)| (*kind, Rc::clone(handler)))
+            .unwrap_or_else(|| panic!("no handler for {channel}"));
+        assert_eq!(kind, ChannelKind::Invoke);
+        self.next_request += 1;
         let mut reply_authority = None;
         let native = if channel == "docs:consume-pending-open" {
-            if let Some(effects) = self.services.hosts.get::<Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>().cloned() {
-                let (owner, authority) = shell_contract::hosts::synthetic::SyntheticReplyAuthority::attach(
-                    shell_contract::ipc::NativeRequestOwner { view: from.view, context: native }, &cancel);
+            if let Some(effects) = self
+                .services
+                .hosts
+                .get::<Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>()
+                .cloned()
+            {
+                let (owner, authority) =
+                    shell_contract::hosts::synthetic::SyntheticReplyAuthority::attach(
+                        shell_contract::ipc::NativeRequestOwner {
+                            view: from.view,
+                            context: native,
+                        },
+                        &cancel,
+                    );
                 reply_authority = Some((effects, authority));
                 owner.context
-            } else { native }
-        } else { native };
-        let cx=CallContext{sender:from,request:Some(RequestId(self.next_request)),cancel,native:Some(native)};
-        let slot:Arc<Mutex<Option<Reply>>>=Arc::default();let answer=slot.clone();
-        handler.call(&cx,args,Responder::new(move|reply|{
-            if let Some((effects, authority)) = reply_authority {
-                let _ = authority.deliver(&effects, || *answer.lock().unwrap() = Some(reply));
             } else {
-                *answer.lock().unwrap() = Some(reply);
+                native
             }
-        }));
+        } else {
+            native
+        };
+        let cx = CallContext {
+            sender: from,
+            request: Some(RequestId(self.next_request)),
+            cancel,
+            native: Some(native),
+        };
+        let slot: Arc<Mutex<Option<Reply>>> = Arc::default();
+        let answer = slot.clone();
+        handler.call(
+            &cx,
+            args,
+            Responder::new(move |reply| {
+                if let Some((effects, authority)) = reply_authority {
+                    let _ = authority.deliver(&effects, || *answer.lock().unwrap() = Some(reply));
+                } else {
+                    *answer.lock().unwrap() = Some(reply);
+                }
+            }),
+        );
         self.drain();
         Pending(slot)
     }
 
-    pub fn send_native(&mut self, channel: &str, from: Sender, args: Vec<IpcValue>, native: NativeContext, cancel: CancelToken) {
-        let (kind, handler) = self.table.handlers.get(channel).map(|(kind, handler)| (*kind, Rc::clone(handler))).expect("native send handler registered");
+    pub fn send_native(
+        &mut self,
+        channel: &str,
+        from: Sender,
+        args: Vec<IpcValue>,
+        native: NativeContext,
+        cancel: CancelToken,
+    ) {
+        let (kind, handler) = self
+            .table
+            .handlers
+            .get(channel)
+            .map(|(kind, handler)| (*kind, Rc::clone(handler)))
+            .expect("native send handler registered");
         assert_eq!(kind, ChannelKind::Send);
-        let cx = CallContext { sender: from, request: None, cancel, native: Some(native) };
-        handler.call(&cx, args, Responder::new(|reply| { if let Err(error) = reply { panic!("native send failed: {error}"); } }));
+        let cx = CallContext {
+            sender: from,
+            request: None,
+            cancel,
+            native: Some(native),
+        };
+        handler.call(
+            &cx,
+            args,
+            Responder::new(|reply| {
+                if let Err(error) = reply {
+                    panic!("native send failed: {error}");
+                }
+            }),
+        );
         self.drain();
     }
 
@@ -716,11 +1046,30 @@ impl Rt {
         }
     }
 
-    pub fn send_from_generation(&mut self, channel: &str, from: Sender, args: Vec<IpcValue>, generation: RendererGeneration) {
-        assert!(matches!(channel, "docs:write-recovery-now-done" | "hwp:recovery-flushed" | "docs:close-save-result"));
-        let (kind, handler) = self.table.handlers.get(channel).map(|(kind, handler)| (*kind, Rc::clone(handler))).expect("ACK handler registered");
+    pub fn send_from_generation(
+        &mut self,
+        channel: &str,
+        from: Sender,
+        args: Vec<IpcValue>,
+        generation: RendererGeneration,
+    ) {
+        assert!(matches!(
+            channel,
+            "docs:write-recovery-now-done" | "hwp:recovery-flushed" | "docs:close-save-result"
+        ));
+        let (kind, handler) = self
+            .table
+            .handlers
+            .get(channel)
+            .map(|(kind, handler)| (*kind, Rc::clone(handler)))
+            .expect("ACK handler registered");
         assert_eq!(kind, ChannelKind::Send);
-        let cx = CallContext { sender: from, request: None, cancel: CancelToken::default(), native: Some(NativeContext::with_renderer((), generation)) };
+        let cx = CallContext {
+            sender: from,
+            request: None,
+            cancel: CancelToken::default(),
+            native: Some(NativeContext::with_renderer((), generation)),
+        };
         handler.call(&cx, args, Responder::new(|_| {}));
         self.drain();
     }

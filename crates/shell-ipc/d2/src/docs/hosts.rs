@@ -7,8 +7,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use main_core::docs::doc_format::Materialized;
 use main_core::docs::byte_handoff::MediaPermit;
+use main_core::docs::doc_format::Materialized;
 use main_core::docs::hwp_export::{HwpConversion, HwpError, HwpFormat};
 use main_core::docs::lazy_media::{LazyMediaBody, OpenedLazyDocx};
 use main_core::packages::electron_utils::safe_remote_url::Response;
@@ -43,21 +43,53 @@ pub trait DocsEngine: Send + Sync {
     /// `openLazyDocx`: `None` is the original cache-optimization fallback
     /// for a small, encrypted or unreadable ZIP (apps/docs/src/main/lazy-media.ts:79-103).
     /// A host transport failure is not that fallback and is returned.
-    fn open_lazy_docx(&self, path: &str, file: Option<std::sync::Arc<std::fs::File>>, permit: MediaPermit, cancel: shell_contract::runtime::CancelToken) -> Result<Option<OpenedLazyDocx>, String>;
-    fn open_lazy_saved(&self, path: &str, input: shell_contract::ipc::NativeSavedInput, permit: MediaPermit, cancel: CancelToken) -> Result<Option<OpenedLazyDocx>, String>;
+    fn open_lazy_docx(
+        &self,
+        path: &str,
+        file: Option<std::sync::Arc<std::fs::File>>,
+        permit: MediaPermit,
+        cancel: shell_contract::runtime::CancelToken,
+    ) -> Result<Option<OpenedLazyDocx>, String>;
+    fn open_lazy_saved(
+        &self,
+        path: &str,
+        input: shell_contract::ipc::NativeSavedInput,
+        permit: MediaPermit,
+        cancel: CancelToken,
+    ) -> Result<Option<OpenedLazyDocx>, String>;
     /// `adoptLazyMediaHashes` catches malformed ZIPs (lazy-media.ts:107-117);
     /// host transport failures are still returned.
-    fn adopt_lazy_media_hashes(&self, bytes: &[u8], path: &str, file: Option<std::sync::Arc<std::fs::File>>, permit: MediaPermit, cancel: shell_contract::runtime::CancelToken) -> Result<(), String>;
+    fn adopt_lazy_media_hashes(
+        &self,
+        bytes: &[u8],
+        path: &str,
+        file: Option<std::sync::Arc<std::fs::File>>,
+        permit: MediaPermit,
+        cancel: shell_contract::runtime::CancelToken,
+    ) -> Result<(), String>;
     fn adopt_lazy_saved(
-        &self, bytes: &[u8], path: &str, input: shell_contract::ipc::NativeSavedInput,
-        permit: MediaPermit, cancel: CancelToken,
+        &self,
+        bytes: &[u8],
+        path: &str,
+        input: shell_contract::ipc::NativeSavedInput,
+        permit: MediaPermit,
+        cancel: CancelToken,
     ) -> Result<(), String>;
     fn adopt_lazy_decrypted(
-        &self, bytes: &[u8], path: &str, plain: Arc<Vec<u8>>,
-        permit: MediaPermit, cancel: CancelToken,
+        &self,
+        bytes: &[u8],
+        path: &str,
+        plain: Arc<Vec<u8>>,
+        permit: MediaPermit,
+        cancel: CancelToken,
     ) -> Result<(), String>;
     /// `materializeLazyDocx(bytes)`: the lazily served pictures put back
-    fn materialize_lazy_docx(&self, bytes: Vec<u8>, permit: MediaPermit, cancel: shell_contract::runtime::CancelToken) -> Result<Materialized, String>;
+    fn materialize_lazy_docx(
+        &self,
+        bytes: Vec<u8>,
+        permit: MediaPermit,
+        cancel: shell_contract::runtime::CancelToken,
+    ) -> Result<Materialized, String>;
     /// `pointLazyMediaAt(hashes, filePath, wcId, plain)`
     fn point_lazy_media_at(
         &self,
@@ -71,7 +103,12 @@ pub trait DocsEngine: Send + Sync {
     /// `forgetLazyMediaOwner(wcId)`
     fn forget_lazy_media_owner(&self, permit: MediaPermit) -> Result<(), String>;
     /// `readLazyMedia(url)`
-    fn read_lazy_media(&self, url: &str, permit: MediaPermit, cancel: shell_contract::runtime::CancelToken) -> Result<Option<LazyMediaBody>, String>;
+    fn read_lazy_media(
+        &self,
+        url: &str,
+        permit: MediaPermit,
+        cancel: shell_contract::runtime::CancelToken,
+    ) -> Result<Option<LazyMediaBody>, String>;
     /// `handOffBytes(bytes)` of `byte-handoff.ts`: the one-shot URL the media
     /// protocol serves the bytes under
     fn hand_off_bytes(&self, bytes: Vec<u8>, permit: MediaPermit) -> Result<String, String>;
@@ -82,12 +119,24 @@ pub trait DocsEngine: Send + Sync {
     /// `convertLegacyDocToDocx(bytes).docx` of `packages/doc2docx`
     fn convert_legacy_doc(&self, bytes: Vec<u8>) -> Result<Vec<u8>, String>;
     /// Recovery conversion retains the committed seed and its actual receiver.
-    fn convert_legacy_doc_recovery(&self, bytes: Vec<u8>, receipt: shell_contract::ipc::RecoverySeedReceipt, receiver: shell_contract::ipc::NativeRequestOwner, cancel: CancelToken) -> Result<Vec<u8>, String>;
+    fn convert_legacy_doc_recovery(
+        &self,
+        bytes: Vec<u8>,
+        receipt: shell_contract::ipc::RecoverySeedReceipt,
+        receiver: shell_contract::ipc::NativeRequestOwner,
+        cancel: CancelToken,
+    ) -> Result<Vec<u8>, String>;
     /// `convertHtmlToDocx({ url }, ElectronBrowserDriver.create(794x1123 @2),
     /// { naturalTableWidth: true }).docx` of `packages/html2docx` for the
     /// generated HTML bytes; `Ok(None)` when `timeout` passed first (the
     /// hidden window is destroyed then, as the TypeScript's watchdog does).
-    fn html_to_docx(&self, html: Vec<u8>, timeout: Duration, view: ViewId, cancel: CancelToken) -> Result<Option<Vec<u8>>, String>;
+    fn html_to_docx(
+        &self,
+        html: Vec<u8>,
+        timeout: Duration,
+        view: ViewId,
+        cancel: CancelToken,
+    ) -> Result<Option<Vec<u8>>, String>;
     /// `readMergeDataSource(path)` of `merge-data-source.ts` (xlsx-gateway
     /// readers, `mergeDataFromRows`)
     fn read_merge_data_source(&self, path: &str) -> Result<serde_json::Value, String>;
@@ -129,18 +178,29 @@ pub type GeneratedActorWake = Arc<dyn Fn(Box<dyn FnOnce(Result<(), String>) + Se
 /// Electron calls of `docs-main.ts` no shared host has.
 pub trait DocsShell: Send + Sync {
     fn register_generated_actor_cleanup(
-        &self, wake: GeneratedActorWake,
+        &self,
+        wake: GeneratedActorWake,
     ) -> Result<Box<dyn shell_contract::hosts::GeneratedCleanupRegistration>, String>;
-    fn capture_dirty_query_target(&self, view: ViewId, expected: &shell_contract::runtime::RendererGeneration) -> Result<shell_contract::ipc::NativeRequestOwner, String>;
+    fn capture_dirty_query_target(
+        &self,
+        view: ViewId,
+        expected: &shell_contract::runtime::RendererGeneration,
+    ) -> Result<shell_contract::ipc::NativeRequestOwner, String>;
     /// `getUiLang()`
     fn ui_lang(&self) -> Lang;
     /// `isHeadlessMode()`
     fn is_headless(&self) -> bool;
     fn unlock_recovery_prepared(
-        &self, target: shell_contract::ipc::RecoveryOpenTarget, snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot, title: String, bytes: &[u8],
+        &self,
+        target: shell_contract::ipc::RecoveryOpenTarget,
+        snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
+        title: String,
+        bytes: &[u8],
     ) -> Result<Option<(Vec<u8>, String)>, String>;
     fn unlock_saved_document(
-        &self, document: shell_contract::ipc::NativeSavedDocument, title: String,
+        &self,
+        document: shell_contract::ipc::NativeSavedDocument,
+        title: String,
     ) -> Result<Option<(Vec<u8>, String)>, String>;
     /// `crypto.randomUUID()` (recovery slots, temp names, write-copies-now tokens)
     fn random_uuid(&self) -> String;
@@ -149,37 +209,63 @@ pub trait DocsShell: Send + Sync {
     /// `fileSavedHook(wc, path)`: the path the shell filed the new file under
     fn file_saved(&self, view: ViewId, path: &str) -> Option<String>;
     fn file_saved_owned(
-        &self, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner,
+        &self,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        destination: shell_contract::ipc::NativeRequestOwner,
         participants: Vec<shell_contract::ipc::NativeRequestOwner>,
-        cancel: CancelToken, pending: CancelToken, effects: shell_contract::hosts::OwnedEffectsHost, path: std::path::PathBuf,
+        cancel: CancelToken,
+        pending: CancelToken,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        path: std::path::PathBuf,
         done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>,
     );
     fn file_saved_existing_document(
-        &self, destination: shell_contract::ipc::NativeSaveDestination,
-        participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: CancelToken, pending: CancelToken,
-        additional: Vec<CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost,
+        &self,
+        destination: shell_contract::ipc::NativeSaveDestination,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: CancelToken,
+        pending: CancelToken,
+        additional: Vec<CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
         done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>,
     );
     fn prepare_docs_menu_refresh_existing_document(
-        &self, binding: shell_contract::ipc::NativeExistingDocumentBinding,
-        participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: CancelToken, pending: CancelToken,
-        additional: Vec<CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost,
+        &self,
+        binding: shell_contract::ipc::NativeExistingDocumentBinding,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: CancelToken,
+        pending: CancelToken,
+        additional: Vec<CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
     ) -> Result<Option<OwnedMenuRefresh>, String>;
     fn prepare_docs_menu_refresh_owned(
-        &self, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner,
+        &self,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        destination: shell_contract::ipc::NativeRequestOwner,
         participants: Vec<shell_contract::ipc::NativeRequestOwner>,
-        cancel: CancelToken, pending: CancelToken, effects: shell_contract::hosts::OwnedEffectsHost,
+        cancel: CancelToken,
+        pending: CancelToken,
+        effects: shell_contract::hosts::OwnedEffectsHost,
     ) -> Result<Option<OwnedMenuRefresh>, String>;
     fn prepare_docs_menu_refresh_recovery(
-        &self, receipt: shell_contract::ipc::RecoverySeedReceipt, receiver: shell_contract::ipc::NativeRequestOwner,
-        cancel: CancelToken, pending: CancelToken, effects: shell_contract::hosts::OwnedEffectsHost,
+        &self,
+        receipt: shell_contract::ipc::RecoverySeedReceipt,
+        receiver: shell_contract::ipc::NativeRequestOwner,
+        cancel: CancelToken,
+        pending: CancelToken,
+        effects: shell_contract::hosts::OwnedEffectsHost,
     ) -> Result<Option<OwnedMenuRefresh>, String>;
     /// `fileOpenedHook(wcId, path)`
     fn file_opened(&self, view: ViewId, path: &str);
     fn file_opened_recovery(
-        &self, path: String, receipt: shell_contract::ipc::RecoverySeedReceipt,
-        receiver: shell_contract::ipc::NativeRequestOwner, cancel: CancelToken, pending: CancelToken,
-        effects: shell_contract::hosts::OwnedEffectsHost, done: Box<dyn FnOnce(Result<(), String>)>,
+        &self,
+        path: String,
+        receipt: shell_contract::ipc::RecoverySeedReceipt,
+        receiver: shell_contract::ipc::NativeRequestOwner,
+        cancel: CancelToken,
+        pending: CancelToken,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        done: Box<dyn FnOnce(Result<(), String>)>,
     );
     /// `shellHooks.newDocumentDir(wcId)`: a project folder for a new document
     fn new_document_dir(&self, view: ViewId) -> Option<String>;
@@ -196,25 +282,45 @@ pub trait DocsShell: Send + Sync {
         bytes: Vec<u8>,
     ) -> Option<Result<Option<String>, String>>;
     fn write_new_document_owned(
-        &self, origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner,
-        cancel: &CancelToken, pending: &CancelToken, effects: &shell_contract::hosts::OwnedEffectsHost,
+        &self,
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &CancelToken,
+        pending: &CancelToken,
+        effects: &shell_contract::hosts::OwnedEffectsHost,
         admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
-        file_name: &str, bytes: &[u8],
+        file_name: &str,
+        bytes: &[u8],
     ) -> Result<Option<String>, String>;
     fn permits_synthetic_create(&self) -> bool;
-    fn open_ai_doc_tab_synthetic(&self, content: serde_json::Value, owner: ViewId) -> Result<(), String>;
+    fn open_ai_doc_tab_synthetic(
+        &self,
+        content: serde_json::Value,
+        owner: ViewId,
+    ) -> Result<(), String>;
     fn open_ai_doc_tab_owned(
-        &self, content: serde_json::Value, origin: shell_contract::ipc::NativeRequestOwner,
-        destination: shell_contract::ipc::NativeRequestOwner, cancel: CancelToken, pending: CancelToken,
-        effects: shell_contract::hosts::OwnedEffectsHost, then: Box<dyn FnOnce(Result<(), String>) + Send>,
+        &self,
+        content: serde_json::Value,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        destination: shell_contract::ipc::NativeRequestOwner,
+        cancel: CancelToken,
+        pending: CancelToken,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        then: Box<dyn FnOnce(Result<(), String>) + Send>,
     );
     /// `shellHooks.openGeneratedPath(path)`: `false` when no tab took it
     fn open_generated_path(&self, path: &str) -> Result<bool, String>;
     fn prepare_generated_output(
-        &self, output: shell_contract::ipc::SavedPublication, input: Option<shell_contract::ipc::NativeSavedInput>,
-        participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: CancelToken, pending: CancelToken,
-        additional: Vec<CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost,
-        accepted: shell_contract::hosts::PdfReloadAccepted, wake: shell_contract::hosts::GeneratedPathWake,
+        &self,
+        output: shell_contract::ipc::SavedPublication,
+        input: Option<shell_contract::ipc::NativeSavedInput>,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: CancelToken,
+        pending: CancelToken,
+        additional: Vec<CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        accepted: shell_contract::hosts::PdfReloadAccepted,
+        wake: shell_contract::hosts::GeneratedPathWake,
     ) -> Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String>;
     /// `activeDocsWebContents()`
     fn active_docs_view(&self) -> Option<ViewId>;
@@ -240,12 +346,21 @@ pub trait DocsShell: Send + Sync {
     /// `printHtmlToPdf(html, () => new BrowserWindow({ show: false, sandbox, javascript: false }))`
     fn print_html_to_pdf(&self, html: String) -> Result<Vec<u8>, String>;
     fn print_html_to_pdf_owned(
-        &self, html: String, origin: &shell_contract::ipc::NativeRequestOwner,
-        destination: &shell_contract::ipc::NativeRequestOwner, cancel: &CancelToken, pending: &CancelToken,
+        &self,
+        html: String,
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &CancelToken,
+        pending: &CancelToken,
     ) -> Result<Vec<u8>, String>;
     /// `net.fetch(url)` (it must reach the app's media schemes too); `Err`
     /// is `String(err)` of the rejection. Runs on a worker.
-    fn net_fetch(&self, url: &str, permit: &MediaPermit, cancel: &CancelToken) -> Result<Box<dyn Response + Send>, String>;
+    fn net_fetch(
+        &self,
+        url: &str,
+        permit: &MediaPermit,
+        cancel: &CancelToken,
+    ) -> Result<Box<dyn Response + Send>, String>;
 }
 
 pub type DocsShellHost = Arc<dyn DocsShell>;
@@ -306,7 +421,14 @@ mod fake {
         pub calls: Arc<Mutex<Vec<Value>>>,
         probe: Option<ProbeLog>,
         uuids: Arc<Mutex<u64>>,
-        query_runtime: Arc<Mutex<Option<(Arc<dyn shell_contract::runtime::Views>, Arc<dyn shell_contract::ipc::EventSink>)>>>,
+        query_runtime: Arc<
+            Mutex<
+                Option<(
+                    Arc<dyn shell_contract::runtime::Views>,
+                    Arc<dyn shell_contract::ipc::EventSink>,
+                )>,
+            >,
+        >,
     }
 
     impl Fake {
@@ -321,7 +443,8 @@ mod fake {
         }
 
         pub(crate) fn bind_query_runtime(&self, services: &shell_contract::runtime::Services) {
-            *self.query_runtime.lock().unwrap() = Some((services.views.clone(), services.events.clone()));
+            *self.query_runtime.lock().unwrap() =
+                Some((services.views.clone(), services.events.clone()));
         }
 
         fn log(&self, line: Value) {
@@ -384,57 +507,139 @@ mod fake {
     }
 
     impl DocsEngine for Fake {
-        fn open_lazy_docx(&self, path: &str, _file: Option<std::sync::Arc<std::fs::File>>, permit: MediaPermit, cancel: shell_contract::runtime::CancelToken) -> Result<Option<OpenedLazyDocx>, String> {
-            if cancel.is_cancelled() || !permit.is_active() { return Err("Document operation cancelled".into()); }
+        fn open_lazy_docx(
+            &self,
+            path: &str,
+            _file: Option<std::sync::Arc<std::fs::File>>,
+            permit: MediaPermit,
+            cancel: shell_contract::runtime::CancelToken,
+        ) -> Result<Option<OpenedLazyDocx>, String> {
+            if cancel.is_cancelled() || !permit.is_active() {
+                return Err("Document operation cancelled".into());
+            }
             self.log(json!(["openLazyDocx", path, permit.owner().view]));
-            let Some(v) = self.answer("open_lazy_docx") else { return Ok(None) };
-            if let Some(error) = error_of(&v) { return Err(error); }
-            Ok(v.get("bytes").zip(v.get("hash").and_then(Value::as_str)).map(|(data, hash)| OpenedLazyDocx {
-                bytes: bytes(data),
-                hash: hash.to_owned(),
-            }))
+            let Some(v) = self.answer("open_lazy_docx") else {
+                return Ok(None);
+            };
+            if let Some(error) = error_of(&v) {
+                return Err(error);
+            }
+            Ok(v.get("bytes")
+                .zip(v.get("hash").and_then(Value::as_str))
+                .map(|(data, hash)| OpenedLazyDocx {
+                    bytes: bytes(data),
+                    hash: hash.to_owned(),
+                }))
         }
-        fn open_lazy_saved(&self, path: &str, input: shell_contract::ipc::NativeSavedInput, permit: MediaPermit, cancel: CancelToken) -> Result<Option<OpenedLazyDocx>, String> {
-            if cancel.is_cancelled() || !permit.is_active() { return Err("Document operation cancelled".into()); }
-            self.log(json!(["openLazySaved", path, permit.owner().view, input.bytes().len()]));
-            let Some(v) = self.answer("open_lazy_docx") else { return Ok(None) };
-            if let Some(error) = error_of(&v) { return Err(error); }
-            Ok(v.get("bytes").zip(v.get("hash").and_then(Value::as_str)).map(|(data, hash)| OpenedLazyDocx {
-                bytes: bytes(data), hash: hash.to_owned(),
-            }))
+        fn open_lazy_saved(
+            &self,
+            path: &str,
+            input: shell_contract::ipc::NativeSavedInput,
+            permit: MediaPermit,
+            cancel: CancelToken,
+        ) -> Result<Option<OpenedLazyDocx>, String> {
+            if cancel.is_cancelled() || !permit.is_active() {
+                return Err("Document operation cancelled".into());
+            }
+            self.log(json!([
+                "openLazySaved",
+                path,
+                permit.owner().view,
+                input.bytes().len()
+            ]));
+            let Some(v) = self.answer("open_lazy_docx") else {
+                return Ok(None);
+            };
+            if let Some(error) = error_of(&v) {
+                return Err(error);
+            }
+            Ok(v.get("bytes")
+                .zip(v.get("hash").and_then(Value::as_str))
+                .map(|(data, hash)| OpenedLazyDocx {
+                    bytes: bytes(data),
+                    hash: hash.to_owned(),
+                }))
         }
-        fn adopt_lazy_media_hashes(&self, _bytes: &[u8], path: &str, _file: Option<std::sync::Arc<std::fs::File>>, permit: MediaPermit, cancel: shell_contract::runtime::CancelToken) -> Result<(), String> {
-            if cancel.is_cancelled() || !permit.is_active() { return Err("Document operation cancelled".into()); }
+        fn adopt_lazy_media_hashes(
+            &self,
+            _bytes: &[u8],
+            path: &str,
+            _file: Option<std::sync::Arc<std::fs::File>>,
+            permit: MediaPermit,
+            cancel: shell_contract::runtime::CancelToken,
+        ) -> Result<(), String> {
+            if cancel.is_cancelled() || !permit.is_active() {
+                return Err("Document operation cancelled".into());
+            }
             self.log(json!(["adoptLazyMediaHashes", path, permit.owner().view]));
-            match self.answer("adopt_lazy_media_hashes").as_ref().and_then(error_of) {
+            match self
+                .answer("adopt_lazy_media_hashes")
+                .as_ref()
+                .and_then(error_of)
+            {
                 Some(error) => Err(error),
                 None => Ok(()),
             }
         }
         fn adopt_lazy_saved(
-            &self, bytes: &[u8], path: &str, input: shell_contract::ipc::NativeSavedInput,
-            permit: MediaPermit, cancel: CancelToken,
+            &self,
+            bytes: &[u8],
+            path: &str,
+            input: shell_contract::ipc::NativeSavedInput,
+            permit: MediaPermit,
+            cancel: CancelToken,
         ) -> Result<(), String> {
-            if cancel.is_cancelled() || !permit.is_active() { return Err("Document operation cancelled".into()); }
-            self.log(json!(["adoptLazySaved", path, permit.owner().view, bytes.len(), input.bytes().len()]));
+            if cancel.is_cancelled() || !permit.is_active() {
+                return Err("Document operation cancelled".into());
+            }
+            self.log(json!([
+                "adoptLazySaved",
+                path,
+                permit.owner().view,
+                bytes.len(),
+                input.bytes().len()
+            ]));
             match self.answer("adopt_lazy_saved").as_ref().and_then(error_of) {
                 Some(error) => Err(error),
                 None => Ok(()),
             }
         }
         fn adopt_lazy_decrypted(
-            &self, bytes: &[u8], path: &str, plain: Arc<Vec<u8>>,
-            permit: MediaPermit, cancel: CancelToken,
+            &self,
+            bytes: &[u8],
+            path: &str,
+            plain: Arc<Vec<u8>>,
+            permit: MediaPermit,
+            cancel: CancelToken,
         ) -> Result<(), String> {
-            if cancel.is_cancelled() || !permit.is_active() { return Err("Document operation cancelled".into()); }
-            self.log(json!(["adoptLazyDecrypted", path, permit.owner().view, bytes.len(), plain.len()]));
-            match self.answer("adopt_lazy_decrypted").as_ref().and_then(error_of) {
+            if cancel.is_cancelled() || !permit.is_active() {
+                return Err("Document operation cancelled".into());
+            }
+            self.log(json!([
+                "adoptLazyDecrypted",
+                path,
+                permit.owner().view,
+                bytes.len(),
+                plain.len()
+            ]));
+            match self
+                .answer("adopt_lazy_decrypted")
+                .as_ref()
+                .and_then(error_of)
+            {
                 Some(error) => Err(error),
                 None => Ok(()),
             }
         }
-        fn materialize_lazy_docx(&self, input: Vec<u8>, permit: MediaPermit, cancel: shell_contract::runtime::CancelToken) -> Result<Materialized, String> {
-            if cancel.is_cancelled() || !permit.is_active() { return Err("Document operation cancelled".into()); }
+        fn materialize_lazy_docx(
+            &self,
+            input: Vec<u8>,
+            permit: MediaPermit,
+            cancel: shell_contract::runtime::CancelToken,
+        ) -> Result<Materialized, String> {
+            if cancel.is_cancelled() || !permit.is_active() {
+                return Err("Document operation cancelled".into());
+            }
             self.log(json!(["materializeLazyDocx", hex(&input)]));
             match self.answer("materialize_lazy_docx") {
                 None => Ok(Materialized {
@@ -473,27 +678,46 @@ mod fake {
                 permit.owner().view,
                 plain.is_some()
             ]));
-            match self.answer("point_lazy_media_at").as_ref().and_then(error_of) {
+            match self
+                .answer("point_lazy_media_at")
+                .as_ref()
+                .and_then(error_of)
+            {
                 Some(error) => Err(error),
                 None => Ok(()),
             }
         }
         fn move_lazy_media_source(&self, old_path: &str, new_path: &str) -> Result<(), String> {
             self.log(json!(["moveLazyMediaSource", old_path, new_path]));
-            match self.answer("move_lazy_media_source").as_ref().and_then(error_of) {
+            match self
+                .answer("move_lazy_media_source")
+                .as_ref()
+                .and_then(error_of)
+            {
                 Some(error) => Err(error),
                 None => Ok(()),
             }
         }
         fn forget_lazy_media_owner(&self, permit: MediaPermit) -> Result<(), String> {
             self.log(json!(["forgetLazyMediaOwner", permit.owner().view]));
-            match self.answer("forget_lazy_media_owner").as_ref().and_then(error_of) {
+            match self
+                .answer("forget_lazy_media_owner")
+                .as_ref()
+                .and_then(error_of)
+            {
                 Some(error) => Err(error),
                 None => Ok(()),
             }
         }
-        fn read_lazy_media(&self, url: &str, permit: MediaPermit, cancel: shell_contract::runtime::CancelToken) -> Result<Option<LazyMediaBody>, String> {
-            if cancel.is_cancelled() || !permit.is_active() { return Err("Document operation cancelled".into()); }
+        fn read_lazy_media(
+            &self,
+            url: &str,
+            permit: MediaPermit,
+            cancel: shell_contract::runtime::CancelToken,
+        ) -> Result<Option<LazyMediaBody>, String> {
+            if cancel.is_cancelled() || !permit.is_active() {
+                return Err("Document operation cancelled".into());
+            }
             self.log(json!(["readLazyMedia", url]));
             match self.answer("read_lazy_media") {
                 None | Some(Value::Null) => Ok(None),
@@ -544,8 +768,16 @@ mod fake {
             self.log(json!(["convertLegacyDocToDocx", hex(&input)]));
             bytes_or_error(self.answer("convert_legacy_doc"), input)
         }
-        fn convert_legacy_doc_recovery(&self, input: Vec<u8>, _receipt: shell_contract::ipc::RecoverySeedReceipt, _receiver: shell_contract::ipc::NativeRequestOwner, cancel: CancelToken) -> Result<Vec<u8>, String> {
-            if cancel.is_cancelled() { return Err("The recovery conversion was cancelled.".into()); }
+        fn convert_legacy_doc_recovery(
+            &self,
+            input: Vec<u8>,
+            _receipt: shell_contract::ipc::RecoverySeedReceipt,
+            _receiver: shell_contract::ipc::NativeRequestOwner,
+            cancel: CancelToken,
+        ) -> Result<Vec<u8>, String> {
+            if cancel.is_cancelled() {
+                return Err("The recovery conversion was cancelled.".into());
+            }
             self.convert_legacy_doc(input)
         }
         fn html_to_docx(
@@ -679,21 +911,44 @@ mod fake {
     }
     struct SyntheticActorCleanup(Arc<Mutex<Vec<Value>>>);
     impl shell_contract::hosts::GeneratedCleanupRegistration for SyntheticActorCleanup {
-        fn complete(self: Box<Self>) { self.0.lock().unwrap().push(json!(["generatedActorCleanupComplete"])); }
+        fn complete(self: Box<Self>) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(json!(["generatedActorCleanupComplete"]));
+        }
     }
-
 
     impl DocsShell for Fake {
         fn register_generated_actor_cleanup(
-            &self, _wake: GeneratedActorWake,
+            &self,
+            _wake: GeneratedActorWake,
         ) -> Result<Box<dyn shell_contract::hosts::GeneratedCleanupRegistration>, String> {
             Ok(Box::new(SyntheticActorCleanup(self.calls.clone())))
         }
-        fn capture_dirty_query_target(&self, view: ViewId, expected: &shell_contract::runtime::RendererGeneration) -> Result<shell_contract::ipc::NativeRequestOwner, String> {
+        fn capture_dirty_query_target(
+            &self,
+            view: ViewId,
+            expected: &shell_contract::runtime::RendererGeneration,
+        ) -> Result<shell_contract::ipc::NativeRequestOwner, String> {
             let runtime = self.query_runtime.lock().unwrap();
-            let (views, _) = runtime.as_ref().ok_or("synthetic query runtime unavailable")?;
-            if !views.renderer_generation(view).is_some_and(|current| current.is_active() && current.same_generation(expected)) { return Err("synthetic target replaced".into()); }
-            Ok(shell_contract::ipc::NativeRequestOwner { view, context: shell_contract::ipc::NativeContext::with_owner_loss((), expected.clone(), expected.loss_token()) })
+            let (views, _) = runtime
+                .as_ref()
+                .ok_or("synthetic query runtime unavailable")?;
+            if !views
+                .renderer_generation(view)
+                .is_some_and(|current| current.is_active() && current.same_generation(expected))
+            {
+                return Err("synthetic target replaced".into());
+            }
+            Ok(shell_contract::ipc::NativeRequestOwner {
+                view,
+                context: shell_contract::ipc::NativeContext::with_owner_loss(
+                    (),
+                    expected.clone(),
+                    expected.loss_token(),
+                ),
+            })
         }
 
         fn ui_lang(&self) -> Lang {
@@ -706,26 +961,52 @@ mod fake {
             self.case.lock().unwrap()["is_headless"] == Value::Bool(true)
         }
         fn unlock_recovery_prepared(
-            &self, _target: shell_contract::ipc::RecoveryOpenTarget, _snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot, _title: String, _bytes: &[u8],
+            &self,
+            _target: shell_contract::ipc::RecoveryOpenTarget,
+            _snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
+            _title: String,
+            _bytes: &[u8],
         ) -> Result<Option<(Vec<u8>, String)>, String> {
             match self.answer("unlock_recovery_prepared") {
                 Some(Value::Null) => Ok(None),
-                Some(Value::Object(value)) if value.contains_key("error") => Err(error_of(&Value::Object(value)).unwrap_or_else(|| "synthetic recovery decryption failed".into())),
+                Some(Value::Object(value)) if value.contains_key("error") => {
+                    Err(error_of(&Value::Object(value))
+                        .unwrap_or_else(|| "synthetic recovery decryption failed".into()))
+                }
                 Some(Value::Object(value)) => {
-                    let bytes = value.get("plaintext").and_then(Value::as_str).ok_or("synthetic recovery plaintext is missing")?;
-                    let password = value.get("password").and_then(Value::as_str).ok_or("synthetic recovery password is missing")?;
+                    let bytes = value
+                        .get("plaintext")
+                        .and_then(Value::as_str)
+                        .ok_or("synthetic recovery plaintext is missing")?;
+                    let password = value
+                        .get("password")
+                        .and_then(Value::as_str)
+                        .ok_or("synthetic recovery password is missing")?;
                     Ok(Some((bytes.as_bytes().to_vec(), password.to_owned())))
                 }
                 _ => Err("synthetic recovery password response is not configured".into()),
             }
         }
-        fn unlock_saved_document(&self, _document: shell_contract::ipc::NativeSavedDocument, _title: String) -> Result<Option<(Vec<u8>, String)>, String> {
+        fn unlock_saved_document(
+            &self,
+            _document: shell_contract::ipc::NativeSavedDocument,
+            _title: String,
+        ) -> Result<Option<(Vec<u8>, String)>, String> {
             match self.answer("unlock_saved_document") {
                 Some(Value::Null) => Ok(None),
-                Some(Value::Object(value)) if value.contains_key("error") => Err(error_of(&Value::Object(value)).unwrap_or_else(|| "synthetic saved decryption failed".into())),
+                Some(Value::Object(value)) if value.contains_key("error") => {
+                    Err(error_of(&Value::Object(value))
+                        .unwrap_or_else(|| "synthetic saved decryption failed".into()))
+                }
                 Some(Value::Object(value)) => {
-                    let bytes = value.get("plaintext").and_then(Value::as_str).ok_or("synthetic saved plaintext is missing")?;
-                    let password = value.get("password").and_then(Value::as_str).ok_or("synthetic saved password is missing")?;
+                    let bytes = value
+                        .get("plaintext")
+                        .and_then(Value::as_str)
+                        .ok_or("synthetic saved plaintext is missing")?;
+                    let password = value
+                        .get("password")
+                        .and_then(Value::as_str)
+                        .ok_or("synthetic saved password is missing")?;
                     Ok(Some((bytes.as_bytes().to_vec(), password.to_owned())))
                 }
                 _ => Err("synthetic saved password response is not configured".into()),
@@ -749,84 +1030,184 @@ mod fake {
                 .and_then(|v| v.as_str().map(str::to_owned))
         }
         fn file_saved_owned(
-            &self, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner,
+            &self,
+            origin: shell_contract::ipc::NativeRequestOwner,
+            destination: shell_contract::ipc::NativeRequestOwner,
             mut participants: Vec<shell_contract::ipc::NativeRequestOwner>,
-            cancel: CancelToken, pending: CancelToken, effects: shell_contract::hosts::OwnedEffectsHost, path: std::path::PathBuf,
-            done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>,
+            cancel: CancelToken,
+            pending: CancelToken,
+            effects: shell_contract::hosts::OwnedEffectsHost,
+            path: std::path::PathBuf,
+            done: Box<
+                dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>),
+            >,
         ) {
             let mut saved = None;
             participants.push(destination.clone());
-            let result = effects.with_owned_transition_many(&origin, &participants, &cancel, &pending, &mut |_| {
-                saved = Some(self.file_saved(destination.view, &path.to_string_lossy()).map(std::path::PathBuf::from).unwrap_or_else(|| path.clone()));
-                Ok(())
-            });
-            done(result.and_then(|()| saved.ok_or_else(|| "the saved-file hook was not admitted".into())).map(|path| {
-                shell_contract::hosts::SavedFile {
-                    path,
-                    session: shell_contract::hosts::SavedSessionReceipt::NoPublication,
-                }
-            }));
+            let result = effects.with_owned_transition_many(
+                &origin,
+                &participants,
+                &cancel,
+                &pending,
+                &mut |_| {
+                    saved = Some(
+                        self.file_saved(destination.view, &path.to_string_lossy())
+                            .map(std::path::PathBuf::from)
+                            .unwrap_or_else(|| path.clone()),
+                    );
+                    Ok(())
+                },
+            );
+            done(
+                result
+                    .and_then(|()| {
+                        saved.ok_or_else(|| "the saved-file hook was not admitted".into())
+                    })
+                    .map(|path| shell_contract::hosts::SavedFile {
+                        path,
+                        session: shell_contract::hosts::SavedSessionReceipt::NoPublication,
+                    }),
+            );
         }
         fn file_saved_existing_document(
-            &self, destination: shell_contract::ipc::NativeSaveDestination,
-            participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: CancelToken, pending: CancelToken,
-            additional: Vec<CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost,
-            done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>,
+            &self,
+            destination: shell_contract::ipc::NativeSaveDestination,
+            participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+            cancel: CancelToken,
+            pending: CancelToken,
+            additional: Vec<CancelToken>,
+            effects: shell_contract::hosts::OwnedEffectsHost,
+            done: Box<
+                dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>),
+            >,
         ) {
             let mut saved = None;
             let extra = additional.iter().collect::<Vec<_>>();
             let path = destination.path().to_owned();
-            let result = effects.with_existing_document_destination_effect(&destination, &path, &participants, &cancel, &pending, &extra, &mut || {
-                saved = Some(self.file_saved(destination.binding().owner().view, &path.to_string_lossy())
-                    .map(std::path::PathBuf::from).unwrap_or_else(|| path.clone()));
-                Ok(())
-            });
-            done(result.and_then(|()| saved.ok_or_else(|| "the saved-file hook was not admitted".into()))
-                .map(|path| shell_contract::hosts::SavedFile { path, session: shell_contract::hosts::SavedSessionReceipt::NoPublication }));
+            let result = effects.with_existing_document_destination_effect(
+                &destination,
+                &path,
+                &participants,
+                &cancel,
+                &pending,
+                &extra,
+                &mut || {
+                    saved = Some(
+                        self.file_saved(
+                            destination.binding().owner().view,
+                            &path.to_string_lossy(),
+                        )
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(|| path.clone()),
+                    );
+                    Ok(())
+                },
+            );
+            done(
+                result
+                    .and_then(|()| {
+                        saved.ok_or_else(|| "the saved-file hook was not admitted".into())
+                    })
+                    .map(|path| shell_contract::hosts::SavedFile {
+                        path,
+                        session: shell_contract::hosts::SavedSessionReceipt::NoPublication,
+                    }),
+            );
         }
         fn prepare_docs_menu_refresh_existing_document(
-            &self, binding: shell_contract::ipc::NativeExistingDocumentBinding,
-            participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: CancelToken, pending: CancelToken,
-            additional: Vec<CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost,
+            &self,
+            binding: shell_contract::ipc::NativeExistingDocumentBinding,
+            participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+            cancel: CancelToken,
+            pending: CancelToken,
+            additional: Vec<CancelToken>,
+            effects: shell_contract::hosts::OwnedEffectsHost,
         ) -> Result<Option<OwnedMenuRefresh>, String> {
             let extra = additional.iter().collect::<Vec<_>>();
-            effects.with_existing_document_save_effect_extra(&binding, &participants, &cancel, &pending, &extra, &mut || Ok(()))?;
+            effects.with_existing_document_save_effect_extra(
+                &binding,
+                &participants,
+                &cancel,
+                &pending,
+                &extra,
+                &mut || Ok(()),
+            )?;
             let fake = self.clone();
             Ok(Some(Box::new(move |done| {
                 let extra = additional.iter().collect::<Vec<_>>();
-                let result = effects.with_existing_document_save_effect_extra(&binding, &participants, &cancel, &pending, &extra, &mut || {
-                    fake.rebuild_docs_menu(); Ok(())
-                });
+                let result = effects.with_existing_document_save_effect_extra(
+                    &binding,
+                    &participants,
+                    &cancel,
+                    &pending,
+                    &extra,
+                    &mut || {
+                        fake.rebuild_docs_menu();
+                        Ok(())
+                    },
+                );
                 done(result);
             })))
         }
         fn prepare_docs_menu_refresh_owned(
-            &self, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner,
+            &self,
+            origin: shell_contract::ipc::NativeRequestOwner,
+            destination: shell_contract::ipc::NativeRequestOwner,
             mut participants: Vec<shell_contract::ipc::NativeRequestOwner>,
-            cancel: CancelToken, pending: CancelToken, effects: shell_contract::hosts::OwnedEffectsHost,
+            cancel: CancelToken,
+            pending: CancelToken,
+            effects: shell_contract::hosts::OwnedEffectsHost,
         ) -> Result<Option<OwnedMenuRefresh>, String> {
             participants.push(destination);
-            effects.with_owned_transition_many(&origin, &participants, &cancel, &pending, &mut |_| Ok(()))?;
+            effects.with_owned_transition_many(
+                &origin,
+                &participants,
+                &cancel,
+                &pending,
+                &mut |_| Ok(()),
+            )?;
             let fake = self.clone();
             Ok(Some(Box::new(move |done| {
-                let result = effects.with_owned_transition_many(&origin, &participants, &cancel, &pending, &mut |_| {
-                    fake.rebuild_docs_menu();
-                    Ok(())
-                });
+                let result = effects.with_owned_transition_many(
+                    &origin,
+                    &participants,
+                    &cancel,
+                    &pending,
+                    &mut |_| {
+                        fake.rebuild_docs_menu();
+                        Ok(())
+                    },
+                );
                 done(result);
             })))
         }
         fn prepare_docs_menu_refresh_recovery(
-            &self, receipt: shell_contract::ipc::RecoverySeedReceipt, receiver: shell_contract::ipc::NativeRequestOwner,
-            cancel: CancelToken, pending: CancelToken, effects: shell_contract::hosts::OwnedEffectsHost,
+            &self,
+            receipt: shell_contract::ipc::RecoverySeedReceipt,
+            receiver: shell_contract::ipc::NativeRequestOwner,
+            cancel: CancelToken,
+            pending: CancelToken,
+            effects: shell_contract::hosts::OwnedEffectsHost,
         ) -> Result<Option<OwnedMenuRefresh>, String> {
-            effects.with_recovery_open_effect_pending(&receipt, &receiver, &cancel, &pending, &mut || Ok(()))?;
+            effects.with_recovery_open_effect_pending(
+                &receipt,
+                &receiver,
+                &cancel,
+                &pending,
+                &mut || Ok(()),
+            )?;
             let fake = self.clone();
             Ok(Some(Box::new(move |done| {
-                let result = effects.with_recovery_open_effect_pending(&receipt, &receiver, &cancel, &pending, &mut || {
-                    fake.rebuild_docs_menu();
-                    Ok(())
-                });
+                let result = effects.with_recovery_open_effect_pending(
+                    &receipt,
+                    &receiver,
+                    &cancel,
+                    &pending,
+                    &mut || {
+                        fake.rebuild_docs_menu();
+                        Ok(())
+                    },
+                );
                 done(result);
             })))
         }
@@ -834,14 +1215,25 @@ mod fake {
             self.log(json!(["fileOpenedHook", view.0, path]))
         }
         fn file_opened_recovery(
-            &self, path: String, receipt: shell_contract::ipc::RecoverySeedReceipt,
-            receiver: shell_contract::ipc::NativeRequestOwner, cancel: CancelToken, pending: CancelToken,
-            effects: shell_contract::hosts::OwnedEffectsHost, done: Box<dyn FnOnce(Result<(), String>)>,
+            &self,
+            path: String,
+            receipt: shell_contract::ipc::RecoverySeedReceipt,
+            receiver: shell_contract::ipc::NativeRequestOwner,
+            cancel: CancelToken,
+            pending: CancelToken,
+            effects: shell_contract::hosts::OwnedEffectsHost,
+            done: Box<dyn FnOnce(Result<(), String>)>,
         ) {
-            done(effects.with_recovery_open_effect_pending(&receipt, &receiver, &cancel, &pending, &mut || {
-                self.file_opened(receiver.view, &path);
-                Ok(())
-            }));
+            done(effects.with_recovery_open_effect_pending(
+                &receipt,
+                &receiver,
+                &cancel,
+                &pending,
+                &mut || {
+                    self.file_opened(receiver.view, &path);
+                    Ok(())
+                },
+            ));
         }
         fn new_document_dir(&self, view: ViewId) -> Option<String> {
             self.log(json!(["newDocumentDir", view.0]));
@@ -872,24 +1264,40 @@ mod fake {
             }
         }
         fn write_new_document_owned(
-            &self, _origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner,
-            _cancel: &CancelToken, _pending: &CancelToken, _effects: &shell_contract::hosts::OwnedEffectsHost,
+            &self,
+            _origin: &shell_contract::ipc::NativeRequestOwner,
+            destination: &shell_contract::ipc::NativeRequestOwner,
+            _cancel: &CancelToken,
+            _pending: &CancelToken,
+            _effects: &shell_contract::hosts::OwnedEffectsHost,
             admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
-            file_name: &str, bytes: &[u8],
+            file_name: &str,
+            bytes: &[u8],
         ) -> Result<Option<String>, String> {
-            if !self.writes_new_documents() { return Ok(None); }
-            self.log(json!(["writeNewDocument", destination.view.0, file_name, hex(bytes)]));
+            if !self.writes_new_documents() {
+                return Ok(None);
+            }
+            self.log(json!([
+                "writeNewDocument",
+                destination.view.0,
+                file_name,
+                hex(bytes)
+            ]));
             match self.answer("write_new_document") {
                 Some(Value::String(path)) => {
-                    main_core::packages::electron_utils::atomic_write::owned::write_file(&path, bytes, admission)
-                        .map_err(|error| error.message)?;
+                    main_core::packages::electron_utils::atomic_write::owned::write_file(
+                        &path, bytes, admission,
+                    )
+                    .map_err(|error| error.message)?;
                     Ok(Some(path))
                 }
                 Some(value) if error_of(&value).is_some() => Err(error_of(&value).unwrap()),
                 _ => Ok(None),
             }
         }
-        fn permits_synthetic_create(&self) -> bool { true }
+        fn permits_synthetic_create(&self) -> bool {
+            true
+        }
         fn open_ai_doc_tab_synthetic(&self, content: Value, owner: ViewId) -> Result<(), String> {
             self.log(json!(["openAiDocTabFor", content, owner.0]));
             match self.answer("open_ai_doc_tab") {
@@ -898,15 +1306,22 @@ mod fake {
             }
         }
         fn open_ai_doc_tab_owned(
-            &self, mut content: Value, origin: shell_contract::ipc::NativeRequestOwner,
-            destination: shell_contract::ipc::NativeRequestOwner, cancel: CancelToken, pending: CancelToken,
-            effects: shell_contract::hosts::OwnedEffectsHost, then: Box<dyn FnOnce(Result<(), String>) + Send>,
+            &self,
+            mut content: Value,
+            origin: shell_contract::ipc::NativeRequestOwner,
+            destination: shell_contract::ipc::NativeRequestOwner,
+            cancel: CancelToken,
+            pending: CancelToken,
+            effects: shell_contract::hosts::OwnedEffectsHost,
+            then: Box<dyn FnOnce(Result<(), String>) + Send>,
         ) {
             let mut answer = None;
-            let result = effects.with_owned_effect(&origin, &destination, &cancel, &pending, &mut || {
-                answer = Some(self.open_ai_doc_tab_synthetic(content.take(), destination.view));
-                Ok(())
-            }).and_then(|()| answer.ok_or("The AI document was not admitted")?);
+            let result = effects
+                .with_owned_effect(&origin, &destination, &cancel, &pending, &mut || {
+                    answer = Some(self.open_ai_doc_tab_synthetic(content.take(), destination.view));
+                    Ok(())
+                })
+                .and_then(|()| answer.ok_or("The AI document was not admitted")?);
             then(result);
         }
         fn open_generated_path(&self, path: &str) -> Result<bool, String> {
@@ -914,23 +1329,43 @@ mod fake {
             Ok(self.answer("open_generated_path") == Some(Value::Bool(true)))
         }
         fn prepare_generated_output(
-            &self, output: shell_contract::ipc::SavedPublication, input: Option<shell_contract::ipc::NativeSavedInput>,
-            participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: CancelToken, pending: CancelToken,
-            additional: Vec<CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost,
-            _accepted: shell_contract::hosts::PdfReloadAccepted, _wake: shell_contract::hosts::GeneratedPathWake,
+            &self,
+            output: shell_contract::ipc::SavedPublication,
+            input: Option<shell_contract::ipc::NativeSavedInput>,
+            participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+            cancel: CancelToken,
+            pending: CancelToken,
+            additional: Vec<CancelToken>,
+            effects: shell_contract::hosts::OwnedEffectsHost,
+            _accepted: shell_contract::hosts::PdfReloadAccepted,
+            _wake: shell_contract::hosts::GeneratedPathWake,
         ) -> Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String> {
-            if input.as_ref().is_some_and(|input| !input.output().same_publication(&output)) {
+            if input
+                .as_ref()
+                .is_some_and(|input| !input.output().same_publication(&output))
+            {
                 return Err("The synthetic saved input does not match the publication".into());
             }
             let fake = self.clone();
             Ok(Box::new(super::fake_generated::Prepared::new(move || {
-                let path = output.path().to_str().ok_or("The synthetic generated path is not Unicode")?.to_owned();
+                let path = output
+                    .path()
+                    .to_str()
+                    .ok_or("The synthetic generated path is not Unicode")?
+                    .to_owned();
                 let extra: Vec<_> = additional.iter().collect();
                 let mut opened = None;
-                output.with_effect(effects.as_ref(), &participants, &cancel, &pending, &extra, &mut || {
-                    opened = Some(fake.open_generated_path(&path)?);
-                    Ok(())
-                })?;
+                output.with_effect(
+                    effects.as_ref(),
+                    &participants,
+                    &cancel,
+                    &pending,
+                    &extra,
+                    &mut || {
+                        opened = Some(fake.open_generated_path(&path)?);
+                        Ok(())
+                    },
+                )?;
                 match opened {
                     Some(false) => Ok(shell_contract::hosts::GeneratedPathOutcome::NotOpened),
                     Some(true) => {
@@ -954,7 +1389,9 @@ mod fake {
                                     .and_then(|receipt| receipt.with_captured_cancellations(&controls))
                             }
                         }?;
-                        Ok(shell_contract::hosts::GeneratedPathOutcome::Opened(Arc::new(receipt)))
+                        Ok(shell_contract::hosts::GeneratedPathOutcome::Opened(
+                            Arc::new(receipt),
+                        ))
                     }
                     None => Err("The synthetic generated output was not admitted".into()),
                 }
@@ -1006,16 +1443,34 @@ mod fake {
             bytes_or_error(self.answer("print_html_to_pdf"), b"%PDF".to_vec())
         }
         fn print_html_to_pdf_owned(
-            &self, html: String, origin: &shell_contract::ipc::NativeRequestOwner,
-            destination: &shell_contract::ipc::NativeRequestOwner, cancel: &CancelToken, pending: &CancelToken,
+            &self,
+            html: String,
+            origin: &shell_contract::ipc::NativeRequestOwner,
+            destination: &shell_contract::ipc::NativeRequestOwner,
+            cancel: &CancelToken,
+            pending: &CancelToken,
         ) -> Result<Vec<u8>, String> {
-            if cancel.is_cancelled() || pending.is_cancelled()
-                || !origin.context.renderer().is_some_and(|generation| generation.is_active())
-                || !destination.context.renderer().is_some_and(|generation| generation.is_active())
-            { return Err("The PDF creation request is no longer active".into()); }
+            if cancel.is_cancelled()
+                || pending.is_cancelled()
+                || !origin
+                    .context
+                    .renderer()
+                    .is_some_and(|generation| generation.is_active())
+                || !destination
+                    .context
+                    .renderer()
+                    .is_some_and(|generation| generation.is_active())
+            {
+                return Err("The PDF creation request is no longer active".into());
+            }
             self.print_html_to_pdf(html)
         }
-        fn net_fetch(&self, url: &str, _permit: &MediaPermit, _cancel: &CancelToken) -> Result<Box<dyn Response + Send>, String> {
+        fn net_fetch(
+            &self,
+            url: &str,
+            _permit: &MediaPermit,
+            _cancel: &CancelToken,
+        ) -> Result<Box<dyn Response + Send>, String> {
             self.log(json!(["net.fetch", url]));
             match self.answer("net_fetch") {
                 Some(v) if error_of(&v).is_none() => Ok(Box::new(FakeResponse {

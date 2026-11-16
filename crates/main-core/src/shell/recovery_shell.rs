@@ -23,8 +23,8 @@ pub use async_launch::{LaunchMachine, LaunchNeed, LaunchReply, LaunchStep};
 use crate::node_fs::NodeError;
 use crate::packages::electron_utils::recovery_contract::RecoveryOpenUntitledRequest;
 use crate::packages::electron_utils::recovery_store::{
-    RecoveryFileIdentity, RecoveryIdentity, RecoveryLaunchDecision, RecoveryOpenPlan, RecoveryStore,
-    RecoveryUntitledIdentity, is_recovery_editor_kind, is_untitled_identity,
+    RecoveryFileIdentity, RecoveryIdentity, RecoveryLaunchDecision, RecoveryOpenPlan,
+    RecoveryStore, RecoveryUntitledIdentity, is_recovery_editor_kind, is_untitled_identity,
 };
 use crate::shell::launch_recovery::{
     LaunchJudgment, LaunchPlan, PlannedOpen, PlannedTab, plan_launch,
@@ -70,7 +70,10 @@ pub trait RecoveryEditors {
 
     /// Opens and fully initializes the selected recovered view before completion.
     fn open_recovered_view(
-        &self, kind: &str, title: &str, file_path: Option<&str>,
+        &self,
+        kind: &str,
+        title: &str,
+        file_path: Option<&str>,
         copy: Option<&RecoveryOpenUntitledRequest>,
         done: Box<dyn FnOnce(Result<Self::View, Failure>)>,
     );
@@ -265,7 +268,9 @@ impl RecoveryShell {
     /// Prepare the immutable unloaded tab; the caller adds and activates it
     /// through the actual asynchronous tab host and notes the returned id.
     pub fn reopen_untitled_copy_plan(
-        kind: &str, title: &str, copy: &RecoveryUntitledIdentity,
+        kind: &str,
+        title: &str,
+        copy: &RecoveryUntitledIdentity,
     ) -> PlannedTab {
         PlannedTab {
             key: "crash".to_owned(),
@@ -282,11 +287,15 @@ impl RecoveryShell {
 
 /// Completes only after the selected copy has actually been initialized.
 pub fn open_untitled_copy_view<E: RecoveryEditors>(
-    editors: &E, kind: &str, request: &RecoveryOpenUntitledRequest,
+    editors: &E,
+    kind: &str,
+    request: &RecoveryOpenUntitledRequest,
     done: Box<dyn FnOnce(Result<E::View, Failure>)>,
 ) {
     if !is_recovery_editor_kind(kind) || !editors.has_recovery_editor(kind) {
-        return done(Err(Failure(format!("the {kind} editor cannot open a recovery copy"))));
+        return done(Err(Failure(format!(
+            "the {kind} editor cannot open a recovery copy"
+        ))));
     }
     editors.open_recovered_view(kind, &request.title, None, Some(request), done);
 }
@@ -308,21 +317,38 @@ pub fn restored_tab_opener(planned: &PlannedTab) -> RestoredTabOpener {
 impl RestoredTabOpener {
     /// `opener.open(context)`: the view the tab loads through
     pub fn open<E: RecoveryEditors>(
-        &self, editors: &E, deps: &dyn RestoredTabOpenerDeps, context: &OpenContext,
+        &self,
+        editors: &E,
+        deps: &dyn RestoredTabOpenerDeps,
+        context: &OpenContext,
         done: Box<dyn FnOnce(Result<E::View, Failure>)>,
     ) {
         if deps.blocked() {
-            return done(Err(Failure("the launch recovery list is not answered yet".to_owned())));
+            return done(Err(Failure(
+                "the launch recovery list is not answered yet".to_owned(),
+            )));
         }
         match self {
-            RestoredTabOpener::UntitledCopy { copy, save_as_default_path } => {
+            RestoredTabOpener::UntitledCopy {
+                copy,
+                save_as_default_path,
+            } => {
                 let request = RecoveryOpenUntitledRequest {
-                    copy:copy.clone(),title:context.title.clone(),
-                    save_as_default_path:save_as_default_path.clone().filter(|path|!path.is_empty()),
+                    copy: copy.clone(),
+                    title: context.title.clone(),
+                    save_as_default_path: save_as_default_path
+                        .clone()
+                        .filter(|path| !path.is_empty()),
                 };
-                open_untitled_copy_view(editors,&context.kind,&request,done);
+                open_untitled_copy_view(editors, &context.kind, &request, done);
             }
-            RestoredTabOpener::File => editors.open_recovered_view(&context.kind, &context.title, context.file_path.as_deref(), None, done),
+            RestoredTabOpener::File => editors.open_recovered_view(
+                &context.kind,
+                &context.title,
+                context.file_path.as_deref(),
+                None,
+                done,
+            ),
         }
     }
 
@@ -418,49 +444,90 @@ where
     Ok(())
 }
 
-
 /// Store operations used by launch. Implementations release any store lock
 /// before returning, so editor and tab callbacks can safely use the same store.
 pub trait LaunchRecoveryStore {
     fn prune_stale_copies(&self);
     fn has_unresolved_copies(&self) -> Result<bool, Failure>;
-    fn plan(&self, judgment: &LaunchJudgment, previous: &SessionRecordReadResult, paths: &[String]) -> Result<LaunchPlan, Failure>;
-    fn apply_decision(&self, identity: &RecoveryIdentity, decision: RecoveryLaunchDecision) -> Result<(), Failure>;
+    fn plan(
+        &self,
+        judgment: &LaunchJudgment,
+        previous: &SessionRecordReadResult,
+        paths: &[String],
+    ) -> Result<LaunchPlan, Failure>;
+    fn apply_decision(
+        &self,
+        identity: &RecoveryIdentity,
+        decision: RecoveryLaunchDecision,
+    ) -> Result<(), Failure>;
 }
 
 impl LaunchRecoveryStore for RecoveryStore<'_> {
-    fn prune_stale_copies(&self) { RecoveryStore::prune_stale_copies(self, None); }
+    fn prune_stale_copies(&self) {
+        RecoveryStore::prune_stale_copies(self, None);
+    }
     fn has_unresolved_copies(&self) -> Result<bool, Failure> {
         RecoveryStore::has_unresolved_copies(self).map_err(|error| Failure(error.message))
     }
-    fn plan(&self, judgment: &LaunchJudgment, previous: &SessionRecordReadResult, paths: &[String]) -> Result<LaunchPlan, Failure> {
+    fn plan(
+        &self,
+        judgment: &LaunchJudgment,
+        previous: &SessionRecordReadResult,
+        paths: &[String],
+    ) -> Result<LaunchPlan, Failure> {
         plan_launch(judgment, previous, self, paths)
     }
-    fn apply_decision(&self, identity: &RecoveryIdentity, decision: RecoveryLaunchDecision) -> Result<(), Failure> {
-        self.apply_launch_decision(identity, decision).map(|_| ()).map_err(|error| Failure(error.message))
+    fn apply_decision(
+        &self,
+        identity: &RecoveryIdentity,
+        decision: RecoveryLaunchDecision,
+    ) -> Result<(), Failure> {
+        self.apply_launch_decision(identity, decision)
+            .map(|_| ())
+            .map_err(|error| Failure(error.message))
     }
 }
 
 /// Filesystem preparation for one launch. Run on a worker with the retained
 /// session process and store; migration must perform the original legacy move.
 pub fn prepare_launch(
-    store: &dyn LaunchRecoveryStore, session: &mut SessionRecordProcess,
-    session_env: &mut dyn SessionRecorderEnv, user_data_dir: String,
-    launch_paths: &[String], reopened_by_installer: bool, migrate: impl FnOnce(),
+    store: &dyn LaunchRecoveryStore,
+    session: &mut SessionRecordProcess,
+    session_env: &mut dyn SessionRecorderEnv,
+    user_data_dir: String,
+    launch_paths: &[String],
+    reopened_by_installer: bool,
+    migrate: impl FnOnce(),
     check: impl Fn() -> Result<(), Failure>,
 ) -> Result<LaunchPlan, Failure> {
-    let (plan, write) = prepare_launch_staged(store, session, || session_env.now(), user_data_dir, launch_paths, reopened_by_installer, migrate, check)?;
+    let (plan, write) = prepare_launch_staged(
+        store,
+        session,
+        || session_env.now(),
+        user_data_dir,
+        launch_paths,
+        reopened_by_installer,
+        migrate,
+        check,
+    )?;
     if let Some(write) = write {
         let result = session_env.write_json(&write.file_path, &write.record);
-        if let Some(recorder) = session.session_recorder() { recorder.complete_write(&write, result, session_env); }
+        if let Some(recorder) = session.session_recorder() {
+            recorder.complete_write(&write, result, session_env);
+        }
     }
     Ok(plan)
 }
 
 pub fn prepare_launch_staged(
-    store: &dyn LaunchRecoveryStore, session: &mut SessionRecordProcess, now: impl FnOnce() -> f64,
-    user_data_dir: String, launch_paths: &[String], reopened_by_installer: bool,
-    migrate: impl FnOnce(), check: impl Fn() -> Result<(), Failure>,
+    store: &dyn LaunchRecoveryStore,
+    session: &mut SessionRecordProcess,
+    now: impl FnOnce() -> f64,
+    user_data_dir: String,
+    launch_paths: &[String],
+    reopened_by_installer: bool,
+    migrate: impl FnOnce(),
+    check: impl Fn() -> Result<(), Failure>,
 ) -> Result<(LaunchPlan, Option<super::session_record::SessionWritePlan>), Failure> {
     check()?;
     store.prune_stale_copies();
@@ -468,21 +535,38 @@ pub fn prepare_launch_staged(
     migrate();
     check()?;
     let recorder = session.init_session_record(&SessionRecorderOptions {
-        user_data_dir, write_delay_ms: None, crash_loop_window_ms: None,
+        user_data_dir,
+        write_delay_ms: None,
+        crash_loop_window_ms: None,
     });
     let mut unresolved_error = None;
-    let judgment = judge_previous_exit(&recorder.previous, &mut || {
-        if let Err(error) = check() { unresolved_error = Some(error); return false; }
-        match store.has_unresolved_copies() {
-            Ok(unresolved) => unresolved,
-            Err(error) => { unresolved_error = Some(error); false }
-        }
-    }, reopened_by_installer);
-    if let Some(error) = unresolved_error { return Err(error); }
+    let judgment = judge_previous_exit(
+        &recorder.previous,
+        &mut || {
+            if let Err(error) = check() {
+                unresolved_error = Some(error);
+                return false;
+            }
+            match store.has_unresolved_copies() {
+                Ok(unresolved) => unresolved,
+                Err(error) => {
+                    unresolved_error = Some(error);
+                    false
+                }
+            }
+        },
+        reopened_by_installer,
+    );
+    if let Some(error) = unresolved_error {
+        return Err(error);
+    }
     check()?;
-    let plan = store.plan(&LaunchJudgment::from(&judgment), &recorder.previous, launch_paths)?;
+    let plan = store.plan(
+        &LaunchJudgment::from(&judgment),
+        &recorder.previous,
+        launch_paths,
+    )?;
     check()?;
     let write = recorder.prepare_start_run(now(), plan.restore_run);
     Ok((plan, write))
 }
-

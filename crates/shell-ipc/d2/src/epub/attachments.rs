@@ -409,7 +409,12 @@ impl Epub {
     }
 
     /// `readAttachmentPage(filePath, offset, maxChars)`
-    pub(super) fn read_attachment_page(self: &std::rc::Rc<Self>, view: ViewId, args: Args, reply: Responder) {
+    pub(super) fn read_attachment_page(
+        self: &std::rc::Rc<Self>,
+        view: ViewId,
+        args: Args,
+        reply: Responder,
+    ) {
         let lang = self.lang();
         let fail =
             |error: &str| object(vec![("ok", false.into_ipc()), ("error", error.into_ipc())]);
@@ -524,24 +529,24 @@ impl Epub {
                     return;
                 }
                 match parsed {
-                Err(error) => then(Err(
-                    error.unwrap_or_else(|| tm(lang, "errParseFailed").to_owned())
-                )),
-                Ok(text) => {
-                    {
-                        let mut state = epub.state.borrow_mut();
-                        let cache = &mut state.attach.text_cache;
-                        // Map.set keeps an existing key where it was
-                        match cache.iter_mut().find(|(p, _, _)| *p == path) {
-                            Some(entry) => *entry = (path, stamp, text.clone()),
-                            None => cache.push((path, stamp, text.clone())),
+                    Err(error) => then(Err(
+                        error.unwrap_or_else(|| tm(lang, "errParseFailed").to_owned())
+                    )),
+                    Ok(text) => {
+                        {
+                            let mut state = epub.state.borrow_mut();
+                            let cache = &mut state.attach.text_cache;
+                            // Map.set keeps an existing key where it was
+                            match cache.iter_mut().find(|(p, _, _)| *p == path) {
+                                Some(entry) => *entry = (path, stamp, text.clone()),
+                                None => cache.push((path, stamp, text.clone())),
+                            }
+                            if cache.len() > TEXT_CACHE_SIZE {
+                                cache.remove(0);
+                            }
                         }
-                        if cache.len() > TEXT_CACHE_SIZE {
-                            cache.remove(0);
-                        }
+                        then(Ok(text))
                     }
-                    then(Ok(text))
-                }
                 }
             },
         );

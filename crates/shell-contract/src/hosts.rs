@@ -468,10 +468,7 @@ pub trait DocsMediaStage: Send + Sync {
     fn old_identity(&self) -> (ViewId, u64);
     fn prior(&self) -> Option<&(dyn std::any::Any + Send + Sync)>;
     fn candidate(&self) -> &(dyn std::any::Any + Send + Sync);
-    fn synthetic_stage(
-        &self,
-        admit: SaveAdmitRef<'_>,
-    ) -> Result<(), String>;
+    fn synthetic_stage(&self, admit: SaveAdmitRef<'_>) -> Result<(), String>;
 }
 
 /// Captured document authority for short effects and accepted native UI actions.
@@ -1316,7 +1313,7 @@ pub trait OwnedEffects: Send + Sync {
             additional,
             &mut || {
                 snapshot
-                    .with_current(&mut effect)
+                    .with_current(&mut *effect)
                     .ok_or_else(|| "The native save snapshot was replaced.".to_owned())?
             },
         )
@@ -1344,7 +1341,7 @@ pub trait OwnedEffects: Send + Sync {
             additional,
             &mut || {
                 snapshot
-                    .with_current(&mut effect)
+                    .with_current(&mut *effect)
                     .ok_or_else(|| "The native save snapshot was replaced.".to_owned())?
             },
         )

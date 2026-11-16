@@ -95,9 +95,9 @@ fn pages_for(
     match engine.inspect_pdf(bytes) {
         Ok(_) if accept == "encrypted" => Err("not-encrypted".into()),
         Ok(pages) => Ok(pages),
-        Err(p) if p == "encrypted" && accept == "encrypted" => {
-            engine.encrypted_page_count(bytes).map_err(|_| "unreadable".into())
-        }
+        Err(p) if p == "encrypted" && accept == "encrypted" => engine
+            .encrypted_page_count(bytes)
+            .map_err(|_| "unreadable".into()),
         Err(p) if p == "unreadable" && accept == "damaged" => Ok(0.0),
         Err(p) if p == "encrypted" || p == "unreadable" => Err(p),
         Err(_) => Err("unreadable".into()),
@@ -405,7 +405,8 @@ impl Window {
                 let candidates = candidates
                     .into_iter()
                     .map(|c| {
-                        let thumb = c.thumb
+                        let thumb = c
+                            .thumb
                             .map(|(w, h, bgra)| me.ctx.engine.png_data_url(w, h, &bgra))
                             .transpose()?;
                         Ok(obj([
@@ -909,11 +910,17 @@ mod tests {
 
     #[test]
     fn encrypted_count_transport_failure_is_not_a_zero_page_pdf() {
-        let engine = super::super::hosts::fake::Fake::new(&json!({
-            "inspect_pdf": { "problem": "encrypted" },
-            "encrypted_page_count": { "error": "engine closed" }
-        }), None);
-        assert_eq!(super::pages_for(&engine, b"pdf", "pdf", "encrypted"), Err("unreadable".into()));
+        let engine = super::super::hosts::fake::Fake::new(
+            &json!({
+                "inspect_pdf": { "problem": "encrypted" },
+                "encrypted_page_count": { "error": "engine closed" }
+            }),
+            None,
+        );
+        assert_eq!(
+            super::pages_for(&engine, b"pdf", "pdf", "encrypted"),
+            Err("unreadable".into())
+        );
     }
 
     #[test]
@@ -1104,11 +1111,19 @@ mod tests {
         let win = open(&mut t);
         let a = t.file("a.pdf", b"a");
         let id = pick(&mut t, win, &[&a], vec![])["inputs"][0]["id"].clone();
-        let found = j(&t.call("pdf-tools:find-blank-pages", win, vec![id.as_str().unwrap().into_ipc()]));
+        let found = j(&t.call(
+            "pdf-tools:find-blank-pages",
+            win,
+            vec![id.as_str().unwrap().into_ipc()],
+        ));
         assert_eq!(found, json!({ "ok": false, "error": "failed" }));
-        let run = j(&t.call("pdf-tools:run", win, vec![v(json!({
-            "tool": "blankPages", "inputIds": [id], "options": { "removePages": "2" }
-        }))]));
+        let run = j(&t.call(
+            "pdf-tools:run",
+            win,
+            vec![v(json!({
+                "tool": "blankPages", "inputIds": [id], "options": { "removePages": "2" }
+            }))],
+        ));
         assert_eq!(run["error"], json!("not-found"));
     }
 

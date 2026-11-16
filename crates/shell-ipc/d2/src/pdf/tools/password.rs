@@ -95,10 +95,17 @@ impl Password {
             .to_owned();
         let generation = {
             let mut state = self.state.borrow_mut();
-            state.generation = state.generation.checked_add(1).expect("password generation exhausted");
+            state.generation = state
+                .generation
+                .checked_add(1)
+                .expect("password generation exhausted");
             state.generation.to_string()
         };
-        let current = with(with(state, "busy", IpcValue::Bool(false)), "generation", IpcValue::String(generation));
+        let current = with(
+            with(state, "busy", IpcValue::Bool(false)),
+            "generation",
+            IpcValue::String(generation),
+        );
         let open = {
             let mut s = self.state.borrow_mut();
             s.current = Some(current.clone());
@@ -117,44 +124,57 @@ impl Password {
         let shell = self.ctx.shell.clone();
         let this = self.clone();
         let generation = self.state.borrow().generation;
-        kit::on_worker(&self.ctx.services, move || shell.open_password_window(parent, &title), move |view| {
-            let current = {
-                let mut state = this.state.borrow_mut();
-                if state.generation != generation || state.pending.is_none() {
-                    None
-                } else if let Some(view) = view {
-                    if !this.ctx.alive(view) {
+        kit::on_worker(
+            &self.ctx.services,
+            move || shell.open_password_window(parent, &title),
+            move |view| {
+                let current = {
+                    let mut state = this.state.borrow_mut();
+                    if state.generation != generation || state.pending.is_none() {
+                        None
+                    } else if let Some(view) = view {
+                        if !this.ctx.alive(view) {
+                            state.current = None;
+                            drop(state);
+                            settle(&this.state, Ok(None));
+                            return;
+                        }
+                        state.view = Some(view);
+                        state.current.clone()
+                    } else {
                         state.current = None;
                         drop(state);
-                        settle(&this.state, Ok(None));
+                        settle(
+                            &this.state,
+                            Err("Opening the password window failed".into()),
+                        );
                         return;
                     }
-                    state.view = Some(view);
-                    state.current.clone()
-                } else {
-                    state.current = None;
-                    drop(state);
-                    settle(&this.state, Err("Opening the password window failed".into()));
-                    return;
-                }
-            };
-            if let (Some(view), Some(current)) = (view, current) {
-                this.ctx.services.events.emit(Target::View(view), "pdf-password:changed", vec![current]);
-            } else if let Some(view) = view {
-                let belongs_to_owned = {
-                    let state = this.state.borrow();
-                    state.owned.is_some() && state.view == Some(view)
                 };
-                if !belongs_to_owned && let Some(window) = this.ctx.window_of(view) {
-                    this.ctx.contents.close_window(window);
+                if let (Some(view), Some(current)) = (view, current) {
+                    this.ctx.services.events.emit(
+                        Target::View(view),
+                        "pdf-password:changed",
+                        vec![current],
+                    );
+                } else if let Some(view) = view {
+                    let belongs_to_owned = {
+                        let state = this.state.borrow();
+                        state.owned.is_some() && state.view == Some(view)
+                    };
+                    if !belongs_to_owned && let Some(window) = this.ctx.window_of(view) {
+                        this.ctx.contents.close_window(window);
+                    }
                 }
-            }
-        });
+            },
+        );
     }
 
     /// `closePdfPasswordDialog()`
     pub fn close(&self) {
-        if self.state.borrow().owned.is_some() { return; }
+        if self.state.borrow().owned.is_some() {
+            return;
+        }
         let view = {
             let mut s = self.state.borrow_mut();
             s.current = None;
@@ -172,19 +192,29 @@ impl Password {
         let (a, b, c) = (self.clone(), self.clone(), self.clone());
         vec![
             kit::invoke("pdf-password:get-state", move |cx, _| {
-                if a.state.borrow().owned.is_some() { return Ok(a.owned_state(cx)); }
+                if a.state.borrow().owned.is_some() {
+                    return Ok(a.owned_state(cx));
+                }
                 let state = a.state.borrow();
-                Ok(if state.view == Some(cx.sender.view) { state.current.clone().unwrap_or(IpcValue::Null) } else { IpcValue::Null })
+                Ok(if state.view == Some(cx.sender.view) {
+                    state.current.clone().unwrap_or(IpcValue::Null)
+                } else {
+                    IpcValue::Null
+                })
             }),
             kit::invoke("pdf-password:submit", move |cx, args| {
-                let Some(password) = args.str(0) else { return Ok(IpcValue::Undefined); };
+                let Some(password) = args.str(0) else {
+                    return Ok(IpcValue::Undefined);
+                };
                 if b.state.borrow().owned.is_some() {
                     b.submit_owned(cx, password, args.str(1));
                     return Ok(IpcValue::Undefined);
                 }
                 let authorized = {
                     let state = b.state.borrow();
-                    state.view == Some(cx.sender.view) && args.str(1) == Some(state.generation.to_string().as_str()) && state.pending.is_some()
+                    state.view == Some(cx.sender.view)
+                        && args.str(1) == Some(state.generation.to_string().as_str())
+                        && state.pending.is_some()
                 };
                 if authorized {
                     b.push_busy();
@@ -199,7 +229,9 @@ impl Password {
                 }
                 let authorized = {
                     let state = c.state.borrow();
-                    state.view == Some(cx.sender.view) && args.str(0) == Some(state.generation.to_string().as_str()) && state.pending.is_some()
+                    state.view == Some(cx.sender.view)
+                        && args.str(0) == Some(state.generation.to_string().as_str())
+                        && state.pending.is_some()
                 };
                 if authorized {
                     settle(&c.state, Ok(None));
@@ -262,15 +294,30 @@ mod tests {
                     "generation": "1", "strings": { "title": "Password" } })
         );
         let stranger = t.rt.view(902, Surface::ShellPdfPassword);
-        assert_eq!(j(&t.call("pdf-password:get-state", stranger, vec![])), json!(null));
-        t.call("pdf-password:submit", stranger, vec!["pw".into_ipc(), "1".into_ipc()]);
+        assert_eq!(
+            j(&t.call("pdf-password:get-state", stranger, vec![])),
+            json!(null)
+        );
+        t.call(
+            "pdf-password:submit",
+            stranger,
+            vec!["pw".into_ipc(), "1".into_ipc()],
+        );
         assert!(got.borrow().is_empty());
         // not a string: nothing happens
         t.call("pdf-password:submit", win, vec![3.0.into_ipc()]);
         assert!(got.borrow().is_empty());
-        t.call("pdf-password:submit", win, vec!["pw".into_ipc(), "0".into_ipc()]);
+        t.call(
+            "pdf-password:submit",
+            win,
+            vec!["pw".into_ipc(), "0".into_ipc()],
+        );
         assert!(got.borrow().is_empty());
-        t.call("pdf-password:submit", win, vec!["pw".into_ipc(), "1".into_ipc()]);
+        t.call(
+            "pdf-password:submit",
+            win,
+            vec!["pw".into_ipc(), "1".into_ipc()],
+        );
         assert_eq!(*got.borrow(), vec![Some("pw".to_owned())]);
         let events = t.rt.events();
         assert_eq!(events.len(), 1);
@@ -279,7 +326,11 @@ mod tests {
 
         // the retry re-prompts in the open window
         let g = got.clone();
-        tools.prompt_password(None, state(), Box::new(move |p| g.borrow_mut().push(p.unwrap())));
+        tools.prompt_password(
+            None,
+            state(),
+            Box::new(move |p| g.borrow_mut().push(p.unwrap())),
+        );
         assert_eq!(t.fake.called("open_password_window").len(), 1);
         assert_eq!(t.rt.events()[0].channel, "pdf-password:changed");
         assert!(t.rt.script().calls.contains(&Call::Focus(ViewId(901))));
@@ -313,7 +364,10 @@ mod tests {
         tools.prompt_password(
             None,
             state(),
-            Box::new(move |p| g2.borrow_mut().push(p.unwrap().or(Some("2 cancelled".into())))),
+            Box::new(move |p| {
+                g2.borrow_mut()
+                    .push(p.unwrap().or(Some("2 cancelled".into())))
+            }),
         );
         assert_eq!(*got.borrow(), vec![None]);
         t.rt.destroy(ViewId(901));
@@ -326,7 +380,11 @@ mod tests {
         let tools = t.tools();
         let got: Rc<RefCell<Vec<Option<String>>>> = Rc::default();
         let g = got.clone();
-        tools.prompt_password(None, state(), Box::new(move |p| g.borrow_mut().push(p.unwrap())));
+        tools.prompt_password(
+            None,
+            state(),
+            Box::new(move |p| g.borrow_mut().push(p.unwrap())),
+        );
         t.rt.view(901, Surface::ShellPdfPassword);
         t.rt.drain();
         tools.close_password_dialog();

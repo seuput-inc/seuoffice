@@ -38,7 +38,13 @@ impl HwpRecoveryElectron for Electron<'_> {
 
     fn send_recovery_flush(&self, wc_id: i64, token: u64) -> Result<(), String> {
         let view = view_of(wc_id);
-        let generation = match self.0.services.views.renderer_generation(view).filter(|generation| generation.is_active()) {
+        let generation = match self
+            .0
+            .services
+            .views
+            .renderer_generation(view)
+            .filter(|generation| generation.is_active())
+        {
             Some(generation) => generation,
             None => {
                 let error = "HWP recovery renderer generation unavailable".to_owned();
@@ -51,16 +57,27 @@ impl HwpRecoveryElectron for Electron<'_> {
             context: shell_contract::ipc::NativeContext::with_renderer((), generation.clone()),
         };
         let result = self.0.services.events.emit_to_owner_checked(
-            &owner, "hwp:recovery-flush", vec![(token as f64).into_ipc()],
+            &owner,
+            "hwp:recovery-flush",
+            vec![(token as f64).into_ipc()],
         );
         match result {
-            Ok(()) if generation.is_active() => { self.0.recovery_targets.borrow_mut().insert(token, (view, generation)); Ok(()) }
+            Ok(()) if generation.is_active() => {
+                self.0
+                    .recovery_targets
+                    .borrow_mut()
+                    .insert(token, (view, generation));
+                Ok(())
+            }
             Ok(()) => {
                 let error = "HWP recovery renderer was replaced".to_owned();
                 *self.0.recovery_send_error.borrow_mut() = Some(error.clone());
                 Err(error)
             }
-            Err(error) => { *self.0.recovery_send_error.borrow_mut() = Some(error.clone()); Err(error) }
+            Err(error) => {
+                *self.0.recovery_send_error.borrow_mut() = Some(error.clone());
+                Err(error)
+            }
         }
     }
 
@@ -124,7 +141,10 @@ impl HwpRecoveryElectron for Electron<'_> {
                     RecoveryTimer::Flush(token) => {
                         let timed_out = hwp.recovery.borrow_mut().flush_timed_out(token);
                         if timed_out {
-                            hwp.finish_recovery_flush(token, Err("HWP recovery flush timed out".into()));
+                            hwp.finish_recovery_flush(
+                                token,
+                                Err("HWP recovery flush timed out".into()),
+                            );
                         }
                     }
                 }
@@ -248,13 +268,21 @@ pub(super) fn entries(hwp: &Rc<Hwp>) -> Vec<Entry> {
 
     let h = Rc::clone(hwp);
     all.push(kit::send("hwp:recovery-flushed", move |cx, args| {
-        if let Some(token) = as_num(args.get(0)).filter(|n| n.is_finite() && n.fract() == 0.0 && *n >= 0.0 && *n <= 9_007_199_254_740_991.0) {
+        if let Some(token) = as_num(args.get(0)).filter(|n| {
+            n.is_finite() && n.fract() == 0.0 && *n >= 0.0 && *n <= 9_007_199_254_740_991.0
+        }) {
             let id = token as u64;
             let owner = h.recovery_targets.borrow().get(&id).cloned();
             let generation = cx.native.as_ref().and_then(|native| native.renderer());
-            let matches = owner.as_ref().zip(generation).is_some_and(|((view, expected), actual)| {
-                *view == cx.sender.view && expected.is_active() && expected.same_generation(actual)
-            });
+            let matches =
+                owner
+                    .as_ref()
+                    .zip(generation)
+                    .is_some_and(|((view, expected), actual)| {
+                        *view == cx.sender.view
+                            && expected.is_active()
+                            && expected.same_generation(actual)
+                    });
             if matches && h.with_recovery(|r, e, _| r.recovery_flushed(e, token)) {
                 let result = as_str(args.get(1)).map_or(Ok(()), |message| Err(message.to_owned()));
                 h.finish_recovery_flush(id, result);

@@ -278,20 +278,22 @@ impl TabsState {
                                     .borrow_mut()
                                     .insert(retained_id, Some(retained.clone()));
                             });
-                            let release = Arc::new(move |done: Box<dyn FnOnce(Result<(), String>) + Send>| {
-                                let id = key.id;
-                                key.core.post(Box::new(move || {
-                                    let result = RETAINED_OUTPUTS.with(|entries| {
-                                        let mut entries = entries.borrow_mut();
-                                        let slot = entries.get_mut(&id).ok_or(
-                                            "The captured generated payload is unavailable",
-                                        )?;
-                                        slot.take();
-                                        Ok(())
-                                    });
-                                    done(result.map_err(str::to_owned));
-                                }));
-                            });
+                            let release = Arc::new(
+                                move |done: Box<dyn FnOnce(Result<(), String>) + Send>| {
+                                    let id = key.id;
+                                    key.core.post(Box::new(move || {
+                                        let result = RETAINED_OUTPUTS.with(|entries| {
+                                            let mut entries = entries.borrow_mut();
+                                            let slot = entries.get_mut(&id).ok_or(
+                                                "The captured generated payload is unavailable",
+                                            )?;
+                                            slot.take();
+                                            Ok(())
+                                        });
+                                        done(result.map_err(str::to_owned));
+                                    }));
+                                },
+                            );
                             let shutting = match operation.retain_inverse(receipt, release) {
                                 Ok(shutting) => shutting,
                                 Err(error) => {
@@ -344,21 +346,21 @@ impl TabsState {
                         match input {
                             Ok(input) => {
                                 let completed = operation.clone();
-                                let finish =
-                                    crate::home_files::back_to_core(fallback_core, move |result: Result<GeneratedPathOutcome, String>| {
-                                        match (result, reveal) {
-                                            (Ok(GeneratedPathOutcome::NotOpened), Some(reveal)) => {
-                                                let token = completed.cancellation();
-                                                reveal(
-                                                    token,
-                                                    Box::new(move |result| {
-                                                        completed.finish(result)
-                                                    }),
-                                                );
-                                            }
-                                            (result, _) => completed.finish(result),
+                                let finish = crate::home_files::back_to_core(
+                                    fallback_core,
+                                    move |result: Result<GeneratedPathOutcome, String>| match (
+                                        result, reveal,
+                                    ) {
+                                        (Ok(GeneratedPathOutcome::NotOpened), Some(reveal)) => {
+                                            let token = completed.cancellation();
+                                            reveal(
+                                                token,
+                                                Box::new(move |result| completed.finish(result)),
+                                            );
                                         }
-                                    });
+                                        (result, _) => completed.finish(result),
+                                    },
+                                );
                                 state.open_saved_input_owned(
                                     input,
                                     path,

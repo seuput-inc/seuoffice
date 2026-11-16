@@ -363,7 +363,10 @@ pub(crate) fn face_offsets(file: &fs::File) -> Result<Vec<i64>, Thrown> {
 impl FontIndex {
     /// Family-name matches in scan order, without PostScript or fallback matches.
     pub fn family_faces(&self, family: &str) -> impl Iterator<Item = &FaceRef> {
-        self.by_family.get(&norm(family)).into_iter().flat_map(|indices| indices.iter().map(|&index| &self.faces[index]))
+        self.by_family
+            .get(&norm(family))
+            .into_iter()
+            .flat_map(|indices| indices.iter().map(|&index| &self.faces[index]))
     }
 
     pub(crate) fn index_file(&mut self, path: &str) {
@@ -541,17 +544,39 @@ pub fn extract_sfnt_face(bytes: Vec<u8>, offset: i64) -> Result<Vec<u8>, String>
     if u32_at(&bytes, 0).map_err(|_| "truncated font header")? == TTC_TAG {
         let count_at = offset.checked_add(4).ok_or("face directory overflow")?;
         let count = u16_at(&bytes, count_at).map_err(|_| "truncated face directory")?;
-        let mut total = 12usize.checked_add(16usize.checked_mul(count as usize).ok_or("face directory overflow")?).ok_or("face directory overflow")?;
+        let mut total = 12usize
+            .checked_add(
+                16usize
+                    .checked_mul(count as usize)
+                    .ok_or("face directory overflow")?,
+            )
+            .ok_or("face directory overflow")?;
         let base = usize::try_from(offset).map_err(|_| "invalid face offset")?;
-        if base.checked_add(total).is_none_or(|end| end > bytes.len()) { return Err("truncated face directory".into()); }
-        for index in 0..count {
-            let entry = offset.checked_add(12 + 16 * index).filter(|entry| *entry <= i64::MAX - 12).ok_or("face directory overflow")?;
-            let start = usize::try_from(u32_at(&bytes, entry + 8).map_err(|_| "truncated face directory")?).map_err(|_| "invalid table offset")?;
-            let len = usize::try_from(u32_at(&bytes, entry + 12).map_err(|_| "truncated face directory")?).map_err(|_| "invalid table length")?;
-            if start.checked_add(len).is_none_or(|end| end > bytes.len()) { return Err("font table outside collection".into()); }
-            total = total.checked_add(len.checked_add(3).ok_or("font table overflow")? & !3).ok_or("font face overflow")?;
+        if base.checked_add(total).is_none_or(|end| end > bytes.len()) {
+            return Err("truncated face directory".into());
         }
-        if total > 512 * 1024 * 1024 { return Err("font face exceeds extraction limit".into()); }
+        for index in 0..count {
+            let entry = offset
+                .checked_add(12 + 16 * index)
+                .filter(|entry| *entry <= i64::MAX - 12)
+                .ok_or("face directory overflow")?;
+            let start =
+                usize::try_from(u32_at(&bytes, entry + 8).map_err(|_| "truncated face directory")?)
+                    .map_err(|_| "invalid table offset")?;
+            let len = usize::try_from(
+                u32_at(&bytes, entry + 12).map_err(|_| "truncated face directory")?,
+            )
+            .map_err(|_| "invalid table length")?;
+            if start.checked_add(len).is_none_or(|end| end > bytes.len()) {
+                return Err("font table outside collection".into());
+            }
+            total = total
+                .checked_add(len.checked_add(3).ok_or("font table overflow")? & !3)
+                .ok_or("font face overflow")?;
+        }
+        if total > 512 * 1024 * 1024 {
+            return Err("font face exceeds extraction limit".into());
+        }
     }
     extract_face(bytes, offset).map_err(|_| "invalid font face".into())
 }
@@ -794,7 +819,10 @@ mod extraction_tests {
     #[test]
     fn extraction_preserves_standalone_and_relocates_collection_tables() {
         let standalone = vec![0, 1, 0, 0];
-        assert_eq!(extract_sfnt_face(standalone.clone(), 0).unwrap(), standalone);
+        assert_eq!(
+            extract_sfnt_face(standalone.clone(), 0).unwrap(),
+            standalone
+        );
         let mut ttc = vec![0u8; 68];
         ttc[0..4].copy_from_slice(b"ttcf");
         ttc[16..20].copy_from_slice(&0x0001_0000u32.to_be_bytes());

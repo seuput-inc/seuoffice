@@ -161,7 +161,11 @@ pub trait EpubEngine: Send + Sync {
     /// `validateReplacements(replacements, length)`: the problem, if any
     fn validate_replacements(&self, replacements: &[Replacement], length: usize) -> Option<String>;
     /// `applyReplacements(source, replacements)`
-    fn apply_replacements(&self, source: &str, replacements: &[Replacement]) -> Result<String, String>;
+    fn apply_replacements(
+        &self,
+        source: &str,
+        replacements: &[Replacement],
+    ) -> Result<String, String>;
     /// `remapChapter(map, text, replacements)`
     fn remap_chapter(
         &self,
@@ -179,7 +183,12 @@ pub trait EpubEngine: Send + Sync {
         edits: &[(String, Vec<Replacement>)],
     ) -> Result<SavedBytes, String>;
     /// `epubMigrationInfo(savedBook, { oldDocHash, newDocHash })`
-    fn migration_info(&self, saved: Bytes, old_doc_hash: &str, new_doc_hash: &str) -> Result<Value, String>;
+    fn migration_info(
+        &self,
+        saved: Bytes,
+        old_doc_hash: &str,
+        new_doc_hash: &str,
+    ) -> Result<Value, String>;
     /// `epubTranslationUnits(book, { chapters })`: `{ units, skipped }`
     fn translation_units(&self, bytes: Bytes, chapters: Option<&[usize]>) -> Result<Value, String>;
     /// `buildTranslatedEpub(bytes, options)`
@@ -263,8 +272,12 @@ pub trait EpubEngine: Send + Sync {
     ) -> Result<bool, StoreError>;
     /// `ResultStore.migrateDocument(info)`: the `MigrateResult`
     fn store_migrate_document(&self, dir: &str, info: Value) -> Result<Value, StoreError>;
-    fn store_migrate_document_owned(&self, dir: &str, info: Value,
-        admit: &mut main_core::packages::pdf_structure::files::StoreAdmission<'_>) -> Result<Value, StoreError>;
+    fn store_migrate_document_owned(
+        &self,
+        dir: &str,
+        info: Value,
+        admit: &mut main_core::packages::pdf_structure::files::StoreAdmission<'_>,
+    ) -> Result<Value, StoreError>;
 }
 
 pub type EpubEngineHost = Arc<dyn EpubEngine>;
@@ -287,18 +300,37 @@ pub trait EpubShell: Send + Sync {
         old_doc_hash: &str,
         new_doc_hash: &str,
     ) -> Result<f64, String>;
-    fn migrate_job_records_owned(&self, dir: &str, old_doc_hash: &str, new_doc_hash: &str,
-        admit: &mut main_core::packages::pdf_structure::files::StoreAdmission<'_>) -> Result<f64, String>;
+    fn migrate_job_records_owned(
+        &self,
+        dir: &str,
+        old_doc_hash: &str,
+        new_doc_hash: &str,
+        admit: &mut main_core::packages::pdf_structure::files::StoreAdmission<'_>,
+    ) -> Result<f64, String>;
     /// `fileSavedHook(contents, path)`: a save landed on a new path
     fn file_saved(&self, view: ViewId, path: &str);
-    fn file_saved_owned(&self, origin: &shell_contract::ipc::NativeRequestOwner,
-        destination: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken,
-        pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost,
-        path: &str, done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>);
-    fn file_saved_existing_document(&self, destination: shell_contract::ipc::NativeSaveDestination,
-        participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken,
-        pending: shell_contract::runtime::CancelToken, additional: Vec<shell_contract::runtime::CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost,
-        done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>);
+    fn file_saved_owned(
+        &self,
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+        path: &str,
+        done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>,
+    );
+    fn file_saved_existing_document(
+        &self,
+        destination: shell_contract::ipc::NativeSaveDestination,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>,
+    );
     /// The open-files source, answered on the core thread. `None` means no
     /// source is set; `Some(Err)` means it failed and all files are unsafe.
     fn open_files(&self, then: Box<dyn FnOnce(Option<Result<Vec<OpenFileState>, ()>>)>);
@@ -670,14 +702,23 @@ mod fake {
             None
         }
 
-        fn apply_replacements(&self, source: &str, replacements: &[Replacement]) -> Result<String, String> {
+        fn apply_replacements(
+            &self,
+            source: &str,
+            replacements: &[Replacement],
+        ) -> Result<String, String> {
             if let Some(error) = self.0.next("applyReplacements").and_then(|v| thrown(&v)) {
                 return Err(error);
             }
             Ok(apply_replacements(source, replacements))
         }
 
-        fn remap_chapter(&self, map: &ChapterMap, text: &str, r: &[Replacement]) -> Result<ChapterMap, String> {
+        fn remap_chapter(
+            &self,
+            map: &ChapterMap,
+            text: &str,
+            r: &[Replacement],
+        ) -> Result<ChapterMap, String> {
             if let Some(error) = self.0.next("remapChapter").and_then(|v| thrown(&v)) {
                 return Err(error);
             }
@@ -996,15 +1037,23 @@ mod fake {
             Ok(Value::Null)
         }
 
-        fn store_migrate_document_owned(&self, dir: &str, info: Value,
-            admit: &mut main_core::packages::pdf_structure::files::StoreAdmission<'_>) -> Result<Value, StoreError> {
+        fn store_migrate_document_owned(
+            &self,
+            dir: &str,
+            info: Value,
+            admit: &mut main_core::packages::pdf_structure::files::StoreAdmission<'_>,
+        ) -> Result<Value, StoreError> {
             let mut result = None;
             let mut info = Some(info);
             admit(&mut || {
-                let info = info.take().ok_or_else(|| main_core::node_fs::NodeError { code: None, message: "The migration was already consumed".into() })?;
+                let info = info.take().ok_or_else(|| main_core::node_fs::NodeError {
+                    code: None,
+                    message: "The migration was already consumed".into(),
+                })?;
                 result = Some(self.store_migrate_document(dir, info));
                 Ok(())
-            }).map_err(|error| StoreError::Other(error.message))?;
+            })
+            .map_err(|error| StoreError::Other(error.message))?;
             result.ok_or_else(|| StoreError::Type("The migration did not execute".into()))?
         }
     }
@@ -1062,10 +1111,19 @@ mod fake {
             Ok(0.0)
         }
 
-        fn migrate_job_records_owned(&self, dir: &str, old: &str, new: &str,
-            admit: &mut main_core::packages::pdf_structure::files::StoreAdmission<'_>) -> Result<f64, String> {
+        fn migrate_job_records_owned(
+            &self,
+            dir: &str,
+            old: &str,
+            new: &str,
+            admit: &mut main_core::packages::pdf_structure::files::StoreAdmission<'_>,
+        ) -> Result<f64, String> {
             let mut result = None;
-            admit(&mut || { result = Some(self.migrate_job_records(dir, old, new)); Ok(()) }).map_err(|error| error.message)?;
+            admit(&mut || {
+                result = Some(self.migrate_job_records(dir, old, new));
+                Ok(())
+            })
+            .map_err(|error| error.message)?;
             result.ok_or_else(|| "The job migration did not execute".to_owned())?
         }
 
@@ -1076,26 +1134,68 @@ mod fake {
                 .push(json!(["fileSavedHook", view.0, path]));
         }
 
-        fn file_saved_owned(&self, origin: &shell_contract::ipc::NativeRequestOwner,
-            destination: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken,
-            pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost,
-            path: &str, done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>) {
-            let result = effects.with_owned_effect_many_extra(origin, participants, cancel, pending, &additional.iter().collect::<Vec<_>>(), &mut || {
-                self.file_saved(destination.view, path);
-                Ok(())
-            }).map(|()| shell_contract::hosts::SavedFile { path: path.to_owned(), session: shell_contract::hosts::SavedSessionReceipt::NoPublication });
+        fn file_saved_owned(
+            &self,
+            origin: &shell_contract::ipc::NativeRequestOwner,
+            destination: &shell_contract::ipc::NativeRequestOwner,
+            participants: &[shell_contract::ipc::NativeRequestOwner],
+            cancel: &shell_contract::runtime::CancelToken,
+            pending: &shell_contract::runtime::CancelToken,
+            additional: &[shell_contract::runtime::CancelToken],
+            effects: &shell_contract::hosts::OwnedEffectsHost,
+            path: &str,
+            done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>,
+        ) {
+            let result = effects
+                .with_owned_effect_many_extra(
+                    origin,
+                    participants,
+                    cancel,
+                    pending,
+                    &additional.iter().collect::<Vec<_>>(),
+                    &mut || {
+                        self.file_saved(destination.view, path);
+                        Ok(())
+                    },
+                )
+                .map(|()| shell_contract::hosts::SavedFile {
+                    path: path.to_owned(),
+                    session: shell_contract::hosts::SavedSessionReceipt::NoPublication,
+                });
             done(result);
         }
-        fn file_saved_existing_document(&self, destination: shell_contract::ipc::NativeSaveDestination,
-            participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken,
-            pending: shell_contract::runtime::CancelToken, additional: Vec<shell_contract::runtime::CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost,
-            done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>) {
+        fn file_saved_existing_document(
+            &self,
+            destination: shell_contract::ipc::NativeSaveDestination,
+            participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+            cancel: shell_contract::runtime::CancelToken,
+            pending: shell_contract::runtime::CancelToken,
+            additional: Vec<shell_contract::runtime::CancelToken>,
+            effects: shell_contract::hosts::OwnedEffectsHost,
+            done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>,
+        ) {
             let result = (|| {
-                let path = destination.path().to_str().ok_or("The saved book path is not Unicode")?.to_owned();
-                effects.with_existing_document_destination_effect(&destination, destination.path(), &participants, &cancel, &pending, &additional.iter().collect::<Vec<_>>(), &mut || {
-                    self.file_saved(destination.binding().owner().view, &path); Ok(())
-                })?;
-                Ok(shell_contract::hosts::SavedFile { path, session: shell_contract::hosts::SavedSessionReceipt::NoPublication })
+                let path = destination
+                    .path()
+                    .to_str()
+                    .ok_or("The saved book path is not Unicode")?
+                    .to_owned();
+                effects.with_existing_document_destination_effect(
+                    &destination,
+                    destination.path(),
+                    &participants,
+                    &cancel,
+                    &pending,
+                    &additional.iter().collect::<Vec<_>>(),
+                    &mut || {
+                        self.file_saved(destination.binding().owner().view, &path);
+                        Ok(())
+                    },
+                )?;
+                Ok(shell_contract::hosts::SavedFile {
+                    path,
+                    session: shell_contract::hosts::SavedSessionReceipt::NoPublication,
+                })
             })();
             done(result);
         }

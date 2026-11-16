@@ -1608,8 +1608,7 @@ pub(crate) fn wake_hwp_publication(
         retry_prepared_hwp(&terminal);
         retry_hwp_cleanup_observer(&state, view, &terminal);
         state.recover_hwp_delivery(view, &terminal);
-        let Some((payload, delivery)) = state.take_ready_hwp_publication(view, &terminal)
-        else {
+        let Some((payload, delivery)) = state.take_ready_hwp_publication(view, &terminal) else {
             return;
         };
         let mut delivery = match delivery {

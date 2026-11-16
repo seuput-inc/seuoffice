@@ -11,11 +11,11 @@
 //! continuation keyed by view, emits the request, and the renderer's answer
 //! (or a timer as the TypeScript's `setTimeout`) runs it on the core thread.
 
-mod owned;
 mod headless;
+mod owned;
 mod recovery_open;
 pub(crate) use headless::HeadlessPublication;
-pub(crate) use owned::{OwnedSave, RecoveryRenameScope, NativeRenameScope, SaveAuthority};
+pub(crate) use owned::{NativeRenameScope, OwnedSave, RecoveryRenameScope, SaveAuthority};
 pub(crate) mod owned_write;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -95,11 +95,45 @@ pub(crate) struct DocHooks {
     pub rename_assets: fn(&str, &str) -> Result<(), String>,
     /// Keep the native protocol's grant synchronized with this view's paths.
     pub asset_paths: Box<dyn Fn(ViewId, bool, Option<&str>, Option<&str>) -> Result<(), String>>,
-    pub asset_paths_owned: Box<dyn Fn(&OwnedSave, bool, Option<&str>, Option<&str>) -> Result<(),String>>,
-    pub native_save_asset_paths: Arc<dyn Fn(&shell_contract::ipc::NativeRequestOwner,bool,Option<&str>,Option<&str>)->Result<super::RecoveryAssetStage,String>+Send+Sync>,
-    pub saved_asset_paths: Arc<dyn Fn(&shell_contract::ipc::NativeRequestOwner,Option<&str>,Option<&str>)->Result<super::SavedAssetStage,String>+Send+Sync>,
-    pub recovery_asset_paths: Box<dyn Fn(&shell_contract::ipc::RecoveryOpenTarget, bool, Option<&str>, Option<&str>) -> Result<Box<dyn FnMut() -> Result<(), String> + Send>, String>>,
-    pub rename_recovery_asset_paths: Arc<dyn Fn(&RecoveryRenameScope, bool, Option<&str>, Option<&str>) -> Result<super::RecoveryAssetStage, String> + Send + Sync>,
+    pub asset_paths_owned:
+        Box<dyn Fn(&OwnedSave, bool, Option<&str>, Option<&str>) -> Result<(), String>>,
+    pub native_save_asset_paths: Arc<
+        dyn Fn(
+                &shell_contract::ipc::NativeRequestOwner,
+                bool,
+                Option<&str>,
+                Option<&str>,
+            ) -> Result<super::RecoveryAssetStage, String>
+            + Send
+            + Sync,
+    >,
+    pub saved_asset_paths: Arc<
+        dyn Fn(
+                &shell_contract::ipc::NativeRequestOwner,
+                Option<&str>,
+                Option<&str>,
+            ) -> Result<super::SavedAssetStage, String>
+            + Send
+            + Sync,
+    >,
+    pub recovery_asset_paths: Box<
+        dyn Fn(
+            &shell_contract::ipc::RecoveryOpenTarget,
+            bool,
+            Option<&str>,
+            Option<&str>,
+        ) -> Result<Box<dyn FnMut() -> Result<(), String> + Send>, String>,
+    >,
+    pub rename_recovery_asset_paths: Arc<
+        dyn Fn(
+                &RecoveryRenameScope,
+                bool,
+                Option<&str>,
+                Option<&str>,
+            ) -> Result<super::RecoveryAssetStage, String>
+            + Send
+            + Sync,
+    >,
     /// html: the view presents another view's preview; its export requests
     /// are dropped and a save request is answered `true` at once
     pub presenting: Box<dyn Fn(ViewId) -> bool>,
@@ -119,7 +153,15 @@ struct DocView {
 
 impl Default for DocView {
     fn default() -> Self {
-        Self { tracked:false,open:None,allowed:HashSet::new(),save:None,dirty:false,disk:HashMap::new(),lease:RendererGeneration::new() }
+        Self {
+            tracked: false,
+            open: None,
+            allowed: HashSet::new(),
+            save: None,
+            dirty: false,
+            disk: HashMap::new(),
+            lease: RendererGeneration::new(),
+        }
     }
 }
 
@@ -149,7 +191,15 @@ pub(crate) struct TextDocs {
     reads: RefCell<HashMap<ViewId, Reading>>,
     headless_targets: RefCell<HashMap<ViewId, IpcValue>>,
     headless_waiters: RefCell<HashMap<ViewId, (HeadlessSettle, Timer)>>,
-    headless_authority: RefCell<HashMap<ViewId, (shell_contract::ipc::NativeInvocationTarget, shell_contract::runtime::CancelToken)>>,
+    headless_authority: RefCell<
+        HashMap<
+            ViewId,
+            (
+                shell_contract::ipc::NativeInvocationTarget,
+                shell_contract::runtime::CancelToken,
+            ),
+        >,
+    >,
     /// the app's own cleanups, run first when a view is destroyed
     cleanups: RefCell<Vec<ViewHook>>,
     /// keeps the `destroyed` listener alive as long as this state
@@ -440,12 +490,22 @@ impl TextDocs {
             });
             (result, changed, revoked)
         };
-        if let Some(revoked) = revoked { revoked.cancel(); }
-        if changed.is_some(){if let Some(request)=self.owned_saves.borrow().get(&view){request.cancel().cancel();}}
+        if let Some(revoked) = revoked {
+            revoked.cancel();
+        }
+        if changed.is_some() {
+            if let Some(request) = self.owned_saves.borrow().get(&view) {
+                request.cancel().cancel();
+            }
+        }
         if let Some((tracked, open, save)) = changed
-            && let Err(error) = (self.hooks.asset_paths)(view, tracked, open.as_deref(), save.as_deref())
+            && let Err(error) =
+                (self.hooks.asset_paths)(view, tracked, open.as_deref(), save.as_deref())
         {
-            eprintln!("[{}] could not update document asset grant: {error}", self.ch.app);
+            eprintln!(
+                "[{}] could not update document asset grant: {error}",
+                self.ch.app
+            );
         }
         result
     }
@@ -482,11 +542,16 @@ impl TextDocs {
         // before the dirty flag goes: a clean close drops the copy, an unsaved or crashed one keeps it
         self.recovery.forget(view);
         let gone = self.views.borrow_mut().remove(&view);
-        if let Some(state) = &gone { state.lease.revoke(); }
+        if let Some(state) = &gone {
+            state.lease.revoke();
+        }
         if gone.is_some()
             && let Err(error) = (self.hooks.asset_paths)(view, false, None, None)
         {
-            eprintln!("[{}] could not revoke document asset grant: {error}", self.ch.app);
+            eprintln!(
+                "[{}] could not revoke document asset grant: {error}",
+                self.ch.app
+            );
         }
         let close = self.close_waiters.borrow_mut().remove(&view);
         if let Some(waiter) = close {
@@ -601,7 +666,7 @@ impl TextDocs {
         if !self.is_dirty(view) || self.is_destroyed(view) {
             return then(Ok(true));
         }
-        let options=self.close_options();
+        let options = self.close_options();
         let response = self
             .dialogs
             .message(parent, &message_box(&options))
@@ -922,7 +987,9 @@ impl TextDocs {
             return;
         };
         kit::clear(timer);
-        if let Some((_, pending)) = self.headless_authority.borrow_mut().remove(&view) { pending.cancel(); }
+        if let Some((_, pending)) = self.headless_authority.borrow_mut().remove(&view) {
+            pending.cancel();
+        }
         self.headless_targets.borrow_mut().remove(&view);
         then(if ok {
             Ok(())
@@ -991,7 +1058,13 @@ impl TextDocs {
         }));
         let d = Rc::clone(self);
         out.push(kit::send(ch.close_save_result, move |cx, args| {
-            if d.handle_owned_close_result(cx.sender.view,cx.native.as_ref(),args.bool(0)==Some(true)){return Ok(())}
+            if d.handle_owned_close_result(
+                cx.sender.view,
+                cx.native.as_ref(),
+                args.bool(0) == Some(true),
+            ) {
+                return Ok(());
+            }
             let waiter = d.close_waiters.borrow_mut().remove(&cx.sender.view);
             if let Some(waiter) = waiter {
                 waiter(args.bool(0) == Some(true))
@@ -1020,7 +1093,9 @@ impl TextDocs {
         // save() (busy, still loading); the save handler resolves the normal path
         let d = Rc::clone(self);
         out.push(kit::send(ch.save_request_ack, move |cx, args| {
-            if d.handle_owned_save_ack(cx,args.bool(0)==Some(true)){return Ok(())}
+            if d.handle_owned_save_ack(cx, args.bool(0) == Some(true)) {
+                return Ok(());
+            }
             let waiter = d.save_waiters.borrow_mut().remove(&cx.sender.view);
             if let Some(waiter) = waiter {
                 waiter(args.bool(0) == Some(true))
@@ -1030,7 +1105,10 @@ impl TextDocs {
         let d = Rc::clone(self);
         out.push(kit::invoke(ch.consume_headless_export, move |cx, _| {
             let mut target = None;
-            d.admit_headless_message(&cx, || { target = d.headless_targets.borrow_mut().remove(&cx.sender.view); Ok(()) })?;
+            d.admit_headless_message(&cx, || {
+                target = d.headless_targets.borrow_mut().remove(&cx.sender.view);
+                Ok(())
+            })?;
             Ok(target.unwrap_or(IpcValue::Null))
         }));
         let d = Rc::clone(self);
@@ -1045,7 +1123,10 @@ impl TextDocs {
             d.settle_headless(cx.sender.view, ok, error);
             Ok(())
         }));
-        out.extend(self.recovery.entries(ch.recovery_open, ch.recovery_write, ch.recovery_applied));
+        out.extend(
+            self.recovery
+                .entries(ch.recovery_open, ch.recovery_write, ch.recovery_applied),
+        );
         out
     }
 }
@@ -1447,9 +1528,13 @@ pub(crate) fn probe_trigger(
             then(done(IpcValue::Undefined))
         }
         "is-dirty" => then(done(docs.is_dirty(view).into_ipc())),
-        "write-copies-now" => docs
-            .recovery
-            .write_copies_now(move |result| then(result.map(|()| IpcValue::Undefined).map_err(|error| crate::kit::error(error.0)))),
+        "write-copies-now" => docs.recovery.write_copies_now(move |result| {
+            then(
+                result
+                    .map(|()| IpcValue::Undefined)
+                    .map_err(|error| crate::kit::error(error.0)),
+            )
+        }),
         "renderer-gone" => {
             docs.renderer_gone(view, arg(0).unwrap_or_default());
             then(done(IpcValue::Undefined))

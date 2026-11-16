@@ -81,7 +81,10 @@ pub trait HwpEngine: Send + Sync {
     /// The source `setOpenFilesSource` registered (`seuoffice.open-files-source`):
     /// `None` when no source is registered (nothing is blocked), `Some(Err)`
     /// when the source threw or rejected (every file counts as unsaved)
-    fn open_files(&self, then: Box<dyn FnOnce(Option<Result<Vec<OpenFileState>, OpenFilesSourceFailed>>)>);
+    fn open_files(
+        &self,
+        then: Box<dyn FnOnce(Option<Result<Vec<OpenFileState>, OpenFilesSourceFailed>>)>,
+    );
     /// `extractDiagramXml(fileName, bytes, nodePageCodec)` of
     /// `@seuoffice/drawio-model`: whether it fails with reason `no_original`
     /// (a `.drawio.svg` / `.drawio.png` that does not hold its diagram)
@@ -154,7 +157,9 @@ pub trait HwpShell: Send + Sync {
     /// `fileSavedHook?.(wc, path)`: a save landed on a new path
     fn file_saved(&self, view: ViewId, path: &str);
     fn file_saved_owned(
-        &self, view: ViewId, path: String,
+        &self,
+        view: ViewId,
+        path: String,
         origin: shell_contract::ipc::NativeRequestOwner,
         destination: shell_contract::ipc::NativeRequestOwner,
         cancel: shell_contract::runtime::CancelToken,
@@ -163,9 +168,12 @@ pub trait HwpShell: Send + Sync {
         done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>,
     );
     fn file_saved_existing_document(
-        &self, view: ViewId, selection: shell_contract::ipc::NativeSaveDestination,
+        &self,
+        view: ViewId,
+        selection: shell_contract::ipc::NativeSaveDestination,
         participants: Vec<shell_contract::ipc::NativeRequestOwner>,
-        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
         additional: Vec<shell_contract::runtime::CancelToken>,
         effects: shell_contract::hosts::OwnedEffectsHost,
         done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>,
@@ -191,10 +199,14 @@ pub trait HwpShell: Send + Sync {
     /// `exportHwpPdfHeadless`'s hidden window (1280x900, no throttling) with
     /// the Hangul preload, not loaded yet
     fn create_headless_view(&self) -> Result<ViewId, String>;
-    fn create_native_headless_view(&self, operation: &shell_contract::ipc::NativeInvocationOperation)
-        -> Result<shell_contract::ipc::NativeInvocationTarget, String>;
-    fn load_native_headless_view(&self, target: &shell_contract::ipc::NativeInvocationTarget)
-        -> Result<(), String>;
+    fn create_native_headless_view(
+        &self,
+        operation: &shell_contract::ipc::NativeInvocationOperation,
+    ) -> Result<shell_contract::ipc::NativeInvocationTarget, String>;
+    fn load_native_headless_view(
+        &self,
+        target: &shell_contract::ipc::NativeInvocationTarget,
+    ) -> Result<(), String>;
     /// its `loadURL` of the Hangul renderer
     fn load_headless_view(&self, view: ViewId) -> Result<(), String>;
     /// `win.destroy()` unless it is destroyed already
@@ -210,9 +222,11 @@ pub(crate) fn entries(
     let hwp = editor::Hwp::new(services)?;
     let editors = Rc::new(HwpEditors(Rc::clone(&hwp)));
     provided.add::<dyn shell_contract::DocumentEditors>(editors.clone());
-    provided.add::<dyn main_core::packages::electron_utils::recovery_contract::RecoveryEditorContract<ViewId, shell_contract::ipc::RecoveryOpenTarget>>(
-        editors.clone(),
-    );
+    provided
+        .add::<dyn main_core::packages::electron_utils::recovery_contract::RecoveryEditorContract<
+                ViewId,
+                shell_contract::ipc::RecoveryOpenTarget,
+            >>(editors.clone());
     // what the shell calls that the contract's traits do not carry
     // (`createHwpView`, `exportHwpPdfHeadless`, the view's own events)
     provided.add::<HwpEditors>(editors);
@@ -429,7 +443,9 @@ pub(crate) mod fake {
     #[cfg(test)]
     pub(crate) fn answer_open_files() {
         PENDING_OPEN_FILES.with(|pending| {
-            if let Some(answer) = pending.borrow_mut().take() { answer(); }
+            if let Some(answer) = pending.borrow_mut().take() {
+                answer();
+            }
         });
     }
 
@@ -550,22 +566,36 @@ pub(crate) mod fake {
 
         /// `{"failed": true}` (the source threw), `{"files": [{"filePath",
         /// "dirty"}]}`, or absent/null for no source registered
-        fn open_files(&self, then: Box<dyn FnOnce(Option<Result<Vec<OpenFileState>, OpenFilesSourceFailed>>)>) {
+        fn open_files(
+            &self,
+            then: Box<dyn FnOnce(Option<Result<Vec<OpenFileState>, OpenFilesSourceFailed>>)>,
+        ) {
             let source = self.0.next("open_files").filter(|v| !v.is_null());
             let result = source.map(|source| {
                 self.1.push(json!(["openFilesSource"]));
                 if source.get("failed").and_then(Value::as_bool) == Some(true) {
                     return Err(OpenFilesSourceFailed);
                 }
-                Ok(source.get("files").and_then(Value::as_array).into_iter().flatten()
+                Ok(source
+                    .get("files")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
                     .map(|f| OpenFileState {
                         file_path: f.get("filePath").and_then(Value::as_str).map(str::to_owned),
                         dirty: f.get("dirty").and_then(Value::as_bool) == Some(true),
-                    }).collect())
+                    })
+                    .collect())
             });
             #[cfg(test)]
-            if self.0.next("defer_open_files").and_then(|value| value.as_bool()) == Some(true) {
-                PENDING_OPEN_FILES.with(|pending| *pending.borrow_mut() = Some(Box::new(move || then(result))));
+            if self
+                .0
+                .next("defer_open_files")
+                .and_then(|value| value.as_bool())
+                == Some(true)
+            {
+                PENDING_OPEN_FILES
+                    .with(|pending| *pending.borrow_mut() = Some(Box::new(move || then(result))));
                 return;
             }
             then(result);
@@ -753,7 +783,9 @@ pub(crate) mod fake {
             self.log(json!(["fileSavedHook", view.0, path]))
         }
         fn file_saved_owned(
-            &self, view: ViewId, path: String,
+            &self,
+            view: ViewId,
+            path: String,
             origin: shell_contract::ipc::NativeRequestOwner,
             destination: shell_contract::ipc::NativeRequestOwner,
             cancel: shell_contract::runtime::CancelToken,
@@ -761,28 +793,48 @@ pub(crate) mod fake {
             effects: shell_contract::hosts::OwnedEffectsHost,
             done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>,
         ) {
-            let result = effects.with_owned_effect(&origin, &destination, &cancel, &pending, &mut || {
-                self.file_saved(view, &path);
-                Ok(())
-            });
-            done(result.map(|()| shell_contract::hosts::SavedFile { path, session: shell_contract::hosts::SavedSessionReceipt::NoPublication }));
+            let result =
+                effects.with_owned_effect(&origin, &destination, &cancel, &pending, &mut || {
+                    self.file_saved(view, &path);
+                    Ok(())
+                });
+            done(result.map(|()| shell_contract::hosts::SavedFile {
+                path,
+                session: shell_contract::hosts::SavedSessionReceipt::NoPublication,
+            }));
         }
         fn file_saved_existing_document(
-            &self, view: ViewId, selection: shell_contract::ipc::NativeSaveDestination,
+            &self,
+            view: ViewId,
+            selection: shell_contract::ipc::NativeSaveDestination,
             participants: Vec<shell_contract::ipc::NativeRequestOwner>,
-            cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+            cancel: shell_contract::runtime::CancelToken,
+            pending: shell_contract::runtime::CancelToken,
             additional: Vec<shell_contract::runtime::CancelToken>,
             effects: shell_contract::hosts::OwnedEffectsHost,
             done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>,
         ) {
-            if selection.binding().owner().view != view { return done(Err("HWP save destination changed".into())); }
+            if selection.binding().owner().view != view {
+                return done(Err("HWP save destination changed".into()));
+            }
             let path = selection.path().to_string_lossy().into_owned();
             let additional = additional.iter().collect::<Vec<_>>();
-            let result = effects.with_existing_document_destination_effect(&selection, selection.path(), &participants, &cancel, &pending, &additional, &mut || {
-                self.file_saved(view, &path);
-                Ok(())
-            });
-            done(result.map(|()| shell_contract::hosts::SavedFile { path, session: shell_contract::hosts::SavedSessionReceipt::NoPublication }));
+            let result = effects.with_existing_document_destination_effect(
+                &selection,
+                selection.path(),
+                &participants,
+                &cancel,
+                &pending,
+                &additional,
+                &mut || {
+                    self.file_saved(view, &path);
+                    Ok(())
+                },
+            );
+            done(result.map(|()| shell_contract::hosts::SavedFile {
+                path,
+                session: shell_contract::hosts::SavedSessionReceipt::NoPublication,
+            }));
         }
         fn open_file_dialog(&self) -> bool {
             self.log(json!(["runtime.openFileDialog"]));
@@ -831,12 +883,16 @@ pub(crate) mod fake {
             self.log(json!(["new BrowserWindow"]));
             made
         }
-        fn create_native_headless_view(&self, _: &shell_contract::ipc::NativeInvocationOperation)
-            -> Result<shell_contract::ipc::NativeInvocationTarget, String> {
+        fn create_native_headless_view(
+            &self,
+            _: &shell_contract::ipc::NativeInvocationOperation,
+        ) -> Result<shell_contract::ipc::NativeInvocationTarget, String> {
             Err("native headless HWP target is unavailable in this fixture".into())
         }
-        fn load_native_headless_view(&self, _: &shell_contract::ipc::NativeInvocationTarget)
-            -> Result<(), String> {
+        fn load_native_headless_view(
+            &self,
+            _: &shell_contract::ipc::NativeInvocationTarget,
+        ) -> Result<(), String> {
             Err("native headless HWP target is unavailable in this fixture".into())
         }
         fn load_headless_view(&self, view: ViewId) -> Result<(), String> {

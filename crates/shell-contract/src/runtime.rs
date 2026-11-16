@@ -127,9 +127,7 @@ impl CancelToken {
         }
         // The source's observer lock is already released. A public cancel after
         // renderer retirement still wakes this independent signal exactly once.
-        if external
-            && let Some(signal) = self.0.external_loss.get()
-        {
+        if external && let Some(signal) = self.0.external_loss.get() {
             signal.cancel();
         }
     }

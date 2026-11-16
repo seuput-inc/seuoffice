@@ -245,10 +245,18 @@ pub struct OwnedPasswordWindowActions {
     /// Completes only after the original captured native window was focused.
     pub focus: Arc<dyn Fn(Box<dyn FnOnce(Result<(), String>) + Send>) + Send + Sync>,
 }
-pub type SavedPasswordWindowFactory = Arc<dyn Fn(
-    String, shell_contract::ipc::NativeSavedDocument,
-    Box<dyn FnOnce(Result<(ViewId, shell_contract::ipc::NativeRequestOwner), String>) + Send>,
-) -> Result<OwnedPasswordWindowActions, String> + Send + Sync>;
+pub type SavedPasswordWindowFactory = Arc<
+    dyn Fn(
+            String,
+            shell_contract::ipc::NativeSavedDocument,
+            Box<
+                dyn FnOnce(Result<(ViewId, shell_contract::ipc::NativeRequestOwner), String>)
+                    + Send,
+            >,
+        ) -> Result<OwnedPasswordWindowActions, String>
+        + Send
+        + Sync,
+>;
 
 /// What the shell does for the PDF tools beyond the shared hosts. Runs on
 /// the core thread unless a method says otherwise.
@@ -273,18 +281,29 @@ pub trait PdfToolsShell: Send + Sync {
     /// Starts real native construction without waiting on the core thread.
     /// Controls are returned immediately; `done` carries the actual created owner.
     fn open_password_window_owned(
-        &self, parent: Option<WindowId>, title: String,
+        &self,
+        parent: Option<WindowId>,
+        title: String,
         source: shell_contract::ipc::NativeRequestOwner,
         destination: shell_contract::ipc::NativeRequestOwner,
-        cancel: CancelToken, pending: CancelToken,
-        done: Box<dyn FnOnce(Result<(ViewId, shell_contract::ipc::NativeRequestOwner), String>) + Send>,
+        cancel: CancelToken,
+        pending: CancelToken,
+        done: Box<
+            dyn FnOnce(Result<(ViewId, shell_contract::ipc::NativeRequestOwner), String>) + Send,
+        >,
     ) -> OwnedPasswordWindowActions;
 
     fn open_password_window_prepared(
-        &self, parent: Option<WindowId>, title: String,
-        target: shell_contract::ipc::RecoveryOpenTarget, snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
-        cancel: CancelToken, pending: CancelToken,
-        done: Box<dyn FnOnce(Result<(ViewId, shell_contract::ipc::NativeRequestOwner), String>) + Send>,
+        &self,
+        parent: Option<WindowId>,
+        title: String,
+        target: shell_contract::ipc::RecoveryOpenTarget,
+        snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
+        cancel: CancelToken,
+        pending: CancelToken,
+        done: Box<
+            dyn FnOnce(Result<(ViewId, shell_contract::ipc::NativeRequestOwner), String>) + Send,
+        >,
     ) -> OwnedPasswordWindowActions;
 
     /// `deps.openResult(path)` (index.ts: reload an open text tab, else
@@ -359,7 +378,8 @@ pub(crate) mod fake {
 
     /// ipc-probe's case log (its `ProbeLog`)
     pub type ProbeLog = Arc<Mutex<Vec<Value>>>;
-    type PasswordOpen = Box<dyn FnOnce(Result<(ViewId, shell_contract::ipc::NativeRequestOwner), String>) + Send>;
+    type PasswordOpen =
+        Box<dyn FnOnce(Result<(ViewId, shell_contract::ipc::NativeRequestOwner), String>) + Send>;
     type PasswordSlot = Arc<Mutex<Option<PasswordOpen>>>;
 
     /// Answers queued per method, and the calls made
@@ -423,14 +443,24 @@ pub(crate) mod fake {
         }
 
         #[cfg(test)]
-        pub fn resume_owned_password(&self, result: Result<(ViewId, shell_contract::ipc::NativeRequestOwner), String>) -> bool {
+        pub fn resume_owned_password(
+            &self,
+            result: Result<(ViewId, shell_contract::ipc::NativeRequestOwner), String>,
+        ) -> bool {
             let slot = {
                 let mut opens = self.password_opens.lock().unwrap();
-                if opens.is_empty() { return false; }
+                if opens.is_empty() {
+                    return false;
+                }
                 opens.remove(0)
             };
             let done = slot.lock().unwrap().take();
-            if let Some(done) = done { done(result); true } else { false }
+            if let Some(done) = done {
+                done(result);
+                true
+            } else {
+                false
+            }
         }
 
         #[cfg(test)]
@@ -563,8 +593,9 @@ pub(crate) mod fake {
 
         fn encrypted_page_count(&self, bytes: &[u8]) -> Result<f64, String> {
             match self.answer("encrypted_page_count", json!(bytes.len())) {
-                Some(answer) if answer.get("error").and_then(Value::as_str).is_some() =>
-                    Err(text(&answer["error"])),
+                Some(answer) if answer.get("error").and_then(Value::as_str).is_some() => {
+                    Err(text(&answer["error"]))
+                }
                 Some(answer) => Ok(answer.as_f64().unwrap_or(0.0)),
                 None => Ok(0.0),
             }
@@ -707,19 +738,35 @@ pub(crate) mod fake {
             Some(ViewId(a.and_then(|a| a.as_u64()).unwrap_or(901) as u32))
         }
         fn open_password_window_owned(
-            &self, parent: Option<WindowId>, title: String,
+            &self,
+            parent: Option<WindowId>,
+            title: String,
             source: shell_contract::ipc::NativeRequestOwner,
             destination: shell_contract::ipc::NativeRequestOwner,
-            cancel: CancelToken, pending: CancelToken,
-            done: Box<dyn FnOnce(Result<(ViewId, shell_contract::ipc::NativeRequestOwner), String>) + Send>,
+            cancel: CancelToken,
+            pending: CancelToken,
+            done: Box<
+                dyn FnOnce(Result<(ViewId, shell_contract::ipc::NativeRequestOwner), String>)
+                    + Send,
+            >,
         ) -> OwnedPasswordWindowActions {
-            self.answer("open_password_window_owned", json!([parent.map(|parent| parent.0), title, source.view.0, destination.view.0]));
+            self.answer(
+                "open_password_window_owned",
+                json!([
+                    parent.map(|parent| parent.0),
+                    title,
+                    source.view.0,
+                    destination.view.0
+                ]),
+            );
             let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
             self.password_closes.lock().unwrap().push(closed.clone());
             let slot = Arc::new(Mutex::new(Some(done)));
             if cancel.is_cancelled() || pending.is_cancelled() {
                 let done = slot.lock().unwrap().take();
-                if let Some(done) = done { done(Err("Password request was cancelled".into())); }
+                if let Some(done) = done {
+                    done(Err("Password request was cancelled".into()));
+                }
             } else {
                 self.password_opens.lock().unwrap().push(slot.clone());
             }
@@ -727,27 +774,51 @@ pub(crate) mod fake {
             let opens = self.password_opens.clone();
             OwnedPasswordWindowActions {
                 close: Arc::new(move || {
-                    if closed.swap(true, Ordering::AcqRel) { return; }
-                    opens.lock().unwrap().retain(|pending| !Arc::ptr_eq(pending, &slot));
+                    if closed.swap(true, Ordering::AcqRel) {
+                        return;
+                    }
+                    opens
+                        .lock()
+                        .unwrap()
+                        .retain(|pending| !Arc::ptr_eq(pending, &slot));
                     let done = slot.lock().unwrap().take();
-                    if let Some(done) = done { done(Err("Password window is closed".into())); }
+                    if let Some(done) = done {
+                        done(Err("Password window is closed".into()));
+                    }
                 }),
                 focus: Arc::new(move |done| {
-                    done(if focus_closed.load(Ordering::Acquire) { Err("Password window is closed".into()) } else { Ok(()) });
+                    done(if focus_closed.load(Ordering::Acquire) {
+                        Err("Password window is closed".into())
+                    } else {
+                        Ok(())
+                    });
                 }),
             }
         }
         fn open_password_window_prepared(
-            &self, parent: Option<WindowId>, title: String, target: shell_contract::ipc::RecoveryOpenTarget, _snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
-            cancel: CancelToken, pending: CancelToken,
-            done: Box<dyn FnOnce(Result<(ViewId, shell_contract::ipc::NativeRequestOwner), String>) + Send>,
+            &self,
+            parent: Option<WindowId>,
+            title: String,
+            target: shell_contract::ipc::RecoveryOpenTarget,
+            _snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
+            cancel: CancelToken,
+            pending: CancelToken,
+            done: Box<
+                dyn FnOnce(Result<(ViewId, shell_contract::ipc::NativeRequestOwner), String>)
+                    + Send,
+            >,
         ) -> OwnedPasswordWindowActions {
-            self.answer("open_password_window_prepared", json!([parent.map(|parent| parent.0), title, target.view().0]));
+            self.answer(
+                "open_password_window_prepared",
+                json!([parent.map(|parent| parent.0), title, target.view().0]),
+            );
             let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
             self.password_closes.lock().unwrap().push(closed.clone());
             let slot = Arc::new(Mutex::new(Some(done)));
             if cancel.is_cancelled() || pending.is_cancelled() || !target.created().is_active() {
-                if let Some(done) = slot.lock().unwrap().take() { done(Err("Password request was cancelled".into())); }
+                if let Some(done) = slot.lock().unwrap().take() {
+                    done(Err("Password request was cancelled".into()));
+                }
             } else {
                 self.password_opens.lock().unwrap().push(slot.clone());
             }
@@ -755,12 +826,23 @@ pub(crate) mod fake {
             let opens = self.password_opens.clone();
             OwnedPasswordWindowActions {
                 close: Arc::new(move || {
-                    if closed.swap(true, Ordering::AcqRel) { return; }
-                    opens.lock().unwrap().retain(|pending| !Arc::ptr_eq(pending, &slot));
-                    if let Some(done) = slot.lock().unwrap().take() { done(Err("Password window is closed".into())); }
+                    if closed.swap(true, Ordering::AcqRel) {
+                        return;
+                    }
+                    opens
+                        .lock()
+                        .unwrap()
+                        .retain(|pending| !Arc::ptr_eq(pending, &slot));
+                    if let Some(done) = slot.lock().unwrap().take() {
+                        done(Err("Password window is closed".into()));
+                    }
                 }),
                 focus: Arc::new(move |done| {
-                    done(if focus_closed.load(Ordering::Acquire) { Err("Password window is closed".into()) } else { Ok(()) });
+                    done(if focus_closed.load(Ordering::Acquire) {
+                        Err("Password window is closed".into())
+                    } else {
+                        Ok(())
+                    });
                 }),
             }
         }

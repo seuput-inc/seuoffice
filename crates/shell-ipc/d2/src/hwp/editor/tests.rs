@@ -92,112 +92,254 @@ fn slot<T: 'static>() -> (Slot<T>, Then<T>) {
 
 fn owned_origin(t: &T, view: ViewId) -> shell_contract::ipc::NativeRequestOwner {
     let generation = t.rt.services.views.renderer_generation(view).unwrap();
-    let effects = t.rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap();
-    t.editors.capture_document_owner(view, effects.capture_owner(view, &generation).unwrap()).unwrap()
+    let effects =
+        t.rt.services
+            .hosts
+            .get::<shell_contract::hosts::OwnedEffectsHost>()
+            .unwrap();
+    t.editors
+        .capture_document_owner(view, effects.capture_owner(view, &generation).unwrap())
+        .unwrap()
 }
 
 #[test]
 fn native_hwp_recovery_refuses_a_different_selected_file() {
-    use main_core::packages::electron_utils::recovery_contract::{RecoveryOpenDecision, RecoveryOpenFileRequest};
-    use shell_contract::ipc::{NativeInvocationIssuer, NativeInvocationSelection, NativeRecoveryDecision, RecoveryOpenContext, RecoveryOpenTarget};
+    use main_core::packages::electron_utils::recovery_contract::{
+        RecoveryOpenDecision, RecoveryOpenFileRequest,
+    };
+    use shell_contract::ipc::{
+        NativeInvocationIssuer, NativeInvocationSelection, NativeRecoveryDecision,
+        RecoveryOpenContext, RecoveryOpenTarget,
+    };
     let mut t = t(json!({}));
     let original = file(&t.rt.dir, "original.hwpx", HWPX);
     let selected = file(&t.rt.dir, "selected.hwpx", HWPX);
     let from = tab(&mut t, 1, Some(&original));
     let generation = t.rt.services.views.renderer_generation(from.view).unwrap();
     let operation = NativeInvocationIssuer::new(Default::default()).issue(
-        NativeInvocationSelection::RecoveryFile { surface: Surface::Hwp, path: PathBuf::from(&selected), decision: NativeRecoveryDecision::Restore },
-        Default::default());
-    let (_issuer, closure) = shell_contract::ipc::NativeClosureIssuer::new(from.view, generation.clone());
-    let target = RecoveryOpenTarget::bind(RecoveryOpenContext::NativeStartup(operation), from.view, generation, closure).unwrap();
+        NativeInvocationSelection::RecoveryFile {
+            surface: Surface::Hwp,
+            path: PathBuf::from(&selected),
+            decision: NativeRecoveryDecision::Restore,
+        },
+        Default::default(),
+    );
+    let (_issuer, closure) =
+        shell_contract::ipc::NativeClosureIssuer::new(from.view, generation.clone());
+    let target = RecoveryOpenTarget::bind(
+        RecoveryOpenContext::NativeStartup(operation),
+        from.view,
+        generation,
+        closure,
+    )
+    .unwrap();
     let result = Rc::new(RefCell::new(None));
     let answer = result.clone();
-    t.editors.open_file_with_decision(&from.view,
-        &RecoveryOpenFileRequest { file_path: original.clone(), decision: RecoveryOpenDecision::Restore },
-        &target, Box::new(move |value| *answer.borrow_mut() = Some(value)));
+    t.editors.open_file_with_decision(
+        &from.view,
+        &RecoveryOpenFileRequest {
+            file_path: original.clone(),
+            decision: RecoveryOpenDecision::Restore,
+        },
+        &target,
+        Box::new(move |value| *answer.borrow_mut() = Some(value)),
+    );
     assert!(matches!(&*result.borrow(), Some(Err(_))));
-    assert_eq!(t.editors.document_path(from.view), Some(PathBuf::from(original)));
+    assert_eq!(
+        t.editors.document_path(from.view),
+        Some(PathBuf::from(original))
+    );
 }
 
 #[test]
 fn recovery_receipt_waits_for_the_matching_initialized_document() {
-    use main_core::packages::electron_utils::recovery_contract::{RecoveryOpenDecision, RecoveryOpenFileRequest};
-    use shell_contract::ipc::{NativeInvocationIssuer, NativeInvocationSelection, NativeRecoveryDecision, RecoveryOpenContext, RecoveryOpenTarget};
+    use main_core::packages::electron_utils::recovery_contract::{
+        RecoveryOpenDecision, RecoveryOpenFileRequest,
+    };
+    use shell_contract::ipc::{
+        NativeInvocationIssuer, NativeInvocationSelection, NativeRecoveryDecision,
+        RecoveryOpenContext, RecoveryOpenTarget,
+    };
     use shell_contract::runtime::CancelToken;
 
     let mut t = t(json!({}));
     let path = file(&t.rt.dir, "recovery.hwpx", HWPX);
     let from = tab(&mut t, 1, Some(&path));
     let generation = t.rt.services.views.renderer_generation(from.view).unwrap();
-    let effects = t.rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap();
+    let effects =
+        t.rt.services
+            .hosts
+            .get::<shell_contract::hosts::OwnedEffectsHost>()
+            .unwrap();
     let owner = effects.capture_owner(from.view, &generation).unwrap();
     let operation = NativeInvocationIssuer::new(CancelToken::default()).issue(
         NativeInvocationSelection::RecoveryFile {
-            surface: Surface::Hwp, path: PathBuf::from(&path), decision: NativeRecoveryDecision::Original,
-        }, CancelToken::default());
-    let (_issuer, closure) = shell_contract::ipc::NativeClosureIssuer::new(from.view, generation.clone());
-    let target = RecoveryOpenTarget::bind(RecoveryOpenContext::NativeStartup(operation), from.view, generation, closure).unwrap();
+            surface: Surface::Hwp,
+            path: PathBuf::from(&path),
+            decision: NativeRecoveryDecision::Original,
+        },
+        CancelToken::default(),
+    );
+    let (_issuer, closure) =
+        shell_contract::ipc::NativeClosureIssuer::new(from.view, generation.clone());
+    let target = RecoveryOpenTarget::bind(
+        RecoveryOpenContext::NativeStartup(operation),
+        from.view,
+        generation,
+        closure,
+    )
+    .unwrap();
     let result = Rc::new(RefCell::new(None));
     let answer = result.clone();
-    t.editors.open_file_with_decision(&from.view,
-        &RecoveryOpenFileRequest { file_path: path.clone(), decision: RecoveryOpenDecision::Original },
-        &target, Box::new(move |value| *answer.borrow_mut() = Some(value)));
+    t.editors.open_file_with_decision(
+        &from.view,
+        &RecoveryOpenFileRequest {
+            file_path: path.clone(),
+            decision: RecoveryOpenDecision::Original,
+        },
+        &target,
+        Box::new(move |value| *answer.borrow_mut() = Some(value)),
+    );
     assert!(matches!(&*result.borrow(), Some(Ok(()))));
     let receipt = target.committed_seed().unwrap();
     assert!(receipt.settlement().is_none());
-    target.invocation_target().unwrap().register_from_native_admitted(owner.clone()).unwrap();
+    target
+        .invocation_target()
+        .unwrap()
+        .register_from_native_admitted(owner.clone())
+        .unwrap();
     target.retain_native_registration(owner.clone()).unwrap();
-    let seed = t.rt.invoke_native("hwp:consume-recovery", from, vec![], owner.context.clone(), CancelToken::default()).take().unwrap().unwrap();
+    let seed =
+        t.rt.invoke_native(
+            "hwp:consume-recovery",
+            from,
+            vec![],
+            owner.context.clone(),
+            CancelToken::default(),
+        )
+        .take()
+        .unwrap()
+        .unwrap();
     assert_eq!(text(&seed, "path").as_deref(), Some(path.as_str()));
     let token = text(&seed, "token").unwrap();
-    let wrong = t.rt.invoke_native("hwp:recovery-initialized", from,
-        vec![s("old"), obj([("ok", true.into_ipc())])], owner.context.clone(), CancelToken::default()).take().unwrap();
+    let wrong =
+        t.rt.invoke_native(
+            "hwp:recovery-initialized",
+            from,
+            vec![s("old"), obj([("ok", true.into_ipc())])],
+            owner.context.clone(),
+            CancelToken::default(),
+        )
+        .take()
+        .unwrap();
     assert!(wrong.is_err());
     assert!(receipt.settlement().is_none());
-    let premature = t.rt.invoke_native("hwp:recovery-initialized", from,
-        vec![s(&token), obj([("ok", true.into_ipc())])], owner.context.clone(), CancelToken::default()).take().unwrap();
+    let premature =
+        t.rt.invoke_native(
+            "hwp:recovery-initialized",
+            from,
+            vec![s(&token), obj([("ok", true.into_ipc())])],
+            owner.context.clone(),
+            CancelToken::default(),
+        )
+        .take()
+        .unwrap();
     assert!(premature.is_err());
     assert!(receipt.settlement().is_none());
-    let read = t.rt.invoke_native("hwp:read-file", from,
-        vec![s(&path)], owner.context.clone(), CancelToken::default()).take().unwrap().unwrap();
+    let read =
+        t.rt.invoke_native(
+            "hwp:read-file",
+            from,
+            vec![s(&path)],
+            owner.context.clone(),
+            CancelToken::default(),
+        )
+        .take()
+        .unwrap()
+        .unwrap();
     assert_eq!(read, bytes(HWPX));
     assert!(receipt.settlement().is_none());
-    let ack = t.rt.invoke_native("hwp:recovery-initialized", from,
-        vec![s(&token), obj([("ok", true.into_ipc())])], owner.context.clone(), CancelToken::default()).take().unwrap();
+    let ack =
+        t.rt.invoke_native(
+            "hwp:recovery-initialized",
+            from,
+            vec![s(&token), obj([("ok", true.into_ipc())])],
+            owner.context.clone(),
+            CancelToken::default(),
+        )
+        .take()
+        .unwrap();
     assert!(ack.is_ok());
     assert!(matches!(receipt.settlement(), Some(Ok(()))));
 }
 
 #[test]
 fn recovery_rename_rejects_revoked_participant_before_state_change() {
-    use shell_contract::ipc::{NativeInvocationIssuer, NativeInvocationSelection, NativeRecoveryDecision, RecoveryOpenContext, RecoveryOpenTarget};
+    use shell_contract::ipc::{
+        NativeInvocationIssuer, NativeInvocationSelection, NativeRecoveryDecision,
+        RecoveryOpenContext, RecoveryOpenTarget,
+    };
     use shell_contract::runtime::CancelToken;
     let mut t = t(json!({}));
     let path = file(&t.rt.dir, "recovery-rename.hwpx", HWPX);
     let from = tab(&mut t, 1, Some(&path));
     let other = tab(&mut t, 2, None);
     let generation = t.rt.services.views.renderer_generation(from.view).unwrap();
-    let effects = t.rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap();
+    let effects =
+        t.rt.services
+            .hosts
+            .get::<shell_contract::hosts::OwnedEffectsHost>()
+            .unwrap();
     let receiver = effects.capture_owner(from.view, &generation).unwrap();
     let operation = NativeInvocationIssuer::new(CancelToken::default()).issue(
-        NativeInvocationSelection::RecoveryFile { surface: Surface::Hwp, path: PathBuf::from(&path), decision: NativeRecoveryDecision::Original },
+        NativeInvocationSelection::RecoveryFile {
+            surface: Surface::Hwp,
+            path: PathBuf::from(&path),
+            decision: NativeRecoveryDecision::Original,
+        },
         CancelToken::default(),
     );
-    let (_issuer, closure) = shell_contract::ipc::NativeClosureIssuer::new(from.view, generation.clone());
-    let target = RecoveryOpenTarget::bind(RecoveryOpenContext::NativeStartup(operation), from.view, generation, closure).unwrap();
-    let receipt = effects.commit_recovery_seed(&target, &mut || Ok(())).unwrap();
-    target.invocation_target().unwrap().register_from_native_admitted(receiver.clone()).unwrap();
+    let (_issuer, closure) =
+        shell_contract::ipc::NativeClosureIssuer::new(from.view, generation.clone());
+    let target = RecoveryOpenTarget::bind(
+        RecoveryOpenContext::NativeStartup(operation),
+        from.view,
+        generation,
+        closure,
+    )
+    .unwrap();
+    let receipt = effects
+        .commit_recovery_seed(&target, &mut || Ok(()))
+        .unwrap();
+    target
+        .invocation_target()
+        .unwrap()
+        .register_from_native_admitted(receiver.clone())
+        .unwrap();
     target.retain_native_registration(receiver.clone()).unwrap();
     let destination = owned_origin(&t, from.view);
     let participant = owned_origin(&t, other.view);
     participant.context.document_lease().unwrap().revoke();
     let new = t.rt.dir.join("renamed.hwpx");
     let (result, done) = slot();
-    t.editors.file_renamed_recovery(from.view, Path::new(&path), &new, &receipt, &receiver,
-        &destination, &[participant], &CancelToken::default(), &CancelToken::default(), done);
+    t.editors.file_renamed_recovery(
+        from.view,
+        Path::new(&path),
+        &new,
+        &receipt,
+        &receiver,
+        &destination,
+        &[participant],
+        &CancelToken::default(),
+        &CancelToken::default(),
+        done,
+    );
     t.rt.drain();
     assert!(matches!(&*result.borrow(), Some(Err(_))));
-    assert_eq!(t.editors.document_path(from.view), Some(PathBuf::from(path)));
+    assert_eq!(
+        t.editors.document_path(from.view),
+        Some(PathBuf::from(path))
+    );
 }
 
 #[test]
@@ -212,11 +354,24 @@ fn hwp_rename_requires_every_captured_document_participant() {
     participant.context.document_lease().unwrap().revoke();
     let next = t.rt.dir.join("after.hwpx");
     let (result, then) = slot();
-    t.editors.file_renamed_many_owned_extra(from.view, Path::new(&path), &next, &owner, &owner,
-        &[participant], &Default::default(), &Default::default(), &[], then);
+    t.editors.file_renamed_many_owned_extra(
+        from.view,
+        Path::new(&path),
+        &next,
+        &owner,
+        &owner,
+        &[participant],
+        &Default::default(),
+        &Default::default(),
+        &[],
+        then,
+    );
     t.rt.drain();
     assert!(matches!(&*result.borrow(), Some(Err(_))));
-    assert_eq!(t.editors.document_path(from.view), Some(PathBuf::from(&path)));
+    assert_eq!(
+        t.editors.document_path(from.view),
+        Some(PathBuf::from(&path))
+    );
     assert_eq!(std::fs::read(&path).unwrap(), HWPX);
     assert!(!next.exists());
 }
@@ -231,43 +386,97 @@ fn hwp_rename_rejects_cancelled_additional_scope() {
     extra.cancel();
     let next = t.rt.dir.join("after-extra.hwpx");
     let (result, then) = slot();
-    t.editors.file_renamed_many_owned_extra(from.view, Path::new(&path), &next, &owner, &owner,
-        &[], &Default::default(), &Default::default(), &[extra], then);
+    t.editors.file_renamed_many_owned_extra(
+        from.view,
+        Path::new(&path),
+        &next,
+        &owner,
+        &owner,
+        &[],
+        &Default::default(),
+        &Default::default(),
+        &[extra],
+        then,
+    );
     t.rt.drain();
     assert!(matches!(&*result.borrow(), Some(Err(_))));
-    assert_eq!(t.editors.document_path(from.view), Some(PathBuf::from(&path)));
+    assert_eq!(
+        t.editors.document_path(from.view),
+        Some(PathBuf::from(&path))
+    );
     assert_eq!(std::fs::read(&path).unwrap(), HWPX);
     assert!(!next.exists());
 }
 
 #[test]
 fn native_hwp_rename_rejects_cancelled_additional_scope() {
-    use shell_contract::ipc::{NativeInvocationIssuer, NativeSaveDestination, NativeSaveRevisionAuthority, NativeSaveSelection};
+    use shell_contract::ipc::{
+        NativeInvocationIssuer, NativeSaveDestination, NativeSaveRevisionAuthority,
+        NativeSaveSelection,
+    };
     use shell_contract::runtime::CancelToken;
     let mut t = t(json!({}));
     let path = file(&t.rt.dir, "native-before.hwpx", HWPX);
     let from = tab(&mut t, 1, Some(&path));
     let owner = owned_origin(&t, from.view);
     let issuer = NativeInvocationIssuer::new(CancelToken::default());
-    let binding = issuer.issue_existing_document_save(Surface::Hwp, from.view,
-        NativeSaveSelection::ExactPath(PathBuf::from(&path)), owner.clone(), CancelToken::default()).unwrap();
-    let authority = NativeSaveRevisionAuthority::new(NativeSaveDestination::from_exact_selection(binding).unwrap(), Vec::new());
+    let binding = issuer
+        .issue_existing_document_save(
+            Surface::Hwp,
+            from.view,
+            NativeSaveSelection::ExactPath(PathBuf::from(&path)),
+            owner.clone(),
+            CancelToken::default(),
+        )
+        .unwrap();
+    let authority = NativeSaveRevisionAuthority::new(
+        NativeSaveDestination::from_exact_selection(binding).unwrap(),
+        Vec::new(),
+    );
     let wrong = t.rt.dir.join("wrong-selection.hwpx");
     let (mismatch, mismatch_done) = slot();
-    t.editors.file_renamed_existing_document(from.view, Path::new(&path), &wrong, &authority, &wrong, &owner,
-        &[], &CancelToken::default(), &CancelToken::default(), &[], mismatch_done);
+    t.editors.file_renamed_existing_document(
+        from.view,
+        Path::new(&path),
+        &wrong,
+        &authority,
+        &wrong,
+        &owner,
+        &[],
+        &CancelToken::default(),
+        &CancelToken::default(),
+        &[],
+        mismatch_done,
+    );
     t.rt.drain();
     assert!(matches!(&*mismatch.borrow(), Some(Err(_))));
-    assert_eq!(t.editors.document_path(from.view), Some(PathBuf::from(&path)));
+    assert_eq!(
+        t.editors.document_path(from.view),
+        Some(PathBuf::from(&path))
+    );
     let extra = CancelToken::default();
     extra.cancel();
     let next = t.rt.dir.join("native-after.hwpx");
     let (result, then) = slot();
-    t.editors.file_renamed_existing_document(from.view, Path::new(&path), &next, &authority, Path::new(&path), &owner,
-        &[], &CancelToken::default(), &CancelToken::default(), &[extra], then);
+    t.editors.file_renamed_existing_document(
+        from.view,
+        Path::new(&path),
+        &next,
+        &authority,
+        Path::new(&path),
+        &owner,
+        &[],
+        &CancelToken::default(),
+        &CancelToken::default(),
+        &[extra],
+        then,
+    );
     t.rt.drain();
     assert!(matches!(&*result.borrow(), Some(Err(_))));
-    assert_eq!(t.editors.document_path(from.view), Some(PathBuf::from(&path)));
+    assert_eq!(
+        t.editors.document_path(from.view),
+        Some(PathBuf::from(&path))
+    );
     assert_eq!(std::fs::read(&path).unwrap(), HWPX);
     assert!(!next.exists());
 }
@@ -281,21 +490,56 @@ fn owned_hwp_save_rejects_another_reply_and_cancellation_before_file_publication
     let generation = origin.context.renderer().unwrap().clone();
     let cancel = shell_contract::runtime::CancelToken::default();
     let (result, then) = slot();
-    t.editors.request_save_owned(from.view, SaveMode::Save, origin, cancel.clone(), then);
+    t.editors
+        .request_save_owned(from.view, SaveMode::Save, origin, cancel.clone(), then);
     let events = channels(&t);
-    let token = events.iter().find(|(channel, _)| *channel == "hwp:save-request")
-        .and_then(|(_, args)| args.get(1)).and_then(as_str).unwrap().to_owned();
+    let token = events
+        .iter()
+        .find(|(channel, _)| *channel == "hwp:save-request")
+        .and_then(|(_, args)| args.get(1))
+        .and_then(as_str)
+        .unwrap()
+        .to_owned();
     let native = || shell_contract::ipc::NativeContext::with_renderer((), generation.clone());
-    let wrong = t.rt.invoke_native("hwp:begin-save", from, vec![s("save"), s("another-request")], native(), Default::default()).take().unwrap().unwrap();
+    let wrong =
+        t.rt.invoke_native(
+            "hwp:begin-save",
+            from,
+            vec![s("save"), s("another-request")],
+            native(),
+            Default::default(),
+        )
+        .take()
+        .unwrap()
+        .unwrap();
     assert_eq!(field(&wrong, "ok"), &IpcValue::Bool(false));
     assert!(result.borrow().is_none());
-    let begun = t.rt.invoke_native("hwp:begin-save", from, vec![s("save"), s(&token)], native(), Default::default()).take().unwrap().unwrap();
+    let begun =
+        t.rt.invoke_native(
+            "hwp:begin-save",
+            from,
+            vec![s("save"), s(&token)],
+            native(),
+            Default::default(),
+        )
+        .take()
+        .unwrap()
+        .unwrap();
     assert_eq!(text(&begun, "path"), Some(path.clone()));
     cancel.cancel();
     t.rt.drain();
     assert!(matches!(&*result.borrow(), Some(Err(_))));
-    let committed = t.rt.invoke_native("hwp:commit-save", from,
-        vec![bytes(HWPX), IpcValue::Array(vec![]), obj([]), s(&token)], native(), Default::default()).take().unwrap().unwrap();
+    let committed =
+        t.rt.invoke_native(
+            "hwp:commit-save",
+            from,
+            vec![bytes(HWPX), IpcValue::Array(vec![]), obj([]), s(&token)],
+            native(),
+            Default::default(),
+        )
+        .take()
+        .unwrap()
+        .unwrap();
     assert_eq!(field(&committed, "ok"), &IpcValue::Bool(false));
     assert_eq!(std::fs::read(&path).unwrap(), HWPX);
     assert!(!PathBuf::from(format!("{path}.bak")).exists());
@@ -309,12 +553,26 @@ fn document_replacement_invalidates_captured_hwp_save_authority() {
     let from = tab(&mut t, 1, Some(&old));
     let old_owner = owned_origin(&t, from.view);
     let (result, then) = slot();
-    t.editors.request_save_owned(from.view, SaveMode::Save, old_owner.clone(), Default::default(), then);
-    t.editors.grant_and_track(from.view, Some(&next), UntitledOption::No);
+    t.editors.request_save_owned(
+        from.view,
+        SaveMode::Save,
+        old_owner.clone(),
+        Default::default(),
+        then,
+    );
+    t.editors
+        .grant_and_track(from.view, Some(&next), UntitledOption::No);
     t.rt.drain();
     assert!(matches!(&*result.borrow(), Some(Err(_))));
-    assert!(t.editors.capture_document_owner(from.view, old_owner).is_err());
-    assert_eq!(t.editors.document_path(from.view), Some(PathBuf::from(next)));
+    assert!(
+        t.editors
+            .capture_document_owner(from.view, old_owner)
+            .is_err()
+    );
+    assert_eq!(
+        t.editors.document_path(from.view),
+        Some(PathBuf::from(next))
+    );
     assert_eq!(std::fs::read(old).unwrap(), HWPX);
 }
 
@@ -328,10 +586,15 @@ fn owned_hwp_close_waits_for_its_save_and_ignores_legacy_boolean_ack() {
     let origin = owned_origin(&t, from.view);
     let cancel = shell_contract::runtime::CancelToken::default();
     let (result, then) = slot();
-    t.editors.request_close_owned(from.view, None, origin, cancel.clone(), then);
+    t.editors
+        .request_close_owned(from.view, None, origin, cancel.clone(), then);
     t.rt.drain();
     assert!(result.borrow().is_none());
-    assert!(channels(&t).iter().any(|(channel, args)| *channel == "hwp:save-request" && args.len() == 2));
+    assert!(
+        channels(&t)
+            .iter()
+            .any(|(channel, args)| *channel == "hwp:save-request" && args.len() == 2)
+    );
     t.rt.send("hwp:close-save-result", from, vec![true.into_ipc()]);
     assert!(result.borrow().is_none());
     cancel.cancel();
@@ -348,7 +611,8 @@ fn completing_a_clean_owned_close_does_not_cancel_its_callers_token() {
     let origin = owned_origin(&t, from.view);
     let cancel = shell_contract::runtime::CancelToken::default();
     let (result, then) = slot();
-    t.editors.request_close_owned(from.view, None, origin, cancel.clone(), then);
+    t.editors
+        .request_close_owned(from.view, None, origin, cancel.clone(), then);
     t.rt.drain();
     assert_eq!(*result.borrow(), Some(Ok(true)));
     assert!(!cancel.is_cancelled());
@@ -366,40 +630,108 @@ fn claiming_owned_hwp_pdf_transfers_only_the_renderer_waiter_deadline() {
         let origin = owned_origin(&t, from.view);
         let generation = origin.context.renderer().unwrap().clone();
         let (result, then) = slot();
-        t.editors.request_save_owned(from.view, SaveMode::SaveAs, origin.clone(), Default::default(), then);
+        t.editors.request_save_owned(
+            from.view,
+            SaveMode::SaveAs,
+            origin.clone(),
+            Default::default(),
+            then,
+        );
         let events = channels(&t);
-        let token = events.iter().find(|(channel, _)| *channel == "hwp:save-request")
-            .and_then(|(_, args)| args.get(1)).and_then(as_str).unwrap().to_owned();
-        let begin = t.rt.invoke_native("hwp:begin-save", from, vec![s("saveAs"), s(&token)],
-            shell_contract::ipc::NativeContext::with_renderer((), generation.clone()), Default::default()).take().unwrap().unwrap();
+        let token = events
+            .iter()
+            .find(|(channel, _)| *channel == "hwp:save-request")
+            .and_then(|(_, args)| args.get(1))
+            .and_then(as_str)
+            .unwrap()
+            .to_owned();
+        let begin =
+            t.rt.invoke_native(
+                "hwp:begin-save",
+                from,
+                vec![s("saveAs"), s(&token)],
+                shell_contract::ipc::NativeContext::with_renderer((), generation.clone()),
+                Default::default(),
+            )
+            .take()
+            .unwrap()
+            .unwrap();
         assert_eq!(text(&begin, "export").as_deref(), Some("pdf"));
         let claim_cancel = shell_contract::runtime::CancelToken::default();
-        assert!(t.editors.take_owned_pdf_grant(from.view, &token, &shell_contract::runtime::RendererGeneration::new(), Some(&origin), &claim_cancel).is_none());
-        assert!(t.editors.take_owned_pdf_grant(from.view, "foreign", &generation, Some(&origin), &claim_cancel).is_none());
-        assert!(t.editors.take_owned_pdf_grant(from.view, &token, &generation, None, &claim_cancel).is_none());
+        assert!(
+            t.editors
+                .take_owned_pdf_grant(
+                    from.view,
+                    &token,
+                    &shell_contract::runtime::RendererGeneration::new(),
+                    Some(&origin),
+                    &claim_cancel
+                )
+                .is_none()
+        );
+        assert!(
+            t.editors
+                .take_owned_pdf_grant(
+                    from.view,
+                    "foreign",
+                    &generation,
+                    Some(&origin),
+                    &claim_cancel
+                )
+                .is_none()
+        );
+        assert!(
+            t.editors
+                .take_owned_pdf_grant(from.view, &token, &generation, None, &claim_cancel)
+                .is_none()
+        );
         let foreign = shell_contract::ipc::NativeRequestOwner {
             view: from.view,
             context: shell_contract::ipc::NativeContext::with_renderer((), generation.clone()),
         };
-        assert!(t.editors.take_owned_pdf_grant(from.view, &token, &generation, Some(&foreign), &claim_cancel).is_none());
+        assert!(
+            t.editors
+                .take_owned_pdf_grant(
+                    from.view,
+                    &token,
+                    &generation,
+                    Some(&foreign),
+                    &claim_cancel
+                )
+                .is_none()
+        );
         let cancelled = shell_contract::runtime::CancelToken::default();
         cancelled.cancel();
-        assert!(t.editors.take_owned_pdf_grant(from.view, &token, &generation, Some(&origin), &cancelled).is_none());
+        assert!(
+            t.editors
+                .take_owned_pdf_grant(from.view, &token, &generation, Some(&origin), &cancelled)
+                .is_none()
+        );
         if !claim {
             t.rt.advance(Duration::from_secs(121));
             assert!(matches!(&*result.borrow(), Some(Err(_))));
             continue;
         }
-        let grant = t.editors.take_owned_pdf_grant(from.view, &token, &generation, Some(&origin), &claim_cancel).unwrap();
+        let grant = t
+            .editors
+            .take_owned_pdf_grant(from.view, &token, &generation, Some(&origin), &claim_cancel)
+            .unwrap();
         assert_eq!(grant.path, target);
-        assert!(t.editors.take_owned_pdf_grant(from.view, &token, &generation, Some(&origin), &claim_cancel).is_none());
+        assert!(
+            t.editors
+                .take_owned_pdf_grant(from.view, &token, &generation, Some(&origin), &claim_cancel)
+                .is_none()
+        );
         t.rt.advance(Duration::from_secs(121));
         assert!(result.borrow().is_none());
         assert!(!grant.pending.is_cancelled());
         (grant.complete)(Ok(()));
         t.rt.drain();
         assert_eq!(*result.borrow(), Some(Ok(false)));
-        assert_eq!(t.editors.document_path(from.view), Some(PathBuf::from(path)));
+        assert_eq!(
+            t.editors.document_path(from.view),
+            Some(PathBuf::from(path))
+        );
     }
 }
 
@@ -968,47 +1300,108 @@ fn native_headless_grant_requires_its_sender_and_is_single_use() {
     let mut t = t(json!({}));
     let sender = t.rt.view(901, Surface::Hwp);
     let foreign = t.rt.view(902, Surface::Hwp);
-    let generation = t.rt.services.views.renderer_generation(sender.view).unwrap();
-    let effects = t.rt.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap();
+    let generation =
+        t.rt.services
+            .views
+            .renderer_generation(sender.view)
+            .unwrap();
+    let effects =
+        t.rt.services
+            .hosts
+            .get::<shell_contract::hosts::OwnedEffectsHost>()
+            .unwrap();
     let owner = effects.capture_owner(sender.view, &generation).unwrap();
-    let other_generation = t.rt.services.views.renderer_generation(foreign.view).unwrap();
-    let other = effects.capture_owner(foreign.view, &other_generation).unwrap();
+    let other_generation =
+        t.rt.services
+            .views
+            .renderer_generation(foreign.view)
+            .unwrap();
+    let other = effects
+        .capture_owner(foreign.view, &other_generation)
+        .unwrap();
     let operation = NativeInvocationIssuer::new(CancelToken::default()).issue(
         NativeInvocationSelection::HeadlessExport {
-            surface: Surface::Hwp, input: "/in.hwp".into(), output: "/out.pdf".into(),
-            format: "pdf".into(), page: None, ops: None, batch: None,
-        }, CancelToken::default(),
+            surface: Surface::Hwp,
+            input: "/in.hwp".into(),
+            output: "/out.pdf".into(),
+            format: "pdf".into(),
+            page: None,
+            ops: None,
+            batch: None,
+        },
+        CancelToken::default(),
     );
     let target = operation.reserve_target(sender.view, generation).unwrap();
     target.register_from_native_admitted(owner.clone()).unwrap();
-    t.editors.0.change(sender.view, |state| state.native_headless = true);
+    t.editors
+        .0
+        .change(sender.view, |state| state.native_headless = true);
     let timer = crate::kit::after(&t.rt.services, Duration::from_secs(180), || {});
     let (finished, then) = slot();
-    t.editors.0.headless.borrow_mut().insert(sender.view, super::Headless {
-        timer, then,
-        native: Some(super::NativeHeadless {
-            target, pdf: Some(PathBuf::from("/out.pdf")),
-            committed: Arc::new(std::sync::atomic::AtomicBool::new(false)), subscriptions: Vec::new(),
-        }),
-    });
-    assert!(t.editors.take_native_headless_pdf_grant(sender.view, None).is_err());
-    assert!(t.editors.take_native_headless_pdf_grant(sender.view, Some(&other.context)).is_err());
-    assert!(matches!(t.editors.take_native_headless_pdf_grant(foreign.view, None), Ok(None)));
-    let grant = t.editors.take_native_headless_pdf_grant(sender.view, Some(&owner.context)).unwrap().unwrap();
+    t.editors.0.headless.borrow_mut().insert(
+        sender.view,
+        super::Headless {
+            timer,
+            then,
+            native: Some(super::NativeHeadless {
+                target,
+                pdf: Some(PathBuf::from("/out.pdf")),
+                committed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                subscriptions: Vec::new(),
+            }),
+        },
+    );
+    assert!(
+        t.editors
+            .take_native_headless_pdf_grant(sender.view, None)
+            .is_err()
+    );
+    assert!(
+        t.editors
+            .take_native_headless_pdf_grant(sender.view, Some(&other.context))
+            .is_err()
+    );
+    assert!(matches!(
+        t.editors.take_native_headless_pdf_grant(foreign.view, None),
+        Ok(None)
+    ));
+    let grant = t
+        .editors
+        .take_native_headless_pdf_grant(sender.view, Some(&owner.context))
+        .unwrap()
+        .unwrap();
     assert_eq!(grant.path, PathBuf::from("/out.pdf"));
-    assert!(t.editors.take_native_headless_pdf_grant(sender.view, Some(&owner.context)).is_err());
+    assert!(
+        t.editors
+            .take_native_headless_pdf_grant(sender.view, Some(&owner.context))
+            .is_err()
+    );
     assert_eq!(t.editors.take_pdf_grant(sender.view), None);
     let premature = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        t.rt.send_native("hwp:headless-export-done", sender,
-            vec![obj([("ok", true.into_ipc())])], owner.context.clone(), CancelToken::default());
+        t.rt.send_native(
+            "hwp:headless-export-done",
+            sender,
+            vec![obj([("ok", true.into_ipc())])],
+            owner.context.clone(),
+            CancelToken::default(),
+        );
     }));
     assert!(premature.is_err());
     assert!(finished.borrow().is_none());
     (grant.commit)();
-    t.rt.send_native("hwp:headless-export-done", sender,
-        vec![obj([("ok", true.into_ipc())])], owner.context.clone(), CancelToken::default());
+    t.rt.send_native(
+        "hwp:headless-export-done",
+        sender,
+        vec![obj([("ok", true.into_ipc())])],
+        owner.context.clone(),
+        CancelToken::default(),
+    );
     assert_eq!(*finished.borrow(), Some(Ok(())));
-    assert!(t.editors.take_native_headless_pdf_grant(sender.view, Some(&owner.context)).is_err());
+    assert!(
+        t.editors
+            .take_native_headless_pdf_grant(sender.view, Some(&owner.context))
+            .is_err()
+    );
 }
 
 #[test]
@@ -1090,9 +1483,20 @@ fn headless_navigation_failure_finishes_and_destroys_the_view() {
     let t = t(json!({ "load_headless_view": "navigation failed" }));
     let input = file(&t.rt.dir, "in.hwp", HWP);
     let (answer, then) = slot();
-    t.editors.export_hwp_pdf_headless(&input, "/out/a.pdf", HEADLESS_TIMEOUT_MS, then);
-    assert_eq!(answer.borrow().clone().unwrap().unwrap_err().message, "navigation failed");
-    assert_eq!(t.shell.take_calls(), vec!["new BrowserWindow", "webContents.loadURL 900", "BrowserWindow.destroy 900"]);
+    t.editors
+        .export_hwp_pdf_headless(&input, "/out/a.pdf", HEADLESS_TIMEOUT_MS, then);
+    assert_eq!(
+        answer.borrow().clone().unwrap().unwrap_err().message,
+        "navigation failed"
+    );
+    assert_eq!(
+        t.shell.take_calls(),
+        vec![
+            "new BrowserWindow",
+            "webContents.loadURL 900",
+            "BrowserWindow.destroy 900"
+        ]
+    );
 }
 
 #[test]
@@ -1345,7 +1749,8 @@ fn the_os_session_end_asks_every_dirty_tab_for_its_copy() {
     t.rt.send("hwp:dirty-changed", a, vec![true.into_ipc()]);
     let result = Rc::new(RefCell::new(None));
     let completed = Rc::clone(&result);
-    t.editors.write_copies_now(Box::new(move |value| *completed.borrow_mut() = Some(value)));
+    t.editors
+        .write_copies_now(Box::new(move |value| *completed.borrow_mut() = Some(value)));
     let events = t.rt.events();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].target, Target::View(a.view));
@@ -1353,7 +1758,11 @@ fn the_os_session_end_asks_every_dirty_tab_for_its_copy() {
     let token = events[0].args[0].clone();
     t.rt.send("hwp:recovery-flushed", other, vec![token.clone()]);
     assert!(result.borrow().is_none());
-    t.rt.send("hwp:recovery-flushed", a, vec![token.clone(), s("copy failed")]);
+    t.rt.send(
+        "hwp:recovery-flushed",
+        a,
+        vec![token.clone(), s("copy failed")],
+    );
     assert!(matches!(&*result.borrow(), Some(Err(error)) if error.0 == "copy failed"));
     t.rt.send("hwp:recovery-flushed", a, vec![token]);
     t.rt.send("hwp:recovery-flushed", a, vec![s("1")]);
@@ -1369,11 +1778,13 @@ fn hwp_flush_replacement_rejects_late_reply_and_timeout() {
     t.rt.send("hwp:dirty-changed", view, vec![true.into_ipc()]);
     let first = Rc::new(RefCell::new(None));
     let done = Rc::clone(&first);
-    t.editors.write_copies_now(Box::new(move |result| *done.borrow_mut() = Some(result)));
+    t.editors
+        .write_copies_now(Box::new(move |result| *done.borrow_mut() = Some(result)));
     let old = t.rt.events()[0].args[0].clone();
     let second = Rc::new(RefCell::new(None));
     let done = Rc::clone(&second);
-    t.editors.write_copies_now(Box::new(move |result| *done.borrow_mut() = Some(result)));
+    t.editors
+        .write_copies_now(Box::new(move |result| *done.borrow_mut() = Some(result)));
     assert!(matches!(&*first.borrow(), Some(Err(_))));
     let current = t.rt.events()[0].args[0].clone();
     t.rt.send("hwp:recovery-flushed", view, vec![old]);
@@ -1392,7 +1803,8 @@ fn hwp_flush_fails_when_the_renderer_is_destroyed() {
     t.rt.send("hwp:dirty-changed", view, vec![true.into_ipc()]);
     let result = Rc::new(RefCell::new(None));
     let done = Rc::clone(&result);
-    t.editors.write_copies_now(Box::new(move |value| *done.borrow_mut() = Some(value)));
+    t.editors
+        .write_copies_now(Box::new(move |value| *done.borrow_mut() = Some(value)));
     let token = t.rt.events()[0].args[0].clone();
     t.rt.destroy(view.view);
     assert!(matches!(&*result.borrow(), Some(Err(_))));
@@ -1408,7 +1820,8 @@ fn hwp_flush_fails_on_new_document_navigation() {
     t.rt.send("hwp:dirty-changed", view, vec![true.into_ipc()]);
     let result = Rc::new(RefCell::new(None));
     let done = Rc::clone(&result);
-    t.editors.write_copies_now(Box::new(move |value| *done.borrow_mut() = Some(value)));
+    t.editors
+        .write_copies_now(Box::new(move |value| *done.borrow_mut() = Some(value)));
     let token = t.rt.events()[0].args[0].clone();
     t.editors.did_start_navigation(view.view, true, true);
     assert!(result.borrow().is_none());
@@ -1429,7 +1842,8 @@ fn hwp_flush_reports_dispatch_failure() {
     t.rt.fail_next_checked_event("stream unavailable");
     let result = Rc::new(RefCell::new(None));
     let done = Rc::clone(&result);
-    t.editors.write_copies_now(Box::new(move |value| *done.borrow_mut() = Some(value)));
+    t.editors
+        .write_copies_now(Box::new(move |value| *done.borrow_mut() = Some(value)));
     assert!(matches!(&*result.borrow(), Some(Err(error)) if error.0 == "stream unavailable"));
     assert!(t.rt.events().is_empty());
 }
@@ -1442,16 +1856,23 @@ fn hwp_renderer_replacement_fails_only_old_generation() {
     t.rt.send("hwp:dirty-changed", view, vec![true.into_ipc()]);
     let old = Rc::new(RefCell::new(None));
     let done = old.clone();
-    t.editors.write_copies_now(Box::new(move |value| *done.borrow_mut() = Some(value)));
+    t.editors
+        .write_copies_now(Box::new(move |value| *done.borrow_mut() = Some(value)));
     let token = t.rt.events()[0].args[0].clone();
     let previous_generation = t.rt.services.views.renderer_generation(view.view).unwrap();
     t.rt.replace_renderer(view.view);
     assert!(matches!(&*old.borrow(), Some(Err(_))));
     let current = Rc::new(RefCell::new(None));
     let done = current.clone();
-    t.editors.write_copies_now(Box::new(move |value| *done.borrow_mut() = Some(value)));
+    t.editors
+        .write_copies_now(Box::new(move |value| *done.borrow_mut() = Some(value)));
     let current_token = t.rt.events()[0].args[0].clone();
-    t.rt.send_from_generation("hwp:recovery-flushed", view, vec![current_token.clone()], previous_generation);
+    t.rt.send_from_generation(
+        "hwp:recovery-flushed",
+        view,
+        vec![current_token.clone()],
+        previous_generation,
+    );
     assert!(current.borrow().is_none());
     t.rt.send("hwp:recovery-flushed", view, vec![token]);
     assert!(current.borrow().is_none());

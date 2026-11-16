@@ -1,8 +1,10 @@
+use super::generated_cleanup::GeneratedCleanupCoordinator;
 use super::*;
 use crate::tabs::activation::TabActivationAuthority;
 use crate::tabs::host::{
-    CapturedSavedShell, EditorSeedRollbackStore, PreparedSavedView, RetainedSpareBinding,
-    SavedViewLoaded, ShellWindow, ViewCreationCleanup, ViewCreationFailure,
+    CapturedSavedShell, EditorSeedRollbackStore, GeneratedPrecloseBarrier,
+    GeneratedPrecloseInstaller, PreparedSavedView, RetainedSpareBinding, SavedViewLoaded,
+    ShellWindow, ViewCreationCleanup, ViewCreationFailure,
 };
 use main_core::shell::tab_manager::ViewCreationCleanupState;
 use shell_contract::hosts::{
@@ -13,12 +15,34 @@ use shell_contract::ipc::{NativeSavedInput, NativeSavedPath};
 use std::rc::Rc;
 use std::sync::Arc;
 
+pub(super) type SavedDone = Box<dyn FnOnce(Result<GeneratedPathOutcome, String>)>;
 type SavedOpenDone = Box<dyn FnOnce(Result<GeneratedPathOutcome, String>) + Send>;
+
+/// The native close of a saved view runs the coordinator's preclose first, so
+/// the manager record and the captured survivors are prepared before the
+/// browser is claimed and closed.
+fn gated_cleanup(
+    barrier: GeneratedPrecloseBarrier,
+    cleanup: ViewCreationCleanup,
+) -> ViewCreationCleanup {
+    Arc::new(
+        move |done: Box<
+            dyn FnOnce(Result<shell_contract::ipc::NativeBrowserRetirement, String>) + Send,
+        >| {
+        let cleanup = cleanup.clone();
+        barrier(Box::new(move |result| match result {
+            Ok(()) => cleanup(done),
+            Err(error) => done(Err(error)),
+        }));
+    },
+    )
+}
 
 /// What the fresh-editor continuation keeps from the original request.
 struct SavedOpen {
     id: u64,
     epoch: u64,
+    source: NativeRequestOwner,
     rollback: EditorSeedRollbackStore,
     participants: Vec<NativeRequestOwner>,
     cancel: CancelToken,
@@ -30,8 +54,10 @@ struct SavedOpen {
 impl TabsState {
     /// Open a committed saved input as an editor. A PDF already open at the
     /// path is reloaded in place; any other open tab, an unsupported kind or a
-    /// kind that cannot adopt a fresh saved view reports `NotOpened`, so the
-    /// caller reveals the file instead of granting new editor authority.
+    /// kind that cannot adopt a fresh saved view (Sheets while its spare view
+    /// is reserved: `CapturedSavedShell` has no spare-transfer preparation)
+    /// reports `NotOpened`, so the caller reveals the file instead of granting
+    /// new editor authority.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn open_saved_input_owned(
         &self,
@@ -73,10 +99,12 @@ impl TabsState {
         };
         let existing = self
             .with_manager(|manager, _| {
-                manager.find_tab_of_kind_by_path(kind, Some(&path_text)).map(|id| {
-                    let view = manager.web_contents_for_tab(&id);
-                    (id, view)
-                })
+                manager
+                    .find_tab_of_kind_by_path(kind, Some(&path_text))
+                    .map(|id| {
+                        let view = manager.web_contents_for_tab(&id);
+                        (id, view)
+                    })
             })
             .flatten();
         if let Some((id, view)) = existing {
@@ -111,6 +139,7 @@ impl TabsState {
             SavedOpen {
                 id,
                 epoch,
+                source: shell_owner,
                 rollback: Rc::default(),
                 participants,
                 cancel,
@@ -221,10 +250,16 @@ impl TabsState {
         };
         if plan.reserved_view().is_some() {
             self.cancel_owned_step(Step::New(plan));
-            return finish(Err(
-                "A saved editor cannot adopt the reserved spare view".into()
-            ));
+            return finish(Ok(GeneratedPathOutcome::NotOpened));
         }
+        let (cleanup_shell, tabs, cleanup_participants) =
+            match self.capture_generated_cleanup_context(&open.source, &open.participants) {
+                Ok(captured) => captured,
+                Err(error) => {
+                    self.cancel_owned_step(Step::New(plan));
+                    return finish(Err(error));
+                }
+            };
         if let Err(error) = self.begin_creation(id) {
             self.cancel_owned_step(Step::New(plan));
             return finish(Err(error));
@@ -247,29 +282,7 @@ impl TabsState {
         let prepared = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
-                let state = self.rc();
-                let reply = Rc::new(RefCell::new(Some(finish)));
-                let failed = reply.clone();
-                let message = error.0.clone();
-                self.retain_editor_cleanup(
-                    None,
-                    None,
-                    open.rollback,
-                    false,
-                    Box::new(move |failure| {
-                        if let Some(done) = failed.borrow_mut().take() {
-                            done(Err(format!("{message}; cleanup failed: {failure}")));
-                        }
-                    }),
-                    Box::new(move || {
-                        state.cancel_owned_step(Step::New(plan));
-                        state.finish_creation(id);
-                        if let Some(done) = reply.borrow_mut().take() {
-                            done(Err(error.0));
-                        }
-                    }),
-                );
-                return;
+                return self.abandon_saved_open(plan, open, error.0, finish);
             }
         };
         let PreparedSavedView {
@@ -277,211 +290,211 @@ impl TabsState {
             binding,
             start,
         } = prepared;
+        let ready_binding = binding.clone();
         let retained = RetainedSpareBinding::new(binding, open.rollback.clone(), None);
-        let adoption = match self.prepare_saved_manager_adoption(plan, &target, retained, open.epoch)
-        {
-            Ok(adoption) => adoption,
-            Err((plan, error)) => {
-                drop(start);
-                let state = self.rc();
-                let reply = Rc::new(RefCell::new(Some(finish)));
-                let failed = reply.clone();
-                let message = error.clone();
-                self.retain_editor_cleanup(
-                    None,
-                    None,
-                    open.rollback,
-                    false,
-                    Box::new(move |failure| {
-                        if let Some(done) = failed.borrow_mut().take() {
-                            done(Err(format!("{message}; cleanup failed: {failure}")));
-                        }
-                    }),
-                    Box::new(move || {
-                        state.cancel_owned_step(Step::New(plan));
-                        state.finish_creation(id);
-                        if let Some(done) = reply.borrow_mut().take() {
-                            done(Err(error));
-                        }
-                    }),
-                );
-                return;
-            }
-        };
+        let adoption =
+            match self.prepare_saved_manager_adoption(plan, &target, retained, open.epoch) {
+                Ok(adoption) => adoption,
+                Err((plan, error)) => {
+                    drop(start);
+                    return self.abandon_saved_open(plan, open, error, finish);
+                }
+            };
         let PreparedSavedManagerAdoption {
             adopt,
             register,
             tab_id,
             recover,
+            preview,
         } = adoption;
+        let view = target.view();
+        let created = target.created().clone();
+        let authority = GeneratedCleanupAuthority {
+            operation: id,
+            source: open.source.clone(),
+            shell: cleanup_shell.1,
+            shell_window: cleanup_shell.0,
+            manager_epoch: open.epoch,
+            cleanup: self.hooks.cleanup_lifetime(),
+            participants: cleanup_participants,
+            survivors: tabs,
+            preview,
+            reservation: ready_binding.reservation.clone(),
+            browser: ready_binding.owner.clone(),
+            retirement: Rc::new(RefCell::new(None)),
+            cancel: open.cancel.clone(),
+            pending: open.pending.clone(),
+            rollback: open.rollback.clone(),
+        };
+        // The host installs no preclose barrier for a saved view; its close runs
+        // through the closure watch and the coordinator's rollback below.
+        let barrier_slot: Rc<RefCell<Option<GeneratedPrecloseBarrier>>> = Rc::default();
+        let installed = barrier_slot.clone();
+        let installer: GeneratedPrecloseInstaller = Box::new(move |barrier, _failure| {
+            *installed.borrow_mut() = Some(barrier);
+            Ok(Arc::new(|| {}))
+        });
+        let (coordinator, coordinator_cleanup) = match GeneratedCleanupCoordinator::prepare(
+            self.rc(),
+            authority,
+            id,
+            view,
+            ready_binding,
+            open.participants.clone(),
+            None,
+            tab_id.clone(),
+            false,
+            installer,
+        ) {
+            Ok(prepared) => prepared,
+            Err((_, error)) => {
+                drop(start);
+                drop(adopt);
+                drop(register);
+                let plan = recover();
+                return match plan {
+                    Some(plan) => self.abandon_saved_open(plan, open, error, finish),
+                    None => {
+                        self.finish_creation(id);
+                        finish(Err(error))
+                    }
+                };
+            }
+        };
+        let Some(barrier) = barrier_slot.borrow_mut().take() else {
+            drop(start);
+            drop(adopt);
+            drop(register);
+            let plan = recover();
+            let error = "The saved close barrier was not installed".to_owned();
+            return match plan {
+                Some(plan) => self.abandon_saved_open(plan, open, error, finish),
+                None => {
+                    self.finish_creation(id);
+                    finish(Err(error))
+                }
+            };
+        };
+        let cleanup = gated_cleanup(barrier, coordinator_cleanup);
+        self.pending_owned.borrow_mut().insert(
+            id,
+            PendingOwnedOpen {
+                epoch: open.epoch,
+                cancel: open.cancel.clone(),
+                generation: created,
+                step: Step::GeneratedFailed { plan: None, view },
+                done: Completion::Saved(finish),
+                generated_cleanup: Some(coordinator.clone()),
+                diagram: None,
+            },
+        );
         let state = self.rc();
         start(
             adopt,
             register,
             Box::new(move |result| {
                 if let Some(plan) = recover() {
-                    state.cancel_owned_step(Step::New(plan));
+                    let plan = {
+                        let mut pending = state.pending_owned.borrow_mut();
+                        match pending.get_mut(&id) {
+                            Some(PendingOwnedOpen {
+                                step:
+                                    Step::GeneratedFailed {
+                                        plan: slot @ None, ..
+                                    },
+                                ..
+                            }) => {
+                                *slot = Some(plan);
+                                None
+                            }
+                            _ => Some(plan),
+                        }
+                    };
+                    if let Some(plan) = plan {
+                        state.cancel_owned_step(Step::New(plan));
+                    }
                 }
                 match result {
-                    Ok(ready) => state.finish_saved_open(open, ready, tab_id, finish),
-                    Err(failure) => state.fail_saved_creation(open, failure, finish),
-                }
-            }),
-        );
-    }
-
-    fn finish_saved_open(
-        &self,
-        open: SavedOpen,
-        ready: crate::tabs::host::ViewCreationReady<SavedViewLoaded>,
-        tab_id: Rc<RefCell<Option<String>>>,
-        finish: SavedOpenDone,
-    ) {
-        let SavedViewLoaded { document, .. } = ready.view;
-        let cleanup = ready.cleanup;
-        let view = document.target().view();
-        let generation = document.target().created().clone();
-        let active = open.epoch == self.manager_epoch.get()
-            && !self.creation_shutdown.get()
-            && !open.cancel.is_cancelled()
-            && !open.pending.is_cancelled();
-        let tab = tab_id.borrow().clone();
-        let tab = match tab {
-            Some(tab) if active => tab,
-            tab => {
-                let error = if tab.is_none() {
-                    "The saved editor was not adopted"
-                } else {
-                    "The saved-open operation is no longer active"
-                };
-                return self.discard_saved_open(open, view, tab, cleanup, error.into(), finish);
-            }
-        };
-        let lifetime = self.retain_adopted_editor(
-            view,
-            generation,
-            ready.reservation.reservation.clone(),
-            ready.reservation.owner.clone(),
-            ready.closure,
-            open.rollback.clone(),
-        );
-        if let Err(failure) = lifetime {
-            let error = failure.message().to_owned();
-            return self.discard_saved_open(open, view, Some(tab), cleanup, error, finish);
-        }
-        let SavedOpen {
-            id,
-            participants,
-            cancel,
-            pending,
-            additional,
-            effects,
-            ..
-        } = open;
-        let owner = document.owner().clone();
-        let authority = TabActivationAuthority::SavedDocument {
-            document: document.clone(),
-            owner: owner.clone(),
-            additional: additional.clone(),
-        };
-        let state = self.rc();
-        let activated = tab.clone();
-        self.activate_loaded_authorized(
-            &tab,
-            authority,
-            owner,
-            participants.clone(),
-            cancel.clone(),
-            pending.clone(),
-            Box::new(move |result| {
-                let outcome = result
-                    .and_then(|()| {
-                        CommittedGeneratedPath::from_saved_document(
-                            document,
-                            participants,
-                            cancel,
-                            pending,
-                            additional,
-                            effects,
-                        )
-                    })
-                    .map(|receipt| GeneratedPathOutcome::Opened(Arc::new(receipt)));
-                if outcome.is_err() {
-                    state.inner.borrow_mut().manager_call(|manager, host| {
-                        if manager.web_contents_for_tab(&activated) == Some(view) {
-                            manager.close_tab_without_prompt(host, &activated);
+                    Ok(ready) => {
+                        let pending = state.pending_owned.borrow_mut().remove(&id);
+                        match pending {
+                            Some(pending) => state.finish_saved_creation(
+                                open,
+                                pending,
+                                ready,
+                                coordinator,
+                                tab_id,
+                                cleanup,
+                            ),
+                            None => {
+                                let completed = state.clone();
+                                state.retain_creation_cleanup_with_rollback(
+                                    Some(cleanup),
+                                    None,
+                                    Some(coordinator.rollback_action()),
+                                    Box::new(|error| {
+                                        eprintln!("[shell] orphaned saved cleanup failed: {error}")
+                                    }),
+                                    Box::new(move || {
+                                        eprintln!("[shell] discarded orphaned saved editor {id}");
+                                        completed.finish_creation(id);
+                                    }),
+                                );
+                            }
                         }
-                    });
-                }
-                state.finish_creation(id);
-                finish(outcome);
-            }),
-            None,
-            None,
-        );
-    }
-
-    fn fail_saved_creation(
-        &self,
-        open: SavedOpen,
-        failure: ViewCreationFailure,
-        finish: SavedOpenDone,
-    ) {
-        let ViewCreationFailure { error, cleanup } = failure;
-        let (cleanup, proof) = match cleanup {
-            ViewCreationCleanupState::Complete => (None, None),
-            ViewCreationCleanupState::Acknowledged(proof) => (None, Some(proof)),
-            ViewCreationCleanupState::Pending(cleanup) => (Some(cleanup), None),
-        };
-        let id = open.id;
-        let state = self.rc();
-        let reply = Rc::new(RefCell::new(Some(finish)));
-        let failed = reply.clone();
-        let original = error.0.clone();
-        self.retain_editor_cleanup(
-            cleanup,
-            proof,
-            open.rollback,
-            false,
-            Box::new(move |failure| {
-                if let Some(done) = failed.borrow_mut().take() {
-                    done(Err(format!("{original}; cleanup failed: {failure}")));
-                }
-            }),
-            Box::new(move || {
-                state.finish_creation(id);
-                if let Some(done) = reply.borrow_mut().take() {
-                    done(Err(error.0));
+                    }
+                    Err(failure) => {
+                        let ViewCreationFailure {
+                            error,
+                            cleanup: failure_cleanup,
+                        } = failure;
+                        let (cleanup, proof) = match failure_cleanup {
+                            ViewCreationCleanupState::Complete => (None, None),
+                            ViewCreationCleanupState::Acknowledged(proof) => (None, Some(proof)),
+                            ViewCreationCleanupState::Pending(_) => (Some(cleanup), None),
+                        };
+                        let completed = state.clone();
+                        let failed = state.clone();
+                        let original = error.0.clone();
+                        state.retain_creation_cleanup_with_rollback(
+                            cleanup,
+                            proof,
+                            Some(coordinator.rollback_action()),
+                            Box::new(move |failure| {
+                                failed.notify_pending_creation_error(
+                                    id,
+                                    format!("{original}; cleanup failed: {failure}"),
+                                );
+                            }),
+                            Box::new(move || {
+                                completed.settle_saved_open(id, Err(error.0));
+                                completed.finish_creation(id);
+                            }),
+                        );
+                    }
                 }
             }),
         );
     }
 
-    fn discard_saved_open(
+    /// Nothing was adopted: hand the plan back and release the creation slot
+    /// once the retained rollback has drained.
+    fn abandon_saved_open(
         &self,
+        plan: PreparedTabOpen<ViewId, RetainedSpareBinding>,
         open: SavedOpen,
-        view: ViewId,
-        tab: Option<String>,
-        cleanup: ViewCreationCleanup,
         error: String,
         finish: SavedOpenDone,
     ) {
-        let SavedOpen { id, rollback, .. } = open;
-        if let Some(tab) = tab {
-            self.inner.borrow_mut().manager_call(|manager, host| {
-                if manager.web_contents_for_tab(&tab) == Some(view) {
-                    manager.close_tab_without_prompt(host, &tab);
-                }
-            });
-        }
+        let id = open.id;
         let state = self.rc();
         let reply = Rc::new(RefCell::new(Some(finish)));
         let failed = reply.clone();
         let message = error.clone();
         self.retain_editor_cleanup(
-            Some(cleanup),
             None,
-            rollback,
+            None,
+            open.rollback,
             false,
             Box::new(move |failure| {
                 if let Some(done) = failed.borrow_mut().take() {
@@ -489,11 +502,203 @@ impl TabsState {
                 }
             }),
             Box::new(move || {
+                state.cancel_owned_step(Step::New(plan));
                 state.finish_creation(id);
                 if let Some(done) = reply.borrow_mut().take() {
                     done(Err(error));
                 }
             }),
+        );
+    }
+
+    fn settle_saved_open(&self, id: u64, result: Result<GeneratedPathOutcome, String>) {
+        let pending = self.pending_owned.borrow_mut().remove(&id);
+        self.owned_abort.borrow_mut().remove(&id);
+        if let Some(PendingOwnedOpen {
+            done: Completion::Saved(done),
+            ..
+        }) = pending
+        {
+            done(result);
+        }
+    }
+
+    /// The editor loaded. As for a generated editor, the caller hears only a
+    /// settled activation; a committed-cleanup-pending activation reports its
+    /// error at once while the retained retry keeps the tab and its cleanup.
+    fn finish_saved_creation(
+        &self,
+        open: SavedOpen,
+        pending: PendingOwnedOpen,
+        ready: crate::tabs::host::ViewCreationReady<SavedViewLoaded>,
+        coordinator: Rc<GeneratedCleanupCoordinator>,
+        tab_id: Rc<RefCell<Option<String>>>,
+        cleanup: ViewCreationCleanup,
+    ) {
+        let SavedOpen {
+            id,
+            epoch,
+            participants,
+            cancel,
+            pending: request_pending,
+            additional,
+            effects,
+            ..
+        } = open;
+        let PendingOwnedOpen { step, done, .. } = pending;
+        self.cancel_owned_step(step);
+        let (done, replied) = match done {
+            Completion::Saved(done) => (Some(done), false),
+            _ => (None, true),
+        };
+        let aborted = self
+            .owned_abort
+            .borrow_mut()
+            .remove(&id)
+            .or_else(|| replied.then(|| "The saved open already replied".to_owned()));
+        let SavedViewLoaded { document, .. } = ready.view;
+        let view = document.target().view();
+        let generation = document.target().created().clone();
+        let tab = tab_id.borrow().clone();
+        let Some(tab) = tab.filter(|_| coordinator.matches_binding(&ready.reservation)) else {
+            return self.fail_generated_completion_parts(
+                id,
+                cleanup,
+                coordinator,
+                None,
+                "The saved editor completion no longer matches its adoption".into(),
+                done,
+            );
+        };
+        let inactive = aborted.or_else(|| {
+            (epoch != self.manager_epoch.get()
+                || self.creation_shutdown.get()
+                || cancel.is_cancelled()
+                || request_pending.is_cancelled())
+            .then(|| "The saved-open operation is no longer active".to_owned())
+        });
+        if let Some(error) = inactive {
+            return self.fail_generated_completion_parts(
+                id,
+                cleanup,
+                coordinator,
+                None,
+                error,
+                done,
+            );
+        }
+        let owner = document.owner().clone();
+        let authority = TabActivationAuthority::SavedDocument {
+            document: document.clone(),
+            owner: owner.clone(),
+            additional: additional.clone(),
+        };
+        let reply = Rc::new(RefCell::new(done));
+        let failed_reply = reply.clone();
+        let on_pending = Rc::new(move |error: &str| {
+            let done = failed_reply.borrow_mut().take();
+            if let Some(done) = done {
+                done(Err(error.to_owned()));
+            }
+        });
+        let state = self.rc();
+        let activation_participants = participants.clone();
+        let activation_cancel = cancel.clone();
+        let activation_pending = request_pending.clone();
+        let settled = Box::new(move |result: Result<(), String>| {
+            let done = reply.borrow_mut().take();
+            let result = result.and_then(|()| {
+                if done.is_none() {
+                    return Err("The saved activation already reported a failure".into());
+                }
+                if epoch != state.manager_epoch.get() || !generation.is_active() {
+                    return Err("The saved editor changed before activation settled".into());
+                }
+                CommittedGeneratedPath::from_saved_document(
+                    document,
+                    participants,
+                    cancel,
+                    request_pending,
+                    additional,
+                    effects,
+                )
+                .map(|receipt| GeneratedPathOutcome::Opened(Arc::new(receipt)))
+            });
+            match result {
+                Err(error) => state.fail_generated_completion_parts(
+                    id,
+                    cleanup,
+                    coordinator,
+                    None,
+                    error,
+                    done,
+                ),
+                Ok(outcome) => {
+                    let store = match coordinator.rollback_store() {
+                        Ok(store) => store,
+                        Err(error) => {
+                            return state.fail_generated_completion_parts(
+                                id,
+                                cleanup,
+                                coordinator,
+                                None,
+                                error,
+                                done,
+                            );
+                        }
+                    };
+                    match state.retain_adopted_editor(
+                        view,
+                        generation,
+                        ready.reservation.reservation,
+                        ready.reservation.owner,
+                        ready.closure,
+                        store,
+                    ) {
+                        Ok(handle) => {
+                            if handle.is_unclosed() != Ok(true) {
+                                let error =
+                                    "The saved editor retired during lifetime handoff".to_owned();
+                                return state.fail_generated_completion_parts(
+                                    id,
+                                    cleanup,
+                                    coordinator,
+                                    Some(handle.into_failure(error.clone())),
+                                    error,
+                                    done,
+                                );
+                            }
+                            coordinator.release();
+                            state.finish_creation(id);
+                            if let Some(done) = done {
+                                done(Ok(outcome));
+                            }
+                        }
+                        Err(failure) => {
+                            let error = failure.message().to_owned();
+                            state.fail_generated_completion_parts(
+                                id,
+                                cleanup,
+                                coordinator,
+                                Some(failure),
+                                error,
+                                done,
+                            );
+                        }
+                    }
+                }
+            }
+        });
+        self.activate_loaded_authorized(
+            &tab,
+            authority,
+            owner,
+            activation_participants,
+            activation_cancel,
+            activation_pending,
+            Box::new(|_| {}),
+            Some(on_pending),
+            Some(settled),
         );
     }
 }

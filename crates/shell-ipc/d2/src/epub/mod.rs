@@ -244,7 +244,9 @@ pub(crate) fn entries(
         },
         {
             let epub = e.clone();
-            kit::invoke("epub:recovery-initialized", move |cx, args| epub.recovery_initialized(cx, args))
+            kit::invoke("epub:recovery-initialized", move |cx, args| {
+                epub.recovery_initialized(cx, args)
+            })
         },
         {
             let epub = e.clone();
@@ -317,7 +319,9 @@ pub(crate) fn entries(
                     return epub.owned_ack(cx, id, args.get(0) == &IpcValue::Bool(true));
                 }
                 let waiter = epub.with_view(view, |v| v.save_waiter.take()).flatten();
-                if let Some(waiter) = waiter { waiter(args.get(0) == &IpcValue::Bool(true)); }
+                if let Some(waiter) = waiter {
+                    waiter(args.get(0) == &IpcValue::Bool(true));
+                }
                 Ok(())
             })
         },
@@ -922,8 +926,14 @@ impl Epub {
 
     fn begin_reading_change(&self) -> shell_contract::runtime::RendererGeneration {
         let revision = shell_contract::runtime::RendererGeneration::new();
-        let previous = self.state.borrow_mut().reading_revision.replace(revision.clone());
-        if let Some(previous) = previous { previous.revoke(); }
+        let previous = self
+            .state
+            .borrow_mut()
+            .reading_revision
+            .replace(revision.clone());
+        if let Some(previous) = previous {
+            previous.revoke();
+        }
         revision
     }
 
@@ -956,11 +966,18 @@ impl Epub {
         let Some(gone) = gone else { return };
         if let Some(pending) = &gone.recovery {
             if let Some(receipt) = &pending.receipt {
-                if let Ok(notification) = receipt.fail_after_loss("The EPUB view was closed".into()) { notification.notify(); }
+                if let Ok(notification) = receipt.fail_after_loss("The EPUB view was closed".into())
+                {
+                    notification.notify();
+                }
             }
         }
-        if let Some(document) = gone.document { document.revoke(); }
-        for (_, close) in gone.owned_closes { close.cancel_and_finish(); }
+        if let Some(document) = gone.document {
+            document.revoke();
+        }
+        for (_, close) in gone.owned_closes {
+            close.cancel_and_finish();
+        }
         for (_, pending) in gone.owned_saves {
             pending.cancel_and_finish();
         }
@@ -1052,7 +1069,13 @@ impl Epub {
         );
     }
 
-    fn open_file(self: &Rc<Self>, view: ViewId, args: Args, reply: Responder, recovery: Option<recovery::OpenUse>) {
+    fn open_file(
+        self: &Rc<Self>,
+        view: ViewId,
+        args: Args,
+        reply: Responder,
+        recovery: Option<recovery::OpenUse>,
+    ) {
         let path = args.str(0).map(str::to_owned);
         let granted = path
             .as_ref()
@@ -1082,7 +1105,11 @@ impl Epub {
             self.view(view, |entry| entry.document.clone()).flatten()
         };
         let worker_scope = recovery.clone();
-        let effects = self.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().cloned();
+        let effects = self
+            .services
+            .hosts
+            .get::<shell_contract::hosts::OwnedEffectsHost>()
+            .cloned();
         let engine = self.engine.clone();
         let read_path = path.clone();
         let epub = self.clone();
@@ -1090,8 +1117,15 @@ impl Epub {
             &self.services,
             move || {
                 if let Some(scope) = &worker_scope {
-                    let Some(effects) = effects else { return Err("Native recovery effects are unavailable".to_owned()); };
-                    effects.with_recovery_open_effect(&scope.receipt, &scope.owner, &scope.cancel, &mut || Ok(()))?;
+                    let Some(effects) = effects else {
+                        return Err("Native recovery effects are unavailable".to_owned());
+                    };
+                    effects.with_recovery_open_effect(
+                        &scope.receipt,
+                        &scope.owner,
+                        &scope.cancel,
+                        &mut || Ok(()),
+                    )?;
                 }
                 let Ok(bytes) = std::fs::read(main_core::node_fs::namespaced(&read_path)) else {
                     return Ok(OpenRun::Unreadable);
@@ -1108,11 +1142,25 @@ impl Epub {
                     Err(error) => return reply.reply(Err(kit::error(error))),
                 };
                 if let Some(scope) = &recovery {
-                    let Some(document) = &document else { return reply.reply(Err(kit::error("The EPUB document was released"))); };
-                    return reply.reply(epub.finish_recovery_open(view, &path, scope, document, run).map_err(kit::error));
+                    let Some(document) = &document else {
+                        return reply.reply(Err(kit::error("The EPUB document was released")));
+                    };
+                    return reply.reply(
+                        epub.finish_recovery_open(view, &path, scope, document, run)
+                            .map_err(kit::error),
+                    );
                 }
-                if !document.as_ref().is_some_and(|document| document.is_active()
-                    && epub.view(view, |entry| entry.document.as_ref().is_some_and(|current| current.same_generation(document))).unwrap_or(false)) {
+                if !document.as_ref().is_some_and(|document| {
+                    document.is_active()
+                        && epub
+                            .view(view, |entry| {
+                                entry
+                                    .document
+                                    .as_ref()
+                                    .is_some_and(|current| current.same_generation(document))
+                            })
+                            .unwrap_or(false)
+                }) {
                     return reply.reply(Err(kit::error("The book document was replaced")));
                 }
                 let refused = |reason: &str| {
@@ -1181,7 +1229,13 @@ impl Epub {
         });
     }
 
-    fn apply_edits(self: &Rc<Self>, view: ViewId, args: Args, reply: Responder, scope: Option<owned::Scope>) {
+    fn apply_edits(
+        self: &Rc<Self>,
+        view: ViewId,
+        args: Args,
+        reply: Responder,
+        scope: Option<owned::Scope>,
+    ) {
         let session = self.session(view).filter(|_| self.may_write(view));
         let Some(session) = session else {
             return reply.reply(Ok(failure("not-open", None)));
@@ -1211,7 +1265,9 @@ impl Epub {
         let engine = self.engine.clone();
         self.with_chapter(session, target.path, move |s, i| {
             let result = i.and_then(|i| match scope {
-                Some(scope) => scope.effect(|| Ok(s.apply_edits(&*engine, i, target.index, &edits))),
+                Some(scope) => {
+                    scope.effect(|| Ok(s.apply_edits(&*engine, i, target.index, &edits)))
+                }
                 None => Ok(s.apply_edits(&*engine, i, target.index, &edits)),
             });
             reply.reply(result.map_err(kit::error));
@@ -1236,7 +1292,8 @@ impl Epub {
         };
         let engine = self.engine.clone();
         self.with_chapter(session, target.path, move |s, i| {
-            let result = i.and_then(|i| s.replace_ranges(&*engine, i, target.index, version, replacements));
+            let result =
+                i.and_then(|i| s.replace_ranges(&*engine, i, target.index, version, replacements));
             reply.reply(result.map_err(kit::error))
         });
     }
@@ -1590,7 +1647,10 @@ impl Epub {
             ]));
         }
         self.with_view(view, |v| v.result_targets.insert(path_key(&target, None)));
-        Ok(object(vec![("ok", true.into_ipc()), ("path", target.into_ipc())]))
+        Ok(object(vec![
+            ("ok", true.into_ipc()),
+            ("path", target.into_ipc()),
+        ]))
     }
 
     /// `writeTranslated(wcId, request)`
@@ -1618,10 +1678,10 @@ impl Epub {
             IpcValue::String(m) if m == "easy" => true,
             _ => return answer(failure("invalid-request", Some("bad mode"))),
         };
-        let Some(lang) = kit::as_str(field(request, "lang"))
-            .filter(|l| session::len16(l) <= 128) else {
-                return answer(failure("invalid-request", Some("bad language")));
-            };
+        let Some(lang) = kit::as_str(field(request, "lang")).filter(|l| session::len16(l) <= 128)
+        else {
+            return answer(failure("invalid-request", Some("bad language")));
+        };
         let valid_language = match language_tag(lang) {
             Ok(valid) => valid,
             Err(error) => return answer(failure("failed", Some(&error.to_string()))),
@@ -1725,7 +1785,11 @@ impl Epub {
 
     /// `session.readText()`: the book's text in spine order, unsaved edits
     /// included; unread chapters are read on a worker
-    fn book_text(&self, session: Rc<RefCell<Session>>, then: Box<dyn FnOnce(Result<String, IpcError>)>) {
+    fn book_text(
+        &self,
+        session: Rc<RefCell<Session>>,
+        then: Box<dyn FnOnce(Result<String, IpcError>)>,
+    ) {
         let (paths, bytes) = {
             let s = session.borrow();
             let paths: Vec<(String, Option<String>)> = s
@@ -1791,16 +1855,28 @@ fn save_book(
     target: &str,
     old_hash: &str,
 ) -> SaveRun {
-    save_book_admitted(engine, shell, dir, bytes, edits, same_file, target, old_hash, None)
+    save_book_admitted(
+        engine, shell, dir, bytes, edits, same_file, target, old_hash, None,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
 fn save_book_admitted(
-    engine: &dyn EpubEngine, shell: &dyn EpubShell, dir: &str, bytes: Bytes,
-    edits: &[(String, Vec<Replacement>)], same_file: bool, target: &str, old_hash: &str,
+    engine: &dyn EpubEngine,
+    shell: &dyn EpubShell,
+    dir: &str,
+    bytes: Bytes,
+    edits: &[(String, Vec<Replacement>)],
+    same_file: bool,
+    target: &str,
+    old_hash: &str,
     scope: Option<&owned::Scope>,
 ) -> SaveRun {
-    if let Some(scope) = scope && let Err(error) = scope.check() { return SaveRun::Failed(error); }
+    if let Some(scope) = scope
+        && let Err(error) = scope.check()
+    {
+        return SaveRun::Failed(error);
+    }
     let write = |bytes: &[u8]| match scope {
         Some(scope) => scope.write(target, bytes),
         None => atomic_write_file(target, bytes).map_err(|error| error.message),
@@ -1845,12 +1921,24 @@ fn save_book_admitted(
                         };
                         if migrated.is_ok() {
                             match scope {
-                                Some(_) => { let _ = shell.migrate_job_records_owned(dir, old_hash, &opened.doc_hash, &mut admit); }
-                                None => { let _ = shell.migrate_job_records(dir, old_hash, &opened.doc_hash); }
+                                Some(_) => {
+                                    let _ = shell.migrate_job_records_owned(
+                                        dir,
+                                        old_hash,
+                                        &opened.doc_hash,
+                                        &mut admit,
+                                    );
+                                }
+                                None => {
+                                    let _ =
+                                        shell.migrate_job_records(dir, old_hash, &opened.doc_hash);
+                                }
                             }
                         }
                     }
-                    Err(error) => eprintln!("[epub] stored translations did not move to the saved file: {error}"),
+                    Err(error) => eprintln!(
+                        "[epub] stored translations did not move to the saved file: {error}"
+                    ),
                 }
             }
             SaveRun::Rebased {
@@ -1887,14 +1975,18 @@ impl EpubEditors {
             .map(|p| p.to_string_lossy().into_owned());
         let mut state = self.0.state.borrow_mut();
         let v = state.views.entry(view).or_default();
-        let previous = v.document.replace(shell_contract::runtime::RendererGeneration::new());
+        let previous = v
+            .document
+            .replace(shell_contract::runtime::RendererGeneration::new());
         v.unopened = true;
         if let Some(open) = open {
             v.open_path = Some(open.clone());
             v.allowed = HashSet::from([open]);
         }
         drop(state);
-        if let Some(previous) = previous { previous.revoke(); }
+        if let Some(previous) = previous {
+            previous.revoke();
+        }
     }
 
     /// `epubIsTranslationLocked(wcId)`
@@ -1933,7 +2025,9 @@ fn timer_slot() -> Rc<Cell<Option<Timer>>> {
 }
 
 impl DocumentEditors for EpubEditors {
-    fn saved_surface(&self) -> Surface { Surface::Epub }
+    fn saved_surface(&self) -> Surface {
+        Surface::Epub
+    }
 
     fn owns(&self, view: ViewId) -> bool {
         self.0
@@ -1943,34 +2037,82 @@ impl DocumentEditors for EpubEditors {
             .is_some_and(|s| s.surface == Surface::Epub)
     }
 
-    fn request_save_owned(&self, view: ViewId, mode: shell_contract::editors::SaveMode,
-        origin: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken,
-        then: shell_contract::editors::Then<bool>) {
+    fn request_save_owned(
+        &self,
+        view: ViewId,
+        mode: shell_contract::editors::SaveMode,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        then: shell_contract::editors::Then<bool>,
+    ) {
         self.0.begin_owned(view, mode, None, origin, cancel, then);
     }
 
-    fn save_to_path_owned(&self, view: ViewId, path: PathBuf,
-        origin: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken,
-        then: shell_contract::editors::Then<()>) {
-        self.0.begin_owned(view, shell_contract::editors::SaveMode::Save, Some(path), origin, cancel,
-            Box::new(move |result| then(result.and_then(|saved| {
-                if saved { Ok(()) } else { Err(kit::error("Could not save the book")) }
-            }))));
+    fn save_to_path_owned(
+        &self,
+        view: ViewId,
+        path: PathBuf,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        then: shell_contract::editors::Then<()>,
+    ) {
+        self.0.begin_owned(
+            view,
+            shell_contract::editors::SaveMode::Save,
+            Some(path),
+            origin,
+            cancel,
+            Box::new(move |result| {
+                then(result.and_then(|saved| {
+                    if saved {
+                        Ok(())
+                    } else {
+                        Err(kit::error("Could not save the book"))
+                    }
+                }))
+            }),
+        );
     }
 
-    fn request_save_native(&self, view: ViewId, mode: shell_contract::editors::SaveMode,
-        binding: shell_contract::ipc::NativeExistingDocumentBinding, cancel: shell_contract::runtime::CancelToken,
-        pending: shell_contract::runtime::CancelToken, then: shell_contract::editors::Then<bool>) {
-        self.0.begin_native(view, mode, None, binding, cancel, pending, then);
+    fn request_save_native(
+        &self,
+        view: ViewId,
+        mode: shell_contract::editors::SaveMode,
+        binding: shell_contract::ipc::NativeExistingDocumentBinding,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        then: shell_contract::editors::Then<bool>,
+    ) {
+        self.0
+            .begin_native(view, mode, None, binding, cancel, pending, then);
     }
 
-    fn save_to_path_native(&self, view: ViewId, path: PathBuf,
-        binding: shell_contract::ipc::NativeExistingDocumentBinding, cancel: shell_contract::runtime::CancelToken,
-        pending: shell_contract::runtime::CancelToken, then: shell_contract::editors::Then<()>) {
-        self.0.begin_native(view, shell_contract::editors::SaveMode::Save, Some(path), binding, cancel, pending,
-            Box::new(move |result| then(result.and_then(|saved| {
-                if saved { Ok(()) } else { Err(kit::error("Could not save the book")) }
-            }))));
+    fn save_to_path_native(
+        &self,
+        view: ViewId,
+        path: PathBuf,
+        binding: shell_contract::ipc::NativeExistingDocumentBinding,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        then: shell_contract::editors::Then<()>,
+    ) {
+        self.0.begin_native(
+            view,
+            shell_contract::editors::SaveMode::Save,
+            Some(path),
+            binding,
+            cancel,
+            pending,
+            Box::new(move |result| {
+                then(result.and_then(|saved| {
+                    if saved {
+                        Ok(())
+                    } else {
+                        Err(kit::error("Could not save the book"))
+                    }
+                }))
+            }),
+        );
     }
 
     /// `requestEpubSave(contents, mode)`
@@ -2017,9 +2159,16 @@ impl DocumentEditors for EpubEditors {
     }
 
     /// `requestEpubClose(contents, parent)`: true means the view may close
-    fn request_close_owned(&self, view: ViewId, parent: Option<WindowId>, origin: shell_contract::ipc::NativeRequestOwner,
-        cancel: shell_contract::runtime::CancelToken, then: shell_contract::editors::Then<bool>) {
-        self.0.request_owned_close(view, parent, origin, cancel, then);
+    fn request_close_owned(
+        &self,
+        view: ViewId,
+        parent: Option<WindowId>,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        then: shell_contract::editors::Then<bool>,
+    ) {
+        self.0
+            .request_owned_close(view, parent, origin, cancel, then);
     }
 
     fn request_close(
@@ -2218,49 +2367,146 @@ impl DocumentEditors for EpubEditors {
         }
     }
 
-    fn file_renamed_owned(&self, view: ViewId, old_path: &Path, new_path: &Path,
-        origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner,
-        cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
-        then: shell_contract::editors::Then<()>) {
-        self.0.rename_owned_book(view, old_path, new_path, origin, destination, &[], cancel, pending, &[], then);
+    fn file_renamed_owned(
+        &self,
+        view: ViewId,
+        old_path: &Path,
+        new_path: &Path,
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        then: shell_contract::editors::Then<()>,
+    ) {
+        self.0.rename_owned_book(
+            view,
+            old_path,
+            new_path,
+            origin,
+            destination,
+            &[],
+            cancel,
+            pending,
+            &[],
+            then,
+        );
     }
 
-
-    fn file_renamed_many_owned_extra(&self, view: ViewId, old_path: &Path, new_path: &Path,
-        origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner,
-        participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken,
-        pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken],
-        then: shell_contract::editors::Then<()>) {
-        self.0.rename_owned_book(view, old_path, new_path, origin, destination, participants, cancel, pending, additional, then);
+    fn file_renamed_many_owned_extra(
+        &self,
+        view: ViewId,
+        old_path: &Path,
+        new_path: &Path,
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+        then: shell_contract::editors::Then<()>,
+    ) {
+        self.0.rename_owned_book(
+            view,
+            old_path,
+            new_path,
+            origin,
+            destination,
+            participants,
+            cancel,
+            pending,
+            additional,
+            then,
+        );
     }
 
-    fn file_renamed_existing_document(&self, view: ViewId, old_path: &Path, new_path: &Path,
-        authority: &shell_contract::ipc::NativeSaveRevisionAuthority, expected_path: &Path, destination: &shell_contract::ipc::NativeRequestOwner,
-        participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken,
-        pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken],
-        then: shell_contract::editors::Then<Option<shell_contract::ipc::NativeSaveRevisionReceipt>>) {
-        let snapshot = match authority.snapshot() { Ok(snapshot) => snapshot, Err(error) => return then(Err(kit::error(error))) };
-        self.0.rename_native_book(view, old_path, new_path, &snapshot, expected_path, destination, participants, cancel, pending, additional, Box::new(move |result| then(result.map(|()| None))));
+    fn file_renamed_existing_document(
+        &self,
+        view: ViewId,
+        old_path: &Path,
+        new_path: &Path,
+        authority: &shell_contract::ipc::NativeSaveRevisionAuthority,
+        expected_path: &Path,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+        then: shell_contract::editors::Then<Option<shell_contract::ipc::NativeSaveRevisionReceipt>>,
+    ) {
+        let snapshot = match authority.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(error) => return then(Err(kit::error(error))),
+        };
+        self.0.rename_native_book(
+            view,
+            old_path,
+            new_path,
+            &snapshot,
+            expected_path,
+            destination,
+            participants,
+            cancel,
+            pending,
+            additional,
+            Box::new(move |result| then(result.map(|()| None))),
+        );
     }
 
-    fn file_renamed_recovery(&self, view: ViewId, old_path: &Path, new_path: &Path,
-        receipt: &shell_contract::ipc::RecoverySeedReceipt, receiver: &shell_contract::ipc::NativeRequestOwner,
-        destination: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner],
-        cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
-        then: shell_contract::editors::Then<()>) {
-        self.0.rename_recovery_book(view, old_path, new_path, receipt, receiver, destination, participants, cancel, pending, then);
+    fn file_renamed_recovery(
+        &self,
+        view: ViewId,
+        old_path: &Path,
+        new_path: &Path,
+        receipt: &shell_contract::ipc::RecoverySeedReceipt,
+        receiver: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        then: shell_contract::editors::Then<()>,
+    ) {
+        self.0.rename_recovery_book(
+            view,
+            old_path,
+            new_path,
+            receipt,
+            receiver,
+            destination,
+            participants,
+            cancel,
+            pending,
+            then,
+        );
     }
 
-    fn capture_document_owner(&self, view: ViewId, mut native: shell_contract::ipc::NativeRequestOwner) -> Result<shell_contract::ipc::NativeRequestOwner, IpcError> {
-        let document = self.0.view(view, |entry| entry.document.clone()).flatten().ok_or_else(|| kit::error("The book document is unavailable"))?;
-        if native.view != view || !document.is_active() { return Err(kit::error("The book document was released")); }
-        if !native.context.renderer().zip(self.0.services.views.renderer_generation(view).as_ref())
-            .is_some_and(|(expected, current)| expected.is_active() && expected.same_generation(current))
-            || !native.loss_token().is_some_and(|loss| !loss.is_cancelled()) {
+    fn capture_document_owner(
+        &self,
+        view: ViewId,
+        mut native: shell_contract::ipc::NativeRequestOwner,
+    ) -> Result<shell_contract::ipc::NativeRequestOwner, IpcError> {
+        let document = self
+            .0
+            .view(view, |entry| entry.document.clone())
+            .flatten()
+            .ok_or_else(|| kit::error("The book document is unavailable"))?;
+        if native.view != view || !document.is_active() {
+            return Err(kit::error("The book document was released"));
+        }
+        if !native
+            .context
+            .renderer()
+            .zip(self.0.services.views.renderer_generation(view).as_ref())
+            .is_some_and(|(expected, current)| {
+                expected.is_active() && expected.same_generation(current)
+            })
+            || !native.loss_token().is_some_and(|loss| !loss.is_cancelled())
+        {
             return Err(kit::error("The book renderer was replaced"));
         }
         if let Some(expected) = native.context.document_lease() {
-            if !expected.same_generation(&document) { return Err(kit::error("The book document was replaced")); }
+            if !expected.same_generation(&document) {
+                return Err(kit::error("The book document was replaced"));
+            }
         }
         native.context = native.context.with_document_lease(document);
         Ok(native)

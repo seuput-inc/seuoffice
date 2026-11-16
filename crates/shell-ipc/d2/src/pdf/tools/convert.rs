@@ -31,13 +31,17 @@ type HwpImportReady = main_core::shell::tab_manager::ViewCreationReady<
 >;
 
 fn retain_hwp_import(
-    directory: String, ready: HwpImportReady, done: Box<dyn FnOnce(Result<(), String>) + Send>,
+    directory: String,
+    ready: HwpImportReady,
+    done: Box<dyn FnOnce(Result<(), String>) + Send>,
 ) {
     let (view, generation) = ready.view;
     let reservation = ready.reservation;
     if !reservation.matches(view, &generation) {
         return (ready.cleanup)(Box::new(move |_| {
-            done(Err("HWP import reservation does not match its attached view".into()));
+            done(Err(
+                "HWP import reservation does not match its attached view".into(),
+            ));
         }));
     }
     let watched_directory = directory.clone();
@@ -45,7 +49,8 @@ fn retain_hwp_import(
     let watched_generation = generation.clone();
     let watch = (ready.closure)(Box::new(move |receipt| {
         if receipt.matches(&watched_reservation, view, &watched_generation)
-            && receipt.outcome() == shell_contract::ipc::NativeClosureOutcome::Closed {
+            && receipt.outcome() == shell_contract::ipc::NativeClosureOutcome::Closed
+        {
             let _ = std::fs::remove_dir_all(watched_directory);
         }
     }));
@@ -55,7 +60,8 @@ fn retain_hwp_import(
             (ready.cleanup)(Box::new(move |result| {
                 if let Ok(receipt) = result {
                     if receipt.matches(&reservation, view, &generation)
-                        && receipt.outcome() == shell_contract::ipc::NativeClosureOutcome::Closed {
+                        && receipt.outcome() == shell_contract::ipc::NativeClosureOutcome::Closed
+                    {
                         let _ = std::fs::remove_dir_all(directory);
                     }
                 }
@@ -64,7 +70,6 @@ fn retain_hwp_import(
         }
     }
 }
-
 
 /// `requestPdfConvertDialog(contents, format, outPath)`: the pdf tab opens
 /// its conversion dialog
@@ -658,25 +663,38 @@ mod tests {
         let generation = RendererGeneration::new();
         let (issuer, reservation) = NativeClosureIssuer::new(view, generation.clone());
         let (foreign, _) = NativeClosureIssuer::new(view, generation.clone());
-        let callbacks: Arc<Mutex<Vec<Box<dyn FnOnce(shell_contract::ipc::NativeClosureReceipt) + Send>>>> = Arc::default();
+        let callbacks: Arc<
+            Mutex<Vec<Box<dyn FnOnce(shell_contract::ipc::NativeClosureReceipt) + Send>>>,
+        > = Arc::default();
         let queued = callbacks.clone();
         let make_ready = || super::HwpImportReady {
-            view: (view, generation.clone()), reservation: reservation.clone(),
+            view: (view, generation.clone()),
+            reservation: reservation.clone(),
             closure: {
                 let queued = queued.clone();
-                Arc::new(move |callback| { queued.lock().unwrap().push(callback); Ok(()) })
+                Arc::new(move |callback| {
+                    queued.lock().unwrap().push(callback);
+                    Ok(())
+                })
             },
             cleanup: Arc::new(|done| done(Err("not needed".into()))),
         };
         let outcome = Arc::new(Mutex::new(None));
         let reply = outcome.clone();
-        super::retain_hwp_import(directory.to_string_lossy().into_owned(), make_ready(),
-            Box::new(move |result| *reply.lock().unwrap() = Some(result)));
+        super::retain_hwp_import(
+            directory.to_string_lossy().into_owned(),
+            make_ready(),
+            Box::new(move |result| *reply.lock().unwrap() = Some(result)),
+        );
         assert!(matches!(&*outcome.lock().unwrap(), Some(Ok(()))));
         assert!(directory.exists());
         callbacks.lock().unwrap().pop().unwrap()(foreign.closed());
         assert!(directory.exists());
-        super::retain_hwp_import(directory.to_string_lossy().into_owned(), make_ready(), Box::new(|result| assert!(result.is_ok())));
+        super::retain_hwp_import(
+            directory.to_string_lossy().into_owned(),
+            make_ready(),
+            Box::new(|result| assert!(result.is_ok())),
+        );
         callbacks.lock().unwrap().pop().unwrap()(issuer.closed());
         assert!(!directory.exists());
     }
@@ -695,14 +713,21 @@ mod tests {
         let (issuer, reservation) = NativeClosureIssuer::new(view, generation.clone());
         let receipt = issuer.closed();
         let ready = super::HwpImportReady {
-            view: (view, generation), reservation,
-            closure: Arc::new(move |callback| { callback(receipt.clone()); Ok(()) }),
+            view: (view, generation),
+            reservation,
+            closure: Arc::new(move |callback| {
+                callback(receipt.clone());
+                Ok(())
+            }),
             cleanup: Arc::new(|done| done(Err("not needed".into()))),
         };
         let result = Arc::new(Mutex::new(None));
         let answer = result.clone();
-        super::retain_hwp_import(directory.to_string_lossy().into_owned(), ready,
-            Box::new(move |value| *answer.lock().unwrap() = Some(value)));
+        super::retain_hwp_import(
+            directory.to_string_lossy().into_owned(),
+            ready,
+            Box::new(move |value| *answer.lock().unwrap() = Some(value)),
+        );
         assert!(matches!(&*result.lock().unwrap(), Some(Ok(()))));
         assert!(!directory.exists());
     }
@@ -788,12 +813,20 @@ mod tests {
             j(&t.call("pdf-password:get-state", win, vec![]))["retry"],
             json!(false)
         );
-        t.call("pdf-password:submit", win, vec!["wrong".into_ipc(), "1".into_ipc()]);
+        t.call(
+            "pdf-password:submit",
+            win,
+            vec!["wrong".into_ipc(), "1".into_ipc()],
+        );
         assert_eq!(
             j(&t.call("pdf-password:get-state", win, vec![]))["retry"],
             json!(true)
         );
-        t.call("pdf-password:submit", win, vec!["right".into_ipc(), "2".into_ipc()]);
+        t.call(
+            "pdf-password:submit",
+            win,
+            vec!["right".into_ipc(), "2".into_ipc()],
+        );
         assert_eq!(
             pending.take(),
             Some(Ok(shell_contract::IpcValue::Undefined))

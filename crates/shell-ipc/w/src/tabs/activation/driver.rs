@@ -8,10 +8,7 @@ use super::{
 };
 use main_core::shell::tab_manager::TabActivationEffect;
 use shell_contract::{
-    ViewId,
-    hosts::OwnedEffectsHost,
-    ipc::NativeRequestOwner,
-    runtime::CancelToken,
+    ViewId, hosts::OwnedEffectsHost, ipc::NativeRequestOwner, runtime::CancelToken,
 };
 use std::{collections::VecDeque, rc::Rc, sync::Arc};
 

@@ -310,8 +310,12 @@ fn successful_owned_descriptor_write_returns_exact_snapshot() {
         .unwrap()
         .write_owned(bytes)
     {
-        file_commit::DirectOwnedWriteAttempt::Completed(file_commit::DirectOwnedWriteOutcome::Committed(snapshot)) => snapshot,
-        file_commit::DirectOwnedWriteAttempt::Completed(file_commit::DirectOwnedWriteOutcome::WrittenWithoutReceipt { error, .. })
+        file_commit::DirectOwnedWriteAttempt::Completed(
+            file_commit::DirectOwnedWriteOutcome::Committed(snapshot),
+        ) => snapshot,
+        file_commit::DirectOwnedWriteAttempt::Completed(
+            file_commit::DirectOwnedWriteOutcome::WrittenWithoutReceipt { error, .. },
+        )
         | file_commit::DirectOwnedWriteAttempt::Partial { error, .. } => panic!("{error}"),
     };
     assert_eq!(snapshot.bytes().as_ptr(), original_pointer);

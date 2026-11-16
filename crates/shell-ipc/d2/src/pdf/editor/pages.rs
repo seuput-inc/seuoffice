@@ -286,7 +286,9 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
                     if pdf_looks_encrypted(&bytes) {
                         return Ok(None);
                     }
-                    engine.copied_pages_of(&bytes, &source, &pages, &cancel).map(Some)
+                    engine
+                        .copied_pages_of(&bytes, &source, &pages, &cancel)
+                        .map(Some)
                 },
                 move |result| {
                     reply.reply(Ok(match result {
@@ -677,7 +679,9 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
                         let shrunk = engine.shrink(&source, &cancel)?;
                         // a run that does not come out smaller writes nothing
                         if shrunk.bytes.len() < source.len() {
-                            if cancel.is_cancelled() { return Err("PDF save cancelled".into()); }
+                            if cancel.is_cancelled() {
+                                return Err("PDF save cancelled".into());
+                            }
                             write_pdf_atomically(&target, &shrunk.bytes).map_err(|e| e.message)?;
                         }
                         Ok((source.len() as f64, shrunk))

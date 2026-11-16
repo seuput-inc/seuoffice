@@ -370,7 +370,13 @@ thread_local! {
 pub type ReplayDone = Box<dyn FnOnce(Result<(), String>) + Send>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum ReplayState { Idle, Queued, Running, Finished, Cancelled }
+enum ReplayState {
+    Idle,
+    Queued,
+    Running,
+    Finished,
+    Cancelled,
+}
 
 struct ReplayInner {
     id: u64,
@@ -402,47 +408,92 @@ struct ReplayDelivery {
 impl Drop for ReplayDelivery {
     fn drop(&mut self) {
         if !self.started {
-            let mut state = self.inner.state.lock().unwrap_or_else(|error| error.into_inner());
-            if *state == ReplayState::Queued { *state = ReplayState::Idle; }
+            let mut state = self
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if *state == ReplayState::Queued {
+                *state = ReplayState::Idle;
+            }
             drop(state);
-            if let Some(done) = self.done.take() { done(Err("The core continuation was discarded".into())); }
+            if let Some(done) = self.done.take() {
+                done(Err("The core continuation was discarded".into()));
+            }
         }
     }
 }
 
 impl CoreReplay {
     pub fn post(&self, done: ReplayDone) {
-        let mut state = self.0.state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if *state != ReplayState::Idle {
             drop(state);
-            done(Err("The core continuation is not available for retry".into()));
+            done(Err(
+                "The core continuation is not available for retry".into()
+            ));
             return;
         }
         *state = ReplayState::Queued;
         drop(state);
-        let mut delivery = ReplayDelivery { inner: self.0.clone(), done: Some(done), started: false };
+        let mut delivery = ReplayDelivery {
+            inner: self.0.clone(),
+            done: Some(done),
+            started: false,
+        };
         self.0.core.post(Box::new(move || {
-            let mut state = delivery.inner.state.lock().unwrap_or_else(|error| error.into_inner());
-            if *state != ReplayState::Queued { return; }
+            let mut state = delivery
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if *state != ReplayState::Queued {
+                return;
+            }
             *state = ReplayState::Running;
             drop(state);
             delivery.started = true;
             let callback = WAITING.with(|waiting| waiting.borrow_mut().remove(&delivery.inner.id));
             let result = catch_unwind(AssertUnwindSafe(|| match callback {
-                Some(callback) => { callback(Box::new(())); Ok(()) }
+                Some(callback) => {
+                    callback(Box::new(()));
+                    Ok(())
+                }
                 None => Err("The core continuation is unavailable".to_owned()),
             }));
-            *delivery.inner.state.lock().unwrap_or_else(|error| error.into_inner()) = ReplayState::Finished;
+            *delivery
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = ReplayState::Finished;
             if let Some(done) = delivery.done.take() {
-                done(match &result { Ok(result) => result.clone(), Err(_) => Err("The core continuation panicked".into()) });
+                done(match &result {
+                    Ok(result) => result.clone(),
+                    Err(_) => Err("The core continuation panicked".into()),
+                });
             }
-            if let Err(panic) = result { std::panic::resume_unwind(panic); }
+            if let Err(panic) = result {
+                std::panic::resume_unwind(panic);
+            }
         }));
     }
 
     pub fn cancel(&self) {
-        let mut state = self.0.state.lock().unwrap_or_else(|error| error.into_inner());
-        if matches!(*state, ReplayState::Running | ReplayState::Finished | ReplayState::Cancelled) { return; }
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if matches!(
+            *state,
+            ReplayState::Running | ReplayState::Finished | ReplayState::Cancelled
+        ) {
+            return;
+        }
         *state = ReplayState::Cancelled;
         drop(state);
         let id = self.0.id;
@@ -454,12 +505,24 @@ impl CoreReplay {
 }
 
 pub fn replay_on_core(services: &Services, then: impl FnOnce() + 'static) -> CoreReplay {
-    assert!(services.core.is_current(), "replay_on_core off the core thread");
-    let id = NEXT.with(|next| { let id = next.get(); next.set(id + 1); id });
-    WAITING.with(|waiting| { waiting.borrow_mut().insert(id, Box::new(move |_| then())); });
-    CoreReplay(std::sync::Arc::new(ReplayInner { id, core: services.core.clone(), state: std::sync::Mutex::new(ReplayState::Idle) }))
+    assert!(
+        services.core.is_current(),
+        "replay_on_core off the core thread"
+    );
+    let id = NEXT.with(|next| {
+        let id = next.get();
+        next.set(id + 1);
+        id
+    });
+    WAITING.with(|waiting| {
+        waiting.borrow_mut().insert(id, Box::new(move |_| then()));
+    });
+    CoreReplay(std::sync::Arc::new(ReplayInner {
+        id,
+        core: services.core.clone(),
+        state: std::sync::Mutex::new(ReplayState::Idle),
+    }))
 }
-
 
 /// A callback any thread may call once: it posts the value to the core
 /// thread and runs `then` there with it. Dropping it uncalled (a worker that
@@ -596,15 +659,21 @@ pub(crate) fn on_renderer_replaced(
     let hook: Rc<dyn Fn(ViewId, RendererGeneration)> = Rc::new(f);
     let id = next_id();
     ON_REPLACED.with(|hooks| hooks.borrow_mut().insert(id, Rc::downgrade(&hook)));
-    services.views.on_renderer_replaced(Box::new(move |view, generation| {
-        let hook = ON_REPLACED.with(|hooks| {
-            let mut hooks = hooks.borrow_mut();
-            let hook = hooks.get(&id).and_then(Weak::upgrade);
-            if hook.is_none() { hooks.remove(&id); }
-            hook
-        });
-        if let Some(hook) = hook { hook(view, generation); }
-    }));
+    services
+        .views
+        .on_renderer_replaced(Box::new(move |view, generation| {
+            let hook = ON_REPLACED.with(|hooks| {
+                let mut hooks = hooks.borrow_mut();
+                let hook = hooks.get(&id).and_then(Weak::upgrade);
+                if hook.is_none() {
+                    hooks.remove(&id);
+                }
+                hook
+            });
+            if let Some(hook) = hook {
+                hook(view, generation);
+            }
+        }));
     hook
 }
 
@@ -804,16 +873,30 @@ mod tests {
         #[derive(Default)]
         struct Queue(std::sync::Mutex<Vec<Box<dyn FnOnce() + Send>>>);
         impl shell_contract::runtime::Thread for Queue {
-            fn post(&self, job: Box<dyn FnOnce() + Send>) { self.0.lock().unwrap().push(job); }
-            fn is_current(&self) -> bool { true }
+            fn post(&self, job: Box<dyn FnOnce() + Send>) {
+                self.0.lock().unwrap().push(job);
+            }
+            fn is_current(&self) -> bool {
+                true
+            }
         }
         let core = std::sync::Arc::new(Queue::default());
         let ran = Rc::new(Cell::new(0));
         let captured = ran.clone();
-        let id = NEXT.with(|next| { let id = next.get(); next.set(id + 1); id });
-        WAITING.with(|waiting| { waiting.borrow_mut().insert(id, Box::new(move |_| captured.set(captured.get() + 1))); });
+        let id = NEXT.with(|next| {
+            let id = next.get();
+            next.set(id + 1);
+            id
+        });
+        WAITING.with(|waiting| {
+            waiting
+                .borrow_mut()
+                .insert(id, Box::new(move |_| captured.set(captured.get() + 1)));
+        });
         let handle = CoreReplay(std::sync::Arc::new(ReplayInner {
-            id, core: core.clone(), state: std::sync::Mutex::new(ReplayState::Idle),
+            id,
+            core: core.clone(),
+            state: std::sync::Mutex::new(ReplayState::Idle),
         }));
         let answers = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let first = answers.clone();

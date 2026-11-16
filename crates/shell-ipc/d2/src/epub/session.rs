@@ -253,7 +253,11 @@ pub(super) struct ChapterState {
 
 /// `state(path)` before it is kept: the chapter read from the book. Runs on
 /// a worker.
-pub(super) fn load_chapter(engine: &dyn EpubEngine, bytes: Bytes, path: String) -> Result<ChapterState, String> {
+pub(super) fn load_chapter(
+    engine: &dyn EpubEngine,
+    bytes: Bytes,
+    path: String,
+) -> Result<ChapterState, String> {
     let decoded = engine.read_text(bytes, &path);
     let (stored, valid) = decoded.map_or((String::new(), false), |d| (d.text, d.valid));
     Ok(ChapterState {

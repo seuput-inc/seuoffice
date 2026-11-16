@@ -2631,8 +2631,9 @@ impl super::activation::DocsDisposalOperation for ProbeDocsDisposal {
             .clone();
         let fake = self.fake.clone();
         let completion = self.clone();
-        let reply =
-            crate::home_files::back_to_core(self.core.clone(), move |result: Result<(), String>| {
+        let reply = crate::home_files::back_to_core(
+            self.core.clone(),
+            move |result: Result<(), String>| {
                 completion.running.set(false);
                 if result.is_ok() {
                     completion.closed.set(true);
@@ -2640,7 +2641,8 @@ impl super::activation::DocsDisposalOperation for ProbeDocsDisposal {
                 done(result.and_then(|()| {
                     super::activation::DocsDisposal::closed(completion.target.clone())
                 }));
-            });
+            },
+        );
         self.effects.post_ui_owned_many(
             self.origin.clone(),
             self.participants.clone(),
@@ -3359,9 +3361,12 @@ impl TabHooks for Hooks {
                         if permit.is_some() {
                             return done(Err("Unexpected synthetic close permit".into()));
                         }
-                        let reply = crate::home_files::back_to_core(core, move |result: Result<(), String>| {
-                            done(result.map(|()| super::activation::TabUiStepOutcome::Applied))
-                        });
+                        let reply = crate::home_files::back_to_core(
+                            core,
+                            move |result: Result<(), String>| {
+                                done(result.map(|()| super::activation::TabUiStepOutcome::Applied))
+                            },
+                        );
                         ui.post(Box::new(move || {
                             let action = Box::new(move || {
                                 if fake.w().case["fail"].as_array().is_some_and(|items| {
@@ -3503,18 +3508,21 @@ impl TabHooks for Hooks {
         let changed_pending = pending.clone();
         let changed_effects = effects.clone();
         let changed = Box::new(move |done: super::activation::TabUiStepDone| {
-            done(probe_activation_emit(
-                changed_events.as_ref(),
-                &changed_revision,
-                &changed_effects,
-                &changed_origin,
-                &changed_participants,
-                shell_index,
-                &changed_cancel,
-                &changed_pending,
-                "tabs:changed",
-                changed_args,
-            ).map(|()| super::activation::TabUiStepOutcome::Applied));
+            done(
+                probe_activation_emit(
+                    changed_events.as_ref(),
+                    &changed_revision,
+                    &changed_effects,
+                    &changed_origin,
+                    &changed_participants,
+                    shell_index,
+                    &changed_cancel,
+                    &changed_pending,
+                    "tabs:changed",
+                    changed_args,
+                )
+                .map(|()| super::activation::TabUiStepOutcome::Applied),
+            );
         });
         let split_origin = origin.clone();
         let split_participants = participants.clone();
@@ -4097,15 +4105,23 @@ impl TabHooks for Hooks {
                     };
                     let mut published = None;
                     let registered = synthetic_created_effect(
-                        &source, &[target.clone()], &generation, &cancel, &pending, || {
-                            closure.reservation.with_owner(&closure.owner, |transition| {
-                                register(&target, transition, &mut || {
-                                    published = Some(target.clone());
-                                    Ok(())
+                        &source,
+                        &[target.clone()],
+                        &generation,
+                        &cancel,
+                        &pending,
+                        || {
+                            closure
+                                .reservation
+                                .with_owner(&closure.owner, |transition| {
+                                    register(&target, transition, &mut || {
+                                        published = Some(target.clone());
+                                        Ok(())
+                                    })
                                 })
-                            })
                         },
-                    ).and_then(|result| result.map_err(TabError));
+                    )
+                    .and_then(|result| result.map_err(TabError));
                     if let Err(error) = registered {
                         return done(Err(ViewCreationFailure {
                             error,
@@ -4114,7 +4130,9 @@ impl TabHooks for Hooks {
                     }
                     let Some(target) = published else {
                         return done(Err(ViewCreationFailure {
-                            error: TabError("Synthetic generated registration was not published".into()),
+                            error: TabError(
+                                "Synthetic generated registration was not published".into(),
+                            ),
                             cleanup: ViewCreationCleanupState::Pending(cleanup),
                         }));
                     };
@@ -4275,7 +4293,12 @@ impl TabHooks for Hooks {
                     rollback.borrow_mut().push(successor_receipt);
                     let mut published = None;
                     let registered = synthetic_created_effect(
-                        &source, &participants, &generation, &cancel, &pending, || {
+                        &source,
+                        &participants,
+                        &generation,
+                        &cancel,
+                        &pending,
+                        || {
                             closure.reservation.with_owner(&successor, |transition| {
                                 register(&target, transition, &mut || {
                                     published = Some(target.clone());
@@ -4283,7 +4306,8 @@ impl TabHooks for Hooks {
                                 })
                             })
                         },
-                    ).and_then(|result| result.map_err(TabError));
+                    )
+                    .and_then(|result| result.map_err(TabError));
                     if let Err(error) = registered {
                         return done(Err(ViewCreationFailure {
                             error,
@@ -4292,7 +4316,9 @@ impl TabHooks for Hooks {
                     }
                     let Some(target) = published else {
                         return done(Err(ViewCreationFailure {
-                            error: TabError("Synthetic spare registration was not published".into()),
+                            error: TabError(
+                                "Synthetic spare registration was not published".into(),
+                            ),
                             cleanup: ViewCreationCleanupState::Pending(cleanup),
                         }));
                     };
@@ -7067,10 +7093,18 @@ mod command_tests {
             surface: Surface::Shell,
         };
         let generation = RendererGeneration::new();
-        views.0.lock().unwrap().insert(shell.view, (shell, generation.clone()));
+        views
+            .0
+            .lock()
+            .unwrap()
+            .insert(shell.view, (shell, generation.clone()));
         let registrar_views = views.clone();
         let registrar: ProbeViewRegistrar = Arc::new(move |sender, generation| {
-            registrar_views.0.lock().unwrap().insert(sender.view, (sender, generation));
+            registrar_views
+                .0
+                .lock()
+                .unwrap()
+                .insert(sender.view, (sender, generation));
             Ok(())
         });
         let mut hosts = Hosts::default();
@@ -7088,7 +7122,10 @@ mod command_tests {
         });
         let state = probe_state(&services, Rc::new(Provided::default())).unwrap();
         let fake = services.hosts.get::<Arc<WorldBox>>().unwrap().0.clone();
-        let effects = services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap();
+        let effects = services
+            .hosts
+            .get::<shell_contract::hosts::OwnedEffectsHost>()
+            .unwrap();
         let owner = effects.capture_owner(shell.view, &generation).unwrap();
         let next_view = fake.w().next_view;
         let cancel = CancelToken::default();
@@ -7106,7 +7143,9 @@ mod command_tests {
             Box::new(move |reply| *observed.borrow_mut() = Some(reply.map(|tab| tab.view()))),
         );
         ui.run();
-        assert!(matches!(&*result.borrow(), Some(Err(error)) if error == "The initialized tab operation is no longer active"));
+        assert!(
+            matches!(&*result.borrow(), Some(Err(error)) if error == "The initialized tab operation is no longer active")
+        );
         assert_eq!(fake.w().next_view, next_view);
         assert!(fake.w().generated.is_empty());
 
@@ -7124,7 +7163,9 @@ mod command_tests {
             Box::new(move |reply| *observed.borrow_mut() = Some(reply.map(|tab| tab.view()))),
         );
         ui.run();
-        assert!(matches!(&*result.borrow(), Some(Err(error)) if error == "The initialized tab operation is no longer active"));
+        assert!(
+            matches!(&*result.borrow(), Some(Err(error)) if error == "The initialized tab operation is no longer active")
+        );
         assert_eq!(fake.w().next_view, next_view);
         assert!(fake.w().generated.is_empty());
     }
@@ -7141,10 +7182,18 @@ mod command_tests {
             surface: Surface::Shell,
         };
         let shell_generation = RendererGeneration::new();
-        views.0.lock().unwrap().insert(shell.view, (shell, shell_generation.clone()));
+        views
+            .0
+            .lock()
+            .unwrap()
+            .insert(shell.view, (shell, shell_generation.clone()));
         let registrar_views = views.clone();
         let registrar: ProbeViewRegistrar = Arc::new(move |sender, generation| {
-            registrar_views.0.lock().unwrap().insert(sender.view, (sender, generation));
+            registrar_views
+                .0
+                .lock()
+                .unwrap()
+                .insert(sender.view, (sender, generation));
             Ok(())
         });
         let mut hosts = Hosts::default();
@@ -7162,8 +7211,13 @@ mod command_tests {
         });
         let state = probe_state(&services, Rc::new(Provided::default())).unwrap();
         let fake = services.hosts.get::<Arc<WorldBox>>().unwrap().0.clone();
-        let effects = services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().unwrap();
-        let owner = effects.capture_owner(shell.view, &shell_generation).unwrap();
+        let effects = services
+            .hosts
+            .get::<shell_contract::hosts::OwnedEffectsHost>()
+            .unwrap();
+        let owner = effects
+            .capture_owner(shell.view, &shell_generation)
+            .unwrap();
         let request = || super::super::open::GeneratedEditorOpen::Generate {
             target: GenerateHandoffTarget::Slides,
             handoff: json!({"text": "fixture"}),
@@ -7172,13 +7226,18 @@ mod command_tests {
         let first = Rc::new(std::cell::RefCell::new(None));
         let first_result = first.clone();
         state.open_generated_editor_owned(
-            request(), owner.clone(), CancelToken::default(),
+            request(),
+            owner.clone(),
+            CancelToken::default(),
             Box::new(move |result| {
-                *first_result.borrow_mut() = Some(result.map(|tab| (tab.tab_id().to_owned(), tab.view())));
+                *first_result.borrow_mut() =
+                    Some(result.map(|tab| (tab.tab_id().to_owned(), tab.view())));
             }),
         );
         for _ in 0..64 {
-            if first.borrow().is_some() { break; }
+            if first.borrow().is_some() {
+                break;
+            }
             ui.run();
         }
         let (existing_id, existing_view) = first.borrow_mut().take().unwrap().unwrap();
@@ -7187,8 +7246,12 @@ mod command_tests {
         let second = Rc::new(std::cell::RefCell::new(None));
         let second_result = second.clone();
         state.open_generated_editor_owned(
-            request(), owner, cancel.clone(),
-            Box::new(move |result| *second_result.borrow_mut() = Some(result.map(|tab| tab.view()))),
+            request(),
+            owner,
+            cancel.clone(),
+            Box::new(move |result| {
+                *second_result.borrow_mut() = Some(result.map(|tab| tab.view()))
+            }),
         );
         let generated = {
             let inner = state.inner.borrow();
@@ -7208,8 +7271,16 @@ mod command_tests {
         assert!(!fake.w().generated.contains_key(&generated));
         let inner = state.inner.borrow();
         let manager = inner.manager.as_ref().unwrap();
-        assert!(manager.list().iter().all(|tab| manager.web_contents_for_tab(&tab.id) != Some(generated)));
-        assert_eq!(manager.web_contents_for_tab(&existing_id), Some(existing_view));
+        assert!(
+            manager
+                .list()
+                .iter()
+                .all(|tab| manager.web_contents_for_tab(&tab.id) != Some(generated))
+        );
+        assert_eq!(
+            manager.web_contents_for_tab(&existing_id),
+            Some(existing_view)
+        );
         assert!(existing_generation.is_active());
         assert!(!fake.view_destroyed(existing_view));
     }

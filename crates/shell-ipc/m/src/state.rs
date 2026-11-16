@@ -239,17 +239,18 @@ impl MState {
         pending: Arc<dyn shell_contract::hosts::GeneratedPathPending>,
     ) {
         let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-        let displaced = match state.hwp_pending.iter_mut().find(|(candidate, entry)| {
-            *candidate == view && Arc::ptr_eq(&entry.terminal, terminal)
-        }) {
-            Some((_, entry)) => {
-                entry.payload = Some(payload);
-                entry.cleanup.push(delivery);
-                entry.settling = false;
-                Ok((entry.receipt.replace(pending), entry.observer.take()))
-            }
-            None => Err((payload, delivery)),
-        };
+        let displaced =
+            match state.hwp_pending.iter_mut().find(|(candidate, entry)| {
+                *candidate == view && Arc::ptr_eq(&entry.terminal, terminal)
+            }) {
+                Some((_, entry)) => {
+                    entry.payload = Some(payload);
+                    entry.cleanup.push(delivery);
+                    entry.settling = false;
+                    Ok((entry.receipt.replace(pending), entry.observer.take()))
+                }
+                None => Err((payload, delivery)),
+            };
         drop(state);
         drop(displaced);
     }

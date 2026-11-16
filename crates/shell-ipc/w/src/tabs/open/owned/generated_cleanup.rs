@@ -588,10 +588,18 @@ impl GeneratedCleanupCoordinator {
         if authority.operation != operation
             || !authority.reservation.same_reservation(&binding.reservation)
             || !authority.browser.same_owner(&binding.owner)
-            || !binding.owner.reservation().same_reservation(&authority.reservation)
-            || !authority.reservation.matches(view, authority.reservation.created())
+            || !binding
+                .owner
+                .reservation()
+                .same_reservation(&authority.reservation)
+            || !authority
+                .reservation
+                .matches(view, authority.reservation.created())
         {
-            return Err((authority, "The generated cleanup operation or reservation changed".into()));
+            return Err((
+                authority,
+                "The generated cleanup operation or reservation changed".into(),
+            ));
         }
         let (close, cleanup) = browser_cleanup(binding.clone());
         let coordinator = std::rc::Rc::new(Self {
@@ -1118,12 +1126,9 @@ impl GeneratedCleanupCoordinator {
             if needs_hydration {
                 let captured = {
                     let authority = self.authority.borrow();
-                    authority.as_ref().map(|authority| {
-                        (
-                            authority.shell.clone(),
-                            authority.cleanup.clone(),
-                        )
-                    })
+                    authority
+                        .as_ref()
+                        .map(|authority| (authority.shell.clone(), authority.cleanup.clone()))
                 };
                 let Some((shell, cleanup)) = captured else {
                     return done(Err("The generated cleanup authority is unavailable".into()));

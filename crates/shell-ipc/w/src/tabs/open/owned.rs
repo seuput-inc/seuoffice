@@ -83,6 +83,7 @@ pub fn native_open_surface(path: &str) -> shell_contract::Surface {
 enum Completion {
     Plain(Done),
     Generated(generated::GeneratedDone),
+    Saved(saved_input::SavedDone),
     Replied,
 }
 
@@ -91,6 +92,7 @@ impl Completion {
         match self {
             Self::Plain(done) => done(Err(error)),
             Self::Generated(done) => done(Err(error)),
+            Self::Saved(done) => done(Err(error)),
             Self::Replied => {}
         }
     }
@@ -434,6 +436,10 @@ pub(super) struct PreparedSavedManagerAdoption {
     pub adopt: super::super::host::SavedManagerAdoption,
     pub register: super::super::host::SavedManagerRegistration,
     pub tab_id: std::rc::Rc<RefCell<Option<String>>>,
+    pub preview: main_core::shell::tab_manager::GeneratedRemovalPreview<
+        ViewId,
+        super::super::host::RetainedSpareBinding,
+    >,
     pub recover: Box<
         dyn FnOnce() -> Option<PreparedTabOpen<ViewId, super::super::host::RetainedSpareBinding>>,
     >,
@@ -513,6 +519,19 @@ impl TabsState {
         };
         let commit = match commit {
             Ok(commit) => commit,
+            Err(error) => return Err((prepared.into_plan(), error)),
+        };
+        let preview = {
+            let inner = self.inner.borrow();
+            match inner.manager.as_ref() {
+                Some(manager) => {
+                    manager.preview_prepared_generated_adoption(&prepared, &commit, &retained)
+                }
+                None => Err("The shell window is unavailable".into()),
+            }
+        };
+        let preview = match preview {
+            Ok(preview) => preview,
             Err(error) => return Err((prepared.into_plan(), error)),
         };
         let prepared = std::rc::Rc::new(RefCell::new(Some(prepared)));
@@ -631,6 +650,7 @@ impl TabsState {
             register,
             tab_id,
             recover,
+            preview,
         })
     }
 
@@ -1422,6 +1442,13 @@ impl TabsState {
                     aborted,
                     done,
                 );
+            }
+            Completion::Saved(done) => {
+                self.close_owned_result(result);
+                self.cancel_owned_step(step);
+                done(Err("The saved open was settled outside its owner".into()));
+                drop(diagram);
+                return;
             }
             Completion::Replied => {
                 if let Some(coordinator) = generated_cleanup {
