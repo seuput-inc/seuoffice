@@ -184,13 +184,12 @@ pub fn parse(bytes: &[u8], target: &str) -> Result<Vec<Artifact>, String> {
                 return Err("NSS manifest: invalid dependency closure".into());
             }
         }
-        if let Some(target) = &artifact.check_for {
-            if !artifacts
+        if let Some(target) = &artifact.check_for
+            && !artifacts
                 .iter()
                 .any(|a| &a.id == target && a.kind == "library")
-            {
-                return Err("NSS manifest: invalid integrity mapping".into());
-            }
+        {
+            return Err("NSS manifest: invalid integrity mapping".into());
         }
     }
     artifacts.sort_by_key(|a| a.fd);

@@ -59,6 +59,8 @@ pub enum ProcessFailure {
     BrowserProcessExited,
     #[cfg(windows)]
     Unresponsive,
+    /// WebView2 `ProcessFailed` of an unknown process kind.
+    #[cfg(any(windows, test))]
     Unknown,
 }
 

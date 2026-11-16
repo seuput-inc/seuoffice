@@ -2230,14 +2230,6 @@ impl ViewTable {
         }
     }
 
-    pub fn dropped(&self, view: ViewId) -> Vec<PathBuf> {
-        let inner = self.inner.lock().unwrap();
-        inner
-            .views
-            .get(&view)
-            .map_or_else(Vec::new, |r| r.reserved.dropped())
-    }
-
     /// The view is gone: forget it, close its stream, and on the core thread
     /// cancel its pending calls and tell the listeners of [`Views::on_destroyed`]
     pub fn remove_view(&self, view: ViewId) {
