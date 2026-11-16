@@ -1,0 +1,21 @@
+{
+  "schema": "native-original-reply-observation/v1",
+  "source": "ad56ec727fc25695fd14261fdfe2b6a755da81a6",
+  "tauriTarget": "2.12.5",
+  "kind": "throwaway-sdk-observation-not-product-test",
+  "files": [
+    {"path":"macos/wk_reply_probe.py","bytes":12849,"sha256":"903063728aaef1dec8a6d9acb457641d82ac32319d2d4e759365342efc5fdc76"},
+    {"path":"windows/Program.cs","bytes":8960,"sha256":"f6e1988988aa7bf974bdd9352b525700bcdaa0c4df5108f055a334d836300c3e"},
+    {"path":"windows/Observer.csproj","bytes":471,"sha256":"5e520e9798be85a31146a006099aae7ea7847f1bfc7c548e1e2522cdb28c3ace"},
+    {"path":"windows/packages.lock.json","bytes":345,"sha256":"eaa55b158255f9bf25418fa0a755c4607538532424efd5db68b5dd2f301aece4"}
+  ],
+  "productionChanged": false,
+  "privilegeIssued": false,
+  "nativeExecution": "NOT_RUN",
+  "macOSMinimumSDKAvailability": "11.0; not product support policy",
+  "windowsRuntimeInstallAllowed": false,
+  "interpretation": "Observed means bounded sequence finished, never security acceptance; absence of an event is not proof of nondelivery.",
+  "windowsOriginalReplyApiExercised": false,
+  "existingRun43793077514": "Keep original single watcher. No cancel/query/rerun.",
+  "productGreen": false
+}
