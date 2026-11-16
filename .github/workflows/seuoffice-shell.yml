@@ -13,6 +13,12 @@ name: seuoffice shell
 #               crates/shell/ci/slice-diagnostics.mjs counts the diagnostics in `owned`
 #   gate=lock   Ubuntu only: regenerates crates/shell/Cargo.lock from the exact `source_sha`
 #               and uploads it as an artifact. Nothing is committed from CI.
+#   gate=probe  the hosted WebView probes P1-P10 (crates/shell/src/probe): the real shell binary
+#               on the macOS and Windows runners drives real WKWebView / WebView2 pages and
+#               writes raw event logs and artifacts; crates/shell/ci/probe-check.mjs then states,
+#               per assertion, observed, violated or unobserved with the evidence line. Logs
+#               and artifacts are uploaded whatever the checker says. `probes` picks which
+#               (comma list, default all; p5 is macOS only, p6 Windows only).
 
 on:
   push:
@@ -23,13 +29,16 @@ on:
   workflow_dispatch:
     inputs:
       gate:
-        description: "full (build, clippy, tests, measurement), check (cargo check and per-file diagnostics), lock (regenerate Cargo.lock on Ubuntu) or fmt (rustfmt patch of both Rust workspaces)"
+        description: "full (build, clippy, tests, measurement), check (cargo check and per-file diagnostics), lock (regenerate Cargo.lock on Ubuntu), fmt (rustfmt patch of both Rust workspaces) or probe (hosted WebView probes P1-P10)"
         type: choice
-        options: [full, check, lock, fmt]
+        options: [full, check, lock, fmt, probe]
         default: full
       owned:
         description: "gate=check: comma-separated path prefixes whose diagnostics must be zero"
         default: crates/shell/src/native/,crates/shell/src/main.rs
+      probes:
+        description: "gate=probe: comma list of probes p1..p10, or all"
+        default: all
       source_sha:
         description: "gate=lock or fmt: the exact commit to work on (40 hex digits)"
         default: ''
@@ -467,3 +476,148 @@ jobs:
           path: ${{ runner.temp }}/fmt/
           retention-days: 7
           if-no-files-found: error
+
+  # The hosted WebView probes (design 0.5, P1-P10): the real shell binary, built as the `mac` and
+  # `win` jobs build it, started once per probe with `--probe <name> --out <dir>` (p10 is
+  # `--measure-dialog`). A probe writes JSON lines and artifacts and decides nothing; the checker
+  # reads them. The pages are the mock fixtures of crates/shell/probe-fixtures, staged where the
+  # shell's app scheme serves its renderer bundles (SEUOFFICE_APPS_DIR).
+  probe:
+    if: github.event_name == 'workflow_dispatch' && inputs.gate == 'probe'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+        working-directory: crates/shell
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.95.0
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: crates/shell
+          cache-on-failure: true
+
+      - name: build environment
+        run: |
+          # as the mac and win jobs set them at job level: ad-hoc signing on the Mac, and the
+          # Strawberry perl vendored OpenSSL configures with (Git Bash's perl lacks modules)
+          if [ "$RUNNER_OS" = macOS ]; then echo 'APPLE_SIGNING_IDENTITY=-' >> "$GITHUB_ENV"; fi
+          if [ "$RUNNER_OS" = Windows ]; then echo 'OPENSSL_SRC_PERL=C:\Strawberry\perl\bin\perl.exe' >> "$GITHUB_ENV"; fi
+          rustc --version
+          cargo --version
+
+      - name: npm ci (esbuild and the workspace packages of the preloads)
+        working-directory: .
+        run: npm ci --ignore-scripts
+      - name: rhwp source
+        working-directory: .
+        run: node tools/build-rhwp-core.mjs --source-only
+      - name: document engine
+        working-directory: .
+        run: npm run build:wasm
+      - name: preloads
+        working-directory: .
+        run: node crates/shell/bridge/preloads.mjs
+      - name: engine host
+        working-directory: .
+        run: node crates/shell/engine-host/build.mjs
+
+      # the pages: every host the probes load them from serves its own copy under /probe/, the
+      # engine host (served cross-origin isolated by the shell) from its own folder, which the
+      # build below carries into the resources
+      - name: stage the probe pages
+        run: |
+          stage="$RUNNER_TEMP/probe-apps"
+          rm -rf "$stage"
+          for host in shell docs sheets hwp; do
+            mkdir -p "$stage/$host/out/renderer"
+            cp -R probe-fixtures/pages "$stage/$host/out/renderer/probe"
+          done
+          rm -rf out/engine-host/probe
+          cp -R probe-fixtures/pages out/engine-host/probe
+          find "$stage" -type f | sort > "$RUNNER_TEMP/probe-stage.txt"
+          echo "$(wc -l < "$RUNNER_TEMP/probe-stage.txt") staged files"
+
+      - name: Tauri CLI
+        if: runner.os == 'macOS'
+        run: npm install --no-audit --no-fund
+      - name: build the app bundle (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          npx tauri build --bundles app --verbose --config '{"bundle":{"resources":{"out/engine-host":"engine-host"}}}' -- --locked
+          app=$(find target/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)
+          echo "SHELL_BIN=$PWD/$app/Contents/MacOS/SeuOffice" >> "$GITHUB_ENV"
+      - name: build (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cargo build --locked --release --verbose
+          mkdir -p target/release/resources/engine-host
+          cp -R out/engine-host/. target/release/resources/engine-host/
+          echo "SHELL_BIN=$PWD/target/release/SeuOffice.exe" >> "$GITHUB_ENV"
+
+      - name: run the probes
+        env:
+          PROBES: ${{ inputs.probes }}
+        run: |
+          out="$RUNNER_TEMP/probes"
+          stage="$RUNNER_TEMP/probe-apps"
+          rm -rf "$out"
+          mkdir -p "$out"
+          ls -la "$SHELL_BIN"
+          list="${PROBES:-all}"
+          [ "$list" = all ] && list="p1,p2,p3,p4,p5,p6,p7,p8,p9,p10"
+          ran=""
+          for probe in ${list//,/ }; do
+            case "$probe:$RUNNER_OS" in
+              p5:Windows|p6:macOS) echo "skip $probe: it is not an $RUNNER_OS probe"; continue ;;
+            esac
+            mkdir -p "$out/$probe"
+            ran="${ran:+$ran,}$probe"
+            if [ "$probe" = p10 ]; then
+              args=(--measure-dialog "$out/p10/dialog.json")
+            else
+              args=(--probe "$probe" --out "$out/$probe")
+            fi
+            # a probe that never reaches its own deadline (a hang before it starts) is killed here
+            if [ "$RUNNER_OS" = Windows ]; then guard=(timeout 540); else guard=(perl -e 'alarm shift; exec @ARGV' 540); fi
+            set +e
+            SEUOFFICE_USER_DATA="$out/$probe/userdata" SEUOFFICE_APPS_DIR="$stage" \
+              SEUOFFICE_SHELL_PARTIAL=1 SEUOFFICE_SHELL_TRACE=1 \
+              "${guard[@]}" "$SHELL_BIN" "${args[@]}" > "$out/$probe/shell.log" 2>&1
+            status=$?
+            set -e
+            echo "$probe exit $status" | tee -a "$out/exit-codes.txt"
+            tail -n 15 "$out/$probe/shell.log" || true
+            rm -rf "$out/$probe/userdata"
+          done
+          echo "$ran" > "$out/probes-run.txt"
+
+      - name: check the records
+        run: |
+          set +e
+          out="$RUNNER_TEMP/probes"
+          ran=$(cat "$out/probes-run.txt")
+          node ci/probe-check.mjs "$out" --probes "$ran" --json "$out/report.json" --markdown "$out/report.md" | tee "$out/report.txt"
+          status=${PIPESTATUS[0]}
+          { echo "### WebView probes on $RUNNER_OS"; cat "$out/report.md"; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      - name: upload the probe records
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: probes-${{ runner.os }}
+          path: |
+            ${{ runner.temp }}/probes/**
+            !${{ runner.temp }}/probes/*/userdata/**
+          if-no-files-found: warn

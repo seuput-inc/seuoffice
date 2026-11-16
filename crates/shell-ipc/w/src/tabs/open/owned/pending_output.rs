@@ -279,9 +279,11 @@ impl PendingOutput {
                 result
             }
         };
-        done(Ok(shell_contract::hosts::GeneratedPathDispatchOutcome::Terminal(
-            GeneratedTerminalDelivery::new(result, Arc::new(PendingHandle(self.clone()))),
-        )));
+        done(Ok(
+            shell_contract::hosts::GeneratedPathDispatchOutcome::Terminal(
+                GeneratedTerminalDelivery::new(result, Arc::new(PendingHandle(self.clone()))),
+            ),
+        ));
     }
     pub(super) fn finish(self: &Arc<Self>, result: Result<GeneratedPathOutcome, String>) {
         let (observer, result) = {

@@ -414,7 +414,7 @@ impl PreparedGeneratedSeedStage {
     }
 }
 
-struct SupersededDrain {
+pub(super) struct SupersededDrain {
     receipts: shell_ipc_w::tabs::host::EditorSeedRollbackStore,
     proof: shell_contract::ipc::NativeBrowserSuperseded,
     running: std::rc::Rc<std::cell::Cell<bool>>,
@@ -437,7 +437,18 @@ impl Drop for SupersededAttempt {
 }
 
 impl SupersededDrain {
-    fn begin(&self, done: Box<dyn FnOnce(Result<(), String>)>) {
+    pub(super) fn new(
+        receipts: shell_ipc_w::tabs::host::EditorSeedRollbackStore,
+        proof: shell_contract::ipc::NativeBrowserSuperseded,
+    ) -> Self {
+        Self {
+            receipts,
+            proof,
+            running: std::rc::Rc::default(),
+        }
+    }
+
+    pub(super) fn begin(&self, done: Box<dyn FnOnce(Result<(), String>)>) {
         if self.running.replace(true) {
             return done(Err(
                 "The superseded editor cleanup is already running".into()
@@ -4151,6 +4162,8 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
         shell_ipc_d1::sheets::editors::views()
             .expect("Sheets editor unavailable")
             .reset_shutting_down();
+        // every guard that refuses a close calls this: a quit under way is off
+        crate::host::quit::quit_vetoed();
     }
     fn resume_discarded_copies(&self) {
         let state = self

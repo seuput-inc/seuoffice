@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>p7 refuse</title>
+<script src="probe.js"></script>
+<script>
+  // A request to a shell scheme that the window's policy refuses. The scheme handler answers
+  // after 600 ms; a refused request must not get that answer.
+  ;(async () => {
+    let result
+    try {
+      const response = await fetch(P.base('html-asset') + 'slow?ms=600&id=refused', {
+        mode: 'cors',
+        cache: 'no-store',
+      })
+      result = { ok: true, status: response.status, body: await response.text() }
+    } catch (error) {
+      result = { ok: false, error: String(error) }
+    }
+    P.log('p7.refuse', result)
+    P.done({})
+  })()
+</script>

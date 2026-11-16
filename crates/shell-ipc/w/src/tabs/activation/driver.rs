@@ -230,7 +230,7 @@ pub(crate) enum CommittedSpareClose {
     None,
     Won(shell_contract::ipc::NativeBrowserClosePermit),
     Superseded(
-        RetainedSpareBinding,
+        Box<RetainedSpareBinding>,
         shell_contract::ipc::NativeBrowserSuperseded,
     ),
 }
@@ -459,7 +459,10 @@ pub(in super::super) fn commit_activation_with_spare<T>(
                     CommittedSpareClose::Won(permit),
                 )),
                 shell_contract::ipc::NativeBrowserCloseClaim::Superseded(proof) => {
-                    Ok((apply()?, CommittedSpareClose::Superseded(binding, proof)))
+                    Ok((
+                        apply()?,
+                        CommittedSpareClose::Superseded(Box::new(binding), proof),
+                    ))
                 }
             }
         } else {
@@ -971,7 +974,9 @@ fn start(
         let (close, superseded, restored) = match close {
             CommittedSpareClose::None => (None, None, None),
             CommittedSpareClose::Won(permit) => (Some(permit), None, None),
-            CommittedSpareClose::Superseded(binding, proof) => (None, Some((binding, proof)), None),
+            CommittedSpareClose::Superseded(binding, proof) => {
+                (None, Some((*binding, proof)), None)
+            }
         };
         let (changed, split, persist_split) = match publication {
             Some(PreparedTabActivationPublication {
@@ -1089,7 +1094,7 @@ impl TabsState {
                 CommittedSpareClose::None => (None, None, None),
                 CommittedSpareClose::Won(permit) => (Some(permit), None, None),
                 CommittedSpareClose::Superseded(binding, proof) => {
-                    (None, Some((binding, proof)), None)
+                    (None, Some((*binding, proof)), None)
                 }
             };
             let (changed, split, persist_split) = match batch.publication {

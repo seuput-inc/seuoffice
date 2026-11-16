@@ -1,11 +1,16 @@
-//! Normal quit waits for project touch persistence and owned worker shutdown.
+//! Quit asks every window's unsaved-changes guard, then waits for recovery
+//! cleanup, project touch persistence and owned worker shutdown.
 use std::sync::{Mutex, OnceLock};
 
 use shell_contract::runtime::Services;
 use shell_ipc_w::projects::Projects;
-use tauri::{AppHandle, RunEvent};
+use tauri::{AppHandle, Manager, RunEvent};
 
 mod completion;
+#[cfg(windows)]
+mod session_end;
+#[cfg(target_os = "macos")]
+mod terminate;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Startup {
@@ -37,6 +42,9 @@ struct State {
     app: Option<AppHandle>,
     worker_generation: u64,
     exit_code: i32,
+    /// a quit was asked for: the last window closing ends the process even
+    /// where closing it alone would not
+    explicit: bool,
 }
 impl State {
     fn accepts_worker(&self, generation: u64) -> bool {
@@ -54,6 +62,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     app: None,
     worker_generation: 0,
     exit_code: 0,
+    explicit: false,
 });
 static SERVICES: OnceLock<Services> = OnceLock::new();
 
@@ -69,6 +78,28 @@ pub(crate) fn register_services(services: Services) -> Result<(), String> {
 /// Called on core after registration, MCP start and first-window creation succeed.
 pub(crate) fn startup_ready() {
     startup_finished(Startup::Ready);
+    install_os_hooks();
+}
+
+/// The quits the menu does not reach: the macOS Dock and log out, Windows
+/// shutdown and sign-out. Neither runs in a headless export.
+fn install_os_hooks() {
+    if crate::headless::is_headless() {
+        return;
+    }
+    let Some(app) = SERVICES
+        .get()
+        .and_then(|services| services.hosts.get::<super::HostContext>())
+        .map(|host| host.app.clone())
+    else {
+        return;
+    };
+    #[cfg(target_os = "macos")]
+    terminate::install(&app);
+    #[cfg(windows)]
+    session_end::install(&app);
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let _ = app;
 }
 /// Called on every terminal startup failure, including failure before Provided.
 pub(crate) fn startup_failed() {
@@ -94,6 +125,17 @@ pub(crate) fn on_run_event(app: &AppHandle, event: &RunEvent) {
     let mut state = STATE.lock().unwrap_or_else(|error| error.into_inner());
     let requested = code.unwrap_or(0);
     state.observe_exit_code(requested);
+    if code.is_none()
+        && state.phase == Phase::Running
+        && !last_window_quits(
+            state.explicit,
+            cfg!(target_os = "macos"),
+            crate::headless::is_headless(),
+        )
+    {
+        api.prevent_exit();
+        return;
+    }
     if matches!(
         state.phase,
         Phase::Ready | Phase::ExitArmed | Phase::Finished
@@ -128,6 +170,97 @@ pub(crate) fn on_run_event(app: &AppHandle, event: &RunEvent) {
     }
     drop(state);
     start_if_possible();
+}
+
+/// `window-all-closed`: the last window ends the app, except on macOS and in a
+/// headless run, which ends itself, unless a quit was asked for.
+fn last_window_quits(explicit: bool, macos: bool, headless: bool) -> bool {
+    explicit || !(macos || headless)
+}
+
+/// A person's quit (menu Quit, Cmd+Q, the Dock, the updater's restart):
+/// `app.quit()`. Every window closes through its own unsaved-changes guard and
+/// the process ends only after the last one is gone and the cleanup below has
+/// run. A refused or failed guard cancels the quit ([`quit_vetoed`]). Callable
+/// from any thread.
+pub(crate) fn request_quit(app: &AppHandle) {
+    let mut state = STATE.lock().unwrap_or_else(|error| error.into_inner());
+    match state.phase {
+        Phase::Running => state.explicit = true,
+        Phase::RecoveryFailed
+        | Phase::SessionFailed
+        | Phase::ProjectFailed
+        | Phase::WorkerFailed => {
+            // the cleanup of an earlier quit failed: asking again retries it
+            drop(state);
+            app.exit(0);
+            return;
+        }
+        _ => return,
+    }
+    drop(state);
+    let ui = app.clone();
+    super::w::post_core_checked(
+        move |_, _| {
+            mark_editors_shutting_down();
+            let closing = ui.clone();
+            if let Err(error) = ui.run_on_main_thread(move || close_every_window(&closing)) {
+                quit_not_started(&format!("the UI thread is unreachable: {error}"));
+            }
+        },
+        || quit_not_started("the core thread refused the quit"),
+    );
+}
+
+/// On the UI thread. Each window's close goes through its guard; with none left
+/// no window event will end the process, so the exit is asked for directly.
+fn close_every_window(app: &AppHandle) {
+    let windows = app.windows();
+    if windows.is_empty() {
+        app.exit(0);
+        return;
+    }
+    for window in windows.into_values() {
+        if let Err(error) = window.close() {
+            eprintln!("[quit] window '{}' did not accept the close: {error}", window.label());
+        }
+    }
+}
+
+/// A window's guard refused (or failed) while a quit was under way: the quit is
+/// off and the application keeps running. Windows that already closed stay
+/// closed, as in Electron.
+pub(crate) fn quit_vetoed() {
+    let mut state = STATE.lock().unwrap_or_else(|error| error.into_inner());
+    if state.phase == Phase::Running {
+        state.explicit = false;
+    }
+}
+
+/// The quit could not ask the editors, so it does not go on: leaving without
+/// the guards would lose what they hold.
+fn quit_not_started(reason: &str) {
+    quit_vetoed();
+    reset_editors_shutting_down();
+    eprintln!("[quit] {reason}; the application keeps running");
+}
+
+/// `before-quit`: no close prompt may fall through to Save from here on and no
+/// editor clean-up may delete a recovery copy. On core.
+fn mark_editors_shutting_down() {
+    if let Some(sheets) = shell_ipc_d1::sheets::editors::views() {
+        sheets.mark_shutting_down();
+    }
+}
+
+/// A vetoed or failed quit puts the latch back down. Posted: callers may run
+/// off core.
+fn reset_editors_shutting_down() {
+    super::w::post_core(|_, _| {
+        if let Some(sheets) = shell_ipc_d1::sheets::editors::views() {
+            sheets.reset_shutting_down();
+        }
+    });
 }
 
 fn drain_native_terminals(services: &Services, startup: Startup) -> Result<(), String> {
@@ -171,35 +304,45 @@ fn start_if_possible() {
         .get::<super::HostContext>()
         .map(|host| host.headless_cleanup.clone());
     let core = services.core.clone();
-    let dispatch = services.core.clone();
-    dispatch.post(Box::new(move || {
-        if let Some(state) = services.hosts.get::<shell_ipc_m::state::MStateRef>() {
-            state.cancel_prepared_hwp_publications();
-        }
-        if let Err(error) = drain_native_terminals(&services, startup) {
-            recovery_drained(startup, Err(error));
-            return;
-        }
-        let delivery_services = services.clone();
-        super::recovery_openers::cancel_all_and_drain(Box::new(move |recovery| {
-            let finish = Box::new(move |headless| {
-                let result = match (recovery, headless) {
-                    (Ok(()), result) | (result, Ok(())) => result,
-                    (Err(first), Err(second)) => Err(format!("{first}; {second}")),
-                };
-                core.post(Box::new(move || {
-                    let result =
-                        result.and_then(|()| drain_native_terminals(&delivery_services, startup));
-                    recovery_drained(startup, result);
-                }));
-            });
-            if let Some(cleanup) = cleanup {
-                cleanup.quiesce_and_retry(finish);
-            } else {
-                finish(Ok(()));
+    // The completion is the one owner of this phase's result: a core that
+    // refuses the job, or a continuation that is dropped, fails the phase
+    // through its Drop instead of leaving the quit waiting.
+    completion::post_with_completion(
+        |job| core.post(job),
+        move |done| {
+            if let Some(state) = services.hosts.get::<shell_ipc_m::state::MStateRef>() {
+                state.cancel_prepared_hwp_publications();
             }
-        }));
-    }));
+            mark_editors_shutting_down();
+            if let Err(error) = drain_native_terminals(&services, startup) {
+                done.finish(Err(error));
+                return;
+            }
+            let delivery_core = services.core.clone();
+            let delivery_services = services.clone();
+            super::recovery_openers::cancel_all_and_drain(Box::new(move |recovery| {
+                let finish = Box::new(move |headless| {
+                    let result = match (recovery, headless) {
+                        (Ok(()), result) | (result, Ok(())) => result,
+                        (Err(first), Err(second)) => Err(format!("{first}; {second}")),
+                    };
+                    delivery_core.post(Box::new(move || {
+                        done.finish(
+                            result.and_then(|()| {
+                                drain_native_terminals(&delivery_services, startup)
+                            }),
+                        );
+                    }));
+                });
+                if let Some(cleanup) = cleanup {
+                    cleanup.quiesce_and_retry(finish);
+                } else {
+                    finish(Ok(()));
+                }
+            }));
+        },
+        move |result| recovery_drained(startup, result),
+    );
 }
 
 fn resume_after_failed_quit() {
@@ -209,6 +352,8 @@ fn resume_after_failed_quit() {
     {
         host.headless_cleanup.resume_after_failed_quit();
     }
+    // the application keeps running: its editors prompt again
+    reset_editors_shutting_down();
 }
 
 fn recovery_drained(startup: Startup, result: Result<(), String>) {
@@ -265,7 +410,8 @@ fn session_flushed(startup: Startup, result: Result<(), String>) {
     drop(state);
     let accepted = super::w::on_core_local(|provided| {
         if let Some(projects) = provided.all::<Projects>().into_iter().next() {
-            projects.flush_touches(Box::new(flush_finished));
+            let done = completion::Completion::new(flush_finished);
+            projects.flush_touches(Box::new(move |result| done.finish(result)));
         } else {
             flush_finished(Ok(()));
         }
@@ -351,9 +497,12 @@ fn start_workers() {
             .get::<std::sync::Arc<super::app_mcp::AppMcp>>()
             .map_or(Ok(()), |mcp| mcp.stop())
             .and_then(|()| super::w_home::shutdown(&worker_services.hosts));
-        worker_services
-            .core
-            .post(Box::new(move || workers_finished(generation, result)));
+        // a core that refuses the result fails this attempt; a later quit retries
+        completion::post_with_completion(
+            |job| worker_services.core.post(job),
+            move |done| done.finish(result),
+            move |result| workers_finished(generation, result),
+        );
     }));
 }
 
@@ -407,7 +556,7 @@ fn updater_finished() {
 
 #[cfg(test)]
 mod tests {
-    use super::{Phase, Startup, State};
+    use super::{Phase, Startup, State, last_window_quits};
     use std::collections::HashSet;
 
     #[test]
@@ -418,6 +567,7 @@ mod tests {
             app: None,
             worker_generation: 2,
             exit_code: 0,
+            explicit: false,
         };
         assert!(!state.accepts_worker(1));
         assert!(state.accepts_worker(2));
@@ -433,6 +583,7 @@ mod tests {
             app: None,
             worker_generation: 0,
             exit_code: 0,
+            explicit: false,
         };
         state.observe_exit_code(1);
         state.phase = Phase::Flushing;
@@ -443,6 +594,15 @@ mod tests {
         assert_eq!(state.exit_code, 1);
         state.observe_exit_code(2);
         assert_eq!(state.exit_code, 1);
+    }
+
+    #[test]
+    fn the_last_window_quits_except_on_macos_and_headless_until_a_quit_is_asked() {
+        assert!(last_window_quits(false, false, false));
+        assert!(!last_window_quits(false, true, false));
+        assert!(!last_window_quits(false, false, true));
+        assert!(last_window_quits(true, true, false));
+        assert!(last_window_quits(true, false, true));
     }
 
     // Frozen policy and the event-to-code mapping are in quit/Properties.md.

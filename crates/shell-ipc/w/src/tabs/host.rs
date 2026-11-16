@@ -314,14 +314,21 @@ pub type SavedManagerRegistration = Box<
     ) -> Result<(), String>,
 >;
 
+/// A saved editor prepared for adoption. A fresh view starts unregistered; a
+/// transferred spare keeps its view and renderer, `target` and `binding` name
+/// the successor browser owner, and `spare_actor` is its successor actor.
 pub struct PreparedSavedView {
     pub target: shell_contract::ipc::NativeSavedTarget,
     pub binding: NativeBrowserBinding,
+    pub spare_actor: Option<std::rc::Rc<dyn SpareActor>>,
+    /// The cleanup closes the real browser; a spare reports it with a failure
+    /// that happens after its browser owner was replaced.
     #[allow(clippy::type_complexity)]
     pub start: Box<
         dyn FnOnce(
             SavedManagerAdoption,
             SavedManagerRegistration,
+            ViewCreationCleanup,
             Box<dyn FnOnce(ViewCreationResult<SavedViewLoaded>)>,
         ),
     >,
@@ -333,6 +340,22 @@ pub trait CapturedSavedShell {
     fn prepare_fresh(
         &self,
         spec: &ViewSpec<'_>,
+        input: shell_contract::ipc::NativeSavedInput,
+        path: shell_contract::ipc::NativeSavedPath,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
+        rollback: EditorSeedRollbackStore,
+    ) -> TabResult<PreparedSavedView>;
+    /// Open the saved input in the reserved, registered Sheets spare instead of
+    /// a new view. Nothing changes until `start` replaces the spare's browser
+    /// owner, installs the saved-load barrier and adopts the manager entry in
+    /// one browser transition.
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_spare(
+        &self,
+        spare: &RetainedSpareBinding,
         input: shell_contract::ipc::NativeSavedInput,
         path: shell_contract::ipc::NativeSavedPath,
         participants: Vec<shell_contract::ipc::NativeRequestOwner>,

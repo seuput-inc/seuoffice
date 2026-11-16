@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>p2 a</title>
+<script src="probe.js"></script>
+<script>
+  // P2: ordering of navigation commit, registration and the first script message, across a
+  // same-document navigation, a cross-document one, a reload and a history traversal back to
+  // this page (which a system webview may restore from its page cache).
+  ;(() => {
+    const phase = sessionStorage.getItem('p2.phase') || '0'
+    P.log('p2.load', {
+      doc: 'a',
+      phase,
+      navType: P.navType(),
+      bridge: typeof window.__seuofficeCheck,
+    })
+    addEventListener('pageshow', (event) => {
+      P.log('p2.pageshow', { doc: 'a', phase, persisted: event.persisted })
+      if (phase === 'back') P.done({ how: event.persisted ? 'page-cache' : 'fresh-load' })
+    })
+    if (phase !== '0') return
+    sessionStorage.setItem('p2.phase', '1')
+    ;(async () => {
+      await P.loaded()
+      await P.sleep(600)
+      location.hash = 'x'
+      P.log('p2.hash', { href: location.href })
+      await P.sleep(200)
+      history.pushState({}, '', 'p2-a.html?pushed=1')
+      P.log('p2.push', { href: location.href })
+      await P.sleep(200)
+      P.log('p2.leave', { to: 'p2-b.html' })
+      location.href = 'p2-b.html'
+    })()
+  })()
+</script>

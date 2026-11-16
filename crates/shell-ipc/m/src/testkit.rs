@@ -21,7 +21,7 @@ use shell_contract::ipc::{
 };
 use shell_contract::provided::Provided;
 use shell_contract::runtime::{AppPaths, CancelToken, PathName, Services, Thread, Views, Workers};
-use shell_contract::{Hosts, IpcValue, RequestId, ViewId, WindowId};
+use shell_contract::{Hosts, IpcError, IpcValue, RequestId, ViewId, WindowId};
 
 use crate::probe::{self, ProbeLog};
 

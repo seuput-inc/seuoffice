@@ -440,14 +440,9 @@ impl UpdaterHost for ShellUpdater {
 
     fn quit_soon(&mut self) {
         // as `app.quit()`: every window closes, each through its own close
-        // guard (W's), and the event loop's exit runs `on_will_quit`
-        let app = self.services.hosts.get::<QuitHost>().map(|q| q.0.clone());
-        if let Some(app) = app {
-            let _ = app.clone().run_on_main_thread(move || {
-                for window in app.windows().into_values() {
-                    let _ = window.close();
-                }
-            });
+        // guard, and the quit's cleanup runs `on_will_quit` before the exit
+        if let Some(QuitHost(app)) = self.services.hosts.get::<QuitHost>() {
+            super::quit::request_quit(app);
         }
     }
 

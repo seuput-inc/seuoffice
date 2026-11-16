@@ -1120,29 +1120,32 @@ impl DriveService for DrivePort {
                     files::NativeRefresh::Unchanged => {
                         Ok(NativeDriveReopen::Unchanged(authority.publication.clone()))
                     }
-                    files::NativeRefresh::Committed {
-                        path,
-                        entry,
-                        generation,
-                        transaction,
-                        moved_commit,
-                        fallback,
-                        warning,
-                    } => Ok(NativeDriveReopen::Moved(Arc::new(
-                        native_reopen::Committed {
-                            authority,
-                            files: inner.files.clone(),
+                    files::NativeRefresh::Committed(committed) => {
+                        let files::NativeCommitted {
+                            path,
                             entry,
                             generation,
-                            moved: path,
+                            transaction,
                             moved_commit,
                             fallback,
-                            original_commit: output.commit().clone(),
-                            transaction: Arc::new(Mutex::new(*transaction)),
-                            warning: Arc::new(Mutex::new(warning)),
-                            services: inner.services.clone(),
-                        },
-                    ))),
+                            warning,
+                        } = *committed;
+                        Ok(NativeDriveReopen::Moved(Arc::new(
+                            native_reopen::Committed {
+                                authority,
+                                files: inner.files.clone(),
+                                entry,
+                                generation,
+                                moved: path,
+                                moved_commit,
+                                fallback,
+                                original_commit: output.commit().clone(),
+                                transaction: Arc::new(Mutex::new(*transaction)),
+                                warning: Arc::new(Mutex::new(warning)),
+                                services: inner.services.clone(),
+                            },
+                        )))
+                    }
                     files::NativeRefresh::CleanupPending {
                         transaction,
                         error,

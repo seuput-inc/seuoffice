@@ -2545,6 +2545,7 @@ impl super::host::CapturedSavedShell for ProbeCapturedSavedShell {
         let fake = self.fake.clone();
         let start = Box::new(move |adopt: super::host::SavedManagerAdoption,
             registration: super::host::SavedManagerRegistration,
+            _cleanup: ViewCreationCleanup,
             done: Box<dyn FnOnce(ViewCreationResult<super::host::SavedViewLoaded>)>| {
             let unstarted = &mut unstarted;
             unstarted.armed = false;
@@ -2604,6 +2605,232 @@ impl super::host::CapturedSavedShell for ProbeCapturedSavedShell {
         Ok(super::host::PreparedSavedView {
             target,
             binding,
+            spare_actor: None,
+            start,
+        })
+    }
+
+    fn prepare_spare(
+        &self,
+        spare: &super::host::RetainedSpareBinding,
+        input: shell_contract::ipc::NativeSavedInput,
+        path: shell_contract::ipc::NativeSavedPath,
+        mut participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
+        rollback: super::host::EditorSeedRollbackStore,
+    ) -> TabResult<super::host::PreparedSavedView> {
+        let effects = self
+            .services
+            .hosts
+            .get::<Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>()
+            .cloned()
+            .ok_or_else(|| TabError("Synthetic saved authority unavailable".into()))?;
+        if self.owner.view != self.shell.view
+            || !self
+                .owner
+                .context
+                .renderer()
+                .is_some_and(|generation| generation.is_active())
+        {
+            return Err(TabError("Synthetic saved shell was replaced".into()));
+        }
+        let super::host::NativeBrowserRegistration::Registered(original) =
+            &spare.browser.registration
+        else {
+            return Err(TabError("Synthetic saved spare is not registered".into()));
+        };
+        let view = original.view;
+        let expected = original
+            .context
+            .renderer()
+            .cloned()
+            .ok_or_else(|| TabError("Synthetic saved spare renderer unavailable".into()))?;
+        let closure = self
+            .fake
+            .w()
+            .closures
+            .get(&view)
+            .cloned()
+            .ok_or_else(|| TabError("Synthetic saved spare reservation unavailable".into()))?;
+        if !closure.reservation.matches(view, &expected)
+            || !closure
+                .reservation
+                .same_reservation(&spare.browser.reservation)
+        {
+            return Err(TabError("Synthetic saved spare reservation changed".into()));
+        }
+        let actor = spare
+            .spare_actor
+            .as_ref()
+            .ok_or_else(|| TabError("Synthetic saved spare actor unavailable".into()))?;
+        participants.push(self.owner.clone());
+        participants.push(original.clone());
+        let target = shell_contract::ipc::NativeSavedTarget::prepare(
+            input,
+            path,
+            shell_contract::Surface::Sheets,
+            view,
+            expected.clone(),
+            closure.reservation.clone(),
+            spare.browser.owner.clone(),
+            participants.clone(),
+            cancel.clone(),
+            pending.clone(),
+            additional.clone(),
+        )
+        .map_err(TabError)?;
+        let replacement = closure
+            .reservation
+            .prepare_replacement(&spare.browser.owner)
+            .map_err(TabError)?;
+        let successor_target = target.prepare_successor(&replacement).map_err(TabError)?;
+        let mut transfer = actor.prepare_transfer().map_err(TabError)?;
+        let successor_actor = transfer.successor();
+        let successor_receipt = transfer.successor_receipt();
+        let mut barrier = actor
+            .prepare_saved_barrier(&successor_target)
+            .map_err(TabError)?;
+        rollback
+            .borrow_mut()
+            .try_reserve(2)
+            .map_err(|error| TabError(error.to_string()))?;
+        let prior = Rc::new(ProbeSupersededDrain {
+            state: Rc::new(std::cell::RefCell::new(ProbeSupersededState {
+                receipts: spare.rollback.borrow().clone(),
+                proof: None,
+                running: false,
+            })),
+        });
+        let mut proposed = spare.browser.clone();
+        proposed.owner = replacement.successor().clone();
+        let editors = Rc::new(Editors(self.fake.clone(), shell_contract::Surface::Sheets));
+        let source = self.owner.clone();
+        let original = original.clone();
+        let start_target = successor_target.clone();
+        let ready_binding = proposed.clone();
+        let start = Box::new(
+            move |adopt: super::host::SavedManagerAdoption,
+                  registration: super::host::SavedManagerRegistration,
+                  cleanup: ViewCreationCleanup,
+                  done: Box<dyn FnOnce(ViewCreationResult<super::host::SavedViewLoaded>)>| {
+                let extra: Vec<_> = additional.iter().collect();
+                let mut adopt = Some(adopt);
+                let committed = synthetic_created_effect(
+                    &source,
+                    &participants,
+                    &expected,
+                    &cancel,
+                    &pending,
+                    || {
+                        replacement.commit(|transition, next_owner| {
+                            let adoption = start_target.validate_in_transition(transition)?;
+                            let mut actor = |next: &mut dyn FnMut() -> Result<(), String>| {
+                                transfer.with_validated(transition, next_owner, &mut || {
+                                    barrier.with_validated(transition, next)
+                                })
+                            };
+                            adopt
+                                .take()
+                                .ok_or("Synthetic saved spare adoption was consumed")?(
+                                &start_target,
+                                transition,
+                                &mut actor,
+                            )?;
+                            adoption.commit();
+                            Ok(())
+                        })
+                    },
+                )
+                .and_then(|result| result.map_err(TabError));
+                let (_, superseded, ()) = match committed {
+                    Ok(committed) => committed,
+                    Err(error) => {
+                        return done(Err(ViewCreationFailure {
+                            error,
+                            cleanup: ViewCreationCleanupState::Complete,
+                        }));
+                    }
+                };
+                prior.state.borrow_mut().proof = Some(superseded);
+                rollback.borrow_mut().push(prior.clone());
+                rollback.borrow_mut().push(successor_receipt);
+                let fail = |error: String,
+                            cleanup: ViewCreationCleanup,
+                            done: Box<
+                    dyn FnOnce(ViewCreationResult<super::host::SavedViewLoaded>),
+                >| {
+                    done(Err(ViewCreationFailure {
+                        error: TabError(error),
+                        cleanup: ViewCreationCleanupState::Pending(cleanup),
+                    }));
+                };
+                let mut document = None;
+                let mut registration = Some(registration);
+                let registered = effects.with_saved_target_registration(
+                    &start_target,
+                    &original,
+                    &participants,
+                    &cancel,
+                    &pending,
+                    &extra,
+                    &mut |transition| {
+                        let mut register = || {
+                            document =
+                                Some(start_target.register_from_native_admitted(original.clone())?);
+                            Ok(())
+                        };
+                        registration
+                            .take()
+                            .ok_or("Synthetic saved spare registration was consumed")?(
+                            &start_target,
+                            &original,
+                            transition,
+                            &mut register,
+                        )
+                    },
+                );
+                if let Err(error) = registered {
+                    return fail(error, cleanup, done);
+                }
+                let Some(document) = document else {
+                    return fail(
+                        "Synthetic saved spare registration did not commit".into(),
+                        cleanup,
+                        done,
+                    );
+                };
+                let saved_document = document.clone();
+                editors.load_saved_document(
+                    document,
+                    Box::new(move |outcome| match outcome {
+                        Ok(outcome) => prior.begin(Box::new(move |retired| match retired {
+                            Ok(()) => done(Ok(ViewCreationReady {
+                                view: super::host::SavedViewLoaded {
+                                    document: saved_document,
+                                    outcome,
+                                },
+                                cleanup,
+                                closure: ready_binding.closure.clone(),
+                                reservation: super::host::NativeBrowserBinding {
+                                    registration: super::host::NativeBrowserRegistration::Registered(
+                                        original,
+                                    ),
+                                    ..ready_binding
+                                },
+                            })),
+                            Err(error) => fail(error, cleanup, done),
+                        })),
+                        Err(error) => fail(error.message, cleanup, done),
+                    }),
+                );
+            },
+        );
+        Ok(super::host::PreparedSavedView {
+            target: successor_target,
+            binding: proposed,
+            spare_actor: Some(successor_actor),
             start,
         })
     }
@@ -7008,6 +7235,20 @@ mod command_tests {
     use super::*;
     use shell_contract::{Surface, ipc::NativeEditorCommand};
 
+    /// A retirement is a terminal close of exactly this reservation, view and generation.
+    fn closed_matches(
+        retirement: &shell_contract::ipc::NativeBrowserRetirement,
+        reservation: &shell_contract::ipc::NativeClosureReservation,
+        view: ViewId,
+        generation: &shell_contract::runtime::RendererGeneration,
+    ) -> bool {
+        matches!(
+            retirement,
+            shell_contract::ipc::NativeBrowserRetirement::Closed(receipt)
+                if receipt.matches(reservation, view, generation)
+        )
+    }
+
     #[test]
     fn first_shell_registration_delivers_only_the_exact_event_once() {
         let events = ProbeShellRegistration::default();
@@ -7542,6 +7783,7 @@ mod command_tests {
                 registered_callback.set(true);
                 register()
             }),
+            Arc::new(|done| done(Err("unused cleanup".into()))),
             Box::new(move |value| *result_slot.borrow_mut() = Some(value)),
         );
         assert!(adopted.get() && registered.get());
@@ -7575,10 +7817,274 @@ mod command_tests {
         (refused.start)(
             Box::new(|_, _, _| panic!("cancelled adoption must not run")),
             Box::new(|_, _, _, _| panic!("cancelled registration must not run")),
+            Arc::new(|done| done(Err("unused cleanup".into()))),
             Box::new(move |value| denied_slot.set(value.is_err())),
         );
         assert!(denied.get());
         assert!(!fake.w().kinds.contains_key(&refused_view.0));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_spare_replaces_its_browser_owner_and_installs_the_barrier_before_load() {
+        use shell_contract::ipc::{
+            NativeInvocationIssuer, NativeSaveDestination, NativeSaveSelection, NativeSavedInput,
+            NativeSavedPath,
+        };
+        use shell_contract::runtime::{CancelToken, RendererGeneration};
+        use std::{
+            fs::{self, File},
+            time::{SystemTime, UNIX_EPOCH},
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "probe-saved-spare-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("saved.xlsx");
+        let views = Arc::new(RegisteredViews::default());
+        let mut hosts = Hosts::default();
+        probe_hosts(&mut hosts, &json!({"savedLoadAnswers":["applied"]}));
+        let registrar_views = views.clone();
+        let registrar: ProbeViewRegistrar = Arc::new(move |sender, generation| {
+            registrar_views
+                .0
+                .lock()
+                .unwrap()
+                .insert(sender.view, (sender, generation));
+            Ok(())
+        });
+        hosts.insert(registrar);
+        let services = shell_contract::hosts::synthetic::SyntheticOwnedEffects::install(Services {
+            ui: Arc::new(TestThread),
+            core: Arc::new(TestThread),
+            workers: Arc::new(TestWorkers),
+            events: Arc::new(TestEvents),
+            views: views.clone(),
+            paths: Arc::new(TestPaths),
+            hosts: Arc::new(hosts),
+        });
+        let provided = Rc::new(Provided::default());
+        provide_hooks(&provided, &services);
+        let fake = services.hosts.get::<Arc<WorldBox>>().unwrap().0.clone();
+        let shell = fake.w().shell;
+        let shell_generation = RendererGeneration::new();
+        views.0.lock().unwrap().insert(
+            shell.view,
+            (
+                shell_contract::ipc::Sender {
+                    view: shell.view,
+                    window: shell.window,
+                    surface: Surface::Shell,
+                },
+                shell_generation.clone(),
+            ),
+        );
+        let effects = services
+            .hosts
+            .get::<shell_contract::hosts::OwnedEffectsHost>()
+            .unwrap()
+            .clone();
+        let shell_owner = effects
+            .capture_owner(shell.view, &shell_generation)
+            .unwrap();
+        let binding = NativeInvocationIssuer::new(CancelToken::default())
+            .issue_existing_document_save(
+                Surface::Sheets,
+                shell.view,
+                NativeSaveSelection::ExactPath(path.clone()),
+                shell_owner.clone(),
+                CancelToken::default(),
+            )
+            .unwrap();
+        let selection = NativeSaveDestination::from_exact_selection(binding).unwrap();
+        let cancel = CancelToken::default();
+        let pending = CancelToken::default();
+        let parent = File::open(&dir).unwrap();
+        let write = effects
+            .begin_native_direct_write(
+                &selection,
+                &[],
+                &cancel,
+                &pending,
+                &[],
+                file_commit::prepare_direct(&parent, &path).unwrap(),
+            )
+            .unwrap();
+        let written = match write.write_owned(b"synthetic saved workbook".to_vec()) {
+            Ok(written) => written,
+            Err(_) => panic!("fixture write failed"),
+        };
+        let (output, snapshot) = match written.finish(effects.as_ref()) {
+            shell_contract::ipc::DirectWriteCompletion::Committed {
+                publication,
+                snapshot,
+            } => (publication, snapshot),
+            _ => panic!("fixture publication failed"),
+        };
+        let input = NativeSavedInput::from_written_snapshot(output.clone(), snapshot).unwrap();
+        let hooks = provided.all::<dyn TabHooks>().into_iter().next().unwrap();
+        let captured = hooks.capture_saved_shell(shell, shell_owner).unwrap();
+        let make_spare = || {
+            let view = fake.w().make_view();
+            let generation = RendererGeneration::new();
+            let closure = fixture_reserve(&fake, view, generation.clone());
+            let owner = fixture_register_owner(&fake, view, &generation, Surface::Sheets).unwrap();
+            let token = Arc::new(());
+            {
+                let mut world = fake.w();
+                world.generated_epochs.insert(view, generation.clone());
+                world.generated_epoch_tokens.insert(view, token.clone());
+            }
+            let actor = Rc::new(ProbeSpareActor {
+                fake: fake.clone(),
+                view,
+                reservation: closure.reservation.clone(),
+                epoch: generation,
+                token,
+                owner: Rc::new(std::cell::RefCell::new(Some(closure.owner.clone()))),
+                state: Rc::new(std::cell::RefCell::new(ProbeSpareState {
+                    owner: closure.owner.clone(),
+                    closing: false,
+                })),
+            });
+            let shared: Rc<dyn super::super::host::SpareActor> = actor.clone();
+            let mut ready = fixture_ready(&fake, view, ());
+            ready.reservation.registration = NativeBrowserRegistration::Registered(owner);
+            let spare = super::super::host::RetainedSpareBinding::new(
+                ready.reservation,
+                Rc::default(),
+                Some(shared),
+            );
+            (spare, view, closure, actor)
+        };
+        let unused_cleanup = || -> ViewCreationCleanup {
+            Arc::new(|done| done(Err("unused cleanup".into())))
+        };
+
+        let (spare, view, closure, actor) = make_spare();
+        let original_browser = closure.owner.clone();
+        let rollback: super::super::host::EditorSeedRollbackStore =
+            Rc::new(std::cell::RefCell::new(Vec::new()));
+        let prepared = captured
+            .prepare_spare(
+                &spare,
+                input.clone(),
+                NativeSavedPath::Selected(output.clone()),
+                vec![],
+                cancel.clone(),
+                pending.clone(),
+                vec![],
+                rollback.clone(),
+            )
+            .unwrap();
+        let target = prepared.target.clone();
+        assert_eq!(target.view(), view);
+        assert!(prepared.spare_actor.is_some());
+        assert!(!target.browser().same_owner(&original_browser));
+        assert!(prepared.binding.owner.same_owner(target.browser()));
+        assert!(!fake.w().saved_barriers.contains_key(&view));
+        assert!(rollback.borrow().is_empty());
+        let adopted = Rc::new(std::cell::Cell::new(false));
+        let registered = Rc::new(std::cell::Cell::new(false));
+        let adopted_callback = adopted.clone();
+        let registered_callback = registered.clone();
+        let fake_at_adoption = fake.clone();
+        let fake_at_registration = fake.clone();
+        let transition_original = original_browser.clone();
+        let result = Rc::new(std::cell::RefCell::new(None));
+        let result_slot = result.clone();
+        (prepared.start)(
+            Box::new(move |target, transition, actor| {
+                assert!(transition.matches_owner(&transition_original));
+                assert!(transition.proposes_owner(target.browser()));
+                assert!(!fake_at_adoption.w().saved_barriers.contains_key(&view));
+                actor(&mut || {
+                    adopted_callback.set(true);
+                    Ok(())
+                })
+            }),
+            Box::new(move |target, owner, transition, register| {
+                assert_eq!(owner.view, view);
+                assert!(transition.matches_owner(target.browser()));
+                assert!(fake_at_registration.w().saved_barriers.contains_key(&view));
+                registered_callback.set(true);
+                register()
+            }),
+            unused_cleanup(),
+            Box::new(move |value| *result_slot.borrow_mut() = Some(value)),
+        );
+        assert!(adopted.get() && registered.get());
+        let ready = match result.borrow_mut().take() {
+            Some(Ok(ready)) => ready,
+            _ => panic!("fixture saved spare load did not complete"),
+        };
+        assert!(matches!(
+            ready.view.outcome,
+            shell_contract::editors::SavedDocumentLoadOutcome::Applied
+        ));
+        assert!(ready.view.document.target().same_target(&target));
+        assert!(ready.reservation.owner.same_owner(target.browser()));
+        assert!(matches!(
+            ready.reservation.registration,
+            NativeBrowserRegistration::Registered(_)
+        ));
+        assert!(actor.state.borrow().owner.same_owner(target.browser()));
+        assert!(fake.w().saved_barriers.contains_key(&view));
+        assert_eq!(rollback.borrow().len(), 2);
+
+        let (spare, refused_view, refused_closure, refused_actor) = make_spare();
+        let cancelled = CancelToken::default();
+        let refused_rollback: super::super::host::EditorSeedRollbackStore =
+            Rc::new(std::cell::RefCell::new(Vec::new()));
+        let refused = captured
+            .prepare_spare(
+                &spare,
+                input,
+                NativeSavedPath::Selected(output),
+                vec![],
+                cancelled.clone(),
+                pending,
+                vec![],
+                refused_rollback.clone(),
+            )
+            .unwrap();
+        cancelled.cancel();
+        let denied = Rc::new(std::cell::RefCell::new(None));
+        let denied_slot = denied.clone();
+        (refused.start)(
+            Box::new(|_, _, _| panic!("cancelled spare adoption must not run")),
+            Box::new(|_, _, _, _| panic!("cancelled spare registration must not run")),
+            unused_cleanup(),
+            Box::new(move |value| *denied_slot.borrow_mut() = Some(value)),
+        );
+        match denied.borrow_mut().take() {
+            Some(Err(failure)) => assert!(matches!(
+                failure.cleanup,
+                ViewCreationCleanupState::Complete
+            )),
+            _ => panic!("cancelled spare must fail without cleanup"),
+        }
+        assert!(!fake.w().saved_barriers.contains_key(&refused_view));
+        assert!(refused_rollback.borrow().is_empty());
+        assert!(
+            refused_actor
+                .state
+                .borrow()
+                .owner
+                .same_owner(&refused_closure.owner)
+        );
+        assert!(
+            refused_closure
+                .reservation
+                .with_owner(&refused_closure.owner, |_| Ok(()))
+                .is_ok()
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -7704,7 +8210,7 @@ mod command_tests {
         };
         let state = probe_state(&services, Rc::new(Provided::default())).unwrap();
         type CloseDone =
-            Box<dyn FnOnce(Result<shell_contract::ipc::NativeClosureReceipt, String>) + Send>;
+            Box<dyn FnOnce(Result<shell_contract::ipc::NativeBrowserRetirement, String>) + Send>;
         type RollbackDone = Box<dyn FnOnce(Result<(), String>)>;
         let close = Arc::new(Mutex::new(None::<CloseDone>));
         let close_slot = close.clone();
@@ -7716,8 +8222,10 @@ mod command_tests {
         let rollback = Rc::new(std::cell::RefCell::new(None::<RollbackDone>));
         let rollback_slot = rollback.clone();
         let rollback_fn = Rc::new(
-            move |proof: Option<shell_contract::ipc::NativeClosureReceipt>, done: RollbackDone| {
-                assert!(proof.as_ref().is_some_and(|proof| proof.matches(
+            move |proof: Option<shell_contract::ipc::NativeBrowserRetirement>,
+                  done: RollbackDone| {
+                assert!(proof.as_ref().is_some_and(|proof| closed_matches(
+                    proof,
                     &reservation,
                     ViewId(88),
                     &generation
@@ -7754,7 +8262,9 @@ mod command_tests {
         let second = Rc::new(std::cell::RefCell::new(None));
         let sink = second.clone();
         state.cancel_creations_and_drain(Box::new(move |result| *sink.borrow_mut() = Some(result)));
-        close.lock().unwrap().take().unwrap()(Ok(issuer.closed()));
+        close.lock().unwrap().take().unwrap()(Ok(
+            shell_contract::ipc::NativeBrowserRetirement::Closed(issuer.closed()),
+        ));
         assert!(second.borrow().is_none());
         rollback.borrow_mut().take().unwrap()(Err("rollback failed".into()));
         assert!(matches!(&*second.borrow(), Some(Err(_))));
@@ -7836,20 +8346,25 @@ mod command_tests {
         .unwrap();
         let original = received.lock().unwrap();
         let later = replay.lock().unwrap();
-        assert!(
-            original
-                .as_ref()
-                .unwrap()
-                .matches(&state.reservation, view, &generation)
-        );
-        assert!(
-            later
-                .as_ref()
-                .unwrap()
-                .matches(&state.reservation, view, &generation)
-        );
+        assert!(closed_matches(
+            original.as_ref().unwrap(),
+            &state.reservation,
+            view,
+            &generation
+        ));
+        assert!(closed_matches(
+            later.as_ref().unwrap(),
+            &state.reservation,
+            view,
+            &generation
+        ));
         let (_, forged) = shell_contract::ipc::NativeClosureIssuer::new(view, generation.clone());
-        assert!(!later.as_ref().unwrap().matches(&forged, view, &generation));
+        assert!(!closed_matches(
+            later.as_ref().unwrap(),
+            &forged,
+            view,
+            &generation
+        ));
     }
 
     #[test]
@@ -8114,6 +8629,16 @@ mod command_tests {
                 bridge,
                 DetachedWindowOptions {
                     view: sender.view,
+                    binding: super::super::host::RetainedSpareBinding::new(
+                        fixture_ready(
+                            &Fake(Arc::new(Mutex::new(World::new(&json!({}), Arc::default())))),
+                            sender.view,
+                            (),
+                        )
+                        .reservation,
+                        Rc::default(),
+                        None,
+                    ),
                     kind: TabKind::Slides,
                     title: "Before".into(),
                     file_path: Some("/saved.pptx".into()),

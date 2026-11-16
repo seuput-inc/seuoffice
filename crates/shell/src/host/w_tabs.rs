@@ -1952,7 +1952,7 @@ pub(crate) fn window_event(window: WindowId, event: &tauri::WindowEvent) {
         return;
     };
     match event {
-        tauri::WindowEvent::CloseRequested { api, .. } if detached => {
+        tauri::WindowEvent::CloseRequested { api, .. } if detached || shell => {
             api.prevent_close();
             events.send(HostEvent::Window(window, WindowEvent::Close));
         }

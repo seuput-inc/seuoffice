@@ -570,6 +570,7 @@ impl TabsState {
     /// opened through the owned creation path for `requester`'s captured owner (none: the shell
     /// window). `Ok(None)` for EPUB and when there is no shell window. `done` runs once, after
     /// the tab exists or the open failed and its creation cleanup settled.
+    #[allow(clippy::type_complexity)]
     pub fn open_template_copy_owned(
         &self,
         copy: &main_core::shell::user_skills::template_tabs::TemplateCopy,
@@ -703,12 +704,7 @@ impl TabsState {
                     );
                     let tab = if epoch == state.manager_epoch.get() {
                         state.with_manager(|manager, host| {
-                            manager.resume_html_present_tab_bound(
-                                host,
-                                view,
-                                &spec_title,
-                                binding,
-                            )
+                            manager.resume_html_present_tab_bound(host, view, &spec_title, binding)
                         })
                     } else {
                         None
@@ -723,10 +719,9 @@ impl TabsState {
                                 std::rc::Rc::default(),
                                 true,
                                 Box::new(move |failure| {
-                                    failed.hooks.warn(
-                                        "[shell] html present view cleanup failed:",
-                                        failure,
-                                    );
+                                    failed
+                                        .hooks
+                                        .warn("[shell] html present view cleanup failed:", failure);
                                 }),
                                 Box::new(move || {
                                     done(Err("The shell window is no longer available".into()));

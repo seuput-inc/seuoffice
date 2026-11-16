@@ -25,6 +25,7 @@ pub(crate) mod owned_saved;
 mod probe;
 mod project_seam;
 mod startup;
+mod shell_close;
 mod state;
 pub mod window_snapshot;
 mod wire;

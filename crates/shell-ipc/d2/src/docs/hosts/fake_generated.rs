@@ -152,6 +152,10 @@ impl GeneratedPathPending for Pending {
             None => Ok(None),
         }
     }
+    fn is_cancelling(&self) -> bool {
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        !state.finished && !state.drainers.is_empty()
+    }
     fn retry(&self, done: Box<dyn FnOnce(Result<(), String>) + Send>) {
         done(self.wake_observer());
     }

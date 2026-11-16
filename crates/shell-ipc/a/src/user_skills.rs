@@ -1597,6 +1597,7 @@ impl TemplateTabsCore {
 
     /// `templateTabs.openPreview(owner, input)`: spec 5.6 "make a blank
     /// template". `done` gets `(tabId, previewId)` once the preview tab is open.
+    #[allow(clippy::type_complexity)]
     pub fn open_preview(
         self: &Rc<Self>,
         owner: ViewId,

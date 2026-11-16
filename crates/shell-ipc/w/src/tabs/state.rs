@@ -136,6 +136,7 @@ pub struct TabsState {
     pub(super) activation_retry_error: RefCell<Option<String>>,
     pub(super) split_persist_retry: RefCell<Vec<super::activation::TabUiStepRetry>>,
     pub(super) startup_publication_retries: RefCell<Vec<super::activation::TabUiStepRetry>>,
+    pub(super) shell_close: RefCell<Option<super::shell_close::ShellClose>>,
     pub(super) this: Weak<TabsState>,
 }
 
@@ -647,6 +648,7 @@ impl TabsState {
             activation_retry_error: RefCell::new(None),
             split_persist_retry: RefCell::new(Vec::new()),
             startup_publication_retries: RefCell::new(Vec::new()),
+            shell_close: RefCell::new(None),
             this: this.clone(),
         });
         CURRENT.with(|c| *c.borrow_mut() = Some(state.clone()));
@@ -906,11 +908,20 @@ impl TabsState {
                     drop(g);
                     self.shell_window_closed();
                 }
+                WindowEvent::Close => {
+                    drop(g);
+                    self.shell_close_requested(window);
+                }
                 _ => {}
             }
             return;
         }
         let Some(rec) = g.recs.get(&window).copied() else {
+            // a window the tabs do not track: the host kept its close open for them
+            if what == WindowEvent::Close {
+                drop(g);
+                self.windows.window_destroy(window);
+            }
             return;
         };
         let Inner {

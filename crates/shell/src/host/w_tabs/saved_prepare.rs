@@ -1,7 +1,9 @@
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use main_core::shell::tab_manager::{TabError, TabResult, ViewSpec};
+use shell_contract::Surface;
 use shell_contract::ipc::{
     NativeRequestOwner, NativeSavedInput, NativeSavedPath, NativeSavedTarget,
 };
@@ -9,10 +11,14 @@ use shell_contract::runtime::{CancelToken, Views};
 use shell_ipc_w::tabs::ShellWindow;
 use shell_ipc_w::tabs::host::{
     CapturedSavedShell, EditorSeedRollbackStore, NativeBrowserBinding, NativeBrowserRegistration,
-    PreparedSavedView, SavedViewLoaded,
+    PreparedSavedView, RetainedSpareBinding, SavedManagerAdoption, SavedManagerRegistration,
+    SavedViewLoaded, ViewCreationCleanup, ViewCreationCleanupState, ViewCreationFailure,
+    ViewCreationReady, ViewCreationResult,
 };
 
 use super::Hooks;
+use super::hooks::SupersededDrain;
+use crate::ipc::native_owner::{self, NativeOwnerAuthority};
 
 pub(super) struct SavedActorReceipt(
     pub(super) Rc<dyn shell_contract::editors::SavedActorRegistration>,
@@ -104,6 +110,20 @@ pub(super) fn capture(
     }))
 }
 
+impl Captured {
+    fn check_shell(&self) -> TabResult<()> {
+        let generation = self
+            .owner
+            .context
+            .renderer()
+            .ok_or_else(|| TabError("The saved shell renderer is unavailable".into()))?;
+        if !generation.is_active() || self.shell.view != self.owner.view {
+            return Err(TabError("The saved shell was replaced".into()));
+        }
+        Ok(())
+    }
+}
+
 impl CapturedSavedShell for Captured {
     fn prepare_fresh(
         &self,
@@ -116,14 +136,7 @@ impl CapturedSavedShell for Captured {
         additional: Vec<CancelToken>,
         rollback: EditorSeedRollbackStore,
     ) -> TabResult<PreparedSavedView> {
-        let shell_generation = self
-            .owner
-            .context
-            .renderer()
-            .ok_or_else(|| TabError("The saved shell renderer is unavailable".into()))?;
-        if !shell_generation.is_active() || self.shell.view != self.owner.view {
-            return Err(TabError("The saved shell was replaced".into()));
-        }
+        self.check_shell()?;
         let mut ordinary = super::OrdinaryActorStages::default();
         let mut prepared = self.hooks.prepare_editor_view_source(
             spec,
@@ -213,6 +226,7 @@ impl CapturedSavedShell for Captured {
         let start = Box::new(
             move |adopt: shell_ipc_w::tabs::host::SavedManagerAdoption,
                   registration: shell_ipc_w::tabs::host::SavedManagerRegistration,
+                  _cleanup: ViewCreationCleanup,
                   done: Box<
                 dyn FnOnce(shell_ipc_w::tabs::host::ViewCreationResult<SavedViewLoaded>),
             >| {
@@ -313,6 +327,203 @@ impl CapturedSavedShell for Captured {
         Ok(PreparedSavedView {
             target,
             binding,
+            spare_actor: None,
+            start,
+        })
+    }
+
+    fn prepare_spare(
+        &self,
+        spare: &RetainedSpareBinding,
+        input: NativeSavedInput,
+        path: NativeSavedPath,
+        participants: Vec<NativeRequestOwner>,
+        cancel: CancelToken,
+        pending: CancelToken,
+        additional: Vec<CancelToken>,
+        rollback: EditorSeedRollbackStore,
+    ) -> TabResult<PreparedSavedView> {
+        self.check_shell()?;
+        let NativeBrowserRegistration::Registered(original) = &spare.browser.registration else {
+            return Err(TabError("The saved spare is not registered".into()));
+        };
+        let view = original.view;
+        let expected = original
+            .context
+            .renderer()
+            .cloned()
+            .ok_or_else(|| TabError("The saved spare renderer is unavailable".into()))?;
+        let cx = &self.hooks.cx;
+        let proof = cx
+            .views
+            .closure_proof(view, &expected)
+            .ok_or_else(|| TabError("The saved spare closure reservation is unavailable".into()))?;
+        if !spare.browser.reservation.matches(view, &expected)
+            || !proof
+                .reservation()
+                .same_reservation(&spare.browser.reservation)
+        {
+            return Err(TabError("The saved spare browser reservation changed".into()));
+        }
+        let origin = original
+            .context
+            .authority_ref::<NativeOwnerAuthority>()
+            .map(|authority| authority.origin.clone())
+            .ok_or_else(|| TabError("The saved spare has no native authority".into()))?;
+        let captured =
+            native_owner::capture_owner(&cx.views, view, &expected).map_err(TabError)?;
+        if captured
+            .context
+            .authority_ref::<NativeOwnerAuthority>()
+            .is_none_or(|authority| authority.origin != origin)
+        {
+            return Err(TabError("The saved spare native document was replaced".into()));
+        }
+        let actor = spare
+            .spare_actor
+            .as_ref()
+            .ok_or_else(|| TabError("The saved spare actor is unavailable".into()))?;
+        let editor = self
+            .hooks
+            .provided
+            .all::<dyn shell_contract::editors::DocumentEditors>()
+            .into_iter()
+            .find(|editor| editor.saved_surface() == Surface::Sheets)
+            .ok_or_else(|| TabError("The saved editor actor is unavailable".into()))?;
+        let editor_capture = editor.clone();
+        let target = NativeSavedTarget::prepare(
+            input,
+            path,
+            Surface::Sheets,
+            view,
+            expected.clone(),
+            spare.browser.reservation.clone(),
+            spare.browser.owner.clone(),
+            participants.clone(),
+            cancel.clone(),
+            pending.clone(),
+            additional.clone(),
+        )
+        .map_err(TabError)?;
+        let replacement = native_owner::prepare_saved_spare_replacement(&target).map_err(TabError)?;
+        let successor_target = replacement.successor().clone();
+        let successor = successor_target.browser().clone();
+        let mut transfer = actor.prepare_transfer().map_err(TabError)?;
+        let successor_actor = transfer.successor();
+        let successor_receipt = transfer.successor_receipt();
+        let mut barrier = actor
+            .prepare_saved_barrier(&successor_target)
+            .map_err(TabError)?;
+        let owner_slot = cx
+            .views
+            .prepare_browser_owner(view, &expected, &successor)
+            .map_err(TabError)?;
+        rollback
+            .borrow_mut()
+            .try_reserve(2)
+            .map_err(|error| TabError(error.to_string()))?;
+        let prior = Rc::new(RefCell::new(spare.rollback.borrow().clone()));
+        let mut proposed = spare.browser.clone();
+        proposed.owner = successor;
+        let core = self.hooks.services.core.clone();
+        let original = original.clone();
+        let start_binding = proposed.clone();
+        let start_successor = successor_target.clone();
+        let start = Box::new(
+            move |adopt: SavedManagerAdoption,
+                  registration: SavedManagerRegistration,
+                  cleanup: ViewCreationCleanup,
+                  done: Box<dyn FnOnce(ViewCreationResult<SavedViewLoaded>)>| {
+                let extra: Vec<_> = additional.iter().collect();
+                let mut adopt = Some(adopt);
+                let admitted = native_owner::with_saved_spare_replacement_effect(
+                    &target,
+                    replacement,
+                    &original,
+                    &participants,
+                    &cancel,
+                    &pending,
+                    &extra,
+                    &mut |transition, next_owner, next_target| {
+                        let browser = owner_slot.validate(transition)?;
+                        let mut actor = |next: &mut dyn FnMut() -> Result<(), String>| {
+                            transfer.with_validated(transition, next_owner, &mut || {
+                                barrier.with_validated(transition, next)
+                            })
+                        };
+                        adopt
+                            .take()
+                            .ok_or("The saved spare adoption was already consumed")?(
+                            next_target,
+                            transition,
+                            &mut actor,
+                        )?;
+                        browser.commit();
+                        Ok(())
+                    },
+                );
+                let (_, superseded) = match admitted {
+                    Ok(admitted) => admitted,
+                    Err(error) => {
+                        return done(Err(ViewCreationFailure {
+                            error: TabError(error),
+                            cleanup: ViewCreationCleanupState::Complete,
+                        }));
+                    }
+                };
+                let prior = Rc::new(SupersededDrain::new(prior, superseded));
+                {
+                    let mut receipts = rollback.borrow_mut();
+                    receipts.push(prior.clone());
+                    receipts.push(successor_receipt);
+                }
+                let ready = ViewCreationReady {
+                    view,
+                    cleanup,
+                    closure: start_binding.closure.clone(),
+                    reservation: start_binding,
+                };
+                super::saved_creation::start_spare(
+                    ready,
+                    start_successor,
+                    core,
+                    participants,
+                    cancel,
+                    pending,
+                    additional,
+                    Box::new(move |view, owner| editor_capture.capture_document_owner(view, owner)),
+                    registration,
+                    Box::new(move |document, reply| editor.load_saved_document(document, reply)),
+                    Box::new(move |result| match result {
+                        Ok(ready) => {
+                            let loaded = SavedViewLoaded {
+                                document: ready.view.document,
+                                outcome: ready.view.outcome,
+                            };
+                            let (cleanup, closure, reservation) =
+                                (ready.cleanup, ready.closure, ready.reservation);
+                            prior.begin(Box::new(move |retired| match retired {
+                                Ok(()) => done(Ok(ViewCreationReady {
+                                    view: loaded,
+                                    cleanup,
+                                    closure,
+                                    reservation,
+                                })),
+                                Err(error) => done(Err(ViewCreationFailure {
+                                    error: TabError(error),
+                                    cleanup: ViewCreationCleanupState::Pending(cleanup),
+                                })),
+                            }));
+                        }
+                        Err(failure) => done(Err(failure)),
+                    }),
+                );
+            },
+        );
+        Ok(PreparedSavedView {
+            target: successor_target,
+            binding: proposed,
+            spare_actor: Some(successor_actor),
             start,
         })
     }

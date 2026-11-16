@@ -16,7 +16,7 @@ impl<F: FnOnce(Result<(), String>)> Completion<F> {
 impl<F: FnOnce(Result<(), String>)> Drop for Completion<F> {
     fn drop(&mut self) {
         if let Some(done) = self.done.take() {
-            done(Err("session flush completion was discarded".into()));
+            done(Err("quit step completion was discarded".into()));
         }
     }
 }
@@ -90,5 +90,39 @@ mod tests {
             receive.try_recv(),
             Ok(Err("session persistence failed".into()))
         );
+    }
+
+    #[test]
+    fn a_stopped_core_thread_fails_the_waiter_instead_of_leaving_it_pending() {
+        use shell_contract::runtime::Thread;
+        let core = shell_core::core_thread::CoreThread::spawn("quit-refusing-core");
+        core.stop();
+        let (send, receive) = mpsc::channel();
+        post_with_completion(
+            |job| core.post(job),
+            |done| done.finish(Ok(())),
+            move |result| send.send(result).unwrap(),
+        );
+        assert!(matches!(receive.try_recv(), Ok(Err(_))));
+    }
+
+    #[test]
+    fn an_owner_handed_to_a_second_refused_post_still_fails_the_waiter() {
+        use shell_contract::runtime::Thread;
+        let core = shell_core::core_thread::CoreThread::spawn("quit-second-post");
+        let (send, receive) = mpsc::channel();
+        let refusing = core.clone();
+        post_with_completion(
+            |job| core.post(job),
+            move |done| {
+                // the first job ran; the continuation that holds the owner is
+                // posted to a core that has meanwhile stopped
+                refusing.stop();
+                refusing.post(Box::new(move || done.finish(Ok(()))));
+            },
+            move |result| send.send(result).unwrap(),
+        );
+        core.stop();
+        assert!(matches!(receive.try_recv(), Ok(Err(_))));
     }
 }

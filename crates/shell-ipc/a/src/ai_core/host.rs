@@ -200,9 +200,8 @@ impl AiSeedRollback {
         Ok(())
     }
     pub fn rollback(&self) -> Result<(), String> {
-        match self.identity.load(Ordering::Acquire) {
-            1..=3 => return Ok(()),
-            _ => {}
+        if matches!(self.identity.load(Ordering::Acquire), 1..=3) {
+            return Ok(());
         }
         if !self.created.is_active() && !self.closed.load(Ordering::Acquire) {
             return Err("The AI document seed lacks an exact close proof".into());

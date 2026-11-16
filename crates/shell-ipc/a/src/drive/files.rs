@@ -354,17 +354,18 @@ pub(super) enum OpenScope {
         admission: ReopenAdmission,
     },
 }
+pub(super) struct NativeCommitted {
+    pub(super) path: PathBuf,
+    pub(super) entry: CacheEntry,
+    pub(super) generation: Arc<CacheGeneration>,
+    pub(super) transaction: Box<native_reopen::Transaction>,
+    pub(super) moved_commit: file_commit::FileCommitReceipt,
+    pub(super) fallback: Option<std::fs::File>,
+    pub(super) warning: Option<String>,
+}
 pub(super) enum NativeRefresh {
     Unchanged,
-    Committed {
-        path: PathBuf,
-        entry: CacheEntry,
-        generation: Arc<CacheGeneration>,
-        transaction: Box<native_reopen::Transaction>,
-        moved_commit: file_commit::FileCommitReceipt,
-        fallback: Option<std::fs::File>,
-        warning: Option<String>,
-    },
+    Committed(Box<NativeCommitted>),
     CleanupPending {
         transaction: Box<native_reopen::Transaction>,
         error: String,
@@ -1028,7 +1029,7 @@ impl DriveFiles {
         if let Some(old) = old_generation {
             old.loss.cancel();
         }
-        Ok(NativeRefresh::Committed {
+        Ok(NativeRefresh::Committed(Box::new(NativeCommitted {
             path: destination,
             entry: updated,
             generation: committed_generation,
@@ -1036,7 +1037,7 @@ impl DriveFiles {
             moved_commit,
             fallback,
             warning,
-        })
+        })))
     }
 
     pub(super) fn prepare_local_path(

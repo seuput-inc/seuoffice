@@ -36,6 +36,7 @@ mod native;
 mod odt_worker;
 mod paths;
 mod preload;
+mod probe;
 #[cfg(target_os = "linux")]
 mod signer_child_guard;
 mod trace;
@@ -57,7 +58,7 @@ use shell_core::table::{Completeness, StartError, build};
 use tauri::{AppHandle, DragDropEvent, Manager, WebviewEvent, WindowEvent};
 
 use crate::host::HostContext;
-use crate::host::window::{Bridge, ViewSpec, WindowSpec, WindowOptions, Windows};
+use crate::host::window::{Bridge, ViewSpec, WindowOptions, WindowSpec, Windows};
 use crate::ipc::Ipc;
 use crate::ipc::outlet::TauriOutlet;
 use crate::measure::Measure;
@@ -76,7 +77,7 @@ struct Options {
 }
 
 impl Options {
-    fn read() -> Result<Self,String> {
+    fn read() -> Result<Self, String> {
         let mut args = std::env::args().skip(1);
         let mut measure = None;
         while let Some(arg) = args.next() {
@@ -85,8 +86,12 @@ impl Options {
             }
         }
         let headless_output = if headless::is_headless() {
-            Some(Arc::new(std::sync::Mutex::new(Some(index_worker_process::isolate_protocol_stdout()?))))
-        } else { None };
+            Some(Arc::new(std::sync::Mutex::new(Some(
+                index_worker_process::isolate_protocol_stdout()?,
+            ))))
+        } else {
+            None
+        };
         Ok(Options {
             partial: std::env::var(PARTIAL_ENV).is_ok_and(|v| v == "1"),
             measure,
@@ -180,48 +185,89 @@ fn fail(app: &AppHandle, paths: &ShellPaths, quiet: bool, why: String) {
 }
 
 fn install_first_shell_startup(
-    services: Services, context: HostContext, paths: Arc<ShellPaths>,
+    services: Services,
+    context: HostContext,
+    paths: Arc<ShellPaths>,
     shutdown: shell_contract::runtime::CancelToken,
-    window: shell_contract::WindowId, owner: shell_contract::ipc::NativeRequestOwner,
+    window: shell_contract::WindowId,
+    owner: shell_contract::ipc::NativeRequestOwner,
 ) {
     host::w::on_core(move |provided| {
         use shell_contract::ipc::{NativeInvocationIssuer, NativeInvocationSelection};
         use std::rc::Rc;
-        if shutdown.is_cancelled() { return; }
+        if shutdown.is_cancelled() {
+            return;
+        }
         let app = context.app.clone();
         let result = (|| {
-            let tabs = provided.all::<shell_ipc_w::tabs::TabsState>().into_iter().next()
+            let tabs = provided
+                .all::<shell_ipc_w::tabs::TabsState>()
+                .into_iter()
+                .next()
                 .ok_or("The first native Shell tab manager is unavailable.")?;
             let native = Arc::new(NativeInvocationIssuer::new(shutdown.clone()));
             let recovery_native = native.clone();
             let startup_owner = owner.clone();
-            let startup_issuer: host::recovery_launch::StartupIssuer = Rc::new(move |selection, cancel| {
-                let NativeInvocationSelection::StartupLaunch { paths, reopened_by_installer } = selection else {
-                    return Err("The startup issuer cannot issue a recovery or CLI operation.".into());
-                };
-                Ok(native.issue_startup(paths, reopened_by_installer, startup_owner.clone(), cancel))
-            });
+            let startup_issuer: host::recovery_launch::StartupIssuer =
+                Rc::new(move |selection, cancel| {
+                    let NativeInvocationSelection::StartupLaunch {
+                        paths,
+                        reopened_by_installer,
+                    } = selection
+                    else {
+                        return Err(
+                            "The startup issuer cannot issue a recovery or CLI operation.".into(),
+                        );
+                    };
+                    Ok(native.issue_startup(
+                        paths,
+                        reopened_by_installer,
+                        startup_owner.clone(),
+                        cancel,
+                    ))
+                });
             let launch_paths = host::os::take_startup_paths()?;
             let reopened = std::env::args().any(|arg| arg == "--updated");
-            let startup = startup_issuer(NativeInvocationSelection::StartupLaunch {
-                paths: launch_paths.into_iter().map(PathBuf::from).collect(),
-                reopened_by_installer: reopened,
-            }, shell_contract::runtime::CancelToken::default())?;
+            let startup = startup_issuer(
+                NativeInvocationSelection::StartupLaunch {
+                    paths: launch_paths.into_iter().map(PathBuf::from).collect(),
+                    reopened_by_installer: reopened,
+                },
+                shell_contract::runtime::CancelToken::default(),
+            )?;
             let recovery_startup = startup.clone();
-            let recovery_issuer: host::recovery_launch::RecoveryIssuer = Rc::new(move |selection, cancel| {
-                recovery_native.issue_recovery_child(&recovery_startup, selection, cancel)
-            });
+            let recovery_issuer: host::recovery_launch::RecoveryIssuer =
+                Rc::new(move |selection, cancel| {
+                    recovery_native.issue_recovery_child(&recovery_startup, selection, cancel)
+                });
             crate::ipc::native_owner::with_startup_operation_effect(
-                &startup, &owner, &[], startup.cancel(), &shutdown,
-                || tabs.initialize_first_shell_window(shell_ipc_w::tabs::host::ShellWindow { window, view: owner.view }),
-            ).ok_or("The first native Shell registration was revoked.")??;
+                &startup,
+                &owner,
+                &[],
+                startup.cancel(),
+                &shutdown,
+                || {
+                    tabs.initialize_first_shell_window(shell_ipc_w::tabs::host::ShellWindow {
+                        window,
+                        view: owner.view,
+                    })
+                },
+            )
+            .ok_or("The first native Shell registration was revoked.")??;
             tabs.install_spare_creator_authority(startup.clone())?;
             let failure_app = app.clone();
             let failure_paths = paths.clone();
             let failure_shutdown = shutdown.clone();
             host::recovery_launch::install_native_launch(
-                services, provided, context, window, owner, startup,
-                recovery_issuer, startup_issuer, Box::new(move |result| {
+                services,
+                provided,
+                context,
+                window,
+                owner,
+                startup,
+                recovery_issuer,
+                startup_issuer,
+                Box::new(move |result| {
                     if let Err(error) = result {
                         if !failure_shutdown.is_cancelled() {
                             fail(&failure_app, &failure_paths, false, error);
@@ -231,14 +277,26 @@ fn install_first_shell_startup(
             )
         })();
         if let Err(error) = result {
-            if !shutdown.is_cancelled() { fail(&app, &paths, false, error); }
+            if !shutdown.is_cancelled() {
+                fail(&app, &paths, false, error);
+            }
         }
     });
 }
 
 /// The first window: the shell window, or the measurement's test page
-fn open_first_window(windows: &Windows, options: &Options, services: &Services,
-    context: &HostContext, paths: &Arc<ShellPaths>) -> Result<(), String> {
+fn open_first_window(
+    windows: &Windows,
+    options: &Options,
+    services: &Services,
+    context: &HostContext,
+    paths: &Arc<ShellPaths>,
+) -> Result<(), String> {
+    // `--probe <name> --out <dir>`: the hosted WebView probes run where the shell would open
+    // its first window
+    if let Some(request) = probe::request() {
+        return probe::run(request, context);
+    }
     let (url, bridge, main, title) = if options.measure.is_some() {
         (
             "genoffice-app://shell/measure.html",
@@ -263,34 +321,72 @@ fn open_first_window(windows: &Windows, options: &Options, services: &Services,
     let startup_frame: Option<StartupFrame> = main.then(|| {
         Arc::new(move |view, event: &native::NativeEvent| {
             use std::sync::atomic::Ordering;
-            let native::NativeEventKind::DocumentRegistered { context: origin } = &event.kind else { return; };
-            if shutdown.is_cancelled() || !event.browser.is_same_browser(origin.browser()) { return; }
-            let Some(sender) = context.views.sender_of(view) else { return; };
-            let Some(generation) = context.views.renderer_generation(view) else { return; };
-            let Some(captured) = context.views.capture_native_owner(view, &generation) else { return; };
-            if sender.surface != Surface::Shell || captured.surface != Surface::Shell || captured.origin != *origin { return; }
-            let Some(owner) = crate::ipc::native_owner::owner(view, captured.origin, captured.renderer, ()) else { return; };
-            if first.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() { return; }
-            install_first_shell_startup(services.clone(), context.clone(), paths.clone(), shutdown.clone(), sender.window, owner);
+            let native::NativeEventKind::DocumentRegistered { context: origin } = &event.kind
+            else {
+                return;
+            };
+            if shutdown.is_cancelled() || !event.browser.is_same_browser(origin.browser()) {
+                return;
+            }
+            let Some(sender) = context.views.sender_of(view) else {
+                return;
+            };
+            let Some(generation) = context.views.renderer_generation(view) else {
+                return;
+            };
+            let Some(captured) = context.views.capture_native_owner(view, &generation) else {
+                return;
+            };
+            if sender.surface != Surface::Shell
+                || captured.surface != Surface::Shell
+                || captured.origin != *origin
+            {
+                return;
+            }
+            let Some(owner) =
+                crate::ipc::native_owner::owner(view, captured.origin, captured.renderer, ())
+            else {
+                return;
+            };
+            if first
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                return;
+            }
+            install_first_shell_startup(
+                services.clone(),
+                context.clone(),
+                paths.clone(),
+                shutdown.clone(),
+                sender.window,
+                owner,
+            );
         }) as StartupFrame
     });
     windows
-        .open_window_with_options(WindowSpec {
-            title: title.into(),
-            size: (1280.0, 860.0),
-            min_size: None,
-            visible: true,
-            decorations: true,
-            transparent: false,
-            resizable: true,
-            parent: None,
-            focus: true,
-            main,
-            view: ViewSpec {
-                url: url.into(),
-                bridge,
+        .open_window_with_options(
+            WindowSpec {
+                title: title.into(),
+                size: (1280.0, 860.0),
+                min_size: None,
+                visible: true,
+                decorations: true,
+                transparent: false,
+                resizable: true,
+                parent: None,
+                focus: true,
+                main,
+                view: ViewSpec {
+                    url: url.into(),
+                    bridge,
+                },
             },
-        }, WindowOptions { on_frame: startup_frame, ..WindowOptions::default() })
+            WindowOptions {
+                on_frame: startup_frame,
+                ..WindowOptions::default()
+            },
+        )
         .map(|_| ())
 }
 
@@ -305,7 +401,8 @@ fn start(
     context: HostContext,
     options: Options,
 ) {
-    let quiet = options.measure.is_some() || headless::is_headless() || std::env::var_os("CI").is_some();
+    let quiet =
+        options.measure.is_some() || headless::is_headless() || std::env::var_os("CI").is_some();
     let failure_app = app.clone();
     let failure_paths = paths.clone();
     let output = options.headless_output.clone();
@@ -317,9 +414,9 @@ fn start(
             let mcp_services = services.clone();
             let fail_here = |why: String| {
                 if let Some(output) = &output {
-                    headless::startup_failed(app.clone(),&mcp_services,output.clone(),why);
+                    headless::startup_failed(app.clone(), &mcp_services, output.clone(), why);
                 } else {
-                    fail(&app,&paths,quiet,why);
+                    fail(&app, &paths, quiet, why);
                 }
             };
             let Some(engine) = app.try_state::<Arc<engine_host::EngineHost>>() else {
@@ -341,7 +438,9 @@ fn start(
                 let table = build(&services, &batches, completeness)?;
                 let handlers = table.len();
                 ipc::install_dispatcher(Dispatcher::new(table));
-                services.views.on_renderer_replaced(Box::new(ipc::renderer_replaced));
+                services
+                    .views
+                    .on_renderer_replaced(Box::new(ipc::renderer_replaced));
                 Ok::<usize, StartError>(handlers)
             });
             match built {
@@ -349,7 +448,12 @@ fn start(
                     eprintln!("shell: {handlers} handlers registered ({completeness:?})");
                     if let Some(output) = &output {
                         run_on(core.as_ref(), host::quit::startup_ready);
-                        headless::start(context,mcp_services,output.clone(),options.invocation_shutdown);
+                        headless::start(
+                            context,
+                            mcp_services,
+                            output.clone(),
+                            options.invocation_shutdown,
+                        );
                         return;
                     }
                     let Some(mcp) = mcp_services.hosts.get::<Arc<host::app_mcp::AppMcp>>() else {
@@ -360,7 +464,9 @@ fn start(
                         fail_here(error);
                         return;
                     }
-                    if let Err(error) = open_first_window(&windows, &options, &mcp_services, &context, &paths) {
+                    if let Err(error) =
+                        open_first_window(&windows, &options, &mcp_services, &context, &paths)
+                    {
                         fail_here(error);
                     } else {
                         run_on(core.as_ref(), host::quit::startup_ready);
@@ -372,9 +478,9 @@ fn start(
     if let Err(error) = spawned {
         let message = format!("cannot start the start-up thread: {error}");
         if let Some(output) = failure_output {
-            headless::startup_failed(failure_app,&failure_services,output,message);
+            headless::startup_failed(failure_app, &failure_services, output, message);
         } else {
-            fail(&failure_app,&failure_paths,quiet,message);
+            fail(&failure_app, &failure_paths, quiet, message);
         }
     }
 }
@@ -409,18 +515,29 @@ fn main() {
     }
     let worker_heap = match index_worker_process::worker_heap_mb() {
         Ok(heap) => heap,
-        Err(error) => { eprintln!("[file-index] {error}"); std::process::exit(2); }
+        Err(error) => {
+            eprintln!("[file-index] {error}");
+            std::process::exit(2);
+        }
     };
     let worker_mode = worker_heap.is_some();
     let worker_output = if worker_mode {
         match index_worker_process::isolate_protocol_stdout() {
             Ok(output) => Some(output),
-            Err(error) => { eprintln!("[file-index] {error}"); std::process::exit(2); }
+            Err(error) => {
+                eprintln!("[file-index] {error}");
+                std::process::exit(2);
+            }
         }
-    } else { None };
+    } else {
+        None
+    };
     let options = match Options::read() {
         Ok(options) => options,
-        Err(error) => { eprintln!("cannot prepare command output: {error}"); std::process::exit(3); }
+        Err(error) => {
+            eprintln!("cannot prepare command output: {error}");
+            std::process::exit(3);
+        }
     };
     // Headless exports are independent processes, never handed to a GUI instance.
     if !worker_mode && !headless::is_headless() && host::os::hand_over_to_running_instance() {
@@ -454,43 +571,65 @@ fn main() {
         ]);
     builder = native::install(builder)
         .register_asynchronous_uri_scheme_protocol(ipc::sync::SCHEME, ipc::sync::handle);
-    let drawio_assets = Arc::new(OnceLock::<Result<Arc<drawio_scheme::DrawioAssets>, String>>::new());
-    builder = builder.register_asynchronous_uri_scheme_protocol("drawio-app", move |ctx, request, responder| {
-        let assets = drawio_assets.get_or_init(|| {
-            drawio_scheme::DrawioAssets::new(paths::resources_path(ctx.app_handle()), Vec::new()).map(Arc::new)
-        });
-        match assets {
-            Ok(assets) => {
-                let origin = native::SchemeRequestContext::capture(
-                    &ctx.app_handle().state::<native::Native>(), ctx.webview_label(),
-                );
-                drawio_scheme::handle(assets.clone(), origin, request, responder)
+    let drawio_assets =
+        Arc::new(OnceLock::<Result<Arc<drawio_scheme::DrawioAssets>, String>>::new());
+    builder = builder.register_asynchronous_uri_scheme_protocol(
+        "drawio-app",
+        move |ctx, request, responder| {
+            let assets = drawio_assets.get_or_init(|| {
+                drawio_scheme::DrawioAssets::new(
+                    paths::resources_path(ctx.app_handle()),
+                    Vec::new(),
+                )
+                .map(Arc::new)
+            });
+            match assets {
+                Ok(assets) => {
+                    let origin = native::SchemeRequestContext::capture(
+                        &ctx.app_handle().state::<native::Native>(),
+                        ctx.webview_label(),
+                    );
+                    drawio_scheme::handle(assets.clone(), origin, request, responder)
+                }
+                Err(error) => {
+                    eprintln!("shell: cannot initialize Diagram assets: {error}");
+                    let mut response = tauri::http::Response::new(Vec::new());
+                    *response.status_mut() = tauri::http::StatusCode::INTERNAL_SERVER_ERROR;
+                    responder.respond(response);
+                }
             }
-            Err(error) => {
-                eprintln!("shell: cannot initialize Diagram assets: {error}");
-                let mut response = tauri::http::Response::new(Vec::new());
-                *response.status_mut() = tauri::http::StatusCode::INTERNAL_SERVER_ERROR;
-                responder.respond(response);
-            }
-        }
-    });
+        },
+    );
     for (name, scheme) in [
         ("seuoffice-docx-media", host::asset_protocol::Scheme::Docx),
         ("html-asset", host::asset_protocol::Scheme::Html),
         ("md-asset", host::asset_protocol::Scheme::Markdown),
-        ("seuoffice-slide-media", host::asset_protocol::Scheme::Slides),
+        (
+            "seuoffice-slide-media",
+            host::asset_protocol::Scheme::Slides,
+        ),
     ] {
         let scheme_views = views.clone();
         let scheme_core = core_thread.clone();
-        builder = builder.register_asynchronous_uri_scheme_protocol(name, move |ctx, request, responder| {
-            let origin = native::SchemeRequestContext::capture(
-                &ctx.app_handle().state::<native::Native>(), ctx.webview_label(),
-            );
-            host::asset_protocol::handle(
-                scheme, ctx.app_handle().clone(), scheme_views.clone(), scheme_core.clone(),
-                ctx.webview_label().to_owned(), origin, request, responder,
-            );
-        });
+        builder = builder.register_asynchronous_uri_scheme_protocol(
+            name,
+            move |ctx, request, responder| {
+                let origin = native::SchemeRequestContext::capture(
+                    &ctx.app_handle().state::<native::Native>(),
+                    ctx.webview_label(),
+                );
+                host::asset_protocol::handle(
+                    scheme,
+                    ctx.app_handle().clone(),
+                    scheme_views.clone(),
+                    scheme_core.clone(),
+                    ctx.webview_label().to_owned(),
+                    origin,
+                    request,
+                    responder,
+                );
+            },
+        );
     }
 
     // one scheme per renderer host: one origin each, as Electron's were
@@ -525,6 +664,9 @@ fn main() {
             },
         );
     }
+    // `--probe`: the probe's schemes, registered last so that they replace the five asset
+    // schemes' handlers and wrap `seuoffice-ipc`; inert without the flag
+    builder = probe::install(builder);
 
     let setup_views = views.clone();
     let setup_paths = paths.clone();
@@ -560,7 +702,9 @@ fn main() {
                 payload.event(),
                 payload.url()
             );
-            if !headless::is_headless() && payload.event() == tauri::webview::PageLoadEvent::Finished {
+            if !headless::is_headless()
+                && payload.event() == tauri::webview::PageLoadEvent::Finished
+            {
                 ui_scale::on_page_finished(webview);
             }
         })
@@ -580,20 +724,35 @@ fn main() {
             engine_host::install(&handle).map_err(std::io::Error::other)?;
             if let Some(output) = worker_output {
                 let worker_app = handle.clone();
-                let engine = handle.state::<Arc<engine_host::EngineHost>>().inner().clone();
-                std::thread::Builder::new().name("seuoffice-index-protocol".into()).spawn(move || {
-                    let result = engine.wait_ready().and_then(|()| host::w_home::index_worker::run_index_worker(output));
-                    let code = match result {
-                        Ok(code) => code,
-                        Err(error) => { eprintln!("[file-index] {error}"); 1 }
-                    };
-                    worker_app.exit(code);
-                }).map_err(std::io::Error::other)?;
+                let engine = handle
+                    .state::<Arc<engine_host::EngineHost>>()
+                    .inner()
+                    .clone();
+                std::thread::Builder::new()
+                    .name("seuoffice-index-protocol".into())
+                    .spawn(move || {
+                        let result = engine
+                            .wait_ready()
+                            .and_then(|()| host::w_home::index_worker::run_index_worker(output));
+                        let code = match result {
+                            Ok(code) => code,
+                            Err(error) => {
+                                eprintln!("[file-index] {error}");
+                                1
+                            }
+                        };
+                        worker_app.exit(code);
+                    })
+                    .map_err(std::io::Error::other)?;
                 return Ok(());
             }
-            host::native_commands::install(options.invocation_shutdown.clone()).map_err(std::io::Error::other)?;
+            host::native_commands::install(options.invocation_shutdown.clone())
+                .map_err(std::io::Error::other)?;
             if !headless::is_headless() {
-                app.manage(host::vault_watch::start(paths.settings_file()).map_err(std::io::Error::other)?);
+                app.manage(
+                    host::vault_watch::start(paths.settings_file())
+                        .map_err(std::io::Error::other)?,
+                );
                 ui_scale::install(&handle, &paths.settings_file().to_string_lossy());
             }
 
@@ -650,18 +809,23 @@ fn main() {
         Ok(application) => application,
         Err(error) => {
             if let Some(output) = build_failure_output {
-                std::process::exit(headless::build_failed(&output,error.to_string()));
+                std::process::exit(headless::build_failed(&output, error.to_string()));
             }
             panic!("error while building the tauri application: {error}");
         }
     };
     application.run(move |app, event| {
-            if matches!(event,tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
-                invocation_shutdown.cancel();
-            }
-            if matches!(event, tauri::RunEvent::Exit) {
-                cleanup_shutdown.cancel();
-            }
-            if !worker_mode { host::on_run_event(app, &event); }
-        });
+        if matches!(
+            event,
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+        ) {
+            invocation_shutdown.cancel();
+        }
+        if matches!(event, tauri::RunEvent::Exit) {
+            cleanup_shutdown.cancel();
+        }
+        if !worker_mode {
+            host::on_run_event(app, &event);
+        }
+    });
 }

@@ -3,8 +3,8 @@ use super::*;
 use crate::tabs::activation::TabActivationAuthority;
 use crate::tabs::host::{
     CapturedSavedShell, EditorSeedRollbackStore, GeneratedPrecloseBarrier,
-    GeneratedPrecloseInstaller, PreparedSavedView, RetainedSpareBinding, SavedViewLoaded,
-    ShellWindow, ViewCreationCleanup, ViewCreationFailure,
+    GeneratedPrecloseInstaller, NativeBrowserRegistration, PreparedSavedView, RetainedSpareBinding,
+    SavedViewLoaded, ShellWindow, ViewCreationCleanup, ViewCreationFailure,
 };
 use main_core::shell::tab_manager::ViewCreationCleanupState;
 use shell_contract::hosts::{
@@ -53,11 +53,10 @@ struct SavedOpen {
 
 impl TabsState {
     /// Open a committed saved input as an editor. A PDF already open at the
-    /// path is reloaded in place; any other open tab, an unsupported kind or a
-    /// kind that cannot adopt a fresh saved view (Sheets while its spare view
-    /// is reserved: `CapturedSavedShell` has no spare-transfer preparation)
+    /// path is reloaded in place; any other open tab or an unsupported kind
     /// reports `NotOpened`, so the caller reveals the file instead of granting
-    /// new editor authority.
+    /// new editor authority. A reserved Sheets spare view receives the saved
+    /// document instead of a new view.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn open_saved_input_owned(
         &self,
@@ -242,6 +241,7 @@ impl TabsState {
         finish: SavedOpenDone,
     ) {
         let id = open.id;
+        let mut open = open;
         let Some(plan) = self
             .inner
             .borrow_mut()
@@ -249,10 +249,25 @@ impl TabsState {
         else {
             return finish(Err("The shell window is unavailable".into()));
         };
-        if plan.reserved_view().is_some() {
-            self.cancel_owned_step(Step::New(plan));
-            return finish(Ok(GeneratedPathOutcome::NotOpened));
-        }
+        let spare = match plan.reserved_view().copied() {
+            None => None,
+            Some(view) => match plan.reserved_binding().cloned() {
+                Some(binding) => match &binding.browser.registration {
+                    NativeBrowserRegistration::Registered(owner) if owner.view == view => {
+                        open.participants.push(owner.clone());
+                        Some(binding)
+                    }
+                    _ => {
+                        self.cancel_owned_step(Step::New(plan));
+                        return finish(Err("The reserved spare is not registered".into()));
+                    }
+                },
+                None => {
+                    self.cancel_owned_step(Step::New(plan));
+                    return finish(Err("The reserved spare binding is unavailable".into()));
+                }
+            },
+        };
         let (cleanup_shell, cleanup_participants) =
             match self.capture_generated_cleanup_context(&open.source, &open.participants) {
                 Ok(captured) => captured,
@@ -265,8 +280,8 @@ impl TabsState {
             self.cancel_owned_step(Step::New(plan));
             return finish(Err(error));
         }
-        let prepared = match plan.creation_spec() {
-            Some(spec) => captured_shell.prepare_fresh(
+        let prepared = match (plan.creation_spec(), spare.as_ref()) {
+            (Some(spec), None) => captured_shell.prepare_fresh(
                 &spec,
                 input,
                 path,
@@ -276,7 +291,17 @@ impl TabsState {
                 open.additional.clone(),
                 open.rollback.clone(),
             ),
-            None => Err(main_core::shell::tab_manager::TabError(
+            (None, Some(binding)) => captured_shell.prepare_spare(
+                binding,
+                input,
+                path,
+                open.participants.clone(),
+                open.cancel.clone(),
+                open.pending.clone(),
+                open.additional.clone(),
+                open.rollback.clone(),
+            ),
+            _ => Err(main_core::shell::tab_manager::TabError(
                 "The saved editor has no creation request".into(),
             )),
         };
@@ -289,10 +314,12 @@ impl TabsState {
         let PreparedSavedView {
             target,
             binding,
+            spare_actor,
             start,
         } = prepared;
         let ready_binding = binding.clone();
-        let retained = RetainedSpareBinding::new(binding, open.rollback.clone(), None);
+        let retained =
+            RetainedSpareBinding::new(binding, open.rollback.clone(), spare_actor.clone());
         let adoption =
             match self.prepare_saved_manager_adoption(plan, &target, retained, open.epoch) {
                 Ok(adoption) => adoption,
@@ -342,9 +369,9 @@ impl TabsState {
             view,
             ready_binding,
             open.participants.clone(),
-            None,
+            spare_actor,
             tab_id.clone(),
-            false,
+            spare.is_some(),
             installer,
         ) {
             Ok(prepared) => prepared,
@@ -393,6 +420,7 @@ impl TabsState {
         start(
             adopt,
             register,
+            cleanup.clone(),
             Box::new(move |result| {
                 if let Some(plan) = recover() {
                     let plan = {

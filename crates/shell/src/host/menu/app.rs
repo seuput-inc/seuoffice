@@ -1876,9 +1876,24 @@ fn predefined(
 /// The items with a template id go to `named` as well
 type Named = HashMap<&'static str, NamedItem>;
 
+/// Quit is an item of its own, not the toolkit's: the predefined one ends the
+/// process (`terminate:` on macOS, `PostQuitMessage` on Windows) without a
+/// window's unsaved-changes guard ever running
+const QUIT_ID: &str = "seuoffice:quit";
+
 fn build_node(app: &AppHandle, node: &Node, named: &mut Named) -> tauri::Result<Built> {
     Ok(match node {
         Node::Separator => Built::Predefined(PredefinedMenuItem::separator(app)?),
+        Node::Role {
+            role: Role::Quit,
+            label,
+        } => Built::Item(TauriItem::with_id(
+            app,
+            QUIT_ID,
+            label.as_deref().unwrap_or("Quit"),
+            true,
+            Some("CmdOrCtrl+Q").filter(|_| !cfg!(windows)),
+        )?),
         Node::Role { role, label } => Built::Predefined(predefined(app, *role, label.as_deref())?),
         Node::Item(item) => {
             let id = item.id.clone().unwrap_or_default();
@@ -2004,7 +2019,9 @@ pub(crate) fn install(cx: &HostContext) {
         effects: crate::ipc::native_owner::effects_host(cx),
     });
     cx.app.on_menu_event(|app, event| {
-        if !crate::host::w_tabs::menu_event(event.id().as_ref()) {
+        if event.id().as_ref() == QUIT_ID {
+            crate::host::quit::request_quit(app);
+        } else if !crate::host::w_tabs::menu_event(event.id().as_ref()) {
             dispatch(app, event.id().as_ref());
         }
     });

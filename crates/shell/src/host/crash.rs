@@ -115,6 +115,16 @@ pub(crate) fn mark_ended_on_core() {
     });
 }
 
+/// Windows ended the session: the run ended on purpose, by the OS
+#[cfg(windows)]
+pub(crate) fn mark_os_ended_on_core() {
+    HEARTBEAT.with(|h| {
+        if let Some(handle) = h.borrow_mut().as_mut() {
+            handle.mark_ended(HeartbeatEnd::Os);
+        }
+    });
+}
+
 /// A view's main frame lost its renderer; called on the UI thread
 pub fn renderer_terminated(view: ViewId) {
     if crate::headless::is_headless() {

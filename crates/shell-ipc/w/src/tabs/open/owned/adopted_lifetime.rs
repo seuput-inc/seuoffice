@@ -253,13 +253,13 @@ impl TabsState {
                 .is_some_and(|entry| entry.receipt.is_none() && !entry.watching && !entry.retiring)
             {
                 let lifetime = entries.remove(&id).expect("the exact lifetime is present");
-                return Err(AdoptedLifetimeFailure::CallerOwned(
-                    Box::new(CallerOwnedAdoptedLifetime {
+                return Err(AdoptedLifetimeFailure::CallerOwned(Box::new(
+                    CallerOwnedAdoptedLifetime {
                         error,
                         state: self.this.clone(),
                         lifetime,
-                    }),
-                ));
+                    },
+                )));
             }
             return Err(AdoptedLifetimeFailure::Retained(RetainedAdoptedLifetime {
                 error,
