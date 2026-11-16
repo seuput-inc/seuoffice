@@ -610,13 +610,7 @@ impl App {
         );
     }
 
-    fn write_owned_deck(
-        &self,
-        scope: SaveScope,
-        path: String,
-        make_parent: bool,
-        done: WriteDone,
-    ) {
+    fn write_owned_deck(&self, scope: SaveScope, path: String, make_parent: bool, done: WriteDone) {
         let prepare = (|| {
             if matches!(
                 &scope.request.authority,

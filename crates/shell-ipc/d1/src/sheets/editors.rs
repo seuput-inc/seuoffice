@@ -718,7 +718,9 @@ impl RegisteredTab {
         drop(headless);
         tab.document.revoke();
         let saved_load = tab.saved_load.borrow_mut().take();
-        if let Some(mut load) = saved_load && let Some(done) = load.completion.take() {
+        if let Some(mut load) = saved_load
+            && let Some(done) = load.completion.take()
+        {
             done(Err(thrown("The saved workbook view was closed")));
         }
         if let Some(mut recovery) = recovery

@@ -268,7 +268,9 @@ pub(crate) fn render_page_png(
         || h > 32768.0
         || w * h > 67_108_864.0
     {
-        return Err(PdfiumError::from("invalid PDFium render dimensions".to_owned()));
+        return Err(PdfiumError::from(
+            "invalid PDFium render dimensions".to_owned(),
+        ));
     }
     let (w, h) = (w as u32, h as u32);
     let bitmap = session.call("FPDFBitmap_Create", &[json!(w), json!(h), json!(1)])?;
@@ -326,7 +328,11 @@ pub(crate) fn render_page_png(
         1 => 1,
         2 => 3,
         3 | 4 => 4,
-        _ => return Err(PdfiumError::from("unsupported PDFium bitmap format".to_owned())),
+        _ => {
+            return Err(PdfiumError::from(
+                "unsupported PDFium bitmap format".to_owned(),
+            ));
+        }
     };
     if stride < (w as usize) * channels {
         return Err(PdfiumError::from("invalid PDFium bitmap stride".to_owned()));

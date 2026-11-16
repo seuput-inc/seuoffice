@@ -421,8 +421,8 @@ impl GenerateShell for FakeShell {
         if let GenerateOrigin::WindowEvent {
             identity, event, ..
         } = &authority.origin
-            && let GenerateWindowEvent::Ready { origin }
-            | GenerateWindowEvent::OpenLink { origin } = event
+            && let GenerateWindowEvent::Ready { origin } | GenerateWindowEvent::OpenLink { origin } =
+                event
             && !Arc::ptr_eq(&identity.as_arc(), &origin.as_arc())
         {
             return Err("model native event origin does not match its bound document".into());

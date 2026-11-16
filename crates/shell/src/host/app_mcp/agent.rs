@@ -26,8 +26,7 @@ use jscompat::JsonValue;
 use main_core::packages::electron_utils::default_save_dir::configured_default_save_dir;
 use main_core::packages::mcp_sdk::server::{Command, StartId, StopId, Ticket};
 use main_core::shell::agent::agent_mcp::{
-    AgentMcpDeps, AgentMcpHost, AgentMcpServer, SourceRedactor,
-    start_agent_mcp_server,
+    AgentMcpDeps, AgentMcpHost, AgentMcpServer, SourceRedactor, start_agent_mcp_server,
 };
 use main_core::shell::agent::agent_mcp_relay::{
     AgentMcpRelays, AgentMcpRelaysDeps, AgentRelayAnswer, AgentRelayAsk, AgentRelayAskRequest,

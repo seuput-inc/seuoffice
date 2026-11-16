@@ -99,9 +99,7 @@ fn finish(
     if let Err(error) = scope.check() {
         return responder.reply(Err(kit::error(error)));
     }
-    if !temporary
-        && let Err(error) = scope.note_landed(&path)
-    {
+    if !temporary && let Err(error) = scope.note_landed(&path) {
         return responder.reply(Err(kit::error(error)));
     }
     let mut answer = Obj::new().set("ok", true).set("path", path.clone());

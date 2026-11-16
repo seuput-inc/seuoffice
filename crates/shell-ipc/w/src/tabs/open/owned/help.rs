@@ -108,7 +108,14 @@ impl TabsState {
                 "The native help command does not match its selection".into(),
             )));
         }
-        self.open_help(topic, HelpAuthority::Native { operation, expected }, done);
+        self.open_help(
+            topic,
+            HelpAuthority::Native {
+                operation,
+                expected,
+            },
+            done,
+        );
     }
 
     fn admit_help(&self, authority: &HelpAuthority) -> Result<(), String> {
@@ -185,10 +192,10 @@ impl TabsState {
     }
 
     fn help_creator(&self, authority: &HelpAuthority) -> HelpCreate {
-        let hooks = self.hooks.clone();
+        let windows = self.inner.borrow().bridge.windows.clone();
         match authority {
             HelpAuthority::Owned { .. } => Box::new(move |then| {
-                hooks.create_help_view(Box::new(move |result| {
+                windows.create_help_view(Box::new(move |result| {
                     then(result.map(|ready| HelpView {
                         view: ready.view,
                         cleanup: ready.cleanup,
@@ -201,7 +208,7 @@ impl TabsState {
                 let operation = operation.clone();
                 Box::new(move |then| {
                     let cancel = operation.cancel().clone();
-                    hooks.create_help_native_command(
+                    windows.create_help_native_command(
                         operation,
                         Vec::new(),
                         cancel.clone(),
@@ -263,9 +270,7 @@ impl TabsState {
             return self.discard_help_view(
                 cleanup,
                 Box::new(move || {
-                    done(Err(TabError(
-                        "The help request is no longer active".into(),
-                    )));
+                    done(Err(TabError("The help request is no longer active".into())));
                 }),
             );
         }
@@ -285,10 +290,7 @@ impl TabsState {
                     Committed::Created(id)
                 }
                 HelpOpenCommit::Existing {
-                    id,
-                    view,
-                    navigate,
-                    ..
+                    id, view, navigate, ..
                 } => Committed::Existing { id, view, navigate },
             }
         });
@@ -296,7 +298,11 @@ impl TabsState {
             Some(Committed::Created(tab)) => {
                 self.show_help(tab, view, None, document, authority, done)
             }
-            Some(Committed::Existing { id, view: existing, navigate }) => {
+            Some(Committed::Existing {
+                id,
+                view: existing,
+                navigate,
+            }) => {
                 // Another help tab appeared while this view was being made.
                 let state = self.clone();
                 self.discard_help_view(

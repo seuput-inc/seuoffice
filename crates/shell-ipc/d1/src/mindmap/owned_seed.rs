@@ -147,7 +147,9 @@ impl MindmapSeedReceipt {
         if mine {
             state.owned_seeds.remove(&self.view);
         }
-        if let Some(Some(entry)) = previous.take() && !entry.retired.get() {
+        if let Some(Some(entry)) = previous.take()
+            && !entry.retired.get()
+        {
             state.owned_seeds.insert(self.view, entry);
         }
         state

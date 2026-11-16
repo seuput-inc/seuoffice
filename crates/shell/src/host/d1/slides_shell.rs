@@ -3382,10 +3382,11 @@ mod tests {
             CancelToken::default(),
         );
         let generation = RendererGeneration::new();
-        let (_issuer, reservation, owner) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(
-            ViewId(42),
-            generation.clone(),
-        );
+        let (_issuer, reservation, owner) =
+            shell_contract::ipc::NativeClosureIssuer::new_with_owner(
+                ViewId(42),
+                generation.clone(),
+            );
         let target = RecoveryOpenTarget::bind(
             RecoveryOpenContext::NativeStartup(operation),
             ViewId(42),

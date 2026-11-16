@@ -817,12 +817,7 @@ pub(crate) fn entries(
     let shell = services.hosts.need::<MarkdownShellHost>(Batch::D2)?;
     let engine = services.hosts.need::<MarkdownEngineHost>(Batch::D2)?;
     let os = services.hosts.need::<OsShellHost>(Batch::D2)?;
-    let (s1, s2, s4, s5) = (
-        shell.clone(),
-        shell.clone(),
-        shell.clone(),
-        shell.clone(),
-    );
+    let (s1, s2, s4, s5) = (shell.clone(), shell.clone(), shell.clone(), shell.clone());
     let assets = shell.clone();
     let owned_assets = shell.clone();
     let native_assets = shell.clone();

@@ -785,8 +785,7 @@ impl TextRecovery {
                     if let Some(plan) = plan {
                         plan.remove_owned(&mut |effect| {
                             main_core::packages::electron_utils::atomic_write::owned::admitted(
-                                &admission,
-                                effect,
+                                &admission, effect,
                             )
                         })
                         .map_err(|error| error.message)?;

@@ -603,8 +603,14 @@ pub trait TabHooks {
         owner: shell_contract::ipc::NativeRequestOwner,
     ) -> Result<std::rc::Rc<dyn CapturedSavedShell>, String>;
     // ---- the editor modules ----
-    /// the `create*View` call of `spec` (`createDocsView(path)`, ...)
-    fn create_view(&self, spec: &ViewSpec<'_>, done: Box<dyn FnOnce(ViewCreationResult<ViewId>)>);
+    /// `createHtmlPresentView(owner, title)`: the only view kind created without an owned
+    /// request; it registers no editor actor, so there is no seed rollback to carry.
+    fn create_html_present_view(
+        &self,
+        owner: i64,
+        title: &str,
+        done: Box<dyn FnOnce(ViewCreationResult<ViewId>)>,
+    );
     fn create_spare_view_owned(
         &self,
         startup: shell_contract::ipc::NativeInvocationOperation,

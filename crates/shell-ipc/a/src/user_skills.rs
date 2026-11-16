@@ -2010,12 +2010,7 @@ mod tests {
             if !lock(&self.live).iter().any(|sender| sender.view == view) {
                 return None;
             }
-            Some(
-                lock(&self.generations)
-                    .entry(view)
-                    .or_default()
-                    .clone(),
-            )
+            Some(lock(&self.generations).entry(view).or_default().clone())
         }
         fn on_renderer_replaced(
             &self,

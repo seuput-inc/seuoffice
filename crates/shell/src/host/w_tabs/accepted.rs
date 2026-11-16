@@ -411,102 +411,105 @@ fn finish_install(
 ) {
     let finish: Box<dyn FnOnce(Result<crate::host::window::CreatedChild, InstallError>) + Send> =
         Box::new(
-        move |result: Result<crate::host::window::CreatedChild, InstallError>| {
-            let result = match result {
-                Ok(child) if !generation.is_active() => Err(InstallError::after_creation(
-                    TabError("The created view was replaced before attachment".into()),
-                    child.close,
-                    child.proof,
-                )),
-                result => result,
-            };
-            use shell_ipc_w::tabs::host::{
-                ViewCreationCleanup, ViewCreationCleanupState, ViewCreationFailure,
-                ViewCreationReady,
-            };
-            match result {
-                Ok(child) => {
-                    let Some(proof) = child.proof.or(fallback) else {
-                        if let Err(error) = child.close.request_close() {
-                            eprintln!("[shell] closing an unbound native browser failed: {error}");
-                        }
-                        eprintln!("[shell] native browser lacks its captured closure proof");
-                        return;
-                    };
-                    let watched = proof.clone();
-                    let closure: main_core::shell::tab_manager::ViewClosureWatch<
-                        shell_contract::ipc::NativeBrowserRetirement,
-                    > = Arc::new(move |done| {
-                        watched.watch(Box::new(move |receipt| {
-                            done(shell_contract::ipc::NativeBrowserRetirement::Closed(
-                                receipt,
-                            ))
-                        }))
-                    });
-                    let reservation = shell_ipc_w::tabs::host::NativeBrowserBinding {
-                        reservation: proof.reservation().clone(),
-                        owner: proof.owner().clone(),
-                        producer: Arc::new(proof.clone()),
-                        closure: closure.clone(),
-                        registration:
-                            shell_ipc_w::tabs::host::NativeBrowserRegistration::Unregistered,
-                    };
-                    let cleanup: ViewCreationCleanup =
-                        cleanup_proof(cx.clone(), view, generation.clone(), proof.clone());
-                    core.post(Box::new(move || {
-                        let callback = COMPLETIONS.with(|pending| pending.borrow_mut().remove(&id));
-                        if let Some(callback) = callback {
-                            callback(Ok(ViewCreationReady {
-                                view: child.view,
-                                cleanup,
-                                closure,
-                                reservation,
-                            }));
-                        }
-                    }));
-                }
-                Err(error) => {
-                    let Some(proof) = error.proof.or(fallback) else {
-                        cx.views.remove_view_if_generation(view, &generation);
-                        return core.post(Box::new(move || {
-                            if let Some(callback) =
-                                COMPLETIONS.with(|pending| pending.borrow_mut().remove(&id))
-                            {
-                                callback(Err(ViewCreationFailure {
-                                    error: error.error,
-                                    cleanup: ViewCreationCleanupState::Complete,
-                                }));
+            move |result: Result<crate::host::window::CreatedChild, InstallError>| {
+                let result = match result {
+                    Ok(child) if !generation.is_active() => Err(InstallError::after_creation(
+                        TabError("The created view was replaced before attachment".into()),
+                        child.close,
+                        child.proof,
+                    )),
+                    result => result,
+                };
+                use shell_ipc_w::tabs::host::{
+                    ViewCreationCleanup, ViewCreationCleanupState, ViewCreationFailure,
+                    ViewCreationReady,
+                };
+                match result {
+                    Ok(child) => {
+                        let Some(proof) = child.proof.or(fallback) else {
+                            if let Err(error) = child.close.request_close() {
+                                eprintln!(
+                                    "[shell] closing an unbound native browser failed: {error}"
+                                );
                             }
-                        }));
-                    };
-                    let cleanup: ViewCreationCleanup =
-                        cleanup_proof(cx.clone(), view, generation.clone(), proof.clone());
-                    let retry = cleanup.clone();
-                    cleanup(Box::new(move |result| {
-                        let (error, cleanup) = match result {
-                            Ok(receipt) => {
-                                (error.error, ViewCreationCleanupState::Acknowledged(receipt))
-                            }
-                            Err(cleanup_error) => (
-                                TabError(format!(
-                                    "{}; creation cleanup failed: {cleanup_error}",
-                                    error.error.0
-                                )),
-                                ViewCreationCleanupState::Pending(retry),
-                            ),
+                            eprintln!("[shell] native browser lacks its captured closure proof");
+                            return;
                         };
+                        let watched = proof.clone();
+                        let closure: main_core::shell::tab_manager::ViewClosureWatch<
+                            shell_contract::ipc::NativeBrowserRetirement,
+                        > = Arc::new(move |done| {
+                            watched.watch(Box::new(move |receipt| {
+                                done(shell_contract::ipc::NativeBrowserRetirement::Closed(
+                                    receipt,
+                                ))
+                            }))
+                        });
+                        let reservation = shell_ipc_w::tabs::host::NativeBrowserBinding {
+                            reservation: proof.reservation().clone(),
+                            owner: proof.owner().clone(),
+                            producer: Arc::new(proof.clone()),
+                            closure: closure.clone(),
+                            registration:
+                                shell_ipc_w::tabs::host::NativeBrowserRegistration::Unregistered,
+                        };
+                        let cleanup: ViewCreationCleanup =
+                            cleanup_proof(cx.clone(), view, generation.clone(), proof.clone());
                         core.post(Box::new(move || {
                             let callback =
                                 COMPLETIONS.with(|pending| pending.borrow_mut().remove(&id));
                             if let Some(callback) = callback {
-                                callback(Err(ViewCreationFailure { error, cleanup }));
+                                callback(Ok(ViewCreationReady {
+                                    view: child.view,
+                                    cleanup,
+                                    closure,
+                                    reservation,
+                                }));
                             }
                         }));
-                    }));
+                    }
+                    Err(error) => {
+                        let Some(proof) = error.proof.or(fallback) else {
+                            cx.views.remove_view_if_generation(view, &generation);
+                            return core.post(Box::new(move || {
+                                if let Some(callback) =
+                                    COMPLETIONS.with(|pending| pending.borrow_mut().remove(&id))
+                                {
+                                    callback(Err(ViewCreationFailure {
+                                        error: error.error,
+                                        cleanup: ViewCreationCleanupState::Complete,
+                                    }));
+                                }
+                            }));
+                        };
+                        let cleanup: ViewCreationCleanup =
+                            cleanup_proof(cx.clone(), view, generation.clone(), proof.clone());
+                        let retry = cleanup.clone();
+                        cleanup(Box::new(move |result| {
+                            let (error, cleanup) = match result {
+                                Ok(receipt) => {
+                                    (error.error, ViewCreationCleanupState::Acknowledged(receipt))
+                                }
+                                Err(cleanup_error) => (
+                                    TabError(format!(
+                                        "{}; creation cleanup failed: {cleanup_error}",
+                                        error.error.0
+                                    )),
+                                    ViewCreationCleanupState::Pending(retry),
+                                ),
+                            };
+                            core.post(Box::new(move || {
+                                let callback =
+                                    COMPLETIONS.with(|pending| pending.borrow_mut().remove(&id));
+                                if let Some(callback) = callback {
+                                    callback(Err(ViewCreationFailure { error, cleanup }));
+                                }
+                            }));
+                        }));
+                    }
                 }
-            }
-        },
-    );
+            },
+        );
     match result {
         Ok(child) => await_creation(child, finish),
         Err(error) => finish(Err(error)),

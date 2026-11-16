@@ -14,7 +14,10 @@ use std::rc::Rc;
 
 /// An opened imported-PDF Hangul tab with the native closure watch of that exact view.
 pub type HwpCopyReady = main_core::shell::tab_manager::ViewCreationReady<
-    (shell_contract::ViewId, shell_contract::runtime::RendererGeneration),
+    (
+        shell_contract::ViewId,
+        shell_contract::runtime::RendererGeneration,
+    ),
     shell_contract::ipc::NativeClosureReceipt,
     shell_contract::ipc::NativeClosureReservation,
 >;

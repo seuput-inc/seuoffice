@@ -584,7 +584,9 @@ impl AppState {
 
     pub(super) fn remove_queued_workbook(&mut self, view: ViewId) -> Option<QueuedWorkbook> {
         let removed = self.queued_workbooks.remove(&view);
-        if removed.is_some() && let Some(tab) = self.tab_mut(view) {
+        if removed.is_some()
+            && let Some(tab) = self.tab_mut(view)
+        {
             tab.queue_revision = Rc::new(());
         }
         removed

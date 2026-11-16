@@ -19,8 +19,8 @@ mod help;
 mod native_command;
 mod pending_output;
 mod receipt_retirement;
-mod startup_native;
 mod saved_input;
+mod startup_native;
 mod tab_load;
 pub(crate) use adopted_lifetime::AdoptedEditorLifetime;
 pub use adopted_lifetime::{

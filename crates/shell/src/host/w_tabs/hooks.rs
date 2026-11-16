@@ -1270,12 +1270,13 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
             }
         });
     }
-    fn create_view(
+    fn create_html_present_view(
         &self,
-        spec: &main_core::shell::tab_manager::ViewSpec<'_>,
+        owner: i64,
+        title: &str,
         done: Box<dyn FnOnce(shell_ipc_w::tabs::host::ViewCreationResult<ViewId>)>,
     ) {
-        self.create_editor_view(spec, done)
+        Hooks::create_html_present_view(self, owner, title, done)
     }
     fn create_spare_view_owned(
         &self,

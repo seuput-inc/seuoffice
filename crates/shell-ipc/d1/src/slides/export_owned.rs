@@ -219,7 +219,9 @@ fn begin_generated_publication(
 
 fn fail_generated_preparation(app: &App, id: &str, error: String) {
     let entry = app.state.borrow_mut().generated_publications.remove(id);
-    if let Some(mut entry) = entry && let Some(consumer) = entry.consumer.take() {
+    if let Some(mut entry) = entry
+        && let Some(consumer) = entry.consumer.take()
+    {
         consumer(app, &Err(error))();
     }
 }

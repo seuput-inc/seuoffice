@@ -782,7 +782,9 @@ fn acknowledge_published(
         if current.csv_source_path.as_deref() == Some(requested) {
             current.csv_source_path = Some(actual.clone());
         }
-        if let Some((path, _)) = current.disk_state.as_mut() && *path == requested {
+        if let Some((path, _)) = current.disk_state.as_mut()
+            && *path == requested
+        {
             *path = actual.clone();
         }
         if current.recovery_identity.as_ref() == Some(&file_identity(requested)) {

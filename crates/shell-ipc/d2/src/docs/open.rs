@@ -633,13 +633,7 @@ impl Docs {
                         &jscompat::js_regex!(r"\.(doc|dot)$", "i")
                             .replace_all(&basename(&path), |_| ".docx".to_owned()),
                     ]);
-                    after_docs.pick_legacy_recovery(
-                        path,
-                        suggested,
-                        parent,
-                        after_scope,
-                        then,
-                    );
+                    after_docs.pick_legacy_recovery(path, suggested, parent, after_scope, then);
                 });
                 if skip {
                     return proceed(true);

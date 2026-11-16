@@ -273,10 +273,7 @@ fn advance(id: u64) {
         core.post(Box::new(move || cleanup_finished(id, result)))
     }));
 }
-fn cleanup_finished(
-    id: u64,
-    result: Result<shell_contract::ipc::NativeBrowserRetirement, String>,
-) {
+fn cleanup_finished(id: u64, result: Result<shell_contract::ipc::NativeBrowserRetirement, String>) {
     let state = PENDING.with(|entries| entries.borrow_mut().remove(&id));
     let Some(mut state) = state else {
         return;

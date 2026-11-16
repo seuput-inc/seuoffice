@@ -1521,25 +1521,19 @@ fn prepare_on_worker(
         Ok(admit) => admit,
         Err(error) => return loading.abort(docs, &error),
     };
-    let deliver = match worker_callback(
-        docs,
-        &target,
-        move |result: PreparedSavedLoad| {
-            let (decoded, content, data_url, disk) = match result {
-                Ok(prepared) => prepared,
-                Err(error) => return loading.abort(&continued, &error),
-            };
-            if let Err(error) = loading.admit(&continued) {
-                return loading.abort(&continued, &error);
-            }
-            let target = loading.document.target().clone();
-            if let Err(error) =
-                publish_content(&continued, loading, decoded, content, data_url, disk)
-            {
-                fail(&continued, &target, &error);
-            }
-        },
-    ) {
+    let deliver = match worker_callback(docs, &target, move |result: PreparedSavedLoad| {
+        let (decoded, content, data_url, disk) = match result {
+            Ok(prepared) => prepared,
+            Err(error) => return loading.abort(&continued, &error),
+        };
+        if let Err(error) = loading.admit(&continued) {
+            return loading.abort(&continued, &error);
+        }
+        let target = loading.document.target().clone();
+        if let Err(error) = publish_content(&continued, loading, decoded, content, data_url, disk) {
+            fail(&continued, &target, &error);
+        }
+    }) {
         Ok(deliver) => deliver,
         Err(error) => return fail(docs, &target, &error),
     };

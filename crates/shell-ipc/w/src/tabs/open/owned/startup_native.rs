@@ -231,8 +231,12 @@ impl TabsState {
                 let second = state.clone();
                 let split = state.clone();
                 let fallback = state.clone();
-                let (b_startup, b_owner, b_cancel, b_pending) =
-                    (startup.clone(), owner.clone(), cancel.clone(), pending.clone());
+                let (b_startup, b_owner, b_cancel, b_pending) = (
+                    startup.clone(),
+                    owner.clone(),
+                    cancel.clone(),
+                    pending.clone(),
+                );
                 self.open_remembered(
                     a.clone(),
                     startup,
@@ -320,7 +324,10 @@ impl TabsState {
         let wanted = path.clone();
         self.route_document_path_authorized(
             path,
-            TabActivationAuthority::NativeOperation { operation: startup, owner },
+            TabActivationAuthority::NativeOperation {
+                operation: startup,
+                owner,
+            },
             cancel,
             pending,
             Box::new(move |result| match result {
@@ -349,7 +356,8 @@ impl TabsState {
         pending: CancelToken,
         done: Box<dyn FnOnce(Result<String, String>)>,
     ) {
-        let Some(request) = document_kind(path).and_then(|kind| editor_request_for_path(kind, path))
+        let Some(request) =
+            document_kind(path).and_then(|kind| editor_request_for_path(kind, path))
         else {
             return done(Err("The remembered document cannot be duplicated".into()));
         };

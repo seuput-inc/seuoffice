@@ -105,14 +105,7 @@ impl Views for FakeViews {
         if !self.0.lock().unwrap().contains(&view.0) {
             return None;
         }
-        Some(
-            self.1
-                .lock()
-                .unwrap()
-                .entry(view)
-                .or_default()
-                .clone(),
-        )
+        Some(self.1.lock().unwrap().entry(view).or_default().clone())
     }
     fn on_renderer_replaced(
         &self,

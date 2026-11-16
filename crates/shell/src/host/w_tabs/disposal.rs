@@ -140,7 +140,9 @@ impl DocsDisposalOperation for PreparedDisposal {
                     |retirement| {
                         let owner = native_owner::authenticated_browser_owner(&target.context)
                             .ok_or("The disposal target has no adopted browser owner")?;
-                        owner.reservation().with_owner(owner, |transition| effect(transition))?;
+                        owner
+                            .reservation()
+                            .with_owner(owner, |transition| effect(transition))?;
                         if let Some(document) = target.context.document_lease() {
                             retirement.retire(document)?;
                         }
@@ -289,10 +291,15 @@ impl Disposal {
             if !self.active(attempt) {
                 return;
             }
-            if let Err(error) = self.events.emit_to_owner_checked(&self.target, "docs:teardown", Vec::new()) {
+            if let Err(error) =
+                self.events
+                    .emit_to_owner_checked(&self.target, "docs:teardown", Vec::new())
+            {
                 return self.finish(
                     attempt,
-                    Err(format!("The captured Docs teardown event was not delivered: {error}")),
+                    Err(format!(
+                        "The captured Docs teardown event was not delivered: {error}"
+                    )),
                 );
             }
             // The wake that drains the event is ordered before this round trip in the page.

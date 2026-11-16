@@ -458,8 +458,10 @@ fn committed_recovery_dialog_tracks_receiver_document_and_pending_loss() {
             .with_document_lease(document.clone());
         let cancel = CancelToken::default();
         let pending = CancelToken::default();
-        let (_, closure, browser) =
-            shell_contract::ipc::NativeClosureIssuer::new_with_owner(receiver.view, generation.clone());
+        let (_, closure, browser) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(
+            receiver.view,
+            generation.clone(),
+        );
         let target = RecoveryOpenTarget::bind(
             RecoveryOpenContext::Renderer {
                 source,
@@ -563,8 +565,10 @@ fn recovery_request_document_loss_cancels_native_session() {
         CancelToken::default(),
     );
     let created = RendererGeneration::new();
-    let (_, closure, browser) =
-        shell_contract::ipc::NativeClosureIssuer::new_with_owner(shell_contract::ViewId(22), created.clone());
+    let (_, closure, browser) = shell_contract::ipc::NativeClosureIssuer::new_with_owner(
+        shell_contract::ViewId(22),
+        created.clone(),
+    );
     let target = RecoveryOpenTarget::bind_request(
         RecoveryOpenContext::NativeStartup(operation),
         shell_contract::ViewId(22),

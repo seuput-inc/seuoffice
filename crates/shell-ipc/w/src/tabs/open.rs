@@ -682,18 +682,13 @@ impl TabsState {
         title: String,
         done: Box<dyn FnOnce(Result<ViewId, String>)>,
     ) {
-        use main_core::shell::tab_manager::{
-            ViewCreationCleanupState, ViewCreationFailure, ViewSpec,
-        };
+        use main_core::shell::tab_manager::{ViewCreationCleanupState, ViewCreationFailure};
         let state = self.rc();
         let epoch = self.manager_epoch.get();
         let spec_title = title.clone();
-        let spec = ViewSpec::HtmlPresent {
-            owner: i64::from(owner.0),
-            title: &title,
-        };
-        self.hooks.create_view(
-            &spec,
+        self.hooks.create_html_present_view(
+            i64::from(owner.0),
+            &title,
             Box::new(move |result| match result {
                 Ok(ready) => {
                     let view = ready.view;

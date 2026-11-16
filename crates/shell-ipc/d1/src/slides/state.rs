@@ -97,7 +97,9 @@ impl StagedBinding {
 
 impl Drop for StagedBinding {
     fn drop(&mut self) {
-        if self.armed && let Err(error) = self.engine.unbind_view(self.deck, &self.owner) {
+        if self.armed
+            && let Err(error) = self.engine.unbind_view(self.deck, &self.owner)
+        {
             eprintln!("[slides] staged binding cleanup failed: {}", error.0);
         }
     }

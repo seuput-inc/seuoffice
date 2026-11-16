@@ -3842,8 +3842,13 @@ impl TabHooks for Hooks {
             persist_split,
         })
     }
-    fn create_view(&self, spec: &ViewSpec<'_>, done: Box<dyn FnOnce(ViewCreationResult<ViewId>)>) {
-        let (name, args, kind) = create_call(spec);
+    fn create_html_present_view(
+        &self,
+        owner: i64,
+        title: &str,
+        done: Box<dyn FnOnce(ViewCreationResult<ViewId>)>,
+    ) {
+        let (name, args, kind) = create_call(&ViewSpec::HtmlPresent { owner, title });
         done(fixture_creation(
             &self.0,
             self.create_prepared(name, args, kind)

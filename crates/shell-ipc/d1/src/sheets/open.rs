@@ -560,7 +560,9 @@ fn open_workbook_session_captured(
                         tab.remove_session(previous);
                     }
                     tab.set_session(&id, registered);
-                    if saved.is_some() && let Some(load) = tab.saved_load.borrow_mut().as_mut() {
+                    if saved.is_some()
+                        && let Some(load) = tab.saved_load.borrow_mut().as_mut()
+                    {
                         load.session_id = Some(saved_session_id);
                     }
                     if let Some((_, native)) = &headless {

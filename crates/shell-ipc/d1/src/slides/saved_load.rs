@@ -843,7 +843,9 @@ pub(super) fn initialized(
     }
     let slot = completed;
     let ok = matches!(args.get(1), shell_contract::IpcValue::Bool(true));
-    if let Some(mut slot) = slot && let Some(done) = slot.done.take() {
+    if let Some(mut slot) = slot
+        && let Some(done) = slot.done.take()
+    {
         done(if ok {
             Ok(shell_contract::editors::SavedDocumentLoadOutcome::Applied)
         } else {

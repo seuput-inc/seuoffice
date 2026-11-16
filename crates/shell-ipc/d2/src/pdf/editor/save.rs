@@ -393,11 +393,10 @@ impl Editor {
             >| {
                 let admitted = authority.commit(&mut || {
                     if let (Some(identity), Ok(Some(result))) = (&identity, &result) {
-                        editor.rec.borrow_mut().copy_landed(
-                            view,
-                            identity.clone(),
-                            Ok(*result),
-                        );
+                        editor
+                            .rec
+                            .borrow_mut()
+                            .copy_landed(view, identity.clone(), Ok(*result));
                     }
                     if let Err(message) = &result {
                         eprintln!("[pdf] recovery copy failed: {message}");
@@ -615,21 +614,20 @@ fn save(
             let confirmed_authority = owned.clone();
             let back = kit::back_on_core(
                 &e.services,
-                move |answer: Result<shell_contract::hosts::MessageBoxAnswer, String>| {
-                    match answer {
-                        Ok(answer) if answer.response == 0 => save(
-                            &editor,
-                            view,
-                            request,
-                            context,
-                            callback_cancel,
-                            reply,
-                            true,
-                            Some(confirmed_authority),
-                        ),
-                        Ok(_) => reply.reply(Ok(failed("external-modified"))),
-                        Err(message) => reply.reply(Ok(failed(message))),
-                    }
+                move |answer: Result<shell_contract::hosts::MessageBoxAnswer, String>| match answer
+                {
+                    Ok(answer) if answer.response == 0 => save(
+                        &editor,
+                        view,
+                        request,
+                        context,
+                        callback_cancel,
+                        reply,
+                        true,
+                        Some(confirmed_authority),
+                    ),
+                    Ok(_) => reply.reply(Ok(failed("external-modified"))),
+                    Err(message) => reply.reply(Ok(failed(message))),
                 },
             );
             return owned.message_dialog(&e.dialogs, e.contents.window_of(view), options, back);

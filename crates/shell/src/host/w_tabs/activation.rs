@@ -287,9 +287,10 @@ fn prepared_step(
                 return done(Err("A non-close UI step received a close permit".into()));
             }
             let core = services.core.clone();
-            let complete = shell_ipc_w::home_files::back_to_core(core, move |result: Result<(), String>| {
-                done(result.map(|()| shell_ipc_w::tabs::TabUiStepOutcome::Applied))
-            });
+            let complete =
+                shell_ipc_w::home_files::back_to_core(core, move |result: Result<(), String>| {
+                    done(result.map(|()| shell_ipc_w::tabs::TabUiStepOutcome::Applied))
+                });
             let Some(effects) = services
                 .hosts
                 .get::<shell_contract::hosts::OwnedEffectsHost>()
