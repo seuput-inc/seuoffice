@@ -65,6 +65,16 @@ fn invoke_native_now(
     args: Vec<IpcValue>,
 ) -> shell_contract::ipc::Reply {
     let native = native_context(rt, sender.view);
+    invoke_native_as(rt, channel, sender, args, native)
+}
+
+fn invoke_native_as(
+    rt: &mut Rt,
+    channel: &str,
+    sender: Sender,
+    args: Vec<IpcValue>,
+    native: shell_contract::ipc::NativeContext,
+) -> shell_contract::ipc::Reply {
     rt.invoke_native(
         channel,
         sender,
@@ -342,29 +352,40 @@ fn recovery_restore_reads_before_load_and_delivers_only_to_reserved_renderer() {
     rt.drain();
     assert_eq!(*result.borrow(), Some(Ok(())));
     cancel.cancel();
-    let receiver = effects.capture_owner(target.view, &created).unwrap();
-    authority.retain_native_registration(receiver).unwrap();
+    let receiver = rt.native_root(target.view);
+    authority
+        .retain_native_registration(receiver.clone())
+        .unwrap();
     let receipt = authority.committed_seed().unwrap();
-    let seed = invoke_native_now(&mut rt, "html:recovery-open", target, vec![]).unwrap();
+    let seed = invoke_native_as(
+        &mut rt,
+        "html:recovery-open",
+        target,
+        vec![],
+        receiver.context.clone(),
+    )
+    .unwrap();
     assert_eq!(field(&seed, "text"), &s("recovered"));
     assert!(receipt.settlement().is_none());
     assert!(
-        invoke_native_now(
+        invoke_native_as(
             &mut rt,
             "html:recovery-applied",
             target,
-            vec![obj([("token", s("wrong")), ("ok", true.into_ipc())])]
+            vec![obj([("token", s("wrong")), ("ok", true.into_ipc())])],
+            receiver.context.clone(),
         )
         .is_err()
     );
     assert!(receipt.settlement().is_none());
     let token = field(&seed, "recoveryToken").clone();
     assert_eq!(
-        invoke_native_now(
+        invoke_native_as(
             &mut rt,
             "html:recovery-applied",
             target,
-            vec![obj([("token", token), ("ok", true.into_ipc())])]
+            vec![obj([("token", token), ("ok", true.into_ipc())])],
+            receiver.context,
         ),
         Ok(IpcValue::Undefined)
     );
@@ -1564,11 +1585,13 @@ fn owned_save_as_cancellation_cannot_publish_the_rendered_copy() {
     );
     let output = rt.dir.join("owned-cancelled.pdf");
     rt.script().save.push_back(Some(output.clone()));
-    let reply = invoke_native_now(
+    let destination = html(&rt).docs.pending_save_destination(target.view).unwrap();
+    let reply = invoke_native_as(
         &mut rt,
         "html:save",
         target,
         vec![obj([("mode", s("saveAs")), ("text", s("<p>changed</p>"))])],
+        destination.context,
     )
     .unwrap();
     assert_eq!(field(&reply, "ok"), &false.into_ipc());
@@ -1647,11 +1670,13 @@ fn owned_close_waits_for_the_native_save_and_keeps_the_requested_mode() {
         rt.events().last().unwrap().channel,
         "html:close-save-request"
     );
-    let result = invoke_native_now(
+    let destination = html(&rt).docs.pending_save_destination(target.view).unwrap();
+    let result = invoke_native_as(
         &mut rt,
         "html:save",
         target,
         vec![obj([("text", s("<p>saved</p>")), ("mode", s("saveAs"))])],
+        destination.context,
     )
     .unwrap();
     assert!(super::text_doc::saved_ok(&result));

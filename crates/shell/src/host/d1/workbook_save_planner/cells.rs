@@ -176,8 +176,8 @@ fn existing_array_ref(cell: &str) -> Option<&str> {
     if let Some(end) = parts.next()
         && !is_grid_address(end)
     {
-            return None;
-        }
+        return None;
+    }
     Some(reference)
 }
 
@@ -669,8 +669,8 @@ fn expand_dimension(xml: &str, mutations: &Mutations<'_>) -> String {
                 && let Some(r) =
                     super::styles::attr(row.xml, "r").and_then(|s| s.parse::<usize>().ok())
             {
-                    max_row = max_row.max(r);
-                }
+                max_row = max_row.max(r);
+            }
             for cell in super::style_entries::children(row.inner)
                 .into_iter()
                 .filter(|e| e.name == "c")

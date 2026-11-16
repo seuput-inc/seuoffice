@@ -32,8 +32,8 @@ pub(super) fn allocate_part_path(
             && number.bytes().all(|b| b.is_ascii_digit())
             && let Ok(value) = number.parse::<u64>()
         {
-                    max = max.max(value);
-                }
+            max = max.max(value);
+        }
     }
     let next = max
         .checked_add(1)
@@ -936,8 +936,8 @@ pub(super) fn apply_additions_phase(
             .map_err(|e| e.to_string())?
             && let Some(name) = found.get(1)
         {
-                names.insert(name.to_lowercase());
-            }
+            names.insert(name.to_lowercase());
+        }
     }
     let cache_re = regex(r#"<pivotCache\b[^>]*\bcacheId="(\d+)""#)?;
     let mut cache_id = 0_u64;

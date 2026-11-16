@@ -10,7 +10,7 @@ use shell_contract::editors::{DocumentEditors, SaveMode};
 use shell_contract::ipc::Target;
 use shell_contract::{IpcValue, Surface, ViewId};
 
-use crate::testkit::{Kit, TestRegistry, call, registered, temp_dir};
+use crate::testkit::{Kit, TestRegistry, registered, temp_dir};
 use crate::value::{field, num, obj, string};
 
 fn setup(name: &str) -> (Kit, TestRegistry, shell_contract::ipc::Sender, PathBuf) {
@@ -21,6 +21,50 @@ fn setup(name: &str) -> (Kit, TestRegistry, shell_contract::ipc::Sender, PathBuf
     let registry = registered(&kit);
     let sender = kit.view(1, Surface::Slides);
     (kit, registry, sender, dir)
+}
+
+/// `testkit::call` with the native context a production ingress captures: the
+/// renderer generation and its owner-loss token, which a save needs to own its origin.
+fn call(
+    registry: &TestRegistry,
+    sender: shell_contract::ipc::Sender,
+    channel: &str,
+    args: Vec<IpcValue>,
+) -> Result<IpcValue, shell_contract::IpcError> {
+    let (kind, handler) = registry
+        .handlers
+        .get(channel)
+        .unwrap_or_else(|| panic!("no handler for {channel}"));
+    let native = super::views()
+        .and_then(|slides| slides.0.services.views.renderer_generation(sender.view))
+        .map(|generation| {
+            shell_contract::ipc::NativeContext::with_owner_loss(
+                (),
+                generation.clone(),
+                generation.loss_token(),
+            )
+        });
+    let cx = shell_contract::ipc::CallContext {
+        sender,
+        request: None,
+        cancel: shell_contract::runtime::CancelToken::default(),
+        native,
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    handler.call(
+        &cx,
+        args,
+        shell_contract::ipc::Responder::new(move |reply| {
+            let _ = tx.send(reply);
+        }),
+    );
+    let reply = rx
+        .try_recv()
+        .unwrap_or_else(|_| panic!("{channel} did not answer"));
+    if *kind == shell_contract::ipc::ChannelKind::Send {
+        assert_eq!(reply.as_ref().ok(), Some(&IpcValue::Undefined));
+    }
+    reply
 }
 
 fn invoke(
@@ -642,11 +686,13 @@ fn private_fonts_work_before_open_and_reject_revoked_owner() {
 #[test]
 fn window_open_keeps_the_creation_owner_after_view_replacement() {
     let (kit, _registry, sender, dir) = setup("slides-window-owner");
+    let old_generation = kit.services.views.renderer_generation(sender.view).unwrap();
     let old = super::engine::RenderOwner {
         view: sender.view,
-        context: shell_contract::ipc::NativeContext::with_renderer(
+        context: shell_contract::ipc::NativeContext::with_owner_loss(
             (),
-            kit.services.views.renderer_generation(sender.view).unwrap(),
+            old_generation.clone(),
+            old_generation.loss_token(),
         ),
     };
     let path = dir.join("window.pptx");
@@ -658,14 +704,17 @@ fn window_open_keeps_the_creation_owner_after_view_replacement() {
     let replacement = kit.view(sender.view.0, Surface::Slides);
     super::open_file_in_window(old, path.to_str().unwrap());
     assert!(!super::views().unwrap().has_session(replacement.view));
+    let current_generation = kit
+        .services
+        .views
+        .renderer_generation(replacement.view)
+        .unwrap();
     let current = super::engine::RenderOwner {
         view: replacement.view,
-        context: shell_contract::ipc::NativeContext::with_renderer(
+        context: shell_contract::ipc::NativeContext::with_owner_loss(
             (),
-            kit.services
-                .views
-                .renderer_generation(replacement.view)
-                .unwrap(),
+            current_generation.clone(),
+            current_generation.loss_token(),
         ),
     };
     super::open_file_in_window(current, path.to_str().unwrap());

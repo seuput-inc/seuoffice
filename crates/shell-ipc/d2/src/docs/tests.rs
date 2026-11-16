@@ -953,6 +953,7 @@ fn owned_dirty_queries_reject_source_loss_target_replacement_cancellation_and_ti
         old,
     );
     assert!(answers.borrow().is_empty());
+    t.editor().register_view(t.a.view).unwrap();
 
     let cancel = shell_contract::runtime::CancelToken::default();
     owned_dirty_query(&t, source, cancel.clone(), answers.clone());
@@ -1093,6 +1094,7 @@ fn closing_twice_joins_one_check_and_a_destroyed_view_closes() {
         );
     }
     assert_eq!(t.channels(), vec!["docs:close-check"]);
+    retire_actor(&mut t);
     t.rt.destroy(a.view);
     assert_eq!(*got.borrow(), vec![true, true]);
 }
@@ -2219,6 +2221,7 @@ fn a_destroyed_view_drops_its_state() {
     let mut t = T::new(json!({}));
     let path = t.file("z.docx", b"x");
     t.open(&path);
+    retire_actor(&mut t);
     t.rt.destroy(ViewId(1));
     let editor = editor_for(&t.rt.provided(), ViewId(1));
     assert!(editor.is_none());
@@ -2644,8 +2647,7 @@ fn owned_save_request(
             })
             .and_then(|value| kit::as_str(&value).map(str::to_owned))
             .unwrap();
-    let generation = t.rt.services.views.renderer_generation(t.a.view).unwrap();
-    let destination = effects.capture_owner(t.a.view, &generation).unwrap();
+    let destination = t.editor().0.pending_save_destination(&token).unwrap();
     (token, destination, cancel, answers)
 }
 
@@ -2655,12 +2657,12 @@ fn acknowledge_owned_save(
     destination: &shell_contract::ipc::NativeRequestOwner,
     ok: bool,
 ) {
-    let generation = destination.context.renderer().unwrap().clone();
-    t.rt.send_from_generation(
+    t.rt.send_native(
         "docs:close-save-result",
         t.a,
         vec![ok.into_ipc(), s(token)],
-        generation,
+        destination.context.clone(),
+        shell_contract::runtime::CancelToken::default(),
     );
 }
 
@@ -2875,6 +2877,23 @@ fn await_disposal(
         );
         std::thread::sleep(Duration::from_millis(1));
     }
+}
+
+/// The shell's actor retirement of the view's current document, which a
+/// destroyed view with a live media lease waits for.
+fn retire_actor(t: &mut T) {
+    let owner = captured_docs_owner(t);
+    let disposal = t.editor().capture_disposal(t.a.view, &owner).unwrap();
+    let answer = Rc::new(RefCell::new(None));
+    let completed = answer.clone();
+    disposal.run(
+        disposal_admission(t, owner, shell_contract::runtime::CancelToken::default()),
+        Box::new(move |result| *completed.borrow_mut() = Some(result)),
+    );
+    assert!(matches!(
+        await_disposal(t, &answer),
+        super::editors::DocsDisposalOutcome::Retired { cleanup: Ok(()) }
+    ));
 }
 
 #[test]

@@ -474,7 +474,11 @@ fn decode(input: &[u8]) -> Result<(u32, u32, Vec<u8>), u8> {
                         input[offset + 2],
                         input[offset + 3],
                     ]);
-                    let value = if value.is_nan() || value >= 1.0 { 1.0 } else { value.max(0.0) };
+                    let value = if value.is_nan() || value >= 1.0 {
+                        1.0
+                    } else {
+                        value.max(0.0)
+                    };
                     (value * 255.0).round() as u8
                 }
             };

@@ -501,10 +501,7 @@ impl GenerateWindows {
                                             .authority_ref::<NativeOwnerAuthority>()
                                             .is_some_and(|proof| proof.origin == *context)
                                         && !frame_entry.identity.pending.is_cancelled()
-                                        && !frame_entry
-                                            .identity
-                                            .ready
-                                            .swap(true, Ordering::AcqRel)
+                                        && !frame_entry.identity.ready.swap(true, Ordering::AcqRel)
                                     {
                                         events.ready_to_show(owner.context);
                                     }

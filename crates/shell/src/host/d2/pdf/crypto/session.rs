@@ -380,8 +380,7 @@ mod tests {
             called.fetch_add(1, Ordering::SeqCst);
             Ok(Vec::new())
         });
-        let admit: Admit =
-            Box::new(|_| Err("admission revoked".into()));
+        let admit: Admit = Box::new(|_| Err("admission revoked".into()));
         let session = Session::new(
             pdf_lib::synthetic_classic_pdf(),
             SignOptions::default(),
@@ -558,120 +557,119 @@ mod tests {
         let trusted_original = original.clone();
         let trusted_chain = vec![cert.clone(); 32];
         let verify_chain = trusted_chain.clone();
-        let admit: Admit =
-            Box::new(move |event| {
-                let number = observed.fetch_add(1, Ordering::SeqCst);
-                match event {
-                    Admission::First => assert_eq!(number, 0),
-                    Admission::Retry(evidence) => {
-                        assert_eq!(number, 1);
-                        let options = SignOptions::default();
-                        assert!(
-                            verify_first_retry(
-                                &trusted_original,
-                                &options,
-                                time,
-                                &verify_chain,
-                                evidence
-                            )
-                            .is_ok()
-                        );
-                        let mut changed = evidence.clone();
-                        changed.revision[0] ^= 1;
-                        assert!(
-                            verify_first_retry(
-                                &trusted_original,
-                                &options,
-                                time,
-                                &verify_chain,
-                                &changed
-                            )
-                            .is_err()
-                        );
-                        changed = evidence.clone();
-                        changed.byte_range[1] += 1;
-                        assert!(
-                            verify_first_retry(
-                                &trusted_original,
-                                &options,
-                                time,
-                                &verify_chain,
-                                &changed
-                            )
-                            .is_err()
-                        );
-                        changed = evidence.clone();
-                        changed.attributes_der[0] ^= 1;
-                        assert!(
-                            verify_first_retry(
-                                &trusted_original,
-                                &options,
-                                time,
-                                &verify_chain,
-                                &changed
-                            )
-                            .is_err()
-                        );
-                        changed = evidence.clone();
-                        changed.signature[0] ^= 1;
-                        assert!(
-                            verify_first_retry(
-                                &trusted_original,
-                                &options,
-                                time,
-                                &verify_chain,
-                                &changed
-                            )
-                            .is_err()
-                        );
-                        changed = evidence.clone();
-                        changed.cms_der[0] ^= 1;
-                        assert!(
-                            verify_first_retry(
-                                &trusted_original,
-                                &options,
-                                time,
-                                &verify_chain,
-                                &changed
-                            )
-                            .is_err()
-                        );
-                        changed = evidence.clone();
-                        changed.cms_der.truncate(16 * 1024);
-                        assert!(
-                            verify_first_retry(
-                                &trusted_original,
-                                &options,
-                                time,
-                                &verify_chain,
-                                &changed
-                            )
-                            .is_err()
-                        );
-                        assert!(
-                            verify_first_retry(
-                                &trusted_original,
-                                &options,
-                                time + chrono::Duration::seconds(1),
-                                &verify_chain,
-                                evidence
-                            )
-                            .is_err()
-                        );
-                        assert!(
-                            verify_first_retry(
-                                &trusted_original,
-                                &options,
-                                time,
-                                &[certificate()],
-                                evidence
-                            )
-                            .is_err()
-                        );
-                    }
+        let admit: Admit = Box::new(move |event| {
+            let number = observed.fetch_add(1, Ordering::SeqCst);
+            match event {
+                Admission::First => assert_eq!(number, 0),
+                Admission::Retry(evidence) => {
+                    assert_eq!(number, 1);
+                    let options = SignOptions::default();
+                    assert!(
+                        verify_first_retry(
+                            &trusted_original,
+                            &options,
+                            time,
+                            &verify_chain,
+                            evidence
+                        )
+                        .is_ok()
+                    );
+                    let mut changed = evidence.clone();
+                    changed.revision[0] ^= 1;
+                    assert!(
+                        verify_first_retry(
+                            &trusted_original,
+                            &options,
+                            time,
+                            &verify_chain,
+                            &changed
+                        )
+                        .is_err()
+                    );
+                    changed = evidence.clone();
+                    changed.byte_range[1] += 1;
+                    assert!(
+                        verify_first_retry(
+                            &trusted_original,
+                            &options,
+                            time,
+                            &verify_chain,
+                            &changed
+                        )
+                        .is_err()
+                    );
+                    changed = evidence.clone();
+                    changed.attributes_der[0] ^= 1;
+                    assert!(
+                        verify_first_retry(
+                            &trusted_original,
+                            &options,
+                            time,
+                            &verify_chain,
+                            &changed
+                        )
+                        .is_err()
+                    );
+                    changed = evidence.clone();
+                    changed.signature[0] ^= 1;
+                    assert!(
+                        verify_first_retry(
+                            &trusted_original,
+                            &options,
+                            time,
+                            &verify_chain,
+                            &changed
+                        )
+                        .is_err()
+                    );
+                    changed = evidence.clone();
+                    changed.cms_der[0] ^= 1;
+                    assert!(
+                        verify_first_retry(
+                            &trusted_original,
+                            &options,
+                            time,
+                            &verify_chain,
+                            &changed
+                        )
+                        .is_err()
+                    );
+                    changed = evidence.clone();
+                    changed.cms_der.truncate(16 * 1024);
+                    assert!(
+                        verify_first_retry(
+                            &trusted_original,
+                            &options,
+                            time,
+                            &verify_chain,
+                            &changed
+                        )
+                        .is_err()
+                    );
+                    assert!(
+                        verify_first_retry(
+                            &trusted_original,
+                            &options,
+                            time + chrono::Duration::seconds(1),
+                            &verify_chain,
+                            evidence
+                        )
+                        .is_err()
+                    );
+                    assert!(
+                        verify_first_retry(
+                            &trusted_original,
+                            &options,
+                            time,
+                            &[certificate()],
+                            evidence
+                        )
+                        .is_err()
+                    );
                 }
-                Ok(())
-            });
+            }
+            Ok(())
+        });
         let session = Session::new(
             original,
             SignOptions::default(),

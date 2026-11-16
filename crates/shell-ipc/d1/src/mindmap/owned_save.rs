@@ -1,6 +1,6 @@
-use super::app::{MAP_EXTENSION, MindmapApp, SAVE_WAIT, TimerJob, mode_name};
+use super::app::{MAP_EXTENSION, MindmapApp, SAVE_WAIT, TimerJob, Wait, mode_name};
 use super::hosts::OpenStatus;
-use super::util::file_name_base;
+use super::util::{file_name_base, has_key};
 use crate::owned_save::OwnedSave;
 use crate::value::{Args, as_bytes, as_str, field, obj, string, thrown};
 use jscompat::node_path::host::{basename, dirname, join};
@@ -1295,7 +1295,30 @@ pub(super) fn request_id(raw: &str) -> Result<u64, IpcError> {
         .map_err(|_| thrown("The map save request identifier is invalid"))
 }
 
+/// `MINDMAP_CHANNELS.save` takes `saveWaiters.get(wcId)` and resumes it with
+/// the call's outcome: only a written map is a save, not a cancel, a Save As
+/// copy or a failure.
+fn resume_menu_save(app: &MindmapApp, view: ViewId, responder: Responder) -> Responder {
+    let core = app.0.services.core.clone();
+    Responder::new(move |reply| {
+        let saved = matches!(
+            &reply,
+            Ok(value) if field(value, "ok") == &IpcValue::Bool(true) && has_key(value, "path")
+        );
+        core.post(Box::new(move || {
+            super::with_app(|app| {
+                let waiter = app.0.state.borrow_mut().save_waiters.take(view);
+                if let Some(waiter) = waiter {
+                    waiter(Wait::Answer(saved));
+                }
+            })
+        }));
+        responder.reply(reply);
+    })
+}
+
 pub(super) fn save(app: &MindmapApp, cx: &CallContext, args: Args, responder: Responder) {
+    let responder = resume_menu_save(app, cx.sender.view, responder);
     let value = args.get(0);
     if !app.may_write(cx.sender.view) {
         return responder.reply(Ok(obj([

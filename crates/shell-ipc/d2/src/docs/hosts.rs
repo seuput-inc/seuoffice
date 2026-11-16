@@ -413,7 +413,7 @@ mod fake {
     type ProbeLog = Arc<Mutex<Vec<Value>>>;
     type QueryRuntime = (
         Arc<dyn shell_contract::runtime::Views>,
-        Arc<dyn shell_contract::ipc::EventSink>,
+        shell_contract::hosts::OwnedEffectsHost,
     );
 
     /// The fake of both hosts, mirrored by tools/ipc-diff/groups/d2/docs-fakes.ts.
@@ -468,8 +468,10 @@ mod fake {
 
         #[cfg(test)]
         pub(crate) fn bind_query_runtime(&self, services: &shell_contract::runtime::Services) {
-            *self.query_runtime.lock().unwrap() =
-                Some((services.views.clone(), services.events.clone()));
+            *self.query_runtime.lock().unwrap() = services
+                .hosts
+                .get::<shell_contract::hosts::OwnedEffectsHost>()
+                .map(|effects| (services.views.clone(), effects.clone()));
         }
 
         fn log(&self, line: Value) {
@@ -957,7 +959,7 @@ mod fake {
             expected: &shell_contract::runtime::RendererGeneration,
         ) -> Result<shell_contract::ipc::NativeRequestOwner, String> {
             let runtime = self.query_runtime.lock().unwrap();
-            let (views, _) = runtime
+            let (views, effects) = runtime
                 .as_ref()
                 .ok_or("synthetic query runtime unavailable")?;
             if !views
@@ -966,14 +968,7 @@ mod fake {
             {
                 return Err("synthetic target replaced".into());
             }
-            Ok(shell_contract::ipc::NativeRequestOwner {
-                view,
-                context: shell_contract::ipc::NativeContext::with_owner_loss(
-                    (),
-                    expected.clone(),
-                    expected.loss_token(),
-                ),
-            })
+            effects.capture_owner(view, expected)
         }
 
         fn ui_lang(&self) -> Lang {

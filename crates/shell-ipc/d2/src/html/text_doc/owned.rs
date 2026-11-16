@@ -386,6 +386,15 @@ impl TextDocs {
         }
         Ok(native)
     }
+    /// The owner a pending owned save captured for its document: the native
+    /// identity its renderer's callbacks arrive under.
+    #[cfg(test)]
+    pub(crate) fn pending_save_destination(&self, view: ViewId) -> Option<NativeRequestOwner> {
+        self.owned_saves
+            .borrow()
+            .get(&view)
+            .map(|save| save.destination().clone())
+    }
     #[cfg(test)]
     pub(crate) fn take_owned_save(
         &self,

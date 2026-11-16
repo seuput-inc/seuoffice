@@ -410,10 +410,10 @@ fn apply_sheet(
     if threaded.part_removed
         && let Some(part) = threaded.part_path
     {
-            rels = remove_rel(&rels, threaded::REL_TYPE)?;
-            changed = true;
-            remove_override(pkg, &part, touched)?;
-        }
+        rels = remove_rel(&rels, threaded::REL_TYPE)?;
+        changed = true;
+        remove_override(pkg, &part, touched)?;
+    }
     if notes.is_empty() {
         let Some(comments_path) = comments_path else {
             if changed {

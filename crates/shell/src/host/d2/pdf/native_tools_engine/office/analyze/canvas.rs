@@ -403,8 +403,11 @@ pub(super) fn classify_pages(
             ) {
                 span.text = format!("{marker} {}", span.text)
             }
-            page.blocks
-                .extend(note.blocks.into_iter().map(|b| PageBlock::Text(Box::new(b))));
+            page.blocks.extend(
+                note.blocks
+                    .into_iter()
+                    .map(|b| PageBlock::Text(Box::new(b))),
+            );
         }
         for block in &mut page.blocks {
             match block {

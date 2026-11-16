@@ -1957,6 +1957,10 @@ fn headless_target(w: &World, sender: Sender) -> shell_contract::ipc::NativeInvo
 #[test]
 fn headless_export_uses_created_renderer_and_cleans_the_original_tab() {
     let w = world("sheets-headless-created", Value::Null);
+    // the native host gives every capture of one renderer the same origin
+    w.kit
+        .host::<Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>()
+        .share_capture_origins();
     let sender = w.kit.view(1, Surface::Sheets);
     let created = w
         .kit
@@ -2262,7 +2266,7 @@ fn every_channel_of_the_list_has_a_handler() {
         .collect();
     assert!(missing.is_empty(), "no handler for {missing:?}");
     assert_eq!(w.registry.handlers.len(), mine.len());
-    assert_eq!(mine.len(), 54);
+    assert_eq!(mine.len(), 55);
 }
 
 fn owned_save_request(

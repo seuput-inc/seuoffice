@@ -1908,6 +1908,9 @@ impl SyntheticGeneratedCleanupRegistry {
     }
 }
 
+type NativeOrigin = Arc<dyn std::any::Any + Send + Sync>;
+type CaptureOrigins = Mutex<Option<HashMap<ViewId, (RendererGeneration, NativeOrigin)>>>;
+
 #[derive(Clone)]
 pub struct SyntheticOwnedEffects {
     ui: Arc<dyn Thread>,
@@ -1916,6 +1919,7 @@ pub struct SyntheticOwnedEffects {
     docs: Arc<DocsPublications>,
     event_streams: Arc<SyntheticEventStreams>,
     browsers: Arc<Mutex<BrowserBindings>>,
+    capture_origins: Arc<CaptureOrigins>,
 }
 
 impl SyntheticOwnedEffects {
@@ -1927,7 +1931,38 @@ impl SyntheticOwnedEffects {
             docs: Arc::default(),
             event_streams: Arc::default(),
             browsers: Arc::default(),
+            capture_origins: Arc::default(),
         }
+    }
+
+    /// Makes every later `capture_owner` of one view and renderer generation
+    /// share one native origin, as the native host's captures of one
+    /// authenticated renderer do. Without it each capture is its own origin.
+    pub fn share_capture_origins(&self) {
+        self.capture_origins
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get_or_insert_with(HashMap::new);
+    }
+
+    fn shared_capture_origin(
+        &self,
+        view: ViewId,
+        generation: &RendererGeneration,
+    ) -> Option<NativeOrigin> {
+        let mut origins = self
+            .capture_origins
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let origins = origins.as_mut()?;
+        if let Some((captured, origin)) = origins.get(&view)
+            && captured.same_generation(generation)
+        {
+            return Some(origin.clone());
+        }
+        let origin: NativeOrigin = Arc::new(());
+        origins.insert(view, (generation.clone(), origin.clone()));
+        Some(origin)
     }
 
     /// Synthetic fixture insertion under the real modeled browser transition.
@@ -2337,7 +2372,7 @@ impl OwnedEffects for SyntheticOwnedEffects {
             SyntheticIdentity {
                 view,
                 docs_document: publication.as_ref().map(|document| document.document_id),
-                native_parent: None,
+                native_parent: self.shared_capture_origin(view, expected),
                 _binding: None,
                 _permit_loss: None,
             },
@@ -2968,6 +3003,8 @@ impl OwnedEffects for SyntheticOwnedEffects {
             let mut registry = self.docs.lock().unwrap_or_else(|error| error.into_inner());
             registry.try_reserve(1).map_err(|error| error.to_string())?;
         }
+        // The request that replaces its own document answers under the successor.
+        let reply = owner.context.request_authority::<SyntheticReplyAuthority>();
         transition.synthetic_transition(
             &mut |commit| {
                 let mut effect = || {
@@ -2987,7 +3024,15 @@ impl OwnedEffects for SyntheticOwnedEffects {
                         if committed {
                             return Err("The Docs media transition was already committed.".into());
                         }
-                        commit()?;
+                        match &reply {
+                            Some(reply) => reply.with_media_transfer(
+                                owner,
+                                cancel,
+                                successor.clone(),
+                                &mut *commit,
+                            )?,
+                            None => commit()?,
+                        }
                         committed = true;
                         Ok(())
                     })?;

@@ -170,8 +170,8 @@ fn fill(value: &Value) -> Result<String, String> {
         if kind != "path"
             && let Some(angle) = gradient.get("angle")
         {
-                attrs.push(format!("degree=\"{}\"", string(angle)));
-            }
+            attrs.push(format!("degree=\"{}\"", string(angle)));
+        }
         if kind == "path" {
             for edge in ["left", "right", "top", "bottom"] {
                 if let Some(v) = gradient.get(edge) {

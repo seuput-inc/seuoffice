@@ -971,6 +971,16 @@ impl Hwp {
         }
     }
 
+    /// The owner a pending owned save captured for its document: the native
+    /// identity its renderer's callbacks arrive under.
+    #[cfg(test)]
+    pub(super) fn pending_save_destination(&self, view: ViewId) -> Option<NativeRequestOwner> {
+        self.owned_saves
+            .borrow()
+            .get(&view)
+            .map(|save| save.scope.destination.clone())
+    }
+
     pub(super) fn take_owned_pdf_grant(
         self: &Rc<Self>,
         view: ViewId,

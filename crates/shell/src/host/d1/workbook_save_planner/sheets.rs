@@ -230,19 +230,19 @@ pub(super) fn rename_sheet_references(
             && local == "hyperlink"
             && let Some(location) = super::styles::attr(element.xml, "location")
         {
-                let location = super::cells::decode_xml(location);
-                if let Some((qualifier, target)) = split_location(&location)
-                    && qualifier_matches(qualifier, old_name)
-                {
-                        let updated = set_attribute(
-                            element.xml,
-                            "location",
-                            Some(&format!("{}!{target}", format_sheet_qualifier(new_name))),
-                        );
-                        let start = element.xml.as_ptr() as usize - xml.as_ptr() as usize;
-                        replacements.push((start, start + element.xml.len(), updated));
-                    }
+            let location = super::cells::decode_xml(location);
+            if let Some((qualifier, target)) = split_location(&location)
+                && qualifier_matches(qualifier, old_name)
+            {
+                let updated = set_attribute(
+                    element.xml,
+                    "location",
+                    Some(&format!("{}!{target}", format_sheet_qualifier(new_name))),
+                );
+                let start = element.xml.as_ptr() as usize - xml.as_ptr() as usize;
+                replacements.push((start, start + element.xml.len(), updated));
             }
+        }
     }
     let mut result = xml.to_owned();
     replacements.sort_unstable_by_key(|(start, _, _)| *start);
@@ -544,32 +544,32 @@ pub(super) fn apply_sheet_plan_to_workbook(
         && let Some(old) =
             super::styles::attr(view.xml, "activeTab").and_then(|s| s.parse::<usize>().ok())
     {
-                let fallback = order
-                    .iter()
-                    .position(|name| {
-                        name.as_str()
-                            .and_then(|n| final_sheets.get(n))
-                            .is_some_and(|(_, hidden)| !hidden)
-                    })
-                    .unwrap_or(0);
-                let updated = set_attribute(
-                    view.xml,
-                    "activeTab",
-                    Some(&map_index(old).unwrap_or(fallback).to_string()),
-                );
-                let at = view.xml.as_ptr() as usize - result.as_ptr() as usize;
-                let end = at + view.xml.len();
-                result.replace_range(at..end, &updated);
-            }
+        let fallback = order
+            .iter()
+            .position(|name| {
+                name.as_str()
+                    .and_then(|n| final_sheets.get(n))
+                    .is_some_and(|(_, hidden)| !hidden)
+            })
+            .unwrap_or(0);
+        let updated = set_attribute(
+            view.xml,
+            "activeTab",
+            Some(&map_index(old).unwrap_or(fallback).to_string()),
+        );
+        let at = view.xml.as_ptr() as usize - result.as_ptr() as usize;
+        let end = at + view.xml.len();
+        result.replace_range(at..end, &updated);
+    }
     if !additions.is_empty()
         && !result.contains("xmlns:r=")
         && let Some(at) = result.find("<workbook")
     {
-            result.insert_str(
-                at + "<workbook".len(),
-                " xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"",
-            );
-        }
+        result.insert_str(
+            at + "<workbook".len(),
+            " xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"",
+        );
+    }
     Ok(result)
 }
 
@@ -683,8 +683,8 @@ fn references_sheet(
                 .and_then(|s| s.parse::<usize>().ok())
                 .is_some_and(|id| skip_scopes.is_some_and(|set| set.contains(&id)))
         {
-                continue;
-            }
+            continue;
+        }
         if formula_references_sheet(&element_text(element.inner), name)? {
             return Ok(true);
         }
@@ -779,11 +779,11 @@ pub(super) fn apply_sheet_plan(
                 .try_exec(element.xml)
                 .map_err(|e| e.to_string())?
         {
-                id = found
-                    .get(2)
-                    .or_else(|| found.get(3))
-                    .map(super::cells::decode_xml);
-            }
+            id = found
+                .get(2)
+                .or_else(|| found.get(3))
+                .map(super::cells::decode_xml);
+        }
         sheet_elements.push((super::cells::decode_xml(name), id));
     }
     let original: HashSet<_> = sheet_elements
@@ -1048,8 +1048,8 @@ pub(super) fn apply_sheet_plan(
         if let Some(rels) = rel_paths.get(name)
             && pkg.has(rels)?
         {
-                pkg.remove(rels);
-            }
+            pkg.remove(rels);
+        }
         pkg.remove(path);
     }
     for path in &removed_owned {

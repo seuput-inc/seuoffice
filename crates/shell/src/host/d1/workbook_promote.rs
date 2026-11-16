@@ -54,10 +54,10 @@ pub(super) fn promote(temporary: &str, target: &str) -> EngineResult<()> {
             if let Err(error) = file.sync_all()
                 && !sync_tolerated(&error)
             {
-                    return Err(engine_error(
-                        main_core::node_fs::node_error(&error, "fsync", temporary).message,
-                    ));
-                }
+                return Err(engine_error(
+                    main_core::node_fs::node_error(&error, "fsync", temporary).message,
+                ));
+            }
         }
         Err(error) if sync_tolerated(&error) => {}
         Err(error) => {
@@ -93,18 +93,13 @@ pub(super) fn promote(temporary: &str, target: &str) -> EngineResult<()> {
     if let Some(backup) = &backup
         && let Err(error) = std::fs::copy(target, backup)
     {
-            return Err(engine_error(if retryable(&error) {
-                format!("The save target is locked by another program: {target}")
-            } else {
-                main_core::node_fs::node_error2(
-                    &error,
-                    "copyfile",
-                    target,
-                    &backup.to_string_lossy(),
-                )
+        return Err(engine_error(if retryable(&error) {
+            format!("The save target is locked by another program: {target}")
+        } else {
+            main_core::node_fs::node_error2(&error, "copyfile", target, &backup.to_string_lossy())
                 .message
-            }));
-        }
+        }));
+    }
     if let Err(error) = std::fs::copy(temporary, target) {
         if let (Some(backup), Some(before)) = (&backup, &before) {
             let untouched = std::fs::metadata(target).ok().is_some_and(|after| {

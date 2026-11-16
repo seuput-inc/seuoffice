@@ -204,9 +204,7 @@ impl McpTabs for ShellMcpTabs {
                 }),
             );
         });
-        if !ran
-            && let Some(done) = done.borrow_mut().take()
-        {
+        if !ran && let Some(done) = done.borrow_mut().take() {
             done(Err("SeuOffice is not ready".into()));
         }
     }
@@ -257,9 +255,7 @@ impl McpTabs for ShellMcpTabs {
                 }),
             );
         });
-        if !ran
-            && let Some(done) = done.borrow_mut().take()
-        {
+        if !ran && let Some(done) = done.borrow_mut().take() {
             done(Err("SeuOffice is not ready".into()));
         }
     }

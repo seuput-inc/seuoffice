@@ -80,12 +80,12 @@ pub(super) fn children(text: &str) -> Vec<Element<'_>> {
             if depth == 0
                 && let Some((open_name, open_start, inner_start)) = open.take()
             {
-                    result.push(Element {
-                        name: open_name,
-                        xml: &text[open_start..end],
-                        inner: &text[inner_start..start],
-                    });
-                }
+                result.push(Element {
+                    name: open_name,
+                    xml: &text[open_start..end],
+                    inner: &text[inner_start..start],
+                });
+            }
         } else if self_closing {
             if depth == 0 {
                 result.push(Element {
@@ -132,8 +132,8 @@ fn resolved<'a>(inner: &'a str, tag: &str, result: &mut Vec<&'a str>) {
         } else if local_name(element.name) == "AlternateContent"
             && let Some(selected) = branch(element.inner)
         {
-                resolved(selected.inner, tag, result);
-            }
+            resolved(selected.inner, tag, result);
+        }
     }
 }
 

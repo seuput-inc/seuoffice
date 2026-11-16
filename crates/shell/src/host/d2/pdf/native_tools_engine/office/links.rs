@@ -114,8 +114,8 @@ pub(super) fn tag(
             if href.is_empty()
                 && let Some(dest) = dest
             {
-                let index = number(s, "FPDFDest_GetDestPageIndex", &[ptr(doc, 0), ptr(dest, 0)])?
-                    as i32;
+                let index =
+                    number(s, "FPDFDest_GetDestPageIndex", &[ptr(doc, 0), ptr(dest, 0)])? as i32;
                 if index >= 0 {
                     href = format!("#_pdfpage{}", index + 1);
                 }

@@ -4036,28 +4036,45 @@ impl OwnedEffects for NativeOwnedEffects {
                     let mut staged = Some(staged);
                     let mut committed = false;
                     let mut commit = || {
-                        let staged = staged
-                            .take()
-                            .ok_or("The Docs media transition was already consumed")?;
-                        let apply = || match &snapshot {
-                            Some(snapshot) => snapshot
-                                .with_current(|| staged.commit(admitted))
-                                .ok_or_else(|| "The recovery authority was replaced".to_owned())?,
-                            None => staged.commit(admitted),
-                        };
-                        match &recovery {
-                            Some((target, registered)) => match target.invocation_target() {
-                                Some(invocation) => invocation
-                                    .with_registered_state(registered, apply)
+                        let apply_transition = || -> Result<(), String> {
+                            let staged = staged
+                                .take()
+                                .ok_or("The Docs media transition was already consumed")?;
+                            let apply = || match &snapshot {
+                                Some(snapshot) => snapshot
+                                    .with_current(|| staged.commit(admitted))
                                     .ok_or_else(|| {
-                                        "The registered recovery target was replaced".to_owned()
+                                        "The recovery authority was replaced".to_owned()
                                     })?,
+                                None => staged.commit(admitted),
+                            };
+                            match &recovery {
+                                Some((target, registered)) => match target.invocation_target() {
+                                    Some(invocation) => invocation
+                                        .with_registered_state(registered, apply)
+                                        .ok_or_else(|| {
+                                            "The registered recovery target was replaced"
+                                                .to_owned()
+                                        })?,
+                                    None => apply(),
+                                },
                                 None => apply(),
-                            },
-                            None => apply(),
-                        }?;
-                        committed = true;
-                        Ok(())
+                            }?;
+                            committed = true;
+                            Ok(())
+                        };
+                        match original
+                            .context
+                            .request_authority::<crate::ipc::ReplyAuthority>()
+                        {
+                            Some(reply) => reply.with_media_transfer(
+                                original,
+                                cancel,
+                                next_owner.clone(),
+                                apply_transition,
+                            ),
+                            None => apply_transition(),
+                        }
                     };
                     let result = retain(&next_owner, &mut commit);
                     result?;

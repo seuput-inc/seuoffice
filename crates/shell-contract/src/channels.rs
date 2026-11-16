@@ -2344,7 +2344,6 @@ pub const CHANNELS: &[ChannelSpec] = &[
     spec("workbook:read-row-outline", &[Invoke], D1, &[Sheets]),
     spec("workbook:read-slicer-state", &[Invoke], D1, &[Sheets]),
     spec("workbook:recalc", &[Invoke], D1, &[Sheets]),
-    spec("workbook:recovery-initialized", &[Invoke], D1, &[Sheets]),
     spec("workbook:recovery-notice", &[Event], D1, &[Sheets]),
     spec("workbook:recovery-write-now", &[Event], D1, &[Sheets]),
     spec("workbook:recovery-write-now-done", &[Send], D1, &[Sheets]),

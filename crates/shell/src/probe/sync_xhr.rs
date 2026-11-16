@@ -24,10 +24,9 @@ pub fn run(ctx: &Ctx) -> Result<(), String> {
     // the real window names its view `view-<id>`; the label is not known before it opens, and
     // events can arrive first, so they are recorded under the id the callback gets
     let sink_timeline = timeline.clone();
-    let on_frame: FrameHook =
-        Arc::new(move |view: ViewId, event: &NativeEvent| {
-            note_event(&format!("view-{}", view.0), &sink_timeline, event);
-        });
+    let on_frame: FrameHook = Arc::new(move |view: ViewId, event: &NativeEvent| {
+        note_event(&format!("view-{}", view.0), &sink_timeline, event);
+    });
     let spec = WindowSpec {
         title: "probe p1".into(),
         size: (640.0, 480.0),

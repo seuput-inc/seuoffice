@@ -78,8 +78,8 @@ pub(super) fn font_file_families(bytes: &[u8]) -> Vec<String> {
             .or_else(|| names.first())
             && !output.contains(display)
         {
-                output.push(display.clone());
-            }
+            output.push(display.clone());
+        }
     }
     output
 }
@@ -448,18 +448,18 @@ impl Registry {
             if let Some(id) = self.files.get(&(key.clone() + &norm(suffix))).copied()
                 && let Some(mut font) = self.best(&[id], &key, original, bold, italic, target)
             {
-                    let matches = font.parse().ok().is_some_and(|face| {
-                        face.tables()
-                            .os2
-                            .is_some_and(|os2| os2.weight().to_number() >= 600)
-                            == bold
-                            && (face.italic_angle().abs() > 0.01) == italic
-                    });
-                    if !strict || matches {
-                        font.family = super::policy::display_family(name, &font.family);
-                        return Some(font);
-                    }
+                let matches = font.parse().ok().is_some_and(|face| {
+                    face.tables()
+                        .os2
+                        .is_some_and(|os2| os2.weight().to_number() >= 600)
+                        == bold
+                        && (face.italic_angle().abs() > 0.01) == italic
+                });
+                if !strict || matches {
+                    font.family = super::policy::display_family(name, &font.family);
+                    return Some(font);
                 }
+            }
         }
         if strict {
             return None;
@@ -467,19 +467,19 @@ impl Registry {
         if let Some(ids) = self.groups.get(&key).cloned()
             && let Some(mut font) = self.best(&ids, &key, original, bold, italic, target)
         {
-                if font.family.is_empty() {
-                    font.family = name.to_owned();
-                }
-                return Some(font);
+            if font.family.is_empty() {
+                font.family = name.to_owned();
             }
+            return Some(font);
+        }
         if let Some(ids) = self.templates.get(&key).cloned()
             && let Some(mut font) = self.best(&ids, &key, original, bold, italic, target)
         {
-                if font.family.is_empty() {
-                    font.family = name.to_owned();
-                }
-                return Some(font);
+            if font.family.is_empty() {
+                font.family = name.to_owned();
             }
+            return Some(font);
+        }
         if self.family_paths.is_none() {
             let mut exact = HashMap::<String, Vec<usize>>::new();
             let mut os = HashMap::<String, Vec<usize>>::new();
@@ -562,11 +562,11 @@ impl Registry {
                     && let Some(mut font) =
                         self.best(&[*id], &original, &original, bold, italic, target)
                 {
-                        if font.family.is_empty() {
-                            font.family = family.to_owned();
-                        }
-                        return Some(font);
+                    if font.family.is_empty() {
+                        font.family = family.to_owned();
                     }
+                    return Some(font);
+                }
             }
         }
         let twins = super::policy::variable_twins(family);
@@ -608,11 +608,11 @@ impl Registry {
             if matches
                 && let Some(mut font) = self.best(&ids, &original, &original, bold, italic, target)
             {
-                    if font.family.is_empty() {
-                        font.family = family.to_owned();
-                    }
-                    return Some(font);
+                if font.family.is_empty() {
+                    font.family = family.to_owned();
                 }
+                return Some(font);
+            }
         }
         if let Some((base, _)) = super::policy::weight_suffix(family) {
             for name in std::iter::once(base).chain(super::policy::aliases(base)) {

@@ -457,11 +457,9 @@ impl DiagramShell for Diagram {
                 }),
             );
         });
-        if !ran
-            && let Some(done) = done.borrow_mut().take()
-        {
-                done(Err("The core thread is unavailable".into()));
-            }
+        if !ran && let Some(done) = done.borrow_mut().take() {
+            done(Err("The core thread is unavailable".into()));
+        }
     }
     fn open_failed(&self, view: ViewId, message: &str) -> bool {
         let exists = on_core(move |provided| {

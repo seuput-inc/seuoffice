@@ -127,8 +127,8 @@ fn defined_range(workbook: &str, name: &str, sheet_index: usize) -> EngineResult
         if let Some(scope) = attr(&item, "localSheetId")?
             && scope.parse::<usize>().ok() != Some(sheet_index)
         {
-                continue;
-            }
+            continue;
+        }
         let Some((_, rest)) = item.split_once('>') else {
             continue;
         };

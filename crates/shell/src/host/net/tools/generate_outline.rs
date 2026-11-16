@@ -202,9 +202,7 @@ fn starts_word(text: &str, at: usize) -> bool {
 
 fn read_topic_line(text: &str, item: bool) -> Draft {
     let mut rest = jscompat::trim(text);
-    if item
-        && let Some(mark) = KIND_MARKS.iter().find(|mark| rest.starts_with(**mark))
-    {
+    if item && let Some(mark) = KIND_MARKS.iter().find(|mark| rest.starts_with(**mark)) {
         let tail = &rest[mark.len()..];
         let gap = leading_blanks(tail);
         if gap > 0 || tail.is_empty() {

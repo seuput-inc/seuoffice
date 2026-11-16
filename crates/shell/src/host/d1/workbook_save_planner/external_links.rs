@@ -122,8 +122,8 @@ fn sheet(xml: &str, broken: &HashSet<usize>) -> Result<String, String> {
         if let Some(body) = shared.get(m.get(1).unwrap_or(""))
             && broken_ref(body, broken)?
         {
-                return Err("a shared formula references the link to break; re-enter that cell as a literal first (edit the formula, then break the link)".into());
-            }
+            return Err("a shared formula references the link to break; re-enter that cell as a literal first (edit the formula, then break the link)".into());
+        }
     }
     let transformed = replace(
         xml,
@@ -139,8 +139,8 @@ fn sheet(xml: &str, broken: &HashSet<usize>) -> Result<String, String> {
             if let Some(body) = body
                 && broken_ref(&body, broken)?
             {
-                    return literal(cell);
-                }
+                return literal(cell);
+            }
             Ok(cell.into())
         },
     )?;

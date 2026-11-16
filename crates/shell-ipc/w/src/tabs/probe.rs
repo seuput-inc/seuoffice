@@ -226,7 +226,6 @@ impl FixturePreclose {
         Ok(Arc::new(move || gate.clone().start(close.clone(), None)))
     }
 
-    #[cfg(test)]
     fn cleanup(self: Arc<Self>, close: ViewCreationCleanup, done: FixtureCloseDone) {
         self.start(close, Some(done));
     }
@@ -287,14 +286,17 @@ impl FixturePreclose {
     }
 }
 
+fn gated_cleanup(gate: Arc<FixturePreclose>, close: ViewCreationCleanup) -> ViewCreationCleanup {
+    Arc::new(move |done| gate.clone().cleanup(close.clone(), done))
+}
+
 #[cfg(test)]
 fn fixture_preclose_cleanup(
     fake: &Fake,
     view: ViewId,
     gate: Arc<FixturePreclose>,
 ) -> ViewCreationCleanup {
-    let close = fixture_cleanup(fake, view);
-    Arc::new(move |done| gate.clone().cleanup(close.clone(), done))
+    gated_cleanup(gate, fixture_cleanup(fake, view))
 }
 
 struct FixtureWindowProof {
@@ -4222,6 +4224,7 @@ impl TabHooks for Hooks {
         let ready = fixture_ready(&self.0, view, view);
         let binding = ready.reservation.clone();
         let gate = Arc::new(FixturePreclose::default());
+        let start_gate = gate.clone();
         let close = fixture_cleanup(&self.0, view);
         let installer: super::host::GeneratedPrecloseInstaller =
             Box::new(move |barrier, failure| gate.install(close, barrier, failure));
@@ -4235,6 +4238,7 @@ impl TabHooks for Hooks {
                       done: Box<
                     dyn FnOnce(ViewCreationResult<super::host::GeneratedViewCommit>),
                 >| {
+                    let cleanup = gated_cleanup(start_gate, cleanup);
                     let unstarted = &mut unstarted;
                     unstarted.armed = false;
                     let mut adoption = Some(adopt);
@@ -7758,12 +7762,16 @@ mod command_tests {
         let shell_owner = effects
             .capture_owner(shell.view, &shell_generation)
             .unwrap();
+        let mut document_owner = shell_owner.clone();
+        document_owner.context = document_owner
+            .context
+            .with_document_lease(RendererGeneration::new());
         let binding = NativeInvocationIssuer::new(CancelToken::default())
             .issue_existing_document_save(
                 Surface::Docs,
                 shell.view,
                 NativeSaveSelection::ExactPath(path.clone()),
-                shell_owner.clone(),
+                document_owner,
                 CancelToken::default(),
             )
             .unwrap();
@@ -7946,12 +7954,16 @@ mod command_tests {
         let shell_owner = effects
             .capture_owner(shell.view, &shell_generation)
             .unwrap();
+        let mut document_owner = shell_owner.clone();
+        document_owner.context = document_owner
+            .context
+            .with_document_lease(RendererGeneration::new());
         let binding = NativeInvocationIssuer::new(CancelToken::default())
             .issue_existing_document_save(
                 Surface::Sheets,
                 shell.view,
                 NativeSaveSelection::ExactPath(path.clone()),
-                shell_owner.clone(),
+                document_owner,
                 CancelToken::default(),
             )
             .unwrap();

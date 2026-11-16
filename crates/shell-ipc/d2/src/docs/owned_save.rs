@@ -1075,6 +1075,19 @@ impl Docs {
             .ok_or_else(|| kit::error("owned save request is no longer pending"))?;
         Ok(Some(scope.capture_callback(cx).map_err(kit::error)?))
     }
+
+    /// The owner a pending owned save captured for its document: the native
+    /// identity its renderer's callbacks arrive under.
+    #[cfg(test)]
+    pub(super) fn pending_save_destination(&self, token: &str) -> Option<NativeRequestOwner> {
+        self.close
+            .saves
+            .borrow()
+            .values()
+            .filter_map(|waiter| waiter.scope.as_ref())
+            .find(|scope| scope.token() == token)
+            .map(|scope| scope.destination().clone())
+    }
 }
 
 pub(super) fn answer(docs: &Docs, cx: &CallContext, token: &str, ok: bool, error: Option<&str>) {

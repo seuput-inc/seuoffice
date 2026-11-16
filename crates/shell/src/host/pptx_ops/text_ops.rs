@@ -65,9 +65,9 @@ fn validate_links(op: &IpcValue) -> Result<(), String> {
                     Some("url")
                         if field(link, "url")
                             .and_then(string)
-                            .is_some_and(|s| !s.is_empty()) =>
-                    {}
-                    Some("slide") if matches!(field(link,"slideIndex"),Some(IpcValue::Number(n)) if n.is_finite() && *n >= 0.0 && n.fract() == 0.0) => {}
+                            .is_some_and(|s| !s.is_empty()) => {}
+                    Some("slide") if matches!(field(link,"slideIndex"),Some(IpcValue::Number(n)) if n.is_finite() && *n >= 0.0 && n.fract() == 0.0) =>
+                        {}
                     Some("action") => {
                         let action = field(link, "action").and_then(string);
                         if !action.is_some_and(|s| ACTIONS.contains(&s)) {

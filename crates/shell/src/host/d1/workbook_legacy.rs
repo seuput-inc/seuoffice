@@ -49,11 +49,11 @@ fn decode_html(bytes: &[u8], preferred: Option<&str>) -> String {
             && let Some(encoding) =
                 Encoding::for_label(label.as_bytes()).filter(|e| *e != REPLACEMENT)
         {
-                    let (text, _, errors) = encoding.decode(bytes);
-                    if !errors && !text.contains('\u{fffd}') {
-                        return text.into_owned();
-                    }
-                }
+            let (text, _, errors) = encoding.decode(bytes);
+            if !errors && !text.contains('\u{fffd}') {
+                return text.into_owned();
+            }
+        }
     }
     file_parse::csv::decode_csv_buffer(bytes, preferred)
 }

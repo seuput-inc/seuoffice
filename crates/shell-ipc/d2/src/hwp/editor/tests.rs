@@ -167,12 +167,7 @@ fn recovery_receipt_waits_for_the_matching_initialized_document() {
     let path = file(&t.rt.dir, "recovery.hwpx", HWPX);
     let from = tab(&mut t, 1, Some(&path));
     let generation = t.rt.services.views.renderer_generation(from.view).unwrap();
-    let effects =
-        t.rt.services
-            .hosts
-            .get::<shell_contract::hosts::OwnedEffectsHost>()
-            .unwrap();
-    let owner = effects.capture_owner(from.view, &generation).unwrap();
+    let owner = t.rt.native_root(from.view);
     let operation = NativeInvocationIssuer::new(CancelToken::default()).issue(
         NativeInvocationSelection::RecoveryFile {
             surface: Surface::Hwp,
@@ -660,6 +655,7 @@ fn claiming_owned_hwp_pdf_transfers_only_the_renderer_waiter_deadline() {
             .unwrap()
             .unwrap();
         assert_eq!(text(&begin, "export").as_deref(), Some("pdf"));
+        let destination = t.editors.0.pending_save_destination(from.view).unwrap();
         let claim_cancel = shell_contract::runtime::CancelToken::default();
         assert!(
             t.editors
@@ -667,7 +663,7 @@ fn claiming_owned_hwp_pdf_transfers_only_the_renderer_waiter_deadline() {
                     from.view,
                     &token,
                     &shell_contract::runtime::RendererGeneration::new(),
-                    Some(&origin),
+                    Some(&destination),
                     &claim_cancel
                 )
                 .is_none()
@@ -678,7 +674,7 @@ fn claiming_owned_hwp_pdf_transfers_only_the_renderer_waiter_deadline() {
                     from.view,
                     "foreign",
                     &generation,
-                    Some(&origin),
+                    Some(&destination),
                     &claim_cancel
                 )
                 .is_none()
@@ -707,7 +703,13 @@ fn claiming_owned_hwp_pdf_transfers_only_the_renderer_waiter_deadline() {
         cancelled.cancel();
         assert!(
             t.editors
-                .take_owned_pdf_grant(from.view, &token, &generation, Some(&origin), &cancelled)
+                .take_owned_pdf_grant(
+                    from.view,
+                    &token,
+                    &generation,
+                    Some(&destination),
+                    &cancelled
+                )
                 .is_none()
         );
         if !claim {
@@ -717,12 +719,24 @@ fn claiming_owned_hwp_pdf_transfers_only_the_renderer_waiter_deadline() {
         }
         let grant = t
             .editors
-            .take_owned_pdf_grant(from.view, &token, &generation, Some(&origin), &claim_cancel)
+            .take_owned_pdf_grant(
+                from.view,
+                &token,
+                &generation,
+                Some(&destination),
+                &claim_cancel,
+            )
             .unwrap();
         assert_eq!(grant.path, target);
         assert!(
             t.editors
-                .take_owned_pdf_grant(from.view, &token, &generation, Some(&origin), &claim_cancel)
+                .take_owned_pdf_grant(
+                    from.view,
+                    &token,
+                    &generation,
+                    Some(&destination),
+                    &claim_cancel
+                )
                 .is_none()
         );
         t.rt.advance(Duration::from_secs(121));

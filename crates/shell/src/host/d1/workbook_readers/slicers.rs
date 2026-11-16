@@ -110,8 +110,8 @@ fn cache(path: &str, xml: &str) -> EngineResult<Option<Cache>> {
             if let Some(x) = attr(&item, "x")?.and_then(number).filter(|x| *x >= 0.0)
                 && attr(&item, "s")? == Some("1")
             {
-                    values.push(x);
-                }
+                values.push(x);
+            }
         }
         selected = Some(values);
     }
@@ -194,13 +194,13 @@ fn read_from<R: Reader>(pkg: &R) -> EngineResult<Value> {
             (attr(&tag, "cacheId")?.and_then(number), attr(&tag, "r:id")?)
             && let Some(path) = rel_target(rel)?
         {
-                let k = key(id);
-                if let Some((_, old)) = by_cache.iter_mut().find(|(existing, _)| *existing == k) {
-                    *old = path
-                } else {
-                    by_cache.push((k, path));
-                }
+            let k = key(id);
+            if let Some((_, old)) = by_cache.iter_mut().find(|(existing, _)| *existing == k) {
+                *old = path
+            } else {
+                by_cache.push((k, path));
             }
+        }
     }
     let mut x14 = HashMap::new();
     let mut legacy = HashMap::new();
@@ -221,8 +221,8 @@ fn read_from<R: Reader>(pkg: &R) -> EngineResult<Value> {
         if let (Some(id), Some(rel)) = (attr(&tag, "sheetId")?, attr(&tag, "r:id")?)
             && let Some(path) = rel_target(rel)?
         {
-                sheets.insert(path, format!("sheet-{}", decode(id)));
-            }
+            sheets.insert(path, format!("sheet-{}", decode(id)));
+        }
     }
     let mut caches = HashMap::new();
     for path in pkg.paths() {

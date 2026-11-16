@@ -958,10 +958,7 @@ pub(crate) fn bind(opener: Opener, tab_id: &str) -> Result<(), String> {
     })
 }
 
-fn lookup(
-    opener: &Opener,
-    context: &UnloadedTabOpenContext,
-) -> Result<OpenerLookup, String> {
+fn lookup(opener: &Opener, context: &UnloadedTabOpenContext) -> Result<OpenerLookup, String> {
     REGISTRY.with(|registry| {
         let registry = registry.borrow();
         let entry = registry

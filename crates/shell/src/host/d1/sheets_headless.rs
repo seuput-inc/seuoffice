@@ -320,11 +320,11 @@ impl Export {
         if self.closed.load(Ordering::Acquire)
             && let Some(created) = self.created.get()
         {
-                self.cx
-                    .views
-                    .remove_view_if_generation(created.view, &created.generation);
-                self.cx.views.remove_window(created.window);
-            }
+            self.cx
+                .views
+                .remove_view_if_generation(created.view, &created.generation);
+            self.cx.views.remove_window(created.window);
+        }
         let result = self
             .result
             .lock()

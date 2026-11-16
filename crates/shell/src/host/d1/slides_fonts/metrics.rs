@@ -137,8 +137,8 @@ impl FontFace {
                 && kerning
                 && let Some(prev) = previous
             {
-                    units += f64::from(pair(&face, prev, glyph));
-                }
+                units += f64::from(pair(&face, prev, glyph));
+            }
             previous = Some(glyph);
         }
         Ok(Some(units / f64::from(face.units_per_em()) * size))

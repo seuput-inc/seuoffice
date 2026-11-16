@@ -758,20 +758,20 @@ pub(super) fn shift_qualified_formulas(
             && element.name == "hyperlink"
             && let Some(location) = super::styles::attr(element.xml, "location")
         {
-                let decoded = location
-                    .replace("&quot;", "\"")
-                    .replace("&apos;", "'")
-                    .replace("&gt;", ">")
-                    .replace("&lt;", "<")
-                    .replace("&amp;", "&");
-                let shifted = shift_formula_text(&decoded, sheet, shift, axis, true)?;
-                let start = element.xml.as_ptr() as usize - xml.as_ptr() as usize;
-                changes.push((
-                    start,
-                    start + element.xml.len(),
-                    super::sheets::set_attribute(element.xml, "location", Some(&shifted)),
-                ));
-            }
+            let decoded = location
+                .replace("&quot;", "\"")
+                .replace("&apos;", "'")
+                .replace("&gt;", ">")
+                .replace("&lt;", "<")
+                .replace("&amp;", "&");
+            let shifted = shift_formula_text(&decoded, sheet, shift, axis, true)?;
+            let start = element.xml.as_ptr() as usize - xml.as_ptr() as usize;
+            changes.push((
+                start,
+                start + element.xml.len(),
+                super::sheets::set_attribute(element.xml, "location", Some(&shifted)),
+            ));
+        }
     }
     let mut result = xml.to_owned();
     changes.sort_unstable_by_key(|(start, _, _)| *start);
@@ -809,26 +809,26 @@ pub(super) fn shift_sheet_formulas(
         if element.name == "f"
             && let Some(reference) = super::styles::attr(element.xml, "ref")
         {
-                if let Shift::Swap { first, second } = shift
-                    && axis == Axis::Row
-                {
-                        let mut refs = reference.split(':');
-                        if let (Some(start), Some(end)) = (
-                            refs.next().and_then(parse_cell),
-                            reference.rsplit(':').next().and_then(parse_cell),
-                        ) {
-                            let outside = end.row < first.start || start.row > second.end;
-                            let in_first = start.row >= first.start && end.row <= first.end;
-                            let in_second = start.row >= second.start && end.row <= second.end;
-                            if !outside && !in_first && !in_second {
-                                return Err("A shared formula anchor overlaps the moved rows — the move cannot be saved.".into());
-                            }
-                        }
+            if let Shift::Swap { first, second } = shift
+                && axis == Axis::Row
+            {
+                let mut refs = reference.split(':');
+                if let (Some(start), Some(end)) = (
+                    refs.next().and_then(parse_cell),
+                    reference.rsplit(':').next().and_then(parse_cell),
+                ) {
+                    let outside = end.row < first.start || start.row > second.end;
+                    let in_first = start.row >= first.start && end.row <= first.end;
+                    let in_second = start.row >= second.start && end.row <= second.end;
+                    if !outside && !in_first && !in_second {
+                        return Err("A shared formula anchor overlaps the moved rows — the move cannot be saved.".into());
                     }
-                let moved = move_ref_range(reference, shift, axis)?
-                    .ok_or("Deletion would remove a shared formula anchor — aborted.")?;
-                open = super::sheets::set_attribute(&open, "ref", Some(&moved));
+                }
             }
+            let moved = move_ref_range(reference, shift, axis)?
+                .ok_or("Deletion would remove a shared formula anchor — aborted.")?;
+            open = super::sheets::set_attribute(&open, "ref", Some(&moved));
+        }
         let closing = format!("</{}>", element.name);
         let rewritten = format!("{}{}{}", open, super::cells::xml_text(&shifted), closing);
         let start = element.xml.as_ptr() as usize - xml.as_ptr() as usize;
@@ -964,9 +964,9 @@ pub(super) fn shift_drawing_anchors(
                     if let Some(moved) = move_position(from.1, shift)
                         && moved != from.1
                     {
-                            let start = from.0.inner.as_ptr() as usize - result.as_ptr() as usize;
-                            changes.push((start, start + from.0.inner.len(), moved.to_string()));
-                        }
+                        let start = from.0.inner.as_ptr() as usize - result.as_ptr() as usize;
+                        changes.push((start, start + from.0.inner.len(), moved.to_string()));
+                    }
                 } else if let Some(to) = to
                     && let Some(moved) = move_range(
                         Span {
@@ -977,15 +977,10 @@ pub(super) fn shift_drawing_anchors(
                     )?
                     && (moved.start != from.1 || moved.end != to.1)
                 {
-                            for (element, value) in [(from.0, moved.start), (to.0, moved.end)] {
-                                let start =
-                                    element.inner.as_ptr() as usize - result.as_ptr() as usize;
-                                changes.push((
-                                    start,
-                                    start + element.inner.len(),
-                                    value.to_string(),
-                                ));
-                            }
+                    for (element, value) in [(from.0, moved.start), (to.0, moved.end)] {
+                        let start = element.inner.as_ptr() as usize - result.as_ptr() as usize;
+                        changes.push((start, start + element.inner.len(), value.to_string()));
+                    }
                 }
             }
         } else {
@@ -1004,9 +999,9 @@ pub(super) fn shift_drawing_anchors(
                     && let Some(offset) = anchor_child(mark, offset_tag)
                     && offset.inner.parse::<i64>().is_ok()
                 {
-                            let start = offset.inner.as_ptr() as usize - result.as_ptr() as usize;
-                            changes.push((start, start + offset.inner.len(), "0".into()));
-                        }
+                    let start = offset.inner.as_ptr() as usize - result.as_ptr() as usize;
+                    changes.push((start, start + offset.inner.len(), "0".into()));
+                }
             }
         }
         changes.sort_unstable_by_key(|(start, _, _)| *start);
@@ -1371,8 +1366,8 @@ pub(super) fn apply_row_attributes(xml: &str, op: &serde_json::Value) -> Result<
             .and_then(|n| n.checked_sub(1))
             && (start..=end).contains(&index)
         {
-                seen.insert(index);
-            }
+            seen.insert(index);
+        }
     }
     let mut missing = (start..=end)
         .filter(|index| sets && !seen.contains(index))
@@ -2135,9 +2130,9 @@ fn shift_anchored_parts(
             .iter()
             .find(|e| e.name == "legacyDrawing")
             .and_then(|e| super::styles::attr(e.xml, "r:id"))
-        {
-            parts.push((id, "vml"));
-        }
+    {
+        parts.push((id, "vml"));
+    }
     if parts.is_empty() {
         return Ok(());
     }
@@ -2335,10 +2330,10 @@ fn decode_cell_text(raw: &str) -> String {
             && let Ok(code) = u32::from_str_radix(hex, 16)
             && let Some(ch) = char::from_u32(code)
         {
-                            out.push(ch);
-                            cursor += 7;
-                            continue;
-                        }
+            out.push(ch);
+            cursor += 7;
+            continue;
+        }
         let Some(ch) = xml[cursor..].chars().next() else {
             break;
         };
@@ -2521,15 +2516,15 @@ fn rename_table_column(xml: &str, id: u64, name: &str) -> String {
             && super::styles::attr(node.xml, "id").and_then(|s| s.parse::<u64>().ok()) == Some(id)
     }) && super::styles::attr(column.xml, "name").is_some()
     {
-            let start = column.xml.as_ptr() as usize - xml.as_ptr() as usize;
-            let replacement = super::sheets::set_attribute(column.xml, "name", Some(name));
-            return format!(
-                "{}{}{}",
-                &xml[..start],
-                replacement,
-                &xml[start + column.xml.len()..]
-            );
-        }
+        let start = column.xml.as_ptr() as usize - xml.as_ptr() as usize;
+        let replacement = super::sheets::set_attribute(column.xml, "name", Some(name));
+        return format!(
+            "{}{}{}",
+            &xml[..start],
+            replacement,
+            &xml[start + column.xml.len()..]
+        );
+    }
     xml.to_owned()
 }
 

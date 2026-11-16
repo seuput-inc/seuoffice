@@ -709,8 +709,8 @@ pub(super) fn print_names(state: &mut PlannerState, resolved: &Value) -> Result<
             && (section.close_start == section.end
                 || out[section.open_end..section.close_start].trim().is_empty())
         {
-                out = splice(&out, section.start, section.end, "");
-            }
+            out = splice(&out, section.start, section.end, "");
+        }
         state.workbook_xml = Arc::new(out);
     }
     Ok(())

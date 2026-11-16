@@ -1474,9 +1474,15 @@ mod tests {
             cancel.cancel();
             finished.send(()).unwrap();
         });
-        revocation.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(
+            revocation
+                .recv_timeout(Duration::from_millis(100))
+                .is_err(),
+            "cancellation is excluded while the admitted effect runs"
+        );
         assert!(finishing.try_recv().is_err());
         release.send(()).unwrap();
+        revocation.recv_timeout(Duration::from_secs(1)).unwrap();
         finishing.recv_timeout(Duration::from_secs(1)).unwrap();
         revoker.join().unwrap();
         let scope = worker.join().unwrap();

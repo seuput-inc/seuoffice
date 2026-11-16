@@ -3857,6 +3857,9 @@ impl
                     Err("The recovery seed was not admitted".into())
                 }
             });
+        if result.is_ok() {
+            self.nudge_queued_workbook(*view);
+        }
         done(result.map_err(main_core::shell::renderer_disposal::Failure));
     }
 
@@ -4132,6 +4135,9 @@ impl
                                 &root, &temp_dir,
                             )
                         });
+                    }
+                    if result.is_ok() {
+                        core.send(view, "menu:action", vec![IpcValue::String("open".into())]);
                     }
                     core.finish_recovery_open(&id, result);
                 }

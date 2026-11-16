@@ -28,9 +28,7 @@ pub(super) fn open_files(then: OpenFilesCallback) {
             ));
         }));
     });
-    if !ran
-        && let Some(done) = then
-    {
+    if !ran && let Some(done) = then {
         done(Some(Err(())));
     }
 }

@@ -193,8 +193,8 @@ pub(super) fn sniff(input: &str) -> char {
                 .iter()
                 .position(|&candidate| candidate == ch)
         {
-                counts[index] += 1;
-            }
+            counts[index] += 1;
+        }
     }
     let mut best = 0;
     for index in 1..3 {

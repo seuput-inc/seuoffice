@@ -484,8 +484,8 @@ fn insert_root_ext(xml: &str, root: &str, element: &str) -> Result<String, Strin
                 && tag_name == "extLst"
                 && let Some(open) = ext_open
             {
-                    ext = Some((open, token.start(), false));
-                }
+                ext = Some((open, token.start(), false));
+            }
             if stack.is_empty() {
                 return match ext {
                     None => Ok(format!(
@@ -614,8 +614,8 @@ pub(super) fn ensure_sheet_drawing(
                 && let Some(target) = attribute(tag.as_str(), "Target")?
                 && attribute(tag.as_str(), "Id")?.is_some()
             {
-                        return super::state::resolve_rel_target(sheet, &target);
-                    }
+                return super::state::resolve_rel_target(sheet, &target);
+            }
         }
     }
     let path = super::pivots::allocate_part_path(pkg, "xl/drawings/drawing", ".xml")?;
@@ -1134,8 +1134,8 @@ pub(super) fn collect_slicer_names(
             if let Some(tag) = first(&xml, r#"<slicerCacheDefinition\b[^>]*>"#)?
                 && let Some(name) = attribute(tag, "name")?
             {
-                    caches.insert(name);
-                }
+                caches.insert(name);
+            }
         }
     }
     Ok((controls, caches))

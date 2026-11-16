@@ -154,24 +154,24 @@ pub(super) fn keys(path: &Path) -> (Vec<String>, Vec<String>) {
                 .and_then(|n| base.checked_add(n))
                 .is_some_and(|end| end <= fvar.len())
         {
-                            let bases = names
-                                .get(&16)
-                                .map(|v| v.iter().collect::<Vec<_>>())
-                                .unwrap_or_else(|| families.clone());
-                            for i in 0..count {
-                                if let Some(instance) = u16_at(&fvar, base + i * size)
-                                    .and_then(|id| names.get(&id))
-                                    .and_then(|v| v.first())
-                                {
-                                    for family in &bases {
-                                        for key in instance_family_keys(family, instance) {
-                                            if !os.contains(&key) {
-                                                os.push(key);
-                                            }
-                                        }
-                                    }
-                                }
+            let bases = names
+                .get(&16)
+                .map(|v| v.iter().collect::<Vec<_>>())
+                .unwrap_or_else(|| families.clone());
+            for i in 0..count {
+                if let Some(instance) = u16_at(&fvar, base + i * size)
+                    .and_then(|id| names.get(&id))
+                    .and_then(|v| v.first())
+                {
+                    for family in &bases {
+                        for key in instance_family_keys(family, instance) {
+                            if !os.contains(&key) {
+                                os.push(key);
                             }
+                        }
+                    }
+                }
+            }
         }
     }
     (exact, os)

@@ -1307,7 +1307,7 @@ fn native_recovery_requires_the_registered_renderer_and_real_book_before_ack() {
         .hosts
         .get::<shell_contract::hosts::OwnedEffectsHost>()
         .unwrap();
-    let owner = effects.capture_owner(sender.view, &generation).unwrap();
+    let owner = rt.native_root(sender.view);
     let other_generation = rt.services.views.renderer_generation(other.view).unwrap();
     let foreign = effects
         .capture_owner(other.view, &other_generation)
@@ -1448,12 +1448,7 @@ fn native_recovery_refusal_settles_failure_without_a_book() {
     std::fs::write(&path, b"BOOK").unwrap();
     let sender = rt.view(203, Surface::Epub);
     let generation = rt.services.views.renderer_generation(sender.view).unwrap();
-    let effects = rt
-        .services
-        .hosts
-        .get::<shell_contract::hosts::OwnedEffectsHost>()
-        .unwrap();
-    let owner = effects.capture_owner(sender.view, &generation).unwrap();
+    let owner = rt.native_root(sender.view);
     let operation = NativeInvocationIssuer::new(CancelToken::default()).issue(
         NativeInvocationSelection::RecoveryFile {
             surface: Surface::Epub,

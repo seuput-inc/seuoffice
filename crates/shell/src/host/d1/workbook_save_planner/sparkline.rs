@@ -130,8 +130,8 @@ fn add(xml: &str, groups: &[&Value]) -> Result<String, String> {
     if let Some(at) = xml.rfind("</extLst>")
         && xml.rfind("</sheetData>").is_none_or(|end| at > end)
     {
-            return Ok(splice(xml, at, &extension));
-        }
+        return Ok(splice(xml, at, &extension));
+    }
     let at = xml
         .rfind("</worksheet>")
         .ok_or("Worksheet has no closing element.")?;

@@ -38,6 +38,7 @@ pub struct TestRegistry {
     /// what the batch added for the other batches (its document editors)
     pub provided: Rc<Provided>,
     views: Option<Arc<FakeViews>>,
+    owned: Option<shell_contract::hosts::OwnedEffectsHost>,
 }
 
 impl Registry for TestRegistry {
@@ -71,6 +72,16 @@ impl Registry for TestRegistry {
 
     fn provided(&self) -> Rc<Provided> {
         self.provided.clone()
+    }
+}
+
+impl TestRegistry {
+    /// What the shell attaches to a call of a view that has a document: the
+    /// native context its owned effects capture for the view's renderer
+    fn captured_context(&self, view: ViewId) -> Option<shell_contract::ipc::NativeContext> {
+        let generation = self.views.as_ref()?.renderer_generation(view)?;
+        let owner = self.owned.as_ref()?.capture_owner(view, &generation).ok()?;
+        Some(owner.context)
     }
 }
 
@@ -891,14 +902,16 @@ pub fn start(
         sender,
         request: None,
         cancel: CancelToken::default(),
-        native: if sender.surface == Surface::Slides {
-            registry
+        native: match sender.surface {
+            Surface::Slides => registry
                 .views
                 .as_ref()
                 .and_then(|views| views.renderer_generation(sender.view))
-                .map(|generation| shell_contract::ipc::NativeContext::with_renderer((), generation))
-        } else {
-            None
+                .map(|generation| {
+                    shell_contract::ipc::NativeContext::with_renderer((), generation)
+                }),
+            Surface::Mindmap => registry.captured_context(sender.view),
+            _ => None,
         },
     };
     start_with_context(registry, cx, channel, args)
@@ -977,6 +990,11 @@ pub fn call(
 pub fn registered(kit: &Kit) -> TestRegistry {
     let mut registry = TestRegistry {
         views: Some(kit.views.clone()),
+        owned: kit
+            .services
+            .hosts
+            .get::<shell_contract::hosts::OwnedEffectsHost>()
+            .cloned(),
         ..Default::default()
     };
     crate::register(&mut registry, &kit.services).expect("D1 registers");

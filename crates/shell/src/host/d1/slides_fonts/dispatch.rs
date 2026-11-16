@@ -339,8 +339,8 @@ pub(super) fn close_request(id: u64) {
     if let Ok(mut registry) = REGISTRY.lock()
         && let Some(request) = registry.requests.remove(&id)
     {
-            request.active.store(false, Ordering::Release);
-        }
+        request.active.store(false, Ordering::Release);
+    }
 }
 
 fn private_entries(

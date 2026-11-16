@@ -1795,14 +1795,14 @@ fn build_added_series(
             r"<c:spPr><a:solidFill>[\s\S]*?</a:solidFill></c:spPr>",
         )?
     {
-            let inner = &result[a + "<c:spPr>".len()..b - "</c:spPr>".len()];
-            result = splice(
-                &result,
-                a,
-                b,
-                &format!("<c:spPr><a:ln>{inner}</a:ln></c:spPr>"),
-            );
-        }
+        let inner = &result[a + "<c:spPr>".len()..b - "</c:spPr>".len()];
+        result = splice(
+            &result,
+            a,
+            b,
+            &format!("<c:spPr><a:ln>{inner}</a:ln></c:spPr>"),
+        );
+    }
     if kind == "scatter" {
         result = result.replace("<c:smooth val=\"0\"/>", "");
     }

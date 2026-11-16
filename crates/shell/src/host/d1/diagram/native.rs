@@ -116,57 +116,51 @@ fn png_text(bytes: &[u8]) -> Result<Option<String>, OpenFailure> {
             && let Some(nul) = data.iter().position(|byte| *byte == 0)
             && (&data[..nul] == b"mxfile" || &data[..nul] == b"mxGraphModel")
         {
-                    let decode_error = || {
-                        failure(
-                            "decompress_failed",
-                            "the diagram inside the PNG cannot be decoded",
-                        )
-                    };
-                    return if kind == b"tEXt" {
-                        let value = &data[nul + 1..];
-                        Ok(Some(
-                            std::str::from_utf8(value)
-                                .map(str::to_owned)
-                                .unwrap_or_else(|_| {
-                                    value.iter().map(|byte| char::from(*byte)).collect()
-                                }),
-                        ))
-                    } else if kind == b"zTXt" {
-                        let raw = inflate(data.get(nul + 2..).ok_or_else(decode_error)?, true)
-                            .map_err(|_| decode_error())?;
-                        Ok(Some(raw.iter().map(|byte| char::from(*byte)).collect()))
-                    } else {
-                        let flag = *data.get(nul + 1).ok_or_else(|| {
-                            failure("corrupt_image", "the file is not a readable PNG")
-                        })?;
-                        let start = nul + 3;
-                        let language = data
-                            .get(start..)
-                            .and_then(|tail| tail.iter().position(|byte| *byte == 0))
-                            .map(|n| start + n)
-                            .ok_or_else(|| {
-                                failure("corrupt_image", "the file is not a readable PNG")
-                            })?;
-                        let translated = data
-                            .get(language + 1..)
-                            .and_then(|tail| tail.iter().position(|byte| *byte == 0))
-                            .map(|n| language + 1 + n)
-                            .ok_or_else(|| {
-                                failure("corrupt_image", "the file is not a readable PNG")
-                            })?;
-                        let value = &data[translated + 1..];
-                        let raw = if flag == 1 {
-                            inflate(value, true).map_err(|_| decode_error())?
-                        } else {
-                            value.to_vec()
-                        };
-                        let raw = raw.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&raw);
-                        Ok(Some(
-                            std::str::from_utf8(raw)
-                                .map_err(|_| decode_error())?
-                                .to_owned(),
-                        ))
-                    };
+            let decode_error = || {
+                failure(
+                    "decompress_failed",
+                    "the diagram inside the PNG cannot be decoded",
+                )
+            };
+            return if kind == b"tEXt" {
+                let value = &data[nul + 1..];
+                Ok(Some(
+                    std::str::from_utf8(value)
+                        .map(str::to_owned)
+                        .unwrap_or_else(|_| value.iter().map(|byte| char::from(*byte)).collect()),
+                ))
+            } else if kind == b"zTXt" {
+                let raw = inflate(data.get(nul + 2..).ok_or_else(decode_error)?, true)
+                    .map_err(|_| decode_error())?;
+                Ok(Some(raw.iter().map(|byte| char::from(*byte)).collect()))
+            } else {
+                let flag = *data
+                    .get(nul + 1)
+                    .ok_or_else(|| failure("corrupt_image", "the file is not a readable PNG"))?;
+                let start = nul + 3;
+                let language = data
+                    .get(start..)
+                    .and_then(|tail| tail.iter().position(|byte| *byte == 0))
+                    .map(|n| start + n)
+                    .ok_or_else(|| failure("corrupt_image", "the file is not a readable PNG"))?;
+                let translated = data
+                    .get(language + 1..)
+                    .and_then(|tail| tail.iter().position(|byte| *byte == 0))
+                    .map(|n| language + 1 + n)
+                    .ok_or_else(|| failure("corrupt_image", "the file is not a readable PNG"))?;
+                let value = &data[translated + 1..];
+                let raw = if flag == 1 {
+                    inflate(value, true).map_err(|_| decode_error())?
+                } else {
+                    value.to_vec()
+                };
+                let raw = raw.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&raw);
+                Ok(Some(
+                    std::str::from_utf8(raw)
+                        .map_err(|_| decode_error())?
+                        .to_owned(),
+                ))
+            };
         }
         if kind == b"IEND" {
             break;
@@ -231,10 +225,10 @@ impl Handler for XmlBuilder {
         } else if self.depth == 2
             && let Some(page) = self.current.and_then(|index| self.pages.get_mut(index))
         {
-                page.children += 1;
-                if page.first.is_none() {
-                    page.first = Some(name);
-                }
+            page.children += 1;
+            if page.first.is_none() {
+                page.first = Some(name);
+            }
         }
         self.depth += 1;
         Ok(())
@@ -250,7 +244,7 @@ impl Handler for XmlBuilder {
         if self.depth == 2
             && let Some(page) = self.current.and_then(|index| self.pages.get_mut(index))
         {
-                page.text.push_str(&String::from_utf16_lossy(text));
+            page.text.push_str(&String::from_utf16_lossy(text));
         }
         Ok(())
     }

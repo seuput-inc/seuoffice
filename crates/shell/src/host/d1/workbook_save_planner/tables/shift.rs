@@ -241,8 +241,8 @@ fn reshape(
             && s.open_end < s.close_start
             && xml_text[s.open_end..s.close_start].trim().is_empty()
         {
-                xml_text = replace_range(&xml_text, s.start, s.end, "");
-            }
+            xml_text = replace_range(&xml_text, s.start, s.end, "");
+        }
     }
     Ok(xml_text)
 }

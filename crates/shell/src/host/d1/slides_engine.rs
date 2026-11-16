@@ -2773,7 +2773,11 @@ mod tests {
         engine.bind_view(old, &first).unwrap();
         engine.bind_view(old, &second).unwrap();
         let snapshot = engine.snapshot(old, true).unwrap();
-        assert!(engine.transfer_history(old, new, std::slice::from_ref(&first)).is_err());
+        assert!(
+            engine
+                .transfer_history(old, new, std::slice::from_ref(&first))
+                .is_err()
+        );
         assert!(
             engine
                 .run_txn(old, &second, &TxnRequest::atomic(Vec::new()).dry())

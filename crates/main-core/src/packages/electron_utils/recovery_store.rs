@@ -431,7 +431,7 @@ impl RecoveryWritePlan {
     }
 }
 
-/// Identity of one recovery namespace entry as observed when a plan was made.
+/// Identity of the recovery copy object observed when a plan was made.
 /// A replacement publishes a new file object, so the inode (or the creation
 /// time off Unix) differs even when bytes and timestamps are identical.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -476,19 +476,20 @@ impl EntryStamp {
     }
 }
 
+/// The plan rewrites only the metadata entry, so it pins only the copy object:
+/// our own metadata republication (for example `mark_loaded`) of the same copy
+/// must not invalidate it, while a replacement copy must.
 pub struct RecoveryMetadataPlan {
     path: String,
     metadata: JsonValue,
     copy_path: String,
     expected_copy: Option<EntryStamp>,
-    expected_metadata: Option<EntryStamp>,
 }
 
 impl RecoveryMetadataPlan {
-    /// False once either entry was replaced or changed after the plan was made.
+    /// False once the copy was replaced or changed after the plan was made.
     fn still_current(&self) -> bool {
         EntryStamp::at_path(&self.copy_path) == self.expected_copy
-            && EntryStamp::at_path(&self.path) == self.expected_metadata
     }
 
     /// `Ok(false)`: the plan was stale and nothing was written.
@@ -1100,11 +1101,6 @@ impl RecoveryPinnedSnapshot {
                 .copy_handle
                 .metadata()
                 .ok()
-                .map(|meta| EntryStamp::of(&meta)),
-            expected_metadata: self
-                .metadata_handle
-                .as_ref()
-                .and_then(|file| file.metadata().ok())
                 .map(|meta| EntryStamp::of(&meta)),
         })
     }
@@ -1954,7 +1950,6 @@ impl RecoveryStore<'_> {
             metadata: meta.to_json(),
             copy_path: copy.to_owned(),
             expected_copy: EntryStamp::at_path(copy),
-            expected_metadata: EntryStamp::at_path(&Self::meta_path_of(copy)),
         })
     }
 

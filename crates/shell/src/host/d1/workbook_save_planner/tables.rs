@@ -269,12 +269,12 @@ fn check_overlap(
             && let Some(r) = t.attribute("ref")
             && area.overlaps(parse_ref(r)?)
         {
-                    return Err(if addition {
-                        format!("Table \"{name}\" overlaps an existing table ({r}).")
-                    } else {
-                        format!("Table \"{name}\" would overlap table {r}.")
-                    });
-                }
+            return Err(if addition {
+                format!("Table \"{name}\" overlaps an existing table ({r}).")
+            } else {
+                format!("Table \"{name}\" would overlap table {r}.")
+            });
+        }
     }
     let sheet = pkg.read_text(worksheet)?;
     if addition
@@ -282,23 +282,23 @@ fn check_overlap(
         && let Some(r) = f.attribute("ref")
         && area.overlaps(parse_ref(r)?)
     {
-                    return Err(format!(
-                        "Table \"{name}\" overlaps the sheet auto-filter ({r}) — clear it first."
-                    ));
-                }
+        return Err(format!(
+            "Table \"{name}\" overlaps the sheet auto-filter ({r}) — clear it first."
+        ));
+    }
     for m in xml::root_elements(&sheet, "mergeCell")? {
         if let Some(r) = m.attribute("ref")
             && area.overlaps(parse_ref(r)?)
         {
-                return Err(format!(
-                    "Table \"{name}\" {} merged cells ({r}) — unmerge them first.",
-                    if addition {
-                        "overlaps"
-                    } else {
-                        "would overlap"
-                    }
-                ));
-            }
+            return Err(format!(
+                "Table \"{name}\" {} merged cells ({r}) — unmerge them first.",
+                if addition {
+                    "overlaps"
+                } else {
+                    "would overlap"
+                }
+            ));
+        }
     }
     Ok(())
 }
@@ -451,12 +451,12 @@ fn add(
     if let Some(root) = first(&sheet, "worksheet")?
         && !root.attributes.iter().any(|(k, _)| k == "xmlns:r")
     {
-            let pos = root.open_end - 1;
-            sheet.insert_str(
-                pos,
-                " xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"",
-            );
-        }
+        let pos = root.open_end - 1;
+        sheet.insert_str(
+            pos,
+            " xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"",
+        );
+    }
     let child = format!("<tablePart r:id=\"{rel_id}\"/>");
     sheet = if let Some(container) = first(&sheet, "tableParts")? {
         let count = xml::root_elements(&sheet, "tablePart")?.len() + 1;

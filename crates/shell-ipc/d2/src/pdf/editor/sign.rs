@@ -719,7 +719,6 @@ fn sign(
                                     // Finish this request's state before revoking its old slot.
                                     ed.release_cert(view, &id);
                                     ed.with_view(view, |v| v.redaction_flow = false);
-                                    ed.set_save_as_in_flight(view, false);
                                     ed.grant_only(view, &target);
                                     ed.replace_document(view, Some(target.clone()));
                                     // the signed file starts clean: no copy of the unsigned document follows
@@ -1003,7 +1002,7 @@ mod tests {
     #[test]
     fn bounded_worker_failure_keeps_inspect_and_sign_reply_shapes() {
         let (mut rt, _) = super::super::tests::rt_with(
-            serde_json::json!({"openCertificateMessage":"worker-unavailable"}),
+            serde_json::json!({"engine": {"openCertificateMessage":"worker-unavailable"}}),
         );
         let view = rt.view(1, Surface::Pdf);
         let editors = rt.provided().all::<PdfEditors>().pop().unwrap();

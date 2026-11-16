@@ -505,17 +505,17 @@ fn export_headless_pdf(
                 if wait.recv_timeout(timeout).is_err()
                     && let Some(jobs) = jobs.upgrade()
                 {
-                        finish_headless(
-                            &cx,
-                            &jobs,
-                            view,
-                            &watch_generation,
-                            Err(format!(
-                                "Slides export timed out after {}ms",
-                                timeout.as_millis()
-                            )),
-                        );
-                    }
+                    finish_headless(
+                        &cx,
+                        &jobs,
+                        view,
+                        &watch_generation,
+                        Err(format!(
+                            "Slides export timed out after {}ms",
+                            timeout.as_millis()
+                        )),
+                    );
+                }
             })
         {
             return finish_headless(
@@ -2186,15 +2186,15 @@ impl AudienceStart {
         if !self.closing.swap(true, std::sync::atomic::Ordering::AcqRel)
             && let Some(created) = self.created.get()
         {
-                let window = created.window;
-                let windows = self.cx.windows.clone();
-                self.cx.ui.post(Box::new(move || {
-                    log_error(
-                        "closing an expired audience window",
-                        windows.close_window(window),
-                    )
-                }));
-            }
+            let window = created.window;
+            let windows = self.cx.windows.clone();
+            self.cx.ui.post(Box::new(move || {
+                log_error(
+                    "closing an expired audience window",
+                    windows.close_window(window),
+                )
+            }));
+        }
     }
 
     fn closed(self: &Arc<Self>) {
@@ -2600,13 +2600,11 @@ impl SlidesShell for Shell {
                 done,
             );
         });
-        if !on_core
-            && let Some(done) = done
-        {
-                done(Err(
-                    "The presentation title must be changed on the core thread".into(),
-                ));
-            }
+        if !on_core && let Some(done) = done {
+            done(Err(
+                "The presentation title must be changed on the core thread".into(),
+            ));
+        }
     }
 
     fn set_window_title_owned(
@@ -2639,13 +2637,11 @@ impl SlidesShell for Shell {
                 done,
             );
         });
-        if !on_core
-            && let Some(done) = done
-        {
-                done(Err(
-                    "The presentation title must be changed on the core thread".into(),
-                ));
-            }
+        if !on_core && let Some(done) = done {
+            done(Err(
+                "The presentation title must be changed on the core thread".into(),
+            ));
+        }
     }
 
     fn prepare_reveal_export(
@@ -2727,13 +2723,11 @@ impl SlidesShell for Shell {
                 }),
             );
         });
-        if !on_core
-            && let Some(done) = done
-        {
-                done(Err(
-                    "Presentation fullscreen must be changed on the core thread".into(),
-                ));
-            }
+        if !on_core && let Some(done) = done {
+            done(Err(
+                "Presentation fullscreen must be changed on the core thread".into(),
+            ));
+        }
     }
 
     fn reload_view(&self, view: ViewId) {

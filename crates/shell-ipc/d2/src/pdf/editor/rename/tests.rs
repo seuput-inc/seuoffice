@@ -249,12 +249,15 @@ fn native_rename_delivers_exact_revision_receipt_before_old_snapshot_loss() {
         std::fs::write(&new, b"%PDF moved").unwrap();
         editor.open_view(target.view, old.to_str());
         let effects = rt.services.hosts.get::<OwnedEffectsHost>().unwrap();
-        let owner = effects
+        let mut owner = effects
             .capture_owner(
                 target.view,
                 &rt.services.views.renderer_generation(target.view).unwrap(),
             )
             .unwrap();
+        owner.context = owner
+            .context
+            .with_document_lease(shell_contract::runtime::RendererGeneration::new());
         let owner = editor.capture_document_owner(target.view, owner).unwrap();
         let binding = NativeInvocationIssuer::new(CancelToken::default())
             .issue_existing_document_save(

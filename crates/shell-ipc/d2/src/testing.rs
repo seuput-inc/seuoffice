@@ -800,6 +800,26 @@ impl Rt {
         self.drain();
     }
 
+    /// An owner of `view`'s current renderer under one fresh fixture-native
+    /// origin. Clones of it, and contexts that only add a document lease to it,
+    /// stay the same origin, as every request of one native browser does.
+    pub fn native_root(&self, view: ViewId) -> shell_contract::ipc::NativeRequestOwner {
+        let generation = self
+            .views
+            .renderer_generation(view)
+            .expect("the view has a renderer");
+        self.services
+            .hosts
+            .get::<Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>()
+            .expect("the synthetic owned effects are installed")
+            .capture_invocation_root(
+                view,
+                &generation,
+                &shell_contract::hosts::synthetic::SyntheticNativeOrigin::new(),
+            )
+            .expect("the renderer is current")
+    }
+
     /// Runs what was posted to the core thread, until nothing is
     pub fn drain(&mut self) {
         loop {
@@ -860,7 +880,18 @@ impl Rt {
             sender: from,
             request,
             cancel: CancelToken::default(),
-            native: if from.surface == Surface::Docs || channel.starts_with("pdf:") {
+            native: if matches!(
+                channel,
+                "docs:write-recovery-now-done" | "hwp:recovery-flushed"
+            ) || (channel == "docs:close-check-result"
+                && args
+                    .get(1)
+                    .is_some_and(|value| matches!(value, IpcValue::String(_))))
+            {
+                self.views
+                    .renderer_generation(from.view)
+                    .map(|generation| NativeContext::with_renderer((), generation))
+            } else if from.surface == Surface::Docs || channel.starts_with("pdf:") {
                 self.views
                     .renderer_generation(from.view)
                     .and_then(|generation| {
@@ -878,17 +909,6 @@ impl Rt {
                             })
                             .map(|owner| owner.context)
                     })
-            } else if matches!(
-                channel,
-                "docs:write-recovery-now-done" | "hwp:recovery-flushed"
-            ) || (channel == "docs:close-check-result"
-                && args
-                    .get(1)
-                    .is_some_and(|value| matches!(value, IpcValue::String(_))))
-            {
-                self.views
-                    .renderer_generation(from.view)
-                    .map(|generation| NativeContext::with_renderer((), generation))
             } else {
                 None
             },

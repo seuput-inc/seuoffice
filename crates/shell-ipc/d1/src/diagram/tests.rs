@@ -291,16 +291,30 @@ fn engine_failure_rejects_project_save_before_creating_file() {
     let registry = registered(&kit);
     let s = Setup { kit, registry, dir };
     let (tab, _) = s.tab(1, None);
-    let error = s
-        .call(
-            tab,
-            "diagram:save-into-project",
-            vec![request([
-                ("bytes", bytes(DIAGRAM)),
-                ("defaultName", string("Plan")),
-            ])],
+    let generation = s.kit.services.views.renderer_generation(tab.view).unwrap();
+    let origin = s
+        .kit
+        .host::<std::sync::Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>()
+        .capture_invocation_root(
+            tab.view,
+            &generation,
+            &shell_contract::hosts::synthetic::SyntheticNativeOrigin::new(),
         )
-        .unwrap_err();
+        .unwrap();
+    let error = crate::testkit::start_with_owner(
+        &s.registry,
+        tab,
+        "diagram:save-into-project",
+        vec![request([
+            ("bytes", bytes(DIAGRAM)),
+            ("defaultName", string("Plan")),
+        ])],
+        &origin,
+        shell_contract::runtime::CancelToken::default(),
+    )
+    .try_recv()
+    .unwrap()
+    .unwrap_err();
     assert_eq!(error.message, "engine unavailable");
     assert!(!target.exists());
 }

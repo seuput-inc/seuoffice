@@ -104,9 +104,7 @@ pub(super) fn decode_retry(mut input: &[u8]) -> Result<RetryEvidence, String> {
     })
 }
 /// Encode the immutable native request without placing secrets in arguments or environment.
-pub(super) fn open_frames(
-    source: &CertificateSource,
-) -> Result<NonceFrames, String> {
+pub(super) fn open_frames(source: &CertificateSource) -> Result<NonceFrames, String> {
     use main_core::pdf::system_certificates::SystemCertificateRef;
     let (kind, thumbprint, directory, nickname, p12, password) = match source {
         CertificateSource::P12 { p12, password } => (
@@ -469,10 +467,7 @@ pub(super) fn unpack_opened(
 }
 
 /// Called only by the private pre-CEF worker dispatcher. Input is the inherited pipe.
-fn read_bundle(
-    input: &mut impl Read,
-    expected: Option<[u8; 32]>,
-) -> Result<NonceFrames, String> {
+fn read_bundle(input: &mut impl Read, expected: Option<[u8; 32]>) -> Result<NonceFrames, String> {
     let header = request_frame(input, HEADER_LEN)?;
     let nonce: [u8; 32] = header[..32]
         .try_into()

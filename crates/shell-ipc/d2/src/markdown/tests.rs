@@ -1281,13 +1281,6 @@ fn owned_save_as_waits_for_the_actual_approved_copy() {
             &rt.services.views.renderer_generation(issuer.view).unwrap(),
         )
         .unwrap();
-    let native = effects
-        .capture_owner(
-            target.view,
-            &rt.services.views.renderer_generation(target.view).unwrap(),
-        )
-        .unwrap()
-        .context;
     let (got, then) = catch();
     editor_for(&rt.provided(), target.view)
         .unwrap()
@@ -1298,6 +1291,11 @@ fn owned_save_as_waits_for_the_actual_approved_copy() {
             CancelToken::default(),
             then,
         );
+    let native = md(&rt)
+        .docs
+        .pending_save_destination(target.view)
+        .unwrap()
+        .context;
     let output = vault(&rt).join("owned-copy.docx");
     let output_s = output.to_string_lossy().into_owned();
     rt.script().save.push_back(Some(output.clone()));
@@ -1451,13 +1449,6 @@ fn owned_png_save_as_acknowledges_only_after_page_publication_and_reveal() {
             &rt.services.views.renderer_generation(issuer.view).unwrap(),
         )
         .unwrap();
-    let native = effects
-        .capture_owner(
-            target.view,
-            &rt.services.views.renderer_generation(target.view).unwrap(),
-        )
-        .unwrap()
-        .context;
     let (got, then) = catch();
     editor_for(&rt.provided(), target.view)
         .unwrap()
@@ -1468,6 +1459,11 @@ fn owned_png_save_as_acknowledges_only_after_page_publication_and_reveal() {
             CancelToken::default(),
             then,
         );
+    let native = md(&rt)
+        .docs
+        .pending_save_destination(target.view)
+        .unwrap()
+        .context;
     let output = vault(&rt).join("pages-copy.png");
     let output_s = output.to_string_lossy().into_owned();
     rt.script().save.push_back(Some(output.clone()));

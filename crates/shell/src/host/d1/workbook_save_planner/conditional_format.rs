@@ -698,9 +698,9 @@ fn apply_rules(
     } else if let Some(last) = preserved.iter().rev().find(|p| p.matched)
         && let Some(at) = out.rfind(&last.text)
     {
-            out.insert_str(at + last.text.len(), &body);
-            return Ok(out);
-        }
+        out.insert_str(at + last.text.len(), &body);
+        return Ok(out);
+    }
     insert_tail(&out, &body)
 }
 pub(super) fn apply(

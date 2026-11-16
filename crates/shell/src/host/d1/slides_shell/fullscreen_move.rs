@@ -247,8 +247,8 @@ pub(super) fn begin(
         if matches!(event, tauri::WindowEvent::Destroyed)
             && let Some(this) = weak.upgrade()
         {
-                this.complete(Err("The original presenter window was destroyed".into()));
-            }
+            this.complete(Err("The original presenter window was destroyed".into()));
+        }
     });
     let prepared = native_owner::run_accepted_ui_pair(
         this.cx.ui.as_ref(),

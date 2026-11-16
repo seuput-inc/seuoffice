@@ -430,8 +430,8 @@ fn add_shape(slide: &mut pptx_engine::types::Slide, value: Value, now: f64) -> R
     if let Some(paragraphs) = options.paragraphs.as_mut()
         && let Some(tagged) = pptx_engine::generate::tag_hangul_paragraphs(paragraphs)
     {
-            *paragraphs = tagged;
-        }
+        *paragraphs = tagged;
+    }
     add_element(slide, &options, &jscompat::random_uuid(), now)?;
     Ok(())
 }
@@ -459,8 +459,8 @@ pub(super) fn generate_page(
         if let Kind::Image { url } = &element.kind
             && !fetched.contains_key(url)
         {
-                fetched.insert(url.clone(), fetch_image(url));
-            }
+            fetched.insert(url.clone(), fetch_image(url));
+        }
     }
     if let Some(background) = page.background {
         let slide = opened
@@ -504,16 +504,16 @@ pub(super) fn generate_page(
                         element.h,
                     )
                 {
-                        let slide = opened
-                            .deck
-                            .slides
-                            .first_mut()
-                            .ok_or("blank presentation has no slide")?;
-                        let id = picture.id.as_deref().ok_or("inserted picture has no id")?;
-                        if !edit_picture_src_rect(slide, id, Some(rect)) {
-                            return Err("could not crop the inserted picture".into());
-                        }
+                    let slide = opened
+                        .deck
+                        .slides
+                        .first_mut()
+                        .ok_or("blank presentation has no slide")?;
+                    let id = picture.id.as_deref().ok_or("inserted picture has no id")?;
+                    if !edit_picture_src_rect(slide, id, Some(rect)) {
+                        return Err("could not crop the inserted picture".into());
                     }
+                }
             }
             Kind::Text { paragraphs, anchor } => {
                 let value = json!({"kind":"textbox", "offset":offset, "paragraphs":paragraphs,

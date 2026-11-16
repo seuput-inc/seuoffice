@@ -350,8 +350,8 @@ pub(super) fn parse(pivot_xml: &str, cache_xml: &str) -> EngineResult<Value> {
             && field.fract() == 0.0
             && let Some(formula) = formulas.get(&(field as usize))
         {
-                result["formula"] = json!(formula);
-            }
+            result["formula"] = json!(formula);
+        }
         data_fields.push(result);
     }
     let aggregations = [

@@ -36,6 +36,9 @@ fn harness(name: &str, case: impl FnOnce(&Path) -> Value) -> H {
         hosts.insert::<ProbeLog>(log.clone());
         super::insert_fakes(hosts, &case);
     });
+    // the native host gives every capture of one renderer the same origin
+    kit.host::<Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>()
+        .share_capture_origins();
     let reg = registered(&kit);
     let sender = kit.view(1, Surface::Mindmap);
     let app = handle().expect("routes ran");
@@ -961,7 +964,10 @@ fn owned_seed_rollback_fences_replacement_and_accepts_consumption() {
         .views
         .renderer_generation(h.sender.view)
         .unwrap();
-    let owner = effects.capture_owner(h.sender.view, &generation).unwrap();
+    let mut owner = effects.capture_owner(h.sender.view, &generation).unwrap();
+    owner.context = owner
+        .context
+        .with_authority(shell_contract::hosts::synthetic::SyntheticNativeOrigin::new());
     let (issuer, reservation) =
         shell_contract::ipc::NativeClosureIssuer::new(h.sender.view, generation.clone());
     let cancel = shell_contract::runtime::CancelToken::default();
@@ -1093,12 +1099,12 @@ fn prepared_seed_requires_exact_browser_and_preserves_prior_seed_on_failure() {
         .unwrap();
     assert!(
         reservation
-            .with_initial_owner(&browser, |transition| prepare("failed")
+            .with_owner(&browser, |transition| prepare("failed")
                 .commit(transition, &mut || Err("rejected".into())))
             .is_err()
     );
     let replacement = reservation
-        .with_initial_owner(&browser, |transition| {
+        .with_owner(&browser, |transition| {
             prepare("new").commit(transition, &mut || {
                 initialized += 1;
                 Ok(())

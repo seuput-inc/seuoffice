@@ -245,7 +245,12 @@ impl PdfReload for SyntheticPdfReload {
                 .capture_owner(view, &next)
                 .map(|owner| NativeRequestOwner {
                     view,
-                    context: owner.context.with_document_lease(RendererGeneration::new()),
+                    context: owner
+                        .context
+                        .with_document_lease(RendererGeneration::new())
+                        .with_authority(
+                            shell_contract::hosts::synthetic::SyntheticNativeOrigin::new(),
+                        ),
                 })
                 .map(|owner| {
                     shared.0.lock().unwrap().pdf_reload_owner = Some(owner.clone());

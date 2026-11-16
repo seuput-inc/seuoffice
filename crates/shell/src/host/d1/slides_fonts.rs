@@ -442,11 +442,11 @@ impl FontSession {
             if !face.private
                 && let Some(w) = w
             {
-                    let suffix = std::str::from_utf8(w).unwrap_or("");
-                    if !main_core::pdf::font_locate::norm(&face.family).ends_with(suffix) {
-                        face.family.push_str(&format!(" W{}", char::from(w[1])));
-                    }
+                let suffix = std::str::from_utf8(w).unwrap_or("");
+                if !main_core::pdf::font_locate::norm(&face.family).ends_with(suffix) {
+                    face.family.push_str(&format!(" W{}", char::from(w[1])));
                 }
+            }
             let target = if w.is_some() {
                 None
             } else {
@@ -461,21 +461,21 @@ impl FontSession {
             if !face.substituted
                 && let Some(target) = target
             {
-                    let weight = face
-                        .parse()
-                        .ok()
-                        .and_then(|parsed| parsed.tables().os2.map(|os2| os2.weight().to_number()));
-                    let matches = weight.is_some_and(|weight| {
-                        if target == 400 {
-                            weight == 400
-                        } else {
-                            weight != 400 && weight.abs_diff(target) <= 100
-                        }
-                    });
-                    if main_core::pdf::font_locate::norm(&face.family) != requested && matches {
-                        face.family = style.family.trim().to_owned();
+                let weight = face
+                    .parse()
+                    .ok()
+                    .and_then(|parsed| parsed.tables().os2.map(|os2| os2.weight().to_number()));
+                let matches = weight.is_some_and(|weight| {
+                    if target == 400 {
+                        weight == 400
+                    } else {
+                        weight != 400 && weight.abs_diff(target) <= 100
                     }
+                });
+                if main_core::pdf::font_locate::norm(&face.family) != requested && matches {
+                    face.family = style.family.trim().to_owned();
                 }
+            }
         }
         self.cache.insert(key, result.clone());
         result
@@ -610,8 +610,8 @@ impl FontSession {
         if let Some(font) = face.filter(|font| !font.substituted)
             && font.shaped_units(sample(script), true).is_some()
         {
-                return Some(font.clone());
-            }
+            return Some(font.clone());
+        }
         self.defaults.get(&script).cloned()
     }
     fn measure(

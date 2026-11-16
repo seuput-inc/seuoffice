@@ -1028,7 +1028,8 @@ impl Windows {
         ) {
             Ok(built) => {
                 if let Some(created) = generation.get()
-                    && let Err(error) = crate::ipc::bind_native_webview(&built, view, created.clone())
+                    && let Err(error) =
+                        crate::ipc::bind_native_webview(&built, view, created.clone())
                 {
                     return Err(ChildCreationError {
                         message: error,

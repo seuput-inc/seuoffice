@@ -502,6 +502,10 @@ fn owned_print_consumes_real_save_scope_and_waits_for_exact_ack_or_owner_loss() 
             .unwrap();
         let token = field(&event.args[0], "requestId").clone();
         assert!(matches!(&token, IpcValue::String(_)));
+        let destination = editor
+            .0
+            .pending_save_destination(crate::kit::as_str(&token).unwrap())
+            .unwrap();
         if scenario != "effect-failure" {
             rt.script().pdf = Some(b"%PDF owned result".to_vec());
         }
@@ -514,7 +518,7 @@ fn owned_print_consumes_real_save_scope_and_waits_for_exact_ack_or_owner_loss() 
                 IpcValue::Undefined,
                 token.clone(),
             ],
-            origin.context.clone(),
+            destination.context.clone(),
             request_cancel.clone(),
         );
         assert!(printing.take().is_none());
@@ -566,7 +570,7 @@ fn owned_print_consumes_real_save_scope_and_waits_for_exact_ack_or_owner_loss() 
                 "docs:close-save-result",
                 sender,
                 vec![true.into_ipc(), "foreign-token".into_ipc()],
-                origin.context.clone(),
+                destination.context.clone(),
                 request_cancel.clone(),
             );
             assert!(result.borrow().is_none());
@@ -575,7 +579,7 @@ fn owned_print_consumes_real_save_scope_and_waits_for_exact_ack_or_owner_loss() 
                 "docs:close-save-result",
                 sender,
                 vec![saved.into_ipc(), token],
-                origin.context.clone(),
+                destination.context.clone(),
                 request_cancel.clone(),
             );
             assert_eq!(result.borrow_mut().take().unwrap().unwrap(), saved);
