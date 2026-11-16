@@ -29,12 +29,12 @@ fn gated_cleanup(
         move |done: Box<
             dyn FnOnce(Result<shell_contract::ipc::NativeBrowserRetirement, String>) + Send,
         >| {
-        let cleanup = cleanup.clone();
-        barrier(Box::new(move |result| match result {
-            Ok(()) => cleanup(done),
-            Err(error) => done(Err(error)),
-        }));
-    },
+            let cleanup = cleanup.clone();
+            barrier(Box::new(move |result| match result {
+                Ok(()) => cleanup(done),
+                Err(error) => done(Err(error)),
+            }));
+        },
     )
 }
 

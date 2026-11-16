@@ -167,7 +167,7 @@ mod tests {
             owner,
         )
         .unwrap();
-        let receipt = target.commit_seed_from_admitted(&mut || Ok(())).unwrap();
+        let receipt = target.commit_seed_from_admitted(|| Ok(())).unwrap();
         let snapshot = target.authority_snapshot().unwrap();
         for (chosen, expected) in [
             ("letter.DOCX", "letter.DOCX"),

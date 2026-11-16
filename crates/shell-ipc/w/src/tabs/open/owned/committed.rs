@@ -245,6 +245,7 @@ impl TabsState {
                 pending,
                 additional,
                 Box::new(move |result| {
+                    let mut completion = completion;
                     completion.pending = false;
                     let path = match result {
                         Ok(NativeDriveReopen::CleanupPending(receipt)) => {

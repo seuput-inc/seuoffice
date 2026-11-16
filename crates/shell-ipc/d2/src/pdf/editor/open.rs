@@ -894,7 +894,8 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
                 {
                     Some(captured) => captured,
                     None => {
-                        return reply.reply(Ok(super::failed("pdf: document revision unavailable")));
+                        return reply
+                            .reply(Ok(super::failed("pdf: document revision unavailable")));
                     }
                 };
                 let authority = match authority.with_destination_receipt(captured) {

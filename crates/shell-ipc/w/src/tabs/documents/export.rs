@@ -95,22 +95,23 @@ impl TabsState {
                     return done(Ok(true));
                 };
                 let finish_state = state.this.clone();
-                let finish = Box::new(move |result: Result<(), String>| {
-                    if let Err(error) = result {
-                        return done(Err(error));
-                    }
-                    let ready = finish_state
-                        .upgrade()
-                        .and_then(|state| {
-                            state.with_manager(|manager, _| {
-                                manager
-                                    .find_tab_of_kind_by_path(TabKind::Docs, Some(&path))
-                                    .is_none()
+                let finish: Box<dyn FnOnce(Result<(), String>)> =
+                    Box::new(move |result: Result<(), String>| {
+                        if let Err(error) = result {
+                            return done(Err(error));
+                        }
+                        let ready = finish_state
+                            .upgrade()
+                            .and_then(|state| {
+                                state.with_manager(|manager, _| {
+                                    manager
+                                        .find_tab_of_kind_by_path(TabKind::Docs, Some(&path))
+                                        .is_none()
+                                })
                             })
-                        })
-                        .unwrap_or(true);
-                    done(Ok(ready));
-                });
+                            .unwrap_or(true);
+                        done(Ok(ready));
+                    });
                 match active {
                     Some((id, active)) if state.shell_window().is_some() => state
                         .activate_loaded_owned_many(

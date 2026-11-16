@@ -238,7 +238,7 @@ fn native_save_revision_successor_retires_every_view_and_preserves_selection() {
                 (old.clone(), next.clone()),
                 (other_old.clone(), other_next.clone()),
             ],
-            &[callback.clone()],
+            std::slice::from_ref(&callback),
         )
         .unwrap();
     assert!(prepared.renewed_request_owner(&callback).is_none());

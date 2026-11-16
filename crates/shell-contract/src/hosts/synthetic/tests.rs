@@ -41,11 +41,14 @@ impl Queue {
     }
 }
 
+type DestroyedCallback = Box<dyn Fn(ViewId) + Send + Sync>;
+type ReplacedCallback = Box<dyn Fn(ViewId, RendererGeneration) + Send + Sync>;
+
 #[derive(Default)]
 struct TestViews {
     current: Mutex<HashMap<ViewId, (Sender, RendererGeneration)>>,
-    destroyed: Mutex<Vec<Box<dyn Fn(ViewId) + Send + Sync>>>,
-    replaced: Mutex<Vec<Box<dyn Fn(ViewId, RendererGeneration) + Send + Sync>>>,
+    destroyed: Mutex<Vec<DestroyedCallback>>,
+    replaced: Mutex<Vec<ReplacedCallback>>,
 }
 impl TestViews {
     fn add(&self, view: ViewId, generation: RendererGeneration) {
@@ -65,7 +68,7 @@ impl TestViews {
         let old = {
             let mut current = self.current.lock().unwrap();
             let (_, generation) = current.get_mut(&view).unwrap();
-            std::mem::replace(generation, RendererGeneration::new())
+            std::mem::take(generation)
         };
         old.revoke();
         for listener in self.replaced.lock().unwrap().iter() {
@@ -836,7 +839,7 @@ fn invocation_admission_requires_registered_identity_and_every_lifetime() {
         .with_native_invocation_effect(
             &document,
             &owner,
-            &[owner.clone()],
+            std::slice::from_ref(&owner),
             &cancel,
             &cancel,
             &mut || {
@@ -850,7 +853,7 @@ fn invocation_admission_requires_registered_identity_and_every_lifetime() {
         .emit_native_invocation_many(
             &document,
             &owner,
-            &[owner.clone()],
+            std::slice::from_ref(&owner),
             0,
             &cancel,
             &cancel,
@@ -864,7 +867,7 @@ fn invocation_admission_requires_registered_identity_and_every_lifetime() {
             .emit_native_invocation_many(
                 &document,
                 &owner,
-                &[owner.clone()],
+                std::slice::from_ref(&owner),
                 1,
                 &cancel,
                 &cancel,
@@ -916,7 +919,7 @@ fn invocation_admission_requires_registered_identity_and_every_lifetime() {
             .emit_native_invocation_many(
                 &document,
                 &owner,
-                &[owner.clone()],
+                std::slice::from_ref(&owner),
                 0,
                 &cancel,
                 &cancel,
@@ -960,7 +963,7 @@ fn recovery_pdf_revision_transition_retains_successor_and_notifies_after_cleanup
     };
     let stale = target.authority_snapshot().unwrap();
     let mut renewal = stale
-        .prepare_pdf_revision_renewal(&[destination.clone()], &old, &next)
+        .prepare_pdf_revision_renewal(std::slice::from_ref(&destination), &old, &next)
         .unwrap();
     let order = Arc::new(Mutex::new(Vec::new()));
     let observed = order.clone();
@@ -973,7 +976,7 @@ fn recovery_pdf_revision_transition_retains_successor_and_notifies_after_cleanup
         .with_recovery_pdf_revision_transition(
             &receipt,
             &receiver,
-            &[destination.clone()],
+            std::slice::from_ref(&destination),
             &cancel,
             &cancel,
             &old,
@@ -1035,7 +1038,7 @@ fn recovery_pdf_revision_transition_rejects_wrong_or_lost_participants_and_unwin
     };
     let snapshot = target.authority_snapshot().unwrap();
     let mut renewal = snapshot
-        .prepare_pdf_revision_renewal(&[destination.clone()], &old, &next)
+        .prepare_pdf_revision_renewal(std::slice::from_ref(&destination), &old, &next)
         .unwrap();
     let (reservation, browser) = closure_reservation(receiver.view, &created);
     let other_target = RecoveryOpenTarget::bind(
@@ -1062,7 +1065,7 @@ fn recovery_pdf_revision_transition_rejects_wrong_or_lost_participants_and_unwin
             .with_recovery_pdf_revision_transition(
                 &other_receipt,
                 &receiver,
-                &[destination.clone()],
+                std::slice::from_ref(&destination),
                 &cancel,
                 &cancel,
                 &old,
@@ -1079,7 +1082,7 @@ fn recovery_pdf_revision_transition_rejects_wrong_or_lost_participants_and_unwin
             .with_recovery_pdf_revision_transition(
                 &receipt,
                 &receiver,
-                &[destination.clone()],
+                std::slice::from_ref(&destination),
                 &cancel,
                 &cancel,
                 &wrong,
@@ -1091,14 +1094,18 @@ fn recovery_pdf_revision_transition_rejects_wrong_or_lost_participants_and_unwin
             .is_err()
     );
     let mut wrong_successor = snapshot
-        .prepare_pdf_revision_renewal(&[destination.clone()], &old, &PdfDocumentLease::new())
+        .prepare_pdf_revision_renewal(
+            std::slice::from_ref(&destination),
+            &old,
+            &PdfDocumentLease::new(),
+        )
         .unwrap();
     assert!(
         effects
             .with_recovery_pdf_revision_transition(
                 &receipt,
                 &receiver,
-                &[destination.clone()],
+                std::slice::from_ref(&destination),
                 &cancel,
                 &cancel,
                 &old,
@@ -1738,7 +1745,7 @@ fn native_command_event_enqueues_only_for_the_selected_live_generation() {
             &operation,
             &command,
             &created,
-            &[owner.clone()],
+            std::slice::from_ref(&owner),
             0,
             &cancel,
             &cancel,
@@ -2386,7 +2393,7 @@ fn native_operation_fixture_requires_explicit_origin_and_every_lifetime() {
         .with_native_operation_effect(
             &operation,
             &origin,
-            &[origin.clone()],
+            std::slice::from_ref(&origin),
             &cancel,
             &cancel,
             &mut || {
@@ -2399,7 +2406,7 @@ fn native_operation_fixture_requires_explicit_origin_and_every_lifetime() {
         .emit_native_operation_many(
             &operation,
             &origin,
-            &[origin.clone()],
+            std::slice::from_ref(&origin),
             0,
             &cancel,
             &cancel,
@@ -2489,7 +2496,7 @@ fn startup_recovery_requires_both_operation_lifetimes_and_registered_child() {
             &owner,
             &child,
             &owner,
-            &[owner.clone()],
+            std::slice::from_ref(&owner),
             0,
             &cancel,
             &cancel,
@@ -2505,7 +2512,7 @@ fn startup_recovery_requires_both_operation_lifetimes_and_registered_child() {
                 &owner,
                 &child,
                 &owner,
-                &[owner.clone()],
+                std::slice::from_ref(&owner),
                 1,
                 &cancel,
                 &cancel,
@@ -2653,7 +2660,7 @@ fn created_many_rejects_lost_created_lifetime_without_running_effect() {
     effects
         .with_created_many_effect(
             &owner,
-            &[owner.clone()],
+            std::slice::from_ref(&owner),
             &created,
             &cancel,
             &cancel,
@@ -2668,7 +2675,7 @@ fn created_many_rejects_lost_created_lifetime_without_running_effect() {
         effects
             .with_created_many_effect(
                 &owner,
-                &[owner.clone()],
+                std::slice::from_ref(&owner),
                 &created,
                 &cancel,
                 &cancel,
@@ -3838,10 +3845,10 @@ fn native_saved_path_admits_only_live_selected_save_controls() {
     let mut calls = 0;
     path.with_effect(
         &host,
-        &[participant.clone()],
+        std::slice::from_ref(&participant),
         &cancel,
         &pending,
-        &[extra.clone()],
+        std::slice::from_ref(&extra),
         &mut || {
             calls += 1;
             Ok(())
@@ -3851,7 +3858,7 @@ fn native_saved_path_admits_only_live_selected_save_controls() {
     let mut plan_calls = 0;
     host.with_prepared_saved_publication(
         path.publication(),
-        &[participant.clone()],
+        std::slice::from_ref(&participant),
         &cancel,
         &pending,
         &[],
@@ -3876,7 +3883,7 @@ fn native_saved_path_admits_only_live_selected_save_controls() {
     assert!(
         path.with_effect(
             &host,
-            &[participant.clone()],
+            std::slice::from_ref(&participant),
             &cancel,
             &pending,
             &[extra],
@@ -3891,7 +3898,7 @@ fn native_saved_path_admits_only_live_selected_save_controls() {
     assert!(
         path.with_effect(
             &host,
-            &[participant.clone()],
+            std::slice::from_ref(&participant),
             &cancel,
             &pending,
             &[],
@@ -4508,7 +4515,7 @@ fn generated_cleanup_fixture_retains_dropped_registrations_until_real_completion
     let retained = registry.retained();
     assert_eq!(retained.len(), 1);
     retained[0]
-        .observe(Box::new(|delivery| drop(delivery)), Arc::new(|| {}))
+        .observe(Box::new(drop), Arc::new(|| {}))
         .unwrap_or_else(|_| panic!("observer rejected"));
     let mut delivery = retained[0]
         .take_redelivery()
