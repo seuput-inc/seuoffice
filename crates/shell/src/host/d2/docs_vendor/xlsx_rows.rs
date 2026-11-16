@@ -213,8 +213,7 @@ fn date_styles(xml: &str) -> Result<HashSet<usize>, String> {
         let code = js_regex!(r"\[[^\]]*\]").replace_all(&code, |_| String::new());
         let code = js_regex!(r"\\.").replace_all(&code, |_| String::new());
         let has_date = js_regex!(r"[ymdh]", "i").test(&code);
-        if (has_date || (!js_regex!(r"[#0?@]").test(&code) && code.contains('s')))
-            && id.is_finite()
+        if (has_date || (!js_regex!(r"[#0?@]").test(&code) && code.contains('s'))) && id.is_finite()
         {
             custom.insert(if id == 0.0 {
                 0.0f64.to_bits()
