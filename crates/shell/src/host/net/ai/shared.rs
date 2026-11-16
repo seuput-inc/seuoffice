@@ -16,8 +16,8 @@ use shell_contract::runtime::CancelToken;
 use shell_ipc_a::ai_core::{AiCoreHost, RemoteImage};
 use shell_ipc_a::slides_ai::SlidesAiHost;
 
-use super::{UiLang, codec, codex_image_available, fetch, read_url, search, subscription_statuses};
 use super::native_image::Decoder;
+use super::{UiLang, codec, codex_image_available, fetch, read_url, search, subscription_statuses};
 
 /// `{ path, statuses?, dataDir? }`
 fn context_of(value: &JsonValue) -> AiToolCallContext {

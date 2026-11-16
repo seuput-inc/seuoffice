@@ -1,5 +1,6 @@
 mod diagram;
 mod recovery;
+mod slides;
 mod target;
 mod text;
 mod visible;
@@ -193,6 +194,9 @@ fn run_call(context: Rc<Context>, call: HostCall, done: Box<dyn FnOnce(Settled)>
             Some(bridge) => visible::dispatch(bridge.clone(), call, done),
             None => done(Err("visible editor bridge is unavailable".into())),
         },
+        "SlidesControl" => {
+            slides::dispatch(context.tabs.clone(), context.services.clone(), call, done)
+        }
         "TargetResolver" => {
             target::dispatch(context.tabs.clone(), context.services.clone(), call, done)
         }

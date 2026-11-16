@@ -172,9 +172,7 @@ impl Hooks {
         deferred: bool,
         prepare: impl FnOnce(ViewId) -> Result<(), String>,
         docs_prepared: Option<&mut Option<shell_ipc_d2::docs::editors::DocsPreparedRegistration>>,
-        sheets_prepared: Option<
-            &mut Option<shell_ipc_d1::sheets::PreparedTabRegistration>,
-        >,
+        sheets_prepared: Option<&mut Option<shell_ipc_d1::sheets::PreparedTabRegistration>>,
         recovery: bool,
         captured_window: Option<(WindowId, Arc<crate::views::NativeWindowLifecycle>)>,
         actors: &mut OrdinaryActorStages,
@@ -200,9 +198,7 @@ impl Hooks {
         mut docs_prepared: Option<
             &mut Option<shell_ipc_d2::docs::editors::DocsPreparedRegistration>,
         >,
-        mut sheets_prepared: Option<
-            &mut Option<shell_ipc_d1::sheets::PreparedTabRegistration>,
-        >,
+        mut sheets_prepared: Option<&mut Option<shell_ipc_d1::sheets::PreparedTabRegistration>>,
         recovery: bool,
         captured_window: Option<(WindowId, Arc<crate::views::NativeWindowLifecycle>)>,
         saved_input: Option<&shell_contract::ipc::NativeSavedInput>,

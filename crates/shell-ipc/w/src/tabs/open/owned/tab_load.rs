@@ -141,7 +141,9 @@ impl TabsState {
         }
     }
 
-    pub(in crate::tabs) fn captured_shell_owner(&self) -> Result<(ShellWindow, NativeRequestOwner), String> {
+    pub(in crate::tabs) fn captured_shell_owner(
+        &self,
+    ) -> Result<(ShellWindow, NativeRequestOwner), String> {
         let effects = self
             .services
             .hosts

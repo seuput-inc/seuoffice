@@ -8574,7 +8574,10 @@ mod command_tests {
         }));
         let observed = observed.lock().unwrap().take().unwrap();
         assert!(
-            super::super::window_snapshot::with_window_observations(&[observed.clone()], || ())
+            super::super::window_snapshot::with_window_observations(
+                std::slice::from_ref(&observed),
+                || ()
+            )
                 .is_ok()
         );
         reservation.set_title("after").unwrap();

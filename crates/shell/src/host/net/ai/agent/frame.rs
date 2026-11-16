@@ -45,7 +45,11 @@ fn number(options: &Value, key: &str) -> Option<f64> {
 
 /// `agentText(lang, 'windowTitle')`: the renderer's string table
 fn title_in(lang: &str) -> &'static str {
-    if lang == "ko" { "에이전트" } else { "Agent" }
+    if lang == "ko" {
+        "에이전트"
+    } else {
+        "Agent"
+    }
 }
 
 impl Frame {

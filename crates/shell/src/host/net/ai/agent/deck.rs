@@ -44,9 +44,7 @@ impl Deck {
     pub fn text(&self, index: usize) -> Result<String, String> {
         let mut slot = self.archive.lock().unwrap_or_else(PoisonError::into_inner);
         let archive = slot.as_mut().ok_or("no deck is open")?;
-        let mut entry = archive
-            .by_index(index)
-            .map_err(|error| error.to_string())?;
+        let mut entry = archive.by_index(index).map_err(|error| error.to_string())?;
         let mut bytes = Vec::new();
         entry
             .read_to_end(&mut bytes)

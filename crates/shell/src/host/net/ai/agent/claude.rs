@@ -183,7 +183,11 @@ pub fn rule_path(path: &str, platform: &str) -> Option<String> {
         let drive = chars.next().filter(char::is_ascii_alphabetic)?;
         let rest = normal.get(1..)?.strip_prefix(":\\")?;
         let rest: Vec<&str> = rest.split('\\').filter(|part| !part.is_empty()).collect();
-        return Some(format!("//{}/{}", drive.to_ascii_lowercase(), rest.join("/")));
+        return Some(format!(
+            "//{}/{}",
+            drive.to_ascii_lowercase(),
+            rest.join("/")
+        ));
     }
     let normal = posix::normalize(path);
     normal.starts_with('/').then(|| format!("/{normal}"))
@@ -532,10 +536,7 @@ impl Core {
         };
         self.respond(
             request_id,
-            object(vec![
-                ("behavior", text("allow")),
-                ("updatedInput", updated),
-            ]),
+            object(vec![("behavior", text("allow")), ("updatedInput", updated)]),
         );
     }
 
@@ -918,8 +919,7 @@ impl ClaudeAgentSession {
         if let Some(tool_use_id) = request.tool_use_id {
             self.core.st.borrow_mut().denied.insert(tool_use_id);
         }
-        self.core
-            .deny(id, message.unwrap_or(DECLINED_BY_PERSON));
+        self.core.deny(id, message.unwrap_or(DECLINED_BY_PERSON));
     }
 
     /// `setOpenDocuments(paths)`
@@ -1377,9 +1377,13 @@ mod tests {
         .unwrap();
         let line = args.join(" ");
         assert!(line.starts_with("-p --input-format stream-json --output-format stream-json"));
-        assert!(line.contains("--tools Read,Edit,Write,Glob,Grep,Bash,PowerShell,Skill,WebSearch,WebFetch"));
+        assert!(line.contains(
+            "--tools Read,Edit,Write,Glob,Grep,Bash,PowerShell,Skill,WebSearch,WebFetch"
+        ));
         assert!(line.contains("--permission-mode auto"));
-        assert!(line.contains("--settings /s/claude-settings.json --mcp-config /s/claude-mcp.json"));
+        assert!(
+            line.contains("--settings /s/claude-settings.json --mcp-config /s/claude-mcp.json")
+        );
         assert!(line.contains("--plugin-dir /skills --add-dir /skills"));
         assert!(line.contains("--model opus"));
         let manual = launch_args(&Launch {
@@ -1426,7 +1430,9 @@ mod tests {
         assert!(!text.contains("\"allow\""));
         let mut trusting = options(AgentPermissionMode::TrustProject);
         trusting.user_mcp_relays = Some(vec![relay("notes", &["read"])]);
-        assert!(json_stringify(&settings(&trusting, "linux")).contains("\"allow\":[\"mcp__notes\"]"));
+        assert!(
+            json_stringify(&settings(&trusting, "linux")).contains("\"allow\":[\"mcp__notes\"]")
+        );
     }
 
     #[test]
@@ -1453,7 +1459,10 @@ mod tests {
         assert_eq!(read.paths, vec!["/work/x".to_owned()]);
         let command = action(
             "Bash",
-            Some(&input(vec![("command", text("ls")), ("description", text("list"))])),
+            Some(&input(vec![
+                ("command", text("ls")),
+                ("description", text("list")),
+            ])),
             &[],
         );
         assert_eq!(command.kind, AgentActionKind::Command);
@@ -1496,7 +1505,11 @@ mod tests {
         ]);
         assert_eq!(init_problem(&good, &relays), None);
         let extra = object(vec![("tools", string_list(&["Read", "Task"]))]);
-        assert!(init_problem(&extra, &relays).unwrap().contains("tools the app did not turn on"));
+        assert!(
+            init_problem(&extra, &relays)
+                .unwrap()
+                .contains("tools the app did not turn on")
+        );
         let unlisted = object(vec![("tools", string_list(&["mcp__notes__write"]))]);
         assert!(init_problem(&unlisted, &relays).is_some());
         let foreign = object(vec![
@@ -1506,7 +1519,11 @@ mod tests {
                 JsonValue::Array(vec![object(vec![("name", text("evil"))])]),
             ),
         ]);
-        assert!(init_problem(&foreign, &relays).unwrap().contains("MCP server"));
+        assert!(
+            init_problem(&foreign, &relays)
+                .unwrap()
+                .contains("MCP server")
+        );
         assert_eq!(
             init_problem(&object(Vec::new()), &relays).as_deref(),
             Some("Claude Code did not report its tool list")

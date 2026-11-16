@@ -1948,11 +1948,7 @@ fn build_nodes(app: &AppHandle, nodes: &[Node], named: &mut Named) -> tauri::Res
         .collect()
 }
 
-fn build_menu(
-    app: &AppHandle,
-    menus: &[Node],
-    named: &mut Named,
-) -> tauri::Result<Menu<Wry>> {
+fn build_menu(app: &AppHandle, menus: &[Node], named: &mut Named) -> tauri::Result<Menu<Wry>> {
     let built = build_nodes(app, menus, named)?;
     let refs: Vec<&dyn IsMenuItem<Wry>> = built.iter().map(Built::as_item).collect();
     Menu::with_items(app, &refs)

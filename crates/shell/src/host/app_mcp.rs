@@ -8,7 +8,9 @@
 mod agent;
 mod transport;
 
-pub(crate) use agent::{AgentMcpEnv, ServerStarted, has_hub, start_agent_relays, start_agent_server};
+pub(crate) use agent::{
+    AgentMcpEnv, ServerStarted, has_hub, start_agent_relays, start_agent_server,
+};
 
 use std::collections::HashMap;
 use std::path::PathBuf;

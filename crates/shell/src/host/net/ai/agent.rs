@@ -386,8 +386,8 @@ impl AgentServices for Services {
             .mcp
             .clone()
             .ok_or_else(|| Fault::new("the MCP runtime is not configured"))?;
-        let started = app_mcp::start_agent_server(env, project_root.to_owned(), hooks)
-            .map_err(Fault::new)?;
+        let started =
+            app_mcp::start_agent_server(env, project_root.to_owned(), hooks).map_err(Fault::new)?;
         Ok(AppMcpStarted {
             url: started.url,
             token: started.token,

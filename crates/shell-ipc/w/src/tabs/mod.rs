@@ -101,8 +101,13 @@ fn ok() -> Result<IpcValue, IpcError> {
 /// and its cancellation
 fn request_principal(
     cx: &CallContext,
-) -> Result<(shell_contract::ipc::NativeRequestOwner, shell_contract::runtime::CancelToken), IpcError>
-{
+) -> Result<
+    (
+        shell_contract::ipc::NativeRequestOwner,
+        shell_contract::runtime::CancelToken,
+    ),
+    IpcError,
+> {
     let Some(context) = cx.native.clone() else {
         return Err(invoke_error(
             "The authenticated tab request owner is unavailable".into(),
@@ -172,10 +177,7 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
             owner,
             cancel,
             Box::new(move |done| {
-                reply.reply(
-                    done.map(|()| IpcValue::Undefined)
-                        .map_err(invoke_error),
-                )
+                reply.reply(done.map(|()| IpcValue::Undefined).map_err(invoke_error))
             }),
         );
     })?;

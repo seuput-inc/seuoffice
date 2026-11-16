@@ -42,10 +42,8 @@ struct ShellSheetsTabs(WorkbookEngineHost);
 
 impl SheetsTabs for ShellSheetsTabs {
     fn is_tab(&self, view: shell_contract::ids::ViewId) -> bool {
-        on_core(move |_| {
-            shell_ipc_d1::sheets::views().is_some_and(|tabs| tabs.is_tab(view))
-        })
-        .unwrap_or(false)
+        on_core(move |_| shell_ipc_d1::sheets::views().is_some_and(|tabs| tabs.is_tab(view)))
+            .unwrap_or(false)
     }
 
     fn external_link_source(
@@ -55,10 +53,9 @@ impl SheetsTabs for ShellSheetsTabs {
         index: u64,
     ) -> Option<String> {
         let id = session_id.to_owned();
-        let (path, base) = on_core(move |_| {
-            shell_ipc_d1::sheets::views()?.external_link_session(view, &id)
-        })
-        .flatten()?;
+        let (path, base) =
+            on_core(move |_| shell_ipc_d1::sheets::views()?.external_link_session(view, &id))
+                .flatten()?;
         let listing = self.0.list_external_links(&path, &base).ok()?;
         let shell_contract::IpcValue::Object(fields) = listing else {
             return None;

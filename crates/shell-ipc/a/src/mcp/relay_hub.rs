@@ -40,7 +40,7 @@ impl McpHubPort {
             Reply::Later(ticket) => {
                 self.hub.agent_calls.borrow_mut().insert(
                     ticket,
-                    Box::new(move |value| done(value.map_err(|error| error.to_string()))),
+                    Box::new(move |value| done(value.map_err(|error| error.message))),
                 );
                 self.hub.pump();
             }

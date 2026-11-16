@@ -453,7 +453,11 @@ fn tavily_web(key: &str, query: &str, max: usize) -> Option<Web> {
         ("max_results", number(max as f64)),
         ("include_answer", JsonValue::Bool(true)),
     ]);
-    let data = keyed_json(Call::post("https://api.tavily.com/search", &body, Vec::new()))?;
+    let data = keyed_json(Call::post(
+        "https://api.tavily.com/search",
+        &body,
+        Vec::new(),
+    ))?;
     let mut results = Vec::new();
     for item in list(prop(&data, "results")) {
         let Some(url) = http_url(prop(item, "url")) else {
@@ -525,7 +529,10 @@ fn exa_web(key: &str, query: &str, max: usize) -> Option<Web> {
         ("numResults", number(max as f64)),
         (
             "contents",
-            object(vec![("text", object(vec![("maxCharacters", number(500.0))]))]),
+            object(vec![(
+                "text",
+                object(vec![("maxCharacters", number(500.0))]),
+            )]),
         ),
     ]);
     let data = keyed_json(Call::post(
@@ -654,8 +661,11 @@ fn normalize_args(query: &str, max_results: f64, fallback: f64) -> (String, usiz
 /// `webSearch(query, maxResults, options)`
 pub(super) fn web_search(query: &str, max_results: f64, options: &SearchOptions) -> SearchAnswer {
     let (query, max) = normalize_args(query, max_results, 6.0);
-    let order = std::iter::once(options.prefer)
-        .chain(SEARCH_BACKENDS.into_iter().filter(|id| *id != options.prefer));
+    let order = std::iter::once(options.prefer).chain(
+        SEARCH_BACKENDS
+            .into_iter()
+            .filter(|id| *id != options.prefer),
+    );
     for id in order {
         let found = match id {
             "serper" => serper_web(&options.serper_key, &query, max),
@@ -981,7 +991,10 @@ fn duck_images(query: &str, max: usize) -> Result<Vec<JsonValue>, String> {
             image_url,
             js_string_or_empty(prop(img, "url")),
             safe_host(prop(img, "url")),
-            (number_of(prop(img, "width")), number_of(prop(img, "height"))),
+            (
+                number_of(prop(img, "width")),
+                number_of(prop(img, "height")),
+            ),
         ));
         if out.len() >= max {
             break;
@@ -1000,7 +1013,9 @@ mod tests {
         assert!(is_copyright_host("https://sub.shutterstock.co.uk/a.jpg"));
         assert!(is_copyright_host("https://shutterstock.com/a.jpg"));
         assert!(!is_copyright_host("https://myshutterstock.com/a.jpg"));
-        assert!(!is_copyright_host("https://blog.example.com/shutterstock-review.png"));
+        assert!(!is_copyright_host(
+            "https://blog.example.com/shutterstock-review.png"
+        ));
         assert!(!is_copyright_host("not a url"));
     }
 
@@ -1010,7 +1025,10 @@ mod tests {
             decode_duck_url("//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa%3Fb%3D1&rut=x"),
             "https://example.com/a?b=1"
         );
-        assert_eq!(decode_duck_url("https://example.com/"), "https://example.com/");
+        assert_eq!(
+            decode_duck_url("https://example.com/"),
+            "https://example.com/"
+        );
         assert_eq!(decode_duck_url("/relative"), "");
         assert_eq!(decode_duck_url("/l/?uddg=%E0%A4%A"), "");
     }

@@ -33,14 +33,12 @@ use main_core::shell::agent::agent_mcp_relay::{
     AgentMcpRelays, AgentMcpRelaysDeps, AgentRelayAnswer, AgentRelayAsk, AgentRelayAskRequest,
     AgentRelayHub, AgentRelayScope, RelayCallId, RelayDone, RelayStep,
 };
-use main_core::shell::agent::agent_sessions::{
-    AgentMcpRelay, RelayAnswer, RelayAskRequest,
-};
+use main_core::shell::agent::agent_sessions::{AgentMcpRelay, RelayAnswer, RelayAskRequest};
 use main_core::shell::agent::agent_skills::AgentOpenTab;
 use main_core::shell::mcp::mcp_server::{HostCall, McpHost, McpServerService, Settled};
 use main_core::shell::mcp::tools::open_documents_tools::list_call;
-use shell_contract::runtime::{AppPaths, PathName};
 use shell_contract::Hosts;
+use shell_contract::runtime::{AppPaths, PathName};
 use shell_ipc_a::agent::{RelayAsker, RelaysStarted, SkillHooks};
 use shell_ipc_a::mcp::McpHubPort;
 use shell_ipc_d2::hwp::HwpEngineHost;
@@ -93,7 +91,8 @@ impl AgentMcpHost for AgentHost {
 }
 
 /// What a withheld document reads as when the source could not be redacted: never the source
-const UNREDACTABLE: &str = "[This document could not be read safely: its withheld words could not be hidden.]";
+const UNREDACTABLE: &str =
+    "[This document could not be read safely: its withheld words could not be hidden.]";
 
 /// `redactMarkdownSource` and `redactHtmlSource` of `@seuoffice/file-parse`: the source
 /// with its withheld words as their labels
@@ -195,7 +194,10 @@ fn proposal_of(value: Option<&JsonValue>) -> Result<AgentSkillProposalInput, Str
         name: word("name"),
         description: word("description"),
         body: word("body"),
-        wants_template: matches!(value.get("wantsTemplate").as_deref(), Some(JsonValue::Bool(true))),
+        wants_template: matches!(
+            value.get("wantsTemplate").as_deref(),
+            Some(JsonValue::Bool(true))
+        ),
         target_id: word("targetId"),
         suggested_template_path: word("suggestedTemplatePath"),
     })
@@ -323,10 +325,9 @@ impl ServerLoop {
     fn message(&mut self, message: ServerMsg) {
         let commands = match message {
             ServerMsg::Event(event) => route(self.server.service(), &self.transport, event),
-            ServerMsg::ToolDone(session, ticket, answer) => self
-                .server
-                .service()
-                .resume_tool(&session, ticket, answer),
+            ServerMsg::ToolDone(session, ticket, answer) => {
+                self.server.service().resume_tool(&session, ticket, answer)
+            }
             ServerMsg::ToolDropped(session, ticket) => self.server.service().resume_tool(
                 &session,
                 ticket,
@@ -375,8 +376,9 @@ fn run_server(
         }),
         docs_control: true,
         slides_control: true,
-        // the deck bridge cannot say whether a deck withholds, so a deck is taken to withhold
-        slides_deck_withholds: false,
+        // the deck bridge answers `deckWithholds`, so an agent session edits a deck only while it
+        // withholds nothing
+        slides_deck_withholds: true,
         sheets_control: true,
         open_documents_control: true,
         resolve_target: true,
@@ -624,14 +626,20 @@ impl RelayLoop {
                 if index >= self.transports.len() {
                     return;
                 }
-                let commands = route(self.relays.service_mut(index), &self.transports[index], event);
+                let commands = route(
+                    self.relays.service_mut(index),
+                    &self.transports[index],
+                    event,
+                );
                 let step = RelayStep {
                     commands: commands
                         .into_iter()
-                        .map(|command| main_core::shell::agent::agent_mcp_relay::ServiceCommand {
-                            service: index,
-                            command,
-                        })
+                        .map(
+                            |command| main_core::shell::agent::agent_mcp_relay::ServiceCommand {
+                                service: index,
+                                command,
+                            },
+                        )
                         .collect(),
                     done: None,
                 };

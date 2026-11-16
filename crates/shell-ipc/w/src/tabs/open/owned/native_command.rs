@@ -440,6 +440,39 @@ impl TabsState {
         });
     }
 
+    pub fn open_mcp_blank_slides_native(
+        &self,
+        operation: NativeInvocationOperation,
+        done: Box<dyn FnOnce(Result<shell_contract::ViewId, String>)>,
+    ) {
+        let expected = match operation.selection() {
+            NativeInvocationSelection::NativeCommand(
+                command @ NativeEditorCommand::NewDocument {
+                    surface: shell_contract::Surface::Slides,
+                    ..
+                },
+            ) => command.clone(),
+            _ => {
+                return done(Err(
+                    "The selected native command is not a new Slides document".into(),
+                ));
+            }
+        };
+        self.open_native_editor(EditorOpen::Slides { path: None }, operation, expected, {
+            let state = self.rc();
+            Box::new(move |result| {
+                done(result.map(|(_, view, _)| {
+                    state
+                        .inner
+                        .borrow_mut()
+                        .mcp_blank
+                        .insert(view, crate::tabs::state::McpBlank::Slides);
+                    view
+                }))
+            })
+        });
+    }
+
     pub fn open_mcp_blank_sheets_native(
         &self,
         operation: NativeInvocationOperation,

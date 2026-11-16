@@ -355,7 +355,7 @@ impl TabsState {
                 file_path,
                 dropped,
             } => {
-                let mut g = self.inner.borrow_mut();
+                let g = self.inner.borrow_mut();
                 if g.manager.is_none() {
                     return;
                 }
@@ -500,9 +500,10 @@ impl TabsState {
             None,
             Box::new(move |result| match result {
                 Ok(()) => state.detach_tab_to_window(&id),
-                Err(error) => state
-                    .hooks
-                    .warn("[tabs] a tab could not be loaded to open in a window:", &error),
+                Err(error) => state.hooks.warn(
+                    "[tabs] a tab could not be loaded to open in a window:",
+                    &error,
+                ),
             }),
         );
     }

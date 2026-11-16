@@ -1602,10 +1602,7 @@ fn run_op(
             .map(str::to_owned)
             .collect(),
         "detach" => vec![str_of(o, "id").unwrap_or("").to_owned()],
-        "find" => tm
-            .tab_id_for_path(str_of(o, "path"))
-            .into_iter()
-            .collect(),
+        "find" => tm.tab_id_for_path(str_of(o, "path")).into_iter().collect(),
         _ => Vec::new(),
     };
     for id in &preload {

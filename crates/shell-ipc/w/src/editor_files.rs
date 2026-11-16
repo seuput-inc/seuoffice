@@ -1424,6 +1424,7 @@ mod owned_docs_tests {
 
     type Completion = Box<dyn FnOnce(Result<(), String>) + Send>;
     #[derive(Default)]
+    #[allow(clippy::type_complexity)]
     struct DeferredTabs {
         completion: Mutex<Option<Completion>>,
         seen: Mutex<

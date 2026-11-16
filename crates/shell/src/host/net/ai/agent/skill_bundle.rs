@@ -87,7 +87,10 @@ fn sha256_hex(parts: &[&str]) -> String {
     for part in parts {
         hash.update(part.as_bytes());
     }
-    hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
+    hash.finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn short_hash(id: &str) -> String {
@@ -96,7 +99,10 @@ fn short_hash(id: &str) -> String {
 
 /// `base` cut so that `-<short hash of id>` fits within the name limit
 fn with_hash(base: &str, id: &str) -> String {
-    let cut: String = base.chars().take(MAX_AGENT_SKILL_NAME - SHORT_HASH - 1).collect();
+    let cut: String = base
+        .chars()
+        .take(MAX_AGENT_SKILL_NAME - SHORT_HASH - 1)
+        .collect();
     let head = cut.trim_end_matches(['-', '.']);
     format!("{head}-{}", short_hash(id))
 }
@@ -170,7 +176,12 @@ fn folder_facts(dir: &str) -> Option<FolderFacts> {
             .and_then(|info| info.modified().ok())
             .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
             .map_or(0.0, |elapsed| elapsed.as_secs_f64() * 1000.0);
-        hash.update(format!("{}\0{}\0{}\n", file.rel, file.size, mtime.round() as i64));
+        hash.update(format!(
+            "{}\0{}\0{}\n",
+            file.rel,
+            file.size,
+            mtime.round() as i64
+        ));
     }
     Some(FolderFacts {
         files: listed.files,
@@ -229,7 +240,10 @@ fn copy_plugin_support(plugin_root: &Path, bundle_dir: &Path) {
             };
             let mut entries: Vec<_> = read.filter_map(Result::ok).collect();
             entries.sort_by(|a, b| {
-                cmp_utf16(&a.file_name().to_string_lossy(), &b.file_name().to_string_lossy())
+                cmp_utf16(
+                    &a.file_name().to_string_lossy(),
+                    &b.file_name().to_string_lossy(),
+                )
             });
             for entry in entries {
                 if self.over() {
@@ -307,9 +321,15 @@ fn adjust_skill_md(to: &Path, name: &str, invoke: &str) -> std::io::Result<bool>
         .get("disable-model-invocation")
         .is_some_and(|value| matches!(value.to_lowercase().as_str(), "true" | "yes" | "on"));
     let fields = if invoke == "manual" {
-        vec![("disable-model-invocation".to_owned(), FieldValue::Bool(true))]
+        vec![(
+            "disable-model-invocation".to_owned(),
+            FieldValue::Bool(true),
+        )]
     } else if says_manual {
-        vec![("disable-model-invocation".to_owned(), FieldValue::Bool(false))]
+        vec![(
+            "disable-model-invocation".to_owned(),
+            FieldValue::Bool(false),
+        )]
     } else {
         Vec::new()
     };
@@ -358,8 +378,7 @@ fn read_manifest(path: &Path) -> HashMap<String, Kept> {
 }
 
 /// One build at a time per bundle folder: two sessions starting together must not mix copies
-static BUILDING: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
-    LazyLock::new(Mutex::default);
+static BUILDING: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = LazyLock::new(Mutex::default);
 
 /// `buildAgentSkillBundle(skills, bundleDir)`: bring the plugin folder in line
 /// with the enabled skills: copy new and changed skills, restore a copy that
@@ -425,7 +444,10 @@ fn build_now(input: Vec<Input>, bundle_dir: &str) -> std::io::Result<AgentSkillB
         let Ok(bytes) = fs::read(Path::new(&skill.dir).join("SKILL.md")) else {
             continue;
         };
-        if !matches!(parse_skill_md(&String::from_utf8_lossy(&bytes)), Ok(Some(_))) {
+        if !matches!(
+            parse_skill_md(&String::from_utf8_lossy(&bytes)),
+            Ok(Some(_))
+        ) {
             continue;
         }
         let Some(facts) = folder_facts(&skill.dir) else {
@@ -454,9 +476,7 @@ fn build_now(input: Vec<Input>, bundle_dir: &str) -> std::io::Result<AgentSkillB
         let to = skills_dir.join(&name);
         let before = manifest.get(&name);
         let copy = match before {
-            Some(before) if before.signature == signature => {
-                folder_facts(&to.to_string_lossy())
-            }
+            Some(before) if before.signature == signature => folder_facts(&to.to_string_lossy()),
             _ => None,
         };
         if copy.is_none_or(|copy| Some(&copy.signature) != before.map(|kept| &kept.copied)) {
@@ -599,7 +619,11 @@ mod tests {
             enabled("app:notes", "app", "notes", &one, "auto"),
         ];
         let built = build_agent_skill_bundle(&skills, &bundle_dir).unwrap();
-        let names: Vec<&str> = built.skills.iter().map(|skill| skill.name.as_str()).collect();
+        let names: Vec<&str> = built
+            .skills
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect();
         assert_eq!(names, ["notes", "notes--user"]);
         let winner = fs::read_to_string(bundle.join("skills/notes/SKILL.md")).unwrap();
         assert!(!winner.contains("disable-model-invocation"));

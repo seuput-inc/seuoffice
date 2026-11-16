@@ -304,6 +304,71 @@ impl SlidesViews {
         result
     }
 
+    /// `runTxn(wcId, req)` of the MCP slides control: applies one transaction to the deck the
+    /// view is attached to, under the capability that view's renderer bound at attach time (an
+    /// MCP call has no renderer of its own). A single-window session gets no scheduled deck
+    /// broadcast, so the fresh render is pushed to its tab here. The render tree is not part of
+    /// the answer; it carries every picture's bytes.
+    pub fn apply_mcp_transaction(
+        &self,
+        view: ViewId,
+        request: &jscompat::JsonValue,
+    ) -> Result<jscompat::JsonValue, IpcError> {
+        let owner = self
+            .0
+            .state
+            .borrow()
+            .owner_of(view)
+            .cloned()
+            .ok_or_else(|| thrown("the deck session is gone"))?;
+        let result = edit_ops::apply_txn_view(&self.0, &owner, &crate::value::from_json(request));
+        let result = result.and_then(|result| {
+            let applied = crate::value::truthy(crate::value::field(&result, "applied"));
+            let IpcValue::Object(entries) = result else {
+                return Err(thrown("the transaction answer is invalid"));
+            };
+            let (render, summary): (Vec<_>, Vec<_>) =
+                entries.into_iter().partition(|(key, _)| key == "slides");
+            if applied && let Some((_, slides)) = render.into_iter().next() {
+                let owners = {
+                    let state = self.0.state.borrow();
+                    state
+                        .slot_of(view)
+                        .map_or_else(Vec::new, |slot| state.attached_owners(slot))
+                };
+                if owners.len() < 2 {
+                    let deck = self
+                        .0
+                        .state
+                        .borrow()
+                        .session(view)
+                        .map(|session| session.deck())
+                        .ok_or_else(|| thrown("the deck session is gone"))?;
+                    let size = self.0.engine.size(deck).map_err(|error| thrown(error.0))?;
+                    let payload = crate::value::obj([
+                        ("slides", slides),
+                        ("size", self.0.size_value(size)),
+                    ]);
+                    for owner in owners {
+                        self.0
+                            .services
+                            .events
+                            .emit_to_owner_checked(
+                                &owner,
+                                "slides:deck-changed",
+                                vec![payload.clone()],
+                            )
+                            .map_err(thrown)?;
+                    }
+                }
+            }
+            crate::value::to_json(&IpcValue::Object(summary))
+                .ok_or_else(|| thrown("the transaction answer is not JSON"))
+        });
+        self.0.pump();
+        result
+    }
+
     pub fn save_to_path(&self, view: ViewId, path: &str) -> Result<(), IpcError> {
         if !self.has_session(view) {
             return Err(thrown("the deck session is gone"));

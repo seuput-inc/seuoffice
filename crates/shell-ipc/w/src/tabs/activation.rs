@@ -313,6 +313,34 @@ impl ReservedSplitMemoryRevision {
     }
 }
 
+/// Retains the exact captured actor and native browser between failed attempts.
+pub trait DocsDisposalOperation {
+    fn run(self: std::rc::Rc<Self>, done: Box<dyn FnOnce(Result<DocsDisposal, String>)>);
+}
+/// Native producer acknowledgement of the exact captured document's completed
+/// disposal. It retains identity only; it cannot authorize a different operation.
+pub struct DocsDisposal {
+    owner: NativeRequestOwner,
+    generation: shell_contract::runtime::RendererGeneration,
+}
+
+impl DocsDisposal {
+    pub fn closed(owner: NativeRequestOwner) -> Result<Self, String> {
+        let generation = owner
+            .context
+            .renderer()
+            .cloned()
+            .ok_or("The disposed document had no captured renderer.")?;
+        Ok(Self { owner, generation })
+    }
+    pub fn view(&self) -> shell_contract::ViewId {
+        self.owner.view
+    }
+    pub fn generation(&self) -> &shell_contract::runtime::RendererGeneration {
+        &self.generation
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::SplitMemoryClock;
@@ -363,30 +391,3 @@ mod tests {
     }
 }
 
-/// Retains the exact captured actor and native browser between failed attempts.
-pub trait DocsDisposalOperation {
-    fn run(self: std::rc::Rc<Self>, done: Box<dyn FnOnce(Result<DocsDisposal, String>)>);
-}
-/// Native producer acknowledgement of the exact captured document's completed
-/// disposal. It retains identity only; it cannot authorize a different operation.
-pub struct DocsDisposal {
-    owner: NativeRequestOwner,
-    generation: shell_contract::runtime::RendererGeneration,
-}
-
-impl DocsDisposal {
-    pub fn closed(owner: NativeRequestOwner) -> Result<Self, String> {
-        let generation = owner
-            .context
-            .renderer()
-            .cloned()
-            .ok_or("The disposed document had no captured renderer.")?;
-        Ok(Self { owner, generation })
-    }
-    pub fn view(&self) -> shell_contract::ViewId {
-        self.owner.view
-    }
-    pub fn generation(&self) -> &shell_contract::runtime::RendererGeneration {
-        &self.generation
-    }
-}

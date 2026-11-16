@@ -1,7 +1,11 @@
-use jscompat::serde::de::{self, DeserializeOwned, IntoDeserializer, MapAccess, SeqAccess, Visitor};
+use jscompat::serde::de::{
+    self, DeserializeOwned, IntoDeserializer, MapAccess, SeqAccess, Visitor,
+};
 use shell_contract::IpcValue;
 
-pub(in crate::host::pptx_ops) fn decode<T: DeserializeOwned>(value: &IpcValue) -> Result<T, String> {
+pub(in crate::host::pptx_ops) fn decode<T: DeserializeOwned>(
+    value: &IpcValue,
+) -> Result<T, String> {
     jscompat::reading_leniently(|| T::deserialize(Value(value))).map_err(|e| e.to_string())
 }
 struct Value<'a>(&'a IpcValue);

@@ -340,9 +340,7 @@ impl MHost for Fake {
                 &pending,
                 &additional.iter().collect::<Vec<_>>(),
                 &mut || {
-                    log.lock()
-                        .unwrap()
-                        .push(json!(["openGeneratedPath", path]));
+                    log.lock().unwrap().push(json!(["openGeneratedPath", path]));
                     opened = Some(should_open);
                     Ok(())
                 },

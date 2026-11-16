@@ -174,9 +174,9 @@ mod tests {
         let proof = Arc::new(Proof(Mutex::new((1, false, true))));
         let reservation = WindowReservation::new(WindowId(1), proof.clone());
         let observation = WindowObservation::new(reservation, 1, false, "title".into());
-        assert!(with_window_observations(&[observation.clone()], || ()).is_ok());
+        assert!(with_window_observations(std::slice::from_ref(&observation), || ()).is_ok());
         *proof.0.lock().unwrap() = (1, false, false);
-        assert!(with_window_observations(&[observation.clone()], || ()).is_err());
+        assert!(with_window_observations(std::slice::from_ref(&observation), || ()).is_err());
         *proof.0.lock().unwrap() = (2, false, true);
         assert!(with_window_observations(&[observation], || ()).is_err());
     }

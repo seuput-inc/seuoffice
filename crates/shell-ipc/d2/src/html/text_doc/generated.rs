@@ -6,8 +6,8 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use shell_contract::hosts::{
-    CommittedGeneratedPath, GeneratedPathOutcome, GeneratedPathWake, OsShellHost,
-    OwnedEffectsHost, PdfReloadAccepted, PreparedGeneratedPath,
+    CommittedGeneratedPath, GeneratedPathOutcome, GeneratedPathWake, OsShellHost, OwnedEffectsHost,
+    PdfReloadAccepted, PreparedGeneratedPath,
 };
 use shell_contract::ipc::{NativeRequestOwner, NativeSavedInput, SavedPublication};
 use shell_contract::runtime::{CancelSubscription, CancelToken, Services};
@@ -85,7 +85,10 @@ fn reload_accepted(request: &OwnedSave, hold: Arc<Reload>) -> PdfReloadAccepted 
             subscriptions.push(loss.on_cancel(move || pending.cancel()));
         }
         drop(subscriptions);
-        *hold.losses.lock().unwrap_or_else(|error| error.into_inner()) = losses;
+        *hold
+            .losses
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = losses;
     })
 }
 

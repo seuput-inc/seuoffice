@@ -1363,9 +1363,8 @@ fn publish_hwp_pdf(
     let commit = staged.take()?;
     let path = commit.path().to_owned();
     let result = match &completion.authority {
-        shell_contract::editors::OwnedPdfGrantAuthority::Renderer(origin) => completion
-            .effects
-            .publish_owned_staged_write(
+        shell_contract::editors::OwnedPdfGrantAuthority::Renderer(origin) => {
+            completion.effects.publish_owned_staged_write(
                 origin,
                 &completion.destination,
                 &[],
@@ -1374,7 +1373,8 @@ fn publish_hwp_pdf(
                 &completion.additional,
                 &path,
                 commit,
-            ),
+            )
+        }
         shell_contract::editors::OwnedPdfGrantAuthority::ExistingDocument {
             selection,
             participants,

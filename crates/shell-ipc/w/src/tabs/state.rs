@@ -67,6 +67,7 @@ pub(super) struct PendingMenu {
 pub(super) enum McpBlank {
     Docs,
     Sheets,
+    Slides,
 }
 
 pub(super) struct Inner {
@@ -817,71 +818,66 @@ impl TabsState {
 
     fn drive_ensure(
         &self,
-        mut step: EnsureStep<ViewId>,
+        step: EnsureStep<ViewId>,
         done: Box<dyn FnOnce(Result<TabLoadResult<ViewId>, String>)>,
     ) {
-        loop {
-            match step {
-                EnsureStep::Done(result) => return done(Ok(result)),
-                EnsureStep::Rejected(error) => return done(Err(error)),
-                EnsureStep::NeedsUser {
-                    opener,
-                    context,
-                    next,
-                } => {
-                    let source = match self.captured_shell_owner() {
-                        Ok((_, owner)) => owner,
-                        Err(error) => return done(Err(error)),
-                    };
-                    let cancel = shell_contract::runtime::CancelToken::default();
-                    let state = self.rc();
-                    self.hooks.opener_needs_user_owned(
-                        &opener,
-                        &context,
-                        source,
-                        cancel.clone(),
-                        cancel.clone(),
-                        Box::new(move |answer| {
-                            drop(cancel);
-                            match state.with_manager(|manager, host| {
-                                manager.resume_ensure_needs_user(host, next, answer)
-                            }) {
-                                Some(step) => state.drive_ensure(step, done),
-                                None => done(Ok(TabLoadResult::Missing)),
-                            }
-                        }),
-                    );
-                    return;
-                }
-                EnsureStep::Load { id } => {
-                    let state = self.rc();
-                    let target = id.clone();
-                    self.hydrate_tab_native(
-                        &target,
-                        Box::new(move |answer| {
-                            if let Err(error) = &answer {
-                                state
-                                    .hooks
-                                    .warn("[tabs] a restored tab could not be opened:", error);
-                            }
-                            match state.with_manager(|manager, host| {
-                                manager.resume_ensure_loaded(host, &id, answer)
-                            }) {
-                                Some(step) => state.drive_ensure(step, done),
-                                None => done(Ok(TabLoadResult::Missing)),
-                            }
-                        }),
-                    );
-                    return;
-                }
-                EnsureStep::AwaitReady { ready, next } => {
-                    self.ensure_waits
-                        .borrow_mut()
-                        .entry(ready.0)
-                        .or_default()
-                        .push((next, done));
-                    return;
-                }
+        match step {
+            EnsureStep::Done(result) => done(Ok(result)),
+            EnsureStep::Rejected(error) => done(Err(error)),
+            EnsureStep::NeedsUser {
+                opener,
+                context,
+                next,
+            } => {
+                let source = match self.captured_shell_owner() {
+                    Ok((_, owner)) => owner,
+                    Err(error) => return done(Err(error)),
+                };
+                let cancel = shell_contract::runtime::CancelToken::default();
+                let state = self.rc();
+                self.hooks.opener_needs_user_owned(
+                    &opener,
+                    &context,
+                    source,
+                    cancel.clone(),
+                    cancel.clone(),
+                    Box::new(move |answer| {
+                        drop(cancel);
+                        match state.with_manager(|manager, host| {
+                            manager.resume_ensure_needs_user(host, next, answer)
+                        }) {
+                            Some(step) => state.drive_ensure(step, done),
+                            None => done(Ok(TabLoadResult::Missing)),
+                        }
+                    }),
+                );
+            }
+            EnsureStep::Load { id } => {
+                let state = self.rc();
+                let target = id.clone();
+                self.hydrate_tab_native(
+                    &target,
+                    Box::new(move |answer| {
+                        if let Err(error) = &answer {
+                            state
+                                .hooks
+                                .warn("[tabs] a restored tab could not be opened:", error);
+                        }
+                        match state.with_manager(|manager, host| {
+                            manager.resume_ensure_loaded(host, &id, answer)
+                        }) {
+                            Some(step) => state.drive_ensure(step, done),
+                            None => done(Ok(TabLoadResult::Missing)),
+                        }
+                    }),
+                );
+            }
+            EnsureStep::AwaitReady { ready, next } => {
+                self.ensure_waits
+                    .borrow_mut()
+                    .entry(ready.0)
+                    .or_default()
+                    .push((next, done));
             }
         }
     }

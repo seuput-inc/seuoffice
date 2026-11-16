@@ -116,7 +116,10 @@ fn http_failure(status: u16, host: &str, has_token: bool) -> Failure {
     }
     Failure {
         status: Some(status),
-        ..failure("http_error", format!("The server answered with HTTP {status}."))
+        ..failure(
+            "http_error",
+            format!("The server answered with HTTP {status}."),
+        )
     }
 }
 
@@ -159,7 +162,9 @@ type Cache = Vec<(String, Arc<Page>)>;
 static PAGES: Mutex<Cache> = Mutex::new(Vec::new());
 
 fn pages() -> std::sync::MutexGuard<'static, Cache> {
-    PAGES.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    PAGES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Every map key that still points at this entry; a newer entry for the same
@@ -253,12 +258,19 @@ fn cache_page(
 fn slice_page(page: &Page, offset: f64) -> JsonValue {
     let total = page.units.len();
     // an offset past the end (or past what a count can hold) reads nothing
-    let from = if offset < total as f64 { offset as usize } else { total };
+    let from = if offset < total as f64 {
+        offset as usize
+    } else {
+        total
+    };
     let to = from.saturating_add(PAGE_CHARS).min(total);
     let slice = String::from_utf16_lossy(&page.units[from..to]);
     let end = offset + (to - from) as f64;
     let truncated = end < total as f64;
-    let mut fields = vec![("ok", JsonValue::Bool(true)), ("url", text(&page.final_url))];
+    let mut fields = vec![
+        ("ok", JsonValue::Bool(true)),
+        ("url", text(&page.final_url)),
+    ];
     if let Some(title) = &page.title {
         fields.push(("title", text(title)));
     }
@@ -298,7 +310,11 @@ fn github_blob(url: &reqwest::Url) -> Option<(String, String, String, String)> {
     if host != "github.com" && host != "www.github.com" {
         return None;
     }
-    let parts: Vec<&str> = url.path().split('/').filter(|part| !part.is_empty()).collect();
+    let parts: Vec<&str> = url
+        .path()
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
     if parts.len() < 5 {
         return None;
     }
@@ -307,7 +323,12 @@ fn github_blob(url: &reqwest::Url) -> Option<(String, String, String, String)> {
     if kind != "blob" || file.is_empty() {
         return None;
     }
-    Some((owner.to_owned(), repo.to_owned(), reference.to_owned(), file))
+    Some((
+        owner.to_owned(),
+        repo.to_owned(),
+        reference.to_owned(),
+        file,
+    ))
 }
 
 /// The request that actually serves the bytes of an address
@@ -450,8 +471,14 @@ fn key_in_address(name: &str) -> bool {
 
 /// `UNKEYED_HEADERS`: the request headers that say nothing about who is asking
 fn unkeyed_header(name: &str) -> bool {
-    ["accept", "accept-encoding", "accept-language", "range", "user-agent"]
-        .contains(&name.to_lowercase().as_str())
+    [
+        "accept",
+        "accept-encoding",
+        "accept-language",
+        "range",
+        "user-agent",
+    ]
+    .contains(&name.to_lowercase().as_str())
 }
 
 /// `siteOf(url)`: scheme and host of an address, for an error text
@@ -461,7 +488,11 @@ fn site_of(url: &reqwest::Url) -> String {
         (Some(host), None) => host.to_owned(),
         _ => String::new(),
     };
-    format!("{}://{}", url.scheme(), slice_utf16(&host, 0.0, Some(100.0)))
+    format!(
+        "{}://{}",
+        url.scheme(),
+        slice_utf16(&host, 0.0, Some(100.0))
+    )
 }
 
 /// `keyedDownload(url, init, { base })`: a download asked for with a credential,
@@ -570,10 +601,13 @@ fn decode_body(
     allow_meta: bool,
     bom: Option<&'static str>,
 ) -> String {
-    let label = bom
-        .map(str::to_owned)
-        .or(declared)
-        .or_else(|| if allow_meta { meta_charset(bytes) } else { None });
+    let label = bom.map(str::to_owned).or(declared).or_else(|| {
+        if allow_meta {
+            meta_charset(bytes)
+        } else {
+            None
+        }
+    });
     let encoding = label
         .and_then(|label| Encoding::for_label(trim(&label).as_bytes()))
         .unwrap_or(UTF_8);
@@ -704,12 +738,23 @@ fn read(
     };
     let final_url = transport.last.clone();
     if !response.ok() {
-        return Err(http_failure(response.status(), &host_of(&final_url), has_token));
+        return Err(http_failure(
+            response.status(),
+            &host_of(&final_url),
+            has_token,
+        ));
     }
 
     let raw_content_type = response.header("content-type");
-    let mime = trim(raw_content_type.as_deref().unwrap_or_default().split(';').next().unwrap_or_default())
-        .to_lowercase();
+    let mime = trim(
+        raw_content_type
+            .as_deref()
+            .unwrap_or_default()
+            .split(';')
+            .next()
+            .unwrap_or_default(),
+    )
+    .to_lowercase();
     // an absent or generic type is decided from the bytes themselves
     let sniff = mime.is_empty() || mime == "application/octet-stream";
     if !sniff && !is_readable_type(&mime) {
@@ -865,7 +910,12 @@ mod tests {
         assert!(cached_page(&mut cache, "https://e.com/0", now).is_none());
         assert!(cached_page(&mut cache, "https://e.com/8", now).is_some());
         // one entry under two keys: the asked address and the final one
-        cache_page(&mut cache, page("https://e.com/final", "y"), "https://e.com/ask", now);
+        cache_page(
+            &mut cache,
+            page("https://e.com/final", "y"),
+            "https://e.com/ask",
+            now,
+        );
         assert!(cached_page(&mut cache, "https://e.com/ask", now).is_some());
         assert!(cached_page(&mut cache, "https://e.com/final", now).is_some());
         let expired = now + CACHE_TTL;
@@ -875,7 +925,10 @@ mod tests {
 
     #[test]
     fn bytes_decode_by_bom_then_declared_then_meta() {
-        assert_eq!(decode_body(b"\xef\xbb\xbfhi", None, false, Some("utf-8")), "hi");
+        assert_eq!(
+            decode_body(b"\xef\xbb\xbfhi", None, false, Some("utf-8")),
+            "hi"
+        );
         assert_eq!(
             decode_body(b"caf\xe9", Some("iso-8859-1".into()), false, None),
             "café"
@@ -883,7 +936,10 @@ mod tests {
         let html = b"<meta charset=\"windows-1252\">caf\xe9";
         assert!(decode_body(html, None, true, None).ends_with("café"));
         assert!(decode_body(html, None, false, None).ends_with("caf\u{fffd}"));
-        assert_eq!(decode_body(b"ok", Some("no-such".into()), false, None), "ok");
+        assert_eq!(
+            decode_body(b"ok", Some("no-such".into()), false, None),
+            "ok"
+        );
     }
 
     #[test]
@@ -893,7 +949,10 @@ mod tests {
         assert!(!looks_like_html("{\"a\":1}"));
         assert!(is_readable_type("application/ld+json"));
         assert!(!is_readable_type("application/pdf"));
-        assert_eq!(declared_charset(Some("text/html; Charset=\"UTF-8\"")).as_deref(), Some("UTF-8"));
+        assert_eq!(
+            declared_charset(Some("text/html; Charset=\"UTF-8\"")).as_deref(),
+            Some("UTF-8")
+        );
         assert_eq!(normalize_offset(f64::NAN), 0.0);
         assert_eq!(normalize_offset(-4.0), 0.0);
         assert_eq!(normalize_offset(7.9), 7.0);

@@ -236,7 +236,11 @@ pub trait AgentWindowFrame: Send + Sync {
     /// `agent_window_options` and `agent_window_load` answered. The window ending
     /// is the view's destruction (`Views::on_destroyed`). `Err` is what the
     /// constructor threw: no window is open then
-    fn create(&self, options: &serde_json::Value, load: &serde_json::Value) -> Result<ViewId, String>;
+    fn create(
+        &self,
+        options: &serde_json::Value,
+        load: &serde_json::Value,
+    ) -> Result<ViewId, String>;
 }
 
 pub type AgentWindowFrameHost = Arc<dyn AgentWindowFrame>;

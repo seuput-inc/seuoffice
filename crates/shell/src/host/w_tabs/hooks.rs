@@ -52,9 +52,7 @@ impl shell_ipc_w::tabs::host::EditorSeedRollback for DocsRegistrationRollback {
     }
 }
 
-pub(super) struct SheetsRegistrationRollback(
-    pub(super) shell_ipc_d1::sheets::RegisteredTab,
-);
+pub(super) struct SheetsRegistrationRollback(pub(super) shell_ipc_d1::sheets::RegisteredTab);
 impl shell_ipc_w::tabs::host::EditorSeedRollback for SheetsRegistrationRollback {
     fn retire_closed(
         &self,
@@ -4023,9 +4021,7 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
     }
     fn sheets_pending_edit_count(&self, id: i64) -> f64 {
         view_id(id)
-            .and_then(|view| {
-                shell_ipc_d1::sheets::views().map(|s| s.pending_edit_count(view))
-            })
+            .and_then(|view| shell_ipc_d1::sheets::views().map(|s| s.pending_edit_count(view)))
             .unwrap_or(f64::INFINITY)
     }
     fn family_is_dirty(&self, kind: TabKind, id: i64) -> TabResult<bool> {

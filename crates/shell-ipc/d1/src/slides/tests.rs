@@ -2371,3 +2371,33 @@ fn replaced_recovery_target_cannot_mark_a_copy_later() {
         RecoveryCopyState::Undecided
     );
 }
+
+#[test]
+fn mcp_transaction_applies_under_the_attached_owner_and_pushes_the_render_to_the_tab() {
+    let (kit, registry, sender, _) = setup("slides-mcp-transaction");
+    invoke(&registry, sender, "slides:new-blank", vec![num(960.0)]);
+    let slides = super::views().unwrap();
+    let before = slides.deck_model(sender.view).unwrap();
+    kit.take_events();
+    let request = crate::value::to_json(&obj([(
+        "ops",
+        IpcValue::Array(vec![obj([
+            ("op", string("addElement")),
+            ("target", obj([("slide", num(0.0))])),
+        ])]),
+    )]))
+    .unwrap();
+    let answer = slides.apply_mcp_transaction(sender.view, &request).unwrap();
+    assert_eq!(answer.get("applied").as_deref(), Some(&jscompat::JsonValue::Bool(true)));
+    assert!(answer.get("slides").is_none(), "the render tree stays out of the answer");
+    assert_ne!(slides.deck_model(sender.view).unwrap(), before);
+    let pushed: Vec<_> = kit
+        .take_events()
+        .into_iter()
+        .filter(|(_, channel, _)| *channel == "slides:deck-changed")
+        .map(|(target, _, _)| target)
+        .collect();
+    assert_eq!(pushed, vec![Target::View(sender.view)]);
+    kit.destroy(sender.view);
+    assert!(slides.apply_mcp_transaction(sender.view, &request).is_err());
+}

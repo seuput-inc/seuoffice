@@ -813,6 +813,18 @@ impl TabsState {
         }
     }
 
+    /// Closes a blank deck tab whose editing session never became ready. Only called for a
+    /// tab the MCP opened itself, so there is no user content to lose.
+    pub fn abandon_mcp_blank_slides(&self, view: ViewId) {
+        if matches!(
+            self.inner.borrow().mcp_blank.get(&view),
+            Some(McpBlank::Slides)
+        ) && self.close_mcp_blank(view, TabKind::Slides)
+        {
+            self.inner.borrow_mut().mcp_blank.remove(&view);
+        }
+    }
+
     fn close_mcp_blank(&self, view: ViewId, kind: TabKind) -> bool {
         self.with_manager(|manager, host| {
             let Some(id) = manager.tab_id_for_web_contents(host, view.0 as i64) else {

@@ -253,7 +253,10 @@ mod tests {
     use super::*;
 
     fn read(html: &str) -> HtmlText {
-        html_to_text(html, &reqwest::Url::parse("https://example.com/dir/page").unwrap())
+        html_to_text(
+            html,
+            &reqwest::Url::parse("https://example.com/dir/page").unwrap(),
+        )
     }
 
     #[test]
