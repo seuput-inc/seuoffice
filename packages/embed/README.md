@@ -26,6 +26,42 @@ await doc.opened // 문서가 화면에 뜨면 끝, 실패하면 SeuofficeEmbedE
 doc.destroy()
 ```
 
+## 다른 출처에서 서빙할 때
+
+웹 묶음을 붙이는 쪽 페이지와 다른 출처(주소의 scheme, 호스트, 포트 중 하나라도 다르면 다른 출처)에서 서빙하면, 묶음의 페이지는 그 호스트가 보낸 `open`을 기본으로 받지 않는다. 묶음을 서빙하는 쪽이 허용할 호스트 출처를 묶음 루트(`docs/`, `pdf/` 폴더와 같은 자리)의 `embed-origins.json`에 적는다.
+
+```json
+{ "origins": ["https://host.example", "https://staging.host.example:8443"] }
+```
+
+- 페이지는 시작할 때 이 파일을 같은 출처에서 매번 새로 받는다(`cache: 'no-store'`, 리다이렉트 없음, 5초 안에). 파일을 고치면 다음에 여는 문서부터 바뀐다.
+- 항목은 `scheme://host[:port]`와 정확히 같아야 한다. 기본 포트와 대소문자는 정리해서 비교한다. 와일드카드(`*`), 경로, 쿼리, `null`, http(s)가 아닌 주소는 안 된다.
+- 파일이 없거나, 받지 못하거나, 상태가 200이 아니거나, JSON이 아니거나, 모양이 틀리면(항목 하나만 틀려도 파일 전체) 자기 출처의 호스트만 받는다. 닫힌 쪽으로 실패한다. 파일이 있는데 모양이 틀린 경우에는 콘솔에 경고가 한 줄 남는다.
+- 파일이 오기 전에 호스트의 `open`이 먼저 도착하면 버리지 않고 기다렸다가, 허용 목록이 정해진 뒤에 판단한다. `ready`는 기다리지 않고 바로 나간다.
+- 허용 출처는 서빙하는 쪽만 정한다. 붙이는 쪽 페이지의 주소(쿼리, 해시), 메시지, `window.name`, 리퍼러에서는 읽지 않는다.
+- 파일은 빌드가 아니라 서빙할 때 놓는다. 그래서 릴리스 묶음(`seuoffice-web-<ver>.tgz`)을 해시로 고정한 채 환경마다 다른 `embed-origins.json`만 얹으면 된다. 예전 빌드 변수 `VITE_SEUOFFICE_EMBED_ORIGINS`는 없어졌다.
+- 호스트와 같은 출처에서 서빙하면 파일이 필요 없다.
+
+### iframe `sandbox`
+
+묶음이 다른 출처일 때 붙이는 쪽이 iframe에 `sandbox` 속성을 줘도 된다. 단 `allow-same-origin`이 반드시 있어야 한다. `allow-scripts`만 주면 iframe 안 페이지의 출처가 `null`이 되어 호스트가 페이지의 `ready`를 거르고(`event.origin !== base.origin`), 문서는 `readyTimeoutMs` 뒤 `timeout`으로 실패한다. 페이지가 `embed-origins.json`을 같은 출처에서 받는 일도 `allow-same-origin`에 기댄다.
+
+크로미움에서 `apps/web/tests/embed-origins.spec.ts`로 확인한 결과다(호스트 `127.0.0.1`, 묶음 `localhost`, 서로 다른 사이트).
+
+| `sandbox` 값                      | 결과                                                                                                                                                                                              |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `allow-scripts`                   | 열리지 않는다(`timeout`).                                                                                                                                                                         |
+| `allow-scripts allow-same-origin` | pdf와 hwpx가 열리고, pdf.js 워커·WASM·글꼴을 받는 요청이 하나도 실패하지 않는다. 편집 후 `doc.save()`로 `onSave`에 바이트가 온다. 페이지가 직접 하는 내려받기, `confirm`, `window.open`은 막힌다. |
+| 위 + `allow-downloads`            | 페이지가 직접 하는 내려받기(Blob 링크의 `download`)도 된다.                                                                                                                                       |
+| 위 + `allow-modals allow-popups`  | `confirm` 같은 대화상자와 `window.open`이 된다. `print`도 규격상 `allow-modals`가 필요하다(시험하지 않았다). `allow-forms`는 SeuOffice가 폼을 제출하지 않아 쓰이지 않는다(시험하지 않았다).       |
+
+- 권장 값은 `allow-scripts allow-same-origin allow-downloads`다. 저장은 `onSave`가 호스트에서 일어나므로 내려받기 권한 없이도 된다. 페이지 안 코드가 직접 파일을 내려받는 경우에만 `allow-downloads`가 필요하다.
+- `allow-popups`와 `allow-modals`는 인쇄와 외부 링크가 필요할 때만 더한다.
+- 묶음이 호스트와 같은 출처면 `allow-same-origin`과 `allow-scripts`를 함께 준 iframe은 자기 `sandbox` 속성을 스스로 떼어 낼 수 있어 보호가 되지 않는다. 다른 출처로 서빙하면 호스트 쪽 쿠키와 저장소에는 닿지 못한다.
+- 클립보드 복사·붙여넣기는 `sandbox`가 아니라 `allow="clipboard-read; clipboard-write"` 속성이 정한다(시험하지 않았다).
+
+코드 변경 제안(구현하지 않음). `OpenOptions`에 `sandbox?: string`을 더해, 값이 있으면 `container.appendChild(iframe)` 전에 `iframe.setAttribute('sandbox', …)`를 한다. 값에 `allow-scripts`와 `allow-same-origin`이 없으면 `openDocument`가 즉시 `SeuofficeEmbedError`로 거절해, `timeout`까지 기다리는 실패를 막는다. `allow`(권한 정책) 문자열도 같은 방식으로 받는다.
+
 ## 고치기
 
 호스트가 그 문서의 편집 잠금을 먼저 잡은 다음 `mode: 'edit'`로 연다. 저장은 `onSave`가 맡는다. 호스트가 바이트를 저장하면 resolve하고, 저장하지 못하면 이유와 함께 reject한다.
