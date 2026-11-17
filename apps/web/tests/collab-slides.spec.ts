@@ -87,7 +87,9 @@ async function open(
   const editor = await openCoEdited(browser, file, { documentId, user, access, ready: 'canvas' })
   opened.push(editor)
   editor.page.on('pageerror', (error) => pageErrors.push(`${user}: ${error.message}`))
-  await expect(editor.frame.locator('.thumb').first()).toBeVisible({ timeout: 20_000 })
+  // an editor lists the slides as thumbnails; a viewer reads one slide at a time
+  const surface = access === 'edit' ? '.thumb' : '.reading-slide'
+  await expect(editor.frame.locator(surface).first()).toBeVisible({ timeout: 20_000 })
   await countOwnEdits(editor)
   return editor
 }
@@ -510,12 +512,13 @@ test('a late joiner and a viewer follow; saves hold one exact version; editing g
     await expect.poll(() => shownDeck(editor)).toEqual(after)
   }
 
-  // the viewer types into a box, deletes a slide and adds one: each is refused with a message,
-  // and the deck stays as it is on every page
-  await typeInto(viewer, 2, 'Agenda by bob', 'dave-typed')
-  await notesBox(viewer).click()
-  await expect(viewer.frame.getByText('이 프레젠테이션은 보기만 할 수 있습니다.')).toBeVisible()
-  await showSlide(viewer, 5)
+  // the viewer has no slide list, ribbon or notes to edit with; it tries typing, deleting, adding a
+  // slide and saving anyway, and the deck stays as it is on every page
+  await expect(thumbs(viewer)).toHaveCount(0)
+  await expect(viewer.frame.locator('.ribbon, .notes-pane')).toHaveCount(0)
+  await viewer.frame.locator('.reading-slide').dblclick()
+  await viewer.page.keyboard.press('ControlOrMeta+A')
+  await viewer.page.keyboard.type('dave-typed')
   await viewer.page.keyboard.press('Delete')
   const mac = await viewerFrame(viewer).evaluate(() => /mac/i.test(navigator.platform))
   await viewer.page.keyboard.press(mac ? 'Meta+Shift+N' : 'Control+M')
@@ -523,7 +526,7 @@ test('a late joiner and a viewer follow; saves hold one exact version; editing g
   await viewer.page.waitForTimeout(1_000)
   expect(await ownEdits(viewer)).toBe(0)
   expect(await viewer.status()).toMatchObject({ phase: 'live', version, unconfirmed: 0 })
-  await expect(thumbs(viewer)).toHaveCount(6)
+  await expect(textEditor(viewer)).toHaveCount(0)
   for (const editor of [alice, bob, carol, viewer]) expect(await shownDeck(editor)).toEqual(after)
   expect(await viewer.page.evaluate(() => window.seuLauncher?.saved ?? null)).toBeNull()
 

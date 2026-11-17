@@ -166,11 +166,11 @@ test('a PDF opened for viewing can be neither changed nor saved', async ({ page 
   let downloads = 0
   page.on('download', () => downloads++)
 
-  await app.locator('.ribbon-tab', { hasText: '페이지' }).click()
-  await expect(app.getByRole('button', { name: '오른쪽으로 회전' })).toBeDisabled()
-  await app.locator('.ribbon-tab', { hasText: '주석' }).click()
-  await expect(app.getByRole('button', { name: '사각형', exact: true })).toBeDisabled()
-  await expect(app.locator('.tb-readonly')).toBeVisible()
+  // reading tools only: the tools that change the document are not there
+  await expect(app.locator('.ribbon-tab')).toHaveCount(0)
+  await expect(app.getByRole('button', { name: '오른쪽으로 회전' })).toHaveCount(0)
+  await expect(app.getByRole('button', { name: '사각형', exact: true })).toHaveCount(0)
+  await expect(app.locator('.tb-page-input')).toBeVisible()
 
   await pressSave(page, app)
   await expect(app.locator('.tb-save-pending')).toBeHidden()

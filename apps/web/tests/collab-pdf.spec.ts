@@ -61,6 +61,7 @@ async function open(
     access,
     ready: 'canvas',
     unlock,
+    viewport: { width: 1400, height: 2200 },
   })
   opened.push(editor)
   editor.page.on('pageerror', (error) => pageErrors.push(`${user}: ${error.message}`))
@@ -383,12 +384,10 @@ test('two people edit one PDF at once; a late joiner and a viewer follow; saves 
   const viewer = await open(browser, file, documentId, 'dave', 'view')
   expect((await viewer.status()).canEdit).toBe(false)
   await expect.poll(() => shown(viewer)).toEqual(afterPages)
-  await expect(viewer.frame.locator('.tb-readonly')).toBeVisible()
-  await tab(viewer, '주석')
-  await expect(rectangleTool(viewer)).toBeDisabled()
-  await tab(viewer, '페이지')
-  await expect(viewer.frame.getByRole('button', { name: '오른쪽으로 회전' })).toBeDisabled()
-  await expect(viewer.frame.getByRole('button', { name: '빈 페이지 삽입' })).toBeDisabled()
+  await expect(viewer.frame.locator('.ribbon-tab')).toHaveCount(0)
+  await expect(rectangleTool(viewer)).toHaveCount(0)
+  await expect(viewer.frame.getByRole('button', { name: '오른쪽으로 회전' })).toHaveCount(0)
+  await expect(viewer.frame.getByRole('button', { name: '빈 페이지 삽입' })).toHaveCount(0)
   await drawRectangle(bob, 0.55, 0.05)
   const version = await settled([alice, bob, carol, viewer])
   const beforeSave = await shown(bob)

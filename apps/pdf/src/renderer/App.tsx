@@ -171,7 +171,7 @@ import {
   remapOutlinePages,
   remapOutlineTree,
 } from './heading-outline'
-import { printPdf } from './print'
+import { PrintBlockedError, printPdf } from './print'
 import { readFileBytes } from './file-bytes'
 import {
   NO_WRITTEN_STEPS,
@@ -307,6 +307,8 @@ import {
   useSplitPaneFocusPing,
   useSplitPaneRole,
   templateDocumentOf,
+  webAiOff,
+  webViewMode,
   type TemplateDocument,
 } from '@seuoffice/ui'
 import { useI18n } from './i18n/locale'
@@ -553,7 +555,12 @@ const RIBBON_TABS = [
   { id: 'page', labelKey: 'ribbonTabPage' },
   { id: 'view', labelKey: 'ribbonTabView' },
 ] as const
-type RibbonTab = (typeof RIBBON_TABS)[number]['id'] | 'fillForm' | 'formDesign'
+type RibbonTab = (typeof RIBBON_TABS)[number]['id'] | 'fillForm' | 'formDesign' | 'reading'
+
+/** the web embed opened the page only to read: the ribbon is the reading bar alone, the AI panel starts closed */
+const WEB_VIEW = webViewMode()
+/** the web embed's host offers no AI: no panel and no AI button */
+const WEB_AI_OFF = webAiOff()
 
 /** Right-click menu of one markup annotation (pending or already in the file). */
 type MarkupMenu =
@@ -699,21 +706,24 @@ export default function App() {
   }
   // Persisted so a closed AI panel stays closed on next launch (docs/slides parity)
   const [aiCollapsed, setAiCollapsed] = useState(
-    () => !aiPanelInitiallyOpen('genoffice-pdf-show-ai'),
+    () => WEB_VIEW || !aiPanelInitiallyOpen('genoffice-pdf-show-ai'),
   )
   // In a split, a secondary pane's panel is forced to the rail; the focus pane keeps its own state
   const { role: paneRole, requestFocus } = useSplitPaneRole()
   const aiPanelOpen = effectiveAiPanelOpen(!aiCollapsed, paneRole)
   /** the panel setter in the "true = visible" sense the sidebar hook expects */
   const setAiOpen = useCallback((open: boolean) => setAiCollapsed(!open), [])
+  const clickAiRail = () =>
+    onAiRailClick(paneRole, !aiCollapsed, (open) => setAiCollapsed(!open), requestFocus)
   // the sidebar switch is a soft hide; it closes the panel when it turns off
   const aiSidebarEnabled = useAiSidebarEnabled(setAiOpen)
   useEffect(() => {
-    rememberAiPanelOpen('genoffice-pdf-show-ai', !aiCollapsed)
+    if (!WEB_VIEW) rememberAiPanelOpen('genoffice-pdf-show-ai', !aiCollapsed)
   }, [aiCollapsed])
   /** One-shot prompt pushed by the ribbon AI buttons; the panel auto-runs it (docs preset pattern) */
   const [aiPreset, setAiPreset] = useState<{ text: string; nonce: number } | null>(null)
-  const [ribbonTab, setRibbonTab] = useState<RibbonTab>('home')
+  const [ribbonTabChoice, setRibbonTab] = useState<RibbonTab>('home')
+  const ribbonTab: RibbonTab = WEB_VIEW ? 'reading' : ribbonTabChoice
   const [spread, setSpread] = useState<1 | 2>(1)
   // side-by-side translation view; the revision rebuilds its tree after a save
   const [bilingualOn, setBilingualOn] = useState(false)
@@ -8294,7 +8304,8 @@ export default function App() {
             void pdoc.loadingTask.destroy()
           }
         } catch (err) {
-          opFailed(err instanceof Error ? err.message : String(err))
+          if (err instanceof PrintBlockedError) showNotice(t('printBlocked'))
+          else opFailed(err instanceof Error ? err.message : String(err))
         } finally {
           setPrinting(false)
         }
@@ -9774,6 +9785,20 @@ export default function App() {
     </button>
   )
 
+  const printBtn = (
+    <button
+      className="rb-big"
+      data-tip={`${t('print')} (${platformShortcuts('⌘P')})`}
+      disabled={printing}
+      onClick={openPrintDlg}
+    >
+      <span className="rb-big-icon">
+        <IconPrint />
+      </span>
+      <span>{printing ? t('printPreparing') : t('print')}</span>
+    </button>
+  )
+
   const editTextBtn = (
     <button
       className={`rb-big${editTextMode ? ' active' : ''}`}
@@ -10073,231 +10098,257 @@ export default function App() {
       aria-busy={redactionCopyInFlight}
     >
       <div className={`ribbon ${collapse.rootClass}`} ref={collapse.rootRef}>
-        <div className="ribbon-tabs" onDoubleClick={collapse.onTabsDoubleClick}>
-          <button
-            className="qa-btn"
-            data-tip={`${t('save')} (${platformShortcuts('⌘S')})`}
-            aria-label={t('save')}
-            disabled={!unsavedShown || saveState === 'saving'}
-            onClick={() => void save()}
-          >
-            <IconSave />
-          </button>
-          <button
-            className="qa-btn"
-            data-tip={`${t('undo')} (${platformShortcuts('⌘Z')})`}
-            aria-label={`${t('undo')} (${platformShortcuts('⌘Z')})`}
-            disabled={undoStack.length === 0 && written.undo === 0}
-            onClick={undo}
-          >
-            <IconUndo />
-          </button>
-          <button
-            className="qa-btn"
-            data-tip={`${t('redo')} (${platformShortcuts('⇧⌘Z')})`}
-            aria-label={`${t('redo')} (${platformShortcuts('⇧⌘Z')})`}
-            disabled={redoStack.length === 0 && written.redo === 0}
-            onClick={redo}
-          >
-            <IconRedo />
-          </button>
-          <span className="qa-sep" />
-          <label className={`autosave-toggle${autoSave ? ' on' : ''}`} data-tip={t('autoSaveTip')}>
-            <span className="autosave-knob" />
-            <span className="autosave-text">{t('autoSave')}</span>
-            <input
-              type="checkbox"
-              checked={autoSave}
-              onChange={(e) => setAutoSave(e.target.checked)}
-            />
-          </label>
-          <span className="qa-sep" />
-          {RIBBON_TABS.map(({ id, labelKey }) => (
+        {!WEB_VIEW && (
+          <div className="ribbon-tabs" onDoubleClick={collapse.onTabsDoubleClick}>
             <button
-              key={id}
-              className={`ribbon-tab ${collapse.tabClass(ribbonTab === id)}`}
-              data-tip={collapse.tabTip(ribbonTab === id)}
-              onClick={() => {
-                collapse.onTabPress(ribbonTab === id)
-                setRibbonTab(id)
-              }}
+              className="qa-btn"
+              data-tip={`${t('save')} (${platformShortcuts('⌘S')})`}
+              aria-label={t('save')}
+              disabled={!unsavedShown || saveState === 'saving'}
+              onClick={() => void save()}
             >
-              {t(labelKey)}
+              <IconSave />
             </button>
-          ))}
-          {!readOnly && (
             <button
-              className={`ribbon-tab ribbon-tab-context ${collapse.tabClass(ribbonTab === 'fillForm')}`}
-              data-tip={collapse.tabTip(ribbonTab === 'fillForm')}
-              onClick={() => {
-                collapse.onTabPress(ribbonTab === 'fillForm')
-                setRibbonTab('fillForm')
-              }}
+              className="qa-btn"
+              data-tip={`${t('undo')} (${platformShortcuts('⌘Z')})`}
+              aria-label={`${t('undo')} (${platformShortcuts('⌘Z')})`}
+              disabled={undoStack.length === 0 && written.undo === 0}
+              onClick={undo}
             >
-              {t('ribbonTabFillForm')}
+              <IconUndo />
             </button>
-          )}
-          {!readOnly && (
             <button
-              className={`ribbon-tab ribbon-tab-context ${collapse.tabClass(ribbonTab === 'formDesign')}`}
-              data-tip={collapse.tabTip(ribbonTab === 'formDesign')}
-              onClick={() => {
-                collapse.onTabPress(ribbonTab === 'formDesign')
-                setRibbonTab('formDesign')
-              }}
+              className="qa-btn"
+              data-tip={`${t('redo')} (${platformShortcuts('⇧⌘Z')})`}
+              aria-label={`${t('redo')} (${platformShortcuts('⇧⌘Z')})`}
+              disabled={redoStack.length === 0 && written.redo === 0}
+              onClick={redo}
             >
-              {t('ribbonTabFormDesign')}
+              <IconRedo />
             </button>
-          )}
-          <span className="ribbon-tabs-spacer" />
-          {readOnly && <span className="tb-readonly">{readOnlyReason}</span>}
-          {/* Pending edits wait for an explicit save or an enabled autosave. */}
-          {saveState === 'saving' ? (
-            <span className="tb-save-pending">{t('saving')}</span>
-          ) : (
-            unsavedShown &&
-            saveState !== 'error' && <span className="tb-save-pending">{t('unsaved')}</span>
-          )}
-          {saveState === 'error' && (
-            <span className="tb-save-error" data-tip={saveError}>
-              {t('saveFailed')}
-            </span>
-          )}
-          {saveState === 'saved' && <span className="tb-save-ok">{t('savedOk')}</span>}
-          {formHasXfa && (
-            <span className="tb-form-warning" data-tip={t('formXfaWarning')}>
-              XFA
-            </span>
-          )}
-        </div>
+            <span className="qa-sep" />
+            <label
+              className={`autosave-toggle${autoSave ? ' on' : ''}`}
+              data-tip={t('autoSaveTip')}
+            >
+              <span className="autosave-knob" />
+              <span className="autosave-text">{t('autoSave')}</span>
+              <input
+                type="checkbox"
+                checked={autoSave}
+                onChange={(e) => setAutoSave(e.target.checked)}
+              />
+            </label>
+            <span className="qa-sep" />
+            {RIBBON_TABS.map(({ id, labelKey }) => (
+              <button
+                key={id}
+                className={`ribbon-tab ${collapse.tabClass(ribbonTab === id)}`}
+                data-tip={collapse.tabTip(ribbonTab === id)}
+                onClick={() => {
+                  collapse.onTabPress(ribbonTab === id)
+                  setRibbonTab(id)
+                }}
+              >
+                {t(labelKey)}
+              </button>
+            ))}
+            {!readOnly && (
+              <button
+                className={`ribbon-tab ribbon-tab-context ${collapse.tabClass(ribbonTab === 'fillForm')}`}
+                data-tip={collapse.tabTip(ribbonTab === 'fillForm')}
+                onClick={() => {
+                  collapse.onTabPress(ribbonTab === 'fillForm')
+                  setRibbonTab('fillForm')
+                }}
+              >
+                {t('ribbonTabFillForm')}
+              </button>
+            )}
+            {!readOnly && (
+              <button
+                className={`ribbon-tab ribbon-tab-context ${collapse.tabClass(ribbonTab === 'formDesign')}`}
+                data-tip={collapse.tabTip(ribbonTab === 'formDesign')}
+                onClick={() => {
+                  collapse.onTabPress(ribbonTab === 'formDesign')
+                  setRibbonTab('formDesign')
+                }}
+              >
+                {t('ribbonTabFormDesign')}
+              </button>
+            )}
+            <span className="ribbon-tabs-spacer" />
+            {readOnly && <span className="tb-readonly">{readOnlyReason}</span>}
+            {/* Pending edits wait for an explicit save or an enabled autosave. */}
+            {saveState === 'saving' ? (
+              <span className="tb-save-pending">{t('saving')}</span>
+            ) : (
+              unsavedShown &&
+              saveState !== 'error' && <span className="tb-save-pending">{t('unsaved')}</span>
+            )}
+            {saveState === 'error' && (
+              <span className="tb-save-error" data-tip={saveError}>
+                {t('saveFailed')}
+              </span>
+            )}
+            {saveState === 'saved' && <span className="tb-save-ok">{t('savedOk')}</span>}
+            {formHasXfa && (
+              <span className="tb-form-warning" data-tip={t('formXfaWarning')}>
+                XFA
+              </span>
+            )}
+          </div>
+        )}
         <div className="ribbon-body" data-ribbon-body="">
+          {ribbonTab === 'reading' && (
+            <>
+              {pageZoomGroup()}
+              <div className="ribbon-sep" />
+              <div className="ribbon-group">
+                <div className="ribbon-group-items">
+                  {searchBtn}
+                  {printBtn}
+                </div>
+              </div>
+            </>
+          )}
           {ribbonTab === 'home' && (
             <>
               {/* ---- AI (first slot: entry + one-click AI actions, docs parity) ---- */}
-              <div className="ribbon-group">
-                <div className="ribbon-group-items">
-                  <button
-                    className={`rb-big ai-entry${aiCollapsed ? '' : ' active'}`}
-                    data-tip={t('aiOpenAssistant')}
-                    onClick={() => setAiCollapsed((v) => !v)}
-                  >
-                    <span className="rb-big-icon">
-                      <AiMark size={26} />
-                    </span>
-                    <span>{aiSubscriptionText(lang, 'aiAssistant')}</span>
-                  </button>
-                  <button
-                    className="rb-big ai-entry"
-                    data-tip={t('aiSummarizeBtn')}
-                    onClick={() =>
-                      runAiPreset(
-                        t(aiSelection ? 'aiQuickSummarySelPrompt' : 'aiQuickSummaryPrompt'),
-                      )
-                    }
-                  >
-                    <span className="rb-big-icon">
-                      <span className="ai-feature-icon" aria-hidden="true">
-                        <IconAiSummarize />
-                      </span>
-                    </span>
-                    <span>{t('aiSummarizeBtn')}</span>
-                  </button>
-                  <button
-                    className="rb-big ai-entry"
-                    data-tip={t('aiKeyPointsBtn')}
-                    onClick={() =>
-                      runAiPreset(
-                        t(aiSelection ? 'aiQuickKeyPointsSelPrompt' : 'aiQuickKeyPointsPrompt'),
-                      )
-                    }
-                  >
-                    <span className="rb-big-icon">
-                      <span className="ai-feature-icon" aria-hidden="true">
-                        <IconAiKeyPoints />
-                      </span>
-                    </span>
-                    <span>{t('aiKeyPointsBtn')}</span>
-                  </button>
-                  <div className="rb-drop-wrap" ref={aiReadWrapRef}>
-                    <button
-                      className={`rb-big ai-entry${aiReadMenuOpen ? ' active' : ''}`}
-                      data-tip={t('arButtonTip')}
-                      data-action="ai-read-menu"
-                      onClick={() => setAiReadMenuOpen((v) => !v)}
-                    >
-                      <span className="rb-big-icon">
-                        <span className="ai-feature-icon" aria-hidden="true">
-                          <IconAiReadPages />
+              {!WEB_AI_OFF && (
+                <>
+                  <div className="ribbon-group">
+                    <div className="ribbon-group-items">
+                      <button
+                        className={`rb-big ai-entry${aiCollapsed ? '' : ' active'}`}
+                        data-tip={t('aiOpenAssistant')}
+                        onClick={() => setAiCollapsed((v) => !v)}
+                      >
+                        <span className="rb-big-icon">
+                          <AiMark size={26} />
                         </span>
-                        <RbCaret />
-                      </span>
-                      <span>{t('arButton')}</span>
-                    </button>
-                    {aiReadMenuOpen && (
-                      <div className="rb-drop rb-menu">
+                        <span>{aiSubscriptionText(lang, 'aiAssistant')}</span>
+                      </button>
+                      <button
+                        className="rb-big ai-entry"
+                        data-tip={t('aiSummarizeBtn')}
+                        onClick={() =>
+                          runAiPreset(
+                            t(aiSelection ? 'aiQuickSummarySelPrompt' : 'aiQuickSummaryPrompt'),
+                          )
+                        }
+                      >
+                        <span className="rb-big-icon">
+                          <span className="ai-feature-icon" aria-hidden="true">
+                            <IconAiSummarize />
+                          </span>
+                        </span>
+                        <span>{t('aiSummarizeBtn')}</span>
+                      </button>
+                      <button
+                        className="rb-big ai-entry"
+                        data-tip={t('aiKeyPointsBtn')}
+                        onClick={() =>
+                          runAiPreset(
+                            t(aiSelection ? 'aiQuickKeyPointsSelPrompt' : 'aiQuickKeyPointsPrompt'),
+                          )
+                        }
+                      >
+                        <span className="rb-big-icon">
+                          <span className="ai-feature-icon" aria-hidden="true">
+                            <IconAiKeyPoints />
+                          </span>
+                        </span>
+                        <span>{t('aiKeyPointsBtn')}</span>
+                      </button>
+                      <div className="rb-drop-wrap" ref={aiReadWrapRef}>
                         <button
-                          data-action="ai-read-open"
-                          onClick={() => {
-                            setAiReadMenuOpen(false)
-                            const answer = aiReadRef.current?.requestOpen(null)
-                            if (answer && 'running' in answer)
-                              showNotice(t('arBusy', answer.running))
-                            else if (!answer || 'unavailable' in answer)
-                              showNotice(t('arUnavailable'))
-                          }}
+                          className={`rb-big ai-entry${aiReadMenuOpen ? ' active' : ''}`}
+                          data-tip={t('arButtonTip')}
+                          data-action="ai-read-menu"
+                          onClick={() => setAiReadMenuOpen((v) => !v)}
                         >
-                          {t('arMenuRead')}
+                          <span className="rb-big-icon">
+                            <span className="ai-feature-icon" aria-hidden="true">
+                              <IconAiReadPages />
+                            </span>
+                            <RbCaret />
+                          </span>
+                          <span>{t('arButton')}</span>
                         </button>
-                        <button
-                          data-action="ai-read-delete"
-                          onClick={() => {
-                            setAiReadMenuOpen(false)
-                            void aiReadRef.current?.deleteStored()
-                          }}
-                        >
-                          {t('arMenuDelete')}
-                        </button>
+                        {aiReadMenuOpen && (
+                          <div className="rb-drop rb-menu">
+                            <button
+                              data-action="ai-read-open"
+                              onClick={() => {
+                                setAiReadMenuOpen(false)
+                                const answer = aiReadRef.current?.requestOpen(null)
+                                if (answer && 'running' in answer)
+                                  showNotice(t('arBusy', answer.running))
+                                else if (!answer || 'unavailable' in answer)
+                                  showNotice(t('arUnavailable'))
+                              }}
+                            >
+                              {t('arMenuRead')}
+                            </button>
+                            <button
+                              data-action="ai-read-delete"
+                              onClick={() => {
+                                setAiReadMenuOpen(false)
+                                void aiReadRef.current?.deleteStored()
+                              }}
+                            >
+                              {t('arMenuDelete')}
+                            </button>
+                          </div>
+                        )}
                       </div>
-                    )}
+                      <button
+                        className="rb-big ai-entry"
+                        data-tip={t('trButtonTip')}
+                        data-action="translate-open"
+                        onClick={() => {
+                          const answer = translateRef.current?.requestOpen({
+                            lang: null,
+                            pages: null,
+                          })
+                          if (answer && 'running' in answer) showNotice(t('arBusy', answer.running))
+                          else if (!answer || 'unavailable' in answer)
+                            showNotice(t('trUnavailable'))
+                        }}
+                      >
+                        <span className="rb-big-icon">
+                          <span className="ai-feature-icon" aria-hidden="true">
+                            <IconAiTranslate />
+                          </span>
+                        </span>
+                        <span>{t('trButton')}</span>
+                      </button>
+                      <button
+                        className="rb-big ai-entry"
+                        data-tip={readOnly ? t('hlReadOnly') : t('hlButtonTip')}
+                        data-action="highlight-open"
+                        onClick={() => {
+                          // opens the start window only; a read-only document shows why it cannot start
+                          const answer = highlightRef.current?.requestOpen()
+                          if (answer && 'running' in answer) showNotice(t('arBusy', answer.running))
+                          else if (!answer || 'unavailable' in answer)
+                            showNotice(t('hlUnavailable'))
+                        }}
+                      >
+                        <span className="rb-big-icon">
+                          <span className="ai-feature-icon" aria-hidden="true">
+                            <IconHighlightPreview />
+                          </span>
+                        </span>
+                        <span>{t('hlButton')}</span>
+                      </button>
+                    </div>
                   </div>
-                  <button
-                    className="rb-big ai-entry"
-                    data-tip={t('trButtonTip')}
-                    data-action="translate-open"
-                    onClick={() => {
-                      const answer = translateRef.current?.requestOpen({ lang: null, pages: null })
-                      if (answer && 'running' in answer) showNotice(t('arBusy', answer.running))
-                      else if (!answer || 'unavailable' in answer) showNotice(t('trUnavailable'))
-                    }}
-                  >
-                    <span className="rb-big-icon">
-                      <span className="ai-feature-icon" aria-hidden="true">
-                        <IconAiTranslate />
-                      </span>
-                    </span>
-                    <span>{t('trButton')}</span>
-                  </button>
-                  <button
-                    className="rb-big ai-entry"
-                    data-tip={readOnly ? t('hlReadOnly') : t('hlButtonTip')}
-                    data-action="highlight-open"
-                    onClick={() => {
-                      // opens the start window only; a read-only document shows why it cannot start
-                      const answer = highlightRef.current?.requestOpen()
-                      if (answer && 'running' in answer) showNotice(t('arBusy', answer.running))
-                      else if (!answer || 'unavailable' in answer) showNotice(t('hlUnavailable'))
-                    }}
-                  >
-                    <span className="rb-big-icon">
-                      <span className="ai-feature-icon" aria-hidden="true">
-                        <IconHighlightPreview />
-                      </span>
-                    </span>
-                    <span>{t('hlButton')}</span>
-                  </button>
-                </div>
-              </div>
-              <div className="ribbon-sep" />
+                  <div className="ribbon-sep" />
+                </>
+              )}
               {markupGroup}
               <div className="ribbon-sep" />
               {/* Edit entries lead; Search moved after page/zoom (⌘F is the common path) */}
@@ -10333,17 +10384,7 @@ export default function App() {
               <div className="ribbon-group">
                 <div className="ribbon-group-items">
                   {searchBtn}
-                  <button
-                    className="rb-big"
-                    data-tip={`${t('print')} (${platformShortcuts('⌘P')})`}
-                    disabled={printing}
-                    onClick={openPrintDlg}
-                  >
-                    <span className="rb-big-icon">
-                      <IconPrint />
-                    </span>
-                    <span>{printing ? t('printPreparing') : t('print')}</span>
-                  </button>
+                  {printBtn}
                   <button
                     className="rb-big"
                     data-tip={t('propsTitle')}
@@ -11146,54 +11187,54 @@ export default function App() {
       <div className="app-main">
         {/* dock wrapper animates the width between panel and rail (docs-style 180ms ease);
             the panel stays mounted while collapsed so the chat history survives */}
-        <div
-          className={`ai-dock${aiPanelOpen ? '' : ' collapsed'}${
-            !aiSidebarEnabled && !aiPanelOpen ? ' ai-dock-off' : ''
-          }`}
-        >
-          {!aiPanelOpen && aiSidebarEnabled && (
-            <button
-              className="ai-rail"
-              data-tip={t('aiOpenAssistant')}
-              aria-label={t('aiOpenAssistant')}
-              onClick={() =>
-                onAiRailClick(paneRole, !aiCollapsed, (open) => setAiCollapsed(!open), requestFocus)
+        {!WEB_AI_OFF && (
+          <div
+            className={`ai-dock${aiPanelOpen ? '' : ' collapsed'}${
+              !aiSidebarEnabled && !aiPanelOpen ? ' ai-dock-off' : ''
+            }`}
+          >
+            {!aiPanelOpen && aiSidebarEnabled && (
+              <button
+                className="ai-rail"
+                data-tip={t('aiOpenAssistant')}
+                aria-label={t('aiOpenAssistant')}
+                onClick={clickAiRail}
+              >
+                <AiMark size={22} />
+              </button>
+            )}
+            <AiPanel
+              api={aiApi}
+              filePath={filePath}
+              preset={aiPreset}
+              onCollapse={() => setAiCollapsed(true)}
+              onRunDone={() => void autoSaveAfterAiRun()}
+              onClearSelection={() => setAiSelection(null)}
+              onCitation={openCitation}
+              templateDocument={templateDocument}
+              onSkillHandoff={() => setAiCollapsed(false)}
+              overview={
+                <InsightsCard
+                  insights={documentInsights}
+                  session={jobSession}
+                  lang={lang}
+                  t={t}
+                  onSearchTerm={searchFor}
+                  onGotoPage={(page) => void aiApi.gotoPage(page)}
+                  onNotice={showNotice}
+                  sectionActions={(section) =>
+                    noteInsertAction(
+                      noteActions,
+                      overviewNoteRequest(section, t('airOverview')),
+                      t,
+                      'ai-overview-link',
+                    )
+                  }
+                />
               }
-            >
-              <AiMark size={22} />
-            </button>
-          )}
-          <AiPanel
-            api={aiApi}
-            filePath={filePath}
-            preset={aiPreset}
-            onCollapse={() => setAiCollapsed(true)}
-            onRunDone={() => void autoSaveAfterAiRun()}
-            onClearSelection={() => setAiSelection(null)}
-            onCitation={openCitation}
-            templateDocument={templateDocument}
-            onSkillHandoff={() => setAiCollapsed(false)}
-            overview={
-              <InsightsCard
-                insights={documentInsights}
-                session={jobSession}
-                lang={lang}
-                t={t}
-                onSearchTerm={searchFor}
-                onGotoPage={(page) => void aiApi.gotoPage(page)}
-                onNotice={showNotice}
-                sectionActions={(section) =>
-                  noteInsertAction(
-                    noteActions,
-                    overviewNoteRequest(section, t('airOverview')),
-                    t,
-                    'ai-overview-link',
-                  )
-                }
-              />
-            }
-          />
-        </div>
+            />
+          </div>
+        )}
         <div className="app-content">
           {diskChange !== null && status === 'ready' && (
             <div className="pdf-disk-change-bar" role="alert">
@@ -13161,7 +13202,7 @@ export default function App() {
                 )}
               </div>
             )}
-            {selPopup && (
+            {selPopup && !(readOnly && WEB_AI_OFF) && (
               <div
                 ref={selBarRef}
                 className={`pdf-sel-popup${selPopup.side === 'above' ? ' is-above' : ''}`}
@@ -13311,21 +13352,23 @@ export default function App() {
                       <span className="pdf-sel-popup-sep" aria-hidden />
                     </>
                   )}
-                  <button
-                    type="button"
-                    className="pdf-sel-ask"
-                    data-tip={labelWithKey(t, t('aiAskTitle'), 'ask')}
-                    aria-label={labelWithKey(t, t('aiAskBtn'), 'ask')}
-                    onClick={openAskPopover}
-                  >
-                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" aria-hidden>
-                      <path
-                        d="M12 3l1.7 4.6L18 9.3l-4.3 1.7L12 15.6l-1.7-4.6L6 9.3l4.3-1.7L12 3zM19 15l.85 2.3L22 18.15l-2.15.85L19 21.3l-.85-2.3-2.15-.85 2.15-.85L19 15z"
-                        fill="currentColor"
-                      />
-                    </svg>
-                    {t('aiAskBtn')}
-                  </button>
+                  {!WEB_AI_OFF && (
+                    <button
+                      type="button"
+                      className="pdf-sel-ask"
+                      data-tip={labelWithKey(t, t('aiAskTitle'), 'ask')}
+                      aria-label={labelWithKey(t, t('aiAskBtn'), 'ask')}
+                      onClick={openAskPopover}
+                    >
+                      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" aria-hidden>
+                        <path
+                          d="M12 3l1.7 4.6L18 9.3l-4.3 1.7L12 15.6l-1.7-4.6L6 9.3l4.3-1.7L12 3zM19 15l.85 2.3L22 18.15l-2.15.85L19 21.3l-.85-2.3-2.15-.85 2.15-.85L19 15z"
+                          fill="currentColor"
+                        />
+                      </svg>
+                      {t('aiAskBtn')}
+                    </button>
+                  )}
                 </div>
                 {!readOnly &&
                   selColorRow &&
@@ -13367,7 +13410,7 @@ export default function App() {
                 />
               </div>
             )}
-            {askPop && (
+            {askPop && !WEB_AI_OFF && (
               <AiAskPopover
                 rect={askPop.rect}
                 excerpt={askPop.excerpt}

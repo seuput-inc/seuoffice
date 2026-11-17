@@ -55,6 +55,8 @@ async function typeInDocument(page: Page, text: string): Promise<void> {
   const editor = page.frameLocator('#viewer iframe').locator('.hwp-editor-host iframe')
   const box = (await editor.boundingBox())!
   await page.mouse.click(box.x + box.width * 0.4, box.y + 300)
+  // the line's end, wherever the click landed: a second text goes after the first, not into it
+  await page.keyboard.press('End')
   await page.keyboard.type(text)
 }
 
@@ -158,26 +160,22 @@ test('a document opened for viewing can be neither changed nor saved', async ({ 
   expect(await editorDirty(page)).toBe(false)
   expect(await documentCount(page, studio)).toBe(before)
 
-  // the editing commands are off in the menu; reading ones stay
-  await studio.locator('#menu-bar .menu-item[data-menu="edit"] .menu-title').click()
-  for (const command of [
-    'edit:undo',
-    'edit:redo',
-    'edit:cut',
-    'edit:paste',
-    'edit:delete',
-    'edit:find-replace',
+  // the menus and tool bars are not shown, and the editing shortcuts behind them do nothing
+  for (const bar of ['#menu-bar', '#icon-toolbar', '#style-bar']) {
+    await expect(studio.locator(bar)).toBeHidden()
+  }
+  for (const chord of [
+    'ControlOrMeta+z',
+    'ControlOrMeta+y',
+    'ControlOrMeta+v',
+    'ControlOrMeta+h',
   ]) {
-    await expect(studio.locator(`.md-item[data-cmd="${command}"]`)).toHaveClass(/\bdisabled\b/)
+    await page.keyboard.press(chord)
   }
-  for (const command of ['edit:copy', 'edit:find']) {
-    await expect(studio.locator(`.md-item[data-cmd="${command}"]`)).not.toHaveClass(/\bdisabled\b/)
-  }
-  await page.keyboard.press('Escape')
+  expect(await editorDirty(page)).toBe(false)
+  expect(await documentCount(page, studio)).toBe(before)
 
   await page.keyboard.press('ControlOrMeta+s')
-  await studio.locator('#menu-bar .menu-item[data-menu="file"] .menu-title').click()
-  await studio.locator('.md-item[data-cmd="ext:ieum-save"]').click()
   // a save would reach the host within this time in the edit tests
   await page.waitForTimeout(3_000)
   expect(downloads).toEqual([])

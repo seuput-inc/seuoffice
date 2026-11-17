@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
-import { printPdf, printScaleForAreas, PRINT_DIALOG_TIMEOUT_MS } from '../src/renderer/print'
+import {
+  PRINT_DIALOG_TIMEOUT_MS,
+  PRINT_START_TIMEOUT_MS,
+  PrintBlockedError,
+  printPdf,
+  printScaleForAreas,
+} from '../src/renderer/print'
 
 function fakeDoc(numPages: number, render = vi.fn(() => ({ promise: Promise.resolve() }))) {
   const getPage = vi.fn(async () => ({
@@ -149,8 +155,10 @@ describe('printPdf', () => {
     vi.useFakeTimers()
     try {
       const { doc } = fakeDoc(2)
-      // A suppressed print: the dialog never opens, so no event ever arrives.
-      ;(window.print as ReturnType<typeof vi.fn>).mockImplementation(() => {})
+      // The dialog opened (`beforeprint`) and then never reported back.
+      ;(window.print as ReturnType<typeof vi.fn>).mockImplementation(() => {
+        window.dispatchEvent(new Event('beforeprint'))
+      })
       const done = printPdf(doc)
       const settled = done.then(
         () => 'resolved',
@@ -163,6 +171,25 @@ describe('printPdf', () => {
       expect(document.querySelector('.pdf-print-root')).toBeNull()
       // Nothing left listening, so a stray event cannot resolve a dead print.
       expect(window.print).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reports a blocked print when window.print starts no print job', async () => {
+    vi.useFakeTimers()
+    try {
+      const { doc } = fakeDoc(1)
+      // A sandboxed frame without allow-modals: print() returns and no event ever arrives.
+      ;(window.print as ReturnType<typeof vi.fn>).mockImplementation(() => {})
+      const settled = printPdf(doc).then(
+        () => null,
+        (err: unknown) => err,
+      )
+      await vi.advanceTimersByTimeAsync(PRINT_START_TIMEOUT_MS)
+
+      expect(await settled).toBeInstanceOf(PrintBlockedError)
+      expect(document.querySelector('.pdf-print-root')).toBeNull()
     } finally {
       vi.useRealTimers()
     }
