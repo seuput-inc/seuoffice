@@ -377,12 +377,12 @@ fn host_paragraph_geometry(
     if let Some(raw) = line.line_raw_twips {
         meta.image_paragraph_line_twips.set(raw);
         meta.image_paragraph_line_rule
-            .assign(match line.line_rule.as_deref() {
-                Some("auto") => Some(BlockImageParagraphLineRule::Auto),
-                Some("atLeast") => Some(BlockImageParagraphLineRule::AtLeast),
-                Some("exact") => Some(BlockImageParagraphLineRule::Exact),
-                _ => None,
-            });
+            .assign(line.line_rule.as_deref().map(|rule| match rule {
+                "auto" => BlockImageParagraphLineRule::Auto,
+                "atLeast" => BlockImageParagraphLineRule::AtLeast,
+                "exact" => BlockImageParagraphLineRule::Exact,
+                other => BlockImageParagraphLineRule::Unlisted(std::sync::Arc::new(other.to_string())),
+            }));
     }
     // the (m - 1) x single extra under an auto-multiple picture line follows the
     // drawing run's face and size (inherited through the paragraph style), not

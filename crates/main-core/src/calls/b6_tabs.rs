@@ -1609,11 +1609,15 @@ fn run_op(
         hydrate_fixture_tab(w, tm, id);
     }
     let out = run_op_inner(name, o, w, tm, dw, platform, sink);
+    // a tab whose opener failed stays unloaded and is left as it was: a second
+    // `activate_tab` would ask for its load again, without end
     while !w.load_requests.is_empty() {
         let requested = std::mem::take(&mut w.load_requests);
         for id in requested {
             hydrate_fixture_tab(w, tm, &id);
-            tm.activate_tab(w, &id);
+            if !tm.is_tab_unloaded(&id) {
+                tm.activate_tab(w, &id);
+            }
         }
     }
     out

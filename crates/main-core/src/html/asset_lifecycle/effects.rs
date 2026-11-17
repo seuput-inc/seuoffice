@@ -352,6 +352,16 @@ impl Drop for Session {
         }
     }
 }
+/// The TypeScript meets each recorded name with `lstat` first, so a name the
+/// system refuses as too long is worded as that call, not as our `open`.
+fn first_lstat(error: NodeError, directory: &str, name: &str) -> NodeError {
+    if error.code == Some("ENAMETOOLONG") {
+        node_error_named("ENAMETOOLONG", "lstat", &join(&[directory, name]))
+    } else {
+        error
+    }
+}
+
 impl Session {
     /// `app` names the editor in the error Node's `existingAssetsDir` gives an
     /// assets path that is no real directory.
@@ -490,7 +500,7 @@ impl Session {
             Err(error) if matches!(error.code, Some("ELOOP" | "EISDIR" | "EINVAL")) => {
                 return Ok(false);
             }
-            other => other,
+            other => other.map_err(|error| first_lstat(error, &directory.directory.path, name)),
         })?
         else {
             return Err(node_error_named(
@@ -515,7 +525,7 @@ impl Session {
             Err(error) if matches!(error.code, Some("ELOOP" | "EISDIR" | "EINVAL")) => {
                 return Ok(false);
             }
-            other => other,
+            other => other.map_err(|error| first_lstat(error, &directory.directory.path, name)),
         })?
         else {
             return Err(node_error_named(
