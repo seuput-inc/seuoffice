@@ -1,0 +1,8 @@
+{
+  "stable": 3,
+  "prerelease": 3,
+  "keep": {
+    "v0.12.37": "Electron baseline downloaded by .github/workflows/proto-measure.yml, proto-tauri2.yml, proto/common/stage-dist.sh and update-proof-mac.sh",
+    "v0.12.15": "install example URLs in docs/seuoffice/판-내기.md and packages/embed/README.md"
+  }
+}

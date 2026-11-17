@@ -23,8 +23,8 @@ name: seuoffice desktop release
 # which builds the next version (the highest v* tag plus one patch, or
 # apps/shell/package.json when that is higher) and publishes it as a GitHub
 # PRE-RELEASE only once the CI and seuoffice workflows passed on the same
-# commit. General (latest) installs get it at once; only the ten newest
-# pre-releases are kept. A tag vX.Y.Z pushed by hand does the same for that
+# commit. General (latest) installs get it at once; only the newest releases listed by
+# .github/release-keep.json are kept. A tag vX.Y.Z pushed by hand does the same for that
 # version. The workflow never promotes a release. The owner promotes one to
 # stable once checked:
 #   gh release edit vX.Y.Z --prerelease=false --latest
@@ -838,13 +838,16 @@ jobs:
           fi
           gh release view "$TAG" --json assets --jq '.assets[].name'
 
-      # pre-releases are the general channel's history; stable releases are never touched
-      - name: Keep the ten newest pre-releases
-        run: |
-          set -euo pipefail
-          gh release list --limit 200 --json tagName,isPrerelease,createdAt \
-            --jq '[.[] | select(.isPrerelease)] | sort_by(.createdAt) | reverse | .[10:] | .[].tagName' |
-            while read -r old; do
-              echo "deleting pre-release $old"
-              gh release delete "$old" --yes --cleanup-tag
-            done
+      # Only the release goes (never the tag): scripts/release-prune.sh keeps Latest, the newest
+      # stable and pre-releases and .github/release-keep.json. Never runs after a failed publish.
+      - name: Checkout prune script and keep list
+        if: success()
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: |
+            scripts/release-prune.sh
+            .github/release-keep.json
+          sparse-checkout-cone-mode: false
+      - name: Prune old releases
+        if: success()
+        run: scripts/release-prune.sh
