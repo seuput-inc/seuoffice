@@ -1838,7 +1838,11 @@ export interface SlidesApi {
    *  sibling split-view copy moved the disk past this one, an auto save defers
    *  silently (`reason: 'external-modified'`) where a user's save asks first.
    *  While an AI run's edits wait for review nothing is written (`reason: 'ai-review'`). */
-  save: (auto?: boolean) => Promise<{
+  save: (
+    auto?: boolean,
+    /** the embed host's `doc.save()` request this save belongs to (web only): names it a host save */
+    hostSaveId?: string,
+  ) => Promise<{
     ok: boolean
     path?: string
     error?: string
@@ -1872,7 +1876,7 @@ export interface SlidesApi {
     slides?: RenderSlide[]
   }>
   /** The close guard chose "Save": the main process asks the renderer to run the full save flow */
-  onCloseSaveRequest: (handler: () => void) => () => void
+  onCloseSaveRequest: (handler: (request?: { hostSaveId: string }) => void) => () => void
   /** Undo/redo stack occupancy pushed by the main process (drives the QAT button gray states) */
   onHistoryChanged: (handler: (state: HistoryChange) => void) => () => void
   /** Another window attached to the same file changed the deck (shared session): fresh render state to apply */

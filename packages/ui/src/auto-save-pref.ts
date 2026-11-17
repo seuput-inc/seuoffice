@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { autoSaveOffered, webEmbedded } from './web-host-mode'
 
 /** the shell-wide AutoSave default; `updatedAt` is 0 until the user has ever set it */
 export interface AutoSaveDefault {
@@ -57,17 +58,25 @@ export function isAutoSaveDefault(value: unknown): value is AutoSaveDefault {
  * AutoSave pill state for an editor window: the shell default, overridable
  * per window under `storageKey`. Works without the shell (standalone dev) by
  * falling back to the legacy '1'/'0' value.
+ *
+ * In a web embed the host decides: autosave starts on when it asked for it and off otherwise,
+ * whatever an earlier page left under `storageKey`, and the person's switch lasts the session
+ * only (it is never written).
  */
 export function useAutoSavePref(
   storageKey: string,
   api: Partial<AutoSaveDefaultApi> | undefined,
 ): [boolean, (on: boolean) => void] {
+  const embedded = webEmbedded()
   const [global, setGlobal] = useState<AutoSaveDefault>(NO_AUTO_SAVE_DEFAULT)
   const [autoSave, setAutoSaveState] = useState(() =>
-    resolveAutoSave(NO_AUTO_SAVE_DEFAULT, localStorage.getItem(storageKey)),
+    embedded
+      ? autoSaveOffered()
+      : resolveAutoSave(NO_AUTO_SAVE_DEFAULT, localStorage.getItem(storageKey)),
   )
 
   useEffect(() => {
+    if (embedded) return
     let alive = true
     const apply = (value: AutoSaveDefault) => {
       if (!alive) return
@@ -87,14 +96,19 @@ export function useAutoSavePref(
       alive = false
       off?.()
     }
-  }, [api, storageKey])
+  }, [api, embedded, storageKey])
 
   const setAutoSave = useCallback(
     (on: boolean) => {
+      if (embedded) {
+        // nothing the page keeps: a switch lasts until the page closes, and only when autosave exists
+        if (autoSaveOffered()) setAutoSaveState(on)
+        return
+      }
       localStorage.setItem(storageKey, encodeAutoSaveOverride(on, global))
       setAutoSaveState(on)
     },
-    [global, storageKey],
+    [embedded, global, storageKey],
   )
 
   return [autoSave, setAutoSave]

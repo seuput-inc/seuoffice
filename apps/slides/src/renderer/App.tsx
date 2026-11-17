@@ -997,14 +997,15 @@ export function App() {
   const askOpenRef = useRef(false)
 
   const save = useCallback(
-    (auto = false): Promise<boolean> => fileActions.save(() => ctxRef.current, auto),
+    (auto = false, hostSaveId?: string): Promise<boolean> =>
+      fileActions.save(() => ctxRef.current, auto, hostSaveId),
     [],
   )
 
   // Close guard (closing tab/window) chose "Save": run the full save flow and report the result
   useEffect(() => {
-    return window.slidesApi.onCloseSaveRequest?.(() => {
-      void save().then(
+    return window.slidesApi.onCloseSaveRequest?.((request) => {
+      void save(false, request?.hostSaveId).then(
         (ok) => window.slidesApi.reportCloseSaveResult(ok),
         () => window.slidesApi.reportCloseSaveResult(false),
       )

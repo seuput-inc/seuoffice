@@ -1010,6 +1010,8 @@ export interface SavePdfRequest {
    * direct save omits this and asks.
    */
   auto?: boolean
+  /** The embed host's `doc.save()` request this save belongs to (web only): names it a host save */
+  hostSaveId?: string
   /** Full bookmark-tree replacement, written when the user edited the outline.
    * Every entry must carry an explicit page target (0-based index); entries
    * the writer cannot rebuild exactly make the save refuse the replacement
@@ -1920,7 +1922,9 @@ export interface PdfApi {
   setDirty(dirty: boolean): void
   /** Main process asks for a save (close prompt, menu Save, export flows) and waits for sendCloseSaveResult.
    *  flushAll: success must mean everything on screen is in the file, including the form field whose card is open */
-  onCloseSaveRequest(handler: (opts: { flushAll: boolean }) => void): () => void
+  onCloseSaveRequest(
+    handler: (opts: { flushAll: boolean; hostSaveId?: string }) => void,
+  ): () => void
   sendCloseSaveResult(ok: boolean): void
   /** Shell menu Save As → renderer writes pending edits to targetPath only (original untouched) and replies via sendSaveAsResult */
   onSaveAsRequest(handler: (targetPath: string) => void): () => void

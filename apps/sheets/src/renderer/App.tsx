@@ -1278,7 +1278,9 @@ export function App({
   >(() => Promise.resolve({ ok: false }))
   /// Latest MCP bridge handlers (assigned each render; see the install below).
   const mcpSheetHandlersRef = useRef<McpSheetHandlers | null>(null)
-  const closeSaveRef = useRef<() => Promise<void>>(() => Promise.resolve())
+  const closeSaveRef = useRef<(request?: { requestId: string }) => Promise<void>>(() =>
+    Promise.resolve(),
+  )
   const commitActiveEditor = useCallback(async (): Promise<boolean> => {
     const editor = univerRef.current?.univerAPI.getActiveWorkbook() as
       ActiveCellEditor | null | undefined
@@ -4256,7 +4258,7 @@ export function App({
       (() => undefined)
     // Close guard chose Save: run the journal save and report the outcome.
     const unsubscribeCloseSave =
-      window.desktopApi?.onCloseSaveRequest?.(() => void closeSaveRef.current()) ??
+      window.desktopApi?.onCloseSaveRequest?.((request) => void closeSaveRef.current(request)) ??
       (() => undefined)
     const gridHost = document.getElementById('univer-container')
     const disposePictureTransfer = gridHost
@@ -6171,6 +6173,7 @@ export function App({
     quiet = false,
     explicitTarget?: { path: string; overwrite: boolean },
     defaultName?: string,
+    hostSaveId?: string,
   ): Promise<SaveOutcome> {
     // Manual and AI saves take the same gate as the timers: a recovery copy
     // written beside a real save would outlive it as a phantom Restore prompt.
@@ -6191,7 +6194,13 @@ export function App({
       () =>
         guardedSave(gate, refusal, async (): Promise<SaveOutcome> => {
           if (!(await commitActiveEditor())) return { ok: false }
-          return handleSaveImpl(saveContext(), mode, quiet, explicitTarget, defaultName)
+          return handleSaveImpl(
+            { ...saveContext(), hostSaveId },
+            mode,
+            quiet,
+            explicitTarget,
+            defaultName,
+          )
         }),
       (targetPath) => handleExportOdsImpl(odsExportContext(), targetPath),
     )
@@ -6255,7 +6264,7 @@ export function App({
     if (stem === null) return
     await handleSave('save-as', false, undefined, stem)
   }
-  closeSaveRef.current = async () => {
+  closeSaveRef.current = async (request) => {
     if (!(await commitActiveEditor())) {
       window.desktopApi?.reportCloseSaveResult?.(false)
       return
@@ -6265,7 +6274,7 @@ export function App({
       window.desktopApi?.reportCloseSaveResult?.(true)
       return
     }
-    await handleSave('save')
+    await handleSave('save', false, undefined, undefined, request?.requestId)
     // handleSave swallows errors into the status bar; a drained journal
     // (fresh state after openLazyWorkbook) is the success signal.
     const after = lazyWorkbookRef.current

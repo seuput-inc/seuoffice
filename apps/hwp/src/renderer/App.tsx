@@ -8,6 +8,7 @@ import {
   rememberAiPanelOpen,
   skillTemplateText,
   templateDocumentOf,
+  autoSaveOffered,
   useAutoSavePref,
   useSplitPaneFocusPing,
   webAiOff,
@@ -428,7 +429,7 @@ export default function App() {
   const pdfCopyRef = useRef<(path: string) => Promise<void>>(async () => {})
 
   const save = useCallback(
-    async (mode: SaveMode, automatic = false): Promise<boolean> => {
+    async (mode: SaveMode, automatic = false, hostSaveId?: string): Promise<boolean> => {
       const editor = editorRef.current
       if (!editor) return false
       // a memo editor is open: its text is not in the document yet; an autosave waits quietly
@@ -451,8 +452,13 @@ export default function App() {
       const done = new Promise<void>((resolve) => (release = resolve))
       savingDoneRef.current = done
       try {
-        const outcome = await runSave(savePortOf(editor), window.hwpApi, mode, automatic, () =>
-          aiHold.isHeld(),
+        const outcome = await runSave(
+          savePortOf(editor),
+          window.hwpApi,
+          mode,
+          automatic,
+          () => aiHold.isHeld(),
+          hostSaveId,
         )
         if (outcome.kind === 'export') {
           // a copy, as File > Export as PDF writes it; nothing about the document changes
@@ -698,7 +704,7 @@ export default function App() {
   // saves asked for by the menu, the shortcut and the close prompt
   useEffect(() => {
     const ready = () => phase === 'ready'
-    const offSave = window.hwpApi.onSaveRequest((mode) => {
+    const offSave = window.hwpApi.onSaveRequest((mode, hostSaveId) => {
       // a memo editor is open: do not discard its text, and tell the user why not
       if (memoBlockedRef.current) {
         showMemoBlocked()
@@ -721,7 +727,7 @@ export default function App() {
             .catch(() => true))
         // save() queues behind an autosave already running; the main process is answered
         // when that one (and this save) finish
-        if (dirty) await save(mode)
+        if (dirty) await save(mode, false, hostSaveId)
         else window.hwpApi.abortSave()
       })()
     })
@@ -1074,15 +1080,20 @@ export default function App() {
             {t('checkTitle')}
           </button>
           <MemoToggle open={memoOpen} onToggle={() => setMemoOpen((open) => !open)} />
-          <label className={`autosave-toggle${autoSave ? ' on' : ''}`} data-tip={t('autoSaveTip')}>
-            <span className="autosave-knob" />
-            <span className="autosave-text">{t('autoSave')}</span>
-            <input
-              type="checkbox"
-              checked={autoSave}
-              onChange={(e) => setAutoSave(e.target.checked)}
-            />
-          </label>
+          {autoSaveOffered() && (
+            <label
+              className={`autosave-toggle${autoSave ? ' on' : ''}`}
+              data-tip={t('autoSaveTip')}
+            >
+              <span className="autosave-knob" />
+              <span className="autosave-text">{t('autoSave')}</span>
+              <input
+                type="checkbox"
+                checked={autoSave}
+                onChange={(e) => setAutoSave(e.target.checked)}
+              />
+            </label>
+          )}
         </div>
       )}
       <div className="app-main">

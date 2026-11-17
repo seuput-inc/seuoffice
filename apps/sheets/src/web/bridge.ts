@@ -12,6 +12,7 @@ import {
   reportDirty,
   reportError,
   reportOpened,
+  saveReason,
   saveToHost,
   unsupported,
   waitForDocument,
@@ -150,9 +151,11 @@ function withTransferredEdits(request: WorkbookSaveRequest): WorkbookSaveRequest
  * session and its pending edits as they were.
  */
 async function saveWorkbookEdits(input: WorkbookSaveRequest): Promise<WorkbookSaveResult> {
+  // quiet marks the app's own autosave passes; hostSaveId is the host request's, when it started this save
+  const reason = saveReason(input.hostSaveId, input.quiet === true)
   // A co-edited workbook is saved at one version of the session, by the host, without a reopen
   if (collab) {
-    await collab.save()
+    await collab.save({ reason })
     return { canceled: true }
   }
   try {
@@ -181,7 +184,7 @@ async function saveWorkbookEdits(input: WorkbookSaveRequest): Promise<WorkbookSa
       throw error
     }
     try {
-      await saveToHost(session.fileName, saved.bytes)
+      await saveToHost(session.fileName, saved.bytes, reason)
     } catch (error) {
       await engine().close(opened.sessionId).catch(noop)
       await engine().drop(target).catch(noop)
@@ -254,11 +257,11 @@ async function workbookTemplateBytes(
 }
 
 // The renderer's close-guard save runs its normal save and reports whether the journal drained.
-let closeSave: (() => void) | undefined
+let closeSave: Parameters<DesktopApi['onCloseSaveRequest']>[0] | undefined
 let closeSaveSettled: ((ok: boolean) => void) | undefined
 
 /** The host's `request_save`: the app's own save, or the workbook as it is when nothing is pending */
-async function runHostSave(): Promise<void> {
+async function runHostSave(ownerId: string): Promise<void> {
   const run = closeSave
   const session = current
   if (!run || !session) throw new Error('the workbook is not open yet')
@@ -266,17 +269,21 @@ async function runHostSave(): Promise<void> {
   lastSaveError = undefined
   const ok = await new Promise<boolean>((resolve) => {
     closeSaveSettled = resolve
-    run()
+    // the request id rides through the renderer's save into saveWorkbookEdits, which names the save a host save
+    run({ requestId: ownerId })
   })
   closeSaveSettled = undefined
   if (!ok) throw new Error(lastSaveError ?? 'the workbook was not saved')
-  if (deliveredCount === delivered) await saveToHost(session.fileName, session.bytes)
+  if (deliveredCount === delivered) await saveToHost(session.fileName, session.bytes, 'host')
 }
 
 // Host requests run one after another: each waits on the single close-save answer.
 let hostSaves: Promise<void> = Promise.resolve()
-function saveForHost(): Promise<void> {
-  const next = hostSaves.then(runHostSave, runHostSave)
+function saveForHost(ownerId: string): Promise<void> {
+  const next = hostSaves.then(
+    () => runHostSave(ownerId),
+    () => runHostSave(ownerId),
+  )
   hostSaves = next.catch(noop)
   return next
 }
@@ -289,7 +296,9 @@ function onSaveShortcut(callback: (action: MenuAction) => void): () => void {
     if (event.key.toLowerCase() !== 's') return
     event.preventDefault()
     if (collab)
-      void collab.save().catch((error: unknown) => console.error('[co-editing] save failed', error))
+      void collab
+        .save({ reason: 'user' })
+        .catch((error: unknown) => console.error('[co-editing] save failed', error))
     else callback('save')
   }
   window.addEventListener('keydown', onKey, true)

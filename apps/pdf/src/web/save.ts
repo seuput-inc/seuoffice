@@ -1,4 +1,4 @@
-import { saveToHost, webLanguage, type WebDocument } from '@seuoffice/web-platform'
+import { saveReason, saveToHost, webLanguage, type WebDocument } from '@seuoffice/web-platform'
 import { applySaveRequest } from '../main/save-pdf'
 import type { SavePdfRequest, SavePdfResult } from '../shared/ipc'
 
@@ -42,7 +42,7 @@ export async function saveOnWeb(doc: WebDocument, request: SavePdfRequest): Prom
   if (refused.length > 0) return { ok: false, error: refusal(refused) }
   try {
     const { bytes } = await applySaveRequest(doc.bytes, request)
-    await saveToHost(doc.fileName, bytes)
+    await saveToHost(doc.fileName, bytes, saveReason(request.hostSaveId, request.auto === true))
     doc.bytes = bytes
     return { ok: true }
   } catch (error) {

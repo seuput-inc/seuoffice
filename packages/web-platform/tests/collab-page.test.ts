@@ -38,10 +38,10 @@ function fromHost(data: Record<string, unknown>): void {
  * page's frames, as a network that went away without closing.
  */
 function playHost(options: { canEdit: boolean }): {
-  stored: { bytes: Uint8Array; version: unknown }[]
+  stored: { bytes: Uint8Array; version: unknown; reason: unknown }[]
   cut(): void
 } {
-  const stored: { bytes: Uint8Array; version: unknown }[] = []
+  const stored: { bytes: Uint8Array; version: unknown; reason: unknown }[] = []
   let relaying = true
   const sockets = new Map<number, { message?: (frame: string | Uint8Array) => void }>()
   vi.spyOn(host, 'postMessage').mockImplementation((message: unknown) => {
@@ -77,7 +77,11 @@ function playHost(options: { canEdit: boolean }): {
         .get(id)
         ?.message?.(typeof frame === 'string' ? frame : new Uint8Array(frame as ArrayBuffer))
     } else if (data.type === 'save') {
-      stored.push({ bytes: new Uint8Array(data.bytes as ArrayBuffer), version: data.collabVersion })
+      stored.push({
+        bytes: new Uint8Array(data.bytes as ArrayBuffer),
+        version: data.collabVersion,
+        reason: data.reason,
+      })
       queueMicrotask(() => fromHost({ type: 'saved', saveId: data.saveId }))
     }
   })
@@ -262,7 +266,7 @@ describe('joining a co-edited page', () => {
       }),
     )
     expect(sent).toContainEqual(expect.objectContaining({ type: 'collab_disconnect' }))
-    await expect(collab.save()).rejects.toThrow()
+    await expect(collab.save({ reason: 'user' })).rejects.toThrow()
   })
 })
 
@@ -332,9 +336,10 @@ describe('what the page allows around the session', () => {
     expect(stored[0].version).toBe(1)
     expect(new TextDecoder().decode(stored[0].bytes)).toBe('[["draft",7]]')
     // the app's own save does not run the host's flow again
-    await collab.save()
+    await collab.save({ reason: 'user' })
     expect(stored).toHaveLength(2)
     expect(new TextDecoder().decode(stored[1].bytes)).toBe('[["draft",7]]')
+    expect(stored.map((file) => file.reason)).toEqual(['host', 'user'])
   })
 
   it('answers no save request on a page the host opened for viewing', async () => {
@@ -359,9 +364,9 @@ describe('what the page allows around the session', () => {
     await collab.attach({ bytes: collab.baseBytes })
     editors[0].perform({ id: 'a', key: 'a', value: 1 })
     await vi.waitFor(() => expect(statuses().at(-1)).toMatchObject({ version: 1, unconfirmed: 0 }))
-    await collab.save({ skipWhenSaved: true })
+    await collab.save({ skipWhenSaved: true, reason: 'auto' })
     await vi.waitFor(() => expect(statuses().at(-1)).toMatchObject({ saved: 1 }))
-    await collab.save({ skipWhenSaved: true })
+    await collab.save({ skipWhenSaved: true, reason: 'auto' })
     expect(stored).toHaveLength(1)
   })
 
@@ -387,7 +392,7 @@ describe('what the page allows around the session', () => {
     expect(unsaved()).toBe(true)
     await vi.waitFor(() => expect(statuses().at(-1)).toMatchObject({ version: 1, unconfirmed: 0 }))
     expect(unsaved()).toBe(true)
-    await collab.save()
+    await collab.save({ reason: 'user' })
     await vi.waitFor(() => expect(unsaved()).toBe(false))
   })
 })
@@ -457,7 +462,7 @@ describe('what the host hears about the open', () => {
     await collab.attach(null)
     expect(built).toEqual([])
     expect(sentOf('opened')).toEqual([])
-    await expect(collab.save()).rejects.toThrow()
+    await expect(collab.save({ reason: 'user' })).rejects.toThrow()
   })
 })
 

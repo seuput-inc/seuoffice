@@ -7,6 +7,7 @@ import {
   type CollabStatus,
   type EmbeddedDocument,
   type LocalFile,
+  type SaveReason,
 } from '@seuoffice/embed'
 
 const viewer = document.getElementById('viewer')!
@@ -62,6 +63,8 @@ declare global {
       mode: 'collab' | 'locked' | 'view' | null
       /** the code of the last `opened` that rejected */
       openError: string | null
+      /** every save that reached `onSave`, in order, with the reason the page gave */
+      saves: { fileName: string; reason: SaveReason }[]
       /** saves that reached `onSave` and wait for `releaseSaves` */
       heldSaves: number
       /** make every later `onSave` wait: lets a test order the saves of two hosts */
@@ -81,6 +84,7 @@ const observed: NonNullable<Window['seuLauncher']> = {
   saved: null,
   mode: null,
   openError: null,
+  saves: [],
   heldSaves: 0,
   holdSaves() {
     if (saveGate) return
@@ -147,6 +151,8 @@ async function open(file: File, collab: CollabParams | null): Promise<void> {
   let shown = false
   const named = (): string => (unsaved ? `${file.name} (저장 안 함)` : file.name)
   const editing = {
+    // `?autoSave=1`: the host asks for the app's autosave
+    autoSave: new URLSearchParams(location.search).get('autoSave') === '1',
     onDirtyChange: (dirty: boolean) => {
       unsaved = dirty
       if (shown && observed.collab?.phase !== 'failed') status.textContent = named()
@@ -156,6 +162,7 @@ async function open(file: File, collab: CollabParams | null): Promise<void> {
   const stored = async (saved: {
     fileName: string
     bytes: Uint8Array
+    reason: SaveReason
     version?: number
   }): Promise<void> => {
     const gate = saveGate
@@ -173,6 +180,7 @@ async function open(file: File, collab: CollabParams | null): Promise<void> {
       bytes: saved.bytes,
       version: saved.version ?? null,
     }
+    observed.saves.push({ fileName: saved.fileName, reason: saved.reason })
     download(saved.fileName, saved.bytes)
     status.textContent = `${saved.fileName} 저장함`
   }

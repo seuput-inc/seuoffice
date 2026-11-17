@@ -300,6 +300,7 @@ import {
   onAiRailClick,
   rememberAiPanelOpen,
   presentationKeyOf,
+  autoSaveOffered,
   useAutoSavePref,
   useDismissablePopover,
   useRibbonCollapse,
@@ -5843,12 +5844,16 @@ export default function App() {
       promise would reuse the pre-reload render's closure — dirty still true, the saved
       edits still listed — and write them onto the file a second time. */
   const queuedSavesRef = useRef<
-    { autosave: boolean; flushAll: boolean; resolve: (ok: boolean) => void }[]
+    { autosave: boolean; flushAll: boolean; hostSaveId?: string; resolve: (ok: boolean) => void }[]
   >([])
 
   // flushAll also writes the field whose card is open: callers that treat success as
   // "everything is in the file" (close-tab Save, flushThen) must not leave it behind
-  const saveInPlace = (autosave = false, flushAll = false): Promise<boolean> => {
+  const saveInPlace = (
+    autosave = false,
+    flushAll = false,
+    hostSaveId?: string,
+  ): Promise<boolean> => {
     if (redactionRequestInFlightRef.current) return Promise.resolve(false)
     // A save is already writing: queue behind it instead of reporting failure — the
     // close prompt's "Save" and ⌘S regularly collide with the blur-triggered autosave
@@ -5857,7 +5862,7 @@ export default function App() {
     // still reads 'idle' for both.
     if (saveInFlightRef.current !== null) {
       return new Promise<boolean>((resolve) =>
-        queuedSavesRef.current.push({ autosave, flushAll, resolve }),
+        queuedSavesRef.current.push({ autosave, flushAll, hostSaveId, resolve }),
       )
     }
     // Fold an open floating-editor draft in first: keyboard save and autosave can land
@@ -5922,6 +5927,7 @@ export default function App() {
         path: filePath,
         ...editsPayload(edits, noteFlush, fields),
         auto: autosave,
+        ...(hostSaveId === undefined ? {} : { hostSaveId }),
       })
       if (!result.ok) {
         // external-modified: the main process already prompted (or the autosave
@@ -6040,12 +6046,16 @@ export default function App() {
    * moves the document once the edits are in. Until it is at the chosen place
    * the document is unsaved, which the main process holds (loadDoc reads it).
    */
-  const save = async (autosave = false, flushAll = false): Promise<boolean> => {
+  const save = async (
+    autosave = false,
+    flushAll = false,
+    hostSaveId?: string,
+  ): Promise<boolean> => {
     if (autosave || !untitledCopyRef.current || !filePath || untitledSaver.writing) {
-      return saveInPlace(autosave, flushAll)
+      return saveInPlace(autosave, flushAll, hostSaveId)
     }
     const out = await untitledSaver.save(filePath, fileName || 'document.pdf', () =>
-      saveInPlace(false, flushAll),
+      saveInPlace(false, flushAll, hostSaveId),
     )
     if (!out.saved) {
       // the edits are in the working file, the document is not where the person chose
@@ -6069,7 +6079,9 @@ export default function App() {
     // One explicit request makes the whole drained batch explicit (autosave opt-in)
     const autosaveOnly = queued.every((q) => q.autosave)
     const flushAll = queued.some((q) => q.flushAll)
-    void save(autosaveOnly, flushAll).then((ok) => {
+    // a batch that holds a host request is stored as the host's save
+    const hostSaveId = queued.find((q) => q.hostSaveId !== undefined)?.hostSaveId
+    void save(autosaveOnly, flushAll, hostSaveId).then((ok) => {
       for (const q of queued) q.resolve(ok)
     })
   })
@@ -9076,13 +9088,13 @@ export default function App() {
 
   // Main process asked for a save (close prompt, menu Save, export) → save and report the result
   useEffect(() => {
-    return window.pdfApi.onCloseSaveRequest(({ flushAll }) => {
+    return window.pdfApi.onCloseSaveRequest(({ flushAll, hostSaveId }) => {
       if (redactions.length > 0) {
         showNotice(t('redactSaveAsHint'))
         window.pdfApi.sendCloseSaveResult(false)
         return
       }
-      void save(false, flushAll).then((ok) => window.pdfApi.sendCloseSaveResult(ok))
+      void save(false, flushAll, hostSaveId).then((ok) => window.pdfApi.sendCloseSaveResult(ok))
     })
   })
 
@@ -10128,18 +10140,20 @@ export default function App() {
               <IconRedo />
             </button>
             <span className="qa-sep" />
-            <label
-              className={`autosave-toggle${autoSave ? ' on' : ''}`}
-              data-tip={t('autoSaveTip')}
-            >
-              <span className="autosave-knob" />
-              <span className="autosave-text">{t('autoSave')}</span>
-              <input
-                type="checkbox"
-                checked={autoSave}
-                onChange={(e) => setAutoSave(e.target.checked)}
-              />
-            </label>
+            {autoSaveOffered() && (
+              <label
+                className={`autosave-toggle${autoSave ? ' on' : ''}`}
+                data-tip={t('autoSaveTip')}
+              >
+                <span className="autosave-knob" />
+                <span className="autosave-text">{t('autoSave')}</span>
+                <input
+                  type="checkbox"
+                  checked={autoSave}
+                  onChange={(e) => setAutoSave(e.target.checked)}
+                />
+              </label>
+            )}
             <span className="qa-sep" />
             {RIBBON_TABS.map(({ id, labelKey }) => (
               <button

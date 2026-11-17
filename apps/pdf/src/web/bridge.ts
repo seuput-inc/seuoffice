@@ -11,6 +11,7 @@ import {
   reportDirty,
   reportError,
   reportOpened,
+  saveReason,
   unsupported,
   waitForDocument,
   webAiSettings,
@@ -52,7 +53,10 @@ async function save(request: SavePdfRequest): Promise<SavePdfResult> {
     if (!editing) return { ok: false, error: 'external-modified' }
     try {
       // pressing save again stores nothing new: the host holds that version already
-      await coEditing.save({ skipWhenSaved: true })
+      await coEditing.save({
+        skipWhenSaved: true,
+        reason: saveReason(request.hostSaveId, request.auto === true),
+      })
       lastSaveError = undefined
       return { ok: false, error: 'external-modified' }
     } catch (error) {
@@ -109,10 +113,10 @@ const decryptPdf: PdfApi['decryptPdf'] = async (bytes, password) => {
 
 // The renderer's own save runs through its close-save request, the way the
 // desktop shell asks for one, and answers through sendCloseSaveResult in order
-let closeSaveRequest: ((opts: { flushAll: boolean }) => void) | undefined
+let closeSaveRequest: Parameters<PdfApi['onCloseSaveRequest']>[0] | undefined
 const closeSaveAnswers: ((ok: boolean) => void)[] = []
 
-function saveForHost(): Promise<void> {
+function saveForHost(ownerId: string): Promise<void> {
   return new Promise((resolve, reject) => {
     if (!closeSaveRequest) {
       reject(new Error('the document is not ready to save'))
@@ -122,7 +126,8 @@ function saveForHost(): Promise<void> {
     closeSaveAnswers.push((ok) =>
       ok ? resolve() : reject(new Error(lastSaveError ?? 'the document was not saved')),
     )
-    closeSaveRequest({ flushAll: true })
+    // the owner id rides through the renderer's save into pdfApi.save, which names the save a host save
+    closeSaveRequest({ flushAll: true, hostSaveId: ownerId })
   })
 }
 

@@ -13,8 +13,8 @@ const memo = new Uint8Array(readFileSync(join(__dirname, 'fixtures/memo.hwp')))
 const doc = { id: 'memo', fileName: 'memo.hwp', bytes: memo, virtualPath: '/web/memo/memo.hwp' }
 
 const host = vi.hoisted(() => ({
-  saveRequest: undefined as (() => Promise<void>) | undefined,
-  saveToHost: vi.fn<(fileName: string, bytes: Uint8Array) => Promise<void>>(),
+  saveRequest: undefined as ((ownerId: string) => Promise<void>) | undefined,
+  saveToHost: vi.fn<(fileName: string, bytes: Uint8Array, reason: string) => Promise<void>>(),
 }))
 
 vi.mock('@seuoffice/web-platform', async (importOriginal) => ({
@@ -25,16 +25,21 @@ vi.mock('@seuoffice/web-platform', async (importOriginal) => ({
   reportOpened: () => {},
   reportDirty: () => {},
   saveToHost: host.saveToHost,
-  onHostSaveRequest: (handler: () => Promise<void>) => (host.saveRequest = handler),
+  // the channel's rule: a token a host request minted names a host save
+  saveReason: (token: string | undefined, auto: boolean) =>
+    token !== undefined ? 'host' : auto ? 'auto' : 'user',
+  onHostSaveRequest: (handler: (ownerId: string) => Promise<void>) => (host.saveRequest = handler),
 }))
 
 /** The renderer's save (save-flow.ts): one at a time, begin, then commit the exported bytes */
 function renderer(api: HwpApi): void {
   let running = Promise.resolve()
-  api.onSaveRequest((_mode: SaveMode) => {
+  api.onSaveRequest((_mode: SaveMode, token?: string) => {
     running = running.then(async () => {
       const begin = await api.beginSave('saveAs')
-      if (begin.ok && 'format' in begin) await api.commitSave(memo, [])
+      if (begin.ok && 'format' in begin) {
+        await api.commitSave(memo, [], token === undefined ? undefined : { hostSaveId: token })
+      }
     })
   })
 }
@@ -53,8 +58,8 @@ describe('host save requests in edit mode', () => {
     host.saveToHost
       .mockImplementationOnce(() => new Promise<void>((resolve) => (release = resolve)))
       .mockResolvedValueOnce(undefined)
-    const first = host.saveRequest!()
-    const second = host.saveRequest!()
+    const first = host.saveRequest!('request-1')
+    const second = host.saveRequest!('request-2')
     await vi.waitFor(() => expect(host.saveToHost).toHaveBeenCalledTimes(1))
     release()
     await expect(first).resolves.toBeUndefined()
@@ -66,8 +71,8 @@ describe('host save requests in edit mode', () => {
     host.saveToHost
       .mockRejectedValueOnce(new Error('disk full at host'))
       .mockResolvedValueOnce(undefined)
-    await expect(host.saveRequest!()).rejects.toThrow('disk full at host')
-    await expect(host.saveRequest!()).resolves.toBeUndefined()
+    await expect(host.saveRequest!('request-1')).rejects.toThrow('disk full at host')
+    await expect(host.saveRequest!('request-2')).resolves.toBeUndefined()
   }, 5_000)
 
   it('a request past the time limit is refused, and its late save does not settle the next one', async () => {
@@ -88,11 +93,11 @@ describe('host save requests in edit mode', () => {
         .mockImplementationOnce(async () => {
           events.push('B stored')
         })
-      const a = host.saveRequest!()
+      const a = host.saveRequest!('request-a')
       const aRefused = expect(a).rejects.toThrow('did not finish in time')
       await vi.waitFor(() => expect(host.saveToHost).toHaveBeenCalledTimes(1))
       await vi.advanceTimersByTimeAsync(60_000)
-      const b = host.saveRequest!().then(() => events.push('B settled'))
+      const b = host.saveRequest!('request-b').then(() => events.push('B settled'))
       // A's limit passes while its save is still with the host
       await vi.advanceTimersByTimeAsync(60_001)
       await aRefused
@@ -102,5 +107,21 @@ describe('host save requests in edit mode', () => {
     } finally {
       vi.useRealTimers()
     }
+  }, 5_000)
+
+  it('names a host save by its request token and leaves an overlapping autosave and user save theirs', async () => {
+    const gate: (() => void)[] = []
+    host.saveToHost.mockImplementation(() => new Promise<void>((resolve) => gate.push(resolve)))
+    const request = host.saveRequest!('request-1')
+    await vi.waitFor(() => expect(host.saveToHost).toHaveBeenCalledTimes(1))
+    // while the host's save is with the host, an autosave and a person's save run their own calls
+    await window.hwpApi.beginSave('save')
+    const autosave = window.hwpApi.commitSave(memo, [], { auto: true })
+    await window.hwpApi.beginSave('save')
+    const user = window.hwpApi.commitSave(memo, [])
+    await vi.waitFor(() => expect(host.saveToHost).toHaveBeenCalledTimes(3))
+    expect(host.saveToHost.mock.calls.map((call) => call[2])).toEqual(['host', 'auto', 'user'])
+    for (const release of gate) release()
+    await Promise.all([request, autosave, user])
   }, 5_000)
 })

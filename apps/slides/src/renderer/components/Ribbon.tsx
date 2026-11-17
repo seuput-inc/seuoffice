@@ -14,6 +14,7 @@ import React, {
 import type { AnimEffectKind, GradientFillSpec, TransitionKind } from '../../shared/ipc'
 import type { ChartStyleInfo } from '@seuoffice/pptx-render'
 import {
+  autoSaveOffered,
   useDismissablePopover,
   useRibbonCollapse,
   Dropdown,
@@ -1901,18 +1902,20 @@ export function Ribbon({
         >
           <IconRedo size={16} />
         </button>
-        <label
-          className={`autosave-toggle ${autoSave ? 'on' : ''}`}
-          data-tip={t('ribbonAutoSaveTip')}
-        >
-          <span className="autosave-knob" />
-          <span className="autosave-text">{t('ribbonAutoSave')}</span>
-          <input
-            type="checkbox"
-            checked={autoSave}
-            onChange={(e) => onAutoSaveChange(e.target.checked)}
-          />
-        </label>
+        {autoSaveOffered() && (
+          <label
+            className={`autosave-toggle ${autoSave ? 'on' : ''}`}
+            data-tip={t('ribbonAutoSaveTip')}
+          >
+            <span className="autosave-knob" />
+            <span className="autosave-text">{t('ribbonAutoSave')}</span>
+            <input
+              type="checkbox"
+              checked={autoSave}
+              onChange={(e) => onAutoSaveChange(e.target.checked)}
+            />
+          </label>
+        )}
         <span className="qa-sep" aria-hidden="true" />
         {TABS.filter((tb) => tb !== 'file').map((tb) => (
           <button

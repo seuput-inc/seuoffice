@@ -2146,6 +2146,8 @@ export const workbookSaveRequestSchema = z
     /// Background save (AutoSave, AI-run autosave): an unsaved new workbook
     /// then writes its backing file in place instead of asking where to save.
     quiet: z.boolean().optional(),
+    /// The embed host's `doc.save()` request this save belongs to (web only): names it a host save.
+    hostSaveId: z.string().optional(),
     /// Name offered by the Save As dialog in place of the file's own. A stem
     /// the model proposed for a document the reader named by hand: it prefills
     /// the dialog rather than replacing it, so the reader still chooses where
@@ -3633,7 +3635,7 @@ export interface DesktopApi {
   /// Mirrors the pending-edit badge to the main process for the close guard.
   notifyPendingEdits(count: number): void
   /// Main asks the renderer to save before closing; reply via reportCloseSaveResult.
-  onCloseSaveRequest(callback: () => void): () => void
+  onCloseSaveRequest(callback: (request?: { requestId: string }) => void): () => void
   reportCloseSaveResult(ok: boolean): void
   /// The workbook just opened in this tab keeps no recovery copy (password
   /// protected): main sends the localized notice once per tab.

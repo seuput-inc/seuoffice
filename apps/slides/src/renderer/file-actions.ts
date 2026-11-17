@@ -90,13 +90,21 @@ async function runSerialized<T>(pass: () => Promise<T>): Promise<T> {
   return current
 }
 
-export async function save(getCtx: () => ActionCtx, auto = false): Promise<boolean> {
+export async function save(
+  getCtx: () => ActionCtx,
+  auto = false,
+  hostSaveId?: string,
+): Promise<boolean> {
   return runSerialized(async () => {
     // resolved only now: a queued pass must remap selection against the tree the prior save adopted
     const ctx = getCtx()
     await flushActiveEdit(ctx)
     await ctx.flushNotes()
-    const r = await window.slidesApi.save(auto)
+    // the desktop's save takes the auto flag alone; the id exists only for a web host request
+    const r =
+      hostSaveId === undefined
+        ? await window.slidesApi.save(auto)
+        : await window.slidesApi.save(auto, hostSaveId)
     if (r.ok) {
       if (r.slides) adoptSavedSlides(ctx, r.slides)
       if (r.path) ctx.setPath(r.path)

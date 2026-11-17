@@ -8,6 +8,7 @@ import {
   reportDirty,
   reportError,
   saveToHost,
+  type SaveReason,
 } from './embed-channel'
 
 export interface PageCollab<Handles> {
@@ -19,7 +20,7 @@ export interface PageCollab<Handles> {
    * What a host save request does: the file of one exact version, stored by
    * the host. `skipWhenSaved`: nothing is stored when the host holds the head already.
    */
-  save(how?: { skipWhenSaved?: boolean }): Promise<void>
+  save(how: { reason: SaveReason; skipWhenSaved?: boolean }): Promise<void>
   /** this page as the session names it (the host's display name for this user); null before the attach */
   self(): { client: string; name: string } | null
 }
@@ -76,9 +77,11 @@ export async function joinPageCollab<Handles, Op>(options: {
   /**
    * How a host save request runs; `save` is the session's save. An editor passes its own flow
    * here so that what a person still has open (a text box, a comment being typed) is committed
-   * first. The flow must end in `save` or in `PageCollab.save`.
+   * first. The flow must end in `save` or in `PageCollab.save`. `ownerId` marks the saves the
+   * flow starts as the host's: an editor that runs its own save flow hands it to that flow, which
+   * reaches `PageCollab.save` under `saveReason(ownerId, …)`.
    */
-  hostSave?(save: () => Promise<void>): Promise<void>
+  hostSave?(save: () => Promise<void>, ownerId: string): Promise<void>
   /**
    * Commit what a person still has open, before a `collab_export` while the session is live.
    * Not `hostSave`, whose flow ends in a real save. A failed session's editor is frozen for good.
@@ -123,19 +126,21 @@ export async function joinPageCollab<Handles, Op>(options: {
     releaseOpened(false)
   }
 
-  const save = async (how: { skipWhenSaved?: boolean } = {}): Promise<void> => {
+  const save = async (how: { reason: SaveReason; skipWhenSaved?: boolean }): Promise<void> => {
     if (!session) throw new Error('the document is not open yet')
     const status = session.status()
     // the app's own repeated saves (its autosave) store nothing new
     if (how.skipWhenSaved && status.version === status.saved && status.unconfirmed === 0) return
     const saved = await session.save()
-    await saveToHost(options.fileName, saved.bytes, { version: saved.version })
+    await saveToHost(options.fileName, saved.bytes, how.reason, { version: saved.version })
     session.reportSaved(saved.version)
   }
   // a viewer's host never stores a save, so a save request finds no handler
   if (editMode()) {
     const { hostSave } = options
-    onHostSaveRequest(() => (hostSave ? hostSave(() => save()) : save()))
+    onHostSaveRequest((ownerId) =>
+      hostSave ? hostSave(() => save({ reason: 'host' }), ownerId) : save({ reason: 'host' }),
+    )
   }
   onHostExportRequest(async () => {
     if (!session) throw new Error('the document is not open yet')

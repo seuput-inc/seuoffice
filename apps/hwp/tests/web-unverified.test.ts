@@ -22,8 +22,8 @@ const refused = gateRefused()
 const doc = { id: 'memo', fileName: 'memo.hwp', bytes: refused, virtualPath: '/web/memo/memo.hwp' }
 
 const host = vi.hoisted(() => ({
-  saveRequest: undefined as (() => Promise<void>) | undefined,
-  saveToHost: vi.fn<(fileName: string, bytes: Uint8Array) => Promise<void>>(),
+  saveRequest: undefined as ((ownerId: string) => Promise<void>) | undefined,
+  saveToHost: vi.fn<(fileName: string, bytes: Uint8Array, reason: string) => Promise<void>>(),
 }))
 
 vi.mock('@seuoffice/web-platform', async (importOriginal) => ({
@@ -34,7 +34,7 @@ vi.mock('@seuoffice/web-platform', async (importOriginal) => ({
   reportOpened: () => {},
   reportDirty: () => {},
   saveToHost: host.saveToHost,
-  onHostSaveRequest: (handler: () => Promise<void>) => (host.saveRequest = handler),
+  onHostSaveRequest: (handler: (ownerId: string) => Promise<void>) => (host.saveRequest = handler),
 }))
 
 describe('a file the compound-file gate refuses, on the web page', () => {
@@ -76,7 +76,9 @@ describe('a file the compound-file gate refuses, on the web page', () => {
       const begin = await window.hwpApi.beginSave(mode)
       if (begin.ok && 'format' in begin) await window.hwpApi.commitSave(refused, [])
     })
-    await expect(host.saveRequest!()).rejects.toThrow(/structure .* could not be checked/)
+    await expect(host.saveRequest!('request-1')).rejects.toThrow(
+      /structure .* could not be checked/,
+    )
     expect(host.saveToHost).not.toHaveBeenCalled()
   })
 })
