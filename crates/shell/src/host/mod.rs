@@ -106,7 +106,7 @@ pub fn install(hosts: &mut Hosts, cx: &HostContext) -> Result<(), String> {
     w_files::install(hosts, cx);
     w_preview::install(hosts, cx);
     w_projects::install(hosts, cx);
-    // Home's application services share the MCP runtime installed by batch A.
+    w_home::install(hosts, cx);
 
     crash::install(hosts, cx);
     d1::install(hosts, cx)?;
@@ -116,7 +116,7 @@ pub fn install(hosts: &mut Hosts, cx: &HostContext) -> Result<(), String> {
     let mcp = Arc::new(app_mcp::AppMcp::new(cx, hosts));
     cx.app.manage(mcp.clone());
     hosts.insert(mcp);
-    w_home::install(hosts, cx);
+    w_home::install_app(hosts, cx);
     os::install(hosts, cx);
     print::install(hosts, cx);
     secrets::install(hosts, cx);

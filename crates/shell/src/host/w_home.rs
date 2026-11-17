@@ -151,6 +151,8 @@ impl FolderWatch for FolderWatchers {
     }
 }
 
+/// Home's file sources (folder watchers, home files, the search index); net's
+/// knowledge-base and drive tools read them at install, so they go first
 pub(super) fn install(hosts: &mut Hosts, cx: &HostContext) {
     let watcher = Arc::new(FolderWatchers::default());
     hosts.insert(watcher.clone());
@@ -159,6 +161,10 @@ pub(super) fn install(hosts: &mut Hosts, cx: &HostContext) {
     let home: HomeFilesHost = Arc::new(ShellHome { ui: cx.ui.clone() });
     hosts.insert(home);
     index::install(hosts);
+}
+
+/// Home's application services, which share the MCP runtime installed by batch A
+pub(super) fn install_app(hosts: &mut Hosts, cx: &HostContext) {
     app::install(hosts, cx);
 }
 

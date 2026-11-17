@@ -5,7 +5,8 @@ name: seuoffice shell
 #   1. bundles the preloads (crates/shell/bridge/preloads.mjs, 19 of them),
 #   2. builds the shell,
 #   3. runs `--measure-dialog` (the IPC measurement the contract asks of
-#      batch W) where the runner has a display, and uploads its JSON.
+#      batch W) where the runner has a display, and uploads its JSON,
+#   4. runs clippy and the release unit tests, even when the measurement failed.
 # Start it by hand while the branch is young:
 #   gh workflow run "seuoffice shell" --ref <branch>
 # The other gates are for the Tauri 2 migration:
@@ -139,20 +140,6 @@ jobs:
           npx tauri build --bundles app --verbose --config '{"bundle":{"resources":{"out/engine-host":"engine-host","../../apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar":"native/xlsx-sidecar","../../packages/pdf2docx/ocr-helper/vision-ocr":"ocr/vision-ocr"}}}' -- --locked
           echo "seconds=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
 
-      - name: clippy
-        run: cargo clippy --locked --all-targets -- -D warnings
-
-      - name: unit tests
-        # the tests that touch the file system take an isolated scratch of this run
-        env:
-          SEUOFFICE_TEST_SCRATCH: ${{ runner.temp }}/test-scratch
-          SEUOFFICE_NATIVE_TEST_SCRATCH: ${{ runner.temp }}/native-test-scratch
-        run: |
-          mkdir -p "$SEUOFFICE_TEST_SCRATCH" "$SEUOFFICE_NATIVE_TEST_SCRATCH"
-          cargo test --locked --release
-          # needs the xlsx-sidecar built by the native helpers step; the `test` gate does not build it
-          cargo test --locked --release real_sidecar -- --ignored
-
       - name: measure the dialog (--measure-dialog)
         timeout-minutes: 10
         run: |
@@ -165,6 +152,22 @@ jobs:
           status=${PIPESTATUS[0]}
           cat "$out/dialog.json" || true
           exit "$status"
+
+      - name: clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: unit tests
+        if: ${{ !cancelled() }}
+        # the tests that touch the file system take an isolated scratch of this run
+        env:
+          SEUOFFICE_TEST_SCRATCH: ${{ runner.temp }}/test-scratch
+          SEUOFFICE_NATIVE_TEST_SCRATCH: ${{ runner.temp }}/native-test-scratch
+        run: |
+          mkdir -p "$SEUOFFICE_TEST_SCRATCH" "$SEUOFFICE_NATIVE_TEST_SCRATCH"
+          cargo test --locked --release
+          # needs the xlsx-sidecar built by the native helpers step; the `test` gate does not build it
+          cargo test --locked --release real_sidecar -- --ignored
 
       - name: upload shell-mac
         if: always()
@@ -246,19 +249,6 @@ jobs:
           cp ../../apps/shell/src/main/quick-look/win-quicklook.exe target/release/resources/quicklook/
           ls -la target/release
 
-      - name: clippy
-        run: cargo clippy --locked --all-targets -- -D warnings
-
-      - name: unit tests
-        env:
-          SEUOFFICE_TEST_SCRATCH: ${{ runner.temp }}/test-scratch
-          SEUOFFICE_NATIVE_TEST_SCRATCH: ${{ runner.temp }}/native-test-scratch
-        run: |
-          mkdir -p "$SEUOFFICE_TEST_SCRATCH" "$SEUOFFICE_NATIVE_TEST_SCRATCH"
-          cargo test --locked --release
-          # needs the xlsx-sidecar built by the native helpers step; the `test` gate does not build it
-          cargo test --locked --release real_sidecar -- --ignored
-
       - name: measure the dialog (--measure-dialog)
         timeout-minutes: 10
         run: |
@@ -273,6 +263,21 @@ jobs:
           echo "exit status $status"
           cat "$out/dialog.json" || true
           exit "$status"
+
+      - name: clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: unit tests
+        if: ${{ !cancelled() }}
+        env:
+          SEUOFFICE_TEST_SCRATCH: ${{ runner.temp }}/test-scratch
+          SEUOFFICE_NATIVE_TEST_SCRATCH: ${{ runner.temp }}/native-test-scratch
+        run: |
+          mkdir -p "$SEUOFFICE_TEST_SCRATCH" "$SEUOFFICE_NATIVE_TEST_SCRATCH"
+          cargo test --locked --release
+          # needs the xlsx-sidecar built by the native helpers step; the `test` gate does not build it
+          cargo test --locked --release real_sidecar -- --ignored
 
       - name: upload shell-win
         if: always()
