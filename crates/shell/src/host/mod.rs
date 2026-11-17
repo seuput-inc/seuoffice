@@ -147,3 +147,6 @@ pub fn on_ui<R: Send + 'static>(
         shell_contract::runtime::run_on(ui.as_ref(), job)
     }
 }
+
+#[cfg(test)]
+mod install_coverage_tests;

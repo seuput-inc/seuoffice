@@ -31,6 +31,8 @@ param(
   [string]$NextVersion,
   [string]$ToReceipt,
   [string]$NextReceipt,
+  [string]$ToYml,
+  [string]$NextYml,
   [ValidateSet('none', 'kill-installer', 'block-start', 'lock-file')] [string]$Fault = 'none',
   [Parameter(Mandatory)] [string]$Out,
   [int]$Port = 9229,
@@ -114,10 +116,13 @@ function Hashes($name) {
     ForEach-Object { '{0} {1}' -f (Get-FileHash -Algorithm SHA256 $_.FullName).Hash, $_.FullName.Substring($ud.Length) } |
     Sort-Object | Set-Content (Join-Path $Out "userdata-$name.txt")
 }
-function Feed($installer, $version) {
+function Feed($installer, $version, $yml) {
   $dir = Join-Path $Out "feed-$version"
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
-  & node (Join-Path $here 'feed.mjs') make --file $installer --version $version --out $dir | Out-Null
+  $make = @('make', '--file', $installer, '--version', $version, '--out', $dir)
+  if ($yml) { $make += @('--yml', $yml) }
+  & node (Join-Path $here 'feed.mjs') @make | Out-Null
+  if ($LASTEXITCODE -ne 0) { Fail "feed for $version does not match the release files" }
   if ($script:feed) { Stop-Process -Id $script:feed.Id -Force -ErrorAction SilentlyContinue }
   $script:feed = Start-Process node -ArgumentList (Join-Path $here 'feed.mjs'), 'serve', '--dir', $dir, '--port', $FeedPort `
     -PassThru -NoNewWindow -RedirectStandardOutput (Join-Path $Out "feed-$version.log")
@@ -229,14 +234,8 @@ try {
   Step 'seeded' (Get-Content -Raw (Join-Path $Out 'seed.json') | ConvertFrom-Json)
 
   # 3. the update, through the app's dialog
-  Feed $To $ToVersion
+  Feed $To $ToVersion $ToYml
   StartApp @()
-  if ($Fault -eq 'block-start') {
-    # set once the old app runs: Windows reads it when a SeuOffice.exe starts,
-    # so only the one the installer starts after the update is stopped
-    New-Item -Force -Path $ifeo | Out-Null
-    Set-ItemProperty -Path $ifeo -Name Debugger -Value 'C:\migration-test\no-such-debugger.exe'
-  }
   $installersBefore = @(Get-Process | ForEach-Object Id)
   $held = $null
   if ($Fault -eq 'lock-file') {
@@ -259,6 +258,13 @@ try {
   }
   if (-not $installer) { Fail 'the update did not start an installer' }
   Step 'installer-started' @{ path = $installer.Path; seconds = $t.Elapsed.TotalSeconds }
+  # the debugger is set here, not while the old app runs: Windows reads it for
+  # every SeuOffice.exe that starts, the old app's renderer and GPU processes
+  # included (run 43435143003: the update probe then found no page)
+  if ($Fault -eq 'block-start') {
+    New-Item -Force -Path $ifeo | Out-Null
+    Set-ItemProperty -Path $ifeo -Name Debugger -Value 'C:\migration-test\no-such-debugger.exe'
+  }
   # read the exit code later: the handle must be taken while the process runs
   if ($installer) { $null = $installer.Handle }
   $answered = @()
@@ -331,7 +337,7 @@ try {
 
   # 5. the new build updates itself from the same feed
   if ($Fault -eq 'none' -and $Next) {
-    Feed $Next $NextVersion
+    Feed $Next $NextVersion $NextYml
     StartApp @()
     $t = [Diagnostics.Stopwatch]::StartNew()
     & node (Join-Path $here 'probe.mjs') update --port $Port --version $NextVersion

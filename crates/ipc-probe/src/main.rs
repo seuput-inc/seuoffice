@@ -838,6 +838,10 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
                         generation.loss_token(),
                     )
                 })
+        } else if case["batch"].as_str() == Some("W") {
+            // a verified renderer call of the shell always carries its captured
+            // owner, which the W handlers require
+            capture_native(sender).map(|owner| owner.context)
         } else {
             None
         };

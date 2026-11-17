@@ -15,6 +15,8 @@ import {
   matchesFontQuery,
   rememberAiPanelOpen,
   useAiSidebarEnabled,
+  webAiOff,
+  webViewMode,
   type AiTokenUsageView,
   type DriveAttachPicked,
   type OnTemplateSkill,
@@ -157,6 +159,13 @@ import {
 } from './quick-access'
 import { SHEET_ZOOM_MAX, SHEET_ZOOM_MIN, clampZoomPercent } from './zoom-range'
 import { ZoomDialog } from './ZoomDialog'
+import { blockEditingInput } from './web-view-input'
+
+/** the web embed opened the page only to read: no ribbon, and the AI panel stays closed at start */
+const WEB_VIEW = webViewMode()
+if (WEB_VIEW) blockEditingInput()
+/** the web embed's host offers no AI: no panel and no AI button */
+const WEB_AI_OFF = webAiOff()
 
 /// The font buttons format the characters selected in the cell editor; not
 /// taking focus on press (as Excel's ribbon does) keeps that selection and
@@ -673,8 +682,8 @@ export function ExcelShell({
     expandFull: t('appRibbonExpand'),
   })
   // Persisted so a closed AI panel stays closed on next launch (docs/slides parity)
-  const [isCopilotOpen, setIsCopilotOpen] = useState(() =>
-    aiPanelInitiallyOpen('ai-sheets-show-ai'),
+  const [isCopilotOpen, setIsCopilotOpen] = useState(
+    () => !WEB_VIEW && aiPanelInitiallyOpen('ai-sheets-show-ai'),
   )
   // the sidebar switch is a soft hide; it closes the panel when it turns off
   const aiSidebarEnabled = useAiSidebarEnabled(setIsCopilotOpen)
@@ -685,7 +694,7 @@ export function ExcelShell({
     return () => window.removeEventListener('wheel', scrollRibbonOnWheel)
   }, [])
   useEffect(() => {
-    rememberAiPanelOpen('ai-sheets-show-ai', isCopilotOpen)
+    if (!WEB_VIEW) rememberAiPanelOpen('ai-sheets-show-ai', isCopilotOpen)
   }, [isCopilotOpen])
   // Split panes (decision 0036): as the secondary pane the dock is forced to
   // the rail, and the rail's click asks the shell to focus this pane first.
@@ -1029,172 +1038,179 @@ export function ExcelShell({
 
   return (
     <main
-      className={`app-shell ${aiDock.open ? '' : 'copilot-collapsed'}${presenting ? ' sheet-presenting' : ''}`}
+      className={`app-shell ${aiDock.open ? '' : 'copilot-collapsed'}${presenting ? ' sheet-presenting' : ''}${WEB_VIEW ? ' web-view' : ''}`}
       inert={openingWorkbook}
       aria-busy={openingWorkbook}
     >
-      <header className={`excel-header ${collapse.rootClass}`} ref={collapse.rootRef}>
-        <nav
-          // a row longer than the default gives the tabs their room back in a
-          // narrow window (styles.css)
-          className={`ribbon-tabs ${IN_TAB ? '' : IS_MAC ? 'ribbon-tabs-mac' : 'ribbon-tabs-win'}${quickAccess.length > DEFAULT_QUICK_ACCESS.length ? ' qa-crowded' : ''}`}
-          aria-label={t('appScopeWorkbook')}
-          onDoubleClick={collapse.onTabsDoubleClick}
-        >
-          {quickAccess.map((id, index) => {
-            const item = quickAccessItem(id)
-            if (!item) return null
-            const builtin = item.builtin ? quickAccessBuiltins[item.builtin] : null
-            const digit = IS_MAC ? null : quickAccessDigit(index)
-            const title = `${builtin ? builtin.title : t(item.labelKey)}${digit ? ` (Alt+${digit})` : ''}`
-            return (
-              <button
-                type="button"
-                className="qa-btn"
-                key={id}
-                data-tip={title}
-                aria-label={title}
-                disabled={builtin?.disabled ?? false}
-                onClick={() => runQuickAccess(index)}
-              >
-                {builtin ? builtin.icon : <ToolSymbol symbol={item.symbol ?? ''} />}
-              </button>
-            )
-          })}
-          <button
-            type="button"
-            className="qa-btn qa-customize"
-            data-tip={t('appQuickAccessCustomize')}
-            aria-label={t('appQuickAccessCustomize')}
-            aria-haspopup="menu"
-            aria-expanded={quickAccessMenuAt !== null}
-            onClick={(event) => {
-              const box = event.currentTarget.getBoundingClientRect()
-              setQuickAccessMenuAt((at) => (at ? null : { x: box.left, y: box.bottom + 2 }))
-            }}
+      {!WEB_VIEW && (
+        <header className={`excel-header ${collapse.rootClass}`} ref={collapse.rootRef}>
+          <nav
+            // a row longer than the default gives the tabs their room back in a
+            // narrow window (styles.css)
+            className={`ribbon-tabs ${IN_TAB ? '' : IS_MAC ? 'ribbon-tabs-mac' : 'ribbon-tabs-win'}${quickAccess.length > DEFAULT_QUICK_ACCESS.length ? ' qa-crowded' : ''}`}
+            aria-label={t('appScopeWorkbook')}
+            onDoubleClick={collapse.onTabsDoubleClick}
           >
-            <CaretIcon />
-          </button>
-          <label
-            className={`autosave-toggle ${autoSave ? 'on' : ''}`}
-            data-tip={t('appAutoSaveTip')}
-          >
-            <span className="autosave-knob" />
-            <span className="autosave-text">{t('appAutoSave')}</span>
-            <input
-              type="checkbox"
-              checked={autoSave}
-              onChange={(e) => onAutoSaveChange(e.target.checked)}
-            />
-          </label>
-          <span className="qa-sep" aria-hidden="true" />
-          {visibleTabs.map((tab) => (
+            {quickAccess.map((id, index) => {
+              const item = quickAccessItem(id)
+              if (!item) return null
+              const builtin = item.builtin ? quickAccessBuiltins[item.builtin] : null
+              const digit = IS_MAC ? null : quickAccessDigit(index)
+              const title = `${builtin ? builtin.title : t(item.labelKey)}${digit ? ` (Alt+${digit})` : ''}`
+              return (
+                <button
+                  type="button"
+                  className="qa-btn"
+                  key={id}
+                  data-tip={title}
+                  aria-label={title}
+                  disabled={builtin?.disabled ?? false}
+                  onClick={() => runQuickAccess(index)}
+                >
+                  {builtin ? builtin.icon : <ToolSymbol symbol={item.symbol ?? ''} />}
+                </button>
+              )
+            })}
             <button
-              className={`${collapse.tabClass(tab === activeTab)} ${CONTEXTUAL_TABS.includes(tab) ? 'contextual' : ''}`}
-              data-tip={collapse.tabTip(tab === activeTab)}
-              key={tab}
-              onClick={() => {
-                collapse.onTabPress(tab === activeTab)
-                setActiveTab(tab)
+              type="button"
+              className="qa-btn qa-customize"
+              data-tip={t('appQuickAccessCustomize')}
+              aria-label={t('appQuickAccessCustomize')}
+              aria-haspopup="menu"
+              aria-expanded={quickAccessMenuAt !== null}
+              onClick={(event) => {
+                const box = event.currentTarget.getBoundingClientRect()
+                setQuickAccessMenuAt((at) => (at ? null : { x: box.left, y: box.bottom + 2 }))
               }}
             >
-              {t(TAB_LABEL[tab])}
+              <CaretIcon />
             </button>
-          ))}
-          <span className="ribbon-tabs-spacer" />
-          <span className="workbook-status" role="status" aria-live="polite">
-            {statusMessage}
-          </span>
-        </nav>
+            <label
+              className={`autosave-toggle ${autoSave ? 'on' : ''}`}
+              data-tip={t('appAutoSaveTip')}
+            >
+              <span className="autosave-knob" />
+              <span className="autosave-text">{t('appAutoSave')}</span>
+              <input
+                type="checkbox"
+                checked={autoSave}
+                onChange={(e) => onAutoSaveChange(e.target.checked)}
+              />
+            </label>
+            <span className="qa-sep" aria-hidden="true" />
+            {visibleTabs.map((tab) => (
+              <button
+                className={`${collapse.tabClass(tab === activeTab)} ${CONTEXTUAL_TABS.includes(tab) ? 'contextual' : ''}`}
+                data-tip={collapse.tabTip(tab === activeTab)}
+                key={tab}
+                onClick={() => {
+                  collapse.onTabPress(tab === activeTab)
+                  setActiveTab(tab)
+                }}
+              >
+                {t(TAB_LABEL[tab])}
+              </button>
+            ))}
+            <span className="ribbon-tabs-spacer" />
+            <span className="workbook-status" role="status" aria-live="polite">
+              {statusMessage}
+            </span>
+          </nav>
 
-        <Ribbon
-          activeTab={activeTab}
-          selectionFormat={selectionFormat}
-          formatPainterActive={formatPainterActive}
-          sheetHasContent={sheetHasContent}
-          sheetProtected={onGetSheetProtection()?.protected ?? null}
-          workbookProtected={onGetWorkbookProtection()}
-          passwordProtected={passwordProtected}
-          spellcheckOn={spellcheckOn}
-          formulaBarVisible={formulaBarVisible}
-          crossHighlightVisible={crossHighlightVisible}
-          pageLayout={pageLayout}
-          selectedChart={selectedChart}
-          selectedShape={selectedShape}
-          selectedTable={selectedTable}
-          outlineSummary={outlineSummary}
-          onListNames={() => {
-            // Names scoped to another sheet resolve to #NAME? here; only
-            // workbook-scoped and active-sheet names are usable in a formula.
-            const data = onGetDefinedNames()
-            return data.names
-              .filter(
-                (entry) => entry.scopeSheetId === null || entry.scopeSheetId === data.activeSheetId,
-              )
-              .map((entry) => entry.name)
-          }}
-          calcManual={calcManual}
-          queryConnections={queryConnections}
-          showFormulas={showFormulas}
-          onRefreshPivot={onRefreshPivot}
-          onIsSelectionInPivot={onIsSelectionInPivot}
-          onCommand={dispatchCommand}
-          onAiRun={(nextPrompt) => {
-            setIsCopilotOpen(true)
-            onSend(nextPrompt)
-          }}
-          aiOpen={aiDock.open}
-          onAiToggle={() => setIsCopilotOpen((open) => !open)}
-        />
-      </header>
+          <Ribbon
+            activeTab={activeTab}
+            selectionFormat={selectionFormat}
+            formatPainterActive={formatPainterActive}
+            sheetHasContent={sheetHasContent}
+            sheetProtected={onGetSheetProtection()?.protected ?? null}
+            workbookProtected={onGetWorkbookProtection()}
+            passwordProtected={passwordProtected}
+            spellcheckOn={spellcheckOn}
+            formulaBarVisible={formulaBarVisible}
+            crossHighlightVisible={crossHighlightVisible}
+            pageLayout={pageLayout}
+            selectedChart={selectedChart}
+            selectedShape={selectedShape}
+            selectedTable={selectedTable}
+            outlineSummary={outlineSummary}
+            onListNames={() => {
+              // Names scoped to another sheet resolve to #NAME? here; only
+              // workbook-scoped and active-sheet names are usable in a formula.
+              const data = onGetDefinedNames()
+              return data.names
+                .filter(
+                  (entry) =>
+                    entry.scopeSheetId === null || entry.scopeSheetId === data.activeSheetId,
+                )
+                .map((entry) => entry.name)
+            }}
+            calcManual={calcManual}
+            queryConnections={queryConnections}
+            showFormulas={showFormulas}
+            onRefreshPivot={onRefreshPivot}
+            onIsSelectionInPivot={onIsSelectionInPivot}
+            onCommand={dispatchCommand}
+            onAiRun={(nextPrompt) => {
+              setIsCopilotOpen(true)
+              onSend(nextPrompt)
+            }}
+            aiOpen={aiDock.open}
+            onAiToggle={() => setIsCopilotOpen((open) => !open)}
+          />
+        </header>
+      )}
 
       {/* AI panel docks on the left, full height under the ribbon (unified with docs) */}
-      <div className={`sheet-body${!aiSidebarEnabled && !aiDock.open ? ' ai-dock-off' : ''}`}>
-        <AiChatPanel
-          isOpen={aiDock.open}
-          focusRequest={openAiRequest}
-          hideRail={!aiSidebarEnabled}
-          hasContent={sheetHasContent}
-          chat={chat}
-          {...(historicChat !== undefined ? { historicChat } : {})}
-          renderSkillCard={renderSkillCard}
-          skillNotes={skillNotes}
-          onTemplateSkill={onTemplateSkill}
-          attachments={attachments}
-          attachNotice={attachNotice}
-          onPickAttachments={onPickAttachments}
-          onDrivePicked={onDrivePicked}
-          docMention={docMention}
-          onAddAttachmentPaths={onAddAttachmentPaths}
-          onAddPastedImage={onAddPastedImage}
-          onRemoveAttachment={onRemoveAttachment}
-          prompt={prompt}
-          preview={preview}
-          proposalPanel={aiProposal}
-          aiBusy={aiBusy}
-          sessionUsage={sessionUsage}
-          subscription={aiSubscription}
-          onPromptChange={onPromptChange}
-          onSend={onSend}
-          onSendQueued={(text, atts, skillUse) => {
-            // the panel asks the send gate first: a message stays queued while it asks to
-            // connect or shows the first-use notice
-            if (aiBusy || aiProposal.proposal.kind === 'pending') return false
-            onSend(text, atts, undefined, skillUse)
-            return true
-          }}
-          onStop={onStop}
-          onNewChat={onNewChat}
-          onUndo={onUndo}
-          scopeRange={aiScopeRange}
-          scopeColumns={aiScopeColumns}
-          scopeLocked={aiScopeLocked}
-          onScopeDismiss={onAiScopeDismiss}
-          onCitation={onAiCitation}
-          onExpand={aiDock.onExpand}
-          onCollapse={() => setIsCopilotOpen(false)}
-          project={aiProject}
-        />
+      <div
+        className={`sheet-body${(!aiSidebarEnabled && !aiDock.open) || WEB_AI_OFF ? ' ai-dock-off' : ''}`}
+      >
+        {!WEB_AI_OFF && (
+          <AiChatPanel
+            isOpen={aiDock.open}
+            focusRequest={openAiRequest}
+            hideRail={!aiSidebarEnabled}
+            hasContent={sheetHasContent}
+            chat={chat}
+            {...(historicChat !== undefined ? { historicChat } : {})}
+            renderSkillCard={renderSkillCard}
+            skillNotes={skillNotes}
+            onTemplateSkill={onTemplateSkill}
+            attachments={attachments}
+            attachNotice={attachNotice}
+            onPickAttachments={onPickAttachments}
+            onDrivePicked={onDrivePicked}
+            docMention={docMention}
+            onAddAttachmentPaths={onAddAttachmentPaths}
+            onAddPastedImage={onAddPastedImage}
+            onRemoveAttachment={onRemoveAttachment}
+            prompt={prompt}
+            preview={preview}
+            proposalPanel={aiProposal}
+            aiBusy={aiBusy}
+            sessionUsage={sessionUsage}
+            subscription={aiSubscription}
+            onPromptChange={onPromptChange}
+            onSend={onSend}
+            onSendQueued={(text, atts, skillUse) => {
+              // the panel asks the send gate first: a message stays queued while it asks to
+              // connect or shows the first-use notice
+              if (aiBusy || aiProposal.proposal.kind === 'pending') return false
+              onSend(text, atts, undefined, skillUse)
+              return true
+            }}
+            onStop={onStop}
+            onNewChat={onNewChat}
+            onUndo={onUndo}
+            scopeRange={aiScopeRange}
+            scopeColumns={aiScopeColumns}
+            scopeLocked={aiScopeLocked}
+            onScopeDismiss={onAiScopeDismiss}
+            onCitation={onAiCitation}
+            onExpand={aiDock.onExpand}
+            onCollapse={() => setIsCopilotOpen(false)}
+            project={aiProject}
+          />
+        )}
         <div className="sheet-main">
           <section className="workbook-area">
             <div id="univer-container" className="spreadsheet" />
@@ -3694,77 +3710,79 @@ function Ribbon({
     : [...fontSizes, echoSize].sort((a, b) => a - b)
   return (
     <div className="ribbon" data-ribbon-body="">
-      <RibbonGroup label={aiSubscriptionText(lang, 'aiAssistant')}>
-        <button
-          className={`ribbon-tool as-button large ai-entry ${aiOpen ? 'active' : ''}`}
-          data-tip={t('aiOpenAssistant')}
-          onClick={onAiToggle}
-        >
-          <span className="tool-icon-row">
-            <AiMark size={26} />
-          </span>
-          <span>
-            <strong>{aiSubscriptionText(lang, 'aiAssistant')}</strong>
-          </span>
-        </button>
-        <button
-          className="ribbon-tool as-button large ai-entry"
-          disabled={!sheetHasContent}
-          data-tip={t('aiCheckBtn')}
-          onClick={() => onAiRun(t('aiCheckPrompt'))}
-        >
-          <span className="tool-icon-row">
-            <span className="ai-feature-icon" aria-hidden="true">
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M11 3.25C15.2802 3.25 18.75 6.71979 18.75 11C18.75 15.2802 15.2802 18.75 11 18.75C6.71979 18.75 3.25 15.2802 3.25 11C3.25 6.71979 6.71979 3.25 11 3.25Z" />
-                <path
-                  d="M7.5 10.8235L9.64097 12.9645C9.93755 13.2611 10.4177 13.2634 10.7171 12.9697L14.7647 9"
+      {!WEB_AI_OFF && (
+        <RibbonGroup label={aiSubscriptionText(lang, 'aiAssistant')}>
+          <button
+            className={`ribbon-tool as-button large ai-entry ${aiOpen ? 'active' : ''}`}
+            data-tip={t('aiOpenAssistant')}
+            onClick={onAiToggle}
+          >
+            <span className="tool-icon-row">
+              <AiMark size={26} />
+            </span>
+            <span>
+              <strong>{aiSubscriptionText(lang, 'aiAssistant')}</strong>
+            </span>
+          </button>
+          <button
+            className="ribbon-tool as-button large ai-entry"
+            disabled={!sheetHasContent}
+            data-tip={t('aiCheckBtn')}
+            onClick={() => onAiRun(t('aiCheckPrompt'))}
+          >
+            <span className="tool-icon-row">
+              <span className="ai-feature-icon" aria-hidden="true">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
                   strokeLinecap="round"
-                />
-                <path d="M20 20.5L16.5 17" strokeLinecap="round" />
-              </svg>
+                  strokeLinejoin="round"
+                >
+                  <path d="M11 3.25C15.2802 3.25 18.75 6.71979 18.75 11C18.75 15.2802 15.2802 18.75 11 18.75C6.71979 18.75 3.25 15.2802 3.25 11C3.25 6.71979 6.71979 3.25 11 3.25Z" />
+                  <path
+                    d="M7.5 10.8235L9.64097 12.9645C9.93755 13.2611 10.4177 13.2634 10.7171 12.9697L14.7647 9"
+                    strokeLinecap="round"
+                  />
+                  <path d="M20 20.5L16.5 17" strokeLinecap="round" />
+                </svg>
+              </span>
             </span>
-          </span>
-          <span>
-            <strong>{t('aiCheckBtn')}</strong>
-          </span>
-        </button>
-        <button
-          className="ribbon-tool as-button large ai-entry"
-          disabled={!sheetHasContent}
-          data-tip={t('aiAnalyzeBtn')}
-          onClick={() => onAiRun(t('aiAnalyzePrompt'))}
-        >
-          <span className="tool-icon-row">
-            <span className="ai-feature-icon" aria-hidden="true">
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M3.88589 14.2073H8.48682" strokeLinecap="round" />
-                <path d="M3.88589 19.0112H8.48682" strokeLinecap="round" />
-                <path d="M3.88589 9.40369H11.692" strokeLinecap="round" />
-                <path d="M3.88589 4.59998H19.1645" strokeLinecap="round" />
-                <path d="M15.1995 10.5445C15.3784 10.0908 16.0206 10.0908 16.1996 10.5445L16.706 11.8286C17.0338 12.6598 17.6918 13.3178 18.523 13.6456L19.8071 14.1521C20.2608 14.331 20.2608 14.9732 19.8071 15.1522L18.523 15.6586C17.6918 15.9864 17.0338 16.6444 16.706 17.4756L16.1996 18.7597C16.0206 19.2134 15.3784 19.2134 15.1995 18.7597L14.693 17.4756C14.3652 16.6444 13.7072 15.9864 12.876 15.6586L11.592 15.1522C11.1382 14.9732 11.1382 14.331 11.592 14.1521L12.876 13.6456C13.7072 13.3178 14.3652 12.6598 14.693 11.8286L15.1995 10.5445Z" />
-              </svg>
+            <span>
+              <strong>{t('aiCheckBtn')}</strong>
             </span>
-          </span>
-          <span>
-            <strong>{t('aiAnalyzeBtn')}</strong>
-          </span>
-        </button>
-      </RibbonGroup>
+          </button>
+          <button
+            className="ribbon-tool as-button large ai-entry"
+            disabled={!sheetHasContent}
+            data-tip={t('aiAnalyzeBtn')}
+            onClick={() => onAiRun(t('aiAnalyzePrompt'))}
+          >
+            <span className="tool-icon-row">
+              <span className="ai-feature-icon" aria-hidden="true">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M3.88589 14.2073H8.48682" strokeLinecap="round" />
+                  <path d="M3.88589 19.0112H8.48682" strokeLinecap="round" />
+                  <path d="M3.88589 9.40369H11.692" strokeLinecap="round" />
+                  <path d="M3.88589 4.59998H19.1645" strokeLinecap="round" />
+                  <path d="M15.1995 10.5445C15.3784 10.0908 16.0206 10.0908 16.1996 10.5445L16.706 11.8286C17.0338 12.6598 17.6918 13.3178 18.523 13.6456L19.8071 14.1521C20.2608 14.331 20.2608 14.9732 19.8071 15.1522L18.523 15.6586C17.6918 15.9864 17.0338 16.6444 16.706 17.4756L16.1996 18.7597C16.0206 19.2134 15.3784 19.2134 15.1995 18.7597L14.693 17.4756C14.3652 16.6444 13.7072 15.9864 12.876 15.6586L11.592 15.1522C11.1382 14.9732 11.1382 14.331 11.592 14.1521L12.876 13.6456C13.7072 13.3178 14.3652 12.6598 14.693 11.8286L15.1995 10.5445Z" />
+                </svg>
+              </span>
+            </span>
+            <span>
+              <strong>{t('aiAnalyzeBtn')}</strong>
+            </span>
+          </button>
+        </RibbonGroup>
+      )}
       <RibbonGroup label={t('appGroupClipboard')}>
         <button
           className="ribbon-tool as-button large"

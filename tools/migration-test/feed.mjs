@@ -3,14 +3,16 @@
 // Electron build to any candidate build (an Electron release, or a CEF build
 // that is not released) runs through the app's own updater, unchanged.
 //
-//   node feed.mjs make  --file <installer.exe | app.zip> --version <v> --out <dir>
+//   node feed.mjs make  --file <installer.exe | app.zip> --version <v> --out <dir> [--yml <release latest*.yml>]
 //   node feed.mjs serve --dir <dir> --port <port>
 //   node feed.mjs point --resources <installed app's resources dir> --url <feed url>
 //
 // make: copies the file (and its .blockmap, when one is beside it) and writes
 // the channel files electron-updater reads (latest.yml and stable.yml for an
 // .exe, latest-mac.yml and stable-mac.yml for a .zip), so a build of either
-// channel finds it.
+// channel finds it. With --yml the release's own latest.yml / latest-mac.yml is
+// served unchanged (after checking it describes the file byte for byte), so a
+// published release is offered exactly as GitHub offers it.
 // serve: answers a single byte range with 206, so a block-map download takes
 // only the changed blocks; each line of its log is one request, a range with
 // its bytes.
@@ -42,6 +44,7 @@ const { values } = parseArgs({
     port: { type: 'string', default: '8765' },
     resources: { type: 'string' },
     url: { type: 'string' },
+    yml: { type: 'string' },
   },
 })
 
@@ -59,6 +62,24 @@ if (command === 'make') {
     copyFileSync(`${file}.blockmap`, join(out, `${name}.blockmap`))
   const bytes = readFileSync(file)
   const sha512 = createHash('sha512').update(bytes).digest('base64')
+  const suffix = name.endsWith('.zip') ? '-mac' : ''
+  if (values.yml) {
+    // a release's own channel file, served as published: it must describe
+    // exactly this file, or the real updater would not be what is tested
+    const published = readFileSync(values.yml, 'utf8')
+    const lines = published.split(/\r?\n/)
+    const at = lines.findIndex((line) => line.trim() === `- url: ${name}`)
+    const entry = at < 0 ? '' : lines.slice(at, at + 3).join('\n')
+    if (!lines.includes(`version: ${need('version')}`)) {
+      throw new Error(`${values.yml} does not offer version ${values.version}`)
+    }
+    if (!entry.includes(`sha512: ${sha512}`) || !entry.includes(`size: ${bytes.length}`)) {
+      throw new Error(`${values.yml} does not describe ${name} byte for byte`)
+    }
+    writeFileSync(join(out, `latest${suffix}.yml`), published)
+    console.log(published)
+    process.exit(0)
+  }
   const yml = [
     `version: ${need('version')}`,
     'files:',
@@ -70,7 +91,6 @@ if (command === 'make') {
     `releaseDate: '${new Date().toISOString()}'`,
     '',
   ].join('\n')
-  const suffix = name.endsWith('.zip') ? '-mac' : ''
   for (const channel of ['latest', 'stable']) {
     writeFileSync(join(out, `${channel}${suffix}.yml`), yml)
   }

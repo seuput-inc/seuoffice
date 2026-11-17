@@ -92,14 +92,79 @@ function pushAiPart(request: AiRequest, part: AiAnswerPart): void {
   request.wake?.()
 }
 
-/** Origins allowed to send `open`: this page's own and the build-time list */
-export function allowedOrigins(): Set<string> {
-  const configured = String(import.meta.env?.VITE_SEUOFFICE_EMBED_ORIGINS ?? '')
-  const origins = configured
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean)
-  return new Set([location.origin, ...origins])
+/** Where the serving side lists the extra origins, next to the apps' folders (dist/embed-origins.json) */
+export const EMBED_ORIGINS_FILE = 'embed-origins.json'
+
+/** A config fetch that takes longer fails closed: the page then accepts only its own origin */
+const CONFIG_TIMEOUT_MS = 5000
+
+/**
+ * The exact origin a config entry names, or null. Only `scheme://host[:port]`
+ * of http(s) counts: no wildcard, path, query, fragment, credentials or
+ * `null`. The default port and the letter case normalize away.
+ */
+export function normalizeOrigin(value: unknown): string | null {
+  if (typeof value !== 'string' || /[*\s]/.test(value)) return null
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return null
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+  if (url.hostname.includes('*') || url.href !== `${url.origin}/`) return null
+  return url.origin
+}
+
+/** The origins of a parsed `embed-origins.json` (`{ "origins": [...] }`), or null when any part is not one */
+export function parseOriginsConfig(json: unknown): string[] | null {
+  if (typeof json !== 'object' || json === null || !('origins' in json)) return null
+  const { origins: entries } = json
+  if (!Array.isArray(entries)) return null
+  const origins: string[] = []
+  for (const entry of entries) {
+    const origin = normalizeOrigin(entry)
+    if (origin === null) return null
+    origins.push(origin)
+  }
+  return origins
+}
+
+/**
+ * Origins allowed to send `open`: this page's own, plus the ones the server
+ * lists in the same-origin file `../embed-origins.json`. Nothing the
+ * embedding page controls is read. A missing file, a failed fetch, a status
+ * other than 200, or a file that is not valid leaves only this page's origin.
+ * Never rejects.
+ */
+export async function loadAllowedOrigins(): Promise<Set<string>> {
+  const allowed = new Set([location.origin])
+  let response: Response
+  try {
+    response = await fetch(new URL(`../${EMBED_ORIGINS_FILE}`, location.href), {
+      cache: 'no-store',
+      credentials: 'omit',
+      redirect: 'error',
+      signal: AbortSignal.timeout(CONFIG_TIMEOUT_MS),
+    })
+    if (response.status !== 200) return allowed
+  } catch {
+    return allowed
+  }
+  let origins: string[] | null = null
+  try {
+    origins = parseOriginsConfig(await response.json())
+  } catch {
+    // not JSON, or cut off
+  }
+  if (origins === null) {
+    console.warn(
+      `[seuoffice] ${EMBED_ORIGINS_FILE} is not {"origins": [exact origins]}; ignoring it`,
+    )
+    return allowed
+  }
+  for (const origin of origins) allowed.add(origin)
+  return allowed
 }
 
 /** First accepted `open`, or null when the page is not framed */
@@ -108,28 +173,59 @@ export function receiveOpen(): Promise<EmbedOpen | null> {
   return started
 }
 
+/**
+ * Tell the sender of a refused `open` that it was refused, so its `opened`
+ * settles instead of waiting. Only the code goes back, to the origin that
+ * asked: no document data and no word about which origins are allowed.
+ */
+function refuseOpen(sender: MessageEventSource | null, origin: string): void {
+  // an opaque origin ("null") cannot be a target origin: there is nobody to answer
+  if (!sender || origin === 'null') return
+  // an `open` comes from a window; a port or a worker has no origin to answer
+  const host = sender as Window
+  try {
+    host.postMessage(
+      { source: EMBED_SOURCE, version: EMBED_VERSION, type: 'error', code: 'origin_not_allowed' },
+      { targetOrigin: origin },
+    )
+  } catch {
+    // a window that went away cannot hear it
+  }
+}
+
 function listen(): Promise<EmbedOpen | null> {
   if (window.parent === window) return Promise.resolve(null)
   // the suite apps compile this file against ES2022, which has no Promise.withResolvers
   let resolve!: (open: EmbedOpen | null) => void
   const promise = new Promise<EmbedOpen | null>((settle) => (resolve = settle))
-  const allowed = allowedOrigins()
+  // an `open` waits here until the file is read: it is neither dropped nor trusted early
+  const allowed = loadAllowedOrigins()
+  let accepted = false
   const onOpen = (event: MessageEvent): void => {
     const data = event.data as Record<string, unknown> | null
     if (!data || data.source !== EMBED_SOURCE || data.version !== EMBED_VERSION) return
-    if (data.type !== 'open' || !allowed.has(event.origin)) return
-    if (typeof data.fileName !== 'string' || !(data.bytes instanceof ArrayBuffer)) return
-    window.removeEventListener('message', onOpen)
-    peer = { target: event.source as Window, origin: event.origin }
-    window.addEventListener('message', onHostMessage)
-    // a page that goes away stops reading: the host should stop paying for the answers
-    window.addEventListener('pagehide', cancelAllAiRequests)
-    collabOffered = data.collab === true
-    resolve({
-      fileName: data.fileName,
-      bytes: data.bytes,
-      ai: data.ai === true,
-      collab: collabOffered,
+    if (data.type !== 'open') return
+    const { source: sender, origin } = event
+    void allowed.then((origins) => {
+      if (accepted) return
+      if (!origins.has(origin)) {
+        refuseOpen(sender, origin)
+        return
+      }
+      if (typeof data.fileName !== 'string' || !(data.bytes instanceof ArrayBuffer)) return
+      accepted = true
+      window.removeEventListener('message', onOpen)
+      peer = { target: sender as Window, origin }
+      window.addEventListener('message', onHostMessage)
+      // a page that goes away stops reading: the host should stop paying for the answers
+      window.addEventListener('pagehide', cancelAllAiRequests)
+      collabOffered = data.collab === true
+      resolve({
+        fileName: data.fileName,
+        bytes: data.bytes,
+        ai: data.ai === true,
+        collab: collabOffered,
+      })
     })
   }
   window.addEventListener('message', onOpen)

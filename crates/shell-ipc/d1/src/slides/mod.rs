@@ -1024,7 +1024,7 @@ pub fn routes(services: &Services, provided: &Rc<Provided>) -> Result<Vec<Route>
             recovery::recovery_initialized,
         ),
         now(&app, "slides:new-blank", lifecycle::new_blank),
-        now(&app, "slides:recent", lifecycle::recent),
+        later(&app, "slides:recent", lifecycle::recent),
         later(&app, "slides:save", owned_save::save),
         later(&app, "slides:save-as", owned_save::save_as),
         later(

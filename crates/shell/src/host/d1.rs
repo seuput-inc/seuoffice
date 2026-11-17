@@ -14,6 +14,7 @@ use super::{HostContext, w_files::ShellLanguage};
 pub(crate) mod diagram;
 pub(crate) mod diagram_headless;
 mod file_parse;
+mod link_net;
 mod page_renderer;
 pub(crate) mod save_guard;
 pub(crate) mod sheets_headless;
@@ -109,6 +110,7 @@ pub fn install(hosts: &mut Hosts, cx: &HostContext) -> Result<(), String> {
     hosts.insert(parser);
     let xmind: shell_ipc_d1::mindmap::XmindEngineHost = Arc::new(xmind::Engine);
     hosts.insert(xmind);
+    link_net::install(hosts);
     let diagram: shell_ipc_d1::diagram::DiagramEngineHost = Arc::new(diagram::Engine);
     hosts.insert(diagram);
     let renderer: shell_ipc_d1::mindmap::PageRendererHost =

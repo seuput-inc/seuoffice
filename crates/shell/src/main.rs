@@ -161,6 +161,7 @@ fn describe(error: &StartError) -> String {
 fn fail(app: &AppHandle, paths: &ShellPaths, quiet: bool, why: String) {
     use shell_contract::runtime::{AppPaths, PathName};
     eprintln!("shell: cannot start: {why}");
+    probe::startup_failed(&why);
     let user_data = paths.path(PathName::UserData);
     if std::fs::create_dir_all(&user_data).is_ok() {
         let _ = std::fs::write(user_data.join("shell-start-error.txt"), format!("{why}\n"));

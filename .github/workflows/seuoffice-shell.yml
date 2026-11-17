@@ -728,6 +728,8 @@ jobs:
         working-directory: crates/shell
     steps:
       - name: refuse anything but a GitHub-hosted runner
+        # before the checkout crates/shell does not exist yet
+        working-directory: ${{ runner.temp }}
         run: |
           if [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ] || [ "${GITHUB_ACTIONS:-}" != true ] || [ -z "${RUNNER_TEMP:-}" ]; then
             echo "::error::the real-app tests run only on GitHub-hosted runners"

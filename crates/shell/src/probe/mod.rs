@@ -110,6 +110,22 @@ pub fn install(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry
     schemes::install(builder)
 }
 
+/// The shell stopped before the probe could run: the record ends with the reason, so the
+/// checker reports it instead of "the process may have crashed". A no-op without `--probe`.
+pub fn startup_failed(why: &str) {
+    if let Some(request) = request() {
+        log::record(
+            "rust",
+            "probe.end",
+            json!({
+                "probe": request.name,
+                "ok": false,
+                "error": format!("the shell did not start: {why}"),
+            }),
+        );
+    }
+}
+
 /// Run the requested probe where the shell would open its first window.
 pub fn run(request: &Request, context: &HostContext) -> Result<(), String> {
     let ctx = Arc::new(harness::Ctx::new(context));

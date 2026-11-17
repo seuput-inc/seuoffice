@@ -229,8 +229,9 @@ fn map_origin(storage_key: &str, flavor: Flavor) -> Option<(String, bool)> {
         Some((origin, partition)) => (origin, Some(partition)),
         None => (storage_key, None),
     };
-    let origin = origin.strip_suffix('/').unwrap_or(origin);
     let (scheme, host) = origin.split_once("://")?;
+    // `file://` has an empty host, so the slash comes off the host, not the origin
+    let host = host.strip_suffix('/').unwrap_or(host);
     let native = match (scheme, host) {
         ("file", "") => app_origin(flavor, SHELL_HOST),
         (DRAWIO_SCHEME, DRAWIO_HOST) => drawio_origin(flavor),

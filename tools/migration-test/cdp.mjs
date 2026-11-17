@@ -59,5 +59,6 @@ export async function evaluate(port, global, expression, timeoutMs = 60_000) {
     }
     await sleep(1000)
   }
-  throw new Error(`no page with window.${global} on port ${port}${last ? `: ${last.message}` : ''}`)
+  const why = last ? `${last.message}${last.cause ? ` (${last.cause.code ?? last.cause.message})` : ''}` : ''
+  throw new Error(`no page with window.${global} on port ${port}${why ? `: ${why}` : ''}`)
 }

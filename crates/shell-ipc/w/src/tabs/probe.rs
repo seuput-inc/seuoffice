@@ -6152,10 +6152,19 @@ impl TabHooks for Hooks {
     }
     fn issue_native_command(
         &self,
-        _: shell_contract::ipc::NativeEditorCommand,
-        _: shell_contract::runtime::CancelToken,
+        command: shell_contract::ipc::NativeEditorCommand,
+        cancel: shell_contract::runtime::CancelToken,
     ) -> Result<shell_contract::ipc::NativeInvocationOperation, String> {
-        Err("Native commands are unavailable in the probe host".into())
+        const GONE: &str = "The native command is no longer available.";
+        if cancel.is_cancelled() {
+            return Err(GONE.into());
+        }
+        let operation = shell_contract::ipc::NativeInvocationIssuer::new(
+            shell_contract::runtime::CancelToken::default(),
+        )
+        .issue_command(command, cancel);
+        operation.with_active(|| ()).ok_or(GONE)?;
+        Ok(operation)
     }
     fn record_recent_file(&self, path: &str) {
         self.log("recordRecentFile", vec![json!(path)]);

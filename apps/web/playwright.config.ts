@@ -11,7 +11,11 @@ export default defineConfig({
   globalSetup: './tests/global-setup.ts',
   timeout: 60_000,
   workers: 1,
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    // the view-mode page must also work in Safari's engine
+    { name: 'webkit', use: { ...devices['Desktop Safari'] }, testMatch: 'view-mode-ui.spec.ts' },
+  ],
   use: { baseURL: `http://localhost:${port}/`, viewport: { width: 1400, height: 900 } },
   webServer: {
     command: `npx vite preview --port ${port} --strictPort`,

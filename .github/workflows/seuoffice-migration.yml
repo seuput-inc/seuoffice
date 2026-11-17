@@ -10,9 +10,16 @@ name: seuoffice migration
 # check of the harness itself, and the baseline the CEF build must equal.
 #   gh workflow run "seuoffice migration" --ref <branch>
 #   gh workflow run "seuoffice migration" --ref <branch> -f to_run=<id> -f to_version=<version> -f to_source_sha=<sha> -f next_run=<id> -f next_version=<version> -f next_source_sha=<sha>
+# A published release, a pre-release included, is checked before it is
+# promoted: the installed release `from` updates through its own update window
+# to the release `to_tag`, served from that release's own latest*.yml and
+# files (nothing rebuilt or re-hashed), and keeps its data. Only the fault-free
+# path runs unless `faults` says otherwise (the faults test the CEF installer).
+#   gh workflow run "seuoffice migration" --ref <branch> -f from=v0.12.42 -f to_tag=v0.12.43
 # By hand only: it downloads releases and installs the app on the runner. A
-# dispatch needs the file on main; before that, a push to a migration-test/*
-# branch runs it with the defaults.
+# dispatch needs the file on main; a push to a migration-test/* branch runs it
+# instead, with `from`, `to_tag`, `next_tag` and `faults` read from
+# tools/migration-test/targets.json of the pushed commit (defaults when absent).
 
 on:
   push:
@@ -47,6 +54,18 @@ on:
         description: Exact second candidate source commit
         required: false
         default: ''
+      to_tag:
+        description: Existing release tag (a pre-release too) to update to, served from its own latest*.yml and files
+        required: false
+        default: ''
+      next_tag:
+        description: Existing release tag to update to after to_tag
+        required: false
+        default: ''
+      faults:
+        description: Windows faults to run, comma separated (none, kill-installer, block-start, lock-file); default none with to_tag, all otherwise
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -60,12 +79,20 @@ jobs:
   resolve:
     runs-on: ubuntu-latest
     outputs:
+      faults: ${{ steps.r.outputs.faults }}
+      real_feed: ${{ steps.r.outputs.real_feed }}
       from: ${{ steps.r.outputs.from }}
       to: ${{ steps.r.outputs.to }}
       next: ${{ steps.r.outputs.next }}
       oldest: ${{ steps.r.outputs.oldest }}
       previous: ${{ steps.r.outputs.previous }}
     steps:
+      - uses: actions/checkout@v4
+      - id: t
+        if: github.event_name == 'push'
+        name: Targets of the pushed branch
+        run: |
+          if [ -f tools/migration-test/targets.json ]; then node tools/migration-test/targets.mjs >> "$GITHUB_OUTPUT"; fi
       - id: r
         name: Releases to start from and to update to
         env:
@@ -75,31 +102,77 @@ jobs:
           NEXT_RUN: ${{ inputs.next_run }}
           NEXT_VERSION: ${{ inputs.next_version }}
           NEXT_SOURCE_SHA: ${{ inputs.next_source_sha }}
-          FROM: ${{ inputs.from || 'oldest,previous' }}
+          TO_TAG: ${{ inputs.to_tag || steps.t.outputs.to_tag }}
+          NEXT_TAG: ${{ inputs.next_tag || steps.t.outputs.next_tag }}
+          FAULTS: ${{ inputs.faults || steps.t.outputs.faults }}
+          FROM: ${{ inputs.from || steps.t.outputs.from || 'oldest,previous' }}
         run: |
+          fail() { echo "::error::$1"; exit 1; }
+          if [ -n "$TO_TAG$NEXT_TAG" ] && [ -n "$TO_RUN$TO_VERSION$TO_SOURCE_SHA$NEXT_RUN$NEXT_VERSION$NEXT_SOURCE_SHA" ]; then
+            fail "Release tags and candidate runs are separate targets"
+          fi
+          [ -z "$NEXT_TAG" ] || [ -n "$TO_TAG" ] || fail "next_tag needs to_tag"
           if [ -n "$TO_RUN$TO_VERSION$TO_SOURCE_SHA$NEXT_RUN$NEXT_VERSION$NEXT_SOURCE_SHA" ]; then
             for value in "$TO_RUN" "$TO_VERSION" "$TO_SOURCE_SHA" "$NEXT_RUN" "$NEXT_VERSION" "$NEXT_SOURCE_SHA"; do
-              [ -n "$value" ] || { echo "::error::Both candidates require a run, exact version and source SHA"; exit 1; }
+              [ -n "$value" ] || fail "Both candidates require a run, exact version and source SHA"
             done
             node -e 'const parse = s => { if (!/^\d+\.\d+\.\d+$/.test(s)) throw Error("Expected x.y.z versions"); return s.split(".").map(BigInt) }; const a = parse(process.env.TO_VERSION), b = parse(process.env.NEXT_VERSION); if (!(b[0] > a[0] || b[0] === a[0] && (b[1] > a[1] || b[1] === a[1] && b[2] > a[2]))) throw Error("next_version must be greater than to_version")'
           fi
-          # stable releases, newest first
-          mapfile -t stable < <(gh release list --limit 200 --exclude-pre-releases --json tagName -q '.[].tagName')
+          FROM=$(echo "$FROM" | tr -d ' ')
+          uses_keywords=false
+          case ",$FROM," in *,oldest,*|*,previous,*) uses_keywords=true ;; esac
+          # a published release offers a platform what its update needs only with all of these
+          check_release() {
+            local tag=$1 v=${1#v} names need
+            names=$(gh release view "$tag" --json assets -q '.assets[].name') || fail "Release $tag does not exist (a draft is not visible either)"
+            for need in "SeuOffice-Setup-$v.exe" "SeuOffice-Setup-$v.exe.blockmap" latest.yml "SeuOffice-$v-arm64-mac.zip" "SeuOffice-$v-arm64-mac.zip.blockmap" latest-mac.yml; do
+              echo "$names" | grep -qxF "$need" || fail "Release $tag has no $need"
+            done
+          }
           has_installer() { gh release view "$1" --json assets -q '.assets[].name' | grep -q '^SeuOffice-Setup-.*\.exe$'; }
-          oldest=''
-          for ((i = ${#stable[@]} - 1; i >= 0; i--)); do
-            if has_installer "${stable[$i]}"; then oldest=${stable[$i]}; break; fi
-          done
-          if [ -z "$TO_RUN" ]; then to=${stable[1]} next=${stable[0]} previous=${stable[2]}
-          else to='' next='' previous=${stable[0]}; fi
-          [ -n "$oldest" ] && [ -n "$previous" ] || { echo "::error::Cannot resolve required Electron origins"; exit 1; }
+          stable=()
+          oldest='' previous=''
+          if [ -z "$TO_TAG" ] || [ "$uses_keywords" = true ]; then
+            # stable releases, newest first
+            mapfile -t stable < <(gh release list --limit 200 --exclude-pre-releases --json tagName -q '.[].tagName')
+            for ((i = ${#stable[@]} - 1; i >= 0; i--)); do
+              if has_installer "${stable[$i]}"; then oldest=${stable[$i]}; break; fi
+            done
+          fi
+          to='' next=''
+          if [ -n "$TO_TAG" ]; then to=$TO_TAG next=$NEXT_TAG; previous=${stable[0]:-}
+          elif [ -z "$TO_RUN" ]; then to=${stable[1]:-} next=${stable[0]:-} previous=${stable[2]:-}
+          else previous=${stable[0]:-}; fi
+          if [ "$uses_keywords" = true ] || [ -z "$TO_TAG" ]; then
+            [ -n "$oldest" ] && [ -n "$previous" ] || fail "Cannot resolve required Electron origins"
+          fi
+          if [ -n "$TO_TAG" ]; then
+            check_release "$to"
+            [ -z "$next" ] || check_release "$next"
+            for tag in $(echo "$FROM" | tr ',' ' '); do
+              case "$tag" in oldest|previous) ;; *) check_release "$tag" ;; esac
+            done
+          fi
           echo "oldest=$oldest" >> "$GITHUB_OUTPUT"
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
           from=$(echo "$FROM" | tr ',' '\n' | sed "s/^oldest$/$oldest/; s/^previous$/$previous/" | sort -u | jq -R . | jq -cs .)
           echo "from=$from" >> "$GITHUB_OUTPUT"
           echo "to=$to" >> "$GITHUB_OUTPUT"
           echo "next=$next" >> "$GITHUB_OUTPUT"
-          echo "from $from, to ${to:-run $TO_RUN}, next ${next:-run $NEXT_RUN}"
+          if [ -n "$TO_TAG" ]; then echo "real_feed=true" >> "$GITHUB_OUTPUT"; else echo "real_feed=false" >> "$GITHUB_OUTPUT"; fi
+          # the receipt of a candidate binds all four paths; a release check runs the update path
+          all=none,kill-installer,block-start,lock-file
+          if [ -n "$TO_RUN" ]; then
+            [ -z "$FAULTS" ] || [ "$FAULTS" = "$all" ] || fail "A candidate run needs every fault"
+            faults=$all
+          elif [ -n "$FAULTS" ]; then faults=$FAULTS
+          elif [ -n "$TO_TAG" ]; then faults=none
+          else faults=$all; fi
+          for fault in $(echo "$faults" | tr ',' ' '); do
+            case "$fault" in none|kill-installer|block-start|lock-file) ;; *) fail "Unknown fault $fault" ;; esac
+          done
+          echo "faults=$(echo "$faults" | tr ',' '\n' | jq -R . | jq -cs .)" >> "$GITHUB_OUTPUT"
+          echo "from $from, to ${to:-run $TO_RUN}, next ${next:-run $NEXT_RUN}, faults $faults"
 
   windows:
     needs: resolve
@@ -109,7 +182,7 @@ jobs:
       fail-fast: false
       matrix:
         from: ${{ fromJSON(needs.resolve.outputs.from) }}
-        fault: [none, kill-installer, block-start, lock-file]
+        fault: ${{ fromJSON(needs.resolve.outputs.faults) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -127,6 +200,7 @@ jobs:
           NEXT_SOURCE_SHA: ${{ inputs.next_source_sha }}
           TO_RELEASE: ${{ needs.resolve.outputs.to }}
           NEXT_RELEASE: ${{ needs.resolve.outputs.next }}
+          REAL_FEED: ${{ needs.resolve.outputs.real_feed }}
         run: |
           set -euo pipefail
           get() {
@@ -136,11 +210,16 @@ jobs:
             else
               version=${release#v}
               mkdir -p "$dir"
-              local name="SeuOffice-Setup-$version.exe"
-              gh release download "$release" --dir "$dir" --pattern "$name"
+              local name="SeuOffice-Setup-$version.exe" more=()
+              [ "$REAL_FEED" != true ] || more=(--pattern "$name.blockmap" --pattern latest.yml)
+              gh release download "$release" --dir "$dir" --pattern "$name" "${more[@]}"
               test -f "$dir/$name"
               echo "$prefix=$(cygpath -w "$dir/$name")" >> "$GITHUB_OUTPUT"
               echo "${prefix}_version=$version" >> "$GITHUB_OUTPUT"
+              if [ "$REAL_FEED" = true ]; then
+                test -f "$dir/latest.yml" && test -f "$dir/$name.blockmap"
+                echo "${prefix}_yml=$(cygpath -w "$dir/latest.yml")" >> "$GITHUB_OUTPUT"
+              fi
             fi
           }
           get to "$TO_RUN" "$TO_VERSION" "$TO_SOURCE_SHA" "$TO_RELEASE"
@@ -152,6 +231,7 @@ jobs:
           ./tools/migration-test/win-desktop.ps1 -From '${{ matrix.from }}' -To '${{ steps.builds.outputs.to }}' `
             -ToVersion '${{ steps.builds.outputs.to_version }}' -Fault '${{ matrix.fault }}' `
             -ToReceipt '${{ steps.builds.outputs.to_receipt }}' -NextReceipt '${{ steps.builds.outputs.next_receipt }}' `
+            -ToYml '${{ steps.builds.outputs.to_yml }}' -NextYml '${{ steps.builds.outputs.next_yml }}' `
             -Out "$env:RUNNER_TEMP\migration" @next
       - if: always()
         uses: actions/upload-artifact@v4
@@ -184,6 +264,7 @@ jobs:
           NEXT_SOURCE_SHA: ${{ inputs.next_source_sha }}
           TO_RELEASE: ${{ needs.resolve.outputs.to }}
           NEXT_RELEASE: ${{ needs.resolve.outputs.next }}
+          REAL_FEED: ${{ needs.resolve.outputs.real_feed }}
         run: |
           set -euo pipefail
           get() {
@@ -193,11 +274,16 @@ jobs:
             else
               version=${release#v}
               mkdir -p "$dir"
-              local name="SeuOffice-$version-arm64-mac.zip"
-              gh release download "$release" --dir "$dir" --pattern "$name"
+              local name="SeuOffice-$version-arm64-mac.zip" more=()
+              [ "$REAL_FEED" != true ] || more=(--pattern "$name.blockmap" --pattern latest-mac.yml)
+              gh release download "$release" --dir "$dir" --pattern "$name" "${more[@]}"
               test -f "$dir/$name"
               echo "$prefix=$dir/$name" >> "$GITHUB_OUTPUT"
               echo "${prefix}_version=$version" >> "$GITHUB_OUTPUT"
+              if [ "$REAL_FEED" = true ]; then
+                test -f "$dir/latest-mac.yml" && test -f "$dir/$name.blockmap"
+                echo "${prefix}_yml=$dir/latest-mac.yml" >> "$GITHUB_OUTPUT"
+              fi
             fi
           }
           get to "$TO_RUN" "$TO_VERSION" "$TO_SOURCE_SHA" "$TO_RELEASE"
@@ -210,6 +296,8 @@ jobs:
           NEXT: ${{ steps.builds.outputs.next }}
           NEXT_VERSION: ${{ steps.builds.outputs.next_version }}
           NEXT_RECEIPT: ${{ steps.builds.outputs.next_receipt }}
+          TO_YML: ${{ steps.builds.outputs.to_yml }}
+          NEXT_YML: ${{ steps.builds.outputs.next_yml }}
           FROM: ${{ matrix.from }}
         run: tools/migration-test/mac-runner.sh "$FROM" "$TO" "$TO_VERSION" "$RUNNER_TEMP/migration" "$NEXT" "$NEXT_VERSION" "$TO_RECEIPT" "$NEXT_RECEIPT"
       - if: always()

@@ -23,7 +23,7 @@ use super::report::{Report, StepRecord};
 use super::scenario::{Scenario, Shortcut, Step, typed_keys};
 use crate::host::HostContext;
 use crate::host::contents::page_error_text;
-use crate::host::shell_tabs::{ShellTabs, shell_tabs};
+use crate::host::shell_tabs::shell_tabs;
 use crate::host::w::on_core;
 use crate::native::document::Life;
 use crate::native::{CaptureSpec, QuietSpec, WebviewExt};

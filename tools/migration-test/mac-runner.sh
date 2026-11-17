@@ -55,7 +55,42 @@ probe_failure() {
   fi
   exit 1
 }
-start_app() { "$app/Contents/MacOS/SeuOffice" --remote-debugging-port=$port "$@" >>"$out/app.log" 2>&1 & }
+# --use-mock-keychain: the updated bundle carries another code signature than the
+# ad hoc one the old app sealed its AI key under, and macOS then asks to allow
+# the keychain item; nobody is there to click on a runner. Run 43435143003: the
+# updated app listened on the debugging port for five minutes and never logged
+# "running", the state of a main process waiting on that prompt. A real update
+# keeps the signature, so the prompt belongs to the harness, not to the update.
+# Every launch uses the same mock, so the key sealed before the update is still
+# opened by the updated app.
+start_app() { "$app/Contents/MacOS/SeuOffice" --remote-debugging-port=$port --use-mock-keychain "$@" >>"$out/app.log" 2>&1 & app_pid=$!; }
+make_feed() {
+  local dir=$1 file=$2 version=$3 yml=${4:-}
+  mkdir -p "$dir"
+  node "$here/feed.mjs" make --file "$file" --version "$version" --out "$dir" ${yml:+--yml "$yml"} >/dev/null
+}
+# what ran, what listened, what the main process was doing and what was on screen
+diagnose() {
+  local d="$out/diag-$1"
+  mkdir -p "$d"
+  { ps -axo pid,ppid,etime,stat,command | grep -i '[S]euOffice'; lsof -nP -iTCP:$port -sTCP:LISTEN; } >"$d/ps.txt" 2>&1 || true
+  curl -sS --max-time 5 "http://127.0.0.1:$port/json/list" >"$d/json-list.txt" 2>&1 || true
+  for p in $(pgrep -f "$app/Contents/MacOS/SeuOffice"); do sample "$p" 3 -file "$d/sample-$p.txt" >/dev/null 2>&1 || true; done
+  screencapture -x "$d/screen.png" 2>/dev/null || true
+  ls -la "$ud" >"$d/userdata.txt" 2>&1 || true
+  cp "$ud/update-log.txt" "$d/" 2>/dev/null || true
+}
+# "Restart & Install" must make the running app quit by itself (the swap runs at
+# its will-quit). Run 43435143003 had it hanging 3.5 minutes, until stop_app
+# ended it; that must not pass unseen.
+quit_hang=
+expect_self_quit() {
+  local pid=$app_pid
+  for _ in $(seq 120); do kill -0 "$pid" 2>/dev/null || return 0; sleep 1; done
+  diagnose "quit-$1"
+  quit_hang="the app did not quit within 120 s of Restart & Install ($1)"
+  result "FAILED: $quit_hang"
+}
 stop_app() {
   osascript -e 'tell application id "com.seuput.seuoffice" to quit' >/dev/null 2>&1 || true
   for _ in $(seq 20); do pgrep -f "$app/Contents/MacOS/SeuOffice" >/dev/null || return 0; sleep 1; done
@@ -70,8 +105,7 @@ ditto -x -k "$zip" /Applications
 from_version=$(version)
 result "installed $from_version"
 
-mkdir -p "$out/feed"
-node "$here/feed.mjs" make --file "$to_zip" --version "$to_version" --out "$out/feed" >/dev/null
+make_feed "$out/feed" "$to_zip" "$to_version" "${TO_YML:-}"
 node "$here/feed.mjs" serve --dir "$out/feed" --port 8765 >"$out/feed.log" 2>&1 &
 feed=$!
 node "$here/feed.mjs" point --resources "$app/Contents/Resources" --url http://127.0.0.1:8765/ >/dev/null
@@ -86,6 +120,7 @@ result seeded
 
 start_app
 probe update --version "$to_version"
+expect_self_quit first
 for _ in $(seq 180); do [ "$(version)" = "$to_version" ] && break; sleep 1; done
 # the swap relaunches the app after the new bundle is in place: wait for it,
 # or a later start hands over to it (single instance) and quits
@@ -98,19 +133,14 @@ result "updated to $to_version"
 start_app
 sleep 10
 if ! probe check --seed "$out/seed.json" --version "$to_version"; then
-  # what ran and listened when the updated app could not be read
-  { ps -axo pid,ppid,etime,command | grep -i '[S]euOffice'; lsof -nP -iTCP:$port -sTCP:LISTEN; } >"$out/after-check.txt" 2>&1 || true
-  ud="$SEUOFFICE_USER_DATA"
-  ls -la "$ud" >>"$out/after-check.txt" 2>&1 || true
-  cp "$ud/update-log.txt" "$out/" 2>/dev/null || true
+  diagnose first-check
   probe_failure "first candidate profile/UI check"
 fi
 stop_app
 result "checked $to_version"
 
 if [ -n "$next_zip" ]; then
-mkdir -p "$out/feed-next"
-node "$here/feed.mjs" make --file "$next_zip" --version "$next_version" --out "$out/feed-next" >/dev/null
+make_feed "$out/feed-next" "$next_zip" "$next_version" "${NEXT_YML:-}"
 kill "$feed"
 wait "$feed" 2>/dev/null || true
 node "$here/feed.mjs" serve --dir "$out/feed-next" --port 8765 >"$out/feed-next.log" 2>&1 &
@@ -119,8 +149,10 @@ node "$here/feed.mjs" point --resources "$app/Contents/Resources" --url http://1
 codesign --force --deep -s - "$app"
 start_app
 if ! probe update --version "$next_version"; then
+  diagnose second-update
   probe_failure "second update"
 fi
+expect_self_quit second
 for _ in $(seq 180); do [ "$(version)" = "$next_version" ] && break; sleep 1; done
 for _ in $(seq 60); do pgrep -f "$app/Contents/MacOS/SeuOffice" >/dev/null && break; sleep 1; done
 sleep 10
@@ -129,11 +161,13 @@ stop_app
 start_app
 sleep 10
 if ! probe check --seed "$out/seed.json" --version "$next_version"; then
+  diagnose second-check
   probe_failure "second candidate profile/UI check"
 fi
 stop_app
 result "second update checked $next_version"
 fi
+[ -z "$quit_hang" ] || exit 1
 result passed
 node - "$out/result.json" "$from" "$to_version" "$next_version" "$to_receipt" "$next_receipt" <<'NODE'
 const fs = require('node:fs')

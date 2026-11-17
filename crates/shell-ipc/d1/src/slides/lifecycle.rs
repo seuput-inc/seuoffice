@@ -652,10 +652,10 @@ pub fn new_blank(app: &App, cx: &CallContext, args: Args) -> Reply {
     Ok(result)
 }
 
-pub fn recent(app: &App, _cx: &CallContext, _args: Args) -> Reply {
-    Ok(IpcValue::Array(
-        app.read_recent().into_iter().map(string).collect(),
-    ))
+pub fn recent(app: &App, _cx: &CallContext, _args: Args, responder: Responder) {
+    app.read_recent(move |paths| {
+        responder.reply(Ok(IpcValue::Array(paths.into_iter().map(string).collect())))
+    });
 }
 
 // ---- close guard ----

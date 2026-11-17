@@ -29,6 +29,8 @@ beforeEach(async () => {
     sent.push(message as Record<string, unknown>)
   })
   Object.defineProperty(window, 'parent', { value: host, configurable: true })
+  // no embed-origins.json: only the own origin, which these tests send from
+  vi.stubGlobal('fetch', async () => new Response('not found', { status: 404 }))
   // the channel keeps one host per page load, so each test loads a fresh copy
   vi.resetModules()
   channel = await import('../src/embed-channel')
@@ -39,6 +41,7 @@ beforeEach(async () => {
 })
 
 afterEach(() => {
+  vi.unstubAllGlobals()
   Object.defineProperty(window, 'parent', { value: window, configurable: true })
   document.body.replaceChildren()
 })

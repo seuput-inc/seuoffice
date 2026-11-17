@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { appForFileName, openDocument, SeuofficeEmbedError } from '../src/index'
+import {
+  appForFileName,
+  DEFAULT_OPEN_TIMEOUT_MS,
+  DEFAULT_SANDBOX,
+  openDocument,
+  SeuofficeEmbedError,
+} from '../src/index'
 
 const BASE = 'https://office.example/'
 
@@ -12,6 +18,109 @@ function post(source: Window | null, origin: string, data: Record<string, unknow
     }),
   )
 }
+
+const ORIGIN = 'https://office.example'
+
+describe('the iframe sandbox', () => {
+  const open = (extra: Record<string, unknown> = {}) =>
+    openDocument(document.body, {
+      baseUrl: BASE,
+      fileName: 'a.pdf',
+      bytes: new Uint8Array(1),
+      ...extra,
+    })
+
+  it('is closed by default: scripts, own origin and downloads only', () => {
+    const doc = open()
+    expect(DEFAULT_SANDBOX).toBe('allow-scripts allow-same-origin allow-downloads')
+    expect(doc.iframe.getAttribute('sandbox')).toBe(DEFAULT_SANDBOX)
+    expect(doc.iframe.hasAttribute('allow')).toBe(false)
+  })
+
+  it('keeps popups, modals, forms and top navigation closed by default', () => {
+    const tokens = open().iframe.getAttribute('sandbox')!.split(' ')
+    for (const closed of ['allow-popups', 'allow-modals', 'allow-forms', 'allow-top-navigation']) {
+      expect(tokens).not.toContain(closed)
+    }
+  })
+
+  it('takes a wider or a narrower value from the host', () => {
+    const wide = open({ sandbox: 'allow-scripts allow-same-origin allow-popups allow-modals' })
+    expect(wide.iframe.getAttribute('sandbox')).toBe(
+      'allow-scripts allow-same-origin allow-popups allow-modals',
+    )
+    const narrow = open({ sandbox: 'allow-scripts allow-same-origin' })
+    expect(narrow.iframe.getAttribute('sandbox')).toBe('allow-scripts allow-same-origin')
+  })
+
+  it('passes the allow attribute through, and only when given', () => {
+    const doc = open({ allow: 'clipboard-read; clipboard-write' })
+    expect(doc.iframe.getAttribute('allow')).toBe('clipboard-read; clipboard-write')
+  })
+
+  it.each([
+    ['an empty value', ''],
+    ['no scripts', 'allow-same-origin allow-downloads'],
+    ['no own origin', 'allow-scripts allow-downloads'],
+    ['a look-alike token', 'allow-scripts allow-same-origin-ish'],
+  ])('refuses %s at once, without a frame', async (_name, sandbox) => {
+    const doc = open({ sandbox })
+    expect(await codeOf(doc.opened)).toBe('invalid_sandbox')
+    expect(document.querySelector('iframe')).toBeNull()
+  })
+})
+
+describe('an open that always settles', () => {
+  const openFor = (extra: Record<string, unknown> = {}) =>
+    openDocument(document.body, {
+      baseUrl: BASE,
+      fileName: 'a.pdf',
+      bytes: new Uint8Array(4),
+      ...extra,
+    })
+
+  it('rejects with origin_not_allowed when the page refuses this host', async () => {
+    const doc = openFor()
+    post(doc.iframe.contentWindow, ORIGIN, { type: 'ready' })
+    post(doc.iframe.contentWindow, ORIGIN, { type: 'error', code: 'origin_not_allowed' })
+    expect(await codeOf(doc.opened)).toBe('origin_not_allowed')
+  })
+
+  it('rejects with open_timeout when the page took the bytes and never answers', async () => {
+    const doc = openFor({ openTimeoutMs: 40 })
+    post(doc.iframe.contentWindow, ORIGIN, { type: 'ready' })
+    expect(await codeOf(doc.opened)).toBe('open_timeout')
+  })
+
+  it('has a 60 second open deadline unless the host says otherwise', async () => {
+    vi.useFakeTimers()
+    try {
+      expect(DEFAULT_OPEN_TIMEOUT_MS).toBe(60000)
+      const doc = openFor()
+      let code = ''
+      doc.opened.catch((error: SeuofficeEmbedError) => (code = error.code))
+      post(doc.iframe.contentWindow, ORIGIN, { type: 'ready' })
+      vi.advanceTimersByTime(59_999)
+      expect(code).toBe('')
+      vi.advanceTimersByTime(1)
+      await Promise.resolve()
+      expect(code).toBe('open_timeout')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps timeout for a page that never announces itself, and stops the open clock on opened', async () => {
+    const silent = openFor({ readyTimeoutMs: 30, openTimeoutMs: 5000 })
+    expect(await codeOf(silent.opened)).toBe('timeout')
+    const shown = openFor({ openTimeoutMs: 30 })
+    post(shown.iframe.contentWindow, ORIGIN, { type: 'ready' })
+    post(shown.iframe.contentWindow, ORIGIN, { type: 'opened' })
+    await expect(shown.opened).resolves.toBeUndefined()
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    await expect(shown.opened).resolves.toBeUndefined()
+  })
+})
 
 async function codeOf(promise: Promise<void>): Promise<string> {
   const error = await promise.then(

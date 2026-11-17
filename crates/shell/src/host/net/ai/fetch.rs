@@ -223,6 +223,19 @@ impl Fetcher for Hops {
     }
 }
 
+/// The resolver for a caller that runs main-core's SSRF guard itself (the mind map's
+/// link preview and picture fetch): the guard validates every hop, so this one only answers
+/// `dns.lookup(host, { all: true })`.
+pub(crate) fn guard_resolver() -> Box<dyn Resolver + Send> {
+    Box::new(SystemResolver)
+}
+
+/// The transport for the same callers: one `GET` per hop, connected to the addresses the guard
+/// validated (undici's `fetch` with the per-hop pinned `Agent`).
+pub(crate) fn guard_fetcher() -> Box<dyn Fetcher + Send> {
+    Box::new(Hops(None))
+}
+
 /// A resolver exposed to editor engines, without exposing the raw transport.
 pub(crate) fn guarded_resolver() -> Box<dyn Resolver + Send> {
     Box::new(EditorResolver)

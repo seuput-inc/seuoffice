@@ -260,24 +260,17 @@ impl App {
         )
     }
 
-    /// `readRecent()`: the stored list without the files that are gone
-    pub fn read_recent(&self) -> Vec<String> {
-        let Ok(raw) = std::fs::read_to_string(self.recent_path()) else {
-            return Vec::new();
-        };
-        let Ok(JsonValue::Array(items)) = json_parse(&raw) else {
-            return Vec::new();
-        };
-        let mut paths = Vec::new();
-        for item in &items {
-            // `existsSync` of a non-string throws, and the catch answers []
-            let JsonValue::String(path) = item else {
-                return Vec::new();
-            };
-            paths.push(path.clone());
-        }
-        paths.retain(|p| Path::new(p).exists());
-        paths
+    /// `readRecent()`: the stored list without the files that are gone. The
+    /// TypeScript awaited every `pushRecent` before it answered an open, so a
+    /// read finds them; the pushes here are queued, so the read queues behind
+    /// them and answers when its turn comes.
+    pub fn read_recent(&self, done: impl FnOnce(Vec<String>) + Send + 'static) {
+        let path = self.recent_path();
+        main_core::shell::app_settings::queue::for_path(&path).submit(move |completion| {
+            let paths = read_recent_list(&path);
+            drop(completion);
+            done(paths);
+        });
     }
 
     /// `pushRecent(path)`: a headless export is not a document the user opened
@@ -287,6 +280,25 @@ impl App {
         }
         super::recent::push_unowned(self.recent_path(), path.to_owned());
     }
+}
+
+fn read_recent_list(path: &str) -> Vec<String> {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(JsonValue::Array(items)) = json_parse(&raw) else {
+        return Vec::new();
+    };
+    let mut paths = Vec::new();
+    for item in &items {
+        // `existsSync` of a non-string throws, and the catch answers []
+        let JsonValue::String(path) = item else {
+            return Vec::new();
+        };
+        paths.push(path.clone());
+    }
+    paths.retain(|p| Path::new(p).exists());
+    paths
 }
 
 // ---- the 30 second recovery copy pass ----
