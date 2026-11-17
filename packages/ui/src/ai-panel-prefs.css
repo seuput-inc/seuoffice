@@ -37,3 +37,8 @@ html[data-ai-panel-side='right'] .app-shell.copilot-collapsed .sheet-body {
 html[data-ai-panel-side='right'] .ai-panel-collapse svg {
   transform: scaleX(-1);
 }
+
+/* An embed host that offers no AI (markWebAiOffer): the ribbon's AI buttons go with the panel. */
+html[data-web-ai='off'] .ai-entry {
+  display: none;
+}

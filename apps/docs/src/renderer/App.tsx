@@ -30,6 +30,8 @@ import {
   useAiSidebarEnabled,
   useSplitPaneFocusPing,
   templateDocumentOf,
+  webAiOff,
+  webViewMode,
   type TemplateDocument,
 } from '@seuoffice/ui'
 import { commentAnchors, commentIdsAt, wordRangeAtCaret } from './editor/comments'
@@ -617,11 +619,12 @@ import {
   type ReviewContext,
 } from './review-actions'
 import { authorName, onAuthorNameChanged } from './author-name'
-import { webViewMode } from './web-view-mode'
 
 const IS_MAC = navigator.platform.toLowerCase().includes('mac')
 // a document the web host opened for viewing never leaves Read Mode
 const WEB_VIEW_LOCKED = webViewMode()
+// the web embed's host offers no AI: no panel and no AI button
+const WEB_AI_OFF = webAiOff()
 
 const twipsToPx = (twips: number) => (twips / 1440) * 96
 
@@ -8583,7 +8586,7 @@ export function App() {
       />
 
       <div className="app-main">
-        {doc && (
+        {doc && !WEB_AI_OFF && (
           <div
             className={`ai-dock${aiDock.open ? '' : ' collapsed'}${
               !aiSidebarEnabled && !aiDock.open ? ' ai-dock-off' : ''

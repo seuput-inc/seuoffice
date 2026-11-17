@@ -344,6 +344,21 @@ textarea:disabled {
   background: var(--surface);
 }
 
+/* The web embed's view mode has no header: the body takes the one row. */
+.app-shell.web-view {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+/* A phone is narrower than the desktop window's 720px floor. */
+body:has(.app-shell.web-view) {
+  min-width: 0;
+}
+
+/* Reading only: Univer's formula bar is an input (and wider than a phone). */
+.app-shell.web-view #univer-container [data-u-comp='formula-bar'] {
+  display: none;
+}
+
 /* F5 presentation: the grid alone; the Univer header/footer stay because they
    are the workbook's own chrome, not this shell's. */
 .app-shell.sheet-presenting .excel-header,

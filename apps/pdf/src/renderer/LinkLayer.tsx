@@ -339,13 +339,11 @@ export function LinkLayer({
           style={boxes[i]}
           href={l.url ?? '#'}
           data-tip={l.url}
-          target={l.url ? '_blank' : undefined}
-          rel="noreferrer"
           onClick={(e) => {
-            if (!l.url) {
-              e.preventDefault()
-              onGoToDest(l.dest)
-            }
+            // window.open, not target=_blank: the web build shows a link its sandbox will not open
+            e.preventDefault()
+            if (l.url) window.open(l.url, '_blank', 'noreferrer')
+            else onGoToDest(l.dest)
           }}
         />
       ))}
