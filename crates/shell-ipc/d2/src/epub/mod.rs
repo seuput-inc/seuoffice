@@ -2033,14 +2033,16 @@ impl EpubEditors {
     }
 
     /// what `epub-asset://<token>/` serves from (`registerEpubAssetProtocol`):
-    /// the open book's bytes of the view the token names
-    pub fn asset_book(&self, token: &str) -> Option<Bytes> {
+    /// the open book's bytes of `view`, only when `token` is the one its book
+    /// was handed out under. The scheme is answered for the view that owns the
+    /// token and for no other.
+    pub fn asset_book(&self, view: ViewId, token: &str) -> Option<Bytes> {
         let state = self.0.state.borrow();
-        let view = state
-            .views
-            .values()
-            .find(|v| v.token.as_deref() == Some(token))?;
-        view.session.as_ref().map(|s| s.borrow().bytes.clone())
+        let entry = state.views.get(&view)?;
+        if entry.token.as_deref() != Some(token) {
+            return None;
+        }
+        entry.session.as_ref().map(|s| s.borrow().bytes.clone())
     }
 }
 

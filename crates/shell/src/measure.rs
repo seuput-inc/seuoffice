@@ -28,7 +28,7 @@ use shell_contract::ids::{RequestId, ViewId};
 use shell_contract::ipc::Reply;
 use shell_contract::runtime::{Thread, run_on};
 use shell_contract::value::IpcValue;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use crate::ipc::Ipc;
 use crate::trace::{self, trace};
@@ -66,12 +66,7 @@ impl Measure {
         std::thread::spawn(move || {
             std::thread::sleep(FIRST_CALL_WITHIN);
             if watchdog.calls.load(Ordering::Acquire) == 0 {
-                watchdog.stalled(format!(
-                    "the page sent nothing to the shell within {} s: no command, no sync request. \
-                     The preload did not run, Tauri's invoke did not leave the page, or the page did not load \
-                     (see trace)",
-                    FIRST_CALL_WITHIN.as_secs()
-                ));
+                watchdog.stalled(watchdog.silence());
                 return;
             }
             std::thread::sleep(DEADLINE - FIRST_CALL_WITHIN);
@@ -87,6 +82,28 @@ impl Measure {
     /// A command or a sync request of the page reached the shell
     pub fn note_call(&self) {
         self.calls.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Why no call arrived in time. The test page opens only once the engine host is ready, so a
+    /// host that never was is the likelier reason than the bridge of a page that was never opened.
+    fn silence(&self) -> String {
+        if let Some(waiting) = self
+            .app
+            .try_state::<Arc<crate::engine_host::EngineHost>>()
+            .and_then(|engine| engine.waiting_for())
+        {
+            return format!(
+                "the engine host was not ready within {} s, so the test page was never opened: \
+                 {waiting}",
+                FIRST_CALL_WITHIN.as_secs()
+            );
+        }
+        format!(
+            "the page sent nothing to the shell within {} s: no command, no sync request. \
+             The preload did not run, Tauri's invoke did not leave the page, or the page did not \
+             load (see trace)",
+            FIRST_CALL_WITHIN.as_secs()
+        )
     }
 
     /// The run cannot finish: write what is known and end

@@ -1,3 +1,5 @@
+import { toPlatformSchemeUrl } from '@seuoffice/electron-utils/custom-scheme-url'
+
 /**
  * DrawingML picture transform (pic a:xfrm rot / flipH / flipV) as CSS.
  * Flips mirror the source and rot turns the result; CSS applies functions
@@ -96,7 +98,7 @@ export function pictureLayerDecls(layers: PictureLayer[] | null | undefined): st
   const pct = (v: number) => `${(v * 100).toFixed(2)}%`
   const top = [...layers].reverse()
   return [
-    `background-image:${top.map((l) => `url("${l.dataUrl}")`).join(',')}`,
+    `background-image:${top.map((l) => `url("${toPlatformSchemeUrl(l.dataUrl)}")`).join(',')}`,
     `background-size:${top.map((l) => `${pct(l.w)} ${pct(l.h)}`).join(',')}`,
     // percentage positions place against the free space, so solve for the
     // offset that lands the layer's left/top edge at its fraction

@@ -1,0 +1,89 @@
+{
+  "steps": [
+    {
+      "op": "open",
+      "path": "${WORK}/diagram.drawio"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 120000
+    },
+    {
+      "op": "wait",
+      "ms": 2000
+    },
+    {
+      "op": "query",
+      "as": "prep-focus",
+      "js": "(() => { const f = document.querySelector('iframe'); f?.focus(); return f !== null })()"
+    },
+    {
+      "op": "wait",
+      "ms": 300
+    },
+    {
+      "op": "type",
+      "text": "\t"
+    },
+    {
+      "op": "wait",
+      "ms": 300
+    },
+    {
+      "op": "type",
+      "text": "\n"
+    },
+    {
+      "op": "wait",
+      "ms": 600
+    },
+    {
+      "op": "type",
+      "text": "SEU-E2E-diagram"
+    },
+    {
+      "op": "wait",
+      "ms": 300
+    },
+    {
+      "op": "type",
+      "text": "\u001b"
+    },
+    {
+      "op": "wait",
+      "ms": 800
+    },
+    {
+      "op": "shortcut",
+      "name": "save"
+    },
+    {
+      "op": "wait",
+      "ms": 2500
+    },
+    {
+      "op": "shortcut",
+      "name": "closeTab"
+    },
+    {
+      "op": "wait",
+      "ms": 1000
+    },
+    {
+      "op": "open",
+      "path": "${WORK}/diagram.drawio"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 120000
+    },
+    {
+      "op": "wait",
+      "ms": 2000
+    },
+    {
+      "op": "screenshot",
+      "name": "diagram-after"
+    }
+  ]
+}

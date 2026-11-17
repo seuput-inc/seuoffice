@@ -126,6 +126,16 @@ await build({
   plugins: [browserPdf, browserMarkup, rawScripts, browserZlib, browserQpdf],
   inject: [resolve(here, 'buffer-globals.ts')],
 })
+// index.html loads this classic script before the module bundle. It stands alone (no `inject`, no
+// imports) so that it still runs, and still reports, when the bundle fails to load or to evaluate.
+await build({
+  entryPoints: { boot: resolve(here, 'boot.ts') },
+  outdir,
+  bundle: true,
+  platform: 'browser',
+  format: 'iife',
+  target: 'es2019',
+})
 await cp(resolve(here, 'index.html'), resolve(outdir, 'index.html'))
 await cp(resolve(dirname(pdfPath), '../../standard_fonts'), resolve(outdir, 'standard_fonts'), {
   recursive: true,

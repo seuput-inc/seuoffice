@@ -1,0 +1,63 @@
+{
+  "steps": [
+    {
+      "op": "open",
+      "path": "${WORK}/docs-ime.docx"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 60000
+    },
+    {
+      "op": "wait",
+      "ms": 800
+    },
+    {
+      "op": "ime",
+      "source": "ko-2set",
+      "keys": "gksrmf"
+    },
+    {
+      "op": "wait",
+      "ms": 800
+    },
+    {
+      "op": "query",
+      "as": "ime-before",
+      "js": "document.querySelector('.editor-scroll .ProseMirror')?.textContent ?? null"
+    },
+    {
+      "op": "shortcut",
+      "name": "save"
+    },
+    {
+      "op": "wait",
+      "ms": 2500
+    },
+    {
+      "op": "shortcut",
+      "name": "closeTab"
+    },
+    {
+      "op": "wait",
+      "ms": 1000
+    },
+    {
+      "op": "open",
+      "path": "${WORK}/docs-ime.docx"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 60000
+    },
+    {
+      "op": "wait",
+      "ms": 800
+    },
+    {
+      "op": "query",
+      "as": "ime-after",
+      "js": "document.querySelector('.editor-scroll .ProseMirror')?.textContent ?? null"
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 //! Exact JavaScript dependency steps left at the engine host boundary.
 //! Replies bypass the core dispatcher: a synchronous native engine call may
 //! hold the core thread while the isolated service page computes its answer.
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::{Duration, Instant};
@@ -24,6 +24,46 @@ const LABEL: &str = "seuoffice-engine-host";
 const HOST: &str = "engine-host";
 const WAIT: Duration = Duration::from_secs(120);
 type Reply = Result<Value, HostError>;
+
+/// The engine page tells the shell what it is doing with `GET REPORT_PATH?m=<text>` on its own
+/// scheme (`engine-host/boot.ts`). The request needs nothing of the IPC that readiness depends on,
+/// so a page that cannot reach the IPC still leaves its reason in the trace and in the error of a
+/// readiness that never came.
+const REPORT_PATH: &str = "/__engine-host-log";
+/// The longest report taken, in characters
+const REPORT_CHARS: usize = 600;
+/// How many reports are kept, and how many of them the error of a missed readiness shows
+const REPORTS_KEPT: usize = 16;
+const REPORTS_SHOWN: usize = 6;
+
+/// What the engine page reported about itself, oldest first
+#[derive(Default)]
+struct PageReports(VecDeque<String>);
+
+impl PageReports {
+    fn note(&mut self, text: String) {
+        if self.0.len() == REPORTS_KEPT {
+            self.0.pop_front();
+        }
+        self.0.push_back(text);
+    }
+
+    /// What to add to the error of a readiness that never came
+    fn status(&self) -> String {
+        if self.0.is_empty() {
+            return "the engine page reported nothing: its boot script did not run, or its \
+                    requests did not reach the shell"
+                .to_owned();
+        }
+        let shown: Vec<&str> = self
+            .0
+            .iter()
+            .skip(self.0.len().saturating_sub(REPORTS_SHOWN))
+            .map(String::as_str)
+            .collect();
+        format!("the engine page reported: {}", shown.join(" | "))
+    }
+}
 
 struct ServiceState {
     ready: Result<bool, String>,
@@ -495,6 +535,7 @@ pub struct EngineHost {
     service: NativeService,
     state: (Mutex<ServiceState>, Condvar),
     next: AtomicU64,
+    page_reports: Mutex<PageReports>,
 }
 
 impl EngineHost {
@@ -518,6 +559,7 @@ impl EngineHost {
                 Condvar::new(),
             ),
             next: AtomicU64::new(1),
+            page_reports: Mutex::default(),
         });
         if !app.manage(host.clone()) {
             return Err("engine host was installed twice".to_owned());
@@ -597,7 +639,10 @@ impl EngineHost {
             if remaining.is_some_and(|duration| duration.is_zero()) {
                 return Err(error(
                     "TimeoutError",
-                    "the engine operation timed out while waiting for readiness",
+                    format!(
+                        "the engine operation timed out while waiting for readiness; {}",
+                        self.page_status()
+                    ),
                 ));
             }
             let wait = remaining
@@ -613,6 +658,29 @@ impl EngineHost {
     pub fn wait_ready(&self) -> Result<(), String> {
         self.wait_ready_until(Some(Instant::now() + WAIT), None)
             .map_err(|e| e.message)
+    }
+
+    fn page_status(&self) -> String {
+        self.page_reports
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .status()
+    }
+
+    /// Why the engine is not ready yet, or `None` once its page said it is
+    pub fn waiting_for(&self) -> Option<String> {
+        let ready = self
+            .state
+            .0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .ready
+            .clone();
+        match ready {
+            Ok(true) => None,
+            Ok(false) => Some(self.page_status()),
+            Err(reason) => Some(reason),
+        }
     }
 
     pub fn call(self: &Arc<Self>, name: &str, input: &Value) -> Reply {
@@ -1947,6 +2015,52 @@ pub fn install(app: &AppHandle) -> Result<(), String> {
 
 pub const SCHEME_HOST: &str = HOST;
 
+/// The text of an engine page report, or `None` when the request is not one: only the engine
+/// page's own GET of `REPORT_PATH` is. The text is the page's, so it is cut and stripped of
+/// control characters before it reaches a log line.
+fn report_text(host: &str, label: &str, request: &tauri::http::Request<Vec<u8>>) -> Option<String> {
+    if host != HOST
+        || label != LABEL
+        || request.method() != tauri::http::Method::GET
+        || request.uri().path() != REPORT_PATH
+    {
+        return None;
+    }
+    let url = tauri::Url::parse(&request.uri().to_string()).ok()?;
+    let (_, text) = url.query_pairs().find(|pair| pair.0 == "m")?;
+    Some(
+        text.chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .take(REPORT_CHARS)
+            .collect(),
+    )
+}
+
+/// The answer to an engine page report, `None` for every other request of the scheme
+pub fn page_report(
+    app: &AppHandle,
+    host: &str,
+    label: &str,
+    request: &tauri::http::Request<Vec<u8>>,
+) -> Option<tauri::http::Response<Vec<u8>>> {
+    let text = report_text(host, label, request)?;
+    crate::trace::trace!("engine", "{text}");
+    if let Some(engine) = app.try_state::<Arc<EngineHost>>() {
+        engine
+            .page_reports
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .note(text);
+    }
+    let mut response = tauri::http::Response::new(Vec::new());
+    *response.status_mut() = tauri::http::StatusCode::NO_CONTENT;
+    response.headers_mut().insert(
+        tauri::http::header::CACHE_CONTROL,
+        tauri::http::HeaderValue::from_static("no-store"),
+    );
+    Some(response)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2451,5 +2565,66 @@ mod tests {
         })
         .join()
         .unwrap();
+    }
+
+    fn report_request(method: &str, uri: &str) -> tauri::http::Request<Vec<u8>> {
+        tauri::http::Request::builder()
+            .method(method)
+            .uri(uri)
+            .body(Vec::new())
+            .unwrap()
+    }
+
+    #[test]
+    fn only_the_engine_pages_own_get_of_the_reserved_path_is_a_report() {
+        let mac = "genoffice-app-engine-host://localhost/__engine-host-log?m=boot%3A%20up%2B1";
+        let windows =
+            "http://genoffice-app-engine-host.localhost/__engine-host-log?m=boot%3A%20up%2B1";
+        for uri in [mac, windows] {
+            let get = report_request("GET", uri);
+            assert_eq!(report_text(HOST, LABEL, &get).as_deref(), Some("boot: up+1"));
+            // another webview of the same scheme, another host's scheme, another method
+            assert_eq!(report_text(HOST, "probe-page", &get), None);
+            assert_eq!(report_text("docs", LABEL, &get), None);
+            assert_eq!(report_text(HOST, LABEL, &report_request("POST", uri)), None);
+        }
+        // an ordinary file of the page is not a report
+        let file = report_request("GET", "genoffice-app-engine-host://localhost/main.js?m=x");
+        assert_eq!(report_text(HOST, LABEL, &file), None);
+    }
+
+    #[test]
+    fn a_report_is_one_bounded_line_of_text() {
+        let long = "a".repeat(REPORT_CHARS * 2);
+        let uri =
+            format!("genoffice-app-engine-host://localhost{REPORT_PATH}?m=one%0Atwo%00{long}");
+        let text = report_text(HOST, LABEL, &report_request("GET", &uri)).unwrap();
+        assert!(text.starts_with("one two "));
+        assert!(!text.chars().any(char::is_control));
+        assert_eq!(text.chars().count(), REPORT_CHARS);
+    }
+
+    #[test]
+    fn a_missed_readiness_names_what_the_page_reported() {
+        let mut reports = PageReports::default();
+        assert!(reports.status().contains("reported nothing"));
+        let total = REPORTS_KEPT + 4;
+        for n in 0..total {
+            reports.note(format!("report {n}"));
+        }
+        let shown: Vec<String> = (total - REPORTS_SHOWN..total)
+            .map(|n| format!("report {n}"))
+            .collect();
+        assert_eq!(
+            reports.status(),
+            format!("the engine page reported: {}", shown.join(" | "))
+        );
+        assert_eq!(reports.0.len(), REPORTS_KEPT);
+    }
+
+    #[test]
+    fn the_boot_script_reports_to_the_path_the_shell_answers() {
+        let script = include_str!("../engine-host/boot.ts");
+        assert!(script.contains(&format!("'{REPORT_PATH}'")));
     }
 }

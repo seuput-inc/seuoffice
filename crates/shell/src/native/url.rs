@@ -151,6 +151,43 @@ mod tests {
         }
     }
 
+    /// The same table as `packages/electron-utils/tests/custom-scheme-url.test.ts`: the page-side
+    /// helper and the bridge must name every URL as the shell does.
+    #[test]
+    fn the_shape_matches_the_page_side_helper() {
+        for (logical, platform) in [
+            (
+                "epub-asset://tok/OEBPS/a%20b.css?x=1#y",
+                "http://epub-asset.localhost/tok/OEBPS/a%20b.css?x=1#y",
+            ),
+            ("epub-asset://tok/", "http://epub-asset.localhost/tok/"),
+            (
+                "html-preview://view-3/",
+                "http://html-preview.localhost/view-3/",
+            ),
+            (
+                "seuoffice-docx-media://handoff/abc",
+                "http://seuoffice-docx-media.localhost/handoff/abc",
+            ),
+            (
+                "seuoffice-slide-media://archive/id-1?mime=image%2Fpng",
+                "http://seuoffice-slide-media.localhost/archive/id-1?mime=image%2Fpng",
+            ),
+            (
+                "drawio-app://editor/index.html?embed=1",
+                "http://drawio-app.localhost/editor/index.html?embed=1",
+            ),
+        ] {
+            let logical = url(logical);
+            let platform_url = platform_url_for(Flavor::LocalhostHttp, &logical);
+            assert_eq!(platform_url.as_str(), platform);
+            assert_eq!(
+                logical_url_for(Flavor::LocalhostHttp, &platform_url).unwrap(),
+                logical
+            );
+        }
+    }
+
     #[test]
     fn urls_the_webview_resolves_itself_have_no_logical_shape() {
         assert!(logical_url_for(Flavor::LocalhostHttp, &url("https://example.org/a")).is_none());

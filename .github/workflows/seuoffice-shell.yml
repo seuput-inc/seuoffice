@@ -20,6 +20,15 @@ name: seuoffice shell
 #               per assertion, observed, violated or unobserved with the evidence line. Logs
 #               and artifacts are uploaded whatever the checker says. `probes` picks which
 #               (comma list, default all; p5 is macOS only, p6 Windows only).
+#   gate=e2e    the real-app tests of gate G3 (crates/shell/e2e): the real app bundle, built as the
+#               full gate builds it plus every renderer, runs each scenario with
+#               `--e2e <scenario.json> --out <dir>` against a throwaway profile and temp
+#               fixture/work folders (GitHub-hosted runners only, never a person's profile or
+#               keychain). Native key events, Korean 2-Set IME, clipboard, save/close/reopen,
+#               PDF export, a 50000-row sheet, PDF viewing and quit with a dirty document are
+#               driven; crates/shell/ci/e2e-check.mjs then prints PASS / FAIL / UNVERIFIED per
+#               check, reading the files the app saved with independent readers and the repo's
+#               own parsers. `scenarios` picks which (comma list, default all).
 
 on:
   push:
@@ -30,9 +39,9 @@ on:
   workflow_dispatch:
     inputs:
       gate:
-        description: "full (build, clippy, tests, measurement), check (cargo check and per-file diagnostics), test (the shell's unit tests in debug, no bundle), lock (regenerate Cargo.lock on Ubuntu), fmt (rustfmt patch of both Rust workspaces) or probe (hosted WebView probes P1-P10)"
+        description: "full (build, clippy, tests, measurement), check (cargo check and per-file diagnostics), test (the shell's unit tests in debug, no bundle), lock (regenerate Cargo.lock on Ubuntu), fmt (rustfmt patch of both Rust workspaces), probe (hosted WebView probes P1-P10) or e2e (real-app tests, G3)"
         type: choice
-        options: [full, check, test, lock, fmt, probe]
+        options: [full, check, test, lock, fmt, probe, e2e]
         default: full
       owned:
         description: "gate=check: comma-separated path prefixes whose diagnostics must be zero"
@@ -42,6 +51,9 @@ on:
         default: ''
       probes:
         description: "gate=probe: comma list of probes p1..p10, or all"
+        default: all
+      scenarios:
+        description: "gate=e2e: comma list of scenario names from crates/shell/e2e/scenarios, or all"
         default: all
       source_sha:
         description: "gate=lock or fmt: the exact commit to work on (40 hex digits)"
@@ -693,4 +705,192 @@ jobs:
           path: |
             ${{ runner.temp }}/probes/**
             !${{ runner.temp }}/probes/*/userdata/**
+          if-no-files-found: warn
+
+  # The real-app tests (gate G3). The app is the full gate's build plus the renderer bundles
+  # (`npm run build:all`) and the resources of the installer's bundle config that this runner
+  # builds (e2e/stage-resources.mjs). Each scenario of crates/shell/e2e/scenarios runs in its
+  # own throwaway profile (SEUOFFICE_USER_DATA with the `.seuoffice-e2e-profile` marker the app
+  # insists on), a fresh copy of the fixtures and its own output folder; the app decides nothing,
+  # ci/e2e-check.mjs reads what it left. Nothing here touches a person's machine: the job refuses
+  # to run anywhere but a GitHub-hosted runner, and every folder is below RUNNER_TEMP.
+  e2e:
+    if: github.event_name == 'workflow_dispatch' && inputs.gate == 'e2e'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: bash
+        working-directory: crates/shell
+    steps:
+      - name: refuse anything but a GitHub-hosted runner
+        run: |
+          if [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ] || [ "${GITHUB_ACTIONS:-}" != true ] || [ -z "${RUNNER_TEMP:-}" ]; then
+            echo "::error::the real-app tests run only on GitHub-hosted runners"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.95.0
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: |
+            crates/shell
+            apps/sheets/native/xlsx-engine
+          cache-on-failure: true
+
+      - name: build environment
+        run: |
+          # the Strawberry perl vendored OpenSSL configures with (Git Bash's perl lacks modules)
+          if [ "$RUNNER_OS" = Windows ]; then echo 'OPENSSL_SRC_PERL=C:\Strawberry\perl\bin\perl.exe' >> "$GITHUB_ENV"; fi
+          rustc --version
+          cargo --version
+
+      - name: npm ci
+        working-directory: .
+        run: npm ci
+      - name: checker tests
+        working-directory: crates/shell/ci
+        run: npx vitest run
+      - name: rhwp source
+        working-directory: .
+        run: node tools/build-rhwp-core.mjs --source-only
+      - name: document engine
+        working-directory: .
+        run: npm run build:wasm
+      - name: apps (the renderer bundles the shell serves, the sheets sidecar, the HWP studio)
+        working-directory: .
+        run: npm run build:all
+      - name: preloads
+        working-directory: .
+        run: node crates/shell/bridge/preloads.mjs
+      - name: engine host
+        working-directory: .
+        run: node crates/shell/engine-host/build.mjs
+      - name: native helpers (macOS)
+        if: runner.os == 'macOS'
+        working-directory: .
+        run: swiftc -O packages/pdf2docx/ocr-helper/vision-ocr.swift -o packages/pdf2docx/ocr-helper/vision-ocr
+      - name: native helpers (Windows)
+        if: runner.os == 'Windows'
+        working-directory: .
+        run: |
+          node packages/pdf2docx/ocr-helper/build-win.mjs
+          node apps/shell/src/main/quick-look/build-win.mjs
+
+      - name: Tauri CLI
+        if: runner.os == 'macOS'
+        run: npm install --no-audit --no-fund
+      - name: signing identity (decision 0035)
+        if: runner.os == 'macOS'
+        env:
+          MAC_SELF_SIGN_P12: ${{ secrets.MAC_SELF_SIGN_P12 }}
+          MAC_SELF_SIGN_PASSWORD: ${{ secrets.MAC_SELF_SIGN_PASSWORD }}
+        run: ci/mac-self-sign.sh
+      - name: build the app bundle (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          export APPLE_SIGNING_IDENTITY="$SEUOFFICE_MAC_SIGN_IDENTITY"
+          config=$(node e2e/stage-resources.mjs mac-config)
+          npx tauri build --bundles app --verbose --config "$config" -- --locked
+          app=$(find target/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)
+          ci/mac-check-signature.sh "$app"
+          echo "SHELL_BIN=$PWD/$app/Contents/MacOS/SeuOffice" >> "$GITHUB_ENV"
+      - name: build and stage the resources (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cargo build --locked --release --verbose
+          node e2e/stage-resources.mjs win-stage target/release
+          echo "SHELL_BIN=$(cygpath -m "$PWD")/target/release/SeuOffice.exe" >> "$GITHUB_ENV"
+
+      # Windows composes Hangul through the Korean IME of the language pack; the hosted image has
+      # English only. A failure here is not fatal: the ime scenarios then fail with their own evidence.
+      - name: Korean IME (Windows)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'e2e-ime-install.txt'
+          try {
+            Install-Language -Language ko-KR -ErrorAction Stop *>> $log
+          } catch {
+            "Install-Language failed: $_" | Tee-Object -FilePath $log -Append
+            Add-WindowsCapability -Online -Name 'Language.Basic~~~ko-KR~~~0.0.1.0' *>> $log
+          }
+          $list = New-WinUserLanguageList en-US
+          $list.Add('ko-KR')
+          Set-WinUserLanguageList $list -Force
+          Get-WinUserLanguageList | Format-List LanguageTag, InputMethodTips *>> $log
+          Get-Content $log
+
+      - name: run the scenarios
+        env:
+          SCENARIOS: ${{ inputs.scenarios }}
+        run: |
+          base="$RUNNER_TEMP"
+          if [ "$RUNNER_OS" = Windows ]; then base=$(cygpath -m "$RUNNER_TEMP"); fi
+          root="$base/e2e"
+          fixtures="$base/e2e-fixtures"
+          rm -rf "$root" "$fixtures"
+          mkdir -p "$root"
+          node e2e/make-fixtures.mjs "$fixtures" | tee "$root/fixtures.txt"
+          ls -la "$SHELL_BIN"
+          list="${SCENARIOS:-all}"
+          # a scenario that never reaches its own deadline (a hang before the runner starts) is killed here
+          if [ "$RUNNER_OS" = Windows ]; then guard=(timeout 1200); else guard=(perl -e 'alarm shift; exec @ARGV' 1200); fi
+          for file in e2e/scenarios/*.json; do
+            name=$(basename "$file" .json)
+            case ",$list," in *",all,"*|*",$name,"*) ;; *) echo "skip $name"; continue ;; esac
+            dir="$root/$name"
+            mkdir -p "$dir/out" "$dir/work" "$dir/userdata"
+            cp -R "$fixtures/." "$dir/work/"
+            : > "$dir/userdata/.seuoffice-e2e-profile"
+            node e2e/render-scenario.mjs "$file" "$dir/scenario.json" "$fixtures" "$dir/work"
+            set +e
+            SEUOFFICE_USER_DATA="$dir/userdata" SEUOFFICE_E2E_FIXTURES="$fixtures" SEUOFFICE_E2E_WORK="$dir/work" \
+              SEUOFFICE_SHELL_TRACE=1 \
+              "${guard[@]}" "$SHELL_BIN" --e2e "$dir/scenario.json" --out "$dir/out" > "$dir/run.log" 2>&1
+            status=$?
+            set -e
+            echo "$status" > "$dir/exit-code.txt"
+            echo "$name exit $status" | tee -a "$root/exit-codes.txt"
+            tail -n 15 "$dir/run.log" || true
+            # the next scenario starts from no app at all
+            if [ "$RUNNER_OS" = Windows ]; then taskkill //F //T //IM SeuOffice.exe > /dev/null 2>&1 || true; else pkill -x SeuOffice || true; fi
+            rm -rf "$dir/userdata"
+          done
+
+      - name: check the records
+        if: ${{ !cancelled() }}
+        env:
+          SCENARIOS: ${{ inputs.scenarios }}
+        run: |
+          set +e
+          base="$RUNNER_TEMP"
+          if [ "$RUNNER_OS" = Windows ]; then base=$(cygpath -m "$RUNNER_TEMP"); fi
+          root="$base/e2e"
+          node ci/e2e-check.mjs --root "$root" --scenarios e2e/scenarios --only "${SCENARIOS:-all}" --json "$root/report.json" --markdown "$root/report.md" | tee "$root/report.txt"
+          status=${PIPESTATUS[0]}
+          { echo "### Real-app tests on $RUNNER_OS"; cat "$root/report.md"; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      - name: upload the test records
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-${{ runner.os }}
+          path: |
+            ${{ runner.temp }}/e2e/**
+            ${{ runner.temp }}/e2e-ime-install.txt
+            !${{ runner.temp }}/e2e/*/userdata/**
+            !${{ runner.temp }}/e2e/*/work/big.xlsx
           if-no-files-found: warn

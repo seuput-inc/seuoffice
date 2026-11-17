@@ -27,17 +27,23 @@ function number(x: number): unknown {
   return x
 }
 
+/** Rewrites one string as it crosses; the shell's bridge uses it to map custom-scheme URLs */
+export type StringMap = (text: string) => string
+
 /** Collects the buffers of every value written through it, so a frame holding several values shares one list */
 export class Encoder {
   readonly buffers: Uint8Array[] = []
+
+  constructor(private readonly mapString?: StringMap) {}
 
   value(v: unknown): unknown {
     switch (typeof v) {
       case 'undefined':
         return tag('u')
       case 'boolean':
-      case 'string':
         return v
+      case 'string':
+        return this.mapString ? this.mapString(v) : v
       case 'number':
         return number(v)
       case 'object':
@@ -96,20 +102,23 @@ function decodeNumber(h: unknown): number {
   throw new WireError(`not a number: ${JSON.stringify(h)}`)
 }
 
-function decodeObject(o: Record<string, unknown>, buffers: Uint8Array[]): Record<string, unknown> {
+function decodeObject(
+  o: Record<string, unknown>,
+  buffers: Uint8Array[],
+  mapString: StringMap | undefined,
+): Record<string, unknown> {
   const out: Record<string, unknown> = {}
-  for (const key of Object.keys(o)) out[key] = decode(o[key], buffers)
+  for (const key of Object.keys(o)) out[key] = decode(o[key], buffers, mapString)
   return out
 }
 
-export function decode(h: unknown, buffers: Uint8Array[]): unknown {
-  if (h === null || typeof h === 'boolean' || typeof h === 'number' || typeof h === 'string') {
-    return h
-  }
-  if (Array.isArray(h)) return h.map((item) => decode(item, buffers))
+export function decode(h: unknown, buffers: Uint8Array[], mapString?: StringMap): unknown {
+  if (typeof h === 'string') return mapString ? mapString(h) : h
+  if (h === null || typeof h === 'boolean' || typeof h === 'number') return h
+  if (Array.isArray(h)) return h.map((item) => decode(item, buffers, mapString))
   if (typeof h !== 'object') throw new WireError(`not a header: ${String(h)}`)
   const o = h as Record<string, unknown>
-  if (!Object.prototype.hasOwnProperty.call(o, '$')) return decodeObject(o, buffers)
+  if (!Object.prototype.hasOwnProperty.call(o, '$')) return decodeObject(o, buffers, mapString)
   switch (o.$) {
     case 'u':
       return undefined
@@ -126,7 +135,7 @@ export function decode(h: unknown, buffers: Uint8Array[]): unknown {
     }
     case 'o':
       if (o.v && typeof o.v === 'object' && !Array.isArray(o.v)) {
-        return decodeObject(o.v as Record<string, unknown>, buffers)
+        return decodeObject(o.v as Record<string, unknown>, buffers, mapString)
       }
       throw new WireError('an escaped object without v')
     default:

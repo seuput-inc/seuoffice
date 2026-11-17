@@ -6,6 +6,7 @@ use std::sync::Arc;
 use main_core::diagram::drawio_protocol::{self, DrawioTarget};
 
 use crate::native::SchemeRequestContext;
+use crate::native::url::{Flavor, platform_url_for};
 
 pub(crate) struct DrawioAssets {
     root: PathBuf,
@@ -76,12 +77,15 @@ impl DrawioAssets {
         let Ok(bytes) = crate::host::drawio_assets::read(&root, &relative, u64::MAX) else {
             return empty(404);
         };
-        let csp = drawio_protocol::drawio_csp(
-            &self
-                .ancestors
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
+        let csp = csp_in_shape(
+            drawio_protocol::drawio_csp(
+                &self
+                    .ancestors
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+            ),
+            Flavor::CURRENT,
         );
         let content_type = drawio_protocol::content_type_of(relative.to_str().unwrap_or(""));
         let headers = drawio_protocol::response_headers(content_type, &csp)
@@ -93,6 +97,7 @@ impl DrawioAssets {
             let Ok(html) = drawio_protocol::inject_bridge(&html) else {
                 return empty(404);
             };
+            let html = bridge_in_shape(html, Flavor::CURRENT);
             if method == "HEAD" {
                 Vec::new()
             } else {
@@ -109,6 +114,44 @@ impl DrawioAssets {
             body,
         }
     }
+}
+
+/// The injected `<script src="/__ieum/bridge.js">` names the bridge by an absolute path. On
+/// WebView2 the page is `http://drawio-app.localhost/editor/index.html` and the host of the scheme
+/// is its first path segment (`native::url`), so that path would miss `/editor`. There the tag
+/// names the bridge by its whole address instead.
+fn bridge_in_shape(html: String, flavor: Flavor) -> String {
+    let logical = format!(
+        "{}://{}{}",
+        drawio_protocol::DRAWIO_SCHEME,
+        drawio_protocol::DRAWIO_HOST,
+        drawio_protocol::BRIDGE_SCRIPT_PATH
+    );
+    let Ok(logical) = tauri::Url::parse(&logical) else {
+        return html;
+    };
+    let address = platform_url_for(flavor, &logical);
+    if address == logical {
+        return html;
+    }
+    html.replacen(
+        &format!("<script src=\"{}\">", drawio_protocol::BRIDGE_SCRIPT_PATH),
+        &format!("<script src=\"{address}\">"),
+        1,
+    )
+}
+
+/// A policy of `drawio_protocol` names the scheme as `drawio-app:`, which WebView2 does not match
+/// against `http://drawio-app.localhost`; there both are named.
+fn csp_in_shape(csp: String, flavor: Flavor) -> String {
+    if flavor == Flavor::Scheme {
+        return csp;
+    }
+    let own = format!("{}:", drawio_protocol::DRAWIO_SCHEME);
+    csp.replace(
+        &own,
+        &format!("{own} http://{}.localhost", drawio_protocol::DRAWIO_SCHEME),
+    )
 }
 
 fn empty(status: u16) -> DrawioResponse {
@@ -155,6 +198,27 @@ pub(crate) fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_bridge_is_named_by_its_address_where_webview2_serves_the_scheme() {
+        let page =
+            "<html><head><script src=\"/__ieum/bridge.js\"></script></head></html>".to_owned();
+        assert_eq!(bridge_in_shape(page.clone(), Flavor::Scheme), page);
+        assert_eq!(
+            bridge_in_shape(page, Flavor::LocalhostHttp),
+            "<html><head><script src=\"http://drawio-app.localhost/editor/__ieum/bridge.js\"></script></head></html>"
+        );
+    }
+
+    #[test]
+    fn the_policy_names_both_shapes_of_the_scheme_on_windows_only() {
+        let csp = drawio_protocol::drawio_csp(&["http://genoffice-app-diagram.localhost"]);
+        assert_eq!(csp_in_shape(csp.clone(), Flavor::Scheme), csp);
+        let windows = csp_in_shape(csp, Flavor::LocalhostHttp);
+        assert!(windows.contains("script-src drawio-app: http://drawio-app.localhost;"));
+        assert!(windows.contains("img-src drawio-app: http://drawio-app.localhost data: blob:"));
+        assert!(windows.contains("frame-ancestors http://genoffice-app-diagram.localhost"));
+    }
 
     #[test]
     fn injected_index_and_print_route_remain_distinct() {

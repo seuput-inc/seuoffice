@@ -1,0 +1,123 @@
+{
+  "steps": [
+    {
+      "op": "open",
+      "path": "${WORK}/slides.pptx"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 60000
+    },
+    {
+      "op": "wait",
+      "ms": 1000
+    },
+    {
+      "op": "query",
+      "as": "prep-blur",
+      "js": "(() => { document.activeElement?.blur?.(); return document.activeElement === document.body })()"
+    },
+    {
+      "op": "type",
+      "text": "\t"
+    },
+    {
+      "op": "wait",
+      "ms": 300
+    },
+    {
+      "op": "type",
+      "text": "\n"
+    },
+    {
+      "op": "wait",
+      "ms": 500
+    },
+    {
+      "op": "type",
+      "text": "SEU-E2E-slides"
+    },
+    {
+      "op": "wait",
+      "ms": 300
+    },
+    {
+      "op": "type",
+      "text": "\u001b"
+    },
+    {
+      "op": "wait",
+      "ms": 500
+    },
+    {
+      "op": "shortcut",
+      "name": "save"
+    },
+    {
+      "op": "wait",
+      "ms": 2500
+    },
+    {
+      "op": "shortcut",
+      "name": "closeTab"
+    },
+    {
+      "op": "wait",
+      "ms": 1000
+    },
+    {
+      "op": "open",
+      "path": "${WORK}/slides.pptx"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 60000
+    },
+    {
+      "op": "wait",
+      "ms": 1000
+    },
+    {
+      "op": "query",
+      "as": "prep-blur-reopen",
+      "js": "(() => { document.activeElement?.blur?.(); return document.activeElement === document.body })()"
+    },
+    {
+      "op": "type",
+      "text": "\t"
+    },
+    {
+      "op": "wait",
+      "ms": 300
+    },
+    {
+      "op": "type",
+      "text": "\n"
+    },
+    {
+      "op": "wait",
+      "ms": 600
+    },
+    {
+      "op": "query",
+      "as": "slides-after",
+      "js": "document.querySelector('.slide-text-editor')?.textContent ?? null"
+    },
+    {
+      "op": "type",
+      "text": "\u001b"
+    },
+    {
+      "op": "wait",
+      "ms": 500
+    },
+    {
+      "op": "exportPdf",
+      "path": "${WORK}/slides-export.pdf"
+    },
+    {
+      "op": "screenshot",
+      "name": "slides-after"
+    }
+  ]
+}

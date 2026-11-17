@@ -1,0 +1,98 @@
+{
+  "steps": [
+    {
+      "op": "open",
+      "path": "${WORK}/sheets-ime.xlsx"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 60000
+    },
+    {
+      "op": "wait",
+      "ms": 1000
+    },
+    {
+      "op": "query",
+      "as": "prep-goto",
+      "js": "window.__seuofficeControl?.({cmd:'goto',target:{kind:'range',range:'A1'}}) ?? null"
+    },
+    {
+      "op": "wait",
+      "ms": 500
+    },
+    {
+      "op": "ime",
+      "source": "ko-2set",
+      "keys": "gksrmf"
+    },
+    {
+      "op": "wait",
+      "ms": 500
+    },
+    {
+      "op": "type",
+      "text": "\n"
+    },
+    {
+      "op": "wait",
+      "ms": 500
+    },
+    {
+      "op": "query",
+      "as": "prep-goto-again",
+      "js": "window.__seuofficeControl?.({cmd:'goto',target:{kind:'range',range:'A1'}}) ?? null"
+    },
+    {
+      "op": "wait",
+      "ms": 300
+    },
+    {
+      "op": "query",
+      "as": "ime-before",
+      "js": "window.__seuofficeControl?.({cmd:'selection'}) ?? null"
+    },
+    {
+      "op": "shortcut",
+      "name": "save"
+    },
+    {
+      "op": "wait",
+      "ms": 2500
+    },
+    {
+      "op": "shortcut",
+      "name": "closeTab"
+    },
+    {
+      "op": "wait",
+      "ms": 1000
+    },
+    {
+      "op": "open",
+      "path": "${WORK}/sheets-ime.xlsx"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 60000
+    },
+    {
+      "op": "wait",
+      "ms": 1000
+    },
+    {
+      "op": "query",
+      "as": "prep-goto-reopen",
+      "js": "window.__seuofficeControl?.({cmd:'goto',target:{kind:'range',range:'A1'}}) ?? null"
+    },
+    {
+      "op": "wait",
+      "ms": 300
+    },
+    {
+      "op": "query",
+      "as": "ime-after",
+      "js": "window.__seuofficeControl?.({cmd:'selection'}) ?? null"
+    }
+  ]
+}

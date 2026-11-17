@@ -1425,9 +1425,12 @@ fn the_shells_calls_see_the_renderers_state() {
     let v = view_on(&rt, 1, Some(&path));
     let h = html(&rt);
     rt.send("html:preview-update", v, vec![1.0.into_ipc()]);
-    assert_eq!(h.preview_text(v.view), None);
+    assert_eq!(h.preview_entry(v.view, v.view), None);
     rt.send("html:preview-update", v, vec![s("<p>live</p>")]);
-    assert_eq!(h.preview_text(v.view).as_deref(), Some("<p>live</p>"));
+    assert_eq!(
+        h.preview_entry(v.view, v.view).map(|entry| entry.text),
+        Some("<p>live</p>".to_owned())
+    );
     rt.send("html:dirty-changed", v, vec![true.into_ipc()]);
     assert!(h.is_dirty(v.view));
     rt.invoke_now("html:recovery-write", v, vec![s("t")])
@@ -1449,8 +1452,42 @@ fn the_shells_calls_see_the_renderers_state() {
         "html renderer stopped (crashed)"
     );
     rt.destroy(v.view);
-    assert_eq!(h.preview_text(v.view), None);
+    assert_eq!(h.preview_entry(v.view, v.view), None);
     assert!(!h.is_dirty(v.view));
+}
+
+#[test]
+fn the_preview_serves_a_view_its_own_buffer_and_a_present_view_its_owners() {
+    let mut rt = rt();
+    let path = doc(&rt, "p.html", "x");
+    let owner = view_on(&rt, 1, Some(&path));
+    let stranger = view_on(&rt, 2, None);
+    let present = rt.view(7, Surface::Html);
+    let h = html(&rt);
+    h.bind_present(present.view, owner.view);
+    rt.send("html:preview-update", owner, vec![s("<p>mine</p>")]);
+    rt.send("html:preview-update", stranger, vec![s("<p>theirs</p>")]);
+    let base = main_core::html::preview_document::asset_base_href(
+        &jscompat::node_path::host::dirname(&path),
+    );
+    let entry = h.preview_entry(owner.view, owner.view).unwrap();
+    assert_eq!(entry.text, "<p>mine</p>");
+    assert_eq!(entry.base_href.as_deref(), Some(base.as_str()));
+    assert_eq!(
+        h.preview_entry(present.view, owner.view).unwrap().text,
+        "<p>mine</p>"
+    );
+    // another view's buffer is never served, nor an owner's to a view not presenting it
+    assert_eq!(h.preview_entry(stranger.view, owner.view), None);
+    assert_eq!(h.preview_entry(owner.view, stranger.view), None);
+    assert_eq!(h.preview_entry(present.view, stranger.view), None);
+    // an unsaved document has no base
+    assert_eq!(
+        h.preview_entry(stranger.view, stranger.view)
+            .unwrap()
+            .base_href,
+        None
+    );
 }
 
 /// runs `d2/html:<what>` as ipc-probe's trigger step does

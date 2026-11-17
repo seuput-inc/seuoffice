@@ -42,10 +42,21 @@ crates/shell/ci/check-local.sh test          # 순수한 상태 기계의 시험
 
 userData는 Electron 판과 같은 자리다(결정 0013, 0019): 기본이 `appData/seuoffice`, 디버그 판은 Electron의 포장하지 않은 실행처럼 `appData/seuoffice-Dev`.
 
+### 실제 앱 자동 시험 (`--e2e <scenario.json> --out <dir>`)
+
+G3 관문의 실행기다(`src/e2e/`). 앱은 평소처럼 전부 시작하고(`SEUOFFICE_SHELL_PARTIAL`이 있으면 거부), 첫 셸 창이 서면 시나리오의 단계를 차례로 실제 앱에서 돌려 `<out>/e2e.jsonl`(단계마다 한 줄)과 산출물(PNG, PDF)을 쓴다. 통과 여부는 실행기가 아니라 검사기가 정한다. 열린 포트, 소켓, 파이프는 없다. 입력은 시나리오 파일뿐이다.
+
+- 거부(종료 2): `SEUOFFICE_USER_DATA`가 없거나, 그 폴더에 워크플로가 만든 `.seuoffice-e2e-profile` 파일이 없을 때. 사람의 설치본, 프로필, 키체인은 대상이 될 수 없다. `--probe`, `--measure-dialog`와 같이 쓰는 것도 거부한다.
+- 종료 코드: 0 모든 단계를 돌았다, 3 어떤 단계를 돌릴 수 없었다(거기서 멈춘다), 124 시나리오의 `deadlineMs`(기본 600000)를 넘겼다.
+- 시나리오 문자열 안의 `${FIXTURES}`, `${WORK}`는 환경 변수 `SEUOFFICE_E2E_FIXTURES`, `SEUOFFICE_E2E_WORK`로 바뀐다.
+- 대화 상자: `dialog` 단계가 다음 네이티브 대화 상자의 답(`save`, `dontSave`, `cancel`, `path:<절대경로>`)을 넣는다. 훅은 `host/dialog/owned.rs`와 `Dialogs::error`에 있고 `--e2e`가 아니면 아무 일도 하지 않는다. 답 없는 대화 상자는 15초 뒤 취소되며 `e2e-dialogs.jsonl`에 남는다.
+- `query`는 활성 편집기 웹뷰에서 `PageOps::evaluate`로 식을 돌린다(Promise는 기다린다). 새 IPC 길은 없다.
+- 윈도의 `ime` 단계는 한국어 언어 팩(한글 IME)이 이미지에 깔려 있어야 한다.
+
 ## 파일 지도
 
 ```
-bridge/        preload 쪽. wire.ts, electron.ts(Transport 인터페이스, 계약), tauri.ts(Tauri 전송), electron-entry.ts(preload가 `electron`으로 받는 것), preloads.mjs
+bridge/        preload 쪽. wire.ts, electron.ts(Transport 인터페이스, 계약), tauri.ts(Tauri 전송), electron-entry.ts(preload가 `electron`으로 받는 것), scheme-urls.ts(WebView2의 `http://<스킴>.localhost/…` 주소와 논리 주소 `<스킴>://…`를 IPC 문자열 경계에서 서로 바꾸고 `window.__SEUOFFICE_SCHEME_FORM__`을 정함. 화면이 직접 만드는 주소는 `@seuoffice/electron-utils/custom-scheme-url`), preloads.mjs
 frontend/      Tauri의 frontendDist(자리 채움)와 측정 페이지 measure.html
 src/main.rs    스레드, 서비스, 시작
 src/ipc/       명령 셋(mod.rs), 뷰마다 출력 흐름(outlet.rs), 동기 스킴(sync.rs)
@@ -55,6 +66,7 @@ src/preload.rs     묶은 preload를 바이너리에 넣음
 src/paths.rs       app.getPath
 src/host/      호스트들(dialog, os_shell, clipboard, contents, window, w, unbuilt 와 다른 묶음의 빈 파일)
 src/measure.rs --measure-dialog
+src/e2e/       --e2e 실제 앱 자동 시험 실행기(시나리오 해석, 단계, 대화 상자 응답, 맥/윈도 원시 입력)
 ci/            로컬 점검, 맡은 파일별 진단 세기(slice-diagnostics.mjs)
 ```
 
@@ -129,6 +141,7 @@ Electron 판은 `genoffice-app://<host>/<파일>`로 내줬고 처리기들(`mai
 - `ipc`, `sync`: 명령이 닿은 것(뷰, 채널, 인자 수, 바이트).
 - `outlet`: 출력 흐름이 열린 것과 보낸 프레임.
 - `measure`: 측정 처리기.
+- `engine`: 엔진 호스트 페이지가 스스로 알리는 것(`engine-host/boot.ts`): 시작, 오류, CSP 위반, `ipc` 스킴에 닿는지의 시험, 준비 신호. IPC를 거치지 않고 자기 스킴의 `GET /__engine-host-log?m=…`로 오므로 IPC가 막힌 페이지도 이유를 남긴다.
 
 브리지(`bridge/tauri.ts`)와 측정 페이지는 단계마다 console.log로 알린다(`[bridge +ms] …`, `[measure +ms] …`). preload가 돈 주소와 `__TAURI_INTERNALS__` 속성, `ipc_listen`을 보낸 때와 받았다는 표시가 온 때, 흐름의 첫 프레임, 첫 invoke와 첫 답, 5초마다 지금 단계가 나온다. 처리 길의 줄(`ipc`, `outlet`, `measure`, `sync`)은 처음 40줄만 모두 적고 이후는 100번에 한 번만 적어 측정을 늦추지 않는다. 센 값은 `traceCounts`에 남는다.
 
@@ -140,6 +153,7 @@ Electron 판은 `genoffice-app://<host>/<파일>`로 내줬고 처리기들(`mai
 - `[bridge …] ipc_listen #1 sent`만 있고 `ipc: … listen`이 없다: 명령이 페이지를 떠나지 못한다(CORS, ACL, invoke key). console에 `[shell bridge] ipc_listen failed`가 뒤따른다.
 - `ipc: listen`은 있고 `outlet: stream attached`가 없다: `ipc_listen` 처리에서 막혔다.
 - `outlet: … bytes sent`는 있고 `[bridge] stream frame #1`이 없다: `Channel`의 `eval`·fetch 길이 페이지에 닿지 못한다.
+- `scheme … engine-host/main.js -> 200`까지만 있고 `engine: … engine_host_ready acknowledged`가 없다: 엔진 호스트가 준비되지 않았다. 측정 페이지는 준비된 뒤에 열리므로 `error`도 그렇게 말하고, `cannot start`의 오류도 페이지가 마지막으로 알린 것(`the engine page reported: …`)을 싣는다. `engine:` 줄이 이유다. `csp blocked connect-src …`나 `ipc probe …: TypeError`는 페이지의 CSP가 Tauri의 `ipc` 스킴을 막은 것이라 `connect-src`에 `ipc:`와 `http://ipc.localhost`가 있어야 하고, `engine:` 줄이 하나도 없으면 `boot.js`가 돌지 않았다.
 
 ## 묶음 W 트레이트가 바뀌었을 때
 

@@ -1,0 +1,70 @@
+{
+  "steps": [
+    {
+      "op": "open",
+      "path": "${WORK}/docs.docx"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 60000
+    },
+    {
+      "op": "wait",
+      "ms": 800
+    },
+    {
+      "op": "type",
+      "text": "SEU-E2E-docs"
+    },
+    {
+      "op": "wait",
+      "ms": 300
+    },
+    {
+      "op": "query",
+      "as": "docs-before",
+      "js": "document.querySelector('.editor-scroll .ProseMirror')?.textContent ?? null"
+    },
+    {
+      "op": "shortcut",
+      "name": "save"
+    },
+    {
+      "op": "wait",
+      "ms": 2500
+    },
+    {
+      "op": "shortcut",
+      "name": "closeTab"
+    },
+    {
+      "op": "wait",
+      "ms": 1000
+    },
+    {
+      "op": "open",
+      "path": "${WORK}/docs.docx"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 60000
+    },
+    {
+      "op": "wait",
+      "ms": 800
+    },
+    {
+      "op": "query",
+      "as": "docs-after",
+      "js": "document.querySelector('.editor-scroll .ProseMirror')?.textContent ?? null"
+    },
+    {
+      "op": "exportPdf",
+      "path": "${WORK}/docs-export.pdf"
+    },
+    {
+      "op": "screenshot",
+      "name": "docs-after"
+    }
+  ]
+}

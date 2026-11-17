@@ -1,0 +1,97 @@
+{
+  "steps": [
+    {
+      "op": "open",
+      "path": "${WORK}/sheets.xlsx"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 60000
+    },
+    {
+      "op": "wait",
+      "ms": 1000
+    },
+    {
+      "op": "query",
+      "as": "prep-goto",
+      "js": "window.__seuofficeControl?.({cmd:'goto',target:{kind:'range',range:'A1'}}) ?? null"
+    },
+    {
+      "op": "wait",
+      "ms": 500
+    },
+    {
+      "op": "type",
+      "text": "SEU-E2E-sheets\n"
+    },
+    {
+      "op": "wait",
+      "ms": 500
+    },
+    {
+      "op": "query",
+      "as": "prep-goto-again",
+      "js": "window.__seuofficeControl?.({cmd:'goto',target:{kind:'range',range:'A1'}}) ?? null"
+    },
+    {
+      "op": "wait",
+      "ms": 300
+    },
+    {
+      "op": "query",
+      "as": "sheets-before",
+      "js": "window.__seuofficeControl?.({cmd:'selection'}) ?? null"
+    },
+    {
+      "op": "shortcut",
+      "name": "save"
+    },
+    {
+      "op": "wait",
+      "ms": 2500
+    },
+    {
+      "op": "shortcut",
+      "name": "closeTab"
+    },
+    {
+      "op": "wait",
+      "ms": 1000
+    },
+    {
+      "op": "open",
+      "path": "${WORK}/sheets.xlsx"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 60000
+    },
+    {
+      "op": "wait",
+      "ms": 1000
+    },
+    {
+      "op": "query",
+      "as": "prep-goto-reopen",
+      "js": "window.__seuofficeControl?.({cmd:'goto',target:{kind:'range',range:'A1'}}) ?? null"
+    },
+    {
+      "op": "wait",
+      "ms": 300
+    },
+    {
+      "op": "query",
+      "as": "sheets-after",
+      "js": "window.__seuofficeControl?.({cmd:'selection'}) ?? null"
+    },
+    {
+      "op": "exportPdf",
+      "path": "${WORK}/sheets-export.pdf"
+    },
+    {
+      "op": "screenshot",
+      "name": "sheets-after"
+    }
+  ]
+}

@@ -148,8 +148,9 @@ block2 = "0.6"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
-# the silent print loop (host/print/windows.rs): Windows.Data.Pdf pages into a GDI printer DC
-windows = { version = "0.62", features = ["Data_Pdf", "Foundation", "Graphics_Imaging", "Storage_Streams", "UI", "Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Graphics_Printing", "Win32_Storage_Xps", "Win32_Storage_FileSystem", "Win32_System_WinRT", "Win32_UI_Controls", "Win32_UI_WindowsAndMessaging", "Win32_Globalization", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Console", "Win32_Security", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_UI_Input_KeyboardAndMouse"] }
+# the silent print loop (host/print/windows.rs): Windows.Data.Pdf pages into a GDI printer DC;
+# Win32_UI_Input_Ime: the Hangul mode query of the --e2e runner (e2e/input_win.rs)
+windows = { version = "0.62", features = ["Data_Pdf", "Foundation", "Graphics_Imaging", "Storage_Streams", "UI", "Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Graphics_Printing", "Win32_Storage_Xps", "Win32_Storage_FileSystem", "Win32_System_WinRT", "Win32_UI_Controls", "Win32_UI_WindowsAndMessaging", "Win32_Globalization", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Console", "Win32_Security", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Input_Ime"] }
 # the WebView2 interfaces behind wry (native/platform/windows): CDP, focus, process failure;
 # the version wry 0.57 resolves, built on the same `windows` 0.62 as the line above
 webview2-com = "0.39"

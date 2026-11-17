@@ -679,6 +679,9 @@ impl Dialogs for ShellDialogs {
     }
 
     fn error(&self, title: &str, content: &str) {
+        if crate::e2e::dialog::intercept_error(title, content) {
+            return;
+        }
         let (title, content) = (title.to_owned(), content.to_owned());
         on_ui(&self.ui, move || {
             MessageDialog::new()

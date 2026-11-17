@@ -22,8 +22,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
+use jscompat::node_path::host::dirname;
 use main_core::html::asset_lifecycle::{discard_pending_owned_assets, rename_owned_asset_document};
-use main_core::html::preview_document::preview_url_for;
+use main_core::html::preview_document::{asset_base_href, preview_url_for};
+use main_core::html::preview_protocol::PreviewEntry;
 use main_core::packages::electron_utils::safe_remote_url::{Fetcher, Resolver};
 use shell_contract::hosts::{ContentsHost, OsShellHost};
 use shell_contract::ipc::RegisterError;
@@ -425,10 +427,21 @@ impl HtmlEditors {
         }
     }
 
-    /// The preview protocol (`html-preview://`) reads what the renderer
-    /// pushed last, with the document's base
-    pub fn preview_text(&self, view: ViewId) -> Option<String> {
-        self.previews.get(view)
+    /// What `html-preview://view-<host>/` serves to `requester`: the buffer
+    /// `host` pushed last, with the base of its document's directory
+    /// (`registerPreviewProtocol`'s `resolve`). A view reads its own buffer
+    /// and, as a presentation view, its owner's, never another view's.
+    pub fn preview_entry(&self, requester: ViewId, host: ViewId) -> Option<PreviewEntry> {
+        let owner = self.state.borrow().present_owner.get(&requester).copied();
+        if host != requester && owner != Some(host) {
+            return None;
+        }
+        let text = self.previews.get(host)?;
+        let base_href = self
+            .docs
+            .save_path(host)
+            .map(|document| asset_base_href(&dirname(&document)));
+        Some(PreviewEntry { text, base_href })
     }
 
     /// `exportHtmlHeadless(input, outPath, format, timeoutMs)` on the hidden

@@ -1,0 +1,106 @@
+{
+  "steps": [
+    {
+      "op": "open",
+      "path": "${WORK}/html.html"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 60000
+    },
+    {
+      "op": "wait",
+      "ms": 1000
+    },
+    {
+      "op": "query",
+      "as": "prep-source-tab",
+      "js": "(() => { const tabs = document.querySelectorAll('button.rb-view[role=\"tab\"]'); tabs[2]?.click(); return tabs.length })()"
+    },
+    {
+      "op": "wait",
+      "ms": 800
+    },
+    {
+      "op": "query",
+      "as": "prep-source-focus",
+      "js": "(() => { const c = document.querySelector('.cm-content'); c?.focus(); return c !== null })()"
+    },
+    {
+      "op": "wait",
+      "ms": 300
+    },
+    {
+      "op": "type",
+      "text": "SEU-E2E-html"
+    },
+    {
+      "op": "wait",
+      "ms": 300
+    },
+    {
+      "op": "query",
+      "as": "html-before",
+      "js": "document.querySelector('.cm-content')?.textContent ?? null"
+    },
+    {
+      "op": "shortcut",
+      "name": "save"
+    },
+    {
+      "op": "wait",
+      "ms": 2500
+    },
+    {
+      "op": "shortcut",
+      "name": "closeTab"
+    },
+    {
+      "op": "wait",
+      "ms": 1000
+    },
+    {
+      "op": "open",
+      "path": "${WORK}/html.html"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 60000
+    },
+    {
+      "op": "wait",
+      "ms": 1000
+    },
+    {
+      "op": "query",
+      "as": "prep-source-tab",
+      "js": "(() => { const tabs = document.querySelectorAll('button.rb-view[role=\"tab\"]'); tabs[2]?.click(); return tabs.length })()"
+    },
+    {
+      "op": "wait",
+      "ms": 800
+    },
+    {
+      "op": "query",
+      "as": "prep-source-focus",
+      "js": "(() => { const c = document.querySelector('.cm-content'); c?.focus(); return c !== null })()"
+    },
+    {
+      "op": "wait",
+      "ms": 300
+    },
+    {
+      "op": "query",
+      "as": "html-after",
+      "js": "document.querySelector('.cm-content')?.textContent ?? null"
+    },
+    {
+      "op": "exportPdf",
+      "path": "${WORK}/html-export.pdf"
+    },
+    {
+      "op": "screenshot",
+      "name": "html-after"
+    }
+  ]
+}

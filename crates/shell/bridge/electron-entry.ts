@@ -6,8 +6,9 @@
  */
 import { IpcRenderer, makeContextBridge, makeWebUtils } from './electron'
 import { transport } from './transport-instance'
+import { urlMapping } from './scheme-urls-instance'
 
-export const ipcRenderer = new IpcRenderer(transport)
+export const ipcRenderer = new IpcRenderer(transport, urlMapping)
 export const contextBridge = makeContextBridge(window)
 export const webUtils = makeWebUtils(transport, window)
 

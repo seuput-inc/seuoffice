@@ -1,0 +1,79 @@
+{
+  "steps": [
+    {
+      "op": "open",
+      "path": "${WORK}/hwp.hwp"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 120000
+    },
+    {
+      "op": "wait",
+      "ms": 1500
+    },
+    {
+      "op": "query",
+      "as": "prep-caret",
+      "js": "(() => { const w = document.querySelector('.hwp-editor-host iframe')?.contentWindow const s = w?.rhwpStudio if (!s) return 'no-studio' if (!w.__e2eCaretHome) { s.automation.registerCommand({ id: 'ext:e2e-caret-home', label: 'E2E caret home', execute(services) { services.getInputHandler().moveCursorTo({ sectionIndex: 0, paragraphIndex: 0, charOffset: 0 }) } }) w.__e2eCaretHome = true } s.automation.execute('ext:e2e-caret-home') w.focus() w.document.querySelector('textarea')?.focus() return 'ok' })()"
+    },
+    {
+      "op": "wait",
+      "ms": 500
+    },
+    {
+      "op": "type",
+      "text": "SEU-E2E-hwp"
+    },
+    {
+      "op": "wait",
+      "ms": 500
+    },
+    {
+      "op": "query",
+      "as": "hwp-before",
+      "js": "(async () => { const s = document.querySelector('.hwp-editor-host iframe')?.contentWindow?.rhwpStudio; if (!s) return null; await s.plugins.load('ieum-agent'); const r = await s.plugins.invoke('ieum-agent', 'findText', ['SEU-E2E-hwp']); return { count: r.count } })()"
+    },
+    {
+      "op": "shortcut",
+      "name": "save"
+    },
+    {
+      "op": "wait",
+      "ms": 2500
+    },
+    {
+      "op": "shortcut",
+      "name": "closeTab"
+    },
+    {
+      "op": "wait",
+      "ms": 1000
+    },
+    {
+      "op": "open",
+      "path": "${WORK}/hwp.hwp"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 120000
+    },
+    {
+      "op": "wait",
+      "ms": 1500
+    },
+    {
+      "op": "query",
+      "as": "hwp-after",
+      "js": "(async () => { const s = document.querySelector('.hwp-editor-host iframe')?.contentWindow?.rhwpStudio; if (!s) return null; await s.plugins.load('ieum-agent'); const r = await s.plugins.invoke('ieum-agent', 'findText', ['SEU-E2E-hwp']); return { count: r.count } })()"
+    },
+    {
+      "op": "exportPdf",
+      "path": "${WORK}/hwp-export.pdf"
+    },
+    {
+      "op": "screenshot",
+      "name": "hwp-after"
+    }
+  ]
+}

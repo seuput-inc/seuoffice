@@ -12,7 +12,7 @@
  * Out:   invoke `{id, channel, args}` · send `{channel, args}` · sendSync `{args}`
  * In:    `{reply: id, value}` · `{reply: id, error: text}` · `{event: channel, args}`
  */
-import { Encoder, WireError, decode, frame, unframe } from './wire'
+import { Encoder, WireError, decode, frame, unframe, type StringMap } from './wire'
 
 export interface Transport {
   invoke(frame: Uint8Array): void
@@ -34,8 +34,20 @@ export interface IpcRendererEvent {
 /** Electron's text when a value cannot be cloned */
 const UNCLONABLE = 'An object could not be cloned.'
 
-function encodeFrame(head: Record<string, unknown>, args: readonly unknown[]): Uint8Array {
-  const e = new Encoder()
+/** How a page and the shell name a custom-scheme URL (custom-scheme-url.ts); absent where they agree */
+export interface UrlMapping {
+  /** a string the shell sent, as the page loads it */
+  toPage: StringMap
+  /** a string the page sends, as the shell names it */
+  toShell: StringMap
+}
+
+function encodeFrame(
+  head: Record<string, unknown>,
+  args: readonly unknown[],
+  urls?: UrlMapping,
+): Uint8Array {
+  const e = new Encoder(urls?.toShell)
   try {
     return frame({ ...head, args: e.values(args) }, e.buffers)
   } catch (err) {
@@ -52,7 +64,10 @@ export class IpcRenderer {
   >()
   private readonly listeners = new Map<string, Listener[]>()
 
-  constructor(private readonly transport: Transport) {
+  constructor(
+    private readonly transport: Transport,
+    private readonly urls?: UrlMapping,
+  ) {
     transport.listen((bytes) => this.receive(bytes))
   }
 
@@ -60,7 +75,7 @@ export class IpcRenderer {
     const id = this.next++
     let bytes: Uint8Array
     try {
-      bytes = encodeFrame({ id, channel }, args)
+      bytes = encodeFrame({ id, channel }, args, this.urls)
     } catch (err) {
       return Promise.reject(err)
     }
@@ -71,14 +86,16 @@ export class IpcRenderer {
   }
 
   send(channel: string, ...args: unknown[]): void {
-    this.transport.send(encodeFrame({ channel }, args))
+    this.transport.send(encodeFrame({ channel }, args, this.urls))
   }
 
   sendSync(channel: string, ...args: unknown[]): unknown {
-    const { header, buffers } = unframe(this.transport.sendSync(channel, encodeFrame({}, args)))
+    const { header, buffers } = unframe(
+      this.transport.sendSync(channel, encodeFrame({}, args, this.urls)),
+    )
     const answer = header as { value?: unknown; error?: string }
     if (answer.error !== undefined) throw new Error(answer.error)
-    return decode(answer.value, buffers)
+    return decode(answer.value, buffers, this.urls?.toPage)
   }
 
   on(channel: string, listener: Listener): this {
@@ -127,11 +144,11 @@ export class IpcRenderer {
       if (!waiting) return
       this.pending.delete(m.reply)
       if (m.error !== undefined) waiting.reject(new Error(m.error))
-      else waiting.resolve(decode(m.value, buffers))
+      else waiting.resolve(decode(m.value, buffers, this.urls?.toPage))
       return
     }
     if (typeof m.event !== 'string') return
-    const args = decode(m.args, buffers) as unknown[]
+    const args = decode(m.args, buffers, this.urls?.toPage) as unknown[]
     const event: IpcRendererEvent = { sender: this, senderId: 0 }
     // a copy: a listener may remove itself (once) while the event runs
     for (const listener of [...(this.listeners.get(m.event) ?? [])]) {

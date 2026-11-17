@@ -1,5 +1,9 @@
 import { ScriptFonts } from './script-fonts'
 import {
+  toLogicalSchemeUrl,
+  toPlatformSchemeUrl,
+} from '@seuoffice/electron-utils/custom-scheme-url'
+import {
   asciiFamilyResolver,
   eaFamilyResolver,
   inheritedEaFamily,
@@ -597,7 +601,7 @@ export const DocInlineImage = Node.create({
       'data-inline-image': '1',
       class: 'doc-inline-img',
       // an ODT placeholder without a preview shows its label box (screen, print, PDF alike)
-      src: odtLabelSrc(node) ?? String(node.attrs.dataUrl),
+      src: odtLabelSrc(node) ?? toPlatformSchemeUrl(String(node.attrs.dataUrl)),
     }
     const w = Number(node.attrs.widthPx)
     const h = Number(node.attrs.heightPx)
@@ -2354,7 +2358,7 @@ export const ListNumberingExtension = Extension.create<object, ListNumberingStor
         if (stray) styles.push(`--li-marker:${cssString(shown ?? text)}`)
         if (marker.picBulletSrc) {
           attrs['data-marker-pic'] = ''
-          styles.push(`--li-marker-pic:url("${marker.picBulletSrc}")`)
+          styles.push(`--li-marker-pic:url("${toPlatformSchemeUrl(marker.picBulletSrc)}")`)
         }
         // geometry fallback: when the paragraph has no w:ind of its own, use the numbering.xml level's indent;
         // marker font size comes from the level's rPr, else from the paragraph mark, else the
@@ -3977,7 +3981,8 @@ export const DocProtected = Node.create({
      *  through HTML) — r136 */
     const imageAttrsFrom = (el: HTMLElement): Record<string, unknown> | null => {
       const img = el.querySelector?.('img.doc-protected-img') as HTMLImageElement | null
-      const src = img?.getAttribute('src') ?? ''
+      // the document keeps the logical address of a lazily served picture
+      const src = toLogicalSchemeUrl(img?.getAttribute('src') ?? '')
       // persistable formats only: a bmp/webp/svg picture would display and
       // then silently vanish on save — the placeholder shell is honest
       if (!persistableImage(src)) return null
@@ -4011,7 +4016,7 @@ export const DocProtected = Node.create({
         tag: 'img[src]',
         getAttrs: (el) => {
           const img = el as HTMLImageElement
-          const src = img.getAttribute('src') ?? ''
+          const src = toLogicalSchemeUrl(img.getAttribute('src') ?? '')
           if (!persistableImage(src)) return false
           let meta: Record<string, unknown> = {}
           try {
@@ -4198,7 +4203,10 @@ function diagramSpecOf(diagram: DiagramDisplay): DomSpec {
           `top:${(s.fillRect.t * s.hPx).toFixed(1)}px;` +
           `width:${sw.toFixed(1)}px;height:${sh.toFixed(1)}px;max-width:none`
       }
-      kids.push(['img', { src: s.imageDataUrl, class: 'doc-diagram-img', style: imgStyle }])
+      kids.push([
+        'img',
+        { src: toPlatformSchemeUrl(s.imageDataUrl), class: 'doc-diagram-img', style: imgStyle },
+      ])
     }
     if (s.texts?.length) {
       kids.push(['span', { class: 'doc-diagram-text' }, s.texts.join('\n')])
@@ -4908,7 +4916,7 @@ function protectedDomSpec(node: PmNode): DomSpec {
       }
     }
     const imgAttrs: Record<string, string> = {
-      src: odtLabelSrc(node) ?? String(imageDataUrl),
+      src: odtLabelSrc(node) ?? toPlatformSchemeUrl(String(imageDataUrl)),
       class: 'doc-protected-img',
     }
     const filterCss = pictureFilterCss(node.attrs.imageEffects as ImageEffects | null)
@@ -5150,7 +5158,10 @@ function protectedDomSpec(node: PmNode): DomSpec {
       [
         'span',
         { class: 'doc-ole-wrap' },
-        ['img', { src: String(imageDataUrl), class: 'doc-ole-img', style: imgStyle }],
+        [
+          'img',
+          { src: toPlatformSchemeUrl(String(imageDataUrl)), class: 'doc-ole-img', style: imgStyle },
+        ],
       ],
     ]
   }
@@ -7390,7 +7401,9 @@ export const TextboxParagraph = Node.create({
           ? `text-indent:${Number(ownFirstLine) / 20}pt`
           : '',
       marker?.szHalfPoints ? `--li-marker-size:${marker.szHalfPoints / 2}pt` : '',
-      marker?.picBulletSrc ? `--li-marker-pic:url("${marker.picBulletSrc}")` : '',
+      marker?.picBulletSrc
+        ? `--li-marker-pic:url("${toPlatformSchemeUrl(marker.picBulletSrc)}")`
+        : '',
       ...(marker?.symbol ? substituteMarker(marker.text).styles : []),
       marker?.oversized ? MARKER_NATURAL_LINE_HEIGHT : '',
       ...effectivePPrCss(

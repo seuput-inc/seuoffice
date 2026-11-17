@@ -152,7 +152,10 @@ pub(crate) fn serve(token: &str, origin: &SchemeRequestContext, responder: UriSc
     let Some((body, authority, lifetime)) = captured else {
         return denied(responder);
     };
-    let csp = main_core::diagram::drawio_protocol::print_page_csp();
+    let csp = super::csp_in_shape(
+        main_core::diagram::drawio_protocol::print_page_csp(),
+        crate::native::url::Flavor::CURRENT,
+    );
     let mut builder = http::Response::builder().status(200);
     for (name, value) in
         main_core::diagram::drawio_protocol::response_headers("text/html; charset=utf-8", &csp)

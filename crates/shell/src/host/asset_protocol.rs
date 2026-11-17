@@ -3,17 +3,22 @@
 use std::sync::{Arc, Mutex};
 
 use super::document_assets::{self, AssetKind, AssetPermit, TargetPermit};
-use crate::native::{RequestCancelSubscription, ResponseGate, SchemeRequestContext};
+use super::{epub_asset, html_preview};
+use crate::native::{
+    DocumentContext, RequestCancelSubscription, ResponseGate, SchemeRequestContext,
+};
 use crate::views::{
     DocsMediaAuthorization, NativeAssetAuthorization, SlidesMediaAuthorization, ViewTable,
 };
 use main_core::docs::byte_handoff::MediaPermit;
 use main_core::docs::lazy_media::MediaAnswer;
+use main_core::html::preview_protocol::PreviewEntry;
 use shell_contract::Surface;
 use shell_contract::{
     ipc::NativeRequestOwner,
-    runtime::{CancelToken, Thread},
+    runtime::{CancelToken, RendererGeneration, Thread},
 };
+use shell_ipc_d2::epub::hosts::Bytes;
 use tauri::http::{self, StatusCode};
 use tauri::{AppHandle, UriSchemeResponder};
 
@@ -23,6 +28,8 @@ pub enum Scheme {
     Html,
     Markdown,
     Slides,
+    Preview,
+    Epub,
 }
 
 type Reply = Arc<Mutex<Option<UriSchemeResponder>>>;
@@ -70,6 +77,15 @@ fn failed(reply: &Reply) {
     );
 }
 
+/// An answer that is a status and nothing else.
+fn bare(status: u16) -> MediaAnswer {
+    MediaAnswer {
+        status,
+        headers: Vec::new(),
+        body: Vec::new(),
+    }
+}
+
 struct Request {
     label: String,
     context: SchemeRequestContext,
@@ -88,6 +104,20 @@ enum Authorization {
     Asset(NativeAssetAuthorization, AssetPermit),
     Slides(SlidesMediaAuthorization),
     Target(Box<TargetPermit>),
+    /// The HTML editor's preview page. `None`: no buffer of this view for this requester.
+    Preview(NativeAssetAuthorization, Option<Box<PreviewEntry>>),
+    Epub(EpubAsset),
+}
+
+/// One entry of an open book, asked for by the document of the view that owns the book.
+#[derive(Clone)]
+struct EpubAsset {
+    origin: DocumentContext,
+    renderer: RendererGeneration,
+    /// `None`: the token names no open book of this view.
+    book: Option<Bytes>,
+    head: bool,
+    path: String,
 }
 
 impl Authorization {
@@ -97,6 +127,8 @@ impl Authorization {
             Self::Asset(auth, permit) => auth.is_current() && permit.is_current().unwrap_or(false),
             Self::Slides(auth) => auth.is_current(),
             Self::Target(permit) => permit.is_current().unwrap_or(false),
+            Self::Preview(auth, _) => auth.is_current(),
+            Self::Epub(asset) => asset.origin.is_live() && asset.renderer.is_active(),
         }
     }
 
@@ -107,7 +139,7 @@ impl Authorization {
         effect: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String> {
         match self {
-            Self::Docs(_) | Self::Slides(_) => effect(),
+            Self::Docs(_) | Self::Slides(_) | Self::Preview(..) | Self::Epub(_) => effect(),
             Self::Asset(_, permit) => permit.with_current_delivery(effect),
             Self::Target(permit) => permit.with_current_delivery(effect),
         }
@@ -183,6 +215,13 @@ fn execute(request: Request, auth: Authorization, owner: Option<NativeRequestOwn
                     },
                 },
             ),
+            Authorization::Preview(_, entry) => Ok(entry
+                .as_deref()
+                .map_or_else(|| bare(404), html_preview::answer)),
+            Authorization::Epub(asset) => match &asset.book {
+                Some(book) => epub_asset::serve(book.clone(), asset.head, asset.path.clone()),
+                None => Ok(epub_asset::refusal(404)),
+            },
         };
         deliver(request, auth, owner, result);
     });
@@ -291,6 +330,7 @@ pub fn handle(
     responder: UriSchemeResponder,
 ) {
     let reply = Arc::new(Mutex::new(Some(responder)));
+    let method = request.method().clone();
     let response = context.response_gate();
     let cancel = CancelToken::default();
     let cancelled = cancel.clone();
@@ -344,6 +384,32 @@ pub fn handle(
             return;
         }
     }
+    // what the address names is decided before any authority is spent on it, as Electron's
+    // handlers decided it before they looked anything up
+    let preview_host = match scheme {
+        Scheme::Preview => match html_preview::view_of(&request.uri) {
+            Ok(view) => Some(view),
+            Err(status) => {
+                respond(&request.reply, bare(status));
+                return;
+            }
+        },
+        _ => None,
+    };
+    let epub_target = match scheme {
+        Scheme::Epub if method != http::Method::GET && method != http::Method::HEAD => {
+            respond(&request.reply, epub_asset::refusal(405));
+            return;
+        }
+        Scheme::Epub => match epub_asset::parse(&request.uri) {
+            Ok(target) => Some(target),
+            Err(status) => {
+                respond(&request.reply, epub_asset::refusal(status));
+                return;
+            }
+        },
+        _ => None,
+    };
     let Some(origin) = request.context.current_document_context() else {
         denied(&request.reply);
         return;
@@ -424,6 +490,60 @@ pub fn handle(
                         )
                         .map(|owner| (Authorization::Slides(auth), owner))
                     }),
+                Scheme::Preview => preview_host.and_then(|host| {
+                    let (_, auth, asset_renderer) =
+                        views.authorize_verified_native_asset_origin(&request.label, &origin)?;
+                    if auth.view != sender.view
+                        || auth.surface != Surface::Html
+                        || !asset_renderer.same_generation(&renderer)
+                    {
+                        return None;
+                    }
+                    // a buffer that is not this view's to read is answered as no view, as
+                    // Electron answered a host that named none
+                    let entry = provided
+                        .all::<shell_ipc_d2::html::HtmlEditors>()
+                        .into_iter()
+                        .next()
+                        .and_then(|editors| editors.preview_entry(auth.view, host))
+                        .map(Box::new);
+                    crate::ipc::native_owner::asset_owner_with_browser(
+                        auth.view,
+                        origin.clone(),
+                        auth.clone(),
+                        asset_renderer,
+                        browser_owner.clone(),
+                    )
+                    .map(|owner| (Authorization::Preview(auth, entry), owner))
+                }),
+                Scheme::Epub => epub_target.and_then(|target| {
+                    if captured.surface != Surface::Epub {
+                        return None;
+                    }
+                    // a token the view does not own is answered as no book
+                    let book = provided
+                        .all::<shell_ipc_d2::epub::EpubEditors>()
+                        .into_iter()
+                        .next()
+                        .and_then(|editors| editors.asset_book(sender.view, &target.token));
+                    crate::ipc::native_owner::owner_with_browser(
+                        sender.view,
+                        origin.clone(),
+                        renderer.clone(),
+                        (),
+                        browser_owner.clone(),
+                    )
+                    .map(|owner| {
+                        let asset = EpubAsset {
+                            origin: origin.clone(),
+                            renderer: renderer.clone(),
+                            book,
+                            head: method == http::Method::HEAD,
+                            path: target.path,
+                        };
+                        (Authorization::Epub(asset), owner)
+                    })
+                }),
             };
             if let Some((auth, owner)) = auth {
                 execute(request, auth, Some(owner));

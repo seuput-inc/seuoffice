@@ -236,10 +236,12 @@ fn opens_only_a_granted_path() {
     };
     assert_eq!(field(&reply, "readOnly"), &IpcValue::Null);
     assert_eq!(
-        editors(&rt).asset_book(&token).as_deref(),
+        editors(&rt).asset_book(sender.view, &token).as_deref(),
         Some(&b"BOOK".to_vec())
     );
-    assert_eq!(editors(&rt).asset_book("other"), None);
+    assert_eq!(editors(&rt).asset_book(sender.view, "other"), None);
+    // the token is the view's alone
+    assert_eq!(editors(&rt).asset_book(stranger.view, &token), None);
 }
 
 #[test]

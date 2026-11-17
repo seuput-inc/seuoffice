@@ -35,6 +35,8 @@ interface ServiceWindow extends Window {
   }
   __seuofficeEngineRequest(id: number, name: string, input: unknown, nonce: string): Promise<void>
   __seuofficeEngineCancel(id: number): void
+  /** boot.js: what this page is doing, told to the shell without the IPC that readiness needs */
+  __seuofficeEngineLog?(message: string): void
 }
 const service = window as unknown as ServiceWindow
 const token = service.__SEUOFFICE_ENGINE_TOKEN__
@@ -155,4 +157,14 @@ window.addEventListener('pagehide', () => {
   for (const controller of requests.values()) controller.abort()
   requests.clear()
 })
-await service.__TAURI_INTERNALS__.invoke('engine_host_ready', { token })
+service.__seuofficeEngineLog?.('main: the bundle is evaluated, sending engine_host_ready')
+const unanswered = setTimeout(
+  () => service.__seuofficeEngineLog?.('main: engine_host_ready has no answer after 10 s'),
+  10_000,
+)
+try {
+  await service.__TAURI_INTERNALS__.invoke('engine_host_ready', { token })
+} finally {
+  clearTimeout(unanswered)
+}
+service.__seuofficeEngineLog?.('main: engine_host_ready acknowledged')

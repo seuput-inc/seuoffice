@@ -889,6 +889,9 @@ pub(super) fn files(
     save: bool,
     session: &Arc<Session>,
 ) -> Result<Option<Vec<PathBuf>>, String> {
+    if let Some(answer) = crate::e2e::dialog::intercept_files(options, save) {
+        return answer;
+    }
     platform::files(app, &FileSpec::of(options), parent, save, session)
 }
 
@@ -897,6 +900,9 @@ pub(crate) fn message(
     parent: Option<&tauri::Window>,
     session: &Arc<Session>,
 ) -> Result<shell_contract::hosts::MessageBoxAnswer, String> {
+    if let Some(answer) = crate::e2e::dialog::intercept_message(options) {
+        return answer;
+    }
     super::message_box::show_owned(options, parent, session)
 }
 

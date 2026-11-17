@@ -18,7 +18,9 @@ pub(crate) mod doc_links;
 mod dock;
 mod fonts;
 
-pub(crate) use app::{app_menu_activate, app_menu_popup, prepare_activation_menu};
+pub(crate) use app::{
+    app_menu_activate, app_menu_popup, e2e_export_pdf, prepare_activation_menu,
+};
 // what batch A and the editors' hosts call for the document links
 #[allow(unused_imports)]
 pub(crate) use doc_links::{

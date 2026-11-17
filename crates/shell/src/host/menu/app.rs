@@ -3105,6 +3105,49 @@ fn perform(app: &AppHandle, kind: TabKind, act: Act) {
     }
 }
 
+/// Whether a menu item is File > Export as PDF of its editor: the shell's own export entry, or
+/// the event the editor's menu table names `export-pdf` (HWP's print request in `pdf` mode)
+fn is_export_pdf(act: &Option<Act>) -> bool {
+    match act {
+        Some(Act::Export("pdf")) => true,
+        Some(Act::Emit { channel, args }) => {
+            let first = args.first();
+            first == Some(&text("export-pdf"))
+                || (*channel == "hwp:print-request" && first == Some(&text("pdf")))
+        }
+        _ => false,
+    }
+}
+
+fn find_export_pdf(nodes: &[Node]) -> Option<Act> {
+    nodes.iter().find_map(|node| match node {
+        Node::Item(item) if is_export_pdf(&item.act) => item.act.clone(),
+        Node::Menu { items, .. } => find_export_pdf(items),
+        _ => None,
+    })
+}
+
+/// The e2e runner's File > Export as PDF: the item of the menu now shown for the active
+/// editor runs as its click does (`perform`), so the editor's own export flow starts.
+pub(crate) fn e2e_export_pdf() -> Result<(), String> {
+    let shell = SHELL
+        .get()
+        .ok_or("the application menu is not installed")?;
+    let (kind, act) = {
+        let shown = lock(&SHOWN);
+        let shown = shown.as_ref().ok_or("no application menu is set yet")?;
+        let act = find_export_pdf(&shown.menus).ok_or_else(|| {
+            format!(
+                "the {} menu has no Export as PDF item",
+                shown.kind.as_str()
+            )
+        })?;
+        (shown.kind, act)
+    };
+    perform(&shell.app, kind, act);
+    Ok(())
+}
+
 // ---- the ☰ popup ----
 
 /// `appMenuPopupTemplate(menus)`: the menus now set as the ☰ button lists them

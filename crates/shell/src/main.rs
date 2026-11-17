@@ -26,6 +26,7 @@
 
 mod app_scheme;
 mod drawio_scheme;
+mod e2e;
 mod engine_host;
 mod headless;
 mod host;
@@ -403,8 +404,10 @@ fn start(
     context: HostContext,
     options: Options,
 ) {
-    let quiet =
-        options.measure.is_some() || headless::is_headless() || std::env::var_os("CI").is_some();
+    let quiet = options.measure.is_some()
+        || headless::is_headless()
+        || e2e::request().is_some()
+        || std::env::var_os("CI").is_some();
     let failure_app = app.clone();
     let failure_paths = paths.clone();
     let output = options.headless_output.clone();
@@ -472,6 +475,10 @@ fn start(
                         fail_here(error);
                     } else {
                         run_on(core.as_ref(), host::quit::startup_ready);
+                        // `--e2e`: the runner takes over once the shell window is up
+                        if let Err(error) = e2e::run(&context) {
+                            fail_here(error);
+                        }
                     }
                 }
                 Err(error) => fail_here(describe(&error)),
@@ -534,6 +541,8 @@ fn main() {
     } else {
         None
     };
+    // `--e2e <scenario> --out <dir>`: refused (exit 2) unless the profile is a marked throwaway
+    e2e::init();
     let options = match Options::read() {
         Ok(options) => options,
         Err(error) => {
@@ -614,6 +623,8 @@ fn main() {
             "seuoffice-slide-media",
             host::asset_protocol::Scheme::Slides,
         ),
+        ("html-preview", host::asset_protocol::Scheme::Preview),
+        ("epub-asset", host::asset_protocol::Scheme::Epub),
     ] {
         let scheme_views = views.clone();
         let scheme_core = core_thread.clone();
@@ -648,8 +659,14 @@ fn main() {
                     app_scheme::roots(paths::resources_path(ctx.app_handle()), measure_page)
                 });
                 let label = ctx.webview_label().to_owned();
+                let app = ctx.app_handle().clone();
                 // reading a file is not for the UI thread
                 tauri::async_runtime::spawn_blocking(move || {
+                    // the engine page's reports are answered here, not read from a file
+                    if let Some(response) = engine_host::page_report(&app, host, &label, &request) {
+                        responder.respond(response);
+                        return;
+                    }
                     let response = app_scheme::serve(roots, host, &request);
                     trace::trace!(
                         "scheme",

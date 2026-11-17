@@ -228,7 +228,7 @@ fn second_instance((argv, cwd): (Vec<String>, Option<PathBuf>)) {
 /// The paths of a later launch or an open-file event: kept for the launch
 /// flow before the shell is ready, deferred while the launch list is up,
 /// else opened (`openLaunchPaths`)
-fn open_paths(paths: Vec<String>, reveal: bool) {
+pub(crate) fn open_paths(paths: Vec<String>, reveal: bool) {
     {
         let mut launch = LAUNCH.lock().unwrap();
         if !launch.ready {
