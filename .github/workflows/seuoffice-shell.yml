@@ -72,7 +72,8 @@ jobs:
   mac:
     if: github.event_name != 'workflow_dispatch' || inputs.gate == 'full'
     runs-on: macos-latest
-    timeout-minutes: 90
+    # release build, then clippy and the release tests each compile the whole shell again
+    timeout-minutes: 180
     defaults:
       run:
         working-directory: crates/shell
@@ -175,7 +176,7 @@ jobs:
   win:
     if: github.event_name != 'workflow_dispatch' || inputs.gate == 'full'
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 180
     # vendored OpenSSL configures with perl; Git Bash's perl lacks the modules it needs
     env:
       OPENSSL_SRC_PERL: C:\Strawberry\perl\bin\perl.exe
