@@ -912,6 +912,11 @@ impl SlidesEngine for FakeEngine {
         std::fs::write(path, bytes).map_err(|e| EngineError(e.to_string()))
     }
 
+    fn save_file_bytes(&self, deck: DeckId) -> Result<Vec<u8>, EngineError> {
+        self.record(json!(["pptx-engine.savePptxToFile"]));
+        Ok(self.with(deck, |d| d.to_bytes()))
+    }
+
     fn commit_saved(&self, deck: DeckId) -> Result<(), EngineError> {
         let mut decks = self
             .decks
@@ -2067,7 +2072,6 @@ impl FakeShell {
     }
     fn export_pdf(&self, op: &IpcValue) -> PdfExportAnswer {
         let path = as_str(field(op, "filePath")).map(str::to_owned);
-        self.record(json!(["exportSlidesPdf", path]));
         if let Some(path) = &path {
             let _ = std::fs::write(path, b"%PDF-1.7");
         }
@@ -2081,8 +2085,19 @@ impl FakeShell {
 
 impl SlidesShell for FakeShell {
     fn opened(&self, view: ViewId, path: &str) {
-        self.record(json!(["slidesOpenedHook", view.0, path]));
-        self.opened.lock().unwrap().push((view, path.to_owned()));
+        let mut opened = self.opened.lock().unwrap();
+        // `slidesOpenedHook` only retitles the tab: Electron calls it when a view's path
+        // changes, while the native save publishes after every write
+        let known = opened
+            .iter()
+            .rev()
+            .find(|(known, _)| *known == view)
+            .is_some_and(|(_, known)| known == path);
+        opened.push((view, path.to_owned()));
+        drop(opened);
+        if !known {
+            self.record(json!(["slidesOpenedHook", view.0, path]));
+        }
     }
     fn reload_view(&self, view: ViewId) {
         self.record(json!(["slides.reload", view.0]));
@@ -2547,15 +2562,26 @@ impl SlidesShell for FakeShell {
         {
             return Err("The synthetic output bytes belong to another publication".into());
         }
+        let log = self.log.clone();
         let action = Box::new(move || {
             let extra: Vec<_> = additional.iter().collect();
+            let published = output.path().to_string_lossy().into_owned();
             output.with_effect(
                 &*effects,
                 &participants,
                 &cancel,
                 &pending,
                 &extra,
-                &mut || Ok(()),
+                &mut || {
+                    // the shell exports to its staging file and reveals the published
+                    // destination; Electron's export writes there directly
+                    if let Some(log) = &log {
+                        let mut log = log.lock().unwrap();
+                        log.push(json!(["exportSlidesPdf", published]));
+                        log.push(json!(["shell.showItemInFolder", published]));
+                    }
+                    Ok(())
+                },
             )?;
             Ok(shell_contract::hosts::GeneratedPathOutcome::NotOpened)
         });

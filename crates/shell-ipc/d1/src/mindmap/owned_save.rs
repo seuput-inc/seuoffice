@@ -818,7 +818,9 @@ impl MindmapApp {
         let check_path = path.clone();
         self.offload(
             move || {
+                // `conflictStopsSave` asks first, then the shared conflict helper asks again
                 shell.is_path_open_elsewhere(&check_path)
+                    && shell.is_path_open_elsewhere(&check_path)
                     && is_modified_since(recorded.as_ref(), &check_path)
             },
             move |app, conflict| {
@@ -1372,12 +1374,21 @@ pub(super) fn save(app: &MindmapApp, cx: &CallContext, args: Args, responder: Re
         }
         pending.revision = Some(revision);
         pending.baseline = baseline;
-        as_bytes(field(value, "bytes"))
-            .map(Vec::from)
-            .ok_or_else(|| thrown("mindmap: bad save request"))
+        Ok(as_bytes(field(value, "bytes")).map(Vec::from))
     });
     let bytes = match accepted {
-        Ok(bytes) => bytes,
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => {
+            // Electron answers `{ ok: false, error }` for a request without bytes
+            let result = request.effect(|| {
+                Ok(obj([
+                    ("ok", IpcValue::Bool(false)),
+                    ("error", string("mindmap: bad save request")),
+                ]))
+            });
+            app.finish_owned_save(id, Ok(false));
+            return responder.reply(result);
+        }
         Err(error) => return fail(app, id, responder, error),
     };
     let engine = app.0.engine.clone();

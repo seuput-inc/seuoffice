@@ -209,22 +209,51 @@ pub fn export_images(app: &App, cx: &CallContext, args: Args, responder: Respond
                     )
                 });
         super::post_to(&services, index, move |app| {
-            let result = outcome
-                .map_err(|error| thrown(error.message))
-                .and_then(|()| {
-                    scope.effect_at_revision(app, &revision, || {
-                        obj([
-                            ("ok", IpcValue::Bool(true)),
-                            (
-                                "paths",
-                                IpcValue::Array(paths.into_iter().map(string).collect()),
-                            ),
-                        ])
-                    })
-                });
+            let result = scope.effect_at_revision(app, &revision, || match outcome {
+                Ok(()) => obj([
+                    ("ok", IpcValue::Bool(true)),
+                    (
+                        "paths",
+                        IpcValue::Array(paths.into_iter().map(string).collect()),
+                    ),
+                ]),
+                // Electron writes each file in place, so its `String(err)` names the
+                // target; the staged write names its temporary file beside it
+                Err(error) => obj([
+                    ("ok", IpcValue::Bool(false)),
+                    (
+                        "error",
+                        string(format!(
+                            "Error: {}",
+                            without_stage_name(&error.message, &paths)
+                        )),
+                    ),
+                ]),
+            });
             responder.reply(result);
         });
     }));
+}
+
+/// `message` with the staging file's name (`<target>.<12 hex>.tmp`) replaced by the target's.
+fn without_stage_name(message: &str, paths: &[String]) -> String {
+    let mut text = message.to_owned();
+    for path in paths {
+        let mut from = 0;
+        while let Some(found) = text[from..].find(path.as_str()) {
+            let start = from + found + path.len();
+            let stage = text[start..].strip_prefix('.').filter(|rest| {
+                rest.get(..12)
+                    .is_some_and(|hex| hex.bytes().all(|b| b.is_ascii_hexdigit()))
+                    && rest[12..].starts_with(".tmp")
+            });
+            if stage.is_some() {
+                text.replace_range(start..start + 17, "");
+            }
+            from = start;
+        }
+    }
+    text
 }
 
 pub fn consume_headless_export(app: &App, cx: &CallContext, _args: Args) -> Reply {
@@ -659,5 +688,30 @@ impl App {
 
     pub fn read_one_cloud_page(&self, marker: &IpcValue) -> Result<Vec<u8>, IpcError> {
         self.read_cloud_page(marker)
+    }
+}
+
+#[cfg(test)]
+mod stage_name_tests {
+    use super::without_stage_name;
+
+    #[test]
+    fn the_staging_name_gives_way_to_the_target() {
+        let paths = vec!["/a/missing/slide-01.png".to_owned()];
+        assert_eq!(
+            without_stage_name(
+                "ENOENT: no such file or directory, open '/a/missing/slide-01.png.a6e3b99b476b.tmp'",
+                &paths,
+            ),
+            "ENOENT: no such file or directory, open '/a/missing/slide-01.png'"
+        );
+        assert_eq!(
+            without_stage_name("EACCES: permission denied", &paths),
+            "EACCES: permission denied"
+        );
+        assert_eq!(
+            without_stage_name("open '/a/missing/slide-01.png.keep'", &paths),
+            "open '/a/missing/slide-01.png.keep'"
+        );
     }
 }

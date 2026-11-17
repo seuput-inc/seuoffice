@@ -396,7 +396,7 @@ impl DocsActorDisposal {
         {
             failure = Some(error);
         }
-        if let Err(error) = docs.engine.forget_lazy_media_owner(permit)
+        if let Err(error) = docs.engine.release_lazy_media_view(permit)
             && failure.is_none()
         {
             failure = Some(error);

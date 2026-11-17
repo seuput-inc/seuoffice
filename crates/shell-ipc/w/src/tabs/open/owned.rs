@@ -1771,6 +1771,17 @@ impl TabsState {
                     );
                 };
                 let mut plan = Some(plan);
+                let mut binding = Some(super::super::host::RetainedSpareBinding::new(
+                    super::super::host::NativeBrowserBinding {
+                        reservation: closure.reservation.clone(),
+                        owner: closure.owner.clone(),
+                        producer: closure.producer.clone(),
+                        closure: closure.closure.clone(),
+                        registration: closure.registration.clone(),
+                    },
+                    attempt.rollback_store(),
+                    None,
+                ));
                 let mut adoption = None;
                 let admitted = super::super::activation::driver::admit(
                     &effects,
@@ -1788,7 +1799,10 @@ impl TabsState {
                             let plan = plan
                                 .take()
                                 .ok_or("The recovery adoption was already consumed")?;
-                            adoption = Some(manager.resume_tab_load_settled(plan, view)?);
+                            let binding = binding
+                                .take()
+                                .ok_or("The recovery binding was already consumed")?;
+                            adoption = Some(manager.resume_tab_load_settled(plan, view, binding)?);
                             Ok(())
                         })
                     },

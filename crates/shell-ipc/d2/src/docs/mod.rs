@@ -588,7 +588,7 @@ impl Docs {
             if let Some(pending) = pending {
                 let _ = self.engine.forget_lazy_media_owner(pending);
             }
-            if let Err(error) = self.engine.forget_lazy_media_owner(permit) {
+            if let Err(error) = self.engine.release_lazy_media_view(permit) {
                 eprintln!("[docs] could not release document media: {error}");
             }
         }

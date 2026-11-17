@@ -7,6 +7,16 @@ fn skipped() -> IpcValue {
     ])
 }
 
+/// Electron answers a refused project save as `{ ok: false, error }`.
+fn refused(message: impl Into<String>) -> IpcValue {
+    obj([("ok", IpcValue::Bool(false)), ("error", string(message))])
+}
+
+type Written = (
+    String,
+    Option<main_core::packages::electron_utils::save_conflict::SaveDiskState>,
+);
+
 pub(in crate::mindmap) fn save_into_project(
     app: &MindmapApp,
     cx: &CallContext,
@@ -22,7 +32,7 @@ pub(in crate::mindmap) fn save_into_project(
     }
     let value = args.get(0);
     let Some(bytes) = as_bytes(field(value, "bytes")).map(Vec::from) else {
-        return responder.reply(Err(thrown("mindmap: bad save request")));
+        return responder.reply(Ok(refused("mindmap: bad save request")));
     };
     let request = match native_owner(cx)
         .and_then(|origin| app.capture_save(view, origin, cx.cancel.clone()))
@@ -63,15 +73,15 @@ pub(in crate::mindmap) fn save_into_project(
     let worker_request = request.clone();
     let cx = cx.clone();
     app.offload(
-        move || {
+        move || -> Result<Result<Option<Written>, String>, IpcError> {
             let opened = engine.open_xmind(&bytes).map_err(thrown)?;
             if opened.status != OpenStatus::Ok {
-                return Err(thrown(format!(
+                return Ok(Err(format!(
                     "mindmap: refusing to write a map that would not open ({})",
                     opened.status.as_str()
                 )));
             }
-            shell
+            Ok(shell
                 .write_new_document_owned(
                     worker_request.authority.renderer()?,
                     &worker_request.destination,
@@ -87,17 +97,23 @@ pub(in crate::mindmap) fn save_into_project(
                         let disk = record_disk_state(&path);
                         (path, disk)
                     })
-                })
-                .map_err(thrown)
+                }))
         },
         move |app, result| match result {
             Err(error) => fail(app, id, responder, error),
-            Ok(None) => {
+            Ok(Err(message)) => {
+                let result = revision.effect(app, &request, || refused(message));
+                app.release_direct_save(id);
+                responder.reply(result);
+            }
+            Ok(Ok(None)) => {
                 let result = revision.effect(app, &request, skipped);
                 app.release_direct_save(id);
                 responder.reply(result);
             }
-            Ok(Some((path, disk))) => app.adopt_owned_map(cx, id, path, request, disk, responder),
+            Ok(Ok(Some((path, disk)))) => {
+                app.adopt_owned_map(cx, id, path, request, disk, responder)
+            }
         },
     );
 }

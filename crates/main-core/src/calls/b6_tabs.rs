@@ -20,12 +20,12 @@ use crate::shell::detached_windows::{
 };
 use crate::shell::split_layout::{Pane, Rect, SplitDropIntent, SplitOrientation};
 use crate::shell::tab_manager::{
-    Deferred, DetachedTab, DiagramIdentity, EditorCalls, EditorOpen, EnsureAfterReady, EnsureStep,
-    HelpOpenCommit, HwpCopy, HwpUntitledCopy, LiveTab, LoadedTabView, OpenDocsOptions,
-    OpenDocumentsRun, OpenDocumentsStep, Opener, Ready, RestoredSession, RestoredSplit,
-    SplitViewState, TabCloseStep, TabHost, TabKind, TabLoadResult, TabManager, TabResult,
-    TemplateCopy, UnloadedTabOpenContext, UnloadedTabSpec, ViewSpec, canonical_path,
-    help_topic_param, help_view_url, help_window_open, prepare_plain_editor_view,
+    Deferred, DetachedTab, DiagramIdentity, EditorCalls, EditorOpen, EditorSeed, EnsureAfterReady,
+    EnsureStep, HelpOpenCommit, HwpCopy, HwpUntitledCopy, LiveTab, LoadedTabView, OpenDocsOptions,
+    OpenDocumentsRun, OpenDocumentsStep, Opener, PreparedTabOpen, Ready, RestoredSession,
+    RestoredSplit, SplitViewState, TabCloseStep, TabError, TabHost, TabKind, TabLoadResult,
+    TabManager, TabResult, TemplateCopy, UnloadedTabOpenContext, UnloadedTabSpec, ViewSpec,
+    canonical_path, help_topic_param, help_view_url, help_window_open, prepare_plain_editor_view,
     resume_plain_editor_view,
 };
 
@@ -1423,7 +1423,7 @@ fn drive_ensure(
                 let loaded = match tm.prepare_tab_load(&id) {
                     Ok(Some(plan)) => {
                         let opened = open_fixture_opener(w, plan.opener(), plan.context());
-                        tm.resume_tab_load(w, plan, opened).map(|_| ())
+                        tm.resume_tab_load(w, plan, opened, ()).map(|_| ())
                     }
                     Ok(None) => Ok(()),
                     Err(error) => Err(error),
@@ -1579,7 +1579,7 @@ fn open_fixture_opener(
 fn hydrate_fixture_tab(w: &mut World, tm: &mut TabManager<View, ()>, id: &str) {
     if let Ok(Some(plan)) = tm.prepare_tab_load(id) {
         let loaded = open_fixture_opener(w, plan.opener(), plan.context());
-        let _ = tm.resume_tab_load(w, plan, loaded);
+        let _ = tm.resume_tab_load(w, plan, loaded, ());
     }
 }
 
@@ -1615,6 +1615,11 @@ fn run_op(
     while !w.load_requests.is_empty() {
         let requested = std::mem::take(&mut w.load_requests);
         for id in requested {
+            // the preload above already ran this tab's opener once for the operation, as the
+            // TypeScript's single `loadTab` does
+            if preload.contains(&id) && tm.is_tab_unloaded(&id) {
+                continue;
+            }
             hydrate_fixture_tab(w, tm, &id);
             if !tm.is_tab_unloaded(&id) {
                 tm.activate_tab(w, &id);
@@ -1969,7 +1974,13 @@ fn run_op_inner(
         // ---- the split ----
         "splitWith" => {
             let tab = str_of(o, "tab").unwrap_or("");
-            match tm.split_with(w, tab, intent_of(o.get("intent"))) {
+            let intent = intent_of(o.get("intent"));
+            if let Some(duplicate) = tm.split_duplicate_pane(tab, intent.as_ref())
+                && let Err(error) = fixture_open_editor(w, tm, duplicate.request)
+            {
+                return error_value(&error.0);
+            }
+            match tm.split_with(w, tab, intent) {
                 Ok(()) => Value::Null,
                 Err(error) => error_value(&error.0),
             }
@@ -2011,16 +2022,10 @@ fn run_op_inner(
         }
         "duplicate" => match tm.prepare_duplicate_pane_open(w, str_of(o, "tab").unwrap_or("")) {
             None => Value::Null,
-            Some(plan) => {
-                let created = match plan.creation_spec() {
-                    Some(spec) => w.create_view(&spec).map(Some),
-                    None => Ok(None),
-                };
-                match tm.resume_editor_open(w, plan, created) {
-                    Ok(id) => Value::from(id),
-                    Err(error) => error_value(&error.0),
-                }
-            }
+            Some(plan) => match adopt_editor(w, tm, plan) {
+                Ok(id) => Value::from(id),
+                Err(error) => error_value(&error.0),
+            },
         },
         // ---- closing, detaching ----
         "closeTab" => {
@@ -2136,15 +2141,24 @@ fn run_op_inner(
         }
         "win" => window_event(o, w, dw, platform),
         "winState" => {
-            let n = o.get("window").and_then(Value::as_u64).unwrap_or(1) as usize;
+            let Some(at) = window_of(w, o) else {
+                // `win.state` of the missing window throws as soon as something is to be set
+                let fields = ["destroyed", "minimized", "focused", "title"];
+                let sets = fields.iter().any(|key| o.get(*key).is_some());
+                let bounds = o.get("bounds").is_some_and(|b| !b.is_null());
+                if sets || bounds {
+                    return error_value("Cannot read properties of undefined (reading 'state')");
+                }
+                return Value::Null;
+            };
             // a window destroyed from outside closes, as Electron's does
             if bool_of(o, "destroyed") == Some(true)
-                && !w.win_state(&Win(n)).destroyed
+                && !w.win_state(&at).destroyed
                 && bool_of(o, "silent") != Some(true)
             {
-                w.closed_queue.push(n);
+                w.closed_queue.push(at.0);
             }
-            let win = w.win_state(&Win(n));
+            let win = w.win_state(&at);
             if let Some(v) = bool_of(o, "destroyed") {
                 win.destroyed = v;
             }
@@ -2194,8 +2208,8 @@ fn run_op_inner(
         "activateDetached" => Value::Bool(dw.activate_detached(w, id)),
         "isDetachedId" => Value::Bool(dw.is_detached_tab_id(w, id)),
         "isDetachedWindow" => {
-            let n = o.get("window").and_then(Value::as_u64).unwrap_or(1) as usize;
-            Value::Bool(dw.is_detached_editor_window(&Win(n)))
+            let known = window_of(w, o);
+            Value::Bool(known.is_some_and(|win| dw.is_detached_editor_window(&win)))
         }
         "focusDetachedByPath" => {
             Value::Bool(dw.focus_detached_by_path(w, str_of(o, "path").unwrap_or("")))
@@ -2289,6 +2303,13 @@ fn run_op_inner(
     }
 }
 
+/// What the TypeScript fake's `windows[Number(window) - 1]` finds: nothing for a number it never
+/// gave out
+fn window_of(w: &World, o: &Value) -> Option<Win> {
+    let n = usize::try_from(o.get("window")?.as_u64()?).ok()?;
+    (1..=w.windows.len()).contains(&n).then_some(Win(n))
+}
+
 /// a window event, delivered to the listener the Rust method stands for; the
 /// `moved` listener exists on Windows only
 fn window_event(
@@ -2297,17 +2318,19 @@ fn window_event(
     dw: &mut DetachedWindows<View, Win, ()>,
     platform: &str,
 ) -> Value {
-    let n = o.get("window").and_then(Value::as_u64).unwrap_or(1) as usize;
-    let Some(Some(rec)) = w.win_rec.get(n - 1).copied() else {
+    let Some(win) = window_of(w, o) else {
+        return error_value("Cannot read properties of undefined (reading 'listeners')");
+    };
+    let Some(rec) = w.win_rec[win.0 - 1] else {
         return Value::Null;
     };
     match str_of(o, "event").unwrap_or("") {
         "close" => {
             let event = dw.on_close(w, rec);
             drive_detached_close(w, dw, rec, event.step);
-            if !event.prevent_default && !w.win_state(&Win(n)).destroyed {
-                w.win_state(&Win(n)).destroyed = true;
-                w.closed_queue.push(n);
+            if !event.prevent_default && !w.win_state(&win).destroyed {
+                w.win_state(&win).destroyed = true;
+                w.closed_queue.push(win.0);
             }
             json!({ "prevented": event.prevent_default })
         }
@@ -2371,7 +2394,7 @@ fn fixture_open_help(
             let title = w
                 .untitled_title_for(TabKind::Help)
                 .unwrap_or_else(|| format!("{} Help", crate::packages::i18n::PRODUCT_NAME));
-            match tm.commit_help_open(plan, view, title) {
+            match tm.commit_help_open_bound(plan, view, title, ()) {
                 HelpOpenCommit::Created { id, .. } => {
                     tm.activate_tab(w, &id);
                     Ok(id)
@@ -2401,11 +2424,79 @@ fn fixture_open_editor(
     request: EditorOpen,
 ) -> TabResult<String> {
     let plan = tm.prepare_editor_open(w, request);
+    adopt_editor(w, tm, plan)
+}
+
+/// How the shell opens an editor tab: the manager reserves the open, the view is made, and the
+/// manager adopts it with the binding the shell keeps for it (nothing to keep in this world). The
+/// shell's own steps around the adoption run in the order of the TypeScript `open*Tab`.
+fn adopt_editor(
+    w: &mut World,
+    tm: &mut TabManager<View, ()>,
+    mut plan: PreparedTabOpen<View, ()>,
+) -> TabResult<String> {
     let created = match plan.creation_spec() {
         Some(spec) => w.create_view(&spec).map(Some),
         None => Ok(None),
     };
-    tm.resume_editor_open(w, plan, created)
+    let created = match created {
+        Ok(created) => created,
+        Err(error) => {
+            tm.cancel_editor_open(w, plan);
+            return Err(error);
+        }
+    };
+    let Some(view) = plan.reserved_view().copied().or(created) else {
+        return Err(TabError("editor open returned no view".into()));
+    };
+    let (seed, _docs_path, workbook, reused) = plan.initialization_inputs();
+    if let Some(path) = &workbook {
+        w.queue_workbook_for_view(&view, path);
+        if reused {
+            w.nudge_queued_workbook(&view);
+        }
+    }
+    if let Some(EditorSeed::DocsAi { new_blank, content }) = &seed {
+        let wc = w.view_id(&view);
+        if *new_blank {
+            w.mark_docs_new_blank(wc);
+        }
+        if let Some(content) = content
+            && let Err(error) = w.queue_docs_ai_content(wc, content)
+        {
+            w.remove_child_view(&view);
+            w.close_view(&view);
+            return Err(error);
+        }
+    }
+    let prepared = match tm.prepare_editor_adoption(w, plan, view) {
+        Ok(prepared) => prepared,
+        Err(failed) => {
+            let (plan, error) = *failed;
+            tm.cancel_editor_open(w, plan);
+            return Err(error);
+        }
+    };
+    let commit = match tm.prepare_editor_adoption_commit(&prepared) {
+        Ok(commit) => commit,
+        Err(error) => {
+            tm.cancel_editor_open(w, prepared.into_plan());
+            return Err(TabError(error));
+        }
+    };
+    if let Err(error) = tm.validate_editor_adoption_commit(&prepared, &commit) {
+        tm.cancel_editor_open(w, prepared.into_plan());
+        return Err(TabError(error));
+    }
+    let id = tm.commit_validated_editor_adoption(prepared, (), commit);
+    if !reused {
+        w.add_child_view(&view);
+        w.set_visible(&view, false);
+    }
+    w.listen_html_full_screen(&view);
+    w.listen_pane_focus(&view);
+    tm.activate_tab(w, &id);
+    Ok(id)
 }
 
 fn open_tab(o: &Value, w: &mut World, tm: &mut TabManager<View, ()>) -> Value {
@@ -2505,7 +2596,7 @@ fn open_tab(o: &Value, w: &mut World, tm: &mut TabManager<View, ()>) -> Value {
             let owner = i64_of(o, "owner");
             let title = str_of(o, "title").unwrap_or("");
             w.create_view(&ViewSpec::HtmlPresent { owner, title })
-                .map(|view| tm.resume_html_present_tab(w, view, title))
+                .map(|view| tm.resume_html_present_tab_bound(w, view, title, ()))
         }
         other => {
             return error_value(&format!("unknown kind {other}"));
@@ -2531,5 +2622,47 @@ mod dirty_failure_tests {
         );
         assert_eq!(tabs.web_contents_for_tab(&id), Some(view));
         assert!(tabs.dirty_tabs(&mut world, TabKind::Slides).is_err());
+    }
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+
+    fn play(ops: &[Value]) -> Vec<Value> {
+        let mut world = World::new(&Value::Null);
+        let mut tabs = TabManager::<View, ()>::new();
+        let mut windows = DetachedWindows::<View, Win, ()>::new();
+        let mut results = Vec::new();
+        for op in ops {
+            let name = str_of(op, "op").unwrap_or("");
+            results.push(run_op(name, op, &mut world, &mut tabs, &mut windows, "", Sink::Op));
+            world.after_op(&mut tabs, &mut windows);
+        }
+        results
+    }
+
+    #[test]
+    fn an_opened_editor_tab_goes_to_a_window_of_its_own() {
+        let results = play(&[
+            json!({ "op": "open", "kind": "docs", "path": "/w/a.docx" }),
+            json!({ "op": "newWindow", "tab": "t1" }),
+            json!({ "op": "winState", "window": 1, "minimized": true }),
+        ]);
+        assert_eq!(results[1], json!({ "window": 1 }));
+        assert_eq!(results[2], Value::Null);
+    }
+
+    #[test]
+    fn a_window_that_was_never_made_answers_the_error_the_typescript_throws() {
+        let results = play(&[
+            json!({ "op": "winState", "window": 2, "minimized": true }),
+            json!({ "op": "winState", "window": 2 }),
+            json!({ "op": "win", "window": 0, "event": "focus" }),
+            json!({ "op": "isDetachedWindow", "window": 1 }),
+        ]);
+        let state = error_value("Cannot read properties of undefined (reading 'state')");
+        let listeners = error_value("Cannot read properties of undefined (reading 'listeners')");
+        assert_eq!(results, [state, Value::Null, listeners, Value::Bool(false)]);
     }
 }

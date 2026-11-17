@@ -551,7 +551,7 @@ const cases: Case[] = [
   c({
     note: 'a certificate the engine refuses, and a file that went missing',
     files: { ...files, 'me.p12': 'p12', 'gone.p12': 'p12' },
-    pdf: { engine: { openCertificate: { error: 'cert-wrong-password' } } },
+    pdf: { engine: { openCertificate: { error: 'cert-password' } } },
     shared: { dialogs: { open: [['$DIR/me.p12']] } },
     calls: [
       open(),

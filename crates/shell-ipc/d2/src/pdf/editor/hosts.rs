@@ -214,6 +214,13 @@ pub trait PdfEngine: Send + Sync {
         target: &str,
         cancel: &CancelToken,
     ) -> Result<(), String>;
+    /// An owned save moves bytes through `prepare_pdf_save` and the owner's
+    /// write, where Electron calls `savePdfToPath`, `savePdfBytesToPath` or
+    /// `copyPdfToPath` with the paths. Only the probe's fake has anything to
+    /// do (log the helper, fail as the case asks); the native engine has not.
+    fn owned_helper(&self, _helper: &str, _paths: &[&str]) -> Result<(), String> {
+        Ok(())
+    }
     /// `pdfBytesWithEdits(sourcePath, request)`
     fn pdf_bytes_with_edits(
         &self,

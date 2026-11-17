@@ -667,8 +667,17 @@ fn save(
                 if let Some(owned) = &authority {
                     owned.current()?;
                     let bytes = match restored {
-                        Some(bytes) => engine.prepare_pdf_save(&bytes, &plain, true, &cancel)?.0,
-                        None => read_file(&path)?,
+                        Some(bytes) => {
+                            engine.owned_helper("savePdfBytesToPath", &[written.as_str()])?;
+                            engine.prepare_pdf_save(&bytes, &plain, true, &cancel)?.0
+                        }
+                        None => {
+                            engine.owned_helper(
+                                "copyPdfToPath",
+                                &[path.as_str(), written.as_str()],
+                            )?;
+                            read_file(&path)?
+                        }
                     };
                     owned.write(&written, &bytes)?;
                 } else {
@@ -778,8 +787,15 @@ fn save(
             if let Some(owned) = &authority {
                 owned.current()?;
                 let (bytes, skips) = match restored {
-                    Some(bytes) => engine.prepare_pdf_save(&bytes, &request, true, &cancel)?,
+                    Some(bytes) => {
+                        engine.owned_helper("savePdfBytesToPath", &[written.as_str()])?;
+                        engine.prepare_pdf_save(&bytes, &request, true, &cancel)?
+                    }
                     None => {
+                        engine.owned_helper(
+                            "savePdfToPath",
+                            &[source.as_str(), written.as_str()],
+                        )?;
                         engine.prepare_pdf_save(&read_file(&source)?, &request, false, &cancel)?
                     }
                 };

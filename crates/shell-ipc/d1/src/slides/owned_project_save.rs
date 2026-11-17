@@ -147,6 +147,7 @@ impl App {
                 op_seq: revision.op_seq,
                 remaining: 0,
                 failure: None,
+                announce: false,
                 done,
             },
         );

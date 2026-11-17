@@ -371,11 +371,7 @@ impl TabsState {
                         vec![tab_id.clone()],
                         None,
                         Box::new(move |result| match result {
-                            Ok(()) => {
-                                state.inner.borrow_mut().manager_call(|m, b| {
-                                    let _ = m.split_with(b, &tab_id, intent);
-                                });
-                            }
+                            Ok(()) => state.split_with_native(tab_id, intent),
                             Err(error) => state
                                 .hooks
                                 .warn("[tabs] a tab could not be loaded to split:", &error),

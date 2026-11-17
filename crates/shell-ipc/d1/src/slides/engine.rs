@@ -228,6 +228,11 @@ pub trait SlidesEngine: Send + Sync {
     fn save_bytes(&self, deck: DeckId) -> Result<Vec<u8>, EngineError>;
     /// `savePptxToFile(opened, path)`: writes (truncating) the path
     fn save_to_file(&self, deck: DeckId, path: &str) -> Result<(), EngineError>;
+    /// the bytes `savePptxToFile(opened, path)` streams into a deck's own file;
+    /// the owned write publishes them itself
+    fn save_file_bytes(&self, deck: DeckId) -> Result<Vec<u8>, EngineError> {
+        self.save_bytes(deck)
+    }
     /// `commitSaved(opened)`
     fn commit_saved(&self, deck: DeckId) -> Result<(), EngineError>;
     #[allow(clippy::too_many_arguments)]

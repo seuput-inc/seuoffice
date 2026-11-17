@@ -41,6 +41,8 @@ pub(in crate::slides) struct PendingWrite {
     op_seq: Option<u64>,
     remaining: usize,
     failure: Option<IpcError>,
+    /// whether the attached views are told the deck moved (`syncAttachedPaths`: a Save As)
+    announce: bool,
     done: WriteDone,
 }
 
@@ -565,6 +567,7 @@ impl App {
             scope,
             path.to_owned(),
             true,
+            true,
             Box::new(move |_, result| done(result)),
         );
     }
@@ -606,11 +609,19 @@ impl App {
             scope,
             crate::host::path_string(path.to_path_buf()),
             true,
+            true,
             Box::new(move |_, result| done(result)),
         );
     }
 
-    fn write_owned_deck(&self, scope: SaveScope, path: String, make_parent: bool, done: WriteDone) {
+    fn write_owned_deck(
+        &self,
+        scope: SaveScope,
+        path: String,
+        make_parent: bool,
+        announce: bool,
+        done: WriteDone,
+    ) {
         let prepare = (|| {
             if matches!(
                 &scope.request.authority,
@@ -640,17 +651,18 @@ impl App {
             Ok(value) => value,
             Err(error) => return done(self, Err(error)),
         };
-        let bytes = self
-            .engine
-            .save_bytes(scope.deck)
-            .map_err(|error| thrown(error.0))
-            .and_then(|bytes| match password {
-                Some(password) => self
-                    .engine
-                    .encrypt_ooxml(&bytes, &password)
-                    .map_err(|error| thrown(error.0)),
-                None => Ok(bytes),
-            });
+        let bytes = match &password {
+            Some(_) => self.engine.save_bytes(scope.deck),
+            None => self.engine.save_file_bytes(scope.deck),
+        }
+        .map_err(|error| thrown(error.0))
+        .and_then(|bytes| match password {
+            Some(password) => self
+                .engine
+                .encrypt_ooxml(&bytes, &password)
+                .map_err(|error| thrown(error.0)),
+            None => Ok(bytes),
+        });
         let bytes = match bytes {
             Ok(bytes) => bytes,
             Err(error) => return done(self, Err(error)),
@@ -669,6 +681,7 @@ impl App {
                 op_seq,
                 remaining: 0,
                 failure: None,
+                announce,
                 done,
             },
         );
@@ -1165,7 +1178,15 @@ fn start(
                 app,
                 &next,
                 &id,
-                obj([("ok", IpcValue::Bool(false))]),
+                // Electron: a cancelled first save answers `external-modified`, a cancelled Save As nothing
+                if mode == SaveMode::Save {
+                    obj([
+                        ("ok", IpcValue::Bool(false)),
+                        ("reason", string("external-modified")),
+                    ])
+                } else {
+                    obj([("ok", IpcValue::Bool(false))])
+                },
                 responder,
             ),
             Ok(Some(selected)) => {
@@ -1375,10 +1396,17 @@ fn failed(app: &App, id: &str, responder: Responder, error: IpcError) {
 
 fn write_reply(app: &App, scope: SaveScope, id: String, path: String, responder: Responder) {
     let result_scope = scope.clone();
+    let announce = app
+        .state
+        .borrow()
+        .owned_saves
+        .get(&id)
+        .is_some_and(|save| save.mode == SaveMode::SaveAs);
     app.write_owned_deck(
         scope,
         path.clone(),
         false,
+        announce,
         Box::new(move |app, result| {
             let result = result.and_then(|()| {
                 let (slides, path) = {

@@ -1,11 +1,12 @@
 use super::{
     Completion, DIAGRAM_CHECKING, DIAGRAM_WAITERS, DiagramCheckGuard, Done, PendingOwnedOpen, Step,
-    TabsState, document_kind, editor_request_for_path, native_open_surface,
+    TabsState, document_kind, editor_request_for_path, native_open_surface, surface_for_kind,
 };
 use crate::tabs::{
     activation::TabActivationAuthority,
     host::{EditorSeedRollbackStore, ViewClosureBinding},
 };
+use main_core::shell::split_layout::SplitDropIntent;
 use main_core::shell::tab_manager::{EditorOpen, ViewCreationCleanupState};
 use shell_contract::ipc::{
     NativeEditorCommand, NativeInvocationOperation, NativeInvocationSelection,
@@ -582,6 +583,74 @@ impl TabsState {
                 match result {
                     Ok((id, _, _)) => state.bind_pending_dir(kind.key(), Some(&id)),
                     Err(error) => state.surface_new_tab_error(&error),
+                }
+            }),
+        );
+    }
+
+    /// `splitWith`: a create drop with no other document first opens a second
+    /// tab on the same document (or a blank one) through the native command that
+    /// opens it, so the pane is an editor tab like any other and can leave the
+    /// strip again. The manager places the tab once it is there.
+    pub(in crate::tabs) fn split_with_native(
+        &self,
+        tab_id: String,
+        intent: Option<SplitDropIntent>,
+    ) {
+        let duplicate = {
+            let inner = self.inner.borrow();
+            inner
+                .manager
+                .as_ref()
+                .and_then(|manager| manager.split_duplicate_pane(&tab_id, intent.as_ref()))
+        };
+        let Some(duplicate) = duplicate else {
+            self.inner.borrow_mut().manager_call(|manager, host| {
+                let _ = manager.split_with(host, &tab_id, intent);
+            });
+            return;
+        };
+        let Some(surface) = surface_for_kind(duplicate.kind) else {
+            return;
+        };
+        let expected = match duplicate.file_path {
+            Some(path) => NativeEditorCommand::OpenFile {
+                surface,
+                path: std::path::PathBuf::from(path),
+            },
+            None => NativeEditorCommand::NewDocument {
+                surface,
+                directory: None,
+            },
+        };
+        let cancel = shell_contract::runtime::CancelToken::default();
+        let operation = match self
+            .hooks
+            .issue_native_command(expected.clone(), cancel.clone())
+        {
+            Ok(operation) => operation,
+            Err(error) => {
+                return self
+                    .hooks
+                    .warn("[tabs] a tab could not be duplicated to split:", &error);
+            }
+        };
+        let state = self.rc();
+        self.open_native_editor(
+            duplicate.request,
+            operation,
+            expected,
+            Box::new(move |result| {
+                drop(cancel);
+                match result {
+                    Ok(_) => {
+                        state.inner.borrow_mut().manager_call(|manager, host| {
+                            let _ = manager.split_with(host, &tab_id, intent);
+                        });
+                    }
+                    Err(error) => state
+                        .hooks
+                        .warn("[tabs] a tab could not be duplicated to split:", &error),
                 }
             }),
         );

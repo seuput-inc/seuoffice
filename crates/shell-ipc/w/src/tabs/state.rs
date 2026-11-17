@@ -193,6 +193,15 @@ pub(super) fn split_shape(state: &Option<SplitViewState>) -> String {
     }
 }
 
+/// What the release of a tear-off over a split edge decided
+pub(super) enum TornSplitDrop {
+    /// No split was meant: the normal dock / detached-window flow follows
+    Declined,
+    Done,
+    /// The torn tab is back in the strip, waiting to be placed with this intent
+    Place(String, SplitDropIntent),
+}
+
 impl Inner {
     /// Calls `f` on the manager and the host, then runs the effects the call
     /// queued. `None` while there is no shell window.
@@ -518,42 +527,45 @@ impl Inner {
 
     /// `applyTornSplitDrop`: a released tear-off whose last pointer position
     /// was over a split edge takes the torn tab back, re-attaches it without
-    /// activating and realizes the decided intent. `false` leaves everything
+    /// activating and realizes the decided intent. `Declined` leaves everything
     /// to the normal dock / detached-window flow.
-    pub(super) fn apply_torn_split_drop(&mut self) -> bool {
+    pub(super) fn apply_torn_split_drop(&mut self) -> TornSplitDrop {
         let drag = self.torn_drag.take();
         let intent = self.torn_drop.take();
         let (Some(drag), Some(intent)) = (drag, intent) else {
             self.send_split_hint(None);
-            return false;
+            return TornSplitDrop::Declined;
         };
         let record = self.detached.take_torn_tab(&mut self.bridge);
         self.drain();
         self.send_split_hint(None);
         let Some(record) = record else {
-            return false;
+            return TornSplitDrop::Declined;
         };
         self.ensure_manager();
         let Some(new_tab_id) = self.manager_call(|m, b| m.attach_tab(b, record, None, false))
         else {
-            return true;
+            return TornSplitDrop::Done;
         };
-        self.apply_torn_intent(&new_tab_id, intent, &drag);
-        true
+        match self.apply_torn_intent(&new_tab_id, intent, &drag) {
+            Some(intent) => TornSplitDrop::Place(new_tab_id, intent),
+            None => TornSplitDrop::Done,
+        }
     }
 
-    /// `applyTornIntent`: splitWith covers create/replace/reorient/focus; a
-    /// pane tab flips the orientation or restores the split it was torn out of
+    /// `applyTornIntent`: a pane tab flips the orientation or restores the split it
+    /// was torn out of. Any other intent is `splitWith`'s (create, replace, reorient,
+    /// focus); it is handed back, since a create may first have to open a duplicate.
     fn apply_torn_intent(
         &mut self,
         new_tab_id: &str,
         intent: SplitDropIntent,
         drag: &TornSplitDrag,
-    ) {
+    ) -> Option<SplitDropIntent> {
         if matches!(intent, SplitDropIntent::Flip(_) | SplitDropIntent::Noop) {
             let Some(start) = &drag.split_at_start else {
                 self.manager_call(|m, b| m.activate_tab(b, new_tab_id));
-                return;
+                return None;
             };
             let a = if start.a_tab_id == drag.tab_id {
                 new_tab_id
@@ -572,9 +584,9 @@ impl Inner {
             self.manager_call(|m, bridge| {
                 m.begin_split(bridge, a, b, orientation, start.ratio, start.focus)
             });
-            return;
+            return None;
         }
-        self.manager_call(|m, b| m.split_with(b, new_tab_id, Some(intent)));
+        Some(intent)
     }
 
     /// `clearPaneRole`: a view leaving the strip is out of any split; its last

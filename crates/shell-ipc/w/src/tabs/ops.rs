@@ -7,7 +7,7 @@ use shell_contract::ids::ViewId;
 use shell_contract::value::IpcValue;
 
 use super::host::TabHooks;
-use super::state::{Inner, TabsState};
+use super::state::{Inner, TabsState, TornSplitDrop};
 use super::wire::to_ipc;
 
 impl TabsState {
@@ -69,8 +69,13 @@ impl TabsState {
     /// `tabs:dock-torn-window`: the held pointer came back over the strip
     pub(super) fn dock_torn_window(&self, index: Option<f64>) {
         let mut g = self.inner.borrow_mut();
-        if g.apply_torn_split_drop() {
-            return;
+        match g.apply_torn_split_drop() {
+            TornSplitDrop::Declined => {}
+            TornSplitDrop::Done => return,
+            TornSplitDrop::Place(id, intent) => {
+                drop(g);
+                return self.split_with_native(id, Some(intent));
+            }
         }
         let Inner {
             detached, bridge, ..
@@ -87,8 +92,13 @@ impl TabsState {
     /// `tabs:end-torn-drag`: the pointer was released
     pub(super) fn end_torn_drag(&self) {
         let mut g = self.inner.borrow_mut();
-        if g.apply_torn_split_drop() {
-            return;
+        match g.apply_torn_split_drop() {
+            TornSplitDrop::Declined => {}
+            TornSplitDrop::Done => return,
+            TornSplitDrop::Place(id, intent) => {
+                drop(g);
+                return self.split_with_native(id, Some(intent));
+            }
         }
         let Inner {
             detached, bridge, ..

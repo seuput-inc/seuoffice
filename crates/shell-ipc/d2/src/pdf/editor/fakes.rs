@@ -249,6 +249,15 @@ impl PdfEngine for FakeEngine {
         self.0.get("copyPdfToPath")?;
         write(target, &read(source)?)
     }
+    fn owned_helper(&self, helper: &str, paths: &[&str]) -> Result<(), String> {
+        let mut line = vec![json!(helper)];
+        line.extend(paths.iter().map(|p| json!(p)));
+        self.line(Value::Array(line));
+        if helper == "copyPdfToPath" {
+            self.0.get("copyPdfToPath")?;
+        }
+        Ok(())
+    }
     fn pdf_bytes_with_edits(
         &self,
         source: &str,

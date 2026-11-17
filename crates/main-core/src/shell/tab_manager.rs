@@ -331,6 +331,15 @@ pub struct DetachedTab<V, B> {
     pub file_path: Option<String>,
 }
 
+/// What `openDuplicatePaneTab` opens: a second view of one tab's document.
+/// `file_path` is the document's own file, `None` for an untitled one.
+#[derive(Debug)]
+pub struct DuplicatePane {
+    pub kind: TabKind,
+    pub file_path: Option<String>,
+    pub request: EditorOpen,
+}
+
 /// A tab with a live view as the lookups hand it out: the TypeScript's
 /// `{ id, kind, webContents, filePath? }` with the view in place of its
 /// `webContents`.
@@ -2752,7 +2761,12 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
     /// Adopt a recovery view only after the native producer has reported the
     /// actual load and initialization completion. Native attachment/listeners
     /// are performed by the captured adapter, not this state reducer.
-    pub fn resume_tab_load_settled(&mut self, plan: PreparedTabLoad, view: V) -> Result<V, String> {
+    pub fn resume_tab_load_settled(
+        &mut self,
+        plan: PreparedTabLoad,
+        view: V,
+        binding: B,
+    ) -> Result<V, String> {
         self.loading_ids.retain(|id| id != &plan.context.tab_id);
         let index = self
             .index_of(&plan.context.tab_id)
@@ -2771,6 +2785,7 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
         }
         let tab = &mut self.tabs[index];
         tab.view = Some(view.clone());
+        tab.binding = Some(binding);
         tab.opener = None;
         tab.lazy = None;
         Ok(view)
@@ -2781,6 +2796,7 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
         host: &mut dyn TabHost<V, B>,
         plan: PreparedTabLoad,
         loaded: Result<LoadedTabView<V>, String>,
+        binding: B,
     ) -> Result<V, String> {
         self.loading_ids.retain(|id| id != &plan.context.tab_id);
         let loaded = match loaded {
@@ -2808,6 +2824,7 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
         let ready = ready.unwrap_or_else(|| host.page_loaded(&view));
         let tab = &mut self.tabs[index];
         tab.view = Some(view.clone());
+        tab.binding = Some(binding);
         tab.opener = None;
         tab.lazy = Some(LazyLoadState {
             ready,
@@ -3108,14 +3125,9 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
         match intent {
             SplitDropIntent::Noop => Ok(()),
             SplitDropIntent::Create(orientation) => {
-                let mut a_tab_id = self.previous_document_tab(tab_id);
-                if a_tab_id.is_none() {
-                    a_tab_id = self.open_duplicate_pane_tab(host, tab_id)?;
-                    if a_tab_id.is_none() {
-                        return Ok(());
-                    }
-                }
-                let Some(a_tab_id) = a_tab_id else {
+                // a drop with no other document waits for the caller to open the
+                // duplicate through its own creation path (`split_duplicate_pane`)
+                let Some(a_tab_id) = self.previous_document_tab(tab_id) else {
                     return Ok(());
                 };
                 self.set_split(
@@ -3299,17 +3311,16 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
         self.notify_split_changed(host);
     }
 
-    pub fn prepare_duplicate_pane_open(
-        &mut self,
-        host: &mut dyn TabHost<V, B>,
-        tab_id: &str,
-    ) -> Option<PreparedTabOpen<V, B>> {
+    /// `openDuplicatePaneTab`: what a second view of the tab's document opens;
+    /// `None` for a kind that cannot be duplicated
+    pub fn duplicate_pane(&self, tab_id: &str) -> Option<DuplicatePane> {
         let tab = self.tab_by_id(tab_id)?;
         if tab.view.is_none() || tab.present {
             return None;
         }
         let path = tab.file_path.clone();
-        let has_path = truthy(path.as_deref()).is_some();
+        let file_path = truthy(path.as_deref()).map(str::to_owned);
+        let has_path = file_path.is_some();
         let request = match tab.kind {
             TabKind::Docs => EditorOpen::Docs {
                 path,
@@ -3336,50 +3347,38 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
             TabKind::Diagram => EditorOpen::Diagram { path },
             TabKind::Home | TabKind::Help => return None,
         };
-        Some(self.prepare_editor_open(host, request))
+        Some(DuplicatePane {
+            kind: tab.kind,
+            file_path,
+            request,
+        })
     }
-    /// `openDuplicatePaneTab`: a second view of the same document for the
-    /// same-document split; `None` for a kind that cannot be duplicated
-    pub fn open_duplicate_pane_tab(
+
+    pub fn prepare_duplicate_pane_open(
         &mut self,
         host: &mut dyn TabHost<V, B>,
         tab_id: &str,
-    ) -> TabResult<Option<String>> {
-        let Some(tab) = self.tab_by_id(tab_id) else {
-            return Ok(None);
-        };
-        if tab.view.is_none() || tab.present {
-            return Ok(None);
+    ) -> Option<PreparedTabOpen<V, B>> {
+        let duplicate = self.duplicate_pane(tab_id)?;
+        Some(self.prepare_editor_open(host, duplicate.request))
+    }
+
+    /// The duplicate a `splitWith` create drop of `tab_id` needs opened before
+    /// it can place the tab: only when no other document tab is there to take
+    /// the opposite pane. The caller opens it through its own creation path, so
+    /// the tab carries the binding every editor tab it opens carries, then
+    /// calls [`Self::split_with`].
+    pub fn split_duplicate_pane(
+        &self,
+        tab_id: &str,
+        intent: Option<&SplitDropIntent>,
+    ) -> Option<DuplicatePane> {
+        if !matches!(intent, Some(SplitDropIntent::Create(_)))
+            || self.previous_document_tab(tab_id).is_some()
+        {
+            return None;
         }
-        let kind = tab.kind;
-        let path = tab.file_path.clone();
-        let path = path.as_deref();
-        let has_path = truthy(path).is_some();
-        Ok(Some(match kind {
-            TabKind::Docs => {
-                let options = OpenDocsOptions {
-                    new_blank: true,
-                    ai_content: None,
-                };
-                self.open_docs_tab(host, path, if has_path { None } else { Some(&options) })?
-            }
-            TabKind::Sheets => self.open_sheets_tab(host, path, !has_path)?,
-            TabKind::Slides => self.open_slides_tab(host, path)?,
-            TabKind::Pdf => match truthy(path) {
-                Some(path) => self.open_pdf_tab(host, path)?,
-                None => return Ok(None),
-            },
-            TabKind::Markdown => self.open_markdown_tab(host, path)?,
-            TabKind::Html => self.open_html_tab(host, path)?,
-            TabKind::Mindmap => self.open_mindmap_tab(host, path)?,
-            TabKind::Hwp => self.open_hwp_tab(host, path, None)?,
-            TabKind::Epub => match truthy(path) {
-                Some(path) => self.open_epub_tab(host, path)?,
-                None => return Ok(None),
-            },
-            TabKind::Diagram => self.open_diagram_tab(host, path)?,
-            TabKind::Home | TabKind::Help => return Ok(None),
-        }))
+        self.duplicate_pane(tab_id)
     }
 
     /// `beginExclusivePrompt`: snapshot the arrangement around a prompt that

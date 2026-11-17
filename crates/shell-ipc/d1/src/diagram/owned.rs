@@ -1463,19 +1463,17 @@ impl DiagramViews {
                         "diagram: refusing to write a diagram that would not open".to_owned(),
                     ));
                 }
-                let path = shell
-                    .write_new_document_owned(
-                        scope.authority.renderer()?,
-                        &scope.destination,
-                        &scope.cancel,
-                        &scope.pending,
-                        &scope.effects,
-                        admission,
-                        &file_name,
-                        &bytes,
-                    )
-                    .map_err(thrown)?;
-                Ok(Ok(path))
+                // Electron answers a failed project write as `{ ok: false, error }`
+                Ok(shell.write_new_document_owned(
+                    scope.authority.renderer()?,
+                    &scope.destination,
+                    &scope.cancel,
+                    &scope.pending,
+                    &scope.effects,
+                    admission,
+                    &file_name,
+                    &bytes,
+                ))
             })();
             core.post(Box::new(move || {
                 let Some(views) = super::lookup(instance) else {

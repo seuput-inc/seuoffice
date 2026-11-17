@@ -267,7 +267,7 @@ impl App {
     }
 
     fn saved_hook_published(&self, id: &str, recipient: NativeRequestOwner, path: String) {
-        let (scope, revision) = {
+        let (scope, revision, announce) = {
             let state = self.state.borrow();
             let Some(write) = state.owned_writes.get(id) else {
                 return;
@@ -279,13 +279,16 @@ impl App {
                     meta_rev: write.meta_rev,
                     op_seq: write.op_seq,
                 },
+                write.announce,
             )
         };
         if let Err(error) = scope.effect_at_revision(self, &revision, || ()) {
             return self.publication_done(id, Err(error), false);
         }
         let request = &scope.request;
-        if let Err(error) = request.emit(&recipient, "slides:renamed", vec![string(&path)]) {
+        if announce
+            && let Err(error) = request.emit(&recipient, "slides:renamed", vec![string(&path)])
+        {
             return self.publication_done(id, Err(error), false);
         }
         let services = self.services.clone();

@@ -102,6 +102,12 @@ pub trait DocsEngine: Send + Sync {
     fn move_lazy_media_source(&self, old_path: &str, new_path: &str) -> Result<(), String>;
     /// `forgetLazyMediaOwner(wcId)`
     fn forget_lazy_media_owner(&self, permit: MediaPermit) -> Result<(), String>;
+    /// `forgetLazyMediaOwner(wcId)` for a view that is gone (`teardownDocsRenderer`,
+    /// `dropDocWriter`), as against the release of a superseded permit, which
+    /// Electron's per-view registry does by itself when the next document opens
+    fn release_lazy_media_view(&self, permit: MediaPermit) -> Result<(), String> {
+        self.forget_lazy_media_owner(permit)
+    }
     /// `readLazyMedia(url)`
     fn read_lazy_media(
         &self,
@@ -725,8 +731,11 @@ mod fake {
                 None => Ok(()),
             }
         }
-        fn forget_lazy_media_owner(&self, permit: MediaPermit) -> Result<(), String> {
+        fn release_lazy_media_view(&self, permit: MediaPermit) -> Result<(), String> {
             self.log(json!(["forgetLazyMediaOwner", permit.owner().view]));
+            self.forget_lazy_media_owner(permit)
+        }
+        fn forget_lazy_media_owner(&self, _permit: MediaPermit) -> Result<(), String> {
             match self
                 .answer("forget_lazy_media_owner")
                 .as_ref()
