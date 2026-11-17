@@ -29,6 +29,8 @@ interface Format {
   editingText: RegExp
   /** the page paints the document on a canvas: typed text would show only in the pixels */
   pixels?: boolean
+  /** the page turns on a click or a space: only the document is compared, not the page indicator */
+  turns?: boolean
   /** something only a reading page has */
   reading: string
 }
@@ -61,7 +63,7 @@ const FORMATS: Format[] = [
     name: 'pptx',
     file: () => at('packages/pptx-engine/tests/fixtures/01_standard_business.pptx'),
     editingText: EDITING_TEXT,
-    pixels: true,
+    turns: true,
     reading: '.reading-view',
   },
   {
@@ -97,6 +99,29 @@ async function visibleCount(frame: Frame, selector: string): Promise<number> {
       (el) => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden',
     ).length
   }, selector)
+}
+
+/** Every slide's text as the renderer draws it, so a page turn cannot hide a changed deck */
+async function deckText(page: Page): Promise<string> {
+  const frame = appFrames(page)[0]!
+  return frame.evaluate(async () => {
+    const slides = await (
+      window as unknown as {
+        slidesApi: {
+          getRenderSlides(): Promise<
+            { nodes: { text?: { lines: { runs: { text: string }[] }[] } }[] }[] | null
+          >
+        }
+      }
+    ).slidesApi.getRenderSlides()
+    return JSON.stringify(
+      (slides ?? []).map((slide) =>
+        slide.nodes.map((node) =>
+          node.text?.lines.map((line) => line.runs.map((run) => run.text).join('')),
+        ),
+      ),
+    )
+  })
 }
 
 async function bodyText(page: Page): Promise<string> {
@@ -187,7 +212,11 @@ async function bodyText(page: Page): Promise<string> {
 
         // typing, pasting and dropping change nothing
         const viewer = page.locator('#viewer iframe')
-        const before = await bodyText(page)
+        const documentText = async (): Promise<string> => {
+          const text = await bodyText(page)
+          return format.turns ? text.replace(/\d+ \/ \d+/g, '') + (await deckText(page)) : text
+        }
+        const before = await documentText()
         const box = (await viewer.boundingBox())!
         await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
         const pixelsBefore = format.pixels ? await viewer.screenshot() : null
@@ -216,8 +245,8 @@ async function bodyText(page: Page): Promise<string> {
         if (pixelsBefore) {
           expect(await changedPixels(page, pixelsBefore, await viewer.screenshot())).toBe(0)
         }
-        expect(await bodyText(page)).toBe(before)
-        expect(await bodyText(page)).not.toContain('ZZTOP')
+        expect(await documentText()).toBe(before)
+        expect(await documentText()).not.toContain('ZZTOP')
         if (format.editable) {
           const editable = await app
             .locator(format.editable)
