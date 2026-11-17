@@ -26,6 +26,18 @@ const MAX_PRINT_PIXELS = 150_000_000
     outlast a real dialog the user is still reading. */
 export const PRINT_DIALOG_TIMEOUT_MS = 300_000
 
+/** A page that may print starts its print job at once (`beforeprint`); one that was not allowed to
+    (a sandboxed iframe without allow-modals ignores `window.print`) never does. */
+export const PRINT_START_TIMEOUT_MS = 2_000
+
+/** `window.print` did nothing: the page is not allowed to print */
+export class PrintBlockedError extends Error {
+  constructor() {
+    super('window.print was ignored: the page is not allowed to open the print dialog')
+    this.name = 'PrintBlockedError'
+  }
+}
+
 /**
  * Render scale for a document given each page's area at scale 1 (PDF points²):
  * full 200 DPI while the whole document fits the pixel budget, otherwise the
@@ -57,15 +69,28 @@ export function printScaleForAreas(areas: number[]): number {
 function waitForPrintDialog(timeoutMs: number): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     let timer: ReturnType<typeof setTimeout> | null = null
+    let startTimer: ReturnType<typeof setTimeout> | null = null
     const detach = () => {
       if (timer !== null) clearTimeout(timer)
+      if (startTimer !== null) clearTimeout(startTimer)
       timer = null
+      startTimer = null
       window.removeEventListener('afterprint', onAfterPrint)
+      window.removeEventListener('beforeprint', onBeforePrint)
     }
     function onAfterPrint(): void {
       detach()
       resolve()
     }
+    function onBeforePrint(): void {
+      if (startTimer !== null) clearTimeout(startTimer)
+      startTimer = null
+    }
+    startTimer = setTimeout(() => {
+      detach()
+      reject(new PrintBlockedError())
+    }, PRINT_START_TIMEOUT_MS)
+    window.addEventListener('beforeprint', onBeforePrint)
     timer = setTimeout(() => {
       detach()
       reject(new Error('the print dialog never reported completion; released the rendered pages'))

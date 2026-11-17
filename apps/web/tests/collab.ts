@@ -37,10 +37,14 @@ export async function openCoEdited(
     ready?: 'editor' | 'canvas'
     /** what a person does before the document shows, such as typing its password */
     unlock?(frame: FrameLocator): Promise<void>
+    /** the page's window; a PDF without an AI panel beside it is fitted to the width, a tall page */
+    viewport?: { width: number; height: number }
   },
 ): Promise<CoEditor> {
   const access = options.access ?? 'edit'
-  const context = await browser.newContext({ viewport: { width: 1400, height: 900 } })
+  const context = await browser.newContext({
+    viewport: options.viewport ?? { width: 1400, height: 900 },
+  })
   const page = await context.newPage()
   // SEUOFFICE_SLOW_CPU=6 slows every page as a small CI runner does: the way to meet at a desk
   // the timing a spec only shows there

@@ -258,13 +258,13 @@ test('docs: the AI answer comes through the host and its edit lands as a tracked
   expect(second!.messages.some((m) => m.role === 'tool')).toBe(true)
 })
 
-test('docs: without AI from the host the panel asks to connect and nothing is sent', async ({
+test('docs: without AI from the host there is no AI panel or button and nothing is sent', async ({
   page,
 }) => {
   const frame = await openHost(page, DOCX, { mode: 'edit' })
-  await askDocs(frame, '안녕')
-  await expect(frame.getByText('AI를 쓰려면 먼저 연결하세요')).toBeVisible()
-  await expect(frame.locator('.ai-msg-assistant')).toHaveCount(0)
+  await expect(frame.locator('.ProseMirror')).toBeVisible({ timeout: 30_000 })
+  await expect(frame.locator('.ai-dock, .ai-panel, .ai-rail, .ai-entry')).toHaveCount(0)
+  await expect(frame.locator('.ai-input-box textarea')).toHaveCount(0)
   expect((await hostState(page)).asked).toBe(0)
 })
 
@@ -377,9 +377,10 @@ const setSubtitle = (text: string): string =>
   })
 
 async function askSlides(frame: FrameLocator, prompt: string): Promise<void> {
-  await expect(frame.locator('.thumb')).toHaveCount(5, { timeout: 30_000 })
+  // edit mode lists the slides as thumbnails; the view mode reads one slide at a time, the panel on its rail
+  await expect(frame.locator('.thumb, .reading-slide').first()).toBeVisible({ timeout: 30_000 })
   const input = frame.locator('.ai-input-box textarea')
-  if (!(await input.isVisible())) await frame.locator('.stage-ai-btn').click()
+  if (!(await input.isVisible())) await frame.locator('.stage-ai-btn, .ai-rail').first().click()
   await input.fill(prompt)
   await input.press('Enter')
 }

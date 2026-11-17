@@ -48,7 +48,9 @@ async function open(page: Page, edit: boolean): Promise<FrameLocator> {
   await page.setInputFiles('#file', FIXTURE)
   await expect(page.locator('#status')).toHaveText(FILE_NAME, { timeout: 30_000 })
   const frame = page.frameLocator('#viewer iframe')
-  await expect(frame.locator('.thumb')).toHaveCount(5)
+  // edit mode lists the slides as thumbnails; view mode reads one slide at a time
+  if (edit) await expect(frame.locator('.thumb')).toHaveCount(5)
+  else await expect(frame.locator('.reading-slide')).toBeVisible()
   return frame
 }
 
@@ -210,18 +212,26 @@ test('without edit mode the presentation cannot be changed or saved', async ({ p
   let downloads = 0
   page.on('download', () => downloads++)
   await expect(page.locator('#save')).toBeHidden()
+  // reading tools only: no slide list, no editing ribbon, no notes pane
+  await expect(frame.locator('.thumb, .ribbon, .notes-pane')).toHaveCount(0)
 
-  await editTextShowing(page, 'Fiscal Year 2026')
+  await frame.locator('.reading-slide').dblclick()
   await page.keyboard.press('ControlOrMeta+A')
   await page.keyboard.type('Fiscal Year 2027')
-  await frame.locator('.notes-pane textarea').click()
-  await frame.locator('.thumb').first().click()
+  await page.keyboard.press('Delete')
   await page.keyboard.press(await newSlideChord(page))
   await page.keyboard.press('ControlOrMeta+S')
   // give a refused edit or save the time a real one takes to land
   await page.waitForTimeout(1_000)
 
-  await expect(frame.locator('.thumb')).toHaveCount(5)
+  await expect(frame.locator('.slide-text-editor')).toHaveCount(0)
   expect(await shownTexts(page, 0)).toEqual(['Q3 Business Review', 'Fiscal Year 2026'])
+  const frameOfApp = page.frames().find((candidate) => candidate !== page.mainFrame())!
+  expect(
+    await frameOfApp.evaluate(async () => {
+      const slides = await (window as unknown as SlidesPage).slidesApi.getRenderSlides()
+      return slides?.length
+    }),
+  ).toBe(5)
   expect(downloads).toBe(0)
 })

@@ -191,8 +191,9 @@ test('view mode keeps the workbook as it is and saves nothing', async ({ page })
   await page.keyboard.press('ControlOrMeta+s')
   // the journal and a save settle well within this; edit mode shows both sooner
   await page.waitForTimeout(1000)
-  // an edit would land in the journal and enable the save button, as it does in edit mode
-  await expect(saveButton(frame)).toBeDisabled()
+  // the view has no save button (an edit would enable it, as in edit mode), and nothing was reported
+  await expect(saveButton(frame)).toHaveCount(0)
+  await expect(page.locator('#status')).not.toContainText('저장 안 함')
   expect(downloads).toBe(0)
 })
 
@@ -215,10 +216,11 @@ test('a text box inserts in edit mode and not in view mode', async ({ page }) =>
   await unsaved(page)
   await expect(saveButton(editing)).toBeEnabled()
 
+  // the view has no Insert tab to begin with
   const viewing = await open(page, FIXTURE, false)
-  await insertTextBox(viewing)
-  await page.waitForTimeout(1000)
-  await expect(saveButton(viewing)).toBeDisabled()
+  await expect(viewing.getByRole('button', { name: /텍스트 상자/ })).toHaveCount(0)
+  await expect(viewing.getByText('삽입', { exact: true })).toHaveCount(0)
+  await expect(saveButton(viewing)).toHaveCount(0)
 })
 
 /** A note through the grid's context menu: Univer's note plugin, outside the ribbon */
@@ -250,5 +252,6 @@ test('a context-menu note adds in edit mode and not in view mode', async ({ page
   const viewing = await open(page, FIXTURE, false)
   await addNote(page, viewing, 'note-in-view')
   await page.waitForTimeout(1000)
-  await expect(saveButton(viewing)).toBeDisabled()
+  await expect(saveButton(viewing)).toHaveCount(0)
+  await expect(page.locator('#status')).not.toContainText('저장 안 함')
 })

@@ -404,6 +404,8 @@ export const strings = {
     ocrStopped: 'Stopped recognizing scanned pages: {done} of {total} recognized.',
     print: 'Print',
     printPreparing: 'Preparing…',
+    printBlocked:
+      'This view cannot open the print dialog. Download the document or open it in its own window to print it.',
     printRangeAll: 'All pages',
     printRangeCurrent: 'Current page',
     printRangeCustom: 'Custom range',
@@ -871,6 +873,8 @@ export const strings = {
     ocrStopped: '스캔 페이지 인식을 중단했습니다: {done} / {total}페이지 인식됨.',
     print: '인쇄',
     printPreparing: '준비 중…',
+    printBlocked:
+      '이 화면에서는 인쇄 창을 열 수 없습니다. 문서를 내려받거나 새 창에서 열어 인쇄해 주세요.',
     printRangeAll: '모든 페이지',
     printRangeCurrent: '현재 페이지',
     printRangeCustom: '사용자 지정 범위',

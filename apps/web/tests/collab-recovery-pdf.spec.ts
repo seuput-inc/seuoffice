@@ -61,7 +61,12 @@ recoveryTests({
   label: 'pdf',
   file: onePagePdf,
   async open(browser, file, documentId, user) {
-    const editor = await openCoEdited(browser, file, { documentId, user, ready: 'canvas' })
+    const editor = await openCoEdited(browser, file, {
+      documentId,
+      user,
+      ready: 'canvas',
+      viewport: { width: 1400, height: 2200 },
+    })
     await expect(editor.frame.locator('.pdf-page').first()).toBeVisible({ timeout: 20_000 })
     await countOwnEdits(editor)
     return editor
