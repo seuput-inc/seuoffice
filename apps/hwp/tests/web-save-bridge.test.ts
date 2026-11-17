@@ -51,7 +51,9 @@ describe('host save requests in edit mode', () => {
     await window.hwpApi.readFile(doc.virtualPath)
     renderer(window.hwpApi)
   })
-  beforeEach(() => host.saveToHost.mockReset())
+  beforeEach(() => {
+    host.saveToHost.mockReset()
+  })
 
   it('settles each of two overlapping requests after its own save', async () => {
     let release!: () => void
@@ -111,7 +113,12 @@ describe('host save requests in edit mode', () => {
 
   it('names a host save by its request token and leaves an overlapping autosave and user save theirs', async () => {
     const gate: (() => void)[] = []
-    host.saveToHost.mockImplementation(() => new Promise<void>((resolve) => gate.push(resolve)))
+    // one pending store per save, and no default left behind: a later call of the mock must not hang
+    for (let i = 0; i < 3; i++) {
+      host.saveToHost.mockImplementationOnce(
+        () => new Promise<void>((resolve) => void gate.push(resolve)),
+      )
+    }
     const request = host.saveRequest!('request-1')
     await vi.waitFor(() => expect(host.saveToHost).toHaveBeenCalledTimes(1))
     // while the host's save is with the host, an autosave and a person's save run their own calls

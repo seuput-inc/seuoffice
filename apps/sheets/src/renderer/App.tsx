@@ -6195,7 +6195,7 @@ export function App({
         guardedSave(gate, refusal, async (): Promise<SaveOutcome> => {
           if (!(await commitActiveEditor())) return { ok: false }
           return handleSaveImpl(
-            { ...saveContext(), hostSaveId },
+            { ...saveContext(), ...(hostSaveId === undefined ? {} : { hostSaveId }) },
             mode,
             quiet,
             explicitTarget,

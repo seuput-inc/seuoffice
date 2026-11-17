@@ -127,10 +127,15 @@ const pdf: Format = {
   },
   async edit(page) {
     const app = appLocator(page)
-    const rotate = app.getByRole('button', { name: '오른쪽으로 회전' })
-    // a second press of the open tab would collapse the ribbon
-    if (!(await rotate.isVisible())) await app.locator('.ribbon-tab', { hasText: '페이지' }).click()
-    await rotate.click()
+    // a rotation made while the page reloads after a save is dropped: press again until it counts
+    await expect(async () => {
+      const rotate = app.getByRole('button', { name: '오른쪽으로 회전' })
+      // a second press of the open tab would collapse the ribbon
+      if (!(await rotate.isVisible()))
+        await app.locator('.ribbon-tab', { hasText: '페이지' }).click()
+      await rotate.click()
+      await expect(page.locator('#status')).toContainText('저장 안 함', { timeout: 3000 })
+    }).toPass({ timeout: 20_000 })
   },
   async userSave(page) {
     await appLocator(page).locator('.pdf-page-content').first().click()
@@ -197,15 +202,18 @@ const sheets: Format = {
     await nameBox(app).fill('A1')
     await nameBox(app).press('Enter')
     await nameBox(app).blur()
-    await page.keyboard.press('ControlOrMeta+h')
-    const panel = app.getByRole('dialog', { name: '찾기 및 바꾸기' })
-    await expect(panel).toBeVisible()
-    await panel.getByLabel('찾을 내용').fill(DOC_MARKER)
-    await panel.getByLabel('찾을 내용').press('Enter')
+    // the Home tab's Find button opens the app's find and replace panel
+    await app.locator('.inline-tools button', { hasText: '찾기' }).first().click()
+    const panel = app.locator('.find-replace-panel')
+    await expect(panel).toBeVisible({ timeout: 10_000 })
+    const query = panel.locator('input').first()
+    await query.fill(DOC_MARKER)
+    await query.press('Enter')
     await panel.getByRole('tab', { name: '바꾸기' }).click()
-    await panel.getByLabel('바꿀 내용').fill(`${DOC_MARKER}replacement`)
-    await panel.getByLabel('바꿀 내용').press('Enter')
-    await panel.getByLabel('찾을 내용').press('Escape')
+    const inputs = panel.locator('.fr-grid input:not([type="checkbox"])')
+    await inputs.nth(1).fill(`${DOC_MARKER}replacement`)
+    await inputs.nth(1).press('Enter')
+    await inputs.first().press('Escape')
   },
   async edit(page, n) {
     const app = appLocator(page)
