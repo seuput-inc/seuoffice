@@ -70,15 +70,6 @@ jobs:
       version: ${{ steps.pick.outputs.version }}
       publish: ${{ steps.pick.outputs.publish }}
     steps:
-      # only the release-notes files and their checker: nothing here builds
-      - name: Checkout the release notes
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          sparse-checkout: |
-            tools/check-release-notes.mjs
-            docs/seuoffice/판-노트
-          sparse-checkout-cone-mode: false
-
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
