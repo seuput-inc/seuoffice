@@ -792,10 +792,8 @@ fn save(
                         engine.prepare_pdf_save(&bytes, &request, true, &cancel)?
                     }
                     None => {
-                        engine.owned_helper(
-                            "savePdfToPath",
-                            &[source.as_str(), written.as_str()],
-                        )?;
+                        engine
+                            .owned_helper("savePdfToPath", &[source.as_str(), written.as_str()])?;
                         engine.prepare_pdf_save(&read_file(&source)?, &request, false, &cancel)?
                     }
                 };

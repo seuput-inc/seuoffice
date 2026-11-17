@@ -2636,7 +2636,15 @@ mod window_tests {
         let mut results = Vec::new();
         for op in ops {
             let name = str_of(op, "op").unwrap_or("");
-            results.push(run_op(name, op, &mut world, &mut tabs, &mut windows, "", Sink::Op));
+            results.push(run_op(
+                name,
+                op,
+                &mut world,
+                &mut tabs,
+                &mut windows,
+                "",
+                Sink::Op,
+            ));
             world.after_op(&mut tabs, &mut windows);
         }
         results
