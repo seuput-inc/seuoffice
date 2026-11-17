@@ -1214,8 +1214,13 @@ pub fn set_slide_layout(app: &App, cx: &CallContext, args: Args) -> Reply {
                 if let Some(layout) = layout.filter(truthy) {
                     o = o.set("layoutPath", layout);
                 }
-                app.journaled_txn(s, &owner, OpSource::Edit, &TxnRequest::atomic(vec![o.build()]))?
-                    .applied
+                app.journaled_txn(
+                    s,
+                    &owner,
+                    OpSource::Edit,
+                    &TxnRequest::atomic(vec![o.build()]),
+                )?
+                .applied
             };
             Ok((applied, applied))
         })?;

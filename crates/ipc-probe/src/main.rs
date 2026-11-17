@@ -796,8 +796,7 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
             && matches!(
                 sender.surface,
                 Surface::Slides | Surface::Sheets | Surface::Mindmap | Surface::Diagram
-            )
-        {
+            ) {
             capture_native(sender).map(|owner| owner.context)
         } else if sender.surface == Surface::Slides {
             case_owners
@@ -830,13 +829,15 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
                 })
                 .map(|owner| owner.context)
         } else if d2 && matches!(channel, "html:handoff-take" | "html:handoff-run-started") {
-            case_views.renderer_generation(sender.view).map(|generation| {
-                shell_contract::ipc::NativeContext::with_owner_loss(
-                    (),
-                    generation.clone(),
-                    generation.loss_token(),
-                )
-            })
+            case_views
+                .renderer_generation(sender.view)
+                .map(|generation| {
+                    shell_contract::ipc::NativeContext::with_owner_loss(
+                        (),
+                        generation.clone(),
+                        generation.loss_token(),
+                    )
+                })
         } else {
             None
         };

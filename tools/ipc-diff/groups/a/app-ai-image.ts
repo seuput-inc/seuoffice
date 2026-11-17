@@ -209,13 +209,6 @@ async function load(cx: LoadContext): Promise<void> {
   globalThis.fetch = fakeFetch(net.fetch ?? [], cx.electron.log)
 
   const electron = cx.electron as unknown as { ipcMain: unknown; app: unknown }
-  // a real webContents has `removeListener`, which `withMediaCallSignal` calls when a call ends;
-  // the fake keeps `once` listeners for good (no case destroys a view), so there is nothing to take off
-  for (const v of cx.case.views ?? []) {
-    cx.electron.contents(v.view).removeListener = function (this: unknown) {
-      return this
-    }
-  }
   // hwp and mindmap: the modules as they are
   const hwp = await cx.fresh<typeof HwpImage>('apps/hwp/src/main/ai-image.ts')
   hwp.registerHwpImageIpc({ filePathOf: () => null })

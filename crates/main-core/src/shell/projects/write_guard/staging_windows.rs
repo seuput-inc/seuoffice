@@ -1313,8 +1313,13 @@ mod tests {
             DataTarget::Directory
         );
         std::fs::remove_dir(data_path.join("folder")).unwrap();
-        let mut partial =
-            create_project_data_stage(&data, data_path.to_str().unwrap(), path.to_str().unwrap(), "partial.md").unwrap();
+        let mut partial = create_project_data_stage(
+            &data,
+            data_path.to_str().unwrap(),
+            path.to_str().unwrap(),
+            "partial.md",
+        )
+        .unwrap();
         assert!(publish_project_data_replace(&mut partial).is_err());
         write_project_data_stage(&mut partial, b"one").unwrap();
         assert!(write_project_data_stage(&mut partial, b"two").is_err());

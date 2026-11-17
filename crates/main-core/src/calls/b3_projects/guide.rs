@@ -27,6 +27,7 @@ use jscompat::{js_regex, json_value_from_serde, to_iso_string, utc_date_parts};
 use serde_json::{Map, Value, json};
 
 use super::super::{Answer, CallError, Context, arg};
+use crate::packages::project_store::ProjectWriteResult;
 use crate::packages::project_store::{
     ApplyMemoryConsolidationArgs, ProjectChatRef, ProjectMemoryOp, ProjectTrustAnswer,
     ProjectTrustDecision, ProjectTrustPrompt, UndoMemoryConsolidationArgs, real_path_native,
@@ -35,7 +36,6 @@ use crate::shell::projects::chat_store::{
     AppendOutcome, AppendProgress, ChatIoResult, ChatOperation, ChatSender, ChatStoreError,
     ChatStoreErrorKind, ChatStoreHost, ChatStoreOptions, IdentityRefusal, ProjectChatStore,
 };
-use crate::packages::project_store::ProjectWriteResult;
 use crate::shell::projects::memory::LocalDateParts;
 use crate::shell::projects::project_guide::{
     ContextFiles, ContextFilesProvider, ContextFilesRequest, EnvLookup, GuideError, GuideStep,

@@ -2557,7 +2557,10 @@ impl ProjectGuide {
     /// is reported, not thrown.
     pub fn write_failed(&self, id: &str, message: &str) -> ProjectWriteResult {
         self.mark_unwritable(id);
-        self.warn(&format!("[projects] cannot write into project {id}:"), message);
+        self.warn(
+            &format!("[projects] cannot write into project {id}:"),
+            message,
+        );
         ProjectWriteResult::Unwritable
     }
 

@@ -931,7 +931,10 @@ fn place_staged_save(
     target: &str,
     extension: &str,
 ) -> Result<(), IpcError> {
-    let beside = join(&[&dirname(target), &format!(".{}.tmp.{extension}", env.uuid())]);
+    let beside = join(&[
+        &dirname(target),
+        &format!(".{}.tmp.{extension}", env.uuid()),
+    ]);
     let placed = fs::copy(staged, &beside)
         .map_err(|e| io_err(e, "copyfile", staged))
         .and_then(|_| env.engine.promote_file_atomically(&beside, target));

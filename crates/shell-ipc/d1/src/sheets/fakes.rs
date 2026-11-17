@@ -1380,12 +1380,9 @@ impl SheetsShell for FakeShell {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
-        let mut staged = crate::staged::StagedOutput::prepare(
-            &path,
-            bytes.to_vec(),
-            PublicationMode::Replace,
-        )
-        .map_err(|error| error.message)?;
+        let mut staged =
+            crate::staged::StagedOutput::prepare(&path, bytes.to_vec(), PublicationMode::Replace)
+                .map_err(|error| error.message)?;
         let commit = staged.take().map_err(|error| error.message)?;
         let result = effects.publish_owned_staged_write(
             origin,

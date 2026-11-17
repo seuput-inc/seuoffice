@@ -1670,8 +1670,12 @@ impl ProjectWriteGuard {
                     attempt += 1;
                 }
                 Err(error) => {
-                    if remove_private_stage(root_handle, &private_path, &private, Some(payload_name))
-                    {
+                    if remove_private_stage(
+                        root_handle,
+                        &private_path,
+                        &private,
+                        Some(payload_name),
+                    ) {
                         // The original stages a temporary file beside the
                         // target, so a data folder that takes no new entry
                         // refuses there with `open` on that name.

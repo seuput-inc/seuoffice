@@ -327,14 +327,6 @@ async function load(cx: LoadContext): Promise<void> {
     Date.now = REAL_DATE_NOW
   }
   setHeadlessMode(world.headless === true)
-  // a real webContents has `removeListener`, which `withMediaCallSignal` and `abortOnDestroyed`
-  // call when a call ends; the fake keeps `once` listeners for good (no case destroys a view),
-  // so there is nothing to take off
-  for (const v of cx.case.views ?? []) {
-    cx.electron.contents(v.view).removeListener = function (this: unknown) {
-      return this
-    }
-  }
   const electron = cx.electron as unknown as {
     ipcMain: unknown
     app: unknown

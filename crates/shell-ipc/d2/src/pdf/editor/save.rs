@@ -820,7 +820,9 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
     all.push(kit::invoke_later("pdf:save", move |cx, mut args, reply| {
         let direct = if kit::as_str(field(args.get(0), "ownedSaveId")).is_none() {
             // the Electron handler's first check is the view's grant (pdf-main.ts:1414)
-            if e.granted(cx.sender.view, field(args.get(0), "path")).is_none() {
+            if e.granted(cx.sender.view, field(args.get(0), "path"))
+                .is_none()
+            {
                 return reply.reply(Ok(failed(NOT_GRANTED)));
             }
             match e.direct_save_authority(cx.sender.view, cx.native.clone(), cx.cancel.clone()) {

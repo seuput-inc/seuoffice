@@ -244,7 +244,10 @@ mod tests {
                 let restored = settles(word, true);
                 assert!(learned.unwrap(), "the learned word is still misspelled");
                 assert!(dropped.unwrap());
-                assert!(restored.unwrap(), "the dropped word is no longer misspelled");
+                assert!(
+                    restored.unwrap(),
+                    "the dropped word is no longer misspelled"
+                );
             }
         }
     }

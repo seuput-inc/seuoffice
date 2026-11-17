@@ -772,7 +772,10 @@ mod editor_tests {
             )),
             remaining: image_limit,
         };
-        assert_eq!(image_above_table.array_buffer().unwrap().len(), table_limit + 1);
+        assert_eq!(
+            image_above_table.array_buffer().unwrap().len(),
+            table_limit + 1
+        );
         let mut table = CappedEditorResponse {
             inner: Box::new(MemoryResponse::new(200, Vec::new(), vec![0; table_limit])),
             remaining: table_limit,
