@@ -26,9 +26,9 @@
  * `collab_unavailable`.
  */
 
-import { createCollabPipe, type CollabRelay } from './collab'
+import { createCollabPipe, type CollabRelay } from './collab.js'
 
-export type { CollabRelay, CollabStatus, WebSocketLike } from './collab'
+export type { CollabRelay, CollabStatus, WebSocketLike } from './collab.js'
 
 export type SeuofficeApp = 'docs' | 'sheets' | 'slides' | 'pdf' | 'hwp'
 
@@ -62,6 +62,9 @@ export type EmbedErrorCode =
   | 'timeout'
   | 'save_failed'
   | 'collab_unavailable'
+  | 'open_timeout'
+  | 'invalid_sandbox'
+  | 'origin_not_allowed'
 
 export class SeuofficeEmbedError extends Error {
   readonly code: EmbedErrorCode
@@ -81,6 +84,18 @@ interface BaseOpenOptions {
   lang?: string
   /** how long to wait for the page to announce itself; default 30000 */
   readyTimeoutMs?: number
+  /**
+   * the iframe's `sandbox` attribute; default `DEFAULT_SANDBOX`. It must keep
+   * `allow-scripts` and `allow-same-origin`, else `opened` rejects with `invalid_sandbox`
+   */
+  sandbox?: string
+  /** the iframe's `allow` (permissions policy) attribute; none by default */
+  allow?: string
+  /**
+   * how long the page has to open the document once the host sent it (from
+   * `ready` to `opened`); on expiry `opened` rejects with `open_timeout`. Default 60000
+   */
+  openTimeoutMs?: number
   /** offer AI to the page; without it the page shows AI as not connected */
   ai?: AiRelay
 }
@@ -179,6 +194,20 @@ export interface CollabEmbeddedDocument extends EmbeddedDocument {
 const SOURCE = 'seuoffice'
 const VERSION = 1
 
+/**
+ * The iframe's `sandbox` unless `OpenOptions.sandbox` says otherwise. The page
+ * needs scripts and its own origin (without `allow-same-origin` it cannot
+ * announce itself); `allow-downloads` lets the page hand a file to the user.
+ * Popups, modals, forms, top navigation and the like stay closed.
+ */
+export const DEFAULT_SANDBOX = 'allow-scripts allow-same-origin allow-downloads'
+
+/** Without these two in `sandbox` the page cannot open: `openDocument` refuses at once */
+const REQUIRED_SANDBOX = ['allow-scripts', 'allow-same-origin']
+
+/** How long the page has, after the host sent the bytes, to answer `opened` or `error` */
+export const DEFAULT_OPEN_TIMEOUT_MS = 60000
+
 export function openDocument(
   container: HTMLElement,
   options: CollabOpenOptions,
@@ -187,6 +216,8 @@ export function openDocument(container: HTMLElement, options: OpenOptions): Embe
 export function openDocument(container: HTMLElement, options: OpenOptions): CollabEmbeddedDocument {
   const iframe = container.ownerDocument.createElement('iframe')
   const app = appForFileName(options.fileName)
+  const sandbox = options.sandbox ?? DEFAULT_SANDBOX
+  const sandboxTokens = sandbox.split(/\s+/)
   const refusal = !app
     ? new SeuofficeEmbedError('unsupported_format', `no seuoffice app opens ${options.fileName}`)
     : options.bytes.byteLength > MAX_EMBED_BYTES
@@ -194,7 +225,12 @@ export function openDocument(container: HTMLElement, options: OpenOptions): Coll
           'too_large',
           `${options.fileName} is ${options.bytes.byteLength} bytes; the limit is ${MAX_EMBED_BYTES}`,
         )
-      : null
+      : !REQUIRED_SANDBOX.every((token) => sandboxTokens.includes(token))
+        ? new SeuofficeEmbedError(
+            'invalid_sandbox',
+            `sandbox "${sandbox}" must allow ${REQUIRED_SANDBOX.join(' and ')}: the page cannot open without them`,
+          )
+        : null
   if (refusal) {
     const opened = Promise.reject(refusal)
     // a rejection the host never awaits must not surface as unhandled
@@ -222,6 +258,9 @@ export function openDocument(container: HTMLElement, options: OpenOptions): Coll
   const mode = options.mode ?? 'view'
   const editing = options.mode === 'edit' ? options : undefined
   const query = new URLSearchParams({ mode, lang: options.lang ?? 'ko' })
+  // the sandbox is set before the frame navigates, so the page never runs outside it
+  iframe.setAttribute('sandbox', sandbox)
+  if (options.allow !== undefined) iframe.setAttribute('allow', options.allow)
   iframe.src = new URL(`${app}/index.html?${query}`, base).href
   iframe.style.width = '100%'
   iframe.style.height = '100%'
@@ -256,10 +295,12 @@ export function openDocument(container: HTMLElement, options: OpenOptions): Coll
       { targetOrigin: base.origin, transfer },
     )
   }
+  let openTimer: ReturnType<typeof setTimeout> | undefined
   const settle = (error?: SeuofficeEmbedError): void => {
     if (settled) return
     settled = true
     clearTimeout(timer)
+    clearTimeout(openTimer)
     if (error) reject(error)
     else resolve()
   }
@@ -281,6 +322,11 @@ export function openDocument(container: HTMLElement, options: OpenOptions): Coll
       }
       sent = true
       clearTimeout(timer)
+      // from here the page has the bytes: it must answer `opened` or `error` in time
+      openTimer = setTimeout(
+        () => settle(new SeuofficeEmbedError('open_timeout', 'the document did not open in time')),
+        options.openTimeoutMs ?? DEFAULT_OPEN_TIMEOUT_MS,
+      )
       collabAnswer(data.collab === true)
       // an exact fresh copy: a view's slice() may share its backing buffer (Buffer#slice does)
       const source =
@@ -519,6 +565,7 @@ function isPageErrorCode(code: unknown): code is EmbedErrorCode {
     code === 'unsupported_format' ||
     code === 'too_large' ||
     code === 'open_failed' ||
-    code === 'collab_unavailable'
+    code === 'collab_unavailable' ||
+    code === 'origin_not_allowed'
   )
 }

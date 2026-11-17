@@ -1,4 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+  type MockInstance,
+} from 'vitest'
 import type * as ChannelModule from '../src/embed-channel'
 
 type Channel = typeof ChannelModule
@@ -116,6 +125,17 @@ describe('the origins a page accepts', () => {
     return done
   }
 
+  const REFUSAL = {
+    source: 'seuoffice',
+    version: 1,
+    type: 'error',
+    code: 'origin_not_allowed',
+  }
+  let posts: MockInstance<Window['postMessage']>
+  /** What the page posted to the host besides `ready`: [message, options] */
+  const refusals = (): unknown[][] =>
+    posts.mock.calls.filter(([message]) => (message as { type?: string }).type === 'error')
+
   async function load(respond: () => Promise<Response>): Promise<{ opening: Promise<unknown> }> {
     fetchMock = vi.fn(respond)
     vi.stubGlobal('fetch', fetchMock)
@@ -125,15 +145,26 @@ describe('the origins a page accepts', () => {
     return { opening: channel.receiveOpen() }
   }
 
+  // every loaded copy of the channel listens on the same window: drop them after each test
+  let listeners: EventListener[]
+
   beforeEach(() => {
     const frame = document.createElement('iframe')
     document.body.appendChild(frame)
     host = frame.contentWindow!
-    vi.spyOn(host, 'postMessage').mockImplementation(() => {})
+    posts = vi.spyOn(host, 'postMessage').mockImplementation(() => {})
     Object.defineProperty(window, 'parent', { value: host, configurable: true })
+    listeners = []
+    const listen = window.addEventListener.bind(window)
+    vi.spyOn(window, 'addEventListener').mockImplementation((type, listener, options) => {
+      if (type === 'message') listeners.push(listener as EventListener)
+      listen(type, listener, options)
+    })
   })
 
   afterEach(() => {
+    vi.mocked(window.addEventListener).mockRestore()
+    for (const listener of listeners) window.removeEventListener('message', listener)
     vi.unstubAllGlobals()
     history.replaceState(null, '', '/')
     Object.defineProperty(window, 'parent', { value: window, configurable: true })
@@ -182,6 +213,7 @@ describe('the origins a page accepts', () => {
     const { opening } = await load(async () => config(JSON.stringify({ origins: [LISTED] })))
     fromHost(OTHER)
     expect(await settled(opening)).toBe(false)
+    expect(refusals()).toEqual([[REFUSAL, { targetOrigin: OTHER }]])
     fromHost(OTHER)
     expect(await settled(opening)).toBe(false)
     fromHost(LISTED)
@@ -199,6 +231,40 @@ describe('the origins a page accepts', () => {
       fromHost(origin)
     }
     expect(await settled(opening)).toBe(false)
+  })
+
+  it('answers a refused open with the code alone, to the origin that sent it', async () => {
+    const { opening } = await load(async () => config(JSON.stringify({ origins: [LISTED] })))
+    fromHost(OTHER, 'secret-plan.hwpx')
+    await settled(opening)
+    const [[message, options]] = refusals()
+    expect(message).toStrictEqual(REFUSAL)
+    expect(JSON.stringify(message)).not.toContain('secret-plan')
+    expect(JSON.stringify(message)).not.toContain(LISTED)
+    expect(options).toStrictEqual({ targetOrigin: OTHER })
+  })
+
+  it('does not answer an opaque origin: there is no target for it', async () => {
+    const { opening } = await load(async () => config(JSON.stringify({ origins: [LISTED] })))
+    fromHost('null')
+    await settled(opening)
+    expect(refusals()).toEqual([])
+  })
+
+  it('does not answer a message that is not an open', async () => {
+    const { opening } = await load(async () => config(JSON.stringify({ origins: [LISTED] })))
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        source: host,
+        origin: OTHER,
+        data: { source: 'seuoffice', version: 1, type: 'saved', saveId: 1 },
+      }),
+    )
+    window.dispatchEvent(
+      new MessageEvent('message', { source: host, origin: OTHER, data: { type: 'open' } }),
+    )
+    await settled(opening)
+    expect(refusals()).toEqual([])
   })
 
   it.each([
@@ -219,6 +285,7 @@ describe('the origins a page accepts', () => {
     const { opening } = await load(respond)
     fromHost(LISTED)
     expect(await settled(opening)).toBe(false)
+    expect(refusals()).toEqual([[REFUSAL, { targetOrigin: LISTED }]])
     fromHost(OWN)
     await expect(opening).resolves.toMatchObject({ fileName: 'memo.hwpx' })
   })
@@ -254,5 +321,6 @@ describe('the origins a page accepts', () => {
       }),
     )
     expect(await settled(opening)).toBe(false)
+    expect(refusals()).toEqual([[REFUSAL, { targetOrigin: LISTED }]])
   })
 })

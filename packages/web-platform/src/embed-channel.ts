@@ -173,6 +173,26 @@ export function receiveOpen(): Promise<EmbedOpen | null> {
   return started
 }
 
+/**
+ * Tell the sender of a refused `open` that it was refused, so its `opened`
+ * settles instead of waiting. Only the code goes back, to the origin that
+ * asked: no document data and no word about which origins are allowed.
+ */
+function refuseOpen(sender: MessageEventSource | null, origin: string): void {
+  // an opaque origin ("null") cannot be a target origin: there is nobody to answer
+  if (!sender || origin === 'null') return
+  // an `open` comes from a window; a port or a worker has no origin to answer
+  const host = sender as Window
+  try {
+    host.postMessage(
+      { source: EMBED_SOURCE, version: EMBED_VERSION, type: 'error', code: 'origin_not_allowed' },
+      { targetOrigin: origin },
+    )
+  } catch {
+    // a window that went away cannot hear it
+  }
+}
+
 function listen(): Promise<EmbedOpen | null> {
   if (window.parent === window) return Promise.resolve(null)
   // the suite apps compile this file against ES2022, which has no Promise.withResolvers
@@ -185,18 +205,27 @@ function listen(): Promise<EmbedOpen | null> {
     const data = event.data as Record<string, unknown> | null
     if (!data || data.source !== EMBED_SOURCE || data.version !== EMBED_VERSION) return
     if (data.type !== 'open') return
-    if (typeof data.fileName !== 'string' || !(data.bytes instanceof ArrayBuffer)) return
-    const { fileName, bytes } = data
+    const { source: sender, origin } = event
     void allowed.then((origins) => {
-      if (accepted || !origins.has(event.origin)) return
+      if (accepted) return
+      if (!origins.has(origin)) {
+        refuseOpen(sender, origin)
+        return
+      }
+      if (typeof data.fileName !== 'string' || !(data.bytes instanceof ArrayBuffer)) return
       accepted = true
       window.removeEventListener('message', onOpen)
-      peer = { target: event.source as Window, origin: event.origin }
+      peer = { target: sender as Window, origin }
       window.addEventListener('message', onHostMessage)
       // a page that goes away stops reading: the host should stop paying for the answers
       window.addEventListener('pagehide', cancelAllAiRequests)
       collabOffered = data.collab === true
-      resolve({ fileName, bytes, ai: data.ai === true, collab: collabOffered })
+      resolve({
+        fileName: data.fileName,
+        bytes: data.bytes,
+        ai: data.ai === true,
+        collab: collabOffered,
+      })
     })
   }
   window.addEventListener('message', onOpen)

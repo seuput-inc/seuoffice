@@ -128,6 +128,9 @@ const doc = openDocument(viewer, {
 - SeuOffice 쪽 페이지는 CSP에 `script-src 'self' 'wasm-unsafe-eval'`, `worker-src 'self' blob:`이 있어야 한다(pdf.js, rhwp, 엑셀 엔진이 WASM과 워커를 쓴다).
 - 붙이는 쪽 페이지는 `frame-src`에 SeuOffice 출처를 넣는다.
 - 붙이는 쪽 페이지가 SeuOffice와 다른 출처에 있으면, SeuOffice를 서빙하는 쪽이 허용할 출처를 `embed-origins.json`에 적어 웹 묶음 루트(`docs/`, `pdf/` 폴더와 같은 자리)에 둔다. 예: `{ "origins": ["https://host.example"] }`. 페이지는 시작할 때 이 파일을 같은 출처에서 매번 새로 받아(`cache: 'no-store'`) 읽고, 거기 적힌 출처가 보낸 문서만 받는다. 파일이 오기 전에 온 `open`은 버리지 않고 기다렸다가 판단한다. 항목은 `scheme://host[:port]`와 정확히 같아야 하고, 와일드카드·경로·`null`·http(s)가 아닌 주소는 안 된다. 파일이 없거나, 받지 못하거나, 200이 아니거나, 형식이 틀리면(항목 하나만 틀려도) 자기 출처가 보낸 문서만 받는다. 출처는 붙이는 쪽 페이지의 주소나 메시지에서는 읽지 않는다. 파일은 빌드가 아니라 서빙할 때 놓으므로 릴리스 묶음(`seuoffice-web-<ver>.tgz`)을 해시로 고정해 그대로 쓸 수 있다. 예전 빌드 변수 `VITE_SEUOFFICE_EMBED_ORIGINS`는 없어졌다.
+- 허용하지 않은 호스트가 `open`을 보내면 페이지가 코드 `origin_not_allowed`만 답하고(문서 내용도 허용 목록도 싣지 않는다) 호스트의 `opened`는 바로 reject된다. 호스트가 바이트를 보낸 뒤 `openTimeoutMs`(기본 60초) 안에 답이 없으면 `open_timeout`으로 reject된다. 코드 전체는 `packages/embed/README.md`의 "오류".
+- `openDocument`는 iframe에 기본으로 `sandbox="allow-scripts allow-same-origin allow-downloads"`를 붙인다. 호스트가 `sandbox`와 `allow`로 바꿀 수 있고, `allow-scripts`나 `allow-same-origin`이 빠지면 바로 `invalid_sandbox`로 reject된다. 기능별로 어떤 값이 필요한지(인쇄, 클립보드 등)는 `packages/embed/README.md`의 표에 있다.
+- SeuOffice를 붙이는 쪽 페이지와 같은 출처에서 서빙하면 `allow-scripts allow-same-origin`은 격리가 아니다. 프레임 안 스크립트가 자기 `sandbox` 속성을 떼어 낼 수 있다. 묶음은 호스트와 다른 출처에서 서빙하기를 권한다.
 - 파일 크기 상한은 50MiB(`MAX_EMBED_BYTES`)다.
 - 정적 파일은 압축해서 보낸다(brotli나 gzip). `application/wasm`과 글꼴(`font/ttf`, `font/otf`)은 서버 기본 압축 목록에 없는 경우가 많으니 직접 넣는다. 압축하지 않으면 한글 문서를 처음 열 때 30.8MB를 받고, brotli면 9.6MB다(`apps/web/README.md`에 형식별 값).
 
