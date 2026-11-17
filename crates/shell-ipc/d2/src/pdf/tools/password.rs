@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use shell_contract::ipc::Target;
-use shell_contract::{IpcValue, ViewId, WindowId};
+use shell_contract::{IpcValue, Surface, ViewId, WindowId};
 
 use super::{Ctx, with};
 use crate::kit::{self, Entry, as_str, field};
@@ -29,6 +29,9 @@ struct State {
     pending: Option<Settle>,
     generation: u64,
     owned: Option<owned::Owned>,
+    /// the window that asked for its state while it was still being attached:
+    /// `pwWin` is set at once in Electron, so there the answer is never `null`
+    early: Option<ViewId>,
 }
 
 #[derive(Clone)]
@@ -128,10 +131,10 @@ impl Password {
             &self.ctx.services,
             move || shell.open_password_window(parent, &title),
             move |view| {
-                let current = {
+                let (current, early) = {
                     let mut state = this.state.borrow_mut();
                     if state.generation != generation || state.pending.is_none() {
-                        None
+                        (None, false)
                     } else if let Some(view) = view {
                         if !this.ctx.alive(view) {
                             state.current = None;
@@ -140,7 +143,8 @@ impl Password {
                             return;
                         }
                         state.view = Some(view);
-                        state.current.clone()
+                        let early = state.early.take() == Some(view);
+                        (state.current.clone(), early)
                     } else {
                         state.current = None;
                         drop(state);
@@ -152,11 +156,13 @@ impl Password {
                     }
                 };
                 if let (Some(view), Some(current)) = (view, current) {
-                    this.ctx.services.events.emit(
-                        Target::View(view),
-                        "pdf-password:changed",
-                        vec![current],
-                    );
+                    if early {
+                        this.ctx.services.events.emit(
+                            Target::View(view),
+                            "pdf-password:changed",
+                            vec![current],
+                        );
+                    }
                 } else if let Some(view) = view {
                     let belongs_to_owned = {
                         let state = this.state.borrow();
@@ -178,6 +184,7 @@ impl Password {
         let view = {
             let mut s = self.state.borrow_mut();
             s.current = None;
+            s.early = None;
             s.view.take()
         };
         settle(&self.state, Ok(None));
@@ -195,10 +202,16 @@ impl Password {
                 if a.state.borrow().owned.is_some() {
                     return Ok(a.owned_state(cx));
                 }
-                let state = a.state.borrow();
+                let mut state = a.state.borrow_mut();
                 Ok(if state.view == Some(cx.sender.view) {
                     state.current.clone().unwrap_or(IpcValue::Null)
                 } else {
+                    if state.view.is_none()
+                        && state.pending.is_some()
+                        && cx.sender.surface == Surface::ShellPdfPassword
+                    {
+                        state.early = Some(cx.sender.view);
+                    }
                     IpcValue::Null
                 })
             }),
@@ -346,6 +359,38 @@ mod tests {
             j(&t.call("pdf-password:get-state", win, vec![])),
             json!(null)
         );
+    }
+
+    #[test]
+    fn a_window_that_asks_after_it_is_attached_is_pushed_nothing() {
+        let mut t = tools(json!({}));
+        let tools = t.tools();
+        tools.prompt_password(None, state(), Box::new(|_| {}));
+        let win = t.rt.view(901, Surface::ShellPdfPassword);
+        t.rt.drain();
+        assert!(t.rt.events().is_empty());
+        assert_eq!(
+            j(&t.call("pdf-password:get-state", win, vec![]))["generation"],
+            json!("1")
+        );
+        assert!(t.rt.events().is_empty());
+    }
+
+    #[test]
+    fn a_window_that_asks_before_it_is_attached_is_pushed_its_state_once() {
+        let mut t = tools(json!({}));
+        let tools = t.tools();
+        tools.prompt_password(None, state(), Box::new(|_| {}));
+        let win = t.rt.view(901, Surface::ShellPdfPassword);
+        // the window's page asks before the opening call has been answered
+        assert_eq!(
+            j(&t.call("pdf-password:get-state", win, vec![])),
+            json!(null)
+        );
+        let events = t.rt.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].channel, "pdf-password:changed");
+        assert_eq!(j(&events[0].args[0])["generation"], json!("1"));
     }
 
     #[test]

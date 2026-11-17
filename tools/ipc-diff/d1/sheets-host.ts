@@ -25,8 +25,8 @@
  * module state starts over.
  */
 import { createRequire, registerHooks } from 'node:module'
-import { readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { basename, resolve } from 'node:path'
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { basename, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setUiLang } from '@seuoffice/i18n'
 import { useElectron } from '../../main-diff/electron-fake.ts'
@@ -641,7 +641,11 @@ export async function loadSheets(cx: LoadContext): Promise<void> {
       e.log.push(['shell.writeNewDocument', id, fileName, bytes.byteLength])
       const scripted = asObject(writer)
       if (typeof scripted.error === 'string') throw new Error(scripted.error)
-      return typeof scripted.path === 'string' ? scripted.path : null
+      if (typeof scripted.path !== 'string') return null
+      // the shell writes the file into the project folder; the editor then opens what was written
+      mkdirSync(dirname(scripted.path), { recursive: true })
+      writeFileSync(scripted.path, bytes)
+      return scripted.path
     },
     ...(create === undefined
       ? {}

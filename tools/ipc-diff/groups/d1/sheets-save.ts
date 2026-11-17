@@ -374,10 +374,17 @@ const cases: Case[] = [
       call('workbook:export-pdf', [pdfRequest({ saveAsPath: '$DIR/p.pdf' })]),
     ],
   ),
-  sheetsCase('a headless run writes where the command line said', { d1: { headless: true } }, [
-    call('workbook:export-pdf', [pdfRequest({ outPath: '$DIR/h.pdf' })]),
-    call('workbook:export-pdf', [pdfRequest()]),
-  ]),
+  // the tab of a headless process that no command line reserved: a state only the TypeScript
+  // allows (ledger: d1-sheets-headless-pdf-without-reservation); no workbook file is needed
+  sheetsCase(
+    'a headless run writes where the command line said',
+    { d1: { headless: true } },
+    [
+      call('workbook:export-pdf', [pdfRequest({ outPath: '$DIR/h.pdf' })]),
+      call('workbook:export-pdf', [pdfRequest()]),
+    ],
+    { files: { temp: { dir: true }, userData: { dir: true }, documents: { dir: true } } },
+  ),
 
   // ---- AI-created documents ----
   sheetsCase('a CSV and a workbook land in the default folder, numbered when taken', {}, [

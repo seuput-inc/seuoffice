@@ -583,18 +583,22 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
 
     let trigger_services = services.clone();
     // Synthetic captures stand in for the native ingress, never authenticate. The
-    // native host gives every capture of one renderer the same origin, so the
-    // fixture does too (as the batch crates' own tests do).
+    // native host gives every capture of one renderer the same origin, which the
+    // D1 editors compare their saves against (as the batch crates' own tests
+    // arrange); the other batches keep each capture its own origin.
     let effects = trigger_services
         .hosts
         .get::<shell_contract::hosts::OwnedEffectsHost>()
         .cloned()
         .ok_or_else(|| "the probe has no synthetic owned-effects fixture".to_owned())?;
-    trigger_services
-        .hosts
-        .get::<Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>()
-        .ok_or_else(|| "the probe has no synthetic capture origins".to_owned())?
-        .share_capture_origins();
+    let d1 = case["batch"].as_str() == Some("D1");
+    if d1 {
+        trigger_services
+            .hosts
+            .get::<Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>()
+            .ok_or_else(|| "the probe has no synthetic capture origins".to_owned())?
+            .share_capture_origins();
+    }
     // what the shell attaches to a call of a document view: the context its owned
     // effects capture for the view's renderer; none once that renderer is gone
     let capture_native = |sender: Sender| {
@@ -624,6 +628,35 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
         core.stop();
         ui.stop();
         return Ok(json!({ "register": error }));
+    }
+    // the shell registers a Docs view's media session when it creates the view;
+    // a case's Docs view is created here, before its first call
+    let d2 = case["batch"].as_str() == Some("D2");
+    let docs_views: Vec<ViewId> = views
+        .iter()
+        .filter(|sender| d2 && sender.surface == Surface::Docs)
+        .map(|sender| sender.view)
+        .collect();
+    if !docs_views.is_empty() {
+        let attached = run_on(core.as_ref(), move || {
+            PROVIDED.with(|p| {
+                let provided = p.borrow();
+                let provided = provided.as_ref().expect("the case's provided");
+                let docs = provided
+                    .all::<shell_ipc_d2::docs::editors::DocsEditors>()
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| "the Docs editors were not provided".to_owned())?;
+                docs_views
+                    .into_iter()
+                    .try_for_each(|view| docs.register_view(view).map(drop))
+            })
+        });
+        if let Err(error) = attached {
+            core.stop();
+            ui.stop();
+            return Ok(json!({ "register": error }));
+        }
     }
 
     let mut calls = Vec::new();
@@ -665,7 +698,11 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
             let name = call["name"].as_str().unwrap_or("").to_string();
             let unknown = format!("unknown trigger {name}");
             let args = references.resolve(&call["args"])?;
-            let owner = capture_native(sender);
+            let owner = if d1 {
+                capture_native(sender)
+            } else {
+                case_owners.get(&sender.view).cloned()
+            };
             let (tx, rx) = mpsc::channel::<Reply>();
             let known = run_on(core.as_ref(), move || {
                 // answered on the core thread or later, after a timer, a
@@ -755,20 +792,77 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
         let (tx, rx) = mpsc::channel();
         let name = channel.to_string();
         let request = (kind == ChannelKind::Invoke).then_some(RequestId(i as u64 + 1));
-        let native = if matches!(
-            sender.surface,
-            Surface::Slides | Surface::Sheets | Surface::Mindmap | Surface::Diagram
-        ) {
+        let native = if d1
+            && matches!(
+                sender.surface,
+                Surface::Slides | Surface::Sheets | Surface::Mindmap | Surface::Diagram
+            )
+        {
+            capture_native(sender).map(|owner| owner.context)
+        } else if sender.surface == Surface::Slides {
+            case_owners
+                .get(&sender.view)
+                .map(|owner| owner.context.clone())
+        } else if sender.surface == Surface::Sheets
+            && matches!(
+                channel,
+                "workbook:create-document"
+                    | "sheets:capture-screen-sources"
+                    | "sheets:capture-screen-source"
+            )
+        {
             capture_native(sender).map(|owner| owner.context)
         } else if matches!(
             channel,
             "docs:write-recovery-now-done" | "hwp:recovery-flushed"
-        ) {
+        ) || (channel == "docs:close-check-result"
+            && matches!(args.get(1), Some(IpcValue::String(_))))
+        {
             case_views
                 .renderer_generation(sender.view)
                 .map(|generation| shell_contract::ipc::NativeContext::with_renderer((), generation))
+        } else if d2 && (sender.surface == Surface::Docs || channel.starts_with("pdf:")) {
+            // a Docs call carries its document's owner; a view without one has none
+            capture_native(sender)
+                .filter(|owner| {
+                    sender.surface != Surface::Docs
+                        || effects.docs_document_identity(owner).is_some()
+                })
+                .map(|owner| owner.context)
+        } else if d2 && matches!(channel, "html:handoff-take" | "html:handoff-run-started") {
+            case_views.renderer_generation(sender.view).map(|generation| {
+                shell_contract::ipc::NativeContext::with_owner_loss(
+                    (),
+                    generation.clone(),
+                    generation.loss_token(),
+                )
+            })
         } else {
             None
+        };
+        // the one reply that answers under the successor its own request creates
+        let mut reply_authority = None;
+        let native = match native {
+            Some(context)
+                if channel == "docs:consume-pending-open" && kind == ChannelKind::Invoke =>
+            {
+                let synthetic = trigger_services
+                    .hosts
+                    .get::<Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>()
+                    .cloned()
+                    .ok_or_else(|| "the probe has no synthetic reply authority".to_owned())?;
+                let (owner, authority) =
+                    shell_contract::hosts::synthetic::SyntheticReplyAuthority::attach(
+                        shell_contract::ipc::NativeRequestOwner {
+                            view: sender.view,
+                            context,
+                        },
+                        &shell_contract::runtime::CancelToken::default(),
+                    );
+                reply_authority = Some((synthetic, authority));
+                Some(owner.context)
+            }
+            other => other,
         };
         core.post(Box::new(move || {
             DISPATCHER.with(|d| {
@@ -781,8 +875,15 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
                     native,
                     &name,
                     args,
-                    Box::new(move |r| {
-                        let _ = tx.send(r);
+                    Box::new(move |r| match reply_authority {
+                        Some((effects, authority)) => {
+                            let _ = authority.deliver(&effects, move || {
+                                let _ = tx.send(r);
+                            });
+                        }
+                        None => {
+                            let _ = tx.send(r);
+                        }
                     }),
                 );
             })

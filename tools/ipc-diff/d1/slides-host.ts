@@ -99,6 +99,9 @@ const WRAPPERS: Record<string, Record<string, string>> = {
   '@seuoffice/pptx-render': Object.fromEntries(
     Object.keys(fakes.render).map((k) => [k, `${SELF}.fakes.render[${JSON.stringify(k)}]`]),
   ),
+  // the real match hands the element to the WASM engine, which reads a parsed element; the
+  // fake deck's elements are matched by their id
+  '@seuoffice/pptx-engine/identity': { matchesElementRef: `(el, id) => el.id === id` },
   // every name made from a random UUID counts up, as the Rust fake's `random_uuid` does
   'node:crypto': { randomUUID: `() => ${SELF}.randomUUID()` },
   '@seuoffice/electron-utils/generate-handoff': {
@@ -176,13 +179,13 @@ function sizedImage(e: LoadContext['electron'], bytes: Buffer, logOn: 'isEmpty' 
 }
 
 box.exportSlidesPdf = async (opts: { filePath?: unknown; openExportedPdf(path: string): void }) => {
-  const path = typeof opts.filePath === 'string' ? opts.filePath : undefined
-  box.log(['exportSlidesPdf', path ?? null])
-  if (path !== undefined) {
-    writeFileSync(path, '%PDF-1.7')
-    opts.openExportedPdf(path)
-  }
-  return { ok: path !== undefined, ...(path !== undefined ? { path } : {}) }
+  // the real export writes the PDF to `filePath` and has nowhere to write without it; the Rust
+  // handler refuses the request before any export starts, with this message
+  if (typeof opts.filePath !== 'string') throw new Error('The PDF destination is required')
+  box.log(['exportSlidesPdf', opts.filePath])
+  writeFileSync(opts.filePath, '%PDF-1.7')
+  opts.openExportedPdf(opts.filePath)
+  return { ok: true, path: opts.filePath }
 }
 box.randomUUID = () =>
   `00000000-0000-4000-8000-${String(++(box.uuids as number)).padStart(12, '0')}`

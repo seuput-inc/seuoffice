@@ -692,8 +692,12 @@ impl Drop for OwnedMetadataStage {
     }
 }
 
+/// `dir_path` is where the stage is made (the folder `data_dir` is the handle
+/// of): a failure to make it is the `open` of the temporary file beside the
+/// target, as the original reports it.
 pub(super) fn create_project_data_stage(
     data_dir: &File,
+    dir_path: &str,
     project_path: &str,
     rel_name: &str,
 ) -> Result<OwnedMetadataStage, NodeError> {
@@ -717,10 +721,11 @@ pub(super) fn create_project_data_stage(
         end -= 1;
     }
     let name = format!("{}.{}.tmp", &rel_name[..end], suffix);
+    let temp_path = jscompat::node_path::host::join(&[dir_path, &name]);
     let file = open_child(
         data_dir,
         &name,
-        project_path,
+        &temp_path,
         FILE_READ_ATTRIBUTES | FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | DELETE,
         0,
         FILE_CREATE,
@@ -1178,7 +1183,7 @@ mod tests {
         name: &str,
         bytes: &[u8],
     ) -> Result<OwnedMetadataStage, NodeError> {
-        let mut stage = create_project_data_stage(data_dir, root, name)?;
+        let mut stage = create_project_data_stage(data_dir, root, root, name)?;
         write_project_data_stage(&mut stage, bytes)?;
         Ok(stage)
     }
@@ -1309,7 +1314,7 @@ mod tests {
         );
         std::fs::remove_dir(data_path.join("folder")).unwrap();
         let mut partial =
-            create_project_data_stage(&data, path.to_str().unwrap(), "partial.md").unwrap();
+            create_project_data_stage(&data, data_path.to_str().unwrap(), path.to_str().unwrap(), "partial.md").unwrap();
         assert!(publish_project_data_replace(&mut partial).is_err());
         write_project_data_stage(&mut partial, b"one").unwrap();
         assert!(write_project_data_stage(&mut partial, b"two").is_err());

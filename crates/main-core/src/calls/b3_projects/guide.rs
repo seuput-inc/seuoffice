@@ -32,8 +32,8 @@ use crate::packages::project_store::{
     ProjectTrustDecision, ProjectTrustPrompt, UndoMemoryConsolidationArgs, real_path_native,
 };
 use crate::shell::projects::chat_store::{
-    AppendOutcome, AppendProgress, ChatSender, ChatStoreError, ChatStoreErrorKind, ChatStoreHost,
-    ChatStoreOptions, ProjectChatStore,
+    AppendOutcome, AppendProgress, ChatIoResult, ChatOperation, ChatSender, ChatStoreError,
+    ChatStoreErrorKind, ChatStoreHost, ChatStoreOptions, IdentityRefusal, ProjectChatStore,
 };
 use crate::packages::project_store::ProjectWriteResult;
 use crate::shell::projects::memory::LocalDateParts;
@@ -524,18 +524,45 @@ fn chat_attempt<T>(
     }
 }
 
-/// A write that waits for the install identity: what `tryWrite` makes of an
-/// identity the settings file refuses is an unwritable project, not a throw.
-fn chat_write_attempt(
+/// The identity the settings file refused: what the chat store answers for
+/// `operation` (the production policy, `refuse_identity`), and the guide's
+/// mark of an unwritable project where it answers instead of throwing.
+fn chat_refused(
     guide: &ProjectGuide,
+    store: &mut ChatStore,
     project_id: &str,
-    mut run: impl FnMut() -> Result<ProjectWriteResult, ChatStoreError>,
+    operation: ChatOperation,
+    failure: ChatStoreError,
+) -> Result<ChatIoResult, ChatStoreError> {
+    match store.refuse_identity(operation)? {
+        IdentityRefusal::Throw => Err(failure),
+        IdentityRefusal::Answer(result) => {
+            guide.write_failed(project_id, &failure.message);
+            Ok(result)
+        }
+    }
+}
+
+fn chat_rename(
+    guide: &ProjectGuide,
+    store: &mut ChatStore,
+    project_id: &str,
+    args: &jscompat::JsonValue,
 ) -> Result<ProjectWriteResult, ChatStoreError> {
-    match run() {
+    match store.rename_chat(args) {
         Err(error) if error.kind == ChatStoreErrorKind::NeedInstallId => {
             match chat_identity(guide) {
-                Ok(()) => run(),
-                Err(failure) => Ok(guide.write_failed(project_id, &failure.message)),
+                Ok(()) => store.rename_chat(args),
+                Err(failure) => match chat_refused(
+                    guide,
+                    store,
+                    project_id,
+                    ChatOperation::Rename { args: args.clone() },
+                    failure,
+                )? {
+                    ChatIoResult::Write(result) => Ok(result),
+                    _ => unreachable!("a rename answers a write result"),
+                },
             }
         }
         result => result,
@@ -549,13 +576,15 @@ fn chat_append(
     args: &jscompat::JsonValue,
     sender: &ChatSender,
 ) -> Result<AppendOutcome, ChatStoreError> {
-    let first = store.begin_append(args, sender);
-    let mut progress = match first {
+    let mut progress = match store.begin_append(args, sender) {
         Err(error) if error.kind == ChatStoreErrorKind::NeedInstallId => {
             if let Err(failure) = chat_identity(guide) {
-                // the original numbers the message before it asks for the identity
-                store.use_up_append(args, sender)?;
-                return Err(failure);
+                let operation = ChatOperation::Append {
+                    args: args.clone(),
+                    sender: sender.clone(),
+                };
+                chat_refused(guide, store, project_id, operation, failure)?;
+                unreachable!("an append that asks for the identity throws");
             }
             store.begin_append(args, sender)?
         }
@@ -564,13 +593,15 @@ fn chat_append(
     loop {
         match progress {
             AppendProgress::Done(result) => return Ok(result),
-            AppendProgress::NeedInstallId(token) => {
+            AppendProgress::NeedInstallId(continuation) => {
                 if let Err(failure) = chat_identity(guide) {
-                    store.cancel_append(token);
-                    guide.write_failed(project_id, &failure.message);
-                    return Ok(AppendOutcome::Unwritable);
+                    let operation = ChatOperation::ResumeAppend { continuation };
+                    return match chat_refused(guide, store, project_id, operation, failure)? {
+                        ChatIoResult::Append(outcome) => Ok(outcome),
+                        _ => unreachable!("a resumed append answers an append outcome"),
+                    };
                 }
-                progress = store.resume_append(token)?;
+                progress = store.resume_append(continuation)?;
             }
         }
     }
@@ -615,9 +646,12 @@ fn chat_op(
                 })),
                 "chatRename" => {
                     args["title"] = Value::from(text_of(op, "title")?);
-                    chat_answer(chat_write_attempt(guide, project_id, || {
-                        store.rename_chat(&json_value_from_serde(&args))
-                    }))
+                    chat_answer(chat_rename(
+                        guide,
+                        store,
+                        project_id,
+                        &json_value_from_serde(&args),
+                    ))
                 }
                 _ => chat_answer(chat_attempt(guide, || {
                     store.chat_info(&ProjectChatRef {

@@ -14,6 +14,7 @@ import { join } from 'node:path'
 import type * as MarkdownMainModule from '../../../../apps/markdown/src/main/markdown-main.ts'
 import { queueMarkdownNoteAppendFor } from '../../../../apps/markdown/src/main/note-append.ts'
 import { queueMarkdownSeedFor } from '../../../../apps/markdown/src/main/seed-main.ts'
+import { nativeEventArg } from '../../event-refs.ts'
 import type { Case, Group, LoadContext } from '../../types.ts'
 import {
   type Outbound,
@@ -631,7 +632,11 @@ const triggerCases: Case[] = [
       call('markdown:recovery-open'),
       dirty,
       trigger('write-copies-now', [], { begin: true }),
-      call('markdown:recovery-write', 'flushed'),
+      call(
+        'markdown:recovery-write',
+        'flushed',
+        nativeEventArg(2, 'markdown:recovery-flush-request'),
+      ),
       outcome('write-copies-now'),
       trigger('discard-pending-assets'),
     ],

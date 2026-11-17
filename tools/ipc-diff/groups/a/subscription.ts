@@ -178,7 +178,23 @@ async function load(cx: LoadContext): Promise<void> {
     SUBSCRIPTION_CHATGPT_USAGE_URL,
     SUBSCRIPTION_INSTALL_URLS,
   })
+  // The probe reads a call's events after every worker and queued job has finished. The
+  // service applies a check's answer after reads of its settings and acceptance files, which
+  // the harness's few idle ticks do not wait for: a check a login or a cancel starts and does
+  // not wait for would announce its result in a later call's events. A call is held until
+  // those reads are over.
+  for (const [channel, handler] of [...cx.electron.handlers.invoke]) {
+    if (!channel.startsWith('ai:subscription-')) continue
+    cx.electron.handlers.invoke.set(channel, async (...args: unknown[]) => {
+      const answer = await handler(...args)
+      await new Promise((resolve) => setTimeout(resolve, QUIET_MS))
+      return answer
+    })
+  }
 }
+
+/** how long a call is held for the reads of the checks it started */
+const QUIET_MS = 200
 
 // ---- cases ------------------------------------------------------------------------------------
 

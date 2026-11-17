@@ -819,6 +819,10 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
     let e = ed.clone();
     all.push(kit::invoke_later("pdf:save", move |cx, mut args, reply| {
         let direct = if kit::as_str(field(args.get(0), "ownedSaveId")).is_none() {
+            // the Electron handler's first check is the view's grant (pdf-main.ts:1414)
+            if e.granted(cx.sender.view, field(args.get(0), "path")).is_none() {
+                return reply.reply(Ok(failed(NOT_GRANTED)));
+            }
             match e.direct_save_authority(cx.sender.view, cx.native.clone(), cx.cancel.clone()) {
                 Ok(authority) => authority,
                 Err(message) => return reply.reply(Ok(failed(message))),
@@ -960,6 +964,14 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
             if let Err(message) = e.owned_save_authority(view, None) {
                 return reply.reply(Ok(failed(message)));
             }
+            // the Electron handler's first checks: the view's grant, then an untitled
+            // copy (pdf-main.ts:1623-1624)
+            if e.granted(view, args.get(0))
+                .filter(|path| e.is_untitled_copy(path))
+                .is_none()
+            {
+                return reply.reply(Ok(false.into_ipc()));
+            }
             match e.direct_save_authority(view, cx.native.clone(), cx.cancel.clone()) {
                 Ok(Some(authority)) => {
                     return e.pick_untitled_with_authority(
@@ -1043,14 +1055,20 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
                         Err(message) => return reply.reply(Ok(failed(message))),
                     }
                 }
-                Ok(None) => match e.direct_save_authority(
-                    cx.sender.view,
-                    cx.native.clone(),
-                    cx.cancel.clone(),
-                ) {
-                    Ok(authority) => authority,
-                    Err(message) => return reply.reply(Ok(failed(message))),
-                },
+                Ok(None) => {
+                    // the Electron handler's first check is the view's grant (pdf-main.ts:1662)
+                    if e.granted(cx.sender.view, args.get(0)).is_none() {
+                        return reply.reply(Ok(failed(NOT_GRANTED)));
+                    }
+                    match e.direct_save_authority(
+                        cx.sender.view,
+                        cx.native.clone(),
+                        cx.cancel.clone(),
+                    ) {
+                        Ok(authority) => authority,
+                        Err(message) => return reply.reply(Ok(failed(message))),
+                    }
+                }
                 Err(message) => return reply.reply(Ok(failed(message))),
             };
             let view = cx.sender.view;

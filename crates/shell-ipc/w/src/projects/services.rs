@@ -813,6 +813,13 @@ impl ChatsOfShell {
         self.store.cancel_io(io)
     }
 
+    pub(super) fn refuse_io_identity(
+        &mut self,
+        io: main_core::shell::projects::chat_store::ChatIo,
+    ) -> Result<main_core::shell::projects::chat_store::IdentityRefusal, ChatStoreError> {
+        self.store.refuse_io_identity(io)
+    }
+
     pub(super) fn abandon_io(
         &mut self,
         ack: main_core::shell::projects::chat_store::ChatIoAcknowledgement,

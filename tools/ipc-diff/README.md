@@ -102,6 +102,13 @@ case. Only that referenced identity is normalized in the comparison, including i
 call's `capture: [eventArg(...)]` when an emitted identity must be compared but is deliberately
 not acknowledged, such as a timeout or destroyed view. Keep all other event fields and stale or
 wrong-view replies in the comparison.
+`nativeEventArg(...)` (same parameters) names a correlation token that only the Rust shell adds, as
+the last argument of an event the Electron main sends without one (the recovery flush requests of
+the editors: the shell's flush replies name the request they answer, so a reply without its token
+settles nothing). The Rust side must emit it and its reply carries it; the Electron side emits no
+argument and its reply carries `undefined`. The token is left out of the compared event on both
+sides, so the rest of that event is still compared; a token that is not the event's last argument
+fails the case.
 Set `expectAnswer` on a call or await step when parity alone cannot prove correctness. The gate
 requires that exact wire-form answer on each side, so matching incorrect successes still fail.
 
@@ -203,6 +210,12 @@ waits for, the case's views, `CasePaths` under the folder, an `EventSink` that r
 ipc-probe registers all six batches as they stand (a missing handler answers
 `No handler registered`, as Electron would), then runs the calls one after another through the
 dispatch, waiting after each until the workers are idle and the core and UI queues are drained.
+
+The native shell attaches to a call of a document view the context its owned effects captured for
+that view's renderer (its loss token and one origin per renderer). For the D1 groups (slides,
+sheets, mind maps, diagrams) the probe attaches the same, made by its synthetic owned-effects
+host: a fixture of that lifetime, never native authentication. The TypeScript has no such notion,
+so a group's cases only name the views; a handler that refuses a call without it fails the case.
 
 ## Ledger and faults
 

@@ -25,6 +25,7 @@ import { registerHooks } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { setOpenPathProbe } from '@seuoffice/electron-utils'
 import type * as PdfMainModule from '../../../../apps/pdf/src/main/pdf-main.ts'
+import { nativeEventArg } from '../../event-refs.ts'
 import type { Call, Case, Group, LoadContext } from '../../types.ts'
 import { fireWatch, resetPdfEditorFakes } from './pdf-editor-fakes.ts'
 import { basename, dirname, join } from 'node:path'
@@ -531,12 +532,13 @@ const cases: Case[] = [
       call('pdf:list-signatures'),
     ],
   }),
-  // ---- certificates ----
+  // ---- certificates: a certificate session belongs to its view's document ----
   c({
     note: 'picking a certificate file: cancelled, then picked and inspected',
-    files: { 'me.p12': 'p12 bytes' },
+    files: { ...files, 'me.p12': 'p12 bytes' },
     shared: { dialogs: { open: [null, ['$DIR/me.p12']] } },
     calls: [
+      open(),
       call('pdf:pick-certificate'),
       call('pdf:pick-certificate'),
       call('pdf:inspect-certificate', '00000000-0000-4000-8000-000000000001', 'pw'),
@@ -548,19 +550,21 @@ const cases: Case[] = [
   }),
   c({
     note: 'a certificate the engine refuses, and a file that went missing',
-    files: { 'me.p12': 'p12', 'gone.p12': 'p12' },
+    files: { ...files, 'me.p12': 'p12', 'gone.p12': 'p12' },
     pdf: { engine: { openCertificate: { error: 'cert-wrong-password' } } },
     shared: { dialogs: { open: [['$DIR/me.p12']] } },
     calls: [
+      open(),
       call('pdf:pick-certificate'),
       call('pdf:inspect-certificate', '00000000-0000-4000-8000-000000000001', 'bad'),
     ],
   }),
   c({
     note: 'a picked file removed before it is read',
-    files: {},
+    files,
     shared: { dialogs: { open: [['$DIR/missing.p12']] } },
     calls: [
+      open(),
       call('pdf:pick-certificate'),
       call('pdf:inspect-certificate', '00000000-0000-4000-8000-000000000001', 'pw'),
     ],
@@ -1195,7 +1199,7 @@ const cases: Case[] = [
       send('pdf:dirty-changed', true),
       trigger('write-pdf-copies-now'),
       outcome(),
-      send('pdf:recovery-flush-done'),
+      send('pdf:recovery-flush-done', nativeEventArg(4, 'pdf:recovery-flush-request')),
       outcome(),
     ],
   }),

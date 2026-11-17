@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { eventArg, EventReferences, outcomeFailure, rejectedAnswer } from './event-refs.ts'
+import {
+  eventArg,
+  EventReferences,
+  nativeEventArg,
+  outcomeFailure,
+  rejectedAnswer,
+} from './event-refs.ts'
 import { caseElectron } from './fakes.ts'
 import type { Call } from './types.ts'
 
@@ -69,5 +75,34 @@ describe('per-side renderer event references', () => {
     expect(second.isDestroyed()).toBe(false)
     expect(closes).toBe(1)
     expect(() => first.send('after-destroy')).toThrow()
+  })
+
+  it('leaves a token only the Rust shell emits out of the compared event', () => {
+    const ref = nativeEventArg(0, 'editor:recovery-flush-request')
+    const calls: Call[] = [
+      { channel: 'flush', kind: 'trigger', args: [], defer: true },
+      { channel: 'editor:recovery-flush-done', kind: 'send', args: [ref] },
+    ]
+    const flush = (args: unknown[]) => ({
+      view: 1,
+      channel: 'editor:recovery-flush-request',
+      args,
+      buffers: [],
+    })
+    const ts = new EventReferences(calls)
+    const rust = new EventReferences(calls)
+    expect(ts.capture(0, [flush([])])).toEqual(rust.capture(0, [flush(['7'])]))
+    expect(ts.resolve(calls[1]!.args)).toEqual([{ $: 'u' }])
+    expect(rust.resolve(calls[1]!.args)).toEqual(['7'])
+  })
+
+  it('refuses a native token that is not the last argument of its event', () => {
+    const ref = nativeEventArg(0, 'editor:recovery-flush-request', 1, 0)
+    const refs = new EventReferences([{ channel: 'answer', args: [ref] }])
+    expect(() =>
+      refs.capture(0, [
+        { view: 1, channel: 'editor:recovery-flush-request', args: ['7', 'x'], buffers: [] },
+      ]),
+    ).toThrow('not the last argument')
   })
 })

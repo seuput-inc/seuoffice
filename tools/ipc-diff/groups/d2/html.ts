@@ -12,6 +12,7 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type * as HtmlMainModule from '../../../../apps/html/src/main/html-main.ts'
 import { queueHtmlSeedFor } from '../../../../apps/html/src/main/seed-main.ts'
+import { nativeEventArg } from '../../event-refs.ts'
 import type { Case, Group, LoadContext } from '../../types.ts'
 import {
   type Outbound,
@@ -664,7 +665,7 @@ const triggerCases: Case[] = [
       call('html:recovery-open'),
       dirty,
       trigger('write-copies-now', [], { begin: true }),
-      call('html:recovery-write', 'flushed'),
+      call('html:recovery-write', 'flushed', nativeEventArg(2, 'html:recovery-flush-request')),
       outcome('write-copies-now'),
       trigger('discard-pending-assets'),
     ],

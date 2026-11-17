@@ -2603,8 +2603,14 @@ impl SlidesShell for FakeShell {
             PresenterWindowAction::ShowFullscreen { window, on } => {
                 self.set_bleed(destination.view, on);
                 self.show_fullscreen_window(window, on);
+                if on {
+                    // the snap can leave the first responder on the shell chrome
+                    self.record(json!(["webContents.focus", destination.view.0]));
+                }
             }
-            PresenterWindowAction::Refocus { .. } => {}
+            PresenterWindowAction::Refocus { .. } => {
+                self.record(json!(["webContents.focus", destination.view.0]));
+            }
             PresenterWindowAction::SwapDisplays {
                 presenter,
                 audience,

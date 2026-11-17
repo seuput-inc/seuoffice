@@ -947,6 +947,10 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
     all.push(kit::invoke_later(
         "pdf:sign-with-certificate",
         move |cx, mut args, reply| {
+            // the Electron handler's first check is the view's grant (pdf-main.ts:2570)
+            if e.granted(cx.sender.view, field(args.get(0), "path")).is_none() {
+                return reply.reply(Ok(sign_failed(super::NOT_GRANTED)));
+            }
             let Some(context) = cx.native.clone() else {
                 return reply.reply(Ok(sign_failed("pdf: signing request is not authenticated")));
             };

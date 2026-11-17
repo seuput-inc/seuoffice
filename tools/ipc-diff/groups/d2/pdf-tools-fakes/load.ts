@@ -154,6 +154,7 @@ export async function loadPdfTools(cx: LoadContext): Promise<void> {
     id: number
     webContents: Record<string, unknown>
     private readonly kind: 'tools' | 'password'
+    private readonly closed: (() => void)[] = []
     constructor(options: {
       parent?: { id: number }
       title?: string
@@ -182,7 +183,11 @@ export async function loadPdfTools(cx: LoadContext): Promise<void> {
     }
     removeMenu() {}
     once() {}
-    on() {}
+    // the password prompt settles on its window's `closed`, which Electron emits
+    // once `close()` has taken the window down
+    on(event?: string, listener?: () => void) {
+      if (this.kind === 'password' && event === 'closed' && listener) this.closed.push(listener)
+    }
     loadURL = async () => {}
     loadFile = async () => {}
     isDestroyed = () => false
@@ -196,6 +201,7 @@ export async function loadPdfTools(cx: LoadContext): Promise<void> {
     }
     close() {
       log(['BrowserWindow.close', this.id])
+      for (const listener of this.closed.splice(0)) listener()
     }
   }
 

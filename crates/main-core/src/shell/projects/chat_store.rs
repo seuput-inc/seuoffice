@@ -1913,7 +1913,7 @@ impl<G: ChatStoreGuide, H: ChatStoreHost> ProjectChatStore<G, H> {
     /// What `append` has used up when its install identity cannot be made: the
     /// original numbers the message and reads the clock before it asks for the
     /// identity, so the next message goes on after the lost number.
-    pub fn use_up_append(
+    fn use_up_append(
         &mut self,
         args: &JsonValue,
         sender: &ChatSender,
@@ -2776,6 +2776,14 @@ impl ChatIoAcknowledgement {
     }
 }
 
+/// What an operation answers when its install identity cannot be made
+pub enum IdentityRefusal {
+    /// the call throws the failure
+    Throw,
+    /// the call answers, and the guide marks the project unwritable
+    Answer(ChatIoResult),
+}
+
 pub enum ChatIoProgress {
     Done(Result<ChatIoResult, ChatStoreError>),
     NeedInstallId(Box<ChatIo>),
@@ -2906,6 +2914,54 @@ impl<G: ChatStoreGuide, H: ChatStoreHost> ProjectChatStore<G, H> {
             self.cancel_append(continuation);
         }
         Ok(())
+    }
+
+    /// The install identity a waiting operation needs cannot be made (the
+    /// settings file refuses it). What the original does then depends on where
+    /// the identity was asked for: inside a write (`tryWrite`) the project
+    /// becomes unwritable and the call answers so; at `append`'s own start the
+    /// message has been numbered and the call throws. The caller reports the
+    /// refusal to the guide for the first kind.
+    pub fn refuse_io_identity(&mut self, io: ChatIo) -> Result<IdentityRefusal, ChatStoreError> {
+        if self.io_lease != Some(io.ticket) {
+            return Err(ChatStoreError::new(
+                "chat worker continuation is no longer active",
+            ));
+        }
+        let ChatIo {
+            outside_checkpoint,
+            operation,
+            mut state,
+            ..
+        } = io;
+        state.discard_deferred_after(outside_checkpoint);
+        state.restore(self);
+        self.io_lease = None;
+        self.refuse_identity(operation)
+    }
+
+    /// The part of [`Self::refuse_io_identity`] that needs the store only:
+    /// what `operation` answers when the install identity cannot be made.
+    /// `Err` is what the call throws before the identity (the clock of the
+    /// message it numbered).
+    pub fn refuse_identity(
+        &mut self,
+        operation: ChatOperation,
+    ) -> Result<IdentityRefusal, ChatStoreError> {
+        Ok(match operation {
+            ChatOperation::Rename { .. } | ChatOperation::Attach { .. } => {
+                IdentityRefusal::Answer(ChatIoResult::Write(ProjectWriteResult::Unwritable))
+            }
+            ChatOperation::ResumeAppend { continuation } => {
+                self.cancel_append(continuation);
+                IdentityRefusal::Answer(ChatIoResult::Append(AppendOutcome::Unwritable))
+            }
+            ChatOperation::Append { args, sender } => {
+                self.use_up_append(&args, &sender)?;
+                IdentityRefusal::Throw
+            }
+            _ => IdentityRefusal::Throw,
+        })
     }
 
     /// Recover the borrowed store when the owner no longer admits a request

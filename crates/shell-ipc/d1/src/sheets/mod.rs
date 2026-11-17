@@ -738,6 +738,10 @@ pub fn routes(services: &Services, provided: &Rc<Provided>) -> Result<Vec<Route>
     routes.push({
         let env = env.clone();
         route::invoke_later("workbook:create-document", move |cx, mut args, reply| {
+            // `sessionFor(event)` answers an unregistered sender before anything else
+            if let Err(error) = core_at(env.slot).require_tab(cx.sender.view) {
+                return reply.reply(Err(error));
+            }
             let (scope, revision) = match core_at(env.slot).capture_owned_call(cx) {
                 Ok(captured) => captured,
                 Err(error) => return reply.reply(Err(error)),

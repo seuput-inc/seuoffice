@@ -7,6 +7,7 @@
  * docs:renamed, docs:teardown, docs:write-recovery-now,
  * docs:recovery-copy-dropped.
  */
+import { eventArg, VOID_ANSWER } from '../../event-refs.ts'
 import type { Case, Group, LoadContext } from '../../types.ts'
 import { type DocsTriggers, docsTriggers, loadDocs } from './docs-load.ts'
 
@@ -94,7 +95,16 @@ const cases = [
   },
   {
     note: 'session end: every booted tab is asked for a copy; one answers, the wait ends',
-    calls: [{ channel: 'docs:consume-copy', args: [] }, trigger('write-copies-now')],
+    calls: [
+      { channel: 'docs:consume-copy', args: [] },
+      { ...trigger('write-copies-now'), defer: true },
+      {
+        channel: 'docs:write-recovery-now-done',
+        kind: 'send',
+        args: [eventArg(1, 'docs:write-recovery-now')],
+      },
+      { channel: '', args: [], await: 1, expectAnswer: VOID_ANSWER },
+    ],
   },
   {
     note: 'an untitled copy restored into a tab that has booted',

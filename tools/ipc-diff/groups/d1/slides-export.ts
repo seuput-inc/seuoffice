@@ -40,6 +40,7 @@ const cases: Case[] = [
     'images are written one file per slide',
     {},
     [
+      OPEN_A,
       images(),
       images({ format: 'jpg', baseName: 'photo' }),
       images({ format: 'gif', dir: '$DIR/gif' }),
@@ -49,6 +50,7 @@ const cases: Case[] = [
     { files: { 'img/.keep': '' } },
   ),
   slidesCase('images into a folder that is not there fail', {}, [
+    OPEN_A,
     images({ dir: '$DIR/missing/deeper' }),
     images({ dir: '$DIR/a.pptx' }),
   ]),
@@ -62,6 +64,7 @@ const cases: Case[] = [
     images({ saveAsTarget: '$DIR/page.png' }),
   ]),
   slidesCase('the PDF is exported by the shell and revealed', {}, [
+    OPEN_A,
     pdf(),
     pdf({ filePath: '$DIR/second.pdf' }),
     pdf({ filePath: UNDEFINED }),

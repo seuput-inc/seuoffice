@@ -3,7 +3,7 @@ use main_core::packages::project_store::{LegacyDocumentChat, ProjectChatRef, Pro
 use main_core::shell::app_settings::queue::Completion;
 use main_core::shell::projects::chat_store::{
     ChatIo, ChatIoAcknowledgement, ChatIoProgress, ChatIoResult, ChatOperation, ChatStoreError,
-    ChatStoreErrorKind, ChatStoreHost, default_new_id,
+    ChatStoreErrorKind, ChatStoreHost, IdentityRefusal, default_new_id,
 };
 use main_core::shell::projects::project_guide::{ChatGuideAuthority, ChatGuideSeed, GuideError};
 use main_core::shell::projects::project_ipc::{ChatAppendOwner, ChatDocuments, ProjectWindow};
@@ -492,13 +492,39 @@ impl Projects {
                                 projects.resume_chat_io(token, finish, io, authority, completion)
                             }
                             Err(error) => {
-                                let error = projects.cancel_chat_snapshot(io, error);
-                                projects.fail_chat_io(token, completion, error);
+                                projects.refuse_chat_identity(token, finish, io, error, completion);
                             }
                         }
                     }));
                 }));
             }
+        }
+    }
+
+    /// The install identity cannot be made: a write answers `unwritable` (the
+    /// guide's `tryWrite`), anything else throws the failure.
+    fn refuse_chat_identity(
+        &self,
+        token: u64,
+        finish: ChatFinish,
+        io: ChatIo,
+        error: String,
+        completion: Completion,
+    ) {
+        let project_id = io.operation().project_id().map(str::to_owned);
+        match self.with_chat_store(|chats| chats.refuse_io_identity(io)) {
+            Ok(IdentityRefusal::Answer(result)) => {
+                if let Some(id) = &project_id {
+                    self.guide().write_failed(id, &error);
+                }
+                self.complete_chat_io(token, finish, Ok(result), None, completion)
+            }
+            Ok(IdentityRefusal::Throw) => self.fail_chat_io(token, completion, error),
+            Err(cleanup) => self.fail_chat_io(
+                token,
+                completion,
+                format!("{error}; chat lease recovery failed: {}", cleanup.message),
+            ),
         }
     }
 

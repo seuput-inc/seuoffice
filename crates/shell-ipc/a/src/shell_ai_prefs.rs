@@ -279,6 +279,9 @@ impl ShellAiPrefsPort {
                     drop(completion);
                     return;
                 }
+                // `cachedAiPanelPrefs = next` comes before `writeAppSettings`: a write that
+                // fails leaves the cache with the new value, and nothing is broadcast
+                *cache.borrow_mut() = Some(next.clone());
                 workers.spawn(Box::new(move || {
                     let result = write_app_settings(
                         &path,
@@ -307,13 +310,6 @@ impl ShellAiPrefsPort {
                     post.post(Box::new(move || {
                         let _completion = completion;
                         reply.reply(result.map(|()| {
-                            PREF_CACHES.with(|caches| {
-                                if let Some(cache) =
-                                    caches.borrow().get(&cache_id).and_then(Weak::upgrade)
-                                {
-                                    *cache.borrow_mut() = Some(next.clone());
-                                }
-                            });
                             let value = from_json(&next.to_json());
                             events.emit(Target::All, PREFS_CHANGED, vec![value.clone()]);
                             value
@@ -630,7 +626,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_write_does_not_publish_or_advance_cache() {
+    fn failed_write_does_not_publish_but_the_cache_keeps_the_value() {
         let r = rig("failed-write", None);
         std::fs::create_dir(r.dir.join("app-settings.json")).unwrap();
         let result = call(|cx, reply| {
@@ -643,9 +639,10 @@ mod tests {
         assert!(result.is_err());
         assert!(r.log.0.lock().unwrap().is_empty());
         std::fs::remove_dir(r.dir.join("app-settings.json")).unwrap();
+        // `cachedAiPanelPrefs = next` ran before the write that failed
         assert_eq!(
             call(|cx, reply| r.port.app_get_ai_panel_prefs(cx, vec![], reply)),
-            Ok(prefs("left", "default", 14.0, true))
+            Ok(prefs("right", "default", 14.0, true))
         );
     }
     #[test]

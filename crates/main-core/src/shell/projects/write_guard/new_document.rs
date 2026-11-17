@@ -215,7 +215,7 @@ fn publish(
     authorize: &Admission,
 ) -> Result<file_commit::FileCommitReceipt, WriteGuardError> {
     let parent = staging_windows::open_existing_dir(dir)?;
-    let mut staged = staging_windows::create_project_data_stage(&parent, target, name)?;
+    let mut staged = staging_windows::create_project_data_stage(&parent, dir, target, name)?;
     staging_windows::write_project_data_stage(&mut staged, bytes)?;
     let dir = dir.to_owned();
     let plan = staging_windows::prepare_project_data_exclusive_receipt(

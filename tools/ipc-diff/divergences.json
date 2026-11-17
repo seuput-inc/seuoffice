@@ -1039,5 +1039,62 @@
       "files": {}
     },
     "reason": "keys whose value is undefined: defaultAiSettings() leaves baseUrl, cliPath and others undefined, which Electronʼs structured clone sends as present keys; main-core builds the settings view as JSON (jscompat::JsonValue has no undefined), so Rust leaves the keys out. The two answers are JSON-equal and no renderer or package reads those keys by presence (stage 2: no `in` or hasOwnProperty checks, no spread over them)."
+  },
+  {
+    "id": "d1-sheets-headless-pdf-without-reservation",
+    "group": "d1/sheets-save",
+    "case": 36,
+    "typescript": {
+      "record": {
+        "calls": [
+          {
+            "answer": {
+              "value": { "canceled": false, "path": "$DIR/h.pdf" },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": { "value": { "canceled": true }, "buffers": [] },
+            "events": []
+          }
+        ],
+        "log": [
+          ["pdf.renderPdf"],
+          [
+            "dialog.showSaveDialog",
+            1,
+            { "defaultPath": "a.pdf", "filters": [{ "name": "PDF", "extensions": ["pdf"] }] }
+          ]
+        ]
+      },
+      "files": {
+        "documents": "dir 755",
+        "h.pdf": "file 644 \"%PDF-1.7\"",
+        "temp": "dir 755",
+        "userData": "dir 755"
+      }
+    },
+    "rust": {
+      "record": {
+        "calls": [
+          {
+            "answer": {
+              "error": "Error invoking remote method 'workbook:export-pdf': Error: The headless PDF has no native invocation reservation"
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "error": "Error invoking remote method 'workbook:export-pdf': Error: The headless PDF has no native invocation reservation"
+            },
+            "events": []
+          }
+        ],
+        "log": []
+      },
+      "files": { "documents": "dir 755", "temp": "dir 755", "userData": "dir 755" }
+    },
+    "reason": "A closed-side refusal. The TypeScript honors an `outPath` the renderer sends whenever the process is in headless mode and writes the PDF there with no dialog. The Rust port writes a headless PDF only for the tab its native invocation reserved (HeadlessExport: input and output chosen by the command line, the path checked against it) and refuses every other tab of a headless process. A headless process holds exactly that tab, so the refusal never meets a real run. The case's ordinary tab in a headless process is a state only the TypeScript allows: it writes h.pdf for the call with a path and opens the Save dialog for the call without one, where the Rust answers the refusal twice and writes nothing. The reserved headless path is covered by the unit tests of sheets/tests.rs."
   }
 ]

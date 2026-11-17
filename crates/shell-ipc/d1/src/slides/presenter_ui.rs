@@ -17,6 +17,16 @@ pub(in crate::slides) fn presenter_swap(
     _args: Args,
     responder: Responder,
 ) {
+    // `!show || !aWin` answers false whatever the document is
+    let has_audience = app
+        .state
+        .borrow()
+        .presenter_shows
+        .get(&cx.sender.view)
+        .is_some_and(|show| show.audience.is_some() && show.audience_owner.is_some());
+    if !has_audience {
+        return responder.reply(Ok(IpcValue::Bool(false)));
+    }
     let source = match super::super::session::render_owner(cx)
         .and_then(|source| app.capture_save_owner(cx.sender.view, source))
     {

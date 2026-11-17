@@ -131,14 +131,10 @@ pub(crate) fn probe_trigger(
             editors.discard_recovery_copy(view);
             done(then)
         }
+        // the TypeScript trigger starts the flush and does not wait for it
         "write-copies-now" => {
-            editors.write_copies_now(Box::new(move |result| {
-                then(
-                    result
-                        .map(|()| IpcValue::Undefined)
-                        .map_err(|error| crate::kit::error(error.0)),
-                )
-            }));
+            editors.write_copies_now(Box::new(|_| ()));
+            done(then)
         }
         "open-file-with-decision" => {
             let decision = match text(args, 1) {

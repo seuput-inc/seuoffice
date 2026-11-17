@@ -115,7 +115,7 @@ fn stage_authorized_data(
             });
         }
         staged = Some(staging_windows::create_project_data_stage(
-            data, root, name,
+            data, data_path, root, name,
         )?);
         Ok(())
     });
