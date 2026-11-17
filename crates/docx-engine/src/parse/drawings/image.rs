@@ -381,7 +381,9 @@ fn host_paragraph_geometry(
                 "auto" => BlockImageParagraphLineRule::Auto,
                 "atLeast" => BlockImageParagraphLineRule::AtLeast,
                 "exact" => BlockImageParagraphLineRule::Exact,
-                other => BlockImageParagraphLineRule::Unlisted(std::sync::Arc::new(other.to_string())),
+                other => {
+                    BlockImageParagraphLineRule::Unlisted(std::sync::Arc::new(other.to_string()))
+                }
             }));
     }
     // the (m - 1) x single extra under an auto-multiple picture line follows the
