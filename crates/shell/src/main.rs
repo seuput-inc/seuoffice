@@ -31,6 +31,7 @@ mod headless;
 mod host;
 mod index_worker_process;
 mod ipc;
+mod local_storage_import;
 mod measure;
 mod native;
 mod odt_worker;
@@ -556,6 +557,10 @@ fn main() {
     let outlet = Arc::new(TauriOutlet::default());
     let views = Arc::new(ViewTable::new(outlet.clone(), core_thread.clone()));
     let paths = Arc::new(ShellPaths::new());
+    // before the first webview: its scripts carry what Electron's localStorage held
+    if !worker_mode && !headless::is_headless() {
+        local_storage_import::prepare(paths.user_data());
+    }
 
     let mut builder = tauri::Builder::default()
         .invoke_system(include_str!("../bridge/invoke-system.js"))

@@ -4,7 +4,7 @@
 //! machine name (`USER_DATA_DIR_NAME` of packages/i18n/src/product.ts), not
 //! after the display name.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use shell_contract::runtime::{AppPaths, PathName};
 
@@ -38,6 +38,12 @@ impl ShellPaths {
 }
 
 impl ShellPaths {
+    /// The Electron build's userData folder, whose `Local Storage` the import
+    /// (`local_storage_import`) reads
+    pub fn user_data(&self) -> &Path {
+        &self.user_data
+    }
+
     /// `APP_SETTINGS_PATH()`
     pub fn settings_file(&self) -> PathBuf {
         self.user_data.join("app-settings.json")

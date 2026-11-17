@@ -2718,8 +2718,12 @@ fn saved_open_result_rejects_acknowledgements_without_identity_result_or_a_consi
     let sender = w.tab(1);
     let refused = |entries: &[(&str, IpcValue)]| {
         message(
-            w.call(sender, "workbook:saved-open-result", saved_open_ack(entries))
-                .unwrap_err(),
+            w.call(
+                sender,
+                "workbook:saved-open-result",
+                saved_open_ack(entries),
+            )
+            .unwrap_err(),
         )
     };
     assert_eq!(

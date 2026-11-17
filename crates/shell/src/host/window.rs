@@ -32,6 +32,7 @@ use crate::native::{
 
 use super::{HostContext, window_open};
 use crate::app_scheme;
+use crate::local_storage_import;
 use crate::preload;
 use crate::trace::{self, trace};
 use crate::views::ViewTable;
@@ -741,6 +742,13 @@ impl Windows {
             spec.view.bridge,
             spec.view.bridge.script().map_or(0, |s| s.len())
         );
+        for script in local_storage_import::init_scripts(&spec.view.url) {
+            builder = if script.all_frames {
+                builder.initialization_script_for_all_frames(script.source)
+            } else {
+                builder.initialization_script(script.source)
+            };
+        }
         if let Some(script) = spec.view.bridge.script() {
             builder = builder.initialization_script(script);
         }
@@ -938,6 +946,13 @@ impl Windows {
             "window",
             "add view {} '{view_label}' to window {} {}", view.0, window.0, spec.url
         );
+        for script in local_storage_import::init_scripts(&spec.url) {
+            builder = if script.all_frames {
+                builder.initialization_script_for_all_frames(script.source)
+            } else {
+                builder.initialization_script(script.source)
+            };
+        }
         if let Some(script) = spec.bridge.script() {
             builder = builder.initialization_script(script);
         }
