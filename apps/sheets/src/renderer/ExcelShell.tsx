@@ -15,19 +15,12 @@ import {
   matchesFontQuery,
   rememberAiPanelOpen,
   useAiSidebarEnabled,
-  webAiOff,
-  webViewMode,
   type AiTokenUsageView,
   type DriveAttachPicked,
   type OnTemplateSkill,
   type SkillUse,
   type AiComposerDocs,
 } from '@seuoffice/ui'
-
-/** the web embed opened the page only to read: no ribbon, and the AI panel stays closed at start */
-const WEB_VIEW = webViewMode()
-/** the web embed's host offers no AI: no panel and no AI button */
-const WEB_AI_OFF = webAiOff()
 
 import {
   BorderAllIcon,
@@ -680,8 +673,8 @@ export function ExcelShell({
     expandFull: t('appRibbonExpand'),
   })
   // Persisted so a closed AI panel stays closed on next launch (docs/slides parity)
-  const [isCopilotOpen, setIsCopilotOpen] = useState(
-    () => !WEB_VIEW && aiPanelInitiallyOpen('ai-sheets-show-ai'),
+  const [isCopilotOpen, setIsCopilotOpen] = useState(() =>
+    aiPanelInitiallyOpen('ai-sheets-show-ai'),
   )
   // the sidebar switch is a soft hide; it closes the panel when it turns off
   const aiSidebarEnabled = useAiSidebarEnabled(setIsCopilotOpen)
@@ -692,7 +685,7 @@ export function ExcelShell({
     return () => window.removeEventListener('wheel', scrollRibbonOnWheel)
   }, [])
   useEffect(() => {
-    if (!WEB_VIEW) rememberAiPanelOpen('ai-sheets-show-ai', isCopilotOpen)
+    rememberAiPanelOpen('ai-sheets-show-ai', isCopilotOpen)
   }, [isCopilotOpen])
   // Split panes (decision 0036): as the secondary pane the dock is forced to
   // the rail, and the rail's click asks the shell to focus this pane first.
@@ -1036,179 +1029,172 @@ export function ExcelShell({
 
   return (
     <main
-      className={`app-shell ${aiDock.open ? '' : 'copilot-collapsed'}${presenting ? ' sheet-presenting' : ''}${WEB_VIEW ? ' web-view' : ''}`}
+      className={`app-shell ${aiDock.open ? '' : 'copilot-collapsed'}${presenting ? ' sheet-presenting' : ''}`}
       inert={openingWorkbook}
       aria-busy={openingWorkbook}
     >
-      {!WEB_VIEW && (
-        <header className={`excel-header ${collapse.rootClass}`} ref={collapse.rootRef}>
-          <nav
-            // a row longer than the default gives the tabs their room back in a
-            // narrow window (styles.css)
-            className={`ribbon-tabs ${IN_TAB ? '' : IS_MAC ? 'ribbon-tabs-mac' : 'ribbon-tabs-win'}${quickAccess.length > DEFAULT_QUICK_ACCESS.length ? ' qa-crowded' : ''}`}
-            aria-label={t('appScopeWorkbook')}
-            onDoubleClick={collapse.onTabsDoubleClick}
+      <header className={`excel-header ${collapse.rootClass}`} ref={collapse.rootRef}>
+        <nav
+          // a row longer than the default gives the tabs their room back in a
+          // narrow window (styles.css)
+          className={`ribbon-tabs ${IN_TAB ? '' : IS_MAC ? 'ribbon-tabs-mac' : 'ribbon-tabs-win'}${quickAccess.length > DEFAULT_QUICK_ACCESS.length ? ' qa-crowded' : ''}`}
+          aria-label={t('appScopeWorkbook')}
+          onDoubleClick={collapse.onTabsDoubleClick}
+        >
+          {quickAccess.map((id, index) => {
+            const item = quickAccessItem(id)
+            if (!item) return null
+            const builtin = item.builtin ? quickAccessBuiltins[item.builtin] : null
+            const digit = IS_MAC ? null : quickAccessDigit(index)
+            const title = `${builtin ? builtin.title : t(item.labelKey)}${digit ? ` (Alt+${digit})` : ''}`
+            return (
+              <button
+                type="button"
+                className="qa-btn"
+                key={id}
+                data-tip={title}
+                aria-label={title}
+                disabled={builtin?.disabled ?? false}
+                onClick={() => runQuickAccess(index)}
+              >
+                {builtin ? builtin.icon : <ToolSymbol symbol={item.symbol ?? ''} />}
+              </button>
+            )
+          })}
+          <button
+            type="button"
+            className="qa-btn qa-customize"
+            data-tip={t('appQuickAccessCustomize')}
+            aria-label={t('appQuickAccessCustomize')}
+            aria-haspopup="menu"
+            aria-expanded={quickAccessMenuAt !== null}
+            onClick={(event) => {
+              const box = event.currentTarget.getBoundingClientRect()
+              setQuickAccessMenuAt((at) => (at ? null : { x: box.left, y: box.bottom + 2 }))
+            }}
           >
-            {quickAccess.map((id, index) => {
-              const item = quickAccessItem(id)
-              if (!item) return null
-              const builtin = item.builtin ? quickAccessBuiltins[item.builtin] : null
-              const digit = IS_MAC ? null : quickAccessDigit(index)
-              const title = `${builtin ? builtin.title : t(item.labelKey)}${digit ? ` (Alt+${digit})` : ''}`
-              return (
-                <button
-                  type="button"
-                  className="qa-btn"
-                  key={id}
-                  data-tip={title}
-                  aria-label={title}
-                  disabled={builtin?.disabled ?? false}
-                  onClick={() => runQuickAccess(index)}
-                >
-                  {builtin ? builtin.icon : <ToolSymbol symbol={item.symbol ?? ''} />}
-                </button>
-              )
-            })}
+            <CaretIcon />
+          </button>
+          <label
+            className={`autosave-toggle ${autoSave ? 'on' : ''}`}
+            data-tip={t('appAutoSaveTip')}
+          >
+            <span className="autosave-knob" />
+            <span className="autosave-text">{t('appAutoSave')}</span>
+            <input
+              type="checkbox"
+              checked={autoSave}
+              onChange={(e) => onAutoSaveChange(e.target.checked)}
+            />
+          </label>
+          <span className="qa-sep" aria-hidden="true" />
+          {visibleTabs.map((tab) => (
             <button
-              type="button"
-              className="qa-btn qa-customize"
-              data-tip={t('appQuickAccessCustomize')}
-              aria-label={t('appQuickAccessCustomize')}
-              aria-haspopup="menu"
-              aria-expanded={quickAccessMenuAt !== null}
-              onClick={(event) => {
-                const box = event.currentTarget.getBoundingClientRect()
-                setQuickAccessMenuAt((at) => (at ? null : { x: box.left, y: box.bottom + 2 }))
+              className={`${collapse.tabClass(tab === activeTab)} ${CONTEXTUAL_TABS.includes(tab) ? 'contextual' : ''}`}
+              data-tip={collapse.tabTip(tab === activeTab)}
+              key={tab}
+              onClick={() => {
+                collapse.onTabPress(tab === activeTab)
+                setActiveTab(tab)
               }}
             >
-              <CaretIcon />
+              {t(TAB_LABEL[tab])}
             </button>
-            <label
-              className={`autosave-toggle ${autoSave ? 'on' : ''}`}
-              data-tip={t('appAutoSaveTip')}
-            >
-              <span className="autosave-knob" />
-              <span className="autosave-text">{t('appAutoSave')}</span>
-              <input
-                type="checkbox"
-                checked={autoSave}
-                onChange={(e) => onAutoSaveChange(e.target.checked)}
-              />
-            </label>
-            <span className="qa-sep" aria-hidden="true" />
-            {visibleTabs.map((tab) => (
-              <button
-                className={`${collapse.tabClass(tab === activeTab)} ${CONTEXTUAL_TABS.includes(tab) ? 'contextual' : ''}`}
-                data-tip={collapse.tabTip(tab === activeTab)}
-                key={tab}
-                onClick={() => {
-                  collapse.onTabPress(tab === activeTab)
-                  setActiveTab(tab)
-                }}
-              >
-                {t(TAB_LABEL[tab])}
-              </button>
-            ))}
-            <span className="ribbon-tabs-spacer" />
-            <span className="workbook-status" role="status" aria-live="polite">
-              {statusMessage}
-            </span>
-          </nav>
+          ))}
+          <span className="ribbon-tabs-spacer" />
+          <span className="workbook-status" role="status" aria-live="polite">
+            {statusMessage}
+          </span>
+        </nav>
 
-          <Ribbon
-            activeTab={activeTab}
-            selectionFormat={selectionFormat}
-            formatPainterActive={formatPainterActive}
-            sheetHasContent={sheetHasContent}
-            sheetProtected={onGetSheetProtection()?.protected ?? null}
-            workbookProtected={onGetWorkbookProtection()}
-            passwordProtected={passwordProtected}
-            spellcheckOn={spellcheckOn}
-            formulaBarVisible={formulaBarVisible}
-            crossHighlightVisible={crossHighlightVisible}
-            pageLayout={pageLayout}
-            selectedChart={selectedChart}
-            selectedShape={selectedShape}
-            selectedTable={selectedTable}
-            outlineSummary={outlineSummary}
-            onListNames={() => {
-              // Names scoped to another sheet resolve to #NAME? here; only
-              // workbook-scoped and active-sheet names are usable in a formula.
-              const data = onGetDefinedNames()
-              return data.names
-                .filter(
-                  (entry) =>
-                    entry.scopeSheetId === null || entry.scopeSheetId === data.activeSheetId,
-                )
-                .map((entry) => entry.name)
-            }}
-            calcManual={calcManual}
-            queryConnections={queryConnections}
-            showFormulas={showFormulas}
-            onRefreshPivot={onRefreshPivot}
-            onIsSelectionInPivot={onIsSelectionInPivot}
-            onCommand={dispatchCommand}
-            onAiRun={(nextPrompt) => {
-              setIsCopilotOpen(true)
-              onSend(nextPrompt)
-            }}
-            aiOpen={aiDock.open}
-            onAiToggle={() => setIsCopilotOpen((open) => !open)}
-          />
-        </header>
-      )}
+        <Ribbon
+          activeTab={activeTab}
+          selectionFormat={selectionFormat}
+          formatPainterActive={formatPainterActive}
+          sheetHasContent={sheetHasContent}
+          sheetProtected={onGetSheetProtection()?.protected ?? null}
+          workbookProtected={onGetWorkbookProtection()}
+          passwordProtected={passwordProtected}
+          spellcheckOn={spellcheckOn}
+          formulaBarVisible={formulaBarVisible}
+          crossHighlightVisible={crossHighlightVisible}
+          pageLayout={pageLayout}
+          selectedChart={selectedChart}
+          selectedShape={selectedShape}
+          selectedTable={selectedTable}
+          outlineSummary={outlineSummary}
+          onListNames={() => {
+            // Names scoped to another sheet resolve to #NAME? here; only
+            // workbook-scoped and active-sheet names are usable in a formula.
+            const data = onGetDefinedNames()
+            return data.names
+              .filter(
+                (entry) => entry.scopeSheetId === null || entry.scopeSheetId === data.activeSheetId,
+              )
+              .map((entry) => entry.name)
+          }}
+          calcManual={calcManual}
+          queryConnections={queryConnections}
+          showFormulas={showFormulas}
+          onRefreshPivot={onRefreshPivot}
+          onIsSelectionInPivot={onIsSelectionInPivot}
+          onCommand={dispatchCommand}
+          onAiRun={(nextPrompt) => {
+            setIsCopilotOpen(true)
+            onSend(nextPrompt)
+          }}
+          aiOpen={aiDock.open}
+          onAiToggle={() => setIsCopilotOpen((open) => !open)}
+        />
+      </header>
 
       {/* AI panel docks on the left, full height under the ribbon (unified with docs) */}
-      <div
-        className={`sheet-body${(!aiSidebarEnabled && !aiDock.open) || WEB_AI_OFF ? ' ai-dock-off' : ''}`}
-      >
-        {!WEB_AI_OFF && (
-          <AiChatPanel
-            isOpen={aiDock.open}
-            focusRequest={openAiRequest}
-            hideRail={!aiSidebarEnabled}
-            hasContent={sheetHasContent}
-            chat={chat}
-            {...(historicChat !== undefined ? { historicChat } : {})}
-            renderSkillCard={renderSkillCard}
-            skillNotes={skillNotes}
-            onTemplateSkill={onTemplateSkill}
-            attachments={attachments}
-            attachNotice={attachNotice}
-            onPickAttachments={onPickAttachments}
-            onDrivePicked={onDrivePicked}
-            docMention={docMention}
-            onAddAttachmentPaths={onAddAttachmentPaths}
-            onAddPastedImage={onAddPastedImage}
-            onRemoveAttachment={onRemoveAttachment}
-            prompt={prompt}
-            preview={preview}
-            proposalPanel={aiProposal}
-            aiBusy={aiBusy}
-            sessionUsage={sessionUsage}
-            subscription={aiSubscription}
-            onPromptChange={onPromptChange}
-            onSend={onSend}
-            onSendQueued={(text, atts, skillUse) => {
-              // the panel asks the send gate first: a message stays queued while it asks to
-              // connect or shows the first-use notice
-              if (aiBusy || aiProposal.proposal.kind === 'pending') return false
-              onSend(text, atts, undefined, skillUse)
-              return true
-            }}
-            onStop={onStop}
-            onNewChat={onNewChat}
-            onUndo={onUndo}
-            scopeRange={aiScopeRange}
-            scopeColumns={aiScopeColumns}
-            scopeLocked={aiScopeLocked}
-            onScopeDismiss={onAiScopeDismiss}
-            onCitation={onAiCitation}
-            onExpand={aiDock.onExpand}
-            onCollapse={() => setIsCopilotOpen(false)}
-            project={aiProject}
-          />
-        )}
+      <div className={`sheet-body${!aiSidebarEnabled && !aiDock.open ? ' ai-dock-off' : ''}`}>
+        <AiChatPanel
+          isOpen={aiDock.open}
+          focusRequest={openAiRequest}
+          hideRail={!aiSidebarEnabled}
+          hasContent={sheetHasContent}
+          chat={chat}
+          {...(historicChat !== undefined ? { historicChat } : {})}
+          renderSkillCard={renderSkillCard}
+          skillNotes={skillNotes}
+          onTemplateSkill={onTemplateSkill}
+          attachments={attachments}
+          attachNotice={attachNotice}
+          onPickAttachments={onPickAttachments}
+          onDrivePicked={onDrivePicked}
+          docMention={docMention}
+          onAddAttachmentPaths={onAddAttachmentPaths}
+          onAddPastedImage={onAddPastedImage}
+          onRemoveAttachment={onRemoveAttachment}
+          prompt={prompt}
+          preview={preview}
+          proposalPanel={aiProposal}
+          aiBusy={aiBusy}
+          sessionUsage={sessionUsage}
+          subscription={aiSubscription}
+          onPromptChange={onPromptChange}
+          onSend={onSend}
+          onSendQueued={(text, atts, skillUse) => {
+            // the panel asks the send gate first: a message stays queued while it asks to
+            // connect or shows the first-use notice
+            if (aiBusy || aiProposal.proposal.kind === 'pending') return false
+            onSend(text, atts, undefined, skillUse)
+            return true
+          }}
+          onStop={onStop}
+          onNewChat={onNewChat}
+          onUndo={onUndo}
+          scopeRange={aiScopeRange}
+          scopeColumns={aiScopeColumns}
+          scopeLocked={aiScopeLocked}
+          onScopeDismiss={onAiScopeDismiss}
+          onCitation={onAiCitation}
+          onExpand={aiDock.onExpand}
+          onCollapse={() => setIsCopilotOpen(false)}
+          project={aiProject}
+        />
         <div className="sheet-main">
           <section className="workbook-area">
             <div id="univer-container" className="spreadsheet" />
@@ -1262,7 +1248,7 @@ export function ExcelShell({
                   {odsNoticeText}
                 </span>
               )}
-              <span className="status-msg">{WEB_VIEW ? null : statusMessage}</span>
+              <span className="status-msg">{statusMessage}</span>
             </div>
             <div className="status-right">
               {/* One-of-N view switcher, so it is a radiogroup rather than a

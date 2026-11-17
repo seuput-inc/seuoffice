@@ -307,8 +307,6 @@ import {
   useSplitPaneFocusPing,
   useSplitPaneRole,
   templateDocumentOf,
-  webAiOff,
-  webViewMode,
   type TemplateDocument,
 } from '@seuoffice/ui'
 import { useI18n } from './i18n/locale'
@@ -555,12 +553,7 @@ const RIBBON_TABS = [
   { id: 'page', labelKey: 'ribbonTabPage' },
   { id: 'view', labelKey: 'ribbonTabView' },
 ] as const
-type RibbonTab = (typeof RIBBON_TABS)[number]['id'] | 'fillForm' | 'formDesign' | 'reading'
-
-/** the web embed opened the page only to read: the ribbon is the reading bar alone, the AI panel starts closed */
-const WEB_VIEW = webViewMode()
-/** the web embed's host offers no AI: no panel and no AI button */
-const WEB_AI_OFF = webAiOff()
+type RibbonTab = (typeof RIBBON_TABS)[number]['id'] | 'fillForm' | 'formDesign'
 
 /** Right-click menu of one markup annotation (pending or already in the file). */
 type MarkupMenu =
@@ -706,7 +699,7 @@ export default function App() {
   }
   // Persisted so a closed AI panel stays closed on next launch (docs/slides parity)
   const [aiCollapsed, setAiCollapsed] = useState(
-    () => WEB_VIEW || !aiPanelInitiallyOpen('genoffice-pdf-show-ai'),
+    () => !aiPanelInitiallyOpen('genoffice-pdf-show-ai'),
   )
   // In a split, a secondary pane's panel is forced to the rail; the focus pane keeps its own state
   const { role: paneRole, requestFocus } = useSplitPaneRole()
@@ -716,12 +709,11 @@ export default function App() {
   // the sidebar switch is a soft hide; it closes the panel when it turns off
   const aiSidebarEnabled = useAiSidebarEnabled(setAiOpen)
   useEffect(() => {
-    if (!WEB_VIEW) rememberAiPanelOpen('genoffice-pdf-show-ai', !aiCollapsed)
+    rememberAiPanelOpen('genoffice-pdf-show-ai', !aiCollapsed)
   }, [aiCollapsed])
   /** One-shot prompt pushed by the ribbon AI buttons; the panel auto-runs it (docs preset pattern) */
   const [aiPreset, setAiPreset] = useState<{ text: string; nonce: number } | null>(null)
-  const [ribbonTabChoice, setRibbonTab] = useState<RibbonTab>('home')
-  const ribbonTab: RibbonTab = WEB_VIEW ? 'reading' : ribbonTabChoice
+  const [ribbonTab, setRibbonTab] = useState<RibbonTab>('home')
   const [spread, setSpread] = useState<1 | 2>(1)
   // side-by-side translation view; the revision rebuilds its tree after a save
   const [bilingualOn, setBilingualOn] = useState(false)
@@ -9782,20 +9774,6 @@ export default function App() {
     </button>
   )
 
-  const printBtn = (
-    <button
-      className="rb-big"
-      data-tip={`${t('print')} (${platformShortcuts('⌘P')})`}
-      disabled={printing}
-      onClick={openPrintDlg}
-    >
-      <span className="rb-big-icon">
-        <IconPrint />
-      </span>
-      <span>{printing ? t('printPreparing') : t('print')}</span>
-    </button>
-  )
-
   const editTextBtn = (
     <button
       className={`rb-big${editTextMode ? ' active' : ''}`}
@@ -10095,121 +10073,104 @@ export default function App() {
       aria-busy={redactionCopyInFlight}
     >
       <div className={`ribbon ${collapse.rootClass}`} ref={collapse.rootRef}>
-        {!WEB_VIEW && (
-          <div className="ribbon-tabs" onDoubleClick={collapse.onTabsDoubleClick}>
+        <div className="ribbon-tabs" onDoubleClick={collapse.onTabsDoubleClick}>
+          <button
+            className="qa-btn"
+            data-tip={`${t('save')} (${platformShortcuts('⌘S')})`}
+            aria-label={t('save')}
+            disabled={!unsavedShown || saveState === 'saving'}
+            onClick={() => void save()}
+          >
+            <IconSave />
+          </button>
+          <button
+            className="qa-btn"
+            data-tip={`${t('undo')} (${platformShortcuts('⌘Z')})`}
+            aria-label={`${t('undo')} (${platformShortcuts('⌘Z')})`}
+            disabled={undoStack.length === 0 && written.undo === 0}
+            onClick={undo}
+          >
+            <IconUndo />
+          </button>
+          <button
+            className="qa-btn"
+            data-tip={`${t('redo')} (${platformShortcuts('⇧⌘Z')})`}
+            aria-label={`${t('redo')} (${platformShortcuts('⇧⌘Z')})`}
+            disabled={redoStack.length === 0 && written.redo === 0}
+            onClick={redo}
+          >
+            <IconRedo />
+          </button>
+          <span className="qa-sep" />
+          <label className={`autosave-toggle${autoSave ? ' on' : ''}`} data-tip={t('autoSaveTip')}>
+            <span className="autosave-knob" />
+            <span className="autosave-text">{t('autoSave')}</span>
+            <input
+              type="checkbox"
+              checked={autoSave}
+              onChange={(e) => setAutoSave(e.target.checked)}
+            />
+          </label>
+          <span className="qa-sep" />
+          {RIBBON_TABS.map(({ id, labelKey }) => (
             <button
-              className="qa-btn"
-              data-tip={`${t('save')} (${platformShortcuts('⌘S')})`}
-              aria-label={t('save')}
-              disabled={!unsavedShown || saveState === 'saving'}
-              onClick={() => void save()}
+              key={id}
+              className={`ribbon-tab ${collapse.tabClass(ribbonTab === id)}`}
+              data-tip={collapse.tabTip(ribbonTab === id)}
+              onClick={() => {
+                collapse.onTabPress(ribbonTab === id)
+                setRibbonTab(id)
+              }}
             >
-              <IconSave />
+              {t(labelKey)}
             </button>
+          ))}
+          {!readOnly && (
             <button
-              className="qa-btn"
-              data-tip={`${t('undo')} (${platformShortcuts('⌘Z')})`}
-              aria-label={`${t('undo')} (${platformShortcuts('⌘Z')})`}
-              disabled={undoStack.length === 0 && written.undo === 0}
-              onClick={undo}
+              className={`ribbon-tab ribbon-tab-context ${collapse.tabClass(ribbonTab === 'fillForm')}`}
+              data-tip={collapse.tabTip(ribbonTab === 'fillForm')}
+              onClick={() => {
+                collapse.onTabPress(ribbonTab === 'fillForm')
+                setRibbonTab('fillForm')
+              }}
             >
-              <IconUndo />
+              {t('ribbonTabFillForm')}
             </button>
-            <button
-              className="qa-btn"
-              data-tip={`${t('redo')} (${platformShortcuts('⇧⌘Z')})`}
-              aria-label={`${t('redo')} (${platformShortcuts('⇧⌘Z')})`}
-              disabled={redoStack.length === 0 && written.redo === 0}
-              onClick={redo}
-            >
-              <IconRedo />
-            </button>
-            <span className="qa-sep" />
-            <label
-              className={`autosave-toggle${autoSave ? ' on' : ''}`}
-              data-tip={t('autoSaveTip')}
-            >
-              <span className="autosave-knob" />
-              <span className="autosave-text">{t('autoSave')}</span>
-              <input
-                type="checkbox"
-                checked={autoSave}
-                onChange={(e) => setAutoSave(e.target.checked)}
-              />
-            </label>
-            <span className="qa-sep" />
-            {RIBBON_TABS.map(({ id, labelKey }) => (
-              <button
-                key={id}
-                className={`ribbon-tab ${collapse.tabClass(ribbonTab === id)}`}
-                data-tip={collapse.tabTip(ribbonTab === id)}
-                onClick={() => {
-                  collapse.onTabPress(ribbonTab === id)
-                  setRibbonTab(id)
-                }}
-              >
-                {t(labelKey)}
-              </button>
-            ))}
-            {!readOnly && (
-              <button
-                className={`ribbon-tab ribbon-tab-context ${collapse.tabClass(ribbonTab === 'fillForm')}`}
-                data-tip={collapse.tabTip(ribbonTab === 'fillForm')}
-                onClick={() => {
-                  collapse.onTabPress(ribbonTab === 'fillForm')
-                  setRibbonTab('fillForm')
-                }}
-              >
-                {t('ribbonTabFillForm')}
-              </button>
-            )}
-            {!readOnly && (
-              <button
-                className={`ribbon-tab ribbon-tab-context ${collapse.tabClass(ribbonTab === 'formDesign')}`}
-                data-tip={collapse.tabTip(ribbonTab === 'formDesign')}
-                onClick={() => {
-                  collapse.onTabPress(ribbonTab === 'formDesign')
-                  setRibbonTab('formDesign')
-                }}
-              >
-                {t('ribbonTabFormDesign')}
-              </button>
-            )}
-            <span className="ribbon-tabs-spacer" />
-            {readOnly && <span className="tb-readonly">{readOnlyReason}</span>}
-            {/* Pending edits wait for an explicit save or an enabled autosave. */}
-            {saveState === 'saving' ? (
-              <span className="tb-save-pending">{t('saving')}</span>
-            ) : (
-              unsavedShown &&
-              saveState !== 'error' && <span className="tb-save-pending">{t('unsaved')}</span>
-            )}
-            {saveState === 'error' && (
-              <span className="tb-save-error" data-tip={saveError}>
-                {t('saveFailed')}
-              </span>
-            )}
-            {saveState === 'saved' && <span className="tb-save-ok">{t('savedOk')}</span>}
-            {formHasXfa && (
-              <span className="tb-form-warning" data-tip={t('formXfaWarning')}>
-                XFA
-              </span>
-            )}
-          </div>
-        )}
-        <div className="ribbon-body" data-ribbon-body="">
-          {ribbonTab === 'reading' && (
-            <>
-              {pageZoomGroup()}
-              <div className="ribbon-sep" />
-              <div className="ribbon-group">
-                <div className="ribbon-group-items">
-                  {searchBtn}
-                  {printBtn}
-                </div>
-              </div>
-            </>
           )}
+          {!readOnly && (
+            <button
+              className={`ribbon-tab ribbon-tab-context ${collapse.tabClass(ribbonTab === 'formDesign')}`}
+              data-tip={collapse.tabTip(ribbonTab === 'formDesign')}
+              onClick={() => {
+                collapse.onTabPress(ribbonTab === 'formDesign')
+                setRibbonTab('formDesign')
+              }}
+            >
+              {t('ribbonTabFormDesign')}
+            </button>
+          )}
+          <span className="ribbon-tabs-spacer" />
+          {readOnly && <span className="tb-readonly">{readOnlyReason}</span>}
+          {/* Pending edits wait for an explicit save or an enabled autosave. */}
+          {saveState === 'saving' ? (
+            <span className="tb-save-pending">{t('saving')}</span>
+          ) : (
+            unsavedShown &&
+            saveState !== 'error' && <span className="tb-save-pending">{t('unsaved')}</span>
+          )}
+          {saveState === 'error' && (
+            <span className="tb-save-error" data-tip={saveError}>
+              {t('saveFailed')}
+            </span>
+          )}
+          {saveState === 'saved' && <span className="tb-save-ok">{t('savedOk')}</span>}
+          {formHasXfa && (
+            <span className="tb-form-warning" data-tip={t('formXfaWarning')}>
+              XFA
+            </span>
+          )}
+        </div>
+        <div className="ribbon-body" data-ribbon-body="">
           {ribbonTab === 'home' && (
             <>
               {/* ---- AI (first slot: entry + one-click AI actions, docs parity) ---- */}
@@ -10372,7 +10333,17 @@ export default function App() {
               <div className="ribbon-group">
                 <div className="ribbon-group-items">
                   {searchBtn}
-                  {printBtn}
+                  <button
+                    className="rb-big"
+                    data-tip={`${t('print')} (${platformShortcuts('⌘P')})`}
+                    disabled={printing}
+                    onClick={openPrintDlg}
+                  >
+                    <span className="rb-big-icon">
+                      <IconPrint />
+                    </span>
+                    <span>{printing ? t('printPreparing') : t('print')}</span>
+                  </button>
                   <button
                     className="rb-big"
                     data-tip={t('propsTitle')}
@@ -11175,61 +11146,54 @@ export default function App() {
       <div className="app-main">
         {/* dock wrapper animates the width between panel and rail (docs-style 180ms ease);
             the panel stays mounted while collapsed so the chat history survives */}
-        {!WEB_AI_OFF && (
-          <div
-            className={`ai-dock${aiPanelOpen ? '' : ' collapsed'}${
-              !aiSidebarEnabled && !aiPanelOpen ? ' ai-dock-off' : ''
-            }`}
-          >
-            {!aiPanelOpen && aiSidebarEnabled && (
-              <button
-                className="ai-rail"
-                data-tip={t('aiOpenAssistant')}
-                aria-label={t('aiOpenAssistant')}
-                onClick={() =>
-                  onAiRailClick(
-                    paneRole,
-                    !aiCollapsed,
-                    (open) => setAiCollapsed(!open),
-                    requestFocus,
+        <div
+          className={`ai-dock${aiPanelOpen ? '' : ' collapsed'}${
+            !aiSidebarEnabled && !aiPanelOpen ? ' ai-dock-off' : ''
+          }`}
+        >
+          {!aiPanelOpen && aiSidebarEnabled && (
+            <button
+              className="ai-rail"
+              data-tip={t('aiOpenAssistant')}
+              aria-label={t('aiOpenAssistant')}
+              onClick={() =>
+                onAiRailClick(paneRole, !aiCollapsed, (open) => setAiCollapsed(!open), requestFocus)
+              }
+            >
+              <AiMark size={22} />
+            </button>
+          )}
+          <AiPanel
+            api={aiApi}
+            filePath={filePath}
+            preset={aiPreset}
+            onCollapse={() => setAiCollapsed(true)}
+            onRunDone={() => void autoSaveAfterAiRun()}
+            onClearSelection={() => setAiSelection(null)}
+            onCitation={openCitation}
+            templateDocument={templateDocument}
+            onSkillHandoff={() => setAiCollapsed(false)}
+            overview={
+              <InsightsCard
+                insights={documentInsights}
+                session={jobSession}
+                lang={lang}
+                t={t}
+                onSearchTerm={searchFor}
+                onGotoPage={(page) => void aiApi.gotoPage(page)}
+                onNotice={showNotice}
+                sectionActions={(section) =>
+                  noteInsertAction(
+                    noteActions,
+                    overviewNoteRequest(section, t('airOverview')),
+                    t,
+                    'ai-overview-link',
                   )
                 }
-              >
-                <AiMark size={22} />
-              </button>
-            )}
-            <AiPanel
-              api={aiApi}
-              filePath={filePath}
-              preset={aiPreset}
-              onCollapse={() => setAiCollapsed(true)}
-              onRunDone={() => void autoSaveAfterAiRun()}
-              onClearSelection={() => setAiSelection(null)}
-              onCitation={openCitation}
-              templateDocument={templateDocument}
-              onSkillHandoff={() => setAiCollapsed(false)}
-              overview={
-                <InsightsCard
-                  insights={documentInsights}
-                  session={jobSession}
-                  lang={lang}
-                  t={t}
-                  onSearchTerm={searchFor}
-                  onGotoPage={(page) => void aiApi.gotoPage(page)}
-                  onNotice={showNotice}
-                  sectionActions={(section) =>
-                    noteInsertAction(
-                      noteActions,
-                      overviewNoteRequest(section, t('airOverview')),
-                      t,
-                      'ai-overview-link',
-                    )
-                  }
-                />
-              }
-            />
-          </div>
-        )}
+              />
+            }
+          />
+        </div>
         <div className="app-content">
           {diskChange !== null && status === 'ready' && (
             <div className="pdf-disk-change-bar" role="alert">
@@ -13197,7 +13161,7 @@ export default function App() {
                 )}
               </div>
             )}
-            {selPopup && !(readOnly && WEB_AI_OFF) && (
+            {selPopup && (
               <div
                 ref={selBarRef}
                 className={`pdf-sel-popup${selPopup.side === 'above' ? ' is-above' : ''}`}
@@ -13347,23 +13311,21 @@ export default function App() {
                       <span className="pdf-sel-popup-sep" aria-hidden />
                     </>
                   )}
-                  {!WEB_AI_OFF && (
-                    <button
-                      type="button"
-                      className="pdf-sel-ask"
-                      data-tip={labelWithKey(t, t('aiAskTitle'), 'ask')}
-                      aria-label={labelWithKey(t, t('aiAskBtn'), 'ask')}
-                      onClick={openAskPopover}
-                    >
-                      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" aria-hidden>
-                        <path
-                          d="M12 3l1.7 4.6L18 9.3l-4.3 1.7L12 15.6l-1.7-4.6L6 9.3l4.3-1.7L12 3zM19 15l.85 2.3L22 18.15l-2.15.85L19 21.3l-.85-2.3-2.15-.85 2.15-.85L19 15z"
-                          fill="currentColor"
-                        />
-                      </svg>
-                      {t('aiAskBtn')}
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    className="pdf-sel-ask"
+                    data-tip={labelWithKey(t, t('aiAskTitle'), 'ask')}
+                    aria-label={labelWithKey(t, t('aiAskBtn'), 'ask')}
+                    onClick={openAskPopover}
+                  >
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" aria-hidden>
+                      <path
+                        d="M12 3l1.7 4.6L18 9.3l-4.3 1.7L12 15.6l-1.7-4.6L6 9.3l4.3-1.7L12 3zM19 15l.85 2.3L22 18.15l-2.15.85L19 21.3l-.85-2.3-2.15-.85 2.15-.85L19 15z"
+                        fill="currentColor"
+                      />
+                    </svg>
+                    {t('aiAskBtn')}
+                  </button>
                 </div>
                 {!readOnly &&
                   selColorRow &&
@@ -13405,7 +13367,7 @@ export default function App() {
                 />
               </div>
             )}
-            {askPop && !WEB_AI_OFF && (
+            {askPop && (
               <AiAskPopover
                 rect={askPop.rect}
                 excerpt={askPop.excerpt}

@@ -117,19 +117,12 @@ import {
   templateDocumentOf,
   type TemplateDocument,
   useAiSidebarEnabled,
-  webAiOff,
-  webViewMode,
 } from '@seuoffice/ui'
 import type { ChartPresetDef, IconDef, SmartArtDef } from './insert-presets'
 import { IconAiBeautify, IconAiFactCheck, IconAiImage } from './components/icons'
 import { ToastHost } from './components/toast'
 import { showToast } from './components/toast-bus'
 import { isAiRunLocked, setAiRunLocked } from './ai-run-lock'
-
-/** the web embed opened the page only to read: the deck shows in Reading view, with no ribbon and no way out of it */
-const WEB_VIEW = webViewMode()
-/** the web embed's host offers no AI: no panel and no AI button */
-const WEB_AI_OFF = webAiOff()
 import { t, useI18n } from './i18n/locale'
 import { AiPanel } from './ai/AiPanel'
 import { useAiDock } from './ai/use-ai-dock'
@@ -493,7 +486,7 @@ export function App() {
   useEffect(() => {
     window.slidesApi.setAutoSavePref?.(autoSave)
   }, [autoSave])
-  const [showAi, setShowAi] = useState(() => !WEB_VIEW && aiPanelInitiallyOpen('ai-slides-show-ai'))
+  const [showAi, setShowAi] = useState(() => aiPanelInitiallyOpen('ai-slides-show-ai'))
   // Split panes (decision 0036): as the secondary pane this view's panel is
   // forced to the rail, and the rail's click asks the shell to focus it first.
   // The choice the rail records is remembered like the toggle's.
@@ -566,7 +559,7 @@ export function App() {
   const stageWrapRef = useRef<HTMLDivElement | null>(null)
   const [stageViewportSize, setStageViewportSize] = useState({ w: 0, h: 0 })
   // ── View tab: view mode + display toggles ─────────────────────────────
-  const [viewMode, setViewMode] = useState<SlidesViewMode>(WEB_VIEW ? 'reading' : 'normal')
+  const [viewMode, setViewMode] = useState<SlidesViewMode>('normal')
   // Follow slide changes made outside the list (arrow keys, canvas paging); viewMode/showThumbs
   // re-run it because the list remounts at scroll 0 when the normal view returns
   useEffect(() => {
@@ -2256,7 +2249,6 @@ export function App() {
 
   // ── View modes ──────────────────────────────────────────────────────────
   const onViewMode = useCallback((mode: SlidesViewMode) => {
-    if (WEB_VIEW) return
     setViewMode(mode)
     setEditing(null)
     setSelectedIds([])
@@ -2297,7 +2289,7 @@ export function App() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault()
-        if (!WEB_VIEW) setViewMode('normal')
+        setViewMode('normal')
       } else if (
         e.key === 'ArrowRight' ||
         e.key === 'ArrowDown' ||
@@ -3540,363 +3532,355 @@ export function App() {
   return (
     <div className="app">
       <ToastHost />
-      {!WEB_VIEW && (
-        <Ribbon
-          hasDoc={!!slide}
-          deckEmpty={deckEmpty}
-          canUndo={histState.canUndo}
-          canRedo={histState.canRedo}
-          dirty={dirty}
-          editing={!!editing || !!editingCell}
-          autoSave={autoSave}
-          onAutoSaveChange={setAutoSave}
-          onOpen={() => void openDialog()}
-          onSave={() => void save()}
-          onUndo={() => void undo()}
-          onRedo={() => void redo()}
-          onSaveAs={() => void saveAs()}
-          onNameWithAi={() => void nameWithAi()}
-          onExportPdf={() => void exportPdf()}
-          onPrint={() => setPrintDlgOpen(true)}
-          onExportImages={() => void exportImages('png')}
-          onExportImagesJpg={() => void exportImages('jpg')}
-          onFormat={onFormat}
-          zoom={zoom}
-          onZoom={previewZoom}
-          showThumbs={showThumbs}
-          onToggleThumbs={() => setShowThumbs((v) => !v)}
-          aiOpen={showAi}
-          onToggleAi={toggleAi}
-          onAiPreset={(text, opts) =>
-            pushAiPreset(text, true, undefined, undefined, opts?.slideShot)
-          }
-          onPickShape={pickShape}
-          onInsertImage={() => void insertImage()}
-          onFormatBackground={openBgFormat}
-          onApplyTheme={(preset) => void applyThemePreset(preset)}
-          onAddSlide={() => void addSlide()}
-          onAddSection={() => void addSectionAt(current)}
-          onAddSlideWithLayout={(lp) => void addSlideWithLayout(lp)}
-          layouts={layoutsResult?.layouts ?? null}
-          layoutSize={layoutsResult?.size ?? null}
-          formatOpen={showFormat}
-          onToggleFormat={() =>
-            setShowFormat((v) => {
-              if (!v) {
-                setShowAnimPane(false)
-                setShowBgFormat(false)
-                setShowSelPane(false)
+      <Ribbon
+        hasDoc={!!slide}
+        deckEmpty={deckEmpty}
+        canUndo={histState.canUndo}
+        canRedo={histState.canRedo}
+        dirty={dirty}
+        editing={!!editing || !!editingCell}
+        autoSave={autoSave}
+        onAutoSaveChange={setAutoSave}
+        onOpen={() => void openDialog()}
+        onSave={() => void save()}
+        onUndo={() => void undo()}
+        onRedo={() => void redo()}
+        onSaveAs={() => void saveAs()}
+        onNameWithAi={() => void nameWithAi()}
+        onExportPdf={() => void exportPdf()}
+        onPrint={() => setPrintDlgOpen(true)}
+        onExportImages={() => void exportImages('png')}
+        onExportImagesJpg={() => void exportImages('jpg')}
+        onFormat={onFormat}
+        zoom={zoom}
+        onZoom={previewZoom}
+        showThumbs={showThumbs}
+        onToggleThumbs={() => setShowThumbs((v) => !v)}
+        aiOpen={showAi}
+        onToggleAi={toggleAi}
+        onAiPreset={(text, opts) => pushAiPreset(text, true, undefined, undefined, opts?.slideShot)}
+        onPickShape={pickShape}
+        onInsertImage={() => void insertImage()}
+        onFormatBackground={openBgFormat}
+        onApplyTheme={(preset) => void applyThemePreset(preset)}
+        onAddSlide={() => void addSlide()}
+        onAddSection={() => void addSectionAt(current)}
+        onAddSlideWithLayout={(lp) => void addSlideWithLayout(lp)}
+        layouts={layoutsResult?.layouts ?? null}
+        layoutSize={layoutsResult?.size ?? null}
+        formatOpen={showFormat}
+        onToggleFormat={() =>
+          setShowFormat((v) => {
+            if (!v) {
+              setShowAnimPane(false)
+              setShowBgFormat(false)
+              setShowSelPane(false)
+            }
+            return !v
+          })
+        }
+        hasSelection={selectedIds.length > 0}
+        hasTextSelection={hasTextSelection}
+        canPaste={hasClipboard}
+        onCopy={() => void copySelected()}
+        onCut={() => void cutSelected()}
+        onPaste={() => void pasteClipboard()}
+        hasBrushFormat={brushFormat !== null}
+        brushMode={brushMode}
+        onFormatBrushClick={onFormatBrushClick}
+        onFormatBrushDoubleClick={onFormatBrushDoubleClick}
+        onTextColor={onTextColor}
+        onAlign={onAlign}
+        onStrike={onStrike}
+        onTextToggle={onTextToggle}
+        onElementTextColor={onElementTextColor}
+        onFindReplace={() => setFindOpen(true)}
+        animByParagraph={animByParagraph}
+        onToggleAnimByParagraph={() => setAnimByParagraph((v) => !v)}
+        onSetLayout={(layoutPath) =>
+          void slideActions.setSlideLayoutAt(ctxRef.current, current, layoutPath)
+        }
+        onResetLayout={() => void slideActions.setSlideLayoutAt(ctxRef.current, current)}
+        onSlideSize={applySlideSize}
+        getSlideSize={() => window.slidesApi.getSlideSize()}
+        onCustomSlideSize={() =>
+          void window.slidesApi.getSlideSize().then((size) => {
+            if (size) setSlideSizeDialog(size)
+          })
+        }
+        onParagraphFormat={onParagraphFormat}
+        onDirection={onDirection}
+        curBulletChar={curBulletChar}
+        curAlign={curAlign}
+        curRtl={curRtl}
+        curFontFamily={fontStatus?.family ?? null}
+        curFontSizePt={fontStatus?.sizePt ?? null}
+        curFontSizeMixed={fontStatus?.sizeMixed ?? false}
+        onFontFamily={onFontFamily}
+        onFontSize={onFontSize}
+        onInsertTable={(rows, cols) => void insertTable(rows, cols)}
+        transition={transition}
+        onTransition={(kind, all) => {
+          void applyTransition(kind, all)
+          if (!all) previewTransitionOnCanvas(kind)
+        }}
+        selectedAnimEffect={selectedAnimEffect}
+        selectionIsMedia={
+          selectedNode?.type === 'picture' && !!(selectedNode as PictureRenderNode).media
+        }
+        timingAnim={timingIdx >= 0 ? animations[timingIdx]! : null}
+        onApplyAnimation={applyAnimation}
+        onAnimHoverPreview={hoverPreviewAnimation}
+        onAnimHoverEnd={() => setHoverAnim(null)}
+        onAddAnimation={addAnimation}
+        onApplyMotionPath={applyMotionPath}
+        onAnimTiming={patchAnimTiming}
+        animPaneOpen={showAnimPane}
+        onToggleAnimPane={toggleAnimPane}
+        animPainterMode={animPainter?.mode ?? null}
+        onAnimPainterClick={() => animationActions.armAnimPainter(ctxRef.current, 'once')}
+        onAnimPainterDoubleClick={() =>
+          animationActions.armAnimPainter(ctxRef.current, 'continuous')
+        }
+        selectionPaneOpen={showSelPane}
+        onToggleSelectionPane={toggleSelectionPane}
+        onChangeCase={(mode) => styleActions.onChangeCase(ctxRef.current, mode)}
+        onHighlight={(hex) => styleActions.onHighlight(ctxRef.current, hex)}
+        onLetterSpacing={(pt) => styleActions.onLetterSpacing(ctxRef.current, pt)}
+        animCount={animations.length}
+        onAnimPreview={() => setAnimPreview((n) => n + 1)}
+        onSlideShow={startSlideShow}
+        onPresenterView={startPresenterView}
+        onCustomShow={() => setCustomShowDlgOpen(true)}
+        onRehearse={startRehearseShow}
+        onRecord={startRecordShow}
+        onClearNarration={clearNarration}
+        currentHidden={!!slide?.hidden}
+        onToggleHidden={() => void toggleHidden()}
+        inkTool={inkTool}
+        onInkTool={onInkTool}
+        inkPresets={inkPresets}
+        inkActiveId={inkActive.id}
+        onInkPresets={onInkPresets}
+        onInkActivate={setInkActiveId}
+        inkCount={inkCount}
+        onInkClearAll={() => void clearInk()}
+        viewMode={viewMode}
+        onViewMode={onViewMode}
+        onSlideMaster={() => void enterMasterView()}
+        onZoomFit={zoomToFit}
+        showRuler={showRuler}
+        onToggleRuler={() => setShowRuler((v) => !v)}
+        showGrid={showGrid}
+        onToggleGrid={() => setShowGrid((v) => !v)}
+        showGuides={showGuides}
+        onToggleGuides={() => setShowGuides((v) => !v)}
+        showNotes={showNotes}
+        onToggleNotes={() => setShowNotes((v) => !v)}
+        commentsOpen={showComments}
+        onToggleComments={() => (showComments ? setShowComments(false) : openComments(false))}
+        onNewComment={() => openComments(true)}
+        commentCount={comments.length}
+        onInsertIcon={(def, color) => void insertIcon(def, color)}
+        onInsertChart={(kind) => void insertChart(kind)}
+        onInsertSmartArt={(def) => void insertSmartArt(def)}
+        onInsertWordArt={(preset) => void insertWordArt(preset)}
+        onInsertField={(type) => void insertField(type)}
+        onOpenLink={() => void openLinkDialog()}
+        onOpenZoom={setZoomDialog}
+        hasSections={sections.length > 0}
+        slideCount={slides.length}
+        currentSlide={current}
+        onOpenHeaderFooter={() => void openHeaderFooter()}
+        onOpenEquation={() => setEqDialogOpen(true)}
+        onInsertMedia={(kind) => void insertMediaFile(kind)}
+        onInsertModel3d={() => void insertModel3dFile()}
+        recording={recording}
+        onToggleScreenRecord={() => void toggleScreenRecord()}
+        contextElementType={contextElementType}
+        onModel3dView={
+          model3dNode
+            ? (rot) =>
+                void model3dActions.storeModel3dView(
+                  ctxRef.current,
+                  model3dNode.sourceId,
+                  model3dNode.box,
+                  rot,
+                )
+            : undefined
+        }
+        tabRequest={contextTabRequest}
+        contextElementId={selectedNode?.sourceId}
+        contextSlideIndex={current}
+        contextChartStyle={contextChartStyle}
+        chartColorSchemes={chartColorSchemes}
+        contextPictureCanCutout={contextPictureCanCutout}
+        contextPictureStroke={contextPictureStroke}
+        onPictureStroke={(stroke) => {
+          // applies to every selected shape/picture; a selected group pierces one level
+          // down so its shape/picture members get the outline (PowerPoint semantics)
+          for (const id of selectedIds) {
+            const n = findNodeCtx(id)?.node
+            if (!n) continue
+            if (n.type === 'picture' || n.type === 'shape') {
+              void onStroke(id, stroke)
+            } else if (n.type === 'group') {
+              for (const c of (n as GroupRenderNode).children) {
+                if (c.type === 'picture' || c.type === 'shape')
+                  void window.slidesApi
+                    .editStroke({
+                      slideIndex: current,
+                      sourceId: c.sourceId,
+                      stroke,
+                      groupId: n.sourceId,
+                    })
+                    .then((r) => r && applySlide(current, r))
               }
-              return !v
-            })
+            }
           }
-          hasSelection={selectedIds.length > 0}
-          hasTextSelection={hasTextSelection}
-          canPaste={hasClipboard}
-          onCopy={() => void copySelected()}
-          onCut={() => void cutSelected()}
-          onPaste={() => void pasteClipboard()}
-          hasBrushFormat={brushFormat !== null}
-          brushMode={brushMode}
-          onFormatBrushClick={onFormatBrushClick}
-          onFormatBrushDoubleClick={onFormatBrushDoubleClick}
-          onTextColor={onTextColor}
-          onAlign={onAlign}
-          onStrike={onStrike}
-          onTextToggle={onTextToggle}
-          onElementTextColor={onElementTextColor}
-          onFindReplace={() => setFindOpen(true)}
-          animByParagraph={animByParagraph}
-          onToggleAnimByParagraph={() => setAnimByParagraph((v) => !v)}
-          onSetLayout={(layoutPath) =>
-            void slideActions.setSlideLayoutAt(ctxRef.current, current, layoutPath)
-          }
-          onResetLayout={() => void slideActions.setSlideLayoutAt(ctxRef.current, current)}
-          onSlideSize={applySlideSize}
-          getSlideSize={() => window.slidesApi.getSlideSize()}
-          onCustomSlideSize={() =>
-            void window.slidesApi.getSlideSize().then((size) => {
-              if (size) setSlideSizeDialog(size)
-            })
-          }
-          onParagraphFormat={onParagraphFormat}
-          onDirection={onDirection}
-          curBulletChar={curBulletChar}
-          curAlign={curAlign}
-          curRtl={curRtl}
-          curFontFamily={fontStatus?.family ?? null}
-          curFontSizePt={fontStatus?.sizePt ?? null}
-          curFontSizeMixed={fontStatus?.sizeMixed ?? false}
-          onFontFamily={onFontFamily}
-          onFontSize={onFontSize}
-          onInsertTable={(rows, cols) => void insertTable(rows, cols)}
-          transition={transition}
-          onTransition={(kind, all) => {
-            void applyTransition(kind, all)
-            if (!all) previewTransitionOnCanvas(kind)
-          }}
-          selectedAnimEffect={selectedAnimEffect}
-          selectionIsMedia={
-            selectedNode?.type === 'picture' && !!(selectedNode as PictureRenderNode).media
-          }
-          timingAnim={timingIdx >= 0 ? animations[timingIdx]! : null}
-          onApplyAnimation={applyAnimation}
-          onAnimHoverPreview={hoverPreviewAnimation}
-          onAnimHoverEnd={() => setHoverAnim(null)}
-          onAddAnimation={addAnimation}
-          onApplyMotionPath={applyMotionPath}
-          onAnimTiming={patchAnimTiming}
-          animPaneOpen={showAnimPane}
-          onToggleAnimPane={toggleAnimPane}
-          animPainterMode={animPainter?.mode ?? null}
-          onAnimPainterClick={() => animationActions.armAnimPainter(ctxRef.current, 'once')}
-          onAnimPainterDoubleClick={() =>
-            animationActions.armAnimPainter(ctxRef.current, 'continuous')
-          }
-          selectionPaneOpen={showSelPane}
-          onToggleSelectionPane={toggleSelectionPane}
-          onChangeCase={(mode) => styleActions.onChangeCase(ctxRef.current, mode)}
-          onHighlight={(hex) => styleActions.onHighlight(ctxRef.current, hex)}
-          onLetterSpacing={(pt) => styleActions.onLetterSpacing(ctxRef.current, pt)}
-          animCount={animations.length}
-          onAnimPreview={() => setAnimPreview((n) => n + 1)}
-          onSlideShow={startSlideShow}
-          onPresenterView={startPresenterView}
-          onCustomShow={() => setCustomShowDlgOpen(true)}
-          onRehearse={startRehearseShow}
-          onRecord={startRecordShow}
-          onClearNarration={clearNarration}
-          currentHidden={!!slide?.hidden}
-          onToggleHidden={() => void toggleHidden()}
-          inkTool={inkTool}
-          onInkTool={onInkTool}
-          inkPresets={inkPresets}
-          inkActiveId={inkActive.id}
-          onInkPresets={onInkPresets}
-          onInkActivate={setInkActiveId}
-          inkCount={inkCount}
-          onInkClearAll={() => void clearInk()}
-          viewMode={viewMode}
-          onViewMode={onViewMode}
-          onSlideMaster={() => void enterMasterView()}
-          onZoomFit={zoomToFit}
-          showRuler={showRuler}
-          onToggleRuler={() => setShowRuler((v) => !v)}
-          showGrid={showGrid}
-          onToggleGrid={() => setShowGrid((v) => !v)}
-          showGuides={showGuides}
-          onToggleGuides={() => setShowGuides((v) => !v)}
-          showNotes={showNotes}
-          onToggleNotes={() => setShowNotes((v) => !v)}
-          commentsOpen={showComments}
-          onToggleComments={() => (showComments ? setShowComments(false) : openComments(false))}
-          onNewComment={() => openComments(true)}
-          commentCount={comments.length}
-          onInsertIcon={(def, color) => void insertIcon(def, color)}
-          onInsertChart={(kind) => void insertChart(kind)}
-          onInsertSmartArt={(def) => void insertSmartArt(def)}
-          onInsertWordArt={(preset) => void insertWordArt(preset)}
-          onInsertField={(type) => void insertField(type)}
-          onOpenLink={() => void openLinkDialog()}
-          onOpenZoom={setZoomDialog}
-          hasSections={sections.length > 0}
-          slideCount={slides.length}
-          currentSlide={current}
-          onOpenHeaderFooter={() => void openHeaderFooter()}
-          onOpenEquation={() => setEqDialogOpen(true)}
-          onInsertMedia={(kind) => void insertMediaFile(kind)}
-          onInsertModel3d={() => void insertModel3dFile()}
-          recording={recording}
-          onToggleScreenRecord={() => void toggleScreenRecord()}
-          contextElementType={contextElementType}
-          onModel3dView={
-            model3dNode
-              ? (rot) =>
-                  void model3dActions.storeModel3dView(
-                    ctxRef.current,
-                    model3dNode.sourceId,
-                    model3dNode.box,
-                    rot,
-                  )
-              : undefined
-          }
-          tabRequest={contextTabRequest}
-          contextElementId={selectedNode?.sourceId}
-          contextSlideIndex={current}
-          contextChartStyle={contextChartStyle}
-          chartColorSchemes={chartColorSchemes}
-          contextPictureCanCutout={contextPictureCanCutout}
-          contextPictureStroke={contextPictureStroke}
-          onPictureStroke={(stroke) => {
-            // applies to every selected shape/picture; a selected group pierces one level
-            // down so its shape/picture members get the outline (PowerPoint semantics)
+        }}
+        onChangeShape={
+          selectedNode?.type === 'shape' && !selectedNode.line
+            ? (prst) => {
+                void window.slidesApi
+                  .changeShape({
+                    slideIndex: current,
+                    sourceId: selectedNode.sourceId,
+                    prst,
+                    groupId: groupIdOf(selectedNode.sourceId),
+                  })
+                  .then((r) => r && applySlide(current, r))
+              }
+            : undefined
+        }
+        onShapeStyle={(s) => {
+          // fill + outline together, applied to every selected shape (sequentially: both
+          // edits rewrite the same slide XML in the main process); a selected group
+          // pierces one level down to its shape members (PowerPoint semantics)
+          void (async () => {
+            const applyTo = async (shape: ShapeRenderNode, groupId?: string) => {
+              const st = shape.stroke
+              const stroke = { color: s.stroke, widthPt: st?.widthPt ?? 1, dash: s.dash ?? 'solid' }
+              if (groupId) {
+                const r1 = await window.slidesApi.editFill({
+                  slideIndex: current,
+                  sourceId: shape.sourceId,
+                  fill: s.fill,
+                  groupId,
+                })
+                if (r1) applySlide(current, r1)
+                const r2 = await window.slidesApi.editStroke({
+                  slideIndex: current,
+                  sourceId: shape.sourceId,
+                  stroke,
+                  groupId,
+                })
+                if (r2) applySlide(current, r2)
+              } else {
+                await onFill(shape.sourceId, s.fill)
+                await onStroke(shape.sourceId, stroke)
+              }
+            }
             for (const id of selectedIds) {
               const n = findNodeCtx(id)?.node
-              if (!n) continue
-              if (n.type === 'picture' || n.type === 'shape') {
-                void onStroke(id, stroke)
-              } else if (n.type === 'group') {
+              if (n?.type === 'shape') {
+                await applyTo(n as ShapeRenderNode)
+              } else if (n?.type === 'group') {
                 for (const c of (n as GroupRenderNode).children) {
-                  if (c.type === 'picture' || c.type === 'shape')
-                    void window.slidesApi
-                      .editStroke({
-                        slideIndex: current,
-                        sourceId: c.sourceId,
-                        stroke,
-                        groupId: n.sourceId,
-                      })
-                      .then((r) => r && applySlide(current, r))
+                  if (c.type === 'shape') await applyTo(c as ShapeRenderNode, n.sourceId)
                 }
               }
             }
-          }}
-          onChangeShape={
-            selectedNode?.type === 'shape' && !selectedNode.line
-              ? (prst) => {
-                  void window.slidesApi
-                    .changeShape({
-                      slideIndex: current,
-                      sourceId: selectedNode.sourceId,
-                      prst,
-                      groupId: groupIdOf(selectedNode.sourceId),
-                    })
-                    .then((r) => r && applySlide(current, r))
-                }
-              : undefined
-          }
-          onShapeStyle={(s) => {
-            // fill + outline together, applied to every selected shape (sequentially: both
-            // edits rewrite the same slide XML in the main process); a selected group
-            // pierces one level down to its shape members (PowerPoint semantics)
-            void (async () => {
-              const applyTo = async (shape: ShapeRenderNode, groupId?: string) => {
-                const st = shape.stroke
-                const stroke = {
-                  color: s.stroke,
-                  widthPt: st?.widthPt ?? 1,
-                  dash: s.dash ?? 'solid',
-                }
-                if (groupId) {
-                  const r1 = await window.slidesApi.editFill({
+          })()
+        }}
+        onShapeFill={(fill) => {
+          void (async () => {
+            for (const id of selectedIds) {
+              const n = findNodeCtx(id)?.node
+              if (n?.type === 'shape') {
+                await onFill(id, fill)
+              } else if (n?.type === 'group') {
+                for (const c of (n as GroupRenderNode).children) {
+                  if (c.type !== 'shape') continue
+                  const r = await window.slidesApi.editFill({
                     slideIndex: current,
-                    sourceId: shape.sourceId,
-                    fill: s.fill,
-                    groupId,
+                    sourceId: c.sourceId,
+                    fill,
+                    groupId: n.sourceId,
                   })
-                  if (r1) applySlide(current, r1)
-                  const r2 = await window.slidesApi.editStroke({
-                    slideIndex: current,
-                    sourceId: shape.sourceId,
-                    stroke,
-                    groupId,
-                  })
-                  if (r2) applySlide(current, r2)
-                } else {
-                  await onFill(shape.sourceId, s.fill)
-                  await onStroke(shape.sourceId, stroke)
+                  if (r) applySlide(current, r)
                 }
               }
-              for (const id of selectedIds) {
-                const n = findNodeCtx(id)?.node
-                if (n?.type === 'shape') {
-                  await applyTo(n as ShapeRenderNode)
-                } else if (n?.type === 'group') {
-                  for (const c of (n as GroupRenderNode).children) {
-                    if (c.type === 'shape') await applyTo(c as ShapeRenderNode, n.sourceId)
-                  }
+            }
+          })()
+        }}
+        onShapeFillImage={(mode, source) => {
+          void (async () => {
+            const targets: Array<{ sourceId: string; groupId?: string }> = []
+            for (const id of selectedIds) {
+              const n = findNodeCtx(id)?.node
+              if (n?.type === 'shape') {
+                targets.push({ sourceId: id })
+              } else if (n?.type === 'group') {
+                for (const c of (n as GroupRenderNode).children) {
+                  if (c.type === 'shape')
+                    targets.push({ sourceId: c.sourceId, groupId: n.sourceId })
                 }
               }
-            })()
-          }}
-          onShapeFill={(fill) => {
-            void (async () => {
-              for (const id of selectedIds) {
-                const n = findNodeCtx(id)?.node
-                if (n?.type === 'shape') {
-                  await onFill(id, fill)
-                } else if (n?.type === 'group') {
-                  for (const c of (n as GroupRenderNode).children) {
-                    if (c.type !== 'shape') continue
-                    const r = await window.slidesApi.editFill({
-                      slideIndex: current,
-                      sourceId: c.sourceId,
-                      fill,
-                      groupId: n.sourceId,
-                    })
-                    if (r) applySlide(current, r)
-                  }
-                }
-              }
-            })()
-          }}
-          onShapeFillImage={(mode, source) => {
-            void (async () => {
-              const targets: Array<{ sourceId: string; groupId?: string }> = []
-              for (const id of selectedIds) {
-                const n = findNodeCtx(id)?.node
-                if (n?.type === 'shape') {
-                  targets.push({ sourceId: id })
-                } else if (n?.type === 'group') {
-                  for (const c of (n as GroupRenderNode).children) {
-                    if (c.type === 'shape')
-                      targets.push({ sourceId: c.sourceId, groupId: n.sourceId })
-                  }
-                }
-              }
-              if (targets.length === 0) return
-              const r = await window.slidesApi.editImageFill({
-                slideIndex: current,
-                targets,
-                mode,
-                ...(source ? { source } : {}),
-              })
-              if (r) applySlide(current, r)
-            })()
-          }}
-          contextShapeFill={
-            selectedNode?.type === 'shape'
-              ? (selectedNode as ShapeRenderNode).fill.kind === 'solid'
-                ? toPickerHex(
-                    (selectedNode as ShapeRenderNode & { fill: { color: string } }).fill.color,
-                  )
-                : (selectedNode as ShapeRenderNode).fill.kind === 'none'
-                  ? 'none'
-                  : null
-              : null
-          }
-          onPictureCrop={startCrop}
-          cropActive={cropTarget != null}
-          onPictureCutout={startCutout}
-          onPictureReplace={() => void replacePicture()}
-          onPictureRotate={(delta) => void rotateSelected(delta)}
-          onPictureOpacity={(opacity) => {
-            if (!selectedNode || selectedNode.type !== 'picture') return
-            void window.slidesApi
-              .editPictureOpacity({ slideIndex: current, sourceId: selectedNode.sourceId, opacity })
-              .then((r) => r && applySlide(current, r))
-          }}
-          onEditTableStyle={(op) => void onEditTableStyle(op)}
-          tableStyleFlags={tableStyleFlags}
-          tableActiveCell={tableActiveCell}
-          onEditChart={(op) => void onEditChart(op)}
-          onOpenChartDataDialog={() => void openChartDataDialog()}
-          onArrange={(op) => void alignSelected(op)}
-          onFlip={(axis) => void flipSelected(axis)}
-          canDistribute={selectedIds.length >= 3}
-          canMatchSize={selectedIds.length >= 2}
-          onMergeShapes={(mode) => void arrangeActions.mergeSelected(ctxRef.current, mode)}
-          canMergeShapes={
-            selectedIds.length >= 2 &&
-            selectedIds.every((id) => {
-              const n = slide?.nodes.find((x) => x.sourceId === id)
-              return !!n && mergeOutline(n) !== null
+            }
+            if (targets.length === 0) return
+            const r = await window.slidesApi.editImageFill({
+              slideIndex: current,
+              targets,
+              mode,
+              ...(source ? { source } : {}),
             })
-          }
-        />
-      )}
+            if (r) applySlide(current, r)
+          })()
+        }}
+        contextShapeFill={
+          selectedNode?.type === 'shape'
+            ? (selectedNode as ShapeRenderNode).fill.kind === 'solid'
+              ? toPickerHex(
+                  (selectedNode as ShapeRenderNode & { fill: { color: string } }).fill.color,
+                )
+              : (selectedNode as ShapeRenderNode).fill.kind === 'none'
+                ? 'none'
+                : null
+            : null
+        }
+        onPictureCrop={startCrop}
+        cropActive={cropTarget != null}
+        onPictureCutout={startCutout}
+        onPictureReplace={() => void replacePicture()}
+        onPictureRotate={(delta) => void rotateSelected(delta)}
+        onPictureOpacity={(opacity) => {
+          if (!selectedNode || selectedNode.type !== 'picture') return
+          void window.slidesApi
+            .editPictureOpacity({ slideIndex: current, sourceId: selectedNode.sourceId, opacity })
+            .then((r) => r && applySlide(current, r))
+        }}
+        onEditTableStyle={(op) => void onEditTableStyle(op)}
+        tableStyleFlags={tableStyleFlags}
+        tableActiveCell={tableActiveCell}
+        onEditChart={(op) => void onEditChart(op)}
+        onOpenChartDataDialog={() => void openChartDataDialog()}
+        onArrange={(op) => void alignSelected(op)}
+        onFlip={(axis) => void flipSelected(axis)}
+        canDistribute={selectedIds.length >= 3}
+        canMatchSize={selectedIds.length >= 2}
+        onMergeShapes={(mode) => void arrangeActions.mergeSelected(ctxRef.current, mode)}
+        canMergeShapes={
+          selectedIds.length >= 2 &&
+          selectedIds.every((id) => {
+            const n = slide?.nodes.find((x) => x.sourceId === id)
+            return !!n && mergeOutline(n) !== null
+          })
+        }
+      />
 
       <div className="app-main">
-        {slide && !WEB_AI_OFF && viewMode !== 'reading' && viewMode !== 'sorter' && (
+        {slide && viewMode !== 'reading' && viewMode !== 'sorter' && (
           <div
             className={`ai-dock${aiDock.open && aiSettings ? '' : ' collapsed'}${
               !aiSidebarEnabled && !aiDock.open ? ' ai-dock-off' : ''
@@ -3963,8 +3947,8 @@ export function App() {
             ) : viewMode === 'reading' ? (
               (() => {
                 // Reading view: page fills the available area, click/arrow keys to turn pages, Esc to exit
-                const availH = Math.max(240, winSize.h - 40 - (WEB_VIEW ? 0 : 112) - 24 - 76)
-                const availW = WEB_VIEW ? winSize.w - 24 : Math.max(320, winSize.w - 120)
+                const availH = Math.max(240, winSize.h - 40 - 112 - 24 - 76)
+                const availW = Math.max(320, winSize.w - 120)
                 const readW = Math.round(
                   Math.min(availW, availH * (slide.widthPx / slide.heightPx)),
                 )
@@ -3993,11 +3977,9 @@ export function App() {
                       >
                         {t('appReadingNext')}
                       </button>
-                      {!WEB_VIEW && (
-                        <button className="reading-exit" onClick={() => onViewMode('normal')}>
-                          {t('appReadingExit')}
-                        </button>
-                      )}
+                      <button className="reading-exit" onClick={() => onViewMode('normal')}>
+                        {t('appReadingExit')}
+                      </button>
                     </div>
                   </div>
                 )
@@ -4843,7 +4825,7 @@ export function App() {
               {status && <span className="status-msg"> — {status}</span>}
             </div>
             <div className="status-right">
-              {hasDoc && !WEB_VIEW && (
+              {hasDoc && (
                 <button
                   className={`status-notes-btn${showNotes ? ' on' : ''}`}
                   data-tip={showNotes ? t('appNotesHide') : t('appNotesShow')}
@@ -4863,7 +4845,7 @@ export function App() {
                   <IconPlayBoxed size={18} />
                 </button>
               )}
-              {!WEB_VIEW && <ZoomControls zoom={zoom} onPreview={previewZoom} />}
+              <ZoomControls zoom={zoom} onPreview={previewZoom} />
             </div>
           </footer>
         </div>

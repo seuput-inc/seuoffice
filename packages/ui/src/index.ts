@@ -237,7 +237,6 @@ export {
   useAiSidebarEnabled,
   aiPanelWidthAtPointer,
 } from './ai-panel-prefs-store'
-export { markWebAiOffer, webAiOff, webViewMode } from './web-host-mode'
 export {
   SPLIT_PANE_BRIDGE_KEY,
   effectiveAiPanelOpen,

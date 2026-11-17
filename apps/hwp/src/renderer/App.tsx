@@ -10,8 +10,6 @@ import {
   templateDocumentOf,
   useAutoSavePref,
   useSplitPaneFocusPing,
-  webAiOff,
-  webViewMode,
   type TemplateDocument,
 } from '@seuoffice/ui'
 import { HwpAiDock } from './ai/AiDock'
@@ -44,7 +42,6 @@ import { openedUnverifiedKey, runSave, saveFailureKey, type SaveEditorPort } fro
 import { AUTOSAVE_IDLE_MS, startAutosave } from './autosave-flow'
 import { PASSWORD_FLAG } from '../../scripts/rhwp-patches.mjs'
 import { STUDIO_SETTINGS_KEY, seededStudioSettings, studioUrl } from './studio-settings'
-import { hideStudioRulers } from './studio-view-only'
 import { hwpFormatOfPath } from '../shared/ipc'
 import type {
   HwpFormat,
@@ -85,10 +82,6 @@ const ARRIVAL_POLL_MS = 1000
 const INFO_NOTICE_MS = 8000
 /** Where the open / collapsed state of the AI dock is remembered. */
 const AI_OPEN_KEY = 'hwpapp.showAi'
-/** the web embed opened the page only to read: no editing tools, and the panel stays closed at start */
-const WEB_VIEW = webViewMode()
-/** the web embed's host offers no AI: no panel and no AI button */
-const WEB_AI_OFF = webAiOff()
 /** A pause after typing before the memo panel is told the document may have changed. */
 const MEMO_TICK_MS = 500
 
@@ -176,7 +169,7 @@ export default function App() {
   const [printSignal, setPrintSignal] = useState(0)
   const prePresentChromeRef = useRef<ChromeVisibility | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
-  const [aiOpen, setAiOpen] = useState(() => !WEB_VIEW && aiPanelInitiallyOpen(AI_OPEN_KEY))
+  const [aiOpen, setAiOpen] = useState(() => aiPanelInitiallyOpen(AI_OPEN_KEY))
   const [checkOpen, setCheckOpen] = useState(false)
   /**
    * a request for the AI panel; `nonce` says it is a new one. The check panel's waits in the
@@ -233,7 +226,7 @@ export default function App() {
   useSplitPaneFocusPing()
 
   useEffect(() => {
-    if (!WEB_VIEW) rememberAiPanelOpen(AI_OPEN_KEY, aiOpen)
+    rememberAiPanelOpen(AI_OPEN_KEY, aiOpen)
   }, [aiOpen])
 
   useEffect(() => {
@@ -261,11 +254,6 @@ export default function App() {
         if (disposed) {
           editor.destroy()
           return
-        }
-        // reading only: the menus and tool bars of the editor stay out, its status bar (page, zoom) stays
-        if (WEB_VIEW) {
-          await editor.chrome.set({ menu: false, toolbar: false })
-          hideStudioRulers(editor.element)
         }
         editorRef.current = editor
         stopDrop = openDocumentsDroppedOn(editor.element, (files) =>
@@ -1063,7 +1051,7 @@ export default function App() {
 
   return (
     <div className={`hwp-app${presenting ? ' hwp-presenting' : ''}`} data-phase={phase}>
-      {phase === 'ready' && !WEB_VIEW && (
+      {phase === 'ready' && (
         <div className="hwp-topbar">
           <button
             type="button"
@@ -1088,7 +1076,7 @@ export default function App() {
       <div className="app-main">
         {/* the AI dock, then the memo column beside the document (as the PDF editor's notes);
             both can be out at once, and both need an open document. The preview covers both. */}
-        {phase === 'ready' && !preview.open && !WEB_AI_OFF && (
+        {phase === 'ready' && !preview.open && (
           <HwpAiDock
             open={aiOpen}
             setOpen={setAiOpen}
@@ -1100,7 +1088,7 @@ export default function App() {
             onRunHold={aiHoldWiring.onRunHold}
           />
         )}
-        {phase === 'ready' && !WEB_VIEW && (
+        {phase === 'ready' && (
           <MemoSide
             open={memoOpen}
             bridge={agentBridge}
@@ -1113,7 +1101,7 @@ export default function App() {
         )}
         <div className="hwp-stage">
           <div ref={hostRef} className="hwp-editor-host" />
-          {phase === 'ready' && !WEB_VIEW && checkOpen && (
+          {phase === 'ready' && checkOpen && (
             <DocCheckPanel
               bridge={agentBridge}
               aiHold={aiHold}
