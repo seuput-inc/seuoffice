@@ -2,7 +2,8 @@
 //!
 //! By default only V8's requested old-generation heap limit is applied. An
 //! explicit OS budget limits job-wide committed bytes on Windows, or each
-//! process's virtual address space independently on Unix. It is not an
+//! process's virtual address space independently on Unix other than macOS,
+//! whose kernel refuses `RLIMIT_AS`, so a budget is refused there. It is not an
 //! aggregate physical-memory limit on Unix. A process group lets normal
 //! shutdown terminate descendants that remain in that group.
 
@@ -320,6 +321,13 @@ mod platform {
         let budget = budget
             .map(|v| libc::rlim_t::try_from(v.get()).map_err(|_| "index worker limit overflow"))
             .transpose()?;
+        #[cfg(target_os = "macos")]
+        if budget.is_some() {
+            return Err(
+                "an address-space budget cannot be enforced on macOS: the kernel refuses RLIMIT_AS"
+                    .into(),
+            );
+        }
         // SAFETY: the closure only invokes async-signal-safe libc calls between fork and exec.
         unsafe {
             command.pre_exec(move || {
@@ -610,17 +618,31 @@ mod tests {
     #[test]
     fn inherited_address_space_limit_and_group_termination() {
         use std::io::Read;
+        let budget = std::num::NonZeroU64::new(4 * 1024 * 1024 * 1024).unwrap();
+        #[cfg(target_os = "macos")]
+        let spawn_budget = {
+            let refused = platform::spawn(&mut Command::new("sh"), Some(budget))
+                .err()
+                .expect("macOS must refuse an address-space budget");
+            assert!(refused.contains("macOS"), "{refused}");
+            None
+        };
+        #[cfg(not(target_os = "macos"))]
+        let spawn_budget = Some(budget);
         let mut command = Command::new("sh");
         command
             .args(["-c", "ulimit -v; exec sleep 30"])
             .stdout(Stdio::piped());
-        let budget = std::num::NonZeroU64::new(4 * 1024 * 1024 * 1024).unwrap();
-        let (mut child, mut guard) = platform::spawn(&mut command, Some(budget)).unwrap();
+        let (mut child, mut guard) = platform::spawn(&mut command, spawn_budget).unwrap();
         let mut line = String::new();
         let mut stdout = std::io::BufReader::new(child.stdout.take().unwrap());
         std::io::BufRead::read_line(&mut stdout, &mut line).unwrap();
-        let reported_kib: u64 = line.trim().parse().unwrap();
-        assert!(reported_kib <= budget.get() / 1024);
+        if spawn_budget.is_some() {
+            let reported_kib: u64 = line.trim().parse().unwrap();
+            assert!(reported_kib <= budget.get() / 1024);
+        } else {
+            assert_eq!(line.trim(), "unlimited");
+        }
         guard.terminate(&mut child).unwrap();
         assert!(!child.wait().unwrap().success());
         let mut remaining = String::new();

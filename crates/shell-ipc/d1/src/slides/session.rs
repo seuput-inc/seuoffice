@@ -331,21 +331,51 @@ impl App {
         if refused {
             return Ok(None);
         }
-        let snapshot = s
-            .core
-            .take_snapshot()
+        // pushHistory comes first, as in TypeScript: it schedules the history
+        // notification before the deck broadcast, and a transaction that
+        // applied nothing still notifies and still clears the redo stack
+        self.push_and_journal(s, owner, source, &request)
+    }
+
+    /// `pushHistory(session)`, `run`, and `undoStack.pop()` when `run` answers
+    /// that it kept nothing. TypeScript pushes before it works, so the history
+    /// notification is scheduled (and the redo stack cleared) even for an edit
+    /// that applies nothing, and a throw leaves the step pushed. Callers
+    /// resolve the render capability before the call, so a call without
+    /// authority never reaches the history.
+    pub fn history_step<T>(
+        &self,
+        s: &mut SlideSession,
+        run: impl FnOnce(&mut SlideSession) -> Result<(T, bool), IpcError>,
+    ) -> Result<T, IpcError> {
+        s.core
+            .push_history()
             .map_err(|error| crate::value::thrown(error.0))?;
-        let result = self.journaled_txn(s, owner, source, &request)?;
-        if !result.applied {
-            return Ok(None);
+        let (value, kept) = run(s)?;
+        if !kept {
+            s.core.undo_stack.pop();
         }
-        s.core.push_history_snapshot(snapshot);
-        Ok(Some(result))
+        Ok(value)
     }
 
     /// `pushHistory(session)`, the transaction, and `undoStack.pop()` when it
     /// applied nothing: the shape of the shims that call `journaledTxn`
     /// themselves
+    pub fn pushed_txn(
+        &self,
+        s: &mut SlideSession,
+        owner: &super::engine::RenderOwner,
+        source: OpSource,
+        request: &TxnRequest,
+    ) -> Result<TxnResult, IpcError> {
+        self.history_step(s, |s| {
+            let result = self.journaled_txn(s, owner, source, request)?;
+            let applied = result.applied;
+            Ok((result, applied))
+        })
+    }
+
+    /// [`App::pushed_txn`] for a shim that answers `null` when nothing applied
     pub fn push_and_journal(
         &self,
         s: &mut SlideSession,
@@ -353,16 +383,8 @@ impl App {
         source: OpSource,
         request: &TxnRequest,
     ) -> Result<Option<TxnResult>, IpcError> {
-        let snapshot = s
-            .core
-            .take_snapshot()
-            .map_err(|error| crate::value::thrown(error.0))?;
-        let result = self.journaled_txn(s, owner, source, request)?;
-        if !result.applied {
-            return Ok(None);
-        }
-        s.core.push_history_snapshot(snapshot);
-        Ok(Some(result))
+        let result = self.pushed_txn(s, owner, source, request)?;
+        Ok(result.applied.then_some(result))
     }
 
     /// `buildSlideUpdate(session, before, changed)`

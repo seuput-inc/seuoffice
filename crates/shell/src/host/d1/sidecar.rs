@@ -497,6 +497,7 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    #[ignore = "needs the xlsx-sidecar binary (npm run native:build -w @seuoffice/sheets or XLSX_SIDECAR_PATH); run by the full gate jobs that build it"]
     fn real_sidecar_opens_reads_and_closes_a_workbook() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let binary = std::env::var_os("XLSX_SIDECAR_PATH")

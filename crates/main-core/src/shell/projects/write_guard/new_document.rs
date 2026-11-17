@@ -98,13 +98,16 @@ fn publish(
     let parent = open_stage_dir(dir)?;
     let destination = std::ffi::CString::new(name)
         .map_err(|_| ProjectWriteRefused::new(ProjectWriteRefusal::BadPath, target))?;
+    // The original writes a temporary file beside the target, so a folder that
+    // takes no new entry fails there with `open` on that name.
+    let temp = crate::packages::electron_utils::atomic_write::temp_path_beside(target);
     let private = file_commit::PrivateDirectory::create(&parent)
-        .map_err(|error| node_error(&error, "mkdir", dir))?;
+        .map_err(|error| node_error(&error, "open", &temp))?;
     let pending = match private.create_stage(0o666) {
         Ok(pending) => pending,
         Err(error) => {
             return Err(cleanup_error(
-                node_error(&error, "open", target).into(),
+                node_error(&error, "open", &temp).into(),
                 ProjectCleanup::directory(private),
             ));
         }

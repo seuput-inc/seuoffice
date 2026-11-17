@@ -3416,9 +3416,10 @@ mod tests {
         let entered = alias.join("source");
         let appended = PathBuf::from(format!("{}.pptx", entered.display()));
         assert!(same_import_path(&original, &appended));
+        // The temp dir itself may be a link (macOS /var), which canonicalization resolves too.
         assert_eq!(
             canonical_import_path(&alias.join("new.pptx")),
-            real.join("new.pptx")
+            std::fs::canonicalize(&real).unwrap().join("new.pptx")
         );
     }
 }

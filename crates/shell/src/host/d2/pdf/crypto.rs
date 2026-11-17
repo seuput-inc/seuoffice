@@ -307,12 +307,17 @@ pub(super) fn signing_revision_digest(
     if !revision[..first_len].ends_with(marker.as_bytes()) {
         return Err("signature byte range does not match the revision".into());
     }
+    // forge encodes the signed attributes in the requested order, which
+    // pdf-sign.ts also signs; DER sorting of the SET OF is deliberately not
+    // demanded, the callers compare these exact bytes with their own rebuild.
     let attributes = yasna::parse_der(attributes_der, |reader| {
-        reader.collect_set_of(|reader| {
-            reader.read_sequence(|seq| {
-                let oid = seq.next().read_oid()?;
-                let values = seq.next().collect_set_of(|value| value.read_der())?;
-                Ok((oid, values))
+        reader.read_tagged_implicit(yasna::tags::TAG_SET, |reader| {
+            reader.collect_sequence_of(|reader| {
+                reader.read_sequence(|seq| {
+                    let oid = seq.next().read_oid()?;
+                    let values = seq.next().collect_set_of(|value| value.read_der())?;
+                    Ok((oid, values))
+                })
             })
         })
     })

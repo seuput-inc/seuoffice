@@ -213,6 +213,19 @@ mod tests {
         assert!(word_of("te\0h").is_none());
     }
 
+    /// Whether `word` reaches `misspelled` within a few seconds. The system checker applies a
+    /// change of the user dictionary on its own schedule, not inside the `Add` or `Remove` call.
+    fn settles(word: &str, misspelled: bool) -> Result<bool, String> {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let now = Platform::is_misspelled(word)?;
+            if now == misspelled || std::time::Instant::now() >= until {
+                return Ok(now == misspelled);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
     #[test]
     fn a_learned_word_is_no_longer_misspelled_until_it_is_dropped() {
         use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
@@ -226,11 +239,12 @@ mod tests {
             Ok(first) => {
                 assert!(first);
                 assert!(Platform::learn(word).unwrap());
-                let learned = Platform::is_misspelled(word);
+                let learned = settles(word, false);
                 let dropped = Platform::unlearn(word);
-                assert!(!learned.unwrap());
+                let restored = settles(word, true);
+                assert!(learned.unwrap(), "the learned word is still misspelled");
                 assert!(dropped.unwrap());
-                assert!(Platform::is_misspelled(word).unwrap());
+                assert!(restored.unwrap(), "the dropped word is no longer misspelled");
             }
         }
     }

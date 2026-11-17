@@ -159,6 +159,9 @@ struct EventArgument {
     view: u64,
     arg: usize,
     occurrence: usize,
+    /// a token only this side's shell adds as the event's last argument; it is
+    /// left out of the compared event (tools/ipc-diff/event-refs.ts, `nativeEventArg`)
+    native: bool,
 }
 impl EventArgument {
     fn parse(value: &Value) -> Result<Option<Self>, String> {
@@ -188,6 +191,7 @@ impl EventArgument {
             view: number("view")?,
             arg: usize::try_from(number("arg")?).map_err(|e| e.to_string())?,
             occurrence: usize::try_from(number("occurrence")?).map_err(|e| e.to_string())?,
+            native: reference.get("native").and_then(Value::as_bool) == Some(true),
         }))
     }
     fn key(&self) -> String {
@@ -269,6 +273,7 @@ impl EventReferences {
             let args = events[index]["args"]
                 .as_array_mut()
                 .ok_or_else(|| format!("event argument not found: {key}"))?;
+            let last = args.len().checked_sub(1);
             let value = args
                 .get_mut(reference.arg)
                 .ok_or_else(|| format!("event argument not found: {key}"))?;
@@ -280,7 +285,16 @@ impl EventReferences {
                 return Err(format!("event identity is not a number or string: {key}"));
             };
             self.values.insert(key.clone(), value.clone());
-            *value = Value::String(format!("$EVENT:{key}:{kind}"));
+            if reference.native {
+                if Some(reference.arg) != last {
+                    return Err(format!(
+                        "native event argument is not the last argument: {key}"
+                    ));
+                }
+                args.pop();
+            } else {
+                *value = Value::String(format!("$EVENT:{key}:{kind}"));
+            }
         }
         Ok(events)
     }
@@ -483,8 +497,8 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
         ),
         replaced: Mutex::new(Vec::new()),
     });
-    // Probe-only synthetic owners are captured alongside case view creation.
-    // They model lifetimes for fixtures and are not native authentication.
+    // The slides presenter's audience window is made by the shell, not by a call:
+    // its probe-only synthetic render owner is not native authentication.
     let case_owners: HashMap<ViewId, shell_contract::ipc::NativeRequestOwner> = views
         .iter()
         .filter(|sender| sender.surface == Surface::Slides)
@@ -568,6 +582,26 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
     });
 
     let trigger_services = services.clone();
+    // Synthetic captures stand in for the native ingress, never authenticate. The
+    // native host gives every capture of one renderer the same origin, so the
+    // fixture does too (as the batch crates' own tests do).
+    let effects = trigger_services
+        .hosts
+        .get::<shell_contract::hosts::OwnedEffectsHost>()
+        .cloned()
+        .ok_or_else(|| "the probe has no synthetic owned-effects fixture".to_owned())?;
+    trigger_services
+        .hosts
+        .get::<Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>()
+        .ok_or_else(|| "the probe has no synthetic capture origins".to_owned())?
+        .share_capture_origins();
+    // what the shell attaches to a call of a document view: the context its owned
+    // effects capture for the view's renderer; none once that renderer is gone
+    let capture_native = |sender: Sender| {
+        case_views
+            .renderer_generation(sender.view)
+            .and_then(|generation| effects.capture_owner(sender.view, &generation).ok())
+    };
     let own = case["batch"].as_str().map(str::to_owned);
     let registering = recorder.clone();
     let registered = run_on(core.as_ref(), move || {
@@ -631,7 +665,7 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
             let name = call["name"].as_str().unwrap_or("").to_string();
             let unknown = format!("unknown trigger {name}");
             let args = references.resolve(&call["args"])?;
-            let owner = case_owners.get(&sender.view).cloned();
+            let owner = capture_native(sender);
             let (tx, rx) = mpsc::channel::<Reply>();
             let known = run_on(core.as_ref(), move || {
                 // answered on the core thread or later, after a timer, a
@@ -721,31 +755,11 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
         let (tx, rx) = mpsc::channel();
         let name = channel.to_string();
         let request = (kind == ChannelKind::Invoke).then_some(RequestId(i as u64 + 1));
-        let native = if sender.surface == Surface::Slides {
-            case_owners
-                .get(&sender.view)
-                .map(|owner| owner.context.clone())
-        } else if sender.surface == Surface::Sheets
-            && matches!(
-                channel,
-                "workbook:create-document"
-                    | "sheets:capture-screen-sources"
-                    | "sheets:capture-screen-source"
-            )
-        {
-            // This host was installed above as SyntheticOwnedEffects, not native authentication.
-            let effects = trigger_services
-                .hosts
-                .get::<shell_contract::hosts::OwnedEffectsHost>()
-                .ok_or_else(|| "the probe has no synthetic owned-effects fixture".to_owned())?;
-            case_views
-                .renderer_generation(sender.view)
-                .map(|generation| {
-                    effects
-                        .capture_owner(sender.view, &generation)
-                        .map(|owner| owner.context)
-                })
-                .transpose()?
+        let native = if matches!(
+            sender.surface,
+            Surface::Slides | Surface::Sheets | Surface::Mindmap | Surface::Diagram
+        ) {
+            capture_native(sender).map(|owner| owner.context)
         } else if matches!(
             channel,
             "docs:write-recovery-now-done" | "hwp:recovery-flushed"

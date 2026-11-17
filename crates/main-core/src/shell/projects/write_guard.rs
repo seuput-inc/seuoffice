@@ -218,6 +218,58 @@ fn create_project_stage_dir(
 }
 
 #[cfg(unix)]
+/// Removes the private staging folder of `parent` once what it held is
+/// published or gone, as the original leaves no staging behind. `payload` is
+/// the one file that may still be inside. `false` when anything stands in the
+/// way: the folder is then retained.
+fn remove_private_stage(
+    parent: &fs::File,
+    private_path: &str,
+    private: &fs::File,
+    payload: Option<&std::ffi::CStr>,
+) -> bool {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::MetadataExt;
+    let Some(name) = std::path::Path::new(private_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| std::ffi::CString::new(name).ok())
+    else {
+        return false;
+    };
+    let Ok(held) = private.metadata() else {
+        return false;
+    };
+    let mut current = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: the parent descriptor and name are live; fstatat initializes current on success.
+    if unsafe {
+        libc::fstatat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            current.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        return false;
+    }
+    // SAFETY: fstatat succeeded.
+    let current = unsafe { current.assume_init() };
+    if stat_dev(&current) != held.dev() || current.st_ino != held.ino() {
+        return false;
+    }
+    if let Some(payload) = payload {
+        // SAFETY: the private directory descriptor and payload name are live.
+        let unlinked = unsafe { libc::unlinkat(private.as_raw_fd(), payload.as_ptr(), 0) };
+        if unlinked != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ENOENT) {
+            return false;
+        }
+    }
+    // SAFETY: the parent descriptor and name are live; only an empty folder is removed.
+    unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) == 0 }
+}
+
+#[cfg(unix)]
 fn write_staged_project(
     staged: &fs::File,
     path: &str,
@@ -740,10 +792,18 @@ impl PreparedProjectFolder {
         let result = authorize(&mut effect);
         drop(effect);
         match result {
-            Ok(()) if published => Ok(PublishedProjectFolder {
-                path: self.target_path,
-                retained_private_dir: Some(self.private_path),
-            }),
+            Ok(()) if published => {
+                let removed = remove_private_stage(
+                    &self.parent_handle,
+                    &self.private_path,
+                    &self.private_handle,
+                    None,
+                );
+                Ok(PublishedProjectFolder {
+                    path: self.target_path,
+                    retained_private_dir: (!removed).then_some(self.private_path),
+                })
+            }
             Ok(()) => Err(NodeError {
                 code: None,
                 message: format!(
@@ -1580,7 +1640,10 @@ impl ProjectWriteGuard {
                 Ok(())
             });
             match result {
-                Ok(()) => return Ok(private_path),
+                Ok(()) => {
+                    let removed = remove_private_stage(root_handle, &private_path, &private, None);
+                    return Ok(if removed { String::new() } else { private_path });
+                }
                 Err(error) if published => return Err(NodeError {
                     code: error.code,
                     message: format!(
@@ -1607,6 +1670,23 @@ impl ProjectWriteGuard {
                     attempt += 1;
                 }
                 Err(error) => {
+                    if remove_private_stage(root_handle, &private_path, &private, Some(payload_name))
+                    {
+                        // The original stages a temporary file beside the
+                        // target, so a data folder that takes no new entry
+                        // refuses there with `open` on that name.
+                        return Err(match error.code {
+                            Some(code @ ("EACCES" | "EPERM" | "EROFS")) => crate::node_fs::node_error_named(
+                                code,
+                                "open",
+                                &crate::packages::electron_utils::atomic_write::temp_path_beside(
+                                    &join(&[data_path, rel_name]),
+                                ),
+                            ),
+                            _ => error,
+                        }
+                        .into());
+                    }
                     return Err(NodeError {
                         code: error.code,
                         message: format!(

@@ -32,9 +32,10 @@ use crate::packages::project_store::{
     ProjectTrustDecision, ProjectTrustPrompt, UndoMemoryConsolidationArgs, real_path_native,
 };
 use crate::shell::projects::chat_store::{
-    AppendProgress, ChatSender, ChatStoreError, ChatStoreErrorKind, ChatStoreHost,
+    AppendOutcome, AppendProgress, ChatSender, ChatStoreError, ChatStoreErrorKind, ChatStoreHost,
     ChatStoreOptions, ProjectChatStore,
 };
+use crate::packages::project_store::ProjectWriteResult;
 use crate::shell::projects::memory::LocalDateParts;
 use crate::shell::projects::project_guide::{
     ContextFiles, ContextFilesProvider, ContextFilesRequest, EnvLookup, GuideError, GuideStep,
@@ -523,20 +524,51 @@ fn chat_attempt<T>(
     }
 }
 
+/// A write that waits for the install identity: what `tryWrite` makes of an
+/// identity the settings file refuses is an unwritable project, not a throw.
+fn chat_write_attempt(
+    guide: &ProjectGuide,
+    project_id: &str,
+    mut run: impl FnMut() -> Result<ProjectWriteResult, ChatStoreError>,
+) -> Result<ProjectWriteResult, ChatStoreError> {
+    match run() {
+        Err(error) if error.kind == ChatStoreErrorKind::NeedInstallId => {
+            match chat_identity(guide) {
+                Ok(()) => run(),
+                Err(failure) => Ok(guide.write_failed(project_id, &failure.message)),
+            }
+        }
+        result => result,
+    }
+}
+
 fn chat_append(
     guide: &ProjectGuide,
     store: &mut ChatStore,
+    project_id: &str,
     args: &jscompat::JsonValue,
     sender: &ChatSender,
-) -> Result<crate::shell::projects::chat_store::AppendOutcome, ChatStoreError> {
-    let mut progress = chat_attempt(guide, || store.begin_append(args, sender))?;
+) -> Result<AppendOutcome, ChatStoreError> {
+    let first = store.begin_append(args, sender);
+    let mut progress = match first {
+        Err(error) if error.kind == ChatStoreErrorKind::NeedInstallId => {
+            if let Err(failure) = chat_identity(guide) {
+                // the original numbers the message before it asks for the identity
+                store.use_up_append(args, sender)?;
+                return Err(failure);
+            }
+            store.begin_append(args, sender)?
+        }
+        other => other?,
+    };
     loop {
         match progress {
             AppendProgress::Done(result) => return Ok(result),
             AppendProgress::NeedInstallId(token) => {
-                if let Err(error) = chat_identity(guide) {
+                if let Err(failure) = chat_identity(guide) {
                     store.cancel_append(token);
-                    return Err(error);
+                    guide.write_failed(project_id, &failure.message);
+                    return Ok(AppendOutcome::Unwritable);
                 }
                 progress = store.resume_append(token)?;
             }
@@ -573,6 +605,7 @@ fn chat_op(
                     chat_answer(chat_append(
                         guide,
                         store,
+                        project_id,
                         &json_value_from_serde(&args),
                         &sender,
                     ))
@@ -582,7 +615,7 @@ fn chat_op(
                 })),
                 "chatRename" => {
                     args["title"] = Value::from(text_of(op, "title")?);
-                    chat_answer(chat_attempt(guide, || {
+                    chat_answer(chat_write_attempt(guide, project_id, || {
                         store.rename_chat(&json_value_from_serde(&args))
                     }))
                 }

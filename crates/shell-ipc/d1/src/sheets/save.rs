@@ -925,8 +925,13 @@ fn guard_split_save(
 }
 
 /// `placeStagedSave`: beside the target first, then promoted over it
-fn place_staged_save(env: &Env, staged: &str, target: &str) -> Result<(), IpcError> {
-    let beside = join(&[&dirname(target), &format!(".{}.tmp.xlsx", env.uuid())]);
+fn place_staged_save(
+    env: &Env,
+    staged: &str,
+    target: &str,
+    extension: &str,
+) -> Result<(), IpcError> {
+    let beside = join(&[&dirname(target), &format!(".{}.tmp.{extension}", env.uuid())]);
     let placed = fs::copy(staged, &beside)
         .map_err(|e| io_err(e, "copyfile", staged))
         .and_then(|_| env.engine.promote_file_atomically(&beside, target));
@@ -941,9 +946,10 @@ fn place_staged_save_owned(
     staged: &str,
     target: &str,
     owned: Option<&crate::owned_save::OwnedSave>,
+    extension: &str,
 ) -> Result<(), IpcError> {
     let Some(owned) = owned else {
-        return place_staged_save(env, staged, target);
+        return place_staged_save(env, staged, target, extension);
     };
     owned.check()?;
     let beside = main_core::packages::electron_utils::atomic_write::temp_path_beside(target);
@@ -1417,7 +1423,7 @@ pub fn save_workbook_with_owner(
                 .encrypt_ooxml(&read_file(&staged_path)?, password)?;
             write_bytes(&target_path, &encrypted, owned.as_ref())?;
         } else {
-            place_staged_save_owned(env, &staged_path, &target_path, owned.as_ref())?;
+            place_staged_save_owned(env, &staged_path, &target_path, owned.as_ref(), "xlsx")?;
         }
         if csv_in_place
             && let (Some(csv_source), Some(content)) =
@@ -1999,7 +2005,7 @@ fn export_workbook_as_ods(
             Ok(reopened) if reopened.sheets > 0.0 => {}
             _ => return OdsOutcome::Unreadable,
         }
-        if let Err(error) = place_staged_save_owned(env, &temp_ods, target, owned) {
+        if let Err(error) = place_staged_save_owned(env, &temp_ods, target, owned, "ods") {
             return OdsOutcome::Failed(error.message);
         }
         OdsOutcome::Exported {

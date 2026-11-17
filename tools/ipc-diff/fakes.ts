@@ -55,6 +55,7 @@ export interface FakeContents {
   /** `on`/`once` of Electron's emitter. */
   on(event: string, listener: Fn): FakeContents
   once(event: string, listener: Fn): FakeContents
+  removeListener(event: string, listener: Fn): FakeContents
   /** calls the listeners of `event` and answers when every one is done */
   emit(event: string, ...args: unknown[]): Promise<unknown[]>
   isCrashed(): boolean
@@ -121,6 +122,13 @@ export function caseElectron(dir: string, c: Case): CaseElectron {
       id: v.view,
       on: (event, listener) => listen(event, listener, false),
       once: (event, listener) => listen(event, listener, true),
+      removeListener: (event, listener) => {
+        listeners.set(
+          event,
+          (listeners.get(event) ?? []).filter((entry) => entry.listener !== listener),
+        )
+        return fake
+      },
       emit: (event, ...args) => {
         if (event === 'destroyed') {
           if (destroyed) return Promise.resolve([])

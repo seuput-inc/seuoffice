@@ -1512,7 +1512,8 @@ where
     let scale = fit_width_px / base_width_px;
     let to_emu = |px: f64| math_round((px / scale) * EMU_PER_PX_96);
     let snapshot = session.take_snapshot().map_err(Into::into)?;
-    let mut changed = false;
+    session.push_history_snapshot(snapshot.clone());
+    let mut added = false;
     let inserted = (|| -> Result<Option<JsonValue>, PictureError> {
         let offset = PictureOffset {
             x: to_emu(x_px),
@@ -1523,7 +1524,7 @@ where
         let Some(id) = session.deck.add_picture(slide_index, &buf, &ext, offset)? else {
             return Ok(None);
         };
-        changed = true;
+        added = true;
         // The requested frame rarely matches the image's aspect ratio; never
         // stretch: fill the frame and center-crop the overflow (object-fit:
         // cover) so the layout box stays exactly where the model placed it.
@@ -1541,26 +1542,30 @@ where
     })();
     match inserted {
         Ok(value) => {
-            if changed {
-                session.push_history_snapshot(snapshot);
+            if !added {
+                session.undo_stack.pop();
+                session.schedule_history_notify();
             }
             Ok(value)
         }
         Err(error) => {
+            let PictureError::Transport(thrown) = error else {
+                // the original handler's catch leaves the history step in place
+                return Ok(None);
+            };
+            session.undo_stack.pop();
+            session.schedule_history_notify();
             if let Err(rollback) = session.deck.restore_snapshot(snapshot) {
                 let rollback: IpcError = rollback.into();
                 return Err(IpcError {
                     code: rollback.code,
                     message: format!(
-                        "Picture edit failed ({error:?}); rollback failed: {}",
+                        "Picture edit failed ({thrown:?}); rollback failed: {}",
                         rollback.message
                     ),
                 });
             }
-            match error {
-                PictureError::Engine => Ok(None),
-                PictureError::Transport(error) => Err(error),
-            }
+            Err(thrown)
         }
     }
 }
@@ -1621,7 +1626,8 @@ where
     }
     let keep_src_rect = prop(op, "keepSrcRect").is_some_and(JsonValue::truthy);
     let snapshot = session.take_snapshot().map_err(Into::into)?;
-    let mut changed = false;
+    session.push_history_snapshot(snapshot.clone());
+    let mut added = false;
     let replaced = (|| -> Result<Option<JsonValue>, PictureError> {
         let ok = session.deck.replace_picture_bytes(
             slide_index,
@@ -1633,7 +1639,7 @@ where
         if !ok {
             return Ok(None);
         }
-        changed = true;
+        added = true;
         // A replacement with a different aspect ratio would be stretched into
         // the surviving frame: center-crop it to cover the frame instead.
         if !keep_src_rect
@@ -1651,26 +1657,30 @@ where
     })();
     match replaced {
         Ok(value) => {
-            if changed {
-                session.push_history_snapshot(snapshot);
+            if !added {
+                session.undo_stack.pop();
+                session.schedule_history_notify();
             }
             Ok(value)
         }
         Err(error) => {
+            let PictureError::Transport(thrown) = error else {
+                // the original handler's catch leaves the history step in place
+                return Ok(None);
+            };
+            session.undo_stack.pop();
+            session.schedule_history_notify();
             if let Err(rollback) = session.deck.restore_snapshot(snapshot) {
                 let rollback: IpcError = rollback.into();
                 return Err(IpcError {
                     code: rollback.code,
                     message: format!(
-                        "Picture edit failed ({error:?}); rollback failed: {}",
+                        "Picture edit failed ({thrown:?}); rollback failed: {}",
                         rollback.message
                     ),
                 });
             }
-            match error {
-                PictureError::Engine => Ok(None),
-                PictureError::Transport(error) => Err(error),
-            }
+            Err(thrown)
         }
     }
 }

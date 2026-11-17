@@ -190,7 +190,9 @@ mod tests {
         ));
         std::fs::write(&path, bytes).unwrap();
         let (exact, _) = keys(&path);
-        assert!(exact.contains(&main_core::pdf::font_locate::norm("Carlito")));
+        // The shipped Carlito files are renamed "SeuOffice Sans GO" (OFL Reserved Font Name).
+        assert!(exact.contains(&main_core::pdf::font_locate::norm("SeuOffice Sans GO")));
+        assert!(!exact.contains(&main_core::pdf::font_locate::norm("Carlito")));
         std::fs::write(&path, b"ttcf\0\0\0\0\0\0\0\x02").unwrap();
         assert_eq!(keys(&path), (Vec::new(), Vec::new()));
         std::fs::remove_file(path).unwrap();

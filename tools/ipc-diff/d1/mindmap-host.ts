@@ -416,8 +416,6 @@ export async function loadMindmap(cx: LoadContext): Promise<void> {
   for (const v of views) {
     Object.assign(e.contents(v.view), {
       setWindowOpenHandler() {},
-      on() {},
-      once() {},
       getURL: () => '',
       loadURL: async () => {},
       reload() {},
@@ -571,7 +569,7 @@ export async function loadMindmap(cx: LoadContext): Promise<void> {
         queries.mindmapReadBytes(contents).catch(() => {})
         break
       case 'copiesNow':
-        void main.writeMindmapCopiesNow()
+        main.writeMindmapCopiesNow().catch(() => {})
         break
     }
   }

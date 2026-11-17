@@ -1910,6 +1910,31 @@ impl<G: ChatStoreGuide, H: ChatStoreHost> ProjectChatStore<G, H> {
         }
     }
 
+    /// What `append` has used up when its install identity cannot be made: the
+    /// original numbers the message and reads the clock before it asks for the
+    /// identity, so the next message goes on after the lost number.
+    pub fn use_up_append(
+        &mut self,
+        args: &JsonValue,
+        sender: &ChatSender,
+    ) -> Result<(), ChatStoreError> {
+        let (project_id, chat_id, root) = self.validate_append(args, sender)?;
+        let chat = Chat {
+            project_id: &project_id,
+            chat_id: &chat_id,
+            root: &root,
+        };
+        let mut state = self.state(&chat);
+        let result = if state.other_project {
+            Ok(())
+        } else {
+            state.next_seq += 1.0;
+            self.host.now_iso().map(|_| ())
+        };
+        self.check_in(&chat, state);
+        result
+    }
+
     /// Validate before queuing the install identity; no message is appended.
     pub fn preflight_append(
         &mut self,

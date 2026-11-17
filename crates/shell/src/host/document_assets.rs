@@ -2145,8 +2145,8 @@ mod tests {
     #[test]
     fn stale_asset_permit_cannot_accept_a_response_after_replacement() {
         let view = ViewId(987_000_090);
-        let old = register_session(view, AssetKind::Html).unwrap();
-        let permit = authorize(view, AssetKind::Html).unwrap().unwrap();
+        let old = register_session(view, AssetKind::Docs).unwrap();
+        let permit = authorize(view, AssetKind::Docs).unwrap().unwrap();
         let mut accepted = false;
         permit
             .with_current_delivery(&mut || {
@@ -2155,7 +2155,7 @@ mod tests {
             })
             .unwrap();
         assert!(accepted);
-        let new = register_session(view, AssetKind::Html).unwrap();
+        let new = register_session(view, AssetKind::Docs).unwrap();
         accepted = false;
         assert!(
             permit

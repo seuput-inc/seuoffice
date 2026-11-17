@@ -600,8 +600,8 @@ mod tests {
         ];
         let written = apply_mirror(workbook, &states, &["Data".into()]).unwrap();
         let read = file_parse::xlsx::workbook_redaction_mirror(&written).unwrap();
-        assert_eq!(read[0]["marks"][0]["startRow"], 2);
-        assert_eq!(read[0]["marks"][0]["endColumn"], 1);
+        assert_eq!(read[0]["marks"][0]["startRow"], 2.0);
+        assert_eq!(read[0]["marks"][0]["endColumn"], 1.0);
     }
     #[test]
     fn copied_mark_keeps_previous_fill_and_uses_copy_operations() {

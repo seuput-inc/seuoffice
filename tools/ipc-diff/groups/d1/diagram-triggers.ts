@@ -231,7 +231,7 @@ const cases: Case[] = [
     { ...answerOf(2), expectAnswer: VOID_ANSWER },
     {
       ...trigger('writeDiagramCopiesNow'),
-      capture: [eventArg(4, 'diagram:recovery-copy-now')],
+      capture: [eventArg(5, 'diagram:recovery-copy-now')],
       expectAnswer: rejectedAnswer('Timed out writing the diagram recovery copy'),
     },
   ]),

@@ -736,15 +736,13 @@ pub(super) fn apply_txn_view(
                 ("failures", compact(&plan.failures)),
             ]));
         }
-        let snapshot = s.core.take_snapshot().map_err(|error| thrown(error.0))?;
-        let r = app.journaled_txn(s, owner, OpSource::Batch, &request)?;
+        let r = app.pushed_txn(s, owner, OpSource::Batch, &request)?;
         if !r.applied {
             return Ok(obj([
                 ("applied", IpcValue::Bool(false)),
                 ("failures", compact(&r.failures)),
             ]));
         }
-        s.core.push_history_snapshot(snapshot);
         // some ops change only package state: without this the session would still look clean
         s.core.mark_meta_dirty();
         // post-pass mirroring the dedicated shims: slides are re-found by the
@@ -865,8 +863,7 @@ pub fn apply_edit_script(app: &App, cx: &CallContext, args: Args) -> Reply {
                 string(first_error(&plan).unwrap_or_default()),
             )]));
         }
-        let snapshot = s.core.take_snapshot().map_err(|error| thrown(error.0))?;
-        let r = app.journaled_txn(
+        let r = app.pushed_txn(
             s,
             &super::session::render_owner(cx)?,
             OpSource::Script,
@@ -881,7 +878,6 @@ pub fn apply_edit_script(app: &App, cx: &CallContext, args: Args) -> Reply {
                 ),
             )]));
         }
-        s.core.push_history_snapshot(snapshot);
         let slide = field(op_value, "slideIndex");
         let mut rendered = app.rebuild_slide(s, &super::session::render_owner(cx)?, slide)?;
         for rec in r.records.iter().flatten() {
@@ -959,8 +955,7 @@ pub fn apply_theme(app: &App, cx: &CallContext, args: Args) -> Reply {
                 string(first_error(&plan).unwrap_or_default()),
             )]));
         }
-        let snapshot = s.core.take_snapshot().map_err(|error| thrown(error.0))?;
-        let r = app.journaled_txn(
+        let r = app.pushed_txn(
             s,
             &super::session::render_owner(cx)?,
             OpSource::Edit,
@@ -972,7 +967,6 @@ pub fn apply_theme(app: &App, cx: &CallContext, args: Args) -> Reply {
                 string(first_error(&r).unwrap_or_else(|| "applyTheme failed".into())),
             )]));
         }
-        s.core.push_history_snapshot(snapshot);
         let after = r
             .records
             .as_ref()
@@ -1171,36 +1165,33 @@ pub fn get_layouts(app: &App, cx: &CallContext, _args: Args) -> Reply {
 pub fn add_slide_with_layout(app: &App, cx: &CallContext, args: Args) -> Reply {
     let op_value = args.get(0);
     app.with_session(cx.sender.view, |app, s| {
+        let owner = super::session::render_owner(cx)?;
         let before = app
             .engine
             .slide_paths(s.deck())
             .map_err(|error| thrown(error.0))?;
-        // 'builtin:' resolution may inject a layout part: do it before the undo snapshot
-        let snapshot = s.core.take_snapshot().map_err(|error| thrown(error.0))?;
-        let layout = resolve_layout_path(app, s, prop(op_value, "layoutPath")?)?;
         let source = field(op_value, "sourceIndex");
-        let applied = if let Some(layout) = layout {
-            let o = op("addSlideWithLayout")
-                .set("target", target(source, None))
-                .set("layoutPath", layout)
-                .build();
-            app.journaled_txn(
-                s,
-                &super::session::render_owner(cx)?,
-                OpSource::Edit,
-                &TxnRequest::atomic(vec![o]),
-            )?
-            .applied
-        } else {
-            false
-        };
+        // 'builtin:' resolution may inject a layout part: it runs inside the undo step
+        let applied = app.history_step(s, |s| {
+            let layout = resolve_layout_path(app, s, prop(op_value, "layoutPath")?)?;
+            let applied = if let Some(layout) = layout {
+                let o = op("addSlideWithLayout")
+                    .set("target", target(source, None))
+                    .set("layoutPath", layout)
+                    .build();
+                app.journaled_txn(s, &owner, OpSource::Edit, &TxnRequest::atomic(vec![o]))?
+                    .applied
+            } else {
+                false
+            };
+            Ok((applied, applied))
+        })?;
         if !applied {
             return null();
         }
-        s.core.push_history_snapshot(snapshot);
         s.fit_width_px = number(field(op_value, "fitWidthPx"));
         s.core.mark_meta_dirty();
-        let update = app.build_slide_update(s, &super::session::render_owner(cx)?, &before, &[])?;
+        let update = app.build_slide_update(s, &owner, &before, &[])?;
         Ok(Obj::from_value(update)
             .set("index", num(number(source) + 1.0))
             .build())
@@ -1210,35 +1201,28 @@ pub fn add_slide_with_layout(app: &App, cx: &CallContext, args: Args) -> Reply {
 pub fn set_slide_layout(app: &App, cx: &CallContext, args: Args) -> Reply {
     let op_value = args.get(0);
     app.with_session(cx.sender.view, |app, s| {
-        let snapshot = s.core.take_snapshot().map_err(|error| thrown(error.0))?;
-        let layout_value = prop(op_value, "layoutPath")?;
-        let layout = resolve_layout_path(app, s, layout_value)?;
+        let owner = super::session::render_owner(cx)?;
         let slide = field(op_value, "slideIndex");
-        // a named layout that fails to resolve is an error; an absent layoutPath means reset
-        let applied = if truthy(layout_value) && layout.is_none() {
-            false
-        } else {
-            let mut o = op("setSlideLayout").set("target", target(slide, None));
-            if let Some(layout) = layout.filter(truthy) {
-                o = o.set("layoutPath", layout);
-            }
-            app.journaled_txn(
-                s,
-                &super::session::render_owner(cx)?,
-                OpSource::Edit,
-                &TxnRequest::atomic(vec![o.build()]),
-            )?
-            .applied
-        };
+        let applied = app.history_step(s, |s| {
+            let layout_value = prop(op_value, "layoutPath")?;
+            let layout = resolve_layout_path(app, s, layout_value)?;
+            // a named layout that fails to resolve is an error; an absent layoutPath means reset
+            let applied = if truthy(layout_value) && layout.is_none() {
+                false
+            } else {
+                let mut o = op("setSlideLayout").set("target", target(slide, None));
+                if let Some(layout) = layout.filter(truthy) {
+                    o = o.set("layoutPath", layout);
+                }
+                app.journaled_txn(s, &owner, OpSource::Edit, &TxnRequest::atomic(vec![o.build()]))?
+                    .applied
+            };
+            Ok((applied, applied))
+        })?;
         if !applied {
             return null();
         }
-        s.core.push_history_snapshot(snapshot);
-        Ok(or_null(app.rebuild_slide(
-            s,
-            &super::session::render_owner(cx)?,
-            slide,
-        )?))
+        Ok(or_null(app.rebuild_slide(s, &owner, slide)?))
     })
 }
 

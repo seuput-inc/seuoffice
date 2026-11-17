@@ -38,12 +38,16 @@ impl CoreThread {
         })
     }
 
-    /// Stops taking jobs and waits for the queued ones
+    /// Stops taking jobs and waits for the queued ones. A job running on this
+    /// thread only stops taking: it cannot wait for itself, and it must not
+    /// touch `join`, which another thread's `stop` holds while it waits for
+    /// that very job.
     pub fn stop(&self) {
         drop(self.queue.lock().unwrap().take());
-        if let Some(join) = self.join.lock().unwrap().take()
-            && join.thread().id() != thread::current().id()
-        {
+        if self.is_current() {
+            return;
+        }
+        if let Some(join) = self.join.lock().unwrap().take() {
             let _ = join.join();
         }
     }
@@ -251,5 +255,28 @@ mod tests {
         receive
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("rejection held its queue lock");
+    }
+
+    #[test]
+    fn a_job_stopping_its_own_core_does_not_deadlock_a_concurrent_stop() {
+        use std::time::Duration;
+
+        let core = CoreThread::spawn("stop-from-job");
+        let (go, go_rx) = mpsc::channel::<()>();
+        let (stopped, stopped_rx) = mpsc::channel::<()>();
+        let inside = core.clone();
+        core.post(Box::new(move || {
+            go_rx.recv().unwrap();
+            inside.stop();
+            stopped.send(()).unwrap();
+        }));
+        let outside = core.clone();
+        let waiter = thread::spawn(move || outside.stop());
+        thread::sleep(Duration::from_millis(100));
+        go.send(()).unwrap();
+        stopped_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the job's stop blocked on the join handle another stop was waiting with");
+        waiter.join().unwrap();
     }
 }

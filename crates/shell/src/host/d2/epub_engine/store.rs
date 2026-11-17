@@ -446,7 +446,7 @@ mod tests {
             }),
         )
         .unwrap();
-        assert_eq!(migration["translationBlocks"], 1);
+        assert_eq!(migration["translationBlocks"], 1.0);
         assert_eq!(
             store_read_translation(dir, "new", "ko", None)
                 .unwrap()
@@ -583,7 +583,7 @@ mod tests {
         )
         .unwrap();
         assert!(effects > 0);
-        assert_eq!(result["translationBlocks"], 1);
+        assert_eq!(result["translationBlocks"], 1.0);
         let source = store_read_translation(dir, "old", "ko", None)
             .unwrap()
             .unwrap();

@@ -755,17 +755,29 @@ mod editor_tests {
     fn editor_response_obeys_the_selected_ceiling() {
         let image_limit = MAX_REMOTE_IMAGE_BYTES as usize;
         let table_limit = 16 * 1024 * 1024;
-        let bytes = vec![0; image_limit + 1];
         let mut image = CappedEditorResponse {
-            inner: Box::new(MemoryResponse::new(200, Vec::new(), bytes.clone())),
+            inner: Box::new(MemoryResponse::new(
+                200,
+                Vec::new(),
+                vec![0; image_limit + 1],
+            )),
             remaining: image_limit,
         };
         assert!(image.array_buffer().is_err());
+        let mut image_above_table = CappedEditorResponse {
+            inner: Box::new(MemoryResponse::new(
+                200,
+                Vec::new(),
+                vec![0; table_limit + 1],
+            )),
+            remaining: image_limit,
+        };
+        assert_eq!(image_above_table.array_buffer().unwrap().len(), table_limit + 1);
         let mut table = CappedEditorResponse {
-            inner: Box::new(MemoryResponse::new(200, Vec::new(), bytes)),
+            inner: Box::new(MemoryResponse::new(200, Vec::new(), vec![0; table_limit])),
             remaining: table_limit,
         };
-        assert_eq!(table.array_buffer().unwrap().len(), image_limit + 1);
+        assert_eq!(table.array_buffer().unwrap().len(), table_limit);
         let mut oversized = CappedEditorResponse {
             inner: Box::new(MemoryResponse::new(
                 200,

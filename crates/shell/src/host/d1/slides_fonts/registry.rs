@@ -663,6 +663,7 @@ mod tests {
             .resolve("Calibri", false, false, &["Carlito", "Arial"], &[])
             .unwrap();
         assert!(!calibri.substituted);
-        assert_eq!(norm(&calibri.family), "carlito");
+        // An alias hit is served under the face's own family, which is the renamed one.
+        assert_eq!(norm(&calibri.family), norm("SeuOffice Sans GO"));
     }
 }

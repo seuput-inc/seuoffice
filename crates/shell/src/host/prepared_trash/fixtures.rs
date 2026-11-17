@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 pub(super) struct Sandbox(PathBuf);
 impl Sandbox {
     pub(super) fn new() -> Self {
-        Self::in_env("SEUOFFICE_HOSTED_TRASH_TEST_ROOT")
+        Self::in_env("SEUOFFICE_NATIVE_TEST_SCRATCH")
     }
     pub(super) fn in_env(name: &str) -> Self {
         let parent = PathBuf::from(

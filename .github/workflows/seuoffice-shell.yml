@@ -150,6 +150,8 @@ jobs:
         run: |
           mkdir -p "$SEUOFFICE_TEST_SCRATCH" "$SEUOFFICE_NATIVE_TEST_SCRATCH"
           cargo test --locked --release
+          # needs the xlsx-sidecar built by the native helpers step; the `test` gate does not build it
+          cargo test --locked --release real_sidecar -- --ignored
 
       - name: measure the dialog (--measure-dialog)
         timeout-minutes: 10
@@ -254,6 +256,8 @@ jobs:
         run: |
           mkdir -p "$SEUOFFICE_TEST_SCRATCH" "$SEUOFFICE_NATIVE_TEST_SCRATCH"
           cargo test --locked --release
+          # needs the xlsx-sidecar built by the native helpers step; the `test` gate does not build it
+          cargo test --locked --release real_sidecar -- --ignored
 
       - name: measure the dialog (--measure-dialog)
         timeout-minutes: 10

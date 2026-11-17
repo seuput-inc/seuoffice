@@ -158,10 +158,18 @@ mod tests {
 
     #[test]
     fn injected_index_and_print_route_remain_distinct() {
-        let base = std::env::temp_dir()
+        let temp = std::env::temp_dir()
             .canonicalize()
-            .expect("temporary directory")
-            .join(format!("drawio-scheme-{}", jscompat::random_uuid()));
+            .expect("temporary directory");
+        // The asset reader accepts drive and UNC roots only; canonicalization gives the
+        // `\\?\` form on Windows.
+        #[cfg(windows)]
+        let temp = std::path::PathBuf::from(
+            temp.to_str()
+                .expect("UTF-8 temporary directory")
+                .trim_start_matches(r"\\?\"),
+        );
+        let base = temp.join(format!("drawio-scheme-{}", jscompat::random_uuid()));
         let root = base.join("drawio");
         std::fs::create_dir_all(&root).expect("directory");
         std::fs::write(root.join("index.html"), "<html><head></head></html>").expect("index");

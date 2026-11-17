@@ -1666,19 +1666,25 @@ impl ProjectGuide {
         }
     }
 
-    pub fn prepare_install_id(&self) -> InstallIdPreparation {
+    /// The install id when it is already made (kept or stored); nothing is
+    /// made, so no new id is drawn.
+    pub fn known_install_id(&self) -> Option<String> {
         if let Some(id) = self.cached_install_id.borrow().as_ref()
             && !id.is_empty()
         {
-            return InstallIdPreparation::Ready(id.clone());
+            return Some(id.clone());
         }
         let id = self.read().install_id;
-        if !id.is_empty() {
-            return InstallIdPreparation::Ready(self.finish_install_id(id));
+        (!id.is_empty()).then(|| self.finish_install_id(id))
+    }
+
+    pub fn prepare_install_id(&self) -> InstallIdPreparation {
+        match self.known_install_id() {
+            Some(id) => InstallIdPreparation::Ready(id),
+            None => InstallIdPreparation::Write(InstallIdWrite {
+                candidate: self.new_id(),
+            }),
         }
-        InstallIdPreparation::Write(InstallIdWrite {
-            candidate: self.new_id(),
-        })
     }
 
     pub fn finish_install_id(&self, id: String) -> String {
@@ -2544,6 +2550,15 @@ impl ProjectGuide {
                 ProjectWriteResult::Unwritable
             }
         }
+    }
+
+    /// What `tryWrite` does with a write that failed while it waited for the
+    /// install identity: the project is unwritable for this run, and the failure
+    /// is reported, not thrown.
+    pub fn write_failed(&self, id: &str, message: &str) -> ProjectWriteResult {
+        self.mark_unwritable(id);
+        self.warn(&format!("[projects] cannot write into project {id}:"), message);
+        ProjectWriteResult::Unwritable
     }
 
     /// A write into a listed project's data folder. Refused without trying while the
@@ -3659,11 +3674,9 @@ macro_rules! guide_traits {
                     id,
                     rel_path,
                     &mut |current: Option<&str>| -> Result<Option<String>, GuideError> {
-                        change(current, &mut || match guide.prepare_install_id() {
-                            InstallIdPreparation::Ready(id) => Ok(id),
-                            InstallIdPreparation::Write(_) => {
-                                Err(ChatStoreError::need_install_id())
-                            }
+                        change(current, &mut || match guide.known_install_id() {
+                            Some(id) => Ok(id),
+                            None => Err(ChatStoreError::need_install_id()),
                         })
                         .map_err(guide_error)
                     },
@@ -3684,9 +3697,9 @@ macro_rules! guide_traits {
             }
 
             fn install_id(&mut self) -> Result<String, ChatStoreError> {
-                match self.guide().prepare_install_id() {
-                    InstallIdPreparation::Ready(id) => Ok(id),
-                    InstallIdPreparation::Write(_) => Err(ChatStoreError::need_install_id()),
+                match self.guide().known_install_id() {
+                    Some(id) => Ok(id),
+                    None => Err(ChatStoreError::need_install_id()),
                 }
             }
 

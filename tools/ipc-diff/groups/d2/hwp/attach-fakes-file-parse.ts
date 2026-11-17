@@ -4,7 +4,13 @@
  * parsers answering from the case's `hosts.d2.hwp` as `FakeEngine` in
  * crates/shell-ipc/d2/src/hwp/mod.rs does (`parse_file_to_text`,
  * `checked_hwp_bytes`), one host-log line per call.
+ *
+ * The app loads this file as CommonJS, so the attachable list reaches its own
+ * instance of the engine loader, not the one `main.ts` started: the real
+ * `attachableMaxBytes` and `diagramPictureExtOfName` answer from the engine, so
+ * this instance starts it too.
  */
+import '@seuoffice/engine-wasm/node'
 import { readFileSync } from 'node:fs'
 import { world } from './common.ts'
 

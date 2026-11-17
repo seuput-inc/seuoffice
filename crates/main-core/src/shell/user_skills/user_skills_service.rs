@@ -544,7 +544,6 @@ fn candidate_view(candidate: &SkillImportCandidate) -> JsonValue {
         .iter()
         .map(|warning| {
             let mut entry = JsObject::new();
-            entry.set("rule", text(&warning.rule));
             entry.set("messageKey", text(&warning.message_key));
             entry.set("file", text(&warning.file));
             entry.set("line", num(warning.line));

@@ -214,8 +214,6 @@ export async function loadDiagram(cx: LoadContext): Promise<void> {
   for (const v of views) {
     Object.assign(e.contents(v.view), {
       setWindowOpenHandler() {},
-      on() {},
-      once() {},
       getURL: () => '',
       loadURL: async () => {},
       reload() {},
