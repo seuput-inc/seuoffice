@@ -151,7 +151,9 @@ fn check_profile(user_data: Option<OsString>) -> Result<PathBuf, String> {
     let folder = user_data
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .ok_or_else(|| format!("{USER_DATA_ENV} is not set; the runner needs a throwaway profile"))?;
+        .ok_or_else(|| {
+            format!("{USER_DATA_ENV} is not set; the runner needs a throwaway profile")
+        })?;
     if !folder.is_dir() {
         return Err(format!(
             "{USER_DATA_ENV} is not a folder: {}",
@@ -196,7 +198,10 @@ pub fn run(context: &HostContext) -> Result<(), String> {
         .name("e2e-deadline".into())
         .spawn(move || {
             std::thread::sleep(deadline);
-            eprintln!("shell: e2e: past the deadline of {} ms", deadline.as_millis());
+            eprintln!(
+                "shell: e2e: past the deadline of {} ms",
+                deadline.as_millis()
+            );
             std::process::exit(EXIT_DEADLINE);
         })
         .map(|_| ())
@@ -212,10 +217,8 @@ mod tests {
     }
 
     fn scratch(name: &str) -> PathBuf {
-        let folder = std::env::temp_dir().join(format!(
-            "seuoffice-e2e-{name}-{}",
-            std::process::id()
-        ));
+        let folder =
+            std::env::temp_dir().join(format!("seuoffice-e2e-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
         folder
     }

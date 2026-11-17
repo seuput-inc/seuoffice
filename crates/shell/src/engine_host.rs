@@ -2582,7 +2582,10 @@ mod tests {
             "http://genoffice-app-engine-host.localhost/__engine-host-log?m=boot%3A%20up%2B1";
         for uri in [mac, windows] {
             let get = report_request("GET", uri);
-            assert_eq!(report_text(HOST, LABEL, &get).as_deref(), Some("boot: up+1"));
+            assert_eq!(
+                report_text(HOST, LABEL, &get).as_deref(),
+                Some("boot: up+1")
+            );
             // another webview of the same scheme, another host's scheme, another method
             assert_eq!(report_text(HOST, "probe-page", &get), None);
             assert_eq!(report_text("docs", LABEL, &get), None);

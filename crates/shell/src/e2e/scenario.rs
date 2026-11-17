@@ -491,15 +491,17 @@ mod tests {
 
     #[test]
     fn errors_name_the_step() {
-        let error = parse_text(r#"{"steps":[{"op":"wait"},{"op":"shortcut","name":"nope"}]}"#)
-            .unwrap_err();
+        let error =
+            parse_text(r#"{"steps":[{"op":"wait"},{"op":"shortcut","name":"nope"}]}"#).unwrap_err();
         assert!(error.starts_with("step 1:"), "{error}");
         assert!(error.contains("nope"), "{error}");
         assert!(parse_text("not json").unwrap_err().contains("JSON"));
         assert!(parse_text(r#"{"steps":[]}"#).unwrap_err().contains("empty"));
-        assert!(parse_text(r#"{"steps":[{"op":"fly"}]}"#)
-            .unwrap_err()
-            .contains("unknown op"));
+        assert!(
+            parse_text(r#"{"steps":[{"op":"fly"}]}"#)
+                .unwrap_err()
+                .contains("unknown op")
+        );
         assert!(parse_text(r#"{"deadlineMs":0,"steps":[{"op":"wait"}]}"#).is_err());
     }
 
@@ -510,12 +512,8 @@ mod tests {
                 .unwrap_err()
                 .contains("absolute")
         );
-        assert!(
-            parse_text(r#"{"steps":[{"op":"ime","source":"ko-2set","keys":"g k"}]}"#).is_err()
-        );
-        assert!(
-            parse_text(r#"{"steps":[{"op":"ime","source":"ja-kana","keys":"gk"}]}"#).is_err()
-        );
+        assert!(parse_text(r#"{"steps":[{"op":"ime","source":"ko-2set","keys":"g k"}]}"#).is_err());
+        assert!(parse_text(r#"{"steps":[{"op":"ime","source":"ja-kana","keys":"gk"}]}"#).is_err());
         assert!(parse_text(r#"{"steps":[{"op":"clipboard"}]}"#).is_err());
     }
 

@@ -289,7 +289,9 @@ mod tests {
         assert!(resolve_message(Some(&Answer::DontSave), &two).is_err());
         assert!(resolve_message(Some(&Answer::Save), &two).is_err());
         assert_eq!(
-            resolve_message(Some(&Answer::Cancel), &two).unwrap().response,
+            resolve_message(Some(&Answer::Cancel), &two)
+                .unwrap()
+                .response,
             1
         );
         assert!(resolve_message(Some(&Answer::Path(abs("a"))), &two).is_err());

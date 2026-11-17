@@ -479,7 +479,10 @@ mod tests {
         }
         assert!(CSP.ends_with("sandbox"));
         assert!(!CSP.contains("https"));
-        assert!(!CSP.replace("http://epub-asset.localhost", "").contains("http"));
+        assert!(
+            !CSP.replace("http://epub-asset.localhost", "")
+                .contains("http")
+        );
         assert!(!CSP.contains('*'));
     }
 

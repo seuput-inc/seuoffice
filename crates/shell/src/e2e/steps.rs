@@ -17,10 +17,10 @@ use serde_json::{Value, json};
 use shell_contract::ids::ViewId;
 use tauri::{Manager, Webview, Window};
 
+use super::EXIT_UNRUNNABLE;
 use super::dialog::{self, Answer};
 use super::report::{Report, StepRecord};
 use super::scenario::{Scenario, Shortcut, Step, typed_keys};
-use super::EXIT_UNRUNNABLE;
 use crate::host::HostContext;
 use crate::host::contents::page_error_text;
 use crate::host::shell_tabs::{ShellTabs, shell_tabs};
@@ -258,7 +258,9 @@ impl Runner<'_> {
                 {
                     self.switch = None;
                     let quiet = Self::settle(&webview);
-                    return Ok(Some(json!({ "kind": kind, "view": view.0, "quiet": quiet })));
+                    return Ok(Some(
+                        json!({ "kind": kind, "view": view.0, "quiet": quiet }),
+                    ));
                 }
             }
             if Instant::now() >= deadline {
@@ -309,17 +311,16 @@ impl Runner<'_> {
             }
             Step::Shortcut(shortcut) => {
                 let target = self.target()?;
-                input::shortcut(&self.context.ui, &target.window, *shortcut)
-                    .map_err(unrunnable)?;
+                input::shortcut(&self.context.ui, &target.window, *shortcut).map_err(unrunnable)?;
                 if *shortcut == Shortcut::Quit {
                     self.quitting = true;
                 }
                 Ok(Some(json!({ "kind": target.kind })))
             }
             Step::Clipboard { text, html } => self.set_clipboard(text.clone(), html.clone()),
-            Step::Query {
-                js, timeout_ms, ..
-            } => self.query(js, Duration::from_millis(*timeout_ms)),
+            Step::Query { js, timeout_ms, .. } => {
+                self.query(js, Duration::from_millis(*timeout_ms))
+            }
             Step::Dialog { answer, timeout_ms } => {
                 let ticket = dialog::push(answer.clone());
                 if self.quitting {
@@ -388,7 +389,9 @@ impl Runner<'_> {
         // an export that never asked for a path must not leave its answer for a later dialog
         dialog::discard(ticket);
         let bytes = outcome?;
-        Ok(Some(json!({ "path": path.display().to_string(), "bytes": bytes })))
+        Ok(Some(
+            json!({ "path": path.display().to_string(), "bytes": bytes }),
+        ))
     }
 
     fn screenshot(&self, name: &str) -> StepResult {
@@ -487,10 +490,8 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> std::path::PathBuf {
-        let folder = std::env::temp_dir().join(format!(
-            "seuoffice-e2e-steps-{name}-{}",
-            std::process::id()
-        ));
+        let folder =
+            std::env::temp_dir().join(format!("seuoffice-e2e-steps-{name}-{}", std::process::id()));
         fs::create_dir_all(&folder).unwrap();
         folder
     }

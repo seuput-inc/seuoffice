@@ -316,9 +316,10 @@ pub(super) fn ime_ko_2set(
         (thread, GetKeyboardLayout(thread))
     };
     // SAFETY: loads the Korean keyboard layout into this process without activating it here.
-    let korean = unsafe { LoadKeyboardLayoutW(w!("00000412"), KLF_NOTELLSHELL) }.map_err(
-        |error| format!("the Korean keyboard layout is not installed (Korean language pack): {error}"),
-    )?;
+    let korean =
+        unsafe { LoadKeyboardLayoutW(w!("00000412"), KLF_NOTELLSHELL) }.map_err(|error| {
+            format!("the Korean keyboard layout is not installed (Korean language pack): {error}")
+        })?;
     if layout_language(korean) != KOREAN_LANGID {
         return Err("Windows did not load the Korean keyboard layout".into());
     }

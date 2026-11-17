@@ -330,12 +330,8 @@ mod tis {
     unsafe extern "C" {
         fn CFArrayGetCount(array: CfRef) -> isize;
         fn CFArrayGetValueAtIndex(array: CfRef, index: isize) -> CfRef;
-        fn CFStringGetCString(
-            string: CfRef,
-            buffer: *mut c_char,
-            size: isize,
-            encoding: u32,
-        ) -> u8;
+        fn CFStringGetCString(string: CfRef, buffer: *mut c_char, size: isize, encoding: u32)
+        -> u8;
         fn CFRelease(object: CfRef);
     }
 
