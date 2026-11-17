@@ -1,11 +1,13 @@
 /**
  * Group `w/doc-picker`: the "Attach from documents" window
  * (`apps/shell/src/main/doc-picker/doc-picker-window.ts`) and the editors'
- * `doc:*` channels that open it and build the `@` list. An invoke that waits
- * for the person cannot be one call of a case, so a case either has an editor
- * ask before its first call (`hosts.w.docPicker.asked`, answer logged when it
- * comes) or has the person close the window as soon as it is up
- * (`userCloses`); support/doc-picker.ts says what a case may describe.
+ * `doc:*` channels that open it and build the `@` list. The window is shown
+ * only when its page invokes `doc-picker:ready` with the window's token. An
+ * invoke that waits for the person is either a deferred call (`defer`, settled
+ * by an `await` step), or comes from an editor that asked before the first call
+ * (`hosts.w.docPicker.asked`, answer logged when it comes), or ends because the
+ * person closes the window as soon as it is created (`userCloses`);
+ * support/doc-picker.ts says what a case may describe.
  */
 import { createDocList } from '../../../../apps/shell/src/main/doc-picker/doc-list.ts'
 import { specOf, standIn } from '../../support/doc-picker.ts'
@@ -27,6 +29,7 @@ const init = (view = 2) => call('doc-picker:get-init', view)
 const list = (view = 2) => call('doc-picker:list', view)
 const choose = (ids: unknown, view = 2) => call('doc-picker:choose', view, ids)
 const cancel = (view = 2) => call('doc-picker:cancel', view)
+const ready = (token: unknown, view = 2) => call('doc-picker:ready', view, token)
 const available = (view = 1) => call('doc:attach-available', view)
 const pick = (view = 1) => call('doc:pick-attachments', view)
 const attachList = (view = 1) => call('doc:attach-list', view)
@@ -250,6 +253,46 @@ const cases: Case[] = [
     views: VIEWS,
     calls: [attachList(), attachList(5)],
   },
+  {
+    note: 'the picker page says it is ready: the window is shown, once',
+    views: VIEWS,
+    hosts: hosts({ asked }),
+    calls: [init(), ready('1'), ready('1'), cancel()],
+  },
+  {
+    note: 'a ready from another view, with another token or none shows nothing',
+    views: VIEWS,
+    hosts: hosts({ asked }),
+    calls: [
+      ready('1', 4),
+      ready('0'),
+      ready('2'),
+      ready(1),
+      call('doc-picker:ready', 2),
+      ready('1', 1),
+      ready('1', 5),
+      cancel(),
+    ],
+  },
+  {
+    note: 'no window: a ready shows nothing',
+    views: VIEWS,
+    calls: [ready('1'), ready('0')],
+  },
+  {
+    note: 'a window opened after another closed has a token of its own',
+    views: VIEWS,
+    hosts: hosts({ asked }),
+    calls: [
+      cancel(),
+      { ...pick(3), defer: true },
+      init(),
+      ready('1'),
+      ready('2'),
+      cancel(),
+      { channel: '', args: [], await: 1 },
+    ],
+  },
 ]
 
 export const group: Group = {
@@ -271,7 +314,7 @@ export const group: Group = {
       void picker
         .open(parent, asked.asker)
         .then((answer) => cx.electron.log.push(['doc:pick-attachments settled', answer]))
-      // the window's page is up before the first call
+      // a person who closes the window has done so before the first call
       for (let i = 0; i < 4; i++) await new Promise((r) => setImmediate(r))
     }
   },

@@ -27,7 +27,7 @@ export class Probe {
     createInterface({ input: this.child.stdout }).on('line', (line) => this.waiting.shift()?.(line))
     this.child.on('exit', (code, signal) => {
       const line = JSON.stringify({
-        bad: `ipc-probe ended (${code ?? signal}): ${this.stderr.slice(-2000)}`,
+        bad: `ipc-probe ended (${code ?? signal}): ${this.stderrTail()}`,
       })
       for (const answer of this.waiting.splice(0)) answer(line)
     })
@@ -43,6 +43,16 @@ export class Probe {
       this.waiting.push(resolve)
       this.child.stdin.write(`${JSON.stringify({ dir, case: { ...c, batch } })}\n`)
     })
+  }
+
+  /** what the probe wrote to stderr last: where a case that never answered got to */
+  stderrTail(): string {
+    return this.stderr.slice(-2000)
+  }
+
+  /** ends a probe that is stuck inside a case, which nothing else can reach */
+  kill(): void {
+    this.child.kill('SIGKILL')
   }
 
   close(): void {

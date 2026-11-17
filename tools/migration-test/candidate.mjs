@@ -109,7 +109,7 @@ const expected =
         },
       }
 const signingKinds =
-  platform === 'win32' ? ['unsigned', 'authenticode'] : ['ad-hoc', 'developer-id-notarized']
+  platform === 'win32' ? ['unsigned', 'authenticode'] : ['self-signed', 'developer-id-notarized']
 for (const channel of channels) {
   const names = expected[channel.channel]
   if (

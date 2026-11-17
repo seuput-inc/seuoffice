@@ -196,6 +196,8 @@ struct World {
     close_answers: VecDeque<CloseAnswer>,
     readies: HashMap<u64, ReadyState>,
     load_requests: Vec<String>,
+    /// the tabs a load already ran for, on behalf of the request that follows it
+    settled_loads: Vec<String>,
     reported: HashSet<u64>,
     openers: HashMap<u64, OpenerSpec>,
     cursor: (f64, f64),
@@ -280,6 +282,7 @@ impl World {
             close_answers: VecDeque::new(),
             readies: HashMap::new(),
             load_requests: Vec::new(),
+            settled_loads: Vec::new(),
             reported: HashSet::new(),
             openers: HashMap::new(),
             cursor: (0.0, 0.0),
@@ -1615,6 +1618,13 @@ fn run_op(
     while !w.load_requests.is_empty() {
         let requested = std::mem::take(&mut w.load_requests);
         for id in requested {
+            // a load the operation already ran for this tab is the attempt the request stands for
+            if let Some(at) = w.settled_loads.iter().position(|settled| settled == &id)
+                && tm.is_tab_unloaded(&id)
+            {
+                w.settled_loads.remove(at);
+                continue;
+            }
             // the preload above already ran this tab's opener once for the operation, as the
             // TypeScript's single `loadTab` does
             if preload.contains(&id) && tm.is_tab_unloaded(&id) {
@@ -1626,6 +1636,7 @@ fn run_op(
             }
         }
     }
+    w.settled_loads.clear();
     out
 }
 
@@ -1964,7 +1975,23 @@ fn run_op_inner(
                 active: f64_of(s, "active"),
                 split,
             };
-            Value::from(tm.hydrate_session(w, &session))
+            let ids = tm.add_restored_tabs(w, &session);
+            let front = TabManager::<View, ()>::restored_front(&session, &ids);
+            // entering a pane is a first activation (`setSplit`): the first pane loads, then
+            // the second, and a pane whose opener fails ends the attempt
+            if let Some(pair) = &front.split {
+                for pane in [&pair.a_tab_id, &pair.b_tab_id] {
+                    hydrate_fixture_tab(w, tm, pane);
+                    if tm.is_tab_unloaded(pane) {
+                        // the manager asks for this load again when it splits: that is
+                        // this attempt, not a second one
+                        w.settled_loads.push(pane.clone());
+                        break;
+                    }
+                }
+            }
+            tm.show_restored_front(w, front);
+            Value::from(ids)
         }
         "ensure" => {
             let step = tm.ensure_tab_loaded(w, id);
@@ -2385,10 +2412,12 @@ fn fixture_open_help(
             tm.activate_tab(w, &id);
             Ok(id)
         }
-        Ok(plan) => {
+        Ok(pending) => {
             let view = w.create_help_view();
-            let url = help_view_url(dev_url.as_deref(), help_topic_param(topic))?;
-            w.load_url(&view, &url);
+            // the TypeScript keeps the view it made when `helpViewUrl` throws: it is never
+            // attached, and nothing of the tab manager changes
+            let plan = pending.resolve()?;
+            w.load_url(&view, plan.url());
             w.add_child_view(&view);
             w.set_visible(&view, false);
             let title = w
@@ -2469,6 +2498,14 @@ fn adopt_editor(
             return Err(error);
         }
     }
+    // the TypeScript attaches the view and listens to it before it reads the diagram's identity
+    // for the tab's title, which the manager's adoption does
+    if !reused {
+        w.add_child_view(&view);
+        w.set_visible(&view, false);
+    }
+    w.listen_html_full_screen(&view);
+    w.listen_pane_focus(&view);
     let prepared = match tm.prepare_editor_adoption(w, plan, view) {
         Ok(prepared) => prepared,
         Err(failed) => {
@@ -2489,12 +2526,6 @@ fn adopt_editor(
         return Err(TabError(error));
     }
     let id = tm.commit_validated_editor_adoption(prepared, (), commit);
-    if !reused {
-        w.add_child_view(&view);
-        w.set_visible(&view, false);
-    }
-    w.listen_html_full_screen(&view);
-    w.listen_pane_focus(&view);
     tm.activate_tab(w, &id);
     Ok(id)
 }

@@ -67,7 +67,45 @@ impl TabsState {
         self.close_tab(&id, done);
     }
 
-    /// Shows a loaded recovered tab under the launch operation.
+    /// Loads each of these recovered tabs that is still unloaded, in order and under a native
+    /// command, without activating them: `loadTab`. `then` gets whether every one is loaded. A
+    /// tab that cannot be opened is warned about and stays unloaded, and the ones after it are
+    /// not tried.
+    fn load_startup_tabs(&self, ids: Vec<String>, then: Box<dyn FnOnce(bool)>) {
+        let mut unloaded: Vec<String> = {
+            let inner = self.inner.borrow();
+            ids.into_iter()
+                .filter(|id| {
+                    inner
+                        .manager
+                        .as_ref()
+                        .is_some_and(|manager| manager.unloaded_tab(id).is_some())
+                })
+                .collect()
+        };
+        if unloaded.is_empty() {
+            return then(true);
+        }
+        // `hydrate_tabs` takes the last one first
+        unloaded.reverse();
+        let state = self.rc();
+        self.hydrate_tabs(
+            unloaded,
+            None,
+            Box::new(move |result| match result {
+                Ok(()) => then(true),
+                Err(error) => {
+                    state
+                        .hooks
+                        .warn("[tabs] a restored tab could not be opened:", &error);
+                    then(false)
+                }
+            }),
+        );
+    }
+
+    /// Shows a recovered tab under the launch operation (`activateTab`): an unloaded one loads
+    /// first, and one that cannot be opened leaves the window as it was.
     pub fn activate_startup_owned(
         &self,
         id: String,
@@ -77,19 +115,28 @@ impl TabsState {
         pending: CancelToken,
         done: TabUiDone,
     ) {
-        let target = match self.capture_startup_tab_owner(&id) {
-            Ok(target) => target,
-            Err(error) => return done(Err(error)),
-        };
-        self.activate_loaded_native_operation_many(
-            &id,
-            startup,
-            owner,
-            target,
-            Vec::new(),
-            cancel,
-            pending,
-            done,
+        let state = self.rc();
+        self.load_startup_tabs(
+            vec![id.clone()],
+            Box::new(move |loaded| {
+                if !loaded {
+                    return done(Ok(()));
+                }
+                let target = match state.capture_startup_tab_owner(&id) {
+                    Ok(target) => target,
+                    Err(error) => return done(Err(error)),
+                };
+                state.activate_loaded_native_operation_many(
+                    &id,
+                    startup,
+                    owner,
+                    target,
+                    Vec::new(),
+                    cancel,
+                    pending,
+                    done,
+                );
+            }),
         );
     }
 
@@ -118,16 +165,28 @@ impl TabsState {
             "b" => Pane::B,
             other => return done(Err(format!("Unknown split focus: {other}"))),
         };
-        self.begin_split_loaded(
-            startup,
-            owner,
-            (a, b),
-            orientation,
-            ratio,
-            focus,
-            cancel,
-            pending,
-            done,
+        // entering a pane is a first activation (`setSplit`): the first pane loads, then the
+        // second; when one cannot be opened there is no split, and the launch goes on
+        let state = self.rc();
+        let panes = vec![a.clone(), b.clone()];
+        self.load_startup_tabs(
+            panes,
+            Box::new(move |loaded| {
+                if !loaded {
+                    return done(Ok(()));
+                }
+                state.begin_split_loaded(
+                    startup,
+                    owner,
+                    (a, b),
+                    orientation,
+                    ratio,
+                    focus,
+                    cancel,
+                    pending,
+                    done,
+                );
+            }),
         );
     }
 

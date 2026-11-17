@@ -2702,3 +2702,88 @@ fn recovery_rename_respects_cancellation_and_notifies_after_success() {
     assert_eq!(editor.document_path(sender.view), Some(renamed));
     assert!(names(&w.kit.take_events()).contains(&(Target::View(sender.view), "workbook:renamed")));
 }
+
+fn saved_open_ack(entries: &[(&str, IpcValue)]) -> Vec<IpcValue> {
+    vec![IpcValue::Object(
+        entries
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), value.clone()))
+            .collect(),
+    )]
+}
+
+#[test]
+fn saved_open_result_rejects_acknowledgements_without_identity_result_or_a_consistent_error() {
+    let w = world("sheets-saved-open-shape", Value::Null);
+    let sender = w.tab(1);
+    let refused = |entries: &[(&str, IpcValue)]| {
+        message(
+            w.call(sender, "workbook:saved-open-result", saved_open_ack(entries))
+                .unwrap_err(),
+        )
+    };
+    assert_eq!(
+        refused(&[("ok", IpcValue::Bool(true))]),
+        "The saved workbook acknowledgement has no identity"
+    );
+    assert_eq!(
+        refused(&[("id", string("")), ("ok", IpcValue::Bool(true))]),
+        "The saved workbook acknowledgement has no identity"
+    );
+    assert_eq!(
+        refused(&[("id", string("load")), ("ok", string("yes"))]),
+        "The saved workbook acknowledgement has no result"
+    );
+    assert_eq!(
+        refused(&[
+            ("id", string("load")),
+            ("ok", IpcValue::Bool(true)),
+            ("error", string("late")),
+        ]),
+        "The saved workbook acknowledgement is invalid"
+    );
+    assert_eq!(
+        refused(&[
+            ("id", string("load")),
+            ("ok", IpcValue::Bool(false)),
+            ("error", num(1.0)),
+        ]),
+        "The saved workbook acknowledgement is invalid"
+    );
+    // a well-formed acknowledgement that matches no opening is refused later, by the tab
+    assert_eq!(
+        refused(&[("id", string("load")), ("ok", IpcValue::Bool(true))]),
+        "The saved workbook opening is unavailable"
+    );
+    assert_eq!(
+        refused(&[("id", string("load")), ("ok", IpcValue::Bool(false))]),
+        "The saved workbook opening is unavailable"
+    );
+}
+
+#[test]
+fn saved_open_result_needs_native_authority_and_a_live_tab() {
+    let w = world("sheets-saved-open-authority", Value::Null);
+    let ack = || saved_open_ack(&[("id", string("load")), ("ok", IpcValue::Bool(true))]);
+
+    // a sender the shell never gave a renderer authority: the call has no native context
+    let sender = w.tab(1);
+    let uncaptured =
+        crate::testkit::start(&w.registry, sender, "workbook:saved-open-result", ack())
+            .try_recv()
+            .expect("the acknowledgement answers");
+    assert_eq!(
+        message(uncaptured.unwrap_err()),
+        "The saved workbook sender has no native authority"
+    );
+
+    // the tab was closed before the renderer acknowledged
+    let closed = w.kit.view(2, Surface::Sheets);
+    assert_eq!(
+        message(
+            w.call(closed, "workbook:saved-open-result", ack())
+                .unwrap_err()
+        ),
+        "The saved workbook tab was closed"
+    );
+}

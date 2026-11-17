@@ -126,4 +126,35 @@ export const NATIVE_CHANNEL_CONTRACTS: readonly NativeChannelContract[] = [
       ],
     },
   },
+  {
+    name: 'workbook:saved-open-result',
+    kinds: ['invoke'],
+    batch: 'D1',
+    surfaces: ['sheets'],
+    handler: 'crates/shell-ipc/d1/src/sheets/mod.rs',
+    reason:
+      'A saved workbook opens only after the renderer reports its first range loaded; the report settles the exact saved-load barrier and drops the session on failure. The Electron shell opens the file in main and never waits for the renderer, so it has no equivalent channel.',
+    arguments: ['id', 'ok', 'error?'],
+    requiredScenarios: [
+      'missing-identity',
+      'missing-result',
+      'inconsistent-error',
+      'missing-native-authority',
+      'closed-tab',
+      'no-opening',
+    ],
+    synthetic: {
+      suite: 'crates/shell-ipc/d1/src/sheets/tests.rs',
+      sourceCases: [
+        {
+          name: 'saved_open_result_rejects_acknowledgements_without_identity_result_or_a_consistent_error',
+          scenarios: ['missing-identity', 'missing-result', 'inconsistent-error', 'no-opening'],
+        },
+        {
+          name: 'saved_open_result_needs_native_authority_and_a_live_tab',
+          scenarios: ['missing-native-authority', 'closed-tab'],
+        },
+      ],
+    },
+  },
 ]

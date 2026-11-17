@@ -11,7 +11,10 @@
 //! - `asked`: `{ parent, asker }`, an editor (in window `parent`) already
 //!   asked for the picker when the case starts, and its answer is logged when
 //!   it comes: `["doc:pick-attachments settled", answer]`;
-//! - `userCloses`: the person closes each picker window as soon as it is up.
+//! - `userCloses`: the person closes each picker window as soon as it is
+//!   created, before its page has said `doc-picker:ready` (so it is never shown).
+//!
+//! The window is shown when its page says `doc-picker:ready` (`renderer_ready`).
 //!
 //! Each host call is one line of the case's log, named after the call it
 //! fakes (`tools/ipc-diff/support/doc-picker.ts` writes the same).
@@ -119,11 +122,12 @@ impl DocPickerWindow for Window {
         options.insert("title".into(), o.title.clone().into());
         push(&self.log, json!(["new BrowserWindow", options]));
         self.open.store(true, Ordering::SeqCst);
-        if let Some(control) = self.control.lock().expect("the control").as_ref() {
-            control.window_ready(self.view);
-            if self.user_closes {
-                control.window_closed(self.view);
-            }
+        // the page is not up yet: it shows the window by `doc-picker:ready`
+        // (`renderer_ready`), so a person who closes it first never sees it
+        if self.user_closes
+            && let Some(control) = self.control.lock().expect("the control").as_ref()
+        {
+            control.window_closed(self.view);
         }
         self.view
     }

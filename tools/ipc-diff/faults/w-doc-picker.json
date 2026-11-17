@@ -35,6 +35,20 @@
     "groups": ["w/doc-picker"]
   },
   {
+    "name": "a second ready shows the window again",
+    "file": "shell-ipc/w/src/doc_picker.rs",
+    "find": "&& state.shown_generation != state.generation",
+    "replace": "&& true",
+    "groups": ["w/doc-picker"]
+  },
+  {
+    "name": "a ready with any token shows the window",
+    "file": "shell-ipc/w/src/doc_picker.rs",
+    "find": "token == &state.generation.to_string()",
+    "replace": "!token.is_empty()",
+    "groups": ["w/doc-picker"]
+  },
+  {
     "name": "the @ list loses the asking view",
     "file": "shell-ipc/w/src/doc_picker.rs",
     "find": "asker.web_contents_id = Some(cx.sender.view.0);",

@@ -2081,13 +2081,11 @@ impl FakeShell {
             error: None,
         }
     }
-}
 
-impl SlidesShell for FakeShell {
-    fn opened(&self, view: ViewId, path: &str) {
+    /// A native save publishes after every write, while Electron calls the opened hook only
+    /// when a view's path changes: record the hook for a changed path only.
+    fn publish_saved(&self, view: ViewId, path: &str) {
         let mut opened = self.opened.lock().unwrap();
-        // `slidesOpenedHook` only retitles the tab: Electron calls it when a view's path
-        // changes, while the native save publishes after every write
         let known = opened
             .iter()
             .rev()
@@ -2098,6 +2096,13 @@ impl SlidesShell for FakeShell {
         if !known {
             self.record(json!(["slidesOpenedHook", view.0, path]));
         }
+    }
+}
+
+impl SlidesShell for FakeShell {
+    fn opened(&self, view: ViewId, path: &str) {
+        self.opened.lock().unwrap().push((view, path.to_owned()));
+        self.record(json!(["slidesOpenedHook", view.0, path]));
     }
     fn reload_view(&self, view: ViewId) {
         self.record(json!(["slides.reload", view.0]));
@@ -2417,7 +2422,7 @@ impl SlidesShell for FakeShell {
         let extra = additional.iter().collect::<Vec<_>>();
         let result = effects
             .with_owned_effect_many_extra(origin, &owners, cancel, pending, &extra, &mut || {
-                self.opened(destination.view, &path.to_string_lossy());
+                self.publish_saved(destination.view, &path.to_string_lossy());
                 Ok(())
             })
             .map(|()| shell_contract::hosts::SavedFile {
@@ -2456,7 +2461,7 @@ impl SlidesShell for FakeShell {
                         let recipient = participants
                             .first()
                             .ok_or("The saved presentation recipient is missing")?;
-                        self.opened(recipient.view, &expected_path.to_string_lossy());
+                        self.publish_saved(recipient.view, &expected_path.to_string_lossy());
                         Ok(())
                     },
                 )

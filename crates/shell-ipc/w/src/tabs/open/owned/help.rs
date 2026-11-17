@@ -9,7 +9,7 @@ use crate::tabs::{
         ViewCreationFailure,
     },
 };
-use main_core::shell::tab_manager::{HelpOpenCommit, PreparedHelpOpen, TabError, TabKind};
+use main_core::shell::tab_manager::{HelpOpenCommit, PendingHelpOpen, TabError, TabKind};
 use shell_contract::{
     ViewId,
     ipc::{
@@ -229,7 +229,7 @@ impl TabsState {
 
     fn help_created(
         self: Rc<Self>,
-        plan: PreparedHelpOpen,
+        plan: PendingHelpOpen,
         authority: HelpAuthority,
         epoch: u64,
         done: HelpDone,
@@ -274,6 +274,14 @@ impl TabsState {
                 }),
             );
         }
+        // `helpViewUrl` throws for an invalid dev URL only after the view is made: the view is
+        // dropped and the request fails
+        let plan = match plan.resolve() {
+            Ok(plan) => plan,
+            Err(error) => {
+                return self.discard_help_view(cleanup, Box::new(move || done(Err(error))));
+            }
+        };
         let binding = RetainedSpareBinding::new(binding, Rc::default(), None);
         let loaded_by_host = document.is_some();
         let committed = self.with_manager(|manager, host| {

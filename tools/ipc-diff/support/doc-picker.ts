@@ -12,10 +12,12 @@
  * - `askers`: the asker of each view, by view number;
  * - `asked`: `{ parent, asker }`, an editor in window `parent` asked for the
  *   picker before the case starts; its answer is logged when it comes;
- * - `userCloses`: the person closes each picker window as soon as it is up.
+ * - `userCloses`: the person closes each picker window as soon as it is
+ *   created, before its page has said `doc-picker:ready` (so it is never shown).
  *
  * `new BrowserWindow` is a window whose calls are log lines named as the
- * Electron call.
+ * Electron call. The module shows it only when the picker page invokes
+ * `doc-picker:ready` with the window's token (`readyToken` of `doc-picker:get-init`).
  */
 import * as attachable from '../../../packages/file-parse/src/attachable.ts'
 import type { LoadContext } from '../types.ts'
@@ -89,17 +91,19 @@ export function standIn(cx: LoadContext) {
       if (contents) contents.setWindowOpenHandler = () => {}
     }
     removeMenu(): void {}
-    once(event: string, listener: () => void): void {
-      // the page is up once the constructor's caller returns
-      if (event !== 'ready-to-show') return
-      setImmediate(listener)
-      if (spec.userCloses) setImmediate(() => this.end())
-    }
     on(event: string, listener: () => void): void {
       if (event === 'closed') this.closed.push(listener)
     }
-    loadFile(): void {}
-    loadURL(): void {}
+    loadFile(): void {
+      this.pageLoads()
+    }
+    loadURL(): void {
+      this.pageLoads()
+    }
+    /** the module loads the page last, after it listens for `closed`: a person closes it here */
+    private pageLoads(): void {
+      if (spec.userCloses) setImmediate(() => this.end())
+    }
     isDestroyed(): boolean {
       return this.destroyed
     }

@@ -25,7 +25,7 @@ if (
   !/^[a-f0-9]{40}$/.test(definition || '') ||
   !/^[0-9]+$/.test(run || '') ||
   !(
-    platform === 'win32' ? ['unsigned', 'authenticode'] : ['ad-hoc', 'developer-id-notarized']
+    platform === 'win32' ? ['unsigned', 'authenticode'] : ['self-signed', 'developer-id-notarized']
   ).includes(signing) ||
   !versions.length ||
   new Set(versions).size !== versions.length ||

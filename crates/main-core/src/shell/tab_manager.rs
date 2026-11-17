@@ -160,9 +160,33 @@ pub type ViewCreationResult<V, R, B> = Result<ViewCreationReady<V, R, B>, ViewCr
 
 type ExistingHelp<V> = (String, Option<V>, Option<String>);
 
+/// The manual's open, reserved before its view exists. The URL is resolved after the view is
+/// made (`PendingHelpOpen::resolve`), as `openHelpTab` makes the view first and only then asks
+/// `helpViewUrl`, which throws for an invalid dev URL.
+pub struct PendingHelpOpen {
+    topic: Option<String>,
+    dev_url: Option<String>,
+}
+
+impl PendingHelpOpen {
+    pub fn resolve(self) -> TabResult<PreparedHelpOpen> {
+        let url = help_view_url(self.dev_url.as_deref(), self.topic.as_deref())?;
+        Ok(PreparedHelpOpen {
+            topic: self.topic,
+            url,
+        })
+    }
+}
+
 pub struct PreparedHelpOpen {
     topic: Option<String>,
     url: String,
+}
+
+impl PreparedHelpOpen {
+    pub fn url(&self) -> &str {
+        &self.url
+    }
 }
 
 pub enum HelpOpenCommit<V> {
@@ -420,6 +444,23 @@ pub struct RestoredSession {
     pub tabs: Vec<UnloadedTabSpec>,
     pub active: Option<f64>,
     pub split: Option<RestoredSplit>,
+}
+
+/// The pair of panes a restored session splits, with the focus its front tab picked
+#[derive(Debug, Clone, PartialEq)]
+pub struct RestoredPair {
+    pub a_tab_id: String,
+    pub b_tab_id: String,
+    pub orientation: SplitOrientation,
+    pub ratio: f64,
+    pub focus: Pane,
+}
+
+/// What `hydrateSession` shows: the split pair, else the active tab
+#[derive(Debug, Clone, PartialEq)]
+pub struct RestoredFront {
+    pub split: Option<RestoredPair>,
+    pub active: Option<String>,
 }
 
 /// `TabLoadResult`
@@ -1451,19 +1492,19 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
         &self,
         dev_url: Option<&str>,
         topic: Option<&str>,
-    ) -> TabResult<Result<PreparedHelpOpen, ExistingHelp<V>>> {
+    ) -> TabResult<Result<PendingHelpOpen, ExistingHelp<V>>> {
         let wanted = help_topic_param(topic);
-        let url = help_view_url(dev_url, wanted)?;
         if let Some(existing) = self.tabs.iter().find(|tab| tab.kind == TabKind::Help) {
-            return Ok(Err((
-                existing.id.clone(),
-                existing.view.clone(),
-                wanted.map(|_| url),
-            )));
+            // only a link to one topic on a tab that has its view navigates, and asks the URL
+            let navigate = match (wanted, existing.view.as_ref()) {
+                (Some(wanted), Some(_)) => Some(help_view_url(dev_url, Some(wanted))?),
+                _ => None,
+            };
+            return Ok(Err((existing.id.clone(), existing.view.clone(), navigate)));
         }
-        Ok(Ok(PreparedHelpOpen {
+        Ok(Ok(PendingHelpOpen {
             topic: wanted.map(str::to_owned),
-            url,
+            dev_url: dev_url.map(str::to_owned),
         }))
     }
 
@@ -2482,8 +2523,9 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
         self.tab_by_id(id).is_some_and(|t| t.opener.is_some())
     }
 
-    /// `hydrateSession`: rebuild a restored session; returns the new tab ids
-    pub fn hydrate_session(
+    /// `hydrateSession`, first half: every tab is added unloaded, in order; returns the new tab
+    /// ids in the order of `session.tabs`
+    pub fn add_restored_tabs(
         &mut self,
         host: &mut dyn TabHost<V, B>,
         session: &RestoredSession,
@@ -2494,6 +2536,13 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
             .map(|spec| self.push_unloaded_tab(host, spec))
             .collect();
         host.on_changed();
+        ids
+    }
+
+    /// What `hydrateSession` puts in front: the split pair when it is valid, else the active
+    /// tab. A split's front tab is its focused pane: `active` picks that pane when it is one
+    /// of the pair and is otherwise ignored.
+    pub fn restored_front(session: &RestoredSession, ids: &[String]) -> RestoredFront {
         let at = |index: Option<f64>| -> Option<String> {
             let index = index?;
             if index.fract() == 0.0 && index.is_finite() && index >= 0.0 && index < ids.len() as f64
@@ -2503,28 +2552,51 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
                 None
             }
         };
-        let active_id = at(session.active);
+        let active = at(session.active);
         let a_id = at(session.split.as_ref().map(|s| s.a));
         let b_id = at(session.split.as_ref().map(|s| s.b));
-        if let (Some(split), Some(a_id), Some(b_id)) = (&session.split, &a_id, &b_id)
-            && a_id != b_id
-        {
-            let focus = if active_id.as_ref() == Some(a_id) {
-                Pane::A
-            } else if active_id.as_ref() == Some(b_id) {
-                Pane::B
-            } else {
-                split.focus
-            };
-            self.begin_split(host, a_id, b_id, split.orientation, split.ratio, focus);
+        let split = match (&session.split, a_id, b_id) {
+            (Some(split), Some(a_id), Some(b_id)) if a_id != b_id => {
+                let focus = if active.as_ref() == Some(&a_id) {
+                    Pane::A
+                } else if active.as_ref() == Some(&b_id) {
+                    Pane::B
+                } else {
+                    split.focus
+                };
+                Some(RestoredPair {
+                    a_tab_id: a_id,
+                    b_tab_id: b_id,
+                    orientation: split.orientation,
+                    ratio: split.ratio,
+                    focus,
+                })
+            }
+            _ => None,
+        };
+        RestoredFront { split, active }
+    }
+
+    /// `hydrateSession`, second half. A split loads its two panes first (`setSplit`): the
+    /// caller loads them before this runs, as a pane that is still unloaded only asks for its
+    /// load and makes no split.
+    pub fn show_restored_front(&mut self, host: &mut dyn TabHost<V, B>, front: RestoredFront) {
+        if let Some(pair) = &front.split {
+            self.begin_split(
+                host,
+                &pair.a_tab_id,
+                &pair.b_tab_id,
+                pair.orientation,
+                pair.ratio,
+                pair.focus,
+            );
             if self.split.is_some() {
-                return ids;
+                return;
             }
         }
-        if let Some(active_id) = active_id {
-            self.activate_tab(host, &active_id);
+        if let Some(active) = front.active {
+            self.activate_tab(host, &active);
         }
-        ids
     }
 
     /// `ensureTabLoaded`: load the tab if it is unloaded, without activating

@@ -427,6 +427,30 @@ function modelWithoutBytes(doc: ParsedDocFull): string {
   return JSON.stringify(model)
 }
 
+/**
+ * Runs `save` with the clock stopped at `nowMs`: the TypeScript reads the
+ * clock where `savedAt` is absent, and a save that crosses a second boundary
+ * would otherwise stamp a time the Rust side, given `nowMs`, never saw.
+ */
+async function atClock<T>(nowMs: number, save: () => Promise<T>): Promise<T> {
+  const RealDate = globalThis.Date
+  class StoppedDate extends RealDate {
+    constructor(...args: unknown[]) {
+      if (args.length === 0) super(nowMs)
+      else super(...(args as [string | number | Date]))
+    }
+    static override now(): number {
+      return nowMs
+    }
+  }
+  globalThis.Date = StoppedDate as DateConstructor
+  try {
+    return await save()
+  } finally {
+    globalThis.Date = RealDate
+  }
+}
+
 async function compareVariant(
   into: Comparison,
   where: string,
@@ -439,7 +463,7 @@ async function compareVariant(
   let typescript: Uint8Array | undefined
   let thrown: string | undefined
   try {
-    typescript = await saveDocx(doc, variant.blocks, variant.options)
+    typescript = await atClock(nowMs, () => saveDocx(doc, variant.blocks, variant.options))
   } catch (error) {
     thrown = error instanceof Error ? error.message : String(error)
   }

@@ -112,6 +112,16 @@ fails the case.
 Set `expectAnswer` on a call or await step when parity alone cannot prove correctness. The gate
 requires that exact wire-form answer on each side, so matching incorrect successes still fail.
 
+### A side that never finishes
+
+A handler that waits for an event that never comes holds the whole step, so each side of a case has
+60 s (`CASE_TIMEOUT_MS` in `main.ts`). A side still running after that is a hang, not a pass: the
+gate prints a `HANG` line that names the side, the group, its batch and the case, records the case
+as `HANG` among the differences, and ends the group at that case. A hung Rust side carries the last
+of ipc-probe's stderr, and the probe is killed. A full run prints `GROUP <name> start` before each
+group (a group's own output reaches the log when it ends) and kills a group process that has run for
+10 minutes (`GROUP_TIMEOUT_MS`), the bound for a hang outside any case.
+
 ### What is compared
 
 For every call: the answer (`{value, buffers}`, `{error}` with Electron's

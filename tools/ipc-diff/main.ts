@@ -9,15 +9,18 @@
  *
  *   npm --prefix tools/ipc-diff run gate [-- --group w/quick-look] [--channel name] [--require W] [--show 20] [--list]
  *
- * Without `--group`, each group runs in a process of its own. `--list` prints
- * `group<TAB>channel` for every channel a case calls. `--require <batch>`
+ * Without `--group`, each group runs in a process of its own, announced by a
+ * `GROUP <name> start` line (its own output follows when it ends). `--list`
+ * prints `group<TAB>channel` for every channel a case calls. `--require <batch>`
  * checks the original Electron-derived channels of that batch. Native-only
  * contracts remain in the runtime registry but require separate synthetic and
  * actual native-host receipts. A full run stays non-green while either is pending.
  *
  * Fails on a difference that divergences.json does not list, on a listed one
  * that no longer reproduces, on a case either side could not run, and on the
- * coverage of a required batch.
+ * coverage of a required batch. A side that has not finished a case in
+ * CASE_TIMEOUT_MS is a hang: a `HANG` line names its batch, group and case, and
+ * the group ends there.
  */
 import '@seuoffice/engine-wasm/node'
 import { spawnSync } from 'node:child_process'
@@ -38,6 +41,7 @@ import { Encoder, WireError, decode } from '../../crates/shell/bridge/wire.ts'
 import { CHANNELS, ELECTRON_CHANNELS, SPECS } from './channels.ts'
 import { NATIVE_CHANNEL_CONTRACTS } from '../shell-inventory/native-channels.ts'
 import { nativeContractCoverage, nativeEvidence } from './native-contracts.ts'
+import { Hang, withDeadline } from './deadline.ts'
 import { caseElectron } from './fakes.ts'
 import { EventReferences, outcomeFailure } from './event-refs.ts'
 import { type GroupReport, channelAnswers, coverage } from './coverage.ts'
@@ -69,6 +73,15 @@ const args = (flag: string): string[] =>
 const show = Number(arg('--show') ?? 10)
 /** how long an awaited deferred invoke may take, as ipc-probe's CALL_TIMEOUT */
 const CALL_TIMEOUT_MS = 20_000
+/**
+ * How long one side of a case may take. A handler that waits for an event that
+ * never comes (a promise nobody settles, a worker nobody stops) holds the
+ * process open on its own, so without a bound the whole step waits for it:
+ * a side still running after this fails its case, and the group ends there.
+ */
+const CASE_TIMEOUT_MS = 60_000
+/** how long one group's process may run; the last bound, for a hang outside any case */
+const GROUP_TIMEOUT_MS = 10 * 60_000
 
 /**
  * `<batch>/<file>` for every groups/<batch>/<file>.ts that exports a group;
@@ -295,13 +308,37 @@ async function runGroup(name: string): Promise<void> {
   for (const [i, c] of group.cases.entries()) {
     if (only.length > 0 && !c.calls.some((call) => only.includes(call.channel))) continue
     checked++
-    const ts = await side(c, (cc, dir) =>
-      typescriptSide(group, cc, dir).catch((err: unknown) => ({
-        bad: String((err as Error)?.stack ?? err),
-      })),
-    )
+    /** the side of this case as a hang names it: batch, group, index, note */
+    const where = (side: string): string =>
+      `the ${side} side of ${name} (batch ${group.batch}) case ${i}${c.note ? ` (${c.note})` : ''}`
+    let hung = false
+    const ts = await side(c, async (cc, dir) => {
+      try {
+        return await withDeadline(
+          where('typescript'),
+          CASE_TIMEOUT_MS,
+          typescriptSide(group, cc, dir),
+        )
+      } catch (err) {
+        if (!(err instanceof Hang)) return { bad: String((err as Error)?.stack ?? err) }
+        console.log(`HANG ${err.message}`)
+        hung = true
+        return { bad: err.message }
+      }
+    })
     const rust = await side(c, async (cc, dir) => {
-      const line = JSON.parse(await probe.run(dir, cc, group.batch)) as Record<string, unknown>
+      let answer: string
+      try {
+        answer = await withDeadline(where('rust'), CASE_TIMEOUT_MS, probe.run(dir, cc, group.batch))
+      } catch (err) {
+        if (!(err instanceof Hang)) throw err
+        console.log(`HANG ${err.message}`)
+        hung = true
+        // the probe is stuck inside the case: nothing more can run on it
+        probe.kill()
+        return { bad: `${err.message}; ipc-probe stderr: ${probe.stderrTail()}` }
+      }
+      const line = JSON.parse(answer) as Record<string, unknown>
       // the TypeScript's JSON.stringify writes numbers as JavaScript does
       return 'calls' in line ? { calls: line.calls, log: line.log } : line
     })
@@ -310,7 +347,14 @@ async function runGroup(name: string): Promise<void> {
     }
     if (!tsRecord.calls || !('calls' in JSON.parse(rust).record)) {
       bad++
-      differences.push({ case: i, note: `BAD ${c.note ?? ''}`, typescript: ts, rust })
+      differences.push({
+        case: i,
+        note: `${hung ? 'HANG' : 'BAD'} ${c.note ?? ''}`,
+        typescript: ts,
+        rust,
+      })
+      // a hang ends the group: it is named, and each further hang would cost its bound again
+      if (hung) break
       continue
     }
     // a deferred invoke's answer is the one its await step settles (coverage.ts)
@@ -367,9 +411,12 @@ async function runGroup(name: string): Promise<void> {
 
 function runEveryGroup(): void {
   let failed = false
+  const listing = process.argv.includes('--list')
   const reports: Record<string, GroupReport> = {}
   for (const name of groupNames()) {
     const groupOut = join(out, ...name.split('/'))
+    // a group's output reaches the log when it ends: this says which one is running
+    if (!listing) console.log(`GROUP ${name} start`)
     const run = spawnSync(
       process.execPath,
       [
@@ -384,17 +431,22 @@ function runEveryGroup(): void {
         env: { ...process.env, IPC_DIFF_OUT: groupOut },
         maxBuffer: 1 << 30,
         stdio: ['ignore', 'pipe', 'inherit'],
+        timeout: GROUP_TIMEOUT_MS,
+        killSignal: 'SIGKILL',
       },
     )
     process.stdout.write(run.stdout)
     if (run.status !== 0) failed = true
+    if ((run.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
+      console.log(`GROUP ${name} was killed: it ran for more than ${GROUP_TIMEOUT_MS / 1000} s`)
+    }
     if (existsSync(join(groupOut, 'report.json'))) {
       reports[name] = JSON.parse(readFileSync(join(groupOut, 'report.json'), 'utf8')).report
-    } else if (!process.argv.includes('--list')) {
+    } else if (!listing) {
       console.log(`GROUP ${name} did not finish (${run.status ?? run.signal})`)
     }
   }
-  if (process.argv.includes('--list')) return
+  if (listing) return
   writeFileSync(join(out, 'report.json'), JSON.stringify(reports, null, 2))
   for (const batch of args('--require')) {
     const problems = coverage(batch, Object.values(reports), ELECTRON_CHANNELS)

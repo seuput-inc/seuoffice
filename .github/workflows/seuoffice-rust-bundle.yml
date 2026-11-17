@@ -126,12 +126,18 @@ jobs:
       - name: Tauri CLI
         working-directory: crates/shell
         run: npm install --no-audit --no-fund
+      - name: Signing identity (macOS, decision 0035)
+        if: matrix.platform == 'mac'
+        working-directory: crates/shell
+        env:
+          MAC_SELF_SIGN_P12: ${{ secrets.MAC_SELF_SIGN_P12 }}
+          MAC_SELF_SIGN_PASSWORD: ${{ secrets.MAC_SELF_SIGN_PASSWORD }}
+        run: ../../.bundle-definition/crates/shell/ci/mac-self-sign.sh
       - name: Package both channels
         working-directory: crates/shell
         env:
           VERSION: ${{ inputs.version }}
           NEXT_VERSION: ${{ inputs.next_version }}
-          APPLE_SIGNING_IDENTITY: '-'
         run: |
           set -euo pipefail
           preflight_first=true
@@ -201,15 +207,13 @@ jobs:
                 profile_preflight
                 node bundle/release-feed.mjs feed --version "$v" --platform win32 "$installer"
               else
-                npx tauri build --config bundle/macos.conf.json --config "{\"version\":\"$v\"}" --bundles app,dmg --verbose -- --locked
+                APPLE_SIGNING_IDENTITY="$SEUOFFICE_MAC_SIGN_IDENTITY" npx tauri build --config bundle/macos.conf.json --config "{\"version\":\"$v\"}" --bundles app,dmg --verbose -- --locked
                 [ "$(find target/release/bundle/macos -maxdepth 1 -name '*.app' -type d | wc -l | tr -d ' ')" = 1 ]
                 [ "$(find target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -type f | wc -l | tr -d ' ')" = 1 ]
                 app=$(find target/release/bundle/macos -maxdepth 1 -name '*.app' -type d)
                 built_dmg=$(find target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -type f)
                 [ "$(lipo -archs "$app/Contents/MacOS/SeuOffice")" = arm64 ]
-                codesign --verify --deep --strict --verbose=2 "$app"
-                signature=$(codesign -dv --verbose=2 "$app" 2>&1)
-                grep -q 'Signature=adhoc' <<<"$signature"
+                ../../.bundle-definition/crates/shell/ci/mac-check-signature.sh "$app"
                 grep -Fxq "channel: $channel" "$app/Contents/Resources/app-update.yml"
                 grep -Fxq 'owner: seuput-inc' "$app/Contents/Resources/app-update.yml"
                 grep -Fxq 'repo: seuoffice' "$app/Contents/Resources/app-update.yml"
@@ -225,15 +229,12 @@ jobs:
                 extracted="$RUNNER_TEMP/extracted-$v-$channel"
                 mkdir -p "$extracted"
                 ditto -x -k "$zip" "$extracted"
-                codesign --verify --deep --strict "$extracted/SeuOffice.app"
-                extracted_signature=$(codesign -dv --verbose=2 "$extracted/SeuOffice.app" 2>&1)
-                grep -q 'Signature=adhoc' <<<"$extracted_signature"
+                ../../.bundle-definition/crates/shell/ci/mac-check-signature.sh "$extracted/SeuOffice.app"
                 grep -Fxq "channel: $channel" "$extracted/SeuOffice.app/Contents/Resources/app-update.yml"
                 mount="$RUNNER_TEMP/mount-$v-$channel"
                 mkdir -p "$mount"
                 hdiutil attach -readonly -nobrowse -mountpoint "$mount" "$dmg"
-                dmg_signature=$(codesign -dv --verbose=2 "$mount/SeuOffice.app" 2>&1)
-                if ! codesign --verify --deep --strict "$mount/SeuOffice.app" || ! grep -q 'Signature=adhoc' <<<"$dmg_signature" || ! grep -Fxq "channel: $channel" "$mount/SeuOffice.app/Contents/Resources/app-update.yml"; then
+                if ! ../../.bundle-definition/crates/shell/ci/mac-check-signature.sh "$mount/SeuOffice.app" || ! grep -Fxq "channel: $channel" "$mount/SeuOffice.app/Contents/Resources/app-update.yml"; then
                   hdiutil detach "$mount"
                   exit 1
                 fi
@@ -252,7 +253,7 @@ jobs:
         run: |
           set -euo pipefail
           signing=unsigned
-          [ '${{ matrix.platform }}' != mac ] || signing=ad-hoc
+          [ '${{ matrix.platform }}' != mac ] || signing=self-signed
           node .bundle-definition/crates/shell/bundle/bundle-manifest.mjs --root "$RUNNER_TEMP/release" --platform '${{ matrix.node_platform }}' --versions "$VERSION $NEXT_VERSION" --source "$SOURCE" --definition "$GITHUB_SHA" --run "$GITHUB_RUN_ID" --signing "$signing"
       - name: Attest the build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8

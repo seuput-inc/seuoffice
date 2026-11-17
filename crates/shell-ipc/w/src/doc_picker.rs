@@ -75,6 +75,8 @@ pub trait DocPickerWindow: Send + Sync {
     /// Creates the window hidden, modal to its parent when given, and loads
     /// the page; its view
     fn create(&self, options: &DocPickerWindowOptions) -> ViewId;
+    /// The window's page invoked `doc-picker:ready` with its current token (once
+    /// for each window): the host reports `window_ready` when it can show it
     fn renderer_ready(&self, view: ViewId);
     fn show(&self);
     fn focus(&self);
@@ -89,6 +91,8 @@ struct State {
     /// the picker window's view; none while there is no window
     view: Option<ViewId>,
     generation: u64,
+    /// the generation `doc-picker:ready` already showed (`shownGeneration`)
+    shown_generation: u64,
     /// the pending `doc:pick-attachments` answer (`settle`)
     settle: Option<Responder>,
     /// the items of the list the window last read; ids are validated against it
@@ -451,10 +455,12 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
         "doc-picker:ready",
         ChannelKind::Invoke,
         move |cx, args| {
-            let state = c.0.lock();
+            let mut state = c.0.lock();
             if state.view == Some(cx.sender.view)
                 && matches!(args.first(), Some(IpcValue::String(token)) if token == &state.generation.to_string())
+                && state.shown_generation != state.generation
             {
+                state.shown_generation = state.generation;
                 c.0.window.renderer_ready(cx.sender.view);
             }
             Ok(IpcValue::Undefined)
