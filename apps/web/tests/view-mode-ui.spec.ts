@@ -214,7 +214,7 @@ async function bodyText(page: Page): Promise<string> {
         const viewer = page.locator('#viewer iframe')
         const documentText = async (): Promise<string> => {
           const text = await bodyText(page)
-          // both indicators: the reading bar's "2 / 5" and the status line's "슬라이드 2/5"
+          // both page indicators: "2 / 5" in the reading bar and "2/5" in the status line
           return format.turns ? text.replace(/\d+ ?\/ ?\d+/g, '') + (await deckText(page)) : text
         }
         const before = await documentText()
