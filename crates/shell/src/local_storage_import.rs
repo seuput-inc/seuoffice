@@ -145,10 +145,8 @@ struct ScratchDir(PathBuf);
 
 impl ScratchDir {
     fn create() -> Result<Self, String> {
-        let path = std::env::temp_dir().join(format!(
-            "seuoffice-ls-import-{}",
-            jscompat::random_uuid()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("seuoffice-ls-import-{}", jscompat::random_uuid()));
         fs::create_dir_all(&path).map_err(|error| format!("{}: {error}", path.display()))?;
         Ok(ScratchDir(path))
     }
@@ -295,7 +293,9 @@ fn parse_cache(text: &str) -> Result<Origins, String> {
         .ok_or("no origins")?;
     let mut origins = Origins::new();
     for (origin, entries) in listed {
-        let entries = entries.as_object().ok_or("an origin that is not an object")?;
+        let entries = entries
+            .as_object()
+            .ok_or("an origin that is not an object")?;
         let mut map = BTreeMap::new();
         for (key, value) in entries {
             let value = value.as_str().ok_or("a value that is not a string")?;
@@ -380,11 +380,17 @@ fn script(origin: &str, entries: &BTreeMap<String, String>) -> Option<String> {
         return None;
     }
     let (scheme, host) = origin.split_once("://")?;
-    let pairs: Vec<Value> = entries.iter().map(|(key, value)| json!([key, value])).collect();
+    let pairs: Vec<Value> = entries
+        .iter()
+        .map(|(key, value)| json!([key, value]))
+        .collect();
     // the entries go in last: nothing in them is looked at for the placeholders
     Some(
         SCRIPT
-            .replace("__PROTOCOL__", &js_literal(&Value::from(format!("{scheme}:"))))
+            .replace(
+                "__PROTOCOL__",
+                &js_literal(&Value::from(format!("{scheme}:"))),
+            )
             .replace("__HOST__", &js_literal(&Value::from(host)))
             .replace("__FLAG__", &js_literal(&Value::from(FLAG_KEY)))
             .replace("__ENTRIES__", &js_literal(&Value::Array(pairs))),
@@ -452,7 +458,10 @@ mod tests {
 
     #[test]
     fn strings_decode_by_their_own_encoding_byte() {
-        assert_eq!(decode_string(&latin1("aidocs.showAi")).unwrap(), "aidocs.showAi");
+        assert_eq!(
+            decode_string(&latin1("aidocs.showAi")).unwrap(),
+            "aidocs.showAi"
+        );
         assert_eq!(decode_string(&[1, 0xe9, 0xff]).unwrap(), "\u{e9}\u{ff}");
         assert_eq!(decode_string(&utf16(SLIDES_KEY)).unwrap(), SLIDES_KEY);
         assert_eq!(decode_string(&utf16("a\u{1f600}")).unwrap(), "a\u{1f600}");
@@ -535,7 +544,11 @@ mod tests {
         for host in RENDERER_HOSTS {
             let electron = format!("genoffice-app://{host}");
             let mapped = map_origin(&electron, Flavor::CURRENT).map(|(origin, _)| origin);
-            assert_eq!(mapped, Some(crate::app_scheme::native_origin(host)), "{host}");
+            assert_eq!(
+                mapped,
+                Some(crate::app_scheme::native_origin(host)),
+                "{host}"
+            );
         }
     }
 
@@ -553,9 +566,16 @@ mod tests {
             "genoffice-app://docs/^0https://evil.example",
             "drawio-app://editor/^0https://evil.example",
         ] {
-            assert_eq!(map_origin(storage_key, Flavor::Scheme), None, "{storage_key}");
+            assert_eq!(
+                map_origin(storage_key, Flavor::Scheme),
+                None,
+                "{storage_key}"
+            );
         }
-        let embedded = map_origin("drawio-app://editor/^0genoffice-app://diagram", Flavor::Scheme);
+        let embedded = map_origin(
+            "drawio-app://editor/^0genoffice-app://diagram",
+            Flavor::Scheme,
+        );
         assert_eq!(embedded, Some(("drawio-app://editor".to_owned(), false)));
     }
 
@@ -567,14 +587,20 @@ mod tests {
             Some(latin1("[1,2]")),
         );
         let dictionary = (
-            db_key("genoffice-app://sheets", latin1("aisheets.spell-dictionary")),
+            db_key(
+                "genoffice-app://sheets",
+                latin1("aisheets.spell-dictionary"),
+            ),
             Some(utf16("[\"안녕\"]")),
         );
         let thumbs = "ai-slides-thumbs-width";
         let default_table = vec![
             (b"VERSION".to_vec(), Some(b"1".to_vec())),
             (b"META:genoffice-app://slides".to_vec(), Some(vec![8, 1])),
-            (b"METAACCESS:genoffice-app://slides".to_vec(), Some(vec![8, 1])),
+            (
+                b"METAACCESS:genoffice-app://slides".to_vec(),
+                Some(vec![8, 1]),
+            ),
             guides,
             put("genoffice-app://slides", thumbs, "180"),
             put("genoffice-app://docs", "aidocs.showAi", "true"),
@@ -588,7 +614,10 @@ mod tests {
             first_sequence: 100,
             ops: vec![
                 put("genoffice-app://slides", thumbs, "240"),
-                (db_key("genoffice-app://docs", latin1("aidocs.showAi")), None),
+                (
+                    db_key("genoffice-app://docs", latin1("aidocs.showAi")),
+                    None,
+                ),
                 put("genoffice-app://pdf", "pdfapp.autoSave", "false"),
             ],
         };
@@ -635,7 +664,10 @@ mod tests {
                 app("slides"),
                 map(&[(SLIDES_KEY, "[1,2]"), ("ai-slides-thumbs-width", "240")]),
             ),
-            (app("sheets"), map(&[("aisheets.spell-dictionary", "[\"안녕\"]")])),
+            (
+                app("sheets"),
+                map(&[("aisheets.spell-dictionary", "[\"안녕\"]")]),
+            ),
             (app("shell"), map(&[("home.sidebarWidth", "300")])),
             (app("help"), map(&[("a", "b")])),
             (app("pdf"), map(&[("pdfapp.autoSave", "false")])),
@@ -683,7 +715,12 @@ mod tests {
         assert_eq!(written["version"], 1);
         let slides = &written["origins"]["genoffice-app-slides://localhost"];
         assert_eq!(slides[SLIDES_KEY], "[1,2]");
-        assert!(!user_data.path().join("localstorage-import-v1.json.tmp").exists());
+        assert!(
+            !user_data
+                .path()
+                .join("localstorage-import-v1.json.tmp")
+                .exists()
+        );
 
         fs::remove_dir_all(user_data.path().join("Local Storage")).unwrap();
         fs::remove_dir_all(user_data.path().join("Partitions")).unwrap();
@@ -764,7 +801,11 @@ mod tests {
         assert!(scripts[1].all_frames);
         assert!(scripts[1].source.contains("DRAWIO-ONLY"));
         assert!(!scripts[1].source.contains("DIAGRAM-ONLY"));
-        assert!(scripts[1].source.contains(r#"location.protocol !== "drawio-app:""#));
+        assert!(
+            scripts[1]
+                .source
+                .contains(r#"location.protocol !== "drawio-app:""#)
+        );
         assert!(scripts[1].source.contains(r#"location.host !== "editor""#));
     }
 
@@ -778,7 +819,10 @@ mod tests {
             "genoffice-app://pdf/index.html",
             "not a url",
         ] {
-            assert!(scripts_for(&origins, page, Flavor::Scheme).is_empty(), "{page}");
+            assert!(
+                scripts_for(&origins, page, Flavor::Scheme).is_empty(),
+                "{page}"
+            );
         }
         let page = "genoffice-app://slides/index.html";
         assert!(scripts_for(&Origins::new(), page, Flavor::Scheme).is_empty());
@@ -789,7 +833,11 @@ mod tests {
         let page = "genoffice-app://slides/index.html";
         let cases = [
             (Flavor::Scheme, "genoffice-app-slides:", "localhost"),
-            (Flavor::LocalhostHttp, "http:", "genoffice-app-slides.localhost"),
+            (
+                Flavor::LocalhostHttp,
+                "http:",
+                "genoffice-app-slides.localhost",
+            ),
         ];
         for (flavor, protocol, host) in cases {
             let scripts = scripts_for(&sample_origins(flavor), page, flavor);

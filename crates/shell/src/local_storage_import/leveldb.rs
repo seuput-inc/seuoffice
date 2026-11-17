@@ -152,7 +152,9 @@ fn read_table_file(dir: &Path, number: u64) -> Result<(String, Vec<u8>), String>
             Err(error) => return Err(format!("{name}: {error}")),
         }
     }
-    Err(format!("the manifest lists table {number:06}, which is missing"))
+    Err(format!(
+        "the manifest lists table {number:06}, which is missing"
+    ))
 }
 
 /// `(number, file name)` of every log in `dir`, oldest first
@@ -299,7 +301,10 @@ fn block_handle(data: &[u8], at: &mut usize) -> Option<(usize, usize)> {
 fn read_block(data: &[u8], (offset, size): (usize, usize)) -> Result<Cow<'_, [u8]>, String> {
     const OUT_OF_RANGE: &str = "a block beyond the file";
     let end = offset.checked_add(size).ok_or(OUT_OF_RANGE)?;
-    if end.checked_add(BLOCK_TRAILER_LEN).is_none_or(|n| n > data.len()) {
+    if end
+        .checked_add(BLOCK_TRAILER_LEN)
+        .is_none_or(|n| n > data.len())
+    {
         return Err(OUT_OF_RANGE.to_owned());
     }
     let raw = &data[offset..end];
@@ -336,12 +341,12 @@ fn for_each_entry(
     let mut key: Vec<u8> = Vec::new();
     let mut at = 0;
     while at < entries.len() {
-        let shared = usize::try_from(varint(entries, &mut at).ok_or(MALFORMED)?)
-            .map_err(|_| MALFORMED)?;
-        let added = usize::try_from(varint(entries, &mut at).ok_or(MALFORMED)?)
-            .map_err(|_| MALFORMED)?;
-        let value_len = usize::try_from(varint(entries, &mut at).ok_or(MALFORMED)?)
-            .map_err(|_| MALFORMED)?;
+        let shared =
+            usize::try_from(varint(entries, &mut at).ok_or(MALFORMED)?).map_err(|_| MALFORMED)?;
+        let added =
+            usize::try_from(varint(entries, &mut at).ok_or(MALFORMED)?).map_err(|_| MALFORMED)?;
+        let value_len =
+            usize::try_from(varint(entries, &mut at).ok_or(MALFORMED)?).map_err(|_| MALFORMED)?;
         if shared > key.len() {
             return Err(MALFORMED.to_owned());
         }
@@ -474,10 +479,7 @@ mod tests {
     fn batch(first_sequence: u64, ops: &[(&str, Option<&str>)]) -> Batch {
         Batch {
             first_sequence,
-            ops: ops
-                .iter()
-                .map(|(k, v)| (key(k), v.map(key)))
-                .collect(),
+            ops: ops.iter().map(|(k, v)| (key(k), v.map(key))).collect(),
         }
     }
 
@@ -525,7 +527,10 @@ mod tests {
                     ],
                     batches: vec![
                         batch(30, &[("a", Some("newest")), ("c", None)]),
-                        batch(40, &[("f", Some("logged")), ("e", None), ("e", Some("e-new"))]),
+                        batch(
+                            40,
+                            &[("f", Some("logged")), ("e", None), ("e", Some("e-new"))],
+                        ),
                     ],
                     ..Fixture::default()
                 },
@@ -592,7 +597,10 @@ mod tests {
         fs::write(&log, &bytes[..bytes.len() - 4]).unwrap();
         let live = read_live(dir.path()).unwrap();
         assert_eq!(live.get(&key("small")), Some(&key("one")));
-        assert_eq!(live.get(&key("big")).map(Vec::as_slice), Some(big.as_bytes()));
+        assert_eq!(
+            live.get(&key("big")).map(Vec::as_slice),
+            Some(big.as_bytes())
+        );
         assert!(!live.contains_key(&key("torn")));
     }
 

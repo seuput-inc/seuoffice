@@ -73,7 +73,11 @@ pub fn write_db(dir: &Path, fixture: &Fixture) {
         fs::write(dir.join(format!("{:06}.ldb", spec.number)), &bytes).unwrap();
         new_files.push((spec.number, bytes.len() as u64));
     }
-    fs::write(dir.join("000009.log"), build_log(&encode_batches(&fixture.batches))).unwrap();
+    fs::write(
+        dir.join("000009.log"),
+        build_log(&encode_batches(&fixture.batches)),
+    )
+    .unwrap();
     if !fixture.stale_log.is_empty() {
         fs::write(
             dir.join("000003.log"),
