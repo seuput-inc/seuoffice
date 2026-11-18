@@ -88,8 +88,15 @@ function check(label, command, commandArgs, options = {}) {
   if (run.status !== 0) failed.push(label)
 }
 
-check('formatting', process.execPath, ['tools/format-changed.mjs', '--check', '--base', mergeBase])
-check('comments', process.execPath, ['tools/check-english-comments.mjs'])
+// node itself needs no shell, and through one a path with a space (C:\Program Files) breaks
+const direct = { shell: false }
+check(
+  'formatting',
+  process.execPath,
+  ['tools/format-changed.mjs', '--check', '--base', mergeBase],
+  direct,
+)
+check('comments', process.execPath, ['tools/check-english-comments.mjs'], direct)
 
 const lintable = changed.filter((f) => /\.(c|m)?[jt]sx?$/.test(f))
 if (lintable.length > 0) check('lint', 'npx', ['eslint', '--no-warn-ignored', '--', ...lintable])
