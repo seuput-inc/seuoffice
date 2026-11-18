@@ -2,8 +2,9 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::{Arc, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, OnceLock, mpsc};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use shell_contract::Hosts;
 use shell_contract::ipc::{RegisterError, Registry};
@@ -13,6 +14,7 @@ use shell_ipc_w::editor_files::{Clock, ClockHost};
 use shell_ipc_w::tabs::TabHooks;
 
 use super::HostContext;
+use crate::trace::trace;
 
 /// `Date.now()`
 struct SystemClock;
@@ -39,19 +41,58 @@ thread_local! {
 /// The shell's services, once the batches registered with them
 static SERVICES: OnceLock<Services> = OnceLock::new();
 
+/// The first UI-thread waits for the core thread that are traced, see [`on_core`]
+const UI_WAITS_TRACED: u32 = 40;
+static UI_WAITS: AtomicU32 = AtomicU32::new(0);
+
 /// Runs `job` with the core thread's [`Provided`]: at once on the core
 /// thread, else through `run_on(core, ..)`. `None` before the batches registered.
 #[allow(dead_code)]
+#[track_caller]
 pub(crate) fn on_core<R: Send + 'static>(
     job: impl FnOnce(&Provided) -> R + Send + 'static,
 ) -> Option<R> {
     let core = SERVICES.get()?.core.clone();
     let run = move || CORE_PROVIDED.with(|p| p.borrow().as_deref().map(job));
     if core.is_current() {
-        run()
-    } else {
-        run_on(core.as_ref(), run)
+        return run();
     }
+    // the core thread blocks on the UI thread while it builds a view: a UI thread that waits for
+    // the core thread at that moment is a deadlock, so every such wait is named in the trace
+    if crate::trace::enabled()
+        && crate::native::defer::is_ui_thread()
+        && UI_WAITS.fetch_add(1, Ordering::Relaxed) < UI_WAITS_TRACED
+    {
+        let at = std::panic::Location::caller();
+        trace!(
+            "uiwait",
+            "the UI thread waits for the core thread at {}:{}",
+            at.file(),
+            at.line()
+        );
+    }
+    run_on(core.as_ref(), run)
+}
+
+/// [`on_core`] for a caller that must not wait for ever: `Err` when the core thread did not
+/// answer within `timeout` (it is stuck in a job, or it dropped this one). The job still runs
+/// when the core gets to it; only its answer is abandoned.
+pub(crate) fn on_core_within<R: Send + 'static>(
+    timeout: Duration,
+    job: impl FnOnce(&Provided) -> R + Send + 'static,
+) -> Result<Option<R>, mpsc::RecvTimeoutError> {
+    let Some(core) = SERVICES.get().map(|services| services.core.clone()) else {
+        return Ok(None);
+    };
+    let run = move || CORE_PROVIDED.with(|p| p.borrow().as_deref().map(job));
+    if core.is_current() {
+        return Ok(run());
+    }
+    let (send, receive) = mpsc::sync_channel(1);
+    core.post(Box::new(move || {
+        let _ = send.send(run());
+    }));
+    receive.recv_timeout(timeout)
 }
 
 /// The core thread's shared [`Provided`]; `None` off the core thread or before registration.

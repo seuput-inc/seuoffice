@@ -14,6 +14,46 @@ export interface NativeChannelContract {
   }
 }
 
+/**
+ * A renderer's acknowledgement of a recovery copy or a saved input the native
+ * shell handed it. The Electron main process registers no handler for any of
+ * them (the renderer's call answers "No handler registered" there): only the
+ * Rust shell waits for the acknowledgement, so no Electron case can compare it.
+ */
+function rendererAck(
+  name: string,
+  batch: 'D1' | 'D2',
+  handler: string,
+  what: string,
+  args: readonly string[],
+  suite: string,
+  sourceCases: NativeChannelContract['synthetic']['sourceCases'],
+): NativeChannelContract {
+  return {
+    name,
+    kinds: ['invoke'],
+    batch,
+    surfaces: [name.split(':')[0]!],
+    handler,
+    reason: `The renderer acknowledges ${what} the native shell handed it; the native wait settles on that exact acknowledgement. The Electron main process registers no handler for this channel.`,
+    arguments: args,
+    requiredScenarios: [
+      'successful-ack',
+      'failed-apply',
+      'missing-receipt',
+      'foreign-receipt',
+      'foreign-renderer',
+      'duplicate-ack',
+      'unauthorized-surface',
+    ],
+    synthetic: { suite, sourceCases },
+  }
+}
+
+const RECOVERY_COPY = 'its exact recovery receipt after applying the recovery copy'
+const RECOVERY_APPLIED = 'the recovery copy it applied'
+const SAVED_INPUT = 'the saved input it applied'
+
 export const NATIVE_CHANNEL_CONTRACTS: readonly NativeChannelContract[] = [
   {
     name: 'docs:owned-print-pdf-buffer',
@@ -157,4 +197,127 @@ export const NATIVE_CHANNEL_CONTRACTS: readonly NativeChannelContract[] = [
       ],
     },
   },
+  rendererAck(
+    'diagram:recovery-initialized',
+    'D1',
+    'crates/shell-ipc/d1/src/diagram/mod.rs',
+    RECOVERY_COPY,
+    ['token', 'ok', 'error?'],
+    'crates/shell-ipc/d1/src/diagram/tests.rs',
+    [
+      {
+        name: 'recovery_file_waits_for_exact_renderer_and_initialized_ack',
+        scenarios: ['successful-ack', 'foreign-renderer'],
+      },
+    ],
+  ),
+  rendererAck(
+    'mindmap:recovery-initialized',
+    'D1',
+    'crates/shell-ipc/d1/src/mindmap/handlers.rs',
+    RECOVERY_COPY,
+    ['token', 'ok', 'error?'],
+    'crates/shell-ipc/d1/src/mindmap/tests.rs',
+    [],
+  ),
+  rendererAck(
+    'slides:recovery-initialized',
+    'D1',
+    'crates/shell-ipc/d1/src/slides/mod.rs',
+    RECOVERY_COPY,
+    ['token', 'ok', 'error?'],
+    'crates/shell-ipc/d1/src/slides/tests.rs',
+    [{ name: 'selected_recovery_decision_opens_the_selected_deck', scenarios: ['successful-ack'] }],
+  ),
+  rendererAck(
+    'docs:recovery-initialized',
+    'D2',
+    'crates/shell-ipc/d2/src/docs/open.rs',
+    RECOVERY_COPY,
+    ['receipt', 'ok', 'error?'],
+    'crates/shell-ipc/d2/src/docs/tests.rs',
+    [
+      {
+        name: 'blank_recovery_waits_for_authenticated_renderer_initialization',
+        scenarios: ['successful-ack', 'foreign-renderer'],
+      },
+      {
+        name: 'captured_recovery_waits_for_real_copy_preparation_before_navigation',
+        scenarios: ['successful-ack'],
+      },
+    ],
+  ),
+  rendererAck(
+    'epub:recovery-initialized',
+    'D2',
+    'crates/shell-ipc/d2/src/epub/mod.rs',
+    RECOVERY_COPY,
+    ['receipt', 'ok', 'error?'],
+    'crates/shell-ipc/d2/src/epub/tests.rs',
+    [
+      {
+        name: 'native_recovery_requires_the_registered_renderer_and_real_book_before_ack',
+        scenarios: ['successful-ack', 'foreign-renderer'],
+      },
+      {
+        name: 'native_recovery_refusal_settles_failure_without_a_book',
+        scenarios: ['failed-apply'],
+      },
+    ],
+  ),
+  rendererAck(
+    'hwp:recovery-initialized',
+    'D2',
+    'crates/shell-ipc/d2/src/hwp/editor.rs',
+    RECOVERY_COPY,
+    ['token', 'result'],
+    'crates/shell-ipc/d2/src/hwp/editor/tests.rs',
+    [
+      {
+        name: 'recovery_receipt_waits_for_the_matching_initialized_document',
+        scenarios: ['successful-ack', 'foreign-receipt'],
+      },
+    ],
+  ),
+  rendererAck(
+    'html:recovery-applied',
+    'D2',
+    'crates/shell-ipc/d2/src/html/mod.rs',
+    RECOVERY_APPLIED,
+    ['result'],
+    'crates/shell-ipc/d2/src/html/tests.rs',
+    [
+      {
+        name: 'recovery_restore_reads_before_load_and_delivers_only_to_reserved_renderer',
+        scenarios: ['successful-ack', 'foreign-renderer'],
+      },
+    ],
+  ),
+  rendererAck(
+    'html:saved-input-applied',
+    'D2',
+    'crates/shell-ipc/d2/src/html/mod.rs',
+    SAVED_INPUT,
+    ['result'],
+    'crates/shell-ipc/d2/src/html/tests.rs',
+    [],
+  ),
+  rendererAck(
+    'markdown:recovery-applied',
+    'D2',
+    'crates/shell-ipc/d2/src/markdown/mod.rs',
+    RECOVERY_APPLIED,
+    ['result'],
+    'crates/shell-ipc/d2/src/markdown/tests.rs',
+    [],
+  ),
+  rendererAck(
+    'markdown:saved-input-applied',
+    'D2',
+    'crates/shell-ipc/d2/src/markdown/mod.rs',
+    SAVED_INPUT,
+    ['result'],
+    'crates/shell-ipc/d2/src/markdown/tests.rs',
+    [],
+  ),
 ]

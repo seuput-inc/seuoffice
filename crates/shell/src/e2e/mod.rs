@@ -16,13 +16,16 @@
 //! installed app, profile or keychain can never be the target.
 //!
 //! Exit codes: 0 when every step ran, 2 when the run was refused (profile, flags, scenario),
-//! 3 when a step could not run (the runner stops there), 124 past the scenario's deadline.
+//! 3 when a step could not run (the runner stops there; the core thread not answering for 90 s
+//! is such a step), 124 past the scenario's deadline, which counts from the process start. A
+//! stalled run leaves what the process was doing in the run log's trace and, on macOS, in
+//! `<out>/hang-<core-stalled|deadline>.txt` (the system `sample` of every thread).
 //!
 //! | op | how |
 //! |---|---|
 //! | `open` | `host::os::open_paths`, the path of macOS open-file events and the single-instance argv |
 //! | `newDocument` | `ShellTabs::new_document`, as the Home tiles and the New menu do |
-//! | `waitReady` | the active tab's document reached the bridge's render-ready state, then the page is quiet |
+//! | `waitReady` | the tab of the file `open` named (after `newDocument`: a tab other than the one before) is active and its document reached the bridge's render-ready state, then the page is quiet |
 //! | `type`, `shortcut`, `ime` | native key events (`input_mac.rs`, `input_win.rs`) |
 //! | `clipboard` | the OS clipboard on the UI thread |
 //! | `query` | `PageOps::evaluate` on the active editor's webview; no new IPC channel exists |
@@ -45,6 +48,8 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::host::HostContext;
+use crate::host::w::on_core_within;
+use crate::trace::trace;
 
 /// The file the workflow puts in its throwaway profile folder
 pub const PROFILE_MARKER: &str = ".seuoffice-e2e-profile";
@@ -52,6 +57,13 @@ pub const PROFILE_MARKER: &str = ".seuoffice-e2e-profile";
 const EXIT_REFUSED: i32 = 2;
 const EXIT_UNRUNNABLE: i32 = 3;
 const EXIT_DEADLINE: i32 = 124;
+/// how long the runner leaves the event loop to end the process before it ends it itself
+const EXIT_GRACE: Duration = Duration::from_secs(30);
+/// `sample` takes three seconds of samples; a longer wait means it is stuck itself
+#[cfg(target_os = "macos")]
+const SAMPLE_WAIT: Duration = Duration::from_secs(30);
+/// the core watch calls the core thread late after this
+const CORE_LATE: Duration = Duration::from_secs(10);
 
 const USER_DATA_ENV: &str = "SEUOFFICE_USER_DATA";
 const PARTIAL_ENV: &str = "SEUOFFICE_SHELL_PARTIAL";
@@ -91,6 +103,9 @@ pub fn init() {
         }
     };
     let _ = LOADED.set(loaded);
+    if let Some(loaded) = LOADED.get().and_then(Option::as_ref) {
+        start_deadline(Duration::from_millis(loaded.scenario.deadline_ms));
+    }
 }
 
 fn load(args: &[String]) -> Result<Option<Loaded>, String> {
@@ -179,8 +194,8 @@ pub fn run(context: &HostContext) -> Result<(), String> {
         return Ok(());
     };
     let report = report::Report::create(&loaded.request.out)?;
-    let deadline = Duration::from_millis(loaded.scenario.deadline_ms);
     let context = context.clone();
+    watch_core();
     std::thread::Builder::new()
         .name("e2e".into())
         .spawn(move || {
@@ -192,9 +207,52 @@ pub fn run(context: &HostContext) -> Result<(), String> {
                 EXIT_UNRUNNABLE
             });
             context.app.exit(code);
+            // an event loop that no longer runs jobs never gets to the exit above; the run's
+            // own code must still be the one the process ends with
+            std::thread::sleep(EXIT_GRACE);
+            std::process::exit(code);
         })
-        .map_err(|error| error.to_string())?;
-    std::thread::Builder::new()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+/// A core thread that stops answering is what every hang of the first real runs looked like
+/// from outside. [`core_watch`] asks it every second and writes the first late answer into the
+/// trace, with the IPC handler it was inside and, on macOS, the stacks of the process.
+fn watch_core() {
+    let spawned = std::thread::Builder::new()
+        .name("e2e-core-watch".into())
+        .spawn(core_watch);
+    if let Err(error) = spawned {
+        eprintln!("shell: e2e: cannot start the core watch: {error}");
+    }
+}
+
+fn core_watch() {
+    let mut late = false;
+    loop {
+        std::thread::sleep(Duration::from_secs(1));
+        let answered = on_core_within(CORE_LATE, |_| ()).is_ok();
+        if !answered && !late {
+            late = true;
+            let inside =
+                crate::ipc::in_flight().unwrap_or_else(|| "no traced IPC handler".to_owned());
+            trace!(
+                "e2e",
+                "the core thread did not answer within {CORE_LATE:?} (inside {inside})"
+            );
+            capture_stacks("core-late");
+        } else if answered && late {
+            late = false;
+            trace!("e2e", "the core thread answers again");
+        }
+    }
+}
+
+/// The deadline counts from the process start, not from the first window: a start that hangs
+/// before any window is up (the runner is not there yet) ends here too, with its stacks.
+fn start_deadline(deadline: Duration) {
+    let spawned = std::thread::Builder::new()
         .name("e2e-deadline".into())
         .spawn(move || {
             std::thread::sleep(deadline);
@@ -202,10 +260,64 @@ pub fn run(context: &HostContext) -> Result<(), String> {
                 "shell: e2e: past the deadline of {} ms",
                 deadline.as_millis()
             );
+            capture_stacks("deadline");
             std::process::exit(EXIT_DEADLINE);
-        })
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+        });
+    if let Err(error) = spawned {
+        eprintln!("shell: e2e: cannot start the deadline thread: {error}");
+        std::process::exit(EXIT_REFUSED);
+    }
+}
+
+/// What every thread of this process is doing, for a run that stopped answering. On macOS the
+/// system `sample` tool writes `<out>/hang-<tag>.txt` (threads are named, so the core thread,
+/// the UI thread and the runner can be told apart). Windows cannot read another thread's stack
+/// from inside the process; the trace lines of the run log are then the evidence.
+pub(super) fn capture_stacks(tag: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::{Command, Stdio};
+        use std::time::Instant;
+        let Some(request) = request() else {
+            return;
+        };
+        let _ = std::fs::create_dir_all(&request.out);
+        let file = request.out.join(format!("hang-{tag}.txt"));
+        let child = Command::new("/usr/bin/sample")
+            .arg(std::process::id().to_string())
+            .args(["3", "-file"])
+            .arg(&file)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        let mut child = match child {
+            Ok(child) => child,
+            Err(error) => {
+                eprintln!("shell: e2e: cannot run sample: {error}");
+                return;
+            }
+        };
+        let end = Instant::now() + SAMPLE_WAIT;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    eprintln!("shell: e2e: sample ended ({status}): {}", file.display());
+                    return;
+                }
+                Ok(None) if Instant::now() < end => {
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                _ => {
+                    let _ = child.kill();
+                    eprintln!("shell: e2e: sample did not finish within {SAMPLE_WAIT:?}");
+                    return;
+                }
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    eprintln!("shell: e2e: no stack capture on this platform ({tag}); the trace is the evidence");
 }
 
 #[cfg(test)]

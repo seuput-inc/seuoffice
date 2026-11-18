@@ -311,7 +311,7 @@ const cases: Case[] = [
     ],
   },
   {
-    note: 'off is for a vendor CLI and a real boolean',
+    note: 'off is for a vendor CLI and a real boolean; only home turns a CLI off',
     views,
     files: folder,
     hosts: sub({}),
@@ -320,6 +320,12 @@ const cases: Case[] = [
       docs('ai:subscription-off', { provider: 'codex', off: 'true' }),
       docs('ai:subscription-off', { provider: 'bogus', off: true }),
       docs('ai:subscription-off'),
+      shell('ai:subscription-off', { provider: 'chatgpt', off: true }),
+      shell('ai:subscription-off', { provider: 'codex', off: 'true' }),
+      shell('ai:subscription-off', { provider: 'codex', off: true }),
+      shell('ai:subscription-statuses'),
+      shell('ai:subscription-off', { provider: 'codex', off: false }),
+      shell('ai:subscription-off'),
     ],
   },
   {
@@ -347,7 +353,7 @@ const cases: Case[] = [
     ],
   },
   {
-    note: 'logout: ChatGPT forgets its connection and is looked at again; others are invalid when unknown',
+    note: 'logout: ChatGPT forgets its connection and is looked at again; others are invalid when unknown; only home logs out (a ChatGPT logout from home writes a new random host id)',
     views,
     files: folder,
     hosts: sub({ detections: { chatgpt: { state: 'signed-out' } } }),
@@ -355,6 +361,8 @@ const cases: Case[] = [
       docs('ai:subscription-logout', provider('chatgpt')),
       docs('ai:subscription-logout', provider('bogus')),
       docs('ai:subscription-logout', provider('codex')),
+      shell('ai:subscription-logout', provider('bogus')),
+      shell('ai:subscription-logout'),
     ],
   },
   {
@@ -380,7 +388,7 @@ const cases: Case[] = [
     calls: [docs('ai:subscription-codex-image')],
   },
   {
-    note: 'the install help opens the vendor page in the system browser; an unknown provider opens nothing',
+    note: 'the install help opens the vendor page in the system browser; an unknown provider opens nothing; Docs has no install help',
     views,
     files: folder,
     hosts: sub({}),
@@ -390,6 +398,7 @@ const cases: Case[] = [
       shell('home:open-subscription-install-help', 'chatgpt'),
       shell('home:open-subscription-install-help', 'bogus'),
       shell('home:open-subscription-install-help'),
+      docs('home:open-subscription-install-help', 'codex'),
     ],
   },
 ]

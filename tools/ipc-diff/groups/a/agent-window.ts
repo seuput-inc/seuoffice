@@ -513,7 +513,8 @@ const cases: Case[] = [
   {
     note: 'project prefs: relative folders are refused, the choices are remembered and normalized',
     views,
-    files: folders,
+    // the choices are written to userData/app-settings.json: the folder is there
+    files: { ...folders, 'userData/.keep': '' },
     hosts: agent(),
     calls: [
       call('agent-window:get-project-prefs', ['relative/folder']),

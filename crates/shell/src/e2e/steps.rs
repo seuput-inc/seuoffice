@@ -9,7 +9,7 @@
 
 use std::fs;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -24,9 +24,10 @@ use super::scenario::{Scenario, Shortcut, Step, typed_keys};
 use crate::host::HostContext;
 use crate::host::contents::page_error_text;
 use crate::host::shell_tabs::shell_tabs;
-use crate::host::w::on_core;
+use crate::host::w::on_core_within;
 use crate::native::document::Life;
 use crate::native::{CaptureSpec, QuietSpec, WebviewExt};
+use crate::trace::trace;
 
 #[cfg(target_os = "macos")]
 use super::input_mac as input;
@@ -36,9 +37,8 @@ use super::input_win as input;
 const POLL: Duration = Duration::from_millis(50);
 /// the shell window and its first tab are up within this, or nothing can run
 const SHELL_START_TIMEOUT: Duration = Duration::from_secs(120);
-/// an `open` of a file that is already open only switches to its tab, which `waitReady` cannot
-/// tell from a tab that has not opened yet: it stops waiting for a switch after this
-const SWITCH_GRACE: Duration = Duration::from_secs(4);
+/// the core thread answers the runner's questions within this, or it is stuck in a job
+const CORE_STALL: Duration = Duration::from_secs(90);
 const QUIET_FOR_MS: u32 = 500;
 const QUIET_TIMEOUT_MS: u32 = 10_000;
 /// a file written by an export must keep its size this long before it counts as complete
@@ -53,6 +53,14 @@ enum StepError {
     Unrunnable(String),
 }
 
+impl StepError {
+    fn into_text(self) -> String {
+        match self {
+            Self::Failed(text) | Self::Unrunnable(text) => text,
+        }
+    }
+}
+
 fn failed(message: impl ToString) -> StepError {
     StepError::Failed(message.to_string())
 }
@@ -63,6 +71,23 @@ fn unrunnable(message: impl ToString) -> StepError {
 
 type StepResult = Result<Option<Value>, StepError>;
 
+/// The active tab as the shell's tab state names it
+struct Active {
+    view: ViewId,
+    kind: &'static str,
+    title: Option<String>,
+    file: Option<String>,
+}
+
+impl Active {
+    fn describe(&self) -> String {
+        format!(
+            "{} view {} title {:?} file {:?}",
+            self.kind, self.view.0, self.title, self.file
+        )
+    }
+}
+
 /// The active tab's editor: its view, webview and the window that holds it
 struct Target {
     kind: &'static str,
@@ -70,10 +95,12 @@ struct Target {
     window: Window,
 }
 
-/// A tab that `open` or `newDocument` is about to bring up
-struct TabSwitch {
-    from: Option<ViewId>,
-    since: Instant,
+/// The tab that `open` or `newDocument` is about to bring up, and how `waitReady` knows it
+enum TabSwitch {
+    /// the tab of this file, whether it opens now or was open already
+    File(PathBuf),
+    /// a new document has no file: any tab but the one that was active (`None`: none was)
+    Other(Option<ViewId>),
 }
 
 struct Runner<'a> {
@@ -96,6 +123,7 @@ pub(super) fn execute(context: &HostContext, scenario: &Scenario, report: &Repor
     }
     for (index, step) in scenario.steps.iter().enumerate() {
         let started = Instant::now();
+        trace!("e2e", "step {index} ({}) begins", step.op());
         let mut record = StepRecord {
             step: index,
             op: step.op(),
@@ -120,6 +148,13 @@ pub(super) fn execute(context: &HostContext, scenario: &Scenario, report: &Repor
         }
         let outcome = runner.run(step);
         record.ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        trace!(
+            "e2e",
+            "step {index} ({}) ended after {} ms, ok {}",
+            record.op,
+            record.ms,
+            outcome.is_ok()
+        );
         let stop = matches!(outcome, Err(StepError::Unrunnable(_)));
         if before_quit {
             if let Err(StepError::Failed(error) | StepError::Unrunnable(error)) = &outcome {
@@ -154,15 +189,37 @@ pub(super) fn execute(context: &HostContext, scenario: &Scenario, report: &Repor
 }
 
 impl Runner<'_> {
-    /// The active tab's view and kind. On the core thread, where the tab state lives.
-    fn active(&self) -> Option<(ViewId, &'static str)> {
-        on_core(|provided| {
+    /// The active tab. On the core thread, where the tab state lives; a core that does not
+    /// answer ends the run there, with the stacks of the process, instead of leaving it to the
+    /// scenario's deadline.
+    fn active(&self) -> Result<Option<Active>, StepError> {
+        let asked = on_core_within(CORE_STALL, |provided| {
             let tabs = shell_tabs(provided)?;
             let kind = tabs.menu_kind()?;
             let view = tabs.active_editor(kind)?;
-            Some((view, kind.as_str()))
-        })
-        .flatten()
+            let (title, file) = tabs
+                .describe_view(view)
+                .map_or((None, None), |(title, file)| (Some(title), file));
+            Some(Active {
+                view,
+                kind: kind.as_str(),
+                title,
+                file,
+            })
+        });
+        match asked {
+            Ok(active) => Ok(active.flatten()),
+            Err(_) => {
+                let inside = crate::ipc::in_flight()
+                    .unwrap_or_else(|| "no traced IPC handler".to_owned());
+                let message = format!(
+                    "the core thread did not answer within {CORE_STALL:?} (inside {inside})"
+                );
+                trace!("e2e", "{message}");
+                super::capture_stacks("core-stalled");
+                Err(unrunnable(message))
+            }
+        }
     }
 
     fn webview_of(&self, view: ViewId) -> Result<Webview, String> {
@@ -178,13 +235,13 @@ impl Runner<'_> {
     }
 
     fn target(&self) -> Result<Target, StepError> {
-        let (view, kind) = self
-            .active()
+        let active = self
+            .active()?
             .ok_or_else(|| failed("there is no active tab"))?;
-        let webview = self.webview_of(view).map_err(failed)?;
+        let webview = self.webview_of(active.view).map_err(failed)?;
         let window = webview.window();
         Ok(Target {
-            kind,
+            kind: active.kind,
             webview,
             window,
         })
@@ -223,8 +280,8 @@ impl Runner<'_> {
     fn wait_shell(&self) -> Result<(), String> {
         let deadline = Instant::now() + SHELL_START_TIMEOUT;
         loop {
-            if let Some((view, _)) = self.active()
-                && let Ok(webview) = self.webview_of(view)
+            if let Some(active) = self.active().map_err(StepError::into_text)?
+                && let Ok(webview) = self.webview_of(active.view)
                 && Self::is_ready(&webview)
             {
                 return Ok(());
@@ -238,35 +295,53 @@ impl Runner<'_> {
         }
     }
 
-    fn begin_switch(&mut self) {
-        self.switch = Some(TabSwitch {
-            from: self.active().map(|(view, _)| view),
-            since: Instant::now(),
+    /// `open` waits for the tab of its file, `newDocument` for any tab but the one that was
+    /// active. A tab that was already showing the file counts: opening it only switches to it.
+    fn begin_switch(&mut self, file: Option<PathBuf>) -> Result<(), StepError> {
+        self.switch = Some(match file {
+            Some(path) => TabSwitch::File(path),
+            None => TabSwitch::Other(self.active()?.map(|active| active.view)),
         });
+        Ok(())
+    }
+
+    fn is_wanted(&self, active: &Active) -> bool {
+        match &self.switch {
+            None => true,
+            Some(TabSwitch::File(expected)) => active
+                .file
+                .as_deref()
+                .is_some_and(|file| same_file(file, expected)),
+            Some(TabSwitch::Other(from)) => *from != Some(active.view),
+        }
     }
 
     fn wait_ready(&mut self, timeout: Duration) -> StepResult {
         let deadline = Instant::now() + timeout;
+        let mut last = None;
         loop {
-            if let Some((view, kind)) = self.active() {
-                let switched = self.switch.as_ref().is_none_or(|switch| {
-                    switch.from != Some(view) || switch.since.elapsed() >= SWITCH_GRACE
-                });
-                if switched
-                    && let Ok(webview) = self.webview_of(view)
+            if let Some(active) = self.active()? {
+                if self.is_wanted(&active)
+                    && let Ok(webview) = self.webview_of(active.view)
                     && Self::is_ready(&webview)
                 {
                     self.switch = None;
                     let quiet = Self::settle(&webview);
-                    return Ok(Some(
-                        json!({ "kind": kind, "view": view.0, "quiet": quiet }),
-                    ));
+                    return Ok(Some(json!({
+                        "kind": active.kind,
+                        "view": active.view.0,
+                        "title": active.title,
+                        "file": active.file,
+                        "quiet": quiet,
+                    })));
                 }
+                last = Some(active);
             }
             if Instant::now() >= deadline {
                 return Err(failed(format!(
-                    "the active tab's document was not ready within {} ms",
-                    timeout.as_millis()
+                    "the active tab's document was not ready within {} ms (active tab: {})",
+                    timeout.as_millis(),
+                    last.as_ref().map_or_else(|| "none".to_owned(), Active::describe)
                 )));
             }
             sleep(POLL);
@@ -279,19 +354,22 @@ impl Runner<'_> {
                 if !path.exists() {
                     return Err(failed(format!("{} does not exist", path.display())));
                 }
-                self.begin_switch();
+                self.begin_switch(Some(path.clone()))?;
                 crate::host::os::open_paths(vec![path.to_string_lossy().into_owned()], true);
                 Ok(Some(json!({ "path": path.display().to_string() })))
             }
             Step::NewDocument { kind } => {
-                self.begin_switch();
+                self.begin_switch(None)?;
                 let home_kind = kind.home_kind();
-                let created = on_core(move |provided| {
+                let created = on_core_within(CORE_STALL, move |provided| {
                     shell_tabs(provided).is_some_and(|tabs| tabs.new_document(home_kind))
                 });
                 match created {
-                    Some(true) => Ok(Some(json!({ "kind": home_kind }))),
-                    _ => Err(failed(format!("the shell cannot create a {home_kind} tab"))),
+                    Ok(Some(true)) => Ok(Some(json!({ "kind": home_kind }))),
+                    Ok(_) => Err(failed(format!("the shell cannot create a {home_kind} tab"))),
+                    Err(_) => Err(unrunnable(format!(
+                        "the core thread did not answer within {CORE_STALL:?}"
+                    ))),
                 }
             }
             Step::WaitReady { timeout_ms } => self.wait_ready(Duration::from_millis(*timeout_ms)),
@@ -426,6 +504,12 @@ impl Runner<'_> {
     }
 }
 
+/// Whether the tab's file is the one `open` named, both as the file system resolves them
+fn same_file(tab: &str, expected: &Path) -> bool {
+    let resolved = |path: &Path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    resolved(Path::new(tab)) == resolved(expected)
+}
+
 /// The app window as a PNG, through the screen capture crate the shell already uses
 fn capture_window(window_id: u32, path: &Path) -> Result<(), String> {
     let windows = xcap::Window::all().map_err(|error| error.to_string())?;
@@ -526,6 +610,20 @@ mod tests {
         let folder = scratch("missing");
         let error = wait_for_pdf(&folder.join("none.pdf"), Duration::from_millis(300)).unwrap_err();
         assert!(error.contains("no PDF appeared"), "{error}");
+        fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
+    fn a_tab_file_matches_the_opened_path_however_it_is_spelled() {
+        let folder = scratch("same");
+        let file = folder.join("a.drawio");
+        let other = folder.join("b.drawio");
+        fs::write(&file, b"x").unwrap();
+        fs::write(&other, b"x").unwrap();
+        let detour = folder.join(".").join("a.drawio");
+        assert!(same_file(&detour.to_string_lossy(), &file));
+        assert!(!same_file(&other.to_string_lossy(), &file));
+        assert!(!same_file("", &file));
         fs::remove_dir_all(&folder).unwrap();
     }
 }

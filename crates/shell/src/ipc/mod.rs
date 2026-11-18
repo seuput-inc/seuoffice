@@ -68,6 +68,39 @@ pub fn renderer_replaced(view: ViewId, old: shell_contract::runtime::RendererGen
     });
 }
 
+/// A dispatch that holds the core thread this long is traced as such
+const SLOW_DISPATCH: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The channel the core thread is dispatching right now and since when: a stalled run reads it
+/// (`in_flight`) to say which handler holds the core thread
+static IN_FLIGHT: Mutex<Option<(String, std::time::Instant)>> = Mutex::new(None);
+
+/// One dispatch in progress; the record ends with it, also when the handler panics
+struct InFlight {
+    started: std::time::Instant,
+}
+
+impl InFlight {
+    fn begin(channel: &str) -> Self {
+        let started = std::time::Instant::now();
+        *IN_FLIGHT.lock().unwrap_or_else(|e| e.into_inner()) = Some((channel.to_owned(), started));
+        Self { started }
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        *IN_FLIGHT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+/// The dispatch the core thread is inside of, with how long it has been there
+pub(crate) fn in_flight() -> Option<String> {
+    let held = IN_FLIGHT.lock().unwrap_or_else(|e| e.into_inner());
+    let (channel, since) = held.as_ref()?;
+    Some(format!("'{channel}' for {} ms", since.elapsed().as_millis()))
+}
+
 /// One message to its handler, on the core thread. `deliver` gets the answer
 /// once, from whichever thread the handler answers on.
 pub(crate) fn dispatch(
@@ -90,6 +123,8 @@ pub(crate) fn dispatch(
             message: "The presentation view is no longer available.".into(),
         }));
     }
+    trace!("ipc", "view {} '{channel}'", sender.view.0);
+    let in_flight = crate::trace::enabled().then(|| InFlight::begin(&channel));
     DISPATCHER.with(|d| match d.borrow().as_ref() {
         Some(d) => d.dispatch(sender, kind, request, native, &channel, args, deliver),
         // the table is built before the first window opens; a message before it is a bug
@@ -98,6 +133,15 @@ pub(crate) fn dispatch(
             message: "the shell has not finished starting".into(),
         })),
     });
+    if let Some(in_flight) = in_flight
+        && in_flight.started.elapsed() >= SLOW_DISPATCH
+    {
+        trace!(
+            "core",
+            "'{channel}' held the core thread for {} ms",
+            in_flight.started.elapsed().as_millis()
+        );
+    }
 }
 
 /// What the commands and the scheme handler share; managed by Tauri

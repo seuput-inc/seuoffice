@@ -47,7 +47,8 @@ userData는 Electron 판과 같은 자리다(결정 0013, 0019): 기본이 `appD
 G3 관문의 실행기다(`src/e2e/`). 앱은 평소처럼 전부 시작하고(`SEUOFFICE_SHELL_PARTIAL`이 있으면 거부), 첫 셸 창이 서면 시나리오의 단계를 차례로 실제 앱에서 돌려 `<out>/e2e.jsonl`(단계마다 한 줄)과 산출물(PNG, PDF)을 쓴다. 통과 여부는 실행기가 아니라 검사기가 정한다. 열린 포트, 소켓, 파이프는 없다. 입력은 시나리오 파일뿐이다.
 
 - 거부(종료 2): `SEUOFFICE_USER_DATA`가 없거나, 그 폴더에 워크플로가 만든 `.seuoffice-e2e-profile` 파일이 없을 때. 사람의 설치본, 프로필, 키체인은 대상이 될 수 없다. `--probe`, `--measure-dialog`와 같이 쓰는 것도 거부한다.
-- 종료 코드: 0 모든 단계를 돌았다, 3 어떤 단계를 돌릴 수 없었다(거기서 멈춘다), 124 시나리오의 `deadlineMs`(기본 600000)를 넘겼다.
+- 종료 코드: 0 모든 단계를 돌았다, 3 어떤 단계를 돌릴 수 없었다(거기서 멈춘다. 코어 스레드가 90초 동안 답하지 않는 것도 여기에 든다), 124 시나리오의 `deadlineMs`(기본 600000, 프로세스 시작부터 센다)를 넘겼다. 멈춘 실행은 실행 로그의 `e2e:`, `ipc:`, `core:`, `uiwait:`, `window:` 줄에 마지막 모습이 남고, macOS에서는 `<out>/hang-core-late.txt`, `hang-core-stalled.txt`, `hang-deadline.txt`에 모든 스레드의 `sample`이 남는다.
+- `waitReady`는 `open`이 이름 붙인 파일의 탭이 활성이 되고 그 문서가 render-ready에 이른 것을 기다린다(`newDocument` 뒤에는 앞의 탭이 아닌 탭). 값에 활성 탭의 `kind`, `view`, `title`, `file`이 들어간다.
 - 시나리오 문자열 안의 `${FIXTURES}`, `${WORK}`는 환경 변수 `SEUOFFICE_E2E_FIXTURES`, `SEUOFFICE_E2E_WORK`로 바뀐다.
 - 대화 상자: `dialog` 단계가 다음 네이티브 대화 상자의 답(`save`, `dontSave`, `cancel`, `path:<절대경로>`)을 넣는다. 훅은 `host/dialog/owned.rs`와 `Dialogs::error`에 있고 `--e2e`가 아니면 아무 일도 하지 않는다. 답 없는 대화 상자는 15초 뒤 취소되며 `e2e-dialogs.jsonl`에 남는다.
 - `query`는 활성 편집기 웹뷰에서 `PageOps::evaluate`로 식을 돌린다(Promise는 기다린다). 새 IPC 길은 없다.

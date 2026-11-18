@@ -136,16 +136,53 @@ pub fn on_run_event(app: &AppHandle, event: &RunEvent) {
 
 /// Runs `job` on the UI thread and waits for it. A host is called from the
 /// core thread, where this blocks it, as the contract's section 3 says; from
-/// the UI thread itself (`run_on` would deadlock) it runs at once.
+/// the UI thread itself (`run_on` would deadlock) it runs at once. With the trace on, a wait
+/// that is not over within a quarter of a second names its caller, once it began and once it
+/// ended: a core thread that never ends one is what a stalled run looks like.
+#[track_caller]
 pub fn on_ui<R: Send + 'static>(
     ui: &Arc<dyn Thread>,
     job: impl FnOnce() -> R + Send + 'static,
 ) -> R {
     if ui.is_current() {
-        job()
-    } else {
-        shell_contract::runtime::run_on(ui.as_ref(), job)
+        return job();
     }
+    if !crate::trace::enabled() {
+        return shell_contract::runtime::run_on(ui.as_ref(), job);
+    }
+    let at = std::panic::Location::caller();
+    let started = std::time::Instant::now();
+    let waiter = std::thread::current().id();
+    let (slow_tx, slow_rx) = std::sync::mpsc::channel::<()>();
+    let watch = std::thread::Builder::new()
+        .name("ui-wait-watch".into())
+        .spawn(move || {
+            if slow_rx
+                .recv_timeout(std::time::Duration::from_millis(250))
+                .is_err_and(|e| e == std::sync::mpsc::RecvTimeoutError::Timeout)
+            {
+                crate::trace::trace!(
+                    "uiwait",
+                    "{waiter:?} waits for the UI thread at {}:{}",
+                    at.file(),
+                    at.line()
+                );
+                return true;
+            }
+            false
+        });
+    let result = shell_contract::runtime::run_on(ui.as_ref(), job);
+    drop(slow_tx);
+    if watch.is_ok_and(|watch| watch.join().unwrap_or(false)) {
+        crate::trace::trace!(
+            "uiwait",
+            "the wait at {}:{} ended after {} ms",
+            at.file(),
+            at.line(),
+            started.elapsed().as_millis()
+        );
+    }
+    result
 }
 
 #[cfg(test)]
