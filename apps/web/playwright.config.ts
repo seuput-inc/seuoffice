@@ -13,8 +13,8 @@ export default defineConfig({
   workers: 1,
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
-    // the view-mode page, an embed's narrow ribbon and in-page dialogs, the first-page image and
-    // the tools a web page leaves out must also work in Safari's engine
+    // the view-mode page, an embed's narrow ribbon and in-page dialogs, the first-page image, the
+    // tools a web page leaves out and a narrow PDF must also work in Safari's engine
     {
       name: 'webkit',
       use: { ...devices['Desktop Safari'] },
@@ -24,6 +24,7 @@ export default defineConfig({
         'embed-dialogs.spec.ts',
         'embed-thumbnail.spec.ts',
         'embed-zotero.spec.ts',
+        'embed-pdf-narrow.spec.ts',
       ],
     },
   ],
