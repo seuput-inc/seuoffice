@@ -1115,7 +1115,10 @@ impl PrintWindow {
         // observer can see (WebView2 raises none at all), so the print page would wait for a
         // load nobody reports. When none is seen, navigate to it once, through the hook.
         if blank_rx.recv_timeout(BLANK_OBSERVE).is_err() {
-            crate::trace::trace!("print", "the initial blank load was not observed: navigating");
+            crate::trace::trace!(
+                "print",
+                "the initial blank load was not observed: navigating"
+            );
             self.document_navigation
                 .as_ref()
                 .ok_or("missing print navigation state")?

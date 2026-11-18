@@ -246,12 +246,7 @@ fn mouse_input(flags: MOUSE_EVENT_FLAGS) -> INPUT {
 
 /// A native left click at `x`, `y`, pixels from the top left of the window's client area: the
 /// cursor is moved there, then the button is pressed and released through `SendInput`
-pub(super) fn click(
-    _ui: &Arc<dyn Thread>,
-    window: &Window,
-    x: f64,
-    y: f64,
-) -> Result<(), String> {
+pub(super) fn click(_ui: &Arc<dyn Thread>, window: &Window, x: f64, y: f64) -> Result<(), String> {
     let hwnd = hwnd_of(window)?;
     foreground(hwnd)?;
     let mut point = POINT {

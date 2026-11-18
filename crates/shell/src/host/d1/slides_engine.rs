@@ -108,7 +108,9 @@ fn request_authority(owner: &RenderOwner) -> Option<Arc<SlidesRequestAuthority>>
     if let Ok(authority) = owner.context.as_arc().downcast::<SlidesRequestAuthority>() {
         return Some(authority);
     }
-    let lease = owner.context.downcast_ref::<crate::views::SlidesViewLease>()?;
+    let lease = owner
+        .context
+        .downcast_ref::<crate::views::SlidesViewLease>()?;
     let token = owner
         .context
         .authority_ref::<crate::ipc::native_owner::NativeOwnerAuthority>()?

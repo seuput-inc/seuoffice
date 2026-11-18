@@ -225,7 +225,11 @@ impl SlidesMediaAuthorization {
     /// The authorization of a slides view's registered document: its lease, and the browser
     /// and committed document `token` belongs to. It is current only while that document is
     /// still the browser's committed one.
-    pub(crate) fn of_document(view: ViewId, lease: SlidesViewLease, token: &DocumentContext) -> Self {
+    pub(crate) fn of_document(
+        view: ViewId,
+        lease: SlidesViewLease,
+        token: &DocumentContext,
+    ) -> Self {
         Self {
             view,
             lease,

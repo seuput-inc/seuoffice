@@ -619,15 +619,19 @@ impl Runner<'_> {
         let page = webview.page().ok()?;
         let expression = "(() => { const read = (w) => { try { return (w.__e2eKeys || []).join('') } catch (error) { return null } }; \
              return { top: read(window), frames: [...document.querySelectorAll('iframe')].map((f) => read(f.contentWindow)) } })()";
-        page.blocking(FOCUS_QUERY, |done| page.evaluate(expression, false, None, done))
-            .ok()
+        page.blocking(FOCUS_QUERY, |done| {
+            page.evaluate(expression, false, None, done)
+        })
+        .ok()
     }
 
     fn reset_keys(webview: &Webview) {
         let Ok(page) = webview.page() else { return };
         let expression = "(() => { const clear = (w) => { try { w.__e2eKeys = [] } catch (error) {} }; \
              clear(window); for (const f of document.querySelectorAll('iframe')) clear(f.contentWindow); return true })()";
-        let _ = page.blocking(FOCUS_QUERY, |done| page.evaluate(expression, false, None, done));
+        let _ = page.blocking(FOCUS_QUERY, |done| {
+            page.evaluate(expression, false, None, done)
+        });
     }
 
     /// A native left click at a point of an element of the top document. The page reports the
@@ -651,7 +655,9 @@ impl Runner<'_> {
         let end = Instant::now() + timeout;
         let spot = loop {
             let answer = page
-                .blocking(FOCUS_QUERY, |done| page.evaluate(&expression, false, None, done))
+                .blocking(FOCUS_QUERY, |done| {
+                    page.evaluate(&expression, false, None, done)
+                })
                 .ok();
             if let Some(spot) = answer.filter(|value| value.is_object()) {
                 break spot;
@@ -666,15 +672,14 @@ impl Runner<'_> {
         };
         let number = |key: &str| spot.get(key).and_then(Value::as_f64);
         let (Some(x), Some(y), Some(dpr)) = (number("x"), number("y"), number("dpr")) else {
-            return Err(failed(format!("the page's answer for {selector:?} has no point")));
+            return Err(failed(format!(
+                "the page's answer for {selector:?} has no point"
+            )));
         };
         // CSS pixels of the webview to pixels of the window: the webview's own offset in the
         // window, then the page's pixel ratio (which includes the shell's interface scale)
         let origin = target.webview.position().map_err(failed)?;
-        let (px, py) = (
-            f64::from(origin.x) + x * dpr,
-            f64::from(origin.y) + y * dpr,
-        );
+        let (px, py) = (f64::from(origin.x) + x * dpr, f64::from(origin.y) + y * dpr);
         input::click(&self.context.ui, &target.window, px, py).map_err(unrunnable)?;
         Self::flush_input(&target.webview);
         Ok(Some(json!({
