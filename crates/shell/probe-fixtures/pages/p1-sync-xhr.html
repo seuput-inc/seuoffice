@@ -4,28 +4,12 @@
 <script src="probe.js"></script>
 <script>
   // P1: a synchronous XHR from the page to the shell's `seuoffice-ipc` scheme (design W6).
-  // Loaded in a real shell view, so the real preload bridge, its nonce and its `sendSync` are
-  // in place. The raw requests use a made-up nonce: Rust refuses them with 403, which still
-  // proves that the request, its custom header and its body reached the handler and that the
-  // page can read the answer.
+  // Loaded in a real shell view with the measurement bridge, which exposes the real
+  // `ipcRenderer.sendSync` (its nonce, its frames) as `measureIpc.sendSync`: the preload keeps
+  // its native synchronous closure private, so a page cannot call that one. The raw requests
+  // use a made-up nonce: Rust refuses them with 403, which still proves that the request, its
+  // custom header and its body reached the handler and that the page can read the answer.
   ;(async () => {
-    const encoder = new TextEncoder()
-    const frame = (header) => {
-      const text = encoder.encode(JSON.stringify(header))
-      const out = new Uint8Array(4 + text.length + 4)
-      const view = new DataView(out.buffer)
-      view.setUint32(0, text.length, true)
-      out.set(text, 4)
-      view.setUint32(4 + text.length, 0, true)
-      return out
-    }
-    const header = (bytes) => {
-      const length = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(
-        0,
-        true,
-      )
-      return JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + length)))
-    }
     const internals = window.__TAURI_INTERNALS__
     P.log('p1.env', {
       userAgent: navigator.userAgent,
@@ -34,11 +18,11 @@
       ipcUrl: internals
         ? internals.convertFileSrc('webframe:get-zoom-factor', 'seuoffice-ipc')
         : null,
-      syncFn: typeof window.__seuofficeNativeSendSync,
+      syncFn: typeof (window.measureIpc && window.measureIpc.sendSync),
     })
     await P.loaded()
-    await P.until(() => typeof window.__seuofficeNativeSendSync === 'function', 8000)
-    P.log('p1.bridge', { syncFn: typeof window.__seuofficeNativeSendSync })
+    await P.until(() => window.measureIpc && typeof window.measureIpc.sendSync === 'function', 8000)
+    P.log('p1.bridge', { syncFn: typeof (window.measureIpc && window.measureIpc.sendSync) })
 
     // the real bridge call: registers synchronously when the asynchronous registration is
     // still in flight, then asks the reserved zoom channel
@@ -46,11 +30,7 @@
     for (let index = 0; index < 20; index += 1) {
       const start = performance.now()
       try {
-        const bytes = window.__seuofficeNativeSendSync(
-          'webframe:get-zoom-factor',
-          frame({ args: [] }),
-        )
-        const answer = header(bytes)
+        const answer = window.measureIpc.sendSync('webframe:get-zoom-factor')
         times.push(performance.now() - start)
         if (index === 0 || index === 19)
           P.log('p1.real', { ok: true, index, answer, ms: times[times.length - 1] })

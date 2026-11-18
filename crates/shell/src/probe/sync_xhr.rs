@@ -1,15 +1,17 @@
 //! P1: a synchronous XHR from a page to the shell's `seuoffice-ipc` scheme (design W6).
 //!
-//! The page is opened as a real shell view (`Windows::open_window_with_options`, the shell
-//! surface's preload bridge), so the real `sendSync`, its nonce and the scheme's handler are
-//! all in play. What the page and the handler saw is in the record: the page's `p1.*` lines and
-//! the `scheme.request` lines of the handler wrapper.
+//! The page is opened as a real shell view (`Windows::open_window_with_options`) with the
+//! measurement bridge (`Bridge::Measure`): the shell surface's own bridge, which hands the
+//! page `ipcRenderer.sendSync` as `measureIpc.sendSync`. The preload keeps its native
+//! synchronous closure private to the bridge (the page cannot take it), so the real
+//! `sendSync` is reachable only through an exposed function. Its nonce and the scheme's
+//! handler are all in play. What the page and the handler saw is in the record: the page's
+//! `p1.*` lines and the `scheme.request` lines of the handler wrapper.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::json;
-use shell_contract::Surface;
 use shell_contract::ids::ViewId;
 
 use super::harness::{Ctx, app_url, note_event};
@@ -40,7 +42,7 @@ pub fn run(ctx: &Ctx) -> Result<(), String> {
         main: false,
         view: ViewSpec {
             url: "genoffice-app://shell/probe/p1-sync-xhr.html".into(),
-            bridge: Bridge::Surface(Surface::Shell),
+            bridge: Bridge::Measure,
         },
     };
     let options = WindowOptions {

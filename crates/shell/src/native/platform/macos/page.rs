@@ -208,8 +208,9 @@ fn script_async(surface: &Surface<'_>, source: &str, done: Done<()>) {
     }
 }
 
-/// What a snapshot temporarily changes about the view; dropping it puts everything back.
-struct Stage {
+/// What a snapshot or a print job temporarily changes about the view; dropping it puts
+/// everything back.
+pub(super) struct Stage {
     view: Retained<WKWebView>,
     window: Option<Retained<NSWindow>>,
     revealed: Option<(f64, bool)>,
@@ -219,7 +220,7 @@ struct Stage {
 }
 
 impl Stage {
-    fn new(surface: &Surface<'_>) -> Self {
+    pub(super) fn new(surface: &Surface<'_>) -> Self {
         Self {
             view: surface.view.retain(),
             window: surface.window.map(|window| window.retain()),
@@ -230,9 +231,10 @@ impl Stage {
         }
     }
 
-    /// A hidden window or view does not render, so a snapshot of it would be blank: show it
-    /// invisibly (fully transparent, ignoring the mouse) for the duration of the snapshot.
-    fn reveal(&mut self) {
+    /// A hidden window or view does not render, so a snapshot of it would be blank, and a
+    /// print job needs the window to be on screen: show it invisibly (fully transparent,
+    /// ignoring the mouse) for the duration of the snapshot or the job.
+    pub(super) fn reveal(&mut self) {
         if let Some(window) = &self.window
             && !window.isVisible()
         {

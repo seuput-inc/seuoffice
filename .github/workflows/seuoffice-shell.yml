@@ -684,7 +684,10 @@ jobs:
             set -e
             echo "$probe exit $status" | tee -a "$out/exit-codes.txt"
             tail -n 15 "$out/$probe/shell.log" || true
-            rm -rf "$out/$probe/userdata"
+            # WebView2 helper processes outlive the shell for a moment and hold the profile
+            # files; the profile is only deleted to keep the artifact small (it is excluded from
+            # the upload anyway), so a busy file is a warning, never a failed probe run
+            rm -rf "$out/$probe/userdata" || echo "::warning::could not remove $out/$probe/userdata (files still in use)"
           done
           echo "$ran" > "$out/probes-run.txt"
 

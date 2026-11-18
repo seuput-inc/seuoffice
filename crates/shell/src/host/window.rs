@@ -873,8 +873,10 @@ impl Windows {
                 return abandon(error);
             }
         };
+        trace!("window", "window {} building", window.0);
         match builder.build() {
             Ok(built) => {
+                trace!("window", "window {} created, configuring", window.0);
                 let configured = (|| {
                     native.window_created(&built.as_ref().window())?;
                     window_lifecycle.attach(built.as_ref().window())?;

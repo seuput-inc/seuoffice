@@ -1,7 +1,10 @@
 //! `PrintOps` over `NSPrintOperation`: the system print dialog, and the file print job behind
 //! `print_pdf`. WebKit's `createPDF` only renders one page, so PDFs come from a print job
-//! that saves to a file. A header and footer, which WebKit cannot print, are stamped onto the
-//! finished document (`header_footer.rs`); the page ranges are applied last.
+//! that saves to a file. Both jobs run through `runOperationModalForWindow`: WebKit's printing
+//! view computes its pages from a thread AppKit spawns for such a job, and answers from the
+//! UI thread's run loop, so a job run synchronously on the UI thread never gets its pages.
+//! A header and footer, which WebKit cannot print, are stamped onto the finished document
+//! (`header_footer.rs`); the page ranges are applied last.
 
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -11,19 +14,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use objc2::rc::Retained;
 use objc2::runtime::Bool;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSPaperOrientation, NSPrintInfo, NSPrintJobSavingURL, NSPrintOperation, NSPrintSaveJob,
-    NSPrintingPaginationMode,
+    NSPrintingPaginationMode, NSWindow,
 };
 use objc2_foundation::{NSCopying, NSObject, NSPoint, NSRect, NSSize, NSURL};
-use objc2_web_kit::{WKPreferences, WKWebView};
+use objc2_web_kit::{WKPreferences, WKUserContentController, WKWebView};
 use tauri::Webview;
 
 use super::Platform;
 use super::header_footer::{self, Plan};
 use super::header_footer_view;
-use super::page::{Surface, object, run};
+use super::page::{Stage, Surface, object, run};
 use crate::native::page::{Done, HeaderFooter, PageError, PdfSpec, parse_page_ranges};
 use crate::native::platform::{PrintOps, PrintOutcome};
 
@@ -148,21 +151,6 @@ fn scratch_file() -> PathBuf {
     ))
 }
 
-fn print_to(surface: &Surface<'_>, spec: &PdfSpec, target: &Path) -> Result<(), PageError> {
-    let _backgrounds = Backgrounds::set(surface, spec.print_background)?;
-    let info = saving_info(spec, target)?;
-    // SAFETY: the info is a complete save-job description; the operation runs on the UI thread.
-    let operation = unsafe { surface.view.printOperationWithPrintInfo(&info) };
-    operation.setShowsPrintPanel(false);
-    operation.setShowsProgressPanel(false);
-    fit_view(&operation, surface.view, info.paperSize());
-    if operation.runOperation() {
-        Ok(())
-    } else {
-        Err(platform("The print operation did not complete."))
-    }
-}
-
 fn slicing(error: impl std::fmt::Display) -> PageError {
     PageError::Platform(format!("The PDF pages could not be selected: {error}"))
 }
@@ -230,8 +218,67 @@ fn with_templates(
     );
 }
 
+/// A file print job in flight. Everything it borrowed from the web view is held here, so the
+/// job outlives the UI-thread call that started it and finishes when AppKit reports back.
+struct SaveJob {
+    mtm: MainThreadMarker,
+    view: Retained<WKWebView>,
+    window: Retained<NSWindow>,
+    controller: Retained<WKUserContentController>,
+    spec: PdfSpec,
+    ranges: Vec<RangeInclusive<u32>>,
+    target: PathBuf,
+    stage: Stage,
+    backgrounds: Backgrounds,
+    done: Done<Vec<u8>>,
+}
+
+impl SaveJob {
+    /// Read the scratch file back and remove it, put the view back as it was, then stamp the
+    /// templates and keep the ranges.
+    fn finish(self, printed: bool) {
+        let Self {
+            mtm,
+            view,
+            window,
+            controller,
+            spec,
+            ranges,
+            target,
+            stage,
+            backgrounds,
+            done,
+        } = self;
+        let bytes = if printed {
+            std::fs::read(&target).map_err(|error| {
+                PageError::Platform(format!("The printed PDF could not be read: {error}"))
+            })
+        } else {
+            Err(platform("The print operation did not complete."))
+        };
+        let _ = std::fs::remove_file(&target);
+        drop(backgrounds);
+        drop(stage);
+        let bytes = match bytes {
+            Ok(bytes) => bytes,
+            Err(error) => return done(Err(error)),
+        };
+        let surface = Surface {
+            mtm,
+            view: &view,
+            window: Some(&window),
+            controller: &controller,
+        };
+        match &spec.header_footer {
+            Some(templates) => with_templates(&surface, &spec, templates, bytes, ranges, done),
+            None => done(slice_pages(bytes, &ranges)),
+        }
+    }
+}
+
 /// The PDF of a print job to a scratch file, read back and removed. Tagged output and
-/// outlines have no WebKit equivalent and are refused rather than dropped.
+/// outlines have no WebKit equivalent and are refused rather than dropped. The job needs the
+/// web view's window on screen, so a hidden one is shown invisibly until the job ends.
 pub(super) fn save_pdf(surface: &Surface<'_>, spec: PdfSpec, done: Done<Vec<u8>>) {
     let refused = if spec.tagged {
         Some("generateTaggedPDF")
@@ -252,60 +299,104 @@ pub(super) fn save_pdf(surface: &Surface<'_>, spec: PdfSpec, done: Done<Vec<u8>>
         Ok(ranges) => ranges.unwrap_or_default(),
         Err(error) => return done(Err(error)),
     };
-    let target = scratch_file();
-    let printed = print_to(surface, &spec, &target).and_then(|()| {
-        std::fs::read(&target).map_err(|error| {
-            PageError::Platform(format!("The printed PDF could not be read: {error}"))
-        })
-    });
-    let _ = std::fs::remove_file(&target);
-    let bytes = match printed {
-        Ok(bytes) => bytes,
+    let Some(window) = surface.window else {
+        return done(Err(platform("The web view is not in a window.")));
+    };
+    let mut stage = Stage::new(surface);
+    stage.reveal();
+    let backgrounds = match Backgrounds::set(surface, spec.print_background) {
+        Ok(backgrounds) => backgrounds,
         Err(error) => return done(Err(error)),
     };
-    match &spec.header_footer {
-        Some(templates) => with_templates(surface, &spec, templates, bytes, ranges, done),
-        None => done(slice_pages(bytes, &ranges)),
-    }
+    let target = scratch_file();
+    let info = match saving_info(&spec, &target) {
+        Ok(info) => info,
+        Err(error) => return done(Err(error)),
+    };
+    // SAFETY: the info is a complete save-job description; the operation is created and run
+    // on the UI thread.
+    let operation = unsafe { surface.view.printOperationWithPrintInfo(&info) };
+    operation.setShowsPrintPanel(false);
+    operation.setShowsProgressPanel(false);
+    fit_view(&operation, surface.view, info.paperSize());
+    let job = SaveJob {
+        mtm: surface.mtm,
+        view: surface.view.retain(),
+        window: window.retain(),
+        controller: surface.controller.retain(),
+        spec,
+        ranges,
+        target,
+        stage,
+        backgrounds,
+        done,
+    };
+    run_modal(
+        surface.mtm,
+        &operation,
+        window,
+        Box::new(move |printed| job.finish(printed)),
+    );
 }
 
 struct Answer {
-    done: RefCell<Option<Done<PrintOutcome>>>,
+    finish: RefCell<Option<Box<dyn FnOnce(bool)>>>,
 }
 
 define_class!(
-    /// The print panel's sheet reports back to this object; it keeps itself alive until then.
+    /// A print operation reports back to this object; it keeps itself alive until then.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[name = "SeuOfficePrintDialogAnswer"]
+    #[name = "SeuOfficePrintAnswer"]
     #[ivars = Answer]
-    struct DialogAnswer;
+    struct PrintAnswer;
 
-    impl DialogAnswer {
+    impl PrintAnswer {
         #[unsafe(method(printOperationDidRun:success:contextInfo:))]
         fn did_run(&self, _operation: &NSPrintOperation, success: Bool, _context: *mut c_void) {
-            if let Some(done) = self.ivars().done.borrow_mut().take() {
-                done(Ok(if success.as_bool() {
-                    PrintOutcome::Printed
-                } else {
-                    PrintOutcome::Cancelled
-                }));
+            let finish = self.ivars().finish.borrow_mut().take();
+            if let Some(finish) = finish {
+                finish(success.as_bool());
             }
-            // SAFETY: balances the retain `print_dialog` leaked so the object lives until now;
+            // SAFETY: balances the retain `run_modal` leaked so the object lives until now;
             // nothing touches `self` afterwards.
             drop(unsafe { Retained::from_raw((self as *const Self).cast_mut()) });
         }
     }
 );
 
-impl DialogAnswer {
-    fn new(mtm: MainThreadMarker, done: Done<PrintOutcome>) -> Retained<Self> {
+impl PrintAnswer {
+    fn new(mtm: MainThreadMarker, finish: Box<dyn FnOnce(bool)>) -> Retained<Self> {
         let answer = Answer {
-            done: RefCell::new(Some(done)),
+            finish: RefCell::new(Some(finish)),
         };
         let this = mtm.alloc::<Self>().set_ivars(answer);
         // SAFETY: NSObject's plain `init`.
         unsafe { msg_send![super(this), init] }
+    }
+}
+
+/// Run `operation` for `window` without holding the UI thread; `finish` runs on it with
+/// whether the job went through.
+fn run_modal(
+    mtm: MainThreadMarker,
+    operation: &NSPrintOperation,
+    window: &NSWindow,
+    finish: Box<dyn FnOnce(bool)>,
+) {
+    let answer = PrintAnswer::new(mtm, finish);
+    // One retain is leaked on purpose: AppKit does not retain the delegate, and `did_run`
+    // releases it.
+    let _ = Retained::into_raw(answer.clone());
+    // SAFETY: the selector is implemented by `PrintAnswer` with the signature AppKit calls
+    // (operation, success, context).
+    unsafe {
+        operation.runOperationModalForWindow_delegate_didRunSelector_contextInfo(
+            window,
+            Some(object(&*answer)),
+            Some(sel!(printOperationDidRun:success:contextInfo:)),
+            std::ptr::null_mut(),
+        );
     }
 }
 
@@ -321,20 +412,18 @@ impl PrintOps for Platform {
             operation.setShowsPrintPanel(true);
             operation.setShowsProgressPanel(true);
             fit_view(&operation, surface.view, info.paperSize());
-            let answer = DialogAnswer::new(surface.mtm, done);
-            // One retain is leaked on purpose: AppKit does not retain the delegate, and
-            // `did_run` releases it.
-            let _ = Retained::into_raw(answer.clone());
-            // SAFETY: the selector is implemented by `DialogAnswer` with the signature AppKit
-            // calls (operation, success, context).
-            unsafe {
-                operation.runOperationModalForWindow_delegate_didRunSelector_contextInfo(
-                    window,
-                    Some(object(&*answer)),
-                    Some(sel!(printOperationDidRun:success:contextInfo:)),
-                    std::ptr::null_mut(),
-                );
-            }
+            run_modal(
+                surface.mtm,
+                &operation,
+                window,
+                Box::new(move |success| {
+                    done(Ok(if success {
+                        PrintOutcome::Printed
+                    } else {
+                        PrintOutcome::Cancelled
+                    }));
+                }),
+            );
         });
     }
 }
