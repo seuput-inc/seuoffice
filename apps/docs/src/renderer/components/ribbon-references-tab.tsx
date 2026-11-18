@@ -265,6 +265,9 @@ export function ReferencesTab({
   const [captionOpen, setCaptionOpen] = useState(false)
   const [sourceOpen, setSourceOpen] = useState(false)
   const [zoteroBusy, setZoteroBusy] = useState<ZoteroCommand | null>(null)
+  // Zotero is reached through the desktop app: a page without that service (the web) offers no
+  // Zotero tool
+  const zoteroOffered = typeof window.desktop.zoteroCommand === 'function'
 
   const runZotero = async (command: ZoteroCommand) => {
     if (zoteroBusy) return
@@ -393,74 +396,78 @@ export function ReferencesTab({
 
   return (
     <>
-      <div className="ribbon-group">
-        <div className="ribbon-group-items">
-          <button
-            className="rb-big"
-            disabled={!hasDoc || zoteroBusy !== null}
-            data-tip={t('zoteroCitationTip')}
-            {...odtOffProps(odtOff)}
-            onClick={() => void runZotero('addEditCitation')}
-          >
-            <span className="rb-big-icon">
-              <IconCitation size={BIG} />
-            </span>
-            <span>{t('zoteroCitation')}</span>
-          </button>
-          <button
-            className="rb-big"
-            disabled={!hasDoc || zoteroBusy !== null}
-            data-tip={t('zoteroBibliographyTip')}
-            {...odtOffProps(odtOff)}
-            onClick={() => void runZotero('addEditBibliography')}
-          >
-            <span className="rb-big-icon">
-              <IconBook size={BIG} />
-            </span>
-            <span>{t('zoteroBibliography')}</span>
-          </button>
-          <button
-            className="rb-big"
-            disabled={!hasDoc || zoteroBusy !== null}
-            data-tip={t('zoteroRefreshTip')}
-            {...odtOffProps(odtOff)}
-            onClick={() => void runZotero('refresh')}
-          >
-            <span className="rb-big-icon">
-              <IconRefresh size={BIG} />
-            </span>
-            <span>{t('zoteroRefresh')}</span>
-          </button>
-          <div className="rb-split-wrap">
-            <button
-              className="rb-big"
-              disabled={!hasDoc || zoteroBusy !== null}
-              data-tip={t('zoteroDocumentSettingsTip')}
-              {...odtOffProps(odtOff)}
-              onClick={() => toggleDropdown(setDropdown, 'zotero-settings')}
-            >
-              <span className="rb-big-icon">
-                <IconCitation size={BIG} />
-                <IconCaret />
-              </span>
-              <span>{t('zoteroDocumentSettings')}</span>
-            </button>
-            {dropdown === 'zotero-settings' && (
-              <div data-rb-panel="" className="layout-menu">
-                <button onClick={() => void runZotero('setDocPrefs')}>
-                  {t('zoteroDocumentPreferences')}
+      {zoteroOffered && (
+        <>
+          <div className="ribbon-group">
+            <div className="ribbon-group-items">
+              <button
+                className="rb-big"
+                disabled={!hasDoc || zoteroBusy !== null}
+                data-tip={t('zoteroCitationTip')}
+                {...odtOffProps(odtOff)}
+                onClick={() => void runZotero('addEditCitation')}
+              >
+                <span className="rb-big-icon">
+                  <IconCitation size={BIG} />
+                </span>
+                <span>{t('zoteroCitation')}</span>
+              </button>
+              <button
+                className="rb-big"
+                disabled={!hasDoc || zoteroBusy !== null}
+                data-tip={t('zoteroBibliographyTip')}
+                {...odtOffProps(odtOff)}
+                onClick={() => void runZotero('addEditBibliography')}
+              >
+                <span className="rb-big-icon">
+                  <IconBook size={BIG} />
+                </span>
+                <span>{t('zoteroBibliography')}</span>
+              </button>
+              <button
+                className="rb-big"
+                disabled={!hasDoc || zoteroBusy !== null}
+                data-tip={t('zoteroRefreshTip')}
+                {...odtOffProps(odtOff)}
+                onClick={() => void runZotero('refresh')}
+              >
+                <span className="rb-big-icon">
+                  <IconRefresh size={BIG} />
+                </span>
+                <span>{t('zoteroRefresh')}</span>
+              </button>
+              <div className="rb-split-wrap">
+                <button
+                  className="rb-big"
+                  disabled={!hasDoc || zoteroBusy !== null}
+                  data-tip={t('zoteroDocumentSettingsTip')}
+                  {...odtOffProps(odtOff)}
+                  onClick={() => toggleDropdown(setDropdown, 'zotero-settings')}
+                >
+                  <span className="rb-big-icon">
+                    <IconCitation size={BIG} />
+                    <IconCaret />
+                  </span>
+                  <span>{t('zoteroDocumentSettings')}</span>
                 </button>
-                <button onClick={() => void runZotero('removeCodes')}>
-                  {t('zoteroRemoveCodes')}
-                </button>
+                {dropdown === 'zotero-settings' && (
+                  <div data-rb-panel="" className="layout-menu">
+                    <button onClick={() => void runZotero('setDocPrefs')}>
+                      {t('zoteroDocumentPreferences')}
+                    </button>
+                    <button onClick={() => void runZotero('removeCodes')}>
+                      {t('zoteroRemoveCodes')}
+                    </button>
+                  </div>
+                )}
               </div>
-            )}
+            </div>
+            <div className="ribbon-group-label">{t('zoteroGroup')}</div>
           </div>
-        </div>
-        <div className="ribbon-group-label">{t('zoteroGroup')}</div>
-      </div>
 
-      <div className="ribbon-sep" />
+          <div className="ribbon-sep" />
+        </>
+      )}
 
       <div className="ribbon-group">
         <div className="ribbon-group-items">
