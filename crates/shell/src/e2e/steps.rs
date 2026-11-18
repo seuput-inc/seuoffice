@@ -21,7 +21,7 @@ use tauri::{Manager, Webview, Window};
 use super::EXIT_UNRUNNABLE;
 use super::dialog::{self, Answer};
 use super::report::{Report, StepRecord};
-use super::scenario::{Scenario, Shortcut, Step, typed_keys};
+use super::scenario::{Scenario, Shortcut, Step, TypedKey, typed_keys};
 use crate::host::HostContext;
 use crate::host::contents::page_error_text;
 use crate::host::shell_tabs::shell_tabs;
@@ -36,6 +36,8 @@ use super::input_mac as input;
 use super::input_win as input;
 
 const POLL: Duration = Duration::from_millis(50);
+/// how often a key the page did not record is sent before it counts as lost
+const KEY_TRIES: u32 = 4;
 /// the shell window and its first tab are up within this, or nothing can run
 const SHELL_START_TIMEOUT: Duration = Duration::from_secs(120);
 /// the core thread answers the runner's questions within this, or it is stuck in a job
@@ -470,13 +472,51 @@ impl Runner<'_> {
                 let target = self.target()?;
                 let focus = Self::focus_page(&target.webview)?;
                 let keys = typed_keys(text);
-                Self::reset_keys(&target.webview);
-                // one key at a time: the page must have handled a key before the next arrives,
-                // or an editor under load drops characters (S, s, a hyphen) out of the text
-                input::type_text(&self.context.ui, &target.window, &keys, &|| {
-                    Self::flush_input(&target.webview)
-                })
-                .map_err(unrunnable)?;
+                // One key at a time: the page must have handled a key before the next arrives,
+                // or an editor under load drops characters out of the text. Windows also loses
+                // injected keys before they reach the page (S82 runs: `diagram` arrived as
+                // `dagram`, `SEU-E2E-hwp` without its hyphen). Once the page has been seen to
+                // record keys in this step, a key it does not record is sent again, and the value
+                // says how many were resent, so the loss stays visible.
+                let mut observed = false;
+                let mut resent = 0_u32;
+                let mut unconfirmed = 0_u32;
+                for key in &keys {
+                    let want = Self::key_name(key);
+                    for attempt in 0..KEY_TRIES {
+                        if want.is_some() {
+                            Self::reset_keys(&target.webview);
+                        }
+                        input::type_text(
+                            &self.context.ui,
+                            &target.window,
+                            std::slice::from_ref(key),
+                            &|| Self::flush_input(&target.webview),
+                        )
+                        .map_err(unrunnable)?;
+                        let Some(want) = &want else { break };
+                        Self::flush_input(&target.webview);
+                        match Self::key_arrived(&target.webview, want) {
+                            Some((true, _)) => {
+                                observed = true;
+                                break;
+                            }
+                            // lost, or gone into a frame the recorder cannot read: only a page
+                            // that has recorded keys in this step tells the two apart
+                            Some((false, blind)) if !blind || observed => {
+                                if attempt + 1 == KEY_TRIES {
+                                    unconfirmed += 1;
+                                } else {
+                                    resent += 1;
+                                }
+                            }
+                            _ => {
+                                unconfirmed += 1;
+                                break;
+                            }
+                        }
+                    }
+                }
                 Self::flush_input(&target.webview);
                 let after = Self::focus_state(&target.webview);
                 Ok(Some(json!({
@@ -484,14 +524,27 @@ impl Runner<'_> {
                     "kind": target.kind,
                     "focusBefore": focus,
                     "focusAfter": after,
-                    "received": Self::keys_received(&target.webview),
+                    "resent": resent,
+                    "unconfirmed": unconfirmed,
                 })))
             }
             Step::Ime { keys } => {
                 let target = self.target()?;
                 Self::focus_page(&target.webview)?;
-                let value = input::ime_ko_2set(&self.context.ui, &target.window, keys)
-                    .map_err(unrunnable)?;
+                // `true` clears the page's key record; `false` says whether the last key the page
+                // saw was the IME's `Process` (a letter that came through is not composing)
+                let composing = |reset: bool| -> Option<bool> {
+                    if reset {
+                        Self::reset_keys(&target.webview);
+                        None
+                    } else {
+                        Self::flush_input(&target.webview);
+                        Self::key_arrived(&target.webview, "<Process>").map(|(seen, _)| seen)
+                    }
+                };
+                let value =
+                    input::ime_ko_2set(&self.context.ui, &target.window, keys, &composing)
+                        .map_err(unrunnable)?;
                 Self::flush_input(&target.webview);
                 Ok(Some(value))
             }
@@ -611,18 +664,40 @@ impl Runner<'_> {
         });
     }
 
-    /// The keys the page's own `keydown` listeners saw since the last [`Self::reset_keys`], per
-    /// frame (`top`, then each iframe in order). What was sent and what arrived differ when the
-    /// OS or the webview drops input; what arrived and what the editor shows differ when the
-    /// editor drops it.
-    fn keys_received(webview: &Webview) -> Option<Value> {
+    /// Whether the page's own `keydown` listeners saw `want` as the last key since the last
+    /// [`Self::reset_keys`], in its top document or in a same-origin iframe; and whether an
+    /// iframe was out of the recorder's reach (cross-origin), where the key may have gone
+    /// instead. `None` when the page cannot be asked.
+    fn key_arrived(webview: &Webview, want: &str) -> Option<(bool, bool)> {
         let page = webview.page().ok()?;
-        let expression = "(() => { const read = (w) => { try { return (w.__e2eKeys || []).join('') } catch (error) { return null } }; \
-             return { top: read(window), frames: [...document.querySelectorAll('iframe')].map((f) => read(f.contentWindow)) } })()";
-        page.blocking(FOCUS_QUERY, |done| {
-            page.evaluate(expression, false, None, done)
-        })
-        .ok()
+        let expression = "(() => { let blind = false; \
+             const last = (w) => { try { const keys = w.__e2eKeys || []; return keys.length ? keys[keys.length - 1] : null } catch (error) { blind = true; return null } }; \
+             const seen = [last(window), ...[...document.querySelectorAll('iframe')].map((f) => last(f.contentWindow))]; \
+             return { seen, blind } })()";
+        let answer = page
+            .blocking(FOCUS_QUERY, |done| {
+                page.evaluate(expression, false, None, done)
+            })
+            .ok()?;
+        let arrived = answer
+            .get("seen")?
+            .as_array()?
+            .iter()
+            .any(|entry| entry.as_str() == Some(want));
+        Some((arrived, answer.get("blind")?.as_bool()?))
+    }
+
+    /// The name the page's key recorder gives a key, for the keys whose arrival can be checked:
+    /// printable ASCII and the named keys. Other text arrives as input events with other names.
+    fn key_name(key: &TypedKey) -> Option<String> {
+        match key {
+            TypedKey::Return => Some("<Enter>".into()),
+            TypedKey::Tab => Some("<Tab>".into()),
+            TypedKey::Escape => Some("<Escape>".into()),
+            TypedKey::Backspace => Some("<Backspace>".into()),
+            TypedKey::Char(c) if c.is_ascii_graphic() || *c == ' ' => Some(c.to_string()),
+            TypedKey::Char(_) => None,
+        }
     }
 
     fn reset_keys(webview: &Webview) {

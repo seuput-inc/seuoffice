@@ -418,6 +418,7 @@ pub(super) fn ime_ko_2set(
     ui: &Arc<dyn Thread>,
     window: &Window,
     keys: &str,
+    _composing: &dyn Fn(bool) -> Option<bool>,
 ) -> Result<Value, String> {
     let previous =
         on_ui(ui, tis::current_id).ok_or("cannot read the current keyboard input source")?;

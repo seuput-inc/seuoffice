@@ -2376,6 +2376,11 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                 Ok(queued) => queued,
                 Err(error) => return responder.reply(Err(kit::error(error))),
             };
+            eprintln!(
+                "[docs] view {}: consume-pending-open finds {queued:?} (recovery: {})",
+                view.0,
+                recovery.is_some()
+            );
             match queued {
                 None => responder.reply(Ok(IpcValue::Null)),
                 Some(path) => d.open_into(view, path, responder, recovery.zip(scope), authority),

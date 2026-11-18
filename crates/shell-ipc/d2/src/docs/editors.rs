@@ -637,6 +637,7 @@ impl DocsEditors {
 
     /// `createDocsView(openPath)`'s queue: the tab's first document
     pub fn queue_open(&self, view: ViewId, path: String) {
+        eprintln!("[docs] view {}: queue_open {path:?}", view.0);
         self.0.window_opens.insert(view, path);
     }
 

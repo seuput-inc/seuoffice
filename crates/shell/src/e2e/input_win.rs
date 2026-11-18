@@ -374,6 +374,7 @@ pub(super) fn ime_ko_2set(
     _ui: &Arc<dyn Thread>,
     window: &Window,
     keys: &str,
+    composing: &dyn Fn(bool) -> Option<bool>,
 ) -> Result<Value, String> {
     let hwnd = hwnd_of(window)?;
     foreground(hwnd)?;
@@ -399,11 +400,33 @@ pub(super) fn ime_ko_2set(
         toggle_hangul()?;
         sleep(IME_SETTLE);
     }
-    let typed = keys.chars().try_for_each(|c| {
-        let result = send(&ime_inputs(c)?);
-        sleep(IME_KEY_GAP);
-        result
-    });
+    // The conversion mode of a WebView2 window cannot be read from here, so the first key says
+    // it: a composing IME hands the page `Process` for it, plain alphanumeric mode the letter
+    // itself (S82 runs: `gksrmf` came out as Latin). A letter that came through is erased and the
+    // mode toggled once more.
+    let mut corrected = false;
+    let mut rest = keys.chars();
+    let typed = (|| -> Result<(), String> {
+        if let Some(first) = rest.next() {
+            composing(true);
+            send(&ime_inputs(first)?)?;
+            sleep(IME_KEY_GAP);
+            if composing(false) == Some(false) {
+                send(&press(VK_BACK, false))?;
+                sleep(SETTLE);
+                toggle_hangul()?;
+                sleep(IME_SETTLE);
+                send(&ime_inputs(first)?)?;
+                sleep(IME_KEY_GAP);
+                corrected = true;
+            }
+        }
+        rest.try_for_each(|c| {
+            let result = send(&ime_inputs(c)?);
+            sleep(IME_KEY_GAP);
+            result
+        })
+    })();
     sleep(SETTLE);
     // leaving Hangul mode commits the composition
     let committed = toggle_hangul();
@@ -415,6 +438,7 @@ pub(super) fn ime_ko_2set(
     Ok(json!({
         "source": "ko-2set",
         "hangulModeBefore": started_in_hangul,
+        "toggledAgain": corrected,
         "layout": format!("{:08x}", korean.0 as usize),
     }))
 }

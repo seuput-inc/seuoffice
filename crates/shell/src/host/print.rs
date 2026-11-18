@@ -787,10 +787,15 @@ impl PrintEvents {
     fn on_event(&self, event: &NativeEvent) {
         if crate::trace::enabled() {
             let shown = format!("{:?}", event.kind);
+            let limit = if matches!(event.kind, NativeEventKind::NavigationFailed { .. }) {
+                2000
+            } else {
+                200
+            };
             crate::trace::trace!(
                 "print",
                 "event {}",
-                shown.chars().take(200).collect::<String>()
+                shown.chars().take(limit).collect::<String>()
             );
         }
         match &event.kind {

@@ -13,6 +13,12 @@
       "ms": 2000
     },
     {
+      "op": "query",
+      "as": "prep-loaded",
+      "timeoutMs": 90000,
+      "js": "(() => { const s = document.querySelector('.dg-spinner'); return document.querySelector('iframe') !== null && (!s || s.offsetParent === null || getComputedStyle(s).visibility === 'hidden') })()"
+    },
+    {
       "op": "click",
       "selector": "iframe"
     },
