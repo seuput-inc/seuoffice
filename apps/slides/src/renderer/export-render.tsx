@@ -99,6 +99,28 @@ export async function renderSlidesToImageBase64(
   return out
 }
 
+/**
+ * One page on a canvas of its own, `pixelRatio` canvas pixels per slide pixel, cut off below
+ * `maxHeightPx` canvas pixels.
+ */
+export async function renderSlideToCanvas(
+  slide: RenderSlide,
+  images: Map<string, HTMLImageElement>,
+  pixelRatio: number,
+  maxHeightPx: number,
+): Promise<HTMLCanvasElement> {
+  const drawn: HTMLCanvasElement[] = []
+  await eachPaintedStage([slide], images, (stage) => {
+    drawn.push(
+      stage.toCanvas({
+        pixelRatio,
+        height: Math.min(slide.heightPx, maxHeightPx / pixelRatio),
+      }),
+    )
+  })
+  return drawn[0]!
+}
+
 /** Ink allowance around a node's box for shadows, glows and reflections (px). */
 const NODE_RASTER_PAD = 48
 

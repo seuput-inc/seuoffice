@@ -1,4 +1,4 @@
-import type { AiPanelPrefs, FontFamilyInfo } from '@seuoffice/ui'
+import type { AiPanelPrefs, FontFamilyInfo, WebThumbnailSource } from '@seuoffice/ui'
 import type { SlidesAiFonts } from '@seuoffice/ui/slides-ai-fonts'
 /**
  * slides main-process <-> renderer IPC contract (Phase 3: open/save/edit, AI not included yet).
@@ -1881,6 +1881,8 @@ export interface SlidesApi {
   onHistoryChanged: (handler: (state: HistoryChange) => void) => () => void
   /** Another window attached to the same file changed the deck (shared session): fresh render state to apply */
   onDeckChanged: (handler: (state: DeckChange) => void) => () => void
+  /** Web embed only: the host asks for a picture of the first slide, which `source` draws */
+  onThumbnailRequest?: (source: WebThumbnailSource) => () => void
   reportCloseSaveResult: (ok: boolean) => void
   /** Mirror the autosave toggle state to the main process: files with it on save silently on close, no dialog */
   setAutoSavePref: (on: boolean) => void

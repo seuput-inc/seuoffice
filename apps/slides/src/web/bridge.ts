@@ -6,6 +6,7 @@ import {
   editMode,
   installWebBridge,
   joinPageCollab,
+  onHostThumbnailRequest,
   registerCollabCapable,
   reportError,
   reportOpened,
@@ -361,6 +362,7 @@ const slidesApi: Partial<SlidesApi> = {
     deckListeners.add(handler)
     return () => void deckListeners.delete(handler)
   },
+  onThumbnailRequest: onHostThumbnailRequest,
   onMenuCommand: unsubscribe,
   onOpened: unsubscribe,
   onRenamed: unsubscribe,
