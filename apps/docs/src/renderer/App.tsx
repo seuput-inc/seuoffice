@@ -8459,7 +8459,7 @@ export function App() {
 
   return (
     <div
-      className={`app ${readMode ? 'read-mode' : ''}${presenting ? ' presentation-mode' : ''}${commentsUi.panel ? ' comments-pane-open' : ''}${revisionDisplay !== 'all' ? ` rev-display-${revisionDisplay}` : ''}${balloonsActive && balloonMode === 'revisions' ? ' rev-balloon' : ''}${revisionFilter.insDel ? '' : ' rev-hide-insdel'}${revisionFilter.format ? '' : ' rev-hide-format'}${tcOptions.balloonLines ? '' : ' markup-no-lines'}`}
+      className={`app ${readMode ? 'read-mode' : ''}${WEB_VIEW_LOCKED ? ' web-view' : ''}${presenting ? ' presentation-mode' : ''}${commentsUi.panel ? ' comments-pane-open' : ''}${revisionDisplay !== 'all' ? ` rev-display-${revisionDisplay}` : ''}${balloonsActive && balloonMode === 'revisions' ? ' rev-balloon' : ''}${revisionFilter.insDel ? '' : ' rev-hide-insdel'}${revisionFilter.format ? '' : ' rev-hide-format'}${tcOptions.balloonLines ? '' : ' markup-no-lines'}`}
       data-balloons={balloonsActive ? balloonMode : undefined}
       data-comment-cards={commentsUi.cards ? '' : undefined}
       data-comment-focus={commentFocus?.id}
@@ -9049,16 +9049,19 @@ export function App() {
                         })
                       : t('appWordCountN', { n: wordCount })}
                   </button>
-                  <button
-                    className={`status-item status-btn status-track${trackChanges ? ' on' : ''}`}
-                    data-tip={t('ribbonTrackChangesTip')}
-                    aria-pressed={trackChanges}
-                    disabled={isProtected || trackChangesForced || WEB_VIEW_LOCKED}
-                    {...odtOffProps(odtDoc)}
-                    onClick={toggleTrackChangesByUser}
-                  >
-                    {t(trackChanges ? 'appTrackChangesOn' : 'appTrackChangesOff')}
-                  </button>
+                  {/* tracking is an author's switch: a viewer's status line does not carry it */}
+                  {!WEB_VIEW_LOCKED && (
+                    <button
+                      className={`status-item status-btn status-track${trackChanges ? ' on' : ''}`}
+                      data-tip={t('ribbonTrackChangesTip')}
+                      aria-pressed={trackChanges}
+                      disabled={isProtected || trackChangesForced}
+                      {...odtOffProps(odtDoc)}
+                      onClick={toggleTrackChangesByUser}
+                    >
+                      {t(trackChanges ? 'appTrackChangesOn' : 'appTrackChangesOff')}
+                    </button>
+                  )}
                 </>
               )}
               {!doc && t('appReady')}
