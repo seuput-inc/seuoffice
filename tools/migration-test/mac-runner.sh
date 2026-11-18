@@ -167,6 +167,27 @@ fi
 stop_app
 result "second update checked $next_version"
 fi
+# Which launches quit by themselves: the updated app, with and without the document and the
+# debugging port, asked to quit the way the Dock asks. Recorded, never failing the run: it
+# tells a harness effect (the port) from the app's own quit path (an open document).
+quit_control() {
+  local label=$1; shift
+  "$app/Contents/MacOS/SeuOffice" "$@" >>"$out/quit-control.log" 2>&1 &
+  local pid=$! started
+  sleep 20
+  started=$SECONDS
+  osascript -e 'tell application id "com.seuput.seuoffice" to quit' >/dev/null 2>&1 || true
+  for _ in $(seq 60); do kill -0 "$pid" 2>/dev/null || { result "quit-control $label: quit in $((SECONDS - started)) s"; return 0; }; sleep 1; done
+  diagnose "control-$label"
+  result "quit-control $label: still running 60 s after quit"
+  kill -9 "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+}
+# the launches without a document first: a killed launch brings its tabs back next time
+quit_control plain --use-mock-keychain
+quit_control port --remote-debugging-port=$port --use-mock-keychain
+quit_control doc --use-mock-keychain "$out/migration-test.docx"
+quit_control port-doc --remote-debugging-port=$port --use-mock-keychain "$out/migration-test.docx"
 [ -z "$quit_hang" ] || exit 1
 result passed
 node - "$out/result.json" "$from" "$to_version" "$next_version" "$to_receipt" "$next_receipt" <<'NODE'
