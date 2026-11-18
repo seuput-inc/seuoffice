@@ -449,10 +449,6 @@ async function bodyText(page: Page): Promise<string> {
         '.ProseMirror',
       )
       const frame = appFrames(page)[0]!
-      expect
-        .soft(await app.locator('.status-bar').innerText(), 'status line')
-        .not.toMatch(/변경 내용 추적/)
-
       // the pointer over a picture or an equation brings no handle and no edit button
       for (const block of ['.doc-protected-image', '.doc-protected-formula']) {
         const target = app.locator(block).first()

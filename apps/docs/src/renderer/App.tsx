@@ -9049,19 +9049,16 @@ export function App() {
                         })
                       : t('appWordCountN', { n: wordCount })}
                   </button>
-                  {/* tracking is an author's switch: a viewer's status line does not carry it */}
-                  {!WEB_VIEW_LOCKED && (
-                    <button
-                      className={`status-item status-btn status-track${trackChanges ? ' on' : ''}`}
-                      data-tip={t('ribbonTrackChangesTip')}
-                      aria-pressed={trackChanges}
-                      disabled={isProtected || trackChangesForced}
-                      {...odtOffProps(odtDoc)}
-                      onClick={toggleTrackChangesByUser}
-                    >
-                      {t(trackChanges ? 'appTrackChangesOn' : 'appTrackChangesOff')}
-                    </button>
-                  )}
+                  <button
+                    className={`status-item status-btn status-track${trackChanges ? ' on' : ''}`}
+                    data-tip={t('ribbonTrackChangesTip')}
+                    aria-pressed={trackChanges}
+                    disabled={isProtected || trackChangesForced || WEB_VIEW_LOCKED}
+                    {...odtOffProps(odtDoc)}
+                    onClick={toggleTrackChangesByUser}
+                  >
+                    {t(trackChanges ? 'appTrackChangesOn' : 'appTrackChangesOff')}
+                  </button>
                 </>
               )}
               {!doc && t('appReady')}
