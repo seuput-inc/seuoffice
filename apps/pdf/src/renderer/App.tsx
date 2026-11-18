@@ -201,6 +201,7 @@ import { useBilingual } from './bilingual/useBilingual'
 import { useBilingualActions } from './bilingual/BilingualActions'
 import { hasUnsavedPageEdits, toggleBilingual, toggleSpread } from './bilingual/model'
 import { createPageRenderer } from './ai-read/render-page'
+import { drawFirstPage } from './first-page-image'
 import { loadAiReadTexts } from './ai-read/search-texts'
 import { DocumentJobSession } from './doc-jobs/job-session'
 import { LinkDialog, type LinkDraft } from './LinkDialog'
@@ -311,6 +312,7 @@ import {
   RibbonTabStrip,
   webAiOff,
   webViewMode,
+  whenLoaded,
   appDialogs,
   type TemplateDocument,
 } from '@seuoffice/ui'
@@ -590,6 +592,8 @@ export default function App() {
     expandFull: t('ribbonExpand'),
   })
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null)
+  const docRef = useRef(doc)
+  docRef.current = doc
   const [filePath, setFilePath] = useState('')
   /** Where the document is, for work that goes on after a save. A save can move the document
       (the first save of an untitled copy, a blank PDF named from its content), and the main
@@ -9142,6 +9146,15 @@ export default function App() {
   useEffect(() => {
     return window.pdfApi.onExportImagesRequest(() => void exportImages(true, 'png', true))
   })
+
+  // Web embed: the host asks for a picture of the first page, perhaps before the document loaded
+  useEffect(
+    () =>
+      window.pdfApi.onThumbnailRequest?.(async (request) =>
+        drawFirstPage(await whenLoaded(() => docRef.current, request.signal), request),
+      ),
+    [],
+  )
 
   // Shell File menu › Markdown / EPUB or Save As › Markdown / EPUB → the same
   // dialog (Save As carries the target it already picked)

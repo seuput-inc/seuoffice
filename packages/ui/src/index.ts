@@ -237,7 +237,16 @@ export {
   useAiSidebarEnabled,
   aiPanelWidthAtPointer,
 } from './ai-panel-prefs-store'
-export { autoSaveOffered, markWebHost, webAiOff, webEmbedded, webViewMode } from './web-host-mode'
+export {
+  autoSaveOffered,
+  markWebHost,
+  webAiOff,
+  webEmbedded,
+  webViewMode,
+  whenLoaded,
+  type WebThumbnailRequest,
+  type WebThumbnailSource,
+} from './web-host-mode'
 export { appDialogs, setAppDialogs, type AppDialogs } from './app-dialogs'
 export {
   SPLIT_PANE_BRIDGE_KEY,

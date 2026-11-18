@@ -53,6 +53,7 @@ import {
 import { CropOverlay } from './CropOverlay'
 import { createImageLoader } from './image-loader'
 import { runHeadlessPdfExport } from './headless-export'
+import { drawFirstSlide } from './first-slide-image'
 import { syncPrivateFonts } from './doc-fonts'
 import { toPickerHex } from './color-input'
 import { InkOverlay } from './InkOverlay'
@@ -1011,6 +1012,22 @@ export function App() {
       )
     })
   }, [save])
+
+  // Web embed: the host asks for a picture of the first slide, perhaps before the deck loaded
+  useEffect(
+    () =>
+      window.slidesApi.onThumbnailRequest?.((request) =>
+        drawFirstSlide(
+          () => ({
+            slides: ctxRef.current.slides,
+            images: ctxRef.current.images,
+            pendingImages: imageLoaderRef.current?.pending() ?? -1,
+          }),
+          request,
+        ),
+      ),
+    [],
+  )
 
   // Undo/redo stack occupancy pushed by the main process: the QAT buttons grey out when empty.
   // The same notice says whether an AI run's unaccepted edits are in the deck: then the deck is

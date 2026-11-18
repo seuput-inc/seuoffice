@@ -14,6 +14,7 @@ export {
 export {
   hostEnablesAutoSave,
   onHostSaveRequest,
+  onHostThumbnailRequest,
   registerCollabCapable,
   reportDirty,
   reportError,

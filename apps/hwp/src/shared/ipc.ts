@@ -1,7 +1,7 @@
 import type { AiSettings, AiStreamChunk, AiStreamRequest } from '@seuoffice/ai-provider'
 import type { AiToolCapabilities, MediaToolErrorCode } from '@seuoffice/ai-search'
 import type { Lang } from '@seuoffice/i18n'
-import type { AiPanelPrefs, AutoSaveDefault } from '@seuoffice/ui'
+import type { AiPanelPrefs, AutoSaveDefault, WebThumbnailSource } from '@seuoffice/ui'
 import type { SubscriptionApi } from './subscription-api'
 
 export const HWP_CHANNELS = {
@@ -365,6 +365,8 @@ export interface HwpApi {
   abortSave(): void
   setDirty(dirty: boolean): void
   onSaveRequest(handler: (mode: SaveMode, hostSaveId?: string) => void): () => void
+  /** Web embed only: the host asks for a picture of the first page, which `source` draws */
+  onThumbnailRequest?(source: WebThumbnailSource): () => void
   /**
    * the editor's own File menu asks to save or print: the main process answers it the way
    * it answers Ctrl+S and Ctrl+P, with a save or print request back to this view

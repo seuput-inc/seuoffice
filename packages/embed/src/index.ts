@@ -24,6 +24,9 @@
  * `save` carries `collabVersion`, the exact version its bytes hold. A page
  * whose `ready` says it cannot co-edit gets no `open`: `opened` rejects with
  * `collab_unavailable`.
+ *
+ * `thumbnail()` asks the page for its first page as a PNG (`thumbnail`); the
+ * page answers `thumbnail_done` with the bytes or the code of why it has none.
  */
 
 import { createCollabPipe, type CollabRelay } from './collab.js'
@@ -54,6 +57,8 @@ export const MAX_EMBED_BYTES = 50 * 1024 * 1024
  * `collab_unavailable`: the page cannot co-edit this file (too large to load
  * whole, an edit kind it cannot sync). The host opens it again without
  * `collab`, under its edit lock.
+ *
+ * The `thumbnail_*` codes are the reasons `thumbnail()` rejects with (see `ThumbnailErrorCode`).
  */
 export type EmbedErrorCode =
   | 'unsupported_format'
@@ -65,6 +70,17 @@ export type EmbedErrorCode =
   | 'open_timeout'
   | 'invalid_sandbox'
   | 'origin_not_allowed'
+  | ThumbnailErrorCode
+
+/**
+ * Why `thumbnail()` gave no image. `thumbnail_unsupported`: this format draws
+ * none yet, no document is open, or the page could not draw it;
+ * `thumbnail_timeout`: no image in time; `thumbnail_too_large`: the PNG is over
+ * the page's size limit; `thumbnail_tainted`: the page holds a picture of
+ * another origin and may not read its own pixels.
+ */
+export type ThumbnailErrorCode =
+  'thumbnail_unsupported' | 'thumbnail_timeout' | 'thumbnail_too_large' | 'thumbnail_tainted'
 
 export class SeuofficeEmbedError extends Error {
   readonly code: EmbedErrorCode
@@ -174,6 +190,18 @@ export interface LocalFile {
   bytes: Uint8Array
 }
 
+export interface ThumbnailOptions {
+  /** the image's width in pixels; default 480, and a width outside 64 to 1024 is moved to the nearer end */
+  width?: number
+}
+
+/** The document's first page as a PNG of `width` by `height` pixels */
+export interface Thumbnail {
+  bytes: Uint8Array
+  width: number
+  height: number
+}
+
 export interface EmbeddedDocument {
   readonly iframe: HTMLIFrameElement
   /** settles once the document is on screen, or rejects with SeuofficeEmbedError */
@@ -191,6 +219,11 @@ export interface EmbeddedDocument {
    * when the page or `onSave` failed.
    */
   save(): Promise<void>
+  /**
+   * The first page as a PNG, in view and in edit mode. Rejects with one of the
+   * `thumbnail_*` codes; before the document opened that is `thumbnail_unsupported`.
+   */
+  thumbnail(options?: ThumbnailOptions): Promise<Thumbnail>
   destroy(): void
 }
 
@@ -254,6 +287,7 @@ export function openDocument(container: HTMLElement, options: OpenOptions): Coll
       opened,
       collabCapable: Promise.resolve(false),
       save: () => Promise.reject(notSaved('the document did not open')),
+      thumbnail: () => Promise.reject(noThumbnail('the document did not open')),
       exportLocal: () => Promise.reject(notSaved('the document did not open')),
       destroy: () => iframe.remove(),
     }
@@ -297,6 +331,15 @@ export function openDocument(container: HTMLElement, options: OpenOptions): Coll
     string,
     {
       resolve: (file: LocalFile) => void
+      reject: (error: SeuofficeEmbedError) => void
+      timer: ReturnType<typeof setTimeout>
+    }
+  >()
+  let nextThumbnailId = 1
+  const thumbnailRequests = new Map<
+    string,
+    {
+      resolve: (image: Thumbnail) => void
       reject: (error: SeuofficeEmbedError) => void
       timer: ReturnType<typeof setTimeout>
     }
@@ -408,6 +451,29 @@ export function openDocument(container: HTMLElement, options: OpenOptions): Coll
       )
         request.resolve({ fileName: data.fileName, bytes: new Uint8Array(data.bytes) })
       else request.reject(notSaved(String(data.message ?? 'the page did not export the document')))
+    } else if (data.type === 'thumbnail_done' && typeof data.requestId === 'string') {
+      const request = thumbnailRequests.get(data.requestId)
+      if (!request) return
+      thumbnailRequests.delete(data.requestId)
+      clearTimeout(request.timer)
+      if (
+        data.ok === true &&
+        data.bytes instanceof ArrayBuffer &&
+        typeof data.width === 'number' &&
+        typeof data.height === 'number'
+      )
+        request.resolve({
+          bytes: new Uint8Array(data.bytes),
+          width: data.width,
+          height: data.height,
+        })
+      else
+        request.reject(
+          new SeuofficeEmbedError(
+            isThumbnailErrorCode(data.code) ? data.code : 'thumbnail_unsupported',
+            String(data.message ?? 'the page gave no image'),
+          ),
+        )
     } else if (sent && typeof data.type === 'string' && data.type.startsWith('collab_')) {
       collabPipe?.onPageMessage(data)
     }
@@ -448,6 +514,23 @@ export function openDocument(container: HTMLElement, options: OpenOptions): Coll
       post({ type: 'collab_export', requestId })
       return done
     },
+    thumbnail: (asked = {}) => {
+      if (!shown) return Promise.reject(noThumbnail('the document is not open yet'))
+      const requestId = String(nextThumbnailId++)
+      const done = new Promise<Thumbnail>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          thumbnailRequests.delete(requestId)
+          reject(new SeuofficeEmbedError('thumbnail_timeout', 'the page did not answer in time'))
+        }, THUMBNAIL_ANSWER_TIMEOUT_MS)
+        thumbnailRequests.set(requestId, { resolve, reject, timer })
+      })
+      post({
+        type: 'thumbnail',
+        requestId,
+        ...(asked.width !== undefined ? { width: asked.width } : {}),
+      })
+      return done
+    },
     destroy: () => {
       view.removeEventListener('message', onMessage)
       clearTimeout(timer)
@@ -459,6 +542,11 @@ export function openDocument(container: HTMLElement, options: OpenOptions): Coll
         request.reject(notSaved('the document was closed'))
       }
       exportRequests.clear()
+      for (const request of thumbnailRequests.values()) {
+        clearTimeout(request.timer)
+        request.reject(noThumbnail('the document was closed'))
+      }
+      thumbnailRequests.clear()
       for (const controller of aiRequests.values()) controller.abort()
       aiRequests.clear()
       collabPipe?.close()
@@ -580,6 +668,26 @@ async function relayAi(
 
 function notSaved(message: string): SeuofficeEmbedError {
   return new SeuofficeEmbedError('save_failed', message)
+}
+
+/**
+ * How long `thumbnail()` waits for the page's answer. The page gives up
+ * drawing after 10 s and says so; this is for a page that never answers (an
+ * older build, a frame that went away).
+ */
+const THUMBNAIL_ANSWER_TIMEOUT_MS = 15000
+
+function noThumbnail(message: string): SeuofficeEmbedError {
+  return new SeuofficeEmbedError('thumbnail_unsupported', message)
+}
+
+function isThumbnailErrorCode(code: unknown): code is ThumbnailErrorCode {
+  return (
+    code === 'thumbnail_unsupported' ||
+    code === 'thumbnail_timeout' ||
+    code === 'thumbnail_too_large' ||
+    code === 'thumbnail_tainted'
+  )
 }
 
 function isPageErrorCode(code: unknown): code is EmbedErrorCode {

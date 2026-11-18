@@ -14,7 +14,12 @@
  * `ready` says whether this page can co-edit (`registerCollabCapable`). When
  * `open` says the host relays co-editing, `collab_*` messages carry the
  * frames of the host's socket (see collab-link.ts).
+ *
+ * A host's `thumbnail` is answered with `thumbnail_done`: the first page as
+ * a PNG, or the code of why there is none (see thumbnail.ts).
  */
+
+import { makeThumbnail, ThumbnailRefusal, type ThumbnailSource } from './thumbnail'
 
 export const EMBED_SOURCE = 'seuoffice'
 export const EMBED_VERSION = 1
@@ -61,6 +66,8 @@ let saveRequestHandler: ((ownerId: string) => Promise<void>) | undefined
 /** Owner ids of the host-asked saves still running: the saves they start are `host` saves */
 const hostSaveOwners = new Set<string>()
 let exportRequestHandler: (() => Promise<{ fileName: string; bytes: Uint8Array }>) | undefined
+/** What draws the first page for a host's `thumbnail`; an app that draws none sets nothing */
+let thumbnailSource: ThumbnailSource | undefined
 let collabCapable = false
 let collabMessageHandler: ((data: Record<string, unknown>) => void) | undefined
 let collabOffered = false
@@ -275,6 +282,8 @@ function onHostMessage(event: MessageEvent): void {
     onAiAnswer(data.requestId, data)
   } else if (data.type === 'collab_export' && typeof data.requestId === 'string') {
     void answerExportRequest(data.requestId)
+  } else if (data.type === 'thumbnail' && typeof data.requestId === 'string') {
+    void answerThumbnailRequest(data.requestId, data.width)
   } else if (typeof data.type === 'string' && data.type.startsWith('collab_')) {
     collabMessageHandler?.(data)
   }
@@ -308,6 +317,21 @@ async function answerExportRequest(requestId: string): Promise<void> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     reply({ type: 'collab_export_done', requestId, ok: false, message })
+  }
+}
+
+/** The first page as a PNG, or why the page has none to give */
+async function answerThumbnailRequest(requestId: string, requestedWidth: unknown): Promise<void> {
+  try {
+    // before `opened` nothing is on screen: there is no first page yet
+    const source = opened ? thumbnailSource : undefined
+    const { bytes, width, height } = await makeThumbnail(source, requestedWidth)
+    reply({ type: 'thumbnail_done', requestId, ok: true, bytes, width, height }, [bytes])
+  } catch (error) {
+    // a drawing the app could not finish has no code of its own: this page cannot draw it
+    const code = error instanceof ThumbnailRefusal ? error.code : 'thumbnail_unsupported'
+    const message = error instanceof Error ? error.message : String(error)
+    reply({ type: 'thumbnail_done', requestId, ok: false, code, message })
   }
 }
 
@@ -521,6 +545,17 @@ export function onHostExportRequest(
   handler: () => Promise<{ fileName: string; bytes: Uint8Array }>,
 ): void {
   exportRequestHandler = handler
+}
+
+/**
+ * What draws the first page when the host asks for its picture (`thumbnail`).
+ * The returned function takes it back: the app's document went away.
+ */
+export function onHostThumbnailRequest(source: ThumbnailSource): () => void {
+  thumbnailSource = source
+  return () => {
+    if (thumbnailSource === source) thumbnailSource = undefined
+  }
 }
 
 /**

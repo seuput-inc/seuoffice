@@ -1,5 +1,5 @@
 import { OLD_VISUAL_SIGNATURE_CONTENT_PREFIXES } from './old-names'
-import type { AiPanelPrefs, AutoSaveDefault } from '@seuoffice/ui'
+import type { AiPanelPrefs, AutoSaveDefault, WebThumbnailSource } from '@seuoffice/ui'
 import type { Lang } from '@seuoffice/i18n'
 import type { AiSettings, AiStreamChunk, AiStreamRequest } from '@seuoffice/ai-provider'
 import type { SubscriptionApi } from './subscription-api'
@@ -1860,6 +1860,8 @@ export interface PdfApi {
   exportImages(request: ExportImagesRequest): Promise<ExportImagesResult>
   /** Shell Save As › PNG page images → draw every page and export it with `saveAs: true` */
   onExportImagesRequest(handler: () => void): () => void
+  /** Web embed only: the host asks for a picture of the first page, which `source` draws */
+  onThumbnailRequest?(source: WebThumbnailSource): () => void
   /** Convert the current PDF to Word / Excel / PowerPoint via the shell's local conversion flows */
   convertOffice(format: PdfConvertFormat): Promise<void>
   /** Shell File menu / Save As → open the Markdown / EPUB conversion dialog */
