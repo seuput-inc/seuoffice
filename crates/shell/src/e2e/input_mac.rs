@@ -10,11 +10,13 @@
 //! the page receives the text, but not a meaningful `KeyboardEvent.code`. Hangul is what the
 //! `ime` op is for.
 
+use std::ffi::c_void;
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
 
 use objc2::MainThreadMarker;
+use objc2::encode::{Encoding, RefEncode};
 use objc2::msg_send;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool};
@@ -256,6 +258,63 @@ fn send(ui: &Arc<dyn Thread>, window: &Window, stroke: Stroke) -> Result<(), Str
     on_ui(ui, move || post(&window, &stroke))
 }
 
+/// An opaque `CGEventRef`, for the `eventWithCGEvent:` argument's type encoding
+#[repr(C)]
+struct CgEvent {
+    _private: [u8; 0],
+}
+
+// SAFETY: `CGEventRef` is a pointer to the CF struct `__CGEvent`.
+unsafe impl RefEncode for CgEvent {
+    const ENCODING_REF: Encoding = Encoding::Pointer(&Encoding::Struct("__CGEvent", &[]));
+}
+
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGEventCreateKeyboardEvent(source: *const c_void, key: u16, down: bool) -> *mut CgEvent;
+    fn CGEventSetFlags(event: *mut CgEvent, flags: u64);
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFRelease(object: *const c_void);
+}
+
+/// Press and release one key as an `NSEvent` that wraps a real `CGEvent`. An input method is
+/// reached through the text input context, which hands the event to the system's input method
+/// process by its CGEvent; a bare `NSEvent` has none, and its keys came out as plain Latin.
+fn post_backed(window: &Window, stroke: &Stroke) -> Result<(), String> {
+    let mtm = MainThreadMarker::new()
+        .ok_or_else(|| "AppKit key events can only be sent on the UI thread.".to_owned())?;
+    let native = ns_window(window)?;
+    activate(mtm, native);
+    let app = NSApplication::sharedApplication(mtm);
+    for down in [true, false] {
+        // SAFETY: the CGEvent is created, wrapped by `eventWithCGEvent:` (which retains what it
+        // needs) and released here; the wrapper is an autoreleased NSEvent.
+        let event: Option<Retained<NSEvent>> = unsafe {
+            let raw = CGEventCreateKeyboardEvent(std::ptr::null(), stroke.code, down);
+            if raw.is_null() {
+                None
+            } else {
+                CGEventSetFlags(raw, stroke.flags.bits() as u64);
+                let wrapped: Option<Retained<NSEvent>> =
+                    msg_send![objc2::class!(NSEvent), eventWithCGEvent: raw.cast_const()];
+                CFRelease(raw.cast_const().cast());
+                wrapped
+            }
+        };
+        let event = event.ok_or_else(|| "AppKit could not wrap the CGEvent.".to_owned())?;
+        app.sendEvent(&event);
+    }
+    Ok(())
+}
+
+fn send_backed(ui: &Arc<dyn Thread>, window: &Window, stroke: Stroke) -> Result<(), String> {
+    let window = window.clone();
+    on_ui(ui, move || post_backed(&window, &stroke))
+}
+
 /// The OS window number, which `xcap` lists the window under
 pub(super) fn window_id(ui: &Arc<dyn Thread>, window: &Window) -> Result<u32, String> {
     let window = window.clone();
@@ -369,7 +428,7 @@ pub(super) fn ime_ko_2set(
     let active = on_ui(ui, tis::current_id);
     let typed = if active.as_deref() == Some(tis::KOREAN_2SET) {
         keys.chars().try_for_each(|c| {
-            let result = send(ui, window, stroke_of(&TypedKey::Char(c)));
+            let result = send_backed(ui, window, stroke_of(&TypedKey::Char(c)));
             sleep(IME_KEY_GAP);
             result
         })

@@ -30,14 +30,24 @@ pub(in crate::slides) fn export_pdf(app: &App, cx: &CallContext, args: Args, res
         Some(path) => path.to_owned(),
         None => return responder.reply(Err(thrown("The PDF destination is required"))),
     };
+    eprintln!(
+        "[slides] view {}: export-pdf asked for {path}",
+        cx.sender.view.0
+    );
     let save_id = as_str(field(&op, "saveRequestId")).map(str::to_owned);
     let scope = match app.export_scope(cx, as_str(field(&op, "saveRequestId")), "pdf", &path) {
         Ok(scope) => scope,
-        Err(error) => return responder.reply(Err(error)),
+        Err(error) => {
+            eprintln!("[slides] export-pdf scope refused: {}", error.message);
+            return responder.reply(Err(error));
+        }
     };
     let revision = match scope.revision(app) {
         Ok(revision) => revision,
-        Err(error) => return responder.reply(Err(error)),
+        Err(error) => {
+            eprintln!("[slides] export-pdf revision refused: {}", error.message);
+            return responder.reply(Err(error));
+        }
     };
     let id = app.shell.random_uuid();
     let shell = app.shell.clone();
@@ -120,6 +130,10 @@ fn stage_and_write(
             ),
         _ => return Err("The PDF save authority does not match its destination".into()),
     };
+    eprintln!(
+        "[slides] the PDF renderer answered ok={} error={:?}",
+        result.ok, result.error
+    );
     if !result.ok {
         return Err(result
             .error

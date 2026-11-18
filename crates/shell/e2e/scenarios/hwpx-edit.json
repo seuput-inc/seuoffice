@@ -22,6 +22,11 @@
       "ms": 500
     },
     {
+      "op": "query",
+      "as": "diag-hwp-dom",
+      "js": "(() => { const f = document.querySelector('.hwp-editor-host iframe'); let inner = null; try { const w = f && f.contentWindow; inner = f && { href: String(w.location.href), state: w.document.readyState, studio: typeof w.rhwpStudio, secure: w.isSecureContext, isolated: w.crossOriginIsolated, errors: w.__e2eErrors || [], text: w.document.body.innerText.slice(0, 200) } } catch (e) { inner = String(e) } return { host: !!document.querySelector('.hwp-editor-host'), iframes: document.querySelectorAll('iframe').length, secure: isSecureContext, errors: window.__e2eErrors || [], inner, html: document.body.innerHTML.slice(0, 400) } })()"
+    },
+    {
       "op": "type",
       "text": "SEU-E2E-hwpx"
     },

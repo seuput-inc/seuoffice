@@ -116,6 +116,11 @@
       "path": "${WORK}/slides-export.pdf"
     },
     {
+      "op": "query",
+      "as": "diag-slides-status",
+      "js": "(() => { const t = document.body.innerText; const i = t.search(/PDF|export/i); return { status: i >= 0 ? t.slice(Math.max(0, i - 80), i + 200) : null, errors: window.__e2eErrors || [] } })()"
+    },
+    {
       "op": "screenshot",
       "name": "slides-after"
     }
