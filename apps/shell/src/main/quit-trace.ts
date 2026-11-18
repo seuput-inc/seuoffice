@@ -2,7 +2,7 @@
 // Active only with SEUOFFICE_QUIT_TRACE=1; lines go to stdout and, when
 // SEUOFFICE_QUIT_TRACE_FILE is set, to that file.
 import { appendFileSync } from 'node:fs'
-import { BrowserWindow, app, webContents } from 'electron'
+import { BrowserWindow, app, dialog, webContents } from 'electron'
 
 const enabled = process.env.SEUOFFICE_QUIT_TRACE === '1'
 const file = process.env.SEUOFFICE_QUIT_TRACE_FILE
@@ -50,6 +50,16 @@ if (enabled) {
   app.on('before-quit', (event) => {
     log(`before-quit prevented=${event.defaultPrevented} ${snapshot()}`)
   })
+  const showMessageBox = dialog.showMessageBox.bind(dialog) as (...args: unknown[]) => Promise<unknown>
+  ;(dialog as unknown as Record<string, unknown>).showMessageBox = (...args: unknown[]) => {
+    const options = (args.find((a) => a && typeof a === 'object' && 'message' in (a as object)) ?? {}) as {
+      message?: string
+    }
+    log(`dialog showMessageBox message=${String(options.message).slice(0, 80)}`)
+    return showMessageBox(...args)
+  }
+  const selfQuit = Number(process.env.SEUOFFICE_QUIT_TRACE_SELF_QUIT_MS ?? 0)
+  if (selfQuit > 0) setTimeout(() => app.quit(), Math.max(0, selfQuit - (Date.now() - t0)))
   app.on('will-quit', (event) => {
     log(`will-quit prevented=${event.defaultPrevented} ${snapshot()}`)
   })
