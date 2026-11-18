@@ -424,7 +424,12 @@ impl Runner<'_> {
             }) else {
                 continue;
             };
-            for line in value.as_array().into_iter().flatten().filter_map(Value::as_str) {
+            for line in value
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
                 if self.reported.insert(format!("{label} {line}")) {
                     let short: String = line.chars().take(400).collect();
                     trace!("pageerr", "{label}: {short}");
