@@ -4,13 +4,13 @@ use super::super::{
     hosts::{PdfEngineHost, PdfShellHost},
     recovery::file_identity,
 };
-use crate::testing::Rt;
+use crate::testing::{Pending, Rt};
 use main_core::packages::electron_utils::{
     recovery_contract::{RecoveryEditorContract, RecoveryOpenUntitledRequest},
     recovery_store::recovery_copy_path,
 };
 use shell_contract::{
-    Surface,
+    IpcValue, Surface,
     editors::DocumentEditors,
     hosts::OwnedEffectsHost,
     ipc::{RecoveryOpenContext, RecoveryOpenTarget},
@@ -30,8 +30,27 @@ impl Workers for Deferred {
     }
 }
 
+/// The message of the refusal a handler answered with
+fn refusal(pending: &Pending) -> String {
+    pending.take().unwrap().unwrap_err().message
+}
+
+/// Records `scenarios` of `channel` with what the test observed for each
+fn record(channel: &str, seen: &serde_json::Map<String, serde_json::Value>, scenarios: &[&str]) {
+    let observed = scenarios.iter().map(|scenario| {
+        let seen = seen
+            .get(*scenario)
+            .unwrap_or_else(|| panic!("scenario {scenario} was never driven"));
+        ((*scenario).to_owned(), seen.clone())
+    });
+    let observed = serde_json::Value::Object(observed.collect()).to_string();
+    shell_contract::native_evidence::record(channel, scenarios, &observed);
+}
+
 #[test]
-fn captured_recovery_completes_before_navigation_and_revocation_blocks_seed() {
+fn native_evidence_captured_recovery_completes_before_navigation_and_revocation_blocks_seed() {
+    let mut consume_seen = serde_json::Map::new();
+    let mut init_seen = serde_json::Map::new();
     for (revoke, failed, replaced, renamed, new_document) in [
         (false, false, false, false, false),
         (false, true, false, false, false),
@@ -40,6 +59,7 @@ fn captured_recovery_completes_before_navigation_and_revocation_blocks_seed() {
         (false, false, false, false, true),
         (true, false, false, false, false),
     ] {
+        let plain = !(revoke || failed || replaced || renamed || new_document);
         let mut rt = Rt::new(|hosts| {
             hosts.insert::<PdfEngineHost>(fakes::engine(&serde_json::Value::Null));
             hosts.insert::<PdfShellHost>(fakes::shell(&serde_json::Value::Null));
@@ -59,6 +79,10 @@ fn captured_recovery_completes_before_navigation_and_revocation_blocks_seed() {
             rt.invoke_now("pdf:consume-recovery-pending", destination, vec![])
                 .unwrap(),
             shell_contract::IpcValue::Null
+        );
+        consume_seen.insert(
+            "ordinary-empty".into(),
+            serde_json::json!({"answer": "null"}),
         );
         let source_generation = rt.services.views.renderer_generation(source.view).unwrap();
         let source_owner = rt
@@ -136,6 +160,16 @@ fn captured_recovery_completes_before_navigation_and_revocation_blocks_seed() {
         let path = editor.0.open_path(destination.view);
         if revoke {
             assert!(path.is_none());
+            let after = rt.invoke_now("pdf:consume-recovery-pending", destination, vec![]);
+            assert!(!matches!(after, Ok(IpcValue::Object(_))));
+            consume_seen.insert(
+                "preparation-loss".into(),
+                serde_json::json!({
+                    "open": format!("{:?}", answer.as_ref().err()),
+                    "document_path": null,
+                    "consume_after_loss": format!("{after:?}"),
+                }),
+            );
         } else {
             let path = path.unwrap();
             assert_eq!(std::fs::read(&path).unwrap(), b"%PDF recovered");
@@ -153,21 +187,32 @@ fn captured_recovery_completes_before_navigation_and_revocation_blocks_seed() {
                 .capture_invocation_root(destination.view, &created, &provenance)
                 .unwrap();
             target.retain_native_registration(receiver.clone()).unwrap();
+            let mut before_consume = String::new();
+            if plain {
+                let early = rt.invoke_native(
+                    "pdf:read-file",
+                    destination,
+                    vec![IpcValue::String(path.clone())],
+                    receiver.context.clone(),
+                    CancelToken::default(),
+                );
+                before_consume = refusal(&early);
+                assert!(before_consume.contains("captured seed"), "{before_consume}");
+            }
             let foreign = shell_contract::ipc::NativeContext::with_renderer(
                 (),
                 shell_contract::runtime::RendererGeneration::new(),
             );
-            assert!(
-                rt.invoke_native(
-                    "pdf:consume-recovery-pending",
-                    destination,
-                    vec![],
-                    foreign,
-                    CancelToken::default()
-                )
-                .take()
-                .unwrap()
-                .is_err()
+            let foreign_consume = refusal(&rt.invoke_native(
+                "pdf:consume-recovery-pending",
+                destination,
+                vec![],
+                foreign,
+                CancelToken::default(),
+            ));
+            consume_seen.insert(
+                "foreign-renderer".into(),
+                serde_json::json!({"error": foreign_consume}),
             );
             assert!(receipt.settlement().is_none());
             let pending = rt
@@ -185,69 +230,109 @@ fn captured_recovery_completes_before_navigation_and_revocation_blocks_seed() {
                 panic!("expected a recovery seed")
             };
             let token = fields
-                .into_iter()
+                .iter()
                 .find(|(key, _)| key == "token")
                 .unwrap()
-                .1;
-            assert!(
-                rt.invoke_native(
-                    "pdf:consume-recovery-pending",
-                    destination,
-                    vec![],
-                    receiver.context.clone(),
-                    CancelToken::default()
-                )
-                .take()
-                .unwrap()
-                .is_err()
+                .1
+                .clone();
+            let IpcValue::String(token_text) = &token else {
+                panic!("the recovery token is a string")
+            };
+            assert!(!token_text.is_empty());
+            assert_eq!(
+                fields.iter().find(|(key, _)| key == "path").unwrap().1,
+                IpcValue::String(path.clone())
+            );
+            consume_seen.insert(
+                "captured-consume".into(),
+                serde_json::json!({"path": path, "token": token_text}),
+            );
+            let duplicate_consume = refusal(&rt.invoke_native(
+                "pdf:consume-recovery-pending",
+                destination,
+                vec![],
+                receiver.context.clone(),
+                CancelToken::default(),
+            ));
+            consume_seen.insert(
+                "duplicate-consume".into(),
+                serde_json::json!({"error": duplicate_consume, "settled": false}),
             );
             assert!(receipt.settlement().is_none());
-            assert!(
-                rt.invoke_native(
-                    "pdf:recovery-initialized",
-                    destination,
-                    vec![],
-                    receiver.context.clone(),
-                    CancelToken::default()
-                )
-                .take()
-                .unwrap()
-                .is_err()
+            let missing_token = refusal(&rt.invoke_native(
+                "pdf:recovery-initialized",
+                destination,
+                vec![],
+                receiver.context.clone(),
+                CancelToken::default(),
+            ));
+            init_seen.insert(
+                "missing-token".into(),
+                serde_json::json!({"error": missing_token, "settled": false}),
             );
             assert!(receipt.settlement().is_none());
-            assert!(
-                rt.invoke_native(
-                    "pdf:recovery-initialized",
-                    destination,
-                    vec![
-                        shell_contract::IpcValue::String("foreign".into()),
-                        shell_contract::IpcValue::Bool(true)
-                    ],
-                    receiver.context.clone(),
-                    CancelToken::default()
-                )
-                .take()
-                .unwrap()
-                .is_err()
+            let foreign_token = refusal(&rt.invoke_native(
+                "pdf:recovery-initialized",
+                destination,
+                vec![IpcValue::String("foreign".into()), IpcValue::Bool(true)],
+                receiver.context.clone(),
+                CancelToken::default(),
+            ));
+            init_seen.insert(
+                "foreign-token".into(),
+                serde_json::json!({"error": foreign_token, "settled": false}),
             );
             assert!(receipt.settlement().is_none());
             let foreign = shell_contract::ipc::NativeContext::with_renderer(
                 (),
                 shell_contract::runtime::RendererGeneration::new(),
             );
-            assert!(
-                rt.invoke_native(
-                    "pdf:recovery-initialized",
-                    destination,
-                    vec![token.clone(), shell_contract::IpcValue::Bool(true)],
-                    foreign,
-                    CancelToken::default()
-                )
-                .take()
-                .unwrap()
-                .is_err()
+            let foreign_ack = refusal(&rt.invoke_native(
+                "pdf:recovery-initialized",
+                destination,
+                vec![token.clone(), IpcValue::Bool(true)],
+                foreign,
+                CancelToken::default(),
+            ));
+            init_seen.insert(
+                "foreign-renderer".into(),
+                serde_json::json!({"error": foreign_ack, "settled": false}),
             );
             assert!(receipt.settlement().is_none());
+            if plain {
+                let reading = rt.invoke_native(
+                    "pdf:read-file",
+                    destination,
+                    vec![IpcValue::String(path.clone())],
+                    receiver.context.clone(),
+                    CancelToken::default(),
+                );
+                assert!(reading.take().is_none());
+                for job in std::mem::take(&mut *workers.0.lock().unwrap()) {
+                    job();
+                }
+                rt.drain();
+                let Ok(IpcValue::Bytes(_, applied)) = reading.take().unwrap() else {
+                    panic!("the renderer's read of its recovered file was refused")
+                };
+                assert_eq!(applied, b"%PDF recovered");
+                assert!(receipt.settlement().is_none());
+                consume_seen.insert(
+                    "renderer-apply".into(),
+                    serde_json::json!({
+                        "read_before_consume": before_consume,
+                        "read_after_consume": "%PDF recovered",
+                        "settled_by_read": false,
+                    }),
+                );
+                init_seen.insert(
+                    "renderer-apply".into(),
+                    serde_json::json!({
+                        "read_before_ack": "%PDF recovered",
+                        "settled_by_read": false,
+                    }),
+                );
+            }
             if renamed {
                 let destination_owner = editor
                     .capture_document_owner(destination.view, receiver.clone())
@@ -334,52 +419,60 @@ fn captured_recovery_completes_before_navigation_and_revocation_blocks_seed() {
             } else if replaced {
                 editor.0.advance_document_revision(destination.view);
                 assert!(receipt.settlement().is_some_and(|result| result.is_err()));
-                assert!(
-                    rt.invoke_native(
-                        "pdf:recovery-initialized",
-                        destination,
-                        vec![token.clone(), shell_contract::IpcValue::Bool(true)],
-                        receiver.context.clone(),
-                        CancelToken::default()
-                    )
-                    .take()
-                    .unwrap()
-                    .is_err()
+                let loss = receipt.settlement().unwrap().unwrap_err();
+                let late_ack = refusal(&rt.invoke_native(
+                    "pdf:recovery-initialized",
+                    destination,
+                    vec![token.clone(), IpcValue::Bool(true)],
+                    receiver.context.clone(),
+                    CancelToken::default(),
+                ));
+                init_seen.insert(
+                    "revision-loss".into(),
+                    serde_json::json!({"settlement": {"err": loss}, "late_ack_error": late_ack}),
                 );
             } else if failed {
-                assert!(
-                    rt.invoke_native(
+                let answer = rt
+                    .invoke_native(
                         "pdf:recovery-initialized",
                         destination,
                         vec![
                             token.clone(),
-                            shell_contract::IpcValue::Bool(false),
-                            shell_contract::IpcValue::String("parse failed".into())
+                            IpcValue::Bool(false),
+                            IpcValue::String("parse failed".into()),
                         ],
                         receiver.context.clone(),
-                        CancelToken::default()
+                        CancelToken::default(),
                     )
                     .take()
                     .unwrap()
-                    .is_ok()
-                );
+                    .unwrap();
+                assert_eq!(answer, IpcValue::Null);
                 assert_eq!(receipt.settlement(), Some(Err("parse failed".into())));
                 rt.destroy(destination.view);
                 assert_eq!(std::fs::read(&path).unwrap(), b"%PDF recovered");
                 assert_eq!(std::fs::read(&copy).unwrap(), b"%PDF recovered");
+                init_seen.insert(
+                    "parse-failure".into(),
+                    serde_json::json!({
+                        "answer": "null",
+                        "settlement": {"err": "parse failed"},
+                        "recovery_copy_kept": true,
+                    }),
+                );
             } else {
-                assert!(
-                    rt.invoke_native(
+                let answer = rt
+                    .invoke_native(
                         "pdf:recovery-initialized",
                         destination,
-                        vec![token.clone(), shell_contract::IpcValue::Bool(true)],
+                        vec![token.clone(), IpcValue::Bool(true)],
                         receiver.context.clone(),
-                        CancelToken::default()
+                        CancelToken::default(),
                     )
                     .take()
                     .unwrap()
-                    .is_ok()
-                );
+                    .unwrap();
+                assert_eq!(answer, IpcValue::Null);
                 assert_eq!(receipt.settlement(), Some(Ok(())));
                 let expected = editor
                     .document_path(destination.view)
@@ -389,21 +482,32 @@ fn captured_recovery_completes_before_navigation_and_revocation_blocks_seed() {
                 assert_eq!(
                     rt.invoke_now("pdf:consume-pending", destination, vec![])
                         .unwrap(),
-                    shell_contract::IpcValue::String(expected)
+                    IpcValue::String(expected.clone())
+                );
+                if plain {
+                    init_seen.insert(
+                        "successful-ack".into(),
+                        serde_json::json!({
+                            "answer": "null",
+                            "settlement": "ok",
+                            "navigation_path": expected,
+                        }),
+                    );
+                }
+            }
+            let second_ack = refusal(&rt.invoke_native(
+                "pdf:recovery-initialized",
+                destination,
+                vec![token, IpcValue::Bool(true)],
+                receiver.context,
+                CancelToken::default(),
+            ));
+            if plain {
+                init_seen.insert(
+                    "duplicate-ack".into(),
+                    serde_json::json!({"error": second_ack, "settlement": "ok"}),
                 );
             }
-            assert!(
-                rt.invoke_native(
-                    "pdf:recovery-initialized",
-                    destination,
-                    vec![token, shell_contract::IpcValue::Bool(true)],
-                    receiver.context,
-                    CancelToken::default()
-                )
-                .take()
-                .unwrap()
-                .is_err()
-            );
         }
         assert!(
             !rt.script()
@@ -412,6 +516,32 @@ fn captured_recovery_completes_before_navigation_and_revocation_blocks_seed() {
                 .any(|call| matches!(call, crate::testing::HostCall::ReloadPdf(_)))
         );
     }
+    record(
+        "pdf:consume-recovery-pending",
+        &consume_seen,
+        &[
+            "ordinary-empty",
+            "captured-consume",
+            "duplicate-consume",
+            "foreign-renderer",
+            "preparation-loss",
+            "renderer-apply",
+        ],
+    );
+    record(
+        "pdf:recovery-initialized",
+        &init_seen,
+        &[
+            "successful-ack",
+            "missing-token",
+            "foreign-token",
+            "foreign-renderer",
+            "duplicate-ack",
+            "parse-failure",
+            "revision-loss",
+            "renderer-apply",
+        ],
+    );
 }
 
 #[test]
@@ -574,7 +704,7 @@ fn exact_closed_receipt_waits_for_preparation_and_removes_only_its_work_file() {
 }
 
 #[test]
-fn recovery_routes_reject_foreign_surface_in_the_real_dispatcher() {
+fn native_evidence_recovery_routes_reject_foreign_surface_in_the_real_dispatcher() {
     let rt = Rt::new(|hosts| {
         hosts.insert::<PdfEngineHost>(fakes::engine(&serde_json::Value::Null));
         hosts.insert::<PdfShellHost>(fakes::shell(&serde_json::Value::Null));
@@ -597,7 +727,8 @@ fn recovery_routes_reject_foreign_surface_in_the_real_dispatcher() {
         .unwrap();
     }
     let dispatcher = shell_core::dispatch::Dispatcher::new(table);
-    for channel in ["pdf:consume-recovery-pending", "pdf:recovery-initialized"] {
+    let channels = ["pdf:consume-recovery-pending", "pdf:recovery-initialized"];
+    let refusals = channels.map(|channel| {
         let (send, receive) = std::sync::mpsc::channel();
         dispatcher.dispatch(
             foreign,
@@ -608,13 +739,17 @@ fn recovery_routes_reject_foreign_surface_in_the_real_dispatcher() {
             vec![],
             Box::new(move |result| send.send(result).unwrap()),
         );
-        assert!(
-            receive
-                .try_recv()
-                .unwrap()
-                .unwrap_err()
-                .message
-                .contains("not open to Docs")
+        let message = receive.try_recv().unwrap().unwrap_err().message;
+        assert!(message.contains("not open to Docs"), "{message}");
+        message
+    });
+    for (channel, message) in channels.into_iter().zip(refusals) {
+        let observed =
+            serde_json::json!({"unauthorized-surface": {"from": "docs", "error": message}});
+        shell_contract::native_evidence::record(
+            channel,
+            &["unauthorized-surface"],
+            &observed.to_string(),
         );
     }
 }

@@ -2876,6 +2876,7 @@ dependencies = [
  "main-core",
  "serde_json",
  "shell-contract",
+ "shell-core",
  "shell-ipc-a",
  "url",
 ]

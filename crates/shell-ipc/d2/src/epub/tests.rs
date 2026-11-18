@@ -1571,3 +1571,313 @@ fn native_recovery_never_queues_into_another_created_view() {
         IpcValue::Null
     );
 }
+
+/// A native-startup recovery seed committed to a fresh EPUB view and consumed
+/// by its renderer; the receipt is what the native wait settles on
+struct Seed {
+    sender: Sender,
+    owner: shell_contract::ipc::NativeRequestOwner,
+    receipt: shell_contract::ipc::RecoverySeedReceipt,
+    path: String,
+    token: IpcValue,
+}
+
+fn seeded(rt: &mut Rt, id: u32, name: &str) -> Seed {
+    use shell_contract::ipc::{
+        NativeClosureIssuer, NativeInvocationIssuer, NativeInvocationSelection,
+        NativeRecoveryDecision, RecoveryOpenContext, RecoveryOpenTarget,
+    };
+    use shell_contract::runtime::CancelToken;
+    let path = rt.dir.join(name);
+    std::fs::write(&path, b"BOOK").unwrap();
+    let sender = rt.view(id, Surface::Epub);
+    let generation = rt.services.views.renderer_generation(sender.view).unwrap();
+    let owner = rt.native_root(sender.view);
+    let operation = NativeInvocationIssuer::new(CancelToken::default()).issue(
+        NativeInvocationSelection::RecoveryFile {
+            surface: Surface::Epub,
+            path: path.clone(),
+            decision: NativeRecoveryDecision::Original,
+        },
+        CancelToken::default(),
+    );
+    let (_issuer, closure, browser_owner) =
+        NativeClosureIssuer::new_with_owner(sender.view, generation.clone());
+    let target = RecoveryOpenTarget::bind(
+        RecoveryOpenContext::NativeStartup(operation),
+        sender.view,
+        generation,
+        closure,
+        browser_owner,
+    )
+    .unwrap();
+    editors(rt).queue_recovery_direct(
+        sender.view,
+        &target,
+        path_str(&path),
+        Box::new(|result| assert!(result.is_ok())),
+    );
+    let receipt = target.committed_seed().unwrap();
+    target
+        .invocation_target()
+        .unwrap()
+        .register_from_native_admitted(owner.clone())
+        .unwrap();
+    target.retain_native_registration(owner.clone()).unwrap();
+    let answer = rt
+        .invoke_native(
+            "epub:consume-pending",
+            sender,
+            vec![],
+            owner.context.clone(),
+            CancelToken::default(),
+        )
+        .take()
+        .unwrap()
+        .unwrap();
+    assert_eq!(field(&answer, "path"), &s(&path_str(&path)));
+    let token = field(&answer, "receipt").clone();
+    Seed {
+        sender,
+        owner,
+        receipt,
+        path: path_str(&path),
+        token,
+    }
+}
+
+/// `epub:recovery-initialized` as the shell receives it with `native` attached
+fn acknowledge(
+    rt: &mut Rt,
+    sender: Sender,
+    args: Vec<IpcValue>,
+    native: shell_contract::ipc::NativeContext,
+) -> Result<IpcValue, IpcError> {
+    rt.invoke_native(
+        "epub:recovery-initialized",
+        sender,
+        args,
+        native,
+        shell_contract::runtime::CancelToken::default(),
+    )
+    .take()
+    .unwrap()
+}
+
+#[test]
+fn native_evidence_epub_recovery_ack_settles_only_the_exact_receipt() {
+    let (mut rt, _) = rt(Value::Null);
+    let seed = seeded(&mut rt, 211, "ack.epub");
+    let other = rt.view(212, Surface::Epub);
+    let other_generation = rt.services.views.renderer_generation(other.view).unwrap();
+    let foreign = rt
+        .services
+        .hosts
+        .get::<shell_contract::hosts::OwnedEffectsHost>()
+        .unwrap()
+        .capture_owner(other.view, &other_generation)
+        .unwrap();
+    let other_root = rt.native_root(other.view);
+    let book = rt
+        .invoke_native(
+            "epub:open-file",
+            seed.sender,
+            vec![s(&seed.path)],
+            seed.owner.context.clone(),
+            shell_contract::runtime::CancelToken::default(),
+        )
+        .take()
+        .unwrap()
+        .unwrap();
+    assert_eq!(field(&book, "status"), &s("ok"));
+    let ok = || vec![seed.token.clone(), true.into_ipc()];
+
+    let no_args = acknowledge(&mut rt, seed.sender, vec![], seed.owner.context.clone())
+        .unwrap_err()
+        .message;
+    assert!(no_args.contains("receipt is required"), "{no_args}");
+    let null_receipt = acknowledge(
+        &mut rt,
+        seed.sender,
+        vec![IpcValue::Null, true.into_ipc()],
+        seed.owner.context.clone(),
+    )
+    .unwrap_err()
+    .message;
+    assert!(
+        null_receipt.contains("receipt is required"),
+        "{null_receipt}"
+    );
+    assert!(seed.receipt.settlement().is_none());
+
+    let stale = acknowledge(
+        &mut rt,
+        seed.sender,
+        vec![s("stale-receipt"), true.into_ipc()],
+        seed.owner.context.clone(),
+    )
+    .unwrap_err()
+    .message;
+    assert!(stale.contains("does not match"), "{stale}");
+    assert!(seed.receipt.settlement().is_none());
+
+    let foreign_native = acknowledge(&mut rt, seed.sender, ok(), foreign.context)
+        .unwrap_err()
+        .message;
+    let foreign_view = acknowledge(&mut rt, other, ok(), other_root.context)
+        .unwrap_err()
+        .message;
+    assert!(
+        foreign_view.contains("No EPUB recovery is pending"),
+        "{foreign_view}"
+    );
+    assert!(seed.receipt.settlement().is_none());
+
+    let accepted = acknowledge(&mut rt, seed.sender, ok(), seed.owner.context.clone()).unwrap();
+    assert_eq!(accepted, IpcValue::Null);
+    assert!(matches!(seed.receipt.settlement(), Some(Ok(()))));
+
+    let duplicate = acknowledge(&mut rt, seed.sender, ok(), seed.owner.context.clone())
+        .unwrap_err()
+        .message;
+    assert!(
+        duplicate.contains("No EPUB recovery is pending"),
+        "{duplicate}"
+    );
+    assert!(matches!(seed.receipt.settlement(), Some(Ok(()))));
+
+    shell_contract::native_evidence::record(
+        "epub:recovery-initialized",
+        &[
+            "successful-ack",
+            "missing-receipt",
+            "foreign-receipt",
+            "foreign-renderer",
+            "duplicate-ack",
+        ],
+        &json!({
+            "successful-ack": {
+                "answer": format!("{accepted:?}"),
+                "settled": format!("{:?}", seed.receipt.settlement()),
+            },
+            "missing-receipt": {
+                "withoutArguments": no_args,
+                "nullReceipt": null_receipt,
+                "settledBefore": "None",
+            },
+            "foreign-receipt": { "error": stale, "settledBefore": "None" },
+            "foreign-renderer": {
+                "foreignNativeContext": foreign_native,
+                "viewWithoutRecovery": foreign_view,
+                "settledBefore": "None",
+            },
+            "duplicate-ack": {
+                "error": duplicate,
+                "settledAfter": format!("{:?}", seed.receipt.settlement()),
+            },
+        })
+        .to_string(),
+    );
+}
+
+#[test]
+fn native_evidence_epub_recovery_failed_apply_settles_failure() {
+    let (mut rt, _) = rt(json!({ "engine": { "open": [{ "refused": "drm" }] } }));
+    let seed = seeded(&mut rt, 213, "protected.epub");
+    let refused = rt
+        .invoke_native(
+            "epub:open-file",
+            seed.sender,
+            vec![s(&seed.path)],
+            seed.owner.context.clone(),
+            shell_contract::runtime::CancelToken::default(),
+        )
+        .take()
+        .unwrap()
+        .unwrap();
+    assert_eq!(field(&refused, "reason"), &s("drm"));
+    assert!(seed.receipt.settlement().is_none());
+    let answer = acknowledge(
+        &mut rt,
+        seed.sender,
+        vec![seed.token.clone(), false.into_ipc(), s("drm")],
+        seed.owner.context.clone(),
+    )
+    .unwrap();
+    assert_eq!(answer, IpcValue::Null);
+    assert!(matches!(seed.receipt.settlement(), Some(Err(reason)) if reason == "drm"));
+    let again = acknowledge(
+        &mut rt,
+        seed.sender,
+        vec![seed.token.clone(), true.into_ipc()],
+        seed.owner.context.clone(),
+    )
+    .unwrap_err()
+    .message;
+    assert!(again.contains("No EPUB recovery is pending"), "{again}");
+    assert!(matches!(seed.receipt.settlement(), Some(Err(reason)) if reason == "drm"));
+
+    shell_contract::native_evidence::record(
+        "epub:recovery-initialized",
+        &["failed-apply"],
+        &json!({
+            "failed-apply": {
+                "openAnswer": { "status": "refused", "reason": "drm" },
+                "answer": format!("{answer:?}"),
+                "settled": format!("{:?}", seed.receipt.settlement()),
+                "ackAfterFailure": again,
+            },
+        })
+        .to_string(),
+    );
+}
+
+#[test]
+fn native_evidence_epub_recovery_ack_is_refused_from_another_surface() {
+    let (rt, _) = rt(Value::Null);
+    let foreign = rt.view(5, Surface::Docs);
+    let own = rt.view(6, Surface::Epub);
+    let mut table = shell_core::table::Table::default();
+    let provided = shell_contract::ipc::Registry::provided(&table);
+    for entry in super::entries(&rt.services, &provided).unwrap() {
+        shell_contract::ipc::Registry::register(
+            &mut table,
+            shell_contract::Batch::D2,
+            entry.channel,
+            entry.kind,
+            entry.handler,
+        )
+        .unwrap();
+    }
+    let dispatcher = shell_core::dispatch::Dispatcher::new(table);
+    let dispatch = |from: Sender| {
+        let (send, receive) = std::sync::mpsc::channel();
+        dispatcher.dispatch(
+            from,
+            shell_contract::ipc::ChannelKind::Invoke,
+            Some(shell_contract::RequestId(1)),
+            None,
+            "epub:recovery-initialized",
+            vec![s("token"), true.into_ipc()],
+            Box::new(move |result| send.send(result).unwrap()),
+        );
+        receive.try_recv().unwrap().unwrap_err().message
+    };
+    let refused = dispatch(foreign);
+    assert!(refused.contains("not open to Docs"), "{refused}");
+    let own_surface = dispatch(own);
+    assert!(!own_surface.contains("not open to"), "{own_surface}");
+
+    shell_contract::native_evidence::record(
+        "epub:recovery-initialized",
+        &["unauthorized-surface"],
+        &json!({
+            "unauthorized-surface": {
+                "dispatchedFrom": "Docs",
+                "error": refused,
+                "sameCallFromEpub": own_surface,
+            },
+        })
+        .to_string(),
+    );
+}

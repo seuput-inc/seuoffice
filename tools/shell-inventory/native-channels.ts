@@ -14,6 +14,24 @@ export interface NativeChannelContract {
   }
 }
 
+const ALL_ACK = [
+  'successful-ack',
+  'failed-apply',
+  'missing-receipt',
+  'foreign-receipt',
+  'foreign-renderer',
+  'duplicate-ack',
+  'unauthorized-surface',
+] as const
+/** What one test drives on a pending wait before and after its exact acknowledgement */
+const EXACT_ACK = [
+  'successful-ack',
+  'missing-receipt',
+  'foreign-receipt',
+  'foreign-renderer',
+  'duplicate-ack',
+] as const
+
 /**
  * A renderer's acknowledgement of a recovery copy or a saved input the native
  * shell handed it. The Electron main process registers no handler for any of
@@ -37,15 +55,7 @@ function rendererAck(
     handler,
     reason: `The renderer acknowledges ${what} the native shell handed it; the native wait settles on that exact acknowledgement. The Electron main process registers no handler for this channel.`,
     arguments: args,
-    requiredScenarios: [
-      'successful-ack',
-      'failed-apply',
-      'missing-receipt',
-      'foreign-receipt',
-      'foreign-renderer',
-      'duplicate-ack',
-      'unauthorized-surface',
-    ],
+    requiredScenarios: ALL_ACK,
     synthetic: { suite, sourceCases },
   }
 }
@@ -76,11 +86,11 @@ export const NATIVE_CHANNEL_CONTRACTS: readonly NativeChannelContract[] = [
       suite: 'crates/shell-ipc/d2/src/docs/export/owned/tests.rs',
       sourceCases: [
         {
-          name: 'owned_print_requires_its_pending_token_and_exports_reject_foreign_tokens_before_effects',
+          name: 'native_evidence_owned_print_requires_its_pending_token_and_rejects_foreign_tokens_and_surfaces',
           scenarios: ['missing-token', 'foreign-token', 'unauthorized-surface'],
         },
         {
-          name: 'owned_print_consumes_real_save_scope_and_waits_for_exact_ack_or_owner_loss',
+          name: 'native_evidence_owned_print_consumes_real_save_scope_and_waits_for_exact_ack_or_owner_loss',
           scenarios: ['normal-completion', 'owner-loss', 'effect-failure'],
         },
       ],
@@ -108,17 +118,18 @@ export const NATIVE_CHANNEL_CONTRACTS: readonly NativeChannelContract[] = [
       suite: 'crates/shell-ipc/d2/src/pdf/editor/recovery_open/tests.rs',
       sourceCases: [
         {
-          name: 'captured_recovery_completes_before_navigation_and_revocation_blocks_seed',
+          name: 'native_evidence_captured_recovery_completes_before_navigation_and_revocation_blocks_seed',
           scenarios: [
             'ordinary-empty',
             'captured-consume',
             'duplicate-consume',
             'foreign-renderer',
             'preparation-loss',
+            'renderer-apply',
           ],
         },
         {
-          name: 'recovery_routes_reject_foreign_surface_in_the_real_dispatcher',
+          name: 'native_evidence_recovery_routes_reject_foreign_surface_in_the_real_dispatcher',
           scenarios: ['unauthorized-surface'],
         },
       ],
@@ -148,7 +159,7 @@ export const NATIVE_CHANNEL_CONTRACTS: readonly NativeChannelContract[] = [
       suite: 'crates/shell-ipc/d2/src/pdf/editor/recovery_open/tests.rs',
       sourceCases: [
         {
-          name: 'captured_recovery_completes_before_navigation_and_revocation_blocks_seed',
+          name: 'native_evidence_captured_recovery_completes_before_navigation_and_revocation_blocks_seed',
           scenarios: [
             'successful-ack',
             'missing-token',
@@ -157,10 +168,11 @@ export const NATIVE_CHANNEL_CONTRACTS: readonly NativeChannelContract[] = [
             'duplicate-ack',
             'parse-failure',
             'revision-loss',
+            'renderer-apply',
           ],
         },
         {
-          name: 'recovery_routes_reject_foreign_surface_in_the_real_dispatcher',
+          name: 'native_evidence_recovery_routes_reject_foreign_surface_in_the_real_dispatcher',
           scenarios: ['unauthorized-surface'],
         },
       ],
@@ -187,11 +199,11 @@ export const NATIVE_CHANNEL_CONTRACTS: readonly NativeChannelContract[] = [
       suite: 'crates/shell-ipc/d1/src/sheets/tests.rs',
       sourceCases: [
         {
-          name: 'saved_open_result_rejects_acknowledgements_without_identity_result_or_a_consistent_error',
+          name: 'native_evidence_workbook_saved_open_result_rejects_malformed_acknowledgements_and_unmatched_openings',
           scenarios: ['missing-identity', 'missing-result', 'inconsistent-error', 'no-opening'],
         },
         {
-          name: 'saved_open_result_needs_native_authority_and_a_live_tab',
+          name: 'native_evidence_workbook_saved_open_result_needs_native_authority_and_a_live_tab',
           scenarios: ['missing-native-authority', 'closed-tab'],
         },
       ],
@@ -206,8 +218,16 @@ export const NATIVE_CHANNEL_CONTRACTS: readonly NativeChannelContract[] = [
     'crates/shell-ipc/d1/src/diagram/tests.rs',
     [
       {
-        name: 'recovery_file_waits_for_exact_renderer_and_initialized_ack',
-        scenarios: ['successful-ack', 'foreign-renderer'],
+        name: 'native_evidence_diagram_recovery_initialized_settles_only_the_exact_ack',
+        scenarios: EXACT_ACK,
+      },
+      {
+        name: 'native_evidence_diagram_recovery_initialized_failed_apply_settles_the_wait_as_failure',
+        scenarios: ['failed-apply'],
+      },
+      {
+        name: 'native_evidence_diagram_recovery_initialized_is_refused_to_other_surfaces',
+        scenarios: ['unauthorized-surface'],
       },
     ],
   ),
@@ -218,7 +238,20 @@ export const NATIVE_CHANNEL_CONTRACTS: readonly NativeChannelContract[] = [
     RECOVERY_COPY,
     ['token', 'ok', 'error?'],
     'crates/shell-ipc/d1/src/mindmap/tests.rs',
-    [],
+    [
+      {
+        name: 'native_evidence_mindmap_recovery_initialized_settles_only_the_exact_ack',
+        scenarios: EXACT_ACK,
+      },
+      {
+        name: 'native_evidence_mindmap_recovery_initialized_failed_apply_settles_the_wait_as_failure',
+        scenarios: ['failed-apply'],
+      },
+      {
+        name: 'native_evidence_mindmap_recovery_initialized_is_refused_to_other_surfaces',
+        scenarios: ['unauthorized-surface'],
+      },
+    ],
   ),
   rendererAck(
     'slides:recovery-initialized',
@@ -227,7 +260,24 @@ export const NATIVE_CHANNEL_CONTRACTS: readonly NativeChannelContract[] = [
     RECOVERY_COPY,
     ['token', 'ok', 'error?'],
     'crates/shell-ipc/d1/src/slides/tests.rs',
-    [{ name: 'selected_recovery_decision_opens_the_selected_deck', scenarios: ['successful-ack'] }],
+    [
+      {
+        name: 'native_evidence_slides_recovery_ack_settles_the_wait_once_for_the_exact_receipt',
+        scenarios: ['successful-ack', 'missing-receipt', 'foreign-receipt', 'duplicate-ack'],
+      },
+      {
+        name: 'native_evidence_slides_recovery_ack_failure_settles_the_wait_as_failure',
+        scenarios: ['failed-apply'],
+      },
+      {
+        name: 'native_evidence_slides_recovery_ack_from_a_foreign_renderer_is_refused',
+        scenarios: ['foreign-renderer'],
+      },
+      {
+        name: 'native_evidence_slides_recovery_ack_is_closed_to_other_surfaces_in_the_real_dispatcher',
+        scenarios: ['unauthorized-surface'],
+      },
+    ],
   ),
   rendererAck(
     'docs:recovery-initialized',
@@ -238,12 +288,18 @@ export const NATIVE_CHANNEL_CONTRACTS: readonly NativeChannelContract[] = [
     'crates/shell-ipc/d2/src/docs/tests.rs',
     [
       {
-        name: 'blank_recovery_waits_for_authenticated_renderer_initialization',
-        scenarios: ['successful-ack', 'foreign-renderer'],
+        name: 'native_evidence_docs_recovery_initialized_settles_only_the_exact_authenticated_ack',
+        scenarios: [
+          'successful-ack',
+          'missing-receipt',
+          'foreign-receipt',
+          'foreign-renderer',
+          'unauthorized-surface',
+        ],
       },
       {
-        name: 'captured_recovery_waits_for_real_copy_preparation_before_navigation',
-        scenarios: ['successful-ack'],
+        name: 'native_evidence_docs_recovery_initialized_failed_ack_settles_failure_once',
+        scenarios: ['failed-apply', 'duplicate-ack'],
       },
     ],
   ),
@@ -256,12 +312,16 @@ export const NATIVE_CHANNEL_CONTRACTS: readonly NativeChannelContract[] = [
     'crates/shell-ipc/d2/src/epub/tests.rs',
     [
       {
-        name: 'native_recovery_requires_the_registered_renderer_and_real_book_before_ack',
-        scenarios: ['successful-ack', 'foreign-renderer'],
+        name: 'native_evidence_epub_recovery_ack_settles_only_the_exact_receipt',
+        scenarios: EXACT_ACK,
       },
       {
-        name: 'native_recovery_refusal_settles_failure_without_a_book',
+        name: 'native_evidence_epub_recovery_failed_apply_settles_failure',
         scenarios: ['failed-apply'],
+      },
+      {
+        name: 'native_evidence_epub_recovery_ack_is_refused_from_another_surface',
+        scenarios: ['unauthorized-surface'],
       },
     ],
   ),
@@ -274,8 +334,16 @@ export const NATIVE_CHANNEL_CONTRACTS: readonly NativeChannelContract[] = [
     'crates/shell-ipc/d2/src/hwp/editor/tests.rs',
     [
       {
-        name: 'recovery_receipt_waits_for_the_matching_initialized_document',
-        scenarios: ['successful-ack', 'foreign-receipt'],
+        name: 'native_evidence_hwp_recovery_ack_settles_only_the_exact_receipt',
+        scenarios: EXACT_ACK,
+      },
+      {
+        name: 'native_evidence_hwp_recovery_failed_apply_settles_failure',
+        scenarios: ['failed-apply'],
+      },
+      {
+        name: 'native_evidence_hwp_recovery_ack_is_refused_from_another_surface',
+        scenarios: ['unauthorized-surface'],
       },
     ],
   ),
@@ -286,12 +354,7 @@ export const NATIVE_CHANNEL_CONTRACTS: readonly NativeChannelContract[] = [
     RECOVERY_APPLIED,
     ['result'],
     'crates/shell-ipc/d2/src/html/tests.rs',
-    [
-      {
-        name: 'recovery_restore_reads_before_load_and_delivers_only_to_reserved_renderer',
-        scenarios: ['successful-ack', 'foreign-renderer'],
-      },
-    ],
+    [{ name: 'native_evidence_html_recovery_applied', scenarios: ALL_ACK }],
   ),
   rendererAck(
     'html:saved-input-applied',
@@ -300,7 +363,7 @@ export const NATIVE_CHANNEL_CONTRACTS: readonly NativeChannelContract[] = [
     SAVED_INPUT,
     ['result'],
     'crates/shell-ipc/d2/src/html/tests.rs',
-    [],
+    [{ name: 'native_evidence_html_saved_input_applied', scenarios: ALL_ACK }],
   ),
   rendererAck(
     'markdown:recovery-applied',
@@ -309,7 +372,7 @@ export const NATIVE_CHANNEL_CONTRACTS: readonly NativeChannelContract[] = [
     RECOVERY_APPLIED,
     ['result'],
     'crates/shell-ipc/d2/src/markdown/tests.rs',
-    [],
+    [{ name: 'native_evidence_markdown_recovery_applied', scenarios: ALL_ACK }],
   ),
   rendererAck(
     'markdown:saved-input-applied',
@@ -318,6 +381,6 @@ export const NATIVE_CHANNEL_CONTRACTS: readonly NativeChannelContract[] = [
     SAVED_INPUT,
     ['result'],
     'crates/shell-ipc/d2/src/markdown/tests.rs',
-    [],
+    [{ name: 'native_evidence_markdown_saved_input_applied', scenarios: ALL_ACK }],
   ),
 ]

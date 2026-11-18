@@ -8,7 +8,8 @@ use shell_contract::{IpcValue, Surface};
 use std::sync::{Arc, Mutex};
 
 #[test]
-fn owned_print_requires_its_pending_token_and_exports_reject_foreign_tokens_before_effects() {
+fn native_evidence_owned_print_requires_its_pending_token_and_rejects_foreign_tokens_and_surfaces()
+{
     let fake = Fake::new(&json!({}));
     let installed = fake.clone();
     let mut rt = Rt::new(move |hosts| {
@@ -64,14 +65,8 @@ fn owned_print_requires_its_pending_token_and_exports_reject_foreign_tokens_befo
         ],
         Box::new(move |result| send.send(result).unwrap()),
     );
-    assert!(
-        receive
-            .try_recv()
-            .unwrap()
-            .unwrap_err()
-            .message
-            .contains("not open to Pdf")
-    );
+    let unauthorized = receive.try_recv().unwrap().unwrap_err();
+    assert!(unauthorized.message.contains("not open to Pdf"));
     let target = rt
         .dir
         .join("not-written.html")
@@ -154,6 +149,7 @@ fn owned_print_requires_its_pending_token_and_exports_reject_foreign_tokens_befo
             ],
         ),
     ];
+    let mut refused = serde_json::Map::new();
     for (channel, arguments) in calls {
         let error = rt.invoke_now(channel, sender, arguments).unwrap_err();
         assert!(
@@ -161,6 +157,7 @@ fn owned_print_requires_its_pending_token_and_exports_reject_foreign_tokens_befo
             "{channel}: {}",
             error.message
         );
+        refused.insert(channel.into(), error.message.into());
     }
     assert!(!std::path::Path::new(&target).exists());
     assert!(
@@ -170,6 +167,20 @@ fn owned_print_requires_its_pending_token_and_exports_reject_foreign_tokens_befo
             .iter()
             .all(|call| !call.to_string().contains("merge_pdfs")
                 && !call.to_string().contains("convert_to_hwp"))
+    );
+    shell_contract::native_evidence::record(
+        "docs:owned-print-pdf-buffer",
+        &["missing-token", "foreign-token", "unauthorized-surface"],
+        &json!({
+            "missing-token": { "error": missing.message },
+            "foreign-token": {
+                "errors": refused,
+                "target-written": false,
+                "pdf-merge-or-hwp-effect-called": false,
+            },
+            "unauthorized-surface": { "error": unauthorized.message },
+        })
+        .to_string(),
     );
 }
 
@@ -450,7 +461,7 @@ fn headless_html_and_markdown_use_real_invocation_and_abort_before_publication()
 }
 
 #[test]
-fn owned_print_consumes_real_save_scope_and_waits_for_exact_ack_or_owner_loss() {
+fn native_evidence_owned_print_consumes_real_save_scope_and_waits_for_exact_ack_or_owner_loss() {
     use crate::{kit::field, testing::HostCall};
     use shell_contract::{
         editors::{DocumentEditors, SaveMode},
@@ -458,6 +469,7 @@ fn owned_print_consumes_real_save_scope_and_waits_for_exact_ack_or_owner_loss() 
         runtime::CancelToken,
     };
     use std::{cell::RefCell, rc::Rc};
+    let mut observed = serde_json::Map::new();
     for scenario in ["normal-completion", "owner-loss", "effect-failure"] {
         let fake = Fake::new(&json!({}));
         let installed = fake.clone();
@@ -541,6 +553,14 @@ fn owned_print_consumes_real_save_scope_and_waits_for_exact_ack_or_owner_loss() 
                     .calls
                     .contains(&HostCall::PrintToPdf(sender.view))
             );
+            observed.insert(
+                scenario.into(),
+                json!({
+                    "print-answer": "error",
+                    "save-request-settled": "error",
+                    "printToPDF-called": false,
+                }),
+            );
         } else {
             let printed = printed.unwrap();
             assert_eq!(
@@ -583,7 +603,26 @@ fn owned_print_consumes_real_save_scope_and_waits_for_exact_ack_or_owner_loss() 
                 request_cancel.clone(),
             );
             assert_eq!(result.borrow_mut().take().unwrap().unwrap(), saved);
+            let answer = if saved {
+                json!({ "ok": true, "base64": "JVBERiBvd25lZCByZXN1bHQ=" })
+            } else {
+                json!({ "ok": false, "error": crate::kit::as_str(field(&printed, "error")).unwrap() })
+            };
+            observed.insert(
+                scenario.into(),
+                json!({
+                    "print-answer": answer,
+                    "foreign-save-result-ignored": true,
+                    "exact-save-result-settled-with": saved,
+                    "printToPDF-calls": 1,
+                }),
+            );
         }
         assert!(!request_cancel.is_cancelled());
     }
+    shell_contract::native_evidence::record(
+        "docs:owned-print-pdf-buffer",
+        &["normal-completion", "owner-loss", "effect-failure"],
+        &serde_json::Value::Object(observed).to_string(),
+    );
 }

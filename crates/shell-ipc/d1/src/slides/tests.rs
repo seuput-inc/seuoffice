@@ -2207,118 +2207,355 @@ fn recovery_identity_tracks_the_live_untitled_deck() {
     assert_eq!(views.recovery_identity(sender.view), Some(first));
 }
 
-#[test]
-fn selected_recovery_decision_opens_the_selected_deck() {
-    use main_core::packages::electron_utils::recovery_contract::{
-        RecoveryEditorContract, RecoveryOpenDecision, RecoveryOpenFileRequest,
-    };
-    use main_core::packages::electron_utils::recovery_store::RecoveryWriteOptions;
+/// A deck opened through a selected recovery copy: the renderer was handed the
+/// copy and owes the native shell its acknowledgement.
+struct AwaitingAck {
+    kit: Kit,
+    registry: TestRegistry,
+    sender: shell_contract::ipc::Sender,
+    owner: shell_contract::ipc::NativeRequestOwner,
+    _target: shell_contract::ipc::RecoveryOpenTarget,
+    receipt: shell_contract::ipc::RecoverySeedReceipt,
+    token: String,
+}
 
-    let (kit, registry, sender, dir) = setup("slides-selected-recovery");
-    let original = dir.join("original.pptx");
-    std::fs::write(
-        &original,
-        b"FAKEPPTX 9144000 5143500 1\nppt/slides/slide1.xml 0 \n",
-    )
-    .unwrap();
-    let path = original.to_string_lossy().into_owned();
-    let views = super::views().unwrap();
-    let identity = super::recovery::file_recovery_id(&path);
-    views.0.with_recovery_store(|store| {
-        store
-            .write_copy(
-                &identity,
-                b"FAKEPPTX 10000000 5143500 1\nppt/slides/slide1.xml 0 \n",
-                &RecoveryWriteOptions::default(),
+impl AwaitingAck {
+    fn new(name: &str) -> Self {
+        use main_core::packages::electron_utils::recovery_contract::{
+            RecoveryEditorContract, RecoveryOpenDecision, RecoveryOpenFileRequest,
+        };
+        use main_core::packages::electron_utils::recovery_store::RecoveryWriteOptions;
+
+        let (kit, registry, sender, dir) = setup(name);
+        let original = dir.join("original.pptx");
+        std::fs::write(
+            &original,
+            b"FAKEPPTX 9144000 5143500 1\nppt/slides/slide1.xml 0 \n",
+        )
+        .unwrap();
+        let path = original.to_string_lossy().into_owned();
+        let views = super::views().unwrap();
+        let identity = super::recovery::file_recovery_id(&path);
+        views.0.with_recovery_store(|store| {
+            store
+                .write_copy(
+                    &identity,
+                    b"FAKEPPTX 10000000 5143500 1\nppt/slides/slide1.xml 0 \n",
+                    &RecoveryWriteOptions::default(),
+                )
+                .unwrap();
+        });
+        let synthetic =
+            kit.host::<std::sync::Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>();
+        let generation = kit.services.views.renderer_generation(sender.view).unwrap();
+        let owner = synthetic
+            .capture_invocation_root(
+                sender.view,
+                &generation,
+                &shell_contract::hosts::synthetic::SyntheticNativeOrigin::new(),
             )
             .unwrap();
-    });
-    let synthetic =
-        kit.host::<std::sync::Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>();
-    let generation = kit.services.views.renderer_generation(sender.view).unwrap();
-    let owner = synthetic
-        .capture_invocation_root(
+        let cancel = shell_contract::runtime::CancelToken::default();
+        let (_issuer, reservation, browser_owner) =
+            shell_contract::ipc::NativeClosureIssuer::new_with_owner(
+                sender.view,
+                generation.clone(),
+            );
+        let target = shell_contract::ipc::RecoveryOpenTarget::bind(
+            shell_contract::ipc::RecoveryOpenContext::Renderer {
+                source: owner.clone(),
+                participants: vec![],
+                cancel: cancel.clone(),
+                pending: cancel,
+            },
             sender.view,
+            generation,
+            reservation,
+            browser_owner,
+        )
+        .unwrap();
+        let finished = Rc::new(RefCell::new(None));
+        let outcome = finished.clone();
+        views.open_file_with_decision(
+            &sender.view,
+            &RecoveryOpenFileRequest {
+                file_path: path,
+                decision: RecoveryOpenDecision::Restore,
+            },
+            &target,
+            Box::new(move |result| *outcome.borrow_mut() = Some(result)),
+        );
+        assert!(finished.borrow_mut().take().unwrap().is_ok());
+        target.retain_native_registration(owner.clone()).unwrap();
+        let (send, receive) = std::sync::mpsc::channel();
+        let cx = shell_contract::ipc::CallContext {
+            sender,
+            request: None,
+            cancel: shell_contract::runtime::CancelToken::default(),
+            native: Some(owner.context.clone()),
+        };
+        registry
+            .handlers
+            .get("slides:consume-pending-open")
+            .unwrap()
+            .1
+            .call(
+                &cx,
+                vec![num(960.0)],
+                shell_contract::ipc::Responder::new(move |result| {
+                    let _ = send.send(result);
+                }),
+            );
+        let opened = receive.try_recv().unwrap().unwrap();
+        assert_eq!(field(field(&opened, "size"), "cx"), &num(10000000.0));
+        let token = match field(&opened, "recoveryToken") {
+            IpcValue::String(token) => token.clone(),
+            other => panic!("missing recovery token: {other:?}"),
+        };
+        let receipt = target.committed_seed().unwrap();
+        assert!(receipt.settlement().is_none());
+        AwaitingAck {
+            kit,
+            registry,
+            sender,
+            owner,
+            _target: target,
+            receipt,
+            token,
+        }
+    }
+
+    /// `slides:recovery-initialized` from the renderer the copy was handed to.
+    fn ack(&self, args: Vec<IpcValue>) -> Result<IpcValue, shell_contract::IpcError> {
+        crate::testkit::start_with_owner(
+            &self.registry,
+            self.sender,
+            "slides:recovery-initialized",
+            args,
+            &self.owner,
+            shell_contract::runtime::CancelToken::default(),
+        )
+        .try_recv()
+        .expect("the acknowledgement answers")
+    }
+}
+
+const NOTHING_AWAITED: &str = "No presentation recovery is awaiting initialization";
+
+#[test]
+fn selected_recovery_decision_opens_the_selected_deck() {
+    let w = AwaitingAck::new("slides-selected-recovery");
+    assert!(w.ack(vec![string("stale"), IpcValue::Bool(true)]).is_err());
+    assert!(w.receipt.settlement().is_none());
+    assert!(w.ack(vec![string(&w.token), IpcValue::Bool(true)]).is_ok());
+    assert!(w.receipt.settlement().unwrap().is_ok());
+}
+
+#[test]
+fn native_evidence_slides_recovery_ack_settles_the_wait_once_for_the_exact_receipt() {
+    let w = AwaitingAck::new("slides-recovery-ack-exact");
+    let token_required = "The recovery acknowledgement token is required";
+    let missing = [
+        w.ack(vec![]).unwrap_err().message,
+        w.ack(vec![IpcValue::Bool(true)]).unwrap_err().message,
+    ];
+    for answer in &missing {
+        assert_eq!(answer, token_required);
+    }
+    assert!(w.receipt.settlement().is_none());
+
+    let foreign = w
+        .ack(vec![string("stale"), IpcValue::Bool(true)])
+        .unwrap_err()
+        .message;
+    assert_eq!(
+        foreign,
+        "The recovery acknowledgement belongs to another presentation"
+    );
+    assert!(w.receipt.settlement().is_none());
+
+    let accepted = w.ack(vec![string(&w.token), IpcValue::Bool(true)]).unwrap();
+    assert_eq!(accepted, IpcValue::Null);
+    assert_eq!(w.receipt.settlement(), Some(Ok(())));
+
+    let duplicate = w
+        .ack(vec![string(&w.token), IpcValue::Bool(true)])
+        .unwrap_err()
+        .message;
+    assert_eq!(duplicate, NOTHING_AWAITED);
+    let duplicate_failure = w
+        .ack(vec![
+            string(&w.token),
+            IpcValue::Bool(false),
+            string("too late"),
+        ])
+        .unwrap_err()
+        .message;
+    assert_eq!(duplicate_failure, NOTHING_AWAITED);
+    assert_eq!(w.receipt.settlement(), Some(Ok(())));
+    shell_contract::native_evidence::record(
+        "slides:recovery-initialized",
+        &[
+            "successful-ack",
+            "missing-receipt",
+            "foreign-receipt",
+            "duplicate-ack",
+        ],
+        &serde_json::json!({
+            "missing-receipt": { "refused": missing, "settled": false },
+            "foreign-receipt": { "refused": foreign, "settled": false },
+            "successful-ack": { "answer": "null", "settlement": "ok" },
+            "duplicate-ack": {
+                "refused": [duplicate, duplicate_failure],
+                "settlement": "ok",
+            },
+        })
+        .to_string(),
+    );
+}
+
+#[test]
+fn native_evidence_slides_recovery_ack_failure_settles_the_wait_as_failure() {
+    let w = AwaitingAck::new("slides-recovery-ack-failed");
+    let answer = w
+        .ack(vec![
+            string(&w.token),
+            IpcValue::Bool(false),
+            string("the renderer could not apply the copy"),
+        ])
+        .unwrap();
+    assert_eq!(answer, IpcValue::Null);
+    let settlement = w.receipt.settlement().expect("the wait settled");
+    let error = settlement.expect_err("the wait settled as a failure");
+    assert!(
+        error.contains("the renderer could not apply the copy"),
+        "{error}"
+    );
+    // the failed apply released the pending acknowledgement
+    let retry = w
+        .ack(vec![string(&w.token), IpcValue::Bool(true)])
+        .unwrap_err()
+        .message;
+    assert_eq!(retry, NOTHING_AWAITED);
+    assert_eq!(w.receipt.settlement(), Some(Err(error.clone())));
+    shell_contract::native_evidence::record(
+        "slides:recovery-initialized",
+        &["failed-apply"],
+        &serde_json::json!({
+            "failed-apply": {
+                "answer": "null",
+                "settlement": { "error": error },
+                "retry": { "refused": retry },
+            },
+        })
+        .to_string(),
+    );
+}
+
+#[test]
+fn native_evidence_slides_recovery_ack_from_a_foreign_renderer_is_refused() {
+    let w = AwaitingAck::new("slides-recovery-ack-foreign-renderer");
+    let right = || vec![string(&w.token), IpcValue::Bool(true)];
+
+    // another view of the shell holds no recovery of its own
+    let other = w.kit.view(2, Surface::Slides);
+    let other_view =
+        crate::testkit::start(&w.registry, other, "slides:recovery-initialized", right())
+            .try_recv()
+            .expect("the acknowledgement answers")
+            .unwrap_err()
+            .message;
+    assert_eq!(other_view, NOTHING_AWAITED);
+    assert!(w.receipt.settlement().is_none());
+
+    // the same view, but a capability of an origin that is not the one the copy was handed to
+    let synthetic = w
+        .kit
+        .host::<std::sync::Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>();
+    let generation = w
+        .kit
+        .services
+        .views
+        .renderer_generation(w.sender.view)
+        .unwrap();
+    let stranger = synthetic
+        .capture_invocation_root(
+            w.sender.view,
             &generation,
             &shell_contract::hosts::synthetic::SyntheticNativeOrigin::new(),
         )
         .unwrap();
-    let cancel = shell_contract::runtime::CancelToken::default();
-    let (_issuer, reservation, browser_owner) =
-        shell_contract::ipc::NativeClosureIssuer::new_with_owner(sender.view, generation.clone());
-    let target = shell_contract::ipc::RecoveryOpenTarget::bind(
-        shell_contract::ipc::RecoveryOpenContext::Renderer {
-            source: owner.clone(),
-            participants: vec![],
-            cancel: cancel.clone(),
-            pending: cancel,
-        },
-        sender.view,
-        generation,
-        reservation,
-        browser_owner,
+    let other_origin = crate::testkit::start_with_owner(
+        &w.registry,
+        w.sender,
+        "slides:recovery-initialized",
+        right(),
+        &stranger,
+        shell_contract::runtime::CancelToken::default(),
+    )
+    .try_recv()
+    .expect("the acknowledgement answers")
+    .unwrap_err()
+    .message;
+    assert!(w.receipt.settlement().is_none());
+
+    // the registered renderer's own acknowledgement still settles the wait
+    w.ack(right()).unwrap();
+    assert_eq!(w.receipt.settlement(), Some(Ok(())));
+    shell_contract::native_evidence::record(
+        "slides:recovery-initialized",
+        &["foreign-renderer"],
+        &serde_json::json!({
+            "foreign-renderer": {
+                "other-view": { "refused": other_view },
+                "other-origin": { "refused": other_origin },
+                "settled-by-foreign-ack": false,
+                "registered-renderer-settlement": "ok",
+            },
+        })
+        .to_string(),
+    );
+}
+
+#[test]
+fn native_evidence_slides_recovery_ack_is_closed_to_other_surfaces_in_the_real_dispatcher() {
+    let w = AwaitingAck::new("slides-recovery-ack-surface");
+    let foreign = w.kit.view(5, Surface::Docs);
+    let mut table = shell_core::table::Table::default();
+    let (kind, handler) = &w.registry.handlers["slides:recovery-initialized"];
+    shell_contract::ipc::Registry::register(
+        &mut table,
+        shell_contract::Batch::D1,
+        "slides:recovery-initialized",
+        *kind,
+        handler.clone(),
     )
     .unwrap();
-    let finished = Rc::new(RefCell::new(None));
-    let outcome = finished.clone();
-    views.open_file_with_decision(
-        &sender.view,
-        &RecoveryOpenFileRequest {
-            file_path: path,
-            decision: RecoveryOpenDecision::Restore,
-        },
-        &target,
-        Box::new(move |result| *outcome.borrow_mut() = Some(result)),
-    );
-    assert!(finished.borrow_mut().take().unwrap().is_ok());
-    target.retain_native_registration(owner.clone()).unwrap();
+    let dispatcher = shell_core::dispatch::Dispatcher::new(table);
     let (send, receive) = std::sync::mpsc::channel();
-    let cx = shell_contract::ipc::CallContext {
-        sender,
-        request: None,
-        cancel: shell_contract::runtime::CancelToken::default(),
-        native: Some(owner.context.clone()),
-    };
-    registry
-        .handlers
-        .get("slides:consume-pending-open")
-        .unwrap()
-        .1
-        .call(
-            &cx,
-            vec![num(960.0)],
-            shell_contract::ipc::Responder::new(move |result| {
-                let _ = send.send(result);
-            }),
-        );
-    let opened = receive.try_recv().unwrap().unwrap();
-    assert_eq!(field(field(&opened, "size"), "cx"), &num(10000000.0));
-    let token = match field(&opened, "recoveryToken") {
-        IpcValue::String(token) => token.clone(),
-        other => panic!("missing recovery token: {other:?}"),
-    };
-    let receipt = target.committed_seed().unwrap();
-    assert!(receipt.settlement().is_none());
-    let failed = crate::testkit::start_with_owner(
-        &registry,
-        sender,
+    dispatcher.dispatch(
+        foreign,
+        shell_contract::ipc::ChannelKind::Invoke,
+        Some(shell_contract::RequestId(1)),
+        None,
         "slides:recovery-initialized",
-        vec![string("stale"), IpcValue::Bool(true)],
-        &owner,
-        shell_contract::runtime::CancelToken::default(),
+        vec![string(&w.token), IpcValue::Bool(true)],
+        Box::new(move |result| send.send(result).unwrap()),
     );
-    assert!(failed.try_recv().unwrap().is_err());
-    assert!(receipt.settlement().is_none());
-    let acknowledged = crate::testkit::start_with_owner(
-        &registry,
-        sender,
+    let refused = receive.try_recv().unwrap().unwrap_err().message;
+    assert!(refused.contains("not open to Docs"), "{refused}");
+    // the handler never ran: the wait is still pending and the renderer's own ack settles it
+    assert!(w.receipt.settlement().is_none());
+    w.ack(vec![string(&w.token), IpcValue::Bool(true)]).unwrap();
+    assert_eq!(w.receipt.settlement(), Some(Ok(())));
+    shell_contract::native_evidence::record(
         "slides:recovery-initialized",
-        vec![string(token), IpcValue::Bool(true)],
-        &owner,
-        shell_contract::runtime::CancelToken::default(),
+        &["unauthorized-surface"],
+        &serde_json::json!({
+            "unauthorized-surface": { "refused": refused, "settled-by-foreign-surface": false },
+        })
+        .to_string(),
     );
-    assert!(acknowledged.try_recv().unwrap().is_ok());
-    assert!(receipt.settlement().unwrap().is_ok());
 }
 
 #[test]

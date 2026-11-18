@@ -296,7 +296,24 @@ jobs:
           path: tools/main-diff/out
           if-no-files-found: ignore
 
-      # All six batches must cover their handlers and emitted events.
+      # The native-only contracts have no Electron oracle: their synthetic
+      # evidence is the receipts the `native_evidence_` tests write when every
+      # assertion of a scenario passed (shell_contract::native_evidence).
+      - name: Native synthetic evidence
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          SEUOFFICE_NATIVE_EVIDENCE: ${{ github.workspace }}/tools/ipc-diff/out/native-evidence
+          SEUOFFICE_TEST_SCRATCH: ${{ runner.temp }}/evidence-test-scratch
+          SEUOFFICE_NATIVE_TEST_SCRATCH: ${{ runner.temp }}/evidence-native-test-scratch
+        run: |
+          rm -rf "$SEUOFFICE_NATIVE_EVIDENCE"
+          mkdir -p "$SEUOFFICE_NATIVE_EVIDENCE" "$SEUOFFICE_TEST_SCRATCH" "$SEUOFFICE_NATIVE_TEST_SCRATCH"
+          cargo test --manifest-path crates/Cargo.toml -p shell-ipc-d1 -p shell-ipc-d2 --no-fail-fast native_evidence_
+          node tools/ipc-diff/native-evidence.mjs "$SEUOFFICE_NATIVE_EVIDENCE" tools/ipc-diff/out/native-evidence.json
+
+      # All six batches must cover their handlers and emitted events, and the
+      # native-only contracts their synthetic and native-host evidence.
       - name: IPC comparison
         if: ${{ !cancelled() }}
         timeout-minutes: 30
@@ -305,7 +322,11 @@ jobs:
           npm --prefix tools/ipc-diff run typecheck
           npm --prefix tools/ipc-diff run test
           mkdir -p tools/ipc-diff/out
-          npm --prefix tools/ipc-diff run gate -- --show 40 --require W --require U --require A --require M --require D1 --require D2 2>&1 | tee tools/ipc-diff/out/gate.txt
+          evidence=()
+          if [ -f tools/ipc-diff/out/native-evidence.json ]; then
+            evidence=(--native-evidence "$PWD/tools/ipc-diff/out/native-evidence.json")
+          fi
+          npm --prefix tools/ipc-diff run gate -- --show 40 --require W --require U --require A --require M --require D1 --require D2 "${evidence[@]}" 2>&1 | tee tools/ipc-diff/out/gate.txt
 
       - name: Keep the IPC comparison
         if: ${{ always() }}

@@ -1758,3 +1758,30 @@ fn superseded_markdown_seed_never_retires_a_current_or_successor_seed() {
     receipt.retire_superseded(&proof).unwrap();
     assert_eq!(md(&rt).seeds.get(target.view).as_deref(), Some("successor"));
 }
+
+/// The acknowledgements carry one `result`; the drivers say what each scenario keys on
+const ACK_APP: crate::html::ack_evidence::App = crate::html::ack_evidence::App {
+    name: "markdown",
+    surface: Surface::Markdown,
+    sibling: Surface::Html,
+    hosts: |hosts| {
+        crate::text_recovery::test_hosts(hosts);
+        super::fakes(hosts, &json!({}))
+    },
+    entries: super::entries,
+    track: view_on,
+    file: note,
+};
+
+#[test]
+fn native_evidence_markdown_recovery_applied() {
+    let observed = crate::html::ack_evidence::recovery_acks(&ACK_APP);
+    crate::html::ack_evidence::record(&ACK_APP, "recovery-applied", &observed);
+}
+
+#[cfg(unix)]
+#[test]
+fn native_evidence_markdown_saved_input_applied() {
+    let observed = crate::html::ack_evidence::saved_input_acks(&ACK_APP);
+    crate::html::ack_evidence::record(&ACK_APP, "saved-input-applied", &observed);
+}
