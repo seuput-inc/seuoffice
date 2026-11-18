@@ -2092,12 +2092,15 @@ fn prepare_menu_for(
         seams_of(provided),
     );
     if let Some((items, view)) = super::doc_links::file_menu(kind) {
-        if let MenuTarget::Captured(expected) = target
-            && expected != Some(view)
-        {
-            return Err("activation document-link target changed before menu preparation".into());
+        // An activation is prepared before its tab is committed, so the live tab of this kind
+        // can still be the previous one (opening a Markdown file over an active Markdown tab).
+        // Its entries carry that tab's authority and must not ride on the activated menu: the
+        // activated menu goes without them, and the refresh that follows the commit adds the
+        // entries of the new tab (the shown signature still names the old one).
+        let foreign = matches!(target, MenuTarget::Captured(expected) if expected != Some(view));
+        if !foreign {
+            ctx.doc_links = doc_link_nodes(&items, view);
         }
-        ctx.doc_links = doc_link_nodes(&items, view);
     }
     Ok((menu_for(kind, &ctx), ctx.labels.check_updates().to_owned()))
 }

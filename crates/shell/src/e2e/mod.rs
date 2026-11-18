@@ -195,7 +195,6 @@ pub fn run(context: &HostContext) -> Result<(), String> {
     };
     let report = report::Report::create(&loaded.request.out)?;
     let context = context.clone();
-    watch_core();
     std::thread::Builder::new()
         .name("e2e".into())
         .spawn(move || {
@@ -216,25 +215,39 @@ pub fn run(context: &HostContext) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-/// A core thread that stops answering is what every hang of the first real runs looked like
-/// from outside. [`core_watch`] asks it every second and writes the first late answer into the
-/// trace, with the IPC handler it was inside and, on macOS, the stacks of the process.
-fn watch_core() {
+/// A core or UI thread that stops answering is what every hang of the first real runs looked
+/// like from outside. From the start of the app (the first window may be what hangs) one
+/// thread asks each of them every second and writes the first late answer into the trace: for
+/// the core thread with the IPC handler it was inside, and on macOS with the stacks of the
+/// process. A no-op without `--e2e`.
+pub fn watch(app: &tauri::AppHandle) {
+    if request().is_none() {
+        return;
+    }
+    let app = app.clone();
     let spawned = std::thread::Builder::new()
-        .name("e2e-core-watch".into())
-        .spawn(core_watch);
+        .name("e2e-watch".into())
+        .spawn(move || watch_threads(&app));
     if let Err(error) = spawned {
-        eprintln!("shell: e2e: cannot start the core watch: {error}");
+        eprintln!("shell: e2e: cannot start the thread watch: {error}");
     }
 }
 
-fn core_watch() {
-    let mut late = false;
+fn ui_answers(app: &tauri::AppHandle) -> bool {
+    let (send, receive) = std::sync::mpsc::sync_channel(1);
+    app.run_on_main_thread(move || {
+        let _ = send.send(());
+    })
+    .is_ok()
+        && receive.recv_timeout(CORE_LATE).is_ok()
+}
+
+fn watch_threads(app: &tauri::AppHandle) {
+    let (mut core_late, mut ui_late) = (false, false);
     loop {
         std::thread::sleep(Duration::from_secs(1));
-        let answered = on_core_within(CORE_LATE, |_| ()).is_ok();
-        if !answered && !late {
-            late = true;
+        let core = on_core_within(CORE_LATE, |_| ()).is_ok();
+        if !core && !core_late {
             let inside =
                 crate::ipc::in_flight().unwrap_or_else(|| "no traced IPC handler".to_owned());
             trace!(
@@ -242,10 +255,21 @@ fn core_watch() {
                 "the core thread did not answer within {CORE_LATE:?} (inside {inside})"
             );
             capture_stacks("core-late");
-        } else if answered && late {
-            late = false;
+        } else if core && core_late {
             trace!("e2e", "the core thread answers again");
         }
+        core_late = !core;
+        let ui = ui_answers(app);
+        if !ui && !ui_late {
+            trace!(
+                "e2e",
+                "the UI thread ran no job within {CORE_LATE:?}"
+            );
+            capture_stacks("ui-late");
+        } else if ui && ui_late {
+            trace!("e2e", "the UI thread runs jobs again");
+        }
+        ui_late = !ui;
     }
 }
 

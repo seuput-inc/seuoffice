@@ -338,12 +338,16 @@ fn attach_native(
         return native.attach(webview, browser);
     }
     let (native, webview, browser) = (native.clone(), webview.clone(), browser.clone());
+    let label = webview.label().to_owned();
     let (send, receive) = std::sync::mpsc::sync_channel(1);
+    trace!("window", "'{label}' asks the UI thread to attach");
     app.run_on_main_thread(move || {
         let _ = send.send(native.attach(&webview, &browser));
     })
     .map_err(|error| error.to_string())?;
-    receive.recv().map_err(|error| error.to_string())?
+    let attached = receive.recv().map_err(|error| error.to_string())?;
+    trace!("window", "'{label}' the UI thread attached it");
+    attached
 }
 
 /// How a view talks to the shell

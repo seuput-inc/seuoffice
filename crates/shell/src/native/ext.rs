@@ -29,6 +29,7 @@ use super::navigation::{NavigationStart, ReloadAdmission, ReloadReservation};
 use super::page::PageOps;
 use super::platform::{self, Current, PageDriver, tauri_public};
 use super::policy::{RequestPolicy, Storage, Store, scratch_root, store_for};
+use crate::trace::trace;
 
 /// What one native browser is built with.
 #[derive(Default)]
@@ -233,7 +234,9 @@ impl WebviewControl for TauriControl {
 /// Claim the creation reservation, bind the close request and attach the OS observers on the
 /// UI thread. See [`Native::attach`].
 pub(crate) fn attach(webview: &Webview, browser: &BrowserIdentity) -> Result<(), String> {
+    let label = webview.label().to_owned();
     let core = browser.core.clone();
+    trace!("attach", "'{label}' claiming the creation");
     core.claim_creation()?;
     let control: Arc<dyn WebviewControl> = Arc::new(TauriControl {
         webview: webview.clone(),
@@ -245,10 +248,13 @@ pub(crate) fn attach(webview: &Webview, browser: &BrowserIdentity) -> Result<(),
         retiring.retire();
         Ok(())
     }))?;
+    trace!("attach", "'{label}' close request bound");
     let window_label = webview.window().label().to_owned();
     let identity = browser.clone();
-    webview
+    let observing = label.clone();
+    let reached = webview
         .with_webview(move |platform_webview| {
+            trace!("attach", "'{observing}' attaching the OS observers");
             match platform::attach(&platform_webview, &identity) {
                 Ok(()) => identity.core.mark_attached(control, &window_label),
                 Err(error) => {
@@ -256,12 +262,15 @@ pub(crate) fn attach(webview: &Webview, browser: &BrowserIdentity) -> Result<(),
                     identity.core.attach_failed(&error);
                 }
             }
+            trace!("attach", "'{observing}' the OS observers are attached");
         })
         .map_err(|error| {
             let error = error.to_string();
             core.attach_failed(&error);
             error
-        })
+        });
+    trace!("attach", "'{label}' observer job handed over");
+    reached
 }
 
 fn run_on_ui(webview: &Webview, job: impl FnOnce() + Send + 'static) -> Result<(), String> {

@@ -187,6 +187,12 @@ fn fail(app: &AppHandle, paths: &ShellPaths, quiet: bool, why: String) {
     }
 }
 
+/// A run nobody watches (CI, `--e2e`, headless) gets no error dialog: it would hold the UI
+/// thread for ever, and with it everything that waits for that thread.
+fn unattended() -> bool {
+    headless::is_headless() || e2e::request().is_some() || std::env::var_os("CI").is_some()
+}
+
 fn install_first_shell_startup(
     services: Services,
     context: HostContext,
@@ -275,7 +281,7 @@ fn install_first_shell_startup(
                     if let Err(error) = result
                         && !failure_shutdown.is_cancelled()
                     {
-                        fail(&failure_app, &failure_paths, false, error);
+                        fail(&failure_app, &failure_paths, unattended(), error);
                     }
                 }),
             )
@@ -283,7 +289,7 @@ fn install_first_shell_startup(
         if let Err(error) = result
             && !shutdown.is_cancelled()
         {
-            fail(&app, &paths, false, error);
+            fail(&app, &paths, unattended(), error);
         }
     });
 }
@@ -743,6 +749,7 @@ fn main() {
         .setup(move |app| {
             let handle = app.handle().clone();
             native::Native::bind_ui(&handle);
+            e2e::watch(&handle);
             let views = setup_views;
             let paths = setup_paths;
             engine_host::install(&handle).map_err(std::io::Error::other)?;

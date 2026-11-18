@@ -1730,28 +1730,24 @@ impl Projects {
         self.serve(|ipc, deps| ipc.listen(&mut *deps.host, i64::from(sender.0), method, listening));
     }
 
+    /// Answers only while the request's owner is still admitted. The admission check runs in
+    /// the owner's fence and the answer after it: delivering a reply takes the same document
+    /// and renderer gates again (`ipc::verified_reply`), and those are not re-entrant, so a
+    /// reply sent from inside the fence would wait for itself for ever on the core thread.
+    /// The delivery re-checks the owner at the moment it queues the frame.
     fn respond_guarded(&self, reply: Responder, value: shell_contract::ipc::Reply) {
         let Some(owner) = reply.owner.clone() else {
             return reply.reply(Err(error_of(Thrown(
                 "authenticated project request owner is unavailable".into(),
             ))));
         };
-        let mut reply = Some(reply);
-        let mut value = Some(value);
-        let result = self
+        let admitted = self
             .shell
             .host
-            .with_request_owner(&owner.native, &owner.cancel, &mut || {
-                if let (Some(reply), Some(value)) = (reply.take(), value.take()) {
-                    reply.reply(value);
-                }
-                Ok(())
-            });
-        if let Some(reply) = reply.take() {
-            let error = result
-                .err()
-                .unwrap_or_else(|| error_of(Thrown("project owner guard did not run".into())));
-            reply.reply(Err(error));
+            .with_request_owner(&owner.native, &owner.cancel, &mut || Ok(()));
+        match admitted {
+            Ok(()) => reply.reply(value),
+            Err(error) => reply.reply(Err(error)),
         }
     }
 
