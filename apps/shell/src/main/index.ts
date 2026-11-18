@@ -638,6 +638,7 @@ import {
   SHELL_WINDOW_MIN_HEIGHT,
   SHELL_WINDOW_MIN_WIDTH,
 } from './window-bounds'
+import { afterLastWindowClosed } from './last-window-closed'
 import { installShellCloseGuard } from './window-close-guard'
 import {
   holdSessionTabsForUpdateRestart,
@@ -689,6 +690,7 @@ import {
   isDetachedTabId,
   isTearingOff,
   setDetachedChangedListener,
+  setDetachedCloseVetoedListener,
   setDockHost,
   takeTornTab,
 } from './detached-windows'
@@ -976,6 +978,11 @@ const launchListGate = createLaunchListGate()
 let deferredLaunchPaths: string[] = []
 /** before-quit ran and no close prompt has vetoed it since */
 let appQuitting = false
+
+// a detached window's cancelled close calls the quit off like the shell window's does
+setDetachedCloseVetoedListener(() => {
+  appQuitting = false
+})
 
 /** what restored tabs need to load: nothing may load until the launch list is answered */
 const restoredTabDeps: RestoredTabOpenerDeps = {
@@ -7387,9 +7394,13 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => {
   // A headless export destroys its hidden window between documents; only
   // runHeadlessExportEntry decides when that run is over.
-  if (headlessArgv.kind !== 'none') return
-  if (shouldKeepQuickLookInTray()) return
-  if (process.platform !== 'darwin') app.quit()
+  const next = afterLastWindowClosed({
+    headless: headlessArgv.kind !== 'none',
+    quitting: appQuitting,
+    keepInTray: shouldKeepQuickLookInTray(),
+    platform: process.platform,
+  })
+  if (next === 'quit') app.quit()
 })
 
 app.on('before-quit', () => {

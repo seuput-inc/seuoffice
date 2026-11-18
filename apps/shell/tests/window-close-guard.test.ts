@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { afterLastWindowClosed } from '../src/main/last-window-closed'
+
 /**
  * The shell window's unsaved-changes guard
  * (src/main/window-close-guard.ts): the clean fast path, the per-app prompt
@@ -366,5 +368,111 @@ describe('failure in the prompt chain', () => {
     expect(win.requestClose()).toBe(true)
     await flush()
     expect(requestSheetsClose).toHaveBeenCalledTimes(2)
+  })
+})
+
+/**
+ * Electron's quit, as far as it matters here: app.quit() closes every window,
+ * a window whose close event is cancelled calls the quit off, and nothing
+ * resumes it. The shell's own latch and last-window policy are the real ones.
+ */
+function launchApp(platform: NodeJS.Platform) {
+  const win = new FakeWindow()
+  const app = {
+    quitting: false,
+    /** the shell's appQuitting: before-quit ran and no close prompt has vetoed it */
+    latch: false,
+    exited: false,
+    quit: (): void => {
+      if (app.quitting) return
+      app.quitting = true
+      app.latch = true
+      if (win.destroyed) {
+        app.exited = true
+        return
+      }
+      if (win.requestClose()) app.quitting = false
+    },
+    lastWindowClosed: (): void => {
+      if (app.quitting) {
+        app.exited = true
+        return
+      }
+      const next = afterLastWindowClosed({
+        headless: false,
+        quitting: app.latch,
+        keepInTray: false,
+        platform,
+      })
+      if (next === 'quit') app.quit()
+    },
+  }
+  const destroy = win.destroy
+  win.destroy = (): void => {
+    destroy()
+    app.lastWindowClosed()
+  }
+  return {
+    win,
+    app,
+    onVetoed: (): void => {
+      app.latch = false
+    },
+  }
+}
+
+describe('quitting with a docs tab open', () => {
+  const docsTab = { id: 'docs-1', webContents: { id: 1 } }
+
+  it('a clean document quits the app on macOS', async () => {
+    const { win, app, onVetoed } = launchApp('darwin')
+    install(win as never, fakeManager({ docs: [docsTab] }) as never, { onVetoed })
+    app.quit()
+    await flush()
+    expect(app.exited).toBe(true)
+  })
+
+  it('a document saved or discarded at the prompt quits the app on macOS', async () => {
+    docsQueryDirty.mockResolvedValue(true)
+    const { win, app, onVetoed } = launchApp('darwin')
+    install(win as never, fakeManager({ docs: [docsTab] }) as never, { onVetoed })
+    app.quit()
+    await flush()
+    expect(requestDocsClose).toHaveBeenCalledWith(docsTab.webContents, win)
+    expect(app.exited).toBe(true)
+  })
+
+  it('a cancelled prompt keeps the app running, and closing the window later does not quit it', async () => {
+    docsQueryDirty.mockResolvedValue(true)
+    requestDocsClose.mockResolvedValueOnce(false)
+    const { win, app, onVetoed } = launchApp('darwin')
+    install(win as never, fakeManager({ docs: [docsTab] }) as never, { onVetoed })
+    app.quit()
+    await flush()
+    expect(app.exited).toBe(false)
+    expect(win.destroyed).toBe(false)
+    expect(app.latch).toBe(false)
+
+    // the person answers Save this time and closes the window: no quit is pending
+    win.close()
+    await flush()
+    expect(win.destroyed).toBe(true)
+    expect(app.exited).toBe(false)
+  })
+
+  it('closing the window alone leaves the macOS app running', async () => {
+    const { win, app, onVetoed } = launchApp('darwin')
+    install(win as never, fakeManager({ docs: [docsTab] }) as never, { onVetoed })
+    win.close()
+    await flush()
+    expect(win.destroyed).toBe(true)
+    expect(app.exited).toBe(false)
+  })
+
+  it('without a docs tab the quit is not cancelled and the app quits', () => {
+    const { win, app, onVetoed } = launchApp('darwin')
+    install(win as never, fakeManager() as never, { onVetoed })
+    app.quit()
+    expect(app.exited).toBe(true)
   })
 })
