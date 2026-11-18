@@ -49,7 +49,7 @@ afterEach(() => {
 describe('saving to the host', () => {
   it('sends a copy of the bytes and resolves when the host stored them', async () => {
     const bytes = new Uint8Array([9, 8, 7])
-    const saving = channel.saveToHost('memo.hwpx', bytes)
+    const saving = channel.saveToHost('memo.hwpx', bytes, 'user')
     const [save] = sent as { type: string; saveId: number; fileName: string; bytes: ArrayBuffer }[]
     expect(save!.type).toBe('save')
     expect(save!.fileName).toBe('memo.hwpx')
@@ -60,7 +60,7 @@ describe('saving to the host', () => {
   })
 
   it('rejects with the host reason and ignores answers from another origin', async () => {
-    const saving = channel.saveToHost('memo.hwpx', new Uint8Array(1))
+    const saving = channel.saveToHost('memo.hwpx', new Uint8Array(1), 'user')
     const { saveId } = sent[0] as { saveId: number }
     fromHost({ type: 'saved', saveId }, 'https://evil.example')
     fromHost({ type: 'save_failed', saveId, message: 'lock lost' })
@@ -89,6 +89,70 @@ describe('saving to the host', () => {
         }),
       ),
     )
+  })
+
+  it('names the reason on each save and pairs every answer with its own save under overlap', async () => {
+    const auto = channel.saveToHost('memo.hwpx', new Uint8Array([1]), 'auto')
+    const user = channel.saveToHost('memo.hwpx', new Uint8Array([2]), 'user')
+    const host = channel.saveToHost('memo.hwpx', new Uint8Array([3]), 'host')
+    const saves = sent as { saveId: number; reason: string; bytes: ArrayBuffer }[]
+    expect(saves.map((save) => save.reason)).toEqual(['auto', 'user', 'host'])
+    const [a, u, h] = saves
+    const settled: string[] = []
+    void auto.then(() => settled.push('auto'))
+    void user.then(
+      () => settled.push('user'),
+      () => settled.push('user failed'),
+    )
+    void host.then(() => settled.push('host'))
+    // answers arrive in another order than the saves were sent
+    fromHost({ type: 'saved', saveId: h!.saveId })
+    fromHost({ type: 'save_failed', saveId: u!.saveId, message: 'lock lost' })
+    fromHost({ type: 'saved', saveId: a!.saveId })
+    await vi.waitFor(() => expect(settled).toEqual(['host', 'user failed', 'auto']))
+  })
+
+  it('calls a save a host save only while the host request that started it runs', async () => {
+    let owner = ''
+    let finish!: () => void
+    channel.onHostSaveRequest((ownerId) => {
+      owner = ownerId
+      return new Promise<void>((resolve) => (finish = resolve))
+    })
+    fromHost({ type: 'request_save', requestId: 5 })
+    await vi.waitFor(() => expect(owner).not.toBe(''))
+    expect(channel.saveReason(owner, false)).toBe('host')
+    // an autosave or a user save running meanwhile carries no owner id
+    expect(channel.saveReason(undefined, true)).toBe('auto')
+    expect(channel.saveReason(undefined, false)).toBe('user')
+    expect(channel.saveReason('not-a-host-request', true)).toBe('auto')
+    finish()
+    await vi.waitFor(() =>
+      expect(sent).toContainEqual(
+        expect.objectContaining({ type: 'request_save_done', requestId: 5 }),
+      ),
+    )
+    expect(channel.saveReason(owner, false)).toBe('user')
+  })
+
+  it('mints one owner id per host request', async () => {
+    const owners: string[] = []
+    channel.onHostSaveRequest(async (ownerId) => void owners.push(ownerId))
+    fromHost({ type: 'request_save', requestId: 1 })
+    fromHost({ type: 'request_save', requestId: 2 })
+    await vi.waitFor(() => expect(owners).toHaveLength(2))
+    expect(new Set(owners).size).toBe(2)
+  })
+
+  it('learns from the host that it runs autosave', async () => {
+    // the beforeEach host asked for none
+    await expect(channel.hostEnablesAutoSave()).resolves.toBe(false)
+    vi.resetModules()
+    const fresh = await import('../src/embed-channel')
+    const opening = fresh.receiveOpen()
+    fromHost({ type: 'open', fileName: 'memo.hwpx', bytes: new ArrayBuffer(1), autoSave: true })
+    await opening
+    await expect(fresh.hostEnablesAutoSave()).resolves.toBe(true)
   })
 
   it('reports dirty only when it changes', () => {

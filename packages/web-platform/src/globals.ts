@@ -1,8 +1,12 @@
 /**
- * Node globals the imported desktop modules expect. Import first, before any
- * module that touches Buffer or process at load time.
+ * Node globals the imported desktop modules expect, and the page's storage. Import first, before
+ * any module that touches Buffer, process or localStorage at load time.
  */
 import { Buffer } from 'buffer'
+import { installEmbedStorage } from './embed-storage'
+
+// the page keeps nothing of a document in the origin's localStorage (embed-storage.ts)
+installEmbedStorage()
 
 const scope = globalThis as Record<string, unknown>
 

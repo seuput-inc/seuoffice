@@ -8,6 +8,7 @@ import {
   onHostSaveRequest,
   reportDirty,
   reportOpened,
+  saveReason,
   saveToHost,
   unsupported,
   waitForDocument,
@@ -35,12 +36,12 @@ let opened: { doc: WebDocument; hwp: OpenedHwp } | null = null
 /** the format `beginSave` settled on; `newTabs` and `commitSave` need one */
 let pendingFormat: HwpFormat | null = null
 /** the renderer's save handlers; the editor's File menu, Ctrl+S and the host send to them */
-const saveListeners = new Set<(mode: SaveMode) => void>()
+const saveListeners = new Set<(mode: SaveMode, hostSaveId?: string) => void>()
 /** the save a host request started, settled when that save ends */
 let hostSave: { resolve: () => void; reject: (error: Error) => void } | null = null
 
-function requestSave(mode: SaveMode): void {
-  for (const listener of saveListeners) listener(mode)
+function requestSave(mode: SaveMode, hostSaveId?: string): void {
+  for (const listener of saveListeners) listener(mode, hostSaveId)
 }
 
 /** the end of a save, as the desktop main process's `settleSave` sees it */
@@ -88,7 +89,7 @@ const saveApi: Partial<HwpApi> = {
     return { ok: true, path: opened.doc.virtualPath, format }
   },
   newTabs: async (data, format) => (pendingFormat ? newTabSpots(data, format) : []),
-  commitSave: async (data, tabs) => {
+  commitSave: async (data, tabs, options) => {
     const format = pendingFormat
     pendingFormat = null
     const done = (result: CommitSaveResult): CommitSaveResult => {
@@ -100,7 +101,11 @@ const saveApi: Partial<HwpApi> = {
     const fixed = webSaveBytes(opened.hwp.base, format, data, tabs)
     if (!fixed.ok) return done(fixed)
     try {
-      await saveToHost(opened.doc.fileName, fixed.bytes)
+      await saveToHost(
+        opened.doc.fileName,
+        fixed.bytes,
+        saveReason(options?.hostSaveId, options?.auto === true),
+      )
     } catch (error) {
       return done({ ok: false, error: error instanceof Error ? error.message : String(error) })
     }
@@ -198,15 +203,16 @@ const hwpApi: Partial<HwpApi> = {
 const HOST_SAVE_TIMEOUT_MS = 120_000
 
 /** One save the host asked for: settles when that save ends, however late */
-function saveForHost(): Promise<void> {
+function saveForHost(ownerId: string): Promise<void> {
   if (saveListeners.size === 0) {
     return Promise.reject(new Error('hwp: the document is not ready to save'))
   }
   return new Promise<void>((resolve, reject) => {
     hostSave = { resolve, reject }
     // the host asks for the bytes, so the save runs even when nothing changed: the renderer
-    // answers 'saveAs' without asking the editor, and here both modes write the opened name
-    requestSave('saveAs')
+    // answers 'saveAs' without asking the editor, and here both modes write the opened name.
+    // The owner id is handed to every call of that save (`CommitSaveOptions.hostSaveId`).
+    requestSave('saveAs', ownerId)
   })
 }
 
@@ -222,10 +228,10 @@ export function installBridges(): void {
   // One host request at a time, in arrival order. The next one starts only once the save before
   // it has really ended, even when its host stopped waiting: a late end would settle the next one.
   let previous: Promise<unknown> = Promise.resolve()
-  onHostSaveRequest(() => {
+  onHostSaveRequest((ownerId) => {
     let refused = false
     // a request refused while it still waited for its turn starts no save
-    const saved = previous.then(() => (refused ? undefined : saveForHost()))
+    const saved = previous.then(() => (refused ? undefined : saveForHost(ownerId)))
     previous = saved.catch(() => {})
     return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {

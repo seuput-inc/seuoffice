@@ -11,13 +11,16 @@ export {
   type WebDocument,
 } from './document-store'
 export {
+  hostEnablesAutoSave,
   onHostSaveRequest,
   registerCollabCapable,
   reportDirty,
   reportError,
   reportOpened,
+  saveReason,
   saveToHost,
   type EmbedOpenErrorCode,
+  type SaveReason,
 } from './embed-channel'
 export {
   collabLink,

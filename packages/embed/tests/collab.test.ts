@@ -332,11 +332,19 @@ describe('the co-editing pipe', () => {
     const saved: unknown[] = []
     const { page, messages } = openWith({ collab, onSave: async (file) => void saved.push(file) })
     page({ type: 'ready', collab: true })
-    page({ type: 'save', saveId: 1, bytes: new Uint8Array([5]).buffer, collabVersion: 12 })
+    page({
+      type: 'save',
+      saveId: 1,
+      reason: 'auto',
+      bytes: new Uint8Array([5]).buffer,
+      collabVersion: 12,
+    })
     await vi.waitFor(() =>
       expect(messages()).toContainEqual(expect.objectContaining({ type: 'saved' })),
     )
-    expect(saved).toEqual([{ fileName: 'memo.docx', bytes: new Uint8Array([5]), version: 12 }])
+    expect(saved).toEqual([
+      { fileName: 'memo.docx', bytes: new Uint8Array([5]), reason: 'auto', version: 12 },
+    ])
   })
 
   it('refuses a co-edited save that names no version', async () => {
@@ -362,7 +370,11 @@ describe('the co-editing pipe', () => {
     )
     expect(messages()[0]).toMatchObject({ type: 'open', collab: false })
     expect(messages().filter((message) => String(message.type).startsWith('collab_'))).toEqual([])
-    expect(onSave).toHaveBeenCalledWith({ fileName: 'memo.docx', bytes: new Uint8Array([5]) })
+    expect(onSave).toHaveBeenCalledWith({
+      fileName: 'memo.docx',
+      bytes: new Uint8Array([5]),
+      reason: 'user',
+    })
     await expect(doc.collabCapable).resolves.toBe(true)
   })
 })

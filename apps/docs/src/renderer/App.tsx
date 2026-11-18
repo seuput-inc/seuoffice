@@ -26,6 +26,7 @@ import {
   runFileNaming,
   createZoomWheelClassifier,
   presentationKeyOf,
+  autoSaveOffered,
   useAutoSavePref,
   useAiSidebarEnabled,
   useSplitPaneFocusPing,
@@ -6299,7 +6300,7 @@ export function App() {
         filePath: doc?.filePath ?? null,
       })
     })
-    const offSave = window.desktop.onCloseSaveRequest?.(() => {
+    const offSave = window.desktop.onCloseSaveRequest?.((request) => {
       // Closing must not report success while edits are still unpersisted, so a
       // save that raced with typing is retried until the file catches up.
       // A pathless document's first save asks where: cancelling resolves false and
@@ -6307,7 +6308,9 @@ export function App() {
       // again. Reporting "persisted" just because the snapshot had no path yet
       // would close over mid-save edits.
       void saveUntilPersisted({
-        save: () => save(false),
+        // the request id marks each save of this pass as the host's (web embed)
+        save: () =>
+          saveImpl({ ...fileCtxRef.current, hostSaveId: request?.requestId }, false, false),
         wasIncomplete: () => saveIncompleteRef.current,
         hasPath: () => true,
       }).then(
@@ -8067,15 +8070,20 @@ export function App() {
         >
           <IconRedo size={16} />
         </button>
-        <label className={`autosave-toggle ${autoSave ? 'on' : ''}`} data-tip={t('appAutoSaveTip')}>
-          <span className="autosave-knob" />
-          <span className="autosave-text">{t('appAutoSave')}</span>
-          <input
-            type="checkbox"
-            checked={autoSave}
-            onChange={(e) => setAutoSave(e.target.checked)}
-          />
-        </label>
+        {autoSaveOffered() && (
+          <label
+            className={`autosave-toggle ${autoSave ? 'on' : ''}`}
+            data-tip={t('appAutoSaveTip')}
+          >
+            <span className="autosave-knob" />
+            <span className="autosave-text">{t('appAutoSave')}</span>
+            <input
+              type="checkbox"
+              checked={autoSave}
+              onChange={(e) => setAutoSave(e.target.checked)}
+            />
+          </label>
+        )}
         <span className="qa-sep" aria-hidden="true" />
       </>
     ),

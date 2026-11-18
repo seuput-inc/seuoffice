@@ -6,7 +6,14 @@
 // holds, accepts and rejects them against this deck; this file keeps the page's revisions in step.
 import { commitSaved, savePptx } from '@seuoffice/pptx-engine'
 import { runTxn, type TxnRequest, type TxnResult } from '@seuoffice/pptx-ops'
-import { documentByPath, onHostSaveRequest, reportDirty, saveToHost } from '@seuoffice/web-platform'
+import {
+  documentByPath,
+  onHostSaveRequest,
+  reportDirty,
+  saveReason,
+  saveToHost,
+  type SaveReason,
+} from '@seuoffice/web-platform'
 import {
   AI_REVIEW_SAVE_REASON,
   acceptAiProposal,
@@ -168,27 +175,24 @@ async function edit<T>(run: (session: Session) => T): Promise<T | null> {
 let lastSaveError = ''
 
 /** Set while the page co-edits: the session writes the file of one version from its log */
-let coEditSave: (() => Promise<void>) | null = null
+let coEditSave: ((reason: SaveReason) => Promise<void>) | null = null
 
 /**
  * Hand saves to a co-editing session. Every later save, the renderer's and the host's (which
  * runs the renderer's flow, `requestRendererSave`, so an open text edit is committed
  * first), stores the file the session produces; the page stops reporting its own unsaved flag.
  */
-export function coEditDeck(save: () => Promise<void>): void {
+export function coEditDeck(save: (reason: SaveReason) => Promise<void>): void {
   coEditSave = save
 }
 
-/**
- * slides:save for a page whose host stores the document. AutoSave passes are sat out the way the
- * desktop sits out one for an untitled deck: the host decides when its copy changes.
- */
-const saveDeck: SlidesApi['save'] = async (auto) => {
-  if (auto === true) return { ok: false, reason: 'external-modified' }
+/** slides:save for a page whose host stores the document: the bytes go to the host, with the reason */
+const saveDeck: SlidesApi['save'] = async (auto, hostSaveId) => {
+  const reason = saveReason(hostSaveId, auto === true)
   if (coEditSave) {
     lastSaveError = ''
     try {
-      await coEditSave()
+      await coEditSave(reason)
       // nothing was reopened: the renderer keeps its slides and their ids
       return { ok: true }
     } catch (error) {
@@ -210,7 +214,7 @@ const saveDeck: SlidesApi['save'] = async (auto) => {
     const shownAtSave = revisionsOf(session).shown
     // counted as in flight until stored, so a run begins only after it (ai-proposal.ts)
     await trackWrite(session, async () => {
-      await saveToHost(doc.fileName, await savePptx(session.opened))
+      await saveToHost(doc.fileName, await savePptx(session.opened), reason)
       commitSaved(session.opened)
     })
     if ((session.metaRev ?? 0) === metaRevAtSave) session.metaDirty = false
@@ -224,7 +228,7 @@ const saveDeck: SlidesApi['save'] = async (auto) => {
   }
 }
 
-let closeSaveHandler: (() => void) | undefined
+let closeSaveHandler: Parameters<SlidesApi['onCloseSaveRequest']>[0] | undefined
 /** Host save requests waiting for the renderer's save flow, in the order they were asked */
 const hostSaves: Array<(ok: boolean) => void> = []
 
@@ -232,7 +236,7 @@ const hostSaves: Array<(ok: boolean) => void> = []
  * A host save request runs the renderer's full save flow (commit the open text edit and notes,
  * then save), the one the desktop's close guard starts with `slides:close-save-request`.
  */
-export function requestRendererSave(): Promise<void> {
+export function requestRendererSave(ownerId: string): Promise<void> {
   return new Promise((resolve, reject) => {
     if (!closeSaveHandler) {
       reject(new Error('the presentation is not open yet'))
@@ -241,7 +245,8 @@ export function requestRendererSave(): Promise<void> {
     hostSaves.push((ok) =>
       ok ? resolve() : reject(new Error(lastSaveError || 'the presentation was not saved')),
     )
-    closeSaveHandler()
+    // the owner id rides through the renderer's save into slides:save, which names the save a host save
+    closeSaveHandler({ hostSaveId: ownerId })
   })
 }
 

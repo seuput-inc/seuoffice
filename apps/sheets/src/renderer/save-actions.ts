@@ -61,6 +61,8 @@ import type { LazyWorkbookState, PinnedClosureCell, UniverRuntime } from './univ
 
 /** The App refs/state the save flow needs; built fresh per call. */
 export interface SaveContext {
+  /** the embed host's save request this save runs for (web only): it names the save a host save */
+  hostSaveId?: string
   univerRef: { readonly current: UniverRuntime | null }
   lazyWorkbookRef: { readonly current: LazyWorkbookState | null }
   setMessage: (message: string) => void
@@ -876,6 +878,7 @@ export async function handleSave(
       mode,
       ...(restoreWriteBack ? { restoreWriteBack: true } : {}),
       ...(quiet ? { quiet: true } : {}),
+      ...(ctx.hostSaveId === undefined ? {} : { hostSaveId: ctx.hostSaveId }),
       ...(csvContent === undefined ? {} : { csvContent }),
       // a name the reader (or the model, via the ribbon) chose for the dialog
       ...(defaultName === undefined ? {} : { defaultName }),
@@ -985,6 +988,7 @@ export async function handleSave(
         // an unsaved new workbook's quiet save writes its backing file in
         // place; without the flag the second phase would open Save As
         ...(quiet ? { quiet: true } : {}),
+        ...(ctx.hostSaveId === undefined ? {} : { hostSaveId: ctx.hostSaveId }),
         edits: [],
         bulkConstantFills: [],
         structuralOps: [],

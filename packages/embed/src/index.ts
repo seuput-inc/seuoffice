@@ -6,7 +6,7 @@
  * only from the iframe's own window at the seuoffice origin.
  *
  * In edit mode the host has taken the document's edit lock before calling
- * `openDocument`; the page sends `save` with new bytes, this side runs
+ * `openDocument`; the page sends `save` with new bytes and its `reason`, this side runs
  * `onSave` and answers `saved` or `save_failed`. `dirty` reports unsaved
  * changes, and `save()` asks the page to save (`request_save`).
  *
@@ -110,10 +110,17 @@ export interface AiRelay {
   request(body: unknown, signal: AbortSignal): Promise<Response>
 }
 
+/**
+ * Why the page saved: `auto` its autosave, `user` the person's own Save (button or
+ * shortcut), `host` a `doc.save()` the host asked for
+ */
+export type SaveReason = 'auto' | 'user' | 'host'
+
 /** A document the page saved: same format and file name it was opened with */
 export interface SavedFile {
   fileName: string
   bytes: Uint8Array
+  reason: SaveReason
 }
 
 /** A co-edited document the page saved: `bytes` hold exactly version `version` */
@@ -132,6 +139,13 @@ interface EditOptionsBase extends BaseOpenOptions {
   mode: 'edit'
   /** called when the page gains or loses unsaved changes */
   onDirtyChange?: (dirty: boolean) => void
+  /**
+   * run the app's autosave (30 s and when the window loses focus, while it has unsaved
+   * changes), each one reaching `onSave` with `reason: 'auto'`. Default false: the page then
+   * shows no autosave toggle and never saves by itself. When true, autosave starts on and the
+   * person can switch it off; the switch lasts until the page closes and is never stored.
+   */
+  autoSave?: boolean
 }
 
 export interface LockedEditOptions extends EditOptionsBase {
@@ -344,6 +358,8 @@ export function openDocument(container: HTMLElement, options: OpenOptions): Coll
           fileName: options.fileName,
           bytes,
           ai: options.ai !== undefined,
+          // only an edit session saves, so only it can ask for the app's autosave
+          autoSave: editing?.autoSave === true,
           collab: options.collab !== undefined,
         },
         base.origin,
@@ -458,10 +474,16 @@ async function store(
   post: (message: Record<string, unknown>) => void,
 ): Promise<void> {
   const saveId = data.saveId
+  const named = data.reason
   if (typeof saveId !== 'number' || !(data.bytes instanceof ArrayBuffer)) return
   try {
     // the page saves under the name it opened; a different name is not this document
-    const file = { fileName: options.fileName, bytes: new Uint8Array(data.bytes) }
+    const file: SavedFile = {
+      fileName: options.fileName,
+      bytes: new Uint8Array(data.bytes),
+      // a page that names no reason (an older build) saved for the person
+      reason: named === 'auto' || named === 'host' ? named : 'user',
+    }
     if (!options.collab) await options.onSave(file)
     else if (typeof data.collabVersion === 'number')
       await options.onSave({ ...file, version: data.collabVersion })

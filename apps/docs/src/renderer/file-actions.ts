@@ -243,6 +243,8 @@ export interface FileActionContext {
   setDefaultFonts?: (fonts: DefaultFonts | undefined) => void
   fontSettingsVersionRef?: { current: number }
   settleFontSettings?: () => Promise<FileActionContext>
+  /** the embed host's save request this save runs for (web only): it names the save a host save */
+  hostSaveId?: string
   styleUpserts: Record<string, StyleUpsert>
   setStyleUpserts: (value: Record<string, StyleUpsert>) => void
   comments: CommentInfo[]
@@ -1246,7 +1248,9 @@ export function save(
   const generation = docGeneration
   return runSerializedSave(
     async () => {
-      const settled = ctx.settleFontSettings ? await ctx.settleFontSettings() : ctx
+      const settled = ctx.settleFontSettings
+        ? { ...(await ctx.settleFontSettings()), hostSaveId: ctx.hostSaveId }
+        : ctx
       if (docGeneration !== generation) return false
       return saveOnce(settled, saveAs, auto, newDocName, explicitTarget, false, pickFormat)
     },
@@ -1622,7 +1626,12 @@ async function saveOnce(
       if (result.dataUrl) fullBytes = await fetchDocBytes(result.dataUrl)
       if (!doc.filePath) pathlessDocSavedPath = savedPath
     } else {
-      const result = await window.desktop.saveDocx(savedPath, await fileBytes(), auto)
+      const result = await window.desktop.saveDocx(
+        savedPath,
+        await fileBytes(),
+        auto,
+        ctx.hostSaveId,
+      )
       if (!result.ok) {
         // external-modified: the main process already prompted (or the autosave
         // deferred to a manual save) — stay dirty, no second dialog/error banner

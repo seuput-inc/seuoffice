@@ -507,6 +507,8 @@ export interface DesktopApi {
     path: string,
     data: ArrayBuffer,
     auto?: boolean,
+    /** the embed host's `doc.save()` request this save belongs to (web only) */
+    hostSaveId?: string,
   ): Promise<{
     ok: boolean
     error?: string
@@ -833,7 +835,7 @@ export interface DesktopApi {
   onCloseCheck(handler: () => void): () => void
   reportCloseCheck(state: { dirty: boolean; autoSave: boolean; filePath?: string | null }): void
   /** Close guard chose "Save": main process asks the renderer to run the full save flow */
-  onCloseSaveRequest(handler: () => void): () => void
+  onCloseSaveRequest(handler: (request?: { requestId: string }) => void): () => void
   reportCloseSaveResult(ok: boolean): void
   /** hosts that track unsaved changes (the web embed) hear each change of the flag; absent on the desktop */
   reportDirty?(dirty: boolean): void

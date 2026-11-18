@@ -27,9 +27,17 @@ export interface EmbedOpen {
   bytes: ArrayBuffer
   /** the host relays AI requests to its gateway (`ai_request`) */
   ai: boolean
+  /** the host runs the app's autosave (`autoSave: true`); without it the page shows no autosave toggle */
+  autoSave: boolean
   /** the host relays co-editing frames (`collab_connect`) */
   collab: boolean
 }
+
+/**
+ * Why a save happened, carried by the save itself so overlapping saves never
+ * share a flag: the app's autosave, the person's own Save, or the host's `doc.save()`.
+ */
+export type SaveReason = 'auto' | 'user' | 'host'
 
 interface Peer {
   target: Window
@@ -48,7 +56,10 @@ let openedAsked = false
 let lastDirty: boolean | undefined
 let nextSaveId = 1
 const pendingSaves = new Map<number, { resolve: () => void; reject: (error: Error) => void }>()
-let saveRequestHandler: (() => Promise<void>) | undefined
+/** What a host's `request_save` runs: it gets this save's owner id (see `saveReason`) */
+let saveRequestHandler: ((ownerId: string) => Promise<void>) | undefined
+/** Owner ids of the host-asked saves still running: the saves they start are `host` saves */
+const hostSaveOwners = new Set<string>()
 let exportRequestHandler: (() => Promise<{ fileName: string; bytes: Uint8Array }>) | undefined
 let collabCapable = false
 let collabMessageHandler: ((data: Record<string, unknown>) => void) | undefined
@@ -173,6 +184,11 @@ export function receiveOpen(): Promise<EmbedOpen | null> {
   return started
 }
 
+/** Whether the host that opened this page runs the app's autosave; false for a page nobody framed */
+export async function hostEnablesAutoSave(): Promise<boolean> {
+  return (await receiveOpen())?.autoSave === true
+}
+
 /**
  * Tell the sender of a refused `open` that it was refused, so its `opened`
  * settles instead of waiting. Only the code goes back, to the origin that
@@ -224,6 +240,7 @@ function listen(): Promise<EmbedOpen | null> {
         fileName: data.fileName,
         bytes: data.bytes,
         ai: data.ai === true,
+        autoSave: data.autoSave === true,
         collab: collabOffered,
       })
     })
@@ -264,13 +281,17 @@ function onHostMessage(event: MessageEvent): void {
 }
 
 async function answerSaveRequest(requestId: number): Promise<void> {
+  const ownerId = crypto.randomUUID()
+  hostSaveOwners.add(ownerId)
   try {
     if (!saveRequestHandler) throw new Error('this document cannot be saved here')
-    await saveRequestHandler()
+    await saveRequestHandler(ownerId)
     reply({ type: 'request_save_done', requestId, ok: true })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     reply({ type: 'request_save_done', requestId, ok: false, message })
+  } finally {
+    hostSaveOwners.delete(ownerId)
   }
 }
 
@@ -442,6 +463,17 @@ export function reportError(code: EmbedOpenErrorCode, message: string): void {
 }
 
 /**
+ * The reason of one save. `ownerId` is the id the app's save flow was started
+ * with by a host request (`onHostSaveRequest` hands it to the handler, the
+ * app carries it through its own save calls); `auto` is the app's own mark of
+ * an autosave pass. A save no host request started is `auto` or `user`.
+ */
+export function saveReason(ownerId: string | undefined, auto: boolean): SaveReason {
+  if (ownerId !== undefined && hostSaveOwners.has(ownerId)) return 'host'
+  return auto ? 'auto' : 'user'
+}
+
+/**
  * Hand the document's bytes to the host, which stores them. Settles when the
  * host answers: resolves on `saved`, rejects with the host's message. A
  * co-edited save names the exact version the bytes hold.
@@ -449,6 +481,7 @@ export function reportError(code: EmbedOpenErrorCode, message: string): void {
 export function saveToHost(
   fileName: string,
   bytes: Uint8Array,
+  reason: SaveReason,
   collab?: { version: number },
 ): Promise<void> {
   if (!peer) return Promise.reject(new Error('no host to save to: the page is not embedded'))
@@ -459,7 +492,13 @@ export function saveToHost(
   const settled = new Promise<void>((resolve, reject) =>
     pendingSaves.set(saveId, { resolve, reject }),
   )
-  const message: Record<string, unknown> = { type: 'save', saveId, fileName, bytes: copy.buffer }
+  const message: Record<string, unknown> = {
+    type: 'save',
+    saveId,
+    reason,
+    fileName,
+    bytes: copy.buffer,
+  }
   if (collab) message.collabVersion = collab.version
   reply(message, [copy.buffer])
   return settled
@@ -472,8 +511,8 @@ export function reportDirty(dirty: boolean): void {
   reply({ type: 'dirty', dirty })
 }
 
-/** The app's own save, run when the host asks for one (`request_save`) */
-export function onHostSaveRequest(handler: () => Promise<void>): void {
+/** The app's own save, run when the host asks for one (`request_save`); `ownerId` marks the saves it starts */
+export function onHostSaveRequest(handler: (ownerId: string) => Promise<void>): void {
   saveRequestHandler = handler
 }
 

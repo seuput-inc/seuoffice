@@ -83,7 +83,7 @@ describe('without co-editing from the host', () => {
       peers: [],
       self: null,
     })
-    void channel.saveToHost('memo.hwpx', new Uint8Array([1]))
+    void channel.saveToHost('memo.hwpx', new Uint8Array([1]), 'user')
     expect(messages().map((message) => message.type)).toEqual(['save'])
     expect(messages()[0]).not.toHaveProperty('collabVersion')
   })
@@ -162,7 +162,7 @@ describe('the co-editing link', () => {
   })
 
   it('puts the version on a save and sends the status', () => {
-    void channel.saveToHost('memo.hwpx', new Uint8Array([1]), { version: 7 })
+    void channel.saveToHost('memo.hwpx', new Uint8Array([1]), 'user', { version: 7 })
     links.reportCollabStatus({
       phase: 'live',
       canEdit: true,

@@ -15,6 +15,7 @@ import {
   matchesFontQuery,
   rememberAiPanelOpen,
   useAiSidebarEnabled,
+  autoSaveOffered,
   webAiOff,
   webViewMode,
   type AiTokenUsageView,
@@ -1085,18 +1086,20 @@ export function ExcelShell({
             >
               <CaretIcon />
             </button>
-            <label
-              className={`autosave-toggle ${autoSave ? 'on' : ''}`}
-              data-tip={t('appAutoSaveTip')}
-            >
-              <span className="autosave-knob" />
-              <span className="autosave-text">{t('appAutoSave')}</span>
-              <input
-                type="checkbox"
-                checked={autoSave}
-                onChange={(e) => onAutoSaveChange(e.target.checked)}
-              />
-            </label>
+            {autoSaveOffered() && (
+              <label
+                className={`autosave-toggle ${autoSave ? 'on' : ''}`}
+                data-tip={t('appAutoSaveTip')}
+              >
+                <span className="autosave-knob" />
+                <span className="autosave-text">{t('appAutoSave')}</span>
+                <input
+                  type="checkbox"
+                  checked={autoSave}
+                  onChange={(e) => onAutoSaveChange(e.target.checked)}
+                />
+              </label>
+            )}
             <span className="qa-sep" aria-hidden="true" />
             {visibleTabs.map((tab) => (
               <button

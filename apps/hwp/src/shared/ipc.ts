@@ -198,6 +198,8 @@ export interface CommitSaveOptions {
   auto?: boolean
   /** the editor's memo list, or null when it could not be listed */
   memos?: MemoSnapshot[] | null
+  /** the embed host's `doc.save()` request this save belongs to (web only): names it a host save */
+  hostSaveId?: string
 }
 
 export type CommitSaveResult =
@@ -362,7 +364,7 @@ export interface HwpApi {
   /** the renderer could not produce bytes for a save it began */
   abortSave(): void
   setDirty(dirty: boolean): void
-  onSaveRequest(handler: (mode: SaveMode) => void): () => void
+  onSaveRequest(handler: (mode: SaveMode, hostSaveId?: string) => void): () => void
   /**
    * the editor's own File menu asks to save or print: the main process answers it the way
    * it answers Ctrl+S and Ctrl+P, with a save or print request back to this view

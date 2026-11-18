@@ -244,7 +244,7 @@ async function joinSlidesCollab(doc: WebDocument): Promise<void> {
     fileName: doc.fileName,
     bytes: doc.bytes,
     // the renderer's own save flow: an open text edit and notes are committed, then the session saves
-    hostSave: () => requestRendererSave(),
+    hostSave: (_save, ownerId) => requestRendererSave(ownerId),
     // an export is the deck as the person sees it: what they are still typing goes in first.
     // A viewer has nothing open, and its page refuses the members a commit would call
     ...(editMode() ? { commitDrafts: () => renderer?.commitDrafts() } : {}),
@@ -265,7 +265,10 @@ async function joinSlidesCollab(doc: WebDocument): Promise<void> {
   if (!page) return
   coEditing = page
   doc.bytes = page.baseBytes
-  if (editMode()) coEditDeck(page.save)
+  // a co-edited save the session already stored has nothing new for an autosave pass to write
+  if (editMode()) {
+    coEditDeck((reason) => page.save({ reason, skipWhenSaved: reason === 'auto' }))
+  }
 }
 
 // AI turns go to the embed host, which calls its gateway (decision 0017)

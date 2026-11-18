@@ -5,6 +5,7 @@ import {
   DEFAULT_SANDBOX,
   openDocument,
   SeuofficeEmbedError,
+  type SavedFile,
 } from '../src/index'
 
 const BASE = 'https://office.example/'
@@ -215,7 +216,7 @@ describe('openDocument', () => {
 describe('editing', () => {
   const ORIGIN = 'https://office.example'
 
-  function openForEdit(onSave: (file: { fileName: string; bytes: Uint8Array }) => Promise<void>) {
+  function openForEdit(onSave: (file: SavedFile) => Promise<void>) {
     const dirty: boolean[] = []
     const doc = openDocument(document.body, {
       baseUrl: BASE,
@@ -299,6 +300,88 @@ describe('editing', () => {
       ]),
     )
     doc.destroy()
+  })
+
+  it('hands onSave the reason the page named, per save, in the order the saves were stored', async () => {
+    const reasons: Array<[number, string]> = []
+    const finishers: Array<() => void> = []
+    const { doc, replies } = openForEdit((file) => {
+      reasons.push([file.bytes[0]!, file.reason])
+      return new Promise<void>((resolve) => finishers.push(resolve))
+    })
+    const send = (saveId: number, byte: number, reason?: unknown) =>
+      post(doc.iframe.contentWindow, ORIGIN, {
+        type: 'save',
+        saveId,
+        ...(reason === undefined ? {} : { reason }),
+        fileName: 'memo.hwpx',
+        bytes: new Uint8Array([byte]).buffer,
+      })
+    send(1, 1, 'auto')
+    send(2, 2, 'host')
+    send(3, 3, 'user')
+    // a page that names none, or an unknown one, saved for the person
+    send(4, 4)
+    send(5, 5, 'periodic')
+    for (let i = 0; i < 5; i++) {
+      await vi.waitFor(() => expect(finishers).toHaveLength(i + 1))
+      finishers[i]!()
+    }
+    await vi.waitFor(() => expect(replies().map((m) => m.saveId)).toEqual([1, 2, 3, 4, 5]))
+    expect(reasons).toEqual([
+      [1, 'auto'],
+      [2, 'host'],
+      [3, 'user'],
+      [4, 'user'],
+      [5, 'user'],
+    ])
+    doc.destroy()
+  })
+
+  it('answers each save id with its own outcome when the stores overlap', async () => {
+    const { doc, replies } = openForEdit(async (file) => {
+      if (file.reason === 'auto') throw new Error('refused')
+    })
+    for (const [saveId, reason] of [
+      [10, 'auto'],
+      [11, 'host'],
+    ] as const) {
+      post(doc.iframe.contentWindow, ORIGIN, {
+        type: 'save',
+        saveId,
+        reason,
+        fileName: 'memo.hwpx',
+        bytes: new ArrayBuffer(1),
+      })
+    }
+    await vi.waitFor(() =>
+      expect(replies()).toEqual([
+        { source: 'seuoffice', version: 1, type: 'save_failed', saveId: 10, message: 'refused' },
+        { source: 'seuoffice', version: 1, type: 'saved', saveId: 11 },
+      ]),
+    )
+    doc.destroy()
+  })
+
+  it('asks the page for autosave only when the host did, and only in edit mode', () => {
+    const asked = (extra: Record<string, unknown>) => {
+      const doc = openDocument(document.body, {
+        baseUrl: BASE,
+        fileName: 'memo.hwpx',
+        bytes: new Uint8Array([1]),
+        ...extra,
+      })
+      const sent = vi.spyOn(doc.iframe.contentWindow!, 'postMessage').mockImplementation(() => {})
+      post(doc.iframe.contentWindow, ORIGIN, { type: 'ready' })
+      const open = sent.mock.calls.map((call) => call[0] as Record<string, unknown>)[0]!
+      doc.destroy()
+      return open.autoSave
+    }
+    const onSave = async () => {}
+    expect(asked({ mode: 'edit', onSave })).toBe(false)
+    expect(asked({ mode: 'edit', onSave, autoSave: false })).toBe(false)
+    expect(asked({ mode: 'edit', onSave, autoSave: true })).toBe(true)
+    expect(asked({ autoSave: true })).toBe(false)
   })
 
   it('ignores a save from another origin', () => {

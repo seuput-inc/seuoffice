@@ -175,6 +175,8 @@ export async function runSave(
    * nothing may be exported while it does.
    */
   isHeld: () => boolean = () => false,
+  /** the embed host's save request this save belongs to (web only) */
+  hostSaveId?: string,
 ): Promise<SaveOutcome> {
   const refuseHeld = (): SaveOutcome => {
     api.abortSave()
@@ -228,11 +230,11 @@ export async function runSave(
     return { kind: 'failed', reason: 'export', detail: detailOf(error) }
   }
 
-  const commit = await api.commitSave(
-    bytes,
-    await measuredTabs(editor, api, bytes, begin.format),
-    memos === undefined ? { auto: automatic } : { auto: automatic, memos },
-  )
+  const commit = await api.commitSave(bytes, await measuredTabs(editor, api, bytes, begin.format), {
+    auto: automatic,
+    ...(memos === undefined ? {} : { memos }),
+    ...(hostSaveId === undefined ? {} : { hostSaveId }),
+  })
   if (!commit.ok) {
     // a same-document copy holds the disk version: the main process refused
     // the write (a deferred autosave or a declined overwrite prompt) — that is

@@ -12,6 +12,7 @@ import {
   reportDirty,
   reportError,
   reportOpened,
+  saveReason,
   saveToHost,
   unsupported,
   waitForDocument,
@@ -103,19 +104,20 @@ async function fileBytes(path: string, data: Uint8Array) {
  * goes to the host. Lazily served pictures are a desktop-only path: the web
  * document opens whole, so the renderer's bytes are already complete.
  */
-const saveDocxToHost: DesktopApi['saveDocx'] = async (path, data) => {
+const saveDocxToHost: DesktopApi['saveDocx'] = async (path, data, auto, hostSaveId) => {
   const doc = documentByPath(path)
   if (!doc) return { ok: false, error: 'save target is not an opened document' }
+  const reason = saveReason(hostSaveId, auto === true)
   try {
     if (coEditing) {
       // the session writes the file of one exact version from the log, never the renderer's
       // own bytes. "Intent pending" keeps the renderer from reloading the document from
       // the file it thinks it saved, which would replace every peer's edit on this page.
-      await coEditing.save({ skipWhenSaved: true })
+      await coEditing.save({ skipWhenSaved: true, reason })
       return { ok: true, passwordIntentPending: true }
     }
     const { bytes, passwordState } = await fileBytes(path, new Uint8Array(data))
-    await saveToHost(doc.fileName, bytes)
+    await saveToHost(doc.fileName, bytes, reason)
     const passwordIntentPending = passwordState
       ? commitDocPasswordSave(WEB_RENDERER, passwordState, path)
       : false
@@ -156,18 +158,19 @@ async function joinDocsCollab(doc: WebDocument): Promise<void> {
 
 // The renderer's close-guard "Save" runs its full save until the document is
 // persisted and reports the outcome; a host-asked save runs the same flow.
-let closeSaveHandler: (() => void) | undefined
+let closeSaveHandler: Parameters<DesktopApi['onCloseSaveRequest']>[0] | undefined
 let settleCloseSave: ((ok: boolean) => void) | undefined
 let hostSaves: Promise<void> = Promise.resolve()
 
-function runHostSave(): Promise<void> {
+function runHostSave(ownerId: string): Promise<void> {
   const run = async (): Promise<void> => {
     const handler = closeSaveHandler
     if (!handler) throw new Error('the document is not open yet')
     lastSaveError = undefined
     const ok = await new Promise<boolean>((resolve) => {
       settleCloseSave = resolve
-      handler()
+      // the request id rides through the renderer's save into saveDocx, which names the save a host save
+      handler({ requestId: ownerId })
     })
     if (!ok) throw new Error(lastSaveError ?? 'the document was not saved')
   }
