@@ -1884,6 +1884,28 @@ impl ViewTable {
         Some(captured)
     }
 
+    /// Why [`Self::capture_native_owner`] found nothing, in words, for the trace
+    pub(crate) fn explain_native_owner(&self, view: ViewId, expected: &RendererGeneration) -> String {
+        let Ok(inner) = self.inner.lock() else {
+            return "the view table is poisoned".into();
+        };
+        let Some(record) = inner.views.get(&view) else {
+            return "the view is not in the table".into();
+        };
+        let Some(bound) = record.native_origin.as_ref() else {
+            return "no native origin is bound to the view".into();
+        };
+        format!(
+            "origin lost: {}, bound renderer is the expected one: {}, record renderer is the expected one: {}, origin registered: {}, renderer active: {}, slides lease active: {:?}",
+            bound.lost.load(Ordering::Acquire),
+            bound.renderer.same_generation(expected),
+            record.renderer.same_generation(expected),
+            bound.context.is_registered(),
+            bound.renderer.is_active(),
+            record.slides_media.as_ref().map(SlidesViewLease::is_active),
+        )
+    }
+
     /// Resolve an authenticated ingress token only against its prior exact
     /// binding. Neither label nor a current-document snapshot proves origin.
     pub(crate) fn authorize_verified_native_asset_origin(

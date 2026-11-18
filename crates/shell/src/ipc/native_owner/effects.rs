@@ -2730,9 +2730,15 @@ pub(crate) fn capture_owner(
     view: ViewId,
     expected: &RendererGeneration,
 ) -> Result<NativeRequestOwner, String> {
-    let captured = views
-        .capture_native_owner(view, expected)
-        .ok_or("Renderer document authentication is not ready.")?;
+    let captured = views.capture_native_owner(view, expected).ok_or_else(|| {
+        crate::trace::trace!(
+            "refused",
+            "capture of the owner of view {} failed: {}",
+            view.0,
+            views.explain_native_owner(view, expected)
+        );
+        "Renderer document authentication is not ready."
+    })?;
     let captured = if let Some(asset) = captured.asset {
         super::asset_owner_with_browser(
             view,

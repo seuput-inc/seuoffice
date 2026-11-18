@@ -22,6 +22,22 @@
       "ms": 500
     },
     {
+      "op": "type",
+      "text": "x"
+    },
+    {
+      "op": "wait",
+      "ms": 400
+    },
+    {
+      "op": "type",
+      "text": "\b"
+    },
+    {
+      "op": "wait",
+      "ms": 400
+    },
+    {
       "op": "ime",
       "source": "ko-2set",
       "keys": "gksrmf"
