@@ -12,6 +12,10 @@
     // the page's zoom as the percentage, on the element that carries the zoom
     'adjust-zoom': () =>
       `html{-webkit-text-size-adjust:100%}.doc-zoom{-webkit-text-size-adjust:${docZoom() * 100}%}`,
+    // and on the editable root itself: Safari gives editable text `none` whatever it inherits
+    'adjust-zoom-editable': () =>
+      'html{-webkit-text-size-adjust:100%}' +
+      `.doc-zoom,.doc-zoom [contenteditable]{-webkit-text-size-adjust:${docZoom() * 100}%}`,
   }
 
   const post = (body) =>

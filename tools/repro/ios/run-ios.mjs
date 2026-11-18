@@ -29,10 +29,15 @@ function newPhone() {
     for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (y[i] ?? 0) - (x[i] ?? 0)
     return 0
   }
+  const wanted = (runtime) => {
+    const at = PHONES.findIndex((name) => runtime.supportedDeviceTypes.some((t) => t.name === name))
+    return at < 0 ? PHONES.length : at
+  }
   const runtimes = JSON.parse(simctl('list', '-j', 'runtimes'))
     .runtimes.filter((r) => r.isAvailable && r.platform === 'iOS')
     .filter((r) => r.version.startsWith(process.env.IOS_VERSION ?? ''))
-    .sort(newer)
+    // a version can come as several builds, one of them for a single new device
+    .sort((a, b) => newer(a, b) || wanted(a) - wanted(b))
   if (!runtimes.length) throw new Error('no iOS simulator runtime')
   const runtime = runtimes[0]
   const types = runtime.supportedDeviceTypes

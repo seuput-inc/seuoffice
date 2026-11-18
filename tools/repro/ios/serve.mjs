@@ -182,7 +182,7 @@ export async function start({ site, hostPort = 5310, bundlePort = 5311, settleMs
 }
 
 /** what probe.js tries in place after the page as shown, by format */
-const TRIED = { docx: ['adjust-100', 'adjust-none', 'adjust-zoom'] }
+const TRIED = { docx: ['adjust-100', 'adjust-none', 'adjust-zoom', 'adjust-zoom-editable'] }
 
 /** the documents of the repro: every format, for viewing and for editing */
 export const CASES = [
