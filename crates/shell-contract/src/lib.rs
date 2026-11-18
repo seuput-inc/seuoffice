@@ -15,6 +15,7 @@ pub mod error;
 pub mod hosts;
 pub mod ids;
 pub mod ipc;
+pub mod native_evidence;
 pub mod pdf_sign_options;
 pub mod provided;
 pub mod runtime;
