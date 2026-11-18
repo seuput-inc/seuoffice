@@ -21,6 +21,10 @@
 </p>
 
 <p align="center">
+  <sub>Mac에서 0.12.43 이하 판을 쓰는 중에 워드 문서를 연 채 '다시 시작하고 설치'를 누르면 앱이 멈춘 듯 보일 수 있습니다. 앱을 한 번 더 종료하면 새 판으로 바뀌고, 문서와 설정은 그대로입니다.</sub>
+</p>
+
+<p align="center">
   <img src="docs/seuoffice/readme/hero.jpg" width="820" alt="노트북과 브라우저에서 PDF, DOCX, XLSX, PPTX, HWP 문서를 여는 SeuOffice">
 </p>
 
