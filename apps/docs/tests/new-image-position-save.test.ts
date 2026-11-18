@@ -7,12 +7,12 @@
  * imageRelH/imageRelV / imagePosH+imagePosV, so the reopened picture edits
  * like an original one.
  */
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { Editor } from '@tiptap/core'
 import { NodeSelection } from '@tiptap/pm/state'
 import type { Node as ProsemirrorNode } from '@tiptap/pm/model'
 import JSZip from 'jszip'
-import { buildBlankDocx, parseDocx, saveDocx } from '@seuoffice/docx-engine'
+import { buildBlankDocx, parseDocx, saveDocx, type ParsedDocFull } from '@seuoffice/docx-engine'
 import { buildDocx } from '../../../packages/docx-engine/tests/helpers/build-docx'
 import { pictureNode } from '../src/renderer/ai/floating-ops'
 import { blocksToPmDoc, pmDocToSavePlan, type PmNode } from '../src/renderer/editor/convert'
@@ -47,15 +47,26 @@ const picture = {
   label: 'Picture',
 }
 
-async function openBlank() {
-  const source = await buildBlankDocx()
-  const parsed = await parseDocx(source)
+// an editor left alive keeps its timers, and they fire after this file's DOM is gone
+const liveEditors: Editor[] = []
+afterEach(() => {
+  for (const editor of liveEditors.splice(0)) editor.destroy()
+})
+
+function openEditor(parsed: ParsedDocFull): Editor {
   const editor = new Editor({
     element: document.createElement('div'),
     extensions: editorExtensions,
     content: blocksToPmDoc(parsed.blocks) as never,
   })
-  return { editor, parsed }
+  liveEditors.push(editor)
+  return editor
+}
+
+async function openBlank() {
+  const source = await buildBlankDocx()
+  const parsed = await parseDocx(source)
+  return { editor: openEditor(parsed), parsed }
 }
 
 /**
@@ -111,7 +122,7 @@ function selectPicture(editor: Editor) {
   editor.view.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.state.doc, target)))
 }
 
-async function save(editor: Editor, parsed: Awaited<ReturnType<typeof parseDocx>>) {
+async function save(editor: Editor, parsed: ParsedDocFull) {
   const plan = pmDocToSavePlan(editor.getJSON() as PmNode, parsed.blocks)
   const bytes = await saveDocx(parsed, plan.saveBlocks)
   const zip = await JSZip.loadAsync(bytes)
@@ -120,12 +131,7 @@ async function save(editor: Editor, parsed: Awaited<ReturnType<typeof parseDocx>
 
 async function reopen(zip: JSZip) {
   const parsed = await parseDocx(await zip.generateAsync({ type: 'uint8array' }))
-  const editor = new Editor({
-    element: document.createElement('div'),
-    extensions: editorExtensions,
-    content: blocksToPmDoc(parsed.blocks) as never,
-  })
-  return { parsed, editor }
+  return { parsed, editor: openEditor(parsed) }
 }
 
 function savedImage(plan: Awaited<ReturnType<typeof pmDocToSavePlan>>) {
@@ -178,7 +184,6 @@ describe('new image floating position on save', () => {
     expect(block?.imageOffsetYEmu).toBe(457200)
     // the reopened picture is an ordinary anchored original: later edits patch it
     expect(pmImage(reopened)?.attrs.docxIndex).not.toBeNull()
-    reopened.destroy()
   })
 
   it('keeps a Layout position preset of a newly inserted picture (margin align)', async () => {
@@ -286,11 +291,7 @@ describe('new image floating position on save', () => {
   it('keeps the position of a pasted copy of an original floating picture', async () => {
     const source = await buildDocx({ bodyXml: FLOATING_PIC_PARA, withImage: true })
     const parsed = await parseDocx(source)
-    const editor = new Editor({
-      element: document.createElement('div'),
-      extensions: editorExtensions,
-      content: blocksToPmDoc(parsed.blocks) as never,
-    })
+    const editor = openEditor(parsed)
     // a duplicate shares the source's docxIndex: the anchor is consumed by the
     // first occurrence, the copy rebuilds from its attrs via imageFromProtectedAttrs
     let node: ProsemirrorNode | undefined

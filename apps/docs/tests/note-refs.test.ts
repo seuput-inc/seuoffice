@@ -75,6 +75,7 @@ describe('footnote / endnote reference conversion', () => {
     expect(refRun).toContain('w:ascii="Palatino Linotype"')
     expect(refRun).toContain('<w:color w:val="000000"/>')
     expect(refRun).toContain('<w:sz w:val="26"/>')
+    editor.destroy()
   })
 
   it('maps Run.noteRef to a docNoteRef atom and back', () => {
@@ -186,6 +187,7 @@ describe('buildNotesContext', () => {
     expect(out).toContain('id 1 (mark 1 in block 0)')
     expect(out).toContain('id 2 (mark in protected block 1, cannot be deleted here)')
     expect(out).toContain('id 3 (no reference mark in the text)')
+    editor.destroy()
   })
 })
 
