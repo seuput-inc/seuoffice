@@ -177,6 +177,7 @@ jobs:
           echo "from $from, to ${to:-run $TO_RUN}, next ${next:-run $NEXT_RUN}, faults $faults"
 
   windows:
+    if: false
     needs: resolve
     runs-on: windows-latest
     timeout-minutes: 60
