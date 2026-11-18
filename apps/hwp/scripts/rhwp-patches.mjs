@@ -153,6 +153,12 @@
  *   handler refuses every edit operation, and the engine document throws on every call that
  *   would change it. A studio nobody asked stays as it was.
  *
+ * studio-read-only-pointer
+ *   Two things the pointer starts are neither a command nor an edit operation, so the gates above
+ *   let them through: a double click on a header or footer puts the editor in the mode that edits
+ *   it, and a right click opens the menu of editing commands, greyed out. A read-only studio
+ *   does neither.
+ *
  * studio-dialogs-*
  *   The studio asks through the window's own confirm, alert and prompt. The web build frames it
  *   in an iframe that its host may sandbox without allow-modals, where confirm answers false at
@@ -1314,6 +1320,29 @@ const PATCHES = {
       },
     ],
   },
+  'studio-read-only-pointer': {
+    file: /[\\/]rhwp-studio[\\/]src[\\/]engine[\\/]input-handler-mouse\.ts$/,
+    edits: [
+      {
+        find: "import { emitHeaderFooterModeChanged } from './header-footer-mode';",
+        replace:
+          "import { emitHeaderFooterModeChanged } from './header-footer-mode';\n" +
+          `import { STUDIO_READ_ONLY } from '${READ_ONLY_MODULE}';`,
+      },
+      {
+        find: ['  if (!this.cursor.isInHeaderFooter()) {', '    try {'].join('\n'),
+        replace: [
+          '  if (!STUDIO_READ_ONLY && !this.cursor.isInHeaderFooter()) {',
+          '    try {',
+        ].join('\n'),
+      },
+      {
+        // after preventDefault: the browser's own menu stays out as well
+        find: '  if (!this.active || !this.contextMenu) return;',
+        replace: '  if (STUDIO_READ_ONLY || !this.active || !this.contextMenu) return;',
+      },
+    ],
+  },
   'studio-dialogs-input-handler': dialogsPatch(
     'engine/input-handler.ts',
     "import { executeFormButton, applyFormActionPlan } from './input-handler-form-action';",
@@ -1492,6 +1521,7 @@ export const STUDIO_PATCHES = /** @type {const} */ ([
   'studio-read-only-operations',
   'studio-ai-run-lock',
   'studio-read-only-document',
+  'studio-read-only-pointer',
   'studio-dialogs-input-handler',
   'studio-dialogs-main',
   'studio-dialogs-bookmark',
