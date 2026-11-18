@@ -152,8 +152,21 @@
  *   whose parent asked for it, the command gate keeps only the commands that read, the input
  *   handler refuses every edit operation, and the engine document throws on every call that
  *   would change it. A studio nobody asked stays as it was.
+ *
+ * studio-dialogs-*
+ *   The studio asks through the window's own confirm, alert and prompt. The web build frames it
+ *   in an iframe that its host may sandbox without allow-modals, where confirm answers false at
+ *   once and alert and prompt show nothing. Each call that a person can reach in the embedded
+ *   editor (chrome=embed, which drops the file commands) asks studioDialogs() instead
+ *   (studio-plugin/dialogs.mjs): the in-page dialogs of the hwp page when it has them, else the
+ *   window's own, so the desktop app behaves as before. A confirm or prompt is awaited, so its
+ *   handler became async; an alert is not waited for, and nothing after it needed the wait.
+ *   Not converted, as no menu, shortcut or drop of the embedded editor reaches them: the file
+ *   commands (open, save, export, print, recent documents), the file input, the document compare
+ *   dialog, and the print surface (the app prints through its own preview).
  */
 
+import { DIALOGS_MODULE } from '../studio-plugin/dialogs.mjs'
 import { CLIPBOARD_HTML_MODULE } from '../studio-plugin/clipboard-html.mjs'
 import { EASY_WORDS_COMMAND, REDO_GATE, RUN_LOCK_GATE } from '../studio-plugin/agent-plugin.mjs'
 import { HANCOM_KEYS_MODULE, studioCommandIds } from '../studio-plugin/hancom-keys.mjs'
@@ -183,6 +196,24 @@ export { PC_FONTS_MODULE }
 
 /** Module specifier the studio-read-only-* patches import; build-studio.mjs aliases it. */
 export { READ_ONLY_MODULE }
+
+/** Module specifier the studio-dialogs-* patches import; build-studio.mjs aliases it. */
+export { DIALOGS_MODULE }
+
+const DIALOGS_IMPORT = `import { studioDialogs } from '${DIALOGS_MODULE}';\n`
+
+/**
+ * A studio-dialogs-* patch: the file (a path under rhwp-studio/src) asks through the page's
+ * dialogs where it called the window's own. `head` is the file's first import, which the import
+ * of the dialogs goes before.
+ */
+function dialogsPatch(file, head, edits) {
+  const path = file.replaceAll('/', '[\\\\/]').replace('.', '\\.')
+  return {
+    file: new RegExp(`[\\\\/]rhwp-studio[\\\\/]src[\\\\/]${path}$`),
+    edits: [{ find: head, replace: DIALOGS_IMPORT + head }, ...edits],
+  }
+}
 
 const PATCHES = {
   'sdk-scheme': {
@@ -1283,6 +1314,143 @@ const PATCHES = {
       },
     ],
   },
+  'studio-dialogs-input-handler': dialogsPatch(
+    'engine/input-handler.ts',
+    "import { executeFormButton, applyFormActionPlan } from './input-handler-form-action';",
+    [
+      {
+        find: '    alert(error.message);',
+        replace: '    void studioDialogs().alert(error.message);',
+      },
+    ],
+  ),
+  'studio-dialogs-main': dialogsPatch(
+    'main.ts',
+    "import { setLinkHostHandler } from './core/link-navigation';",
+    [
+      {
+        find: '      alert(unsupportedDocumentMessage(dropName, wasm.hasPdfImportCapability(), true));',
+        replace:
+          '      void studioDialogs().alert(unsupportedDocumentMessage(dropName, wasm.hasPdfImportCapability(), true));',
+      },
+      {
+        find: '    if (window.innerWidth < 768) alert(`초기화 오류: ${error}`);',
+        replace:
+          '    if (window.innerWidth < 768) void studioDialogs().alert(`초기화 오류: ${error}`);',
+      },
+    ],
+  ),
+  'studio-dialogs-bookmark': dialogsPatch(
+    'ui/bookmark-dialog.ts',
+    "import type { CommandServices } from '@/command/types';",
+    [
+      {
+        find: '  private doDelete(): void {',
+        replace: '  private async doDelete(): Promise<void> {',
+      },
+      {
+        find: "    if (!confirm(t('dialog.bookmark.doDelete.message', { p1: bm.name }))) return;",
+        replace:
+          "    if (!(await studioDialogs().confirm(t('dialog.bookmark.doDelete.message', { p1: bm.name })))) return;",
+      },
+      {
+        find: '  private doRename(): void {',
+        replace: '  private async doRename(): Promise<void> {',
+      },
+      {
+        find: "    const newName = prompt('새 책갈피 이름:', bm.name);",
+        replace: "    const newName = await studioDialogs().prompt('새 책갈피 이름:', bm.name);",
+      },
+      {
+        find: "      alert(t('dialog.bookmark.doRename.message', { p1: MAX_BOOKMARK_NAME_LEN }));",
+        replace:
+          "      void studioDialogs().alert(t('dialog.bookmark.doRename.message', { p1: MAX_BOOKMARK_NAME_LEN }));",
+      },
+    ],
+  ),
+  'studio-dialogs-font-set': dialogsPatch(
+    'ui/font-set-dialog.ts',
+    "import { ModalDialog } from './dialog';",
+    [
+      {
+        find: "        alert(t('dialog.fontSet.onAdd.message'));",
+        replace: "        void studioDialogs().alert(t('dialog.fontSet.onAdd.message'));",
+      },
+      {
+        find: "        alert(t('dialog.fontSet.onEdit.message'));",
+        replace: "        void studioDialogs().alert(t('dialog.fontSet.onEdit.message'));",
+      },
+      {
+        find: '  private onDelete(): void {',
+        replace: '  private async onDelete(): Promise<void> {',
+      },
+      {
+        find: "    if (confirm(t('dialog.fontSet.onDelete.message', { p1: fs.name }))) {",
+        replace:
+          "    if (await studioDialogs().confirm(t('dialog.fontSet.onDelete.message', { p1: fs.name }))) {",
+      },
+    ],
+  ),
+  'studio-dialogs-font-set-edit': dialogsPatch(
+    'ui/font-set-edit-dialog.ts',
+    "import { ModalDialog } from './dialog';",
+    [
+      {
+        find: "      alert(t('dialog.fontSetEdit.onConfirm.message'));",
+        replace: "      void studioDialogs().alert(t('dialog.fontSetEdit.onConfirm.message'));",
+      },
+    ],
+  ),
+  'studio-dialogs-page-setup': dialogsPatch(
+    'ui/page-setup-dialog.ts',
+    "import { ModalDialog } from './dialog';",
+    [{ find: '      alert(violation);', replace: '      void studioDialogs().alert(violation);' }],
+  ),
+  'studio-dialogs-style': dialogsPatch(
+    'ui/style-dialog.ts',
+    "import type { WasmBridge } from '@/core/wasm-bridge';",
+    [
+      {
+        find: '  private handleDelete(): void {',
+        replace: '  private async handleDelete(): Promise<void> {',
+      },
+      {
+        find: "      alert(t('dialog.style.handleDelete.message'));",
+        replace: "      void studioDialogs().alert(t('dialog.style.handleDelete.message'));",
+      },
+      {
+        find: "    if (!confirm(t('dialog.style.handleDelete.message.x2fd130', { p1: style.name }))) return;",
+        replace:
+          "    if (!(await studioDialogs().confirm(t('dialog.style.handleDelete.message.x2fd130', { p1: style.name })))) return;",
+      },
+    ],
+  ),
+  'studio-dialogs-style-edit': dialogsPatch(
+    'ui/style-edit-dialog.ts',
+    "import type { WasmBridge } from '@/core/wasm-bridge';",
+    [
+      {
+        find: "      alert(t('dialog.styleEdit.onConfirm.message'));",
+        replace: "      void studioDialogs().alert(t('dialog.styleEdit.onConfirm.message'));",
+      },
+      {
+        find: "      alert(t('dialog.styleEdit.onConfirm.message.xe7d6e3', { p1: MAX_STYLE_NAME_LEN }));",
+        replace:
+          "      void studioDialogs().alert(t('dialog.styleEdit.onConfirm.message.xe7d6e3', { p1: MAX_STYLE_NAME_LEN }));",
+      },
+    ],
+  ),
+  'studio-dialogs-history': dialogsPatch(
+    'ui/history-dialog.ts',
+    "import type { CommandServices } from '@/command/types';",
+    [
+      {
+        find: "    if (!window.confirm(t('dialog.history.onClearAll.message'))) return;",
+        replace:
+          "    if (!(await studioDialogs().confirm(t('dialog.history.onClearAll.message')))) return;",
+      },
+    ],
+  ),
 }
 
 /** The patches the studio build applies, in order; the SDK's own is applied by the renderer builds. */
@@ -1324,6 +1492,15 @@ export const STUDIO_PATCHES = /** @type {const} */ ([
   'studio-read-only-operations',
   'studio-ai-run-lock',
   'studio-read-only-document',
+  'studio-dialogs-input-handler',
+  'studio-dialogs-main',
+  'studio-dialogs-bookmark',
+  'studio-dialogs-font-set',
+  'studio-dialogs-font-set-edit',
+  'studio-dialogs-page-setup',
+  'studio-dialogs-style',
+  'studio-dialogs-style-edit',
+  'studio-dialogs-history',
 ])
 
 /** Whether a patch is written against this file. */

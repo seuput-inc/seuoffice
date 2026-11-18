@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import ts from 'typescript'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { RENDERER_SCHEME } from '../../../packages/electron-utils/src/renderer-scheme'
 import {
   AGENT_PLUGIN_MODULE,
@@ -24,6 +24,7 @@ import {
   REDO_GATE,
   RUN_LOCK_GATE,
 } from '../studio-plugin/agent-plugin.mjs'
+import { DIALOGS_MODULE, studioDialogs } from '../studio-plugin/dialogs.mjs'
 
 const require = createRequire(import.meta.url)
 
@@ -785,6 +786,13 @@ describe('the studio source the build fetched', () => {
     'src/i18n/locales/ko.ts',
     'src/i18n/locales/en.ts',
     'src/view/canvas-view.ts',
+    'src/ui/bookmark-dialog.ts',
+    'src/ui/font-set-dialog.ts',
+    'src/ui/font-set-edit-dialog.ts',
+    'src/ui/page-setup-dialog.ts',
+    'src/ui/style-dialog.ts',
+    'src/ui/style-edit-dialog.ts',
+    'src/ui/history-dialog.ts',
   ].map((file) => join(studio, file))
 
   // only where a build has fetched it; a fresh checkout has nothing to look at
@@ -1214,5 +1222,90 @@ describe("Hangul's plain drag of a horizontal table border", () => {
     )
     expect(patched).toContain("  } else if (state.edge.type === 'col' && inCellSel && range) {")
     expect(STUDIO_PATCHES).toContain('studio-hancom-row-drag')
+  })
+})
+
+describe('rhwp dialog patches', () => {
+  const NAMES = STUDIO_PATCHES.filter((name) => name.startsWith('studio-dialogs-'))
+
+  it('are all in the studio build', () => {
+    expect(NAMES).toHaveLength(9)
+  })
+
+  it('await a confirm and a prompt, and do not wait for an alert', () => {
+    const source = [
+      "import type { CommandServices } from '@/command/types';",
+      '  private doDelete(): void {',
+      "    if (!confirm(t('dialog.bookmark.doDelete.message', { p1: bm.name }))) return;",
+      '  }',
+      '  private doRename(): void {',
+      "    const newName = prompt('새 책갈피 이름:', bm.name);",
+      "      alert(t('dialog.bookmark.doRename.message', { p1: MAX_BOOKMARK_NAME_LEN }));",
+      '  }',
+      '',
+    ].join('\n')
+    const patched = applyPatch('studio-dialogs-bookmark', source)
+    expect(patched).toContain(
+      `import { studioDialogs } from '${DIALOGS_MODULE}';\nimport type { CommandServices }`,
+    )
+    expect(patched).toContain('private async doDelete(): Promise<void> {')
+    expect(patched).toContain('private async doRename(): Promise<void> {')
+    expect(patched).toContain("if (!(await studioDialogs().confirm(t('dialog.bookmark.doDelete")
+    expect(patched).toContain("await studioDialogs().prompt('새 책갈피 이름:', bm.name)")
+    expect(patched).toContain('void studioDialogs().alert(t(')
+    expect(patched).not.toMatch(/(?<![.\w])(confirm|prompt|alert)\(/)
+  })
+
+  it('keep CRLF sources working and fail when the call is gone', () => {
+    const source = "import { ModalDialog } from './dialog';\r\n      alert(violation);\r\n"
+    expect(applyPatch('studio-dialogs-page-setup', source)).toBe(
+      `import { studioDialogs } from '${DIALOGS_MODULE}';\r\nimport { ModalDialog } from './dialog';\r\n` +
+        '      void studioDialogs().alert(violation);\r\n',
+    )
+    expect(() =>
+      applyPatch('studio-dialogs-page-setup', "import { ModalDialog } from './dialog';"),
+    ).toThrow(/rhwp patch/)
+  })
+})
+
+describe('the dialogs the studio asks through', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  const own = {
+    confirm: vi.fn(() => true),
+    alert: vi.fn(),
+    prompt: vi.fn(() => 'typed'),
+  }
+
+  it("run the window's own when the page holding the studio has none (the desktop app)", async () => {
+    vi.stubGlobal('window', { ...own, parent: {} })
+    expect(await studioDialogs().confirm('sure?')).toBe(true)
+    expect(await studioDialogs().prompt('name', 'x')).toBe('typed')
+    await studioDialogs().alert('hi')
+    expect(own.confirm).toHaveBeenCalledWith('sure?')
+    expect(own.prompt).toHaveBeenCalledWith('name', 'x')
+    expect(own.alert).toHaveBeenCalledWith('hi')
+  })
+
+  it("ask the page's when it has them, and not the window's own", async () => {
+    const page = { confirm: vi.fn(async () => false), alert: vi.fn(), prompt: vi.fn() }
+    vi.stubGlobal('window', { ...own, parent: { seuofficeDialogs: page } })
+    own.confirm.mockClear()
+    expect(await studioDialogs().confirm('sure?')).toBe(false)
+    expect(page.confirm).toHaveBeenCalledWith('sure?')
+    expect(own.confirm).not.toHaveBeenCalled()
+  })
+
+  it("fall back to the window's own when the page is on another origin", async () => {
+    const parent = {}
+    Object.defineProperty(parent, 'seuofficeDialogs', {
+      get() {
+        throw new Error('SecurityError')
+      },
+    })
+    vi.stubGlobal('window', { ...own, parent })
+    own.confirm.mockClear()
+    expect(await studioDialogs().confirm('sure?')).toBe(true)
+    expect(own.confirm).toHaveBeenCalledOnce()
   })
 })
