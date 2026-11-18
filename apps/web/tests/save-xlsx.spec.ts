@@ -244,14 +244,18 @@ async function addNote(page: Page, frame: FrameLocator, text: string) {
   await page.mouse.click(grid.x + 600, grid.y + 400)
 }
 
-test('a context-menu note adds in edit mode and not in view mode', async ({ page }) => {
+test('a context-menu note adds in edit mode, and view mode has no such menu', async ({ page }) => {
   const editing = await open(page, FIXTURE, true)
   await addNote(page, editing, 'note-in-edit')
   await unsaved(page)
 
+  // a workbook opened only to view opens no grid menu: the note has no way in
   const viewing = await open(page, FIXTURE, false)
-  await addNote(page, viewing, 'note-in-view')
+  const viewer = (await page.locator('#viewer iframe').boundingBox())!
+  await page.mouse.click(viewer.x + 400, viewer.y + 200)
+  await page.mouse.click(viewer.x + 400, viewer.y + 200, { button: 'right' })
   await page.waitForTimeout(1000)
+  await expect(viewing.getByText('노트 추가', { exact: true })).toHaveCount(0)
   await expect(saveButton(viewing)).toHaveCount(0)
   await expect(page.locator('#status')).not.toContainText('저장 안 함')
 })
