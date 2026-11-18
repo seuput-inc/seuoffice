@@ -8,7 +8,7 @@ import {
 import { localContextLimit } from '@seuoffice/ai-provider/browser'
 import type { AiSettings } from '@seuoffice/ai-provider'
 import type { Lang } from '@seuoffice/i18n'
-import { aiContextConfirmText, aiRunErrorText } from '@seuoffice/ui'
+import { aiContextConfirmText, aiRunErrorText, appDialogs } from '@seuoffice/ui'
 import { getLang, t } from '../i18n/locale'
 
 /** What the AI panel learns from a turn besides its text (all optional) */
@@ -54,7 +54,7 @@ export function createElectronTransport(
     // a local model's window: the transport warns at 80% and asks once per run
     contextLimit: (settings) => localContextLimit(settings),
     confirmContext: (warning) =>
-      window.confirm(aiContextConfirmText(hooks?.lang() ?? getLang(), warning)),
+      appDialogs.confirm(aiContextConfirmText(hooks?.lang() ?? getLang(), warning)),
     // the subscription causes are worded once for every editor; the kinds above keep pdf's texts
     ...(hooks
       ? {

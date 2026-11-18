@@ -9,7 +9,7 @@ import {
   type Block,
   type SourceInfo,
 } from '@seuoffice/docx-engine'
-import { Dropdown } from '@seuoffice/ui'
+import { appDialogs, Dropdown } from '@seuoffice/ui'
 import { PromptModal } from './PromptModal'
 import {
   collectTocEntriesWithPages,
@@ -272,7 +272,7 @@ export function ReferencesTab({
     // every command lets Zotero rebuild the bibliography from the fields it can see;
     // note citations are not among them yet, so their works would silently drop out
     if (zoteroNoteFields) {
-      window.alert(t('zoteroNoteFieldsUnsupported'))
+      await appDialogs.alert(t('zoteroNoteFieldsUnsupported'))
       return
     }
     setZoteroBusy(command)
@@ -280,7 +280,7 @@ export function ReferencesTab({
       const result = await window.desktop.zoteroCommand(command)
       if (!result.ok) {
         console.error('Zotero integration failed', result.error)
-        window.alert(
+        await appDialogs.alert(
           t(
             result.errorCode === 'connection-refused'
               ? 'zoteroConnectionError'
@@ -290,7 +290,7 @@ export function ReferencesTab({
       }
     } catch (error) {
       console.error('Zotero integration failed', error)
-      window.alert(t('zoteroOperationError'))
+      await appDialogs.alert(t('zoteroOperationError'))
     } finally {
       setZoteroBusy(null)
     }
@@ -299,7 +299,7 @@ export function ReferencesTab({
   const insertToc = () => {
     const entries = collectTocEntriesWithPages(editor, headingPages)
     if (entries.length === 0) {
-      window.alert(t('ribbonTocNoHeadings'))
+      void appDialogs.alert(t('ribbonTocNoHeadings'))
       return
     }
     editor
@@ -320,7 +320,7 @@ export function ReferencesTab({
 
   const insertBibliography = () => {
     if (sources.length === 0) {
-      window.alert(t('ribbonNoSources'))
+      void appDialogs.alert(t('ribbonNoSources'))
       return
     }
     const nodes: Array<Record<string, unknown>> = [
@@ -368,7 +368,7 @@ export function ReferencesTab({
       if (node.type.name === 'docXeMark') terms.push(String(node.attrs.term))
     })
     if (terms.length === 0) {
-      window.alert(t('ribbonNoIndexEntries'))
+      void appDialogs.alert(t('ribbonNoIndexEntries'))
       return
     }
     const locale = getDocumentLocale()

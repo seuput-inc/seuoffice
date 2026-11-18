@@ -310,6 +310,7 @@ import {
   templateDocumentOf,
   webAiOff,
   webViewMode,
+  appDialogs,
   type TemplateDocument,
 } from '@seuoffice/ui'
 import { useI18n } from './i18n/locale'
@@ -6280,7 +6281,7 @@ export default function App() {
     window.pdfApi.sendSaveAsResult('cancelled')
   }
 
-  const requestRedactionSaveAs = () => {
+  const requestRedactionSaveAs = async () => {
     if (redactions.length === 0 || redactionRequestInFlightRef.current) return
     const otherPending =
       saveInFlightRef.current !== null ||
@@ -6307,7 +6308,7 @@ export default function App() {
       showNotice(t('redactSaveFirst'))
       return
     }
-    if (!window.confirm(t('redactConfirm'))) return
+    if (!(await appDialogs.confirm(t('redactConfirm')))) return
     redactionApplyConfirmedRef.current = true
     redactionRequestInFlightRef.current = true
     setRedactionCopyInFlight(true)
@@ -7875,7 +7876,9 @@ export default function App() {
   ): NoUndoGate => ({
     consent,
     confirm: ({ fileBytes, limitBytes }) =>
-      window.confirm(t(question, { size: humanBytes(fileBytes), limit: humanBytes(limitBytes) })),
+      appDialogs.confirm(
+        t(question, { size: humanBytes(fileBytes), limit: humanBytes(limitBytes) }),
+      ),
   })
   /** Before a page operation on a file too large to keep: it cannot be undone */
   const noUndoGate = () => wayBackGate(noUndoConsentRef.current, 'pageOpNoUndoConfirm')

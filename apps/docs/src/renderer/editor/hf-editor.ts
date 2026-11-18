@@ -599,8 +599,13 @@ export function insertHfInstrField(editor: Editor, instr: string, value: string)
 
 export const HF_COMMIT_EVENT = 'ai-docs-commit-tables'
 
-/** focus moving here keeps the header editor open (ribbon formatting acts on it, Word-style) */
-const KEEP_OPEN_SELECTOR = '.ribbon, [data-rb-panel], .modal, .modal-backdrop, .ctx-menu'
+/**
+ * focus moving here keeps the header editor open (ribbon formatting acts on it, Word-style); the
+ * web build's in-page confirm (`[data-web-sandbox-dialog]`) takes the focus where the window's own
+ * confirm left it in place
+ */
+const KEEP_OPEN_SELECTOR =
+  '.ribbon, [data-rb-panel], .modal, .modal-backdrop, .ctx-menu, [data-web-sandbox-dialog]'
 
 export interface HfEditorHandle {
   editor: Editor

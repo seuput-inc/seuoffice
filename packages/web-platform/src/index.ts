@@ -1,5 +1,6 @@
 export { WebUnsupportedError, unsupported } from './errors'
 export { installSandboxFallbacks } from './sandbox-fallbacks'
+export { pageDialogs, showPageDialog } from './page-dialogs'
 export { createWebBridge, installWebBridge } from './bridge'
 export {
   documentByPath,

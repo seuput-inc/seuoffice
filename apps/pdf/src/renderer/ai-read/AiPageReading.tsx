@@ -23,6 +23,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 import type { ReactElement } from 'react'
 import { useSyncExternalStore } from 'react'
 import type { Lang } from '@seuoffice/i18n'
+import { appDialogs } from '@seuoffice/ui'
 import { createAiReadCallModel } from '../../../../../packages/pdf-structure/src/ai-read'
 import {
   startAiReadJob,
@@ -318,7 +319,7 @@ export const AiPageReading = forwardRef<AiPageReadingHandle, AiPageReadingProps>
           return
         }
         const counts = await p.api.store.deleteCounts(hash).catch(() => null)
-        if (!window.confirm(deleteConfirmText(p.t, counts?.ok ? counts : null))) return
+        if (!(await appDialogs.confirm(deleteConfirmText(p.t, counts?.ok ? counts : null)))) return
         const out = await p.api.store.deleteDocument(hash).catch(() => null)
         if (!out?.ok) {
           p.onNotice(p.t('arDeleteFailed'))

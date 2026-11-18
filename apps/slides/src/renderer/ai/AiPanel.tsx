@@ -69,6 +69,7 @@ import type {
 import { ATTACHMENT_IMAGE_EXTS } from '../../shared/ipc'
 import {
   AI_PANEL_WIDTH_DEFAULT,
+  appDialogs,
   AttachmentCardIcon,
   clampAiPanelWidth,
   fileImageIcon,
@@ -1117,28 +1118,27 @@ export function AiPanel({
     // and a decline stops the rest of that run's deck calls without asking again.
     const deckContextGate = createDeckContextGate<AiSettings>({
       contextLimit: (settings) => localContextLimit(settings),
-      confirm: (warning) => window.confirm(aiContextConfirmText(getLang(), warning)),
+      confirm: (warning) => appDialogs.confirm(aiContextConfirmText(getLang(), warning)),
     })
-    const runLlmAttempt = (
+    const runLlmAttempt = async (
       settings: AiSettings,
       system: string,
       user: string,
       timeoutMs: number,
       signal?: AbortSignal,
       maxTokens?: number,
-    ): Promise<LlmResult> =>
-      new Promise((resolve) => {
+    ): Promise<LlmResult> => {
+      // declined: the model is not called, and 'stopped' keeps retry ladders from trying again
+      if (!signal?.aborted && !(await deckContextGate.allows(settings, system, user, signal))) {
+        return {
+          ok: false,
+          error: aiRunErrorText(getLang(), { kind: 'context-limit' }) ?? tGlobal('aiErrStopped'),
+          errKind: 'stopped',
+        }
+      }
+      return new Promise((resolve) => {
         if (signal?.aborted) {
           resolve({ ok: false, error: tGlobal('aiErrStopped'), errKind: 'stopped' })
-          return
-        }
-        // declined: the model is not called, and 'stopped' keeps retry ladders from trying again
-        if (!deckContextGate.allows(settings, system, user, signal)) {
-          resolve({
-            ok: false,
-            error: aiRunErrorText(getLang(), { kind: 'context-limit' }) ?? tGlobal('aiErrStopped'),
-            errKind: 'stopped',
-          })
           return
         }
         const requestId = crypto.randomUUID()
@@ -1230,6 +1230,7 @@ export function AiPanel({
             }),
           )
       })
+    }
     const runLlmOnce = async (
       system: string,
       user: string,
