@@ -261,10 +261,7 @@ fn watch_threads(app: &tauri::AppHandle) {
         core_late = !core;
         let ui = ui_answers(app);
         if !ui && !ui_late {
-            trace!(
-                "e2e",
-                "the UI thread ran no job within {CORE_LATE:?}"
-            );
+            trace!("e2e", "the UI thread ran no job within {CORE_LATE:?}");
             capture_stacks("ui-late");
         } else if ui && ui_late {
             trace!("e2e", "the UI thread runs jobs again");

@@ -1741,10 +1741,10 @@ impl Projects {
                 "authenticated project request owner is unavailable".into(),
             ))));
         };
-        let admitted = self
-            .shell
-            .host
-            .with_request_owner(&owner.native, &owner.cancel, &mut || Ok(()));
+        let admitted =
+            self.shell
+                .host
+                .with_request_owner(&owner.native, &owner.cancel, &mut || Ok(()));
         match admitted {
             Ok(()) => reply.reply(value),
             Err(error) => reply.reply(Err(error)),
