@@ -6,6 +6,7 @@ import {
   editMode,
   installWebBridge,
   onHostSaveRequest,
+  onHostThumbnailRequest,
   reportDirty,
   reportOpened,
   saveReason,
@@ -164,6 +165,7 @@ const hwpApi: Partial<HwpApi> = {
   getPathForFile: () => '',
   openDroppedDocuments: () => false,
   aiToolCapabilities: async () => null,
+  onThumbnailRequest: onHostThumbnailRequest,
   // menu and shell requests that never arrive on the web
   onSaveRequest: unsubscribe,
   onPrintRequest: unsubscribe,

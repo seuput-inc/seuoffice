@@ -13,6 +13,7 @@ import {
   useSplitPaneFocusPing,
   webAiOff,
   webViewMode,
+  whenLoaded,
   type TemplateDocument,
 } from '@seuoffice/ui'
 import { HwpAiDock } from './ai/AiDock'
@@ -32,6 +33,7 @@ import { t as translateNow, useI18n, type StringKey } from './i18n/locale'
 import { MEMO_INSERT_EVENT, memoNoticeOf, type MemoNotice } from './MemoPanel'
 import { MemoSide, MemoToggle, memoPanelInitiallyOpen, rememberMemoPanelOpen } from './MemoSide'
 import { openDocumentsDroppedOn } from './editor-drop'
+import { drawFirstPage } from './first-page-image'
 import { hwpPresentationKeyOf } from './presentation-keys'
 import { createAiHoldWiring, runPrintJob, type AiHoldWiring } from './print-flow'
 import { PrintPreview } from './preview/PrintPreview'
@@ -164,6 +166,8 @@ export default function App() {
   /** the same format for the screen: the check panel passes it to the rules */
   const [docFormat, setDocFormat] = useState<HwpFormat>('hwp')
   const [phase, setPhase] = useState<Phase>('booting')
+  const phaseRef = useRef(phase)
+  phaseRef.current = phase
   /** Ctrl+F5: the document alone in fullscreen, with the editor's own chrome hidden */
   const [presenting, setPresenting] = useState(false)
   const presentingRef = useRef(false)
@@ -226,6 +230,17 @@ export default function App() {
       withChangeNotes(pluginBridge, () => {
         copierRef.current?.noteChange()
         setDocRevision((revision) => revision + 1)
+      }),
+    [pluginBridge],
+  )
+
+  // Web embed: the host asks for a picture of the first page, perhaps before the editor took
+  // the document
+  useEffect(
+    () =>
+      window.hwpApi.onThumbnailRequest?.(async (request) => {
+        await whenLoaded(() => (phaseRef.current === 'ready' ? true : null), request.signal)
+        return drawFirstPage(pluginBridge, request)
       }),
     [pluginBridge],
   )
