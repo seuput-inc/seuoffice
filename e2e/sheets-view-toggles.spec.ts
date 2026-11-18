@@ -32,7 +32,7 @@ test('sheets: the View tab shows every display toggle', async () => {
 
     // the View tab
     const opened = await page.evaluate(() => {
-      const el = [...document.querySelectorAll('.ribbon-tabs > button:not(.qa-btn)')].find(
+      const el = [...document.querySelectorAll('.ribbon-tab-strip > button')].find(
         (x) => x.textContent?.trim() === 'View',
       ) as HTMLElement | undefined
       el?.click()

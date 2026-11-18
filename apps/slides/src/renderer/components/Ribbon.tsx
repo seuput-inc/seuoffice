@@ -24,6 +24,7 @@ import {
   STANDARD_COLORS,
   canPickScreenColor,
   pickScreenColor,
+  RibbonTabStrip,
 } from '@seuoffice/ui'
 import {
   createRecentColorSession,
@@ -1918,33 +1919,35 @@ export function Ribbon({
           </label>
         )}
         <span className="qa-sep" aria-hidden="true" />
-        {TABS.filter((tb) => tb !== 'file').map((tb) => (
-          <button
-            key={tb}
-            className={`ribbon-tab ${collapse.tabClass(tab === tb)}`}
-            data-tip={collapse.tabTip(tab === tb)}
-            onClick={() => {
-              collapse.onTabPress(tab === tb)
-              setTab(tb)
-              setFileOpen(false)
-            }}
-          >
-            {t(TAB_LABEL[tb])}
-          </button>
-        ))}
-        {contextTab && (
-          <button
-            key={contextTab}
-            className={`ribbon-tab ribbon-tab-context ${collapse.tabClass(tab === contextTab)}`}
-            onClick={() => {
-              collapse.onTabPress(tab === contextTab)
-              setTab(contextTab)
-            }}
-            data-tip={collapse.tabTip(tab === contextTab) ?? t(TAB_LABEL[contextTab])}
-          >
-            {t(TAB_LABEL[contextTab])}
-          </button>
-        )}
+        <RibbonTabStrip active={tab}>
+          {TABS.filter((tb) => tb !== 'file').map((tb) => (
+            <button
+              key={tb}
+              className={`ribbon-tab ${collapse.tabClass(tab === tb)}`}
+              data-tip={collapse.tabTip(tab === tb)}
+              onClick={() => {
+                collapse.onTabPress(tab === tb)
+                setTab(tb)
+                setFileOpen(false)
+              }}
+            >
+              {t(TAB_LABEL[tb])}
+            </button>
+          ))}
+          {contextTab && (
+            <button
+              key={contextTab}
+              className={`ribbon-tab ribbon-tab-context ${collapse.tabClass(tab === contextTab)}`}
+              onClick={() => {
+                collapse.onTabPress(tab === contextTab)
+                setTab(contextTab)
+              }}
+              data-tip={collapse.tabTip(tab === contextTab) ?? t(TAB_LABEL[contextTab])}
+            >
+              {t(TAB_LABEL[contextTab])}
+            </button>
+          )}
+        </RibbonTabStrip>
         <span className="ribbon-tabs-spacer" />
       </div>
 

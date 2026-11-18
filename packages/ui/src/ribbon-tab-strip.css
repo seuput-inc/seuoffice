@@ -1,0 +1,44 @@
+/* The ribbon's tab buttons (ribbon-tab-strip.tsx). When they fit, the strip lays them out exactly
+   as the row did (its gap and alignment); when they do not, it shrinks and scrolls sideways
+   instead of squeezing each name onto several lines. */
+.ribbon-tab-strip {
+  display: flex;
+  align-items: inherit;
+  gap: inherit;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  /* room for the active tab's underline, which hangs just below the button; the negative margin
+     keeps the strip's place in the row unchanged */
+  padding-bottom: 3px;
+  margin-bottom: -3px;
+}
+
+.ribbon-tab-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.ribbon-tab-strip > *,
+.ribbon-tab-file {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* A web page at a phone width: the tabs get a line of their own below the File button, the quick
+   access buttons and the mode buttons, so a swipe has the page's whole width to show them in. A
+   web page also has no window caption buttons to leave room for (the desktop keeps that room). */
+@media (max-width: 600px) {
+  html[data-web-host] .ribbon-tabs {
+    flex-wrap: wrap;
+  }
+
+  html[data-web-host] .ribbon-tab-strip {
+    order: 1;
+    flex: 1 0 100%;
+  }
+
+  html[data-web-host] .ribbon-tabs-win {
+    padding-right: 8px;
+  }
+}

@@ -22,6 +22,7 @@ import {
   type DriveAttachPicked,
   type OnTemplateSkill,
   type SkillUse,
+  RibbonTabStrip,
   type AiComposerDocs,
 } from '@seuoffice/ui'
 
@@ -1101,19 +1102,21 @@ export function ExcelShell({
               </label>
             )}
             <span className="qa-sep" aria-hidden="true" />
-            {visibleTabs.map((tab) => (
-              <button
-                className={`${collapse.tabClass(tab === activeTab)} ${CONTEXTUAL_TABS.includes(tab) ? 'contextual' : ''}`}
-                data-tip={collapse.tabTip(tab === activeTab)}
-                key={tab}
-                onClick={() => {
-                  collapse.onTabPress(tab === activeTab)
-                  setActiveTab(tab)
-                }}
-              >
-                {t(TAB_LABEL[tab])}
-              </button>
-            ))}
+            <RibbonTabStrip active={activeTab}>
+              {visibleTabs.map((tab) => (
+                <button
+                  className={`${collapse.tabClass(tab === activeTab)} ${CONTEXTUAL_TABS.includes(tab) ? 'contextual' : ''}`}
+                  data-tip={collapse.tabTip(tab === activeTab)}
+                  key={tab}
+                  onClick={() => {
+                    collapse.onTabPress(tab === activeTab)
+                    setActiveTab(tab)
+                  }}
+                >
+                  {t(TAB_LABEL[tab])}
+                </button>
+              ))}
+            </RibbonTabStrip>
             <span className="ribbon-tabs-spacer" />
             <span className="workbook-status" role="status" aria-live="polite">
               {statusMessage}

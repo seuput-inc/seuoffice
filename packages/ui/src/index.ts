@@ -311,6 +311,7 @@ export {
   type RibbonCollapseLabels,
   type RibbonDensity,
 } from './ribbon-collapse'
+export { RibbonTabStrip } from './ribbon-tab-strip'
 export { AiReplyProgress, AiTypingIndicator } from './AiTypingIndicator'
 export {
   IconArrowDown,

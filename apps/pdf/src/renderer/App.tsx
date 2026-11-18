@@ -308,6 +308,7 @@ import {
   useSplitPaneFocusPing,
   useSplitPaneRole,
   templateDocumentOf,
+  RibbonTabStrip,
   webAiOff,
   webViewMode,
   appDialogs,
@@ -10158,43 +10159,45 @@ export default function App() {
               </label>
             )}
             <span className="qa-sep" />
-            {RIBBON_TABS.map(({ id, labelKey }) => (
-              <button
-                key={id}
-                className={`ribbon-tab ${collapse.tabClass(ribbonTab === id)}`}
-                data-tip={collapse.tabTip(ribbonTab === id)}
-                onClick={() => {
-                  collapse.onTabPress(ribbonTab === id)
-                  setRibbonTab(id)
-                }}
-              >
-                {t(labelKey)}
-              </button>
-            ))}
-            {!readOnly && (
-              <button
-                className={`ribbon-tab ribbon-tab-context ${collapse.tabClass(ribbonTab === 'fillForm')}`}
-                data-tip={collapse.tabTip(ribbonTab === 'fillForm')}
-                onClick={() => {
-                  collapse.onTabPress(ribbonTab === 'fillForm')
-                  setRibbonTab('fillForm')
-                }}
-              >
-                {t('ribbonTabFillForm')}
-              </button>
-            )}
-            {!readOnly && (
-              <button
-                className={`ribbon-tab ribbon-tab-context ${collapse.tabClass(ribbonTab === 'formDesign')}`}
-                data-tip={collapse.tabTip(ribbonTab === 'formDesign')}
-                onClick={() => {
-                  collapse.onTabPress(ribbonTab === 'formDesign')
-                  setRibbonTab('formDesign')
-                }}
-              >
-                {t('ribbonTabFormDesign')}
-              </button>
-            )}
+            <RibbonTabStrip active={ribbonTab}>
+              {RIBBON_TABS.map(({ id, labelKey }) => (
+                <button
+                  key={id}
+                  className={`ribbon-tab ${collapse.tabClass(ribbonTab === id)}`}
+                  data-tip={collapse.tabTip(ribbonTab === id)}
+                  onClick={() => {
+                    collapse.onTabPress(ribbonTab === id)
+                    setRibbonTab(id)
+                  }}
+                >
+                  {t(labelKey)}
+                </button>
+              ))}
+              {!readOnly && (
+                <button
+                  className={`ribbon-tab ribbon-tab-context ${collapse.tabClass(ribbonTab === 'fillForm')}`}
+                  data-tip={collapse.tabTip(ribbonTab === 'fillForm')}
+                  onClick={() => {
+                    collapse.onTabPress(ribbonTab === 'fillForm')
+                    setRibbonTab('fillForm')
+                  }}
+                >
+                  {t('ribbonTabFillForm')}
+                </button>
+              )}
+              {!readOnly && (
+                <button
+                  className={`ribbon-tab ribbon-tab-context ${collapse.tabClass(ribbonTab === 'formDesign')}`}
+                  data-tip={collapse.tabTip(ribbonTab === 'formDesign')}
+                  onClick={() => {
+                    collapse.onTabPress(ribbonTab === 'formDesign')
+                    setRibbonTab('formDesign')
+                  }}
+                >
+                  {t('ribbonTabFormDesign')}
+                </button>
+              )}
+            </RibbonTabStrip>
             <span className="ribbon-tabs-spacer" />
             {readOnly && <span className="tb-readonly">{readOnlyReason}</span>}
             {/* Pending edits wait for an explicit save or an enabled autosave. */}
