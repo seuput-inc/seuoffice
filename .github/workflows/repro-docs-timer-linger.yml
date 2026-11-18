@@ -1,0 +1,59 @@
+name: repro docs timer linger
+
+# Throwaway: runs the docs unit tests in a jsdom environment whose worker stays
+# alive after teardown (tools/repro/jsdom-linger.ts), so every test file that
+# leaves a timer running reports it instead of only on a slow runner.
+
+on:
+  push:
+    branches: ["repro/docs-timer-linger*"]
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates
+      - run: npm ci --ignore-scripts
+      - run: npm run build:wasm
+      - name: docs tests, lingering after teardown
+        working-directory: apps/docs
+        run: |
+          set +e
+          LIVE_LOG="$PWD/live.tsv" npx vitest run --environment="$GITHUB_WORKSPACE/tools/repro/jsdom-linger.ts" > linger.log 2>&1
+          echo "vitest exit: $?" | tee -a "$GITHUB_STEP_SUMMARY"
+          sed 's/\x1b\[[0-9;]*m//g' linger.log > linger.plain.log
+          tail -n 12 linger.plain.log
+          {
+            echo '### files that left a timer running'
+            echo '```'
+            grep -o 'This error originated in "[^"]*"' linger.plain.log | sort | uniq -c | sort -rn
+            echo '```'
+            echo '### where the timers fired'
+            echo '```'
+            grep -A1 -E '^(ReferenceError|TypeError|Error)' linger.plain.log | grep '❯' | sed 's/^ *//' | sort | uniq -c | sort -rn | head -40
+            echo '```'
+            echo '### files that ended with editors alive (count, file)'
+            echo '```'
+            sort -k2 live.tsv | sed "s|$GITHUB_WORKSPACE/apps/docs/||" || true
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docs-linger-log
+          path: |
+            apps/docs/linger.plain.log
+            apps/docs/live.tsv
