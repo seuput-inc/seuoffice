@@ -21,6 +21,11 @@ devtools = ["tauri/devtools"]
 # a release build on Windows without a console window; the runner builds leave
 # it off so the logs and the measurement's output stay on stdout and stderr
 windows-gui = []
+# The replay markers of the native-only IPC record (src/ipc/native_record/replay.rs): a
+# renderer's call may stand for a value of an earlier answered call. Only the real-app test
+# build turns it on (the e2e job of seuoffice-shell.yml); an executable that ships must not
+# have it, which ci/replay-guard.sh checks on the built file in the bundle job.
+e2e-replay = []
 
 [build-dependencies]
 tauri-build = "=2.7.4"

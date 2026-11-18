@@ -188,6 +188,7 @@ jobs:
               [ "$channel" != stable ] || suffix='-stable'
               if [ '${{ matrix.platform }}' = win ]; then
                 npx tauri build --config bundle/windows.conf.json --config "{\"version\":\"$v\"}" --bundles nsis --verbose -- --locked
+                bash ../../.bundle-definition/crates/shell/ci/replay-guard.sh absent target/release/SeuOffice.exe
                 [ "$(find target/release/bundle/nsis -name '*.exe' -type f | wc -l | tr -d ' ')" = 1 ]
                 built_installer=$(find target/release/bundle/nsis -name '*.exe' -type f)
                 installer="$out/SeuOffice-Setup-$v$suffix.exe"
@@ -199,6 +200,7 @@ jobs:
                 grep -Fxq "channel: $channel" "$resources/app-update.yml"
                 grep -Fxq 'owner: seuput-inc' "$resources/app-update.yml"
                 grep -Fxq 'repo: seuoffice' "$resources/app-update.yml"
+                bash ../../.bundle-definition/crates/shell/ci/replay-guard.sh absent "$install/SeuOffice.exe"
                 for file in "$installer" "$install/SeuOffice.exe" "$resources/native/xlsx-sidecar.exe"; do
                   status=$(FILE_TO_VERIFY="$file" powershell -NoProfile -Command '(Get-AuthenticodeSignature -LiteralPath $env:FILE_TO_VERIFY).Status' | tr -d '\r')
                   [ "$status" = NotSigned ] || { echo "::error::unexpected signature status $status"; exit 1; }
@@ -213,6 +215,7 @@ jobs:
                 app=$(find target/release/bundle/macos -maxdepth 1 -name '*.app' -type d)
                 built_dmg=$(find target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -type f)
                 [ "$(lipo -archs "$app/Contents/MacOS/SeuOffice")" = arm64 ]
+                bash ../../.bundle-definition/crates/shell/ci/replay-guard.sh absent "$app/Contents/MacOS/SeuOffice"
                 ../../.bundle-definition/crates/shell/ci/mac-check-signature.sh "$app"
                 grep -Fxq "channel: $channel" "$app/Contents/Resources/app-update.yml"
                 grep -Fxq 'owner: seuput-inc' "$app/Contents/Resources/app-update.yml"
@@ -231,6 +234,7 @@ jobs:
                 ditto -x -k "$zip" "$extracted"
                 ../../.bundle-definition/crates/shell/ci/mac-check-signature.sh "$extracted/SeuOffice.app"
                 grep -Fxq "channel: $channel" "$extracted/SeuOffice.app/Contents/Resources/app-update.yml"
+                bash ../../.bundle-definition/crates/shell/ci/replay-guard.sh absent "$extracted/SeuOffice.app/Contents/MacOS/SeuOffice"
                 mount="$RUNNER_TEMP/mount-$v-$channel"
                 mkdir -p "$mount"
                 hdiutil attach -readonly -nobrowse -mountpoint "$mount" "$dmg"

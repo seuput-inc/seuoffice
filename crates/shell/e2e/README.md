@@ -77,6 +77,13 @@ The workflow's `scenarios` input picks specs too: by name, or `native-host` for 
 required scenario no spec drives is listed with its reason in `UNDRIVEN` of `specs.mjs`; the checker
 test fails when the specs and that list stop matching the contracts.
 
+The specs present another view's receipt and the same receipt twice through replay markers
+(`{"e2eReplay": ...}` in an `invoke` step's arguments, `src/ipc/native_record/replay.rs`). That
+code is compiled only with the cargo feature `e2e-replay`, which only the two builds of this job
+turn on; the job checks that its executable has the marker (`ci/replay-guard.sh present`). A
+default build hands a marker to the handler as an ordinary object, and the bundle job fails when
+an executable it built or installed has the marker's bytes (`ci/replay-guard.sh absent`).
+
 The restore runs answer the launch recovery list with a `click` on its confirm button, in the Home
 tab. The runner's `click` needs an active editor tab today, so those runs fail until `target()` of
 `src/e2e/steps.rs` falls back to the shell window's own view.

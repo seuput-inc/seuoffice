@@ -7,7 +7,8 @@
 //   runs[n].steps   the steps of a `--e2e` scenario, plus `{op: 'invoke', as, channel, args}`: the
 //                   active page sends that call through its own bridge (run.mjs writes it as a
 //                   `query`). `args` is the wire form; `{e2eReplay: 'self' | 'other', path}` stands
-//                   for a value of an answered call (crates/shell/src/ipc/native_record.rs).
+//                   for a value of an answered call, in a build with the `e2e-replay` feature
+//                   (crates/shell/src/ipc/native_record/replay.rs).
 //   runs[n].end     'kill': the app is killed after the last step, as a crash leaves it
 //   runs[n].damage  before the run: 'copies' overwrites the recovery copies the app wrote,
 //                   a file name overwrites that file of the work folder

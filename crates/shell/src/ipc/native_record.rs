@@ -8,13 +8,12 @@
 //! written as its length only, so a receipt or a token never leaves the process.
 //! crates/shell/ci/native-host-check.mjs reads the file. Without `--e2e` nothing here runs.
 //!
-//! Two refusals a scenario must show need a receipt the shell handed a renderer, which no
-//! scenario can know: the same acknowledgement twice, and one renderer presenting another's.
-//! So the arguments of each call that was answered without an error stay in memory, and a later
-//! call may name one of them in place of a value: `{"e2eReplay": "self" | "other", "path": [0,
-//! "token"]}` stands for that value of the last answered call of the same channel from the
-//! sender's own view, or from another view. Such a call still comes from a real page through
-//! the bridge, and is authenticated and dispatched like any other.
+//! The record changes no call. The one thing that does, the replay markers of the real-app
+//! test build (replay.rs), is compiled only with the `e2e-replay` feature: a build without it
+//! hands every argument to its handler as the renderer sent it.
+
+#[cfg(feature = "e2e-replay")]
+mod replay;
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -23,15 +22,12 @@ use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::Instant;
 
 use serde_json::{Map, Value, json};
-use shell_contract::error::IpcError;
-use shell_contract::ids::{RequestId, ViewId};
+use shell_contract::ids::RequestId;
 use shell_contract::ipc::{ChannelKind, Reply, Sender};
 use shell_contract::value::IpcValue;
 use shell_contract::{CHANNELS, ChannelNamespace};
 
 const RECORD_FILE: &str = "native-ipc.jsonl";
-const REPLAY_KEY: &str = "e2eReplay";
-const REPLAY_PATH: &str = "path";
 /// The outcomes of `<app>:saved-input-applied`: the only texts written as they are
 const OUTCOME_WORDS: [&str; 3] = ["applied", "recovered", "failed"];
 /// A text argument shorter than this is not looked for in a refusal text
@@ -49,9 +45,10 @@ pub(super) struct Call<'a> {
     pub(super) channel: &'a str,
 }
 
-/// What `dispatch` goes on with: the arguments, replayed values filled in, and a delivery that
-/// also records the reply. `None` when the call named a value nothing recorded: it is answered
-/// here. Anything but a native-only channel of a `--e2e` run passes through untouched.
+/// What `dispatch` goes on with: the arguments and a delivery that also records the reply.
+/// Anything but a native-only channel of a `--e2e` run passes through untouched. With the
+/// `e2e-replay` feature the arguments have their replay markers filled in, and the answer is
+/// `None` when a marker named a value nothing recorded: that call is answered here.
 pub(super) fn observe(
     call: &Call<'_>,
     args: Vec<IpcValue>,
@@ -66,6 +63,8 @@ pub(super) fn observe(
 /// The recorder of this process; `None` without `--e2e`
 static RECORDER: LazyLock<Option<Arc<Recorder>>> = LazyLock::new(|| {
     let request = crate::e2e::request()?;
+    #[cfg(feature = "e2e-replay")]
+    replay::announce();
     Some(Arc::new(Recorder::new(request.out.join(RECORD_FILE))))
 });
 
@@ -75,21 +74,14 @@ fn is_native(channel: &str) -> bool {
         .any(|spec| spec.name == channel && spec.namespace == ChannelNamespace::Native)
 }
 
-/// The arguments of a call that was answered without an error
-struct Answered {
-    view: ViewId,
-    channel: String,
-    args: Vec<IpcValue>,
-}
-
 #[derive(Default)]
 struct State {
     file: Option<File>,
     /// the file could not be opened: said once, then nothing is written
     unwritable: bool,
     seq: u64,
-    /// newest last, one per view and channel
-    answered: Vec<Answered>,
+    #[cfg(feature = "e2e-replay")]
+    answered: replay::Memory,
 }
 
 struct Recorder {
@@ -166,13 +158,14 @@ impl Recorder {
             "surface": format!("{:?}", call.sender.surface),
             "native": call.native,
         });
-        let mut replayed = Vec::new();
-        let filled = args
-            .iter()
-            .map(|arg| fill(arg, &state.answered, view, call.channel, &mut replayed))
-            .collect::<Result<Vec<_>, String>>();
-        let args = match filled {
-            Ok(args) => args,
+        #[cfg(feature = "e2e-replay")]
+        let args = match state.answered.resolve(&args, view, call.channel) {
+            Ok((args, replayed)) => {
+                if !replayed.is_empty() {
+                    line["replayed"] = Value::Array(replayed);
+                }
+                args
+            }
             Err(message) => {
                 line["args"] = shapes(&args);
                 self.write(&mut state, &line);
@@ -186,7 +179,7 @@ impl Recorder {
                 });
                 self.write(&mut state, &refusal);
                 drop(state);
-                deliver(Err(IpcError {
+                deliver(Err(shell_contract::error::IpcError {
                     name: Some("Error".into()),
                     message,
                 }));
@@ -194,22 +187,22 @@ impl Recorder {
             }
         };
         line["args"] = shapes(&args);
-        if !replayed.is_empty() {
-            line["replayed"] = Value::Array(replayed);
-        }
         self.write(&mut state, &line);
         drop(state);
         let recorder = Arc::clone(self);
-        let channel = call.channel.to_owned();
         let kept = args.clone();
+        #[cfg(feature = "e2e-replay")]
+        let channel = call.channel.to_owned();
         let recorded: Deliver = Box::new(move |reply| {
-            recorder.replied(seq, view, channel, kept, &reply);
+            recorder.replied(seq, &kept, &reply);
+            #[cfg(feature = "e2e-replay")]
+            recorder.lock().answered.note(view, channel, kept, &reply);
             deliver(reply);
         });
         Some((args, recorded))
     }
 
-    fn replied(&self, seq: u64, view: ViewId, channel: String, args: Vec<IpcValue>, reply: &Reply) {
+    fn replied(&self, seq: u64, args: &[IpcValue], reply: &Reply) {
         let mut state = self.lock();
         let mut line = json!({ "event": "reply", "seq": seq, "ms": self.elapsed_ms() });
         match reply {
@@ -219,19 +212,10 @@ impl Recorder {
             }
             Err(error) => {
                 line["ok"] = Value::Bool(false);
-                line["error"] = Value::from(scrubbed(&error.message, &args));
+                line["error"] = Value::from(scrubbed(&error.message, args));
             }
         }
         self.write(&mut state, &line);
-        if reply.is_ok() {
-            let others = |call: &Answered| call.view != view || call.channel != channel;
-            state.answered.retain(others);
-            state.answered.push(Answered {
-                view,
-                channel,
-                args,
-            });
-        }
     }
 }
 
@@ -299,110 +283,12 @@ fn is_secret(text: &str) -> bool {
     text.len() >= SCRUBBED_FROM && !OUTCOME_WORDS.contains(&text)
 }
 
-/// `{"e2eReplay": "self" | "other", "path": [...]}`: whether another view's call is meant, and
-/// where the value is in that call's arguments
-fn replay_marker(value: &IpcValue) -> Option<(bool, &[IpcValue])> {
-    fn field<'a>(fields: &'a [(String, IpcValue)], name: &str) -> Option<&'a IpcValue> {
-        fields
-            .iter()
-            .find(|(key, _)| key == name)
-            .map(|(_, field)| field)
-    }
-    let IpcValue::Object(fields) = value else {
-        return None;
-    };
-    if fields.len() != 2 {
-        return None;
-    }
-    let IpcValue::String(of) = field(fields, REPLAY_KEY)? else {
-        return None;
-    };
-    let IpcValue::Array(path) = field(fields, REPLAY_PATH)? else {
-        return None;
-    };
-    match of.as_str() {
-        "self" => Some((false, path.as_slice())),
-        "other" => Some((true, path.as_slice())),
-        _ => None,
-    }
-}
-
-/// `value` with every replay marker inside it replaced by the value it names
-fn fill(
-    value: &IpcValue,
-    answered: &[Answered],
-    view: ViewId,
-    channel: &str,
-    replayed: &mut Vec<Value>,
-) -> Result<IpcValue, String> {
-    if let Some((other, path)) = replay_marker(value) {
-        let (of, whose) = if other {
-            ("other", "another view")
-        } else {
-            ("self", "this view")
-        };
-        let missing = |what: &str| format!("e2e replay: '{channel}' has no {what}");
-        let source = answered
-            .iter()
-            .rev()
-            .find(|call| call.channel == channel && (call.view != view) == other);
-        let Some(source) = source else {
-            return Err(missing(&format!("answered call from {whose}")));
-        };
-        let Some(found) = walk(&source.args, path) else {
-            return Err(missing("such value in its answered call"));
-        };
-        replayed.push(json!({ "of": of, "view": source.view.0 }));
-        return Ok(found.clone());
-    }
-    match value {
-        IpcValue::Array(items) => {
-            let mut filled = Vec::with_capacity(items.len());
-            for item in items {
-                filled.push(fill(item, answered, view, channel, replayed)?);
-            }
-            Ok(IpcValue::Array(filled))
-        }
-        IpcValue::Object(fields) => {
-            let mut filled = Vec::with_capacity(fields.len());
-            for (key, field) in fields {
-                let field = fill(field, answered, view, channel, replayed)?;
-                filled.push((key.clone(), field));
-            }
-            Ok(IpcValue::Object(filled))
-        }
-        other => Ok(other.clone()),
-    }
-}
-
-/// The value at `path`: an argument index, then object keys and array indexes
-fn walk<'a>(args: &'a [IpcValue], path: &[IpcValue]) -> Option<&'a IpcValue> {
-    let (first, rest) = path.split_first()?;
-    let mut at = args.get(index_of(first)?)?;
-    for step in rest {
-        at = match (at, step) {
-            (IpcValue::Object(fields), IpcValue::String(key)) => {
-                &fields.iter().find(|(name, _)| name == key)?.1
-            }
-            (IpcValue::Array(items), index) => items.get(index_of(index)?)?,
-            _ => return None,
-        };
-    }
-    Some(at)
-}
-
-fn index_of(step: &IpcValue) -> Option<usize> {
-    match step {
-        IpcValue::Number(index) if *index >= 0.0 && index.fract() == 0.0 => Some(*index as usize),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use shell_contract::Surface;
-    use shell_contract::ids::WindowId;
+    use shell_contract::error::IpcError;
+    use shell_contract::ids::{ViewId, WindowId};
     use std::sync::mpsc;
 
     const CHANNEL: &str = "docs:recovery-initialized";
@@ -433,12 +319,12 @@ mod tests {
         IpcValue::String(value.to_owned())
     }
 
-    /// The first argument of an answered call, by name
-    fn replay(of: &str) -> IpcValue {
-        let path = IpcValue::Array(vec![IpcValue::Number(0.0)]);
+    /// What a native-host spec sends in place of a receipt: the value at `path` of an answered
+    /// call, by name
+    fn marker(of: &str, path: &[IpcValue]) -> IpcValue {
         IpcValue::Object(vec![
-            (REPLAY_KEY.to_owned(), text(of)),
-            (REPLAY_PATH.to_owned(), path),
+            ("e2eReplay".to_owned(), text(of)),
+            ("path".to_owned(), IpcValue::Array(path.to_vec())),
         ])
     }
 
@@ -539,10 +425,12 @@ mod tests {
         assert_eq!(scrubbed(refusal, &[result]), refusal);
     }
 
+    #[cfg(feature = "e2e-replay")]
     #[test]
     fn a_replay_stands_for_the_value_of_an_answered_call_of_the_named_view() {
         let (recorder, folder) = recorder("replay");
         let (own, foreign) = (call(5, 1), call(6, 2));
+        let first = [IpcValue::Number(0.0)];
         let exact = vec![text("receipt-of-view-5"), IpcValue::Bool(true)];
         let accepted = Ok(IpcValue::Undefined);
         let _ = exchange(&recorder, &own, exact.clone(), accepted);
@@ -550,10 +438,10 @@ mod tests {
         let fake = vec![text("a-fake-receipt"), IpcValue::Bool(true)];
         let _ = exchange(&recorder, &own, fake, refused("does not match"));
 
-        let twice = vec![replay("self"), IpcValue::Bool(true)];
+        let twice = vec![marker("self", &first), IpcValue::Bool(true)];
         let (seen, _) = exchange(&recorder, &own, twice, refused("does not match"));
         assert_eq!(seen, Some(exact.clone()));
-        let other = vec![replay("other"), IpcValue::Bool(true)];
+        let other = vec![marker("other", &first), IpcValue::Bool(true)];
         let (seen, _) = exchange(&recorder, &foreign, other, refused("does not match"));
         assert_eq!(seen, Some(exact));
 
@@ -564,10 +452,11 @@ mod tests {
         std::fs::remove_dir_all(&folder).unwrap();
     }
 
+    #[cfg(feature = "e2e-replay")]
     #[test]
     fn a_replay_of_nothing_is_refused_before_the_handler() {
         let (recorder, folder) = recorder("unresolved");
-        let args = vec![replay("other")];
+        let args = vec![marker("other", &[IpcValue::Number(0.0)])];
         let accepted = Ok(IpcValue::Undefined);
         let (seen, reply) = exchange(&recorder, &call(5, 1), args, accepted);
         assert_eq!(seen, None);
@@ -578,19 +467,39 @@ mod tests {
         std::fs::remove_dir_all(&folder).unwrap();
     }
 
+    /// A build without the `e2e-replay` feature has no replay: whatever a renderer sends, no
+    /// value of an answered call is put into another call
+    #[cfg(not(feature = "e2e-replay"))]
     #[test]
-    fn a_replay_reaches_into_an_object_argument() {
-        let result = IpcValue::Object(vec![
-            ("token".to_owned(), text("recovery-token")),
-            ("ok".to_owned(), IpcValue::Bool(true)),
-        ]);
-        let args = [result];
-        let token = text("recovery-token");
-        let first = IpcValue::Number(0.0);
-        assert_eq!(walk(&args, &[first.clone(), text("token")]), Some(&token));
-        assert_eq!(walk(&args, &[first.clone(), text("none")]), None);
-        assert_eq!(walk(&args, &[IpcValue::Number(1.0)]), None);
-        assert_eq!(walk(&args, &[IpcValue::Number(-1.0)]), None);
-        assert_eq!(walk(&args, &[]), None);
+    fn without_the_replay_feature_a_marker_reaches_the_handler_as_it_was_sent() {
+        fn ack(token: IpcValue) -> IpcValue {
+            IpcValue::Object(vec![
+                ("token".to_owned(), token),
+                ("ok".to_owned(), IpcValue::Bool(true)),
+            ])
+        }
+        let (recorder, folder) = recorder("no-replay");
+        let answered = vec![ack(text("receipt-of-view-5"))];
+        let accepted = Ok(IpcValue::Undefined);
+        let _ = exchange(&recorder, &call(5, 1), answered, accepted);
+
+        let path = [IpcValue::Number(0.0), text("token")];
+        for (view, of) in [(6, "other"), (5, "self")] {
+            let sent = vec![ack(marker(of, &path)), marker(of, &path)];
+            let answer = refused("the token is not a text");
+            let (seen, reply) = exchange(&recorder, &call(view, 2), sent.clone(), answer);
+            assert_eq!(seen, Some(sent), "{of}");
+            assert_eq!(reply, refused("the token is not a text"), "{of}");
+        }
+
+        let written = std::fs::read_to_string(folder.join(RECORD_FILE)).unwrap();
+        assert!(!written.contains("receipt-of-view-5"), "{written}");
+        assert!(!written.contains("replayed"), "{written}");
+        let lines = lines(&folder);
+        let token = &lines[2]["args"][0]["fields"]["token"];
+        assert_eq!(token["type"], "object");
+        assert_eq!(token["fields"]["e2eReplay"]["length"], 5);
+        assert_eq!(lines[2]["view"], 6);
+        std::fs::remove_dir_all(&folder).unwrap();
     }
 }

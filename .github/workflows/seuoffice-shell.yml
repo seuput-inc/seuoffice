@@ -180,6 +180,10 @@ jobs:
       - name: clippy
         if: ${{ !cancelled() }}
         run: cargo clippy --locked --all-targets -- -D warnings
+      # the replay markers of the e2e build are not in the default features: the same lints for them
+      - name: clippy (e2e-replay)
+        if: ${{ !cancelled() }}
+        run: cargo clippy --locked --all-targets --features e2e-replay -- -D warnings
 
       - name: unit tests
         if: ${{ !cancelled() }}
@@ -444,8 +448,10 @@ jobs:
           mkdir -p "$SEUOFFICE_TEST_SCRATCH" "$SEUOFFICE_NATIVE_TEST_SCRATCH"
           # vendored OpenSSL configures with perl; Git Bash's perl lacks the modules it needs
           if [ "$RUNNER_OS" = Windows ]; then export OPENSSL_SRC_PERL='C:\Strawberry\perl\bin\perl.exe'; fi
+          # with the replay markers of the e2e build, so their tests run here; the full gate's
+          # release tests run without them, and with the test that a default build has none
           # shellcheck disable=SC2086 # the arguments are split as typed
-          bash crates/shell/ci/check-local.sh test -- $TEST_ARGS
+          bash crates/shell/ci/check-local.sh test --features e2e-replay -- $TEST_ARGS
 
   # Cargo.lock of crates/shell, generated once on Ubuntu from an exact commit and handed over
   # as an artifact. The shell is its own workspace, so no other lock moves. A person reviews
@@ -818,16 +824,20 @@ jobs:
         run: |
           export APPLE_SIGNING_IDENTITY="$SEUOFFICE_MAC_SIGN_IDENTITY"
           config=$(node e2e/stage-resources.mjs mac-config)
-          npx tauri build --bundles app --verbose --config "$config" -- --locked
+          npx tauri build --bundles app --verbose --config "$config" -- --locked --features e2e-replay
           app=$(find target/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)
           ci/mac-check-signature.sh "$app"
           echo "SHELL_BIN=$PWD/$app/Contents/MacOS/SeuOffice" >> "$GITHUB_ENV"
       - name: build and stage the resources (Windows)
         if: runner.os == 'Windows'
         run: |
-          cargo build --locked --release --verbose
+          cargo build --locked --release --verbose --features e2e-replay
           node e2e/stage-resources.mjs win-stage target/release
           echo "SHELL_BIN=$(cygpath -m "$PWD")/target/release/SeuOffice.exe" >> "$GITHUB_ENV"
+      # The e2e-replay feature (the two builds above) is for this job alone. Its marker must be
+      # in this executable: the bundle job fails a shipped one that has it, with the same script.
+      - name: the e2e build has the replay markers
+        run: bash ci/replay-guard.sh present "$SHELL_BIN"
 
       # Windows composes Hangul through the Korean IME of the language pack; the hosted image has
       # English only. A failure here is not fatal: the ime scenarios then fail with their own evidence.
