@@ -502,7 +502,7 @@ fn inherited<'a>(document: &'a Document, page: ObjectId, key: &[u8]) -> Option<&
 }
 
 /// The `MediaBox` as `[x, y, width, height]`.
-fn media_box(document: &Document, page: ObjectId) -> Result<[f64; 4], PageError> {
+pub(super) fn media_box(document: &Document, page: ObjectId) -> Result<[f64; 4], PageError> {
     let numbers: Vec<f64> = inherited(document, page, b"MediaBox")
         .and_then(|object| object.as_array().ok())
         .map(|items| {

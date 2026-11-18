@@ -879,11 +879,15 @@ impl Windows {
                 trace!("window", "window {} created, configuring", window.0);
                 let configured = (|| {
                     native.window_created(&built.as_ref().window())?;
+                    trace!("window", "window {} reservation claimed", window.0);
                     window_lifecycle.attach(built.as_ref().window())?;
+                    trace!("window", "window {} lifecycle attached", window.0);
                     if let Some(created) = generation.get() {
                         crate::ipc::bind_native_webview(built.as_ref(), view, created.clone())?;
                     }
+                    trace!("window", "window {} registration bound", window.0);
                     attach_native(&self.app, &native, built.as_ref(), &browser)?;
+                    trace!("window", "window {} observers attached", window.0);
                     if !options.fullscreenable {
                         disable_native_fullscreen(&self.app, &built)?;
                         if cfg!(target_os = "macos") && spec.visible {
@@ -1038,6 +1042,7 @@ impl Windows {
                 });
             }
         };
+        trace!("window", "view {} child building", view.0);
         match parent.add_child(
             builder,
             LogicalPosition::new(bounds.x, bounds.y),
@@ -1054,6 +1059,7 @@ impl Windows {
                         proof,
                     });
                 }
+                trace!("window", "view {} child created, attaching", view.0);
                 if let Err(error) = attach_native(&self.app, &native, &built, &browser) {
                     return Err(ChildCreationError {
                         message: error,
@@ -1061,6 +1067,7 @@ impl Windows {
                         proof,
                     });
                 }
+                trace!("window", "view {} attached", view.0);
                 Ok(CreatedChild {
                     view,
                     webview: built,

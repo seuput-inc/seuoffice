@@ -203,7 +203,8 @@ function interpret(objects, resources, content, matrix, fills, depth) {
   let path = []
   let operands = []
   let inArray = 0
-  TOKEN.lastIndex = 0
+  // a nested form is interpreted by a recursive call: the regexp's position must not be shared
+  const tokens = new RegExp(TOKEN.source, 'g')
   let match
   const paint = () => {
     if (path.length) {
@@ -222,7 +223,7 @@ function interpret(objects, resources, content, matrix, fills, depth) {
     }
     path = []
   }
-  while ((match = TOKEN.exec(text))) {
+  while ((match = tokens.exec(text))) {
     const token = match[0]
     if (token === '[') {
       inArray += 1
@@ -296,8 +297,8 @@ function interpret(objects, resources, content, matrix, fills, depth) {
         break
       }
       case 'BI': {
-        const end = text.indexOf('EI', TOKEN.lastIndex)
-        TOKEN.lastIndex = end < 0 ? text.length : end + 2
+        const end = text.indexOf('EI', tokens.lastIndex)
+        tokens.lastIndex = end < 0 ? text.length : end + 2
         break
       }
       case 'Do': {

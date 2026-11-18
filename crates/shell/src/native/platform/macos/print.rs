@@ -14,6 +14,7 @@ use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use lopdf::Object;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
@@ -28,7 +29,7 @@ use tauri::Webview;
 use super::Platform;
 use super::header_footer::{self, Plan};
 use super::header_footer_view;
-use super::page::{Stage, Surface, object, run};
+use super::page::{Stage, Surface, call_async, object, run};
 use crate::native::page::{Done, HeaderFooter, PageError, PdfSpec, parse_page_ranges};
 use crate::native::platform::{PrintOps, PrintOutcome};
 
@@ -102,8 +103,8 @@ impl Drop for Backgrounds {
     }
 }
 
-/// A print job that saves to `target`: paper, orientation, margins and scale of the spec,
-/// no centering, automatic pagination.
+/// A print job that saves to `target`: paper, orientation and margins of the spec (and its
+/// scale, see below), no centering, automatic pagination.
 fn saving_info(spec: &PdfSpec, target: &Path) -> Result<Retained<NSPrintInfo>, PageError> {
     let info = NSPrintInfo::new();
     // The orientation first: it swaps the paper size, which is then given as oriented.
@@ -123,12 +124,23 @@ fn saving_info(spec: &PdfSpec, target: &Path) -> Result<Retained<NSPrintInfo>, P
             NSSize { width, height }
         });
     }
+    // A scale is not WebKit's own: it would shrink the content without giving the pages more
+    // room. The job prints unscaled on paper (and margins) `1 / scale` as large and
+    // `scale_pages` shrinks the result.
+    let grow = 1.0 / spec.scale;
+    if grow != 1.0 {
+        let paper = info.paperSize();
+        info.setPaperSize(NSSize {
+            width: paper.width * grow,
+            height: paper.height * grow,
+        });
+    }
     let [top, right, bottom, left] = spec.margins_in;
-    info.setTopMargin(top * POINTS);
-    info.setRightMargin(right * POINTS);
-    info.setBottomMargin(bottom * POINTS);
-    info.setLeftMargin(left * POINTS);
-    info.setScalingFactor(spec.scale);
+    info.setTopMargin(top * POINTS * grow);
+    info.setRightMargin(right * POINTS * grow);
+    info.setBottomMargin(bottom * POINTS * grow);
+    info.setLeftMargin(left * POINTS * grow);
+    info.setScalingFactor(1.0);
     info.setHorizontallyCentered(false);
     info.setVerticallyCentered(false);
     info.setHorizontalPagination(NSPrintingPaginationMode::Automatic);
@@ -155,6 +167,54 @@ fn scratch_file() -> PathBuf {
 
 fn slicing(error: impl std::fmt::Display) -> PageError {
     PageError::Platform(format!("The PDF pages could not be selected: {error}"))
+}
+
+fn scaling(error: impl std::fmt::Display) -> PageError {
+    PageError::Platform(format!("The PDF pages could not be scaled: {error}"))
+}
+
+/// Scale every page of the printed PDF by `factor`: its box and its content. The job itself
+/// runs unscaled on paper `1 / factor` as large (see `saving_info`), so that the page breaks
+/// fall as they do in Chromium: WebKit's own scaling shrinks the content without giving the
+/// pages more room, and two forced pages end up on one sheet.
+fn scale_pages(bytes: Vec<u8>, factor: f64) -> Result<Vec<u8>, PageError> {
+    if (factor - 1.0).abs() < 1e-9 {
+        return Ok(bytes);
+    }
+    let mut document = lopdf::Document::load_mem(&bytes).map_err(scaling)?;
+    for (_, page) in document.get_pages() {
+        let [x, y, width, height] = header_footer::media_box(&document, page)
+            .map_err(|_| scaling("a page has no valid MediaBox"))?;
+        let bodies = document.get_page_contents(page);
+        let open = document.add_object(lopdf::Stream::new(
+            lopdf::Dictionary::new(),
+            format!("q\n{factor} 0 0 {factor} 0 0 cm\n").into_bytes(),
+        ));
+        let close = document.add_object(lopdf::Stream::new(
+            lopdf::Dictionary::new(),
+            b"Q\n".to_vec(),
+        ));
+        let mut contents = vec![Object::Reference(open)];
+        contents.extend(bodies.into_iter().map(Object::Reference));
+        contents.push(Object::Reference(close));
+        let dictionary = document.get_dictionary_mut(page).map_err(scaling)?;
+        dictionary.set("Contents", contents);
+        dictionary.set(
+            "MediaBox",
+            vec![
+                Object::Real((x * factor) as f32),
+                Object::Real((y * factor) as f32),
+                Object::Real(((x + width) * factor) as f32),
+                Object::Real(((y + height) * factor) as f32),
+            ],
+        );
+        for key in [&b"CropBox"[..], b"BleedBox", b"TrimBox", b"ArtBox"] {
+            dictionary.remove(key);
+        }
+    }
+    let mut scaled = Vec::new();
+    document.save_to(&mut scaled).map_err(scaling)?;
+    Ok(scaled)
 }
 
 /// Keep only the pages the ranges name. No ranges keep every page.
@@ -259,6 +319,7 @@ impl SaveJob {
             Err(platform("The print operation did not complete."))
         };
         let _ = std::fs::remove_file(&target);
+        let bytes = bytes.and_then(|bytes| scale_pages(bytes, spec.scale));
         drop(backgrounds);
         drop(stage);
         let bytes = match bytes {
@@ -301,6 +362,107 @@ pub(super) fn save_pdf(surface: &Surface<'_>, spec: PdfSpec, done: Done<Vec<u8>>
         Ok(ranges) => ranges.unwrap_or_default(),
         Err(error) => return done(Err(error)),
     };
+    let Some(window) = surface.window else {
+        return done(Err(platform("The web view is not in a window.")));
+    };
+    if !spec.prefer_css_page_size {
+        return begin_job(surface, spec, ranges, done);
+    }
+    // WebKit applies the `@page` margins of a page but takes its paper from the job, so the
+    // size `@page` names is read from the page's style sheets first and becomes the paper.
+    let (mtm, view, window, controller) = (
+        surface.mtm,
+        surface.view.retain(),
+        window.retain(),
+        surface.controller.retain(),
+    );
+    call_async(surface, CSS_PAGE_SIZE, move |outcome| {
+        let surface = Surface {
+            mtm,
+            view: &view,
+            window: Some(&*window),
+            controller: &controller,
+        };
+        match outcome {
+            Ok(answer) => {
+                let mut spec = spec;
+                let size = answer.and_then(|text| serde_json::from_str::<(f64, f64)>(&text).ok());
+                if let Some((width, height)) = size {
+                    spec.landscape = width > height;
+                    spec.paper_in = Some((
+                        width.min(height) / POINTS,
+                        width.max(height) / POINTS,
+                    ));
+                }
+                begin_job(&surface, spec, ranges, done)
+            }
+            Err(error) => done(Err(error)),
+        }
+    });
+}
+
+/// The size of the first page as the page's `@page` rules give it, in points: `[width, height]`,
+/// or nothing when no rule names a size (the job's own paper stays). `@page :first` beats `@page`.
+const CSS_PAGE_SIZE: &str = r#"
+const MM = 72 / 25.4;
+const UNIT = { mm: MM, cm: 10 * MM, q: MM / 4, in: 72, pt: 1, pc: 12, px: 0.75 };
+const NAMED = {
+  a5: [148 * MM, 210 * MM], a4: [210 * MM, 297 * MM], a3: [297 * MM, 420 * MM],
+  b5: [176 * MM, 250 * MM], b4: [250 * MM, 353 * MM],
+  letter: [612, 792], legal: [612, 1008], ledger: [1224, 792],
+};
+const parse = (text) => {
+  let size = null;
+  let landscape = null;
+  const lengths = [];
+  for (const word of text.trim().toLowerCase().split(/\s+/)) {
+    const length = /^(\d*\.?\d+)(mm|cm|q|in|pt|pc|px)$/.exec(word);
+    if (word === 'landscape') landscape = true;
+    else if (word === 'portrait') landscape = false;
+    else if (NAMED[word]) size = NAMED[word];
+    else if (length) lengths.push(Number(length[1]) * UNIT[length[2]]);
+    else if (word !== 'auto') return null;
+  }
+  if (lengths.length === 1) return [lengths[0], lengths[0]];
+  if (lengths.length === 2) return lengths;
+  if (!size) return null;
+  let [width, height] = size;
+  if (landscape !== null && (width > height) !== landscape) [width, height] = [height, width];
+  return [width, height];
+};
+let plain = null;
+let first = null;
+const visit = (rules) => {
+  for (const rule of rules) {
+    if (typeof CSSPageRule !== 'undefined' && rule instanceof CSSPageRule) {
+      const text = rule.style.getPropertyValue('size') ||
+        ((/(?:^|[;{\s])size\s*:\s*([^;}]+)/.exec(rule.cssText) || [])[1] || '');
+      const size = text ? parse(text) : null;
+      if (!size) continue;
+      const selector = rule.selectorText.trim();
+      if (selector === '') plain = size;
+      else if (selector === ':first') first = size;
+    } else if (rule.cssRules &&
+        (!rule.media || rule.media.length === 0 || /print|all/i.test(rule.media.mediaText))) {
+      visit(rule.cssRules);
+    }
+  }
+};
+for (const sheet of document.styleSheets) {
+  try { visit(sheet.cssRules); } catch (_) {}
+}
+const found = first || plain;
+return found ? JSON.stringify(found) : undefined;
+"#;
+
+/// Create the print operation of `spec` and run it; the answer reaches `done` from the UI
+/// thread when the job ends.
+fn begin_job(
+    surface: &Surface<'_>,
+    spec: PdfSpec,
+    ranges: Vec<RangeInclusive<u32>>,
+    done: Done<Vec<u8>>,
+) {
     let Some(window) = surface.window else {
         return done(Err(platform("The web view is not in a window.")));
     };
@@ -467,5 +629,61 @@ mod tests {
     #[test]
     fn scratch_files_are_unique_per_job() {
         assert_ne!(scratch_file(), scratch_file());
+    }
+
+    fn one_page_pdf() -> Vec<u8> {
+        let mut document = lopdf::Document::with_version("1.5");
+        let tree_id = document.new_object_id();
+        let content = document.add_object(lopdf::Stream::new(
+            lopdf::Dictionary::new(),
+            b"0 0 100 50 re f".to_vec(),
+        ));
+        let size = || {
+            Object::Array(vec![
+                Object::Integer(0),
+                Object::Integer(0),
+                Object::Integer(600),
+                Object::Integer(800),
+            ])
+        };
+        let page = document.add_object(lopdf::Dictionary::from_iter([
+            ("Type", Object::Name(b"Page".to_vec())),
+            ("Parent", Object::Reference(tree_id)),
+            ("MediaBox", size()),
+            ("CropBox", size()),
+            ("Contents", Object::Reference(content)),
+        ]));
+        document.objects.insert(
+            tree_id,
+            Object::Dictionary(lopdf::Dictionary::from_iter([
+                ("Type", Object::Name(b"Pages".to_vec())),
+                ("Count", Object::Integer(1)),
+                ("Kids", Object::Array(vec![Object::Reference(page)])),
+            ])),
+        );
+        let catalog = document.add_object(lopdf::Dictionary::from_iter([
+            ("Type", Object::Name(b"Catalog".to_vec())),
+            ("Pages", Object::Reference(tree_id)),
+        ]));
+        document.trailer.set("Root", Object::Reference(catalog));
+        let mut bytes = Vec::new();
+        document.save_to(&mut bytes).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn scaled_pages_shrink_their_box_and_their_content_together() {
+        let scaled = scale_pages(one_page_pdf(), 0.5).unwrap();
+        let document = lopdf::Document::load_mem(&scaled).unwrap();
+        let (_, page) = document.get_pages().into_iter().next().unwrap();
+        assert_eq!(
+            header_footer::media_box(&document, page).unwrap(),
+            [0.0, 0.0, 300.0, 400.0]
+        );
+        assert!(document.get_dictionary(page).unwrap().get(b"CropBox").is_err());
+        let content = String::from_utf8(document.get_page_content(page).unwrap()).unwrap();
+        assert!(content.starts_with("q\n0.5 0 0 0.5 0 0 cm\n"), "{content}");
+        assert!(content.contains("0 0 100 50 re f"));
+        assert!(content.trim_end().ends_with('Q'));
     }
 }
