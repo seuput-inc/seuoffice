@@ -276,7 +276,7 @@ impl TabsState {
         let original = plan
             .reserved_binding()
             .map(|binding| binding.browser.owner.clone());
-        let prepared = {
+        let mut prepared = {
             let mut inner = self.inner.borrow_mut();
             let super::super::super::state::Inner {
                 manager, bridge, ..
@@ -295,8 +295,11 @@ impl TabsState {
         }?;
         let commit = {
             let mut inner = self.inner.borrow_mut();
-            match inner.manager.as_mut() {
-                Some(manager) => manager.prepare_editor_adoption_commit(&prepared),
+            let super::super::super::state::Inner {
+                manager, bridge, ..
+            } = &mut *inner;
+            match manager.as_mut() {
+                Some(manager) => manager.prepare_editor_adoption_commit(bridge, &mut prepared),
                 None => Err("The shell window is unavailable".into()),
             }
         };

@@ -141,7 +141,23 @@ impl TabsState {
     /// `routeDocumentPath` through the native `OpenFile` command: a detached window showing the
     /// file is focused, else the extension picks the editor. `done` runs once.
     pub fn route_document_path(&self, path: &str, done: Box<dyn FnOnce(Result<bool, String>)>) {
-        self.hooks.route_path_native(path.to_owned(), done);
+        let cancel = shell_contract::runtime::CancelToken::default();
+        let command = shell_contract::ipc::NativeEditorCommand::OpenFile {
+            surface: super::native_open_surface(path),
+            path: std::path::PathBuf::from(path),
+        };
+        let operation = match self.hooks.issue_native_command(command, cancel.clone()) {
+            Ok(operation) => operation,
+            Err(error) => return done(Err(error)),
+        };
+        self.route_document_path_native(
+            path.to_owned(),
+            operation,
+            Box::new(move |result| {
+                drop(cancel);
+                done(result);
+            }),
+        );
     }
 
     /// The completion of an open nobody waits for: a failure is logged, never dropped.
@@ -218,8 +234,8 @@ impl TabsState {
             Err(error) => return self.new_sheet_fallback(&suggested, &error),
         };
         let state = self.rc();
-        self.route_document_path(
-            &backing,
+        self.open_new_sheet_native(
+            backing,
             Box::new(move |result| match result {
                 Ok(true) => state.hooks.start_queued_workbook_nudge(),
                 Ok(false) => state.new_sheet_fallback(&suggested, "the workbook did not open"),
@@ -412,53 +428,57 @@ impl TabsState {
     pub fn handle_dropped_files(&self, raw: Option<&IpcValue>) {
         let (supported, skill_files, unsupported) = partition_drop_payload(raw);
         let state = self.rc();
-        let rest = std::rc::Rc::new(RefCell::new(Some((skill_files, unsupported))));
-        let finish: std::rc::Rc<dyn Fn(bool)> = std::rc::Rc::new(move |opened: bool| {
-            let Some((skill_files, unsupported)) = rest.borrow_mut().take() else {
-                return;
-            };
-            if opened {
-                state.reveal_shell_window();
-            }
-            if !unsupported.is_empty() {
-                let message = state
-                    .hooks
-                    .tm_params("errUnsupportedExt", &[("ext", &unsupported.join(", "))]);
-                state.hooks.show_app_warning(&message, None);
-            }
-            state.drop_skill_files(
-                skill_files.into_iter(),
-                opened || !unsupported.is_empty(),
-                false,
-            );
-        });
-        if supported.is_empty() {
-            return finish(false);
-        }
-        let remaining = std::rc::Rc::new(std::cell::Cell::new(supported.len()));
-        let opened = std::rc::Rc::new(std::cell::Cell::new(false));
-        for path in &supported {
-            let (finish, remaining, opened) = (finish.clone(), remaining.clone(), opened.clone());
-            let shown = path.clone();
-            let state = self.rc();
-            self.open_document_path(
-                path,
-                Box::new(move |result| {
-                    match result {
-                        Ok(true) => opened.set(true),
-                        Ok(false) => {}
-                        Err(error) => state.hooks.warn(
+        // one file after another, as the TypeScript loop opens them: each tab is in the strip
+        // and active before the next one opens
+        self.open_dropped_files(
+            supported.into_iter(),
+            false,
+            Box::new(move |opened| {
+                if opened {
+                    state.reveal_shell_window();
+                }
+                if !unsupported.is_empty() {
+                    let message = state
+                        .hooks
+                        .tm_params("errUnsupportedExt", &[("ext", &unsupported.join(", "))]);
+                    state.hooks.show_app_warning(&message, None);
+                }
+                state.drop_skill_files(
+                    skill_files.into_iter(),
+                    opened || !unsupported.is_empty(),
+                    false,
+                );
+            }),
+        );
+    }
+
+    fn open_dropped_files(
+        &self,
+        mut paths: std::vec::IntoIter<String>,
+        opened: bool,
+        finish: Box<dyn FnOnce(bool)>,
+    ) {
+        let Some(path) = paths.next() else {
+            return finish(opened);
+        };
+        let state = self.rc();
+        let shown = path.clone();
+        self.open_document_path(
+            &path,
+            Box::new(move |result| {
+                let opened = match result {
+                    Ok(done) => opened || done,
+                    Err(error) => {
+                        state.hooks.warn(
                             "[shell] opening a dropped file failed:",
                             &format!("{shown}: {error}"),
-                        ),
+                        );
+                        opened
                     }
-                    remaining.set(remaining.get() - 1);
-                    if remaining.get() == 0 {
-                        finish(opened.get());
-                    }
-                }),
-            );
-        }
+                };
+                state.open_dropped_files(paths, opened, finish);
+            }),
+        );
     }
 
     fn drop_skill_files(&self, mut paths: std::vec::IntoIter<String>, acted: bool, missed: bool) {

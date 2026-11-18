@@ -172,7 +172,7 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
             Ok(principal) => principal,
             Err(error) => return reply.reply(Err(error)),
         };
-        s.reveal_tab_owned(
+        s.activate_tab_owned(
             id,
             owner,
             cancel,

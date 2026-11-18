@@ -672,6 +672,10 @@ impl Projects {
                         drop(completion);
                         return;
                     };
+                    // `openDocument` and `showHome` follow the page they show
+                    if let Ok(Some(view)) = &result {
+                        projects.track(*view);
+                    }
                     let step = projects.chat_owner_core(token, || {
                         let view = result.map_err(Thrown)?.map(|view| i64::from(view.0));
                         projects.serve(|ipc, deps| {

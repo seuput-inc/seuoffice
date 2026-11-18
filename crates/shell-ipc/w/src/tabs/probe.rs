@@ -845,9 +845,12 @@ fn fixture_native_command(
         &mut || {
             let created_view = create.take().ok_or("Synthetic creation already ran")?()
                 .map_err(|error| error.0)?;
-            fixture_reserve(fake, created_view, created.clone());
+            let closure = fixture_reserve(fake, created_view, created.clone());
             view = Some(created_view);
-            Ok(())
+            // the shell adopts the browser's first owner inside the creation gate
+            closure
+                .reservation
+                .with_initial_owner(&closure.owner, |_| Ok(()))
         },
     );
     if let Err(error) = admitted {
@@ -2048,6 +2051,23 @@ fn probe_token_matches(current: Option<&Arc<()>>, expected: &Option<Arc<()>>) ->
     }
 }
 
+/// The editor calls a docs seed makes in TypeScript (`openDocsTab` in
+/// tab-manager.ts): `markDocsNewBlank`, then `queueDocsAiContent`
+fn docs_ai_seed_logs(view: ViewId, new_blank: bool, content: &Option<Value>) -> Vec<Vec<Value>> {
+    let mut logs = Vec::new();
+    if new_blank {
+        logs.push(vec![json!("markDocsNewBlank"), json!(view.0)]);
+    }
+    if let Some(content) = content {
+        logs.push(vec![
+            json!("queueDocsAiContent"),
+            json!(view.0),
+            content.clone(),
+        ]);
+    }
+    logs
+}
+
 #[allow(clippy::too_many_arguments)]
 fn prepare_probe_seed(
     fake: &Fake,
@@ -2056,14 +2076,11 @@ fn prepare_probe_seed(
     reservation: &shell_contract::ipc::NativeClosureReservation,
     seed: Option<main_core::shell::tab_manager::EditorSeed>,
     placement: Option<Option<main_core::shell::projects::new_documents::NewDocumentPlacement>>,
-    docs_open_path: Option<String>,
     workbook: Option<String>,
     rollback: &super::host::EditorSeedRollbackStore,
 ) -> TabResult<ProbePreparedSeed> {
+    // a docs path is the argument of `createDocsView`, logged when the view is made
     let mut logs = Vec::new();
-    if let Some(path) = docs_open_path {
-        logs.push(vec![json!("queueDocsOpen"), json!(view.0), json!(path)]);
-    }
     if let Some(path) = workbook {
         logs.push(vec![
             json!("queueWorkbookForView"),
@@ -2072,22 +2089,21 @@ fn prepare_probe_seed(
         ]);
     }
     if let Some(seed) = &seed {
-        logs.push(match seed {
-            main_core::shell::tab_manager::EditorSeed::Generate(value) => vec![
+        match seed {
+            main_core::shell::tab_manager::EditorSeed::Generate(value) => logs.push(vec![
                 json!("queueGenerateHandoffFor"),
                 json!(view.0),
                 value.clone(),
-            ],
-            main_core::shell::tab_manager::EditorSeed::Conversion(value) => {
-                vec![json!("queueConvertedContent"), json!(view.0), value.clone()]
-            }
-            main_core::shell::tab_manager::EditorSeed::DocsAi { new_blank, content } => vec![
-                json!("queueDocsAiSeed"),
+            ]),
+            main_core::shell::tab_manager::EditorSeed::Conversion(value) => logs.push(vec![
+                json!("queueConvertedContent"),
                 json!(view.0),
-                json!(new_blank),
-                json!(content),
-            ],
-        });
+                value.clone(),
+            ]),
+            main_core::shell::tab_manager::EditorSeed::DocsAi { new_blank, content } => {
+                logs.extend(docs_ai_seed_logs(view, *new_blank, content))
+            }
+        }
     }
     let mut world = fake.w();
     world
@@ -3505,14 +3521,10 @@ impl TabHooks for Hooks {
                 }
                 TabActivationEffect::Menu(kind) => {
                     let (fake, kind) = (self.0.clone(), *kind);
+                    // TypeScript's applyMenuFor rebuilds the menu without a call
+                    // of the world's log
                     Some(Box::new(move || {
-                        let mut world = fake.w();
-                        world.active_menu = Some((kind, target));
-                        world.log(vec![
-                            json!("applyMenuFor"),
-                            json!(kind.as_str()),
-                            target.map_or(Value::Null, |view| json!(view.0)),
-                        ]);
+                        fake.w().active_menu = Some((kind, target));
                         Ok(())
                     }))
                 }
@@ -4122,9 +4134,19 @@ impl TabHooks for Hooks {
                     retired.revoke();
                     close(done);
                 });
-                if let Err(error) =
-                    initialize(view, &generation, &closure.reservation, &closure.owner)
-                {
+                // the shell adopts the browser's first owner under the request's
+                // authority before it initializes the editor
+                let adopted =
+                    synthetic_created_effect(&owner, &[], &generation, &cancel, &pending, || {
+                        closure
+                            .reservation
+                            .with_initial_owner(&closure.owner, |_| Ok(()))
+                    })
+                    .and_then(|result| result.map_err(TabError))
+                    .and_then(|()| {
+                        initialize(view, &generation, &closure.reservation, &closure.owner)
+                    });
+                if let Err(error) = adopted {
                     return then(Err(ViewCreationFailure {
                         error,
                         cleanup: ViewCreationCleanupState::Pending(cleanup),
@@ -4187,7 +4209,6 @@ impl TabHooks for Hooks {
             &closure.reservation,
             seed,
             placement,
-            None,
             None,
             &rollback,
         )?;
@@ -4468,7 +4489,6 @@ impl TabHooks for Hooks {
             seed,
             placement,
             None,
-            None,
             &rollback,
         )?;
         rollback
@@ -4651,12 +4671,9 @@ impl TabHooks for Hooks {
                         ])
                     }
                     main_core::shell::tab_manager::EditorSeed::DocsAi { new_blank, content } => {
-                        world.log(vec![
-                            json!("queueDocsAiSeed"),
-                            json!(view.0),
-                            json!(new_blank),
-                            json!(content),
-                        ])
+                        for line in docs_ai_seed_logs(view, *new_blank, content) {
+                            world.log(line);
+                        }
                     }
                 }
                 let token = seed_token.as_ref().expect("prepared seed token");
@@ -4700,7 +4717,7 @@ impl TabHooks for Hooks {
         &self,
         view: ViewId,
         seed: Option<main_core::shell::tab_manager::EditorSeed>,
-        docs_open_path: Option<String>,
+        _docs_open_path: Option<String>,
         workbook: Option<String>,
         new_blank: bool,
         target: &shell_contract::ipc::NativeRequestOwner,
@@ -4726,7 +4743,6 @@ impl TabHooks for Hooks {
             &binding.browser.reservation,
             seed,
             None,
-            docs_open_path,
             workbook,
             rollback,
         )?;
@@ -4742,7 +4758,7 @@ impl TabHooks for Hooks {
         &self,
         view: ViewId,
         seed: Option<main_core::shell::tab_manager::EditorSeed>,
-        docs_open_path: Option<String>,
+        _docs_open_path: Option<String>,
         workbook: Option<String>,
         reused_target: Option<&shell_contract::ipc::NativeRequestOwner>,
         source: &shell_contract::ipc::NativeRequestOwner,
@@ -4756,9 +4772,6 @@ impl TabHooks for Hooks {
         let nudge = workbook.is_some() && reused_target.is_some();
         synthetic_created_effect(source, &[], created, cancel, pending, || {
             let mut world = self.0.w();
-            if let Some(path) = docs_open_path {
-                world.log(vec![json!("queueDocsOpen"), json!(view.0), json!(path)]);
-            }
             if let Some(path) = workbook {
                 world.log(vec![
                     json!("queueWorkbookForView"),
@@ -4770,12 +4783,9 @@ impl TabHooks for Hooks {
                 if let main_core::shell::tab_manager::EditorSeed::DocsAi { new_blank, content } =
                     &seed
                 {
-                    world.log(vec![
-                        json!("queueDocsAiSeed"),
-                        json!(view.0),
-                        json!(new_blank),
-                        json!(content),
-                    ]);
+                    for line in docs_ai_seed_logs(view, *new_blank, content) {
+                        world.log(line);
+                    }
                 }
                 let token = Arc::new(());
                 let prior = world.generated.insert(view, seed);
@@ -4899,9 +4909,6 @@ impl TabHooks for Hooks {
                 pending,
                 &mut || {
                     let mut world = self.0.w();
-                    if let Some(path) = &docs_open_path {
-                        world.log(vec![json!("queueDocsOpen"), json!(view.0), json!(path)]);
-                    }
                     if let Some(path) = &workbook {
                         world.log(vec![
                             json!("queueWorkbookForView"),
@@ -4910,6 +4917,11 @@ impl TabHooks for Hooks {
                         ]);
                     }
                     if let Some(seed) = seed.take() {
+                        if let EditorSeed::DocsAi { new_blank, content } = &seed {
+                            for line in docs_ai_seed_logs(view, *new_blank, content) {
+                                world.log(line);
+                            }
+                        }
                         let prior = world.generated.insert(view, seed);
                         let prior_token = world.generated_tokens.insert(view, token.clone());
                         displaced = Some(prior.map(|seed| (seed, prior_token)));
@@ -5226,9 +5238,11 @@ impl TabHooks for Hooks {
         let fake = self.0.clone();
         let reply = crate::home_files::back_to_core(self.1.core.clone(), done);
         self.1.ui.post(Box::new(move || {
+            // the adoption is one UI action; its calls in Electron's order
+            // (tab-manager.ts: addChildView, then setVisible(false))
             let action = Box::new(move || {
-                fake.view_set_visible(view, false);
                 fake.add_child_view(shell.window, view);
+                fake.view_set_visible(view, false);
                 fake.view_listen(view, ViewListen::HtmlFullScreen);
                 fake.view_listen(view, ViewListen::PaneFocus);
                 Ok(())
@@ -6145,10 +6159,6 @@ impl TabHooks for Hooks {
 
     fn drive_reopen(&self, _path: &str) -> bool {
         false
-    }
-    fn route_path_native(&self, path: String, done: Box<dyn FnOnce(Result<bool, String>)>) {
-        self.log("routeDocumentPath", vec![json!(path)]);
-        done(Ok(true));
     }
     fn issue_native_command(
         &self,
@@ -8513,7 +8523,6 @@ mod command_tests {
             Some(main_core::shell::tab_manager::EditorSeed::Generate(
                 json!({"fixture": true}),
             )),
-            None,
             None,
             None,
             &rollback,

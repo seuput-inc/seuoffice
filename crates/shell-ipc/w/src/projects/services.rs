@@ -1069,8 +1069,11 @@ pub(super) struct HostOfShell {
 }
 
 impl HostOfShell {
-    /// `trackProjectContents(contents)`
+    /// `trackProjectContents(contents)`: a destroyed page is not followed again
     fn track(&self, view: ViewId) {
+        if self.shell.host.page_destroyed(view) {
+            return;
+        }
         if self.tracked.borrow_mut().insert(view) {
             self.shell.host.track(view);
         }
@@ -1095,7 +1098,8 @@ impl ProjectIpcHost for HostOfShell {
         let Some(view) = view_of(target) else {
             return false;
         };
-        if self.shell.views.sender_of(view).is_none() {
+        // `webContents.fromId(target)` and `contents.isDestroyed()`
+        if self.shell.views.sender_of(view).is_none() || self.shell.host.page_destroyed(view) {
             return false;
         }
         let Some(channel) = main_core::packages::project_store::PROJECT_FOLDER_EVENTS
