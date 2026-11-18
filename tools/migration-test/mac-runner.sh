@@ -212,7 +212,10 @@ prompt_up() { ui_buttons >"$out/ui-buttons.txt" 2>&1 && grep -q 'Save' "$out/ui-
 prompt_gone() { [ "$(ui_buttons 2>&1)" = no-sheet ]; }
 doc_has() { unzip -p "$1" word/document.xml 2>/dev/null | grep -qF -- "$2"; }
 app_alive() { kill -0 "$app_pid" 2>/dev/null; }
-no_install_began() { ! grep -q 'phase will-quit' "$ud/update-log.txt" 2>/dev/null; }
+# the update log may hold an earlier run's lines (it is not under the profile this run chose):
+# only what was written since update_log_mark counts
+update_log_mark=0
+no_install_began() { ! tail -n "+$((update_log_mark + 1))" "$ud/update-log.txt" 2>/dev/null | grep -q 'phase will-quit'; }
 
 unsaved_fail() {
   diagnose "unsaved-$1"
@@ -224,6 +227,7 @@ unsaved_fail() {
 unsaved_prompt() {
   local doc=$1 marker=$2 before
   before=$(shasum -a 256 "$doc" | cut -d' ' -f1)
+  update_log_mark=$(wc -l <"$ud/update-log.txt" 2>/dev/null || echo 0)
   probe dirty --marker "$marker" || unsaved_fail dirty "the text could not be typed into the open document"
   result "[unsaved] typed $marker into the open document"
   for round in cancel save; do
