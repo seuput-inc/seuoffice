@@ -156,8 +156,8 @@ test('lists the three memos and keeps an edited body through save and reopen', a
     ])
 
     const body = memoCards(page).filter({ hasText: '본문 메모입니다.' })
-    await body.getByRole('button', { name: '고치기' }).click()
-    await expect(page.locator('.memo-modal-title')).toHaveText('메모 고치기')
+    await body.getByRole('button', { name: '편집' }).click()
+    await expect(page.locator('.memo-modal-title')).toHaveText('메모 편집')
     await expect(page.locator('.memo-textarea')).toHaveValue(
       '본문 메모입니다.\n두 번째 문단입니다.',
     )

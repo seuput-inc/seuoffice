@@ -45,7 +45,7 @@ import { openedUnverifiedKey, runSave, saveFailureKey, type SaveEditorPort } fro
 import { AUTOSAVE_IDLE_MS, startAutosave } from './autosave-flow'
 import { PASSWORD_FLAG } from '../../scripts/rhwp-patches.mjs'
 import { STUDIO_SETTINGS_KEY, seededStudioSettings, studioUrl } from './studio-settings'
-import { hideStudioRulers } from './studio-view-only'
+import { hideStudioEditingMarks } from './studio-view-only'
 import { hwpFormatOfPath } from '../shared/ipc'
 import type {
   HwpFormat,
@@ -266,7 +266,7 @@ export default function App() {
         // reading only: the menus and tool bars of the editor stay out, its status bar (page, zoom) stays
         if (WEB_VIEW) {
           await editor.chrome.set({ menu: false, toolbar: false })
-          hideStudioRulers(editor.element)
+          hideStudioEditingMarks(editor.element)
         }
         editorRef.current = editor
         stopDrop = openDocumentsDroppedOn(editor.element, (files) =>

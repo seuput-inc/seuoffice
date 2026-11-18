@@ -12659,6 +12659,34 @@ body.docs-crop-active
   padding-top: 44px;
 }
 
+/* ---- Web view mode: a block is read, not moved, resized or edited ---- */
+
+.web-view .doc-move-handle,
+.web-view .img-resize-handle,
+.web-view .doc-formula-edit {
+  display: none !important;
+}
+
+.web-view .doc-protected,
+.web-view .doc-protected[data-doc-protected='image'] .doc-img-wrap,
+.web-view .doc-formula,
+.web-view .doc-formula-math {
+  cursor: auto;
+}
+
+/* no frame follows the pointer onto a picture, a table or an equation */
+.web-view .doc-protected[data-doc-protected='image']:not(.doc-img-float):hover {
+  outline: none;
+}
+
+.web-view .doc-protected[data-doc-protected='table']:hover {
+  border-color: transparent;
+}
+
+.web-view .doc-protected-formula-display:hover {
+  outline-color: transparent;
+}
+
 /* F5 presentation: Read Mode plus the whole screen; the reading view keeps it clean */
 .presentation-mode .status-bar {
   display: none !important;

@@ -993,6 +993,12 @@ export function ExcelShell({
         wrapper.after(button)
       }
       if (button.dataset['tip'] !== gotoTipRef.current) button.dataset['tip'] = gotoTipRef.current
+      // a viewer reads the selected cell's address there and types no reference or new name
+      const nameBox = WEB_VIEW ? wrapper.querySelector('input') : null
+      if (nameBox && !nameBox.readOnly) {
+        nameBox.readOnly = true
+        nameBox.tabIndex = -1
+      }
     }
     ensure()
     const container = document.getElementById('univer-container')
@@ -1606,12 +1612,14 @@ export function ExcelShell({
           }}
         />
       )}
-      <SheetTabContextMenu
-        actions={sheetTabActions}
-        getSheetProtected={() => onGetSheetProtection()?.protected ?? null}
-        getWorkbookLocked={onGetWorkbookProtection}
-        onProtectSheet={() => dispatchCommand('sheet-protect')}
-      />
+      {!WEB_VIEW && (
+        <SheetTabContextMenu
+          actions={sheetTabActions}
+          getSheetProtected={() => onGetSheetProtection()?.protected ?? null}
+          getWorkbookLocked={onGetWorkbookProtection}
+          onProtectSheet={() => dispatchCommand('sheet-protect')}
+        />
+      )}
     </main>
   )
 }

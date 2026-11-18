@@ -691,6 +691,7 @@ export const ko = {
   appLoadRangeFailed: '표시 범위를 로드할 수 없습니다.',
   appFullyLoaded:
     '통합 문서를 모두 로드했습니다. 수식이 실시간으로 다시 계산되고 행/열을 편집할 수 있습니다.',
+  appFullyLoadedReadOnly: '통합 문서를 모두 로드했습니다.',
   appRangeMustBeVector: '{range}은(는) 단일 행 또는 단일 열의 셀이어야 합니다.',
   appRangeTooManyCells: '{range}이(가) 셀 {max}개를 초과합니다.',
   appCopyLoadingRange: '복사를 위해 {range}을(를) 불러오는 중…',

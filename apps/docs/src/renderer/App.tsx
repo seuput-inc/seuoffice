@@ -8459,7 +8459,7 @@ export function App() {
 
   return (
     <div
-      className={`app ${readMode ? 'read-mode' : ''}${presenting ? ' presentation-mode' : ''}${commentsUi.panel ? ' comments-pane-open' : ''}${revisionDisplay !== 'all' ? ` rev-display-${revisionDisplay}` : ''}${balloonsActive && balloonMode === 'revisions' ? ' rev-balloon' : ''}${revisionFilter.insDel ? '' : ' rev-hide-insdel'}${revisionFilter.format ? '' : ' rev-hide-format'}${tcOptions.balloonLines ? '' : ' markup-no-lines'}`}
+      className={`app ${readMode ? 'read-mode' : ''}${WEB_VIEW_LOCKED ? ' web-view' : ''}${presenting ? ' presentation-mode' : ''}${commentsUi.panel ? ' comments-pane-open' : ''}${revisionDisplay !== 'all' ? ` rev-display-${revisionDisplay}` : ''}${balloonsActive && balloonMode === 'revisions' ? ' rev-balloon' : ''}${revisionFilter.insDel ? '' : ' rev-hide-insdel'}${revisionFilter.format ? '' : ' rev-hide-format'}${tcOptions.balloonLines ? '' : ' markup-no-lines'}`}
       data-balloons={balloonsActive ? balloonMode : undefined}
       data-comment-cards={commentsUi.cards ? '' : undefined}
       data-comment-focus={commentFocus?.id}

@@ -101,6 +101,7 @@ import {
   type ListItemRef,
 } from './numbering'
 import { symbolFontCovers } from '../font-check'
+import { webViewMode } from '../web-view-mode'
 import { dropActiveSubEditor, notifySubEditorState, setActiveSubEditor } from './active-editor'
 import {
   type BorderLine,
@@ -6997,7 +6998,9 @@ function floatingObjectDragPlugin(): Plugin {
     props: {
       handleDOMEvents: {
         mousedown: (view, event) => {
-          if (event.button !== 0) return false
+          // a document the web host opened for viewing keeps its pictures and shapes in place:
+          // the drop below dispatches whether or not the view is editable
+          if (event.button !== 0 || webViewMode()) return false
           const target = event.target as HTMLElement | null
           if (!target) return false
           // Activate on the move handle of an image block, anywhere on the
@@ -7277,6 +7280,14 @@ function floatingObjectDragPlugin(): Plugin {
 
           window.addEventListener('mousemove', onMove)
           window.addEventListener('mouseup', onUp)
+          return true
+        },
+        // nor does the browser lift such a block: ProseMirror starts the drag of a draggable
+        // node in a view that is not editable too
+        dragstart: (_view, event) => {
+          const block = event.target instanceof Element && event.target.closest('.doc-protected')
+          if (!block || !webViewMode()) return false
+          event.preventDefault()
           return true
         },
       },

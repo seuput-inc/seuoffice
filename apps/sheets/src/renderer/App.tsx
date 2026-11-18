@@ -129,6 +129,7 @@ import {
   placeRemoteEntries,
   useProjectPanel,
   type ProjectPanel,
+  webViewMode,
 } from '@seuoffice/ui'
 
 import {
@@ -746,6 +747,9 @@ import {
 } from './WorkbookVisuals'
 import { ChartFormatPane, SelectDataDialog } from './ChartPanels'
 import { handleSheetsControl, type ControlRequest } from './control'
+
+/** the web embed opened the page only to read: Univer shows no editing menu and no add-sheet button */
+const WEB_VIEW = webViewMode()
 
 // Source sheet id of an in-flight copy-sheet command; the next insert-sheet
 // mutation is that copy and must journal as a duplicate, not a blank add.
@@ -2773,7 +2777,7 @@ export function App({
           // bar (the Univer ribbon needs both flags).
           header: true,
           toolbar: false,
-          contextMenu: true,
+          contextMenu: !WEB_VIEW,
           formulaBar: true,
           footer: {
             sheetBar: true,
@@ -2781,6 +2785,7 @@ export function App({
             menus: true,
             // zoom lives in the custom full-width status bar (unified with docs/slides)
             zoomSlider: false,
+            addSheetButtonConfig: { show: !WEB_VIEW },
           },
           statusBarStatistic: true,
           // OOXML resolves style defaults as cell over row over column; the

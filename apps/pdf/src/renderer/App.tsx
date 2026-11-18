@@ -11688,7 +11688,8 @@ export default function App() {
                         if (!e.shiftKey && !toggle) scrollToPage(v + 1)
                       }}
                       onContextMenu={(e) => {
-                        if (e.target === e.currentTarget) return
+                        // the web embed's view mode has no page menu (rotate, delete, extract, insert)
+                        if (WEB_VIEW || e.target === e.currentTarget) return
                         e.preventDefault()
                         // right-click inside the selection keeps it; elsewhere it picks that page alone
                         if (!pickedPages.includes(origIdx))

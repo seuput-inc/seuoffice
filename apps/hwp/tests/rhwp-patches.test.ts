@@ -537,6 +537,79 @@ describe('rhwp AI run lock patch', () => {
   })
 })
 
+describe('rhwp read-only pointer patch', () => {
+  // the studio's double click and right click handlers, with only the lines the patch reads
+  const mouse = [
+    "import { emitHeaderFooterModeChanged } from './header-footer-mode';",
+    '',
+    'function onDblClick(this: any): void {',
+    '  if (!this.cursor.isInHeaderFooter()) {',
+    '    try {',
+    '      this.cursor.enterHeaderFooterMode();',
+    '      emitHeaderFooterModeChanged();',
+    '      return;',
+    '    } catch { /* ignored */ }',
+    '  }',
+    '  this.selectWord();',
+    '}',
+    '',
+    'function onContextMenu(this: any, e: { preventDefault(): void }): void {',
+    '  e.preventDefault();',
+    '  if (!this.active || !this.contextMenu) return;',
+    '  this.contextMenu.show();',
+    '}',
+    '',
+  ].join('\n')
+  const pointerOn = (readOnly: boolean): string[] => {
+    const patched = applyPatch('studio-read-only-pointer', mouse)
+    const importsGate = /^import \{ STUDIO_READ_ONLY \} from '[^']+';$/m
+    expect(patched).toMatch(importsGate)
+    const js = ts.transpileModule(
+      patched
+        .replace(importsGate, `const STUDIO_READ_ONLY = ${readOnly};`)
+        .replace(/^import .*$/m, 'const emitHeaderFooterModeChanged = () => {};') +
+        '\nreturn { onDblClick, onContextMenu }',
+      { compilerOptions: { target: ts.ScriptTarget.ES2020 } },
+    ).outputText
+    const handlers = new Function(js)() as {
+      onDblClick(this: unknown): void
+      onContextMenu(this: unknown, e: { preventDefault(): void }): void
+    }
+    const seen: string[] = []
+    const studio = {
+      active: true,
+      cursor: {
+        isInHeaderFooter: () => false,
+        enterHeaderFooterMode: () => seen.push('header editing'),
+      },
+      selectWord: () => seen.push('word selected'),
+      contextMenu: { show: () => seen.push('menu') },
+    }
+    handlers.onDblClick.call(studio)
+    handlers.onContextMenu.call(studio, { preventDefault: () => seen.push('browser menu off') })
+    return seen
+  }
+
+  it('starts no header editing and opens no menu in a read-only studio', () => {
+    // the double click still does what it does in the body, and the browser's menu stays out
+    expect(pointerOn(true)).toEqual(['word selected', 'browser menu off'])
+  })
+
+  it('leaves both to a studio nobody asked to be read-only', () => {
+    expect(pointerOn(false)).toEqual(['header editing', 'browser menu off', 'menu'])
+  })
+
+  it('keeps CRLF sources working, fails when the text is gone, and is in the studio build', () => {
+    expect(applyPatch('studio-read-only-pointer', mouse.replaceAll('\n', '\r\n'))).toContain(
+      '  if (!STUDIO_READ_ONLY && !this.cursor.isInHeaderFooter()) {\r\n',
+    )
+    expect(() =>
+      applyPatch('studio-read-only-pointer', mouse.replace('isInHeaderFooter', 'x')),
+    ).toThrow(/studio-read-only-pointer/)
+    expect(STUDIO_PATCHES).toContain('studio-read-only-pointer')
+  })
+})
+
 describe('rhwp PC fonts patch', () => {
   // the studio's text around the patch, as the pinned release has it
   const main = [
@@ -772,6 +845,7 @@ describe('the studio source the build fetched', () => {
     'src/core/wasm-bridge.ts',
     'src/engine/input-handler.ts',
     'src/engine/input-handler-keyboard.ts',
+    'src/engine/input-handler-mouse.ts',
     'src/engine/input-handler-text.ts',
     'src/engine/input-handler-table.ts',
     'src/command/commands/edit.ts',

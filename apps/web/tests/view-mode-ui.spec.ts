@@ -1,7 +1,14 @@
-import { readdirSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { expect, test, type Frame, type Page } from '@playwright/test'
+import {
+  expect,
+  test,
+  type Frame,
+  type FrameLocator,
+  type Page,
+  type TestInfo,
+} from '@playwright/test'
 
 /**
  * A document opened for viewing (no `mode` option) shows reading tools only: no editing ribbon, no AI
@@ -99,6 +106,46 @@ async function visibleCount(frame: Frame, selector: string): Promise<number> {
       (el) => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden',
     ).length
   }, selector)
+}
+
+/** Elements a person sees: laid out, not hidden and not fully transparent */
+async function shownCount(frame: Frame, selector: string): Promise<number> {
+  return frame.evaluate((sel) => {
+    return [...document.querySelectorAll(sel)].filter((el) => {
+      const style = getComputedStyle(el)
+      return (
+        el.getClientRects().length > 0 && style.visibility !== 'hidden' && style.opacity !== '0'
+      )
+    }).length
+  }, selector)
+}
+
+/** Opens a document for viewing and returns its page once the reading surface is there */
+async function openForViewing(
+  page: Page,
+  file: string,
+  width: number,
+  reading: string,
+): Promise<FrameLocator> {
+  await page.setViewportSize({ width, height: 900 })
+  await page.goto('/')
+  await page.setInputFiles('#file', {
+    name: file.split('/').pop()!,
+    mimeType: 'application/octet-stream',
+    buffer: readFileSync(file),
+  })
+  await expect(page.locator('#status')).not.toContainText('여는 중', { timeout: 40_000 })
+  await expect(page.locator('#status')).not.toContainText('오류')
+  const app = page.frameLocator('#viewer iframe')
+  await expect(app.locator(reading).first()).toBeAttached({ timeout: 30_000 })
+  await page.waitForTimeout(4000)
+  return app
+}
+
+async function attachScreenshot(page: Page, testInfo: TestInfo, name: string): Promise<void> {
+  const shot = testInfo.outputPath(`${name}.png`)
+  await page.screenshot({ path: shot })
+  await testInfo.attach(name, { path: shot, contentType: 'image/png' })
 }
 
 /** Every slide's text as the renderer draws it, so a page turn cannot hide a changed deck */
@@ -265,5 +312,275 @@ async function bodyText(page: Page): Promise<string> {
         })
       })
     }
+  }
+
+  /**
+   * What is left to press in a document opened for viewing: each format's ways into an edit (a
+   * button, a menu, a handle, a caret, a hint) are gone, and the reading tools beside them work.
+   * Every check is soft, so one run names each way that is still there.
+   */
+  for (const width of [1440, 390]) {
+    test(`xlsx view mode has no way into an edit at ${width}px`, async ({
+      page,
+      browserName,
+    }, testInfo) => {
+      const problems: string[] = []
+      page.on('pageerror', (error) => problems.push(error.message))
+      const app = await openForViewing(
+        page,
+        at('apps/sheets/fixtures/generated/compatibility-sheets.xlsx'),
+        width,
+        '.status-bar .zoom-slider',
+      )
+      const frame = appFrames(page)[0]!
+      const viewer = page.locator('#viewer iframe')
+      const box = (await viewer.boundingBox())!
+      const bar = app.locator('[data-u-comp="formula-bar"]')
+      const nameBox = bar.locator('[data-u-comp="defined-name"] input')
+
+      expect
+        .soft(await app.locator('.status-bar .status-msg').innerText(), 'status line hint')
+        .not.toMatch(/편집/)
+
+      // between the name box and the content line: no cancel, confirm or function button
+      const icons = await frame.evaluate(() => {
+        const formulaBar = document.querySelector('[data-u-comp="formula-bar"]')!
+        const name = formulaBar.querySelector('[data-u-comp="defined-name"]')!
+        const line = formulaBar.querySelector('canvas')!
+        const from = name.getBoundingClientRect().right
+        const to = line.getBoundingClientRect().left
+        return [...formulaBar.querySelectorAll('svg')].filter((icon) => {
+          const rect = icon.getBoundingClientRect()
+          return rect.width > 0 && rect.left >= from - 1 && rect.right <= to + 1
+        }).length
+      })
+      expect.soft(icons, 'buttons between the name box and the content line').toBe(0)
+      await expect
+        .soft(bar.locator('[data-u-comp="defined-name"] [aria-haspopup]'), 'name manager arrow')
+        .toBeHidden()
+
+      // a reference typed into the name box moves nothing
+      const cell = await nameBox.inputValue()
+      await nameBox.click()
+      await page.keyboard.press('ControlOrMeta+a')
+      await page.keyboard.type('C5')
+      await page.keyboard.press('Enter')
+      await page.waitForTimeout(500)
+      await expect.soft(nameBox, 'name box after typing a reference').toHaveValue(cell)
+
+      // a press on the content line takes no caret, and typing there shows nothing
+      await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
+      await frame.evaluate(() => document.activeElement?.setAttribute('data-focus-before', ''))
+      await bar.locator('canvas').click({ position: { x: 12, y: 10 } })
+      expect
+        .soft(
+          await frame.evaluate(() => document.activeElement?.hasAttribute('data-focus-before')),
+          'focus after a press on the content line',
+        )
+        .toBe(true)
+      const beforeTyping = await viewer.screenshot()
+      await page.keyboard.type('ZZTOP')
+      await page.waitForTimeout(500)
+      expect
+        .soft(await changedPixels(page, beforeTyping, await viewer.screenshot()), 'typed pixels')
+        .toBe(0)
+
+      // one button stands before the sheet tabs, and it lists the sheets
+      const tabs = app.locator('[data-u-comp="slide-tab-item"]')
+      const beforeTabs = await frame.evaluate(() => {
+        const first = document.querySelector('[data-u-comp="slide-tab-bar"]')!
+        const left = first.getBoundingClientRect().left
+        return [...first.closest('footer')!.querySelectorAll('button')].filter((button) => {
+          const rect = button.getBoundingClientRect()
+          return rect.width > 0 && rect.right <= left + 1
+        }).length
+      })
+      expect.soft(beforeTabs, 'buttons before the sheet tabs').toBe(1)
+      await app.locator('#univer-container footer button:visible').first().click()
+      await expect.soft(app.getByRole('menuitem', { name: 'Other' })).toBeVisible()
+      await page.keyboard.press('Escape')
+
+      // another sheet opens on a press; the open sheet's tab takes no rename, no drag, no menu
+      const open = app.locator('[data-u-comp="slide-tab-item"][aria-selected="true"]')
+      const other = app.locator('[data-u-comp="slide-tab-item"][aria-selected="false"]').last()
+      const otherName = await other.innerText()
+      await other.click()
+      await expect.soft(open, 'sheet after a press on its tab').toHaveText(otherName)
+      await open.dblclick()
+      await page.waitForTimeout(400)
+      expect
+        .soft(await shownCount(frame, '[data-u-comp="slide-tab-bar"] [contenteditable="true"]'))
+        .toBe(0)
+      await page.keyboard.press('Escape')
+      const tab = (await open.boundingBox())!
+      await page.mouse.move(tab.x + tab.width / 2, tab.y + tab.height / 2)
+      await page.mouse.down()
+      await page.waitForTimeout(700)
+      expect
+        .soft(await open.evaluate((el) => (el as HTMLElement).style.cursor), 'held tab')
+        .not.toBe('move')
+      await page.mouse.up()
+      await open.click({ button: 'right' })
+      await page.waitForTimeout(400)
+      expect.soft(await shownCount(frame, '[role="menu"]'), 'sheet tab menu').toBe(0)
+      await page.keyboard.press('Escape')
+      expect.soft(await tabs.count(), 'sheets').toBe(3)
+
+      // a right click on a cell opens no editing menu
+      await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { button: 'right' })
+      await page.waitForTimeout(500)
+      expect
+        .soft(await bodyText(page), 'menu after a right click on a cell')
+        .not.toMatch(/붙여넣기|자르기|이름 변경|시트 보호/)
+      expect.soft(problems).toEqual([])
+      await attachScreenshot(page, testInfo, `xlsx-pressing-${width}-${browserName}`)
+    })
+
+    test(`docx view mode has no way into an edit at ${width}px`, async ({
+      page,
+      browserName,
+    }, testInfo) => {
+      const problems: string[] = []
+      page.on('pageerror', (error) => problems.push(error.message))
+      const app = await openForViewing(
+        page,
+        at('fixtures/generated/kitchen-sink.docx'),
+        width,
+        '.ProseMirror',
+      )
+      const frame = appFrames(page)[0]!
+      // the pointer over a picture or an equation brings no handle and no edit button
+      for (const block of ['.doc-protected-image', '.doc-protected-formula']) {
+        const target = app.locator(block).first()
+        await target.scrollIntoViewIfNeeded()
+        await target.hover()
+        await page.waitForTimeout(400)
+        expect
+          .soft(
+            await shownCount(frame, '.doc-move-handle, .doc-formula-edit, .img-resize-handle'),
+            `handles over ${block}`,
+          )
+          .toBe(0)
+        const cursors = await target.evaluate((el) =>
+          [el, ...el.querySelectorAll('*')]
+            .filter((node) => node.getClientRects().length > 0)
+            .map((node) => getComputedStyle(node).cursor),
+        )
+        expect.soft(cursors.join(' '), `cursor over ${block}`).not.toMatch(/grab|move|resize/)
+      }
+
+      // a drag of the picture moves nothing, and the browser lifts no block either
+      await frame.evaluate(() => {
+        window.addEventListener('dragstart', (event) => {
+          document.documentElement.dataset['dragStarted'] = String(!event.defaultPrevented)
+        })
+      })
+      const image = app.locator('.doc-protected-image img').first()
+      const picture = (await image.boundingBox())!
+      await page.mouse.move(picture.x + picture.width / 2, picture.y + picture.height / 2)
+      await page.mouse.down()
+      await page.mouse.move(picture.x + picture.width / 2 + 40, picture.y - 60, { steps: 6 })
+      await page.mouse.up()
+      await page.waitForTimeout(500)
+      const dropped = (await image.boundingBox())!
+      expect
+        .soft([Math.round(dropped.x), Math.round(dropped.y)], 'picture after a drag')
+        .toEqual([Math.round(picture.x), Math.round(picture.y)])
+      expect
+        .soft(
+          await frame.evaluate(() => document.documentElement.dataset['dragStarted']),
+          'drag of a block',
+        )
+        .not.toBe('true')
+      expect.soft(problems).toEqual([])
+      await attachScreenshot(page, testInfo, `docx-pressing-${width}-${browserName}`)
+    })
+
+    test(`pdf view mode has no way into an edit at ${width}px`, async ({
+      page,
+      browserName,
+    }, testInfo) => {
+      const problems: string[] = []
+      page.on('pageerror', (error) => problems.push(error.message))
+      const app = await openForViewing(
+        page,
+        at('apps/pdf/tests/fixtures/plain-sample.pdf'),
+        width,
+        '.tb-page-input',
+      )
+      // a right click on a page thumbnail opens no page menu (rotate, delete, insert)
+      await app.locator('.pdf-thumb').first().click({ button: 'right' })
+      await page.waitForTimeout(400)
+      expect
+        .soft(await bodyText(page), 'menu after a right click on a thumbnail')
+        .not.toMatch(/회전|페이지 삭제|빈 페이지 삽입|페이지 가져오기/)
+      expect.soft(problems).toEqual([])
+      await attachScreenshot(page, testInfo, `pdf-pressing-${width}-${browserName}`)
+    })
+
+    test(`hwp view mode has no way into an edit at ${width}px`, async ({
+      page,
+      browserName,
+    }, testInfo) => {
+      const problems: string[] = []
+      page.on('pageerror', (error) => problems.push(error.message))
+      // a header with a line of text and a picture, over one line of body text
+      await openForViewing(
+        page,
+        at('apps/hwp/tests/fixtures/header-picture-and-text.hwpx'),
+        width,
+        '.hwp-editor-host iframe',
+      )
+      const studio = page.frames().find((frame) => frame.url().includes('/studio/'))!
+      const sheet = (await page
+        .frameLocator('#viewer iframe')
+        .frameLocator('.hwp-editor-host iframe')
+        .locator('.document-page-canvas')
+        .first()
+        .boundingBox())!
+      const on = (x: number, y: number): [number, number] => [
+        sheet.x + sheet.width * x,
+        sheet.y + sheet.height * y,
+      ]
+      const HEADER_TEXT = on(0.3, 0.09)
+      const HEADER_PICTURE = on(0.727, 0.084)
+      const BODY = on(0.5, 0.3)
+      const studioText = (): Promise<string> => studio.evaluate(() => document.body.innerText)
+      const paper = (): Promise<Buffer> =>
+        page.screenshot({
+          clip: { x: sheet.x, y: sheet.y, width: sheet.width, height: sheet.height * 0.35 },
+        })
+
+      expect
+        .soft(await studio.locator('#status-bar').innerText(), 'status line')
+        .not.toMatch(/삽입|수정/)
+
+      // a press in the text shows no caret, a press on a picture no handles
+      const untouched = await paper()
+      await page.mouse.click(...BODY)
+      await page.mouse.click(...HEADER_PICTURE)
+      await page.waitForTimeout(600)
+      expect
+        .soft(await changedPixels(page, untouched, await paper()), 'caret or handles drawn')
+        .toBe(0)
+      await page.mouse.click(...BODY)
+
+      // a double click on the header starts no header editing
+      await page.mouse.dblclick(...HEADER_TEXT)
+      await page.waitForTimeout(600)
+      expect
+        .soft(await studioText(), 'after a double click on the header')
+        .not.toMatch(/머리말|꼬리말/)
+      await page.keyboard.press('Escape')
+
+      // a right click opens no editing menu
+      await page.mouse.click(...BODY, { button: 'right' })
+      await page.waitForTimeout(500)
+      expect
+        .soft(await studioText(), 'menu after a right click')
+        .not.toMatch(/오려 두기|붙이기|모양 복사/)
+      expect.soft(problems).toEqual([])
+      await attachScreenshot(page, testInfo, `hwp-pressing-${width}-${browserName}`)
+    })
   }
 }
