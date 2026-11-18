@@ -1885,7 +1885,11 @@ impl ViewTable {
     }
 
     /// Why [`Self::capture_native_owner`] found nothing, in words, for the trace
-    pub(crate) fn explain_native_owner(&self, view: ViewId, expected: &RendererGeneration) -> String {
+    pub(crate) fn explain_native_owner(
+        &self,
+        view: ViewId,
+        expected: &RendererGeneration,
+    ) -> String {
         let Ok(inner) = self.inner.lock() else {
             return "the view table is poisoned".into();
         };
