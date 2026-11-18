@@ -199,9 +199,10 @@ const sheets: Format = {
   },
   async explore(page) {
     const app = appLocator(page)
-    await nameBox(app).fill('A1')
-    await nameBox(app).press('Enter')
-    await nameBox(app).blur()
+    // the Find button acts on the focused workbook, and a freshly opened one has focus only after
+    // a click inside its cells (a header or the name box does not give it)
+    const grid = (await app.locator('canvas').first().boundingBox())!
+    await page.mouse.click(grid.x + 300, grid.y + 150)
     // the Home tab's Find button opens the app's find and replace panel
     await app.locator('.inline-tools button', { hasText: '찾기' }).first().click()
     const panel = app.locator('.find-replace-panel')
