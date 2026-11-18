@@ -471,7 +471,11 @@ impl BrowserCore {
             .unwrap_or_else(|error| error.into_inner()) = Some(control);
         let _ = self.window_label.set(window_label.into());
         self.lock().attached = true;
-        crate::trace::trace!("attach", "'{}': attached, completing the creation", self.label);
+        crate::trace::trace!(
+            "attach",
+            "'{}': attached, completing the creation",
+            self.label
+        );
         self.close
             .complete_creation(BrowserCreationOutcome::Attached);
         self.ready_check();

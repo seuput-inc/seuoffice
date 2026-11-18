@@ -3141,7 +3141,11 @@ pub(crate) fn e2e_export_pdf() -> Result<(), String> {
             .ok_or_else(|| format!("the {} menu has no Export as PDF item", shown.kind.as_str()))?;
         (shown.kind, act)
     };
-    crate::trace::trace!("e2e", "export as PDF: the {} menu, item {act:?}", kind.as_str());
+    crate::trace::trace!(
+        "e2e",
+        "export as PDF: the {} menu, item {act:?}",
+        kind.as_str()
+    );
     perform(&shell.app, kind, act);
     Ok(())
 }
@@ -3326,7 +3330,11 @@ fn run(act: Act, kind: TabKind, provided: &Provided, services: &Services) {
                 crate::trace::trace!("menu", "emit '{channel}' to view {}", view.0);
                 services.events.emit(Target::View(view), channel, args);
             } else {
-                crate::trace::trace!("menu", "emit '{channel}': no active {} editor", kind.as_str());
+                crate::trace::trace!(
+                    "menu",
+                    "emit '{channel}': no active {} editor",
+                    kind.as_str()
+                );
             }
         }
         Act::Open => tabs.open_file_via_dialog(),
@@ -3351,14 +3359,22 @@ fn run(act: Act, kind: TabKind, provided: &Provided, services: &Services) {
         }
         Act::Export(format) => {
             let Some(view) = editor() else {
-                crate::trace::trace!("menu", "export {format}: no active {} editor", kind.as_str());
+                crate::trace::trace!(
+                    "menu",
+                    "export {format}: no active {} editor",
+                    kind.as_str()
+                );
                 return;
             };
             if let Some(app) = editor_for(provided, view) {
                 crate::trace::trace!("menu", "export {format}: asking view {}", view.0);
                 app.export_request(view, format);
             } else {
-                crate::trace::trace!("menu", "export {format}: view {} has no editor host", view.0);
+                crate::trace::trace!(
+                    "menu",
+                    "export {format}: view {} has no editor host",
+                    view.0
+                );
             }
         }
         Act::Settings => {

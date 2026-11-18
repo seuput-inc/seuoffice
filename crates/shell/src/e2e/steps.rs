@@ -517,8 +517,10 @@ impl Runner<'_> {
         let expression = "(() => { const a = document.activeElement; return { hasFocus: \
              document.hasFocus(), active: a ? a.tagName + (a.className ? '.' + \
              String(a.className).split(' ')[0] : '') : null } })()";
-        page.blocking(FOCUS_QUERY, |done| page.evaluate(expression, false, None, done))
-            .ok()
+        page.blocking(FOCUS_QUERY, |done| {
+            page.evaluate(expression, false, None, done)
+        })
+        .ok()
     }
 
     /// Keys go to the first responder. `set_focus` is asked of the UI thread and answers before
@@ -546,7 +548,9 @@ impl Runner<'_> {
     fn flush_input(webview: &Webview) {
         let Ok(page) = webview.page() else { return };
         let expression = "new Promise(done => requestAnimationFrame(() => setTimeout(done, 50)))";
-        let _ = page.blocking(FOCUS_QUERY, |done| page.evaluate(expression, true, None, done));
+        let _ = page.blocking(FOCUS_QUERY, |done| {
+            page.evaluate(expression, true, None, done)
+        });
     }
 
     /// The expression's value, awaited when it is a promise, as JSON
