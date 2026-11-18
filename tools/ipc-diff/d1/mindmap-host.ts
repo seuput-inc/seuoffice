@@ -38,6 +38,7 @@ import type * as MindmapMain from '../../../apps/mindmap/src/main/mindmap-main.t
 import type * as SeedMain from '../../../apps/mindmap/src/main/seed-main.ts'
 import type * as McpQueries from '../../../apps/mindmap/src/main/mcp-queries.ts'
 import type { FakeContents } from '../fakes.ts'
+import { HARNESS_TIMER } from '../deadline.ts'
 import type { Group, LoadContext } from '../types.ts'
 
 const RealDate = Date
@@ -93,6 +94,10 @@ const realTimers = {
 }
 function timer(kind: 'setTimeout' | 'setInterval') {
   return (fn: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
+    // the bound of the case (deadline.ts) runs on real time
+    if ((fn as unknown as Record<symbol, unknown>)[HARNESS_TIMER]) {
+      return (realTimers[kind] as (...a: unknown[]) => { unref?: () => void })(fn, delay, ...args)
+    }
     const ms = kind === 'setTimeout' && (delay === 500 || delay === 1500) ? 0 : (delay ?? 0)
     const entry: Pending = {
       fn,
