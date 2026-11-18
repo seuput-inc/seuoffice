@@ -130,8 +130,10 @@
     // the page lays the document out again (pagination follows the sizes): read it once it rests
     let nodes = []
     let last = ''
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 40; i++) {
       await new Promise((r) => setTimeout(r, 1000))
+      // the docs page says "opening" for a while after the host heard `opened`
+      if (document.querySelector('.start-booting')) continue
       nodes = textNodes()
       const now = nodes.map((n) => `${n.fontSize}:${n.lines}:${n.text.length}`).join()
       if (now === last) break
