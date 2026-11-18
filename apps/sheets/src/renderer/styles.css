@@ -360,6 +360,25 @@ body:has(.app-shell.web-view) {
   min-width: 0;
 }
 
+/* View mode shows what a cell holds and takes no edit. Univer has no switch for the cancel,
+   confirm and function buttons (the icon spans between the name box and the content line) or
+   for the name manager behind the name box's arrow, so they are hidden here. */
+.app-shell.web-view [data-u-comp='formula-bar'] div:has(> span > svg),
+.app-shell.web-view [data-u-comp='defined-name'] a {
+  display: none;
+}
+
+/* The name box and the content line are read there, not typed into (web-view-input.ts): the
+   canvas carries its text cursor inline. */
+.app-shell.web-view [data-u-comp='defined-name'] input {
+  cursor: default;
+  caret-color: transparent;
+}
+
+.app-shell.web-view [data-u-comp='formula-bar'] canvas {
+  cursor: default !important;
+}
+
 /* F5 presentation: the grid alone; the Univer header/footer stay because they
    are the workbook's own chrome, not this shell's. */
 .app-shell.sheet-presenting .excel-header,

@@ -6259,7 +6259,8 @@ async function preloadEntireWorkbookInner(
   if (lazyWorkbookRef.current === state) {
     state.flags.preloadComplete = true
     if (state.formulaMode && !isManualCalculation(runtime)) requestFullRecalcAfterStream()
-    setMessage(t('appFullyLoaded'))
+    // a read-only open (the web viewer) is told the workbook is in, not that it can be edited
+    setMessage(t(state.file.readOnly ? 'appFullyLoadedReadOnly' : 'appFullyLoaded'))
   }
 }
 
